@@ -1041,6 +1041,7 @@ impl PimService {
             | Request::RenameTemplate { .. }
             | Request::OpenApp { .. }
             | Request::ListApps
+            | Request::ListDesigns
             | Request::ListClients
             | Request::CreateClient { .. }
             | Request::UpdateClient { .. }
@@ -1065,6 +1066,7 @@ impl PimService {
             | Request::SnoozeItem { .. }
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
+            | Request::HideSender { .. }
             | Request::ListRules
             | Request::RemoveRule { .. } => return None,
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,

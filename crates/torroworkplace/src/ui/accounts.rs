@@ -52,7 +52,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_gui::dialog::frame as dialog_frame;
 use torro_gui::icon::Icon;
-use torro_gui::layout::SizeClass;
+use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status, collection_color, color_dot, empty_state};
 use torro_gui::{style, typo};
@@ -649,7 +649,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
     if let Some(wizard) = &state.wizard {
         let content = wizard::view(wizard, data).map(Message::Wizard);
-        return Some(dialog(content, size::FORM_MAX, Message::Wizard(wizard::Message::Close)));
+        return Some(dialog(content, size::form_max(), Message::Wizard(wizard::Message::Close)));
     }
     if let Some(change) = &state.password {
         let account = selected(state, data)?;
@@ -685,15 +685,15 @@ fn password_dialog<'a>(change: &'a PasswordChange, account: &'a AccountInfo) -> 
         .on_input(|password| Message::PasswordEdited(Secret::new(password)))
         .on_submit_maybe(can_send.then_some(Message::SubmitPassword));
     let mut body = column![
-        typo::text(typo::TITLE, tr("Change password")),
-        typo::text(typo::BODY, trf("Enter the new password for {account}.", &[("account", &account.label)]))
+        typo::text(typo::title(), tr("Change password")),
+        typo::text(typo::body(), trf("Enter the new password for {account}.", &[("account", &account.label)]))
             .style(theme::text_2),
         widgets::group(tr("Password"), vec![row_frame(input, false)], None),
     ]
-    .spacing(space::L);
+    .spacing(space::l());
     if let Some(error) = &change.error {
         body = body.push(
-            typo::text(typo::BODY, error.as_str())
+            typo::text(typo::body(), error.as_str())
                 .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
         );
     }
@@ -707,7 +707,7 @@ fn password_dialog<'a>(change: &'a PasswordChange, account: &'a AccountInfo) -> 
             can_send.then_some(Message::SubmitPassword),
         ),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     dialog(body.push(buttons), widgets::POPOVER_WIDTH, Message::ClosePassword)
 }
@@ -893,7 +893,7 @@ fn list<'a>(data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
             .map(|account| if account.id.is_empty() { pending_row(account) } else { account_row(account, now) });
         widgets::group(provider_name(kind), rows.collect(), None)
     });
-    column(groups).spacing(space::XL).into()
+    column(groups).spacing(layout::section_gap()).into()
 }
 
 /// A sign-in in progress: attention dot, the server and "Signing in…". Not pressable: there is
@@ -914,12 +914,12 @@ fn account_row<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, 
 
 /// The name of an account and its provider, at the top of its detail page.
 fn heading(account: &AccountInfo) -> Element<'_, Message> {
-    let name = typo::text(typo::HEADLINE, account.label.as_str()).wrapping(Wrapping::None);
+    let name = typo::text(typo::headline(), account.label.as_str()).wrapping(Wrapping::None);
     column![
         container(name).width(Fill).clip(true),
-        typo::text(typo::META, provider_name(&account.kind)).style(theme::text_2),
+        typo::text(typo::meta(), provider_name(&account.kind)).style(theme::text_2),
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .into()
 }
 
@@ -942,7 +942,7 @@ fn detail<'a>(state: &'a State, account: &'a AccountInfo, data: &'a Data, now: D
     column![heading(account), status_group(account, now), middle]
         .push(connection_group(account))
         .push(remove_button())
-        .spacing(space::XL)
+        .spacing(layout::section_gap())
         .into()
 }
 
@@ -1044,7 +1044,7 @@ impl fmt::Display for NotifyChoice {
 const SIGNATURE_LINES: f32 = 4.0;
 
 fn signature_height() -> f32 {
-    SIGNATURE_LINES * typo::line_height(typo::BODY) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
+    SIGNATURE_LINES * typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
 }
 
 /// A mail account's page: the state of each service with "Sync now", the question for a folder
@@ -1056,7 +1056,7 @@ fn mail_detail<'a>(
     mail: &'a MailView,
     now: DateTime<Utc>,
 ) -> Element<'a, Message> {
-    let mut page = column![heading(account), mail_status_group(account, mail, now)].spacing(space::XL);
+    let mut page = column![heading(account), mail_status_group(account, mail, now)].spacing(layout::section_gap());
     if !mail.open_roles.is_empty() {
         page = page.push(folders_group(&mail.open_roles));
     }
@@ -1110,10 +1110,10 @@ fn wrapped_row<'a>(
     detail: String,
     control: Option<Element<'a, Message>>,
 ) -> Element<'a, Message> {
-    let lines = column![typo::text(typo::BODY, name), typo::text(typo::META, detail).style(theme::text_2)];
-    container(row![].push(mark).push(lines.width(Fill)).push(control).spacing(space::M).align_y(Alignment::Center))
+    let lines = column![typo::text(typo::body(), name), typo::text(typo::meta(), detail).style(theme::text_2)];
+    container(row![].push(mark).push(lines.width(Fill)).push(control).spacing(space::m()).align_y(Alignment::Center))
         .width(Fill)
-        .padding([space::M, space::L])
+        .padding([space::m(), space::l()])
         .into()
 }
 
@@ -1121,8 +1121,8 @@ fn wrapped_row<'a>(
 fn folders_group(roles: &[OpenRoleView]) -> Element<'_, Message> {
     let mut rows = Vec::new();
     for open in roles {
-        let question = typo::text(typo::BODY_STRONG, role_question(open.role));
-        rows.push(container(question).width(Fill).padding([space::M, space::L]).into());
+        let question = typo::text(typo::body_strong(), role_question(open.role));
+        rows.push(container(question).width(Fill).padding([space::m(), space::l()]).into());
         for folder in &open.candidates {
             let pick = widgets::text_button(
                 None,
@@ -1146,9 +1146,9 @@ fn sender_groups<'a>(draft: &'a MailDraft, mail: &MailView) -> Element<'a, Messa
         .on_submit_maybe(dirty.then_some(Message::SaveMail));
     let signature = text_editor(&draft.signature)
         .on_action(Message::SignatureEdited)
-        .font(typo::BODY.font)
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
+        .font(typo::body().font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
         .padding(style::INPUT_PADDING)
         .wrapping(Wrapping::WordOrGlyph)
         .height(signature_height())
@@ -1163,23 +1163,23 @@ fn sender_groups<'a>(draft: &'a MailDraft, mail: &MailView) -> Element<'a, Messa
         ),
         widgets::group(
             tr("Signature"),
-            vec![container(signature).width(Fill).padding([space::S, space::L]).into()],
+            vec![container(signature).width(Fill).padding([space::s(), space::l()]).into()],
             Some(tr("Added under new mail, replies and forwards.").to_string()),
         ),
     ]
-    .spacing(space::XL);
+    .spacing(layout::section_gap());
     // "Save" belongs to both groups, so it sits close under them.
-    column![groups, row![blank::horizontal(), save]].spacing(space::M).into()
+    column![groups, row![blank::horizontal(), save]].spacing(space::m()).into()
 }
 
 /// "Show new mail in Inbox": all, only what the inbox's rules put into "For me", or none.
 fn inbox_group(mail: &MailView) -> Element<'_, Message> {
     let choice =
         pick_list(NOTIFY_CHOICES, Some(NotifyChoice(mail.settings.notify)), |choice| Message::SetNotify(choice.0))
-            .padding(style::PICK_LIST_PADDING)
-            .text_size(typo::CAPTION.size)
-            .text_line_height(typo::CAPTION.line_height)
-            .font(typo::CAPTION.font)
+            .padding(style::pick_list_padding())
+            .text_size(typo::caption().size)
+            .text_line_height(typo::caption().line_height)
+            .font(typo::caption().font)
             .style(style::pick_list)
             .menu_style(style::pick_list_menu);
     let row = setting_row(None, tr("Show new mail in Inbox"), None, choice);
@@ -1214,7 +1214,7 @@ fn mail_connection_group<'a>(account: &'a AccountInfo, mail: &'a MailView) -> El
         widgets::text_button(None, tr("Server settings…"), style::button::secondary, Some(Message::ChangeServers));
     let password =
         widgets::text_button(None, tr("Change password…"), style::button::secondary, Some(Message::ChangePassword));
-    let user = typo::text(typo::BODY, login_name(account, mail)).style(theme::text_2).wrapping(Wrapping::None);
+    let user = typo::text(typo::body(), login_name(account, mail)).style(theme::text_2).wrapping(Wrapping::None);
     let rows = vec![
         wrapped_row(None, tr("Mail servers"), servers, Some(settings)),
         setting_row(None, tr("User"), None, user),
@@ -1246,10 +1246,10 @@ fn servers_purpose(form: &ServerSettings, account: &AccountInfo) -> String {
 fn servers_dialog<'a>(form: &'a ServerSettings, account: &'a AccountInfo, mail: &MailView) -> Element<'a, Message> {
     let submit = form.can_send().then_some(Message::SubmitServers);
     let head = column![
-        typo::text(typo::TITLE, tr("Server settings")),
-        typo::text(typo::BODY, servers_purpose(form, account)).style(theme::text_2),
+        typo::text(typo::title(), tr("Server settings")),
+        typo::text(typo::body(), servers_purpose(form, account)).style(theme::text_2),
     ]
-    .spacing(space::XS);
+    .spacing(space::xs());
     let password = wizard::field("", form.password.expose())
         .secure(true)
         .on_input(|password| Message::ServersPasswordEdited(Secret::new(password)))
@@ -1272,14 +1272,14 @@ fn servers_dialog<'a>(form: &'a ServerSettings, account: &'a AccountInfo, mail: 
         .then(|| tr("Leave empty to use this account for mail only.").to_string());
     let caldav = widgets::group(tr("Calendars and tasks (CalDAV)"), vec![row_frame(caldav, false)], caldav_footer);
     let servers = [server(Server::Imap, &form.imap, imap_titles()), server(Server::Smtp, &form.smtp, smtp_titles())];
-    let mut body = column![].spacing(space::XL);
+    let mut body = column![].spacing(layout::section_gap());
     body = match form.adding {
         Some(_) => body.push(caldav).extend(servers),
         None => body.extend(servers).push(caldav),
     };
     body = body.push(widgets::group(tr("Password"), vec![row_frame(password, false)], None));
     let error: Element<'_, Message> = match &form.error {
-        Some(error) => typo::text(typo::BODY, error.as_str())
+        Some(error) => typo::text(typo::body(), error.as_str())
             .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
             .width(Fill)
             .into(),
@@ -1290,16 +1290,16 @@ fn servers_dialog<'a>(form: &'a ServerSettings, account: &'a AccountInfo, mail: 
         widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CloseServers)),
         widgets::text_button(None, tr("Save"), style::button::primary, submit),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
-    dialog(dialog_frame(head, body, foot, space::XL), size::FORM_MAX, Message::CloseServers)
+    dialog(dialog_frame(head, body, foot, space::xl()), size::form_max(), Message::CloseServers)
 }
 
 /// A text button moved left by its own padding, so its label stands on the page's content axis
 /// (the name, the groups) instead of 10 to the right of it; the hover surface reaches into the margin.
 /// The approvals page uses it for "Show details" (task M3.5).
 pub(super) fn on_axis<'a, M: 'a>(button: Element<'a, M>) -> Element<'a, M> {
-    row![Space::new(), button].spacing(-style::BUTTON_PADDING.left).into()
+    row![Space::new(), button].spacing(-style::button_padding().left).into()
 }
 
 /// The status as a dot and a word, when it last synced, and "Sync now" for a connected account.
@@ -1327,8 +1327,8 @@ fn collections_group<'a>(account: &'a AccountInfo, settings: &Settings) -> Eleme
     let title = tr("Calendars and lists");
     if account.collections.is_empty() {
         let hint = tr("No calendars or task lists yet. Use Sync now to fetch them from the server.");
-        return column![widgets::section_title(title), typo::text(typo::BODY, hint).style(theme::text_2)]
-            .spacing(space::S)
+        return column![widgets::section_title(title), typo::text(typo::body(), hint).style(theme::text_2)]
+            .spacing(space::s())
             .into();
     }
     let rows = account.collections.iter().map(|collection| collection_row(collection, settings)).collect();
@@ -1343,7 +1343,7 @@ fn collection_row<'a>(collection: &'a Collection, settings: &Settings) -> Elemen
         .size(style::CHECK_SIZE)
         .style(style::toggler)
         .on_toggle(move |shown| Message::SetShown { collection: id.clone(), shown });
-    let dot = color_dot(collection_color(collection.color.as_deref()), space::S);
+    let dot = color_dot(collection_color(collection.color.as_deref()), space::s());
     setting_row(Some(dot), collection.name.as_str(), Some(collection_detail(collection)), switch)
 }
 
@@ -1439,7 +1439,7 @@ pub fn github_permissions(scopes: &[String]) -> Vec<Permission> {
 
 /// A row with a value at the right in `text_2`, on one line.
 fn value_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
-    setting_row(None, label, None, typo::text(typo::BODY, value).style(theme::text_2).wrapping(Wrapping::None))
+    setting_row(None, label, None, typo::text(typo::body(), value).style(theme::text_2).wrapping(Wrapping::None))
 }
 
 #[cfg(test)]

@@ -19,8 +19,8 @@
 //! use torro_gui::dialog;
 //! use torro_gui::theme::space;
 //!
-//! let content = dialog::frame(header, body, footer, space::XL);
-//! widgets::modal(base, container(content).padding(space::XL), size::FORM_MAX, Message::Close)
+//! let content = dialog::frame(header, body, footer, space::xl());
+//! widgets::modal(base, container(content).padding(space::xl()), size::form_max(), Message::Close)
 //! ```
 
 use iced::advanced::layout::{self, Layout};
@@ -43,7 +43,7 @@ pub fn frame<'a, M: 'a>(
 ) -> Element<'a, M> {
     // The gap keeps the scroller off the body's rows; Iced reserves it only while it scrolls.
     let scroll = scrollable(body)
-        .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::XS)))
+        .direction(scrollable::Direction::Vertical(style::scrollbar().spacing(space::xs())))
         .style(style::scrollable)
         .width(Fill)
         .height(Shrink);

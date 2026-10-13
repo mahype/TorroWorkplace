@@ -126,6 +126,28 @@ In dieser Reihenfolge, die erste passende Regel gewinnt:
    eine Zeile Zusammenfassung. Nur als Vorschlag, mit Kennzeichnung; ohne KI-Konto fehlt die Funktion
    einfach, nichts anderes ändert sich.
 
+**Ausblenden in Stufen (E3.10, E3.11):** „Hide“ ist kein Spam. Das Menü „Hide from inbox“ (`m`, „…“
+im Paneel, „Hide“ in der Aktionsleiste) bietet für Mail „This conversation“ (`inbox.hide_sender` mit
+`conversation`: erledigt, aber anders als `e` bleibt die Mail ungelesen; eine neue Antwort bringt
+sie zurück), „Everything from <Adresse>“, „Everything from <Domain>“, dann „Always to Info“ und – nur
+wenn das Konto einen Ordner mit Rolle Junk hat – „Move to junk“; für andere Quellen „This entry“
+und „Mute <Quelle>“, die Suite nie. Absender und Domain sind eine Regel (`inbox.hide_sender`): Neue
+Mail davon wird kein Eintrag, offene und vertagte passende Einträge werden erledigt. Die Mail selbst
+bleibt **unverändert** im Postfach, nicht gelesen, nicht verschoben – anders als „erledigt“, das
+die Mail als gelesen markiert. Domain heißt der Teil nach `@`, klein, genau (keine Subdomains); die
+Regel gilt für **alle** Mail-Konten (E3.11), auch Regeln, die vorher für ein Konto angelegt wurden.
+Die Regeln stehen in der Steuerzentrale › Inbox › Rules („Hidden: news@shop.example“, „Hidden:
+everything from shop.example“, darunter „All mail accounts“) mit „Remove“.
+
+**Rückgängig (E3.11):** Nach Done, Later und Hide erscheint unten mittig ein Hinweis
+(`widgets::toast`) mit „Undo“; er verschwindet nach 5 s oder mit `Escape`. `u` in der Liste und
+`Ctrl+Z` (⌘Z auf macOS) lösen Undo aus. Undo nimmt genau die Wirkung zurück, mit vorhandenen
+Befehlen: Done → `set_item_done` wieder offen; Later → `snooze_item` ohne Zeit; Hide „This
+conversation“ → wieder offen; Hide Absender/Domain → `remove_rule` (nur wenn der Aufruf die Regel
+neu angelegt hat), dann die dadurch erledigten Einträge wieder offen (die Antwort von
+`hide_sender` nennt sie; vorher vertagte kommen offen zurück). Done einer Mail hat die Mail schon
+als gelesen markiert; Undo öffnet nur den Eintrag wieder.
+
 **Dringend** ist eine kleine, feste Menge (Freigabe, Agent wartet, Server down, CI rot auf dem
 eigenen PR) und ein Absender, den ich selbst als „VIP“ markiere. Mehr nicht.
 
@@ -192,6 +214,20 @@ Benachrichtigungs-Apps.
   „Öffnen“ heißt: **in dieses Fenster springen**, nicht „irgendein Terminal öffnen“.
 - Einträge erledigen sich selbst: Wartet Claude auf Freigabe und es geht weiter (nächster
   `UserPromptSubmit`/`PostToolUse`-Hook), verschwindet der Eintrag.
+- **Sitzungsname (E2.6):** Der Eintrag trägt den Namen, den der Agent der Sitzung gegeben hat
+  (`AgentInfo.title`), damit man beim Freigeben weiß, um welchen Job es geht. Claude Code: die letzte
+  Zeile `custom-title` im Transkript (vom Menschen vergeben, Umbenennen hängt eine Zeile an), sonst
+  die letzte `ai-title`. Codex: die letzte Zeile der Sitzung in `$CODEX_HOME/session_index.jsonl`
+  (Standard `~/.codex`), Feld `thread_name`. Gemini CLI: kein Name. Gelesen werden nur die letzten
+  256 KB einer Datei und nur bei Meldungen und Rückfragen, nie bei `PostToolUse`; aus dem Transkript
+  nur der Titel. Die Formate sind intern und undokumentiert: Fehlt etwas oder passt es nicht, gibt
+  es keinen Namen, der Hook meldet wie bisher. Der Name ist fremder Text (Steuer- und
+  Richtungszeichen entfernt, eine Zeile, höchstens 80 Zeichen, der Kern säubert noch einmal), nie
+  Teil eines übersetzten Satzes. Die Zeile zeigt ihn als Titel, darunter „Claude Code is waiting for
+  you · Projekt · Branch“; das Paneel als Überschrift, die Benachrichtigung als Überschrift. Eine
+  Rückfrage nennt ihn hinter dem Agenten („Claude Code (session "Login bug") wants to use Bash …“), aber
+  nur, wenn ein Hook fragt; über MCP lässt er sich nicht setzen. Ein neuer Bericht derselben Sitzung
+  bringt einen geänderten Namen mit.
 - **Rückfragen beantworten (E2.5, E3.8):** Claude Code und Codex haben einen `PermissionRequest`-Hook,
   der Erlauben/Ablehnen zurückgeben kann. Ihre Rückfragen lassen sich so direkt im Eingang
   beantworten, ohne ins Terminal zu wechseln. Entscheiden darf nur der Mensch über den App-Schlüssel,
@@ -221,7 +257,10 @@ weder Mail noch Slack).
 | Spur ändern, Absender einordnen | Menü, Screener | `inbox.set_item_lane` · Write (mit „merken“ Admin) | `inbox_set_item_lane` |
 | Zu Aufgabe machen | Taste `t` | `inbox.create_task_from_item` · Write (braucht auch Tasks-Rechte) | `inbox_create_task_from_item` |
 | Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
-| Quelle stummschalten | Menü | `inbox.mute_source` · Admin | `inbox_mute_source` |
+| Quelle stummschalten | Menü „Hide from inbox“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
+| Gespräch ausblenden, Mail bleibt ungelesen (E3.11) | Menü „Hide from inbox“ › „This conversation“ | `inbox.hide_sender` mit `conversation` · Write | `inbox_hide_sender` |
+| Absender oder Domain ausblenden, alle Konten (E3.10, E3.11) | Menü „Hide from inbox“ (`m`, „…“ im Paneel), Steuerzentrale › Inbox › Rules | `inbox.hide_sender` mit `sender`/`domain` · Admin | `inbox_hide_sender` |
+| Rückgängig nach Done, Later, Hide (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 
@@ -289,7 +328,7 @@ Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenk
 | **Mini / Leiste** | Anzeige: „3 for you“, die drei obersten mit Quellen-Symbol; dringend sichtbar hervorgehoben (nicht in Torro-Rot) |
 
 - **Tastatur zuerst** wie Linear oder Superhuman: `j/k` bewegen, `e` erledigt, `s` später,
-  `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` Quelle stumm.
+  `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` ausblenden (Menü „Hide from inbox“, siehe unten).
 - **Schreiben** (Mail, längere Antworten) in einem eigenen Fenster, siehe [mail.md](mail.md).
 - **Fenster je Ausschnitt** mit `--source mail` oder `--lane info`, gemerkt in der
   Workspace-Vorlage. So bekommt, wer will, eine reine Mail-Kachel neben einer Agenten-Kachel.

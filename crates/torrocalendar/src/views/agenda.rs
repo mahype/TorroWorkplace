@@ -41,28 +41,46 @@ use torro_gui::{style, typo};
 use torro_pim::{Event, EventTime};
 
 use super::glance::span;
-use super::week::{BAR, FREE_MINUTES, NOW_LABEL, NOW_LABEL_WIDTH};
+use super::week::{BAR, FREE_MINUTES, now_label, now_label_width};
 use super::{Item, ViewData};
 use crate::app::Message;
 
 /// Width of the date column (`.day{grid-template-columns:56px 1fr}`): the time axis and a little.
-const DATE_COLUMN: f32 = size::AXIS + space::XS;
+fn date_column() -> f32 {
+    size::axis() + space::xs()
+}
 /// The date column of the narrow layout (`html[data-size="s"] .day`, 44).
-const DATE_COLUMN_NARROW: f32 = size::AXIS_NARROW;
+fn date_column_narrow() -> f32 {
+    size::axis_narrow()
+}
 /// The day number (`.date b{font:600 22px/32px "Inter Tabular"}`).
-const DAY_NUMBER: typo::Level = typo::HEADLINE.tabular();
+fn day_number() -> typo::Level {
+    typo::headline().tabular()
+}
 /// Today's red circle around the day number (`.date b`, 32).
-const TODAY_CIRCLE: f32 = size::CONTROL;
+fn today_circle() -> f32 {
+    size::control()
+}
 /// The start of an event (`.ev .tm b`, 13/500 tabular).
-const START: typo::Level = typo::BODY_STRONG.tabular();
+fn start() -> typo::Level {
+    typo::body_strong().tabular()
+}
 /// The quiet head of a day ("Today … 4 events", `.dayhead{height:24px}`) and an all-day chip.
-const DAY_HEAD: f32 = space::XL;
+fn day_head() -> f32 {
+    space::xl()
+}
 /// An event row: start and duration (36) with 4 above and below (`.ev{min-height:44px}`).
-const EVENT_ROW: f32 = size::ROW + space::XS;
+fn event_row() -> f32 {
+    size::row() + space::xs()
+}
 /// The "3 h free" line (`.free{height:28px}`).
-const FREE_ROW: f32 = size::CONTROL_SM;
+fn free_row() -> f32 {
+    size::control_sm()
+}
 /// The line of empty days (`.gap{padding:10px 0}` around a 16-high line).
-const GAP_ROW: f32 = size::CONTROL_LG;
+fn gap_row() -> f32 {
+    size::control_lg()
+}
 /// Ended events and chips are drawn at this opacity (`.ev.past`).
 const PAST_ALPHA: f32 = 0.55;
 /// Dash and gap of the dotted line after "3 h free" (`repeating-linear-gradient(… 0 3px,
@@ -438,17 +456,17 @@ struct Metrics {
 
 impl Metrics {
     fn new(width: f32, narrow: bool) -> Metrics {
-        let side = if narrow { space::M } else { space::XL };
-        let date = if narrow { DATE_COLUMN_NARROW } else { DATE_COLUMN };
-        let time = if narrow { size::AXIS_NARROW } else { size::AXIS };
-        let gap = if narrow { space::S } else { space::M };
-        let events = width.min(size::CONTENT_MAX) - 2.0 * side - date - 2.0 * space::S;
+        let side = if narrow { space::m() } else { space::xl() };
+        let date = if narrow { date_column_narrow() } else { date_column() };
+        let time = if narrow { size::axis_narrow() } else { size::axis() };
+        let gap = if narrow { space::s() } else { space::m() };
+        let events = width.min(size::content_max()) - 2.0 * side - date - 2.0 * space::s();
         let text = (events - time - BAR - 2.0 * gap).max(0.0);
         Metrics { narrow, side, date, time, gap, text }
     }
 }
 
-/// The whole list in a scrollable, at most [`size::CONTENT_MAX`] wide.
+/// The whole list in a scrollable, at most [`size::content_max()`] wide.
 fn list(blocks: &[Block], m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'static, Message> {
     let mut list = column![].width(Length::Fill);
     for (n, block) in blocks.iter().enumerate() {
@@ -465,9 +483,9 @@ fn list(blocks: &[Block], m: Metrics, today: NaiveDate, selected: Option<usize>)
             list = list.push(rule::horizontal(size::HAIRLINE).style(style::rule));
         }
     }
-    let top = if m.narrow { space::XS } else { space::S };
-    let list = container(list).padding(Padding { top, right: m.side, bottom: space::XXL, left: m.side });
-    iced::widget::scrollable(widgets::content(size::CONTENT_MAX, list))
+    let top = if m.narrow { space::xs() } else { space::s() };
+    let list = container(list).padding(Padding { top, right: m.side, bottom: space::xxl(), left: m.side });
+    iced::widget::scrollable(widgets::content(size::content_max(), list))
         .direction(iced::widget::scrollable::Direction::Vertical(style::scrollbar()))
         .style(style::scrollable)
         .width(Length::Fill)
@@ -479,31 +497,31 @@ fn list(blocks: &[Block], m: Metrics, today: NaiveDate, selected: Option<usize>)
 /// first, which sits right under the header bar.
 fn week_head(label: &str, first: bool) -> Element<'static, Message> {
     let content = row![
-        typo::text(typo::CAPTION, label.to_string()).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::caption(), label.to_string()).style(theme::text_3).wrapping(Wrapping::None),
         rule::horizontal(size::HAIRLINE).style(style::rule),
     ]
-    .spacing(space::M)
+    .spacing(space::m())
     .align_y(Alignment::Center);
-    let top = if first { space::S } else { space::XL };
-    container(content).padding(Padding::new(0.0).top(top).bottom(space::XS)).into()
+    let top = if first { space::s() } else { space::xl() };
+    container(content).padding(Padding::new(0.0).top(top).bottom(space::xs())).into()
 }
 
 /// A day: the date column, and beside it the head, the chips and the lines.
 fn day_view(day: &Day, m: Metrics, today: NaiveDate, selected: Option<usize>) -> Element<'static, Message> {
     let head = row![
-        typo::text(typo::CAPTION, day.label.clone().unwrap_or_default()).style(theme::text_2),
+        typo::text(typo::caption(), day.label.clone().unwrap_or_default()).style(theme::text_2),
         Space::new().width(Length::Fill),
-        typo::text(typo::META.tabular(), count_text(day.count())).style(theme::text_3),
+        typo::text(typo::meta().tabular(), count_text(day.count())).style(theme::text_3),
     ]
     .align_y(Alignment::Center)
-    .height(DAY_HEAD);
+    .height(day_head());
     let mut events =
-        column![container(head).padding(Padding::new(0.0).left(space::S).right(space::S).bottom(space::XS))]
+        column![container(head).padding(Padding::new(0.0).left(space::s()).right(space::s()).bottom(space::xs()))]
             .width(Length::Fill);
     if !day.chips.is_empty() {
         let chips = day.chips.iter().map(|chip| chip_view(chip, m, selected == Some(chip.index))).collect();
         events = events
-            .push(container(widgets::chip_row(chips)).padding(Padding::new(0.0).left(space::S).bottom(space::XS)));
+            .push(container(widgets::chip_row(chips)).padding(Padding::new(0.0).left(space::s()).bottom(space::xs())));
     }
     for line in &day.lines {
         events = events.push(match line {
@@ -513,10 +531,10 @@ fn day_view(day: &Day, m: Metrics, today: NaiveDate, selected: Option<usize>) ->
         });
     }
     if day.count() == 0 {
-        let calm = typo::text(typo::META, tr("Nothing planned")).style(theme::text_3);
-        events = events.push(container(calm).padding(Padding::new(0.0).left(space::S).top(space::XS)));
+        let calm = typo::text(typo::meta(), tr("Nothing planned")).style(theme::text_3);
+        events = events.push(container(calm).padding(Padding::new(0.0).left(space::s()).top(space::xs())));
     }
-    row![date_view(day.date, today, m.date), events].padding([space::M, 0.0]).into()
+    row![date_view(day.date, today, m.date), events].padding([space::m(), 0.0]).into()
 }
 
 /// "1 event", "4 events"; nothing for none.
@@ -533,9 +551,9 @@ fn count_text(count: usize) -> String {
 fn date_view(date: NaiveDate, today: NaiveDate, width: f32) -> Element<'static, Message> {
     let is_today = date == today;
     let weekend = is_weekend(date);
-    let weekday = typo::text(typo::CAPTION, weekday_name(date, true))
+    let weekday = typo::text(typo::caption(), weekday_name(date, true))
         .style(move |t: &Theme| TextStyle { color: Some(if is_today { palette(t).text } else { palette(t).text_3 }) });
-    let number = typo::text(DAY_NUMBER, date.day().to_string()).style(move |t: &Theme| {
+    let number = typo::text(day_number(), date.day().to_string()).style(move |t: &Theme| {
         let p = palette(t);
         TextStyle {
             color: Some(if is_today {
@@ -547,9 +565,9 @@ fn date_view(date: NaiveDate, today: NaiveDate, width: f32) -> Element<'static, 
             }),
         }
     });
-    let circle = container(number).center(TODAY_CIRCLE).style(move |t| container::Style {
+    let circle = container(number).center(today_circle()).style(move |t| container::Style {
         background: is_today.then(|| Background::Color(palette(t).accent)),
-        border: border::rounded(TODAY_CIRCLE / 2.0),
+        border: border::rounded(today_circle() / 2.0),
         ..container::Style::default()
     });
     column![weekday, circle].align_x(Alignment::Center).width(width).into()
@@ -559,36 +577,36 @@ fn date_view(date: NaiveDate, today: NaiveDate, width: f32) -> Element<'static, 
 /// `META` / `text_3`. Outlined in `focus_ring` while open in the side panel.
 fn chip_view(chip: &Chip, m: Metrics, selected: bool) -> Element<'static, Message> {
     let (color, alpha) = (chip.color, if chip.past { PAST_ALPHA } else { 1.0 });
-    let note_width = chip.note.as_deref().map_or(0.0, |note| text_width(note, typo::META) + space::XS);
-    let room = m.text + m.time + 2.0 * m.gap - 2.0 * space::S - note_width;
+    let note_width = chip.note.as_deref().map_or(0.0, |note| text_width(note, typo::meta()) + space::xs());
+    let room = m.text + m.time + 2.0 * m.gap - 2.0 * space::s() - note_width;
     let mut content = row![
-        typo::text(typo::CAPTION, ellipsize(&chip.title, typo::CAPTION, room))
+        typo::text(typo::caption(), ellipsize(&chip.title, typo::caption(), room))
             .style(move |t: &Theme| faded(palette(t).text, alpha))
             .wrapping(Wrapping::None)
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_y(Alignment::Center);
     if let Some(note) = &chip.note {
-        content =
-            content.push(typo::text(typo::META, note.clone()).style(move |t: &Theme| faded(palette(t).text_3, alpha)));
+        content = content
+            .push(typo::text(typo::meta(), note.clone()).style(move |t: &Theme| faded(palette(t).text_3, alpha)));
     }
     let bar = container(Space::new()).width(BAR).height(Length::Fill).style(move |_| container::Style {
         background: Some(Background::Color(color.scale_alpha(alpha))),
-        border: Border { radius: Radius::new(0.0).left(radius::XS), ..Border::default() },
+        border: Border { radius: Radius::new(0.0).left(radius::xs()), ..Border::default() },
         ..container::Style::default()
     });
     let body =
-        container(content).padding([0.0, space::S]).height(Length::Fill).center_y(Length::Fill).style(move |t| {
+        container(content).padding([0.0, space::s()]).height(Length::Fill).center_y(Length::Fill).style(move |t| {
             let p = palette(t);
             container::Style {
-                background: Some(Background::Color(tint(p, color).scale_alpha(alpha))),
-                border: Border { radius: Radius::new(0.0).right(radius::XS), ..Border::default() },
+                background: Some(Background::Color(tint(&p, color).scale_alpha(alpha))),
+                border: Border { radius: Radius::new(0.0).right(radius::xs()), ..Border::default() },
                 ..container::Style::default()
             }
         });
-    let chip_box = container(row![bar, body].height(DAY_HEAD)).style(move |t| container::Style {
+    let chip_box = container(row![bar, body].height(day_head())).style(move |t| container::Style {
         border: if selected {
-            border::rounded(radius::XS).color(palette(t).focus_ring).width(style::FOCUS_RING_WIDTH)
+            border::rounded(radius::xs()).color(palette(t).focus_ring).width(style::FOCUS_RING_WIDTH)
         } else {
             Border::default()
         },
@@ -605,10 +623,11 @@ fn row_view(event: &Row, m: Metrics, selected: bool) -> Element<'static, Message
     let color = event.color;
 
     let mut time =
-        column![typo::text(START, format_time(event.start)).style(move |t: &Theme| faded(palette(t).text, alpha))];
+        column![typo::text(start(), format_time(event.start)).style(move |t: &Theme| faded(palette(t).text, alpha))];
     if let Some(minutes) = event.minutes {
         time = time.push(
-            typo::text(typo::META.tabular(), duration(minutes)).style(move |t: &Theme| faded(palette(t).text_3, alpha)),
+            typo::text(typo::meta().tabular(), duration(minutes))
+                .style(move |t: &Theme| faded(palette(t).text_3, alpha)),
         );
     }
     let time = container(time).width(m.time).height(Length::Fill).center_y(Length::Fill).clip(true);
@@ -620,10 +639,10 @@ fn row_view(event: &Row, m: Metrics, selected: bool) -> Element<'static, Message
     });
 
     let left = event.left.filter(|_| !m.narrow).map(|minutes| trf("{span} left", &[("span", &span(minutes))]));
-    let side_width = left.as_deref().map_or(0.0, |label| text_width(label, typo::META) + 2.0 * space::S + m.gap);
+    let side_width = left.as_deref().map_or(0.0, |label| text_width(label, typo::meta()) + 2.0 * space::s() + m.gap);
     let room = m.text - side_width;
     let mut what = column![
-        typo::text(typo::BODY_STRONG, ellipsize(&event.title, typo::BODY_STRONG, room))
+        typo::text(typo::body_strong(), ellipsize(&event.title, typo::body_strong(), room))
             .style(move |t: &Theme| faded(palette(t).text, alpha))
             .wrapping(Wrapping::None)
     ];
@@ -639,9 +658,9 @@ fn row_view(event: &Row, m: Metrics, selected: bool) -> Element<'static, Message
     let running = event.left.is_some();
     button(cells)
         .width(Length::Fill)
-        .height(EVENT_ROW)
-        .padding([space::XS, space::S])
-        .style(move |t, status| row_style(palette(t), status, selected, running.then_some(color)))
+        .height(event_row())
+        .padding([space::xs(), space::s()])
+        .style(move |t, status| row_style(&palette(t), status, selected, running.then_some(color)))
         .on_press(Message::OpenEvent(event.index))
         .into()
 }
@@ -652,7 +671,7 @@ fn detail_view(event: &Row, room: f32, alpha: f32) -> Option<Element<'static, Me
     if text.is_empty() {
         return None;
     }
-    let mut line = row![].spacing(space::XS).align_y(Alignment::Center);
+    let mut line = row![].spacing(space::xs()).align_y(Alignment::Center);
     let mut room = room;
     if event.place.is_some() {
         let which = if event.video { Icon::Video } else { Icon::MapPin };
@@ -660,11 +679,11 @@ fn detail_view(event: &Row, room: f32, alpha: f32) -> Option<Element<'static, Me
             icon::icon(which, icon::SIZE_SM)
                 .style(move |t: &Theme, _| svg::Style { color: Some(palette(t).text_3.scale_alpha(alpha)) }),
         );
-        room -= icon::SIZE_SM + space::XS;
+        room -= icon::SIZE_SM + space::xs();
     }
-    let text = ellipsize(&text.join(SEPARATOR), typo::META, room);
+    let text = ellipsize(&text.join(SEPARATOR), typo::meta(), room);
     line = line.push(
-        typo::text(typo::META, text).style(move |t: &Theme| faded(palette(t).text_2, alpha)).wrapping(Wrapping::None),
+        typo::text(typo::meta(), text).style(move |t: &Theme| faded(palette(t).text_2, alpha)).wrapping(Wrapping::None),
     );
     Some(line.into())
 }
@@ -681,7 +700,7 @@ fn row_style(p: &Palette, status: button::Status, selected: bool, running: Optio
     button::Style {
         background: background.map(Background::Color),
         text_color: p.text,
-        border: border::rounded(radius::SM),
+        border: border::rounded(radius::sm()),
         ..button::Style::default()
     }
 }
@@ -689,14 +708,14 @@ fn row_style(p: &Palette, status: button::Status, selected: bool, running: Optio
 /// "3 h free" in `META` / `text_3` under the bar, followed by a dotted line (`.free`).
 fn free_view(hours: i64, m: Metrics) -> Element<'static, Message> {
     let note =
-        typo::text(typo::META, trf("{n} h free", &[("n", &hours)])).style(theme::text_3).wrapping(Wrapping::None);
+        typo::text(typo::meta(), trf("{n} h free", &[("n", &hours)])).style(theme::text_3).wrapping(Wrapping::None);
     let dots = canvas_widget(Dots).width(Length::Fill).height(size::HAIRLINE);
-    let line = row![note, dots].spacing(space::S).align_y(Alignment::Center);
+    let line = row![note, dots].spacing(space::s()).align_y(Alignment::Center);
     row![Space::new().width(m.time), line]
         .spacing(m.gap)
         .align_y(Alignment::Center)
-        .height(FREE_ROW)
-        .padding([0.0, space::S])
+        .height(free_row())
+        .padding([0.0, space::s()])
         .into()
 }
 
@@ -704,29 +723,29 @@ fn free_view(hours: i64, m: Metrics) -> Element<'static, Message> {
 /// 1-px red line to the right edge.
 fn now_view(at: NaiveTime) -> Element<'static, Message> {
     let pill = container(
-        typo::text(NOW_LABEL, format_time(at)).style(|t: &Theme| TextStyle { color: Some(palette(t).on_accent) }),
+        typo::text(now_label(), format_time(at)).style(|t: &Theme| TextStyle { color: Some(palette(t).on_accent) }),
     )
-    .center_x(NOW_LABEL_WIDTH)
+    .center_x(now_label_width())
     .style(|t| container::Style {
         background: Some(Background::Color(palette(t).accent)),
-        border: border::rounded(radius::XS),
+        border: border::rounded(radius::xs()),
         ..container::Style::default()
     });
     let line = container(Space::new()).width(Length::Fill).height(size::HAIRLINE).style(|t| container::Style {
         background: Some(Background::Color(palette(t).accent)),
         ..container::Style::default()
     });
-    row![pill, line].spacing(space::XS).align_y(Alignment::Center).padding([0.0, space::S]).into()
+    row![pill, line].spacing(space::xs()).align_y(Alignment::Center).padding([0.0, space::s()]).into()
 }
 
 /// Empty days (`.gap`): "3 d" in the date column, "Nothing planned · Tue 20 – Thu 22" beside it.
 fn gap_view(first: NaiveDate, last: NaiveDate, m: Metrics) -> Element<'static, Message> {
     let days = (last - first).num_days() + 1;
-    let count = typo::text(typo::CAPTION.tabular(), trf("{n} d", &[("n", &days)])).style(theme::text_3);
-    let text = typo::text(typo::META, gap_text(first, last)).style(theme::text_3).wrapping(Wrapping::None);
-    row![container(count).center_x(m.date), container(text).padding(Padding::new(0.0).left(space::S)).clip(true)]
+    let count = typo::text(typo::caption().tabular(), trf("{n} d", &[("n", &days)])).style(theme::text_3);
+    let text = typo::text(typo::meta(), gap_text(first, last)).style(theme::text_3).wrapping(Wrapping::None);
+    row![container(count).center_x(m.date), container(text).padding(Padding::new(0.0).left(space::s())).clip(true)]
         .align_y(Alignment::Center)
-        .height(GAP_ROW)
+        .height(gap_row())
         .into()
 }
 
@@ -909,7 +928,7 @@ mod tests {
         // Each fits the start column (by the generous estimate of `text_width`, which runs a few
         // pixels wide; the narrow column of 44 is checked on screen).
         for minutes in [45, 90, 570, 600] {
-            assert!(text_width(&duration(minutes), typo::META) <= size::AXIS, "{}", duration(minutes));
+            assert!(text_width(&duration(minutes), typo::meta()) <= size::axis(), "{}", duration(minutes));
         }
     }
 
@@ -1094,8 +1113,8 @@ mod tests {
                 let _ = view(data, class);
             }
         }
-        let wide = Metrics::new(size::CONTENT_MAX, false);
-        let narrow = Metrics::new(size::CONTENT_MAX, true);
+        let wide = Metrics::new(size::content_max(), false);
+        let narrow = Metrics::new(size::content_max(), true);
         assert!(narrow.text > wide.text, "narrow columns leave the text more room at the same width");
     }
 }

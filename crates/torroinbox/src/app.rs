@@ -1,10 +1,18 @@
 //! The inbox window (tasks E3.1 and E3.2 in `docs/tasks/eingang.md`): state, loading through
-//! [`InboxSource`], and the Linear window around it – `torro_gui::shell` with the sidebar ("For
-//! me" with its count, "Info", "Snoozed", "Done", the group "Sources") in the wide layout, the
+//! [`InboxSource`], and the Linear window around it – `torro_gui::shell` with the sidebar
+//! ("Overview" and "For me" with their count, "Info", "Snoozed", "Done", the group "Sources") in the wide layout, the
 //! rail of icons in the medium one (and in the wide one when the user collapses it: panel button
 //! or `[`, remembered in `ui.json`), a navigation menu ("For me ▾") plus drawer in the medium and
-//! narrow ones. The list (`list.rs`) and the panel (`detail.rs`) only render and report clicks as
-//! [`Message`]s.
+//! narrow ones. The list (`list.rs`), the overview (`overview.rs`) and the panel (`detail.rs`) only
+//! render and report clicks as [`Message`]s.
+//!
+//! The window starts on the overview (task E3.9, [`View::Overview`]): every open entry, in two
+//! columns "Mail" and "Notifications" side by side in the wide layout, one of them – chosen in the
+//! header bar or with `h`/`l` – in the medium and narrow ones. The app keeps which column has the
+//! cursor ([`App::column`]) and which "Info" is unfolded (in `ui.json`, task E3.11); the keys walk the
+//! column
+//! ([`App::rows`]). Every row has an action bar (Task, Done, Later, Hide), whose buttons do what the
+//! keys do on the row ([`Message::Act`]).
 //!
 //! The panel is `torro_gui::panel`: beside the list in the wide layout, over it in the medium and
 //! narrow ones (full width in narrow). Mini and strip show the glance instead (`glance.rs`, E3.3a):
@@ -17,11 +25,19 @@
 //! Triage (E3.2): a cursor marks one row (the highlighted one); the open panel always shows it.
 //! The keys (`keys.rs`) and the panel's footer do the same things: mark done ([`Edit::Done`]),
 //! snooze through a menu or the picker of "Pick…" ([`Edit::Snooze`]), move to the other lane,
-//! asking "always for this source?" ([`Edit::Lane`]), mute or unmute the source at once (E3.2c:
-//! no dialog – a change with an undo needs no question as well). Every change shows a hint for
-//! [`UNDO_FOR`] with "Undo" (`u`), which sends the change that puts it back ([`Undo`]). A change
-//! that takes the entry off the list moves the cursor – and the panel – to the row that took its
-//! place, so `e`, `e`, `e` works through a list.
+//! asking "always for this source?" ([`Edit::Lane`]), and hide it from the inbox in steps (`m`
+//! or the panel's "…", task E3.10, [`Menu::Hide`]): for mail "This conversation" (`inbox.hide_sender`
+//! with `conversation`: done, but the mail stays unread, task E3.11), "Everything from" its sender or
+//! its sender's domain (`inbox.hide_sender`: a rule for every mail account; the mail stays unread and
+//! in place), "Always to Info" and "Move to junk" (only with a junk folder in the account); for
+//! other sources "This entry" (done) and muting or unmuting the source at once (E3.2c: no dialog –
+//! a change with an undo needs no question as well). Every change shows a toast for
+//! [`UNDO_FOR`] (`widgets::toast`, task E3.11) with "Undo" (`u`, and Ctrl + Z / ⌘ + Z in the whole
+//! window), which sends the change that puts it back ([`Undo`]); Escape takes the toast away. Hiding
+//! is undone exactly: a conversation is opened again, a sender or domain loses the rule the call made
+//! and the entries it closed open again ([`Undo::Hidden`]). A change that takes the entry off the
+//! list moves the cursor – and the panel – to the row that took its place, so `e`, `e`, `e` works
+//! through a list.
 //!
 //! Make task (E3.5): `t` or the panel's "Make task" opens a small dialog at the entry – the title
 //! (the entry's, to change), the task list (from [`InboxSource::list_task_lists`]) and an optional
@@ -56,11 +72,12 @@ use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, pick_list, row, stack, text_input};
+use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::connect;
+use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
@@ -68,12 +85,14 @@ use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
-use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, ToastAction, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
+use torro_inbox::item::HideScope;
 use torro_inbox::source::TaskList;
 use torro_inbox::{
-    InboxError, InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter,
+    Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, Link, Rule, SourceInfo, SourceKind, SourceRef, State,
+    StateFilter, rules,
 };
 use torro_ipc::mail::{MoveRole, MoveTarget};
 use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
@@ -82,6 +101,7 @@ use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::keys::{self, Command, Focus, Key};
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
+use crate::overview::{self, Column, Sections};
 use crate::{detail, list};
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
@@ -92,8 +112,9 @@ pub const INBOX: AppId = AppId::INBOX;
 /// entry or a time in the list changed.
 const REFRESH: Duration = Duration::from_secs(10);
 
-/// How long the hint after a change shows, and with it "Undo" (`u`).
-pub const UNDO_FOR: Duration = Duration::from_secs(5);
+/// How long the toast after a change shows, and with it "Undo" (`u`, Ctrl + Z): the suite's
+/// [`widgets::TOAST_FOR`].
+pub const UNDO_FOR: Duration = widgets::TOAST_FOR;
 
 /// How often a shown hint checks whether its time is up. Only while a hint shows.
 const HINT_TICK: Duration = Duration::from_secs(1);
@@ -249,6 +270,19 @@ pub enum Undo {
     /// Moves archived or deleted mail back where it was (`mail.move_messages`), and opens the
     /// entry `reopen` again – the core closed it when its mail left the inbox.
     Mail { edit: MailEdit, reopen: Option<String> },
+    /// Takes hiding back (task E3.11): removes the rule `rule` – only one the hiding made, never one
+    /// that was there before (`inbox.remove_rule`) –, then opens the entries `reopen` again
+    /// (`inbox.set_item_done` with `false`), those the hiding closed ([`Hidden::done`]).
+    Hidden { rule: Option<String>, reopen: Vec<String> },
+}
+
+impl Undo {
+    /// The undo of hiding that answered `hidden`; `None` when it changed nothing (a conversation done
+    /// already, a rule there before that closed nothing more).
+    pub fn of_hidden(hidden: &Hidden) -> Option<Undo> {
+        let rule = hidden.rule.as_ref().filter(|_| hidden.new_rule).map(|rule| rule.id.clone());
+        (rule.is_some() || !hidden.done.is_empty()).then(|| Undo::Hidden { rule, reopen: hidden.done.clone() })
+    }
 }
 
 /// The hint at the bottom of the window: what just happened, with "Undo" when it can be undone.
@@ -343,7 +377,7 @@ pub fn rules_allowed(source: &SourceRef) -> bool {
     source.kind != SourceKind::Suite
 }
 
-/// One entry of a menu of choices (snooze, lane): picked by click or by its digit.
+/// One entry of a menu of choices (snooze, lane, hide): picked by click or by its digit.
 #[derive(Debug, Clone)]
 pub struct Choice {
     pub icon: Icon,
@@ -352,6 +386,34 @@ pub struct Choice {
     /// the digit; `None` for choices without a fixed time.
     pub when: Option<String>,
     pub message: Message,
+    /// A line above it: it starts another kind of choices (the hide menu's lane and junk after
+    /// the ways to hide).
+    pub line: bool,
+}
+
+impl Choice {
+    fn new(icon: Icon, label: impl Into<String>, message: Message) -> Choice {
+        Choice { icon, label: label.into(), when: None, message, line: false }
+    }
+}
+
+/// The text of the toast after hiding (tasks E3.10, E3.11): "Conversation hidden" without a rule,
+/// else the words of the control centre's rules ([`hidden_text`]).
+pub fn hidden_note(hidden: &Hidden) -> String {
+    match &hidden.rule {
+        Some(rule) => hidden_text(rule),
+        None => tr("Conversation hidden").to_owned(),
+    }
+}
+
+/// The text of the hint after hiding with `rule` (task E3.10), in the words of the control
+/// centre's rules: "Hidden: news@shop.example", "Hidden: everything from shop.example".
+pub fn hidden_text(rule: &Rule) -> String {
+    match (&rule.sender, &rule.domain) {
+        (Some(sender), _) => trf("Hidden: {sender}", &[("sender", sender)]),
+        (None, Some(domain)) => trf("Hidden: everything from {domain}", &[("domain", domain)]),
+        (None, None) => trf("New entries from {source} muted", &[("source", &rule.source.label())]),
+    }
 }
 
 /// When a snooze choice wakes, as short as it gets: the time when it is today ("13:30"), else the
@@ -369,6 +431,10 @@ pub enum Sent {
     Edit(Edit, Option<After>),
     /// The source, muted or not, and whether the hint with its undo follows (not after an undo).
     Mute(SourceRef, bool, bool),
+    /// `inbox.hide_sender` for the entry with this id (task E3.10).
+    Hide(String, HideScope),
+    /// The undo of hiding (task E3.11): the rule removed, if any, and the entries opened again.
+    Unhide(Option<String>, Vec<String>),
     Link(String),
     /// `inbox.open_item` for the entry with this id.
     Open(String),
@@ -399,7 +465,9 @@ pub enum Sent {
 /// source exactly what the API offers (`inbox.list_items`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum View {
-    /// Open entries in the lane "For me"; the only view with a count.
+    /// Every open entry in two columns, mail and the rest (task E3.9); the start view.
+    Overview,
+    /// Open entries in the lane "For me"; with the overview the only view with a count.
     ForMe,
     /// Open entries in the lane "Info".
     Info,
@@ -421,6 +489,7 @@ impl View {
     /// views of mail, which list messages instead of entries.
     pub fn filter(&self) -> Option<ItemFilter> {
         let (lane, source, state) = match self {
+            View::Overview => (None, None, StateFilter::Open),
             View::ForMe => (Some(Lane::ForMe), None, StateFilter::Open),
             View::Info => (Some(Lane::Info), None, StateFilter::Open),
             View::Snoozed => (None, None, StateFilter::Snoozed),
@@ -434,6 +503,7 @@ impl View {
     /// The name in the sidebar, the header and the panel's path.
     pub fn name(&self) -> String {
         match self {
+            View::Overview => tr("Overview").into(),
             View::ForMe => tr("For me").into(),
             View::Info => tr("Info").into(),
             View::Snoozed => tr("Snoozed").into(),
@@ -446,6 +516,7 @@ impl View {
 
     pub fn icon(&self) -> Icon {
         match self {
+            View::Overview => Icon::Layers,
             View::ForMe => Icon::Inbox,
             View::Info => Icon::Bell,
             View::Snoozed => Icon::Clock,
@@ -485,6 +556,9 @@ pub enum Menu {
     Lane,
     /// The dialog that makes a task of `App::subject` (task E3.5).
     Task,
+    /// "Hide from inbox" for `App::subject` (task E3.10): the ways to hide it, by `m` or the
+    /// panel's "…" ([`App::hide_choices`]).
+    Hide,
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -536,10 +610,22 @@ pub enum Open {
     Mail,
     /// "For me" with its first mail entry in the panel, the whole mail loaded.
     MailEntry,
+    /// The menu "Hide from inbox" of the first mail entry of "For me", at its row (task E3.10).
+    Hide,
+    /// That entry in the panel, with the menu at the panel's "…".
+    HidePanel,
+    /// The overview (task E3.9) with the cursor on the first row of "Mail", so its action bar
+    /// shows.
+    Overview,
+    /// The overview with "Info" unfolded in both columns.
+    OverviewInfo,
+    /// The overview with the cursor on the first card of "Notifications": the column the medium
+    /// and narrow layouts show then.
+    OverviewNotices,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 21] = [
+    const ALL: [(&'static str, Open); 26] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -561,6 +647,11 @@ impl Open {
         ("folder", Open::Folder),
         ("mail", Open::Mail),
         ("mail-entry", Open::MailEntry),
+        ("hide", Open::Hide),
+        ("hide-panel", Open::HidePanel),
+        ("overview", Open::Overview),
+        ("overview-info", Open::OverviewInfo),
+        ("overview-notices", Open::OverviewNotices),
     ];
 }
 
@@ -570,6 +661,8 @@ impl Open {
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
+/// - `--design <id>`: draw with this design pack instead of the standard (task L.3); needs `--demo`.
+///   An id that is not a valid pack is refused with the valid ones.
 /// - `--now <YYYY-MM-DDTHH:MM>` (local time): a fixed "now" and demo data around it, for pictures
 ///   that can be made again; needs `--demo`.
 /// - `--lane for-me|info` or `--source <key>` (`suite`, `agent:claude-code`, `script:backup`): start
@@ -589,7 +682,8 @@ pub struct Launch {
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub now: Option<NaiveDateTime>,
-    /// The view of `--lane` or `--source`; `None` starts on "For me".
+    pub design: Option<String>,
+    /// The view of `--lane` or `--source`; `None` starts on the overview.
     pub view: Option<View>,
     /// `--compose`: the window writes a message instead of showing the inbox.
     pub compose: Option<compose::Start>,
@@ -680,8 +774,17 @@ impl Launch {
                 NaiveDateTime::parse_from_str(word, "%Y-%m-%dT%H:%M").map_err(|_| LaunchError::BadNow(word.into()))?,
             ),
         };
+        let design = match flag_value(args, "--design")? {
+            None => None,
+            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
+            Some(id) if design::is_choice(id) => Some(id.to_owned()),
+            Some(id) => {
+                let valid = design::choices();
+                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+            }
+        };
         let view = start_view(args)?;
-        Ok(Launch { demo, open, appearance, now, view, compose })
+        Ok(Launch { demo, open, appearance, now, design, view, compose })
     }
 
     /// "Now" at start: the fixed `--now`, else the clock. The demo data are built around it.
@@ -802,6 +905,13 @@ pub struct App<S> {
     cursor: Option<String>,
     /// The list's scroll offset and visible height, as last reported, to keep the cursor in view.
     scroll: Option<(f32, f32)>,
+    /// The overview's column with the cursor, and the one the medium and narrow layouts show.
+    column: Column,
+    /// "Info" unfolded at the end of the overview's columns, by [`Column::index`]. Kept while the
+    /// window runs.
+    info_open: [bool; 2],
+    /// The scroll offset and visible height of the overview's columns, by [`Column::index`].
+    column_scroll: [Option<(f32, f32)>; 2],
     /// The entry the open snooze menu, picker or lane question is for, as it was when opened.
     subject: Option<Item>,
     /// The day and time in the picker of "Pick…".
@@ -851,6 +961,8 @@ pub struct App<S> {
     sidebar: SidebarMode,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
+    /// Follows the design pack the suite settings name (task L.3).
+    design: Follow,
 }
 
 #[derive(Debug, Clone)]
@@ -865,6 +977,17 @@ pub enum Message {
     Show(View),
     /// From the list: open the entry with this id in the panel.
     Select(String),
+    /// From a row's action bar (task E3.9): the cursor to the entry with this id, then what the
+    /// key does there – make a task, done, snooze or hide.
+    Act(String, keys::Command),
+    /// The overview's "Info" at the end of this column: fold or unfold it.
+    ToggleInfo(Column),
+    /// "Mail | Notifications" in the header bar: show this column of the overview.
+    ShowColumn(Column),
+    /// A column of the overview scrolled (or was laid out): its offset and visible height.
+    ColumnScrolled(Column, f32, f32),
+    /// From a card of the overview: open what the entry with this id links to ("Go to window").
+    OpenRow(String),
     /// From the glance (mini, strip): the entry of "For me" with this id under the cursor and in
     /// the panel of "For me", which the window shows once it is larger again.
     OpenForMe(String),
@@ -891,9 +1014,21 @@ pub enum Message {
     /// From the panel: move the entry with this id to the other lane (asking first where a rule
     /// is possible).
     AskLane(String),
-    /// From the panel: mute the source of the entry with this id, or unmute it – at once, with
-    /// an undo.
+    /// From the hide menu: mute the source of the entry with this id, or unmute it – at once,
+    /// with an undo.
     AskMute(String),
+    /// From the panel's "…": the menu "Hide from inbox" for the entry with this id (task E3.10).
+    AskHide(String),
+    /// From the hide menu: hide the sender (or its domain) of the mail entry with this id.
+    HideSender(String, HideScope),
+    /// The source's answer to hiding: the rule as stored, or why not.
+    Hidden(Result<Hidden, String>),
+    /// An undo that is no edit (hiding, task E3.11) is through, or failed.
+    Undone(Result<(), String>, Option<String>),
+    /// The parts unfolded in `ui.json` (task E3.11): which "Info" of the overview is open.
+    Unfolded(Vec<String>),
+    /// From the hide menu: move the mail of the entry with this id to its account's junk folder.
+    Junk(String),
     /// "Pick…" in the snooze menu: the date and time picker.
     ShowPicker,
     /// The picker's day.
@@ -942,6 +1077,8 @@ pub enum Message {
     Appearance(Result<Appearance, String>),
     /// The zoom keys, the stored zoom and its badge.
     Zoom(zoom::Message),
+    /// The design pack stored in the suite settings, and its fonts loaded.
+    Design(design::Message),
     /// From the app switcher at the top of the sidebar.
     Switcher(Switcher),
     /// Open or close the navigation menu ("For me ▾").
@@ -1022,12 +1159,15 @@ pub async fn fetch<S: InboxSource + MailSource>(
         Some(filter) => inbox.list_items(filter).await.map_err(failed)?,
         None => Vec::new(),
     };
+    // The overview lists both lanes: its entries hold "For me" and "Info" already.
     let for_me = match view {
         View::ForMe => items.clone(),
+        View::Overview => items.iter().filter(|item| item.lane == Lane::ForMe).cloned().collect(),
         _ => inbox.list_items(for_me_filter()).await.map_err(failed)?,
     };
     let info = match view {
         View::Info => items.len(),
+        View::Overview => items.iter().filter(|item| item.lane == Lane::Info).count(),
         _ => inbox.list_items(View::Info.filter().unwrap_or_default()).await.map_err(failed)?.len(),
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
@@ -1048,6 +1188,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let app = App {
             inbox,
             zoom: Zoom::for_source(&suite),
+            design: Follow::for_source(&suite),
             suite,
             opened: false,
             offset,
@@ -1061,7 +1202,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 // The first inbox, once the folders are in.
                 Some(Open::Folder | Open::Mail) => View::Mail,
                 Some(Open::MailEntry) => View::ForMe,
-                _ => launch.view.clone().unwrap_or(View::ForMe),
+                Some(Open::Overview | Open::OverviewInfo | Open::OverviewNotices) => View::Overview,
+                _ => launch.view.clone().unwrap_or(View::Overview),
             },
             items: Vec::new(),
             for_me: Vec::new(),
@@ -1072,6 +1214,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             detail: None,
             cursor: None,
             scroll: None,
+            column: Column::default(),
+            info_open: [open == Some(Open::OverviewInfo); 2],
+            column_scroll: [None; 2],
             subject: None,
             pick: Pick::start(Utc::now() + offset),
             task: TaskDraft::default(),
@@ -1105,9 +1250,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
+            ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
             app.load(),
             app.fetch_appearance(),
             app.zoom.fetch().map(Message::Zoom),
+            app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
             size,
         ]);
@@ -1125,14 +1272,22 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             // Zoom keys work everywhere, the glance included.
             self.zoom.subscription().map(Message::Zoom),
+            // The design pack polls the core every 2 s itself and wakes the window only for a change.
+            self.design.subscription().map(Message::Design),
         ];
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
             subscriptions.push(iced::event::listen_with(keys::listen));
-            // Escape closes an open menu, drawer or the panel; nothing listens while none is open.
-            if self.menu.is_some() || self.drawer || self.panel_open() {
+            // Escape closes an open menu, drawer, the toast or the panel; nothing listens while none is
+            // open.
+            if self.menu.is_some() || self.drawer || self.panel_open() || self.hint.is_some() {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
+            }
+            // Ctrl + Z (⌘ + Z) undoes while the toast offers it – not while the dialog of "Make task"
+            // or the picker has the keys.
+            if self.can_undo() && !matches!(self.menu, Some(Menu::Task | Menu::Pick)) {
+                subscriptions.push(widgets::undo_key().map(|()| Message::Undo));
             }
         }
         if self.hint.is_some() {
@@ -1189,8 +1344,20 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::Select(id) => {
                 self.close_menus();
                 self.detail = self.items.iter().find(|item| item.id == id).cloned();
-                if self.detail.is_some() {
+                if let Some(item) = &self.detail {
+                    self.column = Column::of(item);
                     self.cursor = Some(id);
+                }
+            }
+            Message::Act(id, command) => return self.act(&id, command),
+            Message::ToggleInfo(column) => return self.toggle_info(column),
+            Message::ShowColumn(column) => return self.switch_column(column),
+            Message::ColumnScrolled(column, offset, height) => {
+                self.column_scroll[column.index()] = Some((offset, height));
+            }
+            Message::OpenRow(id) => {
+                if let Some(item) = self.items.iter().find(|item| item.id == id).cloned() {
+                    return self.open_entry(&item);
                 }
             }
             Message::OpenForMe(id) => return self.open_for_me(id),
@@ -1217,6 +1384,34 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::AskSnooze(id) => self.ask_snooze(&id),
             Message::AskLane(id) => return self.ask_lane(&id),
             Message::AskMute(id) => return self.ask_mute(&id),
+            Message::AskHide(id) => self.ask_hide(&id),
+            Message::HideSender(id, scope) => return self.hide_sender(id, scope),
+            Message::Hidden(Ok(hidden)) => {
+                self.hint =
+                    Some(Hint { text: hidden_note(&hidden), undo: Undo::of_hidden(&hidden), shown: Instant::now() });
+                return self.load();
+            }
+            Message::Undone(Ok(()), back) => {
+                // Undone: the entry is back in its place, and the cursor with it.
+                if back.is_some() {
+                    self.cursor = back;
+                }
+                return self.load();
+            }
+            Message::Undone(Err(err), _) => {
+                self.error = Some(Failure::new(tr("Couldn't undo the change."), err));
+                return self.load();
+            }
+            Message::Unfolded(names) => {
+                // A forced `--open overview-info` keeps both unfolded, so it can be photographed.
+                if self.launch.open != Some(Open::OverviewInfo) {
+                    self.info_open = Column::ALL.map(|column| names.iter().any(|name| name == column.info_key()));
+                }
+            }
+            Message::Hidden(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't hide the sender."), err));
+            }
+            Message::Junk(id) => return self.move_to_junk(&id),
             Message::ShowPicker => {
                 self.pick = Pick::start(self.now);
                 self.menu = Some(Menu::Pick);
@@ -1283,6 +1478,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
+            // No canvas keeps a cache: the next frame draws with the new design, the task loads its
+            // fonts.
+            Message::Design(message) => {
+                if let Some(task) = self.design.update(message) {
+                    return task.map(Message::Design);
+                }
+            }
             Message::Zoom(message) => {
                 let before = self.zoom.factor();
                 let task = self.zoom.update(message).map(Message::Zoom);
@@ -1317,6 +1519,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
+                } else if self.hint.is_some() {
+                    // The toast goes first: it lies over everything, and the panel stays.
+                    self.hint = None;
                 } else {
                     self.close_panel();
                 }
@@ -1739,9 +1944,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.cursor = row.map(|message| message.id.clone());
             }
         } else if self.cursor_item().is_none() {
-            let last = self.items.len().checked_sub(1);
-            self.cursor =
-                place.zip(last).and_then(|(place, last)| self.items.get(place.min(last))).map(|i| i.id.clone());
+            let rows = self.rows();
+            let last = rows.len().checked_sub(1);
+            let next = place.zip(last).and_then(|(place, last)| rows.get(place.min(last))).map(|i| i.id.clone());
+            self.cursor = next;
         }
         if let Some(detail) = &self.detail {
             // The panel follows the entry when it changed (a new report, woken up).
@@ -1776,13 +1982,79 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.items.iter().find(|item| item.id == id)
     }
 
-    /// Where the cursor's row is in the list.
+    /// Where the cursor's row is among the rows the keys walk ([`App::rows`]).
     fn cursor_place(&self) -> Option<usize> {
         let id = self.cursor.as_deref()?;
         if self.view.is_mail() {
             return self.messages.iter().position(|message| message.id == id);
         }
-        self.items.iter().position(|item| item.id == id)
+        self.rows().iter().position(|item| item.id == id)
+    }
+
+    /// The entries the keys walk, top to bottom: in the overview the column with the cursor
+    /// ([`Sections::order`], "Info" only while unfolded), else the view's list.
+    fn rows(&self) -> Vec<&Item> {
+        if self.view == View::Overview {
+            Sections::of(&self.items, self.column, self.now).order(self.info_open[self.column.index()])
+        } else {
+            self.items.iter().collect()
+        }
+    }
+
+    /// A button of a row's action bar (task E3.9): the cursor – and an open panel – to the entry
+    /// `id`, then `command` as its key would do it, so a menu opens at the row.
+    fn act(&mut self, id: &str, command: Command) -> Task<Message> {
+        let Some(item) = self.items.iter().find(|item| item.id == id).cloned() else { return Task::none() };
+        self.close_menus();
+        self.column = Column::of(&item);
+        self.cursor = Some(item.id.clone());
+        if self.detail.is_some() {
+            self.detail = Some(item);
+        }
+        self.run(command)
+    }
+
+    /// Folds or unfolds "Info" at the end of `column` and remembers it in `ui.json` (task E3.11). A
+    /// cursor on a row folded away leaves it.
+    fn toggle_info(&mut self, column: Column) -> Task<Message> {
+        let open = &mut self.info_open[column.index()];
+        *open = !*open;
+        if !*open && self.cursor_item().is_some_and(|item| Column::of(item) == column && item.lane == Lane::Info) {
+            self.cursor = None;
+        }
+        ui_state::save_unfolded_task(INBOX, self.unfolded())
+    }
+
+    /// The names of the parts unfolded, as `ui.json` keeps them ([`Column::info_key`]).
+    pub fn unfolded(&self) -> Vec<String> {
+        Column::ALL
+            .into_iter()
+            .filter(|column| self.info_open[column.index()])
+            .map(|c| c.info_key().to_owned())
+            .collect()
+    }
+
+    /// The overview: the cursor to the column `to`, on the row at the same place (or the column's
+    /// last), the open panel along with it. Without a cursor only the column changes (medium and
+    /// narrow show it). Nothing in the other views.
+    fn switch_column(&mut self, to: Column) -> Task<Message> {
+        if self.view != View::Overview || to == self.column {
+            return Task::none();
+        }
+        let place = self.cursor_place();
+        self.column = to;
+        let Some(place) = place.or(self.cursor.as_ref().map(|_| 0)) else { return Task::none() };
+        let rows = self.rows();
+        let index = place.min(rows.len().saturating_sub(1));
+        let Some(item) = rows.get(index).map(|item| (*item).clone()) else {
+            self.cursor = None;
+            return Task::none();
+        };
+        self.cursor = Some(item.id.clone());
+        if self.detail.is_some() {
+            self.detail = Some(item);
+        }
+        self.reveal(index)
     }
 
     /// The entry with `id`: in the list, or the one in the panel or an open menu.
@@ -1793,11 +2065,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Where the keys go: a menu of choices, the picker, another menu or the drawer, else the list.
     fn focus(&self) -> Focus {
         match self.menu {
-            Some(Menu::Snooze | Menu::Lane) => Focus::Choices,
+            Some(Menu::Snooze | Menu::Lane | Menu::Hide) => Focus::Choices,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task) => Focus::Task,
             Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
+            None if self.view == View::Overview => Focus::Overview,
             None => Focus::List,
         }
     }
@@ -1808,6 +2081,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         match command {
             Command::Next => self.step(true),
             Command::Previous => self.step(false),
+            Command::ColumnLeft => self.switch_column(Column::Mail),
+            Command::ColumnRight => self.switch_column(Column::Notices),
             Command::Open => self.open_cursor(),
             // In a folder `e` archives: a message has no "done" of its own.
             Command::Done if self.view.is_mail() => self.key_mail(MailAction::Archive),
@@ -1835,7 +2110,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Task::none()
             }
             Command::Lane => cursor.map_or_else(Task::none, |id| self.ask_lane(&id)),
-            Command::Mute => cursor.map_or_else(Task::none, |id| self.ask_mute(&id)),
+            Command::Hide => {
+                if let Some(id) = cursor {
+                    self.ask_hide(&id);
+                }
+                Task::none()
+            }
             Command::MakeTask => cursor.map_or_else(Task::none, |id| self.ask_task(&id)),
             Command::Choose(n) => match self.choices().into_iter().nth(n.wrapping_sub(1)) {
                 Some(choice) => self.update(choice.message),
@@ -1854,7 +2134,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Moves the cursor one row down or up and stops at the first and last row; with no cursor
     /// yet, down chooses the first row and up the last. The open panel shows the new row.
     fn step(&mut self, forward: bool) -> Task<Message> {
-        let rows = if self.view.is_mail() { self.messages.len() } else { self.items.len() };
+        let rows = if self.view.is_mail() { self.messages.len() } else { self.rows().len() };
         let Some(last) = rows.checked_sub(1) else { return Task::none() };
         let next = match (self.cursor_place(), forward) {
             (None, true) => 0,
@@ -1867,7 +2147,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             self.cursor = Some(self.messages[next].id.clone());
             return self.reveal(next);
         }
-        let item = self.items[next].clone();
+        let Some(item) = self.rows().get(next).map(|item| (*item).clone()) else { return Task::none() };
         self.cursor = Some(item.id.clone());
         if self.detail.is_some() {
             self.detail = Some(item);
@@ -1878,16 +2158,23 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Scrolls the list the least that shows row `index` completely – with its group head, when
     /// it is the first of its group ([`list::row_span`]).
     fn reveal(&mut self, index: usize) -> Task<Message> {
-        let Some((offset, height)) = self.scroll else { return Task::none() };
-        let row = list::row_height(self.two_line());
-        // A folder's messages have no group heads: every row is as high as the next.
-        let span = if self.view.is_mail() {
+        let overview = self.view == View::Overview;
+        let (scroll, span, id) = if overview {
+            // The overview: the column with the cursor, which scrolls on its own.
+            let column = self.column;
+            let sections = Sections::of(&self.items, column, self.now);
+            let open = self.info_open[column.index()];
+            let span = sections.order(open).get(index).and_then(|item| overview::row_span(&sections, open, &item.id));
+            (self.column_scroll[column.index()], span, column.scroll_id())
+        } else if self.view.is_mail() {
+            // A folder's messages have no group heads: every row is as high as the next.
+            let row = list::message_height();
             let top = index as f32 * row;
-            (index < self.messages.len()).then_some((top, top + row))
+            (self.scroll, (index < self.messages.len()).then_some((top, top + row)), list::SCROLL)
         } else {
-            list::row_span(&self.items, index, row)
+            (self.scroll, list::row_span(&self.items, index), list::SCROLL)
         };
-        let Some((top, bottom)) = span else { return Task::none() };
+        let (Some((offset, height)), Some((top, bottom))) = (scroll, span) else { return Task::none() };
         let target = if top < offset {
             top
         } else if bottom > offset + height {
@@ -1896,8 +2183,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             return Task::none();
         };
         // The viewport is only reported on the next frame; keys can repeat faster than that.
-        self.scroll = Some((target, height));
-        operation::scroll_to(list::SCROLL, AbsoluteOffset { x: None, y: Some(target) })
+        if overview {
+            self.column_scroll[self.column.index()] = Some((target, height));
+        } else {
+            self.scroll = Some((target, height));
+        }
+        operation::scroll_to(id, AbsoluteOffset { x: None, y: Some(target) })
     }
 
     /// Enter: opens what the entry under the cursor links to – its page, its app, the agent's
@@ -1941,7 +2232,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     }
 
     /// Mutes the source of the entry with `id`, or unmutes it, at once; the hint offers the undo
-    /// (design: confirm *or* undo, never both). The suite is never muted ([`rules_allowed`]).
+    /// (design: confirm *or* undo, never both). The suite is never muted ([`rules_allowed`]). The
+    /// hide menu's "Mute …" ends here.
     fn ask_mute(&mut self, id: &str) -> Task<Message> {
         let Some(source) = self.find(id).map(|item| item.source.clone()) else { return Task::none() };
         if !rules_allowed(&source) {
@@ -1951,6 +2243,116 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.close_menus();
         let muted = !self.is_muted(&source);
         self.mute(source, muted, true)
+    }
+
+    /// Opens the menu "Hide from inbox" for the entry with `id` (task E3.10). An entry with no way
+    /// to hide it – an approval, which closes once decided and whose source is never muted – gets
+    /// a note instead.
+    fn ask_hide(&mut self, id: &str) {
+        let Some(item) = self.find(id).cloned() else { return };
+        if self.hide_choices(&item).is_empty() {
+            self.note(tr("An approval closes once it is decided.").to_owned());
+            return;
+        }
+        self.drawer = false;
+        self.subject = Some(item);
+        self.menu = Some(Menu::Hide);
+    }
+
+    /// The ways to hide `item`, in the order of the menu (task E3.10):
+    ///
+    /// - mail: "This conversation" (`inbox.hide_sender` with `conversation`: done, the mail stays
+    ///   unread; a new reply brings it back), "Everything from <address>" and "Everything from
+    ///   <domain>" (`inbox.hide_sender`, in every mail account), then after a line "Always to Info"
+    ///   (`inbox.set_item_lane` with `remember`) and "Move to junk" (`mail.move_messages`, only
+    ///   when the account has a folder with the role junk). Without a sender's address only the
+    ///   first and the junk folder;
+    /// - other sources: "This entry" (done) and "Mute <source>" / "Unmute <source>"; the suite is
+    ///   never muted ([`rules_allowed`]), an approval has no done.
+    ///
+    /// Done entries have no "This …": they are out of the inbox already.
+    pub fn hide_choices(&self, item: &Item) -> Vec<Choice> {
+        let id = || item.id.clone();
+        let mut choices = Vec::new();
+        let open = !matches!(item.state, State::Done { .. }) && !detail::is_approval(item);
+        if item.source.kind == SourceKind::Mail {
+            // Hidden, not done: the mail stays unread (task E3.11).
+            if open {
+                let conversation = Message::HideSender(id(), HideScope::Conversation);
+                choices.push(Choice::new(Icon::Check, tr("This conversation"), conversation));
+            }
+            let hide = |scope| rules::hide_target(item, scope);
+            if let Some(sender) = hide(HideScope::Sender) {
+                let label = trf("Everything from {sender}", &[("sender", &sender)]);
+                choices.push(Choice::new(Icon::User, label, Message::HideSender(id(), HideScope::Sender)));
+            }
+            if let Some(domain) = hide(HideScope::Domain) {
+                let label = trf("Everything from {domain}", &[("domain", &domain)]);
+                choices.push(Choice::new(Icon::Users, label, Message::HideSender(id(), HideScope::Domain)));
+            }
+            let mut rest = Vec::new();
+            if rules::mail_sender(item).is_some() {
+                let always = Edit::Lane { id: id(), lane: Lane::Info, remember: true };
+                rest.push(Choice::new(lane_icon(Lane::Info), tr("Always to Info"), Message::Edit(always)));
+            }
+            if matches!(item.link, Some(Link::Mail { .. })) && self.junk_folder(&item.source).is_some() {
+                rest.push(Choice::new(Icon::ShieldAlert, tr("Move to junk"), Message::Junk(id())));
+            }
+            if let Some(first) = rest.first_mut() {
+                first.line = !choices.is_empty();
+            }
+            choices.extend(rest);
+            return choices;
+        }
+        if open {
+            choices.push(Choice::new(Icon::Check, tr("This entry"), Message::SetDone(id(), true)));
+        }
+        if rules_allowed(&item.source) {
+            let label = item.source.label();
+            let mute = if self.is_muted(&item.source) {
+                trf("Unmute {source}", &[("source", &label)])
+            } else {
+                trf("Mute {source}", &[("source", &label)])
+            };
+            choices.push(Choice::new(Icon::Moon, mute, Message::AskMute(id())));
+        }
+        choices
+    }
+
+    /// The junk folder of the mail account `source`, if it has one.
+    fn junk_folder(&self, source: &SourceRef) -> Option<&torro_mail::Folder> {
+        let account = source.key();
+        self.folders.iter().find(|folder| folder.account == account && folder.role == Some(Role::Junk))
+    }
+
+    /// Sends `inbox.hide_sender` for the entry `id` and closes the menu; the answer comes as
+    /// [`Message::Hidden`], whose toast names what was hidden and offers to take it back exactly
+    /// ([`Undo::of_hidden`], task E3.11).
+    fn hide_sender(&mut self, id: String, scope: HideScope) -> Task<Message> {
+        self.close_menus();
+        #[cfg(test)]
+        self.sent.push(Sent::Hide(id.clone(), scope));
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.hide_sender(id, scope).await.map_err(|err| err.to_string()) }, Message::Hidden)
+    }
+
+    /// "Move to junk" for the mail entry `id`: its newest mail to the account's junk folder
+    /// (`mail.move_messages`), with an undo that moves it back to the inbox and opens the entry
+    /// again – the core closes it once its mail left the inbox, as for archiving.
+    fn move_to_junk(&mut self, id: &str) -> Task<Message> {
+        self.close_menus();
+        let Some(Link::Mail { message }) = self.find(id).and_then(|item| item.link.clone()) else {
+            return Task::none();
+        };
+        let ids = vec![message];
+        let edit = MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Junk) };
+        let back = MailEdit::Move { ids, to: MoveTarget::Role(MoveRole::Inbox) };
+        let hint = Hint {
+            text: tr("Moved to junk").to_owned(),
+            undo: Some(Undo::Mail { edit: back, reopen: Some(id.to_owned()) }),
+            shown: Instant::now(),
+        };
+        self.mail_edit(Some(edit), Some(hint))
     }
 
     /// Opens the dialog that makes a task of the entry with `id` (task E3.5): its title to change,
@@ -2032,6 +2434,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.send(edit, Some(after))
     }
 
+    /// Whether the toast offers "Undo" now.
+    fn can_undo(&self) -> bool {
+        self.hint.as_ref().is_some_and(|hint| hint.undo.is_some())
+    }
+
     /// "Undo": sends the undo of the hint, which then goes. Nothing while no hint can be undone.
     fn undo(&mut self) -> Task<Message> {
         let Some(undo) = self.hint.take().and_then(|hint| hint.undo) else { return Task::none() };
@@ -2053,6 +2460,24 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     Ok(())
                 };
                 Task::perform(back, |result| Message::MailEdited(result, None))
+            }
+            Undo::Hidden { rule, reopen } => {
+                #[cfg(test)]
+                self.sent.push(Sent::Unhide(rule.clone(), reopen.clone()));
+                // First the rule, then the entries: the other way round nothing would stop mail of the
+                // sender, and the entries would be open with the rule still there.
+                let back = reopen.first().cloned();
+                let inbox = self.inbox.clone();
+                let undone = async move {
+                    if let Some(id) = rule {
+                        inbox.remove_rule(id).await.map_err(|err| err.to_string())?;
+                    }
+                    for id in reopen {
+                        inbox.set_item_done(id, false).await.map_err(|err| err.to_string())?;
+                    }
+                    Ok(())
+                };
+                Task::perform(undone, move |result| Message::Undone(result, back.clone()))
             }
         }
     }
@@ -2093,15 +2518,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     pub fn choices(&self) -> Vec<Choice> {
         let Some(item) = &self.subject else { return Vec::new() };
         let id = || item.id.clone();
-        let choice = |icon, label: String, message| Choice { icon, label, when: None, message };
+        let choice = |icon, label: String, message| Choice::new(icon, label, message);
         match self.menu {
             Some(Menu::Snooze) => {
                 let [later, tomorrow, next_week] = snooze_times(self.now);
                 let snooze = |icon, label: &str, until| Choice {
-                    icon,
-                    label: label.to_owned(),
                     when: Some(wake_short(until, self.now)),
-                    message: Message::Edit(Edit::Snooze { id: id(), until: Some(until) }),
+                    ..Choice::new(icon, label, Message::Edit(Edit::Snooze { id: id(), until: Some(until) }))
                 };
                 let mut choices = vec![
                     snooze(Icon::Clock, tr("Later today"), later),
@@ -2124,6 +2547,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     choice(Icon::Repeat, always, edit(true)),
                 ]
             }
+            Some(Menu::Hide) => self.hide_choices(item),
             _ => Vec::new(),
         }
     }
@@ -2192,22 +2616,11 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         Cover::panel(class, self.panel_open()).or(Cover::drawer(class, self.drawer))
     }
 
-    /// The hint at the bottom centre, over everything but the zoom badge; empty without a hint.
+    /// The toast at the bottom centre (`widgets::toast`, task E3.11), over everything but the zoom
+    /// badge; empty without a hint.
     fn hint_layer(&self) -> Element<'_, Message> {
         let Some(hint) = &self.hint else { return Space::new().into() };
-        let mut content = row![typo::text(typo::BODY, hint.text.as_str()).style(theme::text).wrapping(Wrapping::None)]
-            .spacing(space::S)
-            .align_y(Alignment::Center);
-        if hint.undo.is_some() {
-            content = content
-                .push(widgets::text_button(None, tr("Undo"), style::button::ghost, Some(Message::Undo)))
-                .push(widgets::kbd("U"));
-        }
-        let card = container(content)
-            .center_y(size::CONTROL_LG)
-            .padding(Padding::new(0.0).left(space::M).right(space::S))
-            .style(style::container::menu);
-        container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::XL).into()
+        widgets::toast(hint.text.as_str(), hint.undo.is_some().then(|| ToastAction::undo(Message::Undo)))
     }
 
     /// Mini or strip: loading and the error of a first load as in every layout, then the glance at
@@ -2253,10 +2666,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let anchors = detail::Anchors::default();
         // Menus for an entry open at the panel's buttons while it is open (the row may be under
         // it), else at the cursor's row.
-        let (snooze_at, lane_at, task_at) = if self.detail.is_some() {
-            (&anchors.snooze, &anchors.lane, &anchors.task)
+        let (snooze_at, lane_at, task_at, hide_at) = if self.detail.is_some() {
+            (&anchors.snooze, &anchors.lane, &anchors.task, &anchors.hide)
         } else {
-            (&anchors.row, &anchors.row, &anchors.row)
+            (&anchors.row, &anchors.row, &anchors.row, &anchors.row)
         };
         let below = Placement::Below(Align::End);
         let layer = match self.menu {
@@ -2281,6 +2694,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             }
             Some(Menu::Pick) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
             Some(Menu::Task) => Some(widgets::floating(task_at, below, self.task_dialog(), Message::CloseMenu)),
+            Some(Menu::Hide) => {
+                Some(widgets::floating(hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
+            }
         };
         let detail = if self.view.is_mail() {
             // A folder's message: the mail alone, no entry around it.
@@ -2289,7 +2705,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             self.detail.as_ref().map(|item| {
                 let footer = detail::Footer {
                     anchors: anchors.clone(),
-                    muted: self.is_muted(&item.source),
+                    hide: !self.hide_choices(item).is_empty(),
                     deciding: self.deciding.is_some(),
                     // The panel fills narrow windows: no room for the words of "Move to …".
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
@@ -2314,7 +2730,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let (name, icon) = (self.view.name(), self.view.icon());
         // Nothing listed: the empty state says so, a "0" beside the title would only repeat it.
         let note = (self.loaded && !self.lists_nothing()).then(|| self.count_note());
-        let trailing = [widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh))];
+        let mut trailing = Vec::new();
+        // The overview shows one column below the wide layout: "Mail | Notifications" chooses it.
+        if self.view == View::Overview && class != SizeClass::Wide {
+            let columns = Column::ALL.map(|column| (column.name(), Message::ShowColumn(column)));
+            trailing.push(widgets::segmented(columns, self.column.index()));
+        }
+        trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
         // The rail has no sources (see `sidebar`), so with it the title is the navigation menu,
         // as in the medium layout, and every view stays one click away.
         let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
@@ -2326,7 +2748,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 let mut title =
                     row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)].align_y(Alignment::Center);
                 if let Some(note) = note {
-                    title = title.push(typo::text(typo::BODY, note).style(theme::text_3).wrapping(Wrapping::None));
+                    title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
                 // The rail at the left has the panel button.
                 shell::header_bar([], title, trailing)
@@ -2352,6 +2774,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             }
             Some(_) => self.messages.len().to_string(),
             None if self.view.is_mail() => String::new(),
+            // As in the sidebar: what is for the user; "Info" lies folded.
+            None if self.view == View::Overview => self.for_me.len().to_string(),
             None => self.items.len().to_string(),
         }
     }
@@ -2378,12 +2802,6 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         })
     }
 
-    /// Two lines per row (title over preview): mini and narrow windows. The strip is wide enough
-    /// for one line.
-    fn two_line(&self) -> bool {
-        matches!(self.class(), SizeClass::Narrow | SizeClass::Mini)
-    }
-
     /// The content below the header: an error line if there is one, and the list – left-aligned
     /// under the header's title (design: "links mit Seitenleiste"); in the wide layout at most
     /// `CONTENT_MAX` wide, also while the panel stands beside it (its column takes its own room,
@@ -2400,7 +2818,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             content = content.push(mail::search_bar(&self.search, folder));
         }
         if let Some(failure) = &self.error {
-            content = content.push(container(failure_line(failure)).padding(Padding::new(space::S).left(space::L)));
+            content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
         }
         let rows = if self.view.is_mail() {
             let folder = self.view.folder();
@@ -2415,30 +2833,73 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     selected: self.cursor.as_deref(),
                     now: self.now,
                     anchor: row_anchor.clone(),
-                    two_line: self.two_line(),
+                    accounts: mail::by_account(&self.folders)
+                        .into_iter()
+                        .map(|group| mail::address(group.account))
+                        .collect(),
                     more: self.more.is_some(),
                     attention,
                 })
             }
+        } else if self.view == View::Overview {
+            // Its columns cap their own width; the cap below would squeeze two into one.
+            let columns = self.overview(class, row_anchor, attention);
+            return container(content.push(columns).width(Fill).height(Fill)).width(Fill).into();
         } else {
-            list::view(list::ListData {
-                items: &self.items,
-                view: &self.view,
-                selected: self.cursor.as_deref(),
-                now: self.now,
-                anchor: row_anchor.clone(),
-                two_line: self.two_line(),
-                attention,
-            })
+            list::view(list::ListData { items: &self.items, rows: self.rows_data(row_anchor), attention })
         };
         let list = container(content.push(rows).width(Fill).height(Fill)).width(Fill);
         // Only the wide layout caps the width: in the medium one the content is at most a little
         // over `CONTENT_MAX` anyway, and a cap there would leave a thin empty strip at the right
         // (at 800 wide about 20) that reads as a mistake rather than as a margin.
         match class {
-            SizeClass::Wide => list.max_width(size::CONTENT_MAX).into(),
+            SizeClass::Wide => list.max_width(size::content_max()).into(),
             SizeClass::Medium | SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => list.into(),
         }
+    }
+
+    /// What the rows of entries need (`list::Rows`): the cursor, the time, the mail accounts in the
+    /// sidebar's order (their colours) and which entries have a menu "Hide from inbox".
+    fn rows_data<'a>(&'a self, anchor: &Anchor) -> list::Rows<'a> {
+        list::Rows {
+            view: &self.view,
+            selected: self.cursor.as_deref(),
+            now: self.now,
+            anchor: anchor.clone(),
+            accounts: mail::by_account(&self.folders).into_iter().map(|group| mail::address(group.account)).collect(),
+            hidable: self
+                .items
+                .iter()
+                .filter(|item| !self.hide_choices(item).is_empty())
+                .map(|item| item.id.as_str())
+                .collect(),
+        }
+    }
+
+    /// The overview (task E3.9): both columns side by side in the wide layout, each under its head –
+    /// with an open panel only the column of its entry, the panel takes the other's place –; one
+    /// column, [`App::column`], in the medium and narrow ones.
+    fn overview<'a>(&'a self, class: SizeClass, anchor: &Anchor, attention: iced::Color) -> Element<'a, Message> {
+        let wide = class == SizeClass::Wide;
+        let shown = overview::shown(class, self.detail.as_ref(), self.column);
+        let cap = overview::width(shown.len());
+        let mut columns = row![].width(Fill).height(Fill);
+        for (i, column) in shown.into_iter().enumerate() {
+            if i > 0 {
+                columns = columns.push(rule::vertical(size::HAIRLINE).style(style::rule));
+            }
+            columns = columns.push(overview::column_view(overview::ColumnData {
+                column,
+                sections: Sections::of(&self.items, column, self.now),
+                info_open: self.info_open[column.index()],
+                rows: self.rows_data(anchor),
+                deciding: self.deciding.is_some(),
+                attention,
+                head: wide,
+            }));
+        }
+        // Each column at most `CONTENT_MAX`, as the list of a view.
+        container(columns).width(Fill).max_width(cap).into()
     }
 
     /// The views with their icon, then one entry per source.
@@ -2455,7 +2916,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             view,
         };
         let views = vec![
-            // Like a badge: no "0" when nothing waits.
+            // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
+            entry(View::Overview, Some(self.for_me.len()).filter(|&n| n > 0)),
             entry(View::ForMe, Some(self.for_me.len()).filter(|&n| n > 0)),
             entry(View::Info, Some(self.info).filter(|&n| n > 0)),
             entry(View::Snoozed, None),
@@ -2602,12 +3064,17 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// The open menu of choices ([`App::choices`]) under `title`, each entry with its time (when it
     /// has one) and its digit. The menu card of `widgets::menu`, built from the same pieces here:
     /// its entries end in one trail only, and these need the time quietly before the key hint.
+    ///
+    /// The menu is as wide as its longest entry needs ([`choice_menu_width`]), so the addresses and
+    /// domains of "Hide from inbox" show whole.
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
-        let head = typo::text(typo::CAPTION, title.into()).style(theme::text_3);
+        let head = typo::text(typo::caption(), title.into()).style(theme::text_3);
+        let choices = self.choices();
+        let width = choice_menu_width(&choices);
         let entries =
-            self.choices().into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1)));
-        let list = column![container(head).padding(Padding::new(space::S).bottom(space::XS))].extend(entries);
-        container(list).width(widgets::MENU_WIDTH).padding(style::MENU_INSET).style(style::container::menu).into()
+            choices.into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), width));
+        let list = column![container(head).padding(Padding::new(space::s()).bottom(space::xs()))].extend(entries);
+        container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
     /// The picker of "Pick…" as a floating card: the chosen moment as title ("Wed, 14 Oct · 09:00"),
@@ -2627,10 +3094,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let next = (day < today + Days::new(PICK_DAYS)).then(|| Message::PickDay(day + Days::new(1)));
         let day_row = row![
             widgets::icon_button(Icon::ChevronLeft, tr("Previous day"), previous),
-            typo::text(typo::BODY, day_name(day, today)).style(theme::text).wrapping(Wrapping::None),
+            typo::text(typo::body(), day_name(day, today)).style(theme::text).wrapping(Wrapping::None),
             widgets::icon_button(Icon::ChevronRight, tr("Next day"), next),
         ]
-        .spacing(space::XS)
+        .spacing(space::xs())
         .align_y(Alignment::Center);
         let hours = PICK_HOURS.iter().enumerate().map(|(i, &hour)| {
             let time = NaiveTime::MIN + TimeDelta::hours(i64::from(hour));
@@ -2655,12 +3122,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// until a list is chosen). The list row says so while the lists load, when there are none and
     /// when they could not be read.
     fn task_dialog(&self) -> Element<'_, Message> {
-        let inset = Padding::new(0.0).left(space::S).right(space::S);
+        let inset = Padding::new(0.0).left(space::s()).right(space::s());
         let title = text_input(tr("Task title"), &self.task.title)
             .id(TASK_TITLE)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
-            .font(typo::BODY.font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
             .padding(style::INPUT_PADDING)
             .width(Fill)
             .style(style::text_input)
@@ -2683,19 +3150,19 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseMenu)),
             widgets::text_button(Some(Icon::Check), tr("Create task"), style::button::primary, create),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
         let card = column![
-            container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::XS)),
-            container(title).padding(Padding::new(0.0).bottom(space::S)),
+            container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::xs())),
+            container(title).padding(Padding::new(0.0).bottom(space::s())),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
-                .spacing(space::M)
-                .padding(inset.top(space::M)),
+                .spacing(space::m())
+                .padding(inset.top(space::m())),
         ];
         container(card)
             .width(widgets::POPOVER_WIDTH)
-            .padding([space::L, space::S])
+            .padding([space::l(), space::s()])
             .style(style::container::popover)
             .into()
     }
@@ -2770,10 +3237,24 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Open::MailEntry) => {
                 self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
             }
+            Some(open @ (Open::Overview | Open::OverviewNotices)) => {
+                self.column = if open == Open::Overview { Column::Mail } else { Column::Notices };
+                self.cursor = self.rows().first().map(|item| item.id.clone());
+            }
+            Some(open @ (Open::Hide | Open::HidePanel)) => {
+                if let Some(item) = self.items.iter().find(|item| item.source.kind == SourceKind::Mail).cloned() {
+                    self.cursor = Some(item.id.clone());
+                    if open == Open::HidePanel {
+                        self.detail = Some(item.clone());
+                    }
+                    self.ask_hide(&item.id);
+                }
+            }
             _ => {}
         }
         if let Some(detail) = &self.detail {
             self.cursor = Some(detail.id.clone());
+            self.column = Column::of(detail);
         }
         Task::none()
     }
@@ -2846,23 +3327,69 @@ fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
 }
 
 /// One entry of [`App::choice_menu`], as `widgets::menu` draws one: icon, label, then – quietly,
-/// tabular – when it snoozes until, and the digit that picks it.
-fn choice_entry<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
+/// tabular – when it snoozes until, and the digit that picks it; with [`Choice::line`] the line
+/// `widgets::menu` draws between its sections above it.
+fn choice_entry<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'a, Message> {
+    let line = choice.line;
+    let entry = choice_button(choice, key, width);
+    if !line {
+        return entry;
+    }
+    let rule = container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]);
+    column![rule, entry].into()
+}
+
+/// The button of [`choice_entry`] in a menu `width` wide.
+///
+/// A label longer than its room – only beyond [`choice_menu_width`]'s widest menu – ends in "…"
+/// ([`choice_label`]) and shows whole as tooltip.
+fn choice_button<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'a, Message> {
     let mark = icon::icon(choice.icon, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) });
-    let label = container(typo::text(typo::BODY, choice.label).wrapping(Wrapping::None)).width(Fill).clip(true);
-    let mut content = row![mark, label].spacing(space::S).align_y(Alignment::Center);
+    let shown = choice_label(&choice.label, choice.when.as_deref(), key, width);
+    let cut = (shown != choice.label).then(|| choice.label.clone());
+    let label = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
+    let mut content = row![mark, label].spacing(space::s()).align_y(Alignment::Center);
     if let Some(when) = choice.when {
-        content = content.push(typo::text(typo::META.tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
+        content = content.push(typo::text(typo::meta().tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
     }
     content = content.push(widgets::kbd(key));
-    iced::widget::button(container(content).center_y(Fill))
+    let button = iced::widget::button(container(content).center_y(Fill))
         .width(Fill)
         .height(style::MENU_ITEM_HEIGHT)
         .padding(style::ITEM_PADDING)
         .style(style::button::menu_item(false))
-        .on_press(choice.message)
-        .into()
+        .on_press(choice.message);
+    match cut {
+        Some(whole) => widgets::with_tooltip(button, whole),
+        None => button.into(),
+    }
+}
+
+/// `label` as it fits in a choice of [`choice_button`] in a menu `width` wide, beside its time
+/// `when` and its key hint `key`: whole, or cut with "…" ([`typo::ellipsize`]).
+fn choice_label(label: &str, when: Option<&str>, key: &str, width: f32) -> String {
+    typo::ellipsize(label, typo::body(), width - choice_frame(when, key))
+}
+
+/// What a choice takes from its menu's width besides its label: the menu's and the entry's
+/// insets, the icon, the gaps, the time `when` and the key hint `key`.
+fn choice_frame(when: Option<&str>, key: &str) -> f32 {
+    let gap = space::s();
+    let kbd = typo::text_width(key, typo::caption()) + style::KBD_PADDING.left + style::KBD_PADDING.right;
+    let when = when.map_or(0.0, |when| typo::text_width(when, typo::meta()) + gap);
+    let frame = 2.0 * style::MENU_INSET + style::ITEM_PADDING.left + style::ITEM_PADDING.right;
+    frame + icon::SIZE + 2.0 * gap + kbd + when
+}
+
+/// The width of a menu of `choices`: [`widgets::menu_width`], wider as far as its longest label
+/// needs to show whole – the address or domain of "Hide from inbox" (task E3.10) –, at most
+/// [`size::panel()`], beyond which a label ends in "…".
+fn choice_menu_width(choices: &[Choice]) -> f32 {
+    let needed = choices.iter().enumerate().map(|(i, choice)| {
+        choice_frame(choice.when.as_deref(), keys::digit(i + 1)) + typo::text_width(&choice.label, typo::body())
+    });
+    needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel())
 }
 
 /// A pick list in the suite's look for a property of the dialog of "Make task": `options` shown
@@ -2874,10 +3401,10 @@ where
 {
     pick_list(options, selected, on_pick)
         .width(Fill)
-        .padding(style::PICK_LIST_PADDING)
-        .text_size(typo::CAPTION.size)
-        .text_line_height(typo::CAPTION.line_height)
-        .font(typo::CAPTION.font)
+        .padding(style::pick_list_padding())
+        .text_size(typo::caption().size)
+        .text_line_height(typo::caption().line_height)
+        .font(typo::caption().font)
         .style(style::pick_list)
         .menu_style(style::pick_list_menu)
         .into()
@@ -2896,23 +3423,23 @@ fn failure_state(failure: &Failure) -> Element<'_, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
     let words = column![
-        typo::text(typo::BODY_STRONG, failure.what).align_x(Alignment::Center),
-        typo::text(typo::META, failure.why.as_str())
+        typo::text(typo::body_strong(), failure.what).align_x(Alignment::Center),
+        typo::text(typo::meta(), failure.why.as_str())
             .style(theme::text_3)
             .align_x(Alignment::Center)
             .wrapping(Wrapping::WordOrGlyph),
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_x(Alignment::Center);
     let content = column![
         alert,
         words,
         widgets::text_button(Some(Icon::RefreshCw), tr("Retry"), style::button::secondary, Some(Message::Refresh)),
     ]
-    .spacing(space::M)
+    .spacing(space::m())
     .align_x(Alignment::Center)
-    .max_width(size::FORM_MAX / 2.0);
-    iced::widget::center(content).padding(space::XL).into()
+    .max_width(size::form_max() / 2.0);
+    iced::widget::center(content).padding(space::xl()).into()
 }
 
 /// The line above the list when a later call failed: the alert icon in the error colour, the
@@ -2920,9 +3447,9 @@ fn failure_state(failure: &Failure) -> Element<'_, Message> {
 fn failure_line(failure: &Failure) -> Element<'_, Message> {
     let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).error_text) });
-    let what = typo::text(typo::META, failure.what).style(theme::text_2).wrapping(Wrapping::None);
-    let why = typo::text(typo::META, failure.why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
-    row![alert, row![what, why].spacing(space::XS)].spacing(space::S).align_y(Alignment::Center).into()
+    let what = typo::text(typo::meta(), failure.what).style(theme::text_2).wrapping(Wrapping::None);
+    let why = typo::text(typo::meta(), failure.why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+    row![alert, row![what, why].spacing(space::xs())].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 #[cfg(test)]
@@ -2957,9 +3484,13 @@ mod tests {
         let _ = app.update(Message::Loaded(app.view.clone(), result));
     }
 
-    /// A demo app at the demo's fixed time, loaded.
+    /// A demo app at the demo's fixed time, loaded – on "For me" unless `words` choose a view (the
+    /// window starts on the overview, task E3.9; [`overview_at`] tests that).
     fn loaded(words: &[&str]) -> App<DemoSource> {
         let mut all = vec!["--demo", "--now", "2026-10-13T10:30"];
+        if !words.iter().any(|word| word.starts_with("--lane") || word.starts_with("--source")) {
+            all.extend(["--lane", "for-me"]);
+        }
         all.extend_from_slice(words);
         let mut app = demo(&all);
         load(&mut app);
@@ -2968,8 +3499,21 @@ mod tests {
 
     /// The open entries of "For me" in the demo, waiting first: the three waiting ones, then by time,
     /// the mail entries among them.
-    const FOR_ME: [&str; 9] =
-        ["demo-1", "demo-3", "demo-2", "demo-mail-1", "demo-4", "demo-6", "demo-mail-4", "demo-5", "demo-mail-2"];
+    const FOR_ME: [&str; 13] = [
+        "demo-1",
+        "demo-3",
+        "demo-2",
+        "demo-mail-1",
+        "demo-4",
+        "demo-6",
+        "demo-mail-4",
+        "demo-5",
+        "demo-mail-2",
+        "demo-mail-6",
+        "demo-12",
+        "demo-13",
+        "demo-mail-8",
+    ];
 
     fn ids<S>(app: &App<S>) -> Vec<&str> {
         app.items.iter().map(|item| item.id.as_str()).collect()
@@ -2991,6 +3535,33 @@ mod tests {
             (true, Some(Open::Approval), Some(Appearance::Light))
         );
         assert!(!Launch::parse(&args(&[])).expect("valid").demo);
+        let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");
+        assert_eq!(launch.design.as_deref(), Some("torro"));
+        assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
+        assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
+    }
+
+    /// The message "design changed" (task L.3): the stored setting arrives and the window draws
+    /// with that pack from the next frame; a broken one gives the standard.
+    #[test]
+    fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The standard's values under another id, so the tests beside this one see the same tokens.
+        for (id, toml) in [
+            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+        ] {
+            std::fs::create_dir_all(dir.path().join(id)).expect("pack folder");
+            std::fs::write(dir.path().join(id).join("design.toml"), toml).expect("design.toml");
+        }
+        let mut app = loaded(&[]);
+        app.design = Follow::new(None).in_dir(dir.path().to_path_buf());
+        let switched = app.update(Message::Design(design::Message::Stored(Ok("twin".into()))));
+        assert_eq!(design::active().id, "twin");
+        assert!(switched.units() > 0, "the fonts of the new design are loaded");
+        let _ = app.view();
+        let _ = app.update(Message::Design(design::Message::Stored(Ok("pale".into()))));
+        assert!(design::active().is_standard(), "a broken pack is never drawn");
     }
 
     #[test]
@@ -3060,11 +3631,11 @@ mod tests {
     fn for_me_shows_urgent_entries_first_and_counts_them() {
         let app = loaded(&[]);
         assert_eq!(ids(&app), FOR_ME);
-        assert_eq!(app.for_me.len(), 9);
-        assert_eq!(app.count_note(), "9", "only the number: the title already says For me");
+        assert_eq!(app.for_me.len(), 13);
+        assert_eq!(app.count_note(), "13", "only the number: the title already says For me");
         let groups = list::groups(&app.items);
-        assert_eq!(groups, [(list::Group::Waiting, 0..3), (list::Group::Other, 3..9)], "waiting entries get a head");
-        assert_eq!(app.sources.len(), 9, "suite, two agents, four scripts, two mail accounts");
+        assert_eq!(groups, [(list::Group::Waiting, 0..3), (list::Group::Other, 3..13)], "waiting entries get a head");
+        assert_eq!(app.sources.len(), 11, "suite, two agents, six scripts, two mail accounts");
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("For me"))]));
     }
 
@@ -3073,9 +3644,9 @@ mod tests {
         let mut app = loaded(&[]);
         let _ = app.update(Message::Show(View::Info));
         load(&mut app);
-        assert_eq!(ids(&app), ["demo-8", "demo-9", "demo-mail-3", "demo-mail-5", "demo-7"]);
-        assert_eq!(app.for_me.len(), 9, "the sidebar still counts For me");
-        assert_eq!(app.count_note(), "5");
+        assert_eq!(ids(&app), ["demo-8", "demo-9", "demo-mail-3", "demo-mail-5", "demo-7", "demo-mail-7"]);
+        assert_eq!(app.for_me.len(), 13, "the sidebar still counts For me");
+        assert_eq!(app.count_note(), "6");
         let _ = app.update(Message::Show(View::Source(SourceRef::suite())));
         load(&mut app);
         assert_eq!(ids(&app), ["demo-3", "demo-5"]);
@@ -3235,7 +3806,7 @@ mod tests {
         let _ = app.update(Message::Tick);
         assert!(!app.loaded, "loading stays");
         let mut app = demo(&["--demo", "--open", "error"]);
-        let _ = app.update(Message::Loaded(View::ForMe, Err(DEMO_ERROR.into())));
+        let _ = app.update(Message::Loaded(app.view.clone(), Err(DEMO_ERROR.into())));
         assert_eq!(app.error, Some(Failure { what: tr("Couldn't load the inbox."), why: DEMO_ERROR.into() }));
         assert_eq!(demo(&["--demo", "--open", "menu"]).menu, Some(Menu::Nav));
         assert!(demo(&["--demo", "--open", "drawer"]).drawer);
@@ -3277,14 +3848,14 @@ mod tests {
         let mut app = loaded(&[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<&str> = views.iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(labels, [tr("For me"), tr("Info"), tr("Snoozed"), tr("Done")]);
+        assert_eq!(labels, [tr("Overview"), tr("For me"), tr("Info"), tr("Snoozed"), tr("Done")]);
         assert_eq!(
-            views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..2],
-            [Trail::Count(9), Trail::Count(5)],
-            "For me and Info count their open entries"
+            views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..3],
+            [Trail::Count(13), Trail::Count(13), Trail::Count(6)],
+            "the overview counts what is for the user, For me and Info their open entries"
         );
         let by_source: usize = sources.iter().filter_map(|e| e.count).sum();
-        assert_eq!(by_source, 9 + 5, "the sources add up to For me plus Info");
+        assert_eq!(by_source, 13 + 6, "the sources add up to For me plus Info");
         assert_eq!(sources.first().map(|e| e.label.clone()), Some(tr("Suite").to_owned()));
         assert_eq!(sources.first().map(NavEntry::trail), Some(Trail::Count(2)));
         block_on(app.inbox.mute_source(SourceRef::script("backup"), true)).expect("mute");
@@ -3422,6 +3993,23 @@ mod tests {
                 let result = block_on(app.inbox.decide_approval(approval, allow));
                 let _ = app.update(Message::Decided(result, allow));
             }
+            Some(Sent::Hide(id, scope)) => {
+                let result = block_on(app.inbox.hide_sender(id, scope)).map_err(|err| err.to_string());
+                let _ = app.update(Message::Hidden(result));
+            }
+            Some(Sent::Unhide(rule, reopen)) => {
+                let back = reopen.first().cloned();
+                let result: Result<(), String> = (|| {
+                    if let Some(rule) = rule {
+                        block_on(app.inbox.remove_rule(rule)).map_err(|err| err.to_string())?;
+                    }
+                    for id in reopen {
+                        block_on(app.inbox.set_item_done(id, false)).map_err(|err| err.to_string())?;
+                    }
+                    Ok(())
+                })();
+                let _ = app.update(Message::Undone(result, back));
+            }
             other => panic!("no call to deliver: {other:?}"),
         }
         load(app);
@@ -3455,9 +4043,9 @@ mod tests {
         assert_eq!(cursor(&app), Some("demo-1"), "stops at the first row");
         let mut app = loaded(&[]);
         let _ = press(&mut app, Key::Up);
-        assert_eq!(cursor(&app), Some("demo-mail-2"), "up starts at the bottom");
+        assert_eq!(cursor(&app), Some("demo-mail-8"), "up starts at the bottom");
         let _ = press(&mut app, Key::Down);
-        assert_eq!(cursor(&app), Some("demo-mail-2"), "stops at the last row");
+        assert_eq!(cursor(&app), Some("demo-mail-8"), "stops at the last row");
         let mut empty = loaded(&["--open", "empty"]);
         let _ = press(&mut empty, Key::Down);
         assert_eq!(cursor(&empty), None);
@@ -3467,13 +4055,12 @@ mod tests {
     fn moving_scrolls_the_cursor_into_view() {
         let mut app = loaded(&[]);
         // The group head and two rows fit.
-        let row = list::row_height(app.two_line());
-        let (_, second) = list::row_span(&app.items, 1, row).expect("a second row");
+        let (_, second) = list::row_span(&app.items, 1).expect("a second row");
         let _ = app.update(Message::Scrolled(0.0, second));
         assert_eq!(press(&mut app, Key::Down).units(), 0, "the first row is in view");
         let _ = press(&mut app, Key::Down);
         assert!(press(&mut app, Key::Down).units() > 0, "the third row needs a scroll");
-        let (_, third) = list::row_span(&app.items, 2, row).expect("a third row");
+        let (_, third) = list::row_span(&app.items, 2).expect("a third row");
         assert_eq!(app.scroll, Some((third - second, second)));
         // Back up to the first row: the list scrolls to its group head at the top.
         let _ = press(&mut app, Key::Up);
@@ -3719,11 +4306,30 @@ mod tests {
         ));
     }
 
+    /// `m`, then the hide menu's last entry ("Mute …" for a script's notice).
+    fn mute_by_keys(app: &mut App<DemoSource>) {
+        let _ = press(app, Key::M);
+        assert_eq!((app.menu, app.focus()), (Some(Menu::Hide), Focus::Choices));
+        let last = app.choices().len();
+        let _ = press(app, Key::Digit(u8::try_from(last).expect("a digit")));
+    }
+
     #[test]
-    fn m_mutes_at_once_and_u_unmutes() {
+    fn m_offers_this_entry_and_muting_for_a_notice() {
+        let mut app = at("demo-6");
+        let _ = press(&mut app, Key::M);
+        let labels: Vec<String> = app.choices().into_iter().map(|c| c.label).collect();
+        assert_eq!(labels, [tr("This entry").to_owned(), trf("Mute {source}", &[("source", &"deploy")])]);
+        let _ = press(&mut app, Key::Digit(1));
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: true, .. }, Some(_)))), "done, undo");
+        assert!(app.menu.is_none());
+    }
+
+    #[test]
+    fn the_hide_menu_mutes_at_once_and_u_unmutes() {
         let mut app = at("demo-6");
         let deploy = SourceRef::script("deploy");
-        let _ = press(&mut app, Key::M);
+        mute_by_keys(&mut app);
         assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), true, true)), "no question first");
         assert_eq!(app.focus(), Focus::List, "nothing in front of the list");
         deliver(&mut app);
@@ -3738,23 +4344,219 @@ mod tests {
         assert!(!app.is_muted(&deploy));
         assert!(app.hint.is_none(), "an undo shows no new hint");
         // Unmuting works the same way, with its own undo.
-        let _ = press(&mut app, Key::M);
+        mute_by_keys(&mut app);
         deliver(&mut app);
         let _ = press(&mut app, Key::M);
+        assert_eq!(
+            app.choices().last().map(|c| c.label.clone()),
+            Some(trf("Unmute {source}", &[("source", &"deploy")]))
+        );
+        let _ = press(&mut app, Key::Digit(2));
         assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), false, true)));
         deliver(&mut app);
         assert_eq!(app.hint.and_then(|hint| hint.undo), Some(Undo::Mute(deploy, true)));
     }
 
     #[test]
-    fn the_suite_is_never_muted() {
+    fn the_suite_is_never_muted_and_an_approval_not_hidden() {
         let mut app = at("demo-3");
         let _ = press(&mut app, Key::M);
-        assert!(app.sent.is_empty());
+        assert!(app.sent.is_empty() && app.menu.is_none());
+        assert_eq!(
+            app.hint.as_ref().map(|hint| hint.text.as_str()),
+            Some(tr("An approval closes once it is decided."))
+        );
+        // An account problem of the suite: done, but never muted.
+        let mut app = at("demo-5");
+        let _ = press(&mut app, Key::M);
+        let labels: Vec<String> = app.choices().into_iter().map(|c| c.label).collect();
+        assert_eq!(labels, [tr("This entry").to_owned()]);
+        let _ = app.update(Message::AskMute("demo-5".into()));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mute(..))));
         assert_eq!(
             app.hint.as_ref().map(|hint| hint.text.as_str()),
             Some(tr("Entries from the suite can't be muted."))
         );
+    }
+
+    /// The first mail entry of "For me", under the cursor, and its sender's address.
+    fn at_mail() -> (App<DemoSource>, Item, String) {
+        let app = loaded(&[]);
+        let item = app.items.iter().find(|item| item.source.kind == SourceKind::Mail).cloned().expect("mail in For me");
+        let address = rules::mail_sender(&item).expect("a sender");
+        (at(&item.id), item, address)
+    }
+
+    #[test]
+    fn m_offers_the_steps_for_mail() {
+        let mut app = loaded(&["--open", "info"]);
+        let sale = app.items.iter().find(|item| item.title == "Autumn sale: 20% off").cloned().expect("the sale");
+        app.cursor = Some(sale.id.clone());
+        let _ = press(&mut app, Key::M);
+        assert_eq!((app.menu, app.focus()), (Some(Menu::Hide), Focus::Choices));
+        let choices = app.choices();
+        let labels: Vec<&str> = choices.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                tr("This conversation"),
+                trf("Everything from {sender}", &[("sender", &"news@shop.example")]).as_str(),
+                trf("Everything from {domain}", &[("domain", &"shop.example")]).as_str(),
+                tr("Always to Info"),
+                tr("Move to junk"),
+            ]
+        );
+        let lines: Vec<bool> = choices.iter().map(|c| c.line).collect();
+        assert_eq!(lines, [false, false, false, true, false], "a line before the lane and junk");
+
+        let _ = press(&mut app, Key::Digit(3));
+        assert_eq!(app.sent.last(), Some(&Sent::Hide(sale.id.clone(), HideScope::Domain)));
+        assert!(app.menu.is_none());
+        deliver(&mut app);
+        let text = trf("Hidden: everything from {domain}", &[("domain", &"shop.example")]);
+        let hint = app.hint.clone().expect("a hint");
+        // The work account's mail from the shop is hidden too (task E3.11), and Undo takes both back.
+        let all = block_on(app.inbox.list_items(ItemFilter::default())).expect("the demo answers");
+        let winter = all.into_iter().find(|item| item.title == "Winter jackets are here");
+        let winter = winter.expect("the shop's mail in the work account").id;
+        let undo = Undo::Hidden { rule: Some("demo-rule-1".into()), reopen: vec![sale.id.clone(), winter.clone()] };
+        assert_eq!((hint.text, hint.undo), (text, Some(undo.clone())), "an exact undo");
+        assert!(!ids(&app).contains(&sale.id.as_str()), "out of the inbox");
+        let Some(Link::Mail { message }) = &sale.link else { panic!("a mail entry") };
+        let mail = app.inbox.get_mail(message);
+        let flags = mail.map(|mail| mail.summary.flags).expect("the mail");
+        assert!(!flags.contains(&torro_mail::Flag::Seen), "hiding leaves the mail unread");
+
+        let _ = press(&mut app, Key::U);
+        let Undo::Hidden { rule, reopen } = undo else { panic!("hiding's undo") };
+        assert_eq!(app.sent.last(), Some(&Sent::Unhide(rule, reopen)));
+        deliver(&mut app);
+        assert!(ids(&app).contains(&sale.id.as_str()) && ids(&app).contains(&winter.as_str()), "both back");
+        assert_eq!(cursor(&app), Some(sale.id.as_str()), "the cursor back on the entry");
+        let again = block_on(app.inbox.hide_sender(sale.id.clone(), HideScope::Domain)).expect("hidden again");
+        assert!(again.new_rule, "the rule was removed, so hiding makes it anew");
+    }
+
+    #[test]
+    fn this_conversation_hides_without_marking_the_mail_read_and_undoes() {
+        let mut app = loaded(&[]);
+        let plans = app.items.iter().find(|item| item.title == "Weekend plans").cloned().expect("a mail entry");
+        app.cursor = Some(plans.id.clone());
+        let _ = press(&mut app, Key::M);
+        let _ = press(&mut app, Key::Digit(1));
+        assert_eq!(app.sent.last(), Some(&Sent::Hide(plans.id.clone(), HideScope::Conversation)));
+        deliver(&mut app);
+        let hint = app.hint.clone().expect("a hint");
+        let undo = Undo::Hidden { rule: None, reopen: vec![plans.id.clone()] };
+        assert_eq!((hint.text.as_str(), hint.undo), (tr("Conversation hidden"), Some(undo)));
+        assert!(!ids(&app).contains(&plans.id.as_str()), "out of the inbox");
+        let Some(Link::Mail { message }) = &plans.link else { panic!("a mail entry") };
+        let flags = app.inbox.get_mail(message).map(|mail| mail.summary.flags).expect("the mail");
+        assert!(!flags.contains(&torro_mail::Flag::Seen), "unlike done, the mail stays unread");
+        // The undo key of the suite does what "Undo" does.
+        let _ = app.update(Message::Undo);
+        assert_eq!(app.sent.last(), Some(&Sent::Unhide(None, vec![plans.id.clone()])));
+        deliver(&mut app);
+        assert!(ids(&app).contains(&plans.id.as_str()), "back");
+    }
+
+    #[test]
+    fn later_and_done_undo_and_escape_takes_the_toast_away() {
+        let mut app = at("demo-6");
+        let _ = press(&mut app, Key::S);
+        let _ = press(&mut app, Key::Digit(1));
+        deliver(&mut app);
+        let hint = app.hint.clone().expect("a toast");
+        assert!(matches!(hint.undo, Some(Undo::Edit(Edit::Snooze { ref id, until: None })) if id == "demo-6"));
+        let _ = app.update(Message::Undo);
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Snooze { until: None, .. }, None))), "no longer later");
+        deliver(&mut app);
+        assert!(ids(&app).contains(&"demo-6"));
+
+        let _ = press(&mut app, Key::E);
+        deliver(&mut app);
+        assert!(app.can_undo(), "done offers undo");
+        let _ = app.update(Message::Select("demo-1".into()));
+        let _ = app.update(Message::Escape);
+        assert!(app.hint.is_none() && app.detail.is_some(), "Escape takes the toast first, the panel stays");
+        let _ = press(&mut app, Key::U);
+        assert!(app.sent.is_empty(), "nothing left to undo");
+    }
+
+    #[test]
+    fn the_sender_is_hidden_and_mail_goes_to_junk_with_an_undo() {
+        let (mut app, offer, address) = at_mail();
+        let _ = press(&mut app, Key::M);
+        let _ = press(&mut app, Key::Digit(2));
+        assert_eq!(app.sent.last(), Some(&Sent::Hide(offer.id.clone(), HideScope::Sender)));
+        deliver(&mut app);
+        let text = trf("Hidden: {sender}", &[("sender", &address)]);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(text));
+
+        let (mut app, item, _) = at_mail();
+        let _ = press(&mut app, Key::M);
+        let junk = app.choices().len();
+        let _ = press(&mut app, Key::Digit(u8::try_from(junk).expect("a digit")));
+        let Some(Sent::Mail(MailEdit::Move { to, .. }, Some(hint))) = app.sent.last() else {
+            panic!("a move with a hint: {:?}", app.sent.last())
+        };
+        assert_eq!(*to, MoveTarget::Role(MoveRole::Junk));
+        assert!(matches!(&hint.undo, Some(Undo::Mail { reopen: Some(id), .. }) if *id == item.id));
+    }
+
+    #[test]
+    fn the_hide_menu_is_wide_enough_for_whole_addresses() {
+        let (mut app, _, _) = at_mail();
+        let _ = press(&mut app, Key::M);
+        let choices = app.choices();
+        let width = choice_menu_width(&choices);
+        assert!(width > widgets::menu_width(), "wider than a plain menu: {width}");
+        for (i, choice) in choices.iter().enumerate() {
+            let shown = choice_label(&choice.label, None, keys::digit(i + 1), width);
+            assert_eq!(shown, choice.label, "whole, not \"jonas.…\"");
+        }
+        let short = Choice::new(Icon::Sun, "Soon", Message::Refresh);
+        assert_eq!(choice_menu_width(&[short]), widgets::menu_width(), "short labels: a plain menu");
+        let snooze = loaded(&["--open", "snooze"]);
+        let width = choice_menu_width(&snooze.choices());
+        for (i, choice) in snooze.choices().iter().enumerate() {
+            let shown = choice_label(&choice.label, choice.when.as_deref(), keys::digit(i + 1), width);
+            assert_eq!(shown, choice.label, "every language's snooze times fit");
+        }
+        // Beyond the widest menu a label still ends in "…".
+        let long = Choice::new(Icon::User, "x".repeat(200), Message::Refresh);
+        let width = choice_menu_width(std::slice::from_ref(&long));
+        assert_eq!(width, size::panel());
+        let shown = choice_label(&long.label, None, "1", width);
+        assert!(shown.ends_with(typo::ELLIPSIS) && shown.len() < long.label.len(), "{shown}");
+    }
+
+    #[test]
+    fn open_hide_shows_the_menu_of_the_first_mail_entry() {
+        for (open, panel) in [("hide", false), ("hide-panel", true)] {
+            let mut app = loaded(&["--open", open]);
+            assert_eq!(app.menu, Some(Menu::Hide), "{open}");
+            let subject = app.subject.clone().expect("a subject");
+            assert_eq!((subject.source.kind, app.cursor.as_deref()), (SourceKind::Mail, Some(subject.id.as_str())));
+            assert_eq!(app.detail.is_some(), panel, "{open}");
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+    }
+
+    #[test]
+    fn mail_without_a_junk_folder_or_sender_offers_less() {
+        let (mut app, item, _) = at_mail();
+        app.folders.retain(|folder| folder.role != Some(Role::Junk));
+        let anonymous = Item { from: None, ..item };
+        let labels: Vec<String> = app.hide_choices(&anonymous).into_iter().map(|c| c.label).collect();
+        assert_eq!(labels, [tr("This conversation").to_owned()], "nothing to hide by, nowhere to move");
+        let done = Item { state: State::Done { at: app.now }, ..anonymous };
+        assert!(app.hide_choices(&done).is_empty());
+        let _ = press(&mut app, Key::M);
+        assert_eq!(app.menu, Some(Menu::Hide), "the mail itself still has its sender");
     }
 
     #[test]
@@ -3794,6 +4596,8 @@ mod tests {
         assert_eq!((app.menu, app.subject.as_ref().map(|i| i.id.as_str())), (Some(Menu::Snooze), Some("demo-6")));
         let _ = app.update(Message::AskLane("demo-6".into()));
         assert_eq!(app.menu, Some(Menu::Lane));
+        let _ = app.update(Message::AskHide("demo-6".into()));
+        assert_eq!(app.menu, Some(Menu::Hide));
         let _ = app.update(Message::AskMute("demo-6".into()));
         assert!(app.menu.is_none(), "muting closes the menu");
         assert_eq!(app.sent.last(), Some(&Sent::Mute(SourceRef::script("deploy"), true, true)));
@@ -4049,8 +4853,9 @@ mod tests {
         assert_eq!(app.listed, None, "the folders are in and the inbox chosen, not yet its mail");
         load(&mut app);
         assert_eq!(app.view.folder().map(|folder| folder.id.as_str()), Some("f:work-inbox"));
-        assert_eq!(message_ids(&app), ["m:w1", "m:w2", "m:w3", "m:w4", "m:w5", "m:w6"], "newest first");
-        assert_eq!(app.count_note(), "6");
+        let newest_first = ["m:w1", "m:w2", "m:w3", "m:w13", "m:w4", "m:w14", "m:w5", "m:w6"];
+        assert_eq!(message_ids(&app), newest_first, "newest first");
+        assert_eq!(app.count_note(), "8");
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Inbox"))]));
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
@@ -4123,7 +4928,7 @@ mod tests {
         assert_eq!(
             work,
             [
-                (tr("Inbox"), Some(3)),
+                (tr("Inbox"), Some(5)),
                 (tr("Drafts"), None),
                 (tr("Sent"), None),
                 (tr("Archive"), None),
@@ -4249,7 +5054,7 @@ mod tests {
         let _ = app.update(Message::ClearSearch);
         assert_eq!((app.search.as_str(), app.view.folder().and_then(|f| f.query.clone())), ("", None));
         load(&mut app);
-        assert_eq!(app.messages.len(), 6);
+        assert_eq!(app.messages.len(), 8);
         let _ = app.update(Message::SearchInput("nothing like this".into()));
         let _ = app.update(Message::Search);
         load(&mut app);
@@ -4263,7 +5068,8 @@ mod tests {
         let _ = app.update(Message::SelectMail("m:w4".into()));
         assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mail(..))), "read already");
         let _ = app.update(Message::Mail(MailAction::Flag(true), "m:w4".into()));
-        assert!(app.messages[3].flags.contains(&Flag::Flagged));
+        let w4 = app.messages.iter().find(|message| message.id == "m:w4").expect("m:w4");
+        assert!(w4.flags.contains(&Flag::Flagged));
         let flag = MailEdit::Flags { ids: vec!["m:w4".into()], add: vec![Flag::Flagged], remove: Vec::new() };
         assert_eq!(app.sent.last(), Some(&Sent::Mail(flag, None)));
         deliver_mail(&mut app);
@@ -4283,7 +5089,7 @@ mod tests {
             block_on(MailSource::search_mail(app.inbox.as_ref(), "f:work-inbox".into(), None, 4, Some("4".into())))
                 .map_err(|err| err.to_string());
         let _ = app.update(Message::MoreLoaded(app.view.clone(), page));
-        assert_eq!(app.messages.len(), 6, "nothing twice");
+        assert_eq!(app.messages.len(), 8, "nothing twice");
         assert_eq!(app.more, None);
         assert_eq!(app.page_limit(), mail::PAGE, "a load asks for a page at least");
     }
@@ -4323,5 +5129,186 @@ mod tests {
         assert_eq!(entry.letter.as_ref().map(|letter| letter.id.as_str()), Some("m:w1"));
         deliver_letter(&mut entry, "m:w1");
         draw_everywhere(&mut entry);
+    }
+
+    // ----- Overview (E3.9) -------------------------------------------------------------------
+
+    /// The demo window as it starts – on the overview –, loaded; `words` add to its parameters.
+    fn overview_at(words: &[&str]) -> App<DemoSource> {
+        let mut all = vec!["--demo", "--now", "2026-10-13T10:30"];
+        all.extend_from_slice(words);
+        let mut app = demo(&all);
+        load(&mut app);
+        app
+    }
+
+    fn rows_of<S: InboxSource + MailSource + 'static>(app: &App<S>) -> Vec<&str> {
+        app.rows().iter().map(|item| item.id.as_str()).collect()
+    }
+
+    #[test]
+    fn the_window_starts_on_the_overview_with_every_open_entry() {
+        let app = overview_at(&[]);
+        assert_eq!(app.view, View::Overview);
+        assert_eq!(app.items.len(), FOR_ME.len() + 6, "both lanes in one answer");
+        assert_eq!((app.for_me.len(), app.info), (13, 6), "the sidebar's numbers from the same answer");
+        assert_eq!(app.count_note(), "13", "what is for the user");
+        assert!(app.nav_entries().0[0].active, "the first entry of the sidebar");
+        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Overview"))]));
+        let mail = ["demo-mail-1", "demo-mail-4", "demo-mail-2", "demo-mail-6", "demo-mail-8"];
+        assert_eq!(rows_of(&app), mail, "the keys start in Mail: today, yesterday, earlier");
+    }
+
+    #[test]
+    fn j_and_k_walk_a_column_and_h_and_l_change_it() {
+        let mut app = overview_at(&[]);
+        assert_eq!(app.focus(), Focus::Overview);
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::Down);
+        assert_eq!((cursor(&app), app.column), (Some("demo-mail-4"), Column::Mail));
+        let _ = press(&mut app, Key::L);
+        assert_eq!((cursor(&app), app.column), (Some("demo-3"), Column::Notices), "the same place over there");
+        assert!(app.menu.is_none(), "l changes the column and asks no lane question");
+        for _ in 0..10 {
+            let _ = press(&mut app, Key::Down);
+        }
+        assert_eq!(cursor(&app), Some("demo-13"), "the end of For me: Info is folded");
+        let _ = press(&mut app, Key::H);
+        assert_eq!((cursor(&app), app.column), (Some("demo-mail-8"), Column::Mail), "the column's last row");
+        let _ = press(&mut app, Key::Right);
+        let _ = press(&mut app, Key::Left);
+        let _ = press(&mut app, Key::Left);
+        assert_eq!((cursor(&app), app.column), (Some("demo-mail-8"), Column::Mail), "nothing left of Mail");
+    }
+
+    #[test]
+    fn moving_in_a_column_scrolls_that_column() {
+        let mut app = overview_at(&[]);
+        let _ = press(&mut app, Key::L);
+        let sections = Sections::of(&app.items, Column::Notices, app.now);
+        let (_, first) = overview::row_span(&sections, false, "demo-1").expect("the first card");
+        let _ = app.update(Message::ColumnScrolled(Column::Notices, 0.0, first));
+        assert_eq!(press(&mut app, Key::Down).units(), 0, "the first card is in view");
+        assert!(press(&mut app, Key::Down).units() > 0, "the second needs a scroll");
+        assert!(app.column_scroll[Column::Notices.index()].is_some_and(|(offset, _)| offset > 0.0));
+        assert_eq!(app.column_scroll[Column::Mail.index()], None, "the other column stays");
+    }
+
+    #[test]
+    fn info_unfolds_with_a_click_and_the_keys_follow() {
+        let mut app = overview_at(&[]);
+        for _ in 0..5 {
+            let _ = press(&mut app, Key::Down);
+        }
+        assert_eq!(cursor(&app), Some("demo-mail-8"));
+        let _ = app.update(Message::ToggleInfo(Column::Mail));
+        assert_eq!(app.info_open, [true, false], "only that column");
+        assert_eq!(app.unfolded(), ["overview.mail.info"], "what ui.json keeps (task E3.11)");
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(cursor(&app), Some("demo-mail-3"), "on into Info");
+        let _ = app.update(Message::ToggleInfo(Column::Mail));
+        assert_eq!(cursor(&app), None, "folded away with its row");
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(cursor(&app), Some("demo-mail-1"));
+        assert_eq!(overview_at(&["--open", "overview-info"]).info_open, [true, true]);
+    }
+
+    #[test]
+    fn info_comes_back_unfolded_as_ui_json_kept_it() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::Unfolded(vec!["overview.notices.info".into(), "something.else".into()]));
+        assert_eq!(app.info_open, [false, true]);
+        assert_eq!(app.unfolded(), ["overview.notices.info"]);
+        let _ = app.update(Message::Unfolded(Vec::new()));
+        assert_eq!(app.info_open, [false, false]);
+        let mut forced = overview_at(&["--open", "overview-info"]);
+        let _ = forced.update(Message::Unfolded(Vec::new()));
+        assert_eq!(forced.info_open, [true, true], "a forced state stays for its picture");
+    }
+
+    #[test]
+    fn a_row_action_puts_the_cursor_there_and_does_what_its_key_does() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
+        assert_eq!((app.menu, cursor(&app), app.column), (Some(Menu::Snooze), Some("demo-6"), Column::Notices));
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::Act("demo-mail-4".into(), Command::Hide));
+        assert_eq!((app.menu, app.column), (Some(Menu::Hide), Column::Mail));
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::Act("demo-4".into(), Command::Done));
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { id, done: true }, _)) if id == "demo-4"));
+        let _ = app.update(Message::Act("demo-3".into(), Command::Done));
+        assert_eq!(
+            app.hint.as_ref().map(|hint| hint.text.as_str()),
+            Some(tr("An approval closes once it is decided."))
+        );
+        let _ = app.update(Message::Act("demo-mail-1".into(), Command::MakeTask));
+        assert_eq!((app.menu, cursor(&app)), (Some(Menu::Task), Some("demo-mail-1")));
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::Act("gone".into(), Command::Snooze));
+        assert_eq!((app.menu, cursor(&app)), (None, Some("demo-mail-1")), "an unknown entry does nothing");
+        // With the panel open it follows the row.
+        let _ = app.update(Message::Select("demo-6".into()));
+        let _ = app.update(Message::Act("demo-mail-2".into(), Command::Snooze));
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-mail-2"));
+    }
+
+    #[test]
+    fn go_to_window_on_a_card_opens_the_agents_window() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::OpenRow("demo-1".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Open("demo-1".into())));
+        let _ = app.update(Message::OpenRow("gone".into()));
+        assert_eq!(app.sent.len(), 1);
+    }
+
+    #[test]
+    fn medium_and_narrow_choose_the_column_in_the_header() {
+        let mut app = overview_at(&[]);
+        for size in [MEDIUM, NARROW] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.update(Message::ShowColumn(Column::Notices));
+            assert_eq!((app.column, cursor(&app)), (Column::Notices, None), "{size:?}: no cursor moves");
+            let _ = app.view();
+            let _ = app.update(Message::ShowColumn(Column::Mail));
+        }
+        let _ = press(&mut app, Key::Down);
+        let _ = app.update(Message::ShowColumn(Column::Notices));
+        assert_eq!(cursor(&app), Some("demo-1"), "a cursor comes along");
+        let _ = app.update(Message::Select("demo-mail-4".into()));
+        assert_eq!(app.column, Column::Mail, "a click puts the cursor's column there");
+    }
+
+    #[test]
+    fn open_overview_shows_the_action_bar_on_the_first_mail() {
+        let app = overview_at(&["--open", "overview"]);
+        assert_eq!((app.view.clone(), app.column, cursor(&app)), (View::Overview, Column::Mail, Some("demo-mail-1")));
+        let app = loaded(&["--open", "overview"]);
+        assert_eq!(app.view, View::Overview, "a demo state wins over the lane");
+        let app = overview_at(&["--open", "overview-notices"]);
+        assert_eq!((app.column, cursor(&app)), (Column::Notices, Some("demo-1")), "the first card");
+    }
+
+    #[test]
+    fn the_overview_builds_in_every_size_with_panel_menus_and_cards() {
+        for open in
+            [&["--open", "overview"][..], &["--open", "overview-info"], &["--open", "detail"], &["--open", "empty"]]
+        {
+            let mut app = overview_at(open);
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+                let _ = press(&mut app, Key::Down);
+                let _ = app.update(Message::Act("demo-6".into(), Command::Snooze));
+                let _ = app.view();
+                let _ = app.update(Message::CloseMenu);
+                let _ = app.update(Message::ShowDrawer);
+                let _ = app.view();
+                let _ = app.update(Message::CloseMenu);
+                let _ = app.update(Message::Select("demo-3".into()));
+                let _ = app.view();
+                let _ = app.update(Message::CloseDetail);
+            }
+        }
     }
 }

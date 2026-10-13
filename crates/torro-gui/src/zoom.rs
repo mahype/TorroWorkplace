@@ -232,7 +232,7 @@ impl Zoom {
             Some(_) => badge(self.level),
             None => Space::new().into(),
         };
-        let layer = container(badge).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::XL);
+        let layer = container(badge).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::xl());
         stack![content.into(), layer].width(Fill).height(Fill).into()
     }
 }
@@ -245,11 +245,11 @@ pub fn label(zoom: settings::Zoom) -> String {
 /// The pill with the level: `menu` surface with its border and shadow, fully rounded, the value in
 /// tabular `CAPTION`.
 fn badge<'a, M: 'a>(zoom: settings::Zoom) -> Element<'a, M> {
-    container(typo::text(typo::CAPTION.tabular(), label(zoom)))
-        .center_y(size::CONTROL_SM)
-        .padding([0.0, space::M])
+    container(typo::text(typo::caption().tabular(), label(zoom)))
+        .center_y(size::control_sm())
+        .padding([0.0, space::m()])
         .style(|theme: &Theme| container::Style {
-            border: Border { radius: (size::CONTROL_SM / 2.0).into(), ..style::container::menu(theme).border },
+            border: Border { radius: (size::control_sm() / 2.0).into(), ..style::container::menu(theme).border },
             ..style::container::menu(theme)
         })
         .into()

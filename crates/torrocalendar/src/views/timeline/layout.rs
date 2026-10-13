@@ -31,24 +31,36 @@ pub const HOUR_WIDTH: f32 = 56.0;
 /// Width of a folded night.
 pub const NIGHT_WIDTH: f32 = 48.0;
 /// Height of the row with the day labels ("Tue 13").
-pub const DAY_HEAD: f32 = size::CONTROL_SM;
+pub fn day_head() -> f32 {
+    size::control_sm()
+}
 /// Height of the row with the hour labels.
-pub const AXIS_ROW: f32 = space::XL;
+pub fn axis_row() -> f32 {
+    space::xl()
+}
 /// Pitch of the rows of all-day chips; a chip is [`CHIP_HEIGHT`] high.
-pub const CHIP_PITCH: f32 = space::XL;
+pub fn chip_pitch() -> f32 {
+    space::xl()
+}
 /// Height of an all-day chip and of the "Collapse night" button (`calendar.html`, `.chip`).
 pub const CHIP_HEIGHT: f32 = 22.0;
 /// Space above the first and below the last chip in the all-day row (28 for one row).
 const STRIP_PAD: f32 = 3.0;
 /// Height of the row at the bottom that says "3 h free".
-pub const FREE_ROW: f32 = size::CONTROL_SM;
+pub fn free_row() -> f32 {
+    size::control_sm()
+}
 /// Space between the all-day row and the event columns, and between the columns and the free row.
-const ROW_GAP: f32 = space::XS;
+fn row_gap() -> f32 {
+    space::xs()
+}
 /// Narrowest event column, so that a short entry stays visible and clickable.
 pub const MIN_EVENT_WIDTH: f32 = 16.0;
 /// The event columns are at most this high (eight hours of the week grid): a rotated title and
 /// its time fit, and in a tall window the columns do not stretch into empty tinted bars.
-pub const MAX_LANES_HEIGHT: f32 = 8.0 * size::HOUR;
+pub fn max_lanes_height() -> f32 {
+    8.0 * size::hour()
+}
 /// Gap at the right end of an event column, so that back-to-back events stay apart.
 const GAP: f32 = 2.0;
 /// Gap between the lanes of overlapping events (they share the height).
@@ -73,7 +85,9 @@ fn minutes_between(from: NaiveDateTime, to: NaiveDateTime) -> f32 {
 }
 
 /// The moon is a click target this large (24, the smallest target), around its icon.
-pub const MOON_TARGET: f32 = space::XL;
+pub fn moon_target_size() -> f32 {
+    space::xl()
+}
 /// Two presses at most this far apart in time …
 pub const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 /// … and this close (pixels) are a double-click.
@@ -300,32 +314,32 @@ pub struct Rows {
 impl Rows {
     /// The hour labels: `(top, bottom)`.
     pub fn axis(&self) -> (f32, f32) {
-        (DAY_HEAD, DAY_HEAD + AXIS_ROW)
+        (day_head(), day_head() + axis_row())
     }
 
     /// The all-day chips: `(top, bottom)`.
     pub fn all_day(&self) -> (f32, f32) {
         let top = self.axis().1;
-        (top, top + self.chip_rows.max(1) as f32 * CHIP_PITCH - (CHIP_PITCH - CHIP_HEIGHT) + 2.0 * STRIP_PAD)
+        (top, top + self.chip_rows.max(1) as f32 * chip_pitch() - (chip_pitch() - CHIP_HEIGHT) + 2.0 * STRIP_PAD)
     }
 
-    /// The event columns: `(top, bottom)`, at most [`MAX_LANES_HEIGHT`] high, never upside down in
+    /// The event columns: `(top, bottom)`, at most [`max_lanes_height()`] high, never upside down in
     /// a very low window.
     pub fn lanes(&self) -> (f32, f32) {
-        let top = self.all_day().1 + ROW_GAP;
-        let bottom = (self.height - FREE_ROW - ROW_GAP).min(top + MAX_LANES_HEIGHT);
+        let top = self.all_day().1 + row_gap();
+        let bottom = (self.height - free_row() - row_gap()).min(top + max_lanes_height());
         (top, bottom.max(top + MIN_EVENT_WIDTH))
     }
 
     /// The row of the free-time notes, right under the event columns: `(top, bottom)`.
     pub fn free(&self) -> (f32, f32) {
         let bottom = self.lanes().1;
-        (bottom + ROW_GAP, bottom + FREE_ROW)
+        (bottom + row_gap(), bottom + free_row())
     }
 
     /// The top of the chip in row `row` of the all-day strip.
     fn chip_top(&self, row: usize) -> f32 {
-        self.all_day().0 + STRIP_PAD + row as f32 * CHIP_PITCH
+        self.all_day().0 + STRIP_PAD + row as f32 * chip_pitch()
     }
 }
 
@@ -396,14 +410,14 @@ pub struct Dot {
 /// The dots of the entries that start in a folded night: beside the band's label, from top to
 /// bottom by their start.
 pub fn dots(track: &Track, rows: &Rows, timed: &[Timed]) -> Vec<Dot> {
-    let band = rows.height - DAY_HEAD;
+    let band = rows.height - day_head();
     timed
         .iter()
         .filter_map(|t| {
             let night = track.folded_night_of(t.start)?;
             let evening = night.evening()?;
             let fraction = minutes_between(night.start, t.start) / minutes_between(night.start, night.end);
-            let y = DAY_HEAD + band * (DOTS_FROM + fraction * DOTS_SPAN);
+            let y = day_head() + band * (DOTS_FROM + fraction * DOTS_SPAN);
             Some(Dot { id: t.id, evening, center: Point::new(night.right() - DOT_INSET, y) })
         })
         .collect()
@@ -484,23 +498,23 @@ pub fn free_gaps(
     found
 }
 
-/// The moon of a folded night's band, as a click target [`MOON_TARGET`] square around its icon:
+/// The moon of a folded night's band, as a click target [`moon_target_size()`] square around its icon:
 /// the icon stands at the bottom of the band's label, which is `label` long (moon, gap and text,
 /// turned to read upwards) and centred in the band below the day labels.
 pub fn moon(night: &Segment, rows: &Rows, label: f32) -> Rectangle {
-    let center = Point::new(night.x + night.width / 2.0, DAY_HEAD + (rows.height - DAY_HEAD) / 2.0);
+    let center = Point::new(night.x + night.width / 2.0, day_head() + (rows.height - day_head()) / 2.0);
     let bottom = (center.y + label / 2.0).round();
     let icon = Point::new(center.x, bottom - icon::SIZE_SM / 2.0);
     Rectangle::new(
-        Point::new(icon.x - MOON_TARGET / 2.0, icon.y - MOON_TARGET / 2.0),
-        Size::new(MOON_TARGET, MOON_TARGET),
+        Point::new(icon.x - moon_target_size() / 2.0, icon.y - moon_target_size() / 2.0),
+        Size::new(moon_target_size(), moon_target_size()),
     )
 }
 
 /// The "Collapse night" button of an unfolded night, `width` wide (its label decides), at the
 /// top left of the night in the all-day row.
 pub fn fold_button(night: &Segment, rows: &Rows, width: f32) -> Rectangle {
-    Rectangle::new(Point::new(night.x + space::XS, rows.chip_top(0)), Size::new(width, CHIP_HEIGHT))
+    Rectangle::new(Point::new(night.x + space::xs(), rows.chip_top(0)), Size::new(width, CHIP_HEIGHT))
 }
 
 /// The outline of a folded night's band `rect`: straight sides, top and bottom edges in teeth
@@ -567,7 +581,7 @@ pub fn hit(
         return Some(Hit::Chip(chip.id));
     }
     let segment = track.segment_at(point.x)?;
-    if point.y < DAY_HEAD || point.y >= rows.height {
+    if point.y < day_head() || point.y >= rows.height {
         return None;
     }
     if segment.folded() {
@@ -773,7 +787,7 @@ mod tests {
         let two = Rows { chip_rows: 2, ..one };
         assert_eq!(two.all_day(), (52.0, 104.0));
         assert!(two.lanes().0 > one.lanes().0);
-        assert_eq!(one.lanes(), (84.0, 84.0 + MAX_LANES_HEIGHT), "columns stop at their maximum height");
+        assert_eq!(one.lanes(), (84.0, 84.0 + max_lanes_height()), "columns stop at their maximum height");
         assert_eq!(one.free(), (472.0, 496.0), "free time right under the columns");
         let low = Rows { height: 300.0, ..one };
         assert_eq!(low.lanes(), (84.0, 268.0));
@@ -819,8 +833,8 @@ mod tests {
         assert_eq!(find(band.x + 10.0, 200.0), Some(Hit::Unfold(d(12))), "anywhere in the band");
         let moon = moons[0].1;
         assert_eq!(find(moon.center_x(), moon.center_y()), Some(Hit::Moon(d(12))), "the moon in it");
-        assert!(moon.width >= MOON_TARGET && moon.x >= band.x - MOON_TARGET, "a target of 24");
-        assert_eq!(find(band.x + 10.0, DAY_HEAD + 2.0), Some(Hit::Unfold(d(12))), "up to the axis row");
+        assert!(moon.width >= moon_target_size() && moon.x >= band.x - moon_target_size(), "a target of 24");
+        assert_eq!(find(band.x + 10.0, day_head() + 2.0), Some(Hit::Unfold(d(12))), "up to the axis row");
         assert_eq!(find(band.x + 10.0, 10.0), None, "not in the day labels");
         assert_eq!(find(2.0 * HOUR_WIDTH + 1.0, 300.0), Some(Hit::Slot(at(12, 8, 0))));
         assert_eq!(find(2.0 * HOUR_WIDTH, rows.all_day().0 + 5.0), Some(Hit::AllDay(d(12))));

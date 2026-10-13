@@ -1,7 +1,28 @@
 //! Size classes for tiled windows. The apps run for hours as tiles of very different sizes, so
 //! every view asks [`of`] which layout fits instead of comparing its own thresholds. The rules
 //! are checked in order and the thresholds are shared constants, so views and tests agree.
-//! Design rules per class: `.claude/skills/torro-design`, section 6.
+//! Design rules per class: `.claude/skills/torro-design`, section 6. The thresholds are fixed;
+//! design packs do not change them.
+//!
+//! # Layout gaps by role
+//!
+//! The second half of this module holds the margins, paddings and gaps that have a *role* rather
+//! than a place on the spacing scale: the margin around the inset content panel ([`inset`]), the
+//! padding of pages, panels, list rows and controls, and the gaps between and inside groups. They
+//! come from the active design (`[layout]` in a pack, concept `docs/design-pakete.md`), so a pack
+//! can give the whole suite more or less room in one place. Use them exactly where the role fits;
+//! everything else stays on [`crate::theme::space`].
+//!
+//! ```ignore
+//! container(page).padding(layout::page_padding());            // a settings page
+//! column(groups).spacing(layout::section_gap());               // groups on that page
+//! row![panel].padding(Padding::new(layout::inset()).left(0.0)); // the inset content panel
+//! ```
+
+use iced::Padding;
+use torro_core::design::Pad;
+
+use crate::design;
 
 /// Window width below which a window is [`SizeClass::Mini`] (and, with the height rule, a tile
 /// too narrow for a sidebar or a second column).
@@ -71,9 +92,62 @@ pub fn shown_rows(count: usize, fit: usize) -> (usize, Option<usize>) {
     }
 }
 
+/// The margin around the inset content panel beside the sidebar or rail (top, right, bottom):
+/// 8 in the standard design.
+pub fn inset() -> f32 {
+    design::with(|t| t.design.layout.inset)
+}
+
+/// The padding of content and pages (a settings page, a page without a sidebar beside it):
+/// 24 × 24 in the standard design.
+pub fn page_padding() -> Padding {
+    padding(design::with(|t| t.design.layout.page_padding))
+}
+
+/// The padding of panels, floating cards and dialogs: 16 × 16 in the standard design.
+pub fn panel_padding() -> Padding {
+    padding(design::with(|t| t.design.layout.panel_padding))
+}
+
+/// The padding of list rows (tasks, settings rows, group heads): 0 × 16 in the standard design. The
+/// height of a row comes from `size::row()` and friends; the content is centred in it.
+pub fn row_padding() -> Padding {
+    padding(design::with(|t| t.design.layout.row_padding))
+}
+
+/// The padding of buttons and segments: 0 × 10 in the standard design (`style::button_padding`).
+pub fn control_padding() -> Padding {
+    padding(design::with(|t| t.design.layout.control_padding))
+}
+
+/// The gap between groups and sections of a page: 24 in the standard design.
+pub fn section_gap() -> f32 {
+    design::with(|t| t.design.layout.section_gap)
+}
+
+/// The gap between the elements inside a group (a group's title, its card, its footer): 8 in the
+/// standard design.
+pub fn item_gap() -> f32 {
+    design::with(|t| t.design.layout.item_gap)
+}
+
+fn padding(pad: Pad) -> Padding {
+    Padding { top: pad.vertical, right: pad.horizontal, bottom: pad.vertical, left: pad.horizontal }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_gaps_of_the_standard_design() {
+        assert_eq!(inset(), 8.0);
+        assert_eq!(page_padding(), Padding::new(24.0));
+        assert_eq!(panel_padding(), Padding::new(16.0));
+        assert_eq!(row_padding(), Padding::new(0.0).left(16.0).right(16.0));
+        assert_eq!(control_padding(), Padding::new(0.0).left(10.0).right(10.0));
+        assert_eq!((section_gap(), item_gap()), (24.0, 8.0));
+    }
 
     fn class(width: f32, height: f32) -> SizeClass {
         of(iced::Size::new(width, height))

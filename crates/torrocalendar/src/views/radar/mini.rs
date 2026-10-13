@@ -46,9 +46,13 @@ pub const FILL_LIGHT: f32 = 0.45;
 /// light for light text and too dark for dark text.
 pub const FILL_DARK: f32 = 0.50;
 /// The width of the ring (`docs/tasks`: about 12).
-const RING: f32 = space::M;
+fn ring() -> f32 {
+    space::m()
+}
 /// The ticks at 12, 3, 6 and 9 hang in from the edge of the dial this far…
-const TICK_LENGTH: f32 = space::XS;
+fn tick_length() -> f32 {
+    space::xs()
+}
 /// …and the ring keeps this far from them.
 const TICK_GAP: f32 = 2.0;
 /// Between two lanes of the ring.
@@ -79,11 +83,11 @@ pub fn days(anchor: NaiveDate) -> Vec<NaiveDate> {
 }
 
 /// How many columns of tiles `width` takes `at` its place: [`BESIDE_COLUMNS`] beside the dial,
-/// under it as many tiles of at least [`MIN_TILE`] (with [`space::S`] between) as fit, at least one.
+/// under it as many tiles of at least [`MIN_TILE`] (with [`space::s()`] between) as fit, at least one.
 pub fn columns(at: ListAt, width: f32) -> usize {
     match at {
         ListAt::Props | ListAt::Beside => BESIDE_COLUMNS,
-        ListAt::Below => (((width + space::S) / (MIN_TILE + space::S)).floor() as usize).max(1),
+        ListAt::Below => (((width + space::s()) / (MIN_TILE + space::s())).floor() as usize).max(1),
     }
 }
 
@@ -105,11 +109,11 @@ impl Coming {
         Coming { days }
     }
 
-    /// The section `width` wide: its title, then the tiles in `columns` columns, [`space::S`]
+    /// The section `width` wide: its title, then the tiles in `columns` columns, [`space::s()`]
     /// apart; the last row keeps the width of the others.
     pub fn view(&self, width: f32, columns: usize) -> Element<'static, Message> {
         let columns = columns.max(1);
-        let tile_width = ((width - space::S * (columns as f32 - 1.0)) / columns as f32).floor().max(0.0);
+        let tile_width = ((width - space::s() * (columns as f32 - 1.0)) / columns as f32).floor().max(0.0);
         let rows: Vec<Element<'static, Message>> = self
             .days
             .chunks(columns)
@@ -117,10 +121,10 @@ impl Coming {
                 let mut tiles: Vec<Element<'static, Message>> =
                     chunk.iter().map(|day| tile(day.clone(), tile_width)).collect();
                 tiles.resize_with(columns, || Space::new().width(tile_width).into());
-                row(tiles).spacing(space::S).into()
+                row(tiles).spacing(space::s()).into()
             })
             .collect();
-        widgets::prop_section(tr("Coming days"), vec![column(rows).spacing(space::S).into()])
+        widgets::prop_section(tr("Coming days"), vec![column(rows).spacing(space::s()).into()])
     }
 }
 
@@ -240,24 +244,25 @@ fn lanes(spans: &[(f32, f32)]) -> Vec<(usize, usize)> {
 /// One tile, `width` wide: the label, the dial with the count and the all-day dots over its
 /// middle; hover lays `hover` under it and shows the hand, a click goes to the day.
 fn tile(day: Day, width: f32) -> Element<'static, Message> {
-    let edge = (width - 2.0 * space::S).max(0.0);
-    let label = typo::text(typo::CAPTION, day.label()).style(theme::text_2);
+    let edge = (width - 2.0 * space::s()).max(0.0);
+    let label = typo::text(typo::caption(), day.label()).style(theme::text_2);
     let count = if day.count == 0 {
-        typo::text(typo::BODY_STRONG, "–").style(theme::text_3)
+        typo::text(typo::body_strong(), "–").style(theme::text_3)
     } else {
-        typo::text(typo::BODY_STRONG.tabular(), day.count.to_string()).style(theme::text)
+        typo::text(typo::body_strong().tabular(), day.count.to_string()).style(theme::text)
     };
-    let dots = row(day.all_day.iter().map(|(colour, _)| widgets::color_dot(*colour, space::XS))).spacing(space::XS);
-    let middle = column![count, container(dots).height(space::XS)].spacing(space::XS).align_x(iced::Alignment::Center);
+    let dots = row(day.all_day.iter().map(|(colour, _)| widgets::color_dot(*colour, space::xs()))).spacing(space::xs());
+    let middle =
+        column![count, container(dots).height(space::xs())].spacing(space::xs()).align_x(iced::Alignment::Center);
     let tooltip = day.tooltip();
     let message = day.message();
     let dial = stack![
         iced::widget::canvas(MiniDial { day }).width(edge).height(edge),
         container(middle).center(Length::Fixed(edge)),
     ];
-    let content = column![label, dial].spacing(space::XS).align_x(iced::Alignment::Center);
+    let content = column![label, dial].spacing(space::xs()).align_x(iced::Alignment::Center);
     let tile =
-        button(content).width(width).padding(space::S).style(style::button::sidebar_item(false)).on_press(message);
+        button(content).width(width).padding(space::s()).style(style::button::sidebar_item(false)).on_press(message);
     widgets::with_tooltip(tile, tooltip)
 }
 
@@ -265,8 +270,8 @@ fn tile(day: Day, width: f32) -> Element<'static, Message> {
 /// start), the ring inside the ticks.
 fn dial(edge: f32) -> Dial {
     let radius = (edge / 2.0).max(0.0);
-    let outer = (radius - TICK_LENGTH - TICK_GAP).max(0.0);
-    let inner = (outer - RING).max(0.0);
+    let outer = (radius - tick_length() - TICK_GAP).max(0.0);
+    let inner = (outer - ring()).max(0.0);
     Dial {
         center: Point::new(radius, radius),
         radius,
@@ -325,7 +330,7 @@ impl canvas::Program<Message> for MiniDial {
         // Ticks at 12, 3, 6 and 9 only.
         let tick = mix(p.panel, p.text, TICK);
         for angle in [0.0, 90.0, 180.0, 270.0] {
-            line(&mut frame, dial.point(dial.radius, angle), dial.point(dial.radius - TICK_LENGTH, angle), tick, 1.0);
+            line(&mut frame, dial.point(dial.radius, angle), dial.point(dial.radius - tick_length(), angle), tick, 1.0);
         }
         // The events.
         let in_night = |rel: f32| day.nights.iter().any(|(from, to)| (*from..*to).contains(&rel));
@@ -334,7 +339,7 @@ impl canvas::Program<Message> for MiniDial {
             let from = window.angle(arc.from) + ARC_INSET;
             let to = (window.angle(arc.to) - ARC_INSET).max(from + ARC_MIN);
             let ground = if in_night(arc.from) { p.night } else { p.panel };
-            sector(&mut frame, &dial, inner, outer, from, to, arc_colour(p, arc.colour, ground));
+            sector(&mut frame, &dial, inner, outer, from, to, arc_colour(&p, arc.colour, ground));
         }
         // Where the window starts, in the quiet grey of the large radar away from now.
         let angle = window.angle0;
@@ -527,7 +532,7 @@ mod tests {
             let p = palette(&theme);
             let blue = p.calendar[0];
             let track = mix(p.panel, p.text, TRACK);
-            let arc = arc_colour(p, blue, p.panel);
+            let arc = arc_colour(&p, blue, p.panel);
             let distance = (arc.r - track.r).abs() + (arc.g - track.g).abs() + (arc.b - track.b).abs();
             assert!(distance > 0.5, "{arc:?} on {track:?}");
         }

@@ -27,7 +27,7 @@ use iced::widget::{Space, column, container, operation, row, rule, scrollable};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::layout::SizeClass;
+use torro_gui::layout::{self, SizeClass};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, Mark, Trail, collection_color};
@@ -43,7 +43,9 @@ pub const NAME_INPUT: &str = "new-task-list-name";
 /// Width of the line under the head and over the foot.
 const LINE: f32 = size::HAIRLINE;
 /// The preview of the sidebar row is as wide as a row in the sidebar: the sidebar less its inset.
-const PREVIEW_WIDTH: f32 = size::SIDEBAR - 2.0 * space::S;
+fn preview_width() -> f32 {
+    size::sidebar() - 2.0 * space::s()
+}
 
 /// A Nextcloud account a task list can go to, as the form offers it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,11 +241,11 @@ impl Dialog {
     /// window is narrow) and a quiet line under them. A click beside it closes it.
     fn choice(&self, wide: bool, window: Size) -> Element<'_, Message> {
         let head = row![
-            typo::text(typo::TITLE, tr("New list")).width(Fill),
+            typo::text(typo::title(), tr("New list")).width(Fill),
             widgets::icon_button(Icon::X, tr("Close"), Some(Message::Cancel)),
         ]
         .align_y(Alignment::Center)
-        .padding(Padding { top: space::L, right: space::M, bottom: space::S, left: space::XL });
+        .padding(Padding { top: space::l(), right: space::m(), bottom: space::s(), left: space::xl() });
         let card = |kind: Kind, icon: Icon, title: &'static str, text: &'static str, off: &'static str, key| {
             let on = self.available(kind);
             let text = if on { text } else { off };
@@ -268,14 +270,14 @@ impl Dialog {
             ),
         ];
         // Two cards need about the dialog's width; a narrower window gets them one under the other.
-        let stacked = !wide || window.width < widgets::DIALOG_WIDTH + 2.0 * space::L;
+        let stacked = !wide || window.width < widgets::DIALOG_WIDTH + 2.0 * space::l();
         let cards = widgets::choice_cards(cards, stacked);
         let body = column![
             cards,
-            typo::text(typo::META, tr("The new list shows in the sidebar right away.")).style(theme::text_3),
+            typo::text(typo::meta(), tr("The new list shows in the sidebar right away.")).style(theme::text_3),
         ]
-        .spacing(space::L)
-        .padding(Padding { top: space::S, right: space::XL, bottom: space::XL, left: space::XL });
+        .spacing(space::l())
+        .padding(Padding { top: space::s(), right: space::xl(), bottom: space::xl(), left: space::xl() });
         let card = container(scrollable(column![head, body]).direction(vertical()).style(style::scrollable))
             .width(Fill)
             .style(style::container::popover);
@@ -288,13 +290,13 @@ impl Dialog {
         let back = (!form.creating).then_some(Message::Back);
         let head = row![
             widgets::icon_button(Icon::ChevronLeft, tr("Back"), back),
-            typo::text(typo::TITLE, tr("New task list")).width(Fill),
+            typo::text(typo::title(), tr("New task list")).width(Fill),
             widgets::icon_button(Icon::X, tr("Close"), Some(Message::Cancel)),
         ]
-        .spacing(space::XS)
+        .spacing(space::xs())
         .align_y(Alignment::Center)
-        .padding(space::M);
-        let body = scrollable(container(self.fields(form)).padding(space::XL).width(Fill))
+        .padding(space::m());
+        let body = scrollable(container(self.fields(form)).padding(space::xl()).width(Fill))
             .direction(vertical())
             .style(style::scrollable);
         let card = column![
@@ -302,7 +304,7 @@ impl Dialog {
             rule::horizontal(LINE).style(style::rule),
             body,
             rule::horizontal(LINE).style(style::rule),
-            container(footer(form)).padding([space::L, space::XL]),
+            container(footer(form)).padding([space::l(), space::xl()]),
         ];
         let card = container(card).width(Fill).style(style::container::popover);
         widgets::modal(Space::new().width(Fill).height(Fill), card, widgets::DIALOG_WIDTH, Message::Backdrop)
@@ -317,9 +319,9 @@ impl Dialog {
             torro_gui::shell::header_title(None, tr("New task list"), None),
             [widgets::icon_button(Icon::X, tr("Close"), Some(Message::Cancel))],
         ))
-        .center_y(size::HEADER)
-        .padding([0.0, space::S]);
-        let body = scrollable(container(self.fields(form)).padding(space::L).width(Fill))
+        .center_y(size::header())
+        .padding([0.0, space::s()]);
+        let body = scrollable(container(self.fields(form)).padding(space::l()).width(Fill))
             .direction(vertical())
             .style(style::scrollable)
             .height(Fill);
@@ -328,7 +330,7 @@ impl Dialog {
             rule::horizontal(LINE).style(style::rule),
             body,
             rule::horizontal(LINE).style(style::rule),
-            container(footer(form)).padding([space::M, space::L]),
+            container(footer(form)).padding([space::m(), space::l()]),
         ];
         container(view).width(Fill).height(Fill).style(style::container::panel_flush).into()
     }
@@ -355,7 +357,7 @@ impl Dialog {
         let colours = list_colors().into_iter().map(Some).collect();
         parts.push(labelled(tr("Color"), swatches(colours, form.color.as_deref(), Message::Color), None).into());
         parts.push(labelled(tr("In the sidebar"), preview(form), None).into());
-        column(parts).spacing(space::XL).into()
+        column(parts).spacing(layout::section_gap()).into()
     }
 }
 
@@ -401,7 +403,7 @@ fn footer(form: &Form) -> Element<'_, Message> {
         widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Cancel)),
         create,
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center)
     .into()
 }
@@ -415,19 +417,19 @@ fn preview(form: &Form) -> Element<'_, Message> {
     };
     let ring = Mark::Ring(collection_color(form.color.as_deref()));
     let row = widgets::sidebar_item(ring, name, Trail::Count(0), true, Message::Preview);
-    container(row).width(PREVIEW_WIDTH).into()
+    container(row).width(preview_width()).into()
 }
 
 /// A refusal of the core over the form: what happened and "Retry".
 fn problem_view(problem: &str) -> Element<'_, Message> {
     let line = row![
         list::toned(Icon::CircleAlert, icon::SIZE, Tone::Error),
-        typo::text(typo::BODY, problem).style(theme::text_2).width(Fill),
+        typo::text(typo::body(), problem).style(theme::text_2).width(Fill),
         widgets::text_button(None, tr("Retry"), style::button::ghost, Some(Message::Create)),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
-    container(line).padding(space::M).width(Fill).style(style::container::group).into()
+    container(line).padding(space::m()).width(Fill).style(style::container::group).into()
 }
 
 /// The vertical scrollbar of the dialogs.

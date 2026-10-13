@@ -16,8 +16,8 @@ use torro_core::settings::Settings;
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
 use torro_ipc::{
-    AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, FolderChoice, IssuedKey, Key,
-    MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
+    AccountInfo, ActivityEntry, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice, IssuedKey,
+    Key, MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -25,6 +25,7 @@ use torro_pim::model::GitHubFilter;
 use torro_pim::{AccountState, Collection, CollectionKind};
 use torro_setups::TemplateSummary;
 
+use super::general::Pack;
 use super::wizard;
 use super::{Appearance, Data, Section};
 
@@ -94,10 +95,12 @@ pub enum Open {
     Inbox,
     /// The inbox page without any rules: the group says where they come from.
     InboxEmpty,
+    /// General › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
+    Design,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 44] = [
+    pub const ALL: [(&'static str, Open); 45] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -142,6 +145,7 @@ impl Open {
         ("agent-wizard-key", Open::AgentWizardKey),
         ("inbox", Open::Inbox),
         ("inbox-empty", Open::InboxEmpty),
+        ("design", Open::Design),
     ];
 }
 
@@ -155,17 +159,20 @@ impl Open {
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
+/// - `--design <id>`: draw with this design pack instead of the stored one (task L.3); needs
+///   `--demo`. An id that is not a valid pack is refused with the valid ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
     pub demo: bool,
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
+    pub design: Option<String>,
 }
 
 impl Default for Launch {
     fn default() -> Self {
-        Launch { section: Section::Overview, demo: false, open: None, appearance: None }
+        Launch { section: Section::Overview, demo: false, open: None, appearance: None, design: None }
     }
 }
 
@@ -237,8 +244,81 @@ impl Launch {
             Some("system") => Some(Appearance::System),
             Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
         };
-        Ok(Launch { section, demo, open, appearance })
+        let design = match flag_value(args, "--design")? {
+            None => None,
+            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
+            Some(id) if torro_gui::design::is_choice(id) => Some(id.to_owned()),
+            Some(id) => {
+                let valid = torro_gui::design::choices();
+                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+            }
+        };
+        Ok(Launch { section, demo, open, appearance, design })
     }
+}
+
+/// The design packs of `--demo` (General › Design, task L.4), in memory like all its data: the
+/// standard; "Harbor" (teal accent, cool surfaces) and "Paper" (warm light surfaces, blue accent),
+/// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. The
+/// samples use Inter, the only font the demo has without a folder.
+pub fn demo_designs() -> Vec<Pack> {
+    use torro_core::design::{Design, DesignError, Mode, Rgba};
+    let info = |design: &Design| DesignInfo {
+        id: design.id.clone(),
+        name: design.about.name.clone(),
+        version: design.about.version.clone(),
+        author: design.about.author.clone(),
+        description: design.about.description.clone(),
+        standard: design.is_standard(),
+        valid: true,
+        problems: Vec::new(),
+        active: false,
+    };
+    let pack = |id: &str, name: &str, version: &str, description: &str| {
+        let mut design = Design::standard();
+        design.id = id.into();
+        design.about.name = name.into();
+        design.about.version = version.into();
+        design.about.author = Some("Torro samples".into());
+        design.about.description = Some(description.into());
+        design
+    };
+    let mut harbor = pack("harbor", "Harbor", "1.2.0", "Teal accent, cool surfaces");
+    let dark = &mut harbor.colors.dark;
+    (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x0A0E10), Rgba::hex(0x101518), Rgba::hex(0x151B1F));
+    (dark.accent, dark.on_accent) = (Rgba::hex(0x14B8A6), Rgba::hex(0x042F2C));
+    let light = &mut harbor.colors.light;
+    (light.bg, light.panel) = (Rgba::hex(0xEEF3F4), Rgba::hex(0xFFFFFF));
+    (light.accent, light.on_accent) = (Rgba::hex(0x0B7A72), Rgba::hex(0xFFFFFF));
+    let mut paper = pack("paper", "Paper", "0.9.1", "Warm paper, ink blue");
+    let dark = &mut paper.colors.dark;
+    (dark.bg, dark.panel, dark.raised) = (Rgba::hex(0x12100D), Rgba::hex(0x1A1714), Rgba::hex(0x201C18));
+    (dark.accent, dark.on_accent) = (Rgba::hex(0x7C9CF5), Rgba::hex(0x0B1530));
+    let light = &mut paper.colors.light;
+    (light.bg, light.panel, light.raised) = (Rgba::hex(0xF3EEE4), Rgba::hex(0xFFFCF6), Rgba::hex(0xF8F4EC));
+    (light.accent, light.on_accent) = (Rgba::hex(0x2A4FC4), Rgba::hex(0xFFFFFF));
+    let neon = DesignInfo {
+        id: "neon".into(),
+        name: "Neon".into(),
+        version: "0.3.0".into(),
+        author: Some("Torro samples".into()),
+        description: None,
+        standard: false,
+        valid: false,
+        problems: [
+            DesignError::TextContrast { fg: "colors.dark.text_3".into(), on: "panel".into(), ratio: 3.12 },
+            DesignError::UnknownKey { key: "colors.dark.acent".into() },
+            DesignError::AccentContrast { mode: Mode::Light, ratio: 2.4 },
+        ]
+        .iter()
+        .map(ToString::to_string)
+        .collect(),
+        active: false,
+    };
+    let mut packs: Vec<Pack> =
+        [Design::standard(), harbor, paper].into_iter().map(|design| Pack::new(info(&design), Some(design))).collect();
+    packs.push(Pack::new(neon, None));
+    packs
 }
 
 /// The sample content of `--demo`: a healthy Nextcloud account with a shared read-only calendar,
@@ -493,12 +573,13 @@ fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
 }
 
 /// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
-/// and the nightly build muted, as the demo's sources list has it.
+/// the nightly build muted, as the demo's sources list has it, and a sender and a domain hidden.
 fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
     let rule = |id: &str, source: SourceRef, effect: RuleEffect, age: Duration| Rule {
         id: id.into(),
         source,
         sender: None,
+        domain: None,
         effect,
         created: now - age,
     };
@@ -506,6 +587,15 @@ fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
         rule("5e0b7c2a", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }, Duration::days(6)),
         rule("a81f3d94", SourceRef::script("nightly-build"), RuleEffect::Muted, Duration::days(3)),
         rule("2c6e9b17", SourceRef::script("backup"), RuleEffect::Lane { lane: Lane::Info }, Duration::days(1)),
+        // A sender and a domain hidden in the Inbox (task E3.10).
+        Rule {
+            sender: Some("news@shop.example".into()),
+            ..rule("7d41e0b3", SourceRef::mail("anna@example.org"), RuleEffect::Muted, Duration::hours(20))
+        },
+        Rule {
+            domain: Some("deals.example".into()),
+            ..rule("e93a5c08", SourceRef::mail("anna@example.org"), RuleEffect::Muted, Duration::hours(2))
+        },
     ]
 }
 
@@ -942,6 +1032,10 @@ mod tests {
         assert!(err.to_string().ends_with("valid values: light, dark, system"), "{err}");
         assert_eq!(Launch::parse(&args(&["--demo", "--open"])), Err(LaunchError::MissingValue("--open")));
         assert_eq!(Launch::parse(&args(&["--open", "wizard"])), Err(LaunchError::NeedsDemo("--open")));
+        assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
+        assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
+        let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");
+        assert_eq!(launch.design.as_deref(), Some("torro"));
     }
 
     #[test]

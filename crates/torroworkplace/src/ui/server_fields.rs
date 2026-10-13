@@ -114,7 +114,7 @@ pub(super) fn server_group<'a, M: Clone + 'a>(
         usize::from(fields.security == Security::StartTls),
     );
     let rows =
-        vec![row_frame(row![host, port].spacing(space::S), false), setting_row(None, tr("Security"), None, security)];
+        vec![row_frame(row![host, port].spacing(space::s()), false), setting_row(None, tr("Security"), None, security)];
     widgets::group(title, rows, None)
 }
 

@@ -28,6 +28,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
+use torro_inbox::item::{Hidden, HideScope};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 use torro_mail::{Flag, Folder, Message, MessageSummary};
@@ -202,6 +203,23 @@ impl InboxSource for InboxClient {
         }
     }
 
+    /// `inbox.hide_sender` (tasks E3.10, E3.11): the core hides the entry or keeps the rule and
+    /// answers what changed.
+    async fn hide_sender(&self, id: String, scope: HideScope) -> Result<Hidden, InboxError> {
+        match self.ask(Request::HideSender { id, scope }).await? {
+            Response::Hidden(hidden) => Ok(hidden),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.remove_rule` (task E3.11: "Undo" after hiding a sender or domain).
+    async fn remove_rule(&self, id: String) -> Result<(), InboxError> {
+        match self.ask(Request::RemoveRule { id }).await? {
+            Response::Ok => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `inbox.open_item`: the core opens the entry (window, page or app) on the person's screen.
     async fn open_item(&self, id: String) -> Result<(), InboxError> {
         match self.ask(Request::OpenItem { id }).await? {
@@ -262,7 +280,7 @@ mod tests {
     use std::time::Duration;
 
     use chrono::TimeZone;
-    use torro_inbox::{Kind, State, StateFilter};
+    use torro_inbox::{Kind, Rule, State, StateFilter};
 
     use super::*;
     use crate::{client, server};
@@ -319,6 +337,20 @@ mod tests {
                 Response::Item { item: Item { lane, title: format!("remember {remember}"), ..item(&id) } }
             }
             Request::MuteSource { source, muted: true } if source == SourceRef::script("ci") => Response::Ok,
+            // The rule names the entry and the scope that arrived.
+            Request::HideSender { id, scope } => Response::Hidden(Hidden {
+                rule: Some(Rule {
+                    id: format!("{id}|{scope:?}"),
+                    source: SourceRef::mail("anna@example.org"),
+                    sender: None,
+                    domain: Some("shop.example".into()),
+                    effect: torro_inbox::RuleEffect::Muted,
+                    created: at(10),
+                }),
+                new_rule: true,
+                done: vec![id],
+            }),
+            Request::RemoveRule { id } if id == "r1" => Response::Ok,
             Request::OpenItem { id } if id == "window" => Response::Ok,
             Request::TaskCollections => Response::Collections { collections: lists() },
             Request::CreateTaskFromItem { id, collection, title, due } if id == "i1" => Response::Todo {
@@ -433,6 +465,11 @@ mod tests {
         let moved = client.set_item_lane("c".into(), Lane::Info, true).await.expect("moved");
         assert_eq!((moved.lane, moved.title.as_str()), (Lane::Info, "remember true"));
         client.mute_source(SourceRef::script("ci"), true).await.expect("muted");
+        let hidden = client.hide_sender("m1".into(), HideScope::Domain).await.expect("hidden");
+        let rule = hidden.rule.expect("a rule");
+        assert_eq!((rule.id.as_str(), rule.domain.as_deref()), ("m1|Domain", Some("shop.example")));
+        assert_eq!((hidden.new_rule, hidden.done), (true, vec!["m1".to_string()]));
+        client.remove_rule("r1".into()).await.expect("removed");
     }
 
     #[tokio::test]

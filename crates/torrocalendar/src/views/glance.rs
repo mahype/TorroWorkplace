@@ -45,7 +45,9 @@ const SEPARATOR: &str = " · ";
 const DAY_START: u32 = 8;
 const DAY_END: u32 = 18;
 /// The colour dot in front of a title in the mini tile.
-const DOT: f32 = space::S;
+fn dot() -> f32 {
+    space::s()
+}
 /// Width of the colour bar on the left of event blocks and chips (as in the week view).
 const BAR: f32 = 3.0;
 /// Text inside blocks starts this far from their left edge: the bar plus 6 (as in the week view).
@@ -60,21 +62,28 @@ const GAP: f32 = 2.0;
 const MIN_BLOCK: f32 = 4.0;
 /// Room one hour label of the strip needs ("08:00" in `MICRO` and air): as wide as the narrow
 /// time axis of the week view.
-const LABEL_ROOM: f32 = size::AXIS_NARROW;
+fn label_room() -> f32 {
+    size::axis_narrow()
+}
 /// Past blocks are drawn at this opacity over the panel (as in the week view).
 const PAST_OPACITY: f32 = 0.55;
 /// The time label of the now line: the axis figures at 500 on a 16-high pill, as in the week view.
-const NOW_LABEL: typo::Level =
-    typo::Level { font: theme::FONT_TABULAR_MEDIUM, line_height: typo::CAPTION.line_height, ..typo::MICRO };
+fn now_label() -> typo::Level {
+    typo::Level { font: theme::font_tabular_medium(), line_height: typo::caption().line_height, ..typo::micro() }
+}
 /// Width of the now label: "23:59" with 3 on each side (as in the week view).
-const NOW_LABEL_WIDTH: f32 = size::AXIS_NARROW - 2.0 * space::XS;
+fn now_label_width() -> f32 {
+    size::axis_narrow() - 2.0 * space::xs()
+}
 /// Radius of the dot at the top of the now line (7 across).
 const NOW_DOT: f32 = 3.5;
 /// A title is readable with at least this many of its letters before the "…" (all of a shorter
 /// one), as in the week view and the radar: "Da…" says nothing.
 const MIN_TITLE_LETTERS: usize = 4;
 /// Gap between a block and its title beside it on the free track.
-const BESIDE_GAP: f32 = space::XS;
+fn beside_gap() -> f32 {
+    space::xs()
+}
 /// A hundredth of a point against rounding in measured widths ([`readable_width`]).
 const WIDTH_SLACK: f32 = 0.01;
 
@@ -371,8 +380,8 @@ pub enum TitleSpot {
 /// wider than this sum, and at exactly this width it must still keep them.
 pub fn readable_width(title: &str) -> f32 {
     let head: String = title.chars().take(MIN_TITLE_LETTERS).collect();
-    let cut = text_width(head.trim_end(), typo::CAPTION) + text_width(typo::ELLIPSIS, typo::CAPTION);
-    text_width(title, typo::CAPTION).min(cut) + WIDTH_SLACK
+    let cut = text_width(head.trim_end(), typo::caption()) + text_width(typo::ELLIPSIS, typo::caption());
+    text_width(title, typo::caption()).min(cut) + WIDTH_SLACK
 }
 
 /// Where the titles of the strip's blocks go: per rectangle of `blocks` (as drawn, any order)
@@ -381,7 +390,7 @@ pub fn readable_width(title: &str) -> f32 {
 ///
 /// - [`TitleSpot::Inside`] while the block holds `readable` between its text insets
 ///   (`TEXT_LEFT`, `TEXT_RIGHT`);
-/// - else [`TitleSpot::Beside`]: from `BESIDE_GAP` right of the block up to `TEXT_RIGHT` before
+/// - else [`TitleSpot::Beside`]: from `beside_gap()` right of the block up to `TEXT_RIGHT` before
 ///   the first block in its way – one that shares some of its height and reaches further right,
 ///   in practice the next block of its lane – or up to `track_end`, when that holds `readable`;
 /// - else [`TitleSpot::Bare`].
@@ -405,7 +414,7 @@ pub fn title_spots(blocks: &[Rectangle], readable: &[f32], track_end: f32) -> Ve
                 .filter(|&(j, other)| j != i && other.x + other.width > right && shares_height(block, other))
                 .map(|(_, other)| other.x - TEXT_RIGHT)
                 .fold(track_end, f32::min);
-            let x = right + BESIDE_GAP;
+            let x = right + beside_gap();
             let width = free_until - x;
             if width >= needed { TitleSpot::Beside { x, width } } else { TitleSpot::Bare }
         })
@@ -413,34 +422,34 @@ pub fn title_spots(blocks: &[Rectangle], readable: &[f32], track_end: f32) -> Ve
 }
 
 /// Where the lanes of the strip's timeline begin: below the row of hour labels and the now
-/// label, set off by `space::XS`.
+/// label, set off by `space::xs()`.
 fn lanes_top() -> f32 {
-    line_height(NOW_LABEL) + space::XS
+    line_height(now_label()) + space::xs()
 }
 
 /// Every how many hours the strip labels its axis, so labels `px_per_hour` apart do not crowd.
 pub fn label_step(px_per_hour: f32) -> u32 {
-    [1, 2, 3, 4, 6].into_iter().find(|step| *step as f32 * px_per_hour >= LABEL_ROOM).unwrap_or(12)
+    [1, 2, 3, 4, 6].into_iter().find(|step| *step as f32 * px_per_hour >= label_room()).unwrap_or(12)
 }
 
 /// Height of the date line and the lead of the mini tile: the date, then the big figure, the
 /// title and when.
 fn mini_top_height() -> f32 {
-    line_height(typo::BODY_STRONG)
-        + space::S
-        + line_height(typo::DISPLAY)
-        + space::XS
-        + line_height(typo::BODY_STRONG)
-        + line_height(typo::META)
+    line_height(typo::body_strong())
+        + space::s()
+        + line_height(typo::display())
+        + space::xs()
+        + line_height(typo::body_strong())
+        + line_height(typo::meta())
 }
 
 /// How many rows fit in a mini tile `height` high besides the date and the lead, when they come
 /// in `blocks` groups (today's all-day events under the date, the rest under the lead), each set
-/// off by `space::S`.
+/// off by `space::s()`.
 pub fn rows_that_fit(height: f32, blocks: usize) -> usize {
-    let room = height - 2.0 * space::M - mini_top_height() - blocks as f32 * space::S;
-    let row = line_height(typo::BODY) + space::XS;
-    ((room + space::XS) / row).floor().max(0.0) as usize
+    let room = height - 2.0 * space::m() - mini_top_height() - blocks as f32 * space::s();
+    let row = line_height(typo::body()) + space::xs();
+    ((room + space::xs()) / row).floor().max(0.0) as usize
 }
 
 /// The mini tile for a window of `size`: the date (with "Free until 14:00" when it fits), the
@@ -451,11 +460,11 @@ pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
     let entries = entries(&data.items);
     let now = data.now;
     let focus = focus(&entries, now);
-    let width = (size.width - 2.0 * space::M).max(0.0);
+    let width = (size.width - 2.0 * space::m()).max(0.0);
 
     let date = short_date(now.date());
-    let date_width = text_width(&date, typo::BODY_STRONG);
-    let mut top = row![typo::text(typo::BODY_STRONG, date).style(theme::text_2).wrapping(Wrapping::None)]
+    let date_width = text_width(&date, typo::body_strong());
+    let mut top = row![typo::text(typo::body_strong(), date).style(theme::text_2).wrapping(Wrapping::None)]
         .align_y(Alignment::Center);
     let mut body = column![].width(Length::Fill);
     // `rows_that_fit` counts with one line of detail in the lead; the day above a later lead is a
@@ -464,18 +473,18 @@ pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
     match (focus, display(focus)) {
         (Focus::Now(entry) | Focus::Next(entry) | Focus::Later(entry), Some(big)) => {
             if let Some(line) = headline(focus) {
-                let line = ellipsize(&line, typo::META, width - date_width - space::S);
+                let line = ellipsize(&line, typo::meta(), width - date_width - space::s());
                 top = top.push(Space::new().width(Length::Fill)).push(quiet(line));
             }
             let (day, detail) = (day_above(focus, now), detail_below(focus, entry, now));
             if day.is_some() && !detail.is_empty() {
-                height -= line_height(typo::META);
+                height -= line_height(typo::meta());
             }
             body = body.push(lead(entry, day, big, &detail, width));
         }
         _ => {
             let calm = headline(focus).unwrap_or_default();
-            body = body.push(typo::text(typo::TITLE, ellipsize(&calm, typo::TITLE, width)).style(theme::text_2));
+            body = body.push(typo::text(typo::title(), ellipsize(&calm, typo::title(), width)).style(theme::text_2));
         }
     }
 
@@ -496,11 +505,11 @@ pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
         _ => Vec::new(),
     };
     let shown_all_day = shown.min(all_day.len());
-    let mut above = column![].spacing(space::XS);
+    let mut above = column![].spacing(space::xs());
     for entry in all_day.iter().take(shown_all_day) {
         above = above.push(row_view(entry, None, width));
     }
-    let mut below = column![].spacing(space::XS);
+    let mut below = column![].spacing(space::xs());
     for entry in rest.iter().take(shown - shown_all_day) {
         below = below.push(row_view(entry, Some(row_time(entry, now)), width));
     }
@@ -508,23 +517,23 @@ pub fn mini(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
         below = below.push(quiet(trf("+{n} more", &[("n", &more)])));
     }
 
-    let mut tile = column![top.width(Length::Fill), Space::new().height(space::S)];
+    let mut tile = column![top.width(Length::Fill), Space::new().height(space::s())];
     if shown_all_day > 0 {
-        tile = tile.push(above).push(Space::new().height(space::S));
+        tile = tile.push(above).push(Space::new().height(space::s()));
     }
     tile = tile.push(body);
     if shown > shown_all_day || more.is_some() {
-        tile = tile.push(Space::new().height(space::S)).push(below);
+        tile = tile.push(Space::new().height(space::s())).push(below);
     }
     for (day, day_entries) in later {
-        let mut group = column![quiet_caption(day_name(day, now.date()))].spacing(space::XS);
+        let mut group = column![quiet_caption(day_name(day, now.date()))].spacing(space::xs());
         for entry in day_entries {
             group = group.push(row_view(entry, later_time(entry, day), width));
         }
-        tile = tile.push(Space::new().height(space::S)).push(group);
+        tile = tile.push(Space::new().height(space::s())).push(group);
     }
     container(tile)
-        .padding(space::M)
+        .padding(space::m())
         .width(Length::Fill)
         .height(Length::Fill)
         .clip(true)
@@ -564,31 +573,32 @@ fn fill_later(
 
 /// A day's name over its events in a tall mini tile: `CAPTION` in `text_3`, never wrapped.
 fn quiet_caption(line: String) -> iced::widget::Text<'static> {
-    typo::text(typo::CAPTION, line).style(theme::text_3).wrapping(Wrapping::None)
+    typo::text(typo::caption(), line).style(theme::text_3).wrapping(Wrapping::None)
 }
 
 /// A line in `META` and `text_3`, never wrapped.
 fn quiet(line: String) -> iced::widget::Text<'static> {
-    typo::text(typo::META, line).style(theme::text_3).wrapping(Wrapping::None)
+    typo::text(typo::meta(), line).style(theme::text_3).wrapping(Wrapping::None)
 }
 
 /// The lead of the mini tile: the `day` of a later event ("Tomorrow"), `big` in `DISPLAY`
 /// (tabular when it is a time), the title after the colour dot, and `detail` (when, where) below.
 fn lead(entry: &Entry, day: Option<String>, big: String, detail: &str, width: f32) -> Element<'static, Message> {
-    let level = if big.starts_with(|c: char| c.is_ascii_digit()) { typo::DISPLAY.tabular() } else { typo::DISPLAY };
-    let title = ellipsize(&entry.title, typo::BODY_STRONG, width - DOT - space::S);
+    let level = if big.starts_with(|c: char| c.is_ascii_digit()) { typo::display().tabular() } else { typo::display() };
+    let title = ellipsize(&entry.title, typo::body_strong(), width - dot() - space::s());
     let title =
-        row![widgets::color_dot(entry.color, DOT), typo::text(typo::BODY_STRONG, title).wrapping(Wrapping::None)]
-            .spacing(space::S)
+        row![widgets::color_dot(entry.color, dot()), typo::text(typo::body_strong(), title).wrapping(Wrapping::None)]
+            .spacing(space::s())
             .align_y(Alignment::Center);
     let mut lead = column![];
     if let Some(day) = day {
-        lead = lead.push(typo::text(typo::META, ellipsize(&day, typo::META, width)).style(theme::text_2));
+        lead = lead.push(typo::text(typo::meta(), ellipsize(&day, typo::meta(), width)).style(theme::text_2));
     }
-    lead = lead.push(typo::text(level, big).wrapping(Wrapping::None)).push(Space::new().height(space::XS)).push(title);
+    lead =
+        lead.push(typo::text(level, big).wrapping(Wrapping::None)).push(Space::new().height(space::xs())).push(title);
     if !detail.is_empty() {
-        let detail = ellipsize(detail, typo::META, width);
-        lead = lead.push(typo::text(typo::META, detail).style(theme::text_2).wrapping(Wrapping::None));
+        let detail = ellipsize(detail, typo::meta(), width);
+        lead = lead.push(typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::None));
     }
     lead.into()
 }
@@ -605,24 +615,25 @@ fn row_time(entry: &Entry, now: NaiveDateTime) -> String {
 /// One more event: colour dot and title, its start `time` at the right (none for an all-day
 /// event under the date).
 fn row_view(entry: &Entry, time: Option<String>, width: f32) -> Element<'static, Message> {
-    let time_width = time.as_deref().map_or(0.0, |time| text_width(time, typo::META) + space::S);
-    let title = ellipsize(&entry.title, typo::BODY, width - DOT - space::S - time_width);
-    let mut line = row![widgets::color_dot(entry.color, DOT), typo::text(typo::BODY, title).wrapping(Wrapping::None)]
-        .spacing(space::S)
-        .align_y(Alignment::Center)
-        .height(line_height(typo::BODY));
+    let time_width = time.as_deref().map_or(0.0, |time| text_width(time, typo::meta()) + space::s());
+    let title = ellipsize(&entry.title, typo::body(), width - dot() - space::s() - time_width);
+    let mut line =
+        row![widgets::color_dot(entry.color, dot()), typo::text(typo::body(), title).wrapping(Wrapping::None)]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .height(line_height(typo::body()));
     if let Some(time) = time {
         line = line
             .push(Space::new().width(Length::Fill))
-            .push(typo::text(typo::META.tabular(), time).style(theme::text_3).wrapping(Wrapping::None));
+            .push(typo::text(typo::meta().tabular(), time).style(theme::text_3).wrapping(Wrapping::None));
     }
     line.into()
 }
 
 /// How many all-day chips fit under the date and the status line of a strip `height` high.
 fn chips_that_fit(height: f32) -> usize {
-    let room = height - 2.0 * space::S - line_height(typo::BODY_STRONG) - line_height(typo::META) - space::S;
-    ((room + space::XS) / (style::CHIP_HEIGHT + space::XS)).floor().max(0.0) as usize
+    let room = height - 2.0 * space::s() - line_height(typo::body_strong()) - line_height(typo::meta()) - space::s();
+    ((room + space::xs()) / (style::CHIP_HEIGHT + space::xs())).floor().max(0.0) as usize
 }
 
 /// The strip for a window of `size`: at the left the date, a status line ("Free until 14:00",
@@ -635,7 +646,7 @@ pub fn strip(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
     let focus = focus(&entries, now);
     // The info column takes a sidebar's width, but no more than a quarter of a short strip, so
     // the hours keep the room.
-    let left = size::SIDEBAR.min(size.width / 4.0);
+    let left = size::sidebar().min(size.width / 4.0);
 
     let status = match focus {
         Focus::Now(entry) => {
@@ -644,29 +655,29 @@ pub fn strip(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
         _ => headline(focus).unwrap_or_default(),
     };
     let mut info = column![
-        typo::text(typo::BODY_STRONG, short_date(today)).style(theme::text_2).wrapping(Wrapping::None),
-        quiet(ellipsize(&status, typo::META, left)),
+        typo::text(typo::body_strong(), short_date(today)).style(theme::text_2).wrapping(Wrapping::None),
+        quiet(ellipsize(&status, typo::meta(), left)),
     ];
     let all_day = all_day_on(&entries, today);
     let (shown, more) = shown_rows(all_day.len(), chips_that_fit(size.height));
     if shown > 0 || more.is_some() {
-        let mut chips = column![].spacing(space::XS);
+        let mut chips = column![].spacing(space::xs());
         for entry in all_day.iter().take(shown) {
             chips = chips.push(chip(entry, left));
         }
         if let Some(more) = more {
             chips = chips.push(quiet(trf("+{n} more", &[("n", &more)])));
         }
-        info = info.push(Space::new().height(space::S)).push(chips);
+        info = info.push(Space::new().height(space::s())).push(chips);
     }
 
     let timed: Vec<Entry> = entries.iter().filter(|e| !e.all_day && e.on(today)).cloned().collect();
     let (first, last) = hours(&entries, now);
     let timeline =
         canvas::Canvas::new(Timeline { entries: timed, now, first, last }).width(Length::Fill).height(Length::Fill);
-    let content = row![container(info).width(left).clip(true), timeline].spacing(space::L);
+    let content = row![container(info).width(left).clip(true), timeline].spacing(space::l());
     container(content)
-        .padding(Padding { top: space::S, bottom: space::S, left: space::M, right: space::M })
+        .padding(Padding { top: space::s(), bottom: space::s(), left: space::m(), right: space::m() })
         .width(Length::Fill)
         .height(Length::Fill)
         .style(style::container::panel_flush)
@@ -676,13 +687,13 @@ pub fn strip(data: &ViewData<'_>, size: Size) -> Element<'static, Message> {
 /// An all-day event as a chip `width` wide: tinted, with the colour bar, its title in `CAPTION`.
 fn chip(entry: &Entry, width: f32) -> Element<'static, Message> {
     let color = entry.color;
-    let title = ellipsize(&entry.title, typo::CAPTION, width - TEXT_LEFT - TEXT_RIGHT);
+    let title = ellipsize(&entry.title, typo::caption(), width - TEXT_LEFT - TEXT_RIGHT);
     let bar = container(Space::new().width(BAR).height(Length::Fill)).style(move |_: &Theme| container::Style {
         background: Some(Background::Color(color)),
-        border: border::rounded(Radius::new(0.0).left(radius::XS)),
+        border: border::rounded(Radius::new(0.0).left(radius::xs())),
         ..container::Style::default()
     });
-    let label = container(typo::text(typo::CAPTION, title).wrapping(Wrapping::None))
+    let label = container(typo::text(typo::caption(), title).wrapping(Wrapping::None))
         .padding(Padding::new(0.0).left(TEXT_LEFT - BAR))
         .center_y(Length::Fill);
     container(row![bar, label])
@@ -693,7 +704,7 @@ fn chip(entry: &Entry, width: f32) -> Element<'static, Message> {
             let p = palette(t);
             container::Style {
                 background: Some(Background::Color(over(p.tinted(color), p.panel))),
-                border: border::rounded(radius::XS),
+                border: border::rounded(radius::xs()),
                 ..container::Style::default()
             }
         })
@@ -712,11 +723,11 @@ struct Timeline {
 
 impl Timeline {
     /// x of `minutes` since midnight in a timeline `width` wide; the ends are inset by
-    /// `space::L`, so the first and the last label are not cut.
+    /// `space::l()`, so the first and the last label are not cut.
     fn x_of(&self, minutes: f32, width: f32) -> f32 {
         let from = self.first as f32 * 60.0;
         let total = (self.last - self.first).max(1) as f32 * 60.0;
-        space::L + (minutes - from) / total * (width - 2.0 * space::L).max(0.0)
+        space::l() + (minutes - from) / total * (width - 2.0 * space::l()).max(0.0)
     }
 
     /// The block of each entry, in the order of `entries`, on a canvas `width` × `height`:
@@ -756,21 +767,21 @@ impl canvas::Program<Message> for Timeline {
         let p = palette(theme);
         let mut frame = Frame::new(renderer, bounds.size());
         let (width, height) = (bounds.width, bounds.height);
-        let label_row = line_height(NOW_LABEL);
+        let label_row = line_height(now_label());
         let top = lanes_top();
         let now_minutes = self.now.num_seconds_from_midnight() as f32 / 60.0;
         let now_x = self.x_of(now_minutes, width);
 
-        let per_hour = (width - 2.0 * space::L) / (self.last - self.first).max(1) as f32;
+        let per_hour = (width - 2.0 * space::l()) / (self.last - self.first).max(1) as f32;
         let step = label_step(per_hour);
         for hour in self.first..=self.last {
             let x = self.x_of(hour as f32 * 60.0, width);
             line(&mut frame, Point::new(x, top), Point::new(x, height), p.line);
-            let covered = (x - now_x).abs() < NOW_LABEL_WIDTH;
+            let covered = (x - now_x).abs() < now_label_width();
             if (hour - self.first).is_multiple_of(step) && !covered {
                 let at = Point::new(x, label_row / 2.0);
                 let hour_label = format!("{hour:02}:00");
-                label(&mut frame, &hour_label, at, typo::MICRO, p.text_3, TextAlign::Center, Vertical::Center);
+                label(&mut frame, &hour_label, at, typo::micro(), p.text_3, TextAlign::Center, Vertical::Center);
             }
         }
 
@@ -778,11 +789,11 @@ impl canvas::Program<Message> for Timeline {
         let readable: Vec<f32> = self.entries.iter().map(|e| readable_width(&e.title)).collect();
         let spots = title_spots(&blocks, &readable, self.x_of(self.last as f32 * 60.0, width));
         for ((entry, &rect), spot) in self.entries.iter().zip(&blocks).zip(spots) {
-            let tone = Tone::of(p, entry.color, entry.end <= self.now);
+            let tone = Tone::of(&p, entry.color, entry.end <= self.now);
             block(&mut frame, rect, entry, &tone, spot);
         }
 
-        now_line(&mut frame, p, now_x, top, height, width, self.now.time());
+        now_line(&mut frame, &p, now_x, top, height, width, self.now.time());
         vec![frame.into_geometry()]
     }
 }
@@ -810,23 +821,23 @@ impl Tone {
     }
 }
 
-/// An event block: rounded `radius::XS`, the bar on the left, and its text where `spot` says
+/// An event block: rounded `radius::xs()`, the bar on the left, and its text where `spot` says
 /// ([`title_spots`]): inside title, time range and place from the top, each cut with "…" to the
 /// block's width; beside the title and, when a line more fits, the time range; or none.
 fn block(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, spot: TitleSpot) {
-    frame.fill(&Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::XS)), tone.bar);
+    frame.fill(&Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::xs())), tone.bar);
     let body = Size::new((rect.width - BAR).max(0.0), rect.height);
     frame.fill(
-        &Path::rounded_rectangle(Point::new(rect.x + BAR, rect.y), body, Radius::new(0.0).right(radius::XS)),
+        &Path::rounded_rectangle(Point::new(rect.x + BAR, rect.y), body, Radius::new(0.0).right(radius::xs())),
         tone.fill,
     );
     let range = format!("{} – {}", format_time(entry.start.time()), format_time(entry.end.time()));
     match spot {
         TitleSpot::Inside => {
             let lines = [
-                (entry.title.as_str(), typo::CAPTION, tone.title),
-                (range.as_str(), typo::MICRO, tone.time),
-                (entry.location.as_deref().unwrap_or_default(), typo::META, tone.place),
+                (entry.title.as_str(), typo::caption(), tone.title),
+                (range.as_str(), typo::micro(), tone.time),
+                (entry.location.as_deref().unwrap_or_default(), typo::meta(), tone.place),
             ];
             let clip = Rectangle { width: (rect.width - TEXT_RIGHT).max(0.0), ..rect };
             text_lines(frame, clip, rect.x + TEXT_LEFT, rect.width - TEXT_LEFT - TEXT_RIGHT, &lines);
@@ -834,8 +845,8 @@ fn block(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone, spot: T
         TitleSpot::Beside { x, width } => {
             // Without a fill behind it a cut time ("09:30 – 1…") would read as a wrong one: the
             // range comes whole or not at all. The place stays in the block's larger views.
-            let range = if text_width(&range, typo::MICRO) <= width { range.as_str() } else { "" };
-            let lines = [(entry.title.as_str(), typo::CAPTION, tone.title), (range, typo::MICRO, tone.time)];
+            let range = if text_width(&range, typo::micro()) <= width { range.as_str() } else { "" };
+            let lines = [(entry.title.as_str(), typo::caption(), tone.title), (range, typo::micro(), tone.time)];
             text_lines(frame, Rectangle { x, width, ..rect }, x, width, &lines);
         }
         TitleSpot::Bare => {}
@@ -863,12 +874,12 @@ fn text_lines(frame: &mut Frame, clip: Rectangle, x: f32, room: f32, lines: &[(&
 fn now_line(frame: &mut Frame, p: &Palette, x: f32, top: f32, height: f32, width: f32, now: NaiveTime) {
     line(frame, Point::new(x, top), Point::new(x, height), p.accent);
     frame.fill(&Path::circle(Point::new(x, top), NOW_DOT), p.accent);
-    let pill_height = line_height(NOW_LABEL);
-    let left = (x - NOW_LABEL_WIDTH / 2.0).clamp(0.0, (width - NOW_LABEL_WIDTH).max(0.0));
-    let pill = Rectangle::new(Point::new(left, 0.0), Size::new(NOW_LABEL_WIDTH, pill_height));
-    frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::XS)), p.accent);
+    let pill_height = line_height(now_label());
+    let left = (x - now_label_width() / 2.0).clamp(0.0, (width - now_label_width()).max(0.0));
+    let pill = Rectangle::new(Point::new(left, 0.0), Size::new(now_label_width(), pill_height));
+    frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::xs())), p.accent);
     let at = Point::new(pill.center_x(), pill.center_y());
-    label(frame, &format_time(now), at, NOW_LABEL, p.on_accent, TextAlign::Center, Vertical::Center);
+    label(frame, &format_time(now), at, now_label(), p.on_accent, TextAlign::Center, Vertical::Center);
 }
 
 /// A 1-px line.
@@ -1131,18 +1142,18 @@ mod tests {
 
     #[test]
     fn a_readable_title_needs_four_letters_or_all_of_a_short_one() {
-        let cut = text_width("Dail", typo::CAPTION) + text_width(typo::ELLIPSIS, typo::CAPTION);
+        let cut = text_width("Dail", typo::caption()) + text_width(typo::ELLIPSIS, typo::caption());
         assert_eq!(readable_width("Daily Standup"), cut + WIDTH_SLACK);
-        assert_eq!(readable_width("Gym"), text_width("Gym", typo::CAPTION) + WIDTH_SLACK);
+        assert_eq!(readable_width("Gym"), text_width("Gym", typo::caption()) + WIDTH_SLACK);
         // Five letters are narrower whole than four and "…".
-        assert_eq!(readable_width("Lunch"), text_width("Lunch", typo::CAPTION) + WIDTH_SLACK);
+        assert_eq!(readable_width("Lunch"), text_width("Lunch", typo::caption()) + WIDTH_SLACK);
         // A cut after a space keeps no trailing space, as `ellipsize` does: "1:1…".
-        let space = text_width("1:1", typo::CAPTION) + text_width(typo::ELLIPSIS, typo::CAPTION);
+        let space = text_width("1:1", typo::caption()) + text_width(typo::ELLIPSIS, typo::caption());
         assert_eq!(readable_width("1:1 with Lena"), space + WIDTH_SLACK);
         // At exactly that width the title is cut where the rule says.
-        assert_eq!(ellipsize("Daily Standup", typo::CAPTION, readable_width("Daily Standup")), "Dail…");
-        assert_eq!(ellipsize("1:1 with Lena", typo::CAPTION, readable_width("1:1 with Lena")), "1:1…");
-        assert_eq!(ellipsize("Lunch", typo::CAPTION, readable_width("Lunch")), "Lunch");
+        assert_eq!(ellipsize("Daily Standup", typo::caption(), readable_width("Daily Standup")), "Dail…");
+        assert_eq!(ellipsize("1:1 with Lena", typo::caption(), readable_width("1:1 with Lena")), "1:1…");
+        assert_eq!(ellipsize("Lunch", typo::caption(), readable_width("Lunch")), "Lunch");
     }
 
     #[test]
@@ -1159,7 +1170,7 @@ mod tests {
         // 30 minutes in a 900 × 190 strip are about 25 points: no room inside.
         let blocks = [rect(100.0, 125.0, 20.0, 170.0), rect(400.0, 500.0, 20.0, 170.0)];
         let spots = title_spots(&blocks, &[40.0, 40.0], 800.0);
-        let x = 125.0 + BESIDE_GAP;
+        let x = 125.0 + beside_gap();
         assert_eq!(spots[0], TitleSpot::Beside { x, width: 400.0 - TEXT_RIGHT - x });
         assert_eq!(spots[1], TitleSpot::Inside);
     }
@@ -1176,7 +1187,7 @@ mod tests {
         let blocks = [rect(100.0, 123.0, 20.0, 170.0), rect(125.0, 148.0, 20.0, 170.0)];
         let spots = title_spots(&blocks, &[40.0, 40.0], 800.0);
         assert_eq!(spots[0], TitleSpot::Bare, "the second block follows right after the first");
-        let x = 148.0 + BESIDE_GAP;
+        let x = 148.0 + beside_gap();
         assert_eq!(spots[1], TitleSpot::Beside { x, width: 800.0 - x }, "up to the end of the track");
     }
 
@@ -1186,7 +1197,7 @@ mod tests {
         assert_eq!(title_spots(&last, &[40.0], 800.0), [TitleSpot::Bare]);
         // An hour earlier the rest of the track holds a cut title.
         let earlier = [rect(720.0, 745.0, 20.0, 170.0)];
-        let x = 745.0 + BESIDE_GAP;
+        let x = 745.0 + beside_gap();
         assert_eq!(title_spots(&earlier, &[40.0], 800.0), [TitleSpot::Beside { x, width: 800.0 - x }]);
     }
 
@@ -1196,7 +1207,7 @@ mod tests {
         // height, which ends the free track of both lanes.
         let blocks = [rect(100.0, 125.0, 20.0, 94.0), rect(110.0, 300.0, 96.0, 170.0), rect(500.0, 600.0, 20.0, 170.0)];
         let spots = title_spots(&blocks, &[40.0, 40.0, 40.0], 800.0);
-        let x = 125.0 + BESIDE_GAP;
+        let x = 125.0 + beside_gap();
         assert_eq!(spots[0], TitleSpot::Beside { x, width: 500.0 - TEXT_RIGHT - x });
         assert_eq!(spots[1..], [TitleSpot::Inside, TitleSpot::Inside]);
     }
@@ -1217,7 +1228,7 @@ mod tests {
         };
         let (width, height) = (640.0, 174.0);
         let blocks = timeline.blocks(width, height);
-        assert!(blocks.iter().all(|b| b.y >= line_height(NOW_LABEL)));
+        assert!(blocks.iter().all(|b| b.y >= line_height(now_label())));
         let readable: Vec<f32> = timeline.entries.iter().map(|e| readable_width(&e.title)).collect();
         let spots = title_spots(&blocks, &readable, timeline.x_of(18.0 * 60.0, width));
         assert!(matches!(spots[0], TitleSpot::Beside { .. }), "the standup is too narrow for its title");

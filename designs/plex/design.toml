@@ -1,0 +1,107 @@
+# Plex – the example pack of the suite (task L.5, docs/design-pakete.md, "Ein Paket bauen").
+# Everything left out here comes from the standard design "Torro".
+format = 1
+
+[about]
+name = "Plex"
+version = "1.0.0"
+author = "Torro"
+description = "IBM Plex Sans, more room, petrol accent"
+font_license = "OFL-1.1"
+
+# IBM Plex Sans 1.1.0 from github.com/IBM/plex (release @ibm/plex-sans@1.1.0), SIL OFL 1.1.
+# No [fonts.numbers]: Plex's default figures are already tabular (every digit 600 units wide
+# in all four weights), so the time axis and counters keep their place without a second family.
+[fonts.text]
+family = "IBM Plex Sans"
+regular = "fonts/IBMPlexSans-Regular.ttf"
+medium = "fonts/IBMPlexSans-Medium.ttf"
+semibold = "fonts/IBMPlexSans-SemiBold.ttf"
+bold = "fonts/IBMPlexSans-Bold.ttf"
+
+# One size up and more line height than Torro: Plex is narrower than Inter and wants room.
+[type.meta]
+line = 18
+[type.body]
+size = 14
+line = 22
+[type.body_strong]
+size = 14
+line = 22
+[type.title]
+size = 17
+line = 24
+[type.headline]
+size = 24
+line = 30
+[type.display]
+size = 30
+line = 36
+
+# Squarer corners than Torro, in the spirit of Plex.
+[radius]
+scale = [2, 4, 6, 8]
+
+[layout]
+inset = 10
+page_padding = [32, 40]
+panel_padding = [20, 20]
+row_padding = [0, 20]
+control_padding = [0, 12]
+section_gap = 32
+item_gap = 10
+
+[size]
+control_sm = 30
+control = 34
+control_lg = 40
+row = 44
+row_two = 56
+row_sidebar = 30
+row_group = 36
+header = 48
+sidebar = 248
+hour = 56
+axis = 56
+
+# Cool surfaces with a hint of green, a calm petrol accent. Status, calendar and line colours stay
+# the standard's; every value below passes the contrast rules in both modes.
+[colors.dark]
+bg = "#0C1013"
+panel = "#12171B"
+raised = "#151B1F"
+hover = "#171E22"
+selected = "#1B2226"
+menu = "#161D21"
+text = "#E3E8EB"
+text_2 = "#A9B4BB"
+text_3 = "#86929A"
+line = "#FFFFFF12"
+line_strong = "#FFFFFF1C"
+line_selected = "#FFFFFF4D"
+focus_ring = "#FFFFFF61"
+accent = "#3AA6A0"
+on_accent = "#03201E"
+night = "#0F1C20"
+
+[colors.light]
+bg = "#ECF0F1"
+panel = "#FFFFFF"
+raised = "#F6F8F9"
+hover = "#E9EEF0"
+selected = "#DEE5E8"
+menu = "#FFFFFF"
+text = "#141B1F"
+text_2 = "#475359"
+text_3 = "#59656C"
+line = "#00000012"
+line_strong = "#0000001F"
+line_selected = "#00000057"
+focus_ring = "#00000085"
+accent = "#0C6B66"
+on_accent = "#FFFFFF"
+night = "#DCE6E8"
+
+[logo]
+mark = "logo.svg"
+tray = "tray.svg"

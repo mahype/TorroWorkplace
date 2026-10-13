@@ -1,10 +1,12 @@
 //! The Torro theme for Iced: colour tokens in a light and a dark [`Palette`], the Iced
 //! [`Theme`]s built from them, spacing, radius and size tokens, and the fonts.
 //!
-//! Values from the design skill (`.claude/skills/torro-design`, sections 1–4), after Linear; the
-//! reference mock-ups are `docs/prototypes/linear/` (`torro.css`). Brand and status colours come
-//! from `torro_core::theme`. Torro red is brand only (primary button, today, the now line, the
-//! app logo), never selection and never status.
+//! The values come from the **active design** ([`crate::design`], concept `docs/design-pakete.md`):
+//! every token is a function that reads it, so a switch of design pack shows on the next frame.
+//! The standard design gives the values of the design skill (`.claude/skills/torro-design`,
+//! sections 1–4), after Linear; the reference mock-ups are `docs/prototypes/linear/`
+//! (`torro.css`). Torro red is brand only (primary button, today, the now line, the app logo),
+//! never selection and never status – a pack changes how `accent` looks, not what it is for.
 //!
 //! # Colours: always through `&Theme`
 //!
@@ -15,11 +17,11 @@
 //! use torro_gui::theme::{self, palette, radius, space};
 //! use torro_gui::typo;
 //!
-//! typo::text(typo::META, tr("3 open")).style(theme::text_3);          // text in a token colour
-//! container(body).padding(space::L).style(|t| palette(t).panel.into()); // a plain surface
+//! typo::text(typo::meta(), tr("3 open")).style(theme::text_3);          // text in a token colour
+//! container(body).padding(space::l()).style(|t| palette(t).panel.into()); // a plain surface
 //! container(chip).style(|t| {
 //!     let p = palette(t);
-//!     container::background(p.raised).border(border::rounded(radius::XS).color(p.line_strong).width(1))
+//!     container::background(p.raised).border(border::rounded(radius::xs()).color(p.line_strong).width(1))
 //! });
 //! ```
 //!
@@ -30,43 +32,66 @@
 //! # Spacing and sizes
 //!
 //! [`space`], [`radius`] and [`size`] hold every number a view may use for `.spacing()`,
-//! `.padding()`, `.width()`/`.height()` and border radii. They are `f32`, so they go straight
-//! into Iced (`.spacing(space::S)`, `.height(size::ROW)`, `border::rounded(radius::SM)`).
+//! `.padding()`, `.width()`/`.height()` and border radii; the gaps by role (inset, page and panel
+//! padding …) are in [`crate::layout`]. They return `f32`, so they go straight into Iced
+//! (`.spacing(space::s())`, `.height(size::row())`, `border::rounded(radius::sm())`). They are
+//! functions, not constants: never put them into a `const` or `static`, compute derived values
+//! in a function instead.
 //!
 //! # Fonts
 //!
-//! [`FONT`] and friends name the Inter families that [`crate::fonts`] embeds. Apps rarely pick a
-//! font directly: the levels in [`crate::typo`] carry the right one.
+//! [`font`] and friends name the families of the active design (Inter in the standard, embedded by
+//! [`crate::fonts`]). Apps rarely pick a font directly: the levels in [`crate::typo`] carry the
+//! right one.
 //!
 //! Outside Iced (the tray icon, notifications) there is no `&Theme`; such code takes the dark
 //! tokens from [`Palette::dark`].
 
-use std::sync::LazyLock;
+use std::borrow::Cow;
 
+use crate::design;
 use crate::source::Source;
-use iced::font::Weight;
 use iced::theme::Mode;
 use iced::widget::text::Style as TextStyle;
 use iced::{Color, Font, Shadow, Theme, Vector};
-use torro_core::theme::{Rgb, STATUS_ATTENTION, STATUS_ERROR, STATUS_INACTIVE, STATUS_OK, TORRO_RED};
+use torro_core::design::{Design, FontRole, Mode as DesignMode, Rgba, Weight};
+use torro_core::theme::Rgb;
 use torro_ipc::{Request, Response};
 
-/// Inter Regular (400): the default font of every app, for body text, lists and inputs.
+/// The text font at Regular (400) – Inter in the standard design: the default font of every app,
+/// for body text, lists and inputs.
 ///
 /// Set as the app default by [`crate::settings`]. Never use `Font::DEFAULT`: depending on the
-/// system that is Liberation Sans or Arial, not Inter.
-pub const FONT: Font = Font::with_name("Inter");
-/// Inter Medium (500): emphasis – row titles, buttons, event titles, captions.
-pub const FONT_MEDIUM: Font = Font { weight: Weight::Medium, ..FONT };
-/// Inter SemiBold (600): titles – dialog, group and view titles, the big number in a mini tile.
-pub const FONT_SEMIBOLD: Font = Font { weight: Weight::Semibold, ..FONT };
-/// "Inter Tabular" Regular (400): Inter with tabular figures baked in, for digits that change
-/// (clocks, time axes, counters, dates in columns), so nothing jumps and columns line up.
+/// system that is Liberation Sans or Arial, not the design's font.
+pub fn font() -> Font {
+    design::font(FontRole::Text, Weight::Regular)
+}
+
+/// The text font at Medium (500): emphasis – row titles, buttons, event titles, captions.
+pub fn font_medium() -> Font {
+    design::font(FontRole::Text, Weight::Medium)
+}
+
+/// The text font at SemiBold (600): titles – dialog, group and view titles, the big number in a
+/// mini tile.
+pub fn font_semibold() -> Font {
+    design::font(FontRole::Text, Weight::Semibold)
+}
+
+/// The figures font at Regular (400) – "Inter Tabular" in the standard design, Inter with tabular
+/// figures baked in – for digits that change (clocks, time axes, counters, dates in columns), so
+/// nothing jumps and columns line up.
 ///
 /// A separate family because Iced 0.14 cannot switch OpenType features such as `tnum`.
-pub const FONT_TABULAR: Font = Font::with_name("Inter Tabular");
-/// "Inter Tabular" Medium (500): tabular figures at the weight of [`FONT_MEDIUM`].
-pub const FONT_TABULAR_MEDIUM: Font = Font { weight: Weight::Medium, ..FONT_TABULAR };
+pub fn font_tabular() -> Font {
+    design::tabular_font(iced::font::Weight::Normal)
+}
+
+/// The figures font at Medium (500), the weight of [`font_medium`] (or the nearest lighter one the
+/// design's figures font has).
+pub fn font_tabular_medium() -> Font {
+    design::tabular_font(iced::font::Weight::Medium)
+}
 
 /// A `torro_core` colour (brand and status tokens) as an Iced colour.
 pub const fn color(rgb: Rgb) -> Color {
@@ -75,13 +100,15 @@ pub const fn color(rgb: Rgb) -> Color {
 
 /// The attention colour (waiting for the user, unchecked, deviating, overdue) as an Iced colour.
 ///
-/// The same in both modes; inside a style closure `palette(theme).attention` is equivalent.
+/// From the dark palette of the active design (the standard has the same in both modes); inside a
+/// style closure prefer `palette(theme).attention`, which follows the mode.
 pub fn attention() -> Color {
-    color(STATUS_ATTENTION)
+    design::with(|t| t.dark.attention)
 }
 
-/// The colour tokens of one mode (light or dark). Get it with [`palette`] from the `&Theme` a
-/// style closure receives; [`Palette::dark`] and [`Palette::light`] are for tests and galleries.
+/// The colour tokens of one mode (light or dark) of the active design. Get it with [`palette`] from
+/// the `&Theme` a style closure receives; [`Palette::dark`] and [`Palette::light`] are for tests,
+/// galleries and code without a theme. A copy: take it fresh in every style call or `draw`.
 ///
 /// Field names are the skill's token names in snake case (`TEXT_2` → `text_2`). Text colours
 /// meet WCAG AA (≥ 4.5:1) on every surface (`bg`, `panel`, `raised`, `hover`, `selected`,
@@ -158,14 +185,49 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// The dark tokens ("Torro Dark").
-    pub fn dark() -> &'static Palette {
-        &DARK
+    /// The dark tokens of the active design ("Torro Dark" in the standard).
+    pub fn dark() -> Palette {
+        design::with(|t| t.dark)
     }
 
-    /// The light tokens ("Torro Light").
-    pub fn light() -> &'static Palette {
-        &LIGHT
+    /// The light tokens of the active design ("Torro Light" in the standard).
+    pub fn light() -> Palette {
+        design::with(|t| t.light)
+    }
+
+    /// The tokens of `mode` in `design`, with the derived colours (`attention_text`, `error_text`)
+    /// computed from it and the shadow geometry of the suite (`0 12px 32px`, `torro.css`).
+    pub fn of(design: &Design, mode: DesignMode) -> Palette {
+        let c = design.colors.get(mode);
+        Palette {
+            bg: rgba(c.bg),
+            panel: rgba(c.panel),
+            raised: rgba(c.raised),
+            hover: rgba(c.hover),
+            selected: rgba(c.selected),
+            menu: rgba(c.menu),
+            text: rgba(c.text),
+            text_2: rgba(c.text_2),
+            text_3: rgba(c.text_3),
+            line: rgba(c.line),
+            line_strong: rgba(c.line_strong),
+            line_selected: rgba(c.line_selected),
+            focus_ring: rgba(c.focus_ring),
+            accent: rgba(c.accent),
+            on_accent: rgba(c.on_accent),
+            ok: rgba(c.ok),
+            attention: rgba(c.attention),
+            attention_text: rgba(c.attention_text(mode)),
+            error: rgba(c.error),
+            error_text: rgba(c.error_text(mode)),
+            inactive: rgba(c.inactive),
+            merged: rgba(c.merged),
+            calendar: c.calendar.map(rgba),
+            tint: c.tint,
+            shadow: Shadow { color: rgba(c.shadow), offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
+            scrim: rgba(c.scrim),
+            night: rgba(c.night),
+        }
     }
 
     /// `color` as an event surface: the same hue at [`Palette::tint`] opacity, to be drawn over
@@ -193,93 +255,21 @@ pub const fn over(top: Color, under: Color) -> Color {
     mix(under, top, top.a)
 }
 
-const fn hex(rgb: u32) -> Color {
-    Color::from_rgb8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+/// A design colour as an Iced colour: the channels are laid out the same, so nothing is rounded.
+pub const fn rgba(c: Rgba) -> Color {
+    Color { r: c.r, g: c.g, b: c.b, a: c.a }
 }
 
-/// Translucent white (dark mode) or black (light mode): lines and the focus ring sit on several
-/// surfaces, so they are an overlay instead of one fixed grey per surface.
-const fn white(alpha: f32) -> Color {
-    Color::from_rgba(1.0, 1.0, 1.0, alpha)
-}
-
-const fn black(alpha: f32) -> Color {
-    Color::from_rgba(0.0, 0.0, 0.0, alpha)
-}
-
-/// `0 12px 32px` as in `torro.css`; only the opacity differs between the modes.
-const fn shadow(alpha: f32) -> Shadow {
-    Shadow { color: black(alpha), offset: Vector::new(0.0, 12.0), blur_radius: 32.0 }
-}
-
-const DARK: Palette = Palette {
-    bg: hex(0x08090A),
-    panel: hex(0x0F1011),
-    raised: hex(0x141518),
-    hover: hex(0x16171A),
-    selected: hex(0x1C1E22),
-    menu: hex(0x17181B),
-    text: hex(0xEDEEF0),
-    text_2: hex(0xB4B8BF),
-    text_3: hex(0x8A8F98),
-    line: white(0.06),
-    line_strong: white(0.10),
-    line_selected: white(0.28),
-    focus_ring: white(0.35),
-    accent: color(TORRO_RED),
-    on_accent: Color::WHITE,
-    ok: color(STATUS_OK),
-    attention: color(STATUS_ATTENTION),
-    attention_text: color(STATUS_ATTENTION),
-    error: color(STATUS_ERROR),
-    error_text: color(STATUS_ERROR),
-    inactive: color(STATUS_INACTIVE),
-    merged: hex(0xA78BFA),
-    calendar: [hex(0x5B8CFF), hex(0x3FB984), hex(0xE8A33D), hex(0xD96CA8), hex(0xA78BFA)],
-    tint: 0.18,
-    shadow: shadow(0.5),
-    scrim: black(0.62),
-    night: hex(0x121626),
-};
-
-const LIGHT: Palette = Palette {
-    bg: hex(0xF4F5F6),
-    panel: hex(0xFFFFFF),
-    raised: hex(0xF8F9FA),
-    hover: hex(0xF0F1F3),
-    selected: hex(0xE9EAED),
-    menu: hex(0xFFFFFF),
-    text: hex(0x18191B),
-    text_2: hex(0x4F535A),
-    text_3: hex(0x62666D),
-    line: black(0.07),
-    line_strong: black(0.11),
-    line_selected: black(0.32),
-    focus_ring: black(0.5),
-    accent: color(TORRO_RED),
-    on_accent: Color::WHITE,
-    ok: color(STATUS_OK),
-    attention: color(STATUS_ATTENTION),
-    attention_text: mix(color(STATUS_ATTENTION), hex(0x18191B), 0.5),
-    error: color(STATUS_ERROR),
-    error_text: mix(color(STATUS_ERROR), hex(0x18191B), 0.3),
-    inactive: color(STATUS_INACTIVE),
-    merged: hex(0x7C5CE6),
-    calendar: [hex(0x3B6EF0), hex(0x1F9D68), hex(0xB06F12), hex(0xC2508F), hex(0x7C5CE6)],
-    tint: 0.14,
-    shadow: shadow(0.12),
-    scrim: black(0.3),
-    night: hex(0xE3E7F1),
-};
-
-/// The tokens of the mode `theme` is in: [`Palette::light`] for a light theme, otherwise
-/// [`Palette::dark`]. Works for any Iced theme (it asks Iced whether the background is dark), so a
-/// stray built-in theme still gets Torro colours.
+/// The tokens of the active design in the mode `theme` is in: [`Palette::light`] for a light
+/// theme, otherwise [`Palette::dark`]. Works for any Iced theme (it asks Iced whether the background
+/// is dark), so a stray built-in theme still gets Torro colours.
 ///
 /// The one way views reach colours: call it inside a style closure or a canvas `draw` with the
-/// `&Theme` Iced passes in, never store the result across frames (the mode can change any time).
-pub fn palette(theme: &Theme) -> &'static Palette {
-    if theme.extended_palette().is_dark { &DARK } else { &LIGHT }
+/// `&Theme` Iced passes in, never store the result across frames (the mode and the design can
+/// change any time). Returns a copy; pass `&p` where a function wants `&Palette`.
+pub fn palette(theme: &Theme) -> Palette {
+    let dark = theme.extended_palette().is_dark;
+    design::with(|t| if dark { t.dark } else { t.light })
 }
 
 /// Text style in [`Palette::text`]: `typo::text(…).style(theme::text)`. Plain text already has
@@ -322,7 +312,7 @@ pub async fn stored_appearance(source: &Source) -> Result<Appearance, String> {
 /// matters for [`Appearance::System`], and `Mode::None` counts as dark.
 ///
 /// Use in the app builder: `.theme(|app: &App| theme::for_appearance(app.appearance, app.system_mode))`.
-/// Cheap to call on every frame: the two themes are built once and cloned (an `Arc`).
+/// Cheap to call on every frame: the two themes are built once per design and cloned (an `Arc`).
 pub fn for_appearance(appearance: Appearance, system: Mode) -> Theme {
     match (appearance, system) {
         (Appearance::Light, _) | (Appearance::System, Mode::Light) => light(),
@@ -331,7 +321,7 @@ pub fn for_appearance(appearance: Appearance, system: Mode) -> Theme {
 }
 
 /// The Iced palette (what built-in widgets and the window background use) from our tokens.
-fn iced_theme(name: &'static str, p: &Palette) -> Theme {
+pub(crate) fn iced_theme(name: Cow<'static, str>, p: &Palette) -> Theme {
     Theme::custom(
         name,
         iced::theme::Palette {
@@ -345,17 +335,14 @@ fn iced_theme(name: &'static str, p: &Palette) -> Theme {
     )
 }
 
-static DARK_THEME: LazyLock<Theme> = LazyLock::new(|| iced_theme("Torro Dark", &DARK));
-static LIGHT_THEME: LazyLock<Theme> = LazyLock::new(|| iced_theme("Torro Light", &LIGHT));
-
-/// "Torro Dark": the dark Iced theme ([`Palette::dark`]).
+/// "Torro Dark": the dark Iced theme of the active design ([`Palette::dark`]).
 pub fn theme() -> Theme {
-    DARK_THEME.clone()
+    design::with(|t| t.dark_theme.clone())
 }
 
-/// "Torro Light": the light Iced theme ([`Palette::light`]).
+/// "Torro Light": the light Iced theme of the active design ([`Palette::light`]).
 pub fn light() -> Theme {
-    LIGHT_THEME.clone()
+    design::with(|t| t.light_theme.clone())
 }
 
 /// The theme for [`Appearance::System`] without knowing the desktop's preference: dark.
@@ -365,83 +352,158 @@ pub fn for_system() -> Theme {
     for_appearance(Appearance::System, Mode::None)
 }
 
-/// Spacing between and inside elements (`.spacing()`, `.padding()`): 4 · 8 · 12 · 16 · 24 · 32.
+/// Spacing between and inside elements (`.spacing()`, `.padding()`): 4 · 8 · 12 · 16 · 24 · 32 in
+/// the standard design.
 ///
-/// Label → field 4 (`XS`), within a group 8 (`S`), group → group 16–24 (`L`/`XL`).
+/// Label → field 4 (`xs`), within a group 8 (`s`), group → group 16–24 (`l`/`xl`).
 /// Only building blocks in `torro_gui` may use 2 and 6 (segment inset, icon–text gap in chips).
 pub mod space {
+    use crate::design;
+
     /// 4: label → field, icon → text in tight rows.
-    pub const XS: f32 = 4.0;
+    pub fn xs() -> f32 {
+        design::with(|t| t.design.space.xs)
+    }
     /// 8: within a group, between buttons in a bar.
-    pub const S: f32 = 8.0;
+    pub fn s() -> f32 {
+        design::with(|t| t.design.space.s)
+    }
     /// 12: padding of small tiles (mini, narrow), sidebar group gap.
-    pub const M: f32 = 12.0;
+    pub fn m() -> f32 {
+        design::with(|t| t.design.space.m)
+    }
     /// 16: group → group, padding of the properties column and of medium tiles.
-    pub const L: f32 = 16.0;
+    pub fn l() -> f32 {
+        design::with(|t| t.design.space.l)
+    }
     /// 24: larger group gaps, content padding in the wide layout.
-    pub const XL: f32 = 24.0;
+    pub fn xl() -> f32 {
+        design::with(|t| t.design.space.xl)
+    }
     /// 32: section gaps on large pages.
-    pub const XXL: f32 = 32.0;
+    pub fn xxl() -> f32 {
+        design::with(|t| t.design.space.xxl)
+    }
 }
 
-/// Corner radii (`border::rounded(radius::SM)`). Fully round (dots, rings, avatars, today):
+/// Corner radii (`border::rounded(radius::sm())`). Fully round (dots, rings, avatars, today):
 /// half the element's size.
 pub mod radius {
+    use crate::design;
+
     /// 4: chips, event blocks, inner segment, key hints.
-    pub const XS: f32 = 4.0;
+    pub fn xs() -> f32 {
+        design::with(|t| t.design.radius.xs)
+    }
     /// 6: buttons, rows, inputs, menu items.
-    pub const SM: f32 = 6.0;
+    pub fn sm() -> f32 {
+        design::with(|t| t.design.radius.sm)
+    }
     /// 8: the content panel, menus.
-    pub const MD: f32 = 8.0;
+    pub fn md() -> f32 {
+        design::with(|t| t.design.radius.md)
+    }
     /// 10: floating cards and dialogs.
-    pub const LG: f32 = 10.0;
+    pub fn lg() -> f32 {
+        design::with(|t| t.design.radius.lg)
+    }
 }
 
 /// Fixed sizes of controls, rows and window regions (`.width()`, `.height()`, `.max_width()`).
+/// The margin around the inset content panel is [`crate::layout::inset`].
 pub mod size {
+    use crate::design;
+
     /// 28: buttons, icon buttons, segments, menu buttons in the header.
-    pub const CONTROL_SM: f32 = 28.0;
+    pub fn control_sm() -> f32 {
+        design::with(|t| t.design.size.control_sm)
+    }
     /// 32: inputs, property rows.
-    pub const CONTROL: f32 = 32.0;
+    pub fn control() -> f32 {
+        design::with(|t| t.design.size.control)
+    }
     /// 36: quick entry, the primary button in a dialog.
-    pub const CONTROL_LG: f32 = 36.0;
+    pub fn control_lg() -> f32 {
+        design::with(|t| t.design.size.control_lg)
+    }
     /// 40: a list row (tasks).
-    pub const ROW: f32 = 40.0;
-    /// 52: a list row on two lines (title over a `META` line, as the inbox shows in narrow
-    /// windows). `BODY` (20) and `META` (16) need 36; in [`ROW`] that leaves 2 above and below,
+    pub fn row() -> f32 {
+        design::with(|t| t.design.size.row)
+    }
+    /// 52: a list row on two lines (title over a `meta` line, as the inbox shows in narrow
+    /// windows). `body` (20) and `meta` (16) need 36; in [`row`] that leaves 2 above and below,
     /// which reads cramped – 52 gives them the 8 of a one-line row.
-    pub const ROW_TWO: f32 = 52.0;
+    pub fn row_two() -> f32 {
+        design::with(|t| t.design.size.row_two)
+    }
+    /// 88: a mail entry's row in the inbox (task E3.9) – a 32 avatar beside three lines of 20
+    /// (sender with domain and time, subject, preview), with about 12 above and below, so a list of
+    /// mail reads at a glance instead of as one dense block.
+    pub fn row_message() -> f32 {
+        design::with(|t| t.design.size.row_message)
+    }
+    /// 64: any other entry's row in the inbox (task E3.9) – the source's 28 icon beside two lines of
+    /// 20 (title and time, then the text or "project · branch"), with the same 12 above and below
+    /// as [`row_message`].
+    pub fn row_notice() -> f32 {
+        design::with(|t| t.design.size.row_notice)
+    }
     /// 28: a sidebar row (menu rows are 30, set by the menu building block).
-    pub const ROW_SIDEBAR: f32 = 28.0;
+    pub fn row_sidebar() -> f32 {
+        design::with(|t| t.design.size.row_sidebar)
+    }
     /// 32: a group head in a list ("Overdue 2").
-    pub const ROW_GROUP: f32 = 32.0;
+    pub fn row_group() -> f32 {
+        design::with(|t| t.design.size.row_group)
+    }
     /// 44: the header bar of the content panel.
-    pub const HEADER: f32 = 44.0;
+    pub fn header() -> f32 {
+        design::with(|t| t.design.size.header)
+    }
     /// 232: the sidebar.
-    pub const SIDEBAR: f32 = 232.0;
+    pub fn sidebar() -> f32 {
+        design::with(|t| t.design.size.sidebar)
+    }
     /// 300: the properties column on the right.
-    pub const PROPS: f32 = 300.0;
+    pub fn props() -> f32 {
+        design::with(|t| t.design.size.props)
+    }
     /// 400: the side panel with the details of an event or a task ([`crate::panel`]), beside the
     /// content in the wide layout and over it in the medium one.
-    pub const PANEL: f32 = 400.0;
+    pub fn panel() -> f32 {
+        design::with(|t| t.design.size.panel)
+    }
     /// 460: the list next to the detail in the wide layout.
-    pub const LIST: f32 = 460.0;
+    pub fn list() -> f32 {
+        design::with(|t| t.design.size.list)
+    }
     /// 380: the list next to the detail in the medium layout.
-    pub const LIST_MEDIUM: f32 = 380.0;
+    pub fn list_medium() -> f32 {
+        design::with(|t| t.design.size.list_medium)
+    }
     /// 48: one hour in the calendar's day and week grid.
-    pub const HOUR: f32 = 48.0;
+    pub fn hour() -> f32 {
+        design::with(|t| t.design.size.hour)
+    }
     /// 52: the time axis of the calendar grid.
-    pub const AXIS: f32 = 52.0;
+    pub fn axis() -> f32 {
+        design::with(|t| t.design.size.axis)
+    }
     /// 44: the time axis in the narrow layout.
-    pub const AXIS_NARROW: f32 = 44.0;
-    /// 8: the margin around the inset content panel (top, right, bottom).
-    pub const INSET: f32 = 8.0;
+    pub fn axis_narrow() -> f32 {
+        design::with(|t| t.design.size.axis_narrow)
+    }
     /// 720: reading width of lists and pages without a detail beside them.
-    pub const CONTENT_MAX: f32 = 720.0;
+    pub fn content_max() -> f32 {
+        design::with(|t| t.design.size.content_max)
+    }
     /// 640: reading width of forms.
-    pub const FORM_MAX: f32 = 640.0;
+    pub fn form_max() -> f32 {
+        design::with(|t| t.design.size.form_max)
+    }
     /// 1: a line – separators, grid lines, borders – and a gap as wide as one (keeping labels
-    /// above the columns of a grid). Always one logical pixel, also on HiDPI screens.
+    /// above the columns of a grid). Always one logical pixel, also on HiDPI screens; not part of a
+    /// design pack, so it stays a constant.
     pub const HAIRLINE: f32 = 1.0;
 }
 
@@ -482,18 +544,18 @@ mod tests {
 
     #[test]
     fn dark_text_is_readable_on_every_surface() {
-        assert_text_contrast("dark", Palette::dark(), [14.4, 8.4, 5.1]);
+        assert_text_contrast("dark", &Palette::dark(), [14.4, 8.4, 5.1]);
     }
 
     #[test]
     fn light_text_is_readable_on_every_surface() {
-        assert_text_contrast("light", Palette::light(), [14.6, 6.4, 4.8]);
+        assert_text_contrast("light", &Palette::light(), [14.6, 6.4, 4.8]);
     }
 
     #[test]
     fn error_text_is_readable_on_every_surface() {
         for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
-            let (ratio, surface) = worst(p, p.error_text);
+            let (ratio, surface) = worst(&p, p.error_text);
             assert!(ratio >= 4.5, "{mode}: error_text on {surface} is {ratio:.2}:1");
         }
         assert_eq!(Palette::dark().error_text, Palette::dark().error, "dark mode keeps the status colour");
@@ -502,7 +564,7 @@ mod tests {
     #[test]
     fn attention_text_is_readable_on_every_surface() {
         for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
-            let (ratio, surface) = worst(p, p.attention_text);
+            let (ratio, surface) = worst(&p, p.attention_text);
             assert!(ratio >= 4.5, "{mode}: attention_text on {surface} is {ratio:.2}:1");
         }
         assert_eq!(Palette::dark().attention_text, Palette::dark().attention, "dark mode keeps the status colour");
@@ -512,7 +574,7 @@ mod tests {
     fn merged_stands_out_on_every_surface() {
         // A graphic next to a word (WCAG: 3:1), like the list colours.
         for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
-            let (ratio, surface) = worst(p, p.merged);
+            let (ratio, surface) = worst(&p, p.merged);
             assert!(ratio >= 3.0, "{mode}: merged on {surface} is {ratio:.2}:1");
         }
         assert_eq!(Palette::dark().merged.into_rgba8(), [0xA7, 0x8B, 0xFA, 0xFF]);
@@ -638,15 +700,18 @@ mod tests {
     #[test]
     fn tokens_are_on_the_scale() {
         assert_eq!(
-            [space::XS, space::S, space::M, space::L, space::XL, space::XXL],
+            [space::xs(), space::s(), space::m(), space::l(), space::xl(), space::xxl()],
             [4.0, 8.0, 12.0, 16.0, 24.0, 32.0]
         );
-        assert_eq!([radius::XS, radius::SM, radius::MD, radius::LG], [4.0, 6.0, 8.0, 10.0]);
-        assert_eq!([size::CONTROL_SM, size::CONTROL, size::CONTROL_LG, size::ROW], [28.0, 32.0, 36.0, 40.0]);
-        assert_eq!([size::HEADER, size::SIDEBAR, size::PROPS, size::INSET], [44.0, 232.0, 300.0, 8.0]);
-        assert_eq!([size::LIST, size::LIST_MEDIUM, size::CONTENT_MAX, size::FORM_MAX], [460.0, 380.0, 720.0, 640.0]);
-        assert_eq!([size::HOUR, size::AXIS, size::AXIS_NARROW], [48.0, 52.0, 44.0]);
-        assert_eq!([size::ROW_SIDEBAR, size::ROW_GROUP, size::HAIRLINE], [28.0, 32.0, 1.0]);
+        assert_eq!([radius::xs(), radius::sm(), radius::md(), radius::lg()], [4.0, 6.0, 8.0, 10.0]);
+        assert_eq!([size::control_sm(), size::control(), size::control_lg(), size::row()], [28.0, 32.0, 36.0, 40.0]);
+        assert_eq!([size::header(), size::sidebar(), size::props()], [44.0, 232.0, 300.0]);
+        assert_eq!(
+            [size::list(), size::list_medium(), size::content_max(), size::form_max()],
+            [460.0, 380.0, 720.0, 640.0]
+        );
+        assert_eq!([size::hour(), size::axis(), size::axis_narrow()], [48.0, 52.0, 44.0]);
+        assert_eq!([size::row_sidebar(), size::row_group(), size::HAIRLINE], [28.0, 32.0, 1.0]);
     }
 
     #[test]

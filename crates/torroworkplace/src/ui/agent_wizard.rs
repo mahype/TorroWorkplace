@@ -45,7 +45,7 @@ use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, size, space};
-use torro_gui::{dialog, style, typo, widgets};
+use torro_gui::{dialog, layout, style, typo, widgets};
 use torro_inbox::AgentKind;
 #[cfg(doc)]
 use torro_ipc::api::Outbound;
@@ -366,15 +366,15 @@ fn setup(state: &mut State, outcome: Outcome) -> Action {
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let header = column![
-        typo::text(typo::TITLE, tr("Connect agent")),
-        typo::text(typo::BODY, subtitle(state)).style(theme::text_2)
+        typo::text(typo::title(), tr("Connect agent")),
+        typo::text(typo::body(), subtitle(state)).style(theme::text_2)
     ]
-    .spacing(space::XS);
+    .spacing(space::xs());
     let body = match state.step {
         Step::Client => client_step(state),
         Step::Rights => rights_step(state, data),
         Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks => {
-            typo::text(typo::BODY, trf("Connecting {name} …", &[("name", &chosen_name(state))]))
+            typo::text(typo::body(), trf("Connecting {name} …", &[("name", &chosen_name(state))]))
                 .style(theme::text_2)
                 .into()
         }
@@ -382,7 +382,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::Key => key_step(state),
     };
     // Head and foot stay in the window; the steps scroll between them when it is low (D.12).
-    dialog::frame(header, body, footer(state, data), space::XL)
+    dialog::frame(header, body, footer(state, data), space::xl())
 }
 
 /// "Claude Code", or the script's name.
@@ -412,7 +412,7 @@ fn subtitle(state: &State) -> String {
 /// The clients: found ones to press, "Script", and the others faded with "Not found".
 fn client_step(state: &State) -> Element<'_, Message> {
     let Some(found) = &state.found else {
-        return typo::text(typo::BODY, tr("Looking for agents on this computer …")).style(theme::text_2).into();
+        return typo::text(typo::body(), tr("Looking for agents on this computer …")).style(theme::text_2).into();
     };
     let mut rows: Vec<Element<'_, Message>> = found
         .iter()
@@ -442,23 +442,23 @@ fn found_detail(found: &Found) -> String {
 /// as high as the rows of the clients that were found.
 fn missing_row(target: Target) -> Element<'static, Message> {
     let faded = |colour: fn(&Palette) -> Color| {
-        move |t: &Theme| text::Style { color: Some(colour(palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
+        move |t: &Theme| text::Style { color: Some(colour(&palette(t)).scale_alpha(style::DISABLED_ALPHA)) }
     };
-    let name = one_line(typo::text(typo::BODY, target.label()).style(faded(|p| p.text)));
+    let name = one_line(typo::text(typo::body(), target.label()).style(faded(|p| p.text)));
     row_frame(
-        row![name, widgets::pill_disabled(None, tr("Not found"))].spacing(space::L).align_y(Alignment::Center),
+        row![name, widgets::pill_disabled(None, tr("Not found"))].spacing(space::l()).align_y(Alignment::Center),
         true,
     )
 }
 
 /// A script's name, and the three templates with a check at the chosen one.
 fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
-    let mut page = column![].spacing(space::XL);
+    let mut page = column![].spacing(layout::section_gap());
     if state.choice == Some(Choice::Script) {
         let field = text_input("nightly-backup", &state.name)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
-            .font(typo::BODY.font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
             .padding(style::INPUT_PADDING)
             .width(Fill)
             .style(style::text_input)
@@ -571,14 +571,14 @@ fn done_step(state: &State) -> Element<'_, Message> {
     }
     let undo = tr("To undo, choose Disconnect on its page.");
     if rows.is_empty() {
-        return typo::text(typo::BODY, undo).style(theme::text_2).into();
+        return typo::text(typo::body(), undo).style(theme::text_2).into();
     }
     widgets::group(tr("Configuration"), rows, Some(undo.to_string()))
 }
 
 /// A status icon in front of a row: 16, in the colour `colour` picks from the palette.
 fn status_mark<'a>(which: Icon, colour: fn(&Palette) -> Color) -> Element<'a, Message> {
-    icon::icon(which, icon::SIZE).style(move |t: &Theme, _| svg::Style { color: Some(colour(palette(t))) }).into()
+    icon::icon(which, icon::SIZE).style(move |t: &Theme, _| svg::Style { color: Some(colour(&palette(t))) }).into()
 }
 
 /// A row of a settings group in the dialog, with the metrics of `setting_row` (16 at the sides,
@@ -593,13 +593,13 @@ fn wrap_row<'a>(
     control: impl Into<Element<'a, Message>>,
 ) -> Element<'a, Message> {
     let padding = row_padding(detail.is_some());
-    let mut lines = column![typo::text(typo::BODY, label)];
+    let mut lines = column![typo::text(typo::body(), label)];
     if let Some(detail) = detail {
-        lines = lines.push(typo::text(typo::META, detail).style(theme::text_2));
+        lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2));
     }
-    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::M).align_y(Alignment::Center);
-    let content = row![text.width(Fill), control.into()].spacing(space::L).align_y(Alignment::Center);
-    container(content).width(Fill).padding([padding, space::L]).into()
+    let text = row![].push(mark).push(lines.width(Fill)).spacing(space::m()).align_y(Alignment::Center);
+    let content = row![text.width(Fill), control.into()].spacing(space::l()).align_y(Alignment::Center);
+    container(content).width(Fill).padding([padding, space::l()]).into()
 }
 
 /// The padding above and below a [`wrap_row`]: what makes it 44 high with one line of text and 56
@@ -607,27 +607,27 @@ fn wrap_row<'a>(
 fn row_padding(detail: bool) -> f32 {
     let line = |level: typo::Level| level.line_height.to_absolute(level.size).0;
     match detail {
-        true => (size::HEADER + space::M - line(typo::BODY) - line(typo::META)) / 2.0,
-        false => (size::HEADER - line(typo::BODY)) / 2.0,
+        true => (size::header() + space::m() - line(typo::body()) - line(typo::meta())) / 2.0,
+        false => (size::header() - line(typo::body())) / 2.0,
     }
 }
 
 /// The key this once: why it is shown, the key in a field to select, and "Copy".
 fn key_step(state: &State) -> Element<'_, Message> {
-    let mut body = column![].spacing(space::L);
+    let mut body = column![].spacing(space::l());
     if let Some(error) = &state.error {
         let problem = trf("The configuration could not be written: {error}", &[("error", error)]);
         body = body.push(
-            typo::text(typo::BODY, problem).style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
+            typo::text(typo::body(), problem).style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
         );
         body = body.push(
-            typo::text(typo::BODY, tr("Put this key into its configuration yourself. It is shown only this once."))
+            typo::text(typo::body(), tr("Put this key into its configuration yourself. It is shown only this once."))
                 .style(theme::text_2),
         );
     } else {
         body = body.push(
             typo::text(
-                typo::BODY,
+                typo::body(),
                 trf(
                     "Pass it to your program as {variable}. It is shown only this once; Torro Workplace keeps only a fingerprint of it.",
                     &[("variable", &TOKEN_VARIABLE)],
@@ -639,9 +639,9 @@ fn key_step(state: &State) -> Element<'_, Message> {
     let key = state.key.as_ref().map_or("", IssuedKey::expose);
     // Tabular figures: a key is read and compared character by character.
     let field = text_input("", key)
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
-        .font(typo::BODY.tabular().font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().tabular().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
@@ -651,13 +651,13 @@ fn key_step(state: &State) -> Element<'_, Message> {
         true => widgets::text_button(Some(Icon::Check), tr("Copied"), style::button::secondary, Some(Message::CopyKey)),
         false => widgets::text_button(Some(Icon::Copy), tr("Copy"), style::button::secondary, Some(Message::CopyKey)),
     };
-    body.push(row![field, copy].spacing(space::S).align_y(Alignment::Center)).into()
+    body.push(row![field, copy].spacing(space::s()).align_y(Alignment::Center)).into()
 }
 
 /// The error left (on the rights step), "Back", "Cancel" and the step's primary button right.
 fn footer<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let error: Element<'a, Message> = match (&state.error, state.step) {
-        (Some(error), Step::Rights) => typo::text(typo::BODY, error.as_str())
+        (Some(error), Step::Rights) => typo::text(typo::body(), error.as_str())
             .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) })
             .width(Fill)
             .into(),
@@ -677,7 +677,7 @@ fn footer<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         (Step::Done | Step::Key, _) => primary(tr("Done"), Some(Message::Close)),
         (Step::Client | Step::Creating | Step::Writing | Step::CreatingHooks | Step::WritingHooks, _) => None,
     };
-    row![error].push(back).push(cancel).push(next).spacing(space::S).align_y(Alignment::Center).into()
+    row![error].push(back).push(cancel).push(next).spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 #[cfg(test)]

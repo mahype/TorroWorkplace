@@ -55,7 +55,7 @@ use iced::widget::{Column, Space, button, column, container, operation, row, rul
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::layout::SizeClass;
+use torro_gui::layout::{self, SizeClass};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::widgets::{self, Mark, collection_color};
@@ -76,18 +76,23 @@ const TICK: Duration = Duration::from_millis(100);
 /// How many of the first matches the preview lists.
 const PREVIEW_ROWS: usize = 5;
 /// The dialog is at most as high as it is wide plus its head and foot.
-const MAX_HEIGHT: f32 = size::FORM_MAX + 2.0 * size::HEADER;
+fn max_height() -> f32 {
+    size::form_max() + 2.0 * size::header()
+}
 /// Width of the lines between head, form, preview and foot.
 const LINE: f32 = size::HAIRLINE;
 /// The dialog with the preview beside the form: the form at its reading width, the preview column.
-const WIDTH: f32 = size::FORM_MAX + size::PROPS;
+fn width() -> f32 {
+    size::form_max() + size::props()
+}
 /// The search of a new list until a template or the form changes it: open issues.
 const NEW_SEARCH: &str = "is:open is:issue";
 /// How many repositories the open list of the repository field shows; typing finds the others.
 const REPO_ROWS: usize = 8;
 /// Widths of the quiet chip-shaped placeholders while the labels of a repository load.
-const PLACEHOLDERS: [f32; 4] =
-    [size::CONTROL * 2.0, size::CONTROL_LG * 2.0, size::CONTROL * 3.0, size::CONTROL_LG * 2.5];
+fn placeholder_widths() -> [f32; 4] {
+    [size::control() * 2.0, size::control_lg() * 2.0, size::control() * 3.0, size::control_lg() * 2.5]
+}
 
 /// Id of the name field: focused when a new list opens and when the name is missing on save.
 pub const NAME_INPUT: &str = "filter-name";
@@ -1397,44 +1402,44 @@ impl Editor {
 
     // --- view ---
 
-    /// Over the window: the card on the dialog surface, [`WIDTH`] wide with the preview as a
-    /// column at the right where the window has room for it, else at most [`size::FORM_MAX`] with
+    /// Over the window: the card on the dialog surface, [`width()`] wide with the preview as a
+    /// column at the right where the window has room for it, else at most [`size::form_max()`] with
     /// the preview under the form; at most [`dialog_height`] high, the form scrolling.
     fn dialog(&self, window: Size) -> Element<'_, Message> {
-        let beside = window.width >= WIDTH + 2.0 * space::L;
+        let beside = window.width >= width() + 2.0 * space::l();
         let back = (self.back && !self.saving).then_some(Message::Back);
-        let mut head = row![].spacing(space::XS).align_y(Alignment::Center).padding(space::M);
+        let mut head = row![].spacing(space::xs()).align_y(Alignment::Center).padding(space::m());
         if self.back {
             head = head.push(widgets::icon_button(Icon::ChevronLeft, tr("Back"), back));
         }
         let head = head
-            .push(container(typo::text(typo::TITLE, self.title())).padding([0.0, space::S]).width(Fill))
+            .push(container(typo::text(typo::title(), self.title())).padding([0.0, space::s()]).width(Fill))
             .push(widgets::icon_button(Icon::X, tr("Close"), Some(Message::Cancel)));
         let middle: Element<'_, Message> = if beside {
             row![
-                self.scrolled(space::XL, false, None),
+                self.scrolled(space::xl(), false, None),
                 rule::vertical(LINE).style(style::rule),
-                container(self.preview_view(size::PROPS - 2.0 * space::L, true))
-                    .width(size::PROPS)
+                container(self.preview_view(size::props() - 2.0 * space::l(), true))
+                    .width(size::props())
                     .height(Fill)
-                    .padding(space::L)
+                    .padding(space::l())
                     .style(raised),
             ]
             .height(Fill)
             .into()
         } else {
-            let room = (window.width - 2.0 * space::L).min(size::FORM_MAX) - 2.0 * space::XL;
-            self.scrolled(space::XL, false, Some(room))
+            let room = (window.width - 2.0 * space::l()).min(size::form_max()) - 2.0 * space::xl();
+            self.scrolled(space::xl(), false, Some(room))
         };
         let card = column![
             head,
             rule::horizontal(LINE).style(style::rule),
             middle,
             rule::horizontal(LINE).style(style::rule),
-            container(self.footer(!beside)).padding([space::L, space::XL]),
+            container(self.footer(!beside)).padding([space::l(), space::xl()]),
         ];
         let card = container(card).width(Fill).height(dialog_height(window.height)).style(style::container::popover);
-        let width = if beside { WIDTH } else { size::FORM_MAX };
+        let width = if beside { width() } else { size::form_max() };
         widgets::modal(Space::new().width(Fill).height(Fill), card, width, Message::Backdrop)
     }
 
@@ -1449,13 +1454,13 @@ impl Editor {
         } else {
             torro_gui::shell::header_bar([close], torro_gui::shell::header_title(None, self.title(), None), [])
         };
-        let head = container(head).center_y(size::HEADER).padding([0.0, space::S]);
+        let head = container(head).center_y(size::header()).padding([0.0, space::s()]);
         let view = column![
             head,
             rule::horizontal(LINE).style(style::rule),
-            self.scrolled(space::L, true, Some(width - 2.0 * space::L)),
+            self.scrolled(space::l(), true, Some(width - 2.0 * space::l())),
             rule::horizontal(LINE).style(style::rule),
-            container(self.footer(true)).padding([space::M, space::L]),
+            container(self.footer(true)).padding([space::m(), space::l()]),
         ];
         container(view).width(Fill).height(Fill).style(style::container::panel_flush).into()
     }
@@ -1463,7 +1468,7 @@ impl Editor {
     /// The form, scrolling, with `inset` around it; the preview under it when `preview` gives the
     /// width of the form (the preview is not beside it).
     fn scrolled(&self, inset: f32, narrow: bool, preview: Option<f32>) -> Element<'_, Message> {
-        let mut body = column![self.body(narrow)].spacing(space::XL);
+        let mut body = column![self.body(narrow)].spacing(layout::section_gap());
         if let Some(width) = preview {
             body = body.push(rule::horizontal(LINE).style(style::rule)).push(self.preview_view(width, false));
         }
@@ -1505,12 +1510,12 @@ impl Editor {
         }
         parts.push(rule::horizontal(LINE).style(style::rule).into());
         if narrow {
-            parts.push(column![self.name_field(), self.colors()].spacing(space::L).into());
+            parts.push(column![self.name_field(), self.colors()].spacing(space::l()).into());
         } else {
-            parts.push(row![self.name_field(), self.colors()].spacing(space::L).align_y(Alignment::Start).into());
+            parts.push(row![self.name_field(), self.colors()].spacing(space::l()).align_y(Alignment::Start).into());
         }
         parts.push(self.search_view());
-        column(parts).spacing(space::XL).into()
+        column(parts).spacing(layout::section_gap()).into()
     }
 
     fn notice_view(&self) -> Option<Element<'_, Message>> {
@@ -1526,10 +1531,10 @@ impl Editor {
                     .into(),
             ),
         };
-        let line = row![list::toned(which, icon::SIZE, tone), typo::text(typo::BODY, text).style(theme::text_2)]
-            .spacing(space::S)
+        let line = row![list::toned(which, icon::SIZE, tone), typo::text(typo::body(), text).style(theme::text_2)]
+            .spacing(space::s())
             .align_y(Alignment::Start);
-        Some(container(line).padding(space::M).width(Fill).style(style::container::group).into())
+        Some(container(line).padding(space::m()).width(Fill).style(style::container::group).into())
     }
 
     /// "Repository": the field that opens the list of repositories, what it is for, the list when
@@ -1537,10 +1542,10 @@ impl Editor {
     fn repo_view(&self) -> Element<'_, Message> {
         let (label, quiet, several) = self.repo_label();
         let repo = self.single_repo();
-        let name = typo::text(if quiet { typo::BODY } else { typo::BODY_STRONG }, label).wrapping(Wrapping::None);
+        let name = typo::text(if quiet { typo::body() } else { typo::body_strong() }, label).wrapping(Wrapping::None);
         let name = if quiet { name.style(theme::text_3) } else { name };
         let mut content = row![list::toned(Icon::Github, icon::SIZE_SM, Tone::Text3), name]
-            .spacing(space::S)
+            .spacing(space::s())
             .align_y(Alignment::Center);
         let last = repo.as_ref().zip(self.last_repo.as_ref()).is_some_and(|(a, b)| a.eq_ignore_ascii_case(b));
         if last && !several {
@@ -1550,7 +1555,7 @@ impl Editor {
         content = content.push(Space::new().width(Fill)).push(list::toned(chevron, icon::SIZE_SM, Tone::Text3));
         let field = button(container(content).center_y(Fill).clip(true))
             .width(Fill)
-            .height(size::CONTROL)
+            .height(size::control())
             .padding(style::ITEM_PADDING)
             .style(style::button::secondary)
             .on_press(Message::TogglePicker);
@@ -1562,14 +1567,14 @@ impl Editor {
         } else {
             parts.push(
                 typo::text(
-                    typo::META,
+                    typo::meta(),
                     tr("Repositories your GitHub account can reach. Labels, milestones and people below come from here."),
                 )
                 .style(theme::text_2)
                 .into(),
             );
         }
-        labelled(tr("Repository"), column(parts).spacing(space::XS), None).into()
+        labelled(tr("Repository"), column(parts).spacing(space::xs()), None).into()
     }
 
     /// What the repository field says, whether quietly (nothing chosen), and whether the list
@@ -1599,9 +1604,9 @@ impl Editor {
             .on_submit(Message::PickFound);
         let mut rows: Vec<Element<'_, Message>> = vec![find.into()];
         match &self.repos {
-            Load::Loading => rows.push(container(quiet(tr("Loading repositories…"))).padding(space::S).into()),
+            Load::Loading => rows.push(container(quiet(tr("Loading repositories…"))).padding(space::s()).into()),
             Load::Failed(reason) => {
-                rows.push(container(retry(reason.as_str(), Message::RetryRepos)).padding(space::S).into())
+                rows.push(container(retry(reason.as_str(), Message::RetryRepos)).padding(space::s()).into())
             }
             Load::Ready(_) => {
                 let found = self.found();
@@ -1611,14 +1616,16 @@ impl Editor {
                     rows.push(self.repo_row(repo, on));
                 }
                 if found.is_empty() {
-                    rows.push(container(quiet(tr("No repository matches."))).padding(space::S).into());
+                    rows.push(container(quiet(tr("No repository matches."))).padding(space::s()).into());
                 } else if found.len() > REPO_ROWS {
                     let more = trf("{n} more. Type to narrow the list.", &[("n", &(found.len() - REPO_ROWS))]);
-                    rows.push(container(typo::text(typo::META, more).style(theme::text_3)).padding(space::S).into());
+                    rows.push(
+                        container(typo::text(typo::meta(), more).style(theme::text_3)).padding(space::s()).into(),
+                    );
                 }
             }
         }
-        container(column(rows).spacing(space::XS))
+        container(column(rows).spacing(space::xs()))
             .padding(style::MENU_INSET)
             .width(Fill)
             .style(style::container::menu)
@@ -1634,15 +1641,15 @@ impl Editor {
         };
         let mut content = row![
             check,
-            container(typo::text(typo::BODY, repo.repo.as_str()).wrapping(Wrapping::None)).width(Fill).clip(true)
+            container(typo::text(typo::body(), repo.repo.as_str()).wrapping(Wrapping::None)).width(Fill).clip(true)
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
         if self.last_repo.as_deref().is_some_and(|last| last.eq_ignore_ascii_case(&repo.repo)) {
-            content = content.push(typo::text(typo::META, tr("Last used")).style(theme::text_3));
+            content = content.push(typo::text(typo::meta(), tr("Last used")).style(theme::text_3));
         }
         if repo.private {
-            content = content.push(typo::text(typo::META, tr("Private")).style(theme::text_3));
+            content = content.push(typo::text(typo::meta(), tr("Private")).style(theme::text_3));
         }
         button(container(content).center_y(Fill))
             .width(Fill)
@@ -1678,7 +1685,11 @@ impl Editor {
         let state_at = states.iter().position(|(_, s)| *s == state).unwrap_or_default();
         let state = widgets::segmented(states.map(|(label, s)| (label, Message::State(s))), state_at);
         let (kind, state) = (labelled(tr("Show"), kind, None), labelled(tr("State"), state, None));
-        if narrow { column![kind, state].spacing(space::L).into() } else { row![kind, state].spacing(space::XL).into() }
+        if narrow {
+            column![kind, state].spacing(space::l()).into()
+        } else {
+            row![kind, state].spacing(space::xl()).into()
+        }
     }
 
     /// The label chips of one side ([`Field::Labels`] or [`Field::WithoutLabels`]): the
@@ -1713,17 +1724,17 @@ impl Editor {
             parts.push(widgets::chip_row(chips));
         }
         parts.extend(below);
-        column(parts).spacing(space::S).into()
+        column(parts).spacing(space::s()).into()
     }
 
     /// "Labels": the chips and, where there are chips, what they mean together.
     fn labels_view(&self) -> Element<'_, Message> {
-        let mut content = column![self.label_chips(Field::Labels)].spacing(space::S);
+        let mut content = column![self.label_chips(Field::Labels)].spacing(space::s());
         let chips =
             !field_values(self.query(), Field::Labels).is_empty() || matches!(self.details(), Some(Load::Ready(_)));
         if chips {
             content = content
-                .push(typo::text(typo::META, tr("Shows items that have all selected labels.")).style(theme::text_2));
+                .push(typo::text(typo::meta(), tr("Shows items that have all selected labels.")).style(theme::text_2));
         }
         labelled(Field::Labels.label(), content, None).into()
     }
@@ -1794,10 +1805,10 @@ impl Editor {
             set.push(Field::WithoutLabels.label());
         }
         let mut head = row![disclosure(tr("More filters"), self.more, Message::ToggleMore)]
-            .spacing(space::XS)
+            .spacing(space::xs())
             .align_y(Alignment::Center);
         if !set.is_empty() {
-            head = head.push(typo::text(typo::META, format!("· {}", set.join(", "))).style(theme::text_3));
+            head = head.push(typo::text(typo::meta(), format!("· {}", set.join(", "))).style(theme::text_3));
         }
         if !self.more {
             return head.into();
@@ -1812,14 +1823,14 @@ impl Editor {
             self.person_segments(Field::Mentions),
         ];
         let people: Element<'_, Message> =
-            if narrow { column(people).spacing(space::L).into() } else { row(people).spacing(space::XL).into() };
+            if narrow { column(people).spacing(space::l()).into() } else { row(people).spacing(space::xl()).into() };
         let content = column![
             people,
             labelled(tr("Sort"), sort, None),
             labelled(Field::WithoutLabels.label(), self.label_chips(Field::WithoutLabels), None),
         ]
-        .spacing(space::L);
-        column![head, container(content).padding(Padding::ZERO.left(space::XL))].spacing(space::M).into()
+        .spacing(space::l());
+        column![head, container(content).padding(Padding::ZERO.left(space::xl()))].spacing(space::m()).into()
     }
 
     /// Anyone / Me (and a login of the search) as segments for `field`.
@@ -1844,7 +1855,7 @@ impl Editor {
         let mut parts = labelled(tr("Name"), input, self.name_problem());
         if !self.named {
             parts = parts.push(
-                typo::text(typo::META, tr("Suggested from your filters. Type to change it.")).style(theme::text_3),
+                typo::text(typo::meta(), tr("Suggested from your filters. Type to change it.")).style(theme::text_3),
             );
         }
         parts.width(Fill).into()
@@ -1882,7 +1893,7 @@ impl Editor {
         parts.push(labelled(tr("Search"), query, self.query_problem()).into());
         parts.push(
             typo::text(
-                typo::META,
+                typo::meta(),
                 tr("The filters above write this search. Edit it by hand, or paste a search or a github.com address to start from it; words the form does not know stay as they are."),
             )
             .style(theme::text_2)
@@ -1890,34 +1901,34 @@ impl Editor {
         );
         let add = (self.searches.len() < MAX_SEARCHES).then_some(Message::AddSearch);
         parts.push(widgets::text_button(Some(Icon::Plus), tr("Add another search"), style::button::ghost, add));
-        let content = container(column(parts).spacing(space::M)).padding(Padding::ZERO.left(space::XL));
-        column![head, content].spacing(space::M).into()
+        let content = container(column(parts).spacing(space::m())).padding(Padding::ZERO.left(space::xl()));
+        column![head, content].spacing(space::m()).into()
     }
 
     /// One row per search, the one being edited marked; "✕" removes one.
     fn search_rows(&self) -> Element<'_, Message> {
         let rows = self.searches.iter().enumerate().map(|(index, query)| {
             let label: Element<'_, Message> = if query.is_empty() {
-                typo::text(typo::BODY, tr("Empty search")).style(theme::text_3).wrapping(Wrapping::None).into()
+                typo::text(typo::body(), tr("Empty search")).style(theme::text_3).wrapping(Wrapping::None).into()
             } else {
-                typo::text(typo::BODY, query.as_str()).wrapping(Wrapping::None).into()
+                typo::text(typo::body(), query.as_str()).wrapping(Wrapping::None).into()
             };
             let pick = button(container(label).center_y(Fill).clip(true))
                 .width(Fill)
-                .height(size::CONTROL)
+                .height(size::control())
                 .padding(style::ITEM_PADDING)
                 .style(style::button::list_row(index == self.current))
                 .on_press(Message::Select(index));
             row![pick, widgets::icon_button(Icon::X, tr("Remove search"), Some(Message::RemoveSearch(index)))]
-                .spacing(space::XS)
+                .spacing(space::xs())
                 .align_y(Alignment::Center)
                 .into()
         });
         column![
-            column(rows).spacing(space::XS),
-            typo::text(typo::META, tr("The list shows what any of these searches finds.")).style(theme::text_2),
+            column(rows).spacing(space::xs()),
+            typo::text(typo::meta(), tr("The list shows what any of these searches finds.")).style(theme::text_2),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .into()
     }
 
@@ -1925,12 +1936,12 @@ impl Editor {
     /// column `width` wide – in the narrow column beside the form (`beside`) with the title over
     /// `repo#123`, else on one line each –, the empty state with advice, or what went wrong.
     fn preview_view(&self, width: f32, beside: bool) -> Element<'_, Message> {
-        let mut head = row![typo::text(typo::CAPTION, tr("Preview")).style(theme::text_3).width(Fill)]
-            .spacing(space::XS)
+        let mut head = row![typo::text(typo::caption(), tr("Preview")).style(theme::text_3).width(Fill)]
+            .spacing(space::xs())
             .align_y(Alignment::Center);
         if self.loading {
             head = head.push(list::toned(Icon::RefreshCw, icon::SIZE_SM, Tone::Text3));
-            head = head.push(typo::text(typo::META, tr("Checking…")).style(theme::text_3));
+            head = head.push(typo::text(typo::meta(), tr("Checking…")).style(theme::text_3));
         }
         let mut parts: Vec<Element<'_, Message>> = vec![head.into()];
         match &self.preview {
@@ -1938,21 +1949,21 @@ impl Editor {
             None => parts.push(quiet(tr("The first matches show here once there is a search."))),
             Some(Err(reason)) => parts.push(hint(Icon::CircleAlert, reason.clone())),
             Some(Ok(preview)) => {
-                parts.push(typo::text(typo::HEADLINE.tabular(), matches_text(preview.matches)).into());
+                parts.push(typo::text(typo::headline().tabular(), matches_text(preview.matches)).into());
                 if preview.truncated {
                     parts.push(quiet_meta(tr("The list shows the first 1,000.")));
                 }
                 if preview.todos.is_empty() {
                     parts.push(
                         column![
-                            typo::text(typo::BODY, tr("Nothing matches.")).style(theme::text_2),
+                            typo::text(typo::body(), tr("Nothing matches.")).style(theme::text_2),
                             typo::text(
-                                typo::META,
+                                typo::meta(),
                                 tr("Try fewer labels or another state. The list can still be created; it fills when something matches."),
                             )
                             .style(theme::text_3),
                         ]
-                        .spacing(space::XS)
+                        .spacing(space::xs())
                         .into(),
                     );
                 } else {
@@ -1962,14 +1973,14 @@ impl Editor {
                     } else {
                         first.map(|todo| match_row(todo, width)).collect()
                     };
-                    let spacing = if beside { space::M } else { space::XS };
+                    let spacing = if beside { space::m() } else { space::xs() };
                     parts.push(column(rows).spacing(spacing).into());
                 }
             }
         }
         parts.push(Space::new().height(Fill).into());
         parts.push(quiet_meta(tr("Updates as you choose. Pinned issues can be added later.")));
-        column(parts).spacing(space::M).into()
+        column(parts).spacing(space::m()).into()
     }
 
     /// "Cancel" and the one primary button ("Create list" / "Save", "Creating…" / "Saving…" while
@@ -1980,13 +1991,13 @@ impl Editor {
             _ if !count => Space::new().into(),
             _ if self.loading && self.preview.is_none() => quiet(tr("Checking…")),
             Some(Ok(preview)) => {
-                typo::text(typo::META.tabular(), matches_text(preview.matches)).style(theme::text_2).into()
+                typo::text(typo::meta().tabular(), matches_text(preview.matches)).style(theme::text_2).into()
             }
             Some(Err(_)) => row![
                 list::toned(Icon::CircleAlert, icon::SIZE_SM, Tone::Attention),
-                typo::text(typo::META, tr("No preview")).style(theme::text_2),
+                typo::text(typo::meta(), tr("No preview")).style(theme::text_2),
             ]
-            .spacing(space::XS)
+            .spacing(space::xs())
             .align_y(Alignment::Center)
             .into(),
             None => Space::new().into(),
@@ -2005,7 +2016,7 @@ impl Editor {
             widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Cancel)),
             save,
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center)
         .into()
     }
@@ -2070,13 +2081,13 @@ impl Delete {
         let consequence =
             trf("“{name}” is removed from Torro Workplace. The issues stay on GitHub.", &[("name", &self.name)]);
         let mut content = column![
-            typo::text(typo::TITLE, tr("Delete this filter list?")),
-            typo::text(typo::BODY, consequence).style(theme::text_2),
+            typo::text(typo::title(), tr("Delete this filter list?")),
+            typo::text(typo::body(), consequence).style(theme::text_2),
         ]
-        .spacing(space::L);
+        .spacing(space::l());
         if let Some(problem) = &self.problem {
             content = content.push(
-                typo::text(typo::BODY, problem.as_str())
+                typo::text(typo::body(), problem.as_str())
                     .style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
             );
         }
@@ -2087,10 +2098,10 @@ impl Delete {
                 widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::Cancel)),
                 widgets::text_button(None, tr("Delete list"), style::button::danger, confirm),
             ]
-            .spacing(space::S)
+            .spacing(space::s())
             .align_y(Alignment::Center),
         );
-        let card = container(content).padding(space::XL).width(Fill).style(style::container::popover);
+        let card = container(content).padding(space::xl()).width(Fill).style(style::container::popover);
         widgets::modal(Space::new().width(Fill).height(Fill), card, widgets::POPOVER_WIDTH, Message::Cancel)
     }
 }
@@ -2102,9 +2113,9 @@ impl Delete {
 /// A text field in the look of the suite: `BODY`, 32 high.
 pub(crate) fn field<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, M> {
     text_input(placeholder, value)
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
-        .font(typo::BODY.font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
@@ -2116,21 +2127,21 @@ pub(crate) fn labelled<'a, M: 'a>(
     control: impl Into<Element<'a, M>>,
     problem: Option<&'a str>,
 ) -> Column<'a, M> {
-    let mut column = column![typo::text(typo::META, label).style(theme::text_2), control.into()].spacing(space::XS);
+    let mut column = column![typo::text(typo::meta(), label).style(theme::text_2), control.into()].spacing(space::xs());
     if let Some(problem) = problem {
         column = column.push(
-            typo::text(typo::META, problem).style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
+            typo::text(typo::meta(), problem).style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }),
         );
     }
     column
 }
 
 /// The height of the dialog in a window `window_height` high: the window less the margin
-/// `widgets::modal` keeps around it, at most [`MAX_HEIGHT`]. A fixed height, not `Fill` with a
+/// `widgets::modal` keeps around it, at most [`max_height()`]. A fixed height, not `Fill` with a
 /// maximum: `modal`'s own frame would take `Fill` from the card and draw its shadow down to the
 /// window's bottom edge.
 fn dialog_height(window_height: f32) -> f32 {
-    (window_height - 2.0 * space::L).clamp(0.0, MAX_HEIGHT)
+    (window_height - 2.0 * space::l()).clamp(0.0, max_height())
 }
 
 /// The five list colours of the suite as `#RRGGBB`, as the core stores them: a new list takes one
@@ -2160,14 +2171,14 @@ pub(crate) fn swatches<'a, M: Clone + 'a>(
             None => ring(collection_color(None)),
         };
         button(container(dot).center(Fill))
-            .width(size::CONTROL)
-            .height(size::CONTROL)
+            .width(size::control())
+            .height(size::control())
             .padding(0)
             .style(style::button::segment(on))
             .on_press(pick(choice))
             .into()
     });
-    row(swatches).spacing(space::XS).into()
+    row(swatches).spacing(space::xs()).into()
 }
 
 /// A ring of `colour` as large as a colour dot of the swatches, drawn like a list's ring.
@@ -2182,18 +2193,18 @@ fn ring<'a, M: 'a>(colour: Color) -> Element<'a, M> {
 
 /// A quiet line in `text_3`.
 fn quiet<'a>(line: &'a str) -> Element<'a, Message> {
-    typo::text(typo::BODY, line).style(theme::text_3).into()
+    typo::text(typo::body(), line).style(theme::text_3).into()
 }
 
 /// A part that opens and closes ("› More filters"): chevron and label in `CAPTION`, on the left
 /// edge of the form like the labels above it, ghost states around it.
 fn disclosure<'a>(label: &'a str, open: bool, toggle: Message) -> Element<'a, Message> {
     let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
-    let content = row![list::toned(chevron, icon::SIZE_SM, Tone::Text3), typo::text(typo::CAPTION, label)]
-        .spacing(space::XS)
+    let content = row![list::toned(chevron, icon::SIZE_SM, Tone::Text3), typo::text(typo::caption(), label)]
+        .spacing(space::xs())
         .align_y(Alignment::Center);
     button(container(content).center_y(Fill))
-        .height(size::CONTROL_SM)
+        .height(size::control_sm())
         .padding(0)
         .style(style::button::ghost)
         .on_press(toggle)
@@ -2202,25 +2213,25 @@ fn disclosure<'a>(label: &'a str, open: bool, toggle: Message) -> Element<'a, Me
 
 /// A quiet small line (`META`, `text_3`).
 fn quiet_meta<'a>(line: &'a str) -> Element<'a, Message> {
-    typo::text(typo::META, line).style(theme::text_3).into()
+    typo::text(typo::meta(), line).style(theme::text_3).into()
 }
 
 /// What could not be read from GitHub, with "Retry" that sends `again`.
 fn retry<'a>(reason: &'a str, again: Message) -> Element<'a, Message> {
     row![
         list::toned(Icon::CircleAlert, icon::SIZE_SM, Tone::Attention),
-        typo::text(typo::META, reason).style(theme::text_2).width(Fill),
+        typo::text(typo::meta(), reason).style(theme::text_2).width(Fill),
         widgets::text_button(None, tr("Retry"), style::button::ghost, Some(again)),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center)
     .into()
 }
 
 /// Quiet chip-shaped placeholders while the labels of a repository load: no text, nothing moves.
 fn placeholders<'a>() -> Element<'a, Message> {
-    let chips = PLACEHOLDERS.map(|width| {
-        container(Space::new()).width(width).height(size::CONTROL_SM).style(style::container::chip).into()
+    let chips = placeholder_widths().map(|width| {
+        container(Space::new()).width(width).height(size::control_sm()).style(style::container::chip).into()
     });
     widgets::chip_row(chips.into())
 }
@@ -2232,8 +2243,8 @@ fn raised(theme: &Theme) -> container::Style {
 
 /// An explaining line with an icon in `text_3` before it.
 fn hint<'a>(which: Icon, line: impl text::IntoFragment<'a>) -> Element<'a, Message> {
-    row![list::toned(which, icon::SIZE, Tone::Text3), typo::text(typo::BODY, line).style(theme::text_2)]
-        .spacing(space::S)
+    row![list::toned(which, icon::SIZE, Tone::Text3), typo::text(typo::body(), line).style(theme::text_2)]
+        .spacing(space::s())
         .align_y(Alignment::Start)
         .into()
 }
@@ -2254,16 +2265,16 @@ fn match_row(todo: &Todo, width: f32) -> Element<'_, Message> {
         .and_then(|link| link.github_ref())
         .map(|(repo, number)| format!("{}#{number}", repo.rsplit('/').next().unwrap_or(repo)))
         .unwrap_or_default();
-    let room = width - icon::SIZE - 2.0 * space::S - typo::text_width(&reference, typo::META);
-    let title = typo::ellipsize(&todo.summary, typo::BODY, room.max(0.0));
+    let room = width - icon::SIZE - 2.0 * space::s() - typo::text_width(&reference, typo::meta());
+    let title = typo::ellipsize(&todo.summary, typo::body(), room.max(0.0));
     row![
         mark,
-        container(typo::text(typo::BODY, title).wrapping(Wrapping::None)).width(Fill).clip(true),
-        typo::text(typo::META.tabular(), reference).style(theme::text_3).wrapping(Wrapping::None),
+        container(typo::text(typo::body(), title).wrapping(Wrapping::None)).width(Fill).clip(true),
+        typo::text(typo::meta().tabular(), reference).style(theme::text_3).wrapping(Wrapping::None),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center)
-    .height(size::CONTROL_SM)
+    .height(size::control_sm())
     .into()
 }
 
@@ -2284,13 +2295,13 @@ fn match_block(todo: &Todo) -> Element<'_, Message> {
         .map(|(repo, number)| format!("{}#{number}", repo.rsplit('/').next().unwrap_or(repo)))
         .unwrap_or_default();
     let text = column![
-        typo::text(typo::BODY, todo.summary.as_str()),
-        typo::text(typo::META.tabular(), reference).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::body(), todo.summary.as_str()),
+        typo::text(typo::meta().tabular(), reference).style(theme::text_3).wrapping(Wrapping::None),
     ]
-    .spacing(space::XS);
+    .spacing(space::xs());
     // The symbol sits on the first line of the title.
-    row![container(mark).center_y(typo::line_height(typo::BODY)), text]
-        .spacing(space::S)
+    row![container(mark).center_y(typo::line_height(typo::body())), text]
+        .spacing(space::s())
         .align_y(Alignment::Start)
         .into()
 }

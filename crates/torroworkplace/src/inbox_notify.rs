@@ -35,6 +35,10 @@
 //!   and `docs/eingang.md` asks for exactly that ("While you were in …"). Its title is shown as
 //!   plain text like every other text here.
 //!
+//! - **Agents name their session** (task E2.6): an entry of a hook whose session has a name pops
+//!   up with that name as summary and the core's own words below it ("Claude Code is waiting for
+//!   you · TorroWorkplace"), so the person knows which job it is ([`session_line`]).
+//!
 //! Titles of foreign sources are `untrusted`: the summary of a popup is plain text by the
 //! notification specification, the body is escaped ([`crate::notify::plain`]) so it never becomes
 //! markup or a link, as for approvals (task A.3b).
@@ -82,6 +86,9 @@ const MAIL_SUBJECT_MAX: usize = 100;
 
 /// The longest sender name in a mail popup, in characters.
 const MAIL_SENDER_MAX: usize = 40;
+
+/// The longest project name below an agent session's name in a popup, in characters.
+const PROJECT_MAX: usize = 40;
 
 /// How many sender names a summary of several mails lists; more are counted ("and 2 more").
 const SENDERS_SHOWN: usize = 3;
@@ -497,11 +504,32 @@ fn entry(item: &Item) -> EntryPopup {
         let title = foreign_line(&item.title, MAIL_SUBJECT_MAX);
         return EntryPopup { id: item.id.clone(), title, source, urgent: false, mail };
     }
+    if let Some((title, source)) = session_line(item) {
+        return EntryPopup { id: item.id.clone(), title, source, urgent: item.urgent, mail: Vec::new() };
+    }
     let source = match &item.from {
         Some(from) if !from.name.trim().is_empty() => format!("{} · {}", from.name.trim(), item.source.label()),
         _ => item.source.label(),
     };
     EntryPopup { id: item.id.clone(), title: item.title.clone(), source, urgent: item.urgent, mail: Vec::new() }
+}
+
+/// Summary and body of a popup for an agent's session that has a name (task E2.6): the name,
+/// cleaned and cut ([`foreign_line`], it is the agent's text), and below it the entry's title –
+/// the core's own words about the agent's state – with the project when there is one. `None` for
+/// every other entry, which keeps its title as summary.
+fn session_line(item: &Item) -> Option<(String, String)> {
+    let agent = item.agent.as_ref()?;
+    let name = foreign_line(agent.title.as_deref()?, torro_inbox::hook::SESSION_TITLE_MAX);
+    if name.is_empty() {
+        return None;
+    }
+    let project = agent.project.as_deref().map(|project| foreign_line(project, PROJECT_MAX));
+    let below = match project.filter(|project| !project.is_empty()) {
+        Some(project) => format!("{} · {project}", item.title),
+        None => item.title.clone(),
+    };
+    Some((name, below))
 }
 
 /// The busy event that makes it quiet at `now`, among `events` of the shown calendars: one that
@@ -914,6 +942,34 @@ mod tests {
         for unnamed in [None, Some(String::new())] {
             let popup = Popup::AfterQuiet { count: 2, event: unnamed };
             assert_eq!(popup.text().0, trf("While you were in busy events: {n} for you", &[("n", &2)]));
+        }
+    }
+
+    #[test]
+    fn an_agent_session_pops_up_with_its_name() {
+        let session = |title: Option<&str>| torro_inbox::AgentInfo {
+            agent: torro_inbox::AgentKind::ClaudeCode,
+            session: "s1".into(),
+            project: Some("TorroWorkplace".into()),
+            branch: Some("main".into()),
+            pids: Vec::new(),
+            title: title.map(String::from),
+        };
+        let waiting = Item {
+            title: "Claude Code is waiting for you".into(),
+            agent: Some(session(Some("Login <b>bug</b>\u{202E}"))),
+            ..urgent("w", at(0, 0))
+        };
+        let popup = popup_of(&waiting);
+        assert_eq!(
+            popup.text(),
+            ("Login ‹b›bug‹/b›".to_string(), "Claude Code is waiting for you · TorroWorkplace".to_string())
+        );
+        assert!(popup.urgent(), "the name changes nothing about urgency");
+        // Without a name, or with one that is nothing but control characters: as before.
+        for title in [None, Some("\u{0e} ")] {
+            let unnamed = Item { agent: Some(session(title)), ..waiting.clone() };
+            assert_eq!(popup_of(&unnamed).text().0, "Claude Code is waiting for you", "{title:?}");
         }
     }
 

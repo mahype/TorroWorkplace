@@ -1,0 +1,9 @@
+# Broken: the logo loads an image from the net.
+format = 1
+
+[about]
+name = "SVG href"
+version = "1.0.0"
+
+[logo]
+mark = "logo.svg"

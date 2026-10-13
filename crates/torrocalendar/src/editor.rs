@@ -633,13 +633,13 @@ impl Editor {
                 keyboard::Key::Named(keyboard::key::Named::Escape) => Some(leave_field()),
                 _ => text_editor::Binding::from_key_press(press),
             })
-            .font(typo::HEADLINE.font)
-            .size(typo::HEADLINE.size)
-            .line_height(typo::HEADLINE.line_height)
+            .font(typo::headline().font)
+            .size(typo::headline().size)
+            .line_height(typo::headline().line_height)
             .padding(Padding::ZERO)
             .wrapping(Wrapping::WordOrGlyph)
             .style(|t, s| bare_editor(t, s, palette(t).text));
-        let mut title = column![field].spacing(space::S);
+        let mut title = column![field].spacing(space::s());
         if let Some(problem) = self.shown_problem().filter(|p| p.field() == Field::Title) {
             title = title.push(problem_line(problem));
         }
@@ -677,9 +677,9 @@ impl Editor {
             .on_input(Message::Location)
             .on_submit(Message::Save)
             .padding(Padding::ZERO)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
-            .font(typo::BODY.font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
             .style(bare_input);
         let location = widgets::prop_row(Some(Mark::Icon(Icon::MapPin)), location, None);
 
@@ -691,9 +691,9 @@ impl Editor {
                 keyboard::Key::Named(keyboard::key::Named::Escape) => Some(leave_field()),
                 _ => text_editor::Binding::from_key_press(press),
             })
-            .font(typo::BODY.font)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
+            .font(typo::body().font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
             .padding(Padding::ZERO)
             .wrapping(Wrapping::WordOrGlyph)
             .style(|t, s| bare_editor(t, s, palette(t).text_2));
@@ -704,7 +704,7 @@ impl Editor {
             widgets::prop_section(tr("Location"), vec![location]),
             widgets::prop_section(tr("Notes"), vec![panel::inset(notes)]),
         ]
-        .spacing(space::L)
+        .spacing(space::l())
         .into()
     }
 
@@ -715,7 +715,7 @@ impl Editor {
             Some(choice) => widgets::prop_row(None, calendar_value(choice), on_press),
             None => widgets::prop_row(
                 Some(Mark::Icon(Icon::Calendar)),
-                typo::text(typo::BODY, tr("Choose a calendar")).style(theme::text_3),
+                typo::text(typo::body(), tr("Choose a calendar")).style(theme::text_3),
                 on_press,
             ),
         };
@@ -724,8 +724,8 @@ impl Editor {
 
     /// The title of a series or of an event in a read-only calendar, with the reason under it.
     fn read_only_title(&self, reason: &'static str) -> Element<'_, Message> {
-        let note = typo::text(typo::META, tr(reason)).style(theme::text_2);
-        column![panel::title(self.form.title.as_str()), note].spacing(space::S).into()
+        let note = typo::text(typo::meta(), tr(reason)).style(theme::text_2);
+        column![panel::title(self.form.title.as_str()), note].spacing(space::s()).into()
     }
 
     /// The same sections as the form, with the values as text; location and notes only when set.
@@ -741,18 +741,18 @@ impl Editor {
             all_day_row(width, form.all_day, false),
         ];
         let calendar = form.calendar.as_ref().map(|choice| widgets::prop_row(None, calendar_value(choice), None));
-        let mut body = column![widgets::prop_section(tr("When"), when)].spacing(space::L);
+        let mut body = column![widgets::prop_section(tr("When"), when)].spacing(space::l());
         if let Some(calendar) = calendar {
             body = body.push(widgets::prop_section(tr("Calendar"), vec![calendar]));
         }
         if !form.location.trim().is_empty() {
-            let place = typo::text(typo::BODY, form.location.as_str()).wrapping(Wrapping::WordOrGlyph);
+            let place = typo::text(typo::body(), form.location.as_str()).wrapping(Wrapping::WordOrGlyph);
             let row = widgets::prop_row(Some(Mark::Icon(Icon::MapPin)), place, None);
             body = body.push(widgets::prop_section(tr("Location"), vec![row]));
         }
         if !form.notes.trim().is_empty() {
             let notes =
-                typo::text(typo::BODY, form.notes.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+                typo::text(typo::body(), form.notes.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
             body = body.push(widgets::prop_section(tr("Notes"), vec![panel::inset(notes)]));
         }
         body.into()
@@ -768,7 +768,7 @@ impl Editor {
             return vec![widgets::text_button(None, tr("Delete event"), style::button::danger, Some(Message::Delete))];
         }
         vec![
-            typo::text(typo::BODY, tr("Really delete?")).style(theme::text_2).into(),
+            typo::text(typo::body(), tr("Really delete?")).style(theme::text_2).into(),
             widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::ConfirmDelete)),
             widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelDelete)),
         ]
@@ -806,18 +806,18 @@ impl<'a> Input<'a> {
             .on_input(self.on_input)
             .on_submit(Message::Save)
             .padding(style::INPUT_PADDING)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
-            .font(typo::BODY.tabular().font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().tabular().font)
             .style(quiet(self.invalid))
     }
 
     /// [`Input::view`] as wide as `sample` (or the placeholder, if wider) with the input's padding
     /// and a little room for the caret.
     fn view_sized(self, sample: &str) -> text_input::TextInput<'a, Message> {
-        let level = typo::BODY.tabular();
+        let level = typo::body().tabular();
         let text = text_width(sample, level).max(text_width(self.placeholder, level));
-        let width = text + style::INPUT_PADDING.left + style::INPUT_PADDING.right + space::S;
+        let width = text + style::INPUT_PADDING.left + style::INPUT_PADDING.right + space::s();
         self.view().width(width.ceil())
     }
 }
@@ -829,14 +829,14 @@ fn moment<'a>(all_day: bool, date: Input<'a>, time: Input<'a>) -> Element<'a, Me
     if all_day {
         return date.into();
     }
-    row![date, time.view_sized(TIME_SAMPLE)].spacing(space::XS).into()
+    row![date, time.view_sized(TIME_SAMPLE)].spacing(space::xs()).into()
 }
 
 /// The width of the label column in "When": the widest of its labels in this language.
 fn label_width() -> f32 {
     [tr("Start"), tr("End"), tr("All day")]
         .into_iter()
-        .map(|label| text_width(label, typo::BODY))
+        .map(|label| text_width(label, typo::body()))
         .fold(0.0, f32::max)
         .ceil()
 }
@@ -849,8 +849,8 @@ fn labelled<'a>(
     value: impl Into<Element<'a, Message>>,
     on_press: Option<Message>,
 ) -> Element<'a, Message> {
-    let label = container(typo::text(typo::BODY, label).style(theme::text_3).wrapping(Wrapping::None)).width(width);
-    widgets::prop_row(None, row![label, value.into()].spacing(space::XS).align_y(Alignment::Center), on_press)
+    let label = container(typo::text(typo::body(), label).style(theme::text_3).wrapping(Wrapping::None)).width(width);
+    widgets::prop_row(None, row![label, value.into()].spacing(space::xs()).align_y(Alignment::Center), on_press)
 }
 
 /// "All day" with its switch; the row toggles it too. Read-only: the switch is shown, disabled.
@@ -866,15 +866,15 @@ fn all_day_row<'a>(width: f32, on: bool, editable: bool) -> Element<'a, Message>
 
 /// A value as plain text where the form has an input, starting where the input's text does.
 fn value_text<'a>(value: String) -> Element<'a, Message> {
-    container(typo::text(typo::BODY.tabular(), value).wrapping(Wrapping::None))
+    container(typo::text(typo::body().tabular(), value).wrapping(Wrapping::None))
         .padding(Padding::ZERO.left(style::INPUT_PADDING.left))
         .into()
 }
 
 /// A problem under a "When" or calendar row, starting where the values of the rows start.
 fn field_problem<'a>(width: f32, problem: Problem) -> Element<'a, Message> {
-    let left = style::ITEM_PADDING.left + width + space::XS + style::INPUT_PADDING.left;
-    container(problem_line(problem)).padding(Padding::ZERO.left(left).bottom(space::XS)).into()
+    let left = style::ITEM_PADDING.left + width + space::xs() + style::INPUT_PADDING.left;
+    container(problem_line(problem)).padding(Padding::ZERO.left(left).bottom(space::xs())).into()
 }
 
 /// What is wrong, in the error colour with an icon: "(!) Enter a title".
@@ -883,10 +883,11 @@ fn problem_line<'a>(problem: Problem) -> Element<'a, Message> {
         icon(Icon::CircleAlert, icon::SIZE_SM).style(|theme, _| svg::Style { color: Some(palette(theme).error_text) });
     row![
         // The icon is centred on the first line of the message, which may wrap in a narrow window.
-        container(mark).center_y(typo::META.line_height.to_absolute(typo::META.size)),
-        typo::text(typo::META, problem.message()).style(|theme| text::Style { color: Some(palette(theme).error_text) }),
+        container(mark).center_y(typo::meta().line_height.to_absolute(typo::meta().size)),
+        typo::text(typo::meta(), problem.message())
+            .style(|theme| text::Style { color: Some(palette(theme).error_text) }),
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_y(Alignment::Start)
     .into()
 }
@@ -894,8 +895,8 @@ fn problem_line<'a>(problem: Problem) -> Element<'a, Message> {
 /// The calendar's dot and name. The dot stands in a cell as wide as an icon, so the name lines up
 /// with the values of the rows that have an icon (the location); a `Mark::Dot` would not.
 fn calendar_value(choice: &CalendarChoice) -> Element<'_, Message> {
-    let dot = container(widgets::color_dot(choice_color(choice), space::S)).center_x(icon::SIZE);
-    row![dot, typo::text(typo::BODY, choice.name.as_str())].spacing(space::S).align_y(Alignment::Center).into()
+    let dot = container(widgets::color_dot(choice_color(choice), space::s())).center_x(icon::SIZE);
+    row![dot, typo::text(typo::body(), choice.name.as_str())].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 /// The colour of a calendar's dot.
@@ -1439,7 +1440,7 @@ mod tests {
     fn the_label_column_fits_every_label() {
         let width = label_width();
         for label in [tr("Start"), tr("End"), tr("All day")] {
-            assert!(text_width(label, typo::BODY) <= width, "{label}");
+            assert!(text_width(label, typo::body()) <= width, "{label}");
         }
     }
 }

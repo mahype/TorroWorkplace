@@ -47,11 +47,11 @@ use torro_gui::typo::{self, ellipsize, text_width};
 use torro_gui::widgets::{self, Anchor};
 
 use layout::{Block, Hit, Rows, Segment, Span, Timed, Track};
-pub use layout::{MOON_TARGET, is_double_click};
+pub use layout::{is_double_click, moon_target_size};
 
 use super::ViewData;
 use super::glance::span;
-use super::week::{self, BAR, DAY_CIRCLE, DAY_NUMBER, FREE_MINUTES, NOW_DOT, NOW_LABEL, NOW_LABEL_WIDTH, Tone};
+use super::week::{self, BAR, FREE_MINUTES, NOW_DOT, Tone, day_circle, day_number, now_label, now_label_width};
 use crate::app::Message;
 
 /// Id of the timeline's scrollable, for the scroll to now ([`State::show`]) and the wheel.
@@ -62,17 +62,23 @@ const OPEN_NIGHT: f32 = 0.6;
 /// Text in a column starts this far right of its colour bar (`.ev .txt{left:3px;padding:3px}`).
 const TEXT_SIDE: f32 = 3.0;
 /// Text in a column keeps this far from its top and bottom end (`padding:8px 3px`).
-const TEXT_END: f32 = space::S;
+fn text_end() -> f32 {
+    space::s()
+}
 /// From this width on a column has room for its time beside the title.
 const TWO_LINES: f32 = 40.0;
 /// Inner margin of the day labels and of "Collapse night" (`.daylabel{padding:0 8px}`).
-const LABEL_PAD: f32 = space::S;
+fn label_pad() -> f32 {
+    space::s()
+}
 /// Gap between the parts of a label: weekday, number, "Today"; moon and text.
 const LABEL_GAP: f32 = 6.0;
 /// Inner margin of "Collapse night" (`.fold{padding:0 6px}`).
 const FOLD_PAD: f32 = 6.0;
 /// Hour labels stand this far right of their line (`.hl{left:p+4}`).
-const HOUR_LABEL_GAP: f32 = space::XS;
+fn hour_label_gap() -> f32 {
+    space::xs()
+}
 /// Radius of the dot of an event in a folded night, and of the ring of night colour around it.
 const DOT: f32 = 3.0;
 const DOT_RING: f32 = 5.0;
@@ -319,7 +325,7 @@ impl Plan {
             .iter()
             .filter(|segment| segment.folded())
             .filter_map(|night| {
-                let length = icon::SIZE_SM + LABEL_GAP + text_width(&self.night_label(night, rows), typo::META);
+                let length = icon::SIZE_SM + LABEL_GAP + text_width(&self.night_label(night, rows), typo::meta());
                 night.evening().map(|evening| (evening, layout::moon(night, rows, length)))
             })
             .collect()
@@ -362,7 +368,7 @@ impl Plan {
 
 /// The width of "Collapse night": moon, gap, label, and the inner margin.
 fn fold_width() -> f32 {
-    2.0 * FOLD_PAD + icon::SIZE_SM + space::XS + text_width(tr("Collapse night"), typo::CAPTION)
+    2.0 * FOLD_PAD + icon::SIZE_SM + space::xs() + text_width(tr("Collapse night"), typo::caption())
 }
 
 /// How far the wheel scrolls sideways: its turn up or down as left or right (down is right), in
@@ -473,18 +479,18 @@ impl canvas::Program<Message> for Timeline {
                 );
             }
         }
-        hours(&mut frame, p, plan, &rows, now_x, &seen);
+        hours(&mut frame, &p, plan, &rows, now_x, &seen);
         for x in plan.track.midnights().into_iter().filter(|x| seen(*x, 0.0)) {
             week::line(&mut frame, Point::new(x, 0.0), Point::new(x, height), p.line_strong);
         }
         for night in plan.track.segments.iter().filter(|s| s.folded() && seen(s.x, s.width)) {
-            folded_night(&mut frame, p, plan, &rows, night);
+            folded_night(&mut frame, &p, plan, &rows, night);
         }
-        free_time(&mut frame, p, plan, &rows, &seen);
-        chips(&mut frame, p, plan, &rows, &seen);
-        columns(&mut frame, p, plan, &rows, &seen);
+        free_time(&mut frame, &p, plan, &rows, &seen);
+        chips(&mut frame, &p, plan, &rows, &seen);
+        columns(&mut frame, &p, plan, &rows, &seen);
         for (_, rect) in plan.folds(&rows).into_iter().filter(|(_, rect)| seen(rect.x, rect.width)) {
-            fold_button(&mut frame, p, rect);
+            fold_button(&mut frame, &p, rect);
         }
         if plan.entries.is_empty() {
             let center = match plan.viewport {
@@ -493,18 +499,18 @@ impl canvas::Program<Message> for Timeline {
             };
             let (top, bottom) = rows.all_day();
             let at = Point::new(center, (top + bottom) / 2.0);
-            week::label(&mut frame, tr("No events"), at, typo::META, p.text_3, Alignment::Center, Vertical::Center);
+            week::label(&mut frame, tr("No events"), at, typo::meta(), p.text_3, Alignment::Center, Vertical::Center);
         }
-        day_labels(&mut frame, p, plan, &seen);
+        day_labels(&mut frame, &p, plan, &seen);
         if let Some(x) = now_x {
-            now_line(&mut frame, p, &rows, x, height, plan.now);
+            now_line(&mut frame, &p, &rows, x, height, plan.now);
         }
         if let Some((_, target)) = state.hover.filter(|(since, _)| since.elapsed() >= TOOLTIP_DELAY) {
             let area = match plan.viewport {
                 Some(Viewport { offset, width }) => Rectangle::new(Point::new(offset, 0.0), Size::new(width, height)),
                 None => Rectangle::new(Point::ORIGIN, bounds.size()),
             };
-            moon_tooltip(&mut frame, p, target, area);
+            moon_tooltip(&mut frame, &p, target, area);
         }
         vec![frame.into_geometry()]
     }
@@ -533,16 +539,17 @@ pub(crate) fn hover<M>(hover: &mut Option<(Instant, Rectangle)>, over: Option<Re
 /// screen of the canvas) ends.
 pub(crate) fn moon_tooltip(frame: &mut Frame, p: &Palette, target: Rectangle, area: Rectangle) {
     let text = tr("Double-click to set the night");
-    let pad = Vector::new(space::S, style::KBD_PADDING.top + style::KBD_PADDING.bottom);
-    let size = Size::new(text_width(text, typo::CAPTION) + 2.0 * pad.x, week::line_height(typo::CAPTION) + 2.0 * pad.y);
-    let right = target.x + target.width + space::XS;
-    let x = if right + size.width <= area.x + area.width { right } else { target.x - space::XS - size.width };
+    let pad = Vector::new(space::s(), style::KBD_PADDING.top + style::KBD_PADDING.bottom);
+    let size =
+        Size::new(text_width(text, typo::caption()) + 2.0 * pad.x, week::line_height(typo::caption()) + 2.0 * pad.y);
+    let right = target.x + target.width + space::xs();
+    let x = if right + size.width <= area.x + area.width { right } else { target.x - space::xs() - size.width };
     let y = (target.center_y() - size.height / 2.0).clamp(area.y, (area.y + area.height - size.height).max(area.y));
-    let card = Path::rounded_rectangle(Point::new(x, y), size, Radius::from(radius::SM));
+    let card = Path::rounded_rectangle(Point::new(x, y), size, Radius::from(radius::sm()));
     frame.fill(&card, p.menu);
     frame.stroke(&card, Stroke::default().with_color(p.line_strong).with_width(1.0));
     let at = Point::new(x + pad.x, y + size.height / 2.0);
-    week::label(frame, text, at, typo::CAPTION, p.text_2, Alignment::Left, Vertical::Center);
+    week::label(frame, text, at, typo::caption(), p.text_2, Alignment::Left, Vertical::Center);
 }
 
 /// Hour lines from the axis down, and their labels "09:00" in the axis, in the days and the
@@ -557,19 +564,19 @@ fn hours(
     seen: &dyn Fn(f32, f32) -> bool,
 ) {
     let (top, bottom) = rows.axis();
-    let label_width = text_width("00:00", typo::MICRO);
-    let left = plan.viewport.map_or(0.0, |viewport| viewport.offset) + space::S;
+    let label_width = text_width("00:00", typo::micro());
+    let left = plan.viewport.map_or(0.0, |viewport| viewport.offset) + space::s();
     for (hour, x) in plan.track.hours().into_iter().filter(|(_, x)| seen(*x, label_width)) {
         week::line(frame, Point::new(x, bottom), Point::new(x, rows.height), p.line);
-        let start = x + HOUR_LABEL_GAP;
+        let start = x + hour_label_gap();
         let covered = now_x.is_some_and(|now| {
-            let half = NOW_LABEL_WIDTH / 2.0;
+            let half = now_label_width() / 2.0;
             start < now + half && now - half < start + label_width
         });
         if !covered && start >= left {
             let at = Point::new(start, (top + bottom) / 2.0);
             let text = format!("{:02}:00", hour.hour());
-            week::label(frame, &text, at, typo::MICRO, p.text_3, Alignment::Left, Vertical::Center);
+            week::label(frame, &text, at, typo::micro(), p.text_3, Alignment::Left, Vertical::Center);
         }
     }
 }
@@ -577,8 +584,10 @@ fn hours(
 /// A folded night: the band with zigzag edges in the night colour, a dot for each event in it,
 /// and the moon with "Night · 8 h · 1 event" turned to read upwards in its middle.
 fn folded_night(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, night: &Segment) {
-    let band =
-        Rectangle::new(Point::new(night.x, layout::DAY_HEAD), Size::new(night.width, rows.height - layout::DAY_HEAD));
+    let band = Rectangle::new(
+        Point::new(night.x, layout::day_head()),
+        Size::new(night.width, rows.height - layout::day_head()),
+    );
     let outline = Path::new(|path| {
         let mut points = layout::zigzag(band).into_iter();
         if let Some(first) = points.next() {
@@ -600,7 +609,7 @@ fn folded_night(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, night:
 
     // Where the moon goes is `layout::moon`'s rule too, so its click target sits on it.
     let text = plan.night_label(night, rows);
-    let length = icon::SIZE_SM + LABEL_GAP + text_width(&text, typo::META);
+    let length = icon::SIZE_SM + LABEL_GAP + text_width(&text, typo::meta());
     let center = band.center();
     let bottom = (center.y + length / 2.0).round();
     let moon = Rectangle::new(
@@ -608,9 +617,9 @@ fn folded_night(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, night:
         Size::new(icon::SIZE_SM, icon::SIZE_SM),
     );
     frame.draw_svg(moon, &Icon::Moon.tinted(p.text_3));
-    let line = week::line_height(typo::META);
+    let line = week::line_height(typo::meta());
     let at = Point::new(center.x - line / 2.0, bottom - icon::SIZE_SM - LABEL_GAP);
-    upright(frame, &text, at, typo::META, p.text_3);
+    upright(frame, &text, at, typo::meta(), p.text_3);
 }
 
 /// "3 h free" under the gaps of two hours or more between the events of a day, from now on.
@@ -624,7 +633,7 @@ fn free_time(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, seen: &dy
         let hours = (end - start).num_hours();
         let at = Point::new((x0 + x1) / 2.0, (top + bottom) / 2.0);
         let note = trf("{n} h free", &[("n", &hours)]);
-        week::label(frame, &note, at, typo::META, p.text_3, Alignment::Center, Vertical::Center);
+        week::label(frame, &note, at, typo::meta(), p.text_3, Alignment::Center, Vertical::Center);
     }
 }
 
@@ -635,11 +644,11 @@ fn chips(frame: &mut Frame, p: &Palette, plan: &Plan, rows: &Rows, seen: &dyn Fn
         let Some(entry) = plan.entries.get(chip.id) else { continue };
         let tone = Tone::of(p, entry.color, p.panel, entry.end <= plan.now);
         week::surface(frame, chip.rect, &tone);
-        let room = chip.rect.width - 2.0 * LABEL_PAD - BAR;
-        let title = ellipsize(&entry.title, typo::CAPTION, room);
-        let at = Point::new(chip.rect.x + BAR + LABEL_PAD, chip.rect.center_y());
+        let room = chip.rect.width - 2.0 * label_pad() - BAR;
+        let title = ellipsize(&entry.title, typo::caption(), room);
+        let at = Point::new(chip.rect.x + BAR + label_pad(), chip.rect.center_y());
         frame.with_clip(chip.rect, |frame| {
-            week::label(frame, &title, at, typo::CAPTION, tone.title, Alignment::Left, Vertical::Center);
+            week::label(frame, &title, at, typo::caption(), tone.title, Alignment::Left, Vertical::Center);
         });
     }
     selection(frame, p, plan, &chips);
@@ -668,36 +677,36 @@ fn selection(frame: &mut Frame, p: &Palette, plan: &Plan, blocks: &[Block]) {
 }
 
 /// Title (`CAPTION`) and, from [`TWO_LINES`] on, the time (`MICRO`) of a column, turned −90° to
-/// read from the bottom up, starting [`TEXT_END`] above its bottom and cut with "…" to its height.
+/// read from the bottom up, starting [`text_end()`] above its bottom and cut with "…" to its height.
 /// A column too narrow for both gets the title alone, in its middle.
 ///
 /// Not clipped: Iced 0.14 draws shapes inside `Frame::with_clip` wrongly once the canvas is
 /// scrolled sideways (stray triangles, missing shapes), and turned text is shapes. The cut to the
 /// height and the choice of lines by width keep the text inside the column instead.
 fn column_text(frame: &mut Frame, rect: Rectangle, entry: &Entry, tone: &Tone) {
-    let room = rect.height - 2.0 * TEXT_END;
+    let room = rect.height - 2.0 * text_end();
     if room <= 0.0 {
         return;
     }
-    let line = week::line_height(typo::CAPTION);
+    let line = week::line_height(typo::caption());
     let two = rect.width >= TWO_LINES;
     let x = if two { rect.x + BAR + TEXT_SIDE } else { rect.x + BAR + ((rect.width - BAR - line) / 2.0).max(0.0) };
-    let y = rect.y + rect.height - TEXT_END;
-    let title = ellipsize(&entry.title, typo::CAPTION, room);
-    upright(frame, &title, Point::new(x, y), typo::CAPTION, tone.title);
+    let y = rect.y + rect.height - text_end();
+    let title = ellipsize(&entry.title, typo::caption(), room);
+    upright(frame, &title, Point::new(x, y), typo::caption(), tone.title);
     if two {
         let time = time_text(entry, room);
-        upright(frame, &time, Point::new(x + line, y), typo::MICRO, tone.time);
+        upright(frame, &time, Point::new(x + line, y), typo::micro(), tone.time);
     }
 }
 
 /// "10:00 – 11:30", or the start alone where the range does not fit `room`.
 fn time_text(entry: &Entry, room: f32) -> String {
     let range = format!("{} – {}", format_time(entry.start.time()), format_time(entry.end.time()));
-    if entry.end > entry.start && text_width(&range, typo::MICRO) <= room {
+    if entry.end > entry.start && text_width(&range, typo::micro()) <= room {
         range
     } else {
-        ellipsize(&format_time(entry.start.time()), typo::MICRO, room)
+        ellipsize(&format_time(entry.start.time()), typo::micro(), room)
     }
 }
 
@@ -714,14 +723,14 @@ fn upright(frame: &mut Frame, content: &str, at: Point, level: typo::Level, colo
 
 /// "Collapse night" at the top of an unfolded night: a small raised button with the moon.
 fn fold_button(frame: &mut Frame, p: &Palette, rect: Rectangle) {
-    let shape = Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::XS));
+    let shape = Path::rounded_rectangle(rect.position(), rect.size(), Radius::from(radius::xs()));
     frame.fill(&shape, p.raised);
     frame.stroke(&shape, Stroke::default().with_color(p.line_strong).with_width(1.0));
     let moon_top = rect.center_y() - icon::SIZE_SM / 2.0;
     let moon = Rectangle::new(Point::new(rect.x + FOLD_PAD, moon_top), Size::new(icon::SIZE_SM, icon::SIZE_SM));
     frame.draw_svg(moon, &Icon::Moon.tinted(p.text_3));
-    let at = Point::new(moon.x + icon::SIZE_SM + space::XS, rect.center_y());
-    week::label(frame, tr("Collapse night"), at, typo::CAPTION, p.text_2, Alignment::Left, Vertical::Center);
+    let at = Point::new(moon.x + icon::SIZE_SM + space::xs(), rect.center_y());
+    week::label(frame, tr("Collapse night"), at, typo::caption(), p.text_2, Alignment::Left, Vertical::Center);
 }
 
 /// The day labels ("Tue 13", today "Wed (14) Today" with the number white in a red circle) on the
@@ -729,34 +738,38 @@ fn fold_button(frame: &mut Frame, p: &Palette, rect: Rectangle) {
 fn day_labels(frame: &mut Frame, p: &Palette, plan: &Plan, seen: &dyn Fn(f32, f32) -> bool) {
     let offset = plan.viewport.map_or(0.0, |viewport| viewport.offset);
     let today = plan.now.date();
-    let middle = layout::DAY_HEAD / 2.0;
+    let middle = layout::day_head() / 2.0;
     for (day, from, to) in plan.track.days().into_iter().filter(|(_, from, to)| seen(*from, to - from)) {
         let is_today = day == today;
         let weekday = weekday_name(day, true);
         let number = day.day().to_string();
-        let number_box = DAY_CIRCLE.max(text_width(&number, DAY_NUMBER) + space::S);
-        let mut width = 2.0 * LABEL_PAD + text_width(weekday, typo::META) + LABEL_GAP + number_box;
+        let number_box = day_circle().max(text_width(&number, day_number()) + space::s());
+        let mut width = 2.0 * label_pad() + text_width(weekday, typo::meta()) + LABEL_GAP + number_box;
         if is_today {
-            width += LABEL_GAP + text_width(tr("Today"), typo::META);
+            width += LABEL_GAP + text_width(tr("Today"), typo::meta());
         }
         let x = layout::sticky_x(from, to, offset, width);
-        week::fill(frame, Rectangle::new(Point::new(x, 0.0), Size::new(width.min(to - x), layout::DAY_HEAD)), p.panel);
+        week::fill(
+            frame,
+            Rectangle::new(Point::new(x, 0.0), Size::new(width.min(to - x), layout::day_head())),
+            p.panel,
+        );
         // Not clipped to the day (see `column_text`): `sticky_x` keeps the label inside it.
-        let mut cursor = x + LABEL_PAD;
+        let mut cursor = x + label_pad();
         let tone = if is_today { p.text } else { p.text_3 };
-        week::label(frame, weekday, Point::new(cursor, middle), typo::META, tone, Alignment::Left, Vertical::Center);
-        cursor += text_width(weekday, typo::META) + LABEL_GAP;
+        week::label(frame, weekday, Point::new(cursor, middle), typo::meta(), tone, Alignment::Left, Vertical::Center);
+        cursor += text_width(weekday, typo::meta()) + LABEL_GAP;
         let center = Point::new(cursor + number_box / 2.0, middle);
         let colour = if is_today {
-            frame.fill(&Path::circle(center, DAY_CIRCLE / 2.0), p.accent);
+            frame.fill(&Path::circle(center, day_circle() / 2.0), p.accent);
             p.on_accent
         } else {
             p.text_2
         };
-        week::label(frame, &number, center, DAY_NUMBER, colour, Alignment::Center, Vertical::Center);
+        week::label(frame, &number, center, day_number(), colour, Alignment::Center, Vertical::Center);
         if is_today {
             let at = Point::new(cursor + number_box + LABEL_GAP, middle);
-            week::label(frame, tr("Today"), at, typo::META, p.text_3, Alignment::Left, Vertical::Center);
+            week::label(frame, tr("Today"), at, typo::meta(), p.text_3, Alignment::Left, Vertical::Center);
         }
     }
 }
@@ -767,15 +780,15 @@ fn now_line(frame: &mut Frame, p: &Palette, rows: &Rows, x: f32, height: f32, no
     let (top, bottom) = rows.axis();
     week::line(frame, Point::new(x, bottom), Point::new(x, height), p.accent);
     frame.fill(&Path::circle(Point::new(x, bottom), NOW_DOT), p.accent);
-    let pill_height = week::line_height(NOW_LABEL);
+    let pill_height = week::line_height(now_label());
     let middle = (top + bottom) / 2.0;
     let pill = Rectangle::new(
-        Point::new(x - NOW_LABEL_WIDTH / 2.0, middle - pill_height / 2.0),
-        Size::new(NOW_LABEL_WIDTH, pill_height),
+        Point::new(x - now_label_width() / 2.0, middle - pill_height / 2.0),
+        Size::new(now_label_width(), pill_height),
     );
-    frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::XS)), p.accent);
+    frame.fill(&Path::rounded_rectangle(pill.position(), pill.size(), Radius::from(radius::xs())), p.accent);
     let time = format_time(now.time());
-    week::label(frame, &time, Point::new(x, middle), NOW_LABEL, p.on_accent, Alignment::Center, Vertical::Center);
+    week::label(frame, &time, Point::new(x, middle), now_label(), p.on_accent, Alignment::Center, Vertical::Center);
 }
 
 #[cfg(test)]
@@ -988,7 +1001,7 @@ mod tests {
         // A press on the band beside the moon is no double-click with the one on the moon.
         let _ = press(&timeline, &mut state, moon.center());
         let band = timeline.plan.track.segments[3];
-        let beside = press(&timeline, &mut state, Point::new(band.x + 2.0, layout::DAY_HEAD + 10.0));
+        let beside = press(&timeline, &mut state, Point::new(band.x + 2.0, layout::day_head() + 10.0));
         assert!(matches!(beside, Some(Message::Timeline(Change::ToggleNight(_)))), "{beside:?}");
     }
 

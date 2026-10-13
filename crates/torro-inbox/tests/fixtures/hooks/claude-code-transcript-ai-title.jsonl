@@ -1,0 +1,5 @@
+{"type":"user","sessionId":"def456","uuid":"u1","message":{"role":"user","content":"Update the README"}}
+{"type":"ai-title","aiTitle":"Update README","sessionId":"def456"}
+{"type":"agent-name","agentName":"docs-writer","sessionId":"def456"}
+{"type":"ai-title","aiTitle":"Update README install steps","sessionId":"def456"}
+{"type":"assistant","sessionId":"def456","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"Done."}]}}

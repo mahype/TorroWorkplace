@@ -5,7 +5,8 @@
 //! Day, week, month and agenda views; events can be created, edited and deleted.
 //!
 //! With `--demo`, `--open <state>` starts in a given state and `--now <YYYY-MM-DDTHH:MM>` fixes the
-//! time; `--appearance light|dark|system` overrides the stored appearance (see [`app::Launch`]).
+//! time; `--appearance light|dark|system` overrides the stored appearance and `--design <id>` the
+//! design pack (see [`app::Launch`]).
 //!
 //! On Windows the app is a GUI program without a console window; a failed start is written to
 //! [`START_ERROR_FILE`] in the state directory instead (see [`report_start_error`]).
@@ -43,6 +44,8 @@ fn main() -> ExitCode {
         }
     };
     let source = launch.source(&args);
+    // Before the settings load the fonts: the first frame is drawn with the chosen design.
+    torro_gui::design::start_for(&source, launch.design.as_deref());
     let result =
         iced::application(move || app::App::new(source.clone(), launch.clone()), app::App::update, app::App::view)
             .settings(torro_gui::settings())

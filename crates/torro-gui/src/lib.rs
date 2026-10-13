@@ -2,16 +2,20 @@
 //! centre), so they look and behave like one family when tiled side by side.
 //!
 //! - [`source::Source`]: where data comes from (the core, or demo data with `--demo`).
+//! - [`design`]: the active design of the process (`design::active()`, `design::set(…)`); every
+//!   token below is read from it.
 //! - [`theme`]: light and dark colour tokens (`theme::palette(&Theme)`), the Iced themes,
 //!   spacing, radius and size tokens (`theme::{space, radius, size}`), and the fonts.
-//! - [`typo`]: the type scale (`typo::text(typo::BODY, …)`).
-//! - [`fonts`] / [`settings`]: the bundled Inter files and the Iced settings that load them.
+//! - [`typo`]: the type scale (`typo::text(typo::body(), …)`).
+//! - [`fonts`] / [`settings`]: the bundled Inter files and the Iced settings that load the fonts
+//!   of the active design.
 //! - [`connect`]: the "connect your Nextcloud" screen every app shows without an account.
 //! - [`datetime`]: German date and time parsing and formatting, week arithmetic.
 //! - [`dialog`]: the frame of a dialog: fixed head and foot, a body that scrolls in low windows.
 //! - [`style`]: the style functions for every Iced widget, light and dark.
 //! - [`icon`]: the bundled Lucide icons.
-//! - [`layout`]: the size classes of tiled windows (`layout::of(size)`).
+//! - [`layout`]: the size classes of tiled windows (`layout::of(size)`) and the layout gaps by role
+//!   (`layout::inset()`, `layout::page_padding()` …).
 //! - [`markdown`]: Markdown to read (GitHub texts) in the Torro look.
 //! - [`shell`]: the Linear window frame (sidebar, inset panel, header bar, properties column)
 //!   and the app switcher; the sidebar expanded, collapsed to a rail of icons, or as a drawer.
@@ -23,6 +27,7 @@
 
 pub mod connect;
 pub mod datetime;
+pub mod design;
 pub mod dialog;
 pub mod icon;
 pub mod layout;
@@ -37,15 +42,13 @@ pub mod ui_state;
 pub mod widgets;
 pub mod zoom;
 
-use std::borrow::Cow;
-
 /// The bundled font files: Inter 4.1 (SIL OFL 1.1, `assets/fonts/OFL.txt`), from
 /// <https://github.com/rsms/inter/releases/tag/v4.1> (`Inter-4.1.zip`, SHA-256
 /// `9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e`, `extras/ttf/`).
 ///
-/// Regular, Medium and SemiBold are the static cuts unchanged ([`theme::FONT`],
-/// [`theme::FONT_MEDIUM`], [`theme::FONT_SEMIBOLD`]). The two "Inter Tabular" files
-/// ([`theme::FONT_TABULAR`], [`theme::FONT_TABULAR_MEDIUM`]) have the `tnum` feature baked in,
+/// Regular, Medium and SemiBold are the static cuts unchanged ([`theme::font`],
+/// [`theme::font_medium`], [`theme::font_semibold`] in the standard design). The two "Inter
+/// Tabular" files ([`theme::font_tabular`], [`theme::font_tabular_medium`]) have the `tnum` feature baked in,
 /// because Iced 0.14 cannot switch OpenType features. They were made with
 /// `opentype-feature-freezer` 1.32.2 (fontTools 4.66.1):
 ///
@@ -54,7 +57,8 @@ use std::borrow::Cow;
 /// pyftfeatfreeze -f tnum -S -U Tabular Inter-Medium.ttf InterTabular-Medium.ttf
 /// ```
 ///
-/// Apps do not load these themselves; [`settings`] does.
+/// Apps do not load these themselves; [`settings`] does (through [`design::font_files`], which
+/// picks them for the standard design's built-in faces).
 pub fn fonts() -> [&'static [u8]; 5] {
     [
         include_bytes!("../assets/fonts/Inter-Regular.ttf"),
@@ -65,16 +69,22 @@ pub fn fonts() -> [&'static [u8]; 5] {
     ]
 }
 
-/// Iced settings for every app: [`fonts`] loaded, [`theme::FONT`] (Inter) as default font and
-/// [`typo::BODY`] (13) as default text size – Iced's own default is 16 in the system sans-serif.
+/// Iced settings for every app: the fonts of the active design loaded ([`design::font_files`]; the
+/// embedded Inter for the standard), its text font as default font ([`theme::font`]) and its
+/// [`typo::body`] size (13 in the standard) as default text size – Iced's own default is 16 in the
+/// system sans-serif.
 ///
 /// Use as `iced::application(…).settings(torro_gui::settings())`. It replaces all settings, so it
 /// goes before any builder call that changes settings (`.font`, `.default_font`, `.antialiasing`).
+/// Set the design first ([`design::start`]) if the app starts with another one than the standard.
 pub fn settings() -> iced::Settings {
+    let active = design::active();
+    // A later switch back to this design need not load its fonts again.
+    design::mark_fonts_loaded(&active.id);
     iced::Settings {
-        fonts: fonts().into_iter().map(Cow::Borrowed).collect(),
-        default_font: theme::FONT,
-        default_text_size: typo::BODY.size,
+        fonts: design::font_files(&active),
+        default_font: theme::font(),
+        default_text_size: typo::body().size,
         ..iced::Settings::default()
     }
 }
@@ -175,8 +185,13 @@ mod tests {
 
     #[test]
     fn theme_fonts_match_the_bundled_files() {
-        let expected: [Font; 5] =
-            [theme::FONT, theme::FONT_MEDIUM, theme::FONT_SEMIBOLD, theme::FONT_TABULAR, theme::FONT_TABULAR_MEDIUM];
+        let expected: [Font; 5] = [
+            theme::font(),
+            theme::font_medium(),
+            theme::font_semibold(),
+            theme::font_tabular(),
+            theme::font_tabular_medium(),
+        ];
         for (data, font) in fonts().into_iter().zip(expected) {
             let Family::Name(name) = font.family else { panic!("theme font without a family name") };
             assert_eq!(family(data).as_deref(), Some(name));
@@ -203,7 +218,7 @@ mod tests {
     fn settings_load_inter_at_13() {
         let settings = settings();
         assert_eq!(settings.fonts.len(), fonts().len());
-        assert_eq!(settings.default_font, theme::FONT);
+        assert_eq!(settings.default_font, theme::font());
         assert_eq!(settings.default_text_size, iced::Pixels(13.0));
         assert!(settings.antialiasing);
     }

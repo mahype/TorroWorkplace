@@ -263,7 +263,7 @@ impl Gallery {
         }
     }
 
-    fn palette(&self) -> &'static Palette {
+    fn palette(&self) -> Palette {
         if self.light { Palette::light() } else { Palette::dark() }
     }
 
@@ -278,15 +278,15 @@ impl Gallery {
 
     fn styles(&self) -> Element<'_, Msg> {
         // Three columns, so one screenshot of a wide window (3700 × 1060) shows every style.
-        let first = column![section("Buttons", buttons()), section("Checks", checks())].spacing(space::XXL);
-        let second = column![section("Rows", rows())].spacing(space::XXL);
+        let first = column![section("Buttons", buttons()), section("Checks", checks())].spacing(space::xxl());
+        let second = column![section("Rows", rows())].spacing(space::xxl());
         let third = column![
             section("Inputs", inputs(&self.notes)),
             section("Surfaces", surfaces()),
             section("Live", self.live()),
         ]
-        .spacing(space::XXL);
-        row![first, second, third].spacing(space::XXL).padding(space::XL).into()
+        .spacing(space::xxl());
+        row![first, second, third].spacing(space::xxl()).padding(space::xl()).into()
     }
 
     /// A gallery page: sidebar, header and the scrolling `body` in the inset panel.
@@ -297,32 +297,32 @@ impl Gallery {
             scrollable(body).direction(scrollable::Direction::Vertical(style::scrollbar())).style(style::scrollable),
         ];
         let panel = container(content).width(Fill).height(Fill).style(style::container::panel);
-        container(row![self.sidebar(), container(panel).padding(iced::Padding { left: 0.0, ..size::INSET.into() })])
+        container(row![self.sidebar(), container(panel).padding(iced::Padding { left: 0.0, ..layout::inset().into() })])
             .style(style::container::sidebar)
             .into()
     }
 
     fn sidebar(&self) -> Element<'_, Msg> {
         let items = SECTIONS.iter().enumerate().map(|(i, name)| {
-            button(container(typo::text(typo::BODY, *name)).center_y(Fill))
+            button(container(typo::text(typo::body(), *name)).center_y(Fill))
                 .width(Fill)
-                .height(size::ROW_SIDEBAR)
+                .height(size::row_sidebar())
                 .padding(style::ITEM_PADDING)
                 .on_press(Msg::Section(i))
                 .style(style::button::sidebar_item(i == self.section))
                 .into()
         });
-        let title = typo::text(typo::CAPTION, "Sections").style(theme::text_3);
+        let title = typo::text(typo::caption(), "Sections").style(theme::text_3);
         let list =
-            column![container(title).padding(style::ITEM_PADDING).height(size::ROW_SIDEBAR)].extend(items).spacing(2);
-        container(list).width(size::SIDEBAR).height(Fill).padding(space::S).style(style::container::sidebar).into()
+            column![container(title).padding(style::ITEM_PADDING).height(size::row_sidebar())].extend(items).spacing(2);
+        container(list).width(size::sidebar()).height(Fill).padding(space::s()).style(style::container::sidebar).into()
     }
 
     fn header(&self) -> Element<'_, Msg> {
         let mode = if self.light { "Light" } else { "Dark" };
         let title =
-            row![typo::text(typo::BODY_STRONG, "Style gallery"), typo::text(typo::BODY, mode).style(theme::text_3)]
-                .spacing(space::S);
+            row![typo::text(typo::body_strong(), "Style gallery"), typo::text(typo::body(), mode).style(theme::text_3)]
+                .spacing(space::s());
         let pages = [Page::Styles, Page::Blocks, Page::Parts, Page::Window];
         let active = pages.iter().position(|p| *p == self.page).unwrap_or(0);
         let pages = widgets::segmented(
@@ -344,12 +344,12 @@ impl Gallery {
             text_button("Filter", style::button::ghost, true),
             text_button("New event", style::button::primary, true),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
         container(bar)
-            .height(size::HEADER)
-            .center_y(size::HEADER)
-            .padding(iced::Padding { left: space::L, right: space::M, ..iced::Padding::ZERO })
+            .height(size::header())
+            .center_y(size::header())
+            .padding(iced::Padding { left: space::l(), right: space::m(), ..iced::Padding::ZERO })
             .style(style::container::header)
             .into()
     }
@@ -364,7 +364,7 @@ impl Gallery {
                 text_button("Save", style::button::primary, true),
                 views,
             ]
-            .spacing(space::S)
+            .spacing(space::s())
             .align_y(Alignment::Center),
             row![
                 text_input("Search", &self.query)
@@ -373,10 +373,10 @@ impl Gallery {
                     .width(260)
                     .style(style::text_input),
                 pick_list(VIEWS, self.view, Msg::View)
-                    .padding(style::PICK_LIST_PADDING)
-                    .text_size(typo::CAPTION.size)
-                    .text_line_height(typo::CAPTION.line_height)
-                    .font(typo::CAPTION.font)
+                    .padding(style::pick_list_padding())
+                    .text_size(typo::caption().size)
+                    .text_line_height(typo::caption().line_height)
+                    .font(typo::caption().font)
                     .style(style::pick_list)
                     .menu_style(style::pick_list_menu),
                 checkbox(self.checked)
@@ -397,24 +397,24 @@ impl Gallery {
                 radio("Week starts Monday", 1, self.choice, Msg::Choice).size(style::CHECK_SIZE).style(style::radio),
                 radio("Sunday", 0, self.choice, Msg::Choice).size(style::CHECK_SIZE).style(style::radio),
             ]
-            .spacing(space::L)
+            .spacing(space::l())
             .align_y(Alignment::Center),
         ]
-        .spacing(space::L)
+        .spacing(space::l())
         .into()
     }
 }
 
 /// A titled block of the gallery.
 fn section<'a>(title: &'a str, content: Element<'a, Msg>) -> Element<'a, Msg> {
-    column![typo::text(typo::TITLE, title), content].spacing(space::L).into()
+    column![typo::text(typo::title(), title), content].spacing(space::l()).into()
 }
 
 /// One style: its name, then one cell per state.
 fn line<'a>(name: &'a str, cells: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
     row![
-        typo::text(typo::META, name).style(theme::text_2).width(NAME_WIDTH),
-        iced::widget::Row::with_children(cells).spacing(space::XL)
+        typo::text(typo::meta(), name).style(theme::text_2).width(NAME_WIDTH),
+        iced::widget::Row::with_children(cells).spacing(space::xl())
     ]
     .align_y(Alignment::Start)
     .into()
@@ -422,7 +422,7 @@ fn line<'a>(name: &'a str, cells: Vec<Element<'a, Msg>>) -> Element<'a, Msg> {
 
 /// A widget with the state it is drawn in written under it.
 fn cell<'a>(state: &'a str, widget: impl Into<Element<'a, Msg>>) -> Element<'a, Msg> {
-    column![widget.into(), typo::text(typo::META, state).style(theme::text_3)].spacing(space::XS).into()
+    column![widget.into(), typo::text(typo::meta(), state).style(theme::text_3)].spacing(space::xs()).into()
 }
 
 const BUTTON_STATES: [(&str, button::Status); 4] = [
@@ -443,19 +443,19 @@ fn forced<'a>(
 }
 
 fn label(text: &str) -> Element<'_, Msg> {
-    container(typo::text(typo::CAPTION, text)).center_y(Fill).into()
+    container(typo::text(typo::caption(), text)).center_y(Fill).into()
 }
 
 fn text_button<'a>(text: &'a str, style: ButtonStyle, enabled: bool) -> Element<'a, Msg> {
-    let b = button(label(text)).height(size::CONTROL_SM).padding(style::BUTTON_PADDING).style(style);
+    let b = button(label(text)).height(size::control_sm()).padding(style::button_padding()).style(style);
     if enabled { b.on_press(Msg::Noop).into() } else { b.into() }
 }
 
 fn segmented<'a>(options: &[(&'a str, bool, Msg)]) -> Element<'a, Msg> {
     let segments = options.iter().map(|(name, active, msg)| {
         button(label(name))
-            .height(size::CONTROL_SM - 2.0 * style::SEGMENT_INSET - 2.0)
-            .padding(style::BUTTON_PADDING)
+            .height(size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0)
+            .padding(style::button_padding())
             .on_press(msg.clone())
             .style(style::button::segment(*active))
             .into()
@@ -478,7 +478,7 @@ fn buttons() -> Element<'static, Msg> {
                 .map(|&(state, status)| {
                     cell(
                         state,
-                        forced(label(text), style, status).height(size::CONTROL_SM).padding(style::BUTTON_PADDING),
+                        forced(label(text), style, status).height(size::control_sm()).padding(style::button_padding()),
                     )
                 })
                 .collect();
@@ -490,8 +490,8 @@ fn buttons() -> Element<'static, Msg> {
         let cells = BUTTON_STATES
             .iter()
             .map(|&(state, status)| {
-                let plus = container(typo::text(typo::BODY, "+")).center(Fill);
-                cell(state, forced(plus, style, status).width(size::CONTROL_SM).height(size::CONTROL_SM).padding(0))
+                let plus = container(typo::text(typo::body(), "+")).center(Fill);
+                cell(state, forced(plus, style, status).width(size::control_sm()).height(size::control_sm()).padding(0))
             })
             .collect();
         lines.push(line(name, cells));
@@ -501,14 +501,14 @@ fn buttons() -> Element<'static, Msg> {
             .iter()
             .map(|&(state, status)| {
                 let seg = forced(label("Week"), style::button::segment(active), status)
-                    .height(size::CONTROL_SM - 2.0 * style::SEGMENT_INSET - 2.0)
-                    .padding(style::BUTTON_PADDING);
+                    .height(size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0)
+                    .padding(style::button_padding());
                 cell(state, container(seg).padding(style::SEGMENT_INSET).style(style::container::segmented))
             })
             .collect();
         lines.push(line(if active { "segment(active)" } else { "segment" }, cells));
     }
-    column(lines).spacing(space::L).into()
+    column(lines).spacing(space::l()).into()
 }
 
 fn rows() -> Element<'static, Msg> {
@@ -518,16 +518,16 @@ fn rows() -> Element<'static, Msg> {
             .iter()
             .map(|&(state, status)| {
                 let content = row![
-                    typo::text(typo::BODY, "Today"),
+                    typo::text(typo::body(), "Today"),
                     Space::new().width(Fill),
-                    typo::text(typo::META.tabular(), "5").style(theme::text_3)
+                    typo::text(typo::meta().tabular(), "5").style(theme::text_3)
                 ]
                 .align_y(Alignment::Center);
                 let item = forced(container(content).center_y(Fill), style::button::sidebar_item(active), status)
-                    .width(size::SIDEBAR - 2.0 * space::S - 2.0 * space::XS)
-                    .height(size::ROW_SIDEBAR)
+                    .width(size::sidebar() - 2.0 * space::s() - 2.0 * space::xs())
+                    .height(size::row_sidebar())
                     .padding(style::ITEM_PADDING);
-                cell(state, container(item).padding(space::XS).style(style::container::sidebar))
+                cell(state, container(item).padding(space::xs()).style(style::container::sidebar))
             })
             .collect();
         lines.push(line(if active { "sidebar_item(active)" } else { "sidebar_item" }, cells));
@@ -537,15 +537,15 @@ fn rows() -> Element<'static, Msg> {
             .iter()
             .map(|&(state, status)| {
                 let content = row![
-                    typo::text(typo::BODY_STRONG, "Review API concept"),
+                    typo::text(typo::body_strong(), "Review API concept"),
                     Space::new().width(Fill),
-                    typo::text(typo::META.tabular(), "Oct 14").style(theme::text_3)
+                    typo::text(typo::meta().tabular(), "Oct 14").style(theme::text_3)
                 ]
                 .align_y(Alignment::Center);
                 let item = forced(container(content).center_y(Fill), style::button::list_row(selected), status)
                     .width(240)
-                    .height(size::ROW)
-                    .padding(iced::Padding { left: space::L, right: space::L, ..iced::Padding::ZERO });
+                    .height(size::row())
+                    .padding(iced::Padding { left: space::l(), right: space::l(), ..iced::Padding::ZERO });
                 cell(state, column![item, rule::horizontal(1).style(style::rule)].width(240))
             })
             .collect();
@@ -556,9 +556,11 @@ fn rows() -> Element<'static, Msg> {
             .iter()
             .map(|&(state, status)| {
                 let content = row![
-                    typo::text(typo::BODY, "Week"),
+                    typo::text(typo::body(), "Week"),
                     Space::new().width(Fill),
-                    container(typo::text(typo::CAPTION, "W")).padding(style::KBD_PADDING).style(style::container::kbd)
+                    container(typo::text(typo::caption(), "W"))
+                        .padding(style::KBD_PADDING)
+                        .style(style::container::kbd)
                 ]
                 .align_y(Alignment::Center);
                 let item = forced(container(content).center_y(Fill), style::button::menu_item(highlighted), status)
@@ -570,7 +572,7 @@ fn rows() -> Element<'static, Msg> {
             .collect();
         lines.push(line(if highlighted { "menu_item(highlighted)" } else { "menu_item" }, cells));
     }
-    column(lines).spacing(space::L).into()
+    column(lines).spacing(space::l()).into()
 }
 
 fn inputs(notes: &text_editor::Content) -> Element<'_, Msg> {
@@ -618,25 +620,27 @@ fn inputs(notes: &text_editor::Content) -> Element<'_, Msg> {
         .into_iter()
         .map(|(state, status)| {
             let pick = pick_list(VIEWS, Some("Week"), |_| Msg::Noop)
-                .padding(style::PICK_LIST_PADDING)
-                .text_size(typo::CAPTION.size)
-                .text_line_height(typo::CAPTION.line_height)
-                .font(typo::CAPTION.font)
+                .padding(style::pick_list_padding())
+                .text_size(typo::caption().size)
+                .text_line_height(typo::caption().line_height)
+                .font(typo::caption().font)
                 .style(move |t, _| style::pick_list(t, status));
             cell(state, pick)
         })
         .collect();
     picks.push(cell("Menu (pick_list_menu)", pick_menu()));
-    column![line("text_input", inputs), line("text_editor", editors), line("pick_list", picks)].spacing(space::L).into()
+    column![line("text_input", inputs), line("text_editor", editors), line("pick_list", picks)]
+        .spacing(space::l())
+        .into()
 }
 
 /// The pick list's menu drawn in place: Iced opens it only on click.
 fn pick_menu() -> Element<'static, Msg> {
     let items = VIEWS.iter().map(|v| {
         let hovered = *v == "Week";
-        container(typo::text(typo::BODY, *v))
+        container(typo::text(typo::body(), *v))
             .width(160)
-            .padding(style::BUTTON_PADDING)
+            .padding(style::button_padding())
             .center_y(style::MENU_ITEM_HEIGHT)
             .style(move |t: &Theme| {
                 let m = style::pick_list_menu(t);
@@ -700,7 +704,7 @@ fn checks() -> Element<'static, Msg> {
                 })
                 .into()
         });
-        row(boxes).spacing(space::S).into()
+        row(boxes).spacing(space::s()).into()
     };
     let toggle_states: [(&str, toggler::Status); 6] = [
         ("Off", toggler::Status::Active { is_toggled: false }),
@@ -748,7 +752,7 @@ fn checks() -> Element<'static, Msg> {
         line("toggler", togglers),
         line("radio", radios),
     ]
-    .spacing(space::L)
+    .spacing(space::l())
     .into()
 }
 
@@ -765,20 +769,20 @@ fn surfaces() -> Element<'static, Msg> {
     let boxes = boxes
         .into_iter()
         .map(|(name, s)| {
-            container(typo::text(typo::BODY, name).style(theme::text_2))
+            container(typo::text(typo::body(), name).style(theme::text_2))
                 .width(160)
                 .height(96)
-                .padding(space::L)
+                .padding(space::l())
                 .style(s)
                 .into()
         })
         .collect::<Vec<Element<'_, Msg>>>();
     // Surfaces sit on the window background, as in the app: the panel shows its edge there.
-    let well = container(iced::widget::Row::with_children(boxes).spacing(space::L))
-        .padding(space::L)
+    let well = container(iced::widget::Row::with_children(boxes).spacing(space::l()))
+        .padding(space::l())
         .style(style::container::sidebar);
     let chip = container(
-        row![typo::text(typo::CAPTION, "Today"), typo::text(typo::CAPTION, "Work").style(theme::text_3)]
+        row![typo::text(typo::caption(), "Today"), typo::text(typo::caption(), "Work").style(theme::text_3)]
             .spacing(6)
             .align_y(Alignment::Center),
     )
@@ -786,11 +790,11 @@ fn surfaces() -> Element<'static, Msg> {
     .center_y(style::CHIP_HEIGHT)
     .padding(style::CHIP_PADDING)
     .style(style::container::chip);
-    let kbd = container(typo::text(typo::CAPTION, "Ctrl K")).padding(style::KBD_PADDING).style(style::container::kbd);
-    let header = container(typo::text(typo::BODY_STRONG, "Header"))
+    let kbd = container(typo::text(typo::caption(), "Ctrl K")).padding(style::KBD_PADDING).style(style::container::kbd);
+    let header = container(typo::text(typo::body_strong(), "Header"))
         .width(320)
-        .center_y(size::HEADER)
-        .padding(iced::Padding { left: space::L, ..iced::Padding::ZERO })
+        .center_y(size::header())
+        .padding(iced::Padding { left: space::l(), ..iced::Padding::ZERO })
         .style(style::container::header);
     let scroll_states: [(&str, scrollable::Status); 3] = [
         (
@@ -822,13 +826,13 @@ fn surfaces() -> Element<'static, Msg> {
     let scrolls = scroll_states
         .into_iter()
         .map(|(state, status)| {
-            let lines = (1..=12).map(|i| typo::text(typo::BODY, format!("Row {i}")).into());
+            let lines = (1..=12).map(|i| typo::text(typo::body(), format!("Row {i}")).into());
             let list = scrollable(column(lines).width(Fill))
                 .direction(scrollable::Direction::Vertical(style::scrollbar()))
                 .style(move |t, _| style::scrollable(t, status))
                 .width(160)
                 .height(96);
-            cell(state, container(list).padding(space::S).style(style::container::panel))
+            cell(state, container(list).padding(space::s()).style(style::container::panel))
         })
         .collect();
     column![
@@ -843,7 +847,7 @@ fn surfaces() -> Element<'static, Msg> {
         ),
         line("scrollable", scrolls),
     ]
-    .spacing(space::L)
+    .spacing(space::l())
     .into()
 }
 
@@ -894,18 +898,18 @@ fn quiet<'a>(which: Icon, edge: f32) -> Element<'a, Msg> {
 fn coloured_svg(
     colour: impl Fn(&Palette) -> Color + 'static,
 ) -> impl Fn(&Theme, iced::widget::svg::Status) -> iced::widget::svg::Style {
-    move |t, _| iced::widget::svg::Style { color: Some(colour(palette(t))) }
+    move |t, _| iced::widget::svg::Style { color: Some(colour(&palette(t))) }
 }
 
 fn coloured(colour: impl Fn(&Palette) -> Color + 'static) -> impl Fn(&Theme) -> iced::widget::text::Style {
-    move |t| iced::widget::text::Style { color: Some(colour(palette(t))) }
+    move |t| iced::widget::text::Style { color: Some(colour(&palette(t))) }
 }
 
 /// Linear's priority: three bars rising, the first `level` in `text_2`; urgent is an orange square
 /// with "!". Task-specific, so it lives with the tasks app; drawn here for the example.
 fn priority<'a>(level: u8, urgent: bool) -> Element<'a, Msg> {
     if urgent {
-        return container(typo::text(typo::CAPTION, "!").style(coloured(|_| Palette::dark().bg)))
+        return container(typo::text(typo::caption(), "!").style(coloured(|_| Palette::dark().bg)))
             .center(icon::SIZE_SM)
             .style(|t| container::Style {
                 background: Some(Background::Color(palette(t).attention)),
@@ -1028,8 +1032,8 @@ impl Gallery {
             ),
             SizeClass::Medium => shell::header_bar(
                 [shell::sidebar_toggle(Msg::Drawer)],
-                row![menu, typo::text(typo::BODY, "5 open").style(theme::text_3)]
-                    .spacing(space::S)
+                row![menu, typo::text(typo::body(), "5 open").style(theme::text_3)]
+                    .spacing(space::s())
                     .align_y(Alignment::Center),
                 [filter, new_task],
             ),
@@ -1065,8 +1069,8 @@ impl Gallery {
     fn tasks_body(&self, class: SizeClass) -> Element<'_, Msg> {
         let list = self.task_list(class);
         let width = match class {
-            SizeClass::Wide => size::LIST,
-            SizeClass::Medium => size::LIST_MEDIUM,
+            SizeClass::Wide => size::list(),
+            SizeClass::Medium => size::list_medium(),
             _ => return list,
         };
         row![container(list).width(width).height(Fill), rule::vertical(1).style(style::rule), self.task_detail(class)]
@@ -1078,24 +1082,24 @@ impl Gallery {
         let quick = container(
             row![
                 quiet(Icon::Plus, icon::SIZE_SM),
-                typo::text(typo::BODY, "New task…").style(theme::text_3),
+                typo::text(typo::body(), "New task…").style(theme::text_3),
                 Space::new().width(Fill),
                 widgets::kbd("N"),
             ]
-            .spacing(space::S)
+            .spacing(space::s())
             .align_y(Alignment::Center),
         )
-        .center_y(size::CONTROL_LG)
-        .padding(style::BUTTON_PADDING)
+        .center_y(size::control_lg())
+        .padding(style::button_padding())
         .style(|t| container::Style {
-            border: border::rounded(theme::radius::SM).color(palette(t).line).width(1),
+            border: border::rounded(theme::radius::sm()).color(palette(t).line).width(1),
             ..container::Style::default()
         });
         let mut list = column![container(quick).padding(iced::Padding {
-            top: space::S,
-            right: space::S,
-            bottom: space::XS,
-            left: space::S
+            top: space::s(),
+            right: space::s(),
+            bottom: space::xs(),
+            left: space::s()
         })];
         let marks =
             [Mark::Tinted(Icon::CircleAlert, p.attention), Mark::Icon(Icon::Sun), Mark::Icon(Icon::CalendarClock)];
@@ -1111,14 +1115,15 @@ impl Gallery {
     fn task_row(&self, i: usize, class: SizeClass) -> Element<'_, Msg> {
         let t = &TASKS[i];
         let done = self.done.get(i).copied().unwrap_or(t.done);
-        let title = typo::text(typo::BODY, t.title).wrapping(iced::widget::text::Wrapping::None).style(if done {
+        let title = typo::text(typo::body(), t.title).wrapping(iced::widget::text::Wrapping::None).style(if done {
             theme::text_3
         } else {
             theme::text
         });
         let late = t.late;
         let due = container(
-            typo::text(typo::META.tabular(), t.due).style(coloured(move |p| if late { p.attention } else { p.text_3 })),
+            typo::text(typo::meta().tabular(), t.due)
+                .style(coloured(move |p| if late { p.attention } else { p.text_3 })),
         )
         .width(44)
         .align_right(44);
@@ -1138,15 +1143,16 @@ impl Gallery {
         let p = self.palette();
         let crumb = row![
             small_ring(p.calendar[0], 12.0),
-            typo::text(typo::META, "Work").style(theme::text_3),
+            typo::text(typo::meta(), "Work").style(theme::text_3),
             quiet(Icon::ChevronRight, icon::SIZE_SM),
-            typo::text(typo::META, "Today").style(theme::text_3),
+            typo::text(typo::meta(), "Today").style(theme::text_3),
         ]
         .spacing(6)
         .align_y(Alignment::Center);
         let mut detail = column![
-            container(crumb).padding(iced::Padding::ZERO.bottom(space::M)),
-            container(typo::text(typo::HEADLINE, "Review API concept")).padding(iced::Padding::ZERO.bottom(space::S)),
+            container(crumb).padding(iced::Padding::ZERO.bottom(space::m())),
+            container(typo::text(typo::headline(), "Review API concept"))
+                .padding(iced::Padding::ZERO.bottom(space::s())),
         ];
         if class != SizeClass::Wide {
             let chips = widgets::chip_row(vec![
@@ -1157,14 +1163,14 @@ impl Gallery {
                 widgets::chip(Some(Mark::Ring(p.calendar[0])), "Work", Some(Msg::Noop)),
                 widgets::chip(Some(Mark::Icon(Icon::Ellipsis)), "", Some(Msg::Noop)),
             ]);
-            detail = detail.push(container(chips).padding(iced::Padding::ZERO.top(space::XS).bottom(space::L)));
+            detail = detail.push(container(chips).padding(iced::Padding::ZERO.top(space::xs()).bottom(space::l())));
         }
         let description = "Read docs/api.md and decide the three open questions: HTTP API now or later, the app key as \
                            a file or in the keychain, and whether agents may change accounts and settings.";
         detail = detail.push(
-            container(typo::text(typo::BODY, description).style(theme::text_2))
-                .max_width(size::CONTENT_MAX * 0.7)
-                .padding(iced::Padding::ZERO.bottom(space::XL)),
+            container(typo::text(typo::body(), description).style(theme::text_2))
+                .max_width(size::content_max() * 0.7)
+                .padding(iced::Padding::ZERO.bottom(space::xl())),
         );
         let progress = container(container(Space::new().width(24).height(4)).style(|t| container::Style {
             background: Some(Background::Color(palette(t).ok)),
@@ -1180,13 +1186,13 @@ impl Gallery {
         });
         let sub_head = row![
             quiet(Icon::ChevronDown, icon::SIZE_SM),
-            typo::text(typo::CAPTION, "Sub-tasks").style(theme::text_3),
+            typo::text(typo::caption(), "Sub-tasks").style(theme::text_3),
             progress,
-            typo::text(typo::META.tabular(), "2/4").style(theme::text_3),
+            typo::text(typo::meta().tabular(), "2/4").style(theme::text_3),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
-        let mut subs = column![container(sub_head).padding(iced::Padding::ZERO.bottom(space::XS))];
+        let mut subs = column![container(sub_head).padding(iced::Padding::ZERO.bottom(space::xs()))];
         for (title, done) in [
             ("Read the concept", true),
             ("Compare with TorroMail", true),
@@ -1195,23 +1201,23 @@ impl Gallery {
         ] {
             let line = row![
                 task_check(done, 1, Some(Msg::Noop)),
-                typo::text(typo::BODY, title).style(if done { theme::text_3 } else { theme::text })
+                typo::text(typo::body(), title).style(if done { theme::text_3 } else { theme::text })
             ]
             .spacing(10)
             .align_y(Alignment::Center);
             subs = subs
-                .push(column![container(line).center_y(size::CONTROL - 1.0), rule::horizontal(1).style(style::rule)]);
+                .push(column![container(line).center_y(size::control() - 1.0), rule::horizontal(1).style(style::rule)]);
         }
         subs = subs.push(
             container(
-                row![quiet(Icon::Plus, icon::SIZE_SM), typo::text(typo::BODY, "Add sub-task").style(theme::text_3)]
-                    .spacing(space::S)
+                row![quiet(Icon::Plus, icon::SIZE_SM), typo::text(typo::body(), "Add sub-task").style(theme::text_3)]
+                    .spacing(space::s())
                     .align_y(Alignment::Center),
             )
-            .center_y(size::CONTROL),
+            .center_y(size::control()),
         );
-        detail = detail.push(container(subs).max_width(size::CONTENT_MAX * 0.7));
-        let mut activity = column![typo::text(typo::CAPTION, "Activity").style(theme::text_3)].spacing(space::XS);
+        detail = detail.push(container(subs).max_width(size::content_max() * 0.7));
+        let mut activity = column![typo::text(typo::caption(), "Activity").style(theme::text_3)].spacing(space::xs());
         for (which, who, what) in [
             (Icon::CirclePlus, "You", "created the task · 2 days ago"),
             (Icon::Sparkles, "Claude Code", "added two sub-tasks · yesterday"),
@@ -1221,20 +1227,20 @@ impl Gallery {
                 container(
                     row![
                         quiet(which, icon::SIZE_SM),
-                        typo::text(typo::CAPTION, who).style(theme::text_2),
-                        typo::text(typo::META, what).style(theme::text_3)
+                        typo::text(typo::caption(), who).style(theme::text_2),
+                        typo::text(typo::meta(), what).style(theme::text_3)
                     ]
-                    .spacing(space::S)
+                    .spacing(space::s())
                     .align_y(Alignment::Center),
                 )
-                .center_y(size::ROW_SIDEBAR),
+                .center_y(size::row_sidebar()),
             );
         }
-        detail = detail.push(container(activity).padding(iced::Padding::ZERO.top(space::XXL)));
+        detail = detail.push(container(activity).padding(iced::Padding::ZERO.top(space::xxl())));
         let padding = match class {
-            SizeClass::Wide => iced::Padding::from([space::XXL, space::XXL + space::S]),
-            SizeClass::Medium => iced::Padding::from([space::XL, space::XL + space::XS]),
-            _ => iced::Padding::new(space::L),
+            SizeClass::Wide => iced::Padding::from([space::xxl(), space::xxl() + space::s()]),
+            SizeClass::Medium => iced::Padding::from([space::xl(), space::xl() + space::xs()]),
+            _ => iced::Padding::new(space::l()),
         };
         scrollable(container(detail).padding(padding).width(Fill))
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
@@ -1244,9 +1250,9 @@ impl Gallery {
 
     fn tasks_props(&self) -> Element<'_, Msg> {
         let p = self.palette();
-        let value = |text: &'static str| typo::text(typo::BODY, text);
+        let value = |text: &'static str| typo::text(typo::body(), text);
         let quiet_value =
-            |text: &'static str| row![Space::new().width(Fill), typo::text(typo::BODY, text).style(theme::text_3)];
+            |text: &'static str| row![Space::new().width(Fill), typo::text(typo::body(), text).style(theme::text_3)];
         column![
             widgets::prop_section(
                 "Properties",
@@ -1254,17 +1260,19 @@ impl Gallery {
                     widgets::prop_row(Some(Mark::Ring(p.text_3)), value("Open"), Some(Msg::Noop)),
                     widgets::prop_row(
                         None,
-                        row![priority(2, false), value("Medium priority")].spacing(space::S).align_y(Alignment::Center),
+                        row![priority(2, false), value("Medium priority")]
+                            .spacing(space::s())
+                            .align_y(Alignment::Center),
                         Some(Msg::Noop)
                     ),
                     widgets::prop_row(
                         Some(Mark::Icon(Icon::Calendar)),
-                        typo::text(typo::BODY.tabular(), "Today, 16:00"),
+                        typo::text(typo::body().tabular(), "Today, 16:00"),
                         Some(Msg::Noop)
                     ),
                     widgets::prop_row(
                         Some(Mark::Icon(Icon::Bell)),
-                        typo::text(typo::BODY.tabular(), "15:45"),
+                        typo::text(typo::body().tabular(), "15:45"),
                         Some(Msg::Noop)
                     ),
                     widgets::prop_row(Some(Mark::Icon(Icon::Repeat)), quiet_value("No repeat"), Some(Msg::Noop)),
@@ -1278,7 +1286,7 @@ impl Gallery {
                 "Tags",
                 vec![widgets::prop_row(
                     None,
-                    row![widgets::pill(None, "torroworkplace"), widgets::pill(None, "review")].spacing(space::S),
+                    row![widgets::pill(None, "torroworkplace"), widgets::pill(None, "review")].spacing(space::s()),
                     None
                 )]
             ),
@@ -1286,7 +1294,7 @@ impl Gallery {
                 "Calendar",
                 vec![widgets::prop_row(
                     Some(Mark::Icon(Icon::CalendarPlus)),
-                    typo::text(typo::BODY, "Block time in calendar").style(theme::text_2),
+                    typo::text(typo::body(), "Block time in calendar").style(theme::text_2),
                     Some(Msg::Noop)
                 )]
             ),
@@ -1294,12 +1302,12 @@ impl Gallery {
                 "Account",
                 vec![widgets::prop_row(
                     Some(Mark::Icon(Icon::Cloud)),
-                    typo::text(typo::BODY, "Nextcloud · Tasks").style(theme::text_2),
+                    typo::text(typo::body(), "Nextcloud · Tasks").style(theme::text_2),
                     None
                 )]
             ),
         ]
-        .spacing(space::L)
+        .spacing(space::l())
         .into()
     }
 
@@ -1309,8 +1317,9 @@ impl Gallery {
         let t = &TASKS[self.selected.min(TASKS.len() - 1)];
         let description = "Read docs/api.md and decide the three open questions: HTTP API now or later, the app key as \
                            a file or in the keychain, and whether agents may change accounts and settings.";
-        let body = column![panel::inset(typo::text(typo::BODY, description).style(theme::text_2)), self.tasks_props(),]
-            .spacing(space::L);
+        let body =
+            column![panel::inset(typo::text(typo::body(), description).style(theme::text_2)), self.tasks_props(),]
+                .spacing(space::l());
         panel::panel(
             panel::path(Some(Mark::Ring(self.palette().calendar[t.list])), [t.list_name, "Today"]),
             panel::title(t.title),
@@ -1329,9 +1338,9 @@ impl Gallery {
     fn blocks(&self) -> Element<'_, Msg> {
         let p = self.palette();
         let sidebar = container(self.tasks_sidebar(&Anchor::new()))
-            .width(size::SIDEBAR)
+            .width(size::sidebar())
             .height(640)
-            .padding(space::S)
+            .padding(space::s())
             .style(style::container::sidebar);
         let mut list = column![];
         for ((name, range), mark) in GROUPS.into_iter().zip([
@@ -1344,7 +1353,7 @@ impl Gallery {
                 list = list.push(self.task_row(i, SizeClass::Wide));
             }
         }
-        let list = container(list).width(size::LIST).style(style::container::panel);
+        let list = container(list).width(size::list()).style(style::container::panel);
         let header = container(shell::header_bar(
             [shell::sidebar_toggle(Msg::Noop)],
             shell::header_title(Some(Icon::Sun), "Today", Some("5 open".into())),
@@ -1353,9 +1362,9 @@ impl Gallery {
                 widgets::text_button(Some(Icon::Plus), "New task", style::button::primary, Some(Msg::Noop)),
             ],
         ))
-        .width(size::LIST + size::PROPS)
-        .center_y(size::HEADER)
-        .padding(iced::Padding::ZERO.left(space::L).right(space::M))
+        .width(size::list() + size::props())
+        .center_y(size::header())
+        .padding(iced::Padding::ZERO.left(space::l()).right(space::m()))
         .style(style::container::panel);
         let buttons = row![
             widgets::text_button(Some(Icon::Plus), "New task", style::button::primary, Some(Msg::Noop)),
@@ -1368,7 +1377,7 @@ impl Gallery {
             widgets::compact_button(Icon::Plus, "New task", style::button::primary, Some(Msg::Noop)),
             widgets::segmented([("Day", Msg::Noop), ("Week", Msg::Noop), ("Month", Msg::Noop)], 1),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
         let chips = widgets::chip_row(vec![
             widgets::chip(Some(Mark::Ring(p.text_3)), "Open", Some(Msg::Noop)),
@@ -1382,51 +1391,51 @@ impl Gallery {
             widgets::pill(None, "review"),
             widgets::kbd("N"),
             widgets::kbd("Ctrl K"),
-            row![widgets::status_dot(Status::Ok), typo::text(typo::META, "Connected")]
+            row![widgets::status_dot(Status::Ok), typo::text(typo::meta(), "Connected")]
                 .spacing(6)
                 .align_y(Alignment::Center),
-            row![widgets::status_dot(Status::Attention), typo::text(typo::META, "Waiting")]
+            row![widgets::status_dot(Status::Attention), typo::text(typo::meta(), "Waiting")]
                 .spacing(6)
                 .align_y(Alignment::Center),
-            row![widgets::status_dot(Status::Error), typo::text(typo::META, "Refused")]
+            row![widgets::status_dot(Status::Error), typo::text(typo::meta(), "Refused")]
                 .spacing(6)
                 .align_y(Alignment::Center),
-            row![widgets::status_dot(Status::Inactive), typo::text(typo::META, "Not set up")]
+            row![widgets::status_dot(Status::Inactive), typo::text(typo::meta(), "Not set up")]
                 .spacing(6)
                 .align_y(Alignment::Center),
             widgets::avatar_stack(&[("AW", p.calendar[0]), ("JK", p.calendar[1]), ("LM", p.calendar[2])], 3),
         ]
-        .spacing(space::L)
+        .spacing(space::l())
         .align_y(Alignment::Center);
         let props = container(self.tasks_props())
-            .width(size::PROPS)
-            .padding(iced::Padding { top: space::L, right: space::S, bottom: space::XL, left: space::S })
+            .width(size::props())
+            .padding(iced::Padding { top: space::l(), right: space::s(), bottom: space::xl(), left: space::s() })
             .style(style::container::panel);
         let card = widgets::popover(
             row![
                 widgets::color_dot(p.calendar[0], 8.0),
-                typo::text(typo::META, "Work").style(theme::text_3),
+                typo::text(typo::meta(), "Work").style(theme::text_3),
                 Space::new().width(Fill),
                 widgets::icon_button(Icon::Ellipsis, "More", Some(Msg::Noop)),
                 widgets::icon_button(Icon::X, "Close", Some(Msg::Noop)),
             ]
-            .spacing(space::S)
+            .spacing(space::s())
             .align_y(Alignment::Center),
             "Sprint planning",
             vec![
                 widgets::prop_row(
                     Some(Mark::Icon(Icon::Clock)),
-                    typo::text(typo::BODY.tabular(), "Mon, 5 Oct · 10:00 – 11:30"),
+                    typo::text(typo::body().tabular(), "Mon, 5 Oct · 10:00 – 11:30"),
                     None,
                 ),
                 widgets::prop_row(
                     Some(Mark::Icon(Icon::MapPin)),
-                    typo::text(typo::BODY, "Room 2 · Office Berlin"),
+                    typo::text(typo::body(), "Room 2 · Office Berlin"),
                     None,
                 ),
                 widgets::prop_row(
                     Some(Mark::Icon(Icon::Users)),
-                    typo::text(typo::BODY, "6 guests · you accepted"),
+                    typo::text(typo::body(), "6 guests · you accepted"),
                     None,
                 ),
             ],
@@ -1469,8 +1478,8 @@ impl Gallery {
             ],
             Some("Changes apply to all apps of the suite.".into()),
         ))
-        .width(size::FORM_MAX)
-        .padding(space::L)
+        .width(size::form_max())
+        .padding(space::l())
         .style(style::container::panel);
         let state = |content: Element<'static, Msg>| -> Element<'static, Msg> {
             container(content).width(300).height(180).style(style::container::panel).into()
@@ -1480,7 +1489,7 @@ impl Gallery {
             state(widgets::loading()),
             state(widgets::error_state("The server did not answer. Check the connection and try again.", Msg::Noop)),
         ]
-        .spacing(space::L);
+        .spacing(space::l());
         let first = column![section("Sidebar", sidebar.into())];
         let second = column![
             section("Header bar", header.into()),
@@ -1489,16 +1498,16 @@ impl Gallery {
             section("Chips", chips),
             section("Pills, keys, status, avatars", small.into()),
         ]
-        .spacing(space::XL);
+        .spacing(space::xl());
         let third = column![
-            section("Menu", row![self.nav_menu(), view_menu].spacing(space::L).into()),
+            section("Menu", row![self.nav_menu(), view_menu].spacing(space::l()).into()),
             section("Floating card", card),
             section("Properties", props.into()),
         ]
-        .spacing(space::XL);
+        .spacing(space::xl());
         let fourth =
-            column![section("Settings group", settings.into()), section("States", states.into())].spacing(space::XL);
-        row![first, second, third, fourth].spacing(space::XXL).padding(space::XL).into()
+            column![section("Settings group", settings.into()), section("States", states.into())].spacing(space::xl());
+        row![first, second, third, fourth].spacing(space::xxl()).padding(space::xl()).into()
     }
 
     /// The small parts of the tasks redesign (R.1) in the places R.2 and R.3 use them, and every
@@ -1506,7 +1515,7 @@ impl Gallery {
     fn parts(&self) -> Element<'_, Msg> {
         let p = self.palette();
         let value = |text: &'static str| widgets::prop_value::<Msg>(text);
-        let date = |text: &'static str| typo::text(typo::BODY.tabular(), text);
+        let date = |text: &'static str| typo::text(typo::body().tabular(), text);
         let labels = |names: &[(&'static str, &'static str)]| {
             widgets::label_chip_row(names.iter().map(|(hex, name)| widgets::label_chip(hex, *name)).collect())
         };
@@ -1517,7 +1526,7 @@ impl Gallery {
                 widgets::prop_line(
                     "Priority",
                     None,
-                    row![priority(3, false), value("High")].spacing(space::S).align_y(Alignment::Center),
+                    row![priority(3, false), value("High")].spacing(space::s()).align_y(Alignment::Center),
                     Some(Msg::Noop),
                 ),
                 widgets::prop_line("Due", Some(Mark::Icon(Icon::Calendar)), date("Today, 16:00"), Some(Msg::Noop),),
@@ -1580,15 +1589,15 @@ impl Gallery {
                 ]
             ),
         ]
-        .spacing(space::S);
+        .spacing(space::s());
         let props = container(props)
-            .width(size::PROPS)
-            .padding(iced::Padding { top: space::L, right: space::L, bottom: space::XL, left: space::L })
+            .width(size::props())
+            .padding(iced::Padding { top: space::l(), right: space::l(), bottom: space::xl(), left: space::l() })
             .style(style::container::panel);
 
         let cell = |content: Element<'static, Msg>, name: &'static str| -> Element<'static, Msg> {
-            row![content, typo::text(typo::META, name).style(theme::text_3)]
-                .spacing(space::S)
+            row![content, typo::text(typo::meta(), name).style(theme::text_3)]
+                .spacing(space::s())
                 .align_y(Alignment::Center)
                 .into()
         };
@@ -1602,43 +1611,43 @@ impl Gallery {
                 widgets::state_pill(Mark::Tinted(Icon::GitPullRequestClosed, p.error), "Closed"),
                 widgets::state_pill(Mark::Tinted(Icon::CircleCheck, p.ok), "Completed"),
             ]
-            .spacing(space::S),
+            .spacing(space::s()),
             row![
                 widgets::label_chip("#D73A4A", "bug"),
                 widgets::label_chip("#3B82F6", "ui"),
                 widgets::label_chip("#D4A72C", "linux"),
                 widgets::label_chip("2da44e", "enhancement"),
                 widgets::label_chip("not a colour", "no colour"),
-                typo::text(typo::CAPTION.tabular(), "+2").style(theme::text_3),
+                typo::text(typo::caption().tabular(), "+2").style(theme::text_3),
             ]
-            .spacing(space::XS)
+            .spacing(space::xs())
             .align_y(Alignment::Center),
         ]
-        .spacing(space::M);
+        .spacing(space::m());
         let bar = |done: usize, total: usize| -> Element<'static, Msg> {
             row![
                 widgets::progress_bar(done, total),
-                typo::text(typo::META.tabular(), format!("{done}/{total}")).style(theme::text_3)
+                typo::text(typo::meta().tabular(), format!("{done}/{total}")).style(theme::text_3)
             ]
-            .spacing(space::S)
+            .spacing(space::s())
             .align_y(Alignment::Center)
             .into()
         };
         let sub_tasks = column![
             row![
                 icon(Icon::ChevronDown, 12.0).style(|t, _| iced::widget::svg::Style { color: Some(palette(t).text_3) }),
-                typo::text(typo::CAPTION, "Sub-tasks").style(theme::text_2),
+                typo::text(typo::caption(), "Sub-tasks").style(theme::text_2),
                 bar(2, 4),
             ]
-            .spacing(space::S)
+            .spacing(space::s())
             .align_y(Alignment::Center),
-            row![bar(0, 3), bar(4, 4), bar(0, 0)].spacing(space::XL),
+            row![bar(0, 3), bar(4, 4), bar(0, 0)].spacing(space::xl()),
         ]
-        .spacing(space::M);
+        .spacing(space::m());
         let hint = |which: Icon, label: &'static str| -> Element<'static, Msg> {
-            let mut r = row![quiet(which, icon::SIZE_SM)].spacing(space::XS).align_y(Alignment::Center);
+            let mut r = row![quiet(which, icon::SIZE_SM)].spacing(space::xs()).align_y(Alignment::Center);
             if !label.is_empty() {
-                r = r.push(typo::text(typo::META.tabular(), label).style(theme::text_3));
+                r = r.push(typo::text(typo::meta().tabular(), label).style(theme::text_3));
             }
             r.into()
         };
@@ -1651,7 +1660,7 @@ impl Gallery {
             widgets::kbd("N"),
             widgets::kbd("Ctrl L"),
         ]
-        .spacing(space::L)
+        .spacing(space::l())
         .align_y(Alignment::Center);
         let ci = row![
             cell(icon(Icon::CircleDotDashed, icon::SIZE_SM).style(coloured_svg(|p| p.attention)).into(), "running"),
@@ -1661,26 +1670,74 @@ impl Gallery {
             cell(icon(Icon::Eye, icon::SIZE_SM).style(coloured_svg(|p| p.attention)).into(), "review"),
             cell(icon(Icon::GitMerge, icon::SIZE).style(coloured_svg(|p| p.merged)).into(), "merged"),
         ]
-        .spacing(space::L)
+        .spacing(space::l())
         .align_y(Alignment::Center);
+        // The action bar of a row (task E3.9), shown as under the keyboard cursor: with words, and as
+        // icons in a narrow row. Pointing at any other row shows it too.
+        let actions = || {
+            vec![
+                widgets::RowAction::new(Icon::ListTodo, "Task", "T", Msg::Noop),
+                widgets::RowAction::new(Icon::Check, "Done", "E", Msg::Noop),
+                widgets::RowAction::new(Icon::Clock, "Later", "S", Msg::Noop),
+                widgets::RowAction::new(Icon::Ellipsis, "Hide", "M", Msg::Noop),
+            ]
+        };
+        let entry = |title: &'static str, selected: bool| {
+            let cells = vec![quiet(Icon::Mail, icon::SIZE), typo::text(typo::body(), title).width(Fill).into()];
+            widgets::list_row(cells, selected, Some(Msg::Noop))
+        };
+        // A row of three lines (task E3.11): the bar sits on the first line, over the time, and
+        // leaves the lines below free.
+        let three_lines = || {
+            let lines = column![
+                typo::text(typo::body_strong(), "Jonas Weber"),
+                typo::text(typo::body(), "Budget review for Q4"),
+                typo::text(typo::body(), "The numbers for Q4 are in.").style(theme::text_2),
+            ];
+            let content = row![quiet(Icon::Mail, icon::SIZE), lines.width(Fill)].spacing(space::m());
+            container(content).center_y(size::row_message()).padding(layout::row_padding()).style(|t: &Theme| {
+                container::Style { background: Some(palette(t).selected.into()), ..container::Style::default() }
+            })
+        };
+        let line = typo::line_height(typo::body());
+        let first_line = (size::row_message() - 3.0 * line) / 2.0 + line / 2.0;
+        let bars = column![
+            container(widgets::row_actions(entry("Budget review for Q4", true), actions(), true, true))
+                .width(size::list()),
+            container(widgets::row_actions(entry("Weekend plans", false), actions(), true, false)).width(size::props()),
+            container(widgets::row_actions(entry("Point at me", false), actions(), false, true)).width(size::list()),
+            container(widgets::row_actions_at(three_lines(), actions(), true, true, first_line)).width(size::list()),
+        ]
+        .spacing(space::s());
+        // The toast after a change (task E3.11), drawn in place instead of over the window.
+        let toasts = column![
+            container(widgets::toast("Marked as done", Some(widgets::ToastAction::undo(Msg::Noop))))
+                .width(size::list())
+                .height(size::control_lg() + 2.0 * space::xl()),
+            container(widgets::toast::<Msg>("Task created in Work", None))
+                .width(size::list())
+                .height(size::control_lg() + 2.0 * space::xl()),
+        ];
         let small = column![
+            section("Row actions", bars.into()),
+            section("Toast", toasts.into()),
             section("State pills and label chips", pills.into()),
             section("Progress bar", sub_tasks.into()),
             section("Hints in a row, key hints", hints.into()),
             section("Check and state symbols", ci.into()),
         ]
-        .spacing(space::XL);
+        .spacing(space::xl());
 
         let every_icon = iced::widget::Row::with_children(Icon::ALL.iter().map(|&which| -> Element<'static, Msg> {
-            row![quiet(which, icon::SIZE), typo::text(typo::META, format!("{which:?}")).style(theme::text_2)]
-                .spacing(space::S)
+            row![quiet(which, icon::SIZE), typo::text(typo::meta(), format!("{which:?}")).style(theme::text_2)]
+                .spacing(space::s())
                 .align_y(Alignment::Center)
                 .width(170)
                 .into()
         }))
-        .spacing(space::S)
+        .spacing(space::s())
         .wrap()
-        .vertical_spacing(space::M);
+        .vertical_spacing(space::m());
         let icons = container(every_icon).width(1000);
 
         row![
@@ -1689,8 +1746,8 @@ impl Gallery {
             small,
             section("Every bundled icon (Lucide 0.469.0, stroke 1.75)", icons.into())
         ]
-        .spacing(space::XXL)
-        .padding(space::XL)
+        .spacing(space::xxl())
+        .padding(space::xl())
         .into()
     }
 
@@ -1706,10 +1763,10 @@ impl Gallery {
                     let lead = if on { Icon::Check } else { Icon::Bug };
                     let tone: fn(&Palette) -> Color = if on { |p| p.text } else { |p| p.text_2 };
                     let content = row![icon(lead, icon::SIZE_SM).style(coloured_svg(tone)), label("Bugs")]
-                        .spacing(space::XS + space::XS / 2.0)
+                        .spacing(space::xs() + space::xs() / 2.0)
                         .align_y(Alignment::Center);
                     let chip = forced(content, style::button::choice_chip(on), status)
-                        .height(size::CONTROL_SM)
+                        .height(size::control_sm())
                         .padding(style::CHIP_PADDING);
                     cell(state, chip)
                 })
@@ -1719,9 +1776,9 @@ impl Gallery {
         let property = BUTTON_STATES
             .iter()
             .map(|&(state, status)| {
-                let date = typo::text(typo::META, "Today, 16:00").wrapping(iced::widget::text::Wrapping::None);
+                let date = typo::text(typo::meta(), "Today, 16:00").wrapping(iced::widget::text::Wrapping::None);
                 let content = row![quiet(Icon::Calendar, icon::SIZE_SM), date]
-                    .spacing(space::XS + space::XS / 2.0)
+                    .spacing(space::xs() + space::xs() / 2.0)
                     .align_y(Alignment::Center);
                 cell(
                     state,
@@ -1737,8 +1794,8 @@ impl Gallery {
                 cell(
                     state,
                     forced(label("Cancel"), style::button::secondary, status)
-                        .height(size::CONTROL_SM)
-                        .padding(style::BUTTON_PADDING),
+                        .height(size::control_sm())
+                        .padding(style::button_padding()),
                 )
             })
             .collect();
@@ -1747,8 +1804,8 @@ impl Gallery {
                 .iter()
                 .map(|&(state, status)| {
                     let seg = forced(label("Open"), style::button::segment(active), status)
-                        .height(size::CONTROL_SM - 2.0 * style::SEGMENT_INSET - 2.0)
-                        .padding(style::BUTTON_PADDING);
+                        .height(size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0)
+                        .padding(style::button_padding());
                     cell(state, container(seg).padding(style::SEGMENT_INSET).style(style::container::segmented))
                 })
                 .collect();
@@ -1771,7 +1828,7 @@ impl Gallery {
             segments(true),
             primary,
         ]
-        .spacing(space::L);
+        .spacing(space::l());
 
         // Live: one template (a second click clears it), several labels, segments, busy.
         let templates = ["Assigned to me", "Bugs", "Review requested", "My pull requests"];
@@ -1811,9 +1868,9 @@ impl Gallery {
         let footer = row![
             widgets::text_button(None, "Cancel", style::button::secondary, Some(Msg::Busy(false))),
             create,
-            typo::text(typo::META, "Cancel ends the busy state").style(theme::text_3),
+            typo::text(typo::meta(), "Cancel ends the busy state").style(theme::text_3),
         ]
-        .spacing(space::S)
+        .spacing(space::s())
         .align_y(Alignment::Center);
         let live = column![
             labelled("Start from (one of, click again to clear)", widgets::chip_row(template_chips)),
@@ -1822,16 +1879,16 @@ impl Gallery {
             labelled("Show", show),
             labelled("Footer", footer.into()),
         ]
-        .spacing(space::L);
+        .spacing(space::l());
 
         column![forced_states, rule::horizontal(1).style(style::rule), live]
-            .spacing(space::XL)
-            .width(size::CONTENT_MAX)
+            .spacing(space::xl())
+            .width(size::content_max())
             .into()
     }
 }
 
 /// `body` under a small `CAPTION` title in `text_3`, as the fields of a dialog.
 fn labelled<'a>(title: &'a str, body: Element<'a, Msg>) -> Element<'a, Msg> {
-    column![typo::text(typo::CAPTION, title).style(theme::text_3), body].spacing(space::XS).into()
+    column![typo::text(typo::caption(), title).style(theme::text_3), body].spacing(space::xs()).into()
 }

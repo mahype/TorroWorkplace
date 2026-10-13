@@ -195,6 +195,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
     .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())?;
     let store = Store::open_default().map_err(|err| err.to_string())?;
+    // The first start of the suite brings the example design packs (task L.5); later starts find
+    // the folder and leave it alone.
+    let _ = tokio::task::spawn_blocking(crate::designs::install_examples).await;
     let backend = torro_wm::detect(|key| std::env::var(key).ok());
     let pim = Arc::new(crate::pim::PimService::new());
     pim.start();
@@ -460,6 +463,7 @@ fn describe(request: &Request) -> String {
         Request::RenameTemplate { id, .. } => format!("rename {id}"),
         Request::OpenApp { app } => format!("open {app}"),
         Request::ListApps => "apps".into(),
+        Request::ListDesigns => "designs".into(),
         Request::ListClients => "clients".into(),
         Request::CreateClient { .. } => "create client".into(),
         Request::UpdateClient { id, .. } => format!("update client {id}"),
@@ -483,6 +487,9 @@ fn describe(request: &Request) -> String {
         Request::SnoozeItem { id, .. } => format!("snooze inbox item {id}"),
         Request::SetItemLane { id, .. } => format!("move inbox item {id}"),
         Request::MuteSource { source, muted } => format!("{} {source}", if *muted { "mute" } else { "unmute" }),
+        // Never the address or the domain: they would name who writes to the person.
+        Request::HideSender { id, scope: torro_inbox::HideScope::Conversation } => format!("hide inbox item {id}"),
+        Request::HideSender { id, .. } => format!("hide the sender of inbox item {id}"),
         Request::ListRules => "inbox rules".into(),
         Request::RemoveRule { id } => format!("remove inbox rule {id}"),
         // Never an address, a password, a search, a subject or a folder name (security rule 3 of

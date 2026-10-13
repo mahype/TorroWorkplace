@@ -31,6 +31,7 @@ mod client_setup;
 mod clients;
 mod core;
 mod daemon;
+mod designs;
 mod hook;
 mod inbox;
 mod inbox_notify;

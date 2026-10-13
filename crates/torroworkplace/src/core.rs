@@ -352,6 +352,9 @@ pub struct Snapshot {
     /// The most recently updated of [`Snapshot::inbox_for_me`], newest first, at most
     /// [`TRAY_NEWEST`].
     pub inbox_newest: Vec<InboxLine>,
+    /// The design pack the settings name (task L.3), so the tray icon follows it: its symbol
+    /// (`logo.tray`) or the grid in its accent colour. Empty counts as the standard.
+    pub design: String,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -789,12 +792,16 @@ impl Core {
         let name = info.as_ref().map(|info| info.name.clone());
         let mut fingerprint = None;
         let (request, pin, summary) = match (&request, request.operation().area()) {
-            (Request::AskPermission { tool, details, project }, _) => {
+            (Request::AskPermission { tool, details, project, title }, _) => {
                 if let Some(refused) = crate::approvals::question_refusal(tool, details) {
                     return Ok(refused);
                 }
                 let agent = info.as_ref().map_or_else(|| client.to_string(), asker);
-                let summary = crate::approvals::question_summary(&agent, tool, project.as_deref(), details);
+                // Only a hook reads the session's name from the agent's own files (task E2.6); any
+                // other client could pass itself off as a harmless job, so its name is ignored.
+                let from_hook = info.as_ref().is_some_and(|info| info.kind == torro_ipc::api::HOOK_CLIENT);
+                let session = title.as_deref().filter(|_| from_hook);
+                let summary = crate::approvals::question_summary(&agent, session, tool, project.as_deref(), details);
                 (request, None, summary)
             }
             // Sending (task M3.3): the summary from the message built from the stored draft, and
@@ -1184,6 +1191,7 @@ impl Core {
                 Err(message) => Response::Error { code: "error".into(), message },
             },
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
+            Request::ListDesigns => Response::Designs { designs: self.list_designs() },
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
             Request::RemoveAccount { id } => self.remove_account(&id).await,
             Request::RenameTemplate { id, name } => match self.rename(&id, &name) {
@@ -1235,6 +1243,7 @@ impl Core {
             | Request::SnoozeItem { .. }
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
+            | Request::HideSender { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -2066,6 +2075,32 @@ impl Core {
         self.backend.events().await
     }
 
+    /// `settings.list_designs` (task L.3): every design pack with what the control centre and
+    /// agents need to choose one. Packs hold no secrets, so every reader sees all of them.
+    fn list_designs(&self) -> Vec<torro_ipc::DesignInfo> {
+        let chosen = self.settings.current().design;
+        let listed = match self.settings.designs() {
+            Some(dir) => torro_core::design::list(dir),
+            // Without a home directory only the standard exists; a folder that is not there
+            // lists just that.
+            None => torro_core::design::list(std::path::Path::new("")),
+        };
+        listed
+            .into_iter()
+            .map(|pack| torro_ipc::DesignInfo {
+                valid: pack.valid(),
+                problems: pack.problems().iter().map(ToString::to_string).collect(),
+                active: pack.id == chosen,
+                id: pack.id,
+                name: pack.about.name,
+                version: pack.about.version,
+                author: pack.about.author,
+                description: pack.about.description,
+                standard: pack.standard,
+            })
+            .collect()
+    }
+
     /// The current state for the tray menu. Never fails; problems end up in `problem`.
     pub async fn snapshot(&self) -> Snapshot {
         let mut snapshot = Snapshot {
@@ -2092,6 +2127,7 @@ impl Core {
             Err(err) => snapshot.problem = Some(err.to_string()),
         }
         snapshot.account = Some(self.pim.account_state().await);
+        snapshot.design = self.settings.current().design;
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
         let for_me = self.inbox.for_me(Utc::now(), TRAY_NEWEST).unwrap_or_default();
         snapshot.inbox_for_me = for_me.open;
@@ -2538,6 +2574,48 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), Request::SaveTemplate { name: None }).await), "forbidden");
         core.clients.remove(&id).await.expect("removed");
         assert_eq!(code(&ask(&core, Some(&key), Request::Accounts).await), "unauthorized");
+    }
+
+    /// `settings.list_designs` (task L.3): the standard first, then the packs of the designs
+    /// folder, valid or with their reasons, the chosen one marked; reading is enough to list,
+    /// choosing takes `Admin`.
+    #[tokio::test]
+    async fn designs_are_listed_with_their_problems_and_chosen_by_admins_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let designs = settings_file(dir.path()).with_file_name("designs");
+        for (id, toml) in [
+            ("teal", "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.2.0\"\nauthor = \"Anna\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+        ] {
+            std::fs::create_dir_all(designs.join(id)).expect("pack folder");
+            std::fs::write(designs.join(id).join("design.toml"), toml).expect("design.toml");
+        }
+        let list = |answer: Response| match answer {
+            Response::Designs { designs } => designs,
+            other => panic!("list_designs answers with Designs, got {other:?}"),
+        };
+
+        let (_, reader) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let listed = list(ask(&core, Some(&reader), Request::ListDesigns).await);
+        let ids: Vec<&str> = listed.iter().map(|design| design.id.as_str()).collect();
+        assert_eq!(ids, ["torro", "pale", "teal"], "the standard first, then by folder name");
+        assert!(listed[0].standard && listed[0].valid && listed[0].active);
+        assert!(!listed[1].valid && !listed[1].problems.is_empty(), "{:?}", listed[1]);
+        assert!(listed[1].problems.iter().any(|problem| problem.contains("colors.dark.text")));
+        assert_eq!((listed[2].name.as_str(), listed[2].version.as_str()), ("Teal", "1.2.0"));
+        assert_eq!(listed[2].author.as_deref(), Some("Anna"));
+        assert!(listed[2].valid && listed[2].problems.is_empty() && !listed[2].standard);
+
+        let choose = |id: &str| Request::SetSetting { key: SettingKey::Design, value: serde_json::json!(id) };
+        assert_eq!(code(&ask(&core, Some(&reader), choose("teal")).await), "forbidden", "choosing is Admin");
+        assert_eq!(code(&core.handle(choose("pale")).await), "error", "a broken pack is refused");
+        assert_eq!(core.handle(choose("teal")).await, Response::Ok);
+        assert_eq!(settings(&core).await.design, "teal");
+        let active: Vec<String> =
+            list(core.handle(Request::ListDesigns).await).into_iter().filter(|d| d.active).map(|d| d.id).collect();
+        assert_eq!(active, ["teal"]);
+        assert_eq!(core.snapshot().await.design, "teal", "the tray icon follows");
     }
 
     #[tokio::test]
@@ -4898,6 +4976,7 @@ mod tests {
                 project: None,
                 branch: None,
                 pids: AGENT_PIDS.to_vec(),
+                title: None,
             }),
         };
         let Response::Posted { id: Some(id) } = ask(&core, Some(&hook_key), waiting).await else {
@@ -5469,6 +5548,89 @@ mod tests {
         assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
     }
 
+    /// Task E3.10: hiding a sender takes the admin switch, waits for the person with a summary from
+    /// the inbox, and runs only on the entry as the person saw it.
+    #[tokio::test]
+    async fn hiding_a_sender_needs_the_admin_switch_and_the_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mail = |message: &str| crate::inbox::NewMail {
+            account: "mail:anna@example.org".into(),
+            message: message.into(),
+            thread: "t:1".into(),
+            subject: "Weekly news".into(),
+            snippet: "Autumn sale".into(),
+            from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
+            bulk: true,
+            date: Utc::now(),
+        };
+        let id =
+            core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
+        let reading_mail = |admin| {
+            let mut rights = RightsTemplate::FullAccess.rights();
+            rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin });
+            rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+            rights.mail_accounts = Selection::All;
+            rights
+        };
+        let hide = || Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Domain };
+        let (_, writer) = client(&core, reading_mail(false)).await;
+        assert_eq!(code(&ask(&core, Some(&writer), hide()).await), "forbidden", "write rights are not enough");
+        let sender = Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Sender };
+        assert_eq!(code(&ask(&core, Some(&writer), sender).await), "forbidden", "nor for a sender");
+
+        let (_, admin) = client(&core, reading_mail(true)).await;
+        let asked = waits(ask(&core, Some(&admin), hide()).await);
+        assert_eq!(asked.command, "inbox.hide_sender");
+        assert_eq!(
+            asked.summary,
+            trf(
+                "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
+                &[("domain", &"\"shop.example\"")]
+            )
+        );
+        // A reply came in while the person looked: what they allowed is not what would run.
+        core.inbox.file_mail(&mail("m:2"), torro_mail::Notify::All, Utc::now()).expect("filed");
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
+        assert_eq!(code(&response), "conflict");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+
+        let asked = waits(ask(&core, Some(&admin), hide()).await);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
+        let Response::Hidden(hidden) = *response else { panic!("hiding answers what it hid") };
+        assert_eq!(hidden.rule.and_then(|rule| rule.domain).as_deref(), Some("shop.example"));
+    }
+
+    /// Task E3.11: hiding one conversation keeps no rule, so write rights cover it – no admin switch.
+    #[tokio::test]
+    async fn hiding_a_conversation_needs_write_rights_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mail = crate::inbox::NewMail {
+            account: "mail:anna@example.org".into(),
+            message: "m:1".into(),
+            thread: "t:1".into(),
+            subject: "Lunch?".into(),
+            snippet: "Tuesday?".into(),
+            from: Some(torro_inbox::Sender { name: "Bernd".into(), address: Some("bernd@example.com".into()) }),
+            bulk: false,
+            date: Utc::now(),
+        };
+        let id = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: false });
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        rights.mail_accounts = Selection::All;
+        let (_, writer) = client(&core, rights).await;
+        let conversation = Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Conversation };
+        let answer = ask(&core, Some(&writer), conversation).await;
+        let Response::Hidden(hidden) = answer else { panic!("write rights hide a conversation: {answer:?}") };
+        assert_eq!((hidden.rule, hidden.done), (None, vec![id]));
+    }
+
     #[tokio::test]
     async fn remembering_a_lane_needs_the_admin_switch() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -5639,7 +5801,22 @@ mod tests {
     }
 
     fn question(tool: &str, details: &str) -> Request {
-        Request::AskPermission { tool: tool.into(), details: details.into(), project: Some("my-project".into()) }
+        Request::AskPermission {
+            tool: tool.into(),
+            details: details.into(),
+            project: Some("my-project".into()),
+            title: None,
+        }
+    }
+
+    /// [`question`] with the session's name `title` (task E2.6).
+    fn named_question(title: &str) -> Request {
+        Request::AskPermission {
+            tool: "Bash".into(),
+            details: "cargo test".into(),
+            project: Some("my-project".into()),
+            title: Some(title.into()),
+        }
     }
 
     #[tokio::test]
@@ -5687,6 +5864,30 @@ mod tests {
         let (_, script) = client(&core, RightsTemplate::ReadOnly.rights()).await;
         let asked = waits(ask(&core, Some(&script), question("Bash", "ls")).await);
         assert!(asked.summary.starts_with("Claude Code"), "the client's name: {}", asked.summary);
+    }
+
+    #[tokio::test]
+    async fn a_question_names_the_session_only_when_a_hook_asks() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let (_, key) = hook_client(&core, AgentKind::ClaudeCode).await;
+        let asked = waits(ask(&core, Some(&key), named_question("Login \"bug\"\u{202E} {details}")).await);
+        let expected = crate::approvals::question_summary(
+            "Claude Code",
+            Some("Login 'bug' (details)"),
+            "Bash",
+            Some("my-project"),
+            "cargo test",
+        );
+        assert_eq!(asked.summary, expected);
+        let who =
+            trf("{agent} (session \"{session}\")", &[("agent", &"Claude Code"), ("session", &"Login 'bug' (details)")]);
+        assert!(asked.summary.starts_with(&who), "{}", asked.summary);
+
+        // Any other client's name for itself is ignored: the question reads as without one.
+        let (_, script) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let asked = waits(ask(&core, Some(&script), named_question("Docs only, harmless")).await);
+        assert!(!asked.summary.contains("Docs only"), "{}", asked.summary);
     }
 
     #[tokio::test]
@@ -7540,5 +7741,98 @@ mod tests {
         assert!(smtp.sent().is_empty(), "nothing went out");
         assert!(on_server(&server, "Sent").is_empty());
         assert!(on_server(&server, "Drafts").contains(&"Lunch, and bring Eve".to_string()), "the draft stays");
+    }
+
+    /// Tasks E3.10, E3.11: hiding a conversation or a sender is no "done" – the mail stays unread
+    /// and in the inbox folder on the server, nothing is stored there at all – and the hidden
+    /// sender's next mail becomes no entry.
+    #[tokio::test]
+    async fn hiding_a_sender_leaves_the_mail_untouched_and_files_no_more_of_it() {
+        use crate::account::github::tests::{MemoryTokens, accounts_file};
+        use crate::mail::service::tests::{PASSWORD, eventually, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+
+        let letter = |subject: &str, from: &str| {
+            let date = Utc::now().to_rfc2822();
+            let id = subject.replace(' ', "-");
+            format!(
+                "From: {from}\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {date}\r\n\
+                 Message-ID: <{id}@example.org>\r\nList-Id: <news.shop.example>\r\n\
+                 Content-Type: text/plain; charset=utf-8\r\n\r\nText of {subject}\r\n"
+            )
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let mut account = mail_account("anna@example.org", &server.endpoint);
+        account.mail_settings =
+            Some(torro_mail::MailSettings { notify: torro_mail::Notify::All, ..torro_mail::MailSettings::default() });
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let service = service_in(dir.path(), &secrets);
+        service.reload().await;
+        let settings = crate::settings_service::SettingsStore::at(dir.path().join("config").join("settings.json"));
+        let core = Core::new(
+            torro_wm::Backend::Unsupported { name: "test".into() },
+            torro_setups::storage::Store::at(dir.path().to_path_buf()),
+            Arc::new(crate::pim::PimService::with_settings(settings)),
+            crate::clients::tests::open_in(dir.path()),
+        )
+        .with_approvals(crate::approvals::tests::quiet_in(dir.path()))
+        .with_inbox(crate::inbox::tests::inbox_in(dir.path()))
+        .with_mail(service);
+        core.start_mail_feed(Some(accounts_file(dir.path())));
+        let listed = || async {
+            let all = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+            match core.handle(all).await {
+                Response::Items { items } => items,
+                other => panic!("expected items, got {other:?}"),
+            }
+        };
+        eventually("the inbox watched", || async { server.lines().iter().any(|line| line.ends_with(" IDLE")) }).await;
+
+        let entry = |title: &'static str| async move {
+            listed().await.into_iter().find(|item| item.title == title).expect("an entry")
+        };
+        let untouched = || {
+            server
+                .lines()
+                .into_iter()
+                .filter(|line| {
+                    ["UID STORE", "UID MOVE", "UID COPY", "EXPUNGE"].iter().any(|command| line.contains(command))
+                })
+                .collect::<Vec<String>>()
+        };
+
+        // One conversation (task E3.11): out of the inbox, the mail unread on the server.
+        let lunch = server.add("INBOX", &letter("Lunch", "Bernd <bernd@example.com>"), &[]);
+        eventually("filed", || async { listed().await.len() == 1 }).await;
+        let id = entry("Lunch").await.id;
+        let hide = Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Conversation };
+        let Response::Hidden(hidden) = core.handle(hide).await else { panic!("hiding answers what it hid") };
+        assert_eq!((hidden.rule, hidden.done), (None, vec![id]));
+        assert!(matches!(entry("Lunch").await.state, torro_inbox::State::Done { .. }), "out of the inbox");
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(server.flags("INBOX", lunch).is_empty(), "the conversation's mail is still unread");
+        assert!(untouched().is_empty(), "nothing changed on the server: {:?}", untouched());
+
+        let sale = server.add("INBOX", &letter("Autumn sale", "Shop <news@shop.example>"), &[]);
+        eventually("filed", || async { listed().await.len() == 2 }).await;
+        let id = entry("Autumn sale").await.id;
+        let hide = Request::HideSender { id, scope: torro_inbox::item::HideScope::Domain };
+        let Response::Hidden(hidden) = core.handle(hide).await else { panic!("hiding answers what it hid") };
+        assert_eq!(hidden.rule.and_then(|rule| rule.domain).as_deref(), Some("shop.example"));
+        assert!(matches!(entry("Autumn sale").await.state, torro_inbox::State::Done { .. }), "out of the inbox");
+
+        // Nothing went to the server: no flag stored, nothing moved, and it stays so.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(server.flags("INBOX", sale).is_empty(), "the mail is still unread");
+        assert!(untouched().is_empty(), "nothing changed on the server: {:?}", untouched());
+
+        server.add("INBOX", &letter("Winter sale", "Shop <deals@shop.example>"), &[]);
+        server.add("INBOX", &letter("Hello", "Bernd <bernd@example.com>"), &[]);
+        eventually("the other sender's mail filed", || async { listed().await.len() == 3 }).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let titles: Vec<String> = listed().await.into_iter().map(|item| item.title).collect();
+        assert!(!titles.contains(&"Winter sale".to_string()), "the hidden domain's mail is no entry: {titles:?}");
     }
 }

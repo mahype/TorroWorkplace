@@ -364,9 +364,11 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 /// - `Read` is read-only.
 /// - `Delete` and `Admin` are destructive, and so are `workspaces.load_template`, whose mode
 ///   `replace` closes windows ([`Request::operation`] asks for `Delete` then), the saves of
-///   events and tasks, which overwrite the item on the server when they change it, and of mail
+///   events and tasks, which overwrite the item on the server when they change it, of mail
 ///   `mail.move_messages` (into the trash), `mail.save_draft` (replacing a draft) and
-///   `mail.send_draft` (it removes the draft and cannot be taken back).
+///   `mail.send_draft` (it removes the draft and cannot be taken back), and
+///   `inbox.hide_sender`, whose scopes `sender` and `domain` keep a rule for every mail account
+///   and close entries in all of them (admin then, task E3.11).
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
 ///   `apps`, `approvals`, `inbox`); calendar, tasks and accounts talk to servers, so their hint is
@@ -382,6 +384,7 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
                 | "mail.move_messages"
                 | "mail.save_draft"
                 | "mail.send_draft"
+                | "inbox.hide_sender"
         );
     let hints = ToolAnnotations::new()
         .read_only(read_only)
@@ -421,6 +424,9 @@ const IDEMPOTENT: &[&str] = &[
     "inbox.snooze_item",
     "inbox.set_item_lane",
     "inbox.mute_source",
+    // Hiding the same sender or domain again answers the rule already there (task E3.10), a
+    // hidden conversation again closes nothing more.
+    "inbox.hide_sender",
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
     "accounts.update_mail_account",
@@ -442,7 +448,7 @@ pub enum ToolError {
 /// Only commands with [`Mcp::Tool`] have a tool; any other name is [`ToolError::UnknownTool`].
 /// The arguments are the request's fields, and only those the tool's input schema lists
 /// ([`tools`]): anything else, `method` included, is [`ToolError::Input`], so a typo never goes
-/// unnoticed and the tool alone decides the command. The five tools with easier inputs
+/// unnoticed and the tool alone decides the command. The six tools with easier inputs
 /// ([`easy_input_schema`]) also take those; local times in them are read in `zone` (the
 /// computer's zone, [`Local`]; tests pass a fixed one). The short forms of the saves only create:
 /// `uid`, `href` or `etag` next to them is [`ToolError::Input`] with the way to change an item.
@@ -459,6 +465,7 @@ pub fn request_for<Tz: TimeZone>(tool: &str, arguments: JsonObject, zone: &Tz) -
         "tasks.save_todo" => save_todo(parse(arguments)?, zone),
         "inbox.list_items" => list_items(parse(arguments)?, zone),
         "inbox.post_item" => Ok(post_item(parse(arguments)?)),
+        "approvals.ask_permission" => Ok(ask_permission(parse(arguments)?)),
         name => {
             let mut arguments = arguments;
             arguments.insert("method".into(), Value::String(name.into()));
@@ -558,6 +565,7 @@ pub fn easy_input_schema(command: &str) -> Option<Schema> {
         "tasks.save_todo" => schema_of::<TodoInput>(),
         "inbox.list_items" => schema_of::<ItemsInput>(),
         "inbox.post_item" => schema_of::<PostInput>(),
+        "approvals.ask_permission" => schema_of::<AskInput>(),
         _ => return None,
     };
     Some(schema)
@@ -700,6 +708,26 @@ struct PostInput {
     /// Groups reports of one matter, e.g. `build:main`: a new report merges into the entry and
     /// brings a done one back. Leave out for an entry of its own.
     thread_key: Option<String>,
+}
+
+/// Input of `approvals_ask_permission`: the request's fields without the session's name (task
+/// E2.6), which the core takes only from hooks; offering it here would only invite an agent to
+/// name itself a harmless job.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct AskInput {
+    /// The tool you want to use, as you name it: `Bash`, `apply_patch`, `mcp__fs__write`.
+    tool: String,
+    /// What exactly the tool would do, in full: the shell command, or the tool's input as JSON.
+    #[serde(default)]
+    details: String,
+    /// The project you work in: the last part of your working directory.
+    project: Option<String>,
+}
+
+fn ask_permission(input: AskInput) -> Request {
+    let AskInput { tool, details, project } = input;
+    Request::AskPermission { tool, details, project, title: None }
 }
 
 fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, ToolError> {
@@ -1071,6 +1099,17 @@ mod tests {
     fn the_zoom_is_set_with_a_number() {
         let zoom = request_for("settings_set_setting", args(json!({"key": "zoom", "value": 1.25})), &Utc);
         assert_eq!(zoom, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: json!(1.25) }));
+    }
+
+    #[test]
+    fn designs_are_listed_read_only_and_chosen_with_set_setting() {
+        assert_eq!(request_for("settings_list_designs", JsonObject::new(), &Utc), Ok(Request::ListDesigns));
+        let hints = tools().iter().find(|t| t.name == "settings_list_designs").and_then(|t| t.annotations.clone());
+        assert_eq!(hints.and_then(|h| h.read_only_hint), Some(true));
+        let chosen = request_for("settings_set_setting", args(json!({"key": "design", "value": "plex"})), &Utc);
+        assert_eq!(chosen, Ok(Request::SetSetting { key: torro_ipc::SettingKey::Design, value: json!("plex") }));
+        let set = tools().iter().find(|t| t.name == "settings_set_setting").and_then(|t| t.description.clone());
+        assert!(set.is_some_and(|text| text.contains("`design`")), "set_setting names the design");
     }
 
     #[test]
@@ -1487,6 +1526,29 @@ mod tests {
     }
 
     #[test]
+    fn asking_permission_over_mcp_names_no_session() {
+        let request = request_for(
+            "approvals_ask_permission",
+            args(json!({"tool": "Bash", "details": "cargo test", "project": "my-project"})),
+            &Utc,
+        );
+        assert_eq!(
+            request,
+            Ok(Request::AskPermission {
+                tool: "Bash".into(),
+                details: "cargo test".into(),
+                project: Some("my-project".into()),
+                title: None,
+            })
+        );
+        let named = request_for("approvals_ask_permission", args(json!({"tool": "Bash", "title": "Docs only"})), &Utc);
+        assert!(matches!(named, Err(ToolError::Input(_))), "{named:?}");
+        let tool = tools().iter().find(|t| t.name == "approvals_ask_permission").expect("tool").clone();
+        assert!(tool.input_schema["properties"].get("title").is_none(), "{:?}", tool.input_schema);
+        assert_eq!(tool.input_schema["required"], json!(["tool"]));
+    }
+
+    #[test]
     fn inbox_tools_document_their_inputs_and_hints() {
         let tool = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").clone();
         let list = tool("inbox_list_items");
@@ -1563,6 +1625,34 @@ mod tests {
         assert_eq!(request, Ok(Request::OpenItem { id: "i1".into() }));
         let refused = request_for("inbox_open_item", args(json!({"id": "i1", "url": "https://x.example"})), &Utc);
         assert!(matches!(refused, Err(ToolError::Input(_))), "{refused:?}");
+    }
+
+    /// Tasks E3.10, E3.11: one entry and the scope, nothing else; the description names the rights
+    /// of each scope.
+    #[test]
+    fn inbox_hide_sender_hides_by_the_entry_and_a_scope() {
+        let request = request_for("inbox_hide_sender", args(json!({"id": "i1", "scope": "domain"})), &Utc);
+        let domain = torro_inbox::item::HideScope::Domain;
+        assert_eq!(request, Ok(Request::HideSender { id: "i1".into(), scope: domain }));
+        let request = request_for("inbox_hide_sender", args(json!({"id": "i1", "scope": "conversation"})), &Utc);
+        let conversation = torro_inbox::item::HideScope::Conversation;
+        assert_eq!(request, Ok(Request::HideSender { id: "i1".into(), scope: conversation }));
+        for wrong in [
+            json!({"id": "i1"}),
+            json!({"id": "i1", "scope": "subdomain"}),
+            json!({"id": "i1", "scope": "sender", "sender": "news@shop.example"}),
+        ] {
+            let refused = request_for("inbox_hide_sender", args(wrong.clone()), &Utc);
+            assert!(matches!(refused, Err(ToolError::Input(_))), "{wrong}: {refused:?}");
+        }
+        let tool = tools().iter().find(|tool| tool.name == "inbox_hide_sender").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!((hints.destructive_hint, hints.idempotent_hint), (Some(true), Some(true)));
+        assert_eq!(hints.open_world_hint, Some(false));
+        let description = tool.description.as_deref().unwrap_or_default();
+        for words in ["write rights", "admin rights", "every mail account", "unread"] {
+            assert!(description.contains(words), "{words}: {description}");
+        }
     }
 
     #[test]

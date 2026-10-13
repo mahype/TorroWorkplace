@@ -1,0 +1,9 @@
+# Broken: a typo in a key.
+format = 1
+
+[about]
+name = "Unknown key"
+version = "1.0.0"
+
+[size]
+rowx = 44

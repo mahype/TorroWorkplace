@@ -626,8 +626,9 @@ pub struct MailList<'a> {
     pub now: DateTime<Utc>,
     /// Registered by the selected row.
     pub anchor: Anchor,
-    /// Two lines per row (narrow windows).
-    pub two_line: bool,
+    /// The addresses of the mail accounts in the sidebar's order: the avatars take the colour of
+    /// the folder's account, as in the overview (`list::account_index`).
+    pub accounts: Vec<&'a str>,
     /// More messages wait on the server: "Load more" ends the list.
     pub more: bool,
     /// The attention colour of the theme, for the flag.
@@ -659,7 +660,7 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
     rows = rows.extend(data.messages.iter().map(|message| message_row(data, message, width)));
     if data.more {
         let more = widgets::text_button(None, tr("Load more"), style::button::ghost, Some(Message::MoreMail));
-        rows = rows.push(container(more).width(Fill).center_x(Fill).padding(space::S));
+        rows = rows.push(container(more).width(Fill).center_x(Fill).padding(space::s()));
     }
     scrollable(rows)
         .id(list::SCROLL)
@@ -671,60 +672,50 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
         .into()
 }
 
-/// One message in a row `width` wide. One line: the envelope (closed while unread), the sender in
-/// `text_2`, the subject (medium weight while unread) and the start of the text in `text_3`, then
-/// a paperclip, the flag and the time. Two lines: the sender with paperclip, flag and time, the
-/// subject below it.
+/// One message in a row `width` wide: the mail row of the overview (task E3.11,
+/// `list::mail_content`) – avatar with the sender's initials in the account's colour, sender ·
+/// domain · paperclip · flag · time, the subject (medium weight while unread, with the dot at the
+/// avatar), the start of the text –, [`list::message_height`] high.
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
-    let unread = !message.flags.contains(&Flag::Seen);
-    let mark = icon::icon(if unread { Icon::Mail } else { Icon::MailOpen }, icon::SIZE).style(move |t: &Theme, _| {
-        let p = palette(t);
-        svg::Style { color: Some(if unread { p.text } else { p.text_3 }) }
-    });
-    let level = if unread { typo::BODY_STRONG } else { typo::BODY };
-    let time = list::ago(message.date, data.now);
-    let mut ends: Vec<Element<'a, Message>> = Vec::new();
-    let mut ends_width = 0.0;
+    let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
     if message.has_attachments {
-        ends.push(widgets::with_tooltip(small_icon(Icon::Paperclip, None), tr("Has attachments")));
-        ends_width += icon::SIZE_SM + list::CELL_GAP;
+        marks.push((widgets::with_tooltip(small_icon(Icon::Paperclip, None), tr("Has attachments")), icon::SIZE_SM));
     }
     if message.flags.contains(&Flag::Flagged) {
-        ends.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(data.attention)), tr("Flagged")));
-        ends_width += icon::SIZE_SM + list::CELL_GAP;
+        let flag = widgets::with_tooltip(small_icon(Icon::Flag, Some(data.attention)), tr("Flagged"));
+        marks.push((flag, icon::SIZE_SM));
     }
-    let room = (list::text_room(width, None, &time) - ends_width).max(0.0);
-    ends.push(typo::text(typo::META.tabular(), time).style(theme::text_3).wrapping(Wrapping::None).into());
-    let sender = sender_name(message.from.as_ref());
+    let (name, domain) = sender_parts(message.from.as_ref());
+    let account = data.accounts.iter().position(|account| *account == address(&message.account));
+    let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
+    let lines = list::MailLines {
+        name,
+        domain,
+        time: list::ago(message.date, data.now),
+        marks,
+        subject: subject(message),
+        new: !message.flags.contains(&Flag::Seen),
+        count: None,
+        preview: snippet,
+        account,
+        account_name: None,
+    };
     let selected = data.selected == Some(message.id.as_str());
     let on_press = Message::SelectMail(message.id.clone());
-    let row = if data.two_line {
-        let name = typo::text(level, typo::ellipsize(&sender, level, room)).style(theme::text).wrapping(Wrapping::None);
-        let first = row![container(name).width(Fill).clip(true)].extend(ends).spacing(list::CELL_GAP);
-        let line = typo::ellipsize(&subject(message), typo::META, list::line_room(width));
-        let second = typo::text(typo::META, line).style(theme::text_2).wrapping(Wrapping::None);
-        let words = column![first.align_y(Alignment::Center), container(second).width(Fill).clip(true)].width(Fill);
-        let mark = container(mark).center_y(typo::line_height(level));
-        list::tall_row(row![mark, words].spacing(list::CELL_GAP).into(), selected, on_press)
-    } else {
-        // The sender takes at most a third of the room, so the subject keeps the most of it.
-        let name = typo::ellipsize(&sender, typo::BODY, room / 3.0);
-        let left = (room - typo::text_width(&name, typo::BODY) - space::S).max(0.0);
-        let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
-        let (title, preview) = list::fit(&subject(message), snippet.as_deref(), level, left, None);
-        let mut words = row![
-            typo::text(typo::BODY, name).style(theme::text_2).wrapping(Wrapping::None),
-            typo::text(level, title).style(theme::text).wrapping(Wrapping::None),
-        ]
-        .spacing(space::S);
-        if let Some(preview) = preview {
-            words = words.push(typo::text(typo::BODY, preview).style(theme::text_3).wrapping(Wrapping::None));
-        }
-        let mut cells: Vec<Element<'a, Message>> = vec![mark.into(), container(words).width(Fill).clip(true).into()];
-        cells.extend(ends);
-        widgets::list_row(cells, selected, Some(on_press))
-    };
+    let row = list::sized_row(list::mail_content(lines, width), selected, on_press, list::message_height());
     if selected { widgets::anchored(&data.anchor, row) } else { row }
+}
+
+/// The sender of a message for its row: the name (else the address, else "Unknown sender") and the
+/// domain of the address when the name is not the address itself – as `list::sender` has it for
+/// mail entries.
+pub fn sender_parts(from: Option<&MailAddress>) -> (String, Option<String>) {
+    let name = sender_name(from);
+    let domain = from
+        .map(|who| list::one_line(&who.address))
+        .filter(|address| !address.is_empty() && *address != name)
+        .and_then(|address| torro_inbox::rules::domain_of(&address));
+    (name, domain)
 }
 
 /// A small icon (14) in `text_3`, or in `colour`.
@@ -739,19 +730,19 @@ fn small_icon<'a>(which: Icon, colour: Option<Color>) -> Element<'a, Message> {
 pub fn search_bar<'a>(input: &str, folder: &FolderView) -> Element<'a, Message> {
     let field = text_input(&trf("Search {folder}", &[("folder", &folder.name)]), input)
         .id(SEARCH)
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
-        .font(typo::BODY.font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
         .padding(style::INPUT_PADDING)
         .width(Fill)
         .style(style::text_input)
         .on_input(Message::SearchInput)
         .on_submit(Message::Search);
-    let mut bar = row![field].spacing(space::S).align_y(Alignment::Center);
+    let mut bar = row![field].spacing(space::s()).align_y(Alignment::Center);
     if folder.query.is_some() || !input.is_empty() {
         bar = bar.push(widgets::icon_button(Icon::X, tr("Clear search"), Some(Message::ClearSearch)));
     }
-    container(bar).width(Fill).padding(Padding::new(space::S).left(space::L).right(space::L)).into()
+    container(bar).width(Fill).padding(Padding::new(space::s()).left(space::l()).right(space::l())).into()
 }
 
 /// What the panel shows of a mail.
@@ -800,7 +791,7 @@ pub fn panel<'a>(reading: &Reading<'a>, folder: Option<&'a FolderView>) -> panel
 /// archive, delete, flag, read), the attachments, the text with its links, and the notes that the
 /// text comes from outside and – for HTML – that nothing from the web was loaded.
 pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
-    let mut body = column![].spacing(space::L);
+    let mut body = column![].spacing(space::l());
     if let Some(summary) = reading.summary() {
         body = body.push(panel::inset(header(reading, summary)));
         body = body.push(panel::inset(actions(reading, summary)));
@@ -808,9 +799,9 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     match reading.loaded {
         None => body = body.push(panel::inset(note(tr("Loading the message…")))),
         Some(Err(why)) => {
-            let what = typo::text(typo::BODY, tr("Couldn't load the message.")).style(theme::text_2);
-            let why = typo::text(typo::META, why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
-            body = body.push(panel::inset(column![what, why].spacing(space::XS)));
+            let what = typo::text(typo::body(), tr("Couldn't load the message.")).style(theme::text_2);
+            let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+            body = body.push(panel::inset(column![what, why].spacing(space::xs())));
         }
         Some(Ok(mail)) => {
             let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
@@ -827,26 +818,26 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
 /// Sender, recipients and date, as mail apps show them: the sender's name and address, "to …",
 /// "cc …", and the moment with how long ago it was; a flagged mail says so.
 fn header<'a>(reading: &Reading<'a>, summary: &'a MessageSummary) -> Element<'a, Message> {
-    let mut lines = column![].spacing(space::XS);
+    let mut lines = column![].spacing(space::xs());
     let from = summary.from.as_ref().map_or_else(|| tr("Unknown sender").to_owned(), person);
-    lines = lines.push(typo::text(typo::BODY_STRONG, from).style(theme::text).wrapping(Wrapping::WordOrGlyph));
+    lines = lines.push(typo::text(typo::body_strong(), from).style(theme::text).wrapping(Wrapping::WordOrGlyph));
     if !summary.to.is_empty() {
         let to = trf("to {names}", &[("names", &names(&summary.to))]);
-        lines = lines.push(typo::text(typo::META, to).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+        lines = lines.push(typo::text(typo::meta(), to).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
     }
     if let Some(Ok(mail)) = reading.loaded
         && !mail.cc.is_empty()
     {
         let cc = trf("cc {names}", &[("names", &names(&mail.cc))]);
-        lines = lines.push(typo::text(typo::META, cc).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+        lines = lines.push(typo::text(typo::meta(), cc).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
     }
-    let mut meta = row![].spacing(space::S).align_y(Alignment::Center);
+    let mut meta = row![].spacing(space::s()).align_y(Alignment::Center);
     if reading.dated {
-        meta = meta.push(typo::text(typo::META.tabular(), when(summary.date, reading.now)).style(theme::text_3));
+        meta = meta.push(typo::text(typo::meta().tabular(), when(summary.date, reading.now)).style(theme::text_3));
     }
     if summary.flags.contains(&Flag::Flagged) {
-        let flagged = row![small_icon(Icon::Flag, Some(reading.attention)), typo::text(typo::META, tr("Flagged"))]
-            .spacing(space::XS)
+        let flagged = row![small_icon(Icon::Flag, Some(reading.attention)), typo::text(typo::meta(), tr("Flagged"))]
+            .spacing(space::xs())
             .align_y(Alignment::Center);
         meta = meta.push(flagged);
     }
@@ -888,7 +879,7 @@ fn actions<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, M
         ),
         widgets::icon_button(read_icon, read_label, act(MailAction::Read(!read))),
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_y(Alignment::Center)
     .into()
 }
@@ -899,9 +890,9 @@ fn attachment_row<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
     let name = name.unwrap_or_else(|| tr("Attachment").to_owned());
     let line = row![
         container(widgets::prop_value(name)).width(Fill),
-        typo::text(typo::META.tabular(), size_text(file.size)).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::meta().tabular(), size_text(file.size)).style(theme::text_3).wrapping(Wrapping::None),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     let open = Message::OpenAttachment(id.to_owned(), file.part.clone());
     widgets::prop_row(Some(Mark::Icon(Icon::Paperclip)), line, Some(open))
@@ -911,7 +902,7 @@ fn attachment_row<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
 /// opens on a click), then the notes on foreign text.
 fn text_block<'a>(mail: &'a Mail, link: Color) -> Element<'a, Message> {
     let text = mail.text.as_deref().map(list::plain).unwrap_or_default();
-    let mut block = column![].spacing(space::S);
+    let mut block = column![].spacing(space::s());
     if !text.trim().is_empty() {
         let spans: Vec<iced::widget::text::Span<'a, String>> = pieces(&text)
             .into_iter()
@@ -921,9 +912,9 @@ fn text_block<'a>(mail: &'a Mail, link: Color) -> Element<'a, Message> {
             })
             .collect();
         let message = rich_text(spans)
-            .size(typo::BODY.size)
-            .line_height(typo::BODY.line_height)
-            .font(typo::BODY.font)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
             .style(theme::text_2)
             .wrapping(Wrapping::WordOrGlyph)
             .on_link_click(Message::OpenMailLink);
@@ -940,7 +931,7 @@ fn text_block<'a>(mail: &'a Mail, link: Color) -> Element<'a, Message> {
 
 /// A quiet sentence (`META`, `text_3`).
 fn note<'a>(text: &'a str) -> Element<'a, Message> {
-    typo::text(typo::META, text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
+    typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
 }
 
 /// The hint after opening an attachment.
@@ -1078,6 +1069,17 @@ mod tests {
     }
 
     #[test]
+    fn a_message_row_names_its_sender_and_domain_like_an_entry() {
+        let who =
+            |name: Option<&str>, address: &str| MailAddress { name: name.map(String::from), address: address.into() };
+        let jonas = who(Some("Jonas Weber"), "jonas.weber@Work.Example.org");
+        assert_eq!(sender_parts(Some(&jonas)), ("Jonas Weber".into(), Some("work.example.org".into())));
+        let bare = who(None, "paul@example.org");
+        assert_eq!(sender_parts(Some(&bare)), ("paul@example.org".into(), None), "no domain beside the address");
+        assert_eq!(sender_parts(None), (tr("Unknown sender").to_owned(), None));
+    }
+
+    #[test]
     fn the_hint_names_what_was_opened() {
         let file = opened_text(&Opened::File(PathBuf::from("/tmp/a/budget.csv")));
         assert_eq!(file, trf("Opened {file}", &[("file", &"budget.csv")]));
@@ -1091,7 +1093,7 @@ mod tests {
         let summaries: Vec<MessageSummary> = mail.iter().map(|m| m.summary.clone()).collect();
         let folders = folders();
         let folder = FolderView::of(first_inbox(&folders).expect("an inbox"));
-        for two_line in [false, true] {
+        for accounts in [Vec::new(), vec!["anna@work.example.org", "anna@example.org"]] {
             let data = MailList {
                 messages: &summaries,
                 folder: Some(&folder),
@@ -1099,7 +1101,7 @@ mod tests {
                 selected: Some("m:w1"),
                 now: now(),
                 anchor: Anchor::new(),
-                two_line,
+                accounts,
                 more: true,
                 attention: Color::BLACK,
             };

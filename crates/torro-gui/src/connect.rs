@@ -51,13 +51,13 @@ impl Connect {
     /// (`style::container::popover`, as wide as one) centred on the window background: app name
     /// in `TITLE`, the hint in `text_2`, "Open Settings" as the window's one primary button.
     pub fn view<'a>(&'a self, account: &'a AccountState, app_name: &'a str) -> Element<'a, Message> {
-        let heading = typo::text(typo::TITLE, app_name);
+        let heading = typo::text(typo::title(), app_name);
 
         let body: Element<'a, Message> = match account {
-            AccountState::SigningIn { .. } => typo::text(typo::BODY, tr("Signing in to Nextcloud …")).into(),
+            AccountState::SigningIn { .. } => typo::text(typo::body(), tr("Signing in to Nextcloud …")).into(),
             _ => column![
                 typo::text(
-                    typo::BODY,
+                    typo::body(),
                     tr("Set up your Nextcloud in Torro Workplace's settings to see events and tasks here.")
                 )
                 .style(theme::text_2),
@@ -68,17 +68,17 @@ impl Connect {
                     Some(Message::OpenSettings)
                 )],
             ]
-            .spacing(space::L)
+            .spacing(space::l())
             .into(),
         };
 
-        let card = container(column![heading, body].spacing(space::S).width(Fill))
-            .padding(space::XL)
+        let card = container(column![heading, body].spacing(space::s()).width(Fill))
+            .padding(space::xl())
             .width(Fill)
             .max_width(widgets::POPOVER_WIDTH)
             .style(style::container::popover);
 
-        center(card).padding(space::L).into()
+        center(card).padding(space::l()).into()
     }
 }
 

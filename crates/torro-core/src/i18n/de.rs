@@ -1123,8 +1123,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Rules", "Regeln"),
     (
-        "Rules appear here when you move notices to a lane for good or mute a source in the Inbox.",
-        "Regeln erscheinen hier, wenn du im Eingang Meldungen dauerhaft in eine Spur verschiebst oder eine Quelle stummschaltest.",
+        "Rules appear here when you move notices to a lane for good, mute a source or hide a sender in the Inbox.",
+        "Regeln erscheinen hier, wenn du im Eingang Meldungen dauerhaft in eine Spur verschiebst, eine Quelle stummschaltest oder einen Absender ausblendest.",
     ),
     (
         "Rules apply to new notices. Removing one leaves the entries in the Inbox as they are.",
@@ -1146,6 +1146,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{agent} wants to use {tool} in \"{project}\"", "{agent} möchte {tool} in „{project}“ benutzen"),
     ("{agent} wants to use {tool}: {details}", "{agent} möchte {tool} benutzen: {details}"),
     ("{agent} wants to use {tool}", "{agent} möchte {tool} benutzen"),
+    // The session's name in a question (E2.6)
+    ("{agent} (session \"{session}\")", "{agent} (Sitzung „{session}“)"),
     ("{client} asks for permission", "{client} bittet um Erlaubnis"),
     (
         "Torro Workplace gave an unexpected answer to the question.",
@@ -1809,4 +1811,146 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{address} isn't a valid address.", "{address} ist keine gültige Adresse."),
     ("{file} is larger than {limit}.", "{file} ist größer als {limit}."),
     ("{file} is not a file.", "{file} ist keine Datei."),
+    // Design packs (torro-core, L.1)
+    ("Fonts need their license in fonts/LICENSE.txt.", "Schriften brauchen ihre Lizenz in fonts/LICENSE.txt."),
+    (
+        "Format {found} isn't supported. This version reads format 1.",
+        "Format {found} wird nicht unterstützt. Diese Version liest Format 1.",
+    ),
+    ("Inter, quiet surfaces, Torro red", "Inter, ruhige Flächen, Torro-Rot"),
+    ("The design is larger than {limit} in total.", "Das Design ist insgesamt größer als {limit}."),
+    (
+        "The line height of “{key}” is {line}; it must be between {size} and twice that.",
+        "Die Zeilenhöhe von „{key}“ ist {line}; sie muss zwischen {size} und dem Doppelten liegen.",
+    ),
+    (
+        "The values of “{key}” must grow from small to large.",
+        "Die Werte von „{key}“ müssen von klein nach groß steigen.",
+    ),
+    ("There is no design “{id}”.", "Es gibt kein Design „{id}“."),
+    ("Unknown setting “{key}”. Check the spelling.", "Unbekannte Einstellung „{key}“. Prüfe die Schreibweise."),
+    (
+        "colors.{mode}.line_selected must be clearly stronger than line_strong and weaker than focus_ring.",
+        "colors.{mode}.line_selected muss deutlich kräftiger als line_strong und schwächer als focus_ring sein.",
+    ),
+    (
+        "colors.{mode}.on_accent on accent has a contrast of {ratio}:1; text on the primary button needs at least 4.5:1.",
+        "colors.{mode}.on_accent auf accent hat einen Kontrast von {ratio}:1; Text auf dem Hauptknopf braucht mindestens 4,5:1.",
+    ),
+    (
+        "design.toml can't be read (line {line}): {reason}",
+        "design.toml lässt sich nicht lesen (Zeile {line}): {reason}",
+    ),
+    ("design.toml can't be read: {reason}", "design.toml lässt sich nicht lesen: {reason}"),
+    ("not a PNG image", "kein PNG-Bild"),
+    (
+        "preview.png is {width} × {height}; at most 1200 × 800 is allowed.",
+        "preview.png ist {width} × {height}; erlaubt sind höchstens 1200 × 800.",
+    ),
+    (
+        "{fg} on {on} has a contrast of {ratio}:1; controls need at least 3:1.",
+        "{fg} auf {on} hat einen Kontrast von {ratio}:1; Bedienelemente brauchen mindestens 3:1.",
+    ),
+    (
+        "{fg} on {on} has a contrast of {ratio}:1; text needs at least 4.5:1.",
+        "{fg} auf {on} hat einen Kontrast von {ratio}:1; Text braucht mindestens 4,5:1.",
+    ),
+    ("{file} can't be read: {reason}", "{file} lässt sich nicht lesen: {reason}"),
+    (
+        "{file} contains a script. SVG files may not run anything.",
+        "{file} enthält ein Skript. SVG-Dateien dürfen nichts ausführen.",
+    ),
+    ("{file} has no size. Give the SVG a viewBox.", "{file} hat keine Größe. Gib dem SVG eine viewBox."),
+    ("{file} isn't a TrueType or OpenType font.", "{file} ist keine TrueType- oder OpenType-Schrift."),
+    (
+        "{file} isn't square (ratio {ratio}). Logos need a ratio of 1.",
+        "{file} ist nicht quadratisch (Verhältnis {ratio}). Logos brauchen ein Verhältnis von 1.",
+    ),
+    (
+        "{file} isn't the family “{family}”; it says {found}.",
+        "{file} ist nicht die Familie „{family}“, sondern {found}.",
+    ),
+    (
+        "{file} refers to {reference}. SVG files may only link to #… and data:.",
+        "{file} verweist auf {reference}. SVG-Dateien dürfen nur auf #… und data: verweisen.",
+    ),
+    ("{path} from “{key}” doesn't exist.", "{path} aus „{key}“ gibt es nicht."),
+    ("{path} from “{key}” lies outside the design folder.", "{path} aus „{key}“ liegt außerhalb des Design-Ordners."),
+    (
+        "{path} in “{key}” has the wrong type. Use {expected}.",
+        "{path} in „{key}“ hat den falschen Typ. Nimm {expected}.",
+    ),
+    (
+        "“{id}” can't be a design folder. Use up to 32 characters a–z, 0–9 and -; “torro” is the standard design.",
+        "„{id}“ kann kein Design-Ordner sein. Nimm bis zu 32 Zeichen a–z, 0–9 und -; „torro“ ist das Standard-Design.",
+    ),
+    ("“{key}” is missing.", "„{key}“ fehlt."),
+    ("“{key}” is {value}; allowed are {min} to {max}.", "„{key}“ ist {value}; erlaubt sind {min} bis {max}."),
+    (
+        "“{key}” isn't a color: {value}. Write #RRGGBB or #RRGGBBAA.",
+        "„{key}“ ist keine Farbe: {value}. Schreibe #RRGGBB oder #RRGGBBAA.",
+    ),
+    (
+        "“{key}” uses {weight} of the {font} font, but there is no file for it.",
+        "„{key}“ nutzt {weight} der Schrift {font}, dafür gibt es aber keine Datei.",
+    ),
+    // Choosing a design in the control centre (L.4)
+    ("Can't be used:", "Nicht nutzbar:"),
+    (
+        "Colors, fonts and spacing of all Torro apps. More designs go into the designs folder; one that breaks a rule can't be used.",
+        "Farben, Schriften und Abstände aller Torro-Apps. Weitere Designs kommen in den Design-Ordner; eins, das gegen eine Regel verstößt, ist nicht nutzbar.",
+    ),
+    ("Design", "Design"),
+    ("Designs folder", "Design-Ordner"),
+    ("Open designs folder", "Design-Ordner öffnen"),
+    ("Reload", "Neu laden"),
+    ("The designs can't be listed.", "Die Designs lassen sich nicht auflisten."),
+    // Inbox overview in two columns (E3.9)
+    ("Agents, approvals and notices show up here.", "Agenten, Freigaben und Hinweise erscheinen hier."),
+    ("Earlier", "Früher"),
+    ("Hide", "Ausblenden"),
+    ("Later", "Später"),
+    ("Mail, agents, approvals and notices show up here.", "Mails, Agenten, Freigaben und Hinweise erscheinen hier."),
+    ("New mail that needs you shows up here.", "Neue Mails, die dich brauchen, erscheinen hier."),
+    ("No mail for you.", "Keine Mails für dich."),
+    ("Task", "Aufgabe"),
+    // Hide from the inbox in steps (E3.10)
+    ("Always to Info", "Immer nach Info"),
+    ("Couldn't hide the sender.", "Der Absender ließ sich nicht ausblenden."),
+    ("Everything from {domain}", "Alles von {domain}"),
+    ("Everything from {sender}", "Alles von {sender}"),
+    ("Hidden: everything from {domain}", "Ausgeblendet: alles von {domain}"),
+    ("Hidden: {sender}", "Ausgeblendet: {sender}"),
+    ("Hide from inbox", "Im Eingang ausblenden"),
+    (
+        "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
+        "Mails von allen unter {domain} in allen Mail-Konten ausblenden; die Mails bleiben ungelesen",
+    ),
+    (
+        "Hide mail from {sender} in every mail account; the mail stays unread",
+        "Mails von {sender} in allen Mail-Konten ausblenden; die Mails bleiben ungelesen",
+    ),
+    ("Hide the sender of {entry} in the inbox", "Den Absender von {entry} im Eingang ausblenden"),
+    ("Mail from {sender} goes to “{lane}”", "Mails von {sender} landen in „{lane}“"),
+    ("Move to junk", "In den Spam verschieben"),
+    ("Moved to junk", "In den Spam verschoben"),
+    (
+        "Show mail from everyone at {domain} in the inbox again",
+        "Mails von allen unter {domain} wieder im Eingang zeigen",
+    ),
+    ("Show mail from {sender} in the inbox again", "Mails von {sender} wieder im Eingang zeigen"),
+    ("This conversation", "Diese Unterhaltung"),
+    ("This entry", "Dieser Eintrag"),
+    // Hide without marking read, rules for all accounts, undo (E3.11)
+    ("All mail accounts", "Alle Mail-Konten"),
+    ("Conversation hidden", "Unterhaltung ausgeblendet"),
+    ("Couldn't undo the change.", "Die Änderung ließ sich nicht rückgängig machen."),
+    ("Hide {entry} from the inbox; the mail stays unread", "{entry} im Eingang ausblenden; die Mail bleibt ungelesen"),
+    ("2 invoices could not be matched to a customer.", "2 Rechnungen ließen sich keinem Kunden zuordnen."),
+    ("Certificate for the intranet expires in 14 days", "Zertifikat für das Intranet läuft in 14 Tagen ab"),
+    ("Invoice run needs a check", "Rechnungslauf muss geprüft werden"),
+    (
+        "Renew it before 27 October to keep the intranet reachable.",
+        "Vor dem 27. Oktober erneuern, damit das Intranet erreichbar bleibt.",
+    ),
 ];

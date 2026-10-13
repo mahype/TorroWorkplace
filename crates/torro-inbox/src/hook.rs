@@ -35,8 +35,19 @@
 //! `PermissionRequest` too, but the answer is a choice in its terminal, which Allow or Deny cannot
 //! give. So [`permission_question`] leaves it out, and [`interpret`] reports "waiting" with the
 //! questions and their choices as text ([`questions_text`]).
+//!
+//! **The session's name** (task E2.6): Claude Code and Codex name every session, and the inbox
+//! shows that name, so the person knows which job waits. Both keep it in files of their own, in
+//! formats nobody documents: Claude Code in the transcript (`{"type":"custom-title"}` when the
+//! person named the session, else `{"type":"ai-title"}`), Codex in its `session_index.jsonl`.
+//! [`title_source`] says where to look; the caller reads the end of that file
+//! ([`TITLE_TAIL_MAX`]) only for a report or a question, never for `PostToolUse`, and hands it to
+//! [`title_in_transcript`] or [`title_in_codex_index`], which take the title and nothing else.
+//! Whatever is missing or looks different gives no name, never an error; [`session_title`] makes
+//! the name one harmless line of at most [`SESSION_TITLE_MAX`] characters. Gemini CLI names no
+//! session.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -51,7 +62,8 @@ pub enum HookIntent {
     Report {
         /// [`Kind::AgentWaiting`] or [`Kind::AgentDone`], never another kind.
         kind: Kind,
-        /// Agent, session, project and branch. `pids` is empty; the caller fills it (E2.2).
+        /// Agent, session, project and branch. `pids` is empty and `title` is `None`; the caller
+        /// fills them (E2.2, E2.6: [`title_source`]).
         agent: AgentInfo,
         /// `<agent id>:<session id>`, e.g. `claude-code:abc123` ([`thread_key`]). The core puts
         /// the client in front (security rule 2).
@@ -98,6 +110,7 @@ pub fn interpret(agent: AgentKind, payload: &str, git_head: Option<&str>) -> Hoo
             project: text(&json, "cwd").and_then(project_from_cwd),
             branch: git_head.and_then(branch_from_head),
             pids: Vec::new(),
+            title: None,
         },
         thread_key: thread_key.clone(),
         body: body.map(str::trim).filter(|body| !body.is_empty()).map(String::from),
@@ -170,6 +183,10 @@ pub struct PermissionQuestion {
     pub details: String,
     /// The last part of the payload's `cwd`; `None` without one.
     pub project: Option<String>,
+    /// The session's name (task E2.6, [`session_title`]), so the person knows which job asks.
+    /// [`permission_question`] leaves it `None`; the caller reads it ([`title_source`]) and fills
+    /// it in.
+    pub title: Option<String>,
 }
 
 /// The question in the `PermissionRequest` payload `payload` of `agent`; `None` for every other
@@ -193,7 +210,7 @@ pub fn permission_question(agent: AgentKind, payload: &str) -> Option<Permission
         return None;
     }
     let details = json.get("tool_input").map(permission_details).unwrap_or_default();
-    Some(PermissionQuestion { tool, details, project: text(&json, "cwd").and_then(project_from_cwd) })
+    Some(PermissionQuestion { tool, details, project: text(&json, "cwd").and_then(project_from_cwd), title: None })
 }
 
 /// What a tool's input means for the person: the shell command alone when `tool_input` holds
@@ -242,6 +259,111 @@ pub fn permission_answer(agent: AgentKind, allow: bool) -> Option<String> {
         ),
         AgentKind::Gemini => None,
     }
+}
+
+/// The longest session name kept, in characters ([`session_title`]); a longer one ends in "…".
+pub const SESSION_TITLE_MAX: usize = 80;
+
+/// How much of the end of a transcript or of Codex's index is read for a session's name: 256 KiB.
+/// Claude Code writes its title line again and again while a session runs, and Codex appends to
+/// its index, so the name stands near the end; reading more would only slow the hook down.
+pub const TITLE_TAIL_MAX: u64 = 256 * 1024;
+
+/// Where the name of a session is kept (task E2.6), from [`title_source`]. The caller reads the
+/// last [`TITLE_TAIL_MAX`] bytes of the file and hands them to the parser named here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TitleSource {
+    /// Claude Code: the session's transcript, a JSONL file (`transcript_path` of the payload);
+    /// its end goes to [`title_in_transcript`].
+    Transcript(PathBuf),
+    /// Codex: `session_index.jsonl` in `$CODEX_HOME` (default `~/.codex`), which the caller
+    /// finds; its end goes to [`title_in_codex_index`] with `session`.
+    CodexIndex {
+        /// The payload's `session_id`, the `id` of the session's lines in the index.
+        session: String,
+    },
+}
+
+/// Where to look for the name of the session in `payload` of `agent`: Claude Code's
+/// `transcript_path` (absolute, not empty), Codex's index for its `session_id` (not empty).
+/// `None` for Gemini CLI (it names no session), for broken JSON and without the field. Looks at
+/// no event and reads no file: the caller asks only for reports and questions.
+pub fn title_source(agent: AgentKind, payload: &str) -> Option<TitleSource> {
+    let json = serde_json::from_str::<Value>(payload).ok()?;
+    match agent {
+        AgentKind::ClaudeCode => {
+            let path = PathBuf::from(text(&json, "transcript_path")?);
+            path.is_absolute().then_some(TitleSource::Transcript(path))
+        }
+        AgentKind::Codex => Some(TitleSource::CodexIndex { session: text(&json, "session_id")?.to_string() }),
+        AgentKind::Gemini => None,
+    }
+}
+
+/// The session's name in `tail`, the end of a Claude Code transcript: the last
+/// `{"type":"custom-title","customTitle":…}` (the name the person gave, renaming adds a line),
+/// else the last `{"type":"ai-title","aiTitle":…}`, made harmless by [`session_title`]. Only these
+/// lines are read, nothing else of the conversation. Broken lines (the first one is usually cut
+/// in half) are skipped; `None` when no line names the session.
+pub fn title_in_transcript(tail: &str) -> Option<String> {
+    let (mut custom, mut generated) = (None, None);
+    // A transcript is mostly messages; only lines that may hold a title are parsed at all.
+    for line in tail.lines().filter(|line| line.contains("-title")) {
+        let Ok(json) = serde_json::from_str::<Value>(line) else { continue };
+        let (slot, field) = match text(&json, "type") {
+            Some("custom-title") => (&mut custom, "customTitle"),
+            Some("ai-title") => (&mut generated, "aiTitle"),
+            _ => continue,
+        };
+        if let Some(title) = text(&json, field).and_then(session_title) {
+            *slot = Some(title);
+        }
+    }
+    custom.or(generated)
+}
+
+/// The name of the Codex session `session` in `tail`, the end of Codex's `session_index.jsonl`:
+/// `thread_name` of the last line whose `id` is `session` (renaming adds a line), made harmless by
+/// [`session_title`]. Broken lines are skipped; `None` when no line is about the session or its
+/// last one has no name.
+pub fn title_in_codex_index(tail: &str, session: &str) -> Option<String> {
+    // From the end: the newest line of the session is the one that counts.
+    tail.lines()
+        .rev()
+        .filter(|line| line.contains(session))
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|json| text(json, "id") == Some(session))
+        .and_then(|json| text(&json, "thread_name").and_then(session_title))
+}
+
+/// `raw`, a session's name from the agent's files, as one harmless line: control characters
+/// (`\u{0e}` was seen in a Codex name), direction and invisible format characters go, every run
+/// of white space becomes one space, the ends are trimmed, and a name longer than
+/// [`SESSION_TITLE_MAX`] characters is cut to that length, ending in "…". `None` when nothing is
+/// left. The core applies it again to what a hook sends.
+pub fn session_title(raw: &str) -> Option<String> {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .filter(|&c| !c.is_control() && !is_invisible(c))
+        .collect();
+    let line = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() {
+        return None;
+    }
+    if line.chars().count() <= SESSION_TITLE_MAX {
+        return Some(line);
+    }
+    let mut cut: String = line.chars().take(SESSION_TITLE_MAX - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    Some(cut)
+}
+
+/// Characters that show nothing yet change what a person reads: the bidi controls (they turn
+/// text around), zero-width spaces and joiners, the byte order mark.
+fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{061C}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
 }
 
 /// The thread key of a session: `<agent id>:<session id>`, e.g. `codex:thr_123`.
@@ -296,6 +418,7 @@ mod tests {
                 project: Some("my-project".into()),
                 branch: Some("feat/inbox".into()),
                 pids: Vec::new(),
+                title: None,
             },
             thread_key: thread_key(agent, session),
             body: Some(body.into()),
@@ -445,6 +568,7 @@ mod tests {
                 project: None,
                 branch: None,
                 pids: Vec::new(),
+                title: None,
             },
             thread_key: "claude-code:abc".into(),
             body: None,
@@ -471,6 +595,7 @@ mod tests {
             tool: "Bash".into(),
             details: "rm -rf node_modules".into(),
             project: Some("my-project".into()),
+            title: None,
         };
         assert_eq!(bash, Some(expected), "the command, without the agent's description");
         let codex = permission_question(AgentKind::Codex, &fixture("codex-permission-request"));
@@ -543,6 +668,102 @@ mod tests {
             );
         }
         assert_eq!(permission_answer(AgentKind::Gemini, true), None);
+    }
+
+    fn fixture_file(name: &str) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hooks").join(name);
+        std::fs::read_to_string(&path).expect("fixture exists")
+    }
+
+    #[test]
+    fn the_last_custom_title_names_a_claude_code_session() {
+        // Renamed once: the later name wins over the earlier one and over every ai-title, also
+        // one that comes after it; agent names and messages that mention a title are no title.
+        let transcript = fixture_file("claude-code-transcript.jsonl");
+        assert_eq!(title_in_transcript(&transcript).as_deref(), Some("Login redirect (staging)"));
+    }
+
+    #[test]
+    fn without_a_custom_title_the_last_ai_title_names_it() {
+        let transcript = fixture_file("claude-code-transcript-ai-title.jsonl");
+        assert_eq!(title_in_transcript(&transcript).as_deref(), Some("Update README install steps"));
+    }
+
+    #[test]
+    fn broken_lines_in_a_transcript_are_skipped() {
+        // The first line is cut in half (the tail starts mid-line), others are no JSON, hold no
+        // string or a blank one: only the one good title counts.
+        let transcript = fixture_file("claude-code-transcript-broken.jsonl");
+        assert_eq!(title_in_transcript(&transcript).as_deref(), Some("Release notes"));
+        for none in ["", "\n\n", "not json", r#"{"type":"user","message":"custom-title"}"#] {
+            assert_eq!(title_in_transcript(none), None, "{none:?}");
+        }
+    }
+
+    #[test]
+    fn the_last_line_of_a_codex_session_names_it() {
+        let index = fixture_file("codex-session-index.jsonl");
+        assert_eq!(title_in_codex_index(&index, "thr_123").as_deref(), Some("Parser fixtures and docs"));
+        assert_eq!(title_in_codex_index(&index, "thr_1234").as_deref(), Some("Not this one"), "the whole id");
+        // The control character Codex left in a name goes.
+        assert_eq!(title_in_codex_index(&index, "thr_200").as_deref(), Some("Old name"));
+        // The last line of a session has no name (the line before it is broken): no name.
+        assert_eq!(title_in_codex_index(&index, "thr_300"), None);
+        assert_eq!(title_in_codex_index(&index, "thr_999"), None);
+        assert_eq!(title_in_codex_index("", "thr_123"), None);
+    }
+
+    #[test]
+    fn titles_are_looked_for_where_each_agent_keeps_them() {
+        // The fixture's path is absolute on Unix only; Windows wants a drive, so there it is no
+        // transcript to read.
+        let transcript = PathBuf::from("/home/user/.claude/projects/-home-user-my-project/abc123.jsonl");
+        let found = title_source(AgentKind::ClaudeCode, &fixture("claude-code-stop"));
+        if transcript.is_absolute() {
+            assert_eq!(found, Some(TitleSource::Transcript(transcript)));
+        } else {
+            assert_eq!(found, None, "not absolute on this system");
+        }
+        // An absolute path of this system is taken as it is.
+        let here = std::env::temp_dir().join("abc123.jsonl");
+        let payload = serde_json::json!({ "session_id": "abc", "transcript_path": here.to_string_lossy() }).to_string();
+        assert_eq!(title_source(AgentKind::ClaudeCode, &payload), Some(TitleSource::Transcript(here)));
+        assert_eq!(
+            title_source(AgentKind::Codex, &fixture("codex-stop")),
+            Some(TitleSource::CodexIndex { session: "thr_123".into() })
+        );
+        // Gemini CLI names no session, though it sends a transcript.
+        assert_eq!(title_source(AgentKind::Gemini, &fixture("gemini-after-agent")), None);
+        for broken in ["", "not json", r#"{"session_id":"abc"}"#, r#"{"transcript_path":"relative.jsonl"}"#] {
+            assert_eq!(title_source(AgentKind::ClaudeCode, broken), None, "{broken:?}");
+        }
+        assert_eq!(title_source(AgentKind::Codex, r#"{"session_id":""}"#), None);
+    }
+
+    #[test]
+    fn session_titles_are_one_harmless_line_of_at_most_80_characters() {
+        assert_eq!(session_title("  Fix\tthe\n\nlogin  bug ").as_deref(), Some("Fix the login bug"));
+        assert_eq!(session_title("Build\u{0e} fix\u{1b}[31m").as_deref(), Some("Build fix[31m"));
+        assert_eq!(session_title("abc\u{202E}fed\u{200B}\u{2066}x\u{FEFF}").as_deref(), Some("abcfedx"));
+        for none in ["", "   ", "\u{0e}\u{202E}\n"] {
+            assert_eq!(session_title(none), None, "{none:?}");
+        }
+        let exact = "x".repeat(SESSION_TITLE_MAX);
+        assert_eq!(session_title(&exact).as_deref(), Some(exact.as_str()));
+        let long = session_title(&"ä".repeat(200)).expect("a title");
+        assert_eq!(long.chars().count(), SESSION_TITLE_MAX);
+        assert!(long.ends_with('…'), "{long}");
+        // No blank before the "…".
+        let words = session_title(&format!("{} tail", "y".repeat(SESSION_TITLE_MAX - 2))).expect("a title");
+        assert_eq!(words, format!("{}…", "y".repeat(SESSION_TITLE_MAX - 2)));
+    }
+
+    #[test]
+    fn interpreting_never_reads_a_title() {
+        let HookIntent::Report { agent, .. } = run(AgentKind::ClaudeCode, "claude-code-stop") else {
+            panic!("a report");
+        };
+        assert_eq!(agent.title, None, "the caller fills it");
     }
 
     #[test]

@@ -32,6 +32,12 @@
 //! permission but a choice in its terminal: it is not put as a question, and the hook reports
 //! "waiting" with the questions as text (task E3.8, [`torro_inbox::hook::ASK_TOOL`]).
 //!
+//! **The session's name** (task E2.6): for a report and a question, and only then, the hook looks
+//! up the name the agent gave the session ([`session_name`]): the end of Claude Code's transcript,
+//! or of Codex's `session_index.jsonl`, at most [`torro_inbox::hook::TITLE_TAIL_MAX`] bytes of one
+//! file ([`read_tail`]). Anything missing or unreadable means no name; the report goes out as
+//! before.
+//!
 //! The hook must never hold up or change the agent, so:
 //!
 //! - **nothing on stdout**, except the decision of a person just described. Claude Code reads a
@@ -57,14 +63,18 @@
 //! "Connect agent" wizard sets hooks up (E2.3), such a client is created by hand:
 //! `torroworkplace ctl clients add "Claude Code hooks" --kind hook`.
 
-use std::io::{self, Read, Write};
+use std::ffi::OsString;
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc;
 use std::time::Duration;
 
 use torro_core::i18n::{tr, trf};
-use torro_inbox::hook::{HookIntent, PermissionQuestion, interpret, permission_answer, permission_question};
+use torro_inbox::hook::{
+    HookIntent, PermissionQuestion, TITLE_TAIL_MAX, TitleSource, interpret, permission_answer, permission_question,
+    title_in_codex_index, title_in_transcript, title_source,
+};
 use torro_inbox::{AgentKind, Kind};
 use torro_ipc::{ApprovalInfo, ApprovalState, IpcError, Key, Request, Response};
 
@@ -242,8 +252,9 @@ fn report_from_args(args: &[String]) {
     let socket = torro_ipc::socket_path();
     if args.answer
         && let (Some(payload), Some(token)) = (payload.as_deref(), token.as_ref())
-        && let Some(question) = permission_question(args.agent, payload)
+        && let Some(mut question) = permission_question(args.agent, payload)
     {
+        question.title = session_name(args.agent, payload);
         match answer(args.agent, &question, socket.as_deref(), token, ANSWER_WAIT) {
             Ok(Some(decision)) => return write_decision(&decision),
             Ok(None) => {}
@@ -385,13 +396,71 @@ pub fn run(
 }
 
 /// The request for `payload`, with the branch from `.git/HEAD` of its `cwd` ([`git_head`]) and,
-/// for a report, the parent processes ([`parent_pids`]); `None` when the event means nothing.
+/// for a report, the parent processes ([`parent_pids`]) and the session's name
+/// ([`session_name`]); `None` when the event means nothing.
 pub fn prepare(agent: AgentKind, payload: &str) -> Option<Request> {
     let head = payload_cwd(payload).and_then(|cwd| git_head(&cwd));
-    let intent = interpret(agent, payload, head.as_deref());
-    // Reading /proc only pays off for a report: the pids find the window to jump to.
-    let pids = if matches!(intent, HookIntent::Report { .. }) { parent_pids() } else { Vec::new() };
+    let mut intent = interpret(agent, payload, head.as_deref());
+    // Reading /proc and the agent's files only pays off for a report: the pids find the window to
+    // jump to, the name says which job it is. `PostToolUse` comes often and reads nothing.
+    let pids = match &mut intent {
+        HookIntent::Report { agent: info, .. } => {
+            info.title = session_name(agent, payload);
+            parent_pids()
+        }
+        _ => Vec::new(),
+    };
     request_for(intent, pids)
+}
+
+/// Codex's index of sessions, in [`codex_home`].
+pub const CODEX_INDEX: &str = "session_index.jsonl";
+
+/// The name `agent` gave the session of `payload` (task E2.6), read from the end of one file
+/// ([`title_source`]): Claude Code's transcript, Codex's index in [`codex_home`] (from
+/// `CODEX_HOME` and the home directory of this process). `None` for Gemini CLI and whenever the
+/// file is missing, unreadable or names no session; never fails.
+pub fn session_name(agent: AgentKind, payload: &str) -> Option<String> {
+    let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" });
+    session_name_in(agent, payload, codex_home(std::env::var_os("CODEX_HOME"), home).as_deref())
+}
+
+/// [`session_name`] with Codex's home directory given (`None`: unknown, so Codex has no name).
+fn session_name_in(agent: AgentKind, payload: &str, codex_home: Option<&Path>) -> Option<String> {
+    match title_source(agent, payload)? {
+        TitleSource::Transcript(path) => title_in_transcript(&read_tail(&path, TITLE_TAIL_MAX)?),
+        TitleSource::CodexIndex { session } => {
+            title_in_codex_index(&read_tail(&codex_home?.join(CODEX_INDEX), TITLE_TAIL_MAX)?, &session)
+        }
+    }
+}
+
+/// Where Codex keeps its files: `codex_home_var` (the content of `CODEX_HOME`) when it is set and
+/// not empty, else `.codex` in `home`; `None` without either.
+pub fn codex_home(codex_home_var: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    let not_empty = |value: &OsString| !value.is_empty();
+    match codex_home_var.filter(not_empty) {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => home.filter(not_empty).map(|home| PathBuf::from(home).join(".codex")),
+    }
+}
+
+/// The last `max` bytes of the regular file `path` as text, from the first whole line on (when
+/// the file is longer, the cut falls inside a line, which is dropped); bytes that are no UTF-8
+/// become U+FFFD, so a cut through a character spoils only that character. `None` when the file
+/// is missing, no regular file (a named pipe would wait for a writer) or cannot be read.
+pub fn read_tail(path: &Path, max: u64) -> Option<String> {
+    if !std::fs::metadata(path).ok()?.is_file() {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let start = file.metadata().ok()?.len().saturating_sub(max);
+    file.seek(SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    file.take(max).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes);
+    let text = if start > 0 { text.split_once('\n').map_or("", |(_, rest)| rest) } else { &text };
+    Some(text.to_string())
 }
 
 /// The request an intent becomes. A report is `inbox.post_item` with `pids` in its agent; both
@@ -477,6 +546,7 @@ async fn ask_and_wait(
         tool: question.tool.clone(),
         details: question.details.clone(),
         project: question.project.clone(),
+        title: question.title.clone(),
     };
     let asked = match call(socket, token, &ask).await? {
         Response::Pending { approval } if crate::approvals::is_question(&approval) => approval,
@@ -682,6 +752,7 @@ mod tests {
                 project: Some("my-project".into()),
                 branch: Some("feat/inbox".into()),
                 pids: vec![42, 7],
+                title: None,
             }),
         })
     }
@@ -770,6 +841,101 @@ mod tests {
         let key = Key::new("torro_c1_x");
         assert_eq!(run(AgentKind::ClaudeCode, Some(unknown), None, Some(&key)).ok(), Some(Outcome::Ignored));
         assert_eq!(run(AgentKind::ClaudeCode, None, None, Some(&key)).ok(), Some(Outcome::Ignored));
+    }
+
+    /// A hook fixture of the payloads with `transcript_path` pointing at `transcript`.
+    fn with_transcript(name: &str, transcript: &Path) -> String {
+        let mut json: serde_json::Value = serde_json::from_str(&fixture(name)).expect("JSON");
+        json["transcript_path"] = transcript.to_string_lossy().into_owned().into();
+        json.to_string()
+    }
+
+    fn fixture_path(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../torro-inbox/tests/fixtures/hooks").join(name)
+    }
+
+    #[test]
+    fn a_report_carries_the_session_name_of_claude_code() {
+        let transcript = fixture_path("claude-code-transcript.jsonl");
+        let payload = with_transcript("claude-code-stop", &transcript);
+        let Some(Request::PostItem { agent: Some(agent), title, .. }) = prepare(AgentKind::ClaudeCode, &payload) else {
+            panic!("a report");
+        };
+        assert_eq!(agent.title.as_deref(), Some("Login redirect (staging)"));
+        assert_eq!(title, trf("{agent} finished", &[("agent", &"Claude Code")]), "the name is no part of the title");
+        // Without a transcript the report goes out as before, without a name.
+        let missing = with_transcript("claude-code-stop", &transcript.with_file_name("missing.jsonl"));
+        let Some(Request::PostItem { agent: Some(agent), .. }) = prepare(AgentKind::ClaudeCode, &missing) else {
+            panic!("a report");
+        };
+        assert_eq!(agent.title, None);
+        // Going on reads nothing and sends no name: there is none in the request.
+        let going_on = with_transcript("claude-code-post-tool-use", &transcript);
+        assert_eq!(prepare(AgentKind::ClaudeCode, &going_on), resolve("claude-code:abc123"));
+    }
+
+    #[test]
+    fn only_the_end_of_a_large_transcript_is_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let message = r#"{"type":"assistant","message":{"role":"assistant","content":"lots of work"}}"#;
+        let filler = format!("{message}\n").repeat((TITLE_TAIL_MAX as usize / message.len()) * 2);
+        let title = |name: &str| format!("{{\"type\":\"custom-title\",\"customTitle\":\"{name}\"}}\n");
+        let payload = |file: &Path| with_transcript("claude-code-stop", file);
+
+        let at_end = dir.path().join("end.jsonl");
+        std::fs::write(&at_end, format!("{}{filler}{}", title("Old name"), title("Big job"))).expect("write");
+        assert!(std::fs::metadata(&at_end).expect("file").len() > 2 * TITLE_TAIL_MAX);
+        assert_eq!(session_name_in(AgentKind::ClaudeCode, &payload(&at_end), None).as_deref(), Some("Big job"));
+
+        // A title further back than the tail is not looked for.
+        let at_start = dir.path().join("start.jsonl");
+        std::fs::write(&at_start, format!("{}{filler}", title("Too far back"))).expect("write");
+        assert_eq!(session_name_in(AgentKind::ClaudeCode, &payload(&at_start), None), None);
+
+        // A directory or an empty file is no transcript.
+        assert_eq!(session_name_in(AgentKind::ClaudeCode, &payload(dir.path()), None), None);
+        let empty = dir.path().join("empty.jsonl");
+        std::fs::write(&empty, "").expect("write");
+        assert_eq!(session_name_in(AgentKind::ClaudeCode, &payload(&empty), None), None);
+    }
+
+    #[test]
+    fn the_tail_starts_at_a_whole_line() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = dir.path().join("t.jsonl");
+        std::fs::write(&file, "first line\nsecond\nthird\n").expect("write");
+        assert_eq!(read_tail(&file, 1000).as_deref(), Some("first line\nsecond\nthird\n"), "short: all of it");
+        assert_eq!(read_tail(&file, 10).as_deref(), Some("third\n"), "the cut line is dropped");
+        // A cut through a character spoils only that character.
+        std::fs::write(&file, "äöü\n").expect("write");
+        assert_eq!(read_tail(&file, 5).as_deref(), Some(""), "one line, cut: nothing whole");
+        assert_eq!(read_tail(&dir.path().join("missing"), 10), None);
+    }
+
+    #[test]
+    fn a_codex_session_is_named_from_its_index() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        std::fs::copy(fixture_path("codex-session-index.jsonl"), dir.path().join(CODEX_INDEX)).expect("copy");
+        let payload = fixture("codex-stop");
+        assert_eq!(
+            session_name_in(AgentKind::Codex, &payload, Some(dir.path())).as_deref(),
+            Some("Parser fixtures and docs")
+        );
+        assert_eq!(session_name_in(AgentKind::Codex, &payload, None), None, "no home, no index");
+        let elsewhere = tempfile::tempdir().expect("temp dir");
+        assert_eq!(session_name_in(AgentKind::Codex, &payload, Some(elsewhere.path())), None, "no index");
+        // Gemini CLI names no session.
+        assert_eq!(session_name_in(AgentKind::Gemini, &fixture("gemini-after-agent"), Some(dir.path())), None);
+    }
+
+    #[test]
+    fn codex_lives_in_codex_home_or_in_the_home_directory() {
+        let os = |text: &str| Some(OsString::from(text));
+        assert_eq!(codex_home(os("/opt/codex"), os("/home/anna")), Some(PathBuf::from("/opt/codex")));
+        assert_eq!(codex_home(os(""), os("/home/anna")), Some(PathBuf::from("/home/anna/.codex")));
+        assert_eq!(codex_home(None, os("/home/anna")), Some(PathBuf::from("/home/anna/.codex")));
+        assert_eq!(codex_home(None, os("")), None);
+        assert_eq!(codex_home(None, None), None);
     }
 
     #[test]
@@ -1278,8 +1444,10 @@ mod tests {
     async fn without_a_decision_the_hook_hands_over_nothing() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (socket, key) = core_on_socket(dir.path(), AgentKind::ClaudeCode).await;
-        let question =
+        let mut question =
             permission_question(AgentKind::ClaudeCode, &fixture("claude-code-permission-request")).expect("question");
+        // The session's name goes with the question (task E2.6).
+        question.title = Some("Login bug".into());
         let started = Instant::now();
         let waited = Duration::from_millis(1200);
         let printed = {
@@ -1293,10 +1461,12 @@ mod tests {
         assert!(started.elapsed() >= waited, "{:?}", started.elapsed());
         // ... and not until the question expired (QUESTION_LIFETIME): the question is still open.
         // That tells the two apart without a bound on how slow a loaded machine may be.
-        assert_eq!(open_questions(&socket).await.len(), 1, "the question stays until it expires; nobody allowed it");
+        let open = open_questions(&socket).await;
+        assert_eq!(open.len(), 1, "the question stays until it expires; nobody allowed it");
+        assert!(open[0].summary.contains("Login bug"), "named: {}", open[0].summary);
 
         // Gemini CLI takes no answer: nothing is asked.
-        let gemini = PermissionQuestion { tool: "Bash".into(), details: "ls".into(), project: None };
+        let gemini = PermissionQuestion { tool: "Bash".into(), details: "ls".into(), project: None, title: None };
         let nobody = Key::new("torro_00000000_nope");
         assert!(matches!(answer(AgentKind::Gemini, &gemini, None, &nobody, Duration::ZERO), Ok(None)));
     }
@@ -1310,6 +1480,7 @@ mod tests {
             tool: "Bash".into(),
             details: "x".repeat(crate::approvals::QUESTION_DETAILS_MAX + 1),
             project: None,
+            title: None,
         };
         let refused = {
             let socket = socket.clone();

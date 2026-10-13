@@ -1,29 +1,44 @@
-//! The list of entries (tasks E3.1, E3.2b and E3.2c in `docs/tasks/eingang.md`).
+//! The rows of entries and the list of a view (tasks E3.1, E3.2b, E3.2c and E3.9 in
+//! `docs/tasks/eingang.md`).
 //!
-//! One `widgets::list_row` per entry, in the order the source gives them ([`torro_inbox::rules`]:
-//! urgent first, then the newest): the source's icon (in the attention colour while an urgent
-//! entry is open – never Torro red), the title on one line (medium weight while new), a preview of
-//! the body in `text_3`, how many reports were merged (from two on) and the time. A click on the
-//! row → `Select(id)`. Nothing to show → the empty state of the view, with the view's icon.
+//! **Rows** (task E3.9, [`entry_row`]) are the same in every view and in both columns of the
+//! overview (`overview.rs`), so an entry looks the same wherever it shows:
 //!
-//! **Urgency never by colour alone** (E3.2b): while urgent entries are open, the list is grouped
-//! like torrotasks – a head "Waiting for you" over them and "Other" over the rest ([`groups`]).
-//! Without anything waiting there are no heads.
+//! - a **mail entry** ([`size::row_message()`]): a round avatar with the sender's initials on the
+//!   account's colour, tinted ([`account_index`]; neutral for an account not listed); the sender
+//!   (`BODY_STRONG`) with the domain (`META`, `text_3`) and the time at the right; the subject
+//!   (`BODY_STRONG` while new, else `BODY`) with the number of messages from two on; the preview in
+//!   `text_2` on one line, and at its right – with two accounts or more – the account as dot and
+//!   name. New is a small dot in `text` at the avatar, never red; read but open entries keep their
+//!   subject in `text` and nothing fainter than `text_2`.
+//! - **any other entry** ([`size::row_notice()`]): the source's icon on a small tile (in the
+//!   attention colour while it waits – never Torro red, E3.2b), the title (medium weight while new)
+//!   with the time, below it the text in `text_2` or – for a coding agent's session with a name
+//!   (task E2.6) – what the agent does and where ([`words`]).
 //!
-//! **No hard cut** (E3.2b): Iced 0.14 cannot end a line with "…", so the row works out its free
-//! width ([`text_room`]) and cuts title and preview with an ellipsis itself ([`fit`], with
-//! `typo::ellipsize`'s estimate of Inter). The preview only stands beside the title when about
-//! [`PREVIEW_ROOM`] are left; otherwise it is dropped. Narrow windows get two lines per row
-//! instead: the title, and the preview in `META` below it. The cells still clip, in case the
-//! estimate runs over.
+//! Both start their text at the same x: the notice's tile stands centred in the avatar's width.
 //!
-//! Two-line rows (E3.2c) are [`size::ROW_TWO`] high, with the count and the time on the title's
-//! line and the preview below across the row's width. `widgets::list_row` is 40 high, always, so
-//! the two-line row is built here from the same pieces ([`tall_row`]).
+//! Every row carries its **action bar** (`widgets::row_actions`): Task (`t`), Done (`e`), Later
+//! (`s`) and Hide (`m`), shown while the pointer is over the row and always on the row under the
+//! keyboard cursor – only what works for the entry, as in the panel ([`actions`]). A button sends
+//! [`Message::Act`]: the app puts its cursor on the row and does what the key does, so the menus
+//! open at the row.
 //!
-//! The row under the cursor (E3.2) is the highlighted one; it registers [`ListData::anchor`], so
-//! the snooze menu and the lane question open beside it. The list reports its scroll position
+//! **Urgency never by colour alone** (E3.2b): while urgent entries are open, the list of a view is
+//! grouped like torrotasks – a head "Waiting for you" over them and "Other" over the rest
+//! ([`groups`]). Without anything waiting there are no heads.
+//!
+//! **No hard cut** (E3.2b): Iced 0.14 cannot end a line with "…", so a row works out the room of
+//! each text from its width and cuts it with an ellipsis itself (`typo::ellipsize`); the cells still
+//! clip, in case the estimate runs over.
+//!
+//! The row under the cursor (E3.2) is the highlighted one; it registers [`Rows::anchor`], so the
+//! snooze menu and the lane question open beside it. The list reports its scroll position
 //! (`Message::Scrolled`), so the app can keep the cursor in view ([`row_span`]).
+//!
+//! **Sessions with a name** (task E2.6): a coding agent's entry whose session has a name shows the
+//! name as title and, where the text stands, what the agent does and where: "Claude Code is
+//! waiting for you · TorroWorkplace · feat/inbox" ([`words`]). Without a name the row is as before.
 //!
 //! Titles and bodies of other sources are foreign text (`Item::untrusted`). Iced draws text as it
 //! is, so nothing in it is ever interpreted; [`one_line`] and [`plain`] also drop control and
@@ -33,32 +48,46 @@ use std::ops::Range;
 
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{button, center, column, container, responsive, row, rule, scrollable, space as blank, svg};
-use iced::{Alignment, Color, Element, Fill, Padding, Theme};
+use iced::widget::{button, center, column, container, responsive, row, rule, scrollable, space as blank, stack, svg};
+use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::theme::{self, palette, size, space};
+use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::typo::{self, Level};
-use torro_gui::widgets::{self, Anchor, Mark};
-use torro_gui::{datetime, style};
-use torro_inbox::{Item, SourceKind, SourceRef, State};
+use torro_gui::widgets::{self, Anchor, Mark, RowAction};
+use torro_gui::{datetime, layout, style};
+use torro_inbox::{Item, SourceKind, SourceRef, State, rules};
 
 use crate::app::{Message, View};
+use crate::detail;
+use crate::keys::Command;
 
-/// What the list gets to draw.
-pub struct ListData<'a> {
-    /// The entries of the view, in the order to show them.
-    pub items: &'a [Item],
+/// What the rows of entries need besides the entries (task E3.9): the same for the list of a view
+/// and for the columns of the overview.
+#[derive(Debug, Clone)]
+pub struct Rows<'a> {
+    /// The view shown, for the times ("until Wed, 14 Oct" in "Snoozed").
     pub view: &'a View,
-    /// Id of the entry under the cursor (and in the panel, when it is open).
+    /// Id of the entry under the cursor (and in the panel, when it is open): highlighted, with its
+    /// action bar shown.
     pub selected: Option<&'a str>,
     /// "Now", for the times ("4 min").
     pub now: DateTime<Utc>,
     /// Registered by the selected row, for the menus that open beside it.
     pub anchor: Anchor,
-    /// Two lines per row (title over preview) instead of one: narrow windows, where a preview
-    /// beside the title would hardly ever fit.
-    pub two_line: bool,
+    /// The addresses of the mail accounts in the order the sidebar lists them: an account's place
+    /// gives its colour ([`account_index`]), and from two accounts on the mail rows name theirs.
+    pub accounts: Vec<&'a str>,
+    /// Ids of the entries whose menu "Hide from inbox" has entries (`App::hide_choices`): their
+    /// action bar offers "Hide".
+    pub hidable: Vec<&'a str>,
+}
+
+/// What the list of a view gets to draw.
+pub struct ListData<'a> {
+    /// The entries of the view, in the order to show them.
+    pub items: &'a [Item],
+    pub rows: Rows<'a>,
     /// The attention colour of the current theme, for the icon of the "Waiting for you" head.
     pub attention: Color,
 }
@@ -66,23 +95,42 @@ pub struct ListData<'a> {
 /// The id of the list's scrollable, to scroll the cursor into view.
 pub const SCROLL: &str = "inbox-list";
 
-/// The free width a preview needs beside the title before it is shown at all: below that only a
-/// word or two would fit, which reads as noise rather than as a preview.
-pub const PREVIEW_ROOM: f32 = 120.0;
-
-/// The gap the row estimate counts between two cells: a little more than `list_row`'s own (10),
+/// The gap the row estimate counts between two cells: a little more than the rows' own (8),
 /// so the estimate cuts a letter early rather than running under the next cell.
-pub(crate) const CELL_GAP: f32 = space::M;
+pub(crate) fn cell_gap() -> f32 {
+    space::m()
+}
 
 /// Width of the bar at the left of the selected row, as `widgets::list_row` draws it.
 const SELECTED_BAR: f32 = 2.0 * size::HAIRLINE;
 
+/// Edge of the avatar of a mail row, and the width the marks of all rows take, so the text of mail
+/// and of notices starts at the same x.
+pub(crate) fn mark_width() -> f32 {
+    size::control()
+}
+
+/// Edge of a notice's tile with the source's icon.
+pub(crate) fn tile() -> f32 {
+    size::control_sm()
+}
+
+/// Edge of the "new" dot at the avatar.
+fn new_dot() -> f32 {
+    space::s()
+}
+
 /// Height of a group head: the 4 above it plus the head itself (`widgets::group_head`).
-const GROUP_HEAD: f32 = space::XS + size::ROW_GROUP;
+pub(crate) fn group_head() -> f32 {
+    space::xs() + size::row_group()
+}
+
 /// What every head leaves out: the gap above it and its line above. Above the first head the
 /// header bar already ends with a line, above the others the last row of the group before; a
 /// second line 4 below either would read as a double.
-const HEAD_TRIM: f32 = space::XS + size::HAIRLINE;
+pub(crate) fn head_trim() -> f32 {
+    space::xs() + size::HAIRLINE
+}
 
 /// A group of the list while something is waiting ([`groups`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,44 +180,40 @@ pub fn groups(items: &[Item]) -> Vec<(Group, Range<usize>)> {
     groups
 }
 
-/// The height of every row of the list: [`size::ROW`] on one line, [`size::ROW_TWO`] with the
-/// preview on a line of its own (`two_line`, see [`ListData::two_line`]).
-pub fn row_height(two_line: bool) -> f32 {
-    if two_line { size::ROW_TWO } else { size::ROW }
+/// The height of `item`'s row ([`entry_row`]): [`message_height`] for mail,
+/// [`size::row_notice()`] for every other entry.
+pub fn row_height_of(item: &Item) -> f32 {
+    if item.source.kind == SourceKind::Mail { message_height() } else { size::row_notice() }
 }
 
-/// Where row `index` of `items` lies in the list's content as `(top, bottom)`, with every row
-/// `row` high ([`row_height`]); the first row of a group starts at its head, so scrolling up to it
+/// The height of a mail row, of an entry and of a folder's message alike (task E3.11):
+/// [`size::row_message()`].
+pub fn message_height() -> f32 {
+    size::row_message()
+}
+
+/// Where row `index` of `items` lies in the list's content as `(top, bottom)`, every row as high
+/// as [`row_height_of`] says; the first row of a group starts at its head, so scrolling up to it
 /// shows the head too. `None` past the end.
-pub fn row_span(items: &[Item], index: usize, row: f32) -> Option<(f32, f32)> {
+pub fn row_span(items: &[Item], index: usize) -> Option<(f32, f32)> {
+    let item = items.get(index)?;
+    let above: f32 = items[..index].iter().map(row_height_of).sum();
     let groups = groups(items);
-    if groups.is_empty() {
-        let top = index as f32 * row;
-        return (index < items.len()).then_some((top, top + row));
-    }
-    // Every head is shorter by `HEAD_TRIM` ([`without_top`]).
-    let mut y = 0.0;
-    let height = row;
-    for (_, range) in groups {
-        let head = y;
-        y += GROUP_HEAD - HEAD_TRIM;
-        for row in range.clone() {
-            if row == index {
-                return Some((if row == range.start { head } else { y }, y + height));
-            }
-            y += height;
-        }
-    }
-    None
+    // Every head is shorter by `head_trim()` ([`without_top`]).
+    let head = group_head() - head_trim();
+    let heads = groups.iter().filter(|(_, range)| range.start <= index).count() as f32;
+    let top = above + heads * head;
+    let first = groups.iter().any(|(_, range)| range.start == index);
+    Some((if first { top - head } else { top }, top + row_height_of(item)))
 }
 
 /// The list, scrolling; the empty state of the view when there are no entries.
 pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
     if data.items.is_empty() {
-        let (title, hint) = empty_text(data.view);
-        return empty_state(data.view.icon(), title, hint);
+        let (title, hint) = empty_text(data.rows.view);
+        return empty_state(data.rows.view.icon(), title, hint);
     }
-    // The rows need their width to cut title and preview ([`fit`]).
+    // The rows need their width to cut their texts ([`entry_row`]).
     responsive(move |bounds| list(&data, bounds.width)).into()
 }
 
@@ -178,12 +222,12 @@ fn list<'a>(data: &ListData<'a>, width: f32) -> Element<'a, Message> {
     let mut rows = column![].width(Fill);
     let groups = groups(data.items);
     if groups.is_empty() {
-        rows = rows.extend(data.items.iter().map(|item| row_view(data, item, width)));
+        rows = rows.extend(data.items.iter().map(|item| entry_row(item, &data.rows, width)));
     }
     for (group, range) in groups {
         let head = widgets::group_head(group.mark(data.attention), group.label(), Some(range.len()), None);
         rows = rows.push(without_top(head));
-        rows = rows.extend(data.items[range].iter().map(|item| row_view(data, item, width)));
+        rows = rows.extend(data.items[range].iter().map(|item| entry_row(item, &data.rows, width)));
     }
     scrollable(rows)
         .id(SCROLL)
@@ -195,70 +239,72 @@ fn list<'a>(data: &ListData<'a>, width: f32) -> Element<'a, Message> {
         .into()
 }
 
-/// The group head without its gap and line above: moved up by [`HEAD_TRIM`] inside a clipping
+/// The group head without its gap and line above: moved up by [`head_trim()`] inside a clipping
 /// container, so only the part above the head's top line is cut off (as in torrotasks).
-fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message> {
-    container(container(head).padding(Padding { top: -HEAD_TRIM, ..Padding::ZERO })).clip(true).into()
+pub(crate) fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message> {
+    container(container(head).padding(Padding { top: -head_trim(), ..Padding::ZERO })).clip(true).into()
 }
 
-/// One entry in a row `width` wide: icon, title and preview (one line, or two in narrow windows),
-/// count, time.
-fn row_view<'a>(data: &ListData<'a>, item: &'a Item, width: f32) -> Element<'a, Message> {
-    let urgent = is_waiting(item);
-    let mark = icon::icon(source_icon(&item.source), icon::SIZE).style(move |t: &Theme, _| {
-        let p = palette(t);
-        svg::Style { color: Some(if urgent { p.attention_text } else { p.text_3 }) }
-    });
-    let level = if item.state == State::New { typo::BODY_STRONG } else { typo::BODY };
-    let count = (item.count > 1).then(|| item.count.to_string());
-    let time = time_text(item, data.view, data.now);
-    let room = text_room(width, count.as_deref(), &time);
-    let below = data.two_line.then(|| line_room(width));
-    let (title, preview) = fit(&one_line(&item.title), preview(item).as_deref(), level, room, below);
-    let title = typo::text(level, title).style(theme::text).wrapping(Wrapping::None);
-    // The texts are already cut to fit; the clips only catch an estimate that runs over, so they
-    // never run under the count and the time, which keep their own width.
-    let mut ends: Vec<Element<'a, Message>> = Vec::new();
-    if let Some(count) = count {
-        ends.push(widgets::pill(None, count));
-    }
-    ends.push(typo::text(typo::META.tabular(), time).style(theme::text_3).wrapping(Wrapping::None).into());
-    let selected = data.selected == Some(item.id.as_str());
-    let on_press = Message::Select(item.id.clone());
-    let row = if data.two_line {
-        // Title, count and time on the first line; the icon lines up with that line, not with
-        // the middle of the row.
-        let first = row![container(title).width(Fill).clip(true)].extend(ends).spacing(CELL_GAP);
-        let mut words = column![first.align_y(Alignment::Center)].width(Fill);
-        if let Some(preview) = preview {
-            let preview = typo::text(typo::META, preview).style(theme::text_3).wrapping(Wrapping::None);
-            words = words.push(container(preview).width(Fill).clip(true));
-        }
-        let mark = container(mark).center_y(typo::line_height(level));
-        tall_row(row![mark, words].spacing(CELL_GAP).into(), selected, on_press)
+/// The row of `item`, `width` wide: a mail row or a notice row ([`row_height_of`]), highlighted
+/// while it is under the cursor, with its action bar ([`actions`]). A click opens it in the panel.
+pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
+    let selected = rows.selected == Some(item.id.as_str());
+    let content = if item.source.kind == SourceKind::Mail {
+        mail_content(MailLines::of(item, rows), width)
     } else {
-        let words: Element<'a, Message> = match preview {
-            Some(preview) => row![title, typo::text(typo::BODY, preview).style(theme::text_3).wrapping(Wrapping::None)]
-                .spacing(space::S)
-                .into(),
-            None => title.into(),
-        };
-        let mut cells: Vec<Element<'a, Message>> = vec![mark.into(), container(words).width(Fill).clip(true).into()];
-        cells.extend(ends);
-        widgets::list_row(cells, selected, Some(on_press))
+        notice_content(item, rows, width)
     };
-    if selected { widgets::anchored(&data.anchor, row) } else { row }
+    let height = row_height_of(item);
+    let row = sized_row(content, selected, Message::Select(item.id.clone()), height);
+    let actions = actions(item, rows.hidable.contains(&item.id.as_str()));
+    let words = widgets::row_actions_words(&actions, width);
+    // On the first line, over the time: the preview and the account below stay readable.
+    let row = widgets::row_actions_at(row, actions, selected, words, first_line_middle(height, line_count(item)));
+    if selected { widgets::anchored(&rows.anchor, row) } else { row }
 }
 
-/// A list row on two lines: `widgets::list_row` at [`size::ROW_TWO`] – `content` with 16 at the
-/// sides, centred in the height, the bar at the left while `selected`, a line below.
-pub(crate) fn tall_row<'a>(content: Element<'a, Message>, selected: bool, on_press: Message) -> Element<'a, Message> {
-    let left = if selected { space::L - SELECTED_BAR } else { space::L };
-    let height = size::ROW_TWO - size::HAIRLINE;
+/// What the action bar of `item` offers, in its order (task E3.9), as the panel does:
+///
+/// - "Task" (`t`) and "Done" (`e`, "Reopen" for a done entry) – not for an approval, which closes
+///   once it is decided and becomes no task;
+/// - "Later" (`s`) for every entry that is not done;
+/// - "Hide" (`m`) when the menu "Hide from inbox" has entries for it (`hidable`, from
+///   `App::hide_choices`: never for an approval, and the suite is never muted).
+pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
+    let act = |command| Message::Act(item.id.clone(), command);
+    let approval = detail::is_approval(item);
+    let done = matches!(item.state, State::Done { .. });
+    let mut actions = Vec::new();
+    if !approval {
+        actions.push(RowAction::new(Icon::ListTodo, tr("Task"), "T", act(Command::MakeTask)));
+        let (mark, word) = if done { (Icon::Inbox, tr("Reopen")) } else { (Icon::Check, tr("Done")) };
+        actions.push(RowAction::new(mark, word, "E", act(Command::Done)));
+    }
+    if !done {
+        actions.push(RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
+    }
+    if hidable {
+        actions.push(RowAction::new(Icon::Ellipsis, tr("Hide"), "M", act(Command::Hide)));
+    }
+    actions
+}
+
+/// A row of the list `height` high (including its line): `content` with 16 at the sides, centred
+/// in the height, the bar at the left while `selected`, a line below – `widgets::list_row` at
+/// another height.
+pub(crate) fn sized_row<'a>(
+    content: Element<'a, Message>,
+    selected: bool,
+    on_press: Message,
+    height: f32,
+) -> Element<'a, Message> {
+    let pad = layout::row_padding();
+    let left = if selected { pad.left - SELECTED_BAR } else { pad.left };
+    let height = height - size::HAIRLINE;
     let body = button(container(content).center_y(Fill))
         .width(Fill)
         .height(height)
-        .padding(Padding::new(0.0).left(left).right(space::L))
+        .padding(Padding::new(0.0).left(left).right(pad.right))
         .style(style::button::list_row(selected))
         .on_press(on_press);
     let line: Element<'a, Message> = if selected {
@@ -273,45 +319,276 @@ pub(crate) fn tall_row<'a>(content: Element<'a, Message>, selected: bool, on_pre
     column![line, rule::horizontal(size::HAIRLINE).style(style::rule)].into()
 }
 
-/// The width left for the title in a row `width` wide: minus the row's sides, the icon, the count
-/// pill (when there is one) and the time, each with the gap before it. Never negative.
-pub fn text_room(width: f32, count: Option<&str>, time: &str) -> f32 {
-    let pill = count.map_or(0.0, |count| typo::text_width(count, typo::META) + 2.0 * space::S + CELL_GAP);
-    let time = typo::text_width(time, typo::META) + CELL_GAP;
-    (line_room(width) - pill - time).max(0.0)
+/// The width the lines of a row `width` wide have beside the mark: minus the row's sides, the mark
+/// and the gap after it. Never negative.
+pub fn words_room(width: f32) -> f32 {
+    let pad = layout::row_padding();
+    (width - pad.left - pad.right - mark_width() - space::m()).max(0.0)
 }
 
-/// The width of the preview's own line in a two-line row `width` wide: the row minus its sides
-/// and the icon with its gap. Never negative.
-pub fn line_room(width: f32) -> f32 {
-    (width - 2.0 * space::L - icon::SIZE - CELL_GAP).max(0.0)
+/// One line of a row: `text` taking the free width (clipped, in case the estimate runs over),
+/// then `end` at the right.
+fn line<'a>(text: impl Into<Element<'a, Message>>, end: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    row![container(text).width(Fill).clip(true)].extend(end).spacing(space::s()).align_y(Alignment::Center).into()
 }
 
-/// Title and preview cut to fit, with "…" where they were cut. The title in `level` gets `room`
-/// ([`text_room`]); the preview
-///
-/// - beside it (`below == None`) in `BODY` takes what is left after the gap, but only when that
-///   is at least [`PREVIEW_ROOM`] – else there is no preview;
-/// - on a line of its own (`below == Some(width)`, see [`line_room`]) in `META` gets that width.
-///
-/// A preview that would be cut to nothing is dropped.
-pub fn fit(
-    title: &str,
-    preview: Option<&str>,
-    level: Level,
-    room: f32,
-    below: Option<f32>,
-) -> (String, Option<String>) {
-    let title = typo::ellipsize(title, level, room);
-    let (preview_level, preview_room) = match below {
-        Some(width) => (typo::META, width),
-        None => (typo::BODY, room - typo::text_width(&title, level) - space::S),
+/// The time at the end of the first line (`META`, tabular, `text_3`).
+fn time_cell<'a>(time: String) -> Element<'a, Message> {
+    typo::text(typo::meta().tabular(), time).style(theme::text_3).wrapping(Wrapping::None).into()
+}
+
+/// The width a cell at the end of a line takes from the text, with its gap.
+fn end_width(text: &str, level: Level) -> f32 {
+    typo::text_width(text, level) + cell_gap()
+}
+
+/// The width of the count pill ("3") with its gap.
+fn pill_width(count: &str) -> f32 {
+    typo::text_width(count, typo::meta()) + 2.0 * space::s() + cell_gap()
+}
+
+/// What a mail row shows, the same for a mail entry ([`MailLines::of`]) and for a message in a
+/// folder (`mail.rs`, task E3.11): three lines beside the avatar ([`mail_content`]).
+pub(crate) struct MailLines<'a> {
+    /// The sender's name, else the address ([`sender`]); also the avatar's initials.
+    pub name: String,
+    /// The domain of the address, when the name is not the address itself.
+    pub domain: Option<String>,
+    /// The time at the end of the first line.
+    pub time: String,
+    /// Small marks before the time (paperclip, flag), each with its width.
+    pub marks: Vec<(Element<'a, Message>, f32)>,
+    /// The subject on one line.
+    pub subject: String,
+    /// New or unread: the subject in medium weight, the dot at the avatar.
+    pub new: bool,
+    /// The number of messages from two on.
+    pub count: Option<String>,
+    /// The start of the text on one line.
+    pub preview: Option<String>,
+    /// The account's place among the mail accounts, for its colour ([`account_index`]).
+    pub account: Option<usize>,
+    /// The account's name at the end of the preview's line; `None` with one account (or in a
+    /// folder, which is one account's).
+    pub account_name: Option<String>,
+}
+
+impl<'a> MailLines<'a> {
+    /// The lines of a mail entry's row.
+    pub fn of(item: &Item, rows: &Rows<'a>) -> MailLines<'a> {
+        let (name, domain) = sender(item);
+        MailLines {
+            name,
+            domain,
+            time: time_text(item, rows.view, rows.now),
+            marks: Vec::new(),
+            subject: one_line(&item.title),
+            new: item.state == State::New,
+            count: (item.count > 1).then(|| item.count.to_string()),
+            preview: preview(item),
+            account: account_index(item, &rows.accounts),
+            account_name: (rows.accounts.len() > 1).then(|| account_label(&item.source)),
+        }
+    }
+}
+
+/// The content of a mail row `width` wide (task E3.9): avatar, then sender · domain · (marks) ·
+/// time, subject (· count), preview (· account).
+pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, Message> {
+    let room = words_room(width);
+    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name } = lines;
+
+    // Sender, then the domain in what is left, then the marks and the time.
+    let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
+    let first_room = room - end_width(&time, typo::meta()) - marks_width;
+    let name_shown = typo::ellipsize(&name, typo::body_strong(), first_room);
+    let left = first_room - typo::text_width(&name_shown, typo::body_strong()) - space::s();
+    let domain = domain.map(|domain| typo::ellipsize(&domain, typo::meta(), left)).filter(|d| !d.is_empty());
+    let mut who = row![typo::text(typo::body_strong(), name_shown).style(theme::text).wrapping(Wrapping::None)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    if let Some(domain) = domain {
+        who = who.push(typo::text(typo::meta(), domain).style(theme::text_3).wrapping(Wrapping::None));
+    }
+    let mut ends: Vec<Element<'a, Message>> = marks.into_iter().map(|(mark, _)| mark).collect();
+    ends.push(time_cell(time));
+    let first = line(who, ends);
+
+    // The subject, with the number of messages from two on.
+    let level = if new { typo::body_strong() } else { typo::body() };
+    let subject_room = room - count.as_deref().map_or(0.0, pill_width);
+    let subject = typo::ellipsize(&subject, level, subject_room);
+    let subject = typo::text(level, subject).style(theme::text).wrapping(Wrapping::None);
+    let second = line(subject, count.map(|count| widgets::pill(None, count)).into_iter().collect());
+
+    // The preview, with the account from two accounts on.
+    let account_room = account_name.as_deref().map_or(0.0, |name| {
+        (typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap()).min(room / 3.0)
+    });
+    let preview = preview.map(|text| typo::ellipsize(&text, typo::body(), room - account_room)).unwrap_or_default();
+    let preview = typo::text(typo::body(), preview).style(theme::text_2).wrapping(Wrapping::None);
+    let ends = account_name
+        .map(|name| account_cell(account, typo::ellipsize(&name, typo::meta(), account_room - cell_gap())))
+        .into_iter()
+        .collect();
+    let third = line(preview, ends);
+
+    let words = column![first, second, third].width(Fill);
+    row![avatar(&name, account, new), words].spacing(space::m()).align_y(Alignment::Start).into()
+}
+
+/// How far below a row's top the middle of its first line lies – where the action bar sits (task
+/// E3.11, `widgets::row_actions_at`): the row is `height` high with its line, its `lines` lines of
+/// text are centred in it.
+pub(crate) fn first_line_middle(height: f32, lines: usize) -> f32 {
+    let line = typo::line_height(typo::body());
+    (height - size::HAIRLINE - lines as f32 * line) / 2.0 + line / 2.0
+}
+
+/// How many lines of text `item`'s row has: three for mail, two for a notice with a text, else one.
+fn line_count(item: &Item) -> usize {
+    if item.source.kind == SourceKind::Mail {
+        3
+    } else if words(item).1.is_some_and(|text| !text.is_empty()) {
+        2
+    } else {
+        1
+    }
+}
+
+/// The content of any other entry's row: the source's tile, then title (· count) · time, and the
+/// text below.
+fn notice_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
+    let room = words_room(width);
+    let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
+    let time = time_text(item, rows.view, rows.now);
+    let count = (item.count > 1).then(|| item.count.to_string());
+    let title_room = room - end_width(&time, typo::meta()) - count.as_deref().map_or(0.0, pill_width);
+    let (title, text) = words(item);
+    let title =
+        typo::text(level, typo::ellipsize(&title, level, title_room)).style(theme::text).wrapping(Wrapping::None);
+    let mut ends: Vec<Element<'a, Message>> = count.map(|count| widgets::pill(None, count)).into_iter().collect();
+    ends.push(time_cell(time));
+    let mut words = column![line(title, ends)].width(Fill);
+    if let Some(text) = text.map(|text| typo::ellipsize(&text, typo::body(), room)).filter(|text| !text.is_empty()) {
+        words = words
+            .push(container(typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::None)).clip(true));
+    }
+    let mark = container(source_tile(item)).center_x(mark_width());
+    row![mark, words].spacing(space::m()).align_y(Alignment::Center).into()
+}
+
+/// The source's icon of `item` on a small tile (`raised`, `line` frame): in the attention colour
+/// while it waits, else `text_2`.
+pub(crate) fn source_tile<'a>(item: &Item) -> Element<'a, Message> {
+    let waiting = is_waiting(item);
+    let mark = icon::icon(source_icon(&item.source), icon::SIZE).style(move |t: &Theme, _| {
+        let p = palette(t);
+        svg::Style { color: Some(if waiting { p.attention_text } else { p.text_2 }) }
+    });
+    container(mark)
+        .center(tile())
+        .style(|t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.raised)),
+                border: border::rounded(radius::sm()).color(p.line).width(size::HAIRLINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// The round avatar of a mail row: the initials of `name` ([`initials`], `CAPTION`, `text`) on the
+/// colour of the account at `account` ([`account_index`]) tinted over the panel, or on `raised`
+/// for an account not listed. A `new` entry has a small dot in `text` at its top right – never red.
+fn avatar<'a>(name: &str, account: Option<usize>, new: bool) -> Element<'a, Message> {
+    let edge = mark_width();
+    let letters = typo::text(typo::caption(), initials(name)).style(theme::text).wrapping(Wrapping::None);
+    let face = container(letters).center(edge).style(move |t: &Theme| {
+        let p = palette(t);
+        let surface = match account {
+            Some(i) => theme::over(p.tinted(p.calendar[i % p.calendar.len()]), p.panel),
+            None => p.raised,
+        };
+        container::Style {
+            background: Some(Background::Color(surface)),
+            border: border::rounded(edge / 2.0),
+            ..container::Style::default()
+        }
+    });
+    if !new {
+        return face.into();
+    }
+    let dot = container(blank()).width(new_dot()).height(new_dot()).style(|t: &Theme| container::Style {
+        background: Some(Background::Color(palette(t).text)),
+        border: border::rounded(new_dot() / 2.0),
+        ..container::Style::default()
+    });
+    stack![face, container(dot).width(edge).height(edge).align_right(edge).align_top(edge)].into()
+}
+
+/// The account at the end of the preview's line: its dot in the account's colour and its name
+/// (`META`, `text_3`).
+fn account_cell<'a>(account: Option<usize>, name: String) -> Element<'a, Message> {
+    let dot = container(blank()).width(space::s()).height(space::s()).style(move |t: &Theme| {
+        let p = palette(t);
+        let colour = account.map_or(p.text_3, |i| p.calendar[i % p.calendar.len()]);
+        container::Style {
+            background: Some(Background::Color(colour)),
+            border: border::rounded(space::s() / 2.0),
+            ..container::Style::default()
+        }
+    });
+    let name = typo::text(typo::meta(), name).style(theme::text_3).wrapping(Wrapping::None);
+    row![dot, name].spacing(space::xs()).align_y(Alignment::Center).into()
+}
+
+/// Up to two initials of `name` for an avatar: the first letters of its first and its last word
+/// ("Jonas Weber" → "JW", "IT Service Desk" → "ID", "GitHub" → "G"), upper case; of an address
+/// the local part, split at dots ("lena.hoffmann@…" → "LH"); words that start with no letter or
+/// digit (a "(") are skipped. "?" when nothing is left.
+pub fn initials(name: &str) -> String {
+    // An address as name: its local part ("lena.hoffmann@…" → "LH").
+    let name = name.split('@').next().unwrap_or_default();
+    let firsts: Vec<char> = one_line(name)
+        .split(|c: char| c.is_whitespace() || c == '.' || c == '@' || c == '_' || c == '-')
+        .filter_map(|word| word.chars().next())
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    let picked: String = match firsts.as_slice() {
+        [] => return "?".to_owned(),
+        [only] => only.to_string(),
+        [first, .., last] => [*first, *last].iter().collect(),
     };
-    let preview = preview
-        .filter(|_| below.is_some() || preview_room >= PREVIEW_ROOM)
-        .map(|preview| typo::ellipsize(preview, preview_level, preview_room))
-        .filter(|preview| !preview.is_empty());
-    (title, preview)
+    picked.to_uppercase()
+}
+
+/// Who sent a mail entry, for its row: the sender's name (else the address, else the source), and
+/// the domain of the address when the name is not the address itself.
+pub fn sender(item: &Item) -> (String, Option<String>) {
+    let from = item.from.as_ref();
+    let address = from.and_then(|from| from.address.as_deref()).map(one_line).filter(|a| !a.is_empty());
+    let name = from.map(|from| one_line(&from.name)).filter(|name| !name.is_empty());
+    match (name, address) {
+        (Some(name), Some(address)) if name != address => (name, rules::domain_of(&address)),
+        (Some(name), _) => (name, None),
+        (None, Some(address)) => (address, None),
+        (None, None) => (item.source.label(), None),
+    }
+}
+
+/// The place of `item`'s mail account among `accounts` (addresses in the sidebar's order), which
+/// picks the account's colour from the default colours (`Palette::calendar`: the first blue, the
+/// second green …). `None` for entries that are no mail and accounts not listed: neutral.
+pub fn account_index(item: &Item, accounts: &[&str]) -> Option<usize> {
+    (item.source.kind == SourceKind::Mail).then(|| accounts.iter().position(|a| *a == item.source.name)).flatten()
+}
+
+/// The name of a mail account in a row: the domain of its address ("work.example.org"), which
+/// tells two accounts of one person apart; the address when it has none.
+pub fn account_label(source: &SourceRef) -> String {
+    rules::domain_of(&source.name).unwrap_or_else(|| one_line(&source.name))
 }
 
 /// The empty state of a view: its icon over what shows up here and when – the shared
@@ -319,13 +596,13 @@ pub fn fit(
 pub(crate) fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Element<'a, Message> {
     let mark = icon::icon(which, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let words = column![
-        typo::text(typo::BODY_STRONG, title).align_x(Alignment::Center),
-        typo::text(typo::BODY, hint).style(theme::text_2).align_x(Alignment::Center)
+        typo::text(typo::body_strong(), title).align_x(Alignment::Center),
+        typo::text(typo::body(), hint).style(theme::text_2).align_x(Alignment::Center)
     ]
-    .spacing(space::XS)
+    .spacing(space::xs())
     .align_x(Alignment::Center);
-    let content = column![mark, words].spacing(space::M).align_x(Alignment::Center).max_width(size::FORM_MAX / 2.0);
-    center(content).padding(space::XL).into()
+    let content = column![mark, words].spacing(space::m()).align_x(Alignment::Center).max_width(size::form_max() / 2.0);
+    center(content).padding(space::xl()).into()
 }
 
 /// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts, the
@@ -337,6 +614,37 @@ pub fn source_icon(source: &SourceRef) -> Icon {
         SourceKind::Script => Icon::AppWindow,
         SourceKind::Mail => Icon::Mail,
     }
+}
+
+/// The title and the preview of `item`'s row, on one line each ([`one_line`]): for a coding agent's
+/// session with a name ([`session_name`]) the name, and below or beside it [`agent_line`]; for
+/// every other entry its title and the first line of its body ([`preview`]).
+pub fn words(item: &Item) -> (String, Option<String>) {
+    match session_name(item) {
+        Some(name) => (name, Some(agent_line(item))),
+        None => (one_line(&item.title), preview(item)),
+    }
+}
+
+/// The name of the coding agent's session behind `item` (task E2.6), on one line; `None` for
+/// entries without an agent, sessions without a name and names that are nothing but blanks.
+pub fn session_name(item: &Item) -> Option<String> {
+    let name = one_line(item.agent.as_ref()?.title.as_deref()?);
+    (!name.is_empty()).then_some(name)
+}
+
+/// What a coding agent does and where, for the line under its session's name: the entry's title
+/// (the core's words, "Claude Code is waiting for you"), then project and branch when known,
+/// apart by " · ".
+pub fn agent_line(item: &Item) -> String {
+    let agent = item.agent.as_ref();
+    let place = agent.into_iter().flat_map(|agent| [agent.project.as_deref(), agent.branch.as_deref()]).flatten();
+    std::iter::once(item.title.as_str())
+        .chain(place)
+        .map(one_line)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// The first line of the body that has text, on one line ([`one_line`]); `None` without a body.
@@ -417,6 +725,8 @@ pub fn wake_text(until: DateTime<Utc>, now: DateTime<Utc>) -> String {
 /// What the empty state of `view` says: what shows up here, and when.
 pub fn empty_text(view: &View) -> (&'static str, &'static str) {
     match view {
+        // The overview has an empty state per column (`overview.rs`); this one stands for both.
+        View::Overview => (tr("Nothing for you right now."), tr("Mail, agents, approvals and notices show up here.")),
         View::ForMe => {
             (tr("Nothing for you right now."), tr("Waiting agents, approvals and account problems show up here."))
         }
@@ -496,53 +806,32 @@ mod tests {
         assert_eq!(preview(&item), None);
     }
 
-    const TITLE: &str = "Claude Code is waiting for you";
-    const PREVIEW: &str = "Claude needs your permission to use Bash: cargo test --workspace";
-
     #[test]
-    fn a_preview_beside_the_title_needs_room_or_goes() {
-        let title = typo::text_width(TITLE, typo::BODY_STRONG);
-        // Plenty of room: both whole.
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, 2000.0, None);
-        assert_eq!((t.as_str(), p.as_deref()), (TITLE, Some(PREVIEW)));
-        // Less than the preview's room left beside the title: no preview, never a stub.
-        let tight = title + space::S + PREVIEW_ROOM - 1.0;
-        assert_eq!(fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, tight, None), (TITLE.to_owned(), None));
-        // Enough for a part: the preview ends in "…" within its room.
-        let (_, p) = fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, title + space::S + 200.0, None);
-        let p = p.expect("a preview");
-        assert!(p.ends_with(typo::ELLIPSIS), "{p}");
-        assert!(typo::text_width(&p, typo::BODY) <= 200.0, "{p}");
-    }
+    fn a_named_session_shows_its_name_over_what_the_agent_does() {
+        let named = demo::sample(now()).remove(0);
+        let name = named.agent.as_ref().and_then(|agent| agent.title.clone()).expect("demo-1 has a name");
+        let (title, below) = words(&named);
+        assert_eq!(title, name);
+        let waiting = trf("{agent} is waiting for you", &[("agent", &"Claude Code")]);
+        assert_eq!(below, Some(format!("{waiting} · TorroWorkplace · feat/inbox")));
 
-    #[test]
-    fn a_long_title_ends_in_an_ellipsis_and_leaves_no_preview() {
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, 150.0, None);
-        assert!(t.ends_with(typo::ELLIPSIS), "{t}");
-        assert!(typo::text_width(&t, typo::BODY_STRONG) <= 150.0, "{t}");
-        assert_eq!(p, None);
-    }
-
-    #[test]
-    fn a_preview_below_gets_the_whole_line() {
-        let line = line_room(480.0);
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::BODY_STRONG, 200.0, Some(line));
-        assert!(typo::text_width(&t, typo::BODY_STRONG) <= 200.0, "{t}");
-        let p = p.expect("a preview below the title, however narrow the title's room");
-        assert!(typo::text_width(&p, typo::META) <= line, "{p}");
-        assert!(typo::text_width(&p, typo::META) > 200.0, "wider than the title's room: {p}");
-        assert_eq!(fit(TITLE, None, typo::BODY_STRONG, 200.0, Some(line)).1, None);
-    }
-
-    #[test]
-    fn the_room_leaves_out_icon_count_and_time() {
-        let plain = text_room(480.0, None, "4 min");
-        let counted = text_room(480.0, Some("2"), "4 min");
-        assert!(plain < 480.0 - 2.0 * space::L - icon::SIZE, "minus the sides and the icon");
-        assert!(counted < plain, "the count pill takes room too");
-        assert!(line_room(480.0) > plain, "the preview's own line has no time on it");
-        assert_eq!(text_room(10.0, Some("12"), "50 min"), 0.0, "never negative");
-        assert_eq!(line_room(10.0), 0.0, "never negative");
+        // Without a name, or with a blank one: the title and the message, as before.
+        for title in [None, Some(" \u{202E} ".to_string())] {
+            let mut unnamed = named.clone();
+            if let Some(agent) = unnamed.agent.as_mut() {
+                agent.title = title.clone();
+            }
+            assert_eq!(words(&unnamed), (waiting.clone(), preview(&named)), "{title:?}");
+        }
+        // No project or branch: only the agent's state.
+        let mut bare = named.clone();
+        if let Some(agent) = bare.agent.as_mut() {
+            (agent.project, agent.branch) = (None, None);
+        }
+        assert_eq!(agent_line(&bare), waiting);
+        // Entries of other sources are untouched.
+        let notice = demo::sample(now()).into_iter().find(|i| i.id == "demo-6").expect("a notice");
+        assert_eq!(words(&notice), (one_line(&notice.title), preview(&notice)));
     }
 
     #[test]
@@ -559,22 +848,119 @@ mod tests {
         assert!(super::groups(&calm).is_empty(), "nothing waits: no heads");
     }
 
+    /// A mail entry from `name` <`address`> in the account `account` (an address).
+    fn mail(name: &str, address: &str, account: &str) -> Item {
+        let mut item = demo::sample(now()).remove(5);
+        item.source = SourceRef::mail(account);
+        item.from = Some(torro_inbox::item::Sender { name: name.into(), address: Some(address.into()) });
+        item
+    }
+
     #[test]
-    fn row_spans_count_the_group_heads_and_the_row_height() {
+    fn row_spans_count_the_group_heads_and_each_rows_height() {
         let mut items: Vec<Item> = demo::sample(now()).into_iter().filter(|i| i.state.is_open()).collect();
         items.sort_by_key(|item| !is_waiting(item));
+        items.push(mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org"));
         let waiting = items.iter().filter(|item| is_waiting(item)).count();
-        let head = GROUP_HEAD - HEAD_TRIM;
-        assert_eq!(row_height(false), size::ROW);
-        assert_eq!(row_height(true), size::ROW_TWO, "two lines get their own height");
-        for row in [row_height(false), row_height(true)] {
-            assert_eq!(row_span(&items, 0, row), Some((0.0, head + row)), "the first row shows its head");
-            assert_eq!(row_span(&items, 1, row), Some((head + row, head + 2.0 * row)));
-            let other = head + waiting as f32 * row;
-            assert_eq!(row_span(&items, waiting, row), Some((other, other + head + row)), "no double line");
-            assert_eq!(row_span(&items, items.len(), row), None);
-            let calm = &items[waiting..];
-            assert_eq!(row_span(calm, 1, row), Some((row, 2.0 * row)), "no heads: plain rows");
+        let head = group_head() - head_trim();
+        let (notice, message) = (size::row_notice(), size::row_message());
+        assert_eq!(row_height_of(&items[0]), notice);
+        assert_eq!(row_height_of(&items[items.len() - 1]), message, "mail has three lines");
+        assert_eq!(row_span(&items, 0), Some((0.0, head + notice)), "the first row shows its head");
+        assert_eq!(row_span(&items, 1), Some((head + notice, head + 2.0 * notice)));
+        let other = head + waiting as f32 * notice;
+        assert_eq!(row_span(&items, waiting), Some((other, other + head + notice)), "no double line");
+        let last = items.len() - 1;
+        let top = 2.0 * head + last as f32 * notice;
+        assert_eq!(row_span(&items, last), Some((top, top + message)));
+        assert_eq!(row_span(&items, items.len()), None);
+        let calm = &items[waiting..];
+        assert_eq!(row_span(calm, 1), Some((notice, 2.0 * notice)), "no heads: plain rows");
+        assert_eq!(message_height(), message, "a folder's rows are the mail rows (task E3.11)");
+    }
+
+    #[test]
+    fn the_action_bar_sits_on_the_first_line() {
+        let line = typo::line_height(typo::body());
+        let mail = first_line_middle(size::row_message(), 3);
+        assert_eq!(mail, (size::row_message() - size::HAIRLINE - 3.0 * line) / 2.0 + line / 2.0);
+        let bar = widgets::row_actions_height();
+        assert!(mail + bar / 2.0 < size::row_message() - line, "the preview's line stays free");
+        assert!(mail - bar / 2.0 >= 0.0, "inside the row");
+        let one = first_line_middle(size::row_notice(), 1);
+        assert_eq!(one, (size::row_notice() - size::HAIRLINE) / 2.0, "a single line: the middle");
+    }
+
+    #[test]
+    fn avatars_show_two_initials_at_most() {
+        assert_eq!(initials("Jonas Weber"), "JW");
+        assert_eq!(initials("IT Service Desk"), "ID");
+        assert_eq!(initials("GitHub"), "G");
+        assert_eq!(initials("lena.hoffmann@work.example.org"), "LH", "an address: its local part");
+        assert_eq!(initials("  ( \u{202E} "), "?");
+        assert_eq!(initials("éva  ömer"), "ÉÖ");
+    }
+
+    #[test]
+    fn a_mail_row_names_the_sender_and_the_domain() {
+        let item = mail("Jonas Weber", "jonas.weber@Work.Example.org", "anna@work.example.org");
+        assert_eq!(sender(&item), ("Jonas Weber".to_owned(), Some("work.example.org".to_owned())));
+        let mut bare = item.clone();
+        bare.from = Some(torro_inbox::item::Sender {
+            name: "news@shop.example".into(),
+            address: Some("news@shop.example".into()),
+        });
+        assert_eq!(sender(&bare), ("news@shop.example".to_owned(), None), "no domain beside the address");
+        bare.from = None;
+        assert_eq!(sender(&bare).0, bare.source.label(), "without a sender: the account");
+        let accounts = ["anna@work.example.org", "anna@example.org"];
+        assert_eq!(account_index(&item, &accounts), Some(0));
+        assert_eq!(account_index(&mail("A", "a@b.c", "anna@example.org"), &accounts), Some(1));
+        assert_eq!(account_index(&mail("A", "a@b.c", "other@x.org"), &accounts), None, "not listed: neutral");
+        assert_eq!(account_index(&demo::sample(now()).remove(0), &accounts), None, "no mail");
+        assert_eq!(account_label(&item.source), "work.example.org");
+    }
+
+    fn labels(actions: &[RowAction<'_, Message>]) -> Vec<String> {
+        actions.iter().map(|action| action.label.to_string()).collect()
+    }
+
+    #[test]
+    fn the_action_bar_offers_what_works_for_the_entry() {
+        let by_id = |id: &str| demo::sample(now()).into_iter().find(|i| i.id == id).expect("in the sample");
+        let all = [tr("Task"), tr("Done"), tr("Later"), tr("Hide")];
+        assert_eq!(labels(&actions(&by_id("demo-1"), true)), all, "a waiting agent");
+        assert_eq!(labels(&actions(&by_id("demo-3"), false)), [tr("Later")], "an approval: no task, no done, no hide");
+        assert_eq!(labels(&actions(&by_id("demo-5"), true)), all, "the suite's account problem: its own done");
+        assert_eq!(labels(&actions(&by_id("demo-11"), true)), [tr("Task"), tr("Reopen"), tr("Hide")], "done: no later");
+        let keys: Vec<&str> = actions(&by_id("demo-1"), true).iter().map(|action| action.key).collect();
+        assert_eq!(keys, ["T", "E", "S", "M"], "the keys of the list");
+        let mail = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let sent: Vec<Message> = actions(&mail, true).into_iter().map(|action| action.on_press).collect();
+        assert!(matches!(&sent[0], Message::Act(id, Command::MakeTask) if *id == mail.id));
+        assert!(matches!(&sent[3], Message::Act(_, Command::Hide)));
+    }
+
+    #[test]
+    fn every_row_builds_in_any_width() {
+        let view = View::ForMe;
+        let mut items = demo::sample(now());
+        items.push(mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org"));
+        items.push(Item { count: 3, state: State::Seen, ..mail("", "x@y.z", "anna@example.org") });
+        for accounts in [vec!["anna@work.example.org"], vec!["anna@work.example.org", "anna@example.org"]] {
+            let rows = Rows {
+                view: &view,
+                selected: Some("demo-1"),
+                now: now(),
+                anchor: Anchor::new(),
+                accounts,
+                hidable: vec!["demo-1"],
+            };
+            for width in [0.0, 240.0, 480.0, 720.0] {
+                for item in &items {
+                    let _ = entry_row(item, &rows, width);
+                }
+            }
         }
     }
 

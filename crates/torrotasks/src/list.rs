@@ -88,7 +88,7 @@ pub struct ListData<'a> {
     /// ([`RowParts::for_width`]).
     pub width: f32,
     /// The colours of the current mode, for marks that take a fixed colour.
-    pub palette: &'static Palette,
+    pub palette: Palette,
     /// The list takes no new tasks: a GitHub filter list (task G.3). Its empty state says that
     /// nothing matches, and no group head offers "+".
     pub read_only: bool,
@@ -557,7 +557,7 @@ pub fn row_span(data: &ListData<'_>, index: usize) -> Option<(f32, f32)> {
     for (group, items) in grouped(data) {
         let head = y;
         if group != Group::All {
-            y += if after_head { LINE } else { 0.0 } + size::ROW_GROUP;
+            y += if after_head { LINE } else { 0.0 } + size::row_group();
             after_head = true;
         }
         if data.collapsed.contains(&group) {
@@ -565,9 +565,9 @@ pub fn row_span(data: &ListData<'_>, index: usize) -> Option<(f32, f32)> {
         }
         for (n, (row, _)) in items.into_iter().enumerate() {
             if row == index {
-                return Some((if n == 0 { head } else { y }, y + size::ROW));
+                return Some((if n == 0 { head } else { y }, y + size::row()));
             }
-            y += size::ROW;
+            y += size::row();
             after_head = false;
         }
     }
@@ -604,9 +604,9 @@ pub fn drop_places(data: &ListData<'_>, index: usize) -> Vec<(usize, Option<usiz
 }
 
 /// The place of `places` ([`drop_places`]) whose marker is nearest to `y`, the pointer's height in
-/// the list's content (rows are [`size::ROW`] high; a list in manual order has no heads).
+/// the list's content (rows are [`size::row()`] high; a list in manual order has no heads).
 pub fn nearest_place(places: &[(usize, Option<usize>)], y: f32) -> Option<(usize, Option<usize>)> {
-    let distance = |place: usize| (place as f32 * size::ROW - y).abs();
+    let distance = |place: usize| (place as f32 * size::row() - y).abs();
     places.iter().copied().min_by(|a, b| distance(a.0).total_cmp(&distance(b.0)))
 }
 
@@ -734,8 +734,9 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
 /// dragged, `held`), `hint` as its tooltip. Pressing it starts a drag ([`Message::DragStart`]); the
 /// press stays with the grip, so the row does not open.
 fn with_grip<'a>(line: Element<'a, Message>, index: usize, held: bool, hint: &'static str) -> Element<'a, Message> {
-    let mark =
-        container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3)).center_x(space::L).center_y(size::ROW - LINE);
+    let mark = container(toned(Icon::GripVertical, icon::SIZE_SM, Tone::Text3))
+        .center_x(space::l())
+        .center_y(size::row() - LINE);
     let grip = mouse_area(widgets::with_tooltip(mark, hint))
         .on_press(Message::DragStart(index))
         .interaction(mouse::Interaction::Grab);
@@ -769,21 +770,23 @@ const MARKER: f32 = 2.0 * size::HAIRLINE;
 /// The drop marker: a 2-px line in `text_2` on the line above the row at `place` (under the last
 /// of `rows` at the end), from the indent of the dragged task's level (`depth`) to the right edge.
 fn drop_marker<'a>(place: usize, rows: usize, depth: usize) -> Element<'a, Message> {
-    let bottom = rows as f32 * size::ROW;
-    let top = (place as f32 * size::ROW - MARKER / 2.0).clamp(0.0, (bottom - MARKER).max(0.0));
+    let bottom = rows as f32 * size::row();
+    let top = (place as f32 * size::row() - MARKER / 2.0).clamp(0.0, (bottom - MARKER).max(0.0));
     let line = container(Space::new().width(Fill).height(MARKER)).style(|t: &Theme| container::Style {
         background: Some(Background::Color(palette(t).text_2)),
         border: border::rounded(MARKER / 2.0),
         ..container::Style::default()
     });
-    let indent = space::L + depth as f32 * space::XL;
-    column![Space::new().height(top), container(line).padding(Padding::new(0.0).left(indent).right(space::L))]
+    let indent = space::l() + depth as f32 * space::xl();
+    column![Space::new().height(top), container(line).padding(Padding::new(0.0).left(indent).right(space::l()))]
         .width(Fill)
         .into()
 }
 
 /// Edge of the chevron that folds a group (`.ghead .chev` 12).
-const CHEVRON: f32 = space::M;
+fn chevron_size() -> f32 {
+    space::m()
+}
 
 /// A group head: 32 high on `raised`, flush with the rows. The chevron sits in the 16 left of the
 /// leading axis, the group's icon on that axis (16 in from the edge, like the rows' checks), the
@@ -791,19 +794,19 @@ const CHEVRON: f32 = space::M;
 fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool) -> Element<'a, Message> {
     let chevron = if folded { Icon::ChevronRight } else { Icon::ChevronDown };
     let mut line = row![
-        container(toned(chevron, CHEVRON, Tone::Text3)).center_x(space::L),
+        container(toned(chevron, chevron_size(), Tone::Text3)).center_x(space::l()),
         container(group_mark(group, data)).center_x(icon::SIZE),
-        Space::new().width(space::M),
-        typo::text(typo::CAPTION, group.label(&data.names)).style(theme::text_2).wrapping(text::Wrapping::None),
-        Space::new().width(space::S),
-        typo::text(typo::META.tabular(), count.to_string()).style(theme::text_3),
+        Space::new().width(space::m()),
+        typo::text(typo::caption(), group.label(&data.names)).style(theme::text_2).wrapping(text::Wrapping::None),
+        Space::new().width(space::s()),
+        typo::text(typo::meta().tabular(), count.to_string()).style(theme::text_3),
         Space::new().width(Fill),
     ]
     .align_y(Alignment::Center);
     if group.can_add() && !data.read_only {
         let add = button(center(toned(Icon::Plus, icon::SIZE_SM, Tone::Text3)))
-            .width(size::CONTROL_SM)
-            .height(size::CONTROL_SM)
+            .width(size::control_sm())
+            .height(size::control_sm())
             .padding(0)
             .style(style::button::icon)
             .on_press(Message::AddInGroup(group.clone()));
@@ -811,8 +814,8 @@ fn group_head<'a>(group: &Group, data: &ListData<'a>, count: usize, folded: bool
     }
     // The "+" button is wider than its icon; pull it in so the icon ends 16 from the edge, above
     // the due dates.
-    let right = space::L - (size::CONTROL_SM - icon::SIZE_SM) / 2.0;
-    let head = container(line).width(Fill).center_y(size::ROW_GROUP).padding(Padding::new(0.0).right(right)).style(
+    let right = space::l() - (size::control_sm() - icon::SIZE_SM) / 2.0;
+    let head = container(line).width(Fill).center_y(size::row_group()).padding(Padding::new(0.0).right(right)).style(
         |t: &Theme| container::Style {
             background: Some(Background::Color(palette(t).raised)),
             ..container::Style::default()
@@ -892,7 +895,7 @@ impl Hint {
 
     /// The width the hint takes: its icon and, after 4, its count.
     fn width(self) -> f32 {
-        icon::SIZE_SM + self.text().map_or(0.0, |text| space::XS + text_width(&text, typo::META.tabular()))
+        icon::SIZE_SM + self.text().map_or(0.0, |text| space::xs() + text_width(&text, typo::meta().tabular()))
     }
 
     fn view<'a>(self) -> Element<'a, Message> {
@@ -900,10 +903,10 @@ impl Hint {
             Hint::Subtasks(..) => Icon::ListChecks,
             Hint::Notes => Icon::AlignLeft,
         };
-        let mut hint = row![toned(which, icon::SIZE_SM, Tone::Text3)].spacing(space::XS).align_y(Alignment::Center);
+        let mut hint = row![toned(which, icon::SIZE_SM, Tone::Text3)].spacing(space::xs()).align_y(Alignment::Center);
         if let Some(text) = self.text() {
             hint =
-                hint.push(typo::text(typo::META.tabular(), text).style(theme::text_3).wrapping(text::Wrapping::None));
+                hint.push(typo::text(typo::meta().tabular(), text).style(theme::text_3).wrapping(text::Wrapping::None));
         }
         hint.into()
     }
@@ -935,7 +938,7 @@ fn row_view<'a>(
     let github = github_of(todo);
     let mut line = row![].align_y(Alignment::Center);
     if depth > 0 {
-        line = line.push(Space::new().width(depth as f32 * space::XL));
+        line = line.push(Space::new().width(depth as f32 * space::xl()));
     }
     // An issue of a filter list has its check (task G.5); a link in a task list, issue or pull
     // request, is a task of its own and always has one (task G.6).
@@ -945,18 +948,18 @@ fn row_view<'a>(
     };
     line = line
         .push(lead(todo, index, colour_of(data, &todo.collection), issue))
-        .push(Space::new().width(space::M))
+        .push(Space::new().width(space::m()))
         .push(container(prio_cell(todo.priority)).width(icon::SIZE_SM))
-        .push(Space::new().width(space::S));
+        .push(Space::new().width(space::s()));
     if let Some((repo, number)) = todo.link.as_ref().and_then(Link::github_ref) {
         let name = repo.rsplit('/').next().unwrap_or(repo);
         let reference = if parts.full_ref { format!("{name}#{number}") } else { format!("#{number}") };
         line = line
-            .push(typo::text(typo::META.tabular(), reference).style(theme::text_3).wrapping(text::Wrapping::None))
-            .push(Space::new().width(space::S));
+            .push(typo::text(typo::meta().tabular(), reference).style(theme::text_3).wrapping(text::Wrapping::None))
+            .push(Space::new().width(space::s()));
     }
     let hints = if parts.hints { hints_of(todo, subtasks) } else { Vec::new() };
-    line = line.push(title_cell(todo.summary.clone(), todo.completed, hints)).push(Space::new().width(space::M));
+    line = line.push(title_cell(todo.summary.clone(), todo.completed, hints)).push(Space::new().width(space::m()));
     line = line.push(right_part(data, todo, github, parts, under_today));
     widgets::list_row(vec![line.width(Fill).into()], data.selected == Some(index), Some(Message::Select(index)))
 }
@@ -969,14 +972,14 @@ fn title_cell<'a>(summary: String, done: bool, hints: Vec<Hint>) -> Element<'a, 
         let hints_width = if hints.is_empty() {
             0.0
         } else {
-            space::M + hints.iter().map(|hint| hint.width()).sum::<f32>() + space::S * (hints.len() - 1) as f32
+            space::m() + hints.iter().map(|hint| hint.width()).sum::<f32>() + space::s() * (hints.len() - 1) as f32
         };
         let title_room = (room.width - hints_width).max(0.0);
-        let title = row_title(ellipsize(&summary, typo::BODY_STRONG, title_room), done);
+        let title = row_title(ellipsize(&summary, typo::body_strong(), title_room), done);
         let mut cell = row![container(title).max_width(title_room).clip(true)].align_y(Alignment::Center);
         if !hints.is_empty() {
-            let signs = row(hints.iter().map(|hint| hint.view())).spacing(space::S).align_y(Alignment::Center);
-            cell = cell.push(Space::new().width(space::M)).push(signs);
+            let signs = row(hints.iter().map(|hint| hint.view())).spacing(space::s()).align_y(Alignment::Center);
+            cell = cell.push(Space::new().width(space::m())).push(signs);
         }
         cell.into()
     })
@@ -988,9 +991,9 @@ fn title_cell<'a>(summary: String, done: bool, hints: Vec<Hint>) -> Element<'a, 
 fn row_title<'a>(title: String, done: bool) -> Element<'a, Message> {
     let fragment: text::Span<'static, ()> = span(title).strikethrough(done);
     rich_text(vec![fragment])
-        .size(typo::BODY_STRONG.size)
-        .line_height(typo::BODY_STRONG.line_height)
-        .font(typo::BODY_STRONG.font)
+        .size(typo::body_strong().size)
+        .line_height(typo::body_strong().line_height)
+        .font(typo::body_strong().font)
         .wrapping(text::Wrapping::None)
         .style(move |t: &Theme| {
             let p = palette(t);
@@ -1007,7 +1010,7 @@ fn right_part<'a>(
     parts: RowParts,
     under_today: bool,
 ) -> Element<'a, Message> {
-    let mut right = row![].spacing(space::S).align_y(Alignment::Center);
+    let mut right = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(details) = github {
         if parts.labels && !details.labels.is_empty() {
             right = right.push(labels(details));
@@ -1027,9 +1030,9 @@ fn right_part<'a>(
         let label = row_due(due, data.today, under_today);
         if !label.is_empty() {
             let overdue = is_overdue(todo, data.today);
-            let width = text_width(&label, typo::META.tabular()).max(DUE_MIN);
+            let width = text_width(&label, typo::meta().tabular()).max(due_min());
             let date =
-                typo::text(typo::META.tabular(), label).wrapping(text::Wrapping::None).style(move |t: &Theme| {
+                typo::text(typo::meta().tabular(), label).wrapping(text::Wrapping::None).style(move |t: &Theme| {
                     let p = palette(t);
                     text::Style { color: Some(if overdue { p.attention_text } else { p.text_3 }) }
                 });
@@ -1040,7 +1043,9 @@ fn right_part<'a>(
 }
 
 /// The least width of the due date, so dates line up at the right (`.due{min-width:44px}`).
-const DUE_MIN: f32 = size::HEADER;
+fn due_min() -> f32 {
+    size::header()
+}
 /// Edge of the dot that stands for a list or repository in narrow lists (`.pdot` 6).
 // design-check: allow the dot of a pill is 6, as in widgets::pill
 const ORIGIN_DOT: f32 = 6.0;
@@ -1049,13 +1054,13 @@ const LABELS_SHOWN: usize = 2;
 
 /// The GitHub labels of a row: two chips, then "+n" for the rest.
 fn labels<'a>(details: &GitHubDetails) -> Element<'a, Message> {
-    let mut chips = row![].spacing(space::XS).align_y(Alignment::Center);
+    let mut chips = row![].spacing(space::xs()).align_y(Alignment::Center);
     for label in details.labels.iter().take(LABELS_SHOWN) {
         chips = chips.push(widgets::label_chip(label.color.as_deref().unwrap_or_default(), label.name.clone()));
     }
     let more = details.labels.len().saturating_sub(LABELS_SHOWN);
     if more > 0 {
-        chips = chips.push(typo::text(typo::CAPTION.tabular(), format!("+{more}")).style(theme::text_3));
+        chips = chips.push(typo::text(typo::caption().tabular(), format!("+{more}")).style(theme::text_3));
     }
     chips.into()
 }
@@ -1176,7 +1181,7 @@ impl Tone {
 
 /// `which` at `edge` in the colour of `tone`.
 pub(crate) fn toned<'a, M: 'a>(which: Icon, edge: f32, tone: Tone) -> Element<'a, M> {
-    icon::icon(which, edge).style(move |t, _| svg::Style { color: Some(tone.of(palette(t))) }).into()
+    icon::icon(which, edge).style(move |t, _| svg::Style { color: Some(tone.of(&palette(t))) }).into()
 }
 
 /// The priority column of a row: empty without a priority, the urgent square, or the bars.
@@ -1191,7 +1196,7 @@ fn prio_cell<'a>(priority: Option<u8>) -> Element<'a, Message> {
 /// bars (none: all dim).
 pub(crate) fn prio_glyph<'a, M: 'a>(prio: Prio) -> Element<'a, M> {
     match prio {
-        Prio::Urgent => container(typo::text(typo::CAPTION, "!").style(|t: &Theme| text::Style {
+        Prio::Urgent => container(typo::text(typo::caption(), "!").style(|t: &Theme| text::Style {
             // The panel colour is dark on the bright orange of dark mode and white on the darker
             // orange of light mode: readable in both.
             color: Some(palette(t).panel),
@@ -1199,7 +1204,7 @@ pub(crate) fn prio_glyph<'a, M: 'a>(prio: Prio) -> Element<'a, M> {
         .center(icon::SIZE_SM)
         .style(|t: &Theme| container::Style {
             background: Some(Background::Color(palette(t).attention_text)),
-            border: border::rounded(radius::XS),
+            border: border::rounded(radius::xs()),
             ..container::Style::default()
         })
         .into(),
@@ -1212,9 +1217,9 @@ pub(crate) fn title_view<'a, M: 'a>(todo: &Todo) -> Element<'a, M> {
     let fragment: text::Span<'static, ()> = span(todo.summary.clone()).strikethrough(todo.completed);
     let completed = todo.completed;
     rich_text(vec![fragment])
-        .size(typo::BODY.size)
-        .line_height(typo::BODY.line_height)
-        .font(typo::BODY.font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
         .wrapping(text::Wrapping::None)
         .style(move |t: &Theme| {
             let p = palette(t);
@@ -1309,7 +1314,7 @@ mod tests {
             show_list: true,
             group_by: GroupBy::Due,
             collapsed: no_folds(),
-            width: size::CONTENT_MAX,
+            width: size::content_max(),
             palette: palette(&Theme::Dark),
             read_only: false,
             issue_lists: HashMap::new(),
@@ -1593,7 +1598,7 @@ mod tests {
         assert_eq!(names, ["overdue", "child", "today", "later"]);
 
         let span = |d: &ListData<'_>, uid: &str| row_span(d, todos.iter().position(|t| t.uid == uid).expect("task"));
-        let (head, row) = (size::ROW_GROUP, size::ROW);
+        let (head, row) = (size::row_group(), size::row());
         assert_eq!(span(&d, "o"), Some((0.0, head + row)), "the first row of a group starts at its head");
         assert_eq!(span(&d, "c"), Some((head + row, head + 2.0 * row)));
         assert_eq!(span(&d, "t"), Some((head + 2.0 * row, 2.0 * head + 3.0 * row)));
@@ -1647,15 +1652,15 @@ mod tests {
             let p = RowParts::for_width(width);
             (p.labels, p.hints, p.pill, p.full_ref)
         };
-        assert_eq!(parts(size::CONTENT_MAX), (true, true, true, true), "720: everything");
+        assert_eq!(parts(size::content_max()), (true, true, true, true), "720: everything");
         assert_eq!(parts(700.0), (true, true, true, true));
         assert_eq!(parts(699.0), (false, true, true, true), "labels go first");
         assert_eq!(parts(600.0), (false, true, true, true));
         assert_eq!(parts(599.0), (false, false, true, true), "then the hints");
         assert_eq!(parts(559.0), (false, false, false, true), "then the pill becomes a dot");
         assert_eq!(parts(519.0), (false, false, false, false), "then repo#123 becomes #123");
-        assert_eq!(parts(size::LIST), (false, false, false, false), "the list beside the detail (460)");
-        assert_eq!(parts(size::LIST_MEDIUM), (false, false, false, false));
+        assert_eq!(parts(size::list()), (false, false, false, false), "the list beside the detail (460)");
+        assert_eq!(parts(size::list_medium()), (false, false, false, false));
     }
 
     fn details(kind: GitHubKind, state: GitHubState) -> GitHubDetails {
@@ -1721,7 +1726,7 @@ mod tests {
         let filter = Filter::All;
         let folded: HashSet<Group> = [Group::Today].into();
         for group_by in [GroupBy::Due, GroupBy::List, GroupBy::Priority, GroupBy::Repo, GroupBy::None] {
-            for width in [size::CONTENT_MAX, size::LIST, size::LIST_MEDIUM, 300.0] {
+            for width in [size::content_max(), size::list(), size::list_medium(), 300.0] {
                 for read_only in [false, true] {
                     let d = ListData { group_by, width, read_only, collapsed: &folded, ..data(&todos, &filter, true) };
                     let _ = view(d);
@@ -1871,7 +1876,7 @@ mod tests {
         );
         let groups: Vec<Group> = grouped(&d).into_iter().map(|(group, _)| group).collect();
         assert_eq!(groups, [Group::All], "no heads, not even Overdue for c");
-        assert_eq!(row_span(&d, index_of(&todos, "b")), Some((3.0 * size::ROW, 4.0 * size::ROW)));
+        assert_eq!(row_span(&d, index_of(&todos, "b")), Some((3.0 * size::row(), 4.0 * size::row())));
         let _ = view(ListData { drag: Some((index_of(&todos, "b"), Some(1))), ..d });
     }
 
@@ -1908,8 +1913,8 @@ mod tests {
 
         let places = drop_places(&d, index_of(&todos, "b"));
         assert_eq!(nearest_place(&places, 0.0), Some((0, at("a"))));
-        assert_eq!(nearest_place(&places, 1.4 * size::ROW), Some((0, at("a"))), "nearer a than b");
-        assert_eq!(nearest_place(&places, 4.6 * size::ROW), Some((5, None)));
+        assert_eq!(nearest_place(&places, 1.4 * size::row()), Some((0, at("a"))), "nearer a than b");
+        assert_eq!(nearest_place(&places, 4.6 * size::row()), Some((5, None)));
         assert_eq!(nearest_place(&[], 10.0), None);
     }
 

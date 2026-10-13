@@ -1,0 +1,128 @@
+# Every key the format knows, with valid values (fonts are copied in by the test).
+format = 1
+
+[about]
+name = "Full"
+version = "2.1.0"
+author = "Torro tests"
+description = "Every key set once"
+font_license = "OFL-1.1"
+
+[fonts.text]
+family = "Inter"
+regular = "fonts/Inter-Regular.ttf"
+medium = "fonts/Inter-Medium.ttf"
+semibold = "fonts/Inter-SemiBold.ttf"
+
+[fonts.heading]
+family = "Inter"
+semibold = "fonts/Inter-SemiBold.ttf"
+
+[fonts.numbers]
+family = "Inter Tabular"
+regular = "fonts/InterTabular-Regular.ttf"
+medium = "fonts/InterTabular-Medium.ttf"
+
+[type.micro]
+font = "numbers"
+size = 11
+line = 14
+weight = "regular"
+[type.caption]
+size = 12
+line = 16
+weight = "medium"
+[type.meta]
+size = 12
+line = 16
+[type.body]
+size = 14
+line = 22
+[type.body_strong]
+size = 14
+line = 22
+weight = "medium"
+[type.title]
+font = "heading"
+size = 17
+line = 24
+weight = "semibold"
+[type.headline]
+font = "heading"
+size = 24
+line = 30
+weight = "semibold"
+[type.display]
+font = "text"
+size = 30
+line = 36
+weight = "semibold"
+
+[space]
+scale = [4, 8, 12, 16, 24, 32]
+
+[radius]
+scale = [3, 5, 7, 9]
+
+[layout]
+inset = 10
+page_padding = [24, 32]
+panel_padding = [16, 16]
+row_padding = [8, 16]
+control_padding = [0, 12]
+section_gap = 28
+item_gap = 10
+
+[size]
+control_sm = 28
+control = 32
+control_lg = 36
+row = 44
+row_two = 56
+row_sidebar = 30
+row_group = 34
+header = 48
+sidebar = 248
+props = 300
+panel = 400
+list = 460
+list_medium = 380
+hour = 52
+axis = 56
+axis_narrow = 44
+content_max = 760
+form_max = 640
+
+[colors.dark]
+bg = "#08090A"
+panel = "#0F1011"
+raised = "#141518"
+hover = "#16171A"
+selected = "#1C1E22"
+menu = "#17181B"
+text = "#EDEEF0"
+text_2 = "#B4B8BF"
+text_3 = "#8A8F98"
+line = "#FFFFFF0F"
+line_strong = "#FFFFFF1A"
+line_selected = "#FFFFFF47"
+focus_ring = "#FFFFFF59"
+accent = "#0E7C7B"
+on_accent = "#FFFFFF"
+ok = "#28CD41"
+attention = "#FF9500"
+error = "#FF3B30"
+inactive = "#8E8E93"
+merged = "#A78BFA"
+calendar = ["#5B8CFF", "#3FB984", "#E8A33D", "#D96CA8", "#A78BFA"]
+tint = 0.18
+shadow = "#00000080"
+scrim = "#0000009E"
+night = "#121626"
+
+[colors.light]
+accent = "#0B6B6A"
+
+[logo]
+mark = "logo.svg"
+tray = "tray.svg"

@@ -38,6 +38,7 @@ use torro_core::AppId;
 pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
+use torro_inbox::item::{Hidden, HideScope};
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 use torro_mail::{Draft, Endpoint, Flag, Folder, MailSettings, Message, MessageSummary, Notify, Role, Services};
 use torro_pim::model::GitHubLabel;
@@ -717,6 +718,12 @@ pub enum Request {
     /// an unknown id is answered with `not-found`. Answered with [`Response::Ok`].
     #[serde(rename = "settings.set_collection_shown")]
     SetCollectionShown { collection: String, shown: bool },
+    /// Every design pack: the standard first, then each folder under `<data>/designs/`, valid
+    /// or with the reasons it can't be used, and which one the settings name
+    /// ([`Response::Designs`]). One is chosen with [`Request::SetSetting`] and
+    /// [`SettingKey::Design`]. Reads only; never fails.
+    #[serde(rename = "settings.list_designs")]
+    ListDesigns,
     /// All accounts with their state and collections ([`Response::Accounts`]), in the order they
     /// were added; a sign-in that runs is listed last with an empty id.
     #[serde(rename = "accounts.list_accounts")]
@@ -840,6 +847,12 @@ pub enum Request {
         /// The project the agent works in: the last part of its working directory.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         project: Option<String>,
+        /// The name the coding agent gave its session (task E2.6), so the person knows which job
+        /// asks. Taken only from a hook client (`api::HOOK_CLIENT`), which reads it from the
+        /// agent's own files; ignored for every other key, so no client can pass itself off as a
+        /// harmless job. Made one line of at most 80 characters and quoted in the question.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
     },
 
     // The inbox (`docs/eingang.md`, tasks E1.1 and E1.2): one place for everything that wants the
@@ -1040,6 +1053,33 @@ pub enum Request {
         /// `true` mutes, `false` unmutes.
         muted: bool,
     },
+    /// Hides a mail entry from the inbox (tasks E3.10, E3.11), in one of three scopes:
+    ///
+    /// - `conversation`: only this entry is done; no rule is kept, a new reply in the conversation
+    ///   brings it back. Write access, like `inbox.set_item_done`.
+    /// - `sender`: every later mail from the sender's address, in **every** mail account, is
+    ///   dropped instead of becoming an entry, and the open and snoozed mail entries it matches are
+    ///   done at once. A lasting rule like [`Request::MuteSource`]
+    ///   ([`torro_inbox::RuleEffect::Muted`] with `sender`), removed with [`Request::RemoveRule`];
+    ///   admin access.
+    /// - `domain`: the same for every address of the sender's domain (exactly, no subdomains);
+    ///   admin access.
+    ///
+    /// Not spam and not done: the mail stays as it is on its server, neither read nor moved, in
+    /// every scope. Answered with [`Response::Hidden`]: the rule as stored (the one already there
+    /// when the same rule is made again, `new_rule: false`) and the ids of the entries it marked
+    /// done, as far as the client sees them – what "Undo" takes back. `not-found` for an unknown
+    /// entry or one the client may not see, `forbidden` for one it may not change (rule 1),
+    /// `error` for an entry that is no mail or, for `sender` and `domain`, names no sender's
+    /// address.
+    #[serde(rename = "inbox.hide_sender")]
+    HideSender {
+        /// The mail entry's id.
+        id: String,
+        /// `conversation` hides this entry only, `sender` its sender's address, `domain` everything
+        /// from that address's domain.
+        scope: HideScope,
+    },
     /// The lasting rules: lanes remembered for sources and muted sources ([`Response::Rules`]),
     /// only of sources the client may see.
     #[serde(rename = "inbox.list_rules")]
@@ -1221,6 +1261,10 @@ pub enum SettingKey {
     /// up during a busy event of a shown calendar only when they are urgent; the others are
     /// told in one message when the event ends.
     QuietWhenBusy,
+    /// The design pack every window draws with: its id from `settings.list_designs`, `"torro"`
+    /// for the standard. A pack that is not there or breaks a rule is refused with `error` and
+    /// its reasons, and nothing changes. Open windows follow.
+    Design,
 }
 
 /// The core's answer to one [`Request`].
@@ -1273,6 +1317,10 @@ pub enum Response {
     },
     Apps {
         apps: Vec<AppInfo>,
+    },
+    /// The design packs ([`Request::ListDesigns`]), the standard first.
+    Designs {
+        designs: Vec<DesignInfo>,
     },
     Clients {
         clients: Vec<ClientInfo>,
@@ -1410,6 +1458,9 @@ pub enum Response {
     Rules {
         rules: Vec<Rule>,
     },
+    /// What hiding a mail entry changed ([`Request::HideSender`]): the rule (none for a
+    /// conversation), whether it is new, and the entries it marked done.
+    Hidden(Hidden),
     /// A mail account just connected ([`Request::ConnectMail`]), never with its password.
     MailConnected {
         /// The account as [`Request::Accounts`] lists it: one entry, also when it syncs calendars
@@ -1658,6 +1709,33 @@ pub struct AppInfo {
     pub window_class: String,
     /// The binary was found next to the core or on `PATH`, so `OpenApp` can start it.
     pub installed: bool,
+}
+
+/// One design pack as [`Request::ListDesigns`] reports it. Name, version, author and
+/// description are the pack's own words, shown as written.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DesignInfo {
+    /// The pack's folder name, what [`SettingKey::Design`] takes; `torro` for the standard.
+    pub id: String,
+    /// `Plex`; the id when the pack's `design.toml` cannot be read.
+    pub name: String,
+    /// `1.0.0`; empty when the pack does not say.
+    pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// The standard design the suite ships (always first, always valid).
+    pub standard: bool,
+    /// Whether the pack can be used; a pack that breaks a rule is refused as a whole.
+    pub valid: bool,
+    /// Why it can't be used, one sentence per broken rule, for people; empty when valid.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub problems: Vec<String>,
+    /// The settings name this pack (`Settings::design`). When the active one is not valid, the
+    /// windows draw with the standard.
+    pub active: bool,
 }
 
 /// One client as [`Request::ListClients`] reports it: everything in `clients.json` but the hash

@@ -39,7 +39,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Accounts** | Liste der Konten als Karten, „Add account“, Detailseite je Konto (siehe unten) | v1 |
 | **Workspaces** | Vorlagen: umbenennen, löschen, Tastenplatz F1–F10, beim Anmelden laden; Strategie je Fenster | v1 (Liste, Umbenennen, Löschen), Rest später |
 | **Apps** | Die Apps der Suite: installiert ja/nein, öffnen, App-ID für Fensterregeln | v1 |
-| **General** | Sprache (System / English / Deutsch), Start beim Anmelden, Tray-Icon zeigen | v1 |
+| **General** | Sprache (System / English / Deutsch), Start beim Anmelden, Tray-Icon zeigen; unter „Appearance“ hell/dunkel, Zoom und das Design-Paket ([design-pakete.md](design-pakete.md), L.4) | v1 |
 | **Agents & API** | Agenten und Skripte verbinden (wie TorroMail: Karte je Client, eigener Schlüssel), Rechte je Bereich und Sammlung, Freigaben. Konzept: [api.md](api.md) | später |
 | **Updates** | Automatisch prüfen, „Check for updates now“, zuletzt geprüft | später |
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
@@ -114,12 +114,19 @@ kacheln, etwa „Arbeit · Woche“ und „Familie · Monat“.
 |---|---|
 | Konten (ohne Geheimnisse) | `accounts.json` im Config-Verzeichnis des Kerns (gibt es) |
 | Geheimnisse (App-Passwörter, Tokens, API-Schlüssel) | Schlüsselbund des Systems, Dienst `torroworkplace` (gibt es) |
-| Einstellungen (Sprache, Autostart, ausgeblendete Sammlungen …) | `settings.json` im Config-Verzeichnis, atomar geschrieben |
+| Einstellungen (Sprache, Autostart, ausgeblendete Sammlungen, gewähltes Design `design` …) | `settings.json` im Config-Verzeichnis, atomar geschrieben |
+| Design-Pakete | `designs/<id>/` im Datenverzeichnis; aufgelistet mit `settings.list_designs`, gewählt mit `settings.set_setting { key: "design" }` (L.3) |
 | Vorlagen | wie bisher `templates/` im Datenverzeichnis |
 
 Die Steuerzentrale liest und schreibt nie selbst Dateien, sondern fragt den Dienst über IPC
 (`Settings`, `SetSetting`, `Accounts`, `AddAccount…`, `RemoveAccount`, `TestAccount`). So sehen
 Tray, Apps und Steuerzentrale immer denselben Stand.
+
+Das gewählte Design gilt in allen offenen Fenstern sofort, auf demselben Weg wie hell/dunkel und
+der Zoom: Jede App fragt die Einstellungen beim Start (vor dem ersten Bild) und bei jedem Takt, lädt
+das Paket, lädt seine Schriften nach und zeichnet neu; das Tray-Symbol wechselt mit. Ist das Paket
+weg oder ungültig, zeichnen alle mit dem Standardpaket, die Einstellung bleibt stehen. Zum
+Ausprobieren ohne Dienst: `--demo --design <id>` in jeder App.
 
 ## Apps ohne Konto
 

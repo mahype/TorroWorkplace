@@ -1,0 +1,9 @@
+{"type":"user","sessionId":"abc123","uuid":"u1","message":{"role":"user","content":"Fix the login redirect"}}
+{"type":"ai-title","aiTitle":"Fix login redirect loop","sessionId":"abc123"}
+{"type":"assistant","sessionId":"abc123","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"Looking at the router."}]}}
+{"type":"custom-title","customTitle":"Login bug","sessionId":"abc123"}
+{"type":"agent-name","agentName":"router-helper","sessionId":"abc123"}
+{"type":"assistant","sessionId":"abc123","uuid":"a2","message":{"role":"assistant","content":[{"type":"text","text":"The custom-title of a page is set in head.tsx."}]}}
+{"type":"custom-title","customTitle":"Login redirect (staging)","sessionId":"abc123"}
+{"type":"ai-title","aiTitle":"Fix redirect after sign-in","sessionId":"abc123"}
+{"type":"user","sessionId":"abc123","uuid":"u2","message":{"role":"user","content":"Run the tests"}}

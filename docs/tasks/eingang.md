@@ -519,6 +519,155 @@ Aus der API-Prüfung des Plans am 2026-10-11:
   (Knöpfe gesperrt während der Entscheidung, Hinweise); `AskUserQuestion` wird keine Frage, sondern „wartet“ mit
   Text. Sichtprüfung des Paneels mit `--demo --open approval`.
 
+## Schaltzentrale (Issue #71, 2026-10-13)
+
+Rückmeldung: Der Eingang ist zu dicht, Mails und Benachrichtigungen sind gemischt, die wichtigen Aktionen
+sitzen nur hinter Tasten. Entwürfe (Varianten A, B, C und Vorbilder):
+https://claude.ai/artifact/HKD7No5s6e8jc4y4ounrDs. **Entschieden:** Variante A mit den Info-Bündeln aus C;
+Aktionen beim Überfahren und am Tastaturcursor; „Task“ öffnet den vorhandenen Dialog aus E3.5.
+Reihenfolge **E2.6 → E3.10 → E3.9**, nie parallel (gleiche Dateien in `torroinbox`, E3.10 ändert den Katalog).
+**Erst nach L.2** ([design-pakete.md](design-pakete.md)), weil L.2 jede App umstellt; E3.9 nach L.5, damit die neuen
+Zeilen gleich mit austauschbaren Werten entstehen.
+
+### E2.6 Sitzungsname in Meldungen von Agenten
+- [x] erledigt (Freigabe-Frage: `AskPermission.title`, nur von Hook-Clients, MCP-Tool ohne das Feld – mit Issue #71
+  freigegeben, dafür auch `torro-ipc/src/{lib,api}.rs`, `torroworkplace/src/{core,mcp}.rs`, `docs/api.md`;
+  Mini/Leiste in E3.9; Sichtprüfung `--demo --open detail` hell und dunkel auf macOS, nur breit)
+- **Modell:** Opus · **Braucht:** E2.2, E2.5, E3.8, L.2 · **Dateien:** `crates/torro-inbox/src/{item,hook,demo}.rs`,
+  `crates/torro-inbox/tests/fixtures/hooks/` (neue Transkript- und Index-Beispiele),
+  `crates/torroworkplace/src/{hook,inbox,inbox_notify,approvals}.rs`, `crates/torroinbox/src/{list,detail}.rs`,
+  `crates/torro-core/src/i18n/de.rs`; Doku: `docs/eingang.md` (Abschnitt Agenten)
+- Die Desktop-App von Claude Code zeigt jede Sitzung unter dem Projekt mit Namen. Diesen Namen zeigt der Eingang
+  bei „wartet“, „fertig“ und bei Rückfragen, damit man beim Freigeben weiß, um welchen Job es geht.
+- **Woher:** Claude Code: im Transkript (`transcript_path` der Nutzlast) die letzte Zeile
+  `{"type":"custom-title","customTitle":"…"}`, ohne sie die letzte `{"type":"ai-title","aiTitle":"…"}`. Claude Code
+  schreibt die Zeile regelmäßig neu, es reicht das Ende der Datei (höchstens 256 KB; nichts gefunden → kein Name).
+  Codex: `$CODEX_HOME/session_index.jsonl` (Standard `~/.codex`), letzte Zeile mit `"id" == session_id`, Feld
+  `thread_name`. Gemini CLI: kein Name.
+- **Robust:** Interne, undokumentierte Formate. Fehlt etwas oder passt das Format nicht, bleibt alles wie heute; der
+  Hook scheitert daran nie und wird nicht merklich langsamer. Gelesen wird nur bei Meldungen (`Report`) und
+  Rückfragen, nicht bei `PostToolUse`. Aus dem Transkript wird nur der Titel genommen, sonst nichts.
+- **Fremder Text:** Steuer- und Richtungszeichen entfernen, Leerraum zusammenfassen, auf 80 Zeichen kürzen. Der
+  Eintrag bleibt `untrusted`; der Titel wird nie Teil eines `tr()`-Schlüssels.
+- **Schnittstelle (freigegeben mit Issue #71):** `AgentInfo.title: Option<String>` und
+  `PermissionQuestion.title: Option<String>`, beide `#[serde(default)]`. `hook::interpret` bleibt rein; der Aufrufer
+  liest den Titel (wie `.git/HEAD`) und reicht ihn hinein. Ein neuer Bericht derselben Sitzung übernimmt einen
+  geänderten Namen (`rules::merge`).
+- **Oberfläche:** Zeile: Sitzungsname als Titel, darunter „{agent} is waiting for you · Projekt · Branch“; ohne Namen
+  wie heute. Paneel: Name als Überschrift. Desktop-Benachrichtigung und Freigabe-Frage nennen den Namen.
+  **API:** vorhandene `inbox.post_item`, `inbox.list_items`, `inbox.get_item` (Feld kommt dazu). **MCP:** vorhandene
+  `inbox_list_items`, `inbox_get_item`; Schema-Beschreibung nennt das Feld.
+- **Abnahme:** Tests mit Beispieldateien: letzter `custom-title` gewinnt, `ai-title` als Ersatz, großes Transkript
+  (Titel nur am Ende), kaputte Zeilen, fehlende Datei, Codex-Index, Gemini ohne Namen, Steuerzeichen und Länge.
+  Demo-Daten mit Sitzungsnamen. `torro-api-review`.
+
+### E3.10 Ausblenden in Stufen
+- [x] erledigt (zusätzlich nur Match-Arme bzw. Literale in `torroworkplace/src/{approvals,audit,daemon,pim}.rs`,
+  `torroinbox/src/empty.rs`, `torroworkplace/src/ui/{launch,mod}.rs` – zwei Demo-Regeln für die Sichtprüfung; „…“ im
+  Paneel ersetzt den Mond-Knopf, daneben zeigt „Move to …“ nur sein Icon; „This conversation“ ist `set_item_done`
+  und markiert die Mail darum gelesen – Rückfrage offen; Sichtprüfung `--demo --open hide|hide-panel` und
+  `torroworkplace ui --demo --open inbox` auf macOS, hell und dunkel)
+- **Modell:** Opus · **Braucht:** E2.6, E3.7, E4.1 · **Dateien:** `crates/torro-inbox/src/{item,rules,source,demo}.rs`,
+  `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{core,inbox,mcp}.rs`,
+  `crates/torroworkplace/src/ui/inbox.rs`, `crates/torroinbox/src/{app,keys,detail}.rs`,
+  `crates/torro-core/src/i18n/de.rs`; Doku: `docs/{api,eingang}.md`
+- „Hide“ ist kein Spam: Die Mail bleibt **unverändert** im Postfach (auch nicht als gelesen markiert), sie erscheint
+  nur nicht mehr im Eingang. So stellt der Mensch nach und nach ein, was die Übersicht zeigt.
+- **Menü „Hide from inbox“** (Taste `m`, im „…“-Menü des Paneels, in E3.9 auch in der Aktionsleiste):
+  - Mail: „This conversation“ (erledigt; neue Antworten kommen wieder), „Everything from <Adresse>“,
+    „Everything from <Domain>“, Trenner, „Always to Info“ (gibt es: `set_item_lane` mit `remember`),
+    „Move to junk“ (gibt es: `mail.move_messages` in den Ordner mit Rolle Junk; fehlt er, fehlt der Eintrag).
+  - Andere Quellen: „This entry“ (erledigt), „Mute <Quelle>“ (gibt es: `mute_source`); Suite nie.
+- **Wirkung:** Neue Mail des Absenders bzw. der Domain wird kein Eintrag mehr; offene Einträge, die passen, werden
+  erledigt, ohne in die Quelle zurückzuwirken. Domain heißt der Teil nach `@`, klein, genau (keine Subdomains).
+- **Schnittstelle (freigegeben mit Issue #71):** `Rule.domain: Option<String>` (`#[serde(default)]`, neben
+  `sender`); `RuleEffect::Muted` gilt dann nur für diesen Absender bzw. diese Domain.
+- **API:** neu `inbox.hide_sender { id, scope: sender | domain }` · Admin (dauerhafte Regel wie `mute_source`);
+  `not-found` für fremde oder unbekannte Einträge, `error` für Einträge ohne Mail-Absender. Antwort: die neue `Rule`.
+  Katalogeintrag, `docs/api.md`. **MCP:** `inbox_hide_sender` (Admin, wartet auf Freigabe).
+- **Steuerzentrale › Inbox › Rules:** Absender- und Domain-Regeln mit Wort („Hidden: news@shop.example“,
+  „Hidden: everything from shop.example“) und „Remove“.
+- **Abnahme:** Tests: Regel für Absender und Domain, neue Mail wird kein Eintrag, offene werden erledigt ohne
+  Rückwirkung, Großschreibung egal, Subdomain nicht erfasst, Rechte (Write reicht nicht), `remove_rule` hebt auf.
+  `torro-api-review`; Sichtprüfung des Menüs.
+
+### E3.9 Übersicht in zwei Spalten mit mehr Luft
+- [x] erledigt (zusätzlich `torroinbox/src/main.rs` (`mod overview`), Tokens auch in
+  `torro-core/src/design{.rs,/rules.rs}` und `docs/design-pakete.md`; `l` wechselt in der Übersicht die Spalte statt
+  der Spur; Demo-Zustände `overview`, `overview-info`, `overview-notices`; offen: „Info“ aufgeklappt nur im Speicher,
+  nicht in `ui.json` (braucht `torro-gui/src/ui_state.rs`), Ordner-Ansichten behalten ihre Zeilen (braucht
+  `mail.rs`); Menü „Hide from inbox“ so breit wie nötig, höchstens `size::panel()`; Sichtprüfung auf macOS
+  (AeroSpace, eigenes Fenster schwebend) in allen sechs Größen, hell, dunkel und mit `plex`)
+- **Modell:** Opus · **Braucht:** E2.6, E3.10, L.5 · **Dateien:** `crates/torroinbox/src/{app,list,keys,detail,glance}.rs`,
+  `crates/torroinbox/src/overview.rs` (neu), `crates/torro-gui/src/{theme,widgets}.rs` (Tokens, Baustein
+  Aktionsleiste), `crates/torro-gui/examples/gallery.rs`, `.claude/skills/torro-design/SKILL.md` (neue Tokens und
+  Baustein dokumentieren), `crates/torro-core/src/i18n/de.rs`
+- **Ansicht „Overview“** (neu, oberster Eintrag der Seitenleiste, Standard beim Start; Zahl = offene „For me“):
+  zwei Spalten **Mail** (Einträge der Quelle `mail`) und **Notifications** (alle anderen), je mit Kopf 44 (Icon,
+  Name, Zahl). In jeder Spalte zuerst „For me“, gruppiert: „Waiting for you“ (nur Benachrichtigungen), „Today“,
+  „Yesterday“, „Earlier“; am Ende eingeklappt „Info · n“ (ein Klick klappt auf, gemerkt in `ui.json`). Die anderen
+  Ansichten (For me, Info, Snoozed, Done, Quellen, Ordner) bleiben einspaltig, bekommen aber dieselben Zeilen.
+- **Mail-Zeile** (Token `size::ROW_MESSAGE`, etwa 88): Avatar 32 rund mit Initialen (Fläche getönt in der Farbe des
+  Kontos bzw. neutral), Zeile 1 Absender `BODY_STRONG`, Domain `META`/`TEXT_3`, rechts Zeit tabellarisch; Zeile 2
+  Betreff (`BODY_STRONG` solange neu, sonst `BODY`); Zeile 3 Vorschau `TEXT_2` einzeilig mit „…“; rechts in Zeile 2
+  bzw. 3 Konto als Punkt mit Name und Zahl der Nachrichten ab 2. Neu = kleiner Punkt in `TEXT` am Avatar, nie Rot.
+  Gelesenes, aber offenes wird nicht blasser als `TEXT_2`.
+- **Benachrichtigungs-Zeile** (Token `size::ROW_NOTICE`, etwa 64): Icon 28 der Quelle (Status wie E3.2b nur im Icon),
+  Zeile 1 Titel, Zeile 2 Text bzw. „Projekt · Branch“, rechts Zeit. **Wartet** (Agent wartet, Freigabe): kleine Karte
+  (`RAISED`, Rand `LINE_STRONG`, Radius `MD`, Innenrand `M`) mit den Knöpfen des Paneels (Allow/Deny aus E3.8,
+  „Go to window“ aus E2.4), Sitzungsname aus E2.6 als Titel.
+- **Aktionsleiste** (neuer Baustein `widgets::row_actions`): schwebt rechts in der Zeile beim Überfahren und an der
+  Zeile unter dem Tastaturcursor; Fläche `MENU`, Rand `LINE_STRONG`, Radius `SM`, Knöpfe `CONTROL_SM` mit Icon und
+  Wort: Task (`t`, Dialog aus E3.5), Done (`e`), Later (`s`, Menü wie heute), Hide (`m`, Menü aus E3.10). Ist die
+  Spalte schmaler als die Leiste mit Wörtern, nur Icons mit Tooltip. Freigaben und Suite-Einträge zeigen nur, was für
+  sie geht (keine Aufgabe aus einer Freigabe, Suite nie stumm), wie im Paneel.
+- **Tastatur:** `j/k` innerhalb der Spalte, `h/l` bzw. ←/→ wechselt die Spalte, `Tab` wie bisher; `Enter` öffnet.
+- **Größen:** Breit: zwei Spalten, je höchstens `CONTENT_MAX`, `LINE` dazwischen; offenes Detail (`PANEL` 400)
+  ersetzt die Spalte, in der der Eintrag nicht steht. Mittel und Schmal: Umschalter `segmented` „Mail | Notifications“
+  in der Kopfleiste, eine Spalte. Mini und Leiste unverändert. Leer je Spalte eigener ruhiger Leerzustand.
+- **Oberfläche/API/MCP:** nur Oberfläche; nutzt vorhandene Requests (`inbox.list_items`, `set_item_done`,
+  `snooze_item`, `create_task_from_item`, `hide_sender`, `mute_source`, `approvals.decide_approval`). Kein neuer Request.
+- **Sitzungsname auch in Mini und Leiste** (aus E2.6): `glance.rs` zeigt bei Agenten mit Namen den Namen
+  (`list::session_name`) statt „{agent} is waiting for you“, wie Zeile und Paneel.
+- **Abnahme:** Tests: Aufteilung in Spalten und Gruppen, Info eingeklappt, Cursor zwischen Spalten, Aktionen je Art,
+  Größenklassen. `scripts/design-check.sh` sauber. Sichtprüfung `torro-design-review` in allen Größen, hell und dunkel
+  (`--demo --open overview`).
+
+### E3.11 Nacharbeit: ungelesen ausblenden, Regeln für alle Konten, Undo
+- [x] erledigt (zusätzlich nur `torroinbox/src/empty.rs` (Trait-Methode `remove_rule`) und ein Audit-Text in
+  `torroworkplace/src/daemon.rs`; bestehende Regeln je Konto werden als „alle Konten“ gelesen, gespeichert beim
+  Konto ihrer Entstehung (bestimmt, wer sie sieht); ein Schlüssel ohne Zugriff auf jenes Konto bekommt eine eigene
+  Regel statt der fremden; Undo nach Done öffnet nur den Eintrag, die Mail bleibt gelesen; vorher vertagte Einträge
+  kommen nach Undo offen zurück; Ordner-Zeilen ohne Aktionsleiste; Sichtprüfung auf macOS hell/dunkel, Breit/Schmal)
+- **Modell:** Opus · **Braucht:** E3.9, E3.10 · **Dateien:** `crates/torro-inbox/src/{item,rules,source,demo}.rs`,
+  `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{core,inbox,mcp,approvals}.rs`,
+  `crates/torroworkplace/src/ui/inbox.rs`, `crates/torroinbox/src/{app,list,overview,mail,detail,keys}.rs`,
+  `crates/torro-gui/src/{widgets,ui_state}.rs`, `crates/torro-gui/examples/gallery.rs`,
+  `.claude/skills/torro-design/SKILL.md`, `crates/torro-core/src/i18n/de.rs`; Doku: `docs/{api,eingang}.md`
+- **Entschieden 2026-10-13 (Nutzer):**
+  1. **„This conversation“ lässt die Mail ungelesen.** Ausblenden fasst das Postfach nie an. Schnittstelle (freigegeben):
+     `HideScope::Conversation` in `inbox.hide_sender`; Zugriff je Umfang: `conversation` Write (keine dauerhafte
+     Regel), `sender`/`domain` Admin. Neue Antworten im Gespräch kommen wieder.
+  2. **Absender- und Domain-Regeln gelten für alle Mail-Konten.** Eine Regel blendet in jedem Konto aus. Bestehende
+     Regeln je Konto gelten weiter (beim Laden zusammenführen oder als „alle Konten“ lesen; im Bericht begründen).
+     Steuerzentrale › Inbox › Rules zeigt „All mail accounts“ statt des Kontos.
+  3. **Undo nach Hide, Done und Later:** neuer Baustein `widgets::toast` (unten mittig, Fläche `MENU`, Rand
+     `LINE_STRONG`, Radius `MD`, Schatten, Text `BODY` + Knopf „Undo“, verschwindet nach 5 s oder mit `Escape`;
+     `Ctrl+Z` löst Undo aus). Undo nimmt genau die Wirkung zurück: Done → wieder offen; Later → nicht mehr vertagt;
+     Hide Gespräch → wieder offen; Hide Absender/Domain → Regel entfernen und die dadurch erledigten Einträge wieder
+     öffnen (dafür nennt die Antwort von `hide_sender` die erledigten Ids; Schnittstelle freigegeben). In Skill und
+     Galerie dokumentieren.
+- **Nacharbeit aus E3.9:**
+  - Aufgeklapptes „Info“ je Spalte in `ui.json` merken (Helfer in `torro_gui::ui_state`).
+  - Ordner-Ansichten (`mail.rs`) bekommen dieselben Mail-Zeilen wie die Übersicht.
+  - Demo: Mails und Hinweise auch von gestern und früher, damit alle Gruppen im Bild sind.
+  - Die Aktionsleiste sitzt auf der Höhe der ersten Zeile (Zeit) und deckt weder Vorschau noch Konto ab.
+- **API/MCP:** `inbox.hide_sender` (erweitert), `inbox_hide_sender` (Beschreibung: Umfang und Rechte je Umfang);
+  Undo nutzt vorhandene Requests (`set_item_done`, `snooze_item`, `remove_rule`).
+- **Abnahme:** Tests: Gespräch ausblenden lässt Mail ungelesen (Fake-IMAP, kein STORE), Write reicht für
+  `conversation`, nicht für `sender`; Regel wirkt in zwei Konten; Undo je Aktion; `ui.json` merkt „Info“.
+  `torro-api-review`; Sichtprüfung (Toast, Aktionsleiste, Ordner-Ansicht) hell und dunkel.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur

@@ -13,7 +13,9 @@
 //! - muda reports clicks to a handler that forwards them into the loop, which maps the entry to
 //!   its [`Action`] and runs it on the [`Daemon`].
 //!
-//! Every native object (icon, menu) is created and changed on the main thread only.
+//! Every native object (icon, menu) is created and changed on the main thread only. The icon
+//! follows the chosen design pack (task L.3): every snapshot names it, and the image is drawn
+//! again when it changes.
 //!
 //! What waits in the inbox ([`Waiting`], task E3.3b) shows as the inbox section at the top of the
 //! shared menu and as the count in the tooltip ("Torro Workplace · 3 for you"). Neither system
@@ -44,7 +46,7 @@ use crate::daemon::Daemon;
 const ICON_SIDE: u32 = 44;
 #[cfg(windows)]
 const ICON_SIDE: u32 = 32;
-/// Side of the grid in the middle of the image. On macOS the rest is a transparent border, so
+/// Side of the symbol (the grid, or a design pack's own) in the middle of the image. On macOS the rest is a transparent border, so
 /// the grid stands about 16 pt high like the system's own symbols; Windows uses the whole image.
 #[cfg(target_os = "macos")]
 const ICON_GRID: u32 = 36;
@@ -164,7 +166,8 @@ impl Shell {
     /// Runs the loop on this (the main) thread until [`Handle::exit`].
     pub fn run(self) -> Result<(), TrayError> {
         self.event_loop.set_control_flow(ControlFlow::Wait);
-        let mut app = App { handle: self.handle, daemon: None, tray: None, actions: Vec::new(), generation: 0 };
+        let mut app =
+            App { handle: self.handle, daemon: None, tray: None, design: None, actions: Vec::new(), generation: 0 };
         self.event_loop.run_app(&mut app).map_err(TrayError::EventLoop)
     }
 }
@@ -174,6 +177,8 @@ struct App {
     handle: Handle,
     daemon: Option<Arc<Daemon>>,
     tray: Option<TrayIcon>,
+    /// The design pack the icon shows (`Snapshot::design`); `None` until the icon exists.
+    design: Option<String>,
     /// The actions of the current menu; an entry's id holds its index here.
     actions: Vec<Action>,
     /// Counts the menus built so far. Ids carry it, so a click that arrives from a menu already
@@ -200,10 +205,12 @@ impl App {
                 if let Err(err) = tray.set_tooltip(Some(&tooltip)) {
                     eprintln!("torroworkplace: cannot update the tray tooltip: {err}");
                 }
+                self.follow_design(&snapshot.design);
             }
-            None => match new_tray(native, &tooltip) {
+            None => match new_tray(native, &tooltip, &icon::Look::for_design(&snapshot.design)) {
                 Ok(tray) => {
                     self.tray = Some(tray);
+                    self.design = Some(snapshot.design.clone());
                     // macOS draws a new status item only on the next pass of the run loop; a
                     // second event makes sure that pass comes now and not with the next click.
                     self.handle.send(Event::Wake);
@@ -211,6 +218,28 @@ impl App {
                 // The service keeps working without the icon; the next change tries again.
                 Err(err) => eprintln!("torroworkplace: {err}; running without a tray icon for now"),
             },
+        }
+    }
+
+    /// Draws the icon again when the snapshot names another design pack than the one it shows.
+    /// A failure keeps the old image and is tried again with the next snapshot.
+    fn follow_design(&mut self, design: &str) {
+        let Some(tray) = &self.tray else { return };
+        if self.design.as_deref() == Some(design) {
+            return;
+        }
+        let image = match Icon::from_rgba(icon_image(&icon::Look::for_design(design)), ICON_SIDE, ICON_SIDE) {
+            Ok(image) => image,
+            Err(err) => return eprintln!("torroworkplace: {}", TrayError::Icon(err)),
+        };
+        // macOS keeps it a template, so the menu bar tints it for light and dark.
+        #[cfg(target_os = "macos")]
+        let set = tray.set_icon_templated(Some(image));
+        #[cfg(windows)]
+        let set = tray.set_icon(Some(image));
+        match set {
+            Ok(()) => self.design = Some(design.to_string()),
+            Err(err) => eprintln!("torroworkplace: cannot change the tray icon: {err}"),
         }
     }
 
@@ -254,10 +283,10 @@ fn tooltip(waiting: Waiting) -> String {
 /// The name of the icon, as the notifications name the sender.
 const APP_NAME: &str = crate::notify::APP_NAME;
 
-/// Creates the icon with `menu` and `tooltip`. A left click opens the menu on both systems; on
-/// macOS the image is a template, so the menu bar tints it for light and dark.
-fn new_tray(menu: Menu, tooltip: &str) -> Result<TrayIcon, TrayError> {
-    let image = Icon::from_rgba(icon_image(), ICON_SIDE, ICON_SIDE).map_err(TrayError::Icon)?;
+/// Creates the icon with `menu`, `tooltip` and the image of `look`. A left click opens the menu on
+/// both systems; on macOS the image is a template, so the menu bar tints it for light and dark.
+fn new_tray(menu: Menu, tooltip: &str, look: &icon::Look) -> Result<TrayIcon, TrayError> {
+    let image = Icon::from_rgba(icon_image(look), ICON_SIDE, ICON_SIDE).map_err(TrayError::Icon)?;
     let builder = TrayIconBuilder::new().with_tooltip(tooltip).with_menu(Box::new(menu)).with_menu_on_left_click(true);
     #[cfg(target_os = "macos")]
     let builder = builder.with_icon_templated(image);
@@ -266,9 +295,9 @@ fn new_tray(menu: Menu, tooltip: &str) -> Result<TrayIcon, TrayError> {
     builder.build().map_err(TrayError::Tray)
 }
 
-/// The icon as RGBA, [`ICON_SIDE`] pixels a side with the grid centred in it.
-fn icon_image() -> Vec<u8> {
-    icon::rgba(ICON_GRID, (ICON_SIDE - ICON_GRID) / 2)
+/// The icon of `look` as RGBA, [`ICON_SIDE`] pixels a side with the symbol centred in it.
+fn icon_image(look: &icon::Look) -> Vec<u8> {
+    look.rgba(ICON_GRID, (ICON_SIDE - ICON_GRID) / 2)
 }
 
 /// The native menu for `items`, and the actions its entries stand for, in id order.
@@ -367,6 +396,6 @@ mod tests {
 
     #[test]
     fn icon_image_is_square_rgba() {
-        assert_eq!(icon_image().len(), (ICON_SIDE * ICON_SIDE * 4) as usize);
+        assert_eq!(icon_image(&icon::Look::standard()).len(), (ICON_SIDE * ICON_SIDE * 4) as usize);
     }
 }

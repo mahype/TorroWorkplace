@@ -39,6 +39,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Night, Quarter};
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
+use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel::{self, PanelMode};
@@ -207,6 +208,8 @@ impl Open {
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
+/// - `--design <id>`: draw with this design pack instead of the standard (task L.3); needs `--demo`.
+///   An id that is not a valid pack is refused with the valid ones.
 /// - `--now <YYYY-MM-DDTHH:MM>`: a fixed "now" (and demo data around its day), for pictures that
 ///   can be made again; needs `--demo`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -214,6 +217,7 @@ pub struct Launch {
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub now: Option<NaiveDateTime>,
+    pub design: Option<String>,
 }
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, as `ctl` does.
@@ -292,7 +296,16 @@ impl Launch {
                 NaiveDateTime::parse_from_str(word, "%Y-%m-%dT%H:%M").map_err(|_| LaunchError::BadNow(word.into()))?,
             ),
         };
-        Ok(Launch { open, appearance, now })
+        let design = match flag_value(args, "--design")? {
+            None => None,
+            Some(_) if !demo => return Err(LaunchError::NeedsDemo("--design")),
+            Some(id) if design::is_choice(id) => Some(id.to_owned()),
+            Some(id) => {
+                let valid = design::choices();
+                return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
+            }
+        };
+        Ok(Launch { open, appearance, now, design })
     }
 
     /// The data source: demo data around the fixed day with `--now`, else what
@@ -380,6 +393,8 @@ pub struct App {
     system_mode: Mode,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
+    /// Follows the design pack the suite settings name (task L.3).
+    design: Follow,
     /// The timeline's unfolded nights and scroll position (window state, nothing is stored).
     timeline: timeline::State,
     /// The suite's night, for the timeline and the radar (`Settings::night`).
@@ -459,6 +474,8 @@ pub enum Message {
     Appearance(Result<Appearance, String>),
     /// The zoom keys, the stored zoom and its badge.
     Zoom(zoom::Message),
+    /// The design pack stored in the suite settings, and its fonts loaded.
+    Design(design::Message),
     /// The timeline's scroll position, wheel and nights.
     Timeline(timeline::Change),
     /// A double-click on a moon (`at`: its place on the canvas) or "Nights" in the header without
@@ -540,6 +557,7 @@ impl App {
         let now = launch.now.unwrap_or_else(|| Local::now().naive_local());
         let open = launch.open;
         let zoom = Zoom::for_source(&source);
+        let design = Follow::for_source(&source);
         let app = App {
             source,
             now,
@@ -572,6 +590,7 @@ impl App {
             appearance: Appearance::System,
             system_mode: Mode::None,
             zoom,
+            design,
             launch,
             opened: false,
             timeline: timeline::State::default(),
@@ -586,6 +605,7 @@ impl App {
             app.fetch_appearance(),
             app.fetch_night(),
             app.zoom.fetch().map(Message::Zoom),
+            app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
             size,
         ]);
@@ -603,7 +623,9 @@ impl App {
         let system = iced::system::theme_changes().map(Message::SystemMode);
         let resize = iced::window::resize_events().map(|(_, size)| Message::Resized(size));
         // Zoom keys work everywhere, glance views and open panels included.
-        let mut all = vec![tick, system, resize, self.zoom.subscription().map(Message::Zoom)];
+        // The design pack polls the core every 2 s itself and wakes the window only for a change.
+        let design = self.design.subscription().map(Message::Design);
+        let mut all = vec![tick, system, resize, self.zoom.subscription().map(Message::Zoom), design];
         // Mini and strip are displays: no keys, nothing open to close.
         if !is_glance(self.class()) {
             // Over the view the panel is all there is to work with; beside it the view still is.
@@ -887,6 +909,13 @@ impl App {
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             // The core may be starting up; keep the colours we have.
             Message::Appearance(Err(_)) => {}
+            // The canvases (week, timeline, radar) keep no cache: the next frame draws with the new
+            // design, the task loads its fonts.
+            Message::Design(message) => {
+                if let Some(task) = self.design.update(message) {
+                    return task.map(Message::Design);
+                }
+            }
             Message::Zoom(message) => {
                 let before = self.zoom.factor();
                 let task = self.zoom.update(message).map(Message::Zoom);
@@ -1078,9 +1107,9 @@ impl App {
             let today = widgets::text_button(None, tr("Today"), style::button::ghost, Some(Message::Today));
             let title = row![
                 shell::header_title(None, title, note),
-                row![today, prev, next].spacing(space::XS).align_y(Alignment::Center)
+                row![today, prev, next].spacing(space::xs()).align_y(Alignment::Center)
             ]
-            .spacing(space::L)
+            .spacing(space::l())
             .align_y(Alignment::Center);
             let primary =
                 widgets::text_button(Some(Icon::Plus), tr("New event"), style::button::primary, Some(new_event));
@@ -1115,8 +1144,8 @@ impl App {
                 CalView::Radar => short_date(self.radar_start().date()),
                 _ => title,
             };
-            let title = row![shell::header_title(None, title, None), row![prev, next].spacing(space::XS)]
-                .spacing(space::S)
+            let title = row![shell::header_title(None, title, None), row![prev, next].spacing(space::xs())]
+                .spacing(space::s())
                 .align_y(Alignment::Center);
             let primary = widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event));
             shell::header_bar([shell::sidebar_toggle(Message::ToggleDrawer)], title, [select(), refresh, primary])
@@ -1351,7 +1380,7 @@ impl App {
             // One day is not stretched over a wide window: it keeps a list's reading width at the
             // sidebar (design skill, section 6), and the properties column says what comes next.
             CalView::Day if shell::has_props(self.class()) => {
-                container(views::week::view(data)).max_width(size::CONTENT_MAX).into()
+                container(views::week::view(data)).max_width(size::content_max()).into()
             }
             CalView::Day | CalView::Week => views::week::view(data),
             CalView::Month => views::month::view(data),
@@ -1639,21 +1668,21 @@ fn night_card<'a>(card: NightCard) -> Element<'a, Message> {
     let moon = icon::icon(Icon::Moon, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text_3) });
     let head = row![
         moon,
-        typo::text(typo::META, tr("Calendar")).style(theme::text_3),
+        typo::text(typo::meta(), tr("Calendar")).style(theme::text_3),
         blank::horizontal(),
         widgets::icon_button(Icon::X, tr("Close"), Some(Message::CloseNight)),
     ]
-    .spacing(space::S)
+    .spacing(space::s())
     .align_y(Alignment::Center);
     let time = |label: &'a str, value: Quarter, on_pick: fn(Quarter) -> Message| {
         let field = pick_list(Quarter::all().collect::<Vec<_>>(), Some(value), on_pick)
-            .padding(style::PICK_LIST_PADDING)
-            .text_size(typo::CAPTION.size)
-            .text_line_height(typo::CAPTION.line_height)
-            .font(typo::CAPTION.font)
+            .padding(style::pick_list_padding())
+            .text_size(typo::caption().size)
+            .text_line_height(typo::caption().line_height)
+            .font(typo::caption().font)
             .style(style::pick_list)
             .menu_style(style::pick_list_menu);
-        let row = row![typo::text(typo::BODY, label).style(theme::text_2), blank::horizontal(), field]
+        let row = row![typo::text(typo::body(), label).style(theme::text_2), blank::horizontal(), field]
             .align_y(Alignment::Center);
         widgets::prop_row(None, row, None)
     };
@@ -2194,6 +2223,40 @@ mod tests {
             let launch = Launch::parse(&args(&["--appearance", word])).expect("works without --demo");
             assert_eq!(launch.appearance, Some(appearance));
         }
+    }
+
+    #[test]
+    fn a_design_is_chosen_only_with_the_demo() {
+        let launch = Launch::parse(&args(&["--demo", "--design", "torro"])).expect("the standard is always there");
+        assert_eq!(launch.design.as_deref(), Some("torro"));
+        assert_eq!(Launch::parse(&args(&["--design", "torro"])), Err(LaunchError::NeedsDemo("--design")));
+        assert_eq!(Launch::parse(&args(&["--demo", "--design"])), Err(LaunchError::MissingValue("--design")));
+        // Which ids are valid is `torro_gui::design::is_choice`'s test; it reads the user's designs folder.
+    }
+
+    /// The message "design changed" (task L.3): the stored setting arrives and the window draws
+    /// with that pack from the next frame; a broken one gives the standard.
+    #[test]
+    fn the_stored_design_is_drawn_and_a_broken_one_gives_the_standard() {
+        let dir = std::env::temp_dir().join(format!("torrocalendar-designs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // The standard's values under another id, so the tests beside this one see the same tokens.
+        for (id, toml) in [
+            ("twin", "format = 1\n[about]\nname = \"Torro\"\nversion = \"1.0.0\"\n"),
+            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
+        ] {
+            std::fs::create_dir_all(dir.join(id)).expect("pack folder");
+            std::fs::write(dir.join(id).join("design.toml"), toml).expect("design.toml");
+        }
+        let mut app = launched(&["--demo"]);
+        app.design = Follow::new(None).in_dir(dir.clone());
+        let switched = app.update(Message::Design(design::Message::Stored(Ok("twin".into()))));
+        assert_eq!(design::active().id, "twin");
+        assert!(switched.units() > 0, "the fonts of the new design are loaded");
+        let _: Element<'_, Message> = app.view();
+        let _ = app.update(Message::Design(design::Message::Stored(Ok("pale".into()))));
+        assert!(design::active().is_standard(), "a broken pack is never drawn");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

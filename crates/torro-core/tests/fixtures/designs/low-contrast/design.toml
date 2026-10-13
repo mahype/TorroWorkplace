@@ -1,0 +1,9 @@
+# Broken: text_3 too faint on the dark surfaces.
+format = 1
+
+[about]
+name = "Low contrast"
+version = "1.0.0"
+
+[colors.dark]
+text_3 = "#3A3A3A"

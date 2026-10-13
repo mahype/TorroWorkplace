@@ -1,0 +1,9 @@
+# Broken: black text on the red primary button.
+format = 1
+
+[about]
+name = "Bad on accent"
+version = "1.0.0"
+
+[colors.light]
+on_accent = "#000000"

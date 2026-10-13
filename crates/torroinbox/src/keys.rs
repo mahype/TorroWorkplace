@@ -7,13 +7,19 @@
 //!    they never reach the list: the title field of "Make task" (task E3.5) takes letters, the
 //!    arrows and `Enter` (which creates the task through its `on_submit`).
 //! 2. [`command`] says what a [`Key`] does where the keys go ([`Focus`]): in the list `j`/`k` (and
-//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo, `s` snooze, `l` lane, `m` mute, `t` make a
-//!    task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` delete and `/` search
+//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo (as Ctrl + Z, ⌘ + Z on macOS, does in the whole
+//!    window while the toast offers it – `widgets::undo_key`, task E3.11, not a key of this map:
+//!    `ctrl_guard` takes ⌘ + Z before any widget, only a subscription still hears it), `s` snooze, `l` lane, `m` hide from the inbox
+//!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides); in a menu of choices the digits pick
 //!    its entries; in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
 //!    Behind the navigation menu, the app switcher or the drawer no key reaches the list. Escape
 //!    is not here: `widgets::escape` closes whatever is in front.
+//!
+//! The overview (task E3.9, [`Focus::Overview`]) takes the keys of the list, and `h`/`l` and ←/→
+//! change the column. There `l` changes the column instead of moving the entry to the other lane:
+//! the overview shows both lanes, and "Move to …" stays in the panel.
 
 use iced::keyboard::{self, Key as Name, key::Named};
 use torro_gui::shell;
@@ -27,7 +33,7 @@ pub enum Key {
     Down,
     /// `k` or ↑.
     Up,
-    /// ←.
+    /// ← (in the overview also `h`).
     Left,
     /// →.
     Right,
@@ -41,6 +47,8 @@ pub enum Key {
     S,
     /// `l`.
     L,
+    /// `h`.
+    H,
     /// `m`.
     M,
     /// `t`.
@@ -66,7 +74,9 @@ pub enum Key {
 pub enum Focus {
     /// Nothing in front: the list (and the panel showing its entry) takes the triage keys.
     List,
-    /// A menu of choices for an entry is open (snooze, lane); its entries carry digits.
+    /// Nothing in front of the overview (task E3.9): the keys of the list, and the column keys.
+    Overview,
+    /// A menu of choices for an entry is open (snooze, lane, hide); its entries carry digits.
     Choices,
     /// The date and time picker of "Pick…" is open.
     Picker,
@@ -83,6 +93,10 @@ pub enum Command {
     Next,
     /// Move the cursor to the previous row.
     Previous,
+    /// The overview: the cursor to the column at the left (`h`, ←).
+    ColumnLeft,
+    /// The overview: the cursor to the column at the right (`l`, →).
+    ColumnRight,
     /// Open the entry under the cursor: its page, app or agent's window (`inbox.open_item`), else
     /// the panel.
     Open,
@@ -94,8 +108,8 @@ pub enum Command {
     Snooze,
     /// Move the entry to the other lane (asking whether always for its source).
     Lane,
-    /// Mute the entry's source, or unmute it; at once, with an undo.
-    Mute,
+    /// Open the menu "Hide from inbox" (task E3.10): the entry, its sender or domain, its source.
+    Hide,
     /// Open the dialog that makes a task of the entry (task E3.5).
     MakeTask,
     /// Reply to the mail under the cursor (task E4.2).
@@ -152,6 +166,7 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Character("u") => Key::U,
         Name::Character("s") => Key::S,
         Name::Character("l") => Key::L,
+        Name::Character("h") => Key::H,
         Name::Character("m") => Key::M,
         Name::Character("t") => Key::T,
         Name::Character("r") => Key::R,
@@ -170,6 +185,9 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
 /// What `key` does while the keys go to `focus`; `None` when it does nothing there.
 pub fn command(focus: Focus, key: Key) -> Option<Command> {
     match (focus, key) {
+        (Focus::Overview, Key::Left | Key::H) => Some(Command::ColumnLeft),
+        (Focus::Overview, Key::Right | Key::L) => Some(Command::ColumnRight),
+        (Focus::Overview, key) => command(Focus::List, key),
         (Focus::List | Focus::Elsewhere, Key::Sidebar) => Some(Command::Sidebar),
         (Focus::List, Key::Down) => Some(Command::Next),
         (Focus::List, Key::Up) => Some(Command::Previous),
@@ -178,7 +196,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::U) => Some(Command::Undo),
         (Focus::List, Key::S) => Some(Command::Snooze),
         (Focus::List, Key::L) => Some(Command::Lane),
-        (Focus::List, Key::M) => Some(Command::Mute),
+        (Focus::List, Key::M) => Some(Command::Hide),
         (Focus::List, Key::T) => Some(Command::MakeTask),
         (Focus::List, Key::R) => Some(Command::Reply),
         (Focus::List, Key::A) => Some(Command::ReplyAll),
@@ -244,7 +262,7 @@ mod tests {
             (char("u"), Command::Undo),
             (char("s"), Command::Snooze),
             (char("l"), Command::Lane),
-            (char("m"), Command::Mute),
+            (char("m"), Command::Hide),
             (char("t"), Command::MakeTask),
             (char("r"), Command::Reply),
             (char("a"), Command::ReplyAll),
@@ -256,6 +274,30 @@ mod tests {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
             assert_eq!(command(Focus::List, key), Some(wanted), "{key:?}");
         }
+    }
+
+    #[test]
+    fn the_overview_changes_columns_and_keeps_the_keys_of_the_list() {
+        let none = Modifiers::empty();
+        for (key, wanted) in [
+            (char("h"), Command::ColumnLeft),
+            (Name::Named(Named::ArrowLeft), Command::ColumnLeft),
+            (char("l"), Command::ColumnRight),
+            (Name::Named(Named::ArrowRight), Command::ColumnRight),
+            (char("j"), Command::Next),
+            (char("k"), Command::Previous),
+            (Name::Named(Named::Enter), Command::Open),
+            (char("e"), Command::Done),
+            (char("s"), Command::Snooze),
+            (char("m"), Command::Hide),
+            (char("t"), Command::MakeTask),
+            (char("["), Command::Sidebar),
+        ] {
+            let key = heard(key, none, Status::Ignored).expect("a key of the inbox");
+            assert_eq!(command(Focus::Overview, key), Some(wanted), "{key:?}");
+        }
+        assert_eq!(command(Focus::List, Key::L), Some(Command::Lane), "l keeps the lane in the other views");
+        assert_eq!(command(Focus::List, Key::H), None);
     }
 
     #[test]
