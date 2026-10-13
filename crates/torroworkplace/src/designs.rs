@@ -1,4 +1,4 @@
-//! The example design packs the suite ships (task L.5): `designs/` in the repository, built into
+//! The example design packs the suite ships (tasks L.5, L.8): `designs/` in the repository, built into
 //! this binary and written to the designs folder the first time the suite starts.
 //!
 //! They live here rather than in `torro-core`, because only the core service and the control
@@ -29,20 +29,31 @@ macro_rules! pack_file {
 
 /// Every example pack with every file it has; the test `the_embedded_files_are_the_whole_pack`
 /// fails when a file is added to `designs/` but not here.
-const EXAMPLES: &[Example] = &[Example {
-    id: "plex",
-    files: &[
-        pack_file!("plex", "design.toml"),
-        pack_file!("plex", "logo.svg"),
-        pack_file!("plex", "tray.svg"),
-        pack_file!("plex", "preview.png"),
-        pack_file!("plex", "fonts/LICENSE.txt"),
-        pack_file!("plex", "fonts/IBMPlexSans-Regular.ttf"),
-        pack_file!("plex", "fonts/IBMPlexSans-Medium.ttf"),
-        pack_file!("plex", "fonts/IBMPlexSans-SemiBold.ttf"),
-        pack_file!("plex", "fonts/IBMPlexSans-Bold.ttf"),
-    ],
-}];
+const EXAMPLES: &[Example] = &[
+    Example {
+        id: "plex",
+        files: &[
+            pack_file!("plex", "design.toml"),
+            pack_file!("plex", "logo.svg"),
+            pack_file!("plex", "tray.svg"),
+            pack_file!("plex", "preview.png"),
+            pack_file!("plex", "fonts/LICENSE.txt"),
+            pack_file!("plex", "fonts/IBMPlexSans-Regular.ttf"),
+            pack_file!("plex", "fonts/IBMPlexSans-Medium.ttf"),
+            pack_file!("plex", "fonts/IBMPlexSans-SemiBold.ttf"),
+            pack_file!("plex", "fonts/IBMPlexSans-Bold.ttf"),
+        ],
+    },
+    Example {
+        id: "dracula",
+        files: &[
+            pack_file!("dracula", "design.toml"),
+            pack_file!("dracula", "logo.svg"),
+            pack_file!("dracula", "tray.svg"),
+            pack_file!("dracula", "preview.png"),
+        ],
+    },
+];
 
 /// Creates the designs folder `dir` with the example packs in it, if `dir` does not exist yet.
 /// Returns whether it did; an existing folder is never touched, even when it is empty.
@@ -128,6 +139,24 @@ mod tests {
     }
 
     #[test]
+    fn the_dracula_pack_in_the_repository_passes_every_rule() {
+        let design = torro_core::design::load(&repo_designs(), "dracula").unwrap_or_else(|problems| {
+            let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+            panic!("designs/dracula must be valid: {reasons:#?}")
+        });
+        assert_eq!(design.about.name, "Dracula");
+        let standard = torro_core::design::Design::standard();
+        assert_eq!(design.fonts, standard.fonts, "Dracula keeps Inter");
+        assert_eq!((design.colors.dark.panel, design.colors.light.panel), (rgb(0x282A36), rgb(0xFFFBEB)));
+        assert_eq!((design.colors.dark.accent, design.colors.dark.focus_ring), (rgb(0xBD93F9), rgb(0xFF79C6)));
+        assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some());
+    }
+
+    fn rgb(hex: u32) -> torro_core::design::Rgba {
+        torro_core::design::Rgba::hex(hex)
+    }
+
+    #[test]
     fn the_embedded_files_are_the_whole_pack() {
         let designs = repo_designs();
         let mut folders: Vec<String> = fs::read_dir(&designs)
@@ -137,7 +166,8 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .collect();
         folders.sort();
-        let ids: Vec<&str> = EXAMPLES.iter().map(|example| example.id).collect();
+        let mut ids: Vec<&str> = EXAMPLES.iter().map(|example| example.id).collect();
+        ids.sort_unstable();
         assert_eq!(folders, ids, "every folder in designs/ is an example");
         for example in EXAMPLES {
             let mut on_disk = Vec::new();
@@ -154,7 +184,9 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("data").join("designs");
         assert!(install_if_missing(&dir).expect("install"));
-        assert!(torro_core::design::load(&dir, "plex").is_ok(), "the copy is valid too");
+        for id in ["plex", "dracula"] {
+            assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
+        }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();
         assert_eq!(left.len(), 1, "no staging folder stays behind");
     }

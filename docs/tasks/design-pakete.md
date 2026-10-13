@@ -173,7 +173,9 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
 - **Abnahme:** wie L.5.
 
 ### L.8 Paket Dracula
-- [ ] erledigt
+- [x] erledigt (2026-10-13: ohne JetBrains Mono, Inter wie Torro; zwei Farben weichen vom Original ab, weil sie
+  die Kontrastregeln nicht schaffen: `text_3` statt „Comment“ `#6272A4`, Fehler `#FF8080` statt `#FF5555`; kommt
+  wie Plex nur in einen neuen Design-Ordner, wer schon einen hat, bekommt Dracula nicht von selbst)
 - **Modell:** Opus · **Braucht:** L.5 · **Dateien:** `designs/dracula/`, `crates/torroworkplace/src/designs.rs`
 - Erst durchdesignen, dann bauen. Offizielles Schema (MIT): dunkel „Dracula“, hell „Alucard“; Violett und Pink als
   Akzent; Inter, optional JetBrains Mono (OFL) für Ziffern. Autor und Lizenz im Paket.
