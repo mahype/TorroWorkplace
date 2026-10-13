@@ -348,6 +348,18 @@ impl SharedStore {
         SharedStore(Arc::new(StdMutex::new(store)))
     }
 
+    /// Waits until every handle of this store is dropped, at most `limit`: the sync, the inbox
+    /// feed and running commands each hold one for a moment. Windows cannot delete a database
+    /// that is still open, so [`MailService::remove`] waits here before deleting the files.
+    async fn closed(self, limit: Duration) {
+        let store = Arc::downgrade(&self.0);
+        drop(self);
+        let deadline = tokio::time::Instant::now() + limit;
+        while store.strong_count() > 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
     /// Runs `work` on the store on a blocking thread and hands back its result. One call at a time
     /// per account; keep `work` short (one transaction, or a few).
     pub async fn run<T, F>(&self, work: F) -> Result<T, MailStoreError>
@@ -1267,13 +1279,19 @@ impl MailService {
             let mut entries = self.entries.write().await;
             entries.iter().position(|entry| entry.mailbox.id() == id).map(|at| entries.remove(at))
         };
+        let mut store = None;
         if let Some(mut entry) = entry {
             // The worker holds the store too: it must be gone before the file is deleted.
             if let Some(worker) = entry.worker.take() {
                 worker.abort();
                 let _ = worker.await;
             }
+            store = entry.mailbox.store.clone();
             drop(entry);
+        }
+        // Others may still hold it for a moment (the inbox feed, a running command).
+        if let Some(store) = store {
+            store.closed(Duration::from_secs(5)).await;
         }
         let Some(dirs) = self.dirs.clone() else { return Ok(()) };
         // Sent copies that wait for its Sent folder hold whole messages: they go too (task M3.3).
