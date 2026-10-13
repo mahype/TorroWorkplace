@@ -1827,6 +1827,9 @@ pub(crate) mod tests {
         assert!(service.account_checks(Utc::now()).await.is_none(), "not loaded yet");
         service.reload().await;
         eventually("the first sync", || synced(&service, &account.id)).await;
+        // The worker signs in a second time for IDLE only after the first sync: count once it idles,
+        // or a loaded machine counts before that login and sees it later as one made by the reload.
+        eventually("the worker idles", || async { server.lines().iter().any(|line| line.ends_with(" IDLE")) }).await;
         let logins = server.logins();
         service.reload().await;
         assert!(synced(&service, &account.id).await, "the same account keeps its state");
