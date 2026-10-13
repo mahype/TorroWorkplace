@@ -9,7 +9,7 @@ use std::cmp::Ordering;
 
 use chrono::{DateTime, TimeDelta, Utc};
 
-use crate::item::{Item, Kind, Lane, Link, Sender, SourceKind, State};
+use crate::item::{HideScope, Item, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceKind, State};
 
 /// Days a done entry is kept before [`expired`] says it goes.
 pub const KEEP_DONE_DAYS: i64 = 30;
@@ -62,6 +62,54 @@ pub fn sender_key(from: Option<&Sender>) -> Option<String> {
 /// for mail without a sender's address (nothing can be remembered).
 pub fn mail_sender(item: &Item) -> Option<String> {
     (item.source.kind == SourceKind::Mail).then(|| sender_key(item.from.as_ref())).flatten()
+}
+
+/// The domain of a sender's address (task E3.10): what follows the last `@`, without surrounding
+/// space and a final dot (`shop.example.` is `shop.example`), in small letters; `None` without an
+/// `@` or with nothing after it. Exact: the domain of `news@mail.shop.example` is
+/// `mail.shop.example`, which a rule for `shop.example` does not cover.
+pub fn domain_of(address: &str) -> Option<String> {
+    let (_, domain) = address.trim().rsplit_once('@')?;
+    let domain = domain.trim().trim_end_matches('.').to_lowercase();
+    (!domain.is_empty()).then_some(domain)
+}
+
+/// What `inbox.hide_sender` with `scope` keeps a rule for when it hides `item` (task E3.10): its
+/// sender's address ([`mail_sender`]) or that address's domain ([`domain_of`]). `None` for entries
+/// that are no mail and for mail without a sender's address: there is nothing to hide by. An
+/// "address" that starts with `@` names no sender: the core keeps a hidden domain as `@<domain>`,
+/// so such a sender's rule would be taken for the domain's.
+pub fn hide_target(item: &Item, scope: HideScope) -> Option<String> {
+    let sender = mail_sender(item).filter(|sender| !sender.starts_with('@'))?;
+    match scope {
+        HideScope::Sender => Some(sender),
+        HideScope::Domain => domain_of(&sender),
+    }
+}
+
+/// Whether `rule` drops a new report from `sender` (its [`sender_key`], `None` without one) of
+/// the rule's source; the caller passes only rules of that source. Only muting rules drop: one
+/// without `sender` and `domain` everything, one with `sender` only that address, one with
+/// `domain` only addresses of exactly that domain (task E3.10). A report without a sender's
+/// address is dropped only by a rule for the whole source.
+pub fn drops(rule: &Rule, sender: Option<&str>) -> bool {
+    if rule.effect != RuleEffect::Muted {
+        return false;
+    }
+    match (&rule.sender, &rule.domain) {
+        (None, None) => true,
+        (Some(hidden), _) => sender == Some(hidden.as_str()),
+        (None, Some(hidden)) => sender.and_then(domain_of).as_deref() == Some(hidden.as_str()),
+    }
+}
+
+/// Whether `rule` hides `item`: a muting rule for one sender or domain (task E3.10) of the entry's
+/// source that would drop its mail ([`drops`]). The entries it hides are done when the rule is
+/// made; a rule for a whole source hides none, muting leaves the entries already there.
+pub fn hides(rule: &Rule, item: &Item) -> bool {
+    (rule.sender.is_some() || rule.domain.is_some())
+        && rule.source == item.source
+        && drops(rule, mail_sender(item).as_deref())
 }
 
 /// The kind an entry posted as `kind` by `poster` gets; `None` when the post is refused
@@ -261,6 +309,76 @@ mod tests {
         };
         assert_eq!(mail_sender(&mail).as_deref(), Some("news@shop.example"));
         assert_eq!(mail_sender(&Item { from: mail.from.clone(), ..item("2", Kind::Notice) }), None, "not mail");
+    }
+
+    fn mail_from(address: Option<&str>) -> Item {
+        Item {
+            source: SourceRef::mail("anna@example.org"),
+            from: Some(Sender { name: "Shop".into(), address: address.map(String::from) }),
+            ..item("m", Kind::Message)
+        }
+    }
+
+    fn hiding(sender: Option<&str>, domain: Option<&str>) -> Rule {
+        Rule {
+            id: "r".into(),
+            source: SourceRef::mail("anna@example.org"),
+            sender: sender.map(String::from),
+            domain: domain.map(String::from),
+            effect: RuleEffect::Muted,
+            created: at(8),
+        }
+    }
+
+    #[test]
+    fn a_domain_is_what_follows_the_last_at_in_small_letters() {
+        assert_eq!(domain_of("news@Shop.Example").as_deref(), Some("shop.example"));
+        assert_eq!(domain_of(" \"a@b\"@shop.example ").as_deref(), Some("shop.example"));
+        assert_eq!(domain_of("news@mail.shop.example").as_deref(), Some("mail.shop.example"));
+        assert_eq!(domain_of("no-at-sign"), None);
+        assert_eq!(domain_of("news@"), None);
+        assert_eq!(domain_of("news@shop.example.").as_deref(), Some("shop.example"), "a final dot is the same");
+    }
+
+    #[test]
+    fn hiding_needs_a_mail_with_a_sender() {
+        let mail = mail_from(Some("News@Shop.Example"));
+        assert_eq!(hide_target(&mail, HideScope::Sender).as_deref(), Some("news@shop.example"));
+        assert_eq!(hide_target(&mail, HideScope::Domain).as_deref(), Some("shop.example"));
+        assert_eq!(hide_target(&mail_from(None), HideScope::Sender), None, "no address");
+        assert_eq!(hide_target(&mail_from(Some("@shop.example")), HideScope::Sender), None, "no sender");
+        let notice = Item { from: mail.from.clone(), ..item("n", Kind::Notice) };
+        assert_eq!(hide_target(&notice, HideScope::Domain), None, "not mail");
+    }
+
+    #[test]
+    fn a_hidden_sender_or_domain_drops_only_its_mail() {
+        let sender = hiding(Some("news@shop.example"), None);
+        assert!(drops(&sender, Some("news@shop.example")));
+        assert!(!drops(&sender, Some("orders@shop.example")));
+        assert!(!drops(&sender, None));
+        let domain = hiding(None, Some("shop.example"));
+        assert!(drops(&domain, Some("news@shop.example")));
+        assert!(drops(&domain, Some("orders@shop.example")));
+        assert!(!drops(&domain, Some("news@mail.shop.example")), "no subdomains");
+        assert!(!drops(&domain, Some("news@othershop.example")));
+        assert!(!drops(&domain, None));
+        let whole = hiding(None, None);
+        assert!(drops(&whole, Some("anyone@example.org")) && drops(&whole, None), "a muted source drops all");
+        let lane = Rule { effect: RuleEffect::Lane { lane: Lane::Info }, ..hiding(Some("news@shop.example"), None) };
+        assert!(!drops(&lane, Some("news@shop.example")), "a lane drops nothing");
+    }
+
+    #[test]
+    fn a_hiding_rule_hides_matching_entries_of_its_source_whatever_their_case() {
+        let domain = hiding(None, Some("shop.example"));
+        assert!(hides(&domain, &mail_from(Some("NEWS@SHOP.EXAMPLE"))));
+        assert!(!hides(&domain, &mail_from(Some("news@mail.shop.example"))));
+        assert!(!hides(&domain, &mail_from(None)));
+        let other_account =
+            Item { source: SourceRef::mail("anna@work.example.org"), ..mail_from(Some("a@shop.example")) };
+        assert!(!hides(&domain, &other_account), "only the rule's account");
+        assert!(!hides(&hiding(None, None), &mail_from(Some("a@shop.example"))), "muting hides nothing already there");
     }
 
     #[test]

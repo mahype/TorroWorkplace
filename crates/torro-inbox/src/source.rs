@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::i18n::tr;
 
-use crate::item::{Item, Lane, SourceInfo, SourceRef, State};
+use crate::item::{HideScope, Item, Lane, Rule, SourceInfo, SourceRef, State};
 use crate::rules;
 
 /// What the app can do with the inbox. Every method is one `inbox.*` request; the core checks
@@ -53,6 +53,20 @@ pub trait InboxSource: Send + Sync {
     /// Mutes the source (its new reports are dropped from then on) or unmutes it. Entries already
     /// there stay. A permanent rule, admin level.
     fn mute_source(&self, source: SourceRef, muted: bool) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// Hides the sender of the mail entry `id` from the inbox (`inbox.hide_sender`, task E3.10):
+    /// with [`HideScope::Sender`] every later mail from its address, with [`HideScope::Domain`]
+    /// every later mail from that address's domain (exactly, no subdomains), in the entry's mail
+    /// account. A lasting rule ([`crate::RuleEffect::Muted`] with `sender` or `domain`), admin
+    /// level; making it again answers the rule already there. The entry and every other open or
+    /// snoozed entry of the account the rule matches ([`rules::hides`]) are done at once.
+    ///
+    /// Hiding is no spam and no "done" of the mail: the mail stays as it is on its server – not
+    /// read, not moved. Returns the rule as stored. [`InboxError::NotFound`] for an unknown entry,
+    /// [`InboxError::Forbidden`] for one the client may not change ([`rules::human_only`]),
+    /// [`InboxError::Other`] for an entry that is no mail or names no sender's address
+    /// ([`rules::hide_target`]).
+    fn hide_sender(&self, id: String, scope: HideScope) -> impl Future<Output = Result<Rule, InboxError>> + Send;
 
     /// Opens the entry on the person's screen (`inbox.open_item`, task E2.4): the core brings the
     /// window of the agent behind a hook's entry to the front, opens its web page in the browser

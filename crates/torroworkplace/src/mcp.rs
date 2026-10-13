@@ -421,6 +421,8 @@ const IDEMPOTENT: &[&str] = &[
     "inbox.snooze_item",
     "inbox.set_item_lane",
     "inbox.mute_source",
+    // Hiding the same sender or domain again answers the rule already there (task E3.10).
+    "inbox.hide_sender",
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
     "accounts.update_mail_account",
@@ -1619,6 +1621,26 @@ mod tests {
         assert_eq!(request, Ok(Request::OpenItem { id: "i1".into() }));
         let refused = request_for("inbox_open_item", args(json!({"id": "i1", "url": "https://x.example"})), &Utc);
         assert!(matches!(refused, Err(ToolError::Input(_))), "{refused:?}");
+    }
+
+    /// Task E3.10: one entry and the scope, nothing else; an admin tool that waits for the person.
+    #[test]
+    fn inbox_hide_sender_hides_by_the_entry_and_a_scope() {
+        let request = request_for("inbox_hide_sender", args(json!({"id": "i1", "scope": "domain"})), &Utc);
+        let domain = torro_inbox::item::HideScope::Domain;
+        assert_eq!(request, Ok(Request::HideSender { id: "i1".into(), scope: domain }));
+        for wrong in [
+            json!({"id": "i1"}),
+            json!({"id": "i1", "scope": "subdomain"}),
+            json!({"id": "i1", "scope": "sender", "sender": "news@shop.example"}),
+        ] {
+            let refused = request_for("inbox_hide_sender", args(wrong.clone()), &Utc);
+            assert!(matches!(refused, Err(ToolError::Input(_))), "{wrong}: {refused:?}");
+        }
+        let tool = tools().iter().find(|tool| tool.name == "inbox_hide_sender").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!((hints.destructive_hint, hints.idempotent_hint), (Some(true), Some(true)));
+        assert_eq!(hints.open_world_hint, Some(false));
     }
 
     #[test]

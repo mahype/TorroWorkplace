@@ -1852,7 +1852,7 @@ mod tests {
             assert_eq!(demo.update(message).units(), 0, "{text}");
         }
         assert_eq!(demo.data.accounts.len(), accounts, "removing an account in the demo changes nothing");
-        assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 3, "nor do the inbox's controls");
+        assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 5, "nor do the inbox's controls");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
         assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 2, "the reload and the zoom");

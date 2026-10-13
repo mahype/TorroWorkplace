@@ -487,6 +487,8 @@ fn describe(request: &Request) -> String {
         Request::SnoozeItem { id, .. } => format!("snooze inbox item {id}"),
         Request::SetItemLane { id, .. } => format!("move inbox item {id}"),
         Request::MuteSource { source, muted } => format!("{} {source}", if *muted { "mute" } else { "unmute" }),
+        // Never the address or the domain: they would name who writes to the person.
+        Request::HideSender { id, .. } => format!("hide the sender of inbox item {id}"),
         Request::ListRules => "inbox rules".into(),
         Request::RemoveRule { id } => format!("remove inbox rule {id}"),
         // Never an address, a password, a search, a subject or a folder name (security rule 3 of

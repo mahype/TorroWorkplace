@@ -8,8 +8,10 @@
 //!   flip sends `settings.set_setting { key: "quiet_when_busy", value }` at once, like the
 //!   switches of the General page; there is no Save button.
 //! - **Rules**: one row per rule of `inbox.list_rules` ([`Data::rules`]), remembered lanes first,
-//!   then muted sources, each with "Remove", which sends `inbox.remove_rule { id }`. Without rules
-//!   the group says where they come from.
+//!   then muted sources, then hidden senders and domains of mail accounts (task E3.10: "Hidden:
+//!   news@shop.example", "Hidden: everything from shop.example", with the account below), each
+//!   with "Remove", which sends `inbox.remove_rule { id }`. Without rules the group says where they
+//!   come from.
 //! - **App**: "Open" starts or raises Torro Inbox through `apps.open_app`, where the entries
 //!   themselves are handled.
 //!
@@ -108,7 +110,7 @@ fn rules<'a>(state: &State, rules: &'a [Rule]) -> Element<'a, Message> {
     let rows: Vec<Element<'a, Message>> = if rules.is_empty() {
         let hint = typo::text(
             typo::body(),
-            tr("Rules appear here when you move notices to a lane for good or mute a source in the Inbox."),
+            tr("Rules appear here when you move notices to a lane for good, mute a source or hide a sender in the Inbox."),
         )
         .style(theme::text_2);
         vec![container(hint).width(Fill).padding([space::m(), space::l()]).into()]
@@ -122,22 +124,39 @@ fn rules<'a>(state: &State, rules: &'a [Rule]) -> Element<'a, Message> {
     )
 }
 
-/// The rules for the page: remembered lanes first, then muted sources, each kind in the core's
-/// order (oldest first), so a new rule always lands at the end of its kind.
+/// The rules for the page: remembered lanes first, then muted sources, then hidden senders and
+/// domains, each kind in the core's order (oldest first), so a new rule always lands at the end of
+/// its kind.
 fn ordered(rules: &[Rule]) -> Vec<&Rule> {
     let mut ordered: Vec<&Rule> = rules.iter().collect();
-    ordered.sort_by_key(|rule| matches!(rule.effect, RuleEffect::Muted));
+    ordered.sort_by_key(|rule| match rule.effect {
+        RuleEffect::Lane { .. } => 0,
+        RuleEffect::Muted if is_hidden(rule) => 2,
+        RuleEffect::Muted => 1,
+    });
     ordered
 }
 
-/// What a rule does, as a sentence: "Notices of Claude Code go to “Info”", "backup is muted".
+/// A rule that hides one sender or domain of a mail account (task E3.10), not a whole source.
+fn is_hidden(rule: &Rule) -> bool {
+    rule.effect == RuleEffect::Muted && (rule.sender.is_some() || rule.domain.is_some())
+}
+
+/// What a rule does, as a sentence: "Notices of Claude Code go to “Info”", "Mail from
+/// news@shop.example goes to “For me”", "backup is muted", "Hidden: news@shop.example", "Hidden:
+/// everything from shop.example". Addresses and domains are shown as they are, like source names.
 fn sentence(rule: &Rule) -> String {
     let source = rule.source.label();
-    match rule.effect {
-        RuleEffect::Lane { lane } => {
+    match (rule.effect, &rule.sender, &rule.domain) {
+        (RuleEffect::Lane { lane }, Some(sender), _) => {
+            trf("Mail from {sender} goes to “{lane}”", &[("sender", sender), ("lane", &lane_name(lane))])
+        }
+        (RuleEffect::Lane { lane }, None, _) => {
             trf("Notices of {source} go to “{lane}”", &[("source", &source), ("lane", &lane_name(lane))])
         }
-        RuleEffect::Muted => trf("{source} is muted", &[("source", &source)]),
+        (RuleEffect::Muted, Some(sender), _) => trf("Hidden: {sender}", &[("sender", sender)]),
+        (RuleEffect::Muted, None, Some(domain)) => trf("Hidden: everything from {domain}", &[("domain", domain)]),
+        (RuleEffect::Muted, None, None) => trf("{source} is muted", &[("source", &source)]),
     }
 }
 
@@ -150,10 +169,16 @@ fn lane_name(lane: Lane) -> &'static str {
 }
 
 /// One rule: its sentence, wrapped rather than cut off (a source name can be long), and "Remove".
+/// A rule for one sender of a mail account names the account below, quietly: the same sender may
+/// write to two accounts, and a rule holds for one.
 fn rule_row<'a>(state: &State, rule: &'a Rule) -> Element<'a, Message> {
     let remove = (!state.removing.contains(&rule.id)).then(|| Message::Remove(rule.id.clone()));
     let button = widgets::text_button(None, tr("Remove"), style::button::secondary, remove);
-    wrapping_row(column![typo::text(typo::body(), sentence(rule))], button)
+    let mut lines = column![typo::text(typo::body(), sentence(rule))];
+    if rule.sender.is_some() || rule.domain.is_some() {
+        lines = lines.push(typo::text(typo::meta(), rule.source.label()).style(theme::text_2));
+    }
+    wrapping_row(lines, button)
 }
 
 /// The group "App": Torro Inbox with "Open"; off while the core has not reported the app as
@@ -196,7 +221,7 @@ mod tests {
 
     fn rule(id: &str, source: SourceRef, effect: RuleEffect) -> Rule {
         let created = DateTime::parse_from_rfc3339("2026-10-12T08:00:00Z").expect("time").with_timezone(&Utc);
-        Rule { id: id.into(), source, sender: None, effect, created }
+        Rule { id: id.into(), source, sender: None, domain: None, effect, created }
     }
 
     fn inbox_app(installed: bool) -> AppInfo {
@@ -245,16 +270,44 @@ mod tests {
         assert!(inbox_installed(&Data { apps: Some(vec![inbox_app(true)]), ..Data::default() }));
     }
 
+    fn hidden(id: &str, sender: Option<&str>, domain: Option<&str>) -> Rule {
+        Rule {
+            sender: sender.map(String::from),
+            domain: domain.map(String::from),
+            ..rule(id, SourceRef::mail("anna@example.org"), RuleEffect::Muted)
+        }
+    }
+
     #[test]
-    fn lanes_come_before_mutes_and_keep_their_order() {
+    fn lanes_come_before_mutes_then_hidden_senders_and_keep_their_order() {
         let rules = vec![
+            hidden("h1", None, Some("shop.example")),
             rule("m1", SourceRef::script("nightly-build"), RuleEffect::Muted),
             rule("l1", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }),
+            hidden("h2", Some("news@shop.example"), None),
             rule("m2", SourceRef::script("cron"), RuleEffect::Muted),
             rule("l2", SourceRef::script("backup"), RuleEffect::Lane { lane: Lane::Info }),
         ];
         let ids: Vec<&str> = ordered(&rules).iter().map(|rule| rule.id.as_str()).collect();
-        assert_eq!(ids, ["l1", "l2", "m1", "m2"]);
+        assert_eq!(ids, ["l1", "l2", "m1", "m2", "h1", "h2"]);
+    }
+
+    #[test]
+    fn hidden_senders_and_domains_read_with_their_word() {
+        let sender = hidden("h", Some("news@shop.example"), None);
+        assert_eq!(sentence(&sender), trf("Hidden: {sender}", &[("sender", &"news@shop.example")]));
+        let domain = hidden("h", None, Some("shop.example"));
+        assert_eq!(sentence(&domain), trf("Hidden: everything from {domain}", &[("domain", &"shop.example")]));
+        let lane = Rule {
+            sender: Some("news@shop.example".into()),
+            ..rule("l", SourceRef::mail("anna@example.org"), RuleEffect::Lane { lane: Lane::ForMe })
+        };
+        assert_eq!(
+            sentence(&lane),
+            trf("Mail from {sender} goes to “{lane}”", &[("sender", &"news@shop.example"), ("lane", &tr("For me"))])
+        );
+        let remove = update(&mut State::default(), Message::Remove("h".into()), &Data::default());
+        assert!(matches!(remove, Action::Send(Request::RemoveRule { ref id }) if id == "h"), "removed like any rule");
     }
 
     #[test]
@@ -275,6 +328,7 @@ mod tests {
         let rules = vec![
             rule("l", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }),
             rule("m", SourceRef::script("a-script-with-a-rather-long-name-that-wraps"), RuleEffect::Muted),
+            hidden("h", None, Some("shop.example")),
         ];
         let quiet_off = Settings { quiet_when_busy: false, ..Settings::default() };
         for data in [

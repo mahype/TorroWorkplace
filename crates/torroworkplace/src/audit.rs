@@ -264,7 +264,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::OpenItem { id: entry }
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
-        | Request::SetItemLane { id: entry, .. } => vec![random("inbox", entry)],
+        | Request::SetItemLane { id: entry, .. }
+        | Request::HideSender { id: entry, .. } => vec![random("inbox", entry)],
         Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
             vec![random("inbox", entry), collection(list)]
         }

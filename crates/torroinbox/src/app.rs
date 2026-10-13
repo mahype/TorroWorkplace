@@ -17,8 +17,12 @@
 //! Triage (E3.2): a cursor marks one row (the highlighted one); the open panel always shows it.
 //! The keys (`keys.rs`) and the panel's footer do the same things: mark done ([`Edit::Done`]),
 //! snooze through a menu or the picker of "Pick…" ([`Edit::Snooze`]), move to the other lane,
-//! asking "always for this source?" ([`Edit::Lane`]), mute or unmute the source at once (E3.2c:
-//! no dialog – a change with an undo needs no question as well). Every change shows a hint for
+//! asking "always for this source?" ([`Edit::Lane`]), and hide it from the inbox in steps (`m`
+//! or the panel's "…", task E3.10, [`Menu::Hide`]): for mail "This conversation" (done), "Everything
+//! from" its sender or its sender's domain (`inbox.hide_sender`: a rule; the mail stays unread and
+//! in place), "Always to Info" and "Move to junk" (only with a junk folder in the account); for
+//! other sources "This entry" (done) and muting or unmuting the source at once (E3.2c: no dialog –
+//! a change with an undo needs no question as well). Every change shows a hint for
 //! [`UNDO_FOR`] with "Undo" (`u`), which sends the change that puts it back ([`Undo`]). A change
 //! that takes the entry off the list moves the cursor – and the panel – to the row that took its
 //! place, so `e`, `e`, `e` works through a list.
@@ -56,7 +60,7 @@ use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, pick_list, row, stack, text_input};
+use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -72,9 +76,11 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
+use torro_inbox::item::HideScope;
 use torro_inbox::source::TaskList;
 use torro_inbox::{
-    InboxError, InboxSource, Item, ItemFilter, Lane, Link, SourceInfo, SourceKind, SourceRef, State, StateFilter,
+    InboxError, InboxSource, Item, ItemFilter, Lane, Link, Rule, SourceInfo, SourceKind, SourceRef, State, StateFilter,
+    rules,
 };
 use torro_ipc::mail::{MoveRole, MoveTarget};
 use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
@@ -344,7 +350,7 @@ pub fn rules_allowed(source: &SourceRef) -> bool {
     source.kind != SourceKind::Suite
 }
 
-/// One entry of a menu of choices (snooze, lane): picked by click or by its digit.
+/// One entry of a menu of choices (snooze, lane, hide): picked by click or by its digit.
 #[derive(Debug, Clone)]
 pub struct Choice {
     pub icon: Icon,
@@ -353,6 +359,25 @@ pub struct Choice {
     /// the digit; `None` for choices without a fixed time.
     pub when: Option<String>,
     pub message: Message,
+    /// A line above it: it starts another kind of choices (the hide menu's lane and junk after
+    /// the ways to hide).
+    pub line: bool,
+}
+
+impl Choice {
+    fn new(icon: Icon, label: impl Into<String>, message: Message) -> Choice {
+        Choice { icon, label: label.into(), when: None, message, line: false }
+    }
+}
+
+/// The text of the hint after hiding with `rule` (task E3.10), in the words of the control
+/// centre's rules: "Hidden: news@shop.example", "Hidden: everything from shop.example".
+pub fn hidden_text(rule: &Rule) -> String {
+    match (&rule.sender, &rule.domain) {
+        (Some(sender), _) => trf("Hidden: {sender}", &[("sender", sender)]),
+        (None, Some(domain)) => trf("Hidden: everything from {domain}", &[("domain", domain)]),
+        (None, None) => trf("New entries from {source} muted", &[("source", &rule.source.label())]),
+    }
 }
 
 /// When a snooze choice wakes, as short as it gets: the time when it is today ("13:30"), else the
@@ -370,6 +395,8 @@ pub enum Sent {
     Edit(Edit, Option<After>),
     /// The source, muted or not, and whether the hint with its undo follows (not after an undo).
     Mute(SourceRef, bool, bool),
+    /// `inbox.hide_sender` for the entry with this id (task E3.10).
+    Hide(String, HideScope),
     Link(String),
     /// `inbox.open_item` for the entry with this id.
     Open(String),
@@ -486,6 +513,9 @@ pub enum Menu {
     Lane,
     /// The dialog that makes a task of `App::subject` (task E3.5).
     Task,
+    /// "Hide from inbox" for `App::subject` (task E3.10): the ways to hide it, by `m` or the
+    /// panel's "…" ([`App::hide_choices`]).
+    Hide,
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -537,10 +567,14 @@ pub enum Open {
     Mail,
     /// "For me" with its first mail entry in the panel, the whole mail loaded.
     MailEntry,
+    /// The menu "Hide from inbox" of the first mail entry of "For me", at its row (task E3.10).
+    Hide,
+    /// That entry in the panel, with the menu at the panel's "…".
+    HidePanel,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 21] = [
+    const ALL: [(&'static str, Open); 23] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -562,6 +596,8 @@ impl Open {
         ("folder", Open::Folder),
         ("mail", Open::Mail),
         ("mail-entry", Open::MailEntry),
+        ("hide", Open::Hide),
+        ("hide-panel", Open::HidePanel),
     ];
 }
 
@@ -906,9 +942,17 @@ pub enum Message {
     /// From the panel: move the entry with this id to the other lane (asking first where a rule
     /// is possible).
     AskLane(String),
-    /// From the panel: mute the source of the entry with this id, or unmute it – at once, with
-    /// an undo.
+    /// From the hide menu: mute the source of the entry with this id, or unmute it – at once,
+    /// with an undo.
     AskMute(String),
+    /// From the panel's "…": the menu "Hide from inbox" for the entry with this id (task E3.10).
+    AskHide(String),
+    /// From the hide menu: hide the sender (or its domain) of the mail entry with this id.
+    HideSender(String, HideScope),
+    /// The source's answer to hiding: the rule as stored, or why not.
+    Hidden(Result<Rule, String>),
+    /// From the hide menu: move the mail of the entry with this id to its account's junk folder.
+    Junk(String),
     /// "Pick…" in the snooze menu: the date and time picker.
     ShowPicker,
     /// The picker's day.
@@ -1238,6 +1282,16 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::AskSnooze(id) => self.ask_snooze(&id),
             Message::AskLane(id) => return self.ask_lane(&id),
             Message::AskMute(id) => return self.ask_mute(&id),
+            Message::AskHide(id) => self.ask_hide(&id),
+            Message::HideSender(id, scope) => return self.hide_sender(id, scope),
+            Message::Hidden(Ok(rule)) => {
+                self.note(hidden_text(&rule));
+                return self.load();
+            }
+            Message::Hidden(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't hide the sender."), err));
+            }
+            Message::Junk(id) => return self.move_to_junk(&id),
             Message::ShowPicker => {
                 self.pick = Pick::start(self.now);
                 self.menu = Some(Menu::Pick);
@@ -1821,7 +1875,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Where the keys go: a menu of choices, the picker, another menu or the drawer, else the list.
     fn focus(&self) -> Focus {
         match self.menu {
-            Some(Menu::Snooze | Menu::Lane) => Focus::Choices,
+            Some(Menu::Snooze | Menu::Lane | Menu::Hide) => Focus::Choices,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task) => Focus::Task,
             Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
@@ -1863,7 +1917,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Task::none()
             }
             Command::Lane => cursor.map_or_else(Task::none, |id| self.ask_lane(&id)),
-            Command::Mute => cursor.map_or_else(Task::none, |id| self.ask_mute(&id)),
+            Command::Hide => {
+                if let Some(id) = cursor {
+                    self.ask_hide(&id);
+                }
+                Task::none()
+            }
             Command::MakeTask => cursor.map_or_else(Task::none, |id| self.ask_task(&id)),
             Command::Choose(n) => match self.choices().into_iter().nth(n.wrapping_sub(1)) {
                 Some(choice) => self.update(choice.message),
@@ -1969,7 +2028,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     }
 
     /// Mutes the source of the entry with `id`, or unmutes it, at once; the hint offers the undo
-    /// (design: confirm *or* undo, never both). The suite is never muted ([`rules_allowed`]).
+    /// (design: confirm *or* undo, never both). The suite is never muted ([`rules_allowed`]). The
+    /// hide menu's "Mute …" ends here.
     fn ask_mute(&mut self, id: &str) -> Task<Message> {
         let Some(source) = self.find(id).map(|item| item.source.clone()) else { return Task::none() };
         if !rules_allowed(&source) {
@@ -1979,6 +2039,114 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.close_menus();
         let muted = !self.is_muted(&source);
         self.mute(source, muted, true)
+    }
+
+    /// Opens the menu "Hide from inbox" for the entry with `id` (task E3.10). An entry with no way
+    /// to hide it – an approval, which closes once decided and whose source is never muted – gets
+    /// a note instead.
+    fn ask_hide(&mut self, id: &str) {
+        let Some(item) = self.find(id).cloned() else { return };
+        if self.hide_choices(&item).is_empty() {
+            self.note(tr("An approval closes once it is decided.").to_owned());
+            return;
+        }
+        self.drawer = false;
+        self.subject = Some(item);
+        self.menu = Some(Menu::Hide);
+    }
+
+    /// The ways to hide `item`, in the order of the menu (task E3.10):
+    ///
+    /// - mail: "This conversation" (done; a new reply brings it back), "Everything from <address>"
+    ///   and "Everything from <domain>" (`inbox.hide_sender`), then after a line "Always to Info"
+    ///   (`inbox.set_item_lane` with `remember`) and "Move to junk" (`mail.move_messages`, only
+    ///   when the account has a folder with the role junk). Without a sender's address only the
+    ///   first and the junk folder;
+    /// - other sources: "This entry" (done) and "Mute <source>" / "Unmute <source>"; the suite is
+    ///   never muted ([`rules_allowed`]), an approval has no done.
+    ///
+    /// Done entries have no "This …": they are out of the inbox already.
+    pub fn hide_choices(&self, item: &Item) -> Vec<Choice> {
+        let id = || item.id.clone();
+        let mut choices = Vec::new();
+        let open = !matches!(item.state, State::Done { .. }) && !detail::is_approval(item);
+        if item.source.kind == SourceKind::Mail {
+            if open {
+                choices.push(Choice::new(Icon::Check, tr("This conversation"), Message::SetDone(id(), true)));
+            }
+            let hide = |scope| rules::hide_target(item, scope);
+            if let Some(sender) = hide(HideScope::Sender) {
+                let label = trf("Everything from {sender}", &[("sender", &sender)]);
+                choices.push(Choice::new(Icon::User, label, Message::HideSender(id(), HideScope::Sender)));
+            }
+            if let Some(domain) = hide(HideScope::Domain) {
+                let label = trf("Everything from {domain}", &[("domain", &domain)]);
+                choices.push(Choice::new(Icon::Users, label, Message::HideSender(id(), HideScope::Domain)));
+            }
+            let mut rest = Vec::new();
+            if rules::mail_sender(item).is_some() {
+                let always = Edit::Lane { id: id(), lane: Lane::Info, remember: true };
+                rest.push(Choice::new(lane_icon(Lane::Info), tr("Always to Info"), Message::Edit(always)));
+            }
+            if matches!(item.link, Some(Link::Mail { .. })) && self.junk_folder(&item.source).is_some() {
+                rest.push(Choice::new(Icon::ShieldAlert, tr("Move to junk"), Message::Junk(id())));
+            }
+            if let Some(first) = rest.first_mut() {
+                first.line = !choices.is_empty();
+            }
+            choices.extend(rest);
+            return choices;
+        }
+        if open {
+            choices.push(Choice::new(Icon::Check, tr("This entry"), Message::SetDone(id(), true)));
+        }
+        if rules_allowed(&item.source) {
+            let label = item.source.label();
+            let mute = if self.is_muted(&item.source) {
+                trf("Unmute {source}", &[("source", &label)])
+            } else {
+                trf("Mute {source}", &[("source", &label)])
+            };
+            choices.push(Choice::new(Icon::Moon, mute, Message::AskMute(id())));
+        }
+        choices
+    }
+
+    /// The junk folder of the mail account `source`, if it has one.
+    fn junk_folder(&self, source: &SourceRef) -> Option<&torro_mail::Folder> {
+        let account = source.key();
+        self.folders.iter().find(|folder| folder.account == account && folder.role == Some(Role::Junk))
+    }
+
+    /// Sends `inbox.hide_sender` for the entry `id` and closes the menu; the answer comes as
+    /// [`Message::Hidden`], whose hint names what was hidden. No undo: the rule lives in the core,
+    /// which only `inbox.remove_rule` takes back (the control centre's Inbox › Rules), as for a
+    /// remembered lane.
+    fn hide_sender(&mut self, id: String, scope: HideScope) -> Task<Message> {
+        self.close_menus();
+        #[cfg(test)]
+        self.sent.push(Sent::Hide(id.clone(), scope));
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.hide_sender(id, scope).await.map_err(|err| err.to_string()) }, Message::Hidden)
+    }
+
+    /// "Move to junk" for the mail entry `id`: its newest mail to the account's junk folder
+    /// (`mail.move_messages`), with an undo that moves it back to the inbox and opens the entry
+    /// again – the core closes it once its mail left the inbox, as for archiving.
+    fn move_to_junk(&mut self, id: &str) -> Task<Message> {
+        self.close_menus();
+        let Some(Link::Mail { message }) = self.find(id).and_then(|item| item.link.clone()) else {
+            return Task::none();
+        };
+        let ids = vec![message];
+        let edit = MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Junk) };
+        let back = MailEdit::Move { ids, to: MoveTarget::Role(MoveRole::Inbox) };
+        let hint = Hint {
+            text: tr("Moved to junk").to_owned(),
+            undo: Some(Undo::Mail { edit: back, reopen: Some(id.to_owned()) }),
+            shown: Instant::now(),
+        };
+        self.mail_edit(Some(edit), Some(hint))
     }
 
     /// Opens the dialog that makes a task of the entry with `id` (task E3.5): its title to change,
@@ -2121,15 +2289,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     pub fn choices(&self) -> Vec<Choice> {
         let Some(item) = &self.subject else { return Vec::new() };
         let id = || item.id.clone();
-        let choice = |icon, label: String, message| Choice { icon, label, when: None, message };
+        let choice = |icon, label: String, message| Choice::new(icon, label, message);
         match self.menu {
             Some(Menu::Snooze) => {
                 let [later, tomorrow, next_week] = snooze_times(self.now);
                 let snooze = |icon, label: &str, until| Choice {
-                    icon,
-                    label: label.to_owned(),
                     when: Some(wake_short(until, self.now)),
-                    message: Message::Edit(Edit::Snooze { id: id(), until: Some(until) }),
+                    ..Choice::new(icon, label, Message::Edit(Edit::Snooze { id: id(), until: Some(until) }))
                 };
                 let mut choices = vec![
                     snooze(Icon::Clock, tr("Later today"), later),
@@ -2152,6 +2318,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     choice(Icon::Repeat, always, edit(true)),
                 ]
             }
+            Some(Menu::Hide) => self.hide_choices(item),
             _ => Vec::new(),
         }
     }
@@ -2282,10 +2449,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let anchors = detail::Anchors::default();
         // Menus for an entry open at the panel's buttons while it is open (the row may be under
         // it), else at the cursor's row.
-        let (snooze_at, lane_at, task_at) = if self.detail.is_some() {
-            (&anchors.snooze, &anchors.lane, &anchors.task)
+        let (snooze_at, lane_at, task_at, hide_at) = if self.detail.is_some() {
+            (&anchors.snooze, &anchors.lane, &anchors.task, &anchors.hide)
         } else {
-            (&anchors.row, &anchors.row, &anchors.row)
+            (&anchors.row, &anchors.row, &anchors.row, &anchors.row)
         };
         let below = Placement::Below(Align::End);
         let layer = match self.menu {
@@ -2310,6 +2477,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             }
             Some(Menu::Pick) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
             Some(Menu::Task) => Some(widgets::floating(task_at, below, self.task_dialog(), Message::CloseMenu)),
+            Some(Menu::Hide) => {
+                Some(widgets::floating(hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
+            }
         };
         let detail = if self.view.is_mail() {
             // A folder's message: the mail alone, no entry around it.
@@ -2318,7 +2488,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             self.detail.as_ref().map(|item| {
                 let footer = detail::Footer {
                     anchors: anchors.clone(),
-                    muted: self.is_muted(&item.source),
+                    hide: !self.hide_choices(item).is_empty(),
                     deciding: self.deciding.is_some(),
                     // The panel fills narrow windows: no room for the words of "Move to …".
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
@@ -2799,6 +2969,15 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Open::MailEntry) => {
                 self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
             }
+            Some(open @ (Open::Hide | Open::HidePanel)) => {
+                if let Some(item) = self.items.iter().find(|item| item.source.kind == SourceKind::Mail).cloned() {
+                    self.cursor = Some(item.id.clone());
+                    if open == Open::HidePanel {
+                        self.detail = Some(item.clone());
+                    }
+                    self.ask_hide(&item.id);
+                }
+            }
             _ => {}
         }
         if let Some(detail) = &self.detail {
@@ -2875,23 +3054,54 @@ fn mute_hint(source: &SourceRef, muted: bool) -> Hint {
 }
 
 /// One entry of [`App::choice_menu`], as `widgets::menu` draws one: icon, label, then – quietly,
-/// tabular – when it snoozes until, and the digit that picks it.
+/// tabular – when it snoozes until, and the digit that picks it; with [`Choice::line`] the line
+/// `widgets::menu` draws between its sections above it.
 fn choice_entry<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
+    let line = choice.line;
+    let entry = choice_button(choice, key);
+    if !line {
+        return entry;
+    }
+    let rule = container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::xs(), 0.0]);
+    column![rule, entry].into()
+}
+
+/// The button of [`choice_entry`].
+///
+/// The menu is [`widgets::menu_width`] wide: a label longer than its room – an address or a
+/// domain in the hide menu – ends in "…" ([`choice_label`]) and shows whole as tooltip.
+fn choice_button<'a>(choice: Choice, key: &'static str) -> Element<'a, Message> {
     let mark = icon::icon(choice.icon, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) });
-    let label = container(typo::text(typo::body(), choice.label).wrapping(Wrapping::None)).width(Fill).clip(true);
+    let shown = choice_label(&choice.label, choice.when.as_deref(), key);
+    let cut = (shown != choice.label).then(|| choice.label.clone());
+    let label = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
     let mut content = row![mark, label].spacing(space::s()).align_y(Alignment::Center);
     if let Some(when) = choice.when {
         content = content.push(typo::text(typo::meta().tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
     }
     content = content.push(widgets::kbd(key));
-    iced::widget::button(container(content).center_y(Fill))
+    let button = iced::widget::button(container(content).center_y(Fill))
         .width(Fill)
         .height(style::MENU_ITEM_HEIGHT)
         .padding(style::ITEM_PADDING)
         .style(style::button::menu_item(false))
-        .on_press(choice.message)
-        .into()
+        .on_press(choice.message);
+    match cut {
+        Some(whole) => widgets::with_tooltip(button, whole),
+        None => button.into(),
+    }
+}
+
+/// `label` as it fits in a choice of [`choice_button`] beside its time `when` and its key hint
+/// `key`: whole, or cut with "…" ([`typo::ellipsize`]).
+fn choice_label(label: &str, when: Option<&str>, key: &str) -> String {
+    let gap = space::s();
+    let kbd = typo::text_width(key, typo::caption()) + style::KBD_PADDING.left + style::KBD_PADDING.right;
+    let when = when.map_or(0.0, |when| typo::text_width(when, typo::meta()) + gap);
+    let frame = 2.0 * style::MENU_INSET + style::ITEM_PADDING.left + style::ITEM_PADDING.right;
+    let room = widgets::menu_width() - frame - icon::SIZE - 2.0 * gap - kbd - when;
+    typo::ellipsize(label, typo::body(), room)
 }
 
 /// A pick list in the suite's look for a property of the dialog of "Make task": `options` shown
@@ -3478,6 +3688,10 @@ mod tests {
                 let result = block_on(app.inbox.decide_approval(approval, allow));
                 let _ = app.update(Message::Decided(result, allow));
             }
+            Some(Sent::Hide(id, scope)) => {
+                let result = block_on(app.inbox.hide_sender(id, scope)).map_err(|err| err.to_string());
+                let _ = app.update(Message::Hidden(result));
+            }
             other => panic!("no call to deliver: {other:?}"),
         }
         load(app);
@@ -3775,11 +3989,30 @@ mod tests {
         ));
     }
 
+    /// `m`, then the hide menu's last entry ("Mute …" for a script's notice).
+    fn mute_by_keys(app: &mut App<DemoSource>) {
+        let _ = press(app, Key::M);
+        assert_eq!((app.menu, app.focus()), (Some(Menu::Hide), Focus::Choices));
+        let last = app.choices().len();
+        let _ = press(app, Key::Digit(u8::try_from(last).expect("a digit")));
+    }
+
     #[test]
-    fn m_mutes_at_once_and_u_unmutes() {
+    fn m_offers_this_entry_and_muting_for_a_notice() {
+        let mut app = at("demo-6");
+        let _ = press(&mut app, Key::M);
+        let labels: Vec<String> = app.choices().into_iter().map(|c| c.label).collect();
+        assert_eq!(labels, [tr("This entry").to_owned(), trf("Mute {source}", &[("source", &"deploy")])]);
+        let _ = press(&mut app, Key::Digit(1));
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { done: true, .. }, Some(_)))), "done, undo");
+        assert!(app.menu.is_none());
+    }
+
+    #[test]
+    fn the_hide_menu_mutes_at_once_and_u_unmutes() {
         let mut app = at("demo-6");
         let deploy = SourceRef::script("deploy");
-        let _ = press(&mut app, Key::M);
+        mute_by_keys(&mut app);
         assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), true, true)), "no question first");
         assert_eq!(app.focus(), Focus::List, "nothing in front of the list");
         deliver(&mut app);
@@ -3794,23 +4027,140 @@ mod tests {
         assert!(!app.is_muted(&deploy));
         assert!(app.hint.is_none(), "an undo shows no new hint");
         // Unmuting works the same way, with its own undo.
-        let _ = press(&mut app, Key::M);
+        mute_by_keys(&mut app);
         deliver(&mut app);
         let _ = press(&mut app, Key::M);
+        assert_eq!(
+            app.choices().last().map(|c| c.label.clone()),
+            Some(trf("Unmute {source}", &[("source", &"deploy")]))
+        );
+        let _ = press(&mut app, Key::Digit(2));
         assert_eq!(app.sent.last(), Some(&Sent::Mute(deploy.clone(), false, true)));
         deliver(&mut app);
         assert_eq!(app.hint.and_then(|hint| hint.undo), Some(Undo::Mute(deploy, true)));
     }
 
     #[test]
-    fn the_suite_is_never_muted() {
+    fn the_suite_is_never_muted_and_an_approval_not_hidden() {
         let mut app = at("demo-3");
         let _ = press(&mut app, Key::M);
-        assert!(app.sent.is_empty());
+        assert!(app.sent.is_empty() && app.menu.is_none());
+        assert_eq!(
+            app.hint.as_ref().map(|hint| hint.text.as_str()),
+            Some(tr("An approval closes once it is decided."))
+        );
+        // An account problem of the suite: done, but never muted.
+        let mut app = at("demo-5");
+        let _ = press(&mut app, Key::M);
+        let labels: Vec<String> = app.choices().into_iter().map(|c| c.label).collect();
+        assert_eq!(labels, [tr("This entry").to_owned()]);
+        let _ = app.update(Message::AskMute("demo-5".into()));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mute(..))));
         assert_eq!(
             app.hint.as_ref().map(|hint| hint.text.as_str()),
             Some(tr("Entries from the suite can't be muted."))
         );
+    }
+
+    /// The first mail entry of "For me", under the cursor, and its sender's address.
+    fn at_mail() -> (App<DemoSource>, Item, String) {
+        let app = loaded(&[]);
+        let item = app.items.iter().find(|item| item.source.kind == SourceKind::Mail).cloned().expect("mail in For me");
+        let address = rules::mail_sender(&item).expect("a sender");
+        (at(&item.id), item, address)
+    }
+
+    #[test]
+    fn m_offers_the_steps_for_mail() {
+        let mut app = loaded(&["--open", "info"]);
+        let sale = app.items.iter().find(|item| item.title == "Autumn sale: 20% off").cloned().expect("the sale");
+        app.cursor = Some(sale.id.clone());
+        let _ = press(&mut app, Key::M);
+        assert_eq!((app.menu, app.focus()), (Some(Menu::Hide), Focus::Choices));
+        let choices = app.choices();
+        let labels: Vec<&str> = choices.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                tr("This conversation"),
+                trf("Everything from {sender}", &[("sender", &"news@shop.example")]).as_str(),
+                trf("Everything from {domain}", &[("domain", &"shop.example")]).as_str(),
+                tr("Always to Info"),
+                tr("Move to junk"),
+            ]
+        );
+        let lines: Vec<bool> = choices.iter().map(|c| c.line).collect();
+        assert_eq!(lines, [false, false, false, true, false], "a line before the lane and junk");
+
+        let _ = press(&mut app, Key::Digit(3));
+        assert_eq!(app.sent.last(), Some(&Sent::Hide(sale.id.clone(), HideScope::Domain)));
+        assert!(app.menu.is_none());
+        deliver(&mut app);
+        let text = trf("Hidden: everything from {domain}", &[("domain", &"shop.example")]);
+        let hint = app.hint.clone().expect("a hint");
+        assert_eq!((hint.text, hint.undo), (text, None), "a rule: removed in the control centre");
+        assert!(!ids(&app).contains(&sale.id.as_str()), "out of the inbox");
+        let Some(Link::Mail { message }) = &sale.link else { panic!("a mail entry") };
+        let mail = app.inbox.get_mail(message);
+        let flags = mail.map(|mail| mail.summary.flags).expect("the mail");
+        assert!(!flags.contains(&torro_mail::Flag::Seen), "hiding leaves the mail unread");
+    }
+
+    #[test]
+    fn the_sender_is_hidden_and_mail_goes_to_junk_with_an_undo() {
+        let (mut app, offer, address) = at_mail();
+        let _ = press(&mut app, Key::M);
+        let _ = press(&mut app, Key::Digit(2));
+        assert_eq!(app.sent.last(), Some(&Sent::Hide(offer.id.clone(), HideScope::Sender)));
+        deliver(&mut app);
+        let text = trf("Hidden: {sender}", &[("sender", &address)]);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(text));
+
+        let (mut app, item, _) = at_mail();
+        let _ = press(&mut app, Key::M);
+        let junk = app.choices().len();
+        let _ = press(&mut app, Key::Digit(u8::try_from(junk).expect("a digit")));
+        let Some(Sent::Mail(MailEdit::Move { to, .. }, Some(hint))) = app.sent.last() else {
+            panic!("a move with a hint: {:?}", app.sent.last())
+        };
+        assert_eq!(*to, MoveTarget::Role(MoveRole::Junk));
+        assert!(matches!(&hint.undo, Some(Undo::Mail { reopen: Some(id), .. }) if *id == item.id));
+    }
+
+    #[test]
+    fn long_addresses_in_a_menu_end_in_an_ellipsis() {
+        let long = trf("Everything from {sender}", &[("sender", &"jonas.weber@work.example.org")]);
+        let shown = choice_label(&long, None, "2");
+        assert!(shown.ends_with(typo::ELLIPSIS) && shown.len() < long.len(), "{shown}");
+        assert_eq!(choice_label(tr("Move to junk"), None, "5"), tr("Move to junk"), "short labels stay whole");
+    }
+
+    #[test]
+    fn open_hide_shows_the_menu_of_the_first_mail_entry() {
+        for (open, panel) in [("hide", false), ("hide-panel", true)] {
+            let mut app = loaded(&["--open", open]);
+            assert_eq!(app.menu, Some(Menu::Hide), "{open}");
+            let subject = app.subject.clone().expect("a subject");
+            assert_eq!((subject.source.kind, app.cursor.as_deref()), (SourceKind::Mail, Some(subject.id.as_str())));
+            assert_eq!(app.detail.is_some(), panel, "{open}");
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+    }
+
+    #[test]
+    fn mail_without_a_junk_folder_or_sender_offers_less() {
+        let (mut app, item, _) = at_mail();
+        app.folders.retain(|folder| folder.role != Some(Role::Junk));
+        let anonymous = Item { from: None, ..item };
+        let labels: Vec<String> = app.hide_choices(&anonymous).into_iter().map(|c| c.label).collect();
+        assert_eq!(labels, [tr("This conversation").to_owned()], "nothing to hide by, nowhere to move");
+        let done = Item { state: State::Done { at: app.now }, ..anonymous };
+        assert!(app.hide_choices(&done).is_empty());
+        let _ = press(&mut app, Key::M);
+        assert_eq!(app.menu, Some(Menu::Hide), "the mail itself still has its sender");
     }
 
     #[test]
@@ -3850,6 +4200,8 @@ mod tests {
         assert_eq!((app.menu, app.subject.as_ref().map(|i| i.id.as_str())), (Some(Menu::Snooze), Some("demo-6")));
         let _ = app.update(Message::AskLane("demo-6".into()));
         assert_eq!(app.menu, Some(Menu::Lane));
+        let _ = app.update(Message::AskHide("demo-6".into()));
+        assert_eq!(app.menu, Some(Menu::Hide));
         let _ = app.update(Message::AskMute("demo-6".into()));
         assert!(app.menu.is_none(), "muting closes the menu");
         assert_eq!(app.sent.last(), Some(&Sent::Mute(SourceRef::script("deploy"), true, true)));

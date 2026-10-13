@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
-| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done` ⁸, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done` ⁸, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `hide_sender` ¹⁰, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -299,6 +299,14 @@ App-Schlüssel.
 "<id>" }` (`Admin`); ein fehlendes oder ungültiges Paket lehnt der Dienst mit `error` und allen
 Gründen ab. Pakete enthalten keine Geheimnisse, darum genügt `Read` zum Auflisten. Die Apps folgen
 der Einstellung wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem Takt.
+
+¹⁰ `hide_sender { id, scope: sender | domain }` (E3.10) ist immer `Admin`: eine dauerhafte Regel wie
+`mute_source`, die spätere Mails des Absenders bzw. der Domain (genau, ohne Subdomains) im Konto des
+Eintrags nicht mehr zu Einträgen macht und die offenen und vertagten passenden Einträge erledigt.
+Anders als `set_item_done` wirkt das **nicht** in die Quelle zurück: Die Mail bleibt ungelesen und
+an ihrem Platz, darum braucht es kein Schreibrecht für Mail (nur Leserecht, um den Eintrag zu
+sehen). Antwort ist die neue `Rule` (mit `sender` oder `domain`); `not-found` für Einträge, die der
+Schlüssel nicht sieht, `error` für Einträge ohne Mail-Absender; `remove_rule` hebt die Regel auf.
 
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine

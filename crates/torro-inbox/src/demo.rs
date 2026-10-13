@@ -31,7 +31,10 @@ use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
 use torro_mail::{AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
 
-use crate::item::{Action, AgentInfo, AgentKind, Item, Kind, Lane, Link, Sender, SourceInfo, SourceRef, State};
+use crate::item::{
+    Action, AgentInfo, AgentKind, HideScope, Item, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo, SourceRef,
+    State,
+};
 use crate::rules;
 use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
 
@@ -42,6 +45,8 @@ pub const APPROVAL_ID: &str = "demo-approval-1";
 struct Data {
     items: Vec<Item>,
     muted: BTreeSet<SourceRef>,
+    /// The senders and domains hidden from the inbox (task E3.10), in memory only.
+    hidden: Vec<Rule>,
     /// The tasks made from entries ("Make task", task E3.5), in memory only.
     tasks: Vec<DemoTask>,
     /// The folders of both mail accounts; their numbers are counted from `mail` when listed.
@@ -94,6 +99,7 @@ impl DemoSource {
         let data = Data {
             items,
             muted: BTreeSet::new(),
+            hidden: Vec::new(),
             tasks: Vec::new(),
             folders: folder_sample(),
             mail,
@@ -920,6 +926,40 @@ impl InboxSource for DemoSource {
         Ok(())
     }
 
+    /// Keeps the rule (once, as the core does) and marks done the open and snoozed entries it hides
+    /// ([`rules::hides`]); unlike "done", their mail stays as it is – not read, not moved. Demo
+    /// mode gets no new mail, so the rule drops nothing later. [`InboxError::NotFound`] for an
+    /// unknown entry, [`InboxError::Other`] for one that names no mail sender.
+    async fn hide_sender(&self, id: String, scope: HideScope) -> Result<Rule, InboxError> {
+        let now = self.now();
+        let mut data = self.lock();
+        let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
+        let target = rules::hide_target(item, scope)
+            .ok_or_else(|| InboxError::Other("this entry names no mail sender to hide".into()))?;
+        let (sender, domain) = match scope {
+            HideScope::Sender => (Some(target), None),
+            HideScope::Domain => (None, Some(target)),
+        };
+        let source = item.source.clone();
+        let known =
+            data.hidden.iter().find(|rule| rule.source == source && rule.sender == sender && rule.domain == domain);
+        let rule = match known {
+            Some(rule) => rule.clone(),
+            None => {
+                let id = format!("demo-rule-{}", data.hidden.len() + 1);
+                let rule = Rule { id, source, sender, domain, effect: RuleEffect::Muted, created: now };
+                data.hidden.push(rule.clone());
+                rule
+            }
+        };
+        for item in data.items.iter_mut().filter(|item| !matches!(item.state, State::Done { .. })) {
+            if rules::hides(&rule, item) {
+                rules::set_done(item, true, now);
+            }
+        }
+        Ok(rule)
+    }
+
     /// Demo mode has no window manager and no browser behind it: nothing comes to the front (the
     /// app opens pages and apps itself with `--demo`), the entry is only seen, as after opening.
     /// [`InboxError::Unsupported`] for an entry without a link.
@@ -1180,6 +1220,25 @@ mod tests {
         let items = demo.list_items(ItemFilter::default()).await.expect("items");
         assert!(items.iter().any(|i| i.id == "demo-6" && i.state.is_open()), "nothing changed");
         assert!(demo.lock().tasks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn hiding_a_sender_closes_its_entries_but_leaves_the_mail_unread() {
+        let demo = DemoSource::new(now());
+        let sale = demo.lock().items.iter().find(|item| item.title == "Autumn sale: 20% off").cloned().expect("sale");
+        let Some(Link::Mail { message }) = sale.link.clone() else { panic!("a mail entry links its mail") };
+        let rule = demo.hide_sender(sale.id.clone(), HideScope::Domain).await.expect("hidden");
+        assert_eq!((rule.sender.as_deref(), rule.domain.as_deref()), (None, Some("shop.example")));
+        assert_eq!((rule.source.clone(), rule.effect), (sale.source.clone(), RuleEffect::Muted));
+        assert!(matches!(entry_state(&demo, &sale.id), State::Done { .. }));
+        let mail = demo.lock().mail.iter().find(|m| m.summary.id == message).cloned().expect("the mail");
+        assert!(!mail.summary.flags.contains(&Flag::Seen), "not read");
+        assert!(mail.summary.folder.ends_with("-inbox"), "not moved");
+        let again = demo.hide_sender(sale.id.clone(), HideScope::Domain).await.expect("hidden again");
+        assert_eq!(again, rule, "the same rule");
+        let agent = demo.hide_sender("demo-1".into(), HideScope::Sender).await;
+        assert!(matches!(agent, Err(InboxError::Other(_))), "no mail: {agent:?}");
+        assert_eq!(demo.hide_sender("nope".into(), HideScope::Sender).await, Err(InboxError::NotFound));
     }
 
     fn folder<'a>(folders: &'a [Folder], id: &str) -> &'a Folder {

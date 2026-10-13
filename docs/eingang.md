@@ -126,6 +126,18 @@ In dieser Reihenfolge, die erste passende Regel gewinnt:
    eine Zeile Zusammenfassung. Nur als Vorschlag, mit Kennzeichnung; ohne KI-Konto fehlt die Funktion
    einfach, nichts anderes ändert sich.
 
+**Ausblenden in Stufen (E3.10):** „Hide“ ist kein Spam. Das Menü „Hide from inbox“ (`m`, „…“ im
+Paneel) bietet für Mail „This conversation“ (erledigt wie `e` – das markiert die Mail wie jedes
+Erledigen als gelesen; eine neue Antwort bringt sie zurück),
+„Everything from <Adresse>“, „Everything from <Domain>“, dann „Always to Info“ und – nur wenn das
+Konto einen Ordner mit Rolle Junk hat – „Move to junk“; für andere Quellen „This entry“ und „Mute
+<Quelle>“, die Suite nie. Absender und Domain sind eine Regel (`inbox.hide_sender`): Neue Mail
+davon wird kein Eintrag, offene und vertagte passende Einträge werden erledigt. Die Mail selbst
+bleibt **unverändert** im Postfach, nicht gelesen, nicht verschoben – anders als „erledigt“, das
+die Mail als gelesen markiert. Domain heißt der Teil nach `@`, klein, genau (keine Subdomains); die
+Regel gilt für das Konto des Eintrags. Die Regeln stehen in der Steuerzentrale › Inbox › Rules
+(„Hidden: news@shop.example“, „Hidden: everything from shop.example“) mit „Remove“.
+
 **Dringend** ist eine kleine, feste Menge (Freigabe, Agent wartet, Server down, CI rot auf dem
 eigenen PR) und ein Absender, den ich selbst als „VIP“ markiere. Mehr nicht.
 
@@ -235,7 +247,8 @@ weder Mail noch Slack).
 | Spur ändern, Absender einordnen | Menü, Screener | `inbox.set_item_lane` · Write (mit „merken“ Admin) | `inbox_set_item_lane` |
 | Zu Aufgabe machen | Taste `t` | `inbox.create_task_from_item` · Write (braucht auch Tasks-Rechte) | `inbox_create_task_from_item` |
 | Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
-| Quelle stummschalten | Menü | `inbox.mute_source` · Admin | `inbox_mute_source` |
+| Quelle stummschalten | Menü „Hide from inbox“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
+| Absender oder Domain ausblenden (E3.10) | Menü „Hide from inbox“ (`m`, „…“ im Paneel), Steuerzentrale › Inbox › Rules | `inbox.hide_sender` · Admin | `inbox_hide_sender` |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 
@@ -303,7 +316,7 @@ Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenk
 | **Mini / Leiste** | Anzeige: „3 for you“, die drei obersten mit Quellen-Symbol; dringend sichtbar hervorgehoben (nicht in Torro-Rot) |
 
 - **Tastatur zuerst** wie Linear oder Superhuman: `j/k` bewegen, `e` erledigt, `s` später,
-  `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` Quelle stumm.
+  `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` ausblenden (Menü „Hide from inbox“, siehe unten).
 - **Schreiben** (Mail, längere Antworten) in einem eigenen Fenster, siehe [mail.md](mail.md).
 - **Fenster je Ausschnitt** mit `--source mail` oder `--lane info`, gemerkt in der
   Workspace-Vorlage. So bekommt, wer will, eine reine Mail-Kachel neben einer Agenten-Kachel.

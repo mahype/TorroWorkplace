@@ -562,7 +562,11 @@ Zeilen gleich mit austauschbaren Werten entstehen.
   Demo-Daten mit Sitzungsnamen. `torro-api-review`.
 
 ### E3.10 Ausblenden in Stufen
-- [ ] erledigt
+- [x] erledigt (zusätzlich nur Match-Arme bzw. Literale in `torroworkplace/src/{approvals,audit,daemon,pim}.rs`,
+  `torroinbox/src/empty.rs`, `torroworkplace/src/ui/{launch,mod}.rs` – zwei Demo-Regeln für die Sichtprüfung; „…“ im
+  Paneel ersetzt den Mond-Knopf, daneben zeigt „Move to …“ nur sein Icon; „This conversation“ ist `set_item_done`
+  und markiert die Mail darum gelesen – Rückfrage offen; Sichtprüfung `--demo --open hide|hide-panel` und
+  `torroworkplace ui --demo --open inbox` auf macOS, hell und dunkel)
 - **Modell:** Opus · **Braucht:** E2.6, E3.7, E4.1 · **Dateien:** `crates/torro-inbox/src/{item,rules,source,demo}.rs`,
   `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{core,inbox,mcp}.rs`,
   `crates/torroworkplace/src/ui/inbox.rs`, `crates/torroinbox/src/{app,keys,detail}.rs`,

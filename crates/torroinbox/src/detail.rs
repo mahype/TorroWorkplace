@@ -15,9 +15,12 @@
 //!
 //! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Snooze" (`s`)
 //! opens the snooze menu, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
-//! text button – only its icon in narrow windows, where the words do not fit ([`Footer::compact`])
-//! – and "Mute …" (`m`) as an icon button, which mutes at once with an undo (E3.2c). The suite as a
-//! source is never muted, so its entries have no mute button. "Make task" (`t`, task E3.5) is an
+//! text button – only its icon in narrow windows, where the words do not fit ([`Footer::compact`]),
+//! and beside "…", which leaves no room for them in the panel's 400 either – and "…" (`m`, task
+//! E3.10), which opens the menu "Hide from inbox": the entry, its sender or
+//! domain, "Always to Info" and "Move to junk" for mail, muting the source for the others
+//! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". "Make task"
+//! (`t`, task E3.5) is an
 //! icon button next to "Snooze": its words would not fit beside the others in the panel's 400.
 //! Approvals have none – they close once decided, and a task would not decide them.
 //!
@@ -56,14 +59,18 @@ pub struct Anchors {
     pub lane: Anchor,
     /// The footer's "Make task": its dialog opens here while the panel is open (task E3.5).
     pub task: Anchor,
+    /// The footer's "…": the menu "Hide from inbox" opens here while the panel is open (task
+    /// E3.10).
+    pub hide: Anchor,
 }
 
 /// What the footer needs besides the entry.
 #[derive(Debug, Clone)]
 pub struct Footer {
     pub anchors: Anchors,
-    /// The entry's source is muted: the mute button unmutes.
-    pub muted: bool,
+    /// The menu "Hide from inbox" has entries for this entry (`App::hide_choices`): the footer
+    /// shows its "…".
+    pub hide: bool,
     /// A decision of an approval is on its way: Allow and Deny are disabled until it is answered.
     pub deciding: bool,
     /// Narrow windows (the panel fills the window): "Move to …" shows only its icon, with the
@@ -220,7 +227,7 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 /// The buttons below the line: Allow/Deny for an approval, else done or reopen;
 /// then "Snooze" for an entry that is not done and "Make task" for one that is no approval, and at
-/// the right "Move to …" and "Mute …".
+/// the right "Move to …" and "…" (hide from the inbox) when there is a way to hide it.
 fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     let mut buttons = decide(item, footer.deciding);
     if !matches!(item.state, State::Done { .. }) {
@@ -243,20 +250,16 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
         trf("Move to {lane}", &[("lane", &lane_label(lane))]),
         Message::AskLane(item.id.clone()),
     );
-    let move_to = if footer.compact {
+    // Beside "…" the words would push the last button out of the panel's 400.
+    let move_to = if footer.compact || footer.hide {
         widgets::icon_button(icon, label, Some(ask))
     } else {
         widgets::text_button(Some(icon), label, style::button::ghost, Some(ask))
     };
     buttons.push(widgets::anchored(&footer.anchors.lane, move_to));
-    if app::rules_allowed(&item.source) {
-        let label = item.source.label();
-        let tooltip = if footer.muted {
-            trf("Unmute {source}", &[("source", &label)])
-        } else {
-            trf("Mute {source}", &[("source", &label)])
-        };
-        buttons.push(widgets::icon_button(Icon::Moon, tooltip, Some(Message::AskMute(item.id.clone()))));
+    if footer.hide {
+        let hide = widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())));
+        buttons.push(widgets::anchored(&footer.anchors.hide, hide));
     }
     buttons
 }
@@ -381,24 +384,24 @@ mod tests {
         assert_eq!(decide(&sample("demo-1"), false).len(), 1, "Mark as done");
     }
 
-    fn footer(muted: bool) -> Footer {
-        Footer { anchors: Anchors::default(), muted, deciding: false, compact: false }
+    fn footer(hide: bool) -> Footer {
+        Footer { anchors: Anchors::default(), hide, deciding: false, compact: false }
     }
 
     #[test]
     fn the_footer_offers_triage_to_the_mouse() {
-        // Mark as done, Snooze, Make task, the gap, Move to, Mute.
-        assert_eq!(buttons(&sample("demo-1"), &footer(false)).len(), 6);
-        // Allow, Deny, Snooze, the gap, Move to: the suite is never muted, an approval no task.
+        // Mark as done, Snooze, Make task, the gap, Move to, "…".
+        assert_eq!(buttons(&sample("demo-1"), &footer(true)).len(), 6);
+        // Allow, Deny, Snooze, the gap, Move to: an approval has no way to hide it and no task.
         assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 5);
-        // Reopen, Make task, the gap, Move to, Mute: a done entry is not snoozed.
+        // Reopen, Make task, the gap, Move to, "…": a done entry is not snoozed.
         assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 5);
     }
 
     #[test]
     fn narrow_panels_keep_the_same_buttons() {
-        let compact = Footer { compact: true, ..footer(false) };
-        assert_eq!(buttons(&sample("demo-1"), &compact).len(), buttons(&sample("demo-1"), &footer(false)).len());
+        let compact = Footer { compact: true, ..footer(true) };
+        assert_eq!(buttons(&sample("demo-1"), &compact).len(), buttons(&sample("demo-1"), &footer(true)).len());
     }
 
     #[test]

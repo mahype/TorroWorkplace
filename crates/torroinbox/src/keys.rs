@@ -7,8 +7,8 @@
 //!    they never reach the list: the title field of "Make task" (task E3.5) takes letters, the
 //!    arrows and `Enter` (which creates the task through its `on_submit`).
 //! 2. [`command`] says what a [`Key`] does where the keys go ([`Focus`]): in the list `j`/`k` (and
-//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo, `s` snooze, `l` lane, `m` mute, `t` make a
-//!    task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` delete and `/` search
+//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo, `s` snooze, `l` lane, `m` hide from the inbox
+//!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides); in a menu of choices the digits pick
 //!    its entries; in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
@@ -66,7 +66,7 @@ pub enum Key {
 pub enum Focus {
     /// Nothing in front: the list (and the panel showing its entry) takes the triage keys.
     List,
-    /// A menu of choices for an entry is open (snooze, lane); its entries carry digits.
+    /// A menu of choices for an entry is open (snooze, lane, hide); its entries carry digits.
     Choices,
     /// The date and time picker of "Pick…" is open.
     Picker,
@@ -94,8 +94,8 @@ pub enum Command {
     Snooze,
     /// Move the entry to the other lane (asking whether always for its source).
     Lane,
-    /// Mute the entry's source, or unmute it; at once, with an undo.
-    Mute,
+    /// Open the menu "Hide from inbox" (task E3.10): the entry, its sender or domain, its source.
+    Hide,
     /// Open the dialog that makes a task of the entry (task E3.5).
     MakeTask,
     /// Reply to the mail under the cursor (task E4.2).
@@ -178,7 +178,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::U) => Some(Command::Undo),
         (Focus::List, Key::S) => Some(Command::Snooze),
         (Focus::List, Key::L) => Some(Command::Lane),
-        (Focus::List, Key::M) => Some(Command::Mute),
+        (Focus::List, Key::M) => Some(Command::Hide),
         (Focus::List, Key::T) => Some(Command::MakeTask),
         (Focus::List, Key::R) => Some(Command::Reply),
         (Focus::List, Key::A) => Some(Command::ReplyAll),
@@ -244,7 +244,7 @@ mod tests {
             (char("u"), Command::Undo),
             (char("s"), Command::Snooze),
             (char("l"), Command::Lane),
-            (char("m"), Command::Mute),
+            (char("m"), Command::Hide),
             (char("t"), Command::MakeTask),
             (char("r"), Command::Reply),
             (char("a"), Command::ReplyAll),

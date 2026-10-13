@@ -346,8 +346,11 @@ pub struct SourceInfo {
 }
 
 /// A lasting rule of the inbox, as `inbox.list_rules` lists it: a lane remembered for a source or,
-/// for mail, for one sender of it (`inbox.set_item_lane` with `remember`), or a muted source
-/// (`inbox.mute_source`).
+/// for mail, for one sender of it (`inbox.set_item_lane` with `remember`), a muted source
+/// (`inbox.mute_source`), or the mail of one sender or domain hidden (`inbox.hide_sender`, task
+/// E3.10).
+///
+/// At most one of `sender` and `domain` is set; with neither the rule is about the whole source.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Rule {
     /// Opaque id given by the core; pass it to `inbox.remove_rule`.
@@ -356,9 +359,15 @@ pub struct Rule {
     pub source: SourceRef,
     /// Only reports from this sender: the address of a mail's sender, in small letters (task
     /// E4.1). Moving a mail with `remember` keeps the lane for its sender, not for the whole
-    /// account. `None`: every report of the source.
+    /// account; hiding a sender (task E3.10) mutes only it. `None`: every report of the source
+    /// (or of `domain`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender: Option<String>,
+    /// Only mail from this domain (task E3.10): the part of the sender's address after `@`, in
+    /// small letters, matched exactly – `shop.example` does not cover `news.shop.example`
+    /// ([`crate::rules::domain_of`]). Only hidden domains have it. `None`: no domain rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain: Option<String>,
     pub effect: RuleEffect,
     /// When the user made the rule.
     pub created: DateTime<Utc>,
@@ -371,8 +380,22 @@ pub enum RuleEffect {
     /// New notices of the source go to `lane`, and new mail of the rule's sender. Kinds with a
     /// fixed lane keep it ([`crate::rules::placement`]).
     Lane { lane: Lane },
-    /// New reports of the source are dropped; entries already there stay.
+    /// New reports of the source are dropped; entries already there stay. With the rule's
+    /// `sender` or `domain` only the mail of that sender or domain is dropped (task E3.10,
+    /// [`crate::rules::drops`]); the entries of it that were open are done once, without touching
+    /// the mail.
     Muted,
+}
+
+/// What `inbox.hide_sender` hides of a mail entry's sender (task E3.10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HideScope {
+    /// Every mail from the entry's sender's address, e.g. `news@shop.example`.
+    Sender,
+    /// Every mail from the domain of that address, e.g. `shop.example` – exactly that domain, not
+    /// its subdomains.
+    Domain,
 }
 
 #[cfg(test)]
@@ -386,6 +409,7 @@ mod tests {
             id: "r1".into(),
             source: SourceRef::script("ci"),
             sender: None,
+            domain: None,
             effect: RuleEffect::Lane { lane: Lane::Info },
             created: at,
         };
@@ -398,6 +422,14 @@ mod tests {
         let value = json(&for_sender);
         assert_eq!(value["sender"], "news@shop.example");
         assert_eq!(serde_json::from_value::<Rule>(value).expect("deserialize"), for_sender);
+        let for_domain =
+            Rule { sender: None, domain: Some("shop.example".into()), effect: RuleEffect::Muted, ..for_sender };
+        let value = json(&for_domain);
+        assert_eq!(value["domain"], "shop.example");
+        assert!(value.get("sender").is_none(), "{value}");
+        assert_eq!(serde_json::from_value::<Rule>(value).expect("deserialize"), for_domain);
+        assert_eq!(json(HideScope::Sender), "sender");
+        assert_eq!(json(HideScope::Domain), "domain");
     }
 
     #[test]

@@ -1123,8 +1123,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Rules", "Regeln"),
     (
-        "Rules appear here when you move notices to a lane for good or mute a source in the Inbox.",
-        "Regeln erscheinen hier, wenn du im Eingang Meldungen dauerhaft in eine Spur verschiebst oder eine Quelle stummschaltest.",
+        "Rules appear here when you move notices to a lane for good, mute a source or hide a sender in the Inbox.",
+        "Regeln erscheinen hier, wenn du im Eingang Meldungen dauerhaft in eine Spur verschiebst, eine Quelle stummschaltest oder einen Absender ausblendest.",
     ),
     (
         "Rules apply to new notices. Removing one leaves the entries in the Inbox as they are.",
@@ -1905,4 +1905,34 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Open designs folder", "Design-Ordner öffnen"),
     ("Reload", "Neu laden"),
     ("The designs can't be listed.", "Die Designs lassen sich nicht auflisten."),
+    // Hide from the inbox in steps (E3.10)
+    ("Always to Info", "Immer nach Info"),
+    ("Couldn't hide the sender.", "Der Absender ließ sich nicht ausblenden."),
+    ("Everything from {domain}", "Alles von {domain}"),
+    ("Everything from {sender}", "Alles von {sender}"),
+    ("Hidden: everything from {domain}", "Ausgeblendet: alles von {domain}"),
+    ("Hidden: {sender}", "Ausgeblendet: {sender}"),
+    ("Hide from inbox", "Im Eingang ausblenden"),
+    (
+        "Hide mail from everyone at {domain} of {source} in the inbox; the mail stays unread",
+        "Mails von allen unter {domain} aus {source} im Eingang ausblenden; die Mails bleiben ungelesen",
+    ),
+    (
+        "Hide mail from {sender} of {source} in the inbox; the mail stays unread",
+        "Mails von {sender} aus {source} im Eingang ausblenden; die Mails bleiben ungelesen",
+    ),
+    ("Hide the sender of {entry} in the inbox", "Den Absender von {entry} im Eingang ausblenden"),
+    ("Mail from {sender} goes to “{lane}”", "Mails von {sender} landen in „{lane}“"),
+    ("Move to junk", "In den Spam verschieben"),
+    ("Moved to junk", "In den Spam verschoben"),
+    (
+        "Show mail from everyone at {domain} of {source} in the inbox again",
+        "Mails von allen unter {domain} aus {source} wieder im Eingang zeigen",
+    ),
+    (
+        "Show mail from {sender} of {source} in the inbox again",
+        "Mails von {sender} aus {source} wieder im Eingang zeigen",
+    ),
+    ("This conversation", "Diese Unterhaltung"),
+    ("This entry", "Dieser Eintrag"),
 ];

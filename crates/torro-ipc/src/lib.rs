@@ -38,6 +38,7 @@ use torro_core::AppId;
 pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
+use torro_inbox::item::HideScope;
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 use torro_mail::{Draft, Endpoint, Flag, Folder, MailSettings, Message, MessageSummary, Notify, Role, Services};
 use torro_pim::model::GitHubLabel;
@@ -1052,6 +1053,25 @@ pub enum Request {
         /// `true` mutes, `false` unmutes.
         muted: bool,
     },
+    /// Hides the sender of a mail entry from the inbox (task E3.10): every later mail from the
+    /// sender's address (`scope: sender`) or from its domain (`scope: domain`, exactly, no
+    /// subdomains) in the entry's mail account is dropped instead of becoming an entry, and the
+    /// open and snoozed entries of the account it matches are done at once. A lasting rule like
+    /// [`Request::MuteSource`] ([`torro_inbox::RuleEffect::Muted`] with `sender` or `domain`),
+    /// removed with [`Request::RemoveRule`].
+    ///
+    /// Not spam and not done: the mail stays as it is on its server, neither read nor moved.
+    /// Answered with [`Response::Rule`], the rule as stored (the one already there when the same
+    /// rule is made again). `not-found` for an unknown entry or one the client may not see,
+    /// `forbidden` for one it may not change (rule 1), `error` for an entry that is no mail or
+    /// names no sender's address.
+    #[serde(rename = "inbox.hide_sender")]
+    HideSender {
+        /// The mail entry's id.
+        id: String,
+        /// `sender` hides its sender's address, `domain` everything from that address's domain.
+        scope: HideScope,
+    },
     /// The lasting rules: lanes remembered for sources and muted sources ([`Response::Rules`]),
     /// only of sources the client may see.
     #[serde(rename = "inbox.list_rules")]
@@ -1429,6 +1449,10 @@ pub enum Response {
     /// The lasting rules of the inbox ([`Request::ListRules`]).
     Rules {
         rules: Vec<Rule>,
+    },
+    /// One lasting rule of the inbox as stored ([`Request::HideSender`]).
+    Rule {
+        rule: Rule,
     },
     /// A mail account just connected ([`Request::ConnectMail`]), never with its password.
     MailConnected {

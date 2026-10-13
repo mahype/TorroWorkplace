@@ -1243,6 +1243,7 @@ impl Core {
             | Request::SnoozeItem { .. }
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
+            | Request::HideSender { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -5536,6 +5537,60 @@ mod tests {
         assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
     }
 
+    /// Task E3.10: hiding a sender takes the admin switch, waits for the person with a summary from
+    /// the inbox, and runs only on the entry as the person saw it.
+    #[tokio::test]
+    async fn hiding_a_sender_needs_the_admin_switch_and_the_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let mail = |message: &str| crate::inbox::NewMail {
+            account: "mail:anna@example.org".into(),
+            message: message.into(),
+            thread: "t:1".into(),
+            subject: "Weekly news".into(),
+            snippet: "Autumn sale".into(),
+            from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
+            bulk: true,
+            date: Utc::now(),
+        };
+        let id =
+            core.inbox.file_mail(&mail("m:1"), torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
+        let reading_mail = |admin| {
+            let mut rights = RightsTemplate::FullAccess.rights();
+            rights.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin });
+            rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+            rights.mail_accounts = Selection::All;
+            rights
+        };
+        let hide = || Request::HideSender { id: id.clone(), scope: torro_inbox::item::HideScope::Domain };
+        let (_, writer) = client(&core, reading_mail(false)).await;
+        assert_eq!(code(&ask(&core, Some(&writer), hide()).await), "forbidden", "write rights are not enough");
+
+        let (_, admin) = client(&core, reading_mail(true)).await;
+        let asked = waits(ask(&core, Some(&admin), hide()).await);
+        assert_eq!(asked.command, "inbox.hide_sender");
+        let anna = "\"anna@example.org\" (mail:anna@example.org)";
+        assert_eq!(
+            asked.summary,
+            trf(
+                "Hide mail from everyone at {domain} of {source} in the inbox; the mail stays unread",
+                &[("domain", &"\"shop.example\""), ("source", &anna)]
+            )
+        );
+        // A reply came in while the person looked: what they allowed is not what would run.
+        core.inbox.file_mail(&mail("m:2"), torro_mail::Notify::All, Utc::now()).expect("filed");
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
+        assert_eq!(code(&response), "conflict");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListRules).await, Response::Rules { rules: vec![] });
+
+        let asked = waits(ask(&core, Some(&admin), hide()).await);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
+        assert!(matches!(*response, Response::Rule { ref rule } if rule.domain.as_deref() == Some("shop.example")));
+    }
+
     #[tokio::test]
     async fn remembering_a_lane_needs_the_admin_switch() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -7646,5 +7701,79 @@ mod tests {
         assert!(smtp.sent().is_empty(), "nothing went out");
         assert!(on_server(&server, "Sent").is_empty());
         assert!(on_server(&server, "Drafts").contains(&"Lunch, and bring Eve".to_string()), "the draft stays");
+    }
+
+    /// Task E3.10: hiding a sender is no "done" – the mail stays unread and in the inbox folder on
+    /// the server, nothing is stored there at all – and its next mail becomes no entry.
+    #[tokio::test]
+    async fn hiding_a_sender_leaves_the_mail_untouched_and_files_no_more_of_it() {
+        use crate::account::github::tests::{MemoryTokens, accounts_file};
+        use crate::mail::service::tests::{PASSWORD, eventually, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+
+        let letter = |subject: &str, from: &str| {
+            let date = Utc::now().to_rfc2822();
+            let id = subject.replace(' ', "-");
+            format!(
+                "From: {from}\r\nTo: anna@example.org\r\nSubject: {subject}\r\nDate: {date}\r\n\
+                 Message-ID: <{id}@example.org>\r\nList-Id: <news.shop.example>\r\n\
+                 Content-Type: text/plain; charset=utf-8\r\n\r\nText of {subject}\r\n"
+            )
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let mut account = mail_account("anna@example.org", &server.endpoint);
+        account.mail_settings =
+            Some(torro_mail::MailSettings { notify: torro_mail::Notify::All, ..torro_mail::MailSettings::default() });
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let service = service_in(dir.path(), &secrets);
+        service.reload().await;
+        let settings = crate::settings_service::SettingsStore::at(dir.path().join("config").join("settings.json"));
+        let core = Core::new(
+            torro_wm::Backend::Unsupported { name: "test".into() },
+            torro_setups::storage::Store::at(dir.path().to_path_buf()),
+            Arc::new(crate::pim::PimService::with_settings(settings)),
+            crate::clients::tests::open_in(dir.path()),
+        )
+        .with_approvals(crate::approvals::tests::quiet_in(dir.path()))
+        .with_inbox(crate::inbox::tests::inbox_in(dir.path()))
+        .with_mail(service);
+        core.start_mail_feed(Some(accounts_file(dir.path())));
+        let listed = || async {
+            let all = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+            match core.handle(all).await {
+                Response::Items { items } => items,
+                other => panic!("expected items, got {other:?}"),
+            }
+        };
+        eventually("the inbox watched", || async { server.lines().iter().any(|line| line.ends_with(" IDLE")) }).await;
+
+        let sale = server.add("INBOX", &letter("Autumn sale", "Shop <news@shop.example>"), &[]);
+        eventually("filed", || async { listed().await.len() == 1 }).await;
+        let id = listed().await[0].id.clone();
+        let hide = Request::HideSender { id, scope: torro_inbox::item::HideScope::Domain };
+        let Response::Rule { rule } = core.handle(hide).await else { panic!("hiding answers the rule") };
+        assert_eq!(rule.domain.as_deref(), Some("shop.example"));
+        assert!(matches!(listed().await[0].state, torro_inbox::State::Done { .. }), "out of the inbox");
+
+        // Nothing went to the server: no flag stored, nothing moved, and it stays so.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(server.flags("INBOX", sale).is_empty(), "the mail is still unread");
+        let changes: Vec<String> = server
+            .lines()
+            .into_iter()
+            .filter(|line| {
+                ["UID STORE", "UID MOVE", "UID COPY", "EXPUNGE"].iter().any(|command| line.contains(command))
+            })
+            .collect();
+        assert!(changes.is_empty(), "nothing changed on the server: {changes:?}");
+
+        server.add("INBOX", &letter("Winter sale", "Shop <deals@shop.example>"), &[]);
+        server.add("INBOX", &letter("Hello", "Bernd <bernd@example.com>"), &[]);
+        eventually("the other sender's mail filed", || async { listed().await.len() == 2 }).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let titles: Vec<String> = listed().await.into_iter().map(|item| item.title).collect();
+        assert!(!titles.contains(&"Winter sale".to_string()), "the hidden domain's mail is no entry: {titles:?}");
     }
 }

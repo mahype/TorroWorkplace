@@ -573,12 +573,13 @@ fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
 }
 
 /// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
-/// and the nightly build muted, as the demo's sources list has it.
+/// the nightly build muted, as the demo's sources list has it, and a sender and a domain hidden.
 fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
     let rule = |id: &str, source: SourceRef, effect: RuleEffect, age: Duration| Rule {
         id: id.into(),
         source,
         sender: None,
+        domain: None,
         effect,
         created: now - age,
     };
@@ -586,6 +587,15 @@ fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
         rule("5e0b7c2a", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }, Duration::days(6)),
         rule("a81f3d94", SourceRef::script("nightly-build"), RuleEffect::Muted, Duration::days(3)),
         rule("2c6e9b17", SourceRef::script("backup"), RuleEffect::Lane { lane: Lane::Info }, Duration::days(1)),
+        // A sender and a domain hidden in the Inbox (task E3.10).
+        Rule {
+            sender: Some("news@shop.example".into()),
+            ..rule("7d41e0b3", SourceRef::mail("anna@example.org"), RuleEffect::Muted, Duration::hours(20))
+        },
+        Rule {
+            domain: Some("deals.example".into()),
+            ..rule("e93a5c08", SourceRef::mail("anna@example.org"), RuleEffect::Muted, Duration::hours(2))
+        },
     ]
 }
 

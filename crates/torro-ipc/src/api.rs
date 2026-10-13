@@ -822,6 +822,7 @@ impl Request {
             Request::SnoozeItem { .. } => &SNOOZE_ITEM,
             Request::SetItemLane { .. } => &SET_ITEM_LANE,
             Request::MuteSource { .. } => &MUTE_SOURCE,
+            Request::HideSender { .. } => &HIDE_SENDER,
             Request::ListRules => &LIST_RULES,
             Request::RemoveRule { .. } => &REMOVE_RULE,
             Request::ConnectMail { .. } => &CONNECT_MAIL,
@@ -938,6 +939,7 @@ pub static CATALOGUE: &[&Command] = &[
     &SNOOZE_ITEM,
     &SET_ITEM_LANE,
     &MUTE_SOURCE,
+    &HIDE_SENDER,
     &LIST_RULES,
     &REMOVE_RULE,
     &LIST_FOLDERS,
@@ -1745,6 +1747,20 @@ static MUTE_SOURCE: Command = Command {
                   The source `suite` is the person's and `not-found` for every key.",
 };
 
+static HIDE_SENDER: Command = Command {
+    name: "inbox.hide_sender",
+    area: Area::Inbox,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Hides the sender of a mail entry (source `mail:<address>`) from the inbox: with `scope: sender` \
+                  every later mail from that address, with `scope: domain` every later mail from its domain \
+                  (exactly, not subdomains), in that mail account. Its open and snoozed entries there are done at \
+                  once; the mail itself stays unread and in place on the server. A lasting rule that needs admin \
+                  rights and the person's approval; returns the rule, which remove_rule takes back. `not-found` \
+                  for entries of mail accounts this key may not read, `error` for an entry that is no mail or \
+                  names no sender's address.",
+};
+
 static LIST_RULES: Command = Command {
     name: "inbox.list_rules",
     area: Area::Inbox,
@@ -2069,6 +2085,7 @@ mod tests {
             Request::SnoozeItem { id: "i1".into(), until: Some(now) },
             Request::SetItemLane { id: "i1".into(), lane: Lane::Info, remember: false },
             Request::MuteSource { source: SourceRef::script("backup"), muted: true },
+            Request::HideSender { id: "i1".into(), scope: torro_inbox::item::HideScope::Domain },
             Request::ListRules,
             Request::RemoveRule { id: "r1".into() },
             connect_mail(),
@@ -2776,6 +2793,7 @@ mod tests {
                 "inbox.snooze_item",
                 "inbox.set_item_lane",
                 "inbox.mute_source",
+                "inbox.hide_sender",
                 "inbox.list_rules",
                 "inbox.remove_rule"
             ]
@@ -2804,6 +2822,12 @@ mod tests {
         let rights = RightsTemplate::FullAccess.rights();
         assert!(!rights.allows(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: true }.operation()));
         assert!(rights.allows(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: false }.operation()));
+        // Hiding a sender is a lasting rule too (task E3.10): write rights do not cover it.
+        for scope in [torro_inbox::item::HideScope::Sender, torro_inbox::item::HideScope::Domain] {
+            let hide = Request::HideSender { id: "i".into(), scope };
+            assert_eq!(access(hide.clone()), Access::Admin);
+            assert!(!rights.allows(hide.operation()), "{scope:?}");
+        }
     }
 
     #[test]

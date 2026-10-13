@@ -28,8 +28,9 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
+use torro_inbox::item::HideScope;
 use torro_inbox::source::TaskList;
-use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
+use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, Rule, SourceInfo, SourceRef};
 use torro_mail::{Flag, Folder, Message, MessageSummary};
 use torro_pim::EventTime;
 
@@ -202,6 +203,14 @@ impl InboxSource for InboxClient {
         }
     }
 
+    /// `inbox.hide_sender` (task E3.10): the core keeps the rule and answers it as stored.
+    async fn hide_sender(&self, id: String, scope: HideScope) -> Result<Rule, InboxError> {
+        match self.ask(Request::HideSender { id, scope }).await? {
+            Response::Rule { rule } => Ok(rule),
+            other => Err(unexpected(other)),
+        }
+    }
+
     /// `inbox.open_item`: the core opens the entry (window, page or app) on the person's screen.
     async fn open_item(&self, id: String) -> Result<(), InboxError> {
         match self.ask(Request::OpenItem { id }).await? {
@@ -319,6 +328,17 @@ mod tests {
                 Response::Item { item: Item { lane, title: format!("remember {remember}"), ..item(&id) } }
             }
             Request::MuteSource { source, muted: true } if source == SourceRef::script("ci") => Response::Ok,
+            // The rule names the entry and the scope that arrived.
+            Request::HideSender { id, scope } => Response::Rule {
+                rule: Rule {
+                    id: format!("{id}|{scope:?}"),
+                    source: SourceRef::mail("anna@example.org"),
+                    sender: None,
+                    domain: Some("shop.example".into()),
+                    effect: torro_inbox::RuleEffect::Muted,
+                    created: at(10),
+                },
+            },
             Request::OpenItem { id } if id == "window" => Response::Ok,
             Request::TaskCollections => Response::Collections { collections: lists() },
             Request::CreateTaskFromItem { id, collection, title, due } if id == "i1" => Response::Todo {
@@ -433,6 +453,8 @@ mod tests {
         let moved = client.set_item_lane("c".into(), Lane::Info, true).await.expect("moved");
         assert_eq!((moved.lane, moved.title.as_str()), (Lane::Info, "remember true"));
         client.mute_source(SourceRef::script("ci"), true).await.expect("muted");
+        let rule = client.hide_sender("m1".into(), HideScope::Domain).await.expect("hidden");
+        assert_eq!((rule.id.as_str(), rule.domain.as_deref()), ("m1|Domain", Some("shop.example")));
     }
 
     #[tokio::test]
