@@ -1064,8 +1064,12 @@ E8.9   unabhängig (torro-wm, core.rs)
 ### E8.8b Insights: Ansicht
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** E8.8a, E8.5 · **Dateien:** neu `crates/torroinbox/src/insights.rs`,
-  `crates/torroinbox/src/{app,hub}.rs`, `crates/torro-gui/src/{widgets,theme}.rs`,
-  `crates/torro-core/src/{design.rs,design/rules.rs}`, `crates/torro-core/src/i18n/de.rs`
+  `crates/torroinbox/src/{app,hub,main}.rs`, `crates/torro-gui/src/{widgets,theme}.rs`,
+  `crates/torro-core/src/{design.rs,design/rules.rs,design/pack.rs}`, `crates/torroworkplace/src/{inbox,mail/read}.rs`,
+  `docs/design-pakete.md`, `crates/torro-core/src/i18n/de.rs`
+- **Aus E8.8a, Kern:** „Geöffnet“ zählt bisher nur `inbox.open_item`. Liest jemand eine Mail im Mail-Fenster
+  (`mail.get_message` zu einer Mail, die ein offener Eintrag ist), zählt das ebenfalls als geöffnet, einmal je Eintrag
+  und Tag; sonst schlagen die Vorschläge für Mail zu oft Stummschalten vor. Kein neuer Request.
 - Zentrale › **Insights**: Woche | Monat | Quartal; vier Kennzahlen; Säulen je Tag nach Quelle (gestapelt, Legende,
   Tooltip mit Werten); Stoßzeiten je Stunde; „Where you could cut back“ mit Knopf je Vorschlag (führt
   `inbox.mute_item` aus, mit Undo). Umschalter „Table view“ zeigt alle Zahlen als Tabelle.
