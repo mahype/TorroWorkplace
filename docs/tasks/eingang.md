@@ -799,6 +799,29 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Sichtprüfung `torroinbox --view mail --demo` in allen sechs Größen, beide Dichten, hell und dunkel, mit
   `plex`; Tastatur wie bisher (`e`, `s`, `t`, `r`, `m`).
 
+### E8.3b Einladungen im Mail-Fenster beantworten
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E8.3, E8.7a · **Dateien:** `crates/torro-mail/src/` (Zusammenfassung einer
+  Nachricht), `crates/torroworkplace/src/mail/{read,store,write}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,mcp,approvals,audit,daemon}.rs`, `crates/torroinbox/src/{app,mail,overview}.rs`,
+  `crates/torro-core/src/i18n/de.rs`; Doku: `docs/{api,mail,eingang}.md`. Fehlt eine Datei, die der Compiler wegen
+  neuer Felder erzwingt: nur `None`/`..` ergänzen und im Bericht nennen.
+- **Lücke aus E8.3:** Eine Mail-Zusammenfassung (`MessageSummary`) weiß nicht, ob die Mail eine Einladung ist (nur die
+  ganze Nachricht hat `invitation`), und es gibt keinen Request, um eine Einladung zu beantworten. Darum fehlen die
+  Smart view „Invitations“ und die Knöpfe Accept · Maybe · Decline.
+- **Kern:** `MessageSummary` bekommt ein optionales Merkmal „Einladung“ (Beginn, Ende, Titel aus dem `text/calendar`-
+  Teil, `#[serde(default)]`). Neuer Request `mail.respond_to_invitation { account, id, answer: accept | tentative |
+  decline }` · Write und Schalter „Nach außen“ (verschickt eine Antwort an den Organisator, iMIP `REPLY`) und legt den
+  Termin im Kalender an bzw. aktualisiert ihn (prüft Kalender-Schreibrecht selbst wie E3.5). Fehler: `not-found`,
+  `forbidden`, `error` (keine Einladung, abgelaufen), `conflict`. Freigabe-Zusammenfassung: Titel und Beginn aus dem
+  Mail-Speicher, nie aus dem Client.
+- **Oberfläche:** Karte und Leser zeigen den Termin (Kalender-Icon, Tag und Zeit, Hinweis auf Überschneidung) und
+  Accept · Maybe · Decline · Later · Task; Smart view „Invitations“ in der Seitenleiste.
+- **MCP:** `mail_respond_to_invitation` (wartet je nach „Nach außen“ auf Freigabe).
+- **Abnahme:** Tests: Einladung wird erkannt (Fixture mit `text/calendar`), Antwort erzeugt `REPLY` und Termin,
+  Rechte (ohne Kalender-Write → `forbidden`), „Nach außen = never“ → nichts geht raus. `torro-api-review`;
+  Sichtprüfung Karte und Leser.
+
 ### E8.4 Benachrichtigungen-Fenster
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** E8.2 · **Dateien:** `crates/torroinbox/src/{app,list,overview,keys,glance}.rs`, neu
@@ -827,6 +850,8 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Rechts (Breit):** „Coming back“ (vertagte Einträge mit Zeit) und „Quiet“ (Ruhe bis …); „Handed off“ kommt mit
   E8.7b. Seitenleiste: Act now, To sort, Later, Done today, Sources; Insights erst mit E8.8b.
 - **Schmal:** Zahlen oben, Karten mit großen Allow/Deny.
+- **Aus E8.3:** Das Paneel, das alle drei Fenster teilen, sagt noch „Snooze“ und „Mark as done“, die Karten „Later“ und
+  „Done“. Hier einheitlich auf „Later“ und „Done“ umstellen.
 - **Oberfläche:** wie oben. **API:** vorhandene `inbox.list_items`, `approvals.list_approvals`, `inbox.open_item`,
   `inbox.set_item_done`, `inbox.snooze_item`, `inbox.create_task_from_item`; Allow/Deny wie E3.8. **MCP:** vorhandene
   Tools; Freigaben entscheiden bleibt `Never`.
@@ -889,6 +914,8 @@ E8.9   unabhängig (torro-wm, core.rs)
   Until tomorrow · Always), „What happens“ (No popup · Only Info · Hide), unten der Weg zu den Regeln. Nach dem
   Stummschalten der Toast mit Undo (E3.11). Im Mail-Fenster bleibt „Hide from inbox“ (E3.10), es nutzt dieselben
   Regeln.
+- **Aus E8.3:** „Move to Info“ trägt im Leser bisher das Glocken-Icon. Die Glocke ist ab hier das Stummschalten;
+  „Move to Info“ bekommt ein eigenes Icon.
 - **Steuerzentrale › Inbox › Rules:** alle Regeln mit Wort („Muted until tomorrow: #general in Slack“), Ablauf und
   „Remove“.
 - **API/MCP:** die aus E8.6a; `inbox.remove_rule`.

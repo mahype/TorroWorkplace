@@ -556,6 +556,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Mail window (E8.3)
+    ("With attachments", "Mit Anhang"),
+    ("Smart views", "Intelligente Ansichten"),
+    ("new for you", "neu für dich"),
+    ("{n} messages", "{n} Nachrichten"),
+    ("No attachments.", "Keine Anhänge."),
+    ("New mail with attachments shows up here.", "Neue Mail mit Anhängen erscheint hier."),
     // Muting by trait (E8.6a)
     ("All mail to {account}", "Alle Mails an {account}"),
     ("Mail from {sender}", "Mails von {sender}"),
