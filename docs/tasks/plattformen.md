@@ -217,3 +217,44 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
 - Funde als eigene Aufgaben hier eintragen. Danach: „Windows (experimentell)“ in `docs/release.md` und im
   README streichen, Plattform-Tabelle aktualisieren.
 - Abnahme: Rundgang auf beiden Systemen ohne offene Funde, Doku aktualisiert.
+
+### X.13 Schlüsselbund: ein Eintrag, einmal gelesen
+- [x] erledigt (2026-10-13: `torro_core::account::vault`; Schlüsselbund hinter dem Trait `Keychain`, getestet mit
+  einem im Speicher; alte Einträge werden beim ersten Lesen umgezogen)
+- **Modell:** Opus · **Dateien:** `crates/torro-core/src/account.rs`, `crates/torro-core/src/account/vault.rs`
+  (neu), `docs/release.md` (Hinweis Schlüsselbund)
+- Warum (2026-10-13): Beim Start fragt macOS bis zu 15-mal nach dem Schlüsselbund-Passwort. Jedes Konto hat einen
+  eigenen Eintrag, und Kalender-, Mail-, GitHub- und Eingangsdienst lesen ihn je für sich; wer „Erlauben“ statt
+  „Immer erlauben“ klickt, wird bei jedem Lesen gefragt.
+- **macOS:** Alle Konto-Geheimnisse liegen in **einem** Eintrag (Dienst `torroworkplace`, Konto `torro-vault`,
+  JSON `{ "version": 1, "secrets": { "<id>": "<secret>" } }`). Der Kern liest ihn einmal je Prozess und hält ihn
+  im Speicher; Schreiben und Löschen ändern den Speicher und schreiben den Eintrag in einem Zug. Ein Eintrag
+  aus der Zeit davor (Dienst `torroworkplace`, Konto `<id>`) wird beim ersten Lesen in den Tresor übernommen und
+  dann gelöscht. Ein Tresor, der sich nicht lesen lässt, wird nie überschrieben.
+- **Linux, Windows:** weiter ein Eintrag je Konto (die Windows-Anmeldeinformationen fassen höchstens 2560 Bytes),
+  aber auch dort einmal je Prozess gelesen.
+- Schnittstelle bleibt: `Account::secret`, `set_secret`, `delete_secret`. `torro-vault` ist wie `client-…` als
+  Konto-Id gesperrt. Schlüssel der Agenten (`clients.rs`) bleiben Einzeleinträge: Der Kern schreibt sie nur.
+- **Oberfläche/API/MCP:** keine; Geheimnisse verlassen den Dienst weiterhin nicht.
+- **Abnahme:** Tests mit einem Schlüsselbund im Speicher: viele Konten → ein Lesen; Umzug alter Einträge;
+  Schreiben, Löschen, fehlgeschlagenes Schreiben lässt den Speicher wie vorher; unlesbarer Tresor wird nicht
+  überschrieben; Einzeleinträge mit Zwischenspeicher. fmt, clippy, test (auch `TORRO_LANG=de`) grün.
+
+### X.14 Entwicklungs-Builds auf macOS stabil signieren
+- [x] erledigt (2026-10-13: dazu `scripts/macos-dev-sign.sh` zum Signieren ohne `cargo run`. Geprüft: Zertifikat
+  und Schlüssel landen im Wegwerf-Schlüsselbund, ein zweiter Lauf erkennt sie; ohne gültige Identität signieren
+  die Skripte nichts und der Runner startet Programme und Tests unverändert. **Nicht geprüft:** das Signieren
+  selbst – `codesign` braucht ein Zertifikat, dem für Codesignatur vertraut wird, und das Vertrauen lässt sich
+  nur in den Einstellungen der Person setzen; das tut `macos-dev-cert.sh` beim ersten Lauf)
+- **Modell:** Sonnet · **Dateien:** `scripts/macos-dev-{cert,sign,run}.sh` (neu),
+  `.cargo/config.toml` (neu), `docs/release.md`
+- Warum: Debug-Builds sind ad hoc signiert, mit einer Kennung, die sich mit jedem Build ändert
+  (`torroworkplace-<hash>`). macOS merkt sich „Immer erlauben“ für genau diese Signatur und fragt nach jedem Build
+  von vorn.
+- `scripts/macos-dev-cert.sh` legt einmalig ein selbst signiertes Zertifikat „Torro Development“ (Codesignatur)
+  im Anmelde-Schlüsselbund an; die Person führt es selbst aus. `scripts/macos-dev-run.sh` ist der Cargo-`runner`
+  für macOS: Gibt es die Identität, signiert er das Programm mit ihr und der festen Kennung `io.github.mahype.dev.<name>`,
+  dann startet er es; sonst startet er es unverändert (CI, andere Rechner).
+- **Oberfläche/API/MCP:** keine.
+- **Abnahme:** In einem Wegwerf-Schlüsselbund geprüft: Signatur und Kennung bleiben über zwei Builds gleich, die
+  designierte Anforderung hängt nur an Zertifikat und Kennung; ohne Identität startet das Programm unverändert.
