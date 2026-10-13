@@ -53,7 +53,7 @@ pub const ATTACHMENT_MAX_BYTES: usize = 50 * 1024 * 1024;
 pub const THREAD_MAX: usize = 100;
 
 /// A failed request, already as the answer to send.
-type Answer<T> = Result<T, Response>;
+type Answer<T> = Result<T, Box<Response>>;
 
 /// The stores a caller sees: account id and store, in the order of `accounts.json`.
 type Stores = Vec<(String, SharedStore)>;
@@ -76,10 +76,10 @@ pub async fn answer(mail: &MailService, reach: Reach<'_>, request: Request) -> R
         Request::GetMailAttachment { id, attachment } => get_attachment(mail, reach, &id, &attachment).await,
         other => {
             let message = format!("{} is not a reading mail command", other.operation().name());
-            Err(Response::Error { code: "unsupported".into(), message })
+            Err(Box::new(Response::Error { code: "unsupported".into(), message }))
         }
     };
-    answered.unwrap_or_else(|refused| refused)
+    answered.unwrap_or_else(|refused| *refused)
 }
 
 // ----- mail.list_folders -----
@@ -108,8 +108,8 @@ async fn scoped(mail: &MailService, reach: Reach<'_>, account: Option<&str>) -> 
     };
     // A reachable account that is listed but has no store says why; any other is none.
     match (reached, mail.store(account).await) {
-        (true, Err(err)) => Err(err.response()),
-        _ => Err(MailError::NotFound.response()),
+        (true, Err(err)) => Err(err.response().into()),
+        _ => Err(MailError::NotFound.response().into()),
     }
 }
 
@@ -349,7 +349,7 @@ async fn live_matches(
         found.extend(matches);
     }
     if let (false, Some(err)) = (asked, failure) {
-        return Err(err.response());
+        return Err(err.response().into());
     }
     found.sort_by_key(|summary| std::cmp::Reverse(summary.date));
     Ok(found)
@@ -543,8 +543,8 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
 /// The raw message from the account's command connection. `not-found` when it is gone from the
 /// server or the folder was renumbered since the store took it.
 async fn fetch_raw(mail: &MailService, located: &Located) -> Answer<Vec<u8>> {
-    let mut command = mail.command(&located.account).await.map_err(|err| err.response())?;
-    let raw = peek(command.session(), &located.place).await.map_err(|err| err.response())?;
+    let mut command = mail.command(&located.account).await.map_err(|err| Box::new(err.response()))?;
+    let raw = peek(command.session(), &located.place).await.map_err(|err| Box::new(err.response()))?;
     command.release();
     raw.ok_or_else(no_message)
 }
@@ -603,43 +603,43 @@ async fn get_attachment(mail: &MailService, reach: Reach<'_>, id: &str, part: &s
 
 // ----- answers -----
 
-fn store_failed(err: MailStoreError) -> Response {
-    MailError::Store(err).response()
+fn store_failed(err: MailStoreError) -> Box<Response> {
+    MailError::Store(err).response().into()
 }
 
-fn not_found(message: &str) -> Response {
-    Response::Error { code: "not-found".into(), message: message.into() }
+fn not_found(message: &str) -> Box<Response> {
+    Box::new(Response::Error { code: "not-found".into(), message: message.into() })
 }
 
-fn failed(message: &str) -> Response {
-    Response::Error { code: "error".into(), message: message.into() }
+fn failed(message: &str) -> Box<Response> {
+    Box::new(Response::Error { code: "error".into(), message: message.into() })
 }
 
-fn no_message() -> Response {
+fn no_message() -> Box<Response> {
     not_found(tr("No such message."))
 }
 
-fn no_folder() -> Response {
+fn no_folder() -> Box<Response> {
     not_found(tr("No such folder."))
 }
 
-fn no_attachment() -> Response {
+fn no_attachment() -> Box<Response> {
     not_found(tr("The message has no such attachment."))
 }
 
-fn too_big() -> Response {
+fn too_big() -> Box<Response> {
     failed(tr("The attachment is larger than 50 MiB."))
 }
 
-fn unreadable() -> Response {
+fn unreadable() -> Box<Response> {
     failed(tr("The message could not be read."))
 }
 
-fn bad_cursor() -> Response {
+fn bad_cursor() -> Box<Response> {
     failed(tr("This cursor is not valid. Search again without it."))
 }
 
-fn no_attachment_folder() -> Response {
+fn no_attachment_folder() -> Box<Response> {
     failed(tr("Attachments cannot be kept on this device."))
 }
 

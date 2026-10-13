@@ -805,7 +805,7 @@ impl Core {
                 let reach = Reach::Client(&info.rights);
                 let (mail, pinned) = match crate::mail::send::approval(&self.mail, reach, &author, draft).await {
                     Ok(prepared) => prepared,
-                    Err(refused) => return Ok(refused),
+                    Err(refused) => return Ok(*refused),
                 };
                 // Everything the summary leaves out goes into the details (task M3.5), from the
                 // same draft.

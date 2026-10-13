@@ -643,10 +643,10 @@ pub(crate) async fn approval(
     reach: Reach<'_>,
     author: &DraftAuthor,
     id: &str,
-) -> Result<(MailFacts, String), Response> {
+) -> Result<(MailFacts, String), Box<Response>> {
     match prepare(mail, reach, author, id).await {
         Ok(prepared) => Ok((prepared.facts(), prepared.fingerprint())),
-        Err(err) => Err(err.response()),
+        Err(err) => Err(Box::new(err.response())),
     }
 }
 
