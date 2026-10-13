@@ -43,7 +43,7 @@ use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel::{self, PanelMode};
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
@@ -356,6 +356,9 @@ pub struct App {
     /// (negative: back; `views::radar::start`). Window state like a scroll position: kept while
     /// other views are shown, back to 0 whenever the day changes.
     turn: i64,
+    /// The first day of the radar's mini radars (`views::radar::coming_page`): the day after the
+    /// anchor at first, it stays while the anchor moves within it, and its ‹ › browse it.
+    coming: NaiveDate,
     account: Option<AccountState>,
     /// Every account behind the data, for grouping the calendars in the sidebar (task M1.3).
     accounts: Vec<PimAccount>,
@@ -446,7 +449,10 @@ pub enum Message {
     GoTo(NaiveDate),
     /// The small month's arrows: browse it by this many months.
     MiniMonth(i32),
-    /// "Settings" in the sidebar: open the control centre.
+    /// The ‹ › of the radar's "Coming days": browse its mini radars by this many weeks, the radar
+    /// staying on its day.
+    ComingPage(i64),
+    /// "Settings" in the band or the sidebar: open the control centre.
     OpenSettings,
     /// The core answered `Request::OpenApp`.
     AppOpened(Result<(), String>),
@@ -564,6 +570,7 @@ impl App {
             view: open.and_then(Open::view).unwrap_or(CalView::Week),
             anchor: now.date(),
             turn: 0,
+            coming: now.date() + Days::days(1),
             account: None,
             accounts: Vec::new(),
             folded: HashSet::new(),
@@ -598,7 +605,11 @@ impl App {
             night_saving: false,
             night_card: None,
         };
-        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        // The size, and the traffic lights onto the title band's line (U.11).
+        let size = Task::batch([
+            iced::window::latest().and_then(iced::window::size).map(Message::Resized),
+            torro_gui::place_traffic_lights(),
+        ]);
         let task = Task::batch([
             ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
             app.fetch_account(),
@@ -759,6 +770,10 @@ impl App {
                 return self.go_to(date);
             }
             Message::MiniMonth(months) => self.mini_month = mini_month::shift(self.mini_month, months),
+            Message::ComingPage(weeks) => {
+                self.coming += Days::days(views::radar::COMING_DAYS * weeks);
+                return self.load();
+            }
             Message::Retry => {
                 self.error = None;
                 if !self.connected() {
@@ -978,8 +993,19 @@ impl App {
     /// The window with the zoom badge over it.
     pub fn view(&self) -> Element<'_, Message> {
         let content = self.zoom.view(self.content());
-        let (surface, cover) = (self.surface(), self.cover());
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, Message::DragWindow))
+        let (surface, cover, buttons) = (self.surface(), self.cover(), self.title_buttons());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
+    }
+
+    /// The panel button and "Settings" in the band above the window (U.10). Signing in and the
+    /// glance have no sidebar to toggle, nor room for the buttons.
+    fn title_buttons(&self) -> TitleButtons<Message> {
+        let class = self.class();
+        if !self.connected() || is_glance(class) {
+            return TitleButtons::none();
+        }
+        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+        TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings)
     }
 
     /// What lies over the top of the window, which the title band repeats: the editor's panel over
@@ -1148,13 +1174,15 @@ impl App {
                 .spacing(space::s())
                 .align_y(Alignment::Center);
             let primary = widgets::compact_button(Icon::Plus, tr("New event"), style::button::primary, Some(new_event));
-            shell::header_bar([shell::sidebar_toggle(Message::ToggleDrawer)], title, [select(), refresh, primary])
+            // Where the band has the panel button (macOS), the header leaves it out.
+            let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ToggleDrawer));
+            shell::header_bar(toggle, title, [select(), refresh, primary])
         }
     }
 
     /// The sidebar (`calendar.html`, `.sidebar`): app switcher, small month, the views with their
     /// keys, the calendars with their colour, visibility and number of loaded events, and at the
-    /// bottom "Open Tasks ↗" and "Settings".
+    /// bottom "Open Tasks ↗" and "Settings" (the latter in the band on macOS).
     ///
     /// As a drawer (medium, narrow) it leaves out the views: they are in the header's "Week ▾"
     /// menu, and without them the drawer still fits a window 600 high. As the rail (`mode`, U.2) it
@@ -1219,17 +1247,25 @@ impl App {
                 }
             }
         }
-        let footer = vec![
-            widgets::sidebar_item_in(
+        let mut footer = vec![widgets::sidebar_item_in(
+            mode,
+            Icon::SquareCheck,
+            tr("Open Tasks"),
+            Trail::Icon(Icon::ArrowUpRight),
+            false,
+            Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)),
+        )];
+        // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
+        if !shell::has_band() {
+            footer.push(widgets::sidebar_item_in(
                 mode,
-                Icon::SquareCheck,
-                tr("Open Tasks"),
-                Trail::Icon(Icon::ArrowUpRight),
+                Icon::Settings,
+                tr("Settings"),
+                Trail::None,
                 false,
-                Message::Switcher(Switcher::OpenApp(AppId::TASKS.binary)),
-            ),
-            widgets::sidebar_item_in(mode, Icon::Settings, tr("Settings"), Trail::None, false, Message::OpenSettings),
-        ];
+                Message::OpenSettings,
+            ));
+        }
         let head = shell::sidebar_head(mode, AppId::CALENDAR, switcher, Message::Switcher, Message::ToggleSidebar);
         shell::sidebar(head, items, footer)
     }
@@ -1309,7 +1345,7 @@ impl App {
         }
         match self.shown() {
             CalView::Day => Some(views::week::day_props(&self.view_data())),
-            CalView::Radar => Some(views::radar::list(&self.view_data(), self.night)),
+            CalView::Radar => Some(views::radar::list(&self.view_data(), self.coming, self.night)),
             _ => None,
         }
     }
@@ -1389,10 +1425,10 @@ impl App {
             // Narrow: under the week strip, whose days page the radar like the small month does –
             // unless the tile is so low that the strip would cut into the dial.
             CalView::Radar if self.class() == SizeClass::Narrow => {
-                let (order, turn, anchor) = (self.calendar_order(), self.turn, night.clone());
+                let (order, turn, coming, anchor) = (self.calendar_order(), self.turn, self.coming, night.clone());
                 responsive(move |bounds| {
                     let below = views::radar::ListAt::Below;
-                    let radar = views::radar::view(data.clone(), &order, turn, below, self.night, &anchor);
+                    let radar = views::radar::view(data.clone(), &order, turn, coming, below, self.night, &anchor);
                     if views::radar::strip_fits(bounds) {
                         column![week_strip::view(&data), radar].into()
                     } else {
@@ -1406,7 +1442,7 @@ impl App {
                     SizeClass::Wide => views::radar::ListAt::Props,
                     _ => views::radar::ListAt::Beside,
                 };
-                views::radar::view(data, &self.calendar_order(), self.turn, list, self.night, night)
+                views::radar::view(data, &self.calendar_order(), self.turn, self.coming, list, self.night, night)
             }
         }
     }
@@ -1506,9 +1542,13 @@ impl App {
             CalView::Timeline => (self.anchor - Days::days(1), self.anchor + Days::days(TIMELINE_DAYS)),
             // The day and every window its dial can turn to – from the evening before (twelve hours
             // back from 06:00) to the noon two days on (a day ahead from late tonight, twelve
-            // hours long) – and the seven days of its mini radars, so they are full without loading
-            // on their own. The anchor's own events are always in, so its start does not jump.
-            CalView::Radar => (self.anchor - Days::days(1), self.anchor + Days::days(views::radar::COMING_DAYS + 1)),
+            // hours long) – and the page of its mini radars, so they are full without loading on
+            // their own (a browsed page may lie apart from the anchor: the range spans both). The
+            // anchor's own events are always in, so its start does not jump.
+            CalView::Radar => {
+                let after = self.coming + Days::days(views::radar::COMING_DAYS);
+                ((self.anchor - Days::days(1)).min(self.coming), (self.anchor + Days::days(3)).max(after))
+            }
         }
     }
 
@@ -1572,10 +1612,11 @@ impl App {
     }
 
     /// Moves the view to `date` (the small month follows) and loads it. The radar opens the new
-    /// day at its start, its dial unturned.
+    /// day at its start, its dial unturned; its mini radars keep their page while `date` is on it.
     fn go_to(&mut self, date: NaiveDate) -> Task<Message> {
         self.anchor = date;
         self.turn = 0;
+        self.coming = views::radar::coming_page(self.coming, date);
         self.mini_month = mini_month::shift(date, 0);
         self.load().chain(self.scroll_to_morning())
     }
@@ -2389,7 +2430,8 @@ mod tests {
         let _ = app.update(Message::Resized(NARROW));
         let _ = app.update(Message::GoTo(date(2026, 11, 5)));
         assert_eq!((app.shown(), app.anchor), (CalView::Radar, date(2026, 11, 5)));
-        assert_eq!(app.load_range(), (date(2026, 11, 2), date(2026, 11, 13)), "the strip's week and the radar's days");
+        // The 5th is on the page the 3rd opened (4th to 10th), so it stays.
+        assert_eq!(app.load_range(), (date(2026, 11, 2), date(2026, 11, 11)), "the strip's week and the radar's days");
         let _ = app.view();
     }
 
@@ -2412,6 +2454,34 @@ mod tests {
             let _ = app.update(Message::Resized(class));
             let _ = app.view();
         }
+    }
+
+    #[test]
+    fn a_mini_radar_clicked_leaves_the_tiles_where_they_are_and_arrows_browse_them() {
+        let mut app = radar_app();
+        let today = app.anchor;
+        assert_eq!(app.coming, today + Days::days(1), "the page starts after the shown day");
+        // A tile three days on: the radar shows it, the page stays.
+        let _ = app.update(Message::GoTo(today + Days::days(3)));
+        assert_eq!((app.anchor, app.coming), (today + Days::days(3), today + Days::days(1)));
+        // ‹ › browse a week at a time; the radar stays on its day and the range loads both.
+        let _ = app.update(Message::ComingPage(1));
+        assert_eq!((app.anchor, app.coming), (today + Days::days(3), today + Days::days(8)));
+        assert_eq!(app.range(), (today + Days::days(2), today + Days::days(15)));
+        let _ = app.view();
+        // A tile of the browsed page keeps it too.
+        let _ = app.update(Message::GoTo(today + Days::days(10)));
+        assert_eq!(app.coming, today + Days::days(8));
+        let _ = app.update(Message::ComingPage(-2));
+        assert_eq!(app.coming, today - Days::days(6));
+        assert_eq!(app.range(), (today - Days::days(6), today + Days::days(13)));
+        // "Today" on that page keeps it, today's tile marked…
+        let _ = app.update(Message::Today);
+        assert_eq!((app.anchor, app.coming), (today, today - Days::days(6)));
+        // …and leaves a page without today behind: it starts after today again.
+        let _ = app.update(Message::ComingPage(3));
+        let _ = app.update(Message::Today);
+        assert_eq!((app.anchor, app.coming), (today, today + Days::days(1)));
     }
 
     #[test]

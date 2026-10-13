@@ -1,0 +1,27 @@
+[package]
+name = "torro-appkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "macOS window details Iced and winit cannot set: where the traffic lights sit."
+
+# The workspace lints, except `unsafe_code`: `deny` instead of `forbid`, so the four marked calls
+# into AppKit (see src/lib.rs) may allow it. Nothing else in the suite needs `unsafe`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+dbg_macro = "deny"
+todo = "deny"
+
+[dependencies]
+raw-window-handle.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2.workspace = true
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true

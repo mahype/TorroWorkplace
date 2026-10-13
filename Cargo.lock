@@ -5149,6 +5149,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
+name = "torro-appkit"
+version = "0.1.0"
+dependencies = [
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "raw-window-handle",
+]
+
+[[package]]
 name = "torro-core"
 version = "0.1.0"
 dependencies = [
@@ -5172,6 +5183,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "torro-appkit",
  "torro-core",
  "torro-ipc",
  "torro-pim",

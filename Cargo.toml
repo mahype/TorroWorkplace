@@ -12,6 +12,7 @@ members = [
     "crates/torro-setups",
     "crates/torro-tui",
     "crates/torro-gui",
+    "crates/torro-appkit",
     "crates/torroworkplace",
     "crates/torrotasks",
     "crates/torrocalendar",
@@ -40,6 +41,7 @@ torro-ipc = { path = "crates/torro-ipc" }
 torro-wm = { path = "crates/torro-wm" }
 torro-setups = { path = "crates/torro-setups" }
 torro-gui = { path = "crates/torro-gui" }
+torro-appkit = { path = "crates/torro-appkit" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 getrandom = "0.4.3"
@@ -89,6 +91,12 @@ tempfile = "3.27.0"
 # family names of a pack's fonts, the version Iced's font stack already brings.
 toml = { version = "1.1.8", default-features = false, features = ["parse", "serde", "std"] }
 ttf-parser = { version = "0.25.1", default-features = false, features = ["std"] }
+# macOS only (torro-appkit, U.11): moves the window's traffic lights. The versions winit and rfd already bring.
+block2 = "0.6.2"
+objc2 = "0.6.3"
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "NSGeometry", "NSNotification", "NSObject", "NSOperation", "NSString"] }
+raw-window-handle = "0.6.2"
 # The tray symbol of a design pack (torroworkplace, L.3): an SVG rastered for each tray size. The version Iced 0.14
 # already brings for its SVG widget; no text, system fonts or raster images: a tray symbol needs none of them.
 resvg = { version = "0.45.1", default-features = false }

@@ -36,7 +36,7 @@ aus einem Guss wirkt:
 │ Gruppe ▾ (CAPTION, TEXT_3)  ││ Inhalt (Liste, Raster, Detail)            │ Eigenschaften 300     │
 │ Listen/Kalender mit Punkt   ││                                           │ (nur Breit)           │
 │ …                           ││                                           │                       │
-│ ↗ andere App · Settings     ││                                           │                       │
+│ ↗ andere App (· Settings)   ││                                           │                       │
 └─────────────────────────────┘└───────────────────────────────────────────┴───────────────────────┘
 ```
 
@@ -48,11 +48,17 @@ aus einem Guss wirkt:
 - **Seitenleiste in drei Zuständen** (U.2, `shell::SidebarMode`): **ausgeklappt** (232), **Leiste**
   (`shell::rail()` = 52: nur Icons, Name und Zahl als Tooltip rechts, Gruppentitel als Linie,
   App-Umschalter nur als Logo, Mini-Monat und Versionszeile entfallen) und **Schublade** (Overlay).
-  Breit wählt der Nutzer ausgeklappt oder Leiste – Knopf `panel-left` oben in der Seitenleiste
-  („Collapse sidebar“/„Expand sidebar“) und Taste `[` wie Linear; jede App merkt sich die Wahl in
-  `ui.json` im State-Verzeichnis (`torro_gui::ui_state`). Mittel zeigt immer die Leiste, ihr Knopf
-  öffnet die ausgeklappte Seitenleiste als Schublade; Schmal nur Schublade (Knopf in der
-  Kopfleiste). Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal bauen, mit
+  Breit wählt der Nutzer ausgeklappt oder Leiste – Knopf `panel-left` („Collapse sidebar“/„Expand
+  sidebar“) und Taste `[` wie Linear; jede App merkt sich die Wahl in `ui.json` im State-Verzeichnis
+  (`torro_gui::ui_state`). Mittel zeigt immer die Leiste, der Knopf öffnet die ausgeklappte
+  Seitenleiste als Schublade; Schmal nur Schublade.
+- **Fensterknöpfe im Titelband** (macOS, U.10/U.11, wie Claude/Slack): der Knopf `panel-left` rechts
+  neben der Ampel, die Einstellungen (Zahnrad, „Settings“) in der Ecke oben rechts –
+  `shell::TitleButtons` an `shell::titlebar`. Alles auf einer Linie: Ampel (verschoben mit
+  `torro_gui::place_traffic_lights()` beim Start), Knöpfe und Zahnrad mit Mitte bei y = 20, mittig
+  zwischen Oberkante und eingesetzter Fläche; Schließen-Knopf und Zahnrad je 20 vom Rand. Dort fehlen sie in Seitenleiste und Kopfleiste
+  (`shell::has_band()`); auf anderen Systemen (kein Band) bleibt der Knopf oben in der Seitenleiste
+  bzw. in der schmalen Kopfleiste und „Settings“ unten in der Seitenleiste. Eingeklappt rückt der Inhalt nach links, nichts überlagert. Zeilen einmal bauen, mit
   dem Modus als Parameter: `widgets::sidebar_item_in`, `sidebar_group_in`, `shell::sidebar_head`,
   `Shell::rail`.
 - **Kopfleiste** 44 hoch im Inhalt: links Pfad bzw. Titel (`typo::body_strong()`) mit leiser Ergänzung in

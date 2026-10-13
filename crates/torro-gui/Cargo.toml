@@ -20,3 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 # The 2-s poll of the chosen design (`design::Follow::subscription`) sleeps on Iced's tokio runtime.
 tokio.workspace = true
+
+# Moves the traffic lights beside the title band's buttons (U.11).
+[target.'cfg(target_os = "macos")'.dependencies]
+torro-appkit.workspace = true

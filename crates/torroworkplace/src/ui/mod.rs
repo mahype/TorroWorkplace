@@ -25,8 +25,10 @@
 //! wide windows show the sidebar with the app switcher and the sections; medium and narrow ones
 //! put the sections into a menu at the top left ("Accounts ▾") and the sidebar into a drawer, the
 //! same way the calendar and the tasks app do. In wide windows the sidebar collapses to a rail of
-//! icons (U.2: panel button at its top or `[`, remembered in `ui.json`); medium windows always show
-//! that rail, whose panel button opens the drawer. The page sits under a 44-high header bar with
+//! icons (U.2: panel button or `[`, remembered in `ui.json`); medium windows always show that rail,
+//! and the panel button opens the drawer. On macOS the panel button sits in the band right of the
+//! traffic lights and "General" in its top right corner (U.10); elsewhere at the sidebar's top and
+//! foot. The page sits under a 44-high header bar with
 //! its title and actions, at most [`size::content_max()`] wide.
 //!
 //! Mini and strip tiles have no window frame: [`glance`] shows the status instead (design skill,
@@ -62,7 +64,7 @@ use torro_core::settings::Settings;
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
-use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher};
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
@@ -419,7 +421,11 @@ impl Ui {
             true => ui.perform(Action::ListDesigns),
             false => Task::none(),
         };
-        let size = iced::window::latest().and_then(iced::window::size).map(Message::Resized);
+        // The size, and the traffic lights onto the title band's line (U.11).
+        let size = Task::batch([
+            iced::window::latest().and_then(iced::window::size).map(Message::Resized),
+            torro_gui::place_traffic_lights(),
+        ]);
         let task = Task::batch([
             ui.reload(),
             ui.zoom.fetch().map(Message::Zoom),
@@ -885,7 +891,18 @@ impl Ui {
         // The glances lie on the panel even while loading, so the layout alone decides the band.
         let surface = Surface::of(layout::of(self.size));
         let content = self.zoom.view(window);
-        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, self.cover(), Message::DragWindow))
+        let (cover, buttons) = (self.cover(), self.title_buttons());
+        widgets::ctrl_guard(shell::titlebar(content, self.zoom.factor(), surface, cover, buttons, Message::DragWindow))
+    }
+
+    /// The panel button and "General" in the band above the window (U.10); a glance has neither.
+    fn title_buttons(&self) -> TitleButtons<Message> {
+        let class = layout::of(self.size);
+        if matches!(class, SizeClass::Mini | SizeClass::Strip) {
+            return TitleButtons::none();
+        }
+        let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+        TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::Select(Section::General))
     }
 
     /// What lies over the top of the window, which the title band repeats: the page's dialog, else
@@ -943,7 +960,8 @@ impl Ui {
     }
 
     /// The sidebar in `mode`: app switcher, the sections, and "General" with the version at the
-    /// foot. The rail (U.2) has no room for the version line.
+    /// foot. The rail (U.2) has no room for the version line. Where the window has the band (macOS),
+    /// "General" sits there in the top right corner instead (U.10).
     fn sidebar(&self, mode: SidebarMode, switcher: &Anchor) -> Element<'_, Message> {
         let item = |section: Section| {
             widgets::sidebar_item_in(
@@ -960,7 +978,10 @@ impl Ui {
             .center_y(size::row_sidebar())
             .padding(style::ITEM_PADDING)
             .clip(true);
-        let mut footer = vec![item(Section::General)];
+        let mut footer = Vec::new();
+        if !shell::has_band() {
+            footer.push(item(Section::General));
+        }
         if mode == SidebarMode::Expanded {
             footer.push(version.into());
         }
@@ -1007,7 +1028,7 @@ impl Ui {
     }
 
     /// The header bar: the title (wide) or the section menu (medium, narrow; with the drawer button
-    /// in narrow, where no rail has it); on a page below the section a back button and its name; the
+    /// in narrow, where no rail has it, unless the band has it); on a page below the section a back button and its name; the
     /// page's actions right.
     fn header(&self, class: SizeClass, nav: &Anchor) -> Element<'_, Message> {
         let Header { sub_page, actions } = self.page_header(class);
@@ -1021,8 +1042,7 @@ impl Ui {
             }
             None if wide => (vec![], shell::header_title(Some(section.icon()), section.label(), None)),
             None => (
-                shell::sidebar_mode(class, self.sidebar)
-                    .is_none()
+                (shell::sidebar_mode(class, self.sidebar).is_none() && !shell::has_band())
                     .then(|| shell::sidebar_toggle(Message::ToggleDrawer))
                     .into_iter()
                     .collect(),
