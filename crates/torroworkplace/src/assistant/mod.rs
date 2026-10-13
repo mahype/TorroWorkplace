@@ -1,5 +1,5 @@
-//! The assistant of the core (task C.1, `docs/assistent.md`): its conversations, the engines that
-//! answer, and the handlers of the `assistant.*` requests ([`answer`]).
+//! The assistant of the core (tasks C.1 and C.2, `docs/assistent.md`): its conversations, the
+//! engines that answer, and the handlers of the `assistant.*` requests ([`answer`]).
 //!
 //! The logic lives here only ("Wo die Logik liegt"): the app `torroassistant`, the control centre,
 //! scripts and agents send requests; the core keeps the conversations and runs the answers in the
@@ -9,41 +9,55 @@
 //! - **Storage** ([`store`]): `<data>/assistant/<id>.jsonl`, the folder 0700, every file 0600,
 //!   loaded on first use. Conversations whose last entry is older than the retention time
 //!   (`Settings::assistant_retention`, 30 days unless changed) are removed by
-//!   [`Assistant::clean_up`], pinned ones and those answering never.
-//! - **Engines** ([`Assistant::engines`]): every AI account (engine A, task KI.1a), and the test
+//!   [`Assistant::clean_up`], pinned ones and those answering never. Files are read and written on
+//!   the blocking threads, under the conversations' lock, so their lines keep the order of their
+//!   numbers.
+//! - **Engines** ([`Assistant::engines`]): every AI account (engine A, [`model`]), and the test
 //!   engine ([`TEST_ENGINE`]) with fixed answers, offered in tests and when the core runs with
 //!   `TORRO_TEST_ENGINE=1` ([`TEST_ENGINE_VAR`]), so the app and the control centre can be built
-//!   before a model runs. The model loop with tools is task C.2; until then a message to an AI
-//!   account is `unsupported` and changes nothing.
+//!   without a model.
 //! - **Running answers**: one per conversation; `assistant.send_message` meanwhile is `busy`,
-//!   `assistant.cancel` stops it (the task is aborted, a `stopped` entry follows).
+//!   `assistant.cancel` stops it (the task is aborted, what the model wrote so far stays as an
+//!   answer, a `stopped` entry follows). While a model writes, its text shows as a growing answer
+//!   numbered after the conversation's `last` ([`Run::growing`]), not counted in `last` until it is
+//!   stored: a window asks again with the same `after` and gets it longer.
 //! - **Rights** are the core's ([`crate::core::Core::handle_from`]): the area `assistant` for the
-//!   caller, and never for the assistant's own client (`torro_ipc::api::loops_back`). The run
-//!   itself will work with the assistant's own client (task C.2).
+//!   caller, and never for the assistant's own client (`torro_ipc::api::loops_back`). An answer
+//!   works with the assistant's own client: every tool runs through [`Host::run`], with that
+//!   client's rights, collections and approvals, and the data rule ([`data_rule`]) decides what of
+//!   the results the model reads.
 //! - **Audit**: the core logs the conversation id and the engine, never a text
-//!   ([`crate::audit::ids`]).
+//!   ([`crate::audit::ids`]); the lines of the assistant's tools name the engine too.
 //!
 //! What goes to a client never names a path; the core's log does.
 
+mod data_rule;
+mod model;
+mod prompt;
 mod store;
+mod tools;
 
 use std::collections::HashMap;
+use std::io;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock, PoisonError, Weak};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use tokio::sync::{Mutex, MutexGuard};
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Retention;
 use torro_ipc::api::Area;
-use torro_ipc::assistant::{ChatWindow, Engine, EngineKind, EntryContent, TEST_ENGINE};
+use torro_ipc::assistant::{ChatWindow, Engine, EngineKind, Entry, EntryContent, TEST_ENGINE};
 use torro_ipc::{Request, Response};
 use torro_pim::AccountState;
 use torro_setups::launch::{Launcher, SystemLauncher};
 
 use crate::account::ai::AiAccounts;
+pub use data_rule::{Place, place_of};
+pub use model::{Host, Limits, ModelAccess};
 use store::{Conversation, Line};
 
 /// The environment variable that makes a running core offer the test engine: `1`.
@@ -72,6 +86,12 @@ pub struct Assistant {
     test_engine: Option<Duration>,
     /// Starts `torroassistant` ([`start_app`]); tests record the command instead.
     launch: Launch,
+    /// The bounds of an answer with a model.
+    limits: Limits,
+    /// The core, for answers with a model ([`Assistant::attach`]); weak, since the core holds the
+    /// assistant.
+    host: OnceLock<Weak<dyn Host>>,
+    /// An async lock: it is held while a file is read or written on a blocking thread.
     state: Mutex<State>,
 }
 
@@ -91,6 +111,42 @@ struct State {
 struct Run {
     id: u64,
     task: tokio::task::AbortHandle,
+    /// The engine that answers.
+    engine: String,
+    /// What the model wrote of its current step so far; empty for the test engine.
+    partial: Arc<StdMutex<Partial>>,
+}
+
+/// The text a model is writing, before it becomes an answer entry.
+#[derive(Debug, Default)]
+pub(crate) struct Partial {
+    pub text: String,
+    /// The model that writes, once known.
+    pub model: Option<String>,
+    /// When its first piece came.
+    pub started: Option<DateTime<Utc>>,
+}
+
+impl Run {
+    /// The answer as far as the model wrote it, as the entry after `last` it will become; `None`
+    /// while it wrote nothing.
+    fn growing(&self, last: u64) -> Option<Entry> {
+        let partial = self.partial.lock().unwrap_or_else(PoisonError::into_inner);
+        if partial.text.trim().is_empty() {
+            return None;
+        }
+        let content = EntryContent::Answer {
+            text: partial.text.clone(),
+            engine: self.engine.clone(),
+            model: partial.model.clone(),
+        };
+        Some(Entry { seq: last + 1, time: partial.started.unwrap_or_else(Utc::now), content })
+    }
+
+    /// Forgets what the model wrote: it is an answer entry now.
+    fn clear(&self) {
+        self.partial.lock().unwrap_or_else(PoisonError::into_inner).text.clear();
+    }
 }
 
 impl Assistant {
@@ -107,19 +163,50 @@ impl Assistant {
     }
 
     /// The assistant on `dir`, offering the test engine with steps of `test_engine`, starting its
-    /// windows with `launch`. Reads nothing yet.
+    /// windows with `launch`. Reads nothing yet; answers with a model once a core is attached
+    /// ([`Assistant::attach`]).
     pub fn new(dir: Option<PathBuf>, test_engine: Option<Duration>, launch: Launch) -> Assistant {
-        Assistant { dir, test_engine, launch, state: Mutex::new(State::default()) }
+        Assistant {
+            dir,
+            test_engine,
+            launch,
+            limits: Limits::default(),
+            host: OnceLock::new(),
+            state: Mutex::new(State::default()),
+        }
+    }
+
+    /// The assistant with other bounds for its answers, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_limits(mut self, limits: Limits) -> Assistant {
+        self.limits = limits;
+        self
+    }
+
+    /// Hands the assistant the core it runs tools with (`Core::start`). Until then, and once the
+    /// core is gone, an AI account does not answer (`unsupported`). Only the first call counts.
+    pub fn attach(&self, host: Weak<dyn Host>) {
+        // A second core in one process (tests) keeps the first; nothing else attaches twice.
+        let _ = self.host.set(host);
+    }
+
+    /// The attached core, while it lives.
+    fn host(&self) -> Option<Arc<dyn Host>> {
+        self.host.get().and_then(Weak::upgrade)
     }
 
     /// The state, with the folder read on first use. A folder that cannot be read leaves the
     /// conversations empty and is named on stderr; it is read again on the next use.
-    fn state(&self) -> MutexGuard<'_, State> {
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+    async fn state(&self) -> MutexGuard<'_, State> {
+        let mut state = self.state.lock().await;
         if !state.loaded {
-            match self.dir.as_deref().map(store::load_all).transpose() {
+            let loaded = match self.dir.clone() {
+                Some(dir) => blocking(move || store::load_all(&dir)).await,
+                None => Ok(Vec::new()),
+            };
+            match loaded {
                 Ok(loaded) => {
-                    for conversation in loaded.unwrap_or_default() {
+                    for conversation in loaded {
                         state.conversations.insert(conversation.id.clone(), conversation);
                     }
                     state.loaded = true;
@@ -130,16 +217,25 @@ impl Assistant {
         state
     }
 
-    /// Writes `lines` to the file of conversation `id`; the message of the `error` answer when
-    /// that fails ([`failure`]).
-    fn write(&self, id: &str, lines: &[Line]) -> Result<(), &'static str> {
-        let Some(dir) = &self.dir else {
+    /// Writes `lines` to the file of conversation `id` on a blocking thread; the message of the
+    /// `error` answer when that fails ([`failure`]). Called with the state locked, so the lines of
+    /// a conversation land in the order of their numbers.
+    async fn write(&self, id: &str, lines: Vec<Line>) -> Result<(), &'static str> {
+        let Some(dir) = self.dir.clone() else {
             return Err("there is no place to keep conversations (no home directory)");
         };
-        store::append(dir, id, lines).map_err(|err| {
-            eprintln!("torroworkplace: cannot write the conversation {id} in {}: {err}", dir.display());
+        let (file, shown) = (id.to_string(), dir.clone());
+        blocking(move || store::append(&dir, &file, &lines)).await.map_err(|err| {
+            eprintln!("torroworkplace: cannot write the conversation {id} in {}: {err}", shown.display());
             "the conversation cannot be stored"
         })
+    }
+
+    /// Removes the file of conversation `id` on a blocking thread; one that is not there is fine.
+    async fn remove(&self, id: &str) -> io::Result<()> {
+        let Some(dir) = self.dir.clone() else { return Ok(()) };
+        let id = id.to_string();
+        blocking(move || store::remove(&dir, &id)).await
     }
 
     /// `assistant.list_engines`: every AI account in the order they were added, then the test
@@ -165,8 +261,8 @@ impl Assistant {
     }
 
     /// `assistant.list_conversations`: pinned first, then the most recently active.
-    pub fn list(&self) -> Response {
-        let state = self.state();
+    pub async fn list(&self) -> Response {
+        let state = self.state().await;
         let mut conversations: Vec<_> = state
             .conversations
             .values()
@@ -176,22 +272,25 @@ impl Assistant {
         Response::Conversations { conversations }
     }
 
-    /// `assistant.get_conversation`: the conversation and its entries after `after`.
-    pub fn get(&self, id: &str, after: Option<u64>) -> Response {
-        let state = self.state();
-        match state.conversations.get(id) {
-            Some(conversation) => Response::Conversation {
-                conversation: conversation.summary(state.running.contains_key(id)),
-                entries: conversation.entries_after(after),
-            },
-            None => unknown(id),
+    /// `assistant.get_conversation`: the conversation and its entries after `after`, and while a
+    /// model writes, its growing answer numbered after the conversation's `last` ([`Run::growing`]).
+    pub async fn get(&self, id: &str, after: Option<u64>) -> Response {
+        let state = self.state().await;
+        let Some(conversation) = state.conversations.get(id) else { return unknown(id) };
+        let run = state.running.get(id);
+        let mut entries = conversation.entries_after(after);
+        if let Some(growing) = run.and_then(|run| run.growing(conversation.last()))
+            && growing.seq > after.unwrap_or(0)
+        {
+            entries.push(growing);
         }
+        Response::Conversation { conversation: conversation.summary(run.is_some()), entries }
     }
 
     /// The title of conversation `id` as the core keeps it, for an approval's summary; `None` for
     /// one it does not have.
-    pub fn title(&self, id: &str) -> Option<String> {
-        self.state().conversations.get(id).map(|conversation| conversation.title.clone())
+    pub async fn title(&self, id: &str) -> Option<String> {
+        self.state().await.conversations.get(id).map(|conversation| conversation.title.clone())
     }
 
     /// What a request would be refused with anyway, checked before anyone is asked to approve it
@@ -203,7 +302,7 @@ impl Assistant {
             return Some(refused);
         }
         if let Some(id) = request.conversation() {
-            let state = self.state();
+            let state = self.state().await;
             if !state.conversations.contains_key(id) {
                 return Some(unknown(id));
             }
@@ -219,13 +318,16 @@ impl Assistant {
     }
 
     /// What drives `engine`, or why it cannot answer: `not-found` for no engine of
-    /// `assistant.list_engines`, `unsupported` for an AI account until the model loop exists
-    /// (task C.2), so nothing is stored for an answer that would never come.
+    /// `assistant.list_engines`, `unsupported` for an AI account while no core is attached
+    /// ([`Assistant::attach`]), so nothing is stored for an answer that would never come.
     async fn engine(&self, ai: &AiAccounts, engine: &str) -> Result<EngineKind, Response> {
         if engine == TEST_ENGINE && self.test_engine.is_some() {
             Ok(EngineKind::Test)
         } else if ai.knows(engine).await {
-            Err(refusal("unsupported", "the assistant cannot answer with AI accounts yet"))
+            match self.host() {
+                Some(_) => Ok(EngineKind::Ai),
+                None => Err(refusal("unsupported", "the assistant answers with AI accounts once the core has started")),
+            }
         } else {
             Err(Response::Error { code: "not-found".into(), message: format!("no engine {engine:?}") })
         }
@@ -234,8 +336,8 @@ impl Assistant {
     /// `assistant.send_message` once the engine is known to answer (`kind`): adds the message to
     /// `conversation` or to a new one and starts the answer. Answers with the conversation and the
     /// entries this call added.
-    fn send(self: &Arc<Self>, message: Message, kind: EngineKind, now: DateTime<Utc>) -> Response {
-        let mut state = self.state();
+    async fn send(self: &Arc<Self>, message: Message, kind: EngineKind, now: DateTime<Utc>) -> Response {
+        let mut state = self.state().await;
         let (mut conversation, new) = match &message.conversation {
             Some(id) if state.running.contains_key(id) => return busy(),
             Some(id) => match state.conversations.get(id) {
@@ -253,22 +355,38 @@ impl Assistant {
                 text: message.text,
                 engine: message.engine.clone(),
                 model: message.model.clone(),
-                without: message.without,
+                without: message.without.clone(),
             },
             now,
         );
         let mut lines = if new { vec![conversation.started()] } else { Vec::new() };
         lines.push(Line::Entry { entry: entry.clone() });
-        if let Err(message) = self.write(&conversation.id, &lines) {
+        if let Err(message) = self.write(&conversation.id, lines).await {
             return failure(message);
         }
         conversation.apply(Line::Entry { entry });
         let id = conversation.id.clone();
+        let history = conversation.entries.clone();
         state.conversations.insert(id.clone(), conversation);
         match kind {
             EngineKind::Test => self.start_test_answer(&mut state, &id, message.engine),
-            // `answer` refuses the other engines before anything is stored (task C.2 runs them).
-            EngineKind::Ai => {}
+            EngineKind::Ai => {
+                let (engine, model, without) = (message.engine, message.model, message.without);
+                self.start_model_answer(
+                    &mut state,
+                    &id,
+                    model::Job {
+                        conversation: id.clone(),
+                        run: 0,
+                        engine,
+                        model,
+                        without,
+                        history,
+                        partial: Arc::default(),
+                    },
+                )
+                .await;
+            }
         }
         let running = state.running.contains_key(&id);
         match state.conversations.get(&id) {
@@ -287,7 +405,7 @@ impl Assistant {
         let step = self.test_engine.unwrap_or_default();
         state.next_run += 1;
         let run = state.next_run;
-        let (assistant, conversation) = (Arc::clone(self), id.to_string());
+        let (assistant, conversation, by) = (Arc::clone(self), id.to_string(), engine.clone());
         let task = tokio::spawn(async move {
             tokio::time::sleep(step).await;
             let tool = EntryContent::Tool {
@@ -296,24 +414,58 @@ impl Assistant {
                 summary: tr("A test step: nothing ran").to_string(),
                 error: None,
             };
-            if !assistant.add_to_run(&conversation, run, tool, false) {
+            if !assistant.add_to_run(&conversation, run, tool, false).await {
                 return;
             }
             tokio::time::sleep(step).await;
             let text = tr(
                 "This is the test engine. It answers every message the same way, without a model and without tools.",
             );
-            let answer = EntryContent::Answer { text: text.to_string(), engine, model: None };
-            assistant.add_to_run(&conversation, run, answer, true);
+            let answer = EntryContent::Answer { text: text.to_string(), engine: by, model: None };
+            assistant.add_to_run(&conversation, run, answer, true).await;
         });
-        state.running.insert(id.to_string(), Run { id: run, task: task.abort_handle() });
+        let partial = Arc::default();
+        state.running.insert(id.to_string(), Run { id: run, task: task.abort_handle(), engine, partial });
+    }
+
+    /// Starts the answer `job` with the model of an AI account ([`model::answer`]) in conversation
+    /// `id`, registered as its running answer before it can write. Without a core to run tools
+    /// with (gone meanwhile), the answer is an error entry at once.
+    async fn start_model_answer(self: &Arc<Self>, state: &mut State, id: &str, mut job: model::Job) {
+        let Some(host) = self.host() else {
+            let error = EntryContent::Error {
+                code: "unsupported".into(),
+                message: tr("The assistant can answer with AI accounts once Torro Workplace has started.").into(),
+            };
+            self.add_now(state, id, error).await;
+            return;
+        };
+        state.next_run += 1;
+        job.run = state.next_run;
+        let (engine, partial) = (job.engine.clone(), Arc::clone(&job.partial));
+        let task = tokio::spawn(model::answer(Arc::clone(self), host, job));
+        state.running.insert(id.to_string(), Run { id: state.next_run, task: task.abort_handle(), engine, partial });
+    }
+
+    /// Adds `content` to conversation `id` now, with the state already locked; a failed write is
+    /// named on stderr only.
+    async fn add_now(&self, state: &mut State, id: &str, content: EntryContent) {
+        let Some(entry) = state.conversations.get(id).map(|conversation| conversation.next(content, Utc::now())) else {
+            return;
+        };
+        if self.write(id, vec![Line::Entry { entry: entry.clone() }]).await.is_ok()
+            && let Some(conversation) = state.conversations.get_mut(id)
+        {
+            conversation.apply(Line::Entry { entry });
+        }
     }
 
     /// Adds `content` to conversation `id` while the run `run` is still its running answer; a
-    /// `last` one ends the run. `false` when the run was stopped or replaced meanwhile, or the
-    /// entry could not be stored (the run then ends with nothing more).
-    fn add_to_run(&self, id: &str, run: u64, content: EntryContent, last: bool) -> bool {
-        let mut state = self.state();
+    /// `last` one ends the run. An answer takes the place of the growing one. `false` when the run
+    /// was stopped or replaced meanwhile, or the entry could not be stored (the run then ends with
+    /// nothing more).
+    async fn add_to_run(&self, id: &str, run: u64, content: EntryContent, last: bool) -> bool {
+        let mut state = self.state().await;
         if state.running.get(id).is_none_or(|running| running.id != run) {
             return false;
         }
@@ -321,9 +473,14 @@ impl Assistant {
             state.running.remove(id);
             return false;
         };
-        if self.write(id, &[Line::Entry { entry: entry.clone() }]).is_err() {
+        if self.write(id, vec![Line::Entry { entry: entry.clone() }]).await.is_err() {
             state.running.remove(id);
             return false;
+        }
+        if matches!(entry.content, EntryContent::Answer { .. })
+            && let Some(running) = state.running.get(id)
+        {
+            running.clear();
         }
         if let Some(conversation) = state.conversations.get_mut(id) {
             conversation.apply(Line::Entry { entry });
@@ -334,41 +491,44 @@ impl Assistant {
         true
     }
 
-    /// `assistant.cancel`: stops the running answer of `id` and adds a `stopped` entry. Nothing
-    /// changes when none runs.
-    pub fn cancel(&self, id: &str, now: DateTime<Utc>) -> Response {
-        let mut state = self.state();
-        let Some(conversation) = state.conversations.get(id) else { return unknown(id) };
-        let stopped = conversation.next(EntryContent::Stopped, now);
+    /// `assistant.cancel`: stops the running answer of `id`, keeps what the model wrote so far as
+    /// an answer and adds a `stopped` entry. Nothing changes when none runs.
+    pub async fn cancel(&self, id: &str, now: DateTime<Utc>) -> Response {
+        let mut state = self.state().await;
+        let Some(conversation) = state.conversations.get(id).cloned() else { return unknown(id) };
         let Some(run) = state.running.remove(id) else { return Response::Ok };
-        // Aborted at its next pause; it holds no lock and checks its number before every write.
+        // Aborted at its next pause; it checks its number under the lock before every write.
         run.task.abort();
-        if let Err(message) = self.write(id, &[Line::Entry { entry: stopped.clone() }]) {
+        let mut entries: Vec<Entry> = run.growing(conversation.last()).into_iter().collect();
+        let after = entries.last().map_or(conversation.last(), |entry| entry.seq);
+        entries.push(Entry { seq: after + 1, time: now, content: EntryContent::Stopped });
+        let lines: Vec<Line> = entries.into_iter().map(|entry| Line::Entry { entry }).collect();
+        if let Err(message) = self.write(id, lines.clone()).await {
             return failure(message);
         }
         if let Some(conversation) = state.conversations.get_mut(id) {
-            conversation.apply(Line::Entry { entry: stopped });
+            lines.into_iter().for_each(|line| conversation.apply(line));
         }
         Response::Ok
     }
 
     /// `assistant.rename_conversation`; the title trimmed (the limits are checked before).
-    pub fn rename(&self, id: &str, title: &str) -> Response {
-        self.change(id, Line::Renamed { title: title.trim().to_string() })
+    pub async fn rename(&self, id: &str, title: &str) -> Response {
+        self.change(id, Line::Renamed { title: title.trim().to_string() }).await
     }
 
     /// `assistant.pin_conversation`.
-    pub fn pin(&self, id: &str, pinned: bool) -> Response {
-        self.change(id, Line::Pinned { pinned })
+    pub async fn pin(&self, id: &str, pinned: bool) -> Response {
+        self.change(id, Line::Pinned { pinned }).await
     }
 
     /// Writes `line` to conversation `id` and takes it in.
-    fn change(&self, id: &str, line: Line) -> Response {
-        let mut state = self.state();
+    async fn change(&self, id: &str, line: Line) -> Response {
+        let mut state = self.state().await;
         if !state.conversations.contains_key(id) {
             return unknown(id);
         }
-        if let Err(message) = self.write(id, std::slice::from_ref(&line)) {
+        if let Err(message) = self.write(id, vec![line.clone()]).await {
             return failure(message);
         }
         if let Some(conversation) = state.conversations.get_mut(id) {
@@ -378,18 +538,16 @@ impl Assistant {
     }
 
     /// `assistant.delete_conversation`: stops its answer and removes its file for good.
-    pub fn delete(&self, id: &str) -> Response {
-        let mut state = self.state();
+    pub async fn delete(&self, id: &str) -> Response {
+        let mut state = self.state().await;
         if !state.conversations.contains_key(id) {
             return unknown(id);
         }
         if let Some(run) = state.running.remove(id) {
             run.task.abort();
         }
-        if let Some(dir) = &self.dir
-            && let Err(err) = store::remove(dir, id)
-        {
-            eprintln!("torroworkplace: cannot delete the conversation {id} in {}: {err}", dir.display());
+        if let Err(err) = self.remove(id).await {
+            eprintln!("torroworkplace: cannot delete the conversation {id}: {err}");
             return failure("the conversation cannot be deleted");
         }
         state.conversations.remove(id);
@@ -399,11 +557,13 @@ impl Assistant {
     /// Removes every conversation whose last entry is older than `retention` at `now`, except the
     /// pinned ones and those answering (decision 8). Answers how many went; one whose file cannot
     /// be removed stays and is named on stderr.
-    pub fn clean_up(&self, now: DateTime<Utc>, retention: Retention) -> usize {
+    pub async fn clean_up(&self, now: DateTime<Utc>, retention: Retention) -> usize {
         let Some(days) = retention.days() else { return 0 };
-        let Some(dir) = &self.dir else { return 0 };
+        if self.dir.is_none() {
+            return 0;
+        }
         let oldest = now - chrono::Duration::days(i64::from(days));
-        let mut state = self.state();
+        let mut state = self.state().await;
         let expired: Vec<String> = state
             .conversations
             .values()
@@ -412,7 +572,7 @@ impl Assistant {
             .collect();
         let mut removed = 0;
         for id in expired {
-            match store::remove(dir, &id) {
+            match self.remove(&id).await {
                 Ok(()) => {
                     state.conversations.remove(&id);
                     removed += 1;
@@ -425,9 +585,9 @@ impl Assistant {
 
     /// `assistant.open_window`: starts `torroassistant --chat <id>` or `--chat new`. Bots do not
     /// exist yet (stage 2): `unsupported`.
-    pub fn open_window(&self, window: ChatWindow) -> Response {
+    pub async fn open_window(&self, window: ChatWindow) -> Response {
         let target = match window {
-            ChatWindow::Conversation(id) if !self.state().conversations.contains_key(&id) => return unknown(&id),
+            ChatWindow::Conversation(id) if !self.state().await.conversations.contains_key(&id) => return unknown(&id),
             ChatWindow::Conversation(id) => id,
             ChatWindow::New => "new".to_string(),
             ChatWindow::Bot(_) => return no_bots(),
@@ -437,6 +597,11 @@ impl Assistant {
             Err(err) => failure(&format!("cannot start {BINARY}: {err}")),
         }
     }
+}
+
+/// Runs `work` on a blocking thread; a thread that panicked is an I/O error.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
+    tokio::task::spawn_blocking(work).await.unwrap_or_else(|err| Err(io::Error::other(err)))
 }
 
 /// What `assistant.send_message` asks for, past its limits.
@@ -458,20 +623,20 @@ pub async fn answer(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Reques
     }
     match request {
         Request::ListEngines => Response::Engines { engines: assistant.engines(ai).await },
-        Request::ListConversations => assistant.list(),
-        Request::GetConversation { id, after } => assistant.get(&id, after),
+        Request::ListConversations => assistant.list().await,
+        Request::GetConversation { id, after } => assistant.get(&id, after).await,
         Request::SendMessage { conversation, engine, model, text, without } => {
             let kind = match assistant.engine(ai, &engine).await {
                 Ok(kind) => kind,
                 Err(refused) => return refused,
             };
-            assistant.send(Message { conversation, engine, model, text, without }, kind, Utc::now())
+            assistant.send(Message { conversation, engine, model, text, without }, kind, Utc::now()).await
         }
-        Request::CancelAnswer { conversation } => assistant.cancel(&conversation, Utc::now()),
-        Request::RenameConversation { id, title } => assistant.rename(&id, &title),
-        Request::DeleteConversation { id } => assistant.delete(&id),
-        Request::PinConversation { id, pinned } => assistant.pin(&id, pinned),
-        Request::OpenChatWindow { window } => assistant.open_window(window),
+        Request::CancelAnswer { conversation } => assistant.cancel(&conversation, Utc::now()).await,
+        Request::RenameConversation { id, title } => assistant.rename(&id, &title).await,
+        Request::DeleteConversation { id } => assistant.delete(&id).await,
+        Request::PinConversation { id, pinned } => assistant.pin(&id, pinned).await,
+        Request::OpenChatWindow { window } => assistant.open_window(window).await,
         other => failure(&format!("{} is no command of the assistant", other.operation().name())),
     }
 }
@@ -523,6 +688,7 @@ pub(crate) mod tests {
     use chrono::TimeZone;
     use torro_ipc::assistant::{ConversationSummary, Entry};
 
+    pub(crate) use super::model::tests::{Script, Scripted, calls, says};
     use super::*;
 
     /// An assistant in `dir/assistant` with the test engine taking `step` per step, starting no app.
@@ -630,7 +796,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn unknown_conversations_and_engines_are_not_found_and_ai_accounts_wait_for_c2() {
+    async fn unknown_conversations_and_engines_are_not_found() {
         let dir = tempfile::tempdir().expect("temp dir");
         let (assistant, ai) = (Arc::new(assistant_in(dir.path(), Duration::ZERO)), no_ai(dir.path()));
         let unknown = "0123456789abcdef";
@@ -696,7 +862,8 @@ pub(crate) mod tests {
                 },
             ]
         );
-        // The model loop is task C.2: until then a message to an AI account changes nothing.
+        // Without a core to run tools with (none attached here) an AI account does not answer, and
+        // nothing is stored.
         let to_ollama = Request::SendMessage {
             conversation: None,
             engine: account.id,
@@ -795,7 +962,7 @@ pub(crate) mod tests {
         // 31 days after the last entry of all but the recent one, which is 29 days old then.
         let now = Utc::now();
         {
-            let mut state = assistant.state();
+            let mut state = assistant.state().await;
             for (id, age) in [(&ids[0], 31), (&ids[1], 31), (&ids[2], 31), (&ids[3], 29)] {
                 let conversation = state.conversations.get_mut(id).expect("held");
                 conversation.created = then;
@@ -804,9 +971,9 @@ pub(crate) mod tests {
                 }
             }
         }
-        assert_eq!(assistant.clean_up(now, Retention::Forever), 0, "forever keeps everything");
-        assert_eq!(assistant.clean_up(now, Retention::Days(30)), 1);
-        let kept: Vec<String> = match assistant.list() {
+        assert_eq!(assistant.clean_up(now, Retention::Forever).await, 0, "forever keeps everything");
+        assert_eq!(assistant.clean_up(now, Retention::Days(30)).await, 1);
+        let kept: Vec<String> = match assistant.list().await {
             Response::Conversations { conversations } => conversations.into_iter().map(|c| c.id).collect(),
             other => panic!("expected conversations, got {other:?}"),
         };
