@@ -942,7 +942,8 @@ impl MailService {
 
     /// Loads the mail accounts and starts their workers ([`MailService::reload`]), files the Sent
     /// copies still waiting now and every minute ([`send::keep_copying`], task M3.3), and deletes
-    /// fetched attachments older than a day now and every hour. The core calls it once.
+    /// fetched attachments older than a day and stores of removed accounts now and every hour. The
+    /// core calls it once.
     pub fn start(self: &Arc<Self>) {
         let service = Arc::clone(self);
         tokio::spawn(async move {
@@ -951,6 +952,7 @@ impl MailService {
             let Some(dirs) = service.dirs.clone() else { return };
             let cache = AttachmentCache::new(&dirs);
             loop {
+                service.remove_unknown_stores(&dirs).await;
                 let purge = cache.clone();
                 match tokio::task::spawn_blocking(move || purge.purge(ATTACHMENT_MAX_AGE)).await {
                     Ok(Ok(_)) => {}
@@ -1299,10 +1301,29 @@ impl MailService {
             let account = id.to_string();
             let _ = tokio::task::spawn_blocking(move || outbox.forget_account(&account)).await;
         }
-        let id = id.to_string();
-        match tokio::task::spawn_blocking(move || MailStore::remove(&dirs, &id)).await {
-            Ok(removed) => removed.map_err(|err| err.to_string()),
-            Err(err) => Err(format!("the mail store could not be deleted: {err}")),
+        let account = id.to_string();
+        // The account is gone already (keychain, `accounts.json`); a store Windows still holds open
+        // is deleted by the next clean-up ([`MailStore::remove_unknown`]), not left forever.
+        match tokio::task::spawn_blocking(move || MailStore::remove(&dirs, &account)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => eprintln!("torroworkplace: the mail store of {id} is deleted later: {err}"),
+            Err(err) => eprintln!("torroworkplace: the mail store of {id} is deleted later: {err}"),
+        }
+        Ok(())
+    }
+
+    /// Deletes the stores of accounts no longer in `accounts.json` (task M2.7: one Windows kept open
+    /// while its account was removed). Nothing is deleted when the accounts cannot be read.
+    async fn remove_unknown_stores(&self, dirs: &MailDirs) {
+        let Ok(stored) = self.read_accounts().await else { return };
+        let accounts: Vec<String> = stored.into_iter().map(|(account, _, _)| account.id).collect();
+        let dirs = dirs.clone();
+        // An hour old at least: a store opened while the accounts were read is not touched.
+        let min_age = PURGE_EVERY;
+        match tokio::task::spawn_blocking(move || MailStore::remove_unknown(&dirs, &accounts, min_age)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => eprintln!("torroworkplace: cannot clean up old mail stores: {err}"),
+            Err(err) => eprintln!("torroworkplace: cannot clean up old mail stores: {err}"),
         }
     }
 

@@ -268,15 +268,44 @@ impl MailStore {
     /// (drop it). Nothing there is nothing to do. Called when the account is removed.
     #[allow(dead_code, reason = "used from accounts.remove_account, task M2.7")]
     pub fn remove(dirs: &MailDirs, account: &str) -> Result<(), MailStoreError> {
-        let path = file_for(dirs, account);
-        for file in [path.clone(), side_file(&path, "-wal"), side_file(&path, "-shm")] {
-            match std::fs::remove_file(&file) {
-                Ok(()) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err.into()),
+        remove_files(&file_for(dirs, account))
+    }
+
+    /// Deletes the stores in `dirs.data` that belong to none of `accounts` (`mail:<address>`),
+    /// each with `-wal` and `-shm`; returns how many stores went. A store whose account was
+    /// removed while Windows still kept its file open stays behind; this clean-up, run at start and
+    /// every hour, deletes it later. Other files in the folder are left alone, and so is a store
+    /// changed less than `min_age` ago: one connected just now may not be in `accounts` yet.
+    pub fn remove_unknown(
+        dirs: &MailDirs,
+        accounts: &[String],
+        min_age: std::time::Duration,
+    ) -> Result<usize, MailStoreError> {
+        let known: Vec<PathBuf> = accounts.iter().map(|account| file_for(dirs, account)).collect();
+        let entries = match std::fs::read_dir(&dirs.data) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(err) => return Err(err.into()),
+        };
+        let mut removed = 0;
+        for entry in entries {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|name| name.to_str()) else { continue };
+            // The store itself, or a `-wal`/`-shm` left without it.
+            let Some(stem) =
+                ["", "-wal", "-shm"].iter().find_map(|suffix| name.strip_suffix(&format!(".sqlite{suffix}")))
+            else {
+                continue;
+            };
+            let store = dirs.data.join(format!("{stem}.sqlite"));
+            if known.contains(&store) || !path.is_file() || changed_within(&path, min_age) {
+                continue;
+            }
+            if remove_files(&store).is_ok() && name.ends_with(".sqlite") {
+                removed += 1;
             }
         }
-        Ok(())
+        Ok(removed)
     }
 
     /// The account this store belongs to (`mail:<address>`).
@@ -749,6 +778,33 @@ impl MailStore {
 fn file_for(dirs: &MailDirs, account: &str) -> PathBuf {
     let hash: String = Sha256::digest(account.as_bytes()).iter().take(16).map(|byte| format!("{byte:02x}")).collect();
     dirs.data.join(format!("{hash}.sqlite"))
+}
+
+/// `path` was changed less than `age` ago (or its age cannot be told, which counts as recent).
+fn changed_within(path: &Path, age: std::time::Duration) -> bool {
+    let modified = std::fs::metadata(path).and_then(|meta| meta.modified());
+    modified.map_or(true, |at| at.elapsed().map_or(true, |elapsed| elapsed < age))
+}
+
+/// Deletes the store `path` with its `-wal` and `-shm`; a missing file is no error. On Windows a
+/// file someone still has open (or a virus scanner looks into just after it was closed) cannot be
+/// deleted: tried again for up to two seconds before giving up.
+fn remove_files(path: &Path) -> Result<(), MailStoreError> {
+    for file in [path.to_path_buf(), side_file(path, "-wal"), side_file(path, "-shm")] {
+        let mut tries = 0;
+        loop {
+            match std::fs::remove_file(&file) {
+                Ok(()) => break,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => break,
+                Err(_) if cfg!(windows) && tries < 20 => {
+                    tries += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(err) => return Err(err.into()),
+            }
+        }
+    }
+    Ok(())
 }
 
 fn side_file(path: &Path, suffix: &str) -> PathBuf {
@@ -1463,6 +1519,40 @@ mod tests {
         // A new store for the removed account starts empty.
         let fresh = MailStore::open(&dirs, ACCOUNT).expect("again");
         assert!(fresh.folders().expect("folders").is_empty());
+    }
+
+    #[test]
+    fn stores_of_unknown_accounts_are_cleaned_up_and_nothing_else() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let dirs = MailDirs::new(tmp.path(), tmp.path());
+        drop(MailStore::open(&dirs, ACCOUNT).expect("anna"));
+        drop(MailStore::open(&dirs, "mail:bob@example.org").expect("bob"));
+        let gone = file_for(&dirs, "mail:bob@example.org");
+        std::fs::write(side_file(&gone, "-wal"), b"x").expect("a wal left behind");
+        std::fs::write(dirs.data.join("notes.txt"), b"x").expect("another file");
+        std::fs::create_dir_all(dirs.data.join("send-journal")).expect("a folder");
+
+        assert_eq!(
+            MailStore::remove_unknown(&dirs, &[ACCOUNT.to_string()], std::time::Duration::ZERO).expect("cleaned"),
+            1
+        );
+        assert!(file_for(&dirs, ACCOUNT).exists(), "a known account keeps its store");
+        assert!(!gone.exists() && !side_file(&gone, "-wal").exists(), "the unknown one goes with its wal");
+        assert!(dirs.data.join("notes.txt").exists() && dirs.data.join("send-journal").exists());
+        assert_eq!(
+            MailStore::remove_unknown(&dirs, &[ACCOUNT.to_string()], std::time::Duration::ZERO).expect("again"),
+            0
+        );
+        let none = MailDirs::new(&tmp.path().join("missing"), tmp.path());
+        assert_eq!(
+            MailStore::remove_unknown(&none, &[], std::time::Duration::ZERO).expect("no folder, nothing to do"),
+            0
+        );
+        // A store changed just now stays: its account may be connecting at this moment.
+        drop(MailStore::open(&dirs, "mail:carla@example.org").expect("carla"));
+        let fresh = file_for(&dirs, "mail:carla@example.org");
+        assert_eq!(MailStore::remove_unknown(&dirs, &[], std::time::Duration::from_secs(3600)).expect("young"), 0);
+        assert!(fresh.exists());
     }
 
     #[cfg(unix)]
