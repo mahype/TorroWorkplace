@@ -2,6 +2,8 @@
 
 Stand: 2026-10-13. **Entschieden:** Stufe 1 jetzt, Stufe 2 später (welche Schalter, klären wir dann),
 Stufe 3 (freie Anordnung über eine Layout-Sprache) nicht. Aufgaben: [tasks/design-pakete.md](tasks/design-pakete.md).
+**Ergänzt 2026-10-13:** eigene Farben für die Seitenleiste ([unten](#seitenleiste-mit-eigenen-farben), L.6), damit
+Pakete wie Commitr und Ribbon (Issue #80) eine farbige Leiste neben hellem Inhalt haben können.
 
 ## Worum es geht
 
@@ -133,6 +135,8 @@ bg = "#0B0D10"
 
 [colors.light]
 accent = "#0B7A79"
+sidebar = "#24292F"            # optional: Seitenleiste mit eigener Farbe (siehe unten); fehlt: bg
+sidebar_text = "#F6F8FA"
 
 [logo]
 mark = "logo.svg"              # fehlt: das „T“ des Standardpakets auf der Akzentfarbe
@@ -154,6 +158,29 @@ Gewichte 400/500/600). Laufweite und Großschreibung gehen mit Iced 0.14 nicht u
 Paneel, Zeile, Bedienelement, Gruppe, Element). Die Apps nutzen dafür benannte Tokens statt der Skala, damit ein Paket
 sie gezielt ändern kann. Abstände je einzelnem Element gibt es bewusst nicht, damit es am Anfang nicht zu bunt wird.
 
+### Seitenleiste mit eigenen Farben
+
+Bisher liegt die Seitenleiste auf `bg` und nutzt dieselben Textfarben wie der Inhalt; `text` muss deshalb auf `bg`
+*und* `panel` tragen. Eine dunkle Leiste neben hellem Inhalt (wie bei Slack, GitHub oder Office) geht so nicht. Darum
+hat jeder Modus optional einen eigenen Satz für die **Rahmenfläche**:
+
+| Schlüssel | Wofür | fehlt → |
+|---|---|---|
+| `sidebar` | Fläche der Seitenleiste, der Leiste (Rail), der Schublade, des Rands um die Inhaltsfläche (`inset`) und des Titelbands darüber | `bg` |
+| `sidebar_hover` | Zeile unter dem Zeiger | `hover` |
+| `sidebar_selected` | gewählte Zeile | `selected` |
+| `sidebar_text` | Text der gewählten Zeile, Titel | `text` |
+| `sidebar_text_2` | Text der Zeilen | `text_2` |
+| `sidebar_text_3` | Gruppentitel, Zähler, Datumszahlen außerhalb des Monats | `text_3` |
+| `sidebar_line` | Linien in und an der Leiste | `line` |
+
+- **Zurückfallen auf die Werte desselben Pakets**, nicht des Standards: Setzt ein Paket nur `bg`, folgt die
+  Seitenleiste seinem `bg`, und es sieht aus wie bisher.
+- Was in der Seitenleiste steht, zeichnet sich ohne Zutun der Apps in diesen Farben (Navigation, Gruppen, Mini-Monat
+  des Kalenders, Listen mit Farbpunkten, App-Umschalter, Fußzeilen). Akzent, Status- und Kalenderfarben bleiben
+  dieselben; sie müssen dann aber auch auf `sidebar` tragen (Regeln unten).
+- Zustände, die auf dem Fenster selbst liegen (Anmelden, Laden, Fehler vor dem Layout), bleiben auf `bg`.
+
 ## Regeln, die jedes Paket einhalten muss
 
 Die Suite prüft ein Paket beim Laden. Verstößt es gegen eine Regel, wird es **ganz abgelehnt** (nie halb
@@ -166,6 +193,7 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Kontrast Text | `text`, `text_2`, `text_3` ≥ 4,5:1 auf `bg`, `panel`, `raised`, `hover`, `selected`, `menu` (hell und dunkel) |
 | Kontrast Bedienelemente | `focus_ring`, `merged`, Kalenderfarben ≥ 3:1 auf `panel`; Statusfarben ≥ 3:1 auf `panel` im dunklen Modus, `attention_text` und `error_text` ≥ 4,5:1 auf allen Flächen in beiden Modi; `line_selected` mindestens dreimal so deutlich wie `line_strong` und schwächer als `focus_ring` |
 | Akzent | `on_accent` auf `accent` ≥ 4,5:1 (Text auf dem Primärknopf) |
+| Seitenleiste | `sidebar_text`, `sidebar_text_2`, `sidebar_text_3` ≥ 4,5:1 auf `sidebar`, `sidebar_hover`, `sidebar_selected`; `focus_ring`, `accent`, Kalenderfarben und Statusfarben ≥ 3:1 auf `sidebar` (hell und dunkel). Gilt auch, wenn die Werte zurückfallen |
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |
 | Layout-Abstände | `inset` 0–24; Innenränder 0–48; `section_gap` 8–64; `item_gap` 2–24 |
 | Abstände | `space` aufsteigend, 2–64; `radius` aufsteigend, 0–16 |
