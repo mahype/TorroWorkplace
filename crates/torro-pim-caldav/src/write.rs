@@ -1312,7 +1312,7 @@ mod tests {
     }
 
     fn todo_without_extras() -> Todo {
-        Todo { url: Some(" ".into()), link: Some(Link { id: " ".into(), github: None }), ..todo() }
+        Todo { url: Some(" ".into()), link: Some(Link::new(" ")), ..todo() }
     }
 
     #[test]
@@ -1379,6 +1379,55 @@ mod tests {
         let written = todo_onto(&stored, &todo, later());
         assert_rewritten(&stored, &written, &TODO_STAMPS, &stamps());
     }
+
+    /// A task made of a mail (task E8.7a) as Nextcloud Tasks holds it after an edit in the web:
+    /// the link folded over two lines, the readable line at the end of the description. Whether
+    /// Nextcloud Tasks itself keeps the property when it saves is checked by hand (see the task).
+    const MAIL_LINK_TODO: &str = include_str!("../tests/fixtures/nextcloud-tasks-mail-link.ics");
+    const MAIL_LINK: &str = "mail:anna@mailbox.org:CAF=8kR2x9QzT1vY4wE7uI0oP3aS6dF5gH8jK2lZ@mail.example.org";
+
+    /// Task E8.7a: a mail link is read whole, survives every change the core writes and is
+    /// written as the one id, never with the details the core filled in.
+    #[test]
+    fn a_mail_link_is_read_kept_and_written_as_its_id() {
+        let mut task = read_todo(MAIL_LINK_TODO);
+        assert_eq!(task.link, Some(Link::new(MAIL_LINK)));
+        let link = task.link.clone().expect("link");
+        assert_eq!(link.mail_ref(), Some(("mail:anna@mailbox.org", &MAIL_LINK[22..])));
+        assert!(
+            task.description
+                .as_deref()
+                .is_some_and(|text| text.ends_with("From mail: Anna Keller, “Angebot Dachsanierung”, 13 Oct"))
+        );
+
+        // Done in the suite, with the details the core filled in riding along: only the state changes.
+        task.completed = true;
+        let details = torro_pim::model::MailDetails {
+            message: "m:secret".into(),
+            subject: "Angebot Dachsanierung".into(),
+            sender: Some("Anna Keller".into()),
+            sender_address: Some("anna@keller.example".into()),
+            date: later(),
+            new_replies: 2,
+            untrusted: true,
+        };
+        task.link = Some(Link { mail: Some(Box::new(details)), ..link });
+        let written = todo_onto(MAIL_LINK_TODO, &task, later());
+        let replaced = [TODO_STAMPS_MAIL[0], TODO_STAMPS_MAIL[1], "STATUS:NEEDS-ACTION"];
+        let done = format!("COMPLETED:{LATER}");
+        let new = with_stamps(&["STATUS:COMPLETED", &done, "PERCENT-COMPLETE:100"]);
+        assert_rewritten(MAIL_LINK_TODO, &written, &replaced, &new);
+        assert!(!written.contains("m:secret") && !written.contains("keller.example"), "details are not stored");
+        assert_eq!(read_todo(&written).link, Some(Link::new(MAIL_LINK)));
+
+        // A new task writes the id on one logical line, folded as iCalendar wants it.
+        let fresh = Todo { link: Some(Link::new(MAIL_LINK)), ..todo() };
+        let ics = todo_ics(&fresh, now());
+        assert!(unfolded_lines(&ics).contains(&format!("X-TORRO-LINK:{MAIL_LINK}")), "{ics}");
+        assert_eq!(read_todo(&ics).link, Some(Link::new(MAIL_LINK)));
+    }
+
+    const TODO_STAMPS_MAIL: [&str; 2] = ["LAST-MODIFIED:20261013T094000Z", "DTSTAMP:20261013T094000Z"];
 
     #[test]
     fn a_url_cannot_add_properties() {

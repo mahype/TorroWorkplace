@@ -68,6 +68,51 @@ pub struct Item {
     /// [`FacetKey::is_foreign`] keys are foreign text like `title`.
     #[serde(default)]
     pub facets: Vec<Facet>,
+    /// The task made of this entry or of its mail (task E8.7a): a task whose link
+    /// (`X-TORRO-LINK`) is `inbox:<this entry's id>` or, for a mail entry, `mail:<account>:<Message-ID>`
+    /// of one of its mails. Filled in by the core when it answers, never stored with the entry and
+    /// never taken from a poster; only for a caller that may read tasks and sees the task's list,
+    /// else `None`. The suite's own entry "You finished a task from a mail" carries the finished
+    /// task here as the core filed it. Its title is foreign text like `title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<ItemTask>,
+}
+
+/// The task an entry turned into ([`Item::task`], task E8.7a), as the core's task cache holds it
+/// when it answers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ItemTask {
+    /// The task's iCalendar UID; `apps.open_app` opens it with the target `task:<uid>`.
+    pub uid: String,
+    /// The id of the task list it is in, as `tasks.list_lists` names it.
+    pub collection: String,
+    /// The task list's display name; empty when the core does not know it.
+    #[serde(default)]
+    pub list: String,
+    /// The task's title.
+    pub title: String,
+    /// When it is due; `None` without a due date.
+    #[serde(default)]
+    pub due: Option<TaskDue>,
+    /// It is done.
+    pub completed: bool,
+    /// The task's link id, the way back from the task: `inbox:<entry id>` or
+    /// `mail:<account>:<Message-ID>` (open the mail with `apps.open_app` and this as `target`).
+    pub link: String,
+    /// Only on the suite's entry "You finished a task from a mail": the open mail entry the task's
+    /// mail is in, for "Mark mail done" (`inbox.set_item_done`). `None` everywhere else.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail_entry: Option<String>,
+}
+
+/// When a task is due ([`ItemTask::due`]), on the wire as `torro_pim::EventTime`: a calendar day
+/// (`{"date": "2026-10-17"}`) or an instant (`{"datetime": "…Z"}`). Kept here because the inbox
+/// model does not depend on the calendar model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskDue {
+    Date(chrono::NaiveDate),
+    DateTime(DateTime<Utc>),
 }
 
 /// One trait of an entry (task E8.6a): what kind of trait and its value, e.g. `sender` and

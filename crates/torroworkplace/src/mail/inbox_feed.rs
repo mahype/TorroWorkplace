@@ -21,6 +21,11 @@
 //!   accounts the service no longer syncs are done ([`Feed::retire`]); nothing could mark their
 //!   mail read any more. Kept here rather than where accounts change, so the core's account
 //!   commands need not know the inbox.
+//! - **Tasks made of mail** (task E8.7a): a task keeps its mail as `mail:<address>:<Message-ID>`;
+//!   [`mail_for_task`], [`linked_mail`], [`linked_details`], [`mails_of`] and [`conversation_of`]
+//!   find the mail again by its Message-ID in whatever folder it is, and [`from_mail_line`] names it
+//!   in the task's description. They read the store of the account named, whoever asks: the core
+//!   checks the caller's rights before.
 //!
 //! Rights are not checked here: the feed files for the person, and the inbox shows a client a
 //! mail entry only as its rights allow (`crate::inbox`). Mail is data from outside: entries are
@@ -33,6 +38,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
+use torro_core::i18n::{tr, trf};
 use torro_inbox::{Item, Sender, SourceKind, State};
 use torro_mail::{Flag, MailAddress, MessageTraits, Notify, Role};
 
@@ -151,6 +157,135 @@ pub(crate) async fn set_seen(mail: &MailService, account: &str, messages: Vec<St
         })
         .await?;
     Ok(count)
+}
+
+// ----- tasks made of mail (task E8.7a) -----
+//
+// A task keeps its mail as `mail:<address>:<Message-ID>` (`torro_pim::model::Link::mail`). These
+// look the mail up again in the account's store by its Message-ID, so a mail moved to another
+// folder is still found. Rights are the caller's to check: they read with the store of `account`
+// alone, whoever asks.
+
+/// A mail as a task is made of it ([`mail_for_task`]): its summary, the start of its text and its
+/// `Message-ID` header, `None` when it has none (it cannot be linked then).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailForTask {
+    pub summary: torro_mail::MessageSummary,
+    pub rfc_message_id: Option<String>,
+}
+
+/// The mail `id` (`m:…`) of `account` as a task is made of it. [`MailError::NotFound`] for an
+/// account without mail on, or a mail its store does not hold.
+pub async fn mail_for_task(mail: &MailService, account: &str, id: &str) -> Result<MailForTask, MailError> {
+    let store = mail.store(account).await?;
+    let id = id.to_string();
+    let found = store
+        .run(move |store| {
+            let Some(summary) = store.summary(&id)? else { return Ok(None) };
+            let rfc_message_id = store.resolve_message(&id)?.and_then(|found| found.rfc_message_id);
+            Ok(Some(MailForTask { summary, rfc_message_id }))
+        })
+        .await
+        .map_err(MailError::Store)?;
+    found.ok_or(MailError::NotFound)
+}
+
+/// The newest mail of `account` with the `Message-ID` `message_id` (any folder), `None` when its
+/// store holds none, the account has no mail on or the store fails (that goes to the log, without
+/// the id).
+pub async fn linked_mail(mail: &MailService, account: &str, message_id: &str) -> Option<torro_mail::MessageSummary> {
+    let store = mail.store(account).await.ok()?;
+    let rfc = torro_pim::model::bare_message_id(message_id).to_string();
+    match store.run(move |store| store.messages_by_rfc_id(&rfc)).await {
+        Ok(found) => found.into_iter().next(),
+        Err(err) => {
+            eprintln!("torroworkplace: inbox: cannot look up the mail of a task in {account}: {err}");
+            None
+        }
+    }
+}
+
+/// What a task's link shows of its mail ([`torro_pim::model::MailDetails`]): subject, sender and
+/// date of the newest copy with `message_id`, and the replies after it that are not the
+/// account's own. `None` as for [`linked_mail`].
+pub async fn linked_details(
+    mail: &MailService,
+    account: &str,
+    message_id: &str,
+) -> Option<torro_pim::model::MailDetails> {
+    let found = linked_mail(mail, account, message_id).await?;
+    let store = mail.store(account).await.ok()?;
+    let own = account.strip_prefix(torro_mail::ACCOUNT_PREFIX).unwrap_or(account).to_string();
+    let (thread, date) = (found.thread_id.clone(), found.date);
+    let new_replies = store.run(move |store| store.replies_after(&thread, date, &own)).await.unwrap_or_default();
+    let sender = found.from.as_ref().map(|from| sender(from).name);
+    Some(torro_pim::model::MailDetails {
+        message: found.id,
+        subject: found.subject,
+        sender_address: found.from.map(|from| from.address),
+        sender,
+        date: found.date,
+        new_replies,
+        untrusted: true,
+    })
+}
+
+/// What a mail entry's mails (`messages`, `m:…` of `account`) are, to find the tasks made of them:
+/// their `Message-ID`s and their conversations (`thread_id`), as the store has them. A task linked
+/// to a mail of the same conversation belongs to the entry too, also after that mail was moved or
+/// deleted and the entry holds only a reply. Mails no longer held are left out, and so is
+/// everything when the store fails.
+pub async fn mails_of(mail: &MailService, account: &str, messages: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let Ok(store) = mail.store(account).await else { return (Vec::new(), Vec::new()) };
+    let found = store
+        .run(move |store| {
+            let (mut ids, mut threads) = (Vec::new(), Vec::new());
+            for message in &messages {
+                ids.extend(store.resolve_message(message)?.and_then(|found| found.rfc_message_id));
+                threads.extend(store.summary(message)?.map(|summary| summary.thread_id));
+            }
+            Ok((ids, threads))
+        })
+        .await;
+    found.unwrap_or_default()
+}
+
+/// The ids (`m:…`) of every mail of the conversation of the mail with `message_id` in `account`,
+/// its copies included: what an entry holding that conversation holds. Empty when the store holds
+/// no such mail. `Err` only for an account without mail on ([`MailError::NotFound`]) or a store
+/// that failed, so a caller can tell "gone" from "unknown".
+pub async fn conversation_of(mail: &MailService, account: &str, message_id: &str) -> Result<Vec<String>, MailError> {
+    let store = mail.store(account).await?;
+    let rfc = torro_pim::model::bare_message_id(message_id).to_string();
+    let found = store
+        .run(move |store| {
+            let copies = store.messages_by_rfc_id(&rfc)?;
+            let mut ids: Vec<String> = copies.iter().map(|summary| summary.id.clone()).collect();
+            if let Some(newest) = copies.first() {
+                ids.extend(store.thread_newest(&newest.thread_id, THREAD_LOOKUP_MAX)?.into_iter().map(|m| m.id));
+            }
+            Ok(ids)
+        })
+        .await
+        .map_err(MailError::Store)?;
+    Ok(found)
+}
+
+/// At most this many mails of a conversation are looked at ([`conversation_of`]), the newest: a
+/// conversation a sender made up to be huge stays bounded.
+const THREAD_LOOKUP_MAX: u32 = 100;
+
+/// The readable line a task made of a mail ends its description with (task E8.7a): "From mail:
+/// Anna Keller, “Offer”, 13 Oct", so the mail is named also where `X-TORRO-LINK` means nothing
+/// (Nextcloud Tasks, other programs). Sender and subject are the mail's; the day in local time.
+pub fn from_mail_line(summary: &torro_mail::MessageSummary) -> String {
+    let who = summary.from.as_ref().map_or_else(|| tr("unknown sender").to_string(), |from| sender(from).name);
+    let subject = match summary.subject.trim() {
+        "" => tr("(no subject)").to_string(),
+        subject => subject.to_string(),
+    };
+    let day = torro_gui::datetime::format_day_month(summary.date.with_timezone(&chrono::Local).date_naive());
+    trf("From mail: {sender}, “{subject}”, {day}", &[("sender", &who), ("subject", &subject), ("day", &day)])
 }
 
 /// The feed: the inbox it files into, the mail service it listens to, and where the accounts'

@@ -337,6 +337,7 @@ mod tests {
             actions: Vec::new(),
             untrusted: true,
             facets: Vec::new(),
+            task: None,
         }
     }
 

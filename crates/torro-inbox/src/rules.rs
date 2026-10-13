@@ -515,6 +515,7 @@ mod tests {
             actions: Vec::new(),
             untrusted: true,
             facets: Vec::new(),
+            task: None,
         }
     }
 
@@ -699,6 +700,7 @@ mod tests {
         let suite = Item {
             source: SourceRef::suite(),
             facets: vec![facet(FacetKey::Client, "backup")],
+            task: None,
             ..item("p", Kind::Approval)
         };
         let client = muting_rule(SourceRef::suite(), facet(FacetKey::Client, "backup"), MuteEffect::Hide, None);

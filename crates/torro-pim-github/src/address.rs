@@ -141,7 +141,7 @@ pub(crate) fn name_part(part: &str) -> bool {
 /// `https://`, anything after the number ignored). `None` for anything else.
 pub fn issue_ref(input: &str) -> Option<IssueRef> {
     let input = input.trim();
-    if let Some((repo, number)) = (Link { id: input.to_string(), github: None }).github_ref() {
+    if let Some((repo, number)) = (Link { id: input.to_string(), github: None, mail: None }).github_ref() {
         return Some(IssueRef { repo: repo.to_string(), number });
     }
     if let Some((repo, number)) = input.split_once('#')

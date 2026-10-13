@@ -210,6 +210,7 @@ fn entry(now: DateTime<Utc>, n: u32, source: SourceRef, kind: Kind, title: Strin
         actions: Vec::new(),
         untrusted: true,
         facets: Vec::new(),
+        task: None,
     }
 }
 
@@ -704,6 +705,7 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 actions: Vec::new(),
                 untrusted: true,
                 facets: Vec::new(),
+                task: None,
             };
             // The traits the core gives new mail (task E8.6a), its list and bulk from the headers.
             let list = m.traits.list_id.as_deref();

@@ -2610,7 +2610,7 @@ mod tests {
     #[test]
     fn only_web_addresses_are_offered() {
         for url in ["file:///etc/passwd", "javascript:alert(1)", "zoommtg://x", ""] {
-            let other = Link { id: "jira:ABC-1".into(), github: None };
+            let other = Link { id: "jira:ABC-1".into(), github: None, mail: None };
             let task = Todo { url: Some(url.into()), link: Some(other), ..todo("t1", "a") };
             let mut detail = detail_of(&task);
             assert_eq!(detail.link_target(), None, "{url}");

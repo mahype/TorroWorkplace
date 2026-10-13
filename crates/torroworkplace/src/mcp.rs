@@ -1622,6 +1622,45 @@ mod tests {
         assert!(matches!(refused, Err(ToolError::Input(_))), "the list is needed: {refused:?}");
     }
 
+    /// Task E8.7a: the tool takes account, mail and list, optionally title and due day; it writes a
+    /// new task to the server every time.
+    #[test]
+    fn tasks_create_todo_from_mail_builds_its_request() {
+        let arguments =
+            json!({"account": "mail:anna@mailbox.org", "id": "m:1", "collection": "work", "title": "Answer"});
+        let request = request_for("tasks_create_todo_from_mail", args(arguments), &Utc);
+        let wanted = Request::CreateTodoFromMail {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:1".into(),
+            collection: "work".into(),
+            title: Some("Answer".into()),
+            due: None,
+        };
+        assert_eq!(request, Ok(wanted));
+        let refused = request_for("tasks_create_todo_from_mail", args(json!({"id": "m:1", "collection": "w"})), &Utc);
+        assert!(matches!(refused, Err(ToolError::Input(_))), "the account is needed: {refused:?}");
+        let tool = tools().iter().find(|tool| tool.name == "tasks_create_todo_from_mail").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(
+            (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint),
+            (Some(false), Some(false), Some(false))
+        );
+    }
+
+    /// Task E8.7a: `apps_open_app` takes the target as well, and still works without it.
+    #[test]
+    fn apps_open_app_takes_a_target() {
+        let target = json!({"app": "torrotasks", "target": "task:7d1e"});
+        assert_eq!(
+            request_for("apps_open_app", args(target), &Utc),
+            Ok(Request::OpenApp { app: "torrotasks".into(), target: Some("task:7d1e".into()) })
+        );
+        assert_eq!(
+            request_for("apps_open_app", args(json!({"app": "torrocalendar"})), &Utc),
+            Ok(Request::OpenApp { app: "torrocalendar".into(), target: None })
+        );
+    }
+
     /// Task E2.4: the tool takes the entry's id and nothing else.
     #[test]
     fn inbox_open_item_opens_one_entry_by_its_id() {
@@ -1715,6 +1754,7 @@ mod tests {
             actions: Vec::new(),
             untrusted,
             facets: Vec::new(),
+            task: None,
         };
         let listed = result_of(Response::Items { items: vec![entry("a", true), entry("b", false)] });
         let items = &listed.structured_content.expect("structured")["items"];

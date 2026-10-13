@@ -442,6 +442,8 @@ fn describe(request: &Request) -> String {
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
         Request::MoveTodo { .. } => "move todo".into(),
+        // The list only: never the mail account, the mail's id or its Message-ID (task E8.7a).
+        Request::CreateTodoFromMail { collection, .. } => format!("make a task in {collection} of a mail"),
         // Ids only, never a search or a name (tasks G.2, G.7).
         Request::CreateTaskList { account, .. } => format!("create task list in {account}"),
         Request::CreateFilterList { account, .. } => format!("create filter list of {account}"),
@@ -461,7 +463,8 @@ fn describe(request: &Request) -> String {
         Request::Accounts => "accounts".into(),
         Request::RemoveAccount { id } => format!("remove account {id}"),
         Request::RenameTemplate { id, .. } => format!("rename {id}"),
-        Request::OpenApp { app } => format!("open {app}"),
+        // The app only, never the target: it names a mail or a task (task E8.7a).
+        Request::OpenApp { app, .. } => format!("open {app}"),
         Request::ListApps => "apps".into(),
         Request::ListDesigns => "designs".into(),
         Request::ListClients => "clients".into(),
@@ -530,5 +533,29 @@ fn report(what: &str, response: &Response) {
     }
     if let Some((summary, body)) = crate::notify::message(what, response) {
         crate::notify::show(summary, body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task E8.7a: messages about these requests name the list and the app, never the mail
+    /// account, the mail's id, its Message-ID or what an app was opened on.
+    #[test]
+    fn mail_and_targets_stay_out_of_messages() {
+        let task = Request::CreateTodoFromMail {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:0a1b2c3d".into(),
+            collection: "home".into(),
+            title: Some("Answer Anna".into()),
+            due: None,
+        };
+        assert_eq!(describe(&task), "make a task in home of a mail");
+        let open = Request::OpenApp {
+            app: "torro-inbox-mail".into(),
+            target: Some("mail:anna@mailbox.org:<offer@keller.example>".into()),
+        };
+        assert_eq!(describe(&open), "open torro-inbox-mail");
     }
 }

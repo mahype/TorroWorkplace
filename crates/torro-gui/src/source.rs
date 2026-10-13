@@ -41,7 +41,7 @@ impl Source {
     /// core's message (unknown app, cannot start, core not running).
     pub async fn open_app(&self, binary: &str) -> Result<(), String> {
         let Source::Core(client) = self else { return Ok(()) };
-        let request = torro_ipc::Request::OpenApp { app: binary.to_owned() };
+        let request = torro_ipc::Request::OpenApp { app: binary.to_owned(), target: None };
         match torro_ipc::client::call(&client.socket, &request).await {
             Ok(torro_ipc::Response::Ok) => Ok(()),
             Ok(torro_ipc::Response::Error { message, .. }) => Err(message),

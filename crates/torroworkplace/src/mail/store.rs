@@ -40,7 +40,11 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
+
+/// Version 2 (task E8.7a): messages found by their `Message-ID`, which a task's link names
+/// ([`MailStore::messages_by_rfc_id`]), without reading the whole table.
+const SCHEMA_V2: &str = "CREATE INDEX IF NOT EXISTS messages_by_rfc_id ON messages (rfc_message_id);";
 
 const FLAG_SEEN: i64 = 1;
 const FLAG_FLAGGED: i64 = 2;
@@ -716,6 +720,42 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// The messages whose `Message-ID` header is `rfc_message_id` (as the sync stores it: without
+    /// angle brackets), newest first: the same mail can be in several folders (task E8.7a). A task's
+    /// link names a mail this way, so it is found again after it moved to another folder.
+    pub fn messages_by_rfc_id(&self, rfc_message_id: &str) -> Result<Vec<MessageSummary>, MailStoreError> {
+        let sql = format!(
+            "SELECT {SUMMARY_COLUMNS} FROM messages m WHERE m.rfc_message_id = ?1 ORDER BY m.date DESC, m.seq DESC"
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map([rfc_message_id], |row| summary_from_row(&self.account, row))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// How many mails of the conversation `thread_id` are dated after `after` and not sent from
+    /// `own` (the account's address, in any case): the replies that came since (task E8.7a). The
+    /// same mail in several folders counts once (by `Message-ID`; one without counts per copy).
+    pub fn replies_after(&self, thread_id: &str, after: DateTime<Utc>, own: &str) -> Result<u32, MailStoreError> {
+        let sql = format!(
+            "SELECT {SUMMARY_COLUMNS}, m.rfc_message_id FROM messages m WHERE m.thread_id = ?1 AND m.date > ?2"
+        );
+        let mut statement = self.db.prepare(&sql)?;
+        let rows = statement.query_map(params![thread_id, after.timestamp()], |row| {
+            Ok((summary_from_row(&self.account, row)?, row.get::<_, Option<String>>(10)?))
+        })?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut count = 0u32;
+        for row in rows {
+            let (summary, rfc_message_id) = row?;
+            let mine = summary.from.as_ref().is_some_and(|from| from.address.eq_ignore_ascii_case(own));
+            let again = rfc_message_id.is_some_and(|rfc| !seen.insert(rfc));
+            if !mine && !again {
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
     // ----- drafts -----
 
     /// Reserves the id of a new draft and remembers its `author`. The id is a message id: build
@@ -822,10 +862,13 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
         return Ok(());
     }
     let tx = db.unchecked_transaction()?;
-    if let Err(err) = tx.execute_batch(SCHEMA_V1) {
+    if version < 1
+        && let Err(err) = tx.execute_batch(SCHEMA_V1)
+    {
         // `no such module: fts5` from the virtual table.
         return Err(if err.to_string().contains("fts5") { MailStoreError::NoFullText } else { err.into() });
     }
+    tx.execute_batch(SCHEMA_V2)?;
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -1066,6 +1109,33 @@ mod tests {
         let (_tmp, _dirs, store) = open();
         let count: i64 = store.db.query_row("SELECT count(*) FROM mail_fts", [], |row| row.get(0)).expect("fts5");
         assert_eq!(count, 0);
+    }
+
+    /// Task E8.7a: a mail is found by its Message-ID in whatever folder it is, and the replies after
+    /// it count once each, the account's own not at all.
+    #[test]
+    fn a_mail_is_found_by_its_message_id_and_later_replies_count() {
+        let (_tmp, _dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let archive = folder(&store, "Archive", Some(Role::Archive));
+        let sent = folder(&store, "Sent", Some(Role::Sent));
+        let offer = NewMessage { thread_id: "offer".into(), ..message(3, "Offer") };
+        let moved = add(&store, &archive, &offer);
+        assert!(store.messages_by_rfc_id("<3@example.org>").expect("by id").iter().any(|m| m.id == moved));
+        assert!(store.messages_by_rfc_id("<4@example.org>").expect("by id").is_empty());
+        // A reply from Bernd, the same reply in a second folder, and the person's own answer.
+        let reply = NewMessage { thread_id: "offer".into(), ..message(5, "Re: Offer") };
+        add(&store, &inbox, &reply);
+        add(&store, &archive, &NewMessage { uid: 50, ..reply.clone() });
+        let own = NewMessage {
+            thread_id: "offer".into(),
+            from: Some(address(None, "Anna@Example.org")),
+            ..message(6, "Re: Re: Offer")
+        };
+        add(&store, &sent, &own);
+        assert_eq!(store.replies_after("offer", day(3), "anna@example.org").expect("replies"), 1);
+        assert_eq!(store.replies_after("offer", day(5), "anna@example.org").expect("replies"), 0);
+        assert_eq!(store.messages_by_rfc_id("<5@example.org>").expect("copies").len(), 2, "both copies");
     }
 
     #[test]

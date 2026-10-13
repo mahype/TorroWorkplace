@@ -881,23 +881,7 @@ impl PimService {
                     Err(failed) => self.failed(failed).await,
                 }
             }
-            Request::Todos => {
-                let lists = ids(self.seen(reach, Role::TaskList).await);
-                let state = self.state.read().await;
-                // Links come with what GitHub reports, for whom may see it (task G.6).
-                let mut todos: Vec<Todo> = state
-                    .accounts
-                    .iter()
-                    .flat_map(|slot| &slot.todos)
-                    .filter(|t| lists.contains(&t.collection))
-                    .map(|todo| reach.with_details(todo.clone(), &state.links))
-                    .collect();
-                // Filter lists: every item checked against the client's repositories first.
-                let filters = state.filters.iter().flat_map(|slot| &slot.lists);
-                let seen = filters.filter(|list| lists.contains(&list.collection.id));
-                todos.extend(seen.flat_map(|list| &list.todos).filter_map(|todo| reach.todo_for(todo)));
-                Response::Todos { todos }
-            }
+            Request::Todos => Response::Todos { todos: self.todos_within(reach).await },
             // The core hands in the account's token (`crate::core`); without it GitHub cannot be asked.
             Request::SaveTodo { todo } if self.is_filter_list(&todo.collection).await => {
                 self.save_filter_todo(todo, None, reach).await
@@ -927,6 +911,34 @@ impl PimService {
             },
             _ => error("error", "not a calendar or task request".into()),
         }
+    }
+
+    /// The tasks of every task list `reach` sees, as `tasks.list_todos` answers them: links with
+    /// what GitHub reports for whom may see it (task G.6), the items of filter lists checked
+    /// against a client's repositories first. Mail details ([`Link::mail`]) are the core's to add
+    /// (task E8.7a); here they are always left out, also when a client sent them along.
+    pub async fn todos_within(&self, reach: Reach<'_>) -> Vec<Todo> {
+        let lists = ids(self.seen(reach, Role::TaskList).await);
+        let state = self.state.read().await;
+        let mut todos: Vec<Todo> = state
+            .accounts
+            .iter()
+            .flat_map(|slot| &slot.todos)
+            .filter(|t| lists.contains(&t.collection))
+            .map(|todo| reach.with_details(todo.clone(), &state.links))
+            .collect();
+        let filters = state.filters.iter().flat_map(|slot| &slot.lists);
+        let seen = filters.filter(|list| lists.contains(&list.collection.id));
+        todos.extend(seen.flat_map(|list| &list.todos).filter_map(|todo| reach.todo_for(todo)));
+        for link in todos.iter_mut().filter_map(|todo| todo.link.as_mut()) {
+            link.mail = None;
+        }
+        todos
+    }
+
+    /// The task lists `reach` sees, as `tasks.list_lists` answers them.
+    pub async fn task_lists_within(&self, reach: Reach<'_>) -> Vec<Collection> {
+        self.seen(reach, Role::TaskList).await
     }
 
     /// The cached collections of all accounts that `reach` sees as `role`.
@@ -964,6 +976,14 @@ impl PimService {
             Request::SaveTodo { todo } if self.links_elsewhere(reach, todo).await => {
                 return todo.link.as_ref().map(|link| link.id.clone());
             }
+            // A mail link set or changed to an account the client may not read (task E8.7a): the
+            // suite reports a finished task of a mail that waits, so a client could otherwise make
+            // it speak of mail it never saw.
+            Request::SaveTodo { todo } if self.links_unread_mail(reach, todo).await => {
+                return todo.link.as_ref().and_then(Link::mail_ref).map(|(account, _)| account.to_string());
+            }
+            // The list as `tasks.save_todo` checks it; the mail by account in the core (task E8.7a).
+            Request::CreateTodoFromMail { collection, .. } => (Role::TaskList, collection, None),
             Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
                 (Role::TaskList, &todo.collection, todo.href.as_deref())
             }
@@ -2931,6 +2951,20 @@ impl PimService {
     /// link would write the item's title from GitHub into the task, where the client reads it.
     async fn links_elsewhere(&self, reach: Reach<'_>, todo: &Todo) -> bool {
         new_link(&*self.state.read().await, todo).is_some_and(|issue| !reach.reaches_repo(&issue.repo))
+    }
+
+    /// For a client: `todo` sets or changes a mail link (`mail:<address>:<Message-ID>`, task E8.7a)
+    /// to an account it may not read (read access to `mail` and the account in its
+    /// `mail_accounts`). Keeping the link it read (the cached task at its `href` has the same id)
+    /// is fine, so a client may still tick a task a person made of a mail.
+    async fn links_unread_mail(&self, reach: Reach<'_>, todo: &Todo) -> bool {
+        let Reach::Client(rights) = reach else { return false };
+        let Some((account, _)) = todo.link.as_ref().and_then(Link::mail_ref) else { return false };
+        let state = self.state.read().await;
+        let held = todo.href.as_deref().and_then(|href| cached_todo(&state, href)).and_then(|held| held.link.as_ref());
+        let kept = held.zip(todo.link.as_ref()).is_some_and(|(held, sent)| held.id == sent.id);
+        let reads = rights.area(Area::Mail).allows(Access::Read) && rights.reaches_mail_account(account);
+        !(kept || reads)
     }
 
     /// For a client: why it may not save `todo` – `forbidden` ([`NO_GITHUB_LINK`]) when it sets or

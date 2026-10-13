@@ -83,6 +83,7 @@ impl Item {
                     checks: self.checks,
                     conflict: self.conflict,
                 }),
+                mail: None,
             }),
         }
     }

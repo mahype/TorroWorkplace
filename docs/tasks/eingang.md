@@ -929,13 +929,27 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Sichtprüfung des Menüs (Breit, Schmal, beide Dichten) und der Regelseite; Undo.
 
 ### E8.7a Aufgabe mit Rückbezug: Kern
-- [ ] erledigt
+- [x] erledigt (Konto-Id `mail:<adresse>` aus `accounts.list_accounts`, Kennung `mail:<adresse>:<Message-ID>` mit
+  der Message-ID ohne spitze Klammern, wie der Speicher sie hält (`torro_pim::model::bare_message_id`); `Link.mail`
+  als `Option<Box<MailDetails>>`, sonst schlägt Clippy wegen der Größe von `torro_pim::Change` an; Index auf die
+  Message-ID im Mail-Speicher (Schema 2), `task_notes` in `inbox.sqlite` (Schema 5); ein Eintrag zeigt auch die
+  Aufgabe einer Mail derselben Unterhaltung; „Reply“/„Mark mail done“ als Knöpfe erst mit E8.7b (aus `task.link`,
+  `task.mail_entry`), weil neue `Action`-Fälle `torroinbox` brechen; `save_todo` setzt `mail:`-Links nur mit
+  Leserecht aufs Konto; `open_app` mit Ziel startet immer ein neues Fenster, die Apps lesen `--message`/`--task`
+  und zeigen es ab E8.7b; GitHub-Einträge gibt es im Eingang noch nicht (E5), andere Quellen bleiben `inbox:`;
+  Handprüfung in Nextcloud Tasks offen; `docs/api-reference.md` gibt es nicht)
 - **Modell:** Opus · **Braucht:** E3.5, E4.1 · **Dateien:** `crates/torro-pim/src/model.rs`,
   `crates/torro-pim-caldav/src/{ical,write}.rs`, `crates/torro-ipc/src/{lib,api,inbox}.rs`,
   `crates/torro-inbox/src/item.rs`, `crates/torroworkplace/src/{core,inbox,pim,mcp,approvals,apps}.rs`,
   `crates/torroworkplace/src/mail/{store,inbox_feed}.rs`, `crates/torroinbox/src/main.rs`,
   `crates/torrotasks/src/main.rs` (Startziel), `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`; Doku:
-  `docs/{api,eingang}.md`
+  `docs/{api,eingang}.md`; zusätzlich freigegeben (2026-10-13), nur so weit der Compiler es erzwingt (`mail: None`,
+  `task: None`, `target: None`, Muster mit `..`): `crates/torro-pim-github/src/{address,item}.rs`,
+  `crates/torro-pim/src/demo.rs`, `crates/torrotasks/src/{detail,list,app}.rs` (nur die genannten Stellen),
+  `crates/torro-inbox/src/{source,rules,demo}.rs`, `crates/torroworkplace/src/{inbox_notify,daemon,audit}.rs`,
+  `crates/torroworkplace/src/ui/{apps,inbox,mod}.rs`, `crates/torroworkplace/src/tray/menu.rs`,
+  `crates/torro-gui/src/source.rs`; in `audit.rs` und `daemon.rs` je ein echter Zweig mit Test; neue Testdaten
+  `crates/torro-pim-caldav/tests/fixtures/nextcloud-tasks-mail-link.ics`
 - **Kennung:** `inbox.create_task_from_item` schreibt für Mail `mail:<konto-id>:<Message-ID>`, für GitHub wie bisher
   `github:…`, sonst `inbox:<id>`. `<konto-id>` ist die feste Kennung des Kontos aus `accounts.list_accounts`, denn die
   Kennung liegt dauerhaft auf dem CalDAV-Server. Dazu eine lesbare Zeile am Ende der Beschreibung („From mail: …“,
