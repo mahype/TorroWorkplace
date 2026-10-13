@@ -739,6 +739,22 @@ E8.9   unabhängig (torro-wm, core.rs)
   `AppId::ALL` enthält die drei Einträge; eine Vorlage mit Mail-Fenster stellt es als Mail-Fenster wieder her.
   Sichtprüfung je Fensterart in Breit und Schmal.
 
+### E8.1b Nacharbeit: Fensterarten überall erkennen
+- [ ] erledigt
+- **Modell:** Haiku · **Braucht:** E8.1, E8.9 · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
+  `crates/torroinbox/src/detail.rs`, `crates/torroworkplace/src/ui/apps.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Verweise auf Apps:** Ein Eintrag mit `Link::App` wird heute nur über den Programmnamen erkannt
+  (`inbox.rs`, Prüfung beim Melden und Öffnen; `detail.rs`, Knopf und Wort). Ein Verweis auf eine Fensterklasse
+  (`torro-inbox-mail`) wird darum abgelehnt. Beide Stellen nutzen `AppId::find`; Unbekanntes bleibt abgelehnt
+  (Sicherheitsregel 6).
+- **Steuerzentrale › Apps:** Name und Beschreibung werden je Eintrag gewählt, nicht je Programm. Die drei
+  Inbox-Zeilen zeigen ihren übersetzten Namen und je eine Zeile Beschreibung (Mail: „Your mail, from a quick look to
+  a full client“; Benachrichtigungen: „What your apps report, one column per app“; Zentrale: „Decide, hand on and
+  see where it all comes from“).
+- **API:** vorhandene `inbox.post_item`, `inbox.open_item`, `apps.list_apps`. **MCP:** vorhandene Tools.
+- **Abnahme:** Tests: Verweis auf `torro-inbox-mail` wird angenommen und geöffnet, unbekannte Fensterklasse →
+  abgelehnt; Steuerzentrale zeigt drei verschiedene Namen und Beschreibungen. Übersetzungen im Bericht.
+
 ### E8.2 Zwei Dichten und Bausteine für Karten
 - [ ] erledigt
 - **Modell:** Opus · **Braucht:** E8.1 · **Dateien:** `crates/torro-core/src/{design.rs,design/rules.rs}`,
