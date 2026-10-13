@@ -778,7 +778,12 @@ E8.9   unabhängig (torro-wm, core.rs)
   das Merken in `ui.json` und den Vorrang von `--density`.
 
 ### E8.3 Mail-Fenster
-- [ ] erledigt
+- [x] erledigt (Mail-Fenster zeigt nur Mail, `Kind::keeps`; „For me“ ist seine Übersicht, „Snoozed“ heißt dort
+  „Later“; Karten nur im Mail-Fenster, `list::Look`; Leser neben der Liste nur in Breit, Mittel/Schmal behalten das
+  Paneel; Smart view nur „With attachments“ über die ersten Seiten der Posteingänge – **„Invitations“ und Accept ·
+  Maybe · Decline fehlen**: `MessageSummary` hat kein Einladungs-Merkmal und es gibt keinen Request zum Beantworten
+  (neue Kern-Aufgabe nötig); kein „Answer by Fri“-Chip, dafür fehlen Daten; Ordner-Karten: Reply · Archive, „Task“
+  mit E8.7b; Sichtprüfung am Mac über AeroSpace: sechs Größen, beide Dichten, hell, dunkel, Plex)
 - **Modell:** Opus · **Braucht:** E8.2 · **Dateien:** `crates/torroinbox/src/{app,mail,list,detail,overview,keys,glance}.rs`,
   `crates/torro-core/src/i18n/de.rs`
 - **Breit:** Seitenleiste mit For me, Info, Later, Done, „Smart views“ (Einladungen, mit Anhang) und je Konto die

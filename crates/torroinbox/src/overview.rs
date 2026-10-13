@@ -18,6 +18,11 @@
 //! - **Keys** (`keys.rs`): `j`/`k` walk the column ([`Sections::order`]), `h`/`l` and ←/→ change the
 //!   column; the app keeps which column has the cursor.
 //!
+//! - **Cards** (task E8.3, `list::Look::Cards`, the comfortable density of the mail window): the
+//!   groups are quiet captions ("Today · 4", [`caption`]) over a column of mail cards
+//!   (`list::entry_card`), "Info" folded at the end as before. In narrow windows the column starts
+//!   with how many mails are new for the user and from whom ([`ColumnData::lead`], [`lead`]).
+//!
 //! A column with nothing for the user says so quietly ([`calm`]); a column with nothing at all shows
 //! the empty state of its own.
 //!
@@ -39,7 +44,7 @@ use torro_inbox::{Item, Lane, Link, SourceKind};
 
 use crate::app::Message;
 use crate::detail;
-use crate::list::{self, Rows};
+use crate::list::{self, Look, Rows};
 
 /// A column of the overview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -227,10 +232,29 @@ fn calm_height() -> f32 {
     size::row_message()
 }
 
+/// The height of the caption over a group of cards ([`caption`]): its line with [`space::m()`]
+/// above and [`space::s()`] below.
+fn caption_height() -> f32 {
+    space::m() + typo::line_height(typo::caption()) + space::s()
+}
+
+/// The height of the lead of a narrow column of cards ([`lead`]): the big number or its two lines
+/// beside it, whichever is higher, under [`space::xs()`].
+fn lead_height() -> f32 {
+    let words = typo::line_height(typo::body_strong()) + typo::line_height(typo::meta());
+    space::xs() + typo::line_height(typo::display()).max(words)
+}
+
 /// Where the row (or card) of `id` lies in the scrolling content of a column with `sections`, as
 /// `(top, bottom)`; the first of a group starts at its head, so scrolling up to it shows the head.
 /// Rows of "Info" only while it is unfolded (`info_open`). `None` for an entry not shown.
-pub fn row_span(sections: &Sections<'_>, info_open: bool, id: &str) -> Option<(f32, f32)> {
+///
+/// With cards (`look`, task E8.3) the heads are captions and the entries cards; `lead` says whether
+/// the column starts with its [`lead`] ([`cards_span`]).
+pub fn row_span(sections: &Sections<'_>, info_open: bool, id: &str, look: Look, lead: bool) -> Option<(f32, f32)> {
+    if look.cards() {
+        return cards_span(sections, info_open, id, look, lead);
+    }
     let head = list::group_head() - list::head_trim();
     let mut y = 0.0;
     for (group, items) in &sections.groups {
@@ -262,6 +286,42 @@ pub fn row_span(sections: &Sections<'_>, info_open: bool, id: &str) -> Option<(f
     y += size::row();
     for item in sections.info.iter().filter(|_| info_open) {
         let height = list::row_height_of(item);
+        if item.id == id {
+            return Some((y, y + height));
+        }
+        y += height;
+    }
+    None
+}
+
+/// [`row_span`] for a column of cards: the lead, then per group its caption and its cards with
+/// [`size::card_gap()`] between them, the calm line when "For me" is empty, the "Info" toggle
+/// [`space::m()`] below, and – unfolded – the cards of "Info" [`space::s()`] below it.
+fn cards_span(sections: &Sections<'_>, info_open: bool, id: &str, look: Look, lead: bool) -> Option<(f32, f32)> {
+    let mut y = list::cards_inset().top + if lead { lead_height() } else { 0.0 };
+    for (_, items) in &sections.groups {
+        let start = y;
+        y += caption_height();
+        for (i, item) in items.iter().enumerate() {
+            if i > 0 {
+                y += size::card_gap();
+            }
+            let height = list::height_of(item, look);
+            if item.id == id {
+                return Some((if i == 0 { start } else { y }, y + height));
+            }
+            y += height;
+        }
+    }
+    if sections.groups.is_empty() {
+        y += calm_height();
+    }
+    y += space::m() + size::row() + space::s();
+    for (i, item) in sections.info.iter().filter(|_| info_open).enumerate() {
+        if i > 0 {
+            y += size::card_gap();
+        }
+        let height = list::height_of(item, look);
         if item.id == id {
             return Some((y, y + height));
         }
@@ -302,6 +362,9 @@ pub struct ColumnData<'a> {
     /// The column's head (icon, name, number): in the wide layout, where both columns stand side by
     /// side; medium and narrow name the column in the header bar instead.
     pub head: bool,
+    /// With cards in a narrow window (task E8.3): how many mails are new for the user and the line
+    /// of their newest senders ("From Anna, Ben, Chris", `glance::senders_text`), over the cards.
+    pub lead: Option<(usize, String)>,
 }
 
 /// One column: its head (when [`ColumnData::head`]), then its groups, cards and rows, the calm line
@@ -357,8 +420,11 @@ fn head<'a>(column: Column, for_me: usize) -> Element<'a, Message> {
     .into()
 }
 
-/// The scrolling content of a column `width` wide.
+/// The scrolling content of a column `width` wide: rows, or cards ([`content_cards`]).
 fn content_rows<'a>(data: &ColumnData<'a>, width: f32) -> Element<'a, Message> {
+    if data.rows.look.cards() {
+        return content_cards(data, width);
+    }
     let mut rows = column![].width(Fill);
     for (group, items) in &data.sections.groups {
         let head = widgets::group_head(group.mark(data.attention), group.label(), Some(items.len()), None);
@@ -380,6 +446,51 @@ fn content_rows<'a>(data: &ColumnData<'a>, width: f32) -> Element<'a, Message> {
         rows = rows.extend(data.sections.info.iter().map(|item| list::entry_row(item, &data.rows, width)));
     }
     rows.into()
+}
+
+/// The scrolling content of a column of cards `width` wide (task E8.3): the [`lead`], every group
+/// under its [`caption`] as a column of cards, the calm line, "Info" with its cards – laid out as
+/// [`cards_span`] counts it.
+fn content_cards<'a>(data: &ColumnData<'a>, width: f32) -> Element<'a, Message> {
+    let inner = width - list::cards_side();
+    let cards = |items: &[&'a Item]| {
+        column(items.iter().map(|item| list::entry_card(item, &data.rows, inner))).spacing(size::card_gap())
+    };
+    let mut content = column![].width(Fill);
+    if let Some((count, senders)) = &data.lead {
+        content = content.push(lead(*count, senders.clone()));
+    }
+    for (group, items) in &data.sections.groups {
+        content = content.push(caption(group.label(), items.len())).push(cards(items));
+    }
+    if data.sections.groups.is_empty() {
+        content = content.push(calm(data.column));
+    }
+    let toggle = info_toggle(data.column, data.sections.info.len(), data.info_open);
+    content = content.push(container(toggle).padding(Padding::new(0.0).top(space::m()).bottom(space::s())));
+    if data.info_open {
+        content = content.push(cards(&data.sections.info));
+    }
+    container(content).padding(list::cards_inset()).into()
+}
+
+/// The caption over a group of cards: "Today · 4" in `CAPTION` and `text_3` (sentence case, as the
+/// design's groups), [`space::m()`] above and [`space::s()`] below it.
+fn caption<'a>(label: &str, count: usize) -> Element<'a, Message> {
+    let words = typo::text(typo::caption(), format!("{label} · {count}")).style(theme::text_3).wrapping(Wrapping::None);
+    container(words).padding(Padding::new(0.0).top(space::m()).bottom(space::s()).left(space::xs())).into()
+}
+
+/// The lead of a narrow column of cards (task E8.3, "N new for you"): the number in `DISPLAY`,
+/// beside it "new for you" and the newest senders in `META`.
+fn lead<'a>(count: usize, senders: String) -> Element<'a, Message> {
+    let figure = typo::text(typo::display().tabular(), count.to_string()).style(theme::text).wrapping(Wrapping::None);
+    let words = column![
+        typo::text(typo::body_strong(), tr("new for you")).style(theme::text).wrapping(Wrapping::None),
+        container(typo::text(typo::meta(), senders).style(theme::text_3).wrapping(Wrapping::None)).clip(true),
+    ];
+    let line = row![figure, words].spacing(space::m()).align_y(Alignment::Center);
+    container(line).padding(Padding::new(0.0).top(space::xs()).left(space::xs())).into()
 }
 
 /// The quiet line of a column whose "For me" is empty while "Info" has entries: what would show up
@@ -559,8 +670,8 @@ mod tests {
         let open = notices.order(true);
         assert_eq!(open.len(), folded.len() + 3);
         assert_eq!(ids(&open[folded.len()..]), ["demo-8", "demo-9", "demo-7"], "unfolded: at the end");
-        assert_eq!(row_span(&notices, false, "demo-8"), None, "a folded row is not shown");
-        assert!(row_span(&notices, true, "demo-8").is_some());
+        assert_eq!(row_span(&notices, false, "demo-8", Look::Rows, false), None, "a folded row is not shown");
+        assert!(row_span(&notices, true, "demo-8", Look::Rows, false).is_some());
     }
 
     #[test]
@@ -569,10 +680,13 @@ mod tests {
         let notices = Sections::of(&items, Column::Notices, now());
         let head = list::group_head() - list::head_trim();
         let card = card_height(notices.groups[0].1[0]);
-        assert_eq!(row_span(&notices, false, "demo-1"), Some((0.0, head + space::s() + card + space::s())));
+        assert_eq!(
+            row_span(&notices, false, "demo-1", Look::Rows, false),
+            Some((0.0, head + space::s() + card + space::s()))
+        );
         let block = cards_height(&notices.groups[0].1);
         let today = &notices.groups[1].1;
-        let first = row_span(&notices, false, &today[0].id).expect("the first row of Today");
+        let first = row_span(&notices, false, &today[0].id, Look::Rows, false).expect("the first row of Today");
         assert_eq!(first, (block + head, block + 2.0 * head + size::row_notice()), "its head comes along");
         let rows: f32 = today.iter().map(|item| list::row_height_of(item)).sum();
         // Yesterday and Earlier, each with its head, lie between Today and Info.
@@ -581,7 +695,7 @@ mod tests {
             .map(|(_, items)| head + items.iter().map(|item| list::row_height_of(item)).sum::<f32>())
             .sum();
         let info = block + 2.0 * head + rows + later + size::row();
-        assert_eq!(row_span(&notices, true, "demo-8"), Some((info, info + size::row_notice())));
+        assert_eq!(row_span(&notices, true, "demo-8", Look::Rows, false), Some((info, info + size::row_notice())));
         // An approval's card has buttons, so it is taller than a card without.
         let approval = notices.groups[0].1.iter().find(|item| detail::is_approval(item)).expect("an approval");
         let mut plain = (*approval).clone();
@@ -596,7 +710,7 @@ mod tests {
         assert!(mail.groups.is_empty() && !mail.info.is_empty() && !mail.is_empty());
         let first = &mail.info[0].id;
         assert_eq!(
-            row_span(&mail, true, first),
+            row_span(&mail, true, first, Look::Rows, false),
             Some((calm_height() + size::row(), calm_height() + size::row() + size::row_message()))
         );
         assert!(Sections::of(&[], Column::Mail, now()).is_empty());
@@ -642,5 +756,30 @@ mod tests {
             (Column::Mail.info_key(), Column::Notices.info_key()),
             ("overview.mail.info", "overview.notices.info")
         );
+    }
+
+    /// Task E8.3: a column of cards counts the lead, the captions, the cards and their gaps, the
+    /// "Info" toggle and the cards of "Info".
+    #[test]
+    fn spans_of_cards_count_captions_gaps_and_the_lead() {
+        let items = open();
+        let mail = Sections::of(&items, Column::Mail, now());
+        let look = Look::Cards { words: false };
+        let today = &mail.groups[0].1;
+        let height = |item: &Item| list::height_of(item, look);
+        let top = list::cards_inset().top;
+        assert_eq!(
+            row_span(&mail, false, &today[0].id, look, false),
+            Some((top, top + caption_height() + height(today[0])))
+        );
+        let second = top + caption_height() + height(today[0]) + size::card_gap();
+        assert_eq!(row_span(&mail, false, &today[1].id, look, false), Some((second, second + height(today[1]))));
+        let led = row_span(&mail, false, &today[1].id, look, true).expect("with the lead");
+        assert_eq!(led.0, second + lead_height(), "the lead comes first");
+        assert_eq!(row_span(&mail, false, &mail.info[0].id, look, false), None, "Info folded");
+        let (info, _) = row_span(&mail, true, &mail.info[0].id, look, false).expect("Info unfolded");
+        let last = mail.groups.last().and_then(|(_, items)| items.last()).expect("a last card");
+        let (_, end) = row_span(&mail, false, &last.id, look, false).expect("the last card of For me");
+        assert_eq!(info, end + space::m() + size::row() + space::s());
     }
 }

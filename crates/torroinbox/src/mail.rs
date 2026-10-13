@@ -13,7 +13,11 @@
 //! - Reply, reply all and forward open the compose window (task E4.3) as its own process
 //!   ([`compose_command`]): `torroinbox --compose --reply <id>`, `--reply-all <id>` or
 //!   `--forward <id>`, started like the suite starts its programs ([`source::sibling`]).
-//! - [`list`] draws a folder's messages, [`body`] the whole mail for the panel.
+//! - [`list`] draws a folder's messages – rows, or cards in the comfortable density of the mail
+//!   window (task E8.3, [`message_card`]) – and the smart view "With attachments" ([`attachments`]:
+//!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
+//!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3): Reply ·
+//!   Reply all · Forward | Done · Later · Task, the text in the reading level (`typo::read()`).
 //!
 //! **Mail is foreign text** (`untrusted`). The core turns HTML into text and fetches nothing it
 //! names, so no picture or other content from the web is ever loaded. The text is drawn as it is;
@@ -28,23 +32,26 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, responsive, rich_text, row, scrollable, span, svg, text_input};
+use iced::widget::{column, container, responsive, rich_text, row, rule, scrollable, span, svg, text_input};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
+use torro_gui::layout;
 use torro_gui::panel;
 use torro_gui::source;
-use torro_gui::theme::{self, palette, space};
-use torro_gui::widgets::{self, Anchor, Mark};
+use torro_gui::theme::{self, palette, size, space};
+use torro_gui::widgets::{self, Anchor, Mark, RowAction};
 use torro_gui::{datetime, style, typo};
 use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
+use torro_inbox::{Item, Lane, State};
 use torro_ipc::inbox::InboxClient;
 use torro_ipc::mail::{MoveRole, MoveTarget};
 use torro_mail::{AttachmentInfo, Flag, Folder, MailAddress, Message as Mail, MessageSummary, Role};
 
-use crate::app::{INBOX, Message};
-use crate::list;
+use crate::app::{INBOX, Message, View};
+use crate::detail;
+use crate::list::{self, Look};
 
 /// How many messages one page of a folder holds.
 pub const PAGE: u32 = 50;
@@ -617,8 +624,9 @@ pub fn subject(summary: &MessageSummary) -> String {
 /// What the message list gets to draw.
 pub struct MailList<'a> {
     pub messages: &'a [MessageSummary],
-    /// The folder shown; `None` while a window of mail waits for its folders.
-    pub folder: Option<&'a FolderView>,
+    /// The view shown: a folder, the smart view of attachments, or a window of mail waiting for
+    /// its folders ([`View::Mail`]).
+    pub view: &'a View,
     /// The mail accounts have no folders at all (no account connected).
     pub no_accounts: bool,
     /// Id of the message under the cursor.
@@ -633,31 +641,44 @@ pub struct MailList<'a> {
     pub more: bool,
     /// The attention colour of the theme, for the flag.
     pub attention: Color,
+    /// Rows or cards (task E8.3).
+    pub look: Look,
 }
 
 /// A folder's messages, scrolling, with "Load more" at the end when there are more; the empty
 /// state of the folder or the search when there are none.
 pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
     if data.messages.is_empty() {
-        let (which, title, hint) = match data.folder {
-            None if data.no_accounts => {
+        let (which, title, hint) = match data.view {
+            _ if data.no_accounts => {
                 (Icon::Mail, tr("No mail account yet."), tr("Connect one in Settings, under Accounts."))
             }
-            None => return widgets::loading(),
-            Some(folder) if folder.query.is_some() => (Icon::Search, tr("No messages found."), tr("Try other words.")),
-            Some(folder) => {
+            View::Folder(folder) if folder.query.is_some() => {
+                (Icon::Search, tr("No messages found."), tr("Try other words."))
+            }
+            View::Folder(folder) => {
                 (folder_icon(folder.role), tr("No messages here."), tr("Mail in this folder shows up here."))
             }
+            View::Attachments => {
+                (Icon::Paperclip, tr("No attachments."), tr("New mail with attachments shows up here."))
+            }
+            _ => return widgets::loading(),
         };
         return list::empty_state(which, title, hint);
     }
     responsive(move |bounds| rows(&data, bounds.width)).into()
 }
 
-/// The rows at `width`.
+/// The rows at `width`, or a column of cards.
 fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
     let mut rows = column![].width(Fill);
-    rows = rows.extend(data.messages.iter().map(|message| message_row(data, message, width)));
+    if let Look::Cards { words } = data.look {
+        let inner = width - list::cards_side();
+        let cards = data.messages.iter().map(|message| message_card(data, message, inner, words));
+        rows = rows.push(container(column(cards).spacing(size::card_gap())).padding(list::cards_inset()));
+    } else {
+        rows = rows.extend(data.messages.iter().map(|message| message_row(data, message, width)));
+    }
     if data.more {
         let more = widgets::text_button(None, tr("Load more"), style::button::ghost, Some(Message::MoreMail));
         rows = rows.push(container(more).width(Fill).center_x(Fill).padding(space::s()));
@@ -706,6 +727,75 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     if selected { widgets::anchored(&data.anchor, row) } else { row }
 }
 
+/// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row, as chips
+/// "Attachments" and "Flagged", and its buttons Reply (`r`) and Archive (`e`, what "done" is in a
+/// folder). "Task" comes to a folder's messages with E8.7b; a message has no "Later" of its own.
+/// In the smart view of attachments, which holds every account's mail, the head names the account.
+fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32, words: bool) -> Element<'a, Message> {
+    let mut chips = Vec::new();
+    if message.has_attachments {
+        chips.push(widgets::state_pill(Icon::Paperclip, tr("Attachments")));
+    }
+    if message.flags.contains(&Flag::Flagged) {
+        chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
+    }
+    let id = || message.id.clone();
+    let buttons = vec![
+        RowAction::new(Icon::Reply, tr("Reply"), "R", Message::Mail(MailAction::Reply, id())),
+        RowAction::new(Icon::Archive, tr("Archive"), "E", Message::Mail(MailAction::Archive, id())),
+    ];
+    let (name, domain) = sender_parts(message.from.as_ref());
+    let account = data.accounts.iter().position(|account| *account == address(&message.account));
+    let several = *data.view == View::Attachments && data.accounts.len() > 1;
+    let lines = list::MailLines {
+        name,
+        domain,
+        time: list::ago(message.date, data.now),
+        marks: Vec::new(),
+        subject: subject(message),
+        new: !message.flags.contains(&Flag::Seen),
+        count: None,
+        preview: Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty()),
+        account,
+        account_name: several.then(|| account_name(&message.account)),
+    };
+    let selected = data.selected == Some(message.id.as_str());
+    let card = list::MailCard {
+        lines,
+        chips,
+        buttons,
+        more: None,
+        words,
+        selected,
+        on_press: Message::SelectMail(message.id.clone()),
+    };
+    let card = list::mail_card(card, width);
+    if selected { widgets::anchored(&data.anchor, card) } else { card }
+}
+
+/// The height of the card of `message` with its buttons with `words` ([`message_card`]).
+pub fn message_card_height(message: &MessageSummary, words: bool) -> f32 {
+    let chips = message.has_attachments || message.flags.contains(&Flag::Flagged);
+    list::mail_card_height(!list::one_line(&message.snippet).is_empty(), chips, words)
+}
+
+/// The name of the account `mail:<address>` on a card: the domain of its address, as a row names
+/// an entry's account (`list::account_label`).
+fn account_name(account: &str) -> String {
+    let address = address(account);
+    torro_inbox::rules::domain_of(address).unwrap_or_else(|| list::one_line(address))
+}
+
+/// The smart view "With attachments" (task E8.3): of the messages of every account's inbox, newest
+/// first, those with attachments, newest first. `pages` are the first pages of the inboxes as
+/// `mail.search_messages` answered them; nothing new is asked of the core.
+pub fn attachments(pages: Vec<Vec<MessageSummary>>) -> Vec<MessageSummary> {
+    let mut found: Vec<MessageSummary> =
+        pages.into_iter().flatten().filter(|message| message.has_attachments).collect();
+    found.sort_by_key(|message| std::cmp::Reverse(message.date));
+    found
+}
+
 /// The sender of a message for its row: the name (else the address, else "Unknown sender") and the
 /// domain of the address when the name is not the address itself – as `list::sender` has it for
 /// mail entries.
@@ -746,6 +836,7 @@ pub fn search_bar<'a>(input: &str, folder: &FolderView) -> Element<'a, Message> 
 }
 
 /// What the panel shows of a mail.
+#[derive(Debug, Clone, Copy)]
 pub struct Reading<'a> {
     /// The message's id.
     pub id: &'a str,
@@ -762,6 +853,12 @@ pub struct Reading<'a> {
     pub in_trash: bool,
     /// Show the date under the sender; an entry's panel says when already ("Properties").
     pub dated: bool,
+    /// The text in the reading level (`typo::read()`, task E8.3): the comfortable density of the
+    /// mail window; `BODY` otherwise.
+    pub read: bool,
+    /// The account's place among the mail accounts, for the colour of the reader's avatar
+    /// (`list::account_index`).
+    pub account: Option<usize>,
 }
 
 impl<'a> Reading<'a> {
@@ -809,10 +906,274 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
                 let rows = files.into_iter().map(|file| attachment_row(reading.id, file)).collect();
                 body = body.push(widgets::prop_section(tr("Attachments"), rows));
             }
-            body = body.push(panel::inset(text_block(mail, reading.link)));
+            body = body.push(panel::inset(text_block(mail, reading.link, text_level(reading.read))));
         }
     }
     body.into()
+}
+
+/// The level of a mail's text: the reading level in the comfortable mail window, else `BODY`.
+fn text_level(read: bool) -> typo::Level {
+    if read { typo::read() } else { typo::body() }
+}
+
+/// The entry a mail in the reader belongs to (task E8.3): its buttons Done, Later and Task act on
+/// it, as `e`, `s` and `t` do.
+#[derive(Debug, Clone, Copy)]
+pub struct ReaderEntry<'a> {
+    pub item: &'a Item,
+    /// "Hide from inbox" has entries for it (`App::hide_choices`): the reader shows its "…".
+    pub hide: bool,
+}
+
+/// The reader of the wide mail window (task E8.3), beside the list: the mail's actions at the top
+/// ([`reader_actions`]), the subject (`HEADLINE`, in compact `TITLE`), the sender with the large
+/// avatar, to whom and when, then the text – in the reading level ([`Reading::read`]) – with its
+/// notes and the attachments. At most [`size::content_max()`] wide, with the page's padding,
+/// scrolling. `entry` is the mail entry the mail belongs to, `None` for a folder's message;
+/// `anchors` are where the menus of its buttons open (the app's window).
+pub fn reader<'a>(
+    reading: Reading<'a>,
+    entry: Option<ReaderEntry<'a>>,
+    anchors: detail::Anchors,
+    comfortable: bool,
+) -> Element<'a, Message> {
+    responsive(move |bounds| {
+        let pad = layout::page_padding();
+        let room = (bounds.width - pad.left - pad.right).clamp(0.0, size::content_max());
+        let content = reader_content(&reading, entry, &anchors, comfortable, room);
+        let page = container(content).padding(pad);
+        scrollable(page)
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .width(Fill)
+            .height(Fill)
+            .into()
+    })
+    .into()
+}
+
+/// The reader's content `room` wide ([`reader`]).
+fn reader_content<'a>(
+    reading: &Reading<'a>,
+    entry: Option<ReaderEntry<'a>>,
+    anchors: &detail::Anchors,
+    comfortable: bool,
+    room: f32,
+) -> Element<'a, Message> {
+    let gap = if comfortable { layout::section_gap() } else { space::l() };
+    let mut body = column![].spacing(gap).width(room);
+    let Some(summary) = reading.summary() else {
+        return body.push(note(tr("Loading the message…"))).into();
+    };
+    body = body.push(reader_actions(reading, summary, entry, anchors, comfortable, room));
+    let level = if comfortable { typo::headline() } else { typo::title() };
+    body = body.push(typo::text(level, subject(summary)).style(theme::text).wrapping(Wrapping::WordOrGlyph));
+    body = body.push(reader_sender(reading, summary, comfortable, room));
+    if !comfortable {
+        body = body.push(rule::horizontal(size::HAIRLINE).style(style::rule));
+    }
+    match reading.loaded {
+        None => body = body.push(note(tr("Loading the message…"))),
+        Some(Err(why)) => {
+            let what = typo::text(typo::body(), tr("Couldn't load the message.")).style(theme::text_2);
+            let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+            body = body.push(column![what, why].spacing(space::xs()));
+        }
+        Some(Ok(mail)) => {
+            body = body.push(text_block(mail, reading.link, text_level(reading.read)));
+            let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
+            if !files.is_empty() {
+                let cards = files.into_iter().map(|file| attachment_card(reading.id, file));
+                body = body.push(column(cards).spacing(space::s()));
+            }
+        }
+    }
+    body.into()
+}
+
+/// The sender of the mail in the reader `room` wide: the avatar (large in comfortable, as a row's
+/// in compact), the name with the address quietly after it, "to …" with the account below, and
+/// when at the right. Names and addresses that do not fit end in "…".
+fn reader_sender<'a>(
+    reading: &Reading<'a>,
+    summary: &'a MessageSummary,
+    comfortable: bool,
+    room: f32,
+) -> Element<'a, Message> {
+    let name = sender_name(summary.from.as_ref());
+    let edge = if comfortable { size::avatar_lg() } else { list::mark_width() };
+    let face = list::avatar(&name, reading.account, false, edge);
+    let when = when(summary.date, reading.now);
+    let words_room = (room - edge - typo::text_width(&when, typo::meta()) - 2.0 * space::m()).max(0.0);
+    let name = typo::ellipsize(&name, typo::body_strong(), words_room);
+    let left = words_room - typo::text_width(&name, typo::body_strong()) - space::s();
+    let mut who = row![typo::text(typo::body_strong(), name).style(theme::text).wrapping(Wrapping::None)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    if let Some(from) = &summary.from {
+        let address = typo::ellipsize(&list::one_line(&from.address), typo::meta(), left);
+        who = who.push(typo::text(typo::meta(), address).style(theme::text_3).wrapping(Wrapping::None));
+    }
+    let mut to = vec![address(&summary.account).to_owned()];
+    if !summary.to.is_empty() {
+        to.insert(0, trf("to {names}", &[("names", &names(&summary.to))]));
+    }
+    let to = typo::ellipsize(&to.join(" · "), typo::meta(), words_room);
+    let to = typo::text(typo::meta(), to).style(theme::text_2).wrapping(Wrapping::None);
+    let words = column![container(who).clip(true), container(to).clip(true)].width(Fill);
+    let when = typo::text(typo::meta().tabular(), when).style(theme::text_3).wrapping(Wrapping::None);
+    row![face, words, when].spacing(space::m()).align_y(Alignment::Center).into()
+}
+
+/// One button of the reader's actions ([`reader_actions`]).
+struct ReaderButton {
+    icon: Icon,
+    label: String,
+    message: Option<Message>,
+    /// Where its menu opens (Later, Task, Move to …, "…").
+    anchor: Option<Anchor>,
+}
+
+impl ReaderButton {
+    fn new(icon: Icon, label: impl Into<String>, message: Option<Message>) -> Self {
+        ReaderButton { icon, label: label.into(), message, anchor: None }
+    }
+
+    fn at(self, anchor: &Anchor) -> Self {
+        ReaderButton { anchor: Some(anchor.clone()), ..self }
+    }
+
+    /// The button with its word in `style`, or its icon alone.
+    fn view<'a>(self, words: bool, style: widgets::ButtonStyle) -> Element<'a, Message> {
+        let button = if words {
+            widgets::text_button(Some(self.icon), self.label, style, self.message)
+        } else {
+            widgets::icon_button(self.icon, self.label, self.message)
+        };
+        match self.anchor {
+            Some(anchor) => widgets::anchored(&anchor, button),
+            None => button,
+        }
+    }
+
+    /// Its width with its word: the button's padding, the icon, the gap and the word.
+    fn width(&self) -> f32 {
+        let pad = style::button_padding();
+        pad.left + pad.right + icon::SIZE_SM + space::xs() + typo::text_width(&self.label, typo::caption())
+    }
+}
+
+/// The reader's actions in one row (task E8.3): Reply (the window's one primary button), Reply
+/// all, Forward | Done, Later, Task on the mail's entry – "Archive" in their place for a folder's
+/// message, where `e` archives –, then at the right as icons Delete, Flag, read or unread, for an
+/// entry also Archive, "Move to …" and "…" (Hide from inbox), and Close. In comfortable the first
+/// six carry their words while they fit into `room`, else every button is its icon with the word
+/// as tooltip.
+fn reader_actions<'a>(
+    reading: &Reading<'a>,
+    summary: &MessageSummary,
+    entry: Option<ReaderEntry<'a>>,
+    anchors: &detail::Anchors,
+    comfortable: bool,
+    room: f32,
+) -> Element<'a, Message> {
+    let id = reading.id;
+    let mail = |action: MailAction| Some(Message::Mail(action, id.to_owned()));
+    let write = [
+        ReaderButton::new(Icon::Reply, tr("Reply"), mail(MailAction::Reply)),
+        ReaderButton::new(Icon::ReplyAll, tr("Reply all"), mail(MailAction::ReplyAll)),
+        ReaderButton::new(Icon::Forward, tr("Forward"), mail(MailAction::Forward)),
+    ];
+    let flagged = summary.flags.contains(&Flag::Flagged);
+    let read = summary.flags.contains(&Flag::Seen);
+    let delete = (!reading.in_trash).then(|| Message::Mail(MailAction::Delete, id.to_owned()));
+    let flag = if flagged { tr("Unflag") } else { tr("Flag") };
+    let mut triage = Vec::new();
+    let mut tools = vec![
+        ReaderButton::new(Icon::Trash2, tr("Delete"), delete),
+        ReaderButton::new(Icon::Flag, flag, mail(MailAction::Flag(!flagged))),
+        if read {
+            ReaderButton::new(Icon::Mail, tr("Mark unread"), mail(MailAction::Read(false)))
+        } else {
+            ReaderButton::new(Icon::MailOpen, tr("Mark read"), mail(MailAction::Read(true)))
+        },
+    ];
+    match entry {
+        Some(ReaderEntry { item, hide }) => {
+            let item_id = || item.id.clone();
+            let done = matches!(item.state, State::Done { .. });
+            triage.push(if done {
+                ReaderButton::new(Icon::Inbox, tr("Reopen"), Some(Message::SetDone(item_id(), false)))
+            } else {
+                ReaderButton::new(Icon::Check, tr("Done"), Some(Message::SetDone(item_id(), true)))
+            });
+            if !done {
+                let later = ReaderButton::new(Icon::Clock, tr("Later"), Some(Message::AskSnooze(item_id())));
+                triage.push(later.at(&anchors.snooze));
+            }
+            let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskTask(item_id())));
+            triage.push(task.at(&anchors.task));
+            tools.insert(0, ReaderButton::new(Icon::Archive, tr("Archive"), mail(MailAction::Archive)));
+            let lane = crate::app::other_lane(item.lane);
+            let move_to =
+                ReaderButton::new(crate::app::lane_icon(lane), lane_word(lane), Some(Message::AskLane(item_id())));
+            tools.push(move_to.at(&anchors.lane));
+            if hide {
+                let more = ReaderButton::new(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item_id())));
+                tools.push(more.at(&anchors.hide));
+            }
+        }
+        None => triage.push(ReaderButton::new(Icon::Archive, tr("Archive"), mail(MailAction::Archive))),
+    }
+    tools.push(ReaderButton::new(Icon::X, tr("Close"), Some(Message::CloseDetail)));
+
+    let count = write.len() + triage.len() + tools.len();
+    let gaps = count as f32 * space::xs() + space::l();
+    let spoken: f32 = write.iter().chain(&triage).map(ReaderButton::width).sum();
+    let words = comfortable && spoken + tools.len() as f32 * size::control_sm() + gaps <= room;
+    let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
+    for (i, button) in write.into_iter().enumerate() {
+        let style = if i == 0 { style::button::primary } else { style::button::secondary };
+        bar = bar.push(button.view(words, style));
+    }
+    let line = container(rule::vertical(size::HAIRLINE).style(style::rule)).height(typo::line_height(typo::body()));
+    bar = bar.push(container(line).padding(Padding::new(0.0).left(space::xs()).right(space::xs())));
+    for button in triage {
+        bar = bar.push(button.view(words, style::button::ghost));
+    }
+    bar = bar.push(iced::widget::space::horizontal());
+    for button in tools {
+        bar = bar.push(button.view(false, style::button::ghost));
+    }
+    bar.into()
+}
+
+/// "Move to Info" or "Move to For me": the reader's button that moves the entry to `lane`.
+fn lane_word(lane: Lane) -> String {
+    let name = match lane {
+        Lane::ForMe => tr("For me"),
+        Lane::Info => tr("Info"),
+    };
+    trf("Move to {lane}", &[("lane", &name)])
+}
+
+/// An attachment in the reader (task E8.3): a card with the file's tile ([`widgets::source_tile`],
+/// large), its name and size, and "Open", which fetches and opens it as a click on the panel's row
+/// does ([`open_attachment`]).
+fn attachment_card<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
+    let name = file.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
+    let name = name.unwrap_or_else(|| tr("Attachment").to_owned());
+    let tile = widgets::source_tile(widgets::TileFace::Icon(Icon::Paperclip), widgets::TileSize::Large, None);
+    let words = column![
+        container(typo::text(typo::body_strong(), name).style(theme::text).wrapping(Wrapping::None)).clip(true),
+        typo::text(typo::meta().tabular(), size_text(file.size)).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .width(Fill);
+    let open = Message::OpenAttachment(id.to_owned(), file.part.clone());
+    let open = widgets::text_button(None, tr("Open"), style::button::ghost, Some(open));
+    let line = row![tile, words, open].spacing(space::m()).align_y(Alignment::Center);
+    widgets::card(vec![line.into()], false, None)
 }
 
 /// Sender, recipients and date, as mail apps show them: the sender's name and address, "to …",
@@ -898,9 +1259,9 @@ fn attachment_row<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
     widgets::prop_row(Some(Mark::Icon(Icon::Paperclip)), line, Some(open))
 }
 
-/// The text with its web addresses as links ([`pieces`]: the whole address shows, underlined, and
-/// opens on a click), then the notes on foreign text.
-fn text_block<'a>(mail: &'a Mail, link: Color) -> Element<'a, Message> {
+/// The text in `level` with its web addresses as links ([`pieces`]: the whole address shows,
+/// underlined, and opens on a click), then the notes on foreign text.
+fn text_block<'a>(mail: &'a Mail, link: Color, level: typo::Level) -> Element<'a, Message> {
     let text = mail.text.as_deref().map(list::plain).unwrap_or_default();
     let mut block = column![].spacing(space::s());
     if !text.trim().is_empty() {
@@ -912,9 +1273,9 @@ fn text_block<'a>(mail: &'a Mail, link: Color) -> Element<'a, Message> {
             })
             .collect();
         let message = rich_text(spans)
-            .size(typo::body().size)
-            .line_height(typo::body().line_height)
-            .font(typo::body().font)
+            .size(level.size)
+            .line_height(level.line_height)
+            .font(level.font)
             .style(theme::text_2)
             .wrapping(Wrapping::WordOrGlyph)
             .on_link_click(Message::OpenMailLink);
@@ -951,7 +1312,7 @@ fn file_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use chrono::TimeZone;
-    use torro_inbox::demo;
+    use torro_inbox::{SourceKind, demo};
 
     use super::*;
 
@@ -1093,35 +1454,86 @@ mod tests {
         let summaries: Vec<MessageSummary> = mail.iter().map(|m| m.summary.clone()).collect();
         let folders = folders();
         let folder = FolderView::of(first_inbox(&folders).expect("an inbox"));
+        let views = [View::Folder(folder.clone()), View::Attachments, View::Mail];
+        let looks = [Look::Rows, Look::Cards { words: false }, Look::Cards { words: true }];
         for accounts in [Vec::new(), vec!["anna@work.example.org", "anna@example.org"]] {
-            let data = MailList {
-                messages: &summaries,
-                folder: Some(&folder),
-                no_accounts: false,
-                selected: Some("m:w1"),
-                now: now(),
-                anchor: Anchor::new(),
-                accounts,
-                more: true,
-                attention: Color::BLACK,
-            };
-            let _ = list(data);
+            for (view, look) in views.iter().flat_map(|view| looks.map(|look| (view, look))) {
+                for messages in [&summaries[..], &[]] {
+                    let data = MailList {
+                        messages,
+                        view,
+                        no_accounts: false,
+                        selected: Some("m:w1"),
+                        now: now(),
+                        anchor: Anchor::new(),
+                        accounts: accounts.clone(),
+                        more: true,
+                        attention: Color::BLACK,
+                        look,
+                    };
+                    let _ = list(data);
+                }
+            }
         }
+        let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
+            &DemoSource::new(now()),
+            Default::default(),
+        ));
+        let entry =
+            all.expect("the demo answers").into_iter().find(|item| item.source.kind == SourceKind::Mail).expect("mail");
         for message in &mail {
             let loaded = Ok(message.clone());
             for loaded in [None, Some(&loaded)] {
-                let reading = Reading {
-                    id: &message.summary.id,
-                    summary: Some(&message.summary),
-                    loaded,
-                    now: now(),
-                    link: Color::BLACK,
-                    attention: Color::BLACK,
-                    in_trash: false,
-                    dated: true,
-                };
-                let _ = panel(&reading, Some(&folder));
+                for read in [false, true] {
+                    let reading = Reading {
+                        id: &message.summary.id,
+                        summary: Some(&message.summary),
+                        loaded,
+                        now: now(),
+                        link: Color::BLACK,
+                        attention: Color::BLACK,
+                        in_trash: false,
+                        dated: true,
+                        read,
+                        account: Some(0),
+                    };
+                    let _ = panel(&reading, Some(&folder));
+                    for entry in [None, Some(ReaderEntry { item: &entry, hide: true })] {
+                        let _ = reader(reading, entry, detail::Anchors::default(), read);
+                    }
+                }
             }
         }
+    }
+
+    /// Task E8.3: the smart view keeps the messages with attachments of every inbox, newest first.
+    #[test]
+    fn the_smart_view_holds_the_mail_with_attachments_newest_first() {
+        let mail = demo::mail_sample(now());
+        let pages: Vec<Vec<MessageSummary>> = demo::MAIL_ACCOUNTS
+            .iter()
+            .map(|account| mail.iter().filter(|m| m.summary.account == *account).map(|m| m.summary.clone()).collect())
+            .collect();
+        let found = attachments(pages);
+        assert!(!found.is_empty(), "the demo has mail with attachments");
+        assert!(found.iter().all(|message| message.has_attachments));
+        assert!(found.windows(2).all(|pair| pair[0].date >= pair[1].date), "newest first");
+        let wanted = mail.iter().filter(|m| m.summary.has_attachments).count();
+        assert_eq!(found.len(), wanted, "from every account");
+    }
+
+    /// Task E8.3: a message's card answers and archives (`r`, `e`), and is as high as its parts.
+    #[test]
+    fn a_message_card_is_as_high_as_what_it_shows() {
+        let mut message = demo::mail_sample(now()).remove(0).summary;
+        message.has_attachments = false;
+        message.flags.clear();
+        message.snippet = "Short".into();
+        let plain = message_card_height(&message, false);
+        message.has_attachments = true;
+        assert_eq!(message_card_height(&message, false), plain, "chips beside the icons: no extra row");
+        assert!(message_card_height(&message, true) > message_card_height(&{ message.clone() }, false));
+        message.snippet.clear();
+        assert!(message_card_height(&message, false) < plain, "no preview, no preview lines");
     }
 }
