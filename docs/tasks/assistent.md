@@ -74,7 +74,8 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   zu viele Schritte.
 
 ### C.3 Kontext: Skill „Torro Workplace“
-- [ ] erledigt
+- [x] erledigt (Name der Person bleibt leer, solange die Suite keinen kennt; Persönlichkeit hat den Platz vor dem
+  Skill, C.10 füllt ihn; nachgetragen: Verdrahtung in `assistant/model.rs`)
 - **Modell:** Opus · **Braucht:** C.2 · **Dateien:** `crates/torroworkplace/src/assistant/prompt.rs`,
   `crates/torroworkplace/assets/assistant/skill.md` (neu)
 - Fester Teil (englisch) und erzeugter Teil (Datum, Zeitzone, Sprache, erlaubte Bereiche) nach dem Konzept.
