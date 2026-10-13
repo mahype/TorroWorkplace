@@ -243,7 +243,8 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
 
 ### L.13 Paket Guildr (erinnert an Discord)
-- [ ] erledigt
+- [x] erledigt (2026-10-13: Figtree als feste Schnitte aus der variablen Schrift, Ziffern in
+  „Figtree Tabular“; dunkles Fehlerrot heller, im hellen Modus Kalenderfarben und Fokus dunkler)
 - **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/guildr/`, `crates/torroworkplace/src/designs.rs`
 - Figtree (OFL) statt der unfreien „gg sans“, Blurple `#5865F2` auf Dunkelgrau, Hell abgeleitet. Kein
   Discord-Name, kein Logo.

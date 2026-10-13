@@ -95,6 +95,22 @@ const EXAMPLES: &[Example] = &[
             pack_file!("channelr", "fonts/Lato-Regular.ttf"),
         ],
     },
+    Example {
+        id: "guildr",
+        files: &[
+            pack_file!("guildr", "design.toml"),
+            pack_file!("guildr", "logo.svg"),
+            pack_file!("guildr", "tray.svg"),
+            pack_file!("guildr", "preview.png"),
+            pack_file!("guildr", "fonts/Figtree-Bold.ttf"),
+            pack_file!("guildr", "fonts/Figtree-Medium.ttf"),
+            pack_file!("guildr", "fonts/Figtree-Regular.ttf"),
+            pack_file!("guildr", "fonts/Figtree-SemiBold.ttf"),
+            pack_file!("guildr", "fonts/FigtreeTabular-Medium.ttf"),
+            pack_file!("guildr", "fonts/FigtreeTabular-Regular.ttf"),
+            pack_file!("guildr", "fonts/LICENSE.txt"),
+        ],
+    },
 ];
 
 /// Creates the designs folder `dir` with the example packs in it, if `dir` does not exist yet.
@@ -287,6 +303,7 @@ mod tests {
         // id, name, text font, figures font
         let packs: &[(&str, &str, &str, &str)] = &[
             ("channelr", "Channelr", "Lato", "Lato"),
+            ("guildr", "Guildr", "Figtree", "Figtree Tabular"),
             // further packs
         ];
         for (id, name, text, numbers) in packs {
@@ -328,7 +345,7 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("data").join("designs");
         assert!(install_if_missing(&dir).expect("install"));
-        for id in ["plex", "commitr", "ribbon", "channelr"] {
+        for id in ["plex", "commitr", "ribbon", "channelr", "guildr"] {
             assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
         }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();
