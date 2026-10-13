@@ -1,0 +1,13 @@
+# Broken: fonts without fonts/LICENSE.txt (Inter is copied in by the test).
+format = 1
+
+[about]
+name = "No license"
+version = "1.0.0"
+font_license = "OFL-1.1"
+
+[fonts.text]
+family = "Inter"
+regular = "fonts/Inter-Regular.ttf"
+medium = "fonts/Inter-Medium.ttf"
+semibold = "fonts/Inter-SemiBold.ttf"

@@ -1,0 +1,9 @@
+# Broken: a 9-pixel caption.
+format = 1
+
+[about]
+name = "Tiny type"
+version = "1.0.0"
+
+[type.caption]
+size = 9

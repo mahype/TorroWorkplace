@@ -1,0 +1,9 @@
+# Broken: list rows of 20.
+format = 1
+
+[about]
+name = "Short row"
+version = "1.0.0"
+
+[size]
+row = 20

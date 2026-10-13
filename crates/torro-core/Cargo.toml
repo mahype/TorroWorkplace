@@ -17,3 +17,10 @@ keyring.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# Design packs (task L.1): `design.toml`, the logos' SVG and the fonts' names – data only, never run.
+roxmltree.workspace = true
+toml.workspace = true
+ttf-parser.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

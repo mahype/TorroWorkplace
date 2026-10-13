@@ -50,29 +50,73 @@ author = "Sven Wagener"        # optional
 description = "IBM Plex, more room, teal accent"   # optional
 font_license = "OFL-1.1"       # Pflicht, sobald Schriften dabei sind
 
-[fonts]                        # fehlt der Block: Inter aus dem Standardpaket
+[fonts.text]                   # Schrift für Fließtext, Listen, Knöpfe; fehlt: Inter
 family = "IBM Plex Sans"       # Name der Familie, wie er in den Dateien steht
-regular = "fonts/IBMPlexSans-Regular.ttf"
-medium = "fonts/IBMPlexSans-Medium.ttf"
-semibold = "fonts/IBMPlexSans-SemiBold.ttf"
-tabular_family = "IBM Plex Sans Tabular"         # optional: Familie mit festen Ziffern
-tabular_regular = "fonts/IBMPlexSansTabular-Regular.ttf"
-tabular_medium = "fonts/IBMPlexSansTabular-Medium.ttf"
+regular = "fonts/IBMPlexSans-Regular.ttf"      # 400, Pflicht
+medium = "fonts/IBMPlexSans-Medium.ttf"        # 500, optional
+semibold = "fonts/IBMPlexSans-SemiBold.ttf"    # 600, optional
+bold = "fonts/IBMPlexSans-Bold.ttf"            # 700, optional
 
-[type]                         # Größe / Zeilenhöhe je Stufe; Gewichte sind fest (siehe unten)
-micro = [11, 14]
-caption = [12, 16]
-meta = [12, 16]
-body = [14, 22]
-title = [17, 24]
-headline = [24, 30]
-display = [30, 36]
+[fonts.heading]                # optional: eigene Schrift für Überschriften; fehlt: wie text
+family = "IBM Plex Serif"
+semibold = "fonts/IBMPlexSerif-SemiBold.ttf"
+
+[fonts.numbers]                # optional: Familie mit festen Ziffern (Uhrzeiten, Zähler); fehlt: wie text
+family = "IBM Plex Sans Tabular"
+regular = "fonts/IBMPlexSansTabular-Regular.ttf"
+medium = "fonts/IBMPlexSansTabular-Medium.ttf"
+
+# Jede Schriftstufe vollständig einstellbar: Schrift (text | heading | numbers), Größe,
+# Zeilenhöhe, Gewicht (regular | medium | semibold | bold). Nur, was abweicht.
+[type.micro]       # Zeitachse, Uhrzeit in Terminen
+font = "numbers"
+size = 11
+line = 14
+weight = "regular"
+[type.caption]     # Gruppentitel, Knöpfe, Chips
+size = 12
+line = 16
+weight = "medium"
+[type.meta]        # Metadaten, Zähler, Fälligkeit
+size = 12
+line = 16
+[type.body]        # Standard: Listen, Seitenleiste, Eingaben, Fließtext
+size = 14
+line = 22
+[type.body_strong] # Zeilen- und Kopfleisten-Titel
+size = 14
+line = 22
+weight = "medium"
+[type.title]       # Karten- und Dialogtitel
+font = "heading"
+size = 17
+line = 24
+weight = "semibold"
+[type.headline]    # Detailtitel
+font = "heading"
+size = 24
+line = 30
+weight = "semibold"
+[type.display]     # Kopfzahl in Mini
+size = 30
+line = 36
+weight = "semibold"
 
 [space]                        # xs s m l xl xxl
 scale = [4, 8, 12, 16, 24, 32]
 
 [radius]                       # xs sm md lg
 scale = [3, 5, 7, 9]
+
+# Abstände des Layouts, allgemein (nicht je Element): Rand und Innenrand
+[layout]
+inset = 8                      # Rand um die Inhaltsfläche neben der Seitenleiste (margin)
+page_padding = [24, 32]        # Innenrand von Inhalt und Seiten: senkrecht, waagerecht (padding)
+panel_padding = [16, 16]       # Innenrand von Paneelen, Karten, Dialogen
+row_padding = [8, 16]          # Innenrand von Listenzeilen
+control_padding = [0, 10]      # Innenrand von Knöpfen, Chips, Eingaben
+section_gap = 24               # Abstand zwischen Gruppen und Abschnitten
+item_gap = 8                   # Abstand zwischen Elementen innerhalb einer Gruppe
 
 [size]                         # nur, was abweicht; Namen wie torro_gui::theme::size
 row = 44
@@ -97,8 +141,15 @@ ein eigenes Logo, zeichnet die Suite ihr Logo in der Akzentfarbe des Pakets: Ein
 und Tray mit, nichts bleibt rot hängen.
 
 Abgeleitet und nie im Paket: `attention_text` und `error_text` (aus Status- und Textfarbe, wie heute), die
-Iced-Palette, Hover-Stufen der Knöpfe. Gewichte bleiben 400/500/600 (`regular`/`medium`/`semibold`): Die Stufen
-`CAPTION`, `BODY_STRONG` nutzen `medium`, `TITLE` bis `DISPLAY` `semibold`.
+Iced-Palette, Hover-Stufen der Knöpfe.
+
+**Typografie ist vollständig einstellbar:** bis zu drei Schriften (Text, Überschriften, Ziffern) und für jede der acht
+Stufen Schrift, Größe, Zeilenhöhe und Gewicht. Das Standardpaket setzt die heutigen Werte (Inter, Grundgröße 13,
+Gewichte 400/500/600). Laufweite und Großschreibung gehen mit Iced 0.14 nicht und sind nicht Teil des Formats.
+
+**Layout-Abstände sind zuerst allgemein:** ein Rand (`inset`) und wenige Innenränder und Lücken nach Rolle (Seite,
+Paneel, Zeile, Bedienelement, Gruppe, Element). Die Apps nutzen dafür benannte Tokens statt der Skala, damit ein Paket
+sie gezielt ändern kann. Abstände je einzelnem Element gibt es bewusst nicht, damit es am Anfang nicht zu bunt wird.
 
 ## Regeln, die jedes Paket einhalten muss
 
@@ -112,7 +163,8 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Kontrast Text | `text`, `text_2`, `text_3` ≥ 4,5:1 auf `bg`, `panel`, `raised`, `hover`, `selected`, `menu` (hell und dunkel) |
 | Kontrast Bedienelemente | `focus_ring`, `line_selected`, Statusfarben, `merged`, Kalenderfarben ≥ 3:1 auf `panel` |
 | Akzent | `on_accent` auf `accent` ≥ 4,5:1 (Text auf dem Primärknopf) |
-| Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe; `body` 12–16 |
+| Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht je Schrift |
+| Layout-Abstände | `inset` 0–24; Innenränder 0–48; `section_gap` 8–64; `item_gap` 2–24 |
 | Abstände | `space` aufsteigend, 2–64; `radius` aufsteigend, 0–16 |
 | Maße | Bedienelemente (`control_sm` …) ≥ 24 (Klickziel); `row` 32–64; `row_sidebar` 24–40; `header` 36–64; `sidebar` 180–320; `props`, `panel`, `list` 280–520; `content_max` 560–1200 |
 | Dateien | Pfade nur innerhalb des Paketordners, keine Links nach außen; `design.toml` ≤ 64 KB, SVG ≤ 256 KB, PNG ≤ 2 MB, Schrift ≤ 5 MB, Paket ≤ 20 MB |
@@ -152,7 +204,7 @@ Pakete enthalten keine Geheimnisse; Agenten dürfen sie auflisten und (als Admin
   einmal je Prozess (`torro_gui::design::set`/`active`), gelesen beim Start, ersetzt beim Wechsel. Schriften: beim
   Start in `torro_gui::settings()`, beim Wechsel über `iced::font::load`.
 - **Gleiches Bild:** Mit dem Standardpaket sieht jede App aus wie vorher. Das ist die Abnahme der Umstellung.
-- **Später, Stufe 2:** Schalter in `design.toml` (Block `[layout]`), die jede App liest. Welche, klären wir, wenn
+- **Später, Stufe 2:** Schalter in `design.toml` (Block `[arrangement]`), die jede App liest. Welche, klären wir, wenn
   Stufe 1 steht. Kandidaten: Seitenleiste links/rechts/als Reiter, Listen als Zeilen oder Karten, Dichte, Detail
   daneben/darüber, Kopfleiste mit Text oder nur Icons.
 - **Später, Herunterladen:** Ein Katalog (z. B. ein Git-Repo mit Paketen), „Install“ lädt, prüft und legt ab. Erst

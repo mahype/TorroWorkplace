@@ -18,15 +18,19 @@ Alle nacheinander: L.2 ändert jede App, L.3 den Katalog.
 prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol aus SVG).
 
 ### L.1 Kern: Paketformat, Standardpaket, Laden und Prüfen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Dateien:** `crates/torro-core/src/design.rs` (neu, ggf. `design/` mit Untermodulen),
   `crates/torro-core/src/lib.rs`, `crates/torro-core/Cargo.toml`, `Cargo.toml` (Wurzel, Abhängigkeiten),
   `crates/torro-core/tests/fixtures/designs/` (Beispielpakete, gültig und kaputt)
-- Modell nach [design-pakete.md](../design-pakete.md): `Design` mit `about`, Schriften, Stufen, `space`, `radius`,
-  `size`, Farben hell und dunkel (alle Felder von `torro_gui::theme::Palette`, die nicht abgeleitet sind), Logo-Pfaden.
+- Modell nach [design-pakete.md](../design-pakete.md): `Design` mit `about`, bis zu drei Schriften (`text`,
+  `heading`, `numbers`, je mit `regular`/`medium`/`semibold`/`bold`), acht Stufen mit Schrift, Größe, Zeilenhöhe und
+  Gewicht, `space`, `radius`, Layout-Abständen (`inset`, `page_padding`, `panel_padding`, `row_padding`,
+  `control_padding`, `section_gap`, `item_gap`), `size`, Farben hell und dunkel (alle Felder von `torro_gui::theme::Palette`, die nicht abgeleitet sind), Logo-Pfaden.
   Farben als `Rgba` in `torro-core` (kein Iced), Schreibweise `#RRGGBB` oder `#RRGGBBAA`.
 - `Design::standard()`: **genau die heutigen Werte** aus `torro_gui::theme`, `typo` und `torro_core::theme` (Inter
   eingebettet, „T“ und Tray-Raster als Logo). Die Werte wandern hierher; `torro-gui` liest sie ab L.2 von hier.
+  Für die Layout-Abstände die Werte, die Shell, Listenzeilen, Paneele, Knöpfe und Seiten heute nutzen (im Code
+  nachsehen, nicht raten; im Doc-Kommentar die Fundstelle nennen).
 - `designs::list(dir) -> Vec<Listed>`: Standardpaket zuerst, dann jeder Ordner unter `<data>/designs/` mit Ergebnis
   (gültig oder Liste der Gründe). `designs::load(dir, id) -> Result<Design, DesignError>`: Datei lesen, mit dem
   Standard zusammenführen, prüfen. Fehler-Enum mit einer Variante je Regel, jede mit lesbarem Text (englisch, über
@@ -58,6 +62,13 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
 - **Start:** `torro_gui::settings()` lädt die Schriften des aktiven Designs; Familiennamen, die Iced als
   `&'static str` braucht, einmal je Familie festhalten (`Box::leak` ist erlaubt, begrenzt auf die geladenen Familien).
   Bis L.3 ist das aktive Design immer das Standardpaket.
+- **Typografie:** Stufen bekommen Schrift und Gewicht aus dem Design (`typo::title()` nutzt z. B. die
+  Überschriften-Schrift des Pakets).
+- **Layout-Abstände:** neue benannte Tokens (`layout::inset()`, `layout::page_padding()`, `layout::panel_padding()`,
+  `layout::row_padding()`, `layout::control_padding()`, `layout::section_gap()`, `layout::item_gap()`). Bausteine in
+  `torro-gui` (Shell, `list_row`, `panel`, `popover`, `dialog`, Knöpfe, `widgets::group`) nutzen sie; in den Apps die
+  Stellen umstellen, die genau diese Rollen haben (Seiten- und Paneel-Innenrand, Abstand zwischen Gruppen). Alles
+  andere bleibt auf der Skala `space::*`.
 - **Logo:** `shell`-Logo (Umschalter, Leiste) zeichnet `logo.mark` des Designs als SVG, sonst das „T“ auf `accent`.
 - Abgeleitete Farben (`attention_text`, `error_text`, Iced-Palette) aus dem Design berechnen, nicht als Konstanten.
 - `scripts/design-check.sh` und Skill `torro-design` auf die neue Schreibweise umstellen (Regeln bleiben gleich:

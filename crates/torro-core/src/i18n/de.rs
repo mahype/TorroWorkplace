@@ -1809,4 +1809,87 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{address} isn't a valid address.", "{address} ist keine gültige Adresse."),
     ("{file} is larger than {limit}.", "{file} ist größer als {limit}."),
     ("{file} is not a file.", "{file} ist keine Datei."),
+    // Design packs (torro-core, L.1)
+    ("Fonts need their license in fonts/LICENSE.txt.", "Schriften brauchen ihre Lizenz in fonts/LICENSE.txt."),
+    (
+        "Format {found} isn't supported. This version reads format 1.",
+        "Format {found} wird nicht unterstützt. Diese Version liest Format 1.",
+    ),
+    ("Inter, quiet surfaces, Torro red", "Inter, ruhige Flächen, Torro-Rot"),
+    ("The design is larger than {limit} in total.", "Das Design ist insgesamt größer als {limit}."),
+    (
+        "The line height of “{key}” is {line}; it must be between {size} and twice that.",
+        "Die Zeilenhöhe von „{key}“ ist {line}; sie muss zwischen {size} und dem Doppelten liegen.",
+    ),
+    (
+        "The values of “{key}” must grow from small to large.",
+        "Die Werte von „{key}“ müssen von klein nach groß steigen.",
+    ),
+    ("There is no design “{id}”.", "Es gibt kein Design „{id}“."),
+    ("Unknown setting “{key}”. Check the spelling.", "Unbekannte Einstellung „{key}“. Prüfe die Schreibweise."),
+    (
+        "colors.{mode}.line_selected must be clearly stronger than line_strong and weaker than focus_ring.",
+        "colors.{mode}.line_selected muss deutlich kräftiger als line_strong und schwächer als focus_ring sein.",
+    ),
+    (
+        "colors.{mode}.on_accent on accent has a contrast of {ratio}:1; text on the primary button needs at least 4.5:1.",
+        "colors.{mode}.on_accent auf accent hat einen Kontrast von {ratio}:1; Text auf dem Hauptknopf braucht mindestens 4,5:1.",
+    ),
+    (
+        "design.toml can't be read (line {line}): {reason}",
+        "design.toml lässt sich nicht lesen (Zeile {line}): {reason}",
+    ),
+    ("design.toml can't be read: {reason}", "design.toml lässt sich nicht lesen: {reason}"),
+    ("not a PNG image", "kein PNG-Bild"),
+    (
+        "preview.png is {width} × {height}; at most 1200 × 800 is allowed.",
+        "preview.png ist {width} × {height}; erlaubt sind höchstens 1200 × 800.",
+    ),
+    (
+        "{fg} on {on} has a contrast of {ratio}:1; controls need at least 3:1.",
+        "{fg} auf {on} hat einen Kontrast von {ratio}:1; Bedienelemente brauchen mindestens 3:1.",
+    ),
+    (
+        "{fg} on {on} has a contrast of {ratio}:1; text needs at least 4.5:1.",
+        "{fg} auf {on} hat einen Kontrast von {ratio}:1; Text braucht mindestens 4,5:1.",
+    ),
+    ("{file} can't be read: {reason}", "{file} lässt sich nicht lesen: {reason}"),
+    (
+        "{file} contains a script. SVG files may not run anything.",
+        "{file} enthält ein Skript. SVG-Dateien dürfen nichts ausführen.",
+    ),
+    ("{file} has no size. Give the SVG a viewBox.", "{file} hat keine Größe. Gib dem SVG eine viewBox."),
+    ("{file} isn't a TrueType or OpenType font.", "{file} ist keine TrueType- oder OpenType-Schrift."),
+    (
+        "{file} isn't square (ratio {ratio}). Logos need a ratio of 1.",
+        "{file} ist nicht quadratisch (Verhältnis {ratio}). Logos brauchen ein Verhältnis von 1.",
+    ),
+    (
+        "{file} isn't the family “{family}”; it says {found}.",
+        "{file} ist nicht die Familie „{family}“, sondern {found}.",
+    ),
+    (
+        "{file} refers to {reference}. SVG files may only link to #… and data:.",
+        "{file} verweist auf {reference}. SVG-Dateien dürfen nur auf #… und data: verweisen.",
+    ),
+    ("{path} from “{key}” doesn't exist.", "{path} aus „{key}“ gibt es nicht."),
+    ("{path} from “{key}” lies outside the design folder.", "{path} aus „{key}“ liegt außerhalb des Design-Ordners."),
+    (
+        "{path} in “{key}” has the wrong type. Use {expected}.",
+        "{path} in „{key}“ hat den falschen Typ. Nimm {expected}.",
+    ),
+    (
+        "“{id}” can't be a design folder. Use up to 32 characters a–z, 0–9 and -; “torro” is the standard design.",
+        "„{id}“ kann kein Design-Ordner sein. Nimm bis zu 32 Zeichen a–z, 0–9 und -; „torro“ ist das Standard-Design.",
+    ),
+    ("“{key}” is missing.", "„{key}“ fehlt."),
+    ("“{key}” is {value}; allowed are {min} to {max}.", "„{key}“ ist {value}; erlaubt sind {min} bis {max}."),
+    (
+        "“{key}” isn't a color: {value}. Write #RRGGBB or #RRGGBBAA.",
+        "„{key}“ ist keine Farbe: {value}. Schreibe #RRGGBB oder #RRGGBBAA.",
+    ),
+    (
+        "“{key}” uses {weight} of the {font} font, but there is no file for it.",
+        "„{key}“ nutzt {weight} der Schrift {font}, dafür gibt es aber keine Datei.",
+    ),
 ];

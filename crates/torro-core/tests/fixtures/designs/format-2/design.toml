@@ -1,0 +1,6 @@
+# Broken: a format this version does not read.
+format = 2
+
+[about]
+name = "Format 2"
+version = "1.0.0"
