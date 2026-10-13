@@ -1,4 +1,4 @@
-//! The example design packs the suite ships (tasks L.5, L.7, L.9): `designs/` in the repository,
+//! The example design packs the suite ships (tasks L.5, L.7–L.9, L.12–L.15): `designs/` in the repository,
 //! built into this binary and written to the designs folder when the suite starts.
 //!
 //! They live here rather than in `torro-core`, because only the core service and the control
@@ -159,6 +159,15 @@ const EXAMPLES: &[Example] = &[
             pack_file!("gruvbox", "logo.svg"),
             pack_file!("gruvbox", "tray.svg"),
             pack_file!("gruvbox", "preview.png"),
+        ],
+    },
+    Example {
+        id: "dracula",
+        files: &[
+            pack_file!("dracula", "design.toml"),
+            pack_file!("dracula", "logo.svg"),
+            pack_file!("dracula", "tray.svg"),
+            pack_file!("dracula", "preview.png"),
         ],
     },
 ];
@@ -349,6 +358,15 @@ mod tests {
     }
 
     #[test]
+    fn the_dracula_pack_keeps_the_scheme_where_it_can() {
+        let design = torro_core::design::load(&repo_designs(), "dracula").expect("designs/dracula is valid");
+        let rgb = torro_core::design::Rgba::hex;
+        assert_eq!(design.fonts, torro_core::design::Design::standard().fonts, "Dracula keeps Inter");
+        assert_eq!((design.colors.dark.panel, design.colors.light.panel), (rgb(0x282A36), rgb(0xFFFBEB)));
+        assert_eq!((design.colors.dark.accent, design.colors.dark.focus_ring), (rgb(0xBD93F9), rgb(0xFF79C6)));
+    }
+
+    #[test]
     fn the_further_packs_pass_every_rule() {
         // id, name, text font, figures font
         let packs: &[(&str, &str, &str, &str)] = &[
@@ -359,6 +377,7 @@ mod tests {
             ("solarized", "Solarized", "Inter", "Inter Tabular"),
             ("catppuccin", "Catppuccin", "Inter", "Inter Tabular"),
             ("gruvbox", "Gruvbox", "Inter", "Inter Tabular"),
+            ("dracula", "Dracula", "Inter", "Inter Tabular"),
             // further packs
         ];
         for (id, name, text, numbers) in packs {
@@ -400,9 +419,19 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("data").join("designs");
         assert!(install_if_missing(&dir).expect("install"));
-        for id in
-            ["plex", "commitr", "ribbon", "channelr", "guildr", "quattro", "nord", "solarized", "catppuccin", "gruvbox"]
-        {
+        for id in [
+            "plex",
+            "commitr",
+            "ribbon",
+            "channelr",
+            "guildr",
+            "quattro",
+            "nord",
+            "solarized",
+            "catppuccin",
+            "gruvbox",
+            "dracula",
+        ] {
             assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
         }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();
