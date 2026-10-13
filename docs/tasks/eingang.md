@@ -741,8 +741,8 @@ E8.9   unabhängig (torro-wm, core.rs)
 
 ### E8.1b Nacharbeit: Fensterarten überall erkennen
 - [ ] erledigt
-- **Modell:** Haiku · **Braucht:** E8.1, E8.9 · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
-  `crates/torroinbox/src/detail.rs`, `crates/torroworkplace/src/ui/apps.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Modell:** Haiku · **Braucht:** E8.1, E8.9, E8.5 · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
+  `crates/torroinbox/src/{detail,list,app}.rs`, `crates/torroworkplace/src/ui/apps.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Verweise auf Apps:** Ein Eintrag mit `Link::App` wird heute nur über den Programmnamen erkannt
   (`inbox.rs`, Prüfung beim Melden und Öffnen; `detail.rs`, Knopf und Wort). Ein Verweis auf eine Fensterklasse
   (`torro-inbox-mail`) wird darum abgelehnt. Beide Stellen nutzen `AppId::find`; Unbekanntes bleibt abgelehnt
@@ -751,9 +751,13 @@ E8.9   unabhängig (torro-wm, core.rs)
   Inbox-Zeilen zeigen ihren übersetzten Namen und je eine Zeile Beschreibung (Mail: „Your mail, from a quick look to
   a full client“; Benachrichtigungen: „What your apps report, one column per app“; Zentrale: „Decide, hand on and
   see where it all comes from“).
+- **Aus E8.5:** In Listen-Ansichten (`list::actions`) zeigt die Aktionsleiste einer Freigabe noch „Later“; Freigaben
+  haben kein Later. Toasts und das Menü sagen noch „Marked as done“, „Snoozed until …“ und „Snooze until“; einheitlich
+  „Done“ und „Later“ wie Karten und Paneel („Done“, „Later until …“, „Later until“).
 - **API:** vorhandene `inbox.post_item`, `inbox.open_item`, `apps.list_apps`. **MCP:** vorhandene Tools.
 - **Abnahme:** Tests: Verweis auf `torro-inbox-mail` wird angenommen und geöffnet, unbekannte Fensterklasse →
-  abgelehnt; Steuerzentrale zeigt drei verschiedene Namen und Beschreibungen. Übersetzungen im Bericht.
+  abgelehnt; Steuerzentrale zeigt drei verschiedene Namen und Beschreibungen; Freigabe-Zeile ohne Later; Toasts mit
+  `tr()`-Vergleich. Übersetzungen im Bericht.
 
 ### E8.2 Zwei Dichten und Bausteine für Karten
 - [x] erledigt (zusätzlich `torro-core/src/design/pack.rs`: Schlüssel `type.read` im Paket-Format; Tokens
@@ -874,6 +878,27 @@ E8.9   unabhängig (torro-wm, core.rs)
   Tools; Freigaben entscheiden bleibt `Never`.
 - **Abnahme:** Sichtprüfung `--view hub --demo` in allen Größen; Freigaben haben keinen Knopf zum Verwerfen oder
   Vertagen (Test auf die Knopfliste je Eintragsart).
+
+### E8.5b Ruhe-Status und Termin aus einem Eintrag
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E8.5, E3.4 · **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`,
+  `crates/torroworkplace/src/{core,inbox,inbox_notify,pim,mcp,approvals,audit,daemon}.rs`,
+  `crates/torroinbox/src/{app,hub,detail,keys}.rs`, `crates/torro-core/src/i18n/de.rs`; Doku: `docs/{api,eingang}.md`.
+  Stellen, die der Compiler wegen neuer Fälle erzwingt: nur das Nötigste, im Bericht nennen.
+- **Lücken aus E8.5:** Die Zentrale zeigt rechts „Quiet“ nicht, weil kein Request sagt, ob gerade Ruhe gilt und bis
+  wann. Und „Event“ fehlt bei „To sort“, weil kein Request aus einem Eintrag einen Termin macht.
+- **Ruhe:** `inbox.get_quiet { }` · Read → ob Ruhe gilt, warum (Termin „busy“, später Fokus-Profil) und bis wann; den
+  Titel des Termins nur mit Kalender-Leserecht, sonst „a busy event“. **MCP:** `inbox_get_quiet`. **Oberfläche:**
+  Zentrale rechts „Quiet until 15:00 · Kundentermin“, in Schmal eine Zeile unter den Zahlen.
+- **Termin:** `inbox.create_event_from_item { id, collection, title?, start, end }` · Write (Bereich `inbox`, prüft
+  Kalender-Schreibrecht und Kalender-Auswahl selbst wie E3.5 für Tasks; `not-found` für unsichtbare Kalender), der
+  Termin bekommt den Rückbezug wie in E8.7a (`URL` bzw. eine Zeile „From …“ in der Beschreibung). Freigabe-
+  Zusammenfassung: Titel aus dem Eintrag beim Fragen festgehalten, Kalendername aus dem Cache. **MCP:**
+  `inbox_create_event_from_item`. **Oberfläche:** „Event“ bei „To sort“ und im Paneel öffnet einen kleinen Dialog
+  (Titel vorbelegt, Kalender, Beginn, Dauer), wie „Task“ (E3.5).
+- **Abnahme:** Tests: Ruhe aus einem Termin „busy“ mit und ohne Kalenderrecht, keine Ruhe ohne Termin; Termin
+  entsteht mit Rückbezug, Rechte (ohne Kalender-Write → `forbidden`, ausgeblendeter Kalender → `not-found`),
+  Freigabe-Text. `torro-api-review`; Sichtprüfung Zentrale und Dialog.
 
 ### E8.6a Stummschalten nach Merkmalen: Kern
 - [x] erledigt (zusätzlich freigegeben, nur so weit der Compiler es erzwingt: `torroworkplace/src/{daemon,pim}.rs`

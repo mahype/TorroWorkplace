@@ -556,6 +556,25 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Inbox hub (E8.5)
+    ("Act now", "Jetzt handeln"),
+    ("Decide", "Entscheiden"),
+    ("To sort", "Zu sortieren"),
+    ("to decide", "zu entscheiden"),
+    ("agents", "Agenten"),
+    ("to sort", "zu sortieren"),
+    ("{n} finished", "{n} fertig"),
+    ("Finished", "Fertig"),
+    ("Done today", "Heute erledigt"),
+    ("Coming back", "Kommt wieder"),
+    ("What you put off comes back here.", "Was du vertagst, kommt hier wieder."),
+    ("Nothing to act on.", "Nichts zu tun."),
+    (
+        "Approvals, waiting agents and entries to sort show up here.",
+        "Freigaben, wartende Agenten und Einträge zum Sortieren erscheinen hier.",
+    ),
+    ("Nothing to sort.", "Nichts zu sortieren."),
+    ("Mail and notices for you show up here.", "Mails und Meldungen für dich erscheinen hier."),
     // Tasks that keep their mail (E8.7a)
     ("unknown sender", "unbekannter Absender"),
     ("From mail: {sender}, “{subject}”, {day}", "Aus Mail: {sender}, „{subject}“, {day}"),
