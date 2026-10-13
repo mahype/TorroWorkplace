@@ -161,9 +161,9 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Format | `format = 1`; `name` und `version` vorhanden; unbekannte Schlüssel sind ein Fehler (Tippfehler sollen auffallen) |
 | Nur Daten | Ein Paket enthält nie Code. Gelesen werden nur `design.toml`, SVG, PNG, TTF/OTF |
 | Kontrast Text | `text`, `text_2`, `text_3` ≥ 4,5:1 auf `bg`, `panel`, `raised`, `hover`, `selected`, `menu` (hell und dunkel) |
-| Kontrast Bedienelemente | `focus_ring`, `line_selected`, Statusfarben, `merged`, Kalenderfarben ≥ 3:1 auf `panel` |
+| Kontrast Bedienelemente | `focus_ring`, `merged`, Kalenderfarben ≥ 3:1 auf `panel`; Statusfarben ≥ 3:1 auf `panel` im dunklen Modus, `attention_text` und `error_text` ≥ 4,5:1 auf allen Flächen in beiden Modi; `line_selected` mindestens dreimal so deutlich wie `line_strong` und schwächer als `focus_ring` |
 | Akzent | `on_accent` auf `accent` ≥ 4,5:1 (Text auf dem Primärknopf) |
-| Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht je Schrift |
+| Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |
 | Layout-Abstände | `inset` 0–24; Innenränder 0–48; `section_gap` 8–64; `item_gap` 2–24 |
 | Abstände | `space` aufsteigend, 2–64; `radius` aufsteigend, 0–16 |
 | Maße | Bedienelemente (`control_sm` …) ≥ 24 (Klickziel); `row` 32–64; `row_sidebar` 24–40; `header` 36–64; `sidebar` 180–320; `props`, `panel`, `list` 280–520; `content_max` 560–1200 |
@@ -172,7 +172,7 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Schriften | lesbar als TrueType/OpenType; Familie aus `family` steht in der Datei; Lizenzdatei vorhanden |
 | Logo | quadratisch (Seitenverhältnis 1 ± 0,05) |
 
-Was ein Paket **nicht** kann: andere Schwellen der Größenklassen, andere Gewichte, Animationen, Ton, Texte,
+Was ein Paket **nicht** kann: andere Schwellen der Größenklassen, Laufweite und Großschreibung, Animationen, Ton, Texte,
 Tastenbelegung, Anordnung (Stufe 2).
 
 ## Wählen und wechseln
