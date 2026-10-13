@@ -1,4 +1,4 @@
-# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.5)
+# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.9)
 
 Konzept und Regeln für Pakete: [design-pakete.md](../design-pakete.md). Issue #72. Regeln für die Arbeit:
 [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`. Wer einen
@@ -9,10 +9,13 @@ Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review
 > wenn Stufe 1 steht.
 
 ```
-L.1 ── L.2 ── L.3 ── L.4 ── L.5
+L.1 ── L.2 ── L.3 ── L.4 ── L.5 ── L.6 ─┬─ L.7 Commitr
+                                        ├─ L.8 Dracula
+                                        └─ L.9 Ribbon
 ```
 
-Alle nacheinander: L.2 ändert jede App, L.3 den Katalog.
+L.1–L.6 nacheinander: L.2 ändert jede App, L.3 den Katalog, L.6 das Format. L.7–L.9 (Issue #80) sind unabhängig
+voneinander, jedes Paket wird erst durchdesignt, dann gebaut.
 
 **Neue Abhängigkeiten** (über `[workspace.dependencies]`): `toml` (L.1), `ttf-parser` (L.1, Familie und Format
 prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol aus SVG).
@@ -133,3 +136,53 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   mehr Luft (`body` 14, Zeilen 44), andere Akzentfarbe (kein Rot), eigenes Logo und Tray-Symbol. Besteht alle Regeln.
 - **Abnahme:** Paket lädt ohne Gründe; alle Apps mit `--demo --design plex` in allen Größen angesehen (oder ehrlich
   „nicht möglich“); `torro-design-review` mit beiden Paketen.
+
+### L.6 Seitenleiste mit eigenen Farben
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** L.5 · **Dateien:** `crates/torro-core/src/design.rs`,
+  `crates/torro-core/src/design/**` (Format, Zusammenführen, Prüfen, Fehler), `crates/torro-core/tests/fixtures/designs/`,
+  `crates/torro-core/src/i18n/de.rs` (neue Fehlertexte), `crates/torro-gui/src/**` (vor allem `theme.rs`, `style.rs`,
+  `shell.rs`, `widgets.rs`, `design.rs`), die Stellen in `crates/{torrocalendar,torrotasks,torroinbox}/src/**` und
+  `crates/torroworkplace/src/ui/**`, die in der Seitenleiste selbst Farben wählen (z. B. Mini-Monat, Kalenderliste),
+  `.claude/skills/torro-design/SKILL.md`; Doku: `docs/design-pakete.md` (Abschnitt steht schon)
+- **Format** nach [Seitenleiste mit eigenen Farben](../design-pakete.md#seitenleiste-mit-eigenen-farben): je Modus
+  optional `sidebar`, `sidebar_hover`, `sidebar_selected`, `sidebar_text`, `sidebar_text_2`, `sidebar_text_3`,
+  `sidebar_line`. Fehlt ein Wert, gilt der entsprechende Wert **desselben Pakets** (`bg`, `hover`, `selected`, `text`,
+  `text_2`, `text_3`, `line`), nicht der des Standards. Das Standardpaket setzt keinen davon.
+- **Schnittstelle (zur Freigabe):** `Palette` bekommt die sieben Felder (in `torro-core` und `torro-gui`).
+  Vorschlag für die Umsetzung, ohne die Apps anzufassen: Die Shell legt die Seitenleiste (auch Rail, Schublade, Rand
+  und Titelband) in einen Iced-`themer` mit einem Theme, das `palette()` als „Seitenleiste“ erkennt und dann eine
+  Palette liefert, in der `bg`/`text`/… durch die `sidebar*`-Werte ersetzt sind. So zeichnet sich alles in der Leiste
+  von selbst richtig. Andere Lösung → vorher fragen.
+- **Prüfen:** Regel „Seitenleiste“ aus der Tabelle im Konzept, mit Werten nach dem Zurückfallen; eine Fehlervariante
+  mit Schlüssel und Verhältnis wie die übrigen Kontrastfehler.
+- **Titelband:** `Surface::Window` nimmt `sidebar`, damit die Ampel auf der Leistenfarbe sitzt; Zustände auf dem Fenster
+  selbst (Anmelden, Laden, Fehler) bleiben auf `bg`.
+- **Oberfläche/API/MCP:** keine neuen Funktionen; `settings_list_designs` meldet die neuen Gründe wie alle anderen.
+- **Abnahme:** Standardpaket und Plex sehen aus wie vorher (Test: ohne `sidebar*` ist die Seitenleisten-Palette gleich
+  der normalen). Testpaket mit dunkler Leiste neben hellem Inhalt lädt; kaputte Beispiele (Text auf `sidebar` zu
+  schwach, Kalenderfarbe auf `sidebar` zu schwach) werden mit Grund abgelehnt. Sichtprüfung mit einem Testpaket in
+  Kalender, Aufgaben, Inbox und Steuerzentrale, breit und mittel (Rail), hell und dunkel, auch Schublade im Schmalen.
+
+### L.7 Paket Commitr (erinnert an GitHub)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** L.6 · **Dateien:** `designs/commitr/`, `crates/torroworkplace/src/designs.rs`
+- Erst durchdesignen, dann bauen (wie L.5). Richtung: Mona Sans (OFL), neutrales Grau, Blau `#0969DA` als Akzent,
+  feine Linien, Radius 6, eher dicht, dunkle Seitenleiste. Kein GitHub-Name und kein Octocat; „inspired by GitHub“
+  in der Beschreibung, eigenes Logo.
+- **Abnahme:** wie L.5.
+
+### L.8 Paket Dracula
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** L.5 · **Dateien:** `designs/dracula/`, `crates/torroworkplace/src/designs.rs`
+- Erst durchdesignen, dann bauen. Offizielles Schema (MIT): dunkel „Dracula“, hell „Alucard“; Violett und Pink als
+  Akzent; Inter, optional JetBrains Mono (OFL) für Ziffern. Autor und Lizenz im Paket.
+- **Abnahme:** wie L.5.
+
+### L.9 Paket Ribbon (erinnert an Microsoft Office)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** L.6 · **Dateien:** `designs/ribbon/`, `crates/torroworkplace/src/designs.rs`
+- Erst durchdesignen, dann bauen. Richtung: Selawik (OFL; Segoe UI darf nicht mit), Office-Blau `#0F6CBD`, helle graue
+  Flächen, Radius 4, ruhig; Seitenleiste ggf. in Blau. Kein Office-Name und kein Office-Logo; „inspired by Microsoft
+  Office“ in der Beschreibung, eigenes Logo.
+- **Abnahme:** wie L.5.
