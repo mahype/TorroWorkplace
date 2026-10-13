@@ -46,6 +46,7 @@ use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
+use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
 use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceRef};
 use torro_ipc::api::Mcp;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
@@ -1236,7 +1237,33 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 (_, None) => trf("Hide the sender of {entry} in the inbox", &[("entry", &entry())]),
             }
         }
+        // The trait and its value as the inbox holds them for the entry, never as the client says
+        // (task E8.6a): a trait holds for every source of the kind.
+        Request::MuteItem { scope, until, effect, .. } => {
+            let what = match (scope, facts.item.as_ref().and_then(|item| torro_inbox::rules::mute_target(item, *scope)))
+            {
+                (MuteScope::Conversation, _) => trf("the conversation {entry}", &[("entry", &entry())]),
+                (MuteScope::Facet { .. }, Some(facet)) => {
+                    let named = format!("\"{}\"", quote(&torro_inbox::rules::facet_label(&facet)));
+                    reach_of(facet.key, named)
+                }
+                (MuteScope::Facet { .. }, None) => trf("a trait of {entry}", &[("entry", &entry())]),
+            };
+            let effect = mute_effect_name(*effect);
+            match until {
+                Some(until) => trf(
+                    "Mute {what} until {when} ({effect})",
+                    &[("what", &what), ("when", &when(&EventTime::DateTime(*until), today)), ("effect", &effect)],
+                ),
+                None => trf("Mute {what} for good ({effect})", &[("what", &what), ("effect", &effect)]),
+            }
+        }
         Request::RemoveRule { .. } => match &facts.rule {
+            // A muted trait (task E8.6a), named by its words.
+            Some(Rule { facet: Some(facet), .. }) => trf(
+                "Stop muting {what} in the inbox",
+                &[("what", &format!("\"{}\"", quote(&torro_inbox::rules::facet_label(facet))))],
+            ),
             // A hidden sender or domain is hidden in every mail account (task E3.11).
             Some(Rule { sender: Some(sender), effect: RuleEffect::Muted, .. }) => {
                 trf("Show mail from {sender} in the inbox again", &[("sender", &format!("\"{}\"", quote(sender)))])
@@ -1260,7 +1287,8 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 "Stop sending notices of {source} to {lane}",
                 &[("source", &source_name(source)), ("lane", &lane_name(*lane))],
             ),
-            None => tr("Remove an unknown inbox rule").to_string(),
+            // Only rules with a trait keep no popups; one without is nothing the core makes.
+            Some(Rule { effect: RuleEffect::NoPopup, .. }) | None => tr("Remove an unknown inbox rule").to_string(),
         },
         other => summary(other, &Facts::default()),
     }
@@ -1275,6 +1303,28 @@ fn web_host(url: &str) -> Option<String> {
     let authority = rest.split(['/', '?', '#', '\\']).next().unwrap_or_default();
     let host = authority.rsplit('@').next().unwrap_or_default();
     (!host.is_empty()).then(|| host.to_string())
+}
+
+/// `what` with how far a muted trait of `key` reaches (task E8.6a): one that can name more than
+/// one source holds for every source of the kind, also those the asking key may not see, which the
+/// person must know before allowing it (as for a hidden sender, "in every mail account").
+fn reach_of(key: FacetKey, what: String) -> String {
+    match key {
+        FacetKey::Sender | FacetKey::Domain | FacetKey::List | FacetKey::Bulk => {
+            trf("{what} in every mail account", &[("what", &what)])
+        }
+        FacetKey::Project | FacetKey::Kind => trf("{what} for every agent", &[("what", &what)]),
+        FacetKey::Account | FacetKey::Agent | FacetKey::Client | FacetKey::Conversation => what,
+    }
+}
+
+/// What muting does, in a few words for a summary (task E8.6a): "no popup", "only Info", "hidden".
+fn mute_effect_name(effect: MuteEffect) -> &'static str {
+    match effect {
+        MuteEffect::NoPopup => tr("no popup"),
+        MuteEffect::Info => tr("only Info"),
+        MuteEffect::Hide => tr("hidden"),
+    }
 }
 
 /// `item` is an entry of a mail account (task E4.1).
@@ -2476,6 +2526,7 @@ pub(crate) mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
         }
     }
 
@@ -2510,7 +2561,7 @@ pub(crate) mod tests {
                 &[("entry", &unknown), ("lane", &tr("For me")), ("source", &tr("its source"))]
             )
         );
-        let done = |done| inbox_summary(&Request::SetItemDone { id: "e1".into(), done }, &known);
+        let done = |done| inbox_summary(&Request::SetItemDone { id: "e1".into(), done, dismissed: false }, &known);
         assert_eq!(done(true), trf("Mark {entry} as done", &[("entry", &entry)]));
         assert_eq!(done(false), trf("Open {entry} again", &[("entry", &entry)]));
         let snooze = inbox_summary(&Request::SnoozeItem { id: "e1".into(), until: None }, &InboxFacts::default());
@@ -2524,6 +2575,8 @@ pub(crate) mod tests {
                 domain: None,
                 effect,
                 created: Utc::now(),
+                facet: None,
+                until: None,
             }),
             ..InboxFacts::default()
         };
@@ -2549,7 +2602,7 @@ pub(crate) mod tests {
         };
         let mail = InboxFacts { item: Some(mail), ..InboxFacts::default() };
         let news = "\"Weekly news\"";
-        let done = inbox_summary(&Request::SetItemDone { id: "e1".into(), done: true }, &mail);
+        let done = inbox_summary(&Request::SetItemDone { id: "e1".into(), done: true, dismissed: false }, &mail);
         assert_eq!(done, trf("Mark {entry} as done and its mail as read", &[("entry", &news)]));
         assert_eq!(
             inbox_summary(&lane(true), &mail),
@@ -2570,6 +2623,8 @@ pub(crate) mod tests {
                 domain: None,
                 effect: RuleEffect::Lane { lane: Lane::ForMe },
                 created: Utc::now(),
+                facet: None,
+                until: None,
             }),
             ..InboxFacts::default()
         };
@@ -2618,6 +2673,8 @@ pub(crate) mod tests {
                 domain: domain.map(String::from),
                 effect: RuleEffect::Muted,
                 created: Utc::now(),
+                facet: None,
+                until: None,
             }),
             ..InboxFacts::default()
         };
@@ -2629,6 +2686,56 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&remove_hidden, &hidden(None, Some("shop.example"))),
             trf("Show mail from everyone at {domain} in the inbox again", &[("domain", &"\"shop.example\"")])
+        );
+
+        // Muting (task E8.6a): the trait and its value from the entry, the end and the effect in words.
+        let mut muted_mail = mail.item.clone().expect("mail");
+        muted_mail.facets = torro_inbox::rules::facets(&muted_mail, None, false);
+        let muted_mail = InboxFacts { item: Some(muted_mail), ..InboxFacts::default() };
+        let mute = |scope, until, effect| Request::MuteItem { id: "e1".into(), scope, until, effect };
+        let sender = format!("\"{}\"", trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        let sender = trf("{what} in every mail account", &[("what", &sender)]);
+        let by_sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender };
+        assert_eq!(
+            inbox_summary(&mute(by_sender, None, MuteEffect::NoPopup), &muted_mail),
+            trf("Mute {what} for good ({effect})", &[("what", &sender), ("effect", &tr("no popup"))])
+        );
+        let until = Utc::now() + chrono::TimeDelta::days(1);
+        let when_text = when(&EventTime::DateTime(until), Local::now().date_naive());
+        assert_eq!(
+            inbox_summary(&mute(MuteScope::Conversation, Some(until), MuteEffect::Info), &muted_mail),
+            trf(
+                "Mute {what} until {when} ({effect})",
+                &[
+                    ("what", &trf("the conversation {entry}", &[("entry", &news)])),
+                    ("when", &when_text),
+                    ("effect", &tr("only Info"))
+                ]
+            )
+        );
+        let by_project = MuteScope::Facet { key: torro_inbox::item::FacetKey::Project };
+        assert_eq!(
+            inbox_summary(&mute(by_project, None, MuteEffect::Hide), &muted_mail),
+            trf(
+                "Mute {what} for good ({effect})",
+                &[("what", &trf("a trait of {entry}", &[("entry", &news)])), ("effect", &tr("hidden"))]
+            ),
+            "a trait the entry lacks names no value"
+        );
+        let muted_rule = InboxFacts {
+            rule: hidden(None, None).rule.map(|rule| Rule {
+                facet: Some(torro_inbox::item::Facet {
+                    key: torro_inbox::item::FacetKey::List,
+                    value: "<news.shop.example>".into(),
+                }),
+                ..rule
+            }),
+            ..InboxFacts::default()
+        };
+        let list = format!("\"{}\"", trf("The list {list}", &[("list", &"<news.shop.example>")]));
+        assert_eq!(
+            inbox_summary(&remove_hidden, &muted_rule),
+            trf("Stop muting {what} in the inbox", &[("what", &list)])
         );
 
         let post = Request::PostItem {

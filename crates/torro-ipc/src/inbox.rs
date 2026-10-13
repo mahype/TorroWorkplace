@@ -28,7 +28,7 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
-use torro_inbox::item::{Hidden, HideScope};
+use torro_inbox::item::{Hidden, HideScope, MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 use torro_mail::{Flag, Folder, Message, MessageSummary};
@@ -185,7 +185,35 @@ impl InboxSource for InboxClient {
     }
 
     async fn set_item_done(&self, id: String, done: bool) -> Result<Item, InboxError> {
-        self.ask_item(Request::SetItemDone { id, done }).await
+        self.ask_item(Request::SetItemDone { id, done, dismissed: false }).await
+    }
+
+    /// `inbox.set_item_done` with `dismissed: true` (task E8.6a).
+    async fn dismiss_item(&self, id: String) -> Result<Item, InboxError> {
+        self.ask_item(Request::SetItemDone { id, done: true, dismissed: true }).await
+    }
+
+    /// `inbox.list_mute_options` (task E8.6a).
+    async fn list_mute_options(&self, id: String) -> Result<Vec<MuteOption>, InboxError> {
+        match self.ask(Request::ListMuteOptions { id }).await? {
+            Response::MuteOptions { options } => Ok(options),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.mute_item` (task E8.6a): the core keeps the rule or changes the entry and answers what
+    /// changed.
+    async fn mute_item(
+        &self,
+        id: String,
+        scope: MuteScope,
+        until: Option<DateTime<Utc>>,
+        effect: MuteEffect,
+    ) -> Result<Muted, InboxError> {
+        match self.ask(Request::MuteItem { id, scope, until, effect }).await? {
+            Response::Muted(muted) => Ok(muted),
+            other => Err(unexpected(other)),
+        }
     }
 
     async fn snooze_item(&self, id: String, until: Option<DateTime<Utc>>) -> Result<Item, InboxError> {
@@ -308,6 +336,7 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
         }
     }
 
@@ -326,10 +355,25 @@ mod tests {
             Request::ListSources => Response::Sources {
                 sources: vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false }],
             },
-            Request::SetItemDone { id, done } => {
+            // A dismissed entry is titled so, to see the flag arrived.
+            Request::SetItemDone { id, done, dismissed } => {
                 let state = if done { State::Done { at: at(10) } } else { State::Seen };
-                Response::Item { item: Item { state, ..item(&id) } }
+                Response::Item { item: Item { state, title: format!("dismissed {dismissed}"), ..item(&id) } }
             }
+            Request::ListMuteOptions { id } => Response::MuteOptions {
+                options: vec![MuteOption {
+                    scope: MuteScope::Conversation,
+                    value: None,
+                    label: id,
+                    untrusted: false,
+                    admin: false,
+                }],
+            },
+            // The moved id names what arrived.
+            Request::MuteItem { id, scope, until, effect } => Response::Muted(Muted {
+                moved: vec![format!("{id}|{scope:?}|{}|{effect:?}", until.is_some())],
+                ..Muted::default()
+            }),
             Request::SnoozeItem { id, until } => Response::Item {
                 item: Item { state: until.map_or(State::Seen, |until| State::Snoozed { until }), ..item(&id) },
             },
@@ -346,6 +390,8 @@ mod tests {
                     domain: Some("shop.example".into()),
                     effect: torro_inbox::RuleEffect::Muted,
                     created: at(10),
+                    facet: None,
+                    until: None,
                 }),
                 new_rule: true,
                 done: vec![id],
@@ -470,6 +516,20 @@ mod tests {
         assert_eq!((rule.id.as_str(), rule.domain.as_deref()), ("m1|Domain", Some("shop.example")));
         assert_eq!((hidden.new_rule, hidden.done), (true, vec!["m1".to_string()]));
         client.remove_rule("r1".into()).await.expect("removed");
+    }
+
+    /// Task E8.6a: dismissing, the menu and muting each send their one request.
+    #[tokio::test]
+    async fn dismissing_and_muting_send_their_requests() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        assert_eq!(client.dismiss_item("a".into()).await.expect("dismissed").title, "dismissed true");
+        assert_eq!(client.set_item_done("a".into(), true).await.expect("done").title, "dismissed false");
+        let options = client.list_mute_options("m1".into()).await.expect("options");
+        assert_eq!((options.len(), options[0].label.as_str()), (1, "m1"));
+        let sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender };
+        let muted = client.mute_item("m1".into(), sender, Some(at(12)), MuteEffect::Info).await.expect("muted");
+        assert_eq!(muted.moved, ["m1|Facet { key: Sender }|true|Info"]);
     }
 
     #[tokio::test]

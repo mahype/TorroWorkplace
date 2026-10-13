@@ -369,6 +369,7 @@ fn unread_mail(
             snippet: summary.snippet,
             from: summary.from.as_ref().map(sender),
             bulk: is_bulk(&message.traits),
+            list: message.traits.list_id.clone(),
             date: summary.date,
         });
     }
@@ -581,7 +582,7 @@ mod tests {
         let other = server.add("INBOX", &bernd("Another", 0), &[]);
         eventually("filed", || async { listed().await.len() == 2 }).await;
         let id = entry(&listed().await, "Offer").id.clone();
-        let done = core.handle(Request::SetItemDone { id, done: true }).await;
+        let done = core.handle(Request::SetItemDone { id, done: true, dismissed: false }).await;
         assert!(matches!(&done, Response::Item { item } if matches!(item.state, State::Done { .. })), "{done:?}");
 
         eventually("read on the server", || async { server.flags("INBOX", uid).contains(&"\\Seen".to_string()) }).await;
@@ -621,7 +622,7 @@ mod tests {
 
         // Removed altogether: an entry opened again by hand is done at the next look.
         let id = entries(&inbox)[0].id.clone();
-        inbox.handle(Request::SetItemDone { id, done: false }, None, Utc::now());
+        inbox.handle(Request::SetItemDone { id, done: false, dismissed: false }, None, Utc::now());
         store_accounts(dir.path(), &secrets, &[]);
         mail.reload().await;
         feed.retire(Utc::now()).await;

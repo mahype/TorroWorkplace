@@ -582,6 +582,8 @@ fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
         domain: None,
         effect,
         created: now - age,
+        facet: None,
+        until: None,
     };
     vec![
         rule("5e0b7c2a", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }, Duration::days(6)),

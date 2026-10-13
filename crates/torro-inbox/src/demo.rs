@@ -32,8 +32,8 @@ use torro_core::i18n::{tr, trf};
 use torro_mail::{AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
 
 use crate::item::{
-    Action, AgentInfo, AgentKind, Hidden, HideScope, Item, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo,
-    SourceRef, State,
+    Action, AgentInfo, AgentKind, Facet, Hidden, HideScope, Item, Kind, Lane, Link, MuteEffect, MuteOption, MuteScope,
+    Muted, Rule, RuleEffect, Sender, SourceInfo, SourceRef, State,
 };
 use crate::rules;
 use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
@@ -45,9 +45,10 @@ pub const APPROVAL_ID: &str = "demo-approval-1";
 struct Data {
     items: Vec<Item>,
     muted: BTreeSet<SourceRef>,
-    /// The senders and domains hidden from the inbox (task E3.10), in memory only.
+    /// The senders and domains hidden from the inbox (task E3.10) and the traits muted (task
+    /// E8.6a), in memory only.
     hidden: Vec<Rule>,
-    /// How many hiding rules were made, for their ids: one removed leaves no gap to reuse.
+    /// How many of these rules were made, for their ids: one removed leaves no gap to reuse.
     rules_made: usize,
     /// The tasks made from entries ("Make task", task E3.5), in memory only.
     tasks: Vec<DemoTask>,
@@ -73,14 +74,48 @@ impl Data {
         domain: Option<String>,
         now: DateTime<Utc>,
     ) -> (Option<Rule>, bool) {
-        if let Some(known) = self.hidden.iter().find(|rule| rule.sender == sender && rule.domain == domain) {
+        let known =
+            self.hidden.iter().find(|rule| rule.facet.is_none() && rule.sender == sender && rule.domain == domain);
+        if let Some(known) = known {
             return (Some(known.clone()), false);
         }
-        self.rules_made += 1;
-        let id = format!("demo-rule-{}", self.rules_made);
-        let rule = Rule { id, source, sender, domain, effect: RuleEffect::Muted, created: now };
+        let id = self.next_rule_id();
+        let rule =
+            Rule { id, source, sender, domain, effect: RuleEffect::Muted, created: now, facet: None, until: None };
         self.hidden.push(rule.clone());
         (Some(rule), true)
+    }
+
+    fn next_rule_id(&mut self) -> String {
+        self.rules_made += 1;
+        format!("demo-rule-{}", self.rules_made)
+    }
+
+    /// The rule muting `facet` with `effect` until `until` (task E8.6a), as the core keeps it: the
+    /// same rule already there for a source of the same kind (its end then the later of both), else
+    /// a new one about `source`; with whether it is new.
+    fn muting_rule(
+        &mut self,
+        source: SourceRef,
+        facet: Facet,
+        effect: RuleEffect,
+        until: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> (Rule, bool) {
+        let same = |rule: &Rule| {
+            rule.facet.as_ref() == Some(&facet)
+                && rule.effect == effect
+                && rules::reaches(rule, &source)
+                && rules::is_active(rule, now)
+        };
+        if let Some(known) = self.hidden.iter_mut().find(|rule| same(rule)) {
+            known.until = rules::later_end(known.until, until);
+            return (known.clone(), false);
+        }
+        let id = self.next_rule_id();
+        let rule = Rule { id, source, sender: None, domain: None, effect, created: now, facet: Some(facet), until };
+        self.hidden.push(rule.clone());
+        (rule, true)
     }
 }
 
@@ -174,6 +209,7 @@ fn entry(now: DateTime<Utc>, n: u32, source: SourceRef, kind: Kind, title: Strin
         link: None,
         actions: Vec::new(),
         untrusted: true,
+        facets: Vec::new(),
     }
 }
 
@@ -306,6 +342,10 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
             ..notice(now, 13, "certs", Lane::ForMe, tr("Certificate for the intranet expires in 14 days"), 3 * 24 * 60)
         },
     ]
+    .into_iter()
+    // The traits the core gives every report (task E8.6a).
+    .map(|item| Item { facets: rules::facets(&item, None, false), ..item })
+    .collect()
 }
 
 /// The two mail accounts of the demo: work and private, as `mail:<address>`, in the order the core lists them.
@@ -645,7 +685,7 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 name: from.name.clone().unwrap_or_else(|| from.address.clone()),
                 address: Some(from.address.clone()),
             });
-            Item {
+            let entry = Item {
                 id: format!("demo-mail-{}", n + 1),
                 source: SourceRef::mail(summary.account.trim_start_matches("mail:")),
                 thread_key: summary.thread_id.clone(),
@@ -663,7 +703,11 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 link: Some(Link::Mail { message: summary.id.clone() }),
                 actions: Vec::new(),
                 untrusted: true,
-            }
+                facets: Vec::new(),
+            };
+            // The traits the core gives new mail (task E8.6a), its list and bulk from the headers.
+            let list = m.traits.list_id.as_deref();
+            Item { facets: rules::facets(&entry, list, list.is_some()), ..entry }
         })
         .collect()
 }
@@ -963,6 +1007,62 @@ impl InboxSource for DemoSource {
         Ok(item)
     }
 
+    /// Done like [`InboxSource::set_item_done`]; demo mode keeps no statistics.
+    async fn dismiss_item(&self, id: String) -> Result<Item, InboxError> {
+        self.set_item_done(id, true).await
+    }
+
+    async fn list_mute_options(&self, id: String) -> Result<Vec<MuteOption>, InboxError> {
+        let data = self.lock();
+        let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
+        Ok(rules::mute_options(item))
+    }
+
+    /// As the core does (task E8.6a): the value from the entry, a rule unless the conversation is
+    /// hidden or moved for good, then the entries it holds for changed at once. Demo mode gets no new
+    /// reports, so the rule changes nothing later. [`InboxError::Forbidden`] for the person's own
+    /// entries is the app key's: the demo is the person, so they are [`InboxError::Other`] here like
+    /// a trait the entry lacks.
+    async fn mute_item(
+        &self,
+        id: String,
+        scope: MuteScope,
+        until: Option<DateTime<Utc>>,
+        effect: MuteEffect,
+    ) -> Result<Muted, InboxError> {
+        let now = self.now();
+        let mut data = self.lock();
+        let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
+        if until.is_some_and(|until| until <= now) {
+            return Err(InboxError::Other("the end of muting has passed".into()));
+        }
+        let target = rules::mute_target(item, scope)
+            .ok_or_else(|| InboxError::Other("this entry has nothing to mute it by".into()))?;
+        let source = item.source.clone();
+        let (rule, new_rule) = if scope.keeps_rule(effect, until.is_some()) {
+            let (rule, new_rule) = data.muting_rule(source, target, effect.rule_effect(), until, now);
+            (Some(rule), new_rule)
+        } else {
+            (None, false)
+        };
+        let mut muted = Muted { rule: rule.clone(), new_rule, ..Muted::default() };
+        for entry in &mut data.items {
+            let holds = match &rule {
+                Some(rule) => rules::mutes(rule, entry, now),
+                None => entry.id == id,
+            };
+            if !holds {
+                continue;
+            }
+            match rules::mute_entry(entry, effect, now) {
+                Some(rules::MutedEntry::Done) => muted.done.push(entry.id.clone()),
+                Some(rules::MutedEntry::Moved) => muted.moved.push(entry.id.clone()),
+                None => {}
+            }
+        }
+        Ok(muted)
+    }
+
     async fn snooze_item(&self, id: String, until: Option<DateTime<Utc>>) -> Result<Item, InboxError> {
         self.change(&id, |item| rules::snooze(item, until))
     }
@@ -1015,7 +1115,7 @@ impl InboxSource for DemoSource {
         Ok(Hidden { rule, new_rule, done })
     }
 
-    /// Removes a hidden sender or domain (the only rules demo mode keeps); muted sources are taken
+    /// Removes a hidden sender or domain or a muted trait (the only rules demo mode keeps); muted sources are taken
     /// back with [`InboxSource::mute_source`]. [`InboxError::NotFound`] for an unknown rule.
     async fn remove_rule(&self, id: String) -> Result<(), InboxError> {
         let mut data = self.lock();
@@ -1348,6 +1448,55 @@ mod tests {
         assert!(twice.done.is_empty(), "nothing was open any more");
         let notice = demo.hide_sender("demo-6".into(), HideScope::Conversation).await;
         assert!(matches!(notice, Err(InboxError::Other(_))), "only mail: {notice:?}");
+    }
+
+    /// Task E8.6a: the menu is built from the entry's traits, and the person's own entries have none.
+    #[tokio::test]
+    async fn the_demo_offers_the_traits_of_its_entries() {
+        let demo = DemoSource::new(now());
+        let waiting = demo.list_mute_options("demo-1".into()).await.expect("options");
+        let keys: Vec<MuteScope> = waiting.iter().map(|option| option.scope).collect();
+        assert_eq!(
+            keys,
+            [
+                MuteScope::Conversation,
+                MuteScope::Facet { key: crate::item::FacetKey::Agent },
+                MuteScope::Facet { key: crate::item::FacetKey::Project },
+                MuteScope::Facet { key: crate::item::FacetKey::Kind },
+            ]
+        );
+        assert!(demo.list_mute_options("demo-3".into()).await.expect("approval").is_empty());
+        assert_eq!(demo.list_mute_options("nope".into()).await, Err(InboxError::NotFound));
+        let mail =
+            demo.lock().items.iter().find(|item| item.lane == Lane::Info && item.id.starts_with("demo-mail")).cloned();
+        let mail = mail.expect("a newsletter");
+        let list = mail.facets.iter().find(|facet| facet.key == crate::item::FacetKey::List);
+        assert_eq!(list.map(|facet| facet.value.as_str()), Some("<news.example>"), "from List-Id");
+    }
+
+    /// Task E8.6a: muting hides or moves at once and answers what to take back.
+    #[tokio::test]
+    async fn muting_in_the_demo_changes_the_entries_it_holds_for() {
+        let demo = DemoSource::new(now());
+        let project = MuteScope::Facet { key: crate::item::FacetKey::Kind };
+        let muted = demo.mute_item("demo-1".into(), project, None, MuteEffect::Info).await.expect("muted");
+        assert!(muted.new_rule && muted.rule.is_some());
+        assert_eq!(muted.moved, ["demo-1", "demo-2"], "both waiting agents");
+        assert_eq!(demo.lock().items[0].lane, Lane::Info);
+        let again = demo.mute_item("demo-2".into(), project, None, MuteEffect::Info).await.expect("again");
+        assert!(!again.new_rule && again.moved.is_empty(), "the same rule, nothing more to move");
+        let conversation =
+            demo.mute_item("demo-6".into(), MuteScope::Conversation, None, MuteEffect::Hide).await.expect("hidden");
+        assert_eq!(conversation, Muted { done: vec!["demo-6".into()], ..Muted::default() }, "no rule");
+        let past = demo.mute_item("demo-7".into(), MuteScope::Conversation, Some(now()), MuteEffect::Hide).await;
+        assert!(matches!(past, Err(InboxError::Other(_))), "{past:?}");
+        let lacking = MuteScope::Facet { key: crate::item::FacetKey::Sender };
+        let lacking = demo.mute_item("demo-7".into(), lacking, None, MuteEffect::Hide).await;
+        assert!(matches!(lacking, Err(InboxError::Other(_))), "a script has no sender: {lacking:?}");
+        let rule = muted.rule.expect("a rule");
+        demo.remove_rule(rule.id).await.expect("removed like any rule");
+        let dismissed = demo.dismiss_item("demo-8".into()).await.expect("dismissed");
+        assert!(matches!(dismissed.state, State::Done { .. }));
     }
 
     fn folder<'a>(folders: &'a [Folder], id: &str) -> &'a Folder {

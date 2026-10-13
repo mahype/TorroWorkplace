@@ -490,6 +490,9 @@ fn describe(request: &Request) -> String {
         // Never the address or the domain: they would name who writes to the person.
         Request::HideSender { id, scope: torro_inbox::HideScope::Conversation } => format!("hide inbox item {id}"),
         Request::HideSender { id, .. } => format!("hide the sender of inbox item {id}"),
+        // Never the trait or its value: they would name who writes to the person.
+        Request::ListMuteOptions { id } => format!("mute options of inbox item {id}"),
+        Request::MuteItem { id, .. } => format!("mute by inbox item {id}"),
         Request::ListRules => "inbox rules".into(),
         Request::RemoveRule { id } => format!("remove inbox rule {id}"),
         // Never an address, a password, a search, a subject or a folder name (security rule 3 of
