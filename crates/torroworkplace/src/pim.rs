@@ -1110,6 +1110,16 @@ impl PimService {
             | Request::SendDraft { .. } => return None,
             // No collection: AI accounts have none (task KI.1a).
             Request::ConnectAi { .. } | Request::AiModels { .. } | Request::FindAiServers => return None,
+            // No collection: the assistant's conversations are its own (task C.1).
+            Request::ListEngines
+            | Request::ListConversations
+            | Request::GetConversation { .. }
+            | Request::SendMessage { .. }
+            | Request::CancelAnswer { .. }
+            | Request::RenameConversation { .. }
+            | Request::DeleteConversation { .. }
+            | Request::PinConversation { .. }
+            | Request::OpenChatWindow { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

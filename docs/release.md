@@ -119,6 +119,16 @@ Suite heißt also drei Aufrufe oder das geplante `install.sh` (siehe `docs/resea
 - Keine Universal-Binary: `dist` kann `universal2-apple-darwin` (noch) nicht als Ziel. Es gibt zwei Archive.
   GitHub stellt den letzten Intel-Runner (`macos-15-intel`) bis Herbst 2027 bereit; danach entfällt
   `x86_64-apple-darwin` oder muss gecrosscompiled werden.
+- **Schlüsselbund** (X.13): Alle Konto-Geheimnisse liegen auf macOS in einem Eintrag (Dienst `torroworkplace`,
+  Konto `torro-vault`), den der Dienst einmal je Start liest. macOS fragt also höchstens einmal; mit „Immer
+  erlauben“ gar nicht mehr, solange die Signatur gleich bleibt. Einträge von früher (ein Eintrag je Konto) zieht
+  der Dienst beim ersten Lesen um.
+- **Entwicklungs-Builds** (X.14): Debug-Builds sind ad hoc signiert, mit einer Kennung, die sich mit jedem Build
+  ändert; der Schlüsselbund erkennt sie danach nicht wieder. Einmal `scripts/macos-dev-cert.sh` ausführen (legt
+  das Zertifikat „Torro Development“ an und vertraut ihm für Codesignatur, fragt nach dem Passwort). Danach
+  signiert `cargo run` über den Runner in `.cargo/config.toml` jedes Programm mit diesem Zertifikat und der
+  Kennung `io.github.mahype.dev.<name>`; wer die Binaries anders startet, signiert sie mit
+  `scripts/macos-dev-sign.sh`. Ohne das Zertifikat (CI, andere Rechner) tun beide nichts.
 - Homebrew: `dist` erzeugt nur Formeln (kein Cask). Ein Cask für die `.app.zip` kann später von Hand in
   `Casks/` des Taps liegen; Versions- und Prüfsummen-Update müsste ein eigener Schritt übernehmen.
 

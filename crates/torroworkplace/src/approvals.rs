@@ -289,6 +289,10 @@ pub struct Facts {
     /// `None` for every other command, and until the store exists (tasks M3.2, M3.3). For
     /// `accounts.update_mail_account` the account's label is [`Facts::name`].
     pub mail: Option<MailFacts>,
+    /// For `assistant.send_message`: the name of the engine that would answer, as
+    /// `assistant.list_engines` lists it (task C.1). `None` when the core does not know it: the
+    /// summary then shows the engine's id. The conversation's title is [`Facts::name`].
+    pub engine: Option<String>,
 }
 
 /// What the core holds about the messages, drafts and folders a `mail.*` command names, for the
@@ -1130,9 +1134,81 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             }
             None => tr("Send an unknown draft").to_string(),
         },
+        request @ (Request::SendMessage { .. }
+        | Request::CancelAnswer { .. }
+        | Request::RenameConversation { .. }
+        | Request::DeleteConversation { .. }
+        | Request::PinConversation { .. }
+        | Request::OpenChatWindow { .. }) => assistant_summary(request, facts),
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// What an `assistant.*` command would do, in words (task C.1): `Delete the assistant
+/// conversation "Trip to Lisbon"`. The conversation by the title the core keeps for its id
+/// ([`Facts::name`]), "an unknown assistant conversation" when it has none; the engine by its name
+/// ([`Facts::engine`]), else its id. The client's own text appears only where it is what will be
+/// written: a new title. Never the message itself. All of it goes through [`quote`].
+fn assistant_summary(request: &Request, facts: &Facts) -> String {
+    use torro_ipc::assistant::ChatWindow;
+    let known = facts.name.as_deref().map(quote);
+    match (request, known) {
+        (Request::SendMessage { engine, conversation, .. }, title) => {
+            let engine = quote(facts.engine.as_deref().unwrap_or(engine));
+            match (conversation, title) {
+                (None, _) => trf("Start an assistant conversation answered by \"{engine}\"", &[("engine", &engine)]),
+                (Some(_), Some(title)) => trf(
+                    "Send the assistant a message in \"{title}\", answered by \"{engine}\"",
+                    &[("title", &title), ("engine", &engine)],
+                ),
+                (Some(_), None) => trf(
+                    "Send the assistant a message in an unknown conversation, answered by \"{engine}\"",
+                    &[("engine", &engine)],
+                ),
+            }
+        }
+        (Request::CancelAnswer { .. }, Some(title)) => {
+            trf("Stop the assistant's answer in \"{title}\"", &[("title", &title)])
+        }
+        (Request::CancelAnswer { .. }, None) => {
+            tr("Stop the assistant's answer in an unknown conversation").to_string()
+        }
+        (Request::RenameConversation { title: new, .. }, Some(title)) => trf(
+            "Rename the assistant conversation \"{title}\" to \"{new}\"",
+            &[("title", &title), ("new", &quote(new))],
+        ),
+        (Request::RenameConversation { title: new, .. }, None) => {
+            trf("Rename an unknown assistant conversation to \"{new}\"", &[("new", &quote(new))])
+        }
+        (Request::DeleteConversation { .. }, Some(title)) => {
+            trf("Delete the assistant conversation \"{title}\"", &[("title", &title)])
+        }
+        (Request::DeleteConversation { .. }, None) => tr("Delete an unknown assistant conversation").to_string(),
+        (Request::PinConversation { pinned: true, .. }, Some(title)) => {
+            trf("Pin the assistant conversation \"{title}\"", &[("title", &title)])
+        }
+        (Request::PinConversation { pinned: false, .. }, Some(title)) => {
+            trf("Unpin the assistant conversation \"{title}\"", &[("title", &title)])
+        }
+        (Request::PinConversation { pinned: true, .. }, None) => {
+            tr("Pin an unknown assistant conversation").to_string()
+        }
+        (Request::PinConversation { pinned: false, .. }, None) => {
+            tr("Unpin an unknown assistant conversation").to_string()
+        }
+        (Request::OpenChatWindow { window: ChatWindow::New }, _) => {
+            tr("Open a new assistant conversation in a window").to_string()
+        }
+        (Request::OpenChatWindow { window: ChatWindow::Conversation(_) }, Some(title)) => {
+            trf("Open the assistant conversation \"{title}\" in a window", &[("title", &title)])
+        }
+        (Request::OpenChatWindow { window: ChatWindow::Conversation(_) }, None) => {
+            tr("Open an unknown assistant conversation in a window").to_string()
+        }
+        // Bots do not exist yet and are refused before anyone is asked; say which command it is.
+        (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
     }
 }
 
@@ -1978,6 +2054,85 @@ pub(crate) mod tests {
         assert_eq!(code, "error");
         assert!(!message.contains("/home/anna") && !message.contains("approvals.json"), "{message}");
         assert!(ApprovalsError::NotFound("x".into()).to_string().contains("\"x\""), "other errors stay as they are");
+    }
+
+    /// Task C.1: the assistant's commands name the conversation by the title the core keeps, the
+    /// engine by its name, never the message; the new title of a rename is the client's text,
+    /// made harmless; a conversation the core does not hold is "unknown".
+    #[test]
+    fn assistant_commands_are_summed_up_by_the_stored_title() {
+        use torro_ipc::assistant::ChatWindow;
+        let id = "0123456789abcdef".to_string();
+        let held = Facts { name: Some("Trip to\nLisbon \"now\"\u{202E}".into()), ..Facts::default() };
+        let unknown = Facts::default();
+        let title: (&str, &dyn std::fmt::Display) = ("title", &"Trip to Lisbon 'now'");
+
+        let delete = Request::DeleteConversation { id: id.clone() };
+        assert_eq!(summary(&delete, &held), trf("Delete the assistant conversation \"{title}\"", &[title]));
+        assert_eq!(summary(&delete, &unknown), tr("Delete an unknown assistant conversation"));
+
+        let rename = Request::RenameConversation { id: id.clone(), title: "Holiday {when}\n\"x\"".into() };
+        assert_eq!(
+            summary(&rename, &held),
+            trf("Rename the assistant conversation \"{title}\" to \"{new}\"", &[title, ("new", &"Holiday (when) 'x'")])
+        );
+        assert_eq!(
+            summary(&rename, &unknown),
+            trf("Rename an unknown assistant conversation to \"{new}\"", &[("new", &"Holiday (when) 'x'")])
+        );
+
+        let pin = |pinned| Request::PinConversation { id: id.clone(), pinned };
+        assert_eq!(summary(&pin(true), &held), trf("Pin the assistant conversation \"{title}\"", &[title]));
+        assert_eq!(summary(&pin(false), &held), trf("Unpin the assistant conversation \"{title}\"", &[title]));
+        assert_eq!(summary(&pin(true), &unknown), tr("Pin an unknown assistant conversation"));
+        assert_eq!(summary(&pin(false), &unknown), tr("Unpin an unknown assistant conversation"));
+
+        let cancel = Request::CancelAnswer { conversation: id.clone() };
+        assert_eq!(summary(&cancel, &held), trf("Stop the assistant's answer in \"{title}\"", &[title]));
+        assert_eq!(summary(&cancel, &unknown), tr("Stop the assistant's answer in an unknown conversation"));
+
+        let open = |window| Request::OpenChatWindow { window };
+        assert_eq!(
+            summary(&open(ChatWindow::Conversation(id.clone())), &held),
+            trf("Open the assistant conversation \"{title}\" in a window", &[title])
+        );
+        assert_eq!(
+            summary(&open(ChatWindow::Conversation(id.clone())), &unknown),
+            tr("Open an unknown assistant conversation in a window")
+        );
+        assert_eq!(summary(&open(ChatWindow::New), &held), tr("Open a new assistant conversation in a window"));
+
+        let send = |conversation: Option<String>| Request::SendMessage {
+            conversation,
+            engine: "ai:ollama@localhost:11434".into(),
+            model: None,
+            text: "Secret plans for Anna".into(),
+            without: Vec::new(),
+        };
+        let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
+        let in_it = summary(&send(Some(id.clone())), &with_engine);
+        assert_eq!(
+            in_it,
+            trf(
+                "Send the assistant a message in \"{title}\", answered by \"{engine}\"",
+                &[title, ("engine", &"Ollama")]
+            )
+        );
+        assert!(!in_it.contains("Secret"), "never the message: {in_it}");
+        assert_eq!(
+            summary(&send(None), &unknown),
+            trf(
+                "Start an assistant conversation answered by \"{engine}\"",
+                &[("engine", &"ai:ollama@localhost:11434")]
+            )
+        );
+        assert_eq!(
+            summary(&send(Some(id)), &Facts { engine: Some("Ollama".into()), ..Facts::default() }),
+            trf(
+                "Send the assistant a message in an unknown conversation, answered by \"{engine}\"",
+                &[("engine", &"Ollama")]
+            )
+        );
     }
 
     #[test]
