@@ -39,6 +39,7 @@ mod detail;
 #[cfg(test)]
 mod empty;
 mod glance;
+mod hub;
 mod keys;
 mod list;
 mod mail;

@@ -24,6 +24,10 @@
 //!
 //! `x` dismisses a notification (task E8.4, the card's ✕): done, counted apart. The app decides
 //! where it works – never for mail and approvals.
+//!
+//! The hub's "Act now" (task E8.5) is one list of sections, so it takes the keys of the list
+//! ([`Focus::List`]): `j`/`k` walk Decide, Agents and To sort, `l` moves an entry to the other lane.
+//! `s` on an approval opens no snooze menu – an approval waits for yes or no.
 
 use iced::keyboard::{self, Key as Name, key::Named};
 use torro_gui::shell;

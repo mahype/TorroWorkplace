@@ -848,7 +848,17 @@ E8.9   unabhängig (torro-wm, core.rs)
   Quellen zeigen nur ihre. Sichtprüfung `--view notifications --demo` in allen Größen und beiden Dichten.
 
 ### E8.5 Zentrale
-- [ ] erledigt
+- [x] erledigt („Act now“ in `hub.rs`: Kacheln je Herkunft – Mail, Agenten, Suite, je Skript, die vollsten
+  zuerst, so viele wie in eine Reihe passen; Klick filtert, `--open tile` –, dann Decide · Agents · To sort mit
+  Knöpfen je Eintrag (`hub::acts`): Freigaben Allow · Deny (· Go to window), **ohne ✕, Later und Done** – auch
+  `s` und das Paneel vertagen keine Freigabe mehr; Agenten Go to window · Later · Done; Mail Task · Later · Done;
+  Rest Open · Task · Later · ✕. Rechts „Coming back“ (Breit, solange kein Paneel offen ist). Seitenleiste Act
+  now, To sort (der Abschnitt allein, `--open to-sort`), Later, Done today (nur heute Erledigtes), Sources –
+  keine Mail-Ordner. Compact: Agents und To sort als Zeilen mit Aktionsleiste, Freigaben bleiben Karten. Schmal:
+  Zahlen oben, große Allow/Deny, Knöpfe unter den Karten; Kopfleiste bei 400 frei. Glance der Zentrale ohne
+  Mail-Block. Paneel: „Later“ und „Done“. **Offen:** „Quiet (Ruhe bis …)“ fehlt, kein Request sagt, ob und bis
+  wann Ruhe gilt; „Event“ fehlt, kein Request macht aus einem Eintrag einen Termin. Sichtprüfung am Mac über
+  AeroSpace: sechs Größen und 400 breit, beide Dichten, hell, dunkel, Plex, Paneel, To sort, Kachel, leer)
 - **Modell:** Opus · **Braucht:** E8.2 · **Dateien:** `crates/torroinbox/src/{app,overview,detail,keys,glance}.rs`, neu
   `crates/torroinbox/src/hub.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Act now:** oben je Quelle eine Kachel (große Zahl, eine Zeile Erklärung; Klick filtert), dann **Decide**

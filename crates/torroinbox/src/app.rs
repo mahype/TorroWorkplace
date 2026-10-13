@@ -7,12 +7,10 @@
 //! render and report clicks as [`Message`]s.
 //!
 //! Three windows (task E8.1, [`Kind`], `--view mail|notifications|hub`): each with its own window
-//! class, title and entry in the app switcher. So far they differ in the overview's columns – the
-//! mail window shows "Mail", the notifications window "Notifications", the hub both
-//! ([`Kind::columns`]); the rest is the same window. Each has "Compact | Comfortable" in its header
-//! bar (task E8.2, [`App::density`]), remembered per window and slice in `ui.json`
-//! ([`Launch::density_key`]), `--density` winning; the cards of the comfortable density come with
-//! E8.3 to E8.5.
+//! class, title and entry in the app switcher. They keep different entries ([`Kind::keeps`]: mail,
+//! everything else, all) and draw their overviews in their own way (below). Each has "Compact |
+//! Comfortable" in its header bar (task E8.2, [`App::density`]), remembered per window and slice in
+//! `ui.json` ([`Launch::density_key`]), `--density` winning.
 //!
 //! The mail window (task E8.3, `docs/eingang.md` "Drei Fenster") holds mail only ([`Kind::keeps`]).
 //! Its sidebar lists For me (the overview's one column: the mail for the user by day, "Info"
@@ -34,9 +32,16 @@
 //! notification has the ✕ (`x`, [`Edit::Dismiss`]: done, sent as dismissing) but approvals, and the
 //! header bar "Dismiss all" with an undo ([`Undo::Dismissed`]); `m` and the bell mute the source.
 //!
-//! The window starts on the overview (task E3.9, [`View::Overview`]): every open entry, in two
-//! columns "Mail" and "Notifications" side by side in the wide layout, one of them – chosen in the
-//! header bar or with `h`/`l` – in the medium and narrow ones. The app keeps which column has the
+//! The hub (task E8.5, `hub.rs`) is about acting: its overview is "Act now" ([`App::is_hub`]) – one
+//! tile per origin over the sections Decide (approvals), Agents and To sort, each entry with its
+//! buttons always shown, and in the wide layout "Coming back" at the right (the snoozed entries,
+//! [`Loaded::snoozed`]). A click on a tile filters the sections ([`App::filter`]). Its sidebar lists
+//! Act now, To sort (the section alone, [`App::sorting`]), Later, Done today and the sources. An
+//! approval has neither ✕ nor Later anywhere: `s` on it only says that it waits for a decision.
+//!
+//! The mail window starts on the overview (task E3.9, [`View::Overview`]): its open mail in the
+//! column "Mail" (the overview's other column, "Notifications", was the hub's until E8.5). The app
+//! keeps which column has the
 //! cursor ([`App::column`]) and which "Info" is unfolded (in `ui.json`, task E3.11); the keys walk the
 //! column
 //! ([`App::rows`]). Every row has an action bar (Task, Done, Later, Hide), whose buttons do what the
@@ -127,6 +132,7 @@ use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
 
 use crate::compose;
 use crate::glance::{self, GlanceData};
+use crate::hub::{self, Origin};
 use crate::keys::{self, Command, Focus, Key};
 use crate::list::Look;
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
@@ -686,10 +692,14 @@ pub enum Open {
     Attachments,
     /// The notifications window arranged "By time" (task E8.4), where it has room for columns.
     ByTime,
+    /// The hub's To sort alone (task E8.5), as its sidebar entry shows it.
+    ToSort,
+    /// The hub's "Act now" filtered to its first tile (task E8.5).
+    Tile,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 28] = [
+    const ALL: [(&'static str, Open); 30] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -718,6 +728,8 @@ impl Open {
         ("overview-notices", Open::OverviewNotices),
         ("attachments", Open::Attachments),
         ("by-time", Open::ByTime),
+        ("to-sort", Open::ToSort),
+        ("tile", Open::Tile),
     ];
 }
 
@@ -778,8 +790,8 @@ pub struct Launch {
 /// them apart. All three show the same entries of the core – what one marks done is done in all.
 ///
 /// The mail window shows the overview's "Mail" column (task E8.3), the notifications window the
-/// other entries on its board (task E8.4, `notifications.rs`), the hub today's overview with both
-/// ([`Kind::columns`]) until its own look comes with E8.5.
+/// other entries on its board (task E8.4, `notifications.rs`), the hub "Act now" with all of them
+/// (task E8.5, `hub.rs`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Kind {
     /// `--view mail`: what came in by mail.
@@ -814,7 +826,8 @@ impl Kind {
         }
     }
 
-    /// The overview's columns this window shows, left to right; never empty.
+    /// The overview's columns of the entries this window keeps, left to right; never empty. The hub
+    /// keeps both, though its "Act now" sorts them into sections of its own (`hub.rs`).
     pub fn columns(self) -> &'static [Column] {
         match self {
             Kind::Mail => &[Column::Mail],
@@ -837,14 +850,17 @@ impl Kind {
     }
 
     /// The name of `view` in this window: in the mail window (task E8.3) the overview is "For me" –
-    /// its one column is the mail for the user – and in the notifications window (task E8.4) "New";
-    /// in both "Snoozed" is "Later", as the buttons say; elsewhere the view's own name
-    /// ([`View::name`]).
+    /// its one column is the mail for the user –, in the notifications window (task E8.4) "New", in
+    /// the hub (task E8.5) "Act now", and the hub's "Done" is "Done today" (it lists what was done
+    /// today, `App::take`); in all three "Snoozed" is "Later", as the buttons say; elsewhere the
+    /// view's own name ([`View::name`]).
     pub fn view_name(self, view: &View) -> String {
         match (self, view) {
             (Kind::Mail, View::Overview) => tr("For me").into(),
             (Kind::Notifications, View::Overview) => tr("New").into(),
-            (Kind::Mail | Kind::Notifications, View::Snoozed) => tr("Later").into(),
+            (Kind::Hub, View::Overview) => tr("Act now").into(),
+            (Kind::Hub, View::Done) => tr("Done today").into(),
+            (_, View::Snoozed) => tr("Later").into(),
             _ => view.name(),
         }
     }
@@ -1106,6 +1122,9 @@ pub struct Loaded {
     /// The messages of a folder's view: its first page (as many as were listed before, when the
     /// view is loaded again). `None` in the other views.
     pub mail: Option<MailPage>,
+    /// The snoozed entries, for "Coming back" beside the hub's "Act now" (task E8.5); empty in every
+    /// other window and view.
+    pub snoozed: Vec<Item>,
 }
 
 /// Something that went wrong, as the window shows it: a whole sentence ("Couldn't load the
@@ -1211,6 +1230,12 @@ pub struct App<S> {
     shown: Shown,
     /// "By app | By time" of the notifications window (task E8.4).
     arrange: Arrange,
+    /// The snoozed entries beside the hub's "Act now" ("Coming back", task E8.5), as last loaded.
+    snoozed: Vec<Item>,
+    /// The tile of "Act now" clicked (task E8.5): its origin's entries alone show. Window state.
+    filter: Option<Origin>,
+    /// The hub shows To sort alone (its sidebar entry "To sort"), on the entries of its overview.
+    sorting: bool,
     /// The calls started, for the tests.
     #[cfg(test)]
     sent: Vec<Sent>,
@@ -1405,6 +1430,11 @@ pub enum Message {
     DismissAll,
     /// The answer to "Dismiss all": the entries dismissed, and why the rest was not, if it stopped.
     DismissedAll(Vec<String>, Option<String>),
+    /// A tile of the hub's "Act now" (task E8.5): show only the entries of this origin, or – for the
+    /// tile already chosen – all of them again.
+    Filter(Origin),
+    /// "To sort" in the hub's sidebar: the section To sort alone, on the overview's entries.
+    ShowToSort,
 }
 
 /// Asks `inbox` for the entries of `view`, the counts for "For me" and "Info" and the sources.
@@ -1421,6 +1451,8 @@ pub enum Message {
 /// And only those of the sources `shown` (task E8.4, the notifications window's choice): with one
 /// source the requests ask for it alone (the API's `source`), with more the entries of the others
 /// are left out here.
+///
+/// The hub's overview (task E8.5) also asks for the snoozed entries, for "Coming back".
 pub async fn fetch<S: InboxSource + MailSource>(
     inbox: Arc<S>,
     view: View,
@@ -1437,6 +1469,7 @@ pub async fn fetch<S: InboxSource + MailSource>(
             sources: Vec::new(),
             folders: Vec::new(),
             mail: view.listing().map(|_| MailPage { messages: Vec::new(), next: None }),
+            snoozed: Vec::new(),
         };
         return Ok(none);
     }
@@ -1481,7 +1514,14 @@ pub async fn fetch<S: InboxSource + MailSource>(
         }
         _ => None,
     };
-    Ok(Loaded { items, for_me, info, sources, folders, mail })
+    // "Coming back" beside the hub's "Act now" (task E8.5).
+    let snoozed = match (kind, &view) {
+        (Kind::Hub, View::Overview) => {
+            keep(inbox.list_items(View::Snoozed.filter().unwrap_or_default()).await.map_err(failed)?)
+        }
+        _ => Vec::new(),
+    };
+    Ok(Loaded { items, for_me, info, sources, folders, mail, snoozed })
 }
 
 impl<S: InboxSource + MailSource + 'static> App<S> {
@@ -1508,7 +1548,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Some(Open::MailEntry) if launch.kind == Kind::Mail => View::Overview,
                 Some(Open::MailEntry) => View::ForMe,
                 Some(Open::Attachments) => View::Attachments,
-                Some(Open::Overview | Open::OverviewInfo | Open::OverviewNotices) => View::Overview,
+                Some(Open::Overview | Open::OverviewInfo | Open::OverviewNotices | Open::ToSort | Open::Tile) => {
+                    View::Overview
+                }
                 _ => launch.view.clone().unwrap_or(View::Overview),
             },
             items: Vec::new(),
@@ -1541,6 +1583,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             mail_only: launch.view == Some(View::Mail),
             shown: launch.shown.clone(),
             arrange: if open == Some(Open::ByTime) { Arrange::ByTime } else { Arrange::default() },
+            snoozed: Vec::new(),
+            filter: None,
+            sorting: open == Some(Open::ToSort),
             #[cfg(test)]
             sent: Vec::new(),
             appearance: Appearance::System,
@@ -1580,8 +1625,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         (app, task)
     }
 
-    /// The window title: the window's kind and its view ("Mail · Overview", [`Kind::title`]).
+    /// The window title: the window's kind and its view ("Mail · Overview", [`Kind::title`]); the
+    /// hub's To sort alone is "Inbox · To sort".
     pub fn title(&self) -> String {
+        if self.is_hub() && self.sorting {
+            return trf("Inbox · {view}", &[("view", &self.view_label())]);
+        }
         self.launch.kind.title(&self.view)
     }
 
@@ -1654,6 +1703,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.detail = None;
                 self.reading = false;
                 self.cursor = None;
+                // "Act now" again, all of it (task E8.5).
+                self.sorting = false;
+                self.filter = None;
                 // A folder from the sidebar comes whole; its search field starts empty.
                 self.search = view.folder().and_then(|folder| folder.query.clone()).unwrap_or_default();
                 if view != self.view {
@@ -1663,7 +1715,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             }
             Message::Select(id) => {
                 self.close_menus();
-                self.detail = self.items.iter().find(|item| item.id == id).cloned();
+                // "Coming back" opens snoozed entries, which the overview does not list (task E8.5).
+                self.detail = self.items.iter().chain(&self.snoozed).find(|item| item.id == id).cloned();
                 if let Some(item) = &self.detail {
                     self.column = self.launch.kind.column_or_first(Column::of(item));
                     self.cursor = Some(id);
@@ -1938,8 +1991,70 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Message::Arrange(arrange) => self.arrange = arrange,
             Message::DismissAll => return self.dismiss_all(),
             Message::DismissedAll(done, failed) => return self.dismissed_all(done, failed),
+            Message::Filter(origin) => self.toggle_filter(origin),
+            Message::ShowToSort => return self.show_to_sort(),
         }
         Task::none()
+    }
+
+    /// Whether the content is the hub's "Act now" or its To sort alone (task E8.5, `hub.rs`).
+    fn is_hub(&self) -> bool {
+        self.launch.kind == Kind::Hub && self.view == View::Overview
+    }
+
+    /// The name of what the window shows, in the header, the panel's path and the title: To sort
+    /// while the hub shows it alone, else the view's name in this window ([`Kind::view_name`]).
+    fn view_label(&self) -> String {
+        if self.is_hub() && self.sorting { tr("To sort").to_owned() } else { self.launch.kind.view_name(&self.view) }
+    }
+
+    /// A tile of "Act now": its origin's entries alone, or all again for the tile already chosen. A
+    /// cursor on an entry the filter hides leaves it.
+    fn toggle_filter(&mut self, origin: Origin) {
+        self.filter = if self.filter.as_ref() == Some(&origin) { None } else { Some(origin) };
+        let shown = self.cursor.as_deref().is_some_and(|id| self.rows().iter().any(|item| item.id == id));
+        if !shown {
+            self.cursor = None;
+        }
+    }
+
+    /// "To sort" in the hub's sidebar: the overview's entries with To sort alone – no view of its own,
+    /// so the entries stay those of "Act now" and nothing is asked anew when it was shown already.
+    fn show_to_sort(&mut self) -> Task<Message> {
+        self.close_menus();
+        self.detail = None;
+        self.cursor = None;
+        self.sorting = true;
+        self.filter = None;
+        if self.view != View::Overview {
+            self.view = View::Overview;
+            return self.load();
+        }
+        Task::none()
+    }
+
+    /// The layout of the hub's content now ([`hub::layout`]), at the width it gets: the window less
+    /// the sidebar or rail with the inset beside the content, the panel beside it and "Coming back"
+    /// in the wide layout, and the hub's own inset. An estimate from the window's size, as
+    /// [`App::board_width`], because the keys need it as well as the drawing.
+    fn hub_layout(&self) -> hub::Layout {
+        let class = self.class();
+        let chrome = match shell::sidebar_mode(class, self.sidebar) {
+            Some(SidebarMode::Expanded) => size::sidebar() + layout::inset(),
+            Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
+            None => 0.0,
+        };
+        let panel = if class == SizeClass::Wide && self.panel_open() { size::panel() } else { 0.0 };
+        let side = if self.hub_side() { size::props() } else { 0.0 };
+        let layout = hub::layout(0.0, class, self.density(), self.sorting);
+        let width = self.size.width - chrome - panel - side - hub::sides(layout.narrow);
+        hub::layout(width.max(0.0), class, self.density(), self.sorting)
+    }
+
+    /// Whether "Coming back" stands beside "Act now": in the wide layout, while no panel takes its
+    /// place.
+    fn hub_side(&self) -> bool {
+        self.is_hub() && !self.sorting && self.class() == SizeClass::Wide && !self.panel_open()
     }
 
     /// Whether the content is the board of the notifications window (task E8.4,
@@ -2344,6 +2459,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let followed = self.detail.as_ref().is_some_and(|detail| self.cursor.as_deref() == Some(detail.id.as_str()));
         self.items = loaded.items;
         self.items.sort_by_key(|item| !list::is_waiting(item));
+        // The hub's "Done today" (task E8.5): what was done today, local time.
+        if self.launch.kind == Kind::Hub && self.view == View::Done {
+            let today = local_today(self.now);
+            self.items.retain(|item| matches!(item.state, State::Done { at } if local_today(at) == today));
+        }
+        self.snoozed = loaded.snoozed;
         self.for_me = loaded.for_me;
         self.for_me.sort_by_key(|item| !list::is_waiting(item));
         self.info = loaded.info;
@@ -2377,8 +2498,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             self.cursor = next;
         }
         if let Some(detail) = &self.detail {
-            // The panel follows the entry when it changed (a new report, woken up).
-            let fresh = self.items.iter().find(|item| item.id == detail.id).cloned();
+            // The panel follows the entry when it changed (a new report, woken up); one opened from
+            // "Coming back" is among the snoozed ones.
+            let fresh = self.items.iter().chain(&self.snoozed).find(|item| item.id == detail.id).cloned();
             match fresh {
                 Some(fresh) => self.detail = Some(fresh),
                 None if followed => self.detail = self.cursor_item().cloned(),
@@ -2425,6 +2547,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         if self.is_board() {
             return notifications::order(&self.items, self.board(), &self.view);
         }
+        // The hub walks its sections (task E8.5): Decide, Agents, To sort – or To sort alone.
+        if self.is_hub() {
+            return hub::Sections::of(&self.items, self.filter.as_ref()).order(self.sorting);
+        }
         if self.view == View::Overview {
             Sections::of(&self.items, self.column, self.now).order(self.info_open[self.column.index()])
         } else {
@@ -2470,7 +2596,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// narrow show it). Nothing in the other views, nor to a column this window's kind does not
     /// show (the mail window has no "Notifications", [`Kind::columns`]).
     fn switch_column(&mut self, to: Column) -> Task<Message> {
-        if self.view != View::Overview || to == self.column || !self.launch.kind.columns().contains(&to) {
+        // The hub's "Act now" has sections, no columns (task E8.5).
+        let columns = self.launch.kind.columns();
+        if self.view != View::Overview || self.is_hub() || to == self.column || !columns.contains(&to) {
             return Task::none();
         }
         let place = self.cursor_place();
@@ -2502,7 +2630,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Menu::Task) => Focus::Task,
             Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
-            None if self.view == View::Overview => Focus::Overview,
+            // The hub's "Act now" is one list of sections: `h`/`l` change no column there.
+            None if self.view == View::Overview && !self.is_hub() => Focus::Overview,
             None => Focus::List,
         }
     }
@@ -2604,8 +2733,15 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Scrolls the list the least that shows row `index` completely – with its group head, when
     /// it is the first of its group ([`list::row_span`]).
     fn reveal(&mut self, index: usize) -> Task<Message> {
-        let overview = self.view == View::Overview && !self.is_board();
-        let (scroll, span, id) = if self.is_board() {
+        let overview = self.view == View::Overview && !self.is_board() && !self.is_hub();
+        let (scroll, span, id) = if self.is_hub() {
+            // "Act now" scrolls as one (task E8.5), its tiles or numbers above the sections.
+            let sections = hub::Sections::of(&self.items, self.filter.as_ref());
+            let tiles = hub::tiles(&self.items).len();
+            let layout = self.hub_layout();
+            let span = self.rows().get(index).and_then(|item| hub::span(&sections, tiles, layout, &item.id));
+            (self.scroll, span, list::SCROLL)
+        } else if self.is_board() {
             // The board scrolls as one; "By app" has its heads above the scrolling part.
             let (board, density) = (self.board(), self.density());
             let span = self
@@ -2676,11 +2812,16 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         }
     }
 
-    /// Opens the snooze menu for the entry with `id`. Done entries are not snoozed.
+    /// Opens the snooze menu for the entry with `id`. Done entries are not snoozed, and an approval is
+    /// never put off (task E8.5, "Knöpfe je Eintrag"): it waits for yes or no, a note says so.
     fn ask_snooze(&mut self, id: &str) {
         let Some(item) = self.find(id).filter(|item| !matches!(item.state, State::Done { .. })).cloned() else {
             return;
         };
+        if detail::is_approval(&item) {
+            self.note(tr("An approval closes once it is decided.").to_owned());
+            return;
+        }
         self.drawer = false;
         self.subject = Some(item);
         self.menu = Some(Menu::Snooze);
@@ -3179,8 +3320,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             // Only an entry open in the panel: a keyboard cursor left over from a larger window is no
             // reason to single out a row of a display.
             selected: self.detail.as_ref().map(|item| item.id.as_str()),
-            // The notifications window shows no mail (task E8.4), so its glance has no mail block.
-            folders: if self.launch.kind == Kind::Notifications { &[] } else { &self.folders },
+            // Only the mail window reads mail: the notifications window shows none (task E8.4), the
+            // hub acts on it (task E8.5), so their glances have no block of unread mail.
+            folders: if self.launch.kind == Kind::Mail { &self.folders } else { &[] },
             now: self.now,
             error: self.error.as_ref().map(|failure| failure.what),
         };
@@ -3269,11 +3411,14 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
                 let letter = self.reading().map(|reading| mail::body(&reading));
-                detail::panel(item, self.launch.kind.view_name(&self.view), self.now, footer, letter)
+                detail::panel(item, self.view_label(), self.now, footer, letter)
             })
         };
         let placed = panel::place(class, self.body(class, &anchors.row), detail, layer);
-        shell::shell(class, sidebar, header, placed.body, None)
+        // "Coming back" beside the hub's "Act now" in the wide layout (task E8.5), in the shell's
+        // column at the right.
+        let side = self.hub_side().then(|| hub::side(&self.snoozed, self.now, self.cursor.as_deref()));
+        shell::shell(class, sidebar, header, placed.body, side)
             .rail(rail)
             .drawer(self.drawer, Message::CloseMenu)
             .overlay(placed.overlay)
@@ -3285,14 +3430,21 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// "Refresh". The inbox creates nothing, so there is no primary button.
     fn header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Message> {
         let kind = self.launch.kind;
-        let (name, icon) = (kind.view_name(&self.view), kind.view_icon(&self.view));
-        // Nothing listed: the empty state says so, a "0" beside the title would only repeat it.
-        let note = (self.loaded && !self.lists_nothing()).then(|| self.count_note());
+        let icon = if self.is_hub() && self.sorting { Icon::Inbox } else { kind.view_icon(&self.view) };
+        let name = self.view_label();
+        // Nothing listed: the empty state says so, a "0" beside the title would only repeat it. The
+        // narrow hub says its numbers big on the page (task E8.5), and the header has no room.
+        let narrow_hub = self.is_hub() && !matches!(class, SizeClass::Wide | SizeClass::Medium);
+        let note = (self.loaded && !self.lists_nothing() && !narrow_hub)
+            .then(|| self.count_note())
+            .filter(|note| !note.is_empty());
         let mut trailing = Vec::new();
-        // The overview shows one column below the wide layout: "Mail | Notifications" chooses it –
-        // in the hub; the mail and the notifications window have one column only.
+        // The overview shows one column below the wide layout: "Mail | Notifications" chooses it
+        // where a window has two columns – none since the hub has sections (task E8.5); the mail and
+        // the notifications window have one column only.
         let columns = self.launch.kind.columns();
-        let choose_column = self.view == View::Overview && class != SizeClass::Wide && columns.len() > 1;
+        let choose_column =
+            self.view == View::Overview && !self.is_hub() && class != SizeClass::Wide && columns.len() > 1;
         if choose_column {
             let chosen = columns.iter().position(|&column| column == self.column).unwrap_or_default();
             let columns = columns.iter().map(|&column| (column.name(), Message::ShowColumn(column)));
@@ -3354,7 +3506,14 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     ///
     /// A folder counts all its messages (a page shows only the newest); a search counts what it
     /// found so far.
+    ///
+    /// The hub's "Act now" (task E8.5) says what is in its sections ("1 to decide · 3 agents · 9 to
+    /// sort", [`hub::summary`]), its To sort alone how many there are to sort.
     fn count_note(&self) -> String {
+        if self.is_hub() {
+            let sections = hub::Sections::of(&self.items, None);
+            return if self.sorting { sections.to_sort.len().to_string() } else { hub::summary(&sections) };
+        }
         match self.view.folder() {
             Some(folder) if folder.query.is_none() => {
                 let all = self.folders.iter().find(|f| f.id == folder.id).map(|f| f.total as usize);
@@ -3374,6 +3533,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
 
     /// Whether the view lists nothing (the empty state says so; no "0" beside the title).
     fn lists_nothing(&self) -> bool {
+        if self.is_hub() {
+            return hub::Sections::of(&self.items, None).order(self.sorting).is_empty();
+        }
         if self.view.is_mail() { self.messages.is_empty() } else { self.items.is_empty() }
     }
 
@@ -3459,6 +3621,19 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 icon: self.launch.kind.view_icon(&self.view),
             });
             return container(content.push(board).width(Fill).height(Fill)).width(Fill).into();
+        } else if self.is_hub() {
+            // The hub's "Act now" (task E8.5), which caps its own width.
+            let colours = palette(&self.theme());
+            let hub = hub::view(hub::HubData {
+                items: &self.items,
+                filter: self.filter.as_ref(),
+                layout: self.hub_layout(),
+                rows: self.rows_data(row_anchor),
+                deciding: self.deciding.is_some(),
+                attention: colours.attention,
+                ok: colours.ok,
+            });
+            return container(content.push(hub).width(Fill).height(Fill)).width(Fill).into();
         } else if self.view == View::Overview {
             // Its columns cap their own width; the cap below would squeeze two into one.
             let columns = self.overview(class, row_anchor, attention);
@@ -3537,8 +3712,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             mark: Mark::Icon(kind.view_icon(&view)),
             label: kind.view_name(&view),
             count,
-            active: view == self.view,
+            active: view == self.view && !self.sorting,
             view,
+            sort: false,
         };
         // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
         let for_me = Some(self.for_me.len()).filter(|&n| n > 0);
@@ -3559,13 +3735,21 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     Vec::new(),
                 );
             }
-            Kind::Hub => vec![
-                entry(View::Overview, for_me),
-                entry(View::ForMe, for_me),
-                entry(View::Info, info),
-                entry(View::Snoozed, None),
-                entry(View::Done, None),
-            ],
+            // Act now, To sort, Later, Done today (task E8.5); "Act now" counts what is for the user,
+            // To sort what of it is to sort ([`hub::Section::of`]).
+            Kind::Hub => {
+                let to_sort = self.for_me.iter().filter(|item| hub::Section::of(item) == Some(hub::Section::ToSort));
+                let to_sort = Some(to_sort.count()).filter(|&n| n > 0);
+                let sort = NavEntry {
+                    mark: Mark::Icon(Icon::Inbox),
+                    label: tr("To sort").to_owned(),
+                    count: to_sort,
+                    active: self.is_hub() && self.sorting,
+                    view: View::Overview,
+                    sort: true,
+                };
+                vec![entry(View::Overview, for_me), sort, entry(View::Snoozed, None), entry(View::Done, None)]
+            }
         };
         if kind == Kind::Mail {
             return (views, Vec::new());
@@ -3581,7 +3765,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     info.source.label()
                 };
                 let count = usize::try_from(info.open).ok().filter(|&open| open > 0);
-                NavEntry { mark: Mark::Icon(view.icon()), label, count, active: view == self.view, view }
+                NavEntry { mark: Mark::Icon(view.icon()), label, count, active: view == self.view, view, sort: false }
             })
             .collect();
         (views, sources)
@@ -3600,6 +3784,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             count: None,
             active: view == self.view,
             view,
+            sort: false,
         }]
     }
 
@@ -3630,6 +3815,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                             count,
                             active: self.view.folder().is_some_and(|shown| shown.id == folder.id),
                             view: View::Folder(FolderView::of(folder)),
+                            sort: false,
                         }
                     })
                     .collect(),
@@ -3660,7 +3846,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let (views, sources) = self.nav_entries();
         let row = |e: NavEntry| {
             let trail = e.trail();
-            widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, Message::Show(e.view))
+            let message = e.message();
+            widgets::sidebar_item_in(mode, e.mark, e.label, trail, e.active, message)
         };
         let mut items: Vec<Element<'a, Message>> =
             if self.mail_only { Vec::new() } else { views.into_iter().map(row).collect() };
@@ -3678,7 +3865,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 items.push(widgets::sidebar_group_in(mode, tr("This window shows"), None));
                 items.extend(notifications::source_rows(mode, &listed, &self.shown, &self.sources, colour));
             }
-        } else if mode == SidebarMode::Expanded || self.mail_only {
+        } else if (mode == SidebarMode::Expanded && self.launch.kind != Kind::Hub) || self.mail_only {
+            // The hub acts and does not read (task E8.5): no folders, unless it is a window of mail
+            // only (`--source mail`).
             let groups = self.mail_groups();
             let single = groups.len() == 1;
             for group in groups {
@@ -3722,7 +3911,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let (views, sources) = self.nav_entries();
         let item = |e: NavEntry| {
             let trail = e.trail();
-            MenuItem::new(e.mark, e.label, Message::Show(e.view)).trail(trail).current(e.active)
+            let message = e.message();
+            MenuItem::new(e.mark, e.label, message).trail(trail).current(e.active)
         };
         let mut sections = Vec::new();
         if !self.mail_only {
@@ -3738,7 +3928,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         // window lists no folders (task E8.3): there it is about what is new; the drawer has them.
         let narrow_mail = self.launch.kind == Kind::Mail && self.class() == SizeClass::Narrow && !self.mail_only;
         // The notifications window has no mail at all (task E8.4); its sources are the chips.
-        let no_mail = narrow_mail || self.launch.kind == Kind::Notifications;
+        // Nor has the hub, which acts and does not read (task E8.5), unless it is a window of mail only.
+        let hub = self.launch.kind == Kind::Hub && !self.mail_only;
+        let no_mail = narrow_mail || hub || self.launch.kind == Kind::Notifications;
         let groups = if no_mail { Vec::new() } else { self.mail_groups() };
         let single = groups.len() == 1;
         for group in groups {
@@ -3934,6 +4126,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.column = self.launch.kind.column_or_first(column);
                 self.cursor = self.rows().first().map(|item| item.id.clone());
             }
+            Some(Open::Tile) => self.filter = hub::tiles(&self.items).first().map(|tile| tile.origin.clone()),
             Some(open @ (Open::Hide | Open::HidePanel)) => {
                 if let Some(item) = self.items.iter().find(|item| item.source.kind == SourceKind::Mail).cloned() {
                     self.cursor = Some(item.id.clone());
@@ -3997,9 +4190,16 @@ struct NavEntry {
     /// Shown as counter where there is one.
     count: Option<usize>,
     active: bool,
+    /// The hub's "To sort" (task E8.5): it shows the section alone on the overview, not a view.
+    sort: bool,
 }
 
 impl NavEntry {
+    /// What a click on the row sends: the view, or the hub's To sort alone.
+    fn message(&self) -> Message {
+        if self.sort { Message::ShowToSort } else { Message::Show(self.view.clone()) }
+    }
+
     /// The row of an inbox folder, which a folded account keeps in the rail and the menu.
     fn is_inbox(&self) -> bool {
         self.view.folder().is_some_and(|folder| folder.role == Some(Role::Inbox))
@@ -4540,9 +4740,19 @@ mod tests {
         assert_eq!(app.cursor.as_deref(), Some("demo-1"), "Info's entry is not in the glance");
     }
 
+    /// [`loaded`] late in the demo's day, when the codex session done 22 hours before was done
+    /// today: the hub's "Done today" lists it (task E8.5).
+    fn loaded_late(words: &[&str]) -> App<DemoSource> {
+        let mut all = vec!["--demo", "--now", "2026-10-13T23:30", "--lane", "for-me"];
+        all.extend_from_slice(words);
+        let mut app = demo(&all);
+        load(&mut app);
+        app
+    }
+
     #[test]
     fn an_answer_for_a_view_left_behind_is_dropped() {
-        let mut app = loaded(&[]);
+        let mut app = loaded_late(&[]);
         let for_me =
             block_on(fetch(app.inbox.clone(), View::ForMe, false, mail::PAGE, app.launch.kind, Shown::Everything));
         let _ = app.update(Message::Show(View::Done));
@@ -4670,11 +4880,11 @@ mod tests {
         let mut app = loaded(&[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<&str> = views.iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(labels, [tr("Overview"), tr("For me"), tr("Info"), tr("Snoozed"), tr("Done")]);
+        assert_eq!(labels, [tr("Act now"), tr("To sort"), tr("Later"), tr("Done today")], "the hub's (task E8.5)");
         assert_eq!(
-            views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..3],
-            [Trail::Count(13), Trail::Count(13), Trail::Count(6)],
-            "the overview counts what is for the user, For me and Info their open entries"
+            views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..2],
+            [Trail::Count(13), Trail::Count(9)],
+            "Act now counts what is for the user, To sort what of it is to sort"
         );
         let by_source: usize = sources.iter().filter_map(|e| e.count).sum();
         assert_eq!(by_source, 13 + 6, "the sources add up to For me plus Info");
@@ -4986,7 +5196,7 @@ mod tests {
 
     #[test]
     fn e_reopens_a_done_entry() {
-        let mut app = loaded(&["--open", "done"]);
+        let mut app = loaded_late(&["--open", "done"]);
         let _ = press(&mut app, Key::Down);
         let _ = press(&mut app, Key::E);
         let reopen = Edit::Done { id: "demo-11".into(), done: false };
@@ -5985,13 +6195,16 @@ mod tests {
     fn the_window_starts_on_the_overview_with_every_open_entry() {
         let app = overview_at(&[]);
         assert_eq!(app.view, View::Overview);
+        assert!(app.is_hub(), "the hub's overview is Act now (task E8.5)");
         assert_eq!(app.items.len(), FOR_ME.len() + 6, "both lanes in one answer");
         assert_eq!((app.for_me.len(), app.info), (13, 6), "the sidebar's numbers from the same answer");
-        assert_eq!(app.count_note(), "13", "what is for the user");
+        assert_eq!(app.count_note(), hub::summary(&hub::Sections::of(&app.items, None)));
         assert!(app.nav_entries().0[0].active, "the first entry of the sidebar");
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Overview"))]));
-        let mail = ["demo-mail-1", "demo-mail-4", "demo-mail-2", "demo-mail-6", "demo-mail-8"];
-        assert_eq!(rows_of(&app), mail, "the keys start in Mail: today, yesterday, earlier");
+        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Act now"))]));
+        let rows = rows_of(&app);
+        assert_eq!(rows[..4], ["demo-3", "demo-1", "demo-2", "demo-4"], "Decide, then Agents, then To sort");
+        assert_eq!(rows.len(), FOR_ME.len(), "everything for the user, no Info");
+        assert_eq!(app.snoozed.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["demo-10"], "Coming back");
     }
 
     /// Task E8.1: the notifications window shows the overview's other column alone, the mail window
@@ -6022,44 +6235,92 @@ mod tests {
         }
     }
 
+    /// Task E8.5: the keys walk the hub's sections as one list; a tile filters them.
     #[test]
-    fn j_and_k_walk_a_column_and_h_and_l_change_it() {
+    fn the_hubs_keys_walk_its_sections_and_a_tile_filters_them() {
         let mut app = overview_at(&[]);
-        assert_eq!(app.focus(), Focus::Overview);
+        assert_eq!(app.focus(), Focus::List, "no columns to change");
         let _ = press(&mut app, Key::Down);
         let _ = press(&mut app, Key::Down);
-        assert_eq!((cursor(&app), app.column), (Some("demo-mail-4"), Column::Mail));
-        let _ = press(&mut app, Key::L);
-        assert_eq!((cursor(&app), app.column), (Some("demo-3"), Column::Notices), "the same place over there");
-        assert!(app.menu.is_none(), "l changes the column and asks no lane question");
-        for _ in 0..10 {
-            let _ = press(&mut app, Key::Down);
-        }
-        assert_eq!(cursor(&app), Some("demo-13"), "the end of For me: Info is folded");
+        assert_eq!(cursor(&app), Some("demo-1"), "from Decide into Agents");
         let _ = press(&mut app, Key::H);
-        assert_eq!((cursor(&app), app.column), (Some("demo-mail-8"), Column::Mail), "the column's last row");
-        let _ = press(&mut app, Key::Right);
-        let _ = press(&mut app, Key::Left);
-        let _ = press(&mut app, Key::Left);
-        assert_eq!((cursor(&app), app.column), (Some("demo-mail-8"), Column::Mail), "nothing left of Mail");
+        assert_eq!(cursor(&app), Some("demo-1"), "h does nothing");
+        let _ = app.update(Message::Filter(Origin::Mail));
+        assert!(rows_of(&app).iter().all(|id| id.starts_with("demo-mail")), "the mail tile: mail alone");
+        assert_eq!(cursor(&app), None, "the cursor's entry is filtered away");
+        let _ = app.update(Message::Filter(Origin::Mail));
+        assert_eq!(rows_of(&app).len(), FOR_ME.len(), "a second click shows everything");
+        let _ = app.update(Message::Filter(Origin::Agents));
+        let _ = app.update(Message::Show(View::Overview));
+        assert_eq!(app.filter, None, "Act now from the sidebar shows everything");
+    }
+
+    /// Task E8.5: "To sort" in the sidebar shows the section alone, and "Act now" all again.
+    #[test]
+    fn to_sort_shows_its_section_alone() {
+        let mut app = overview_at(&[]);
+        let _ = app.update(Message::ShowToSort);
+        assert!(app.sorting && app.view == View::Overview);
+        assert_eq!(rows_of(&app).len(), 9);
+        assert!(rows_of(&app).iter().all(|id| *id != "demo-3"), "no approval to sort");
+        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("To sort"))]));
+        assert_eq!(app.count_note(), "9");
+        assert!(app.nav_entries().0[1].active && !app.nav_entries().0[0].active);
+        let _ = app.update(Message::Show(View::Overview));
+        assert!(!app.sorting);
+        assert_eq!(rows_of(&app).first(), Some(&"demo-3"));
+        assert!(overview_at(&["--open", "to-sort"]).sorting, "its demo state");
+        assert_eq!(overview_at(&["--open", "tile"]).filter, Some(Origin::Mail), "the busiest tile chosen");
+    }
+
+    /// Task E8.5: an approval is never put off – not by `s`, not from its card or the panel.
+    #[test]
+    fn approvals_are_not_put_off() {
+        let mut app = overview_at(&[]);
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(cursor(&app), Some("demo-3"));
+        let _ = press(&mut app, Key::S);
+        assert_eq!(app.menu, None, "no snooze menu");
+        assert_eq!(
+            app.hint.as_ref().map(|hint| hint.text.as_str()),
+            Some(tr("An approval closes once it is decided."))
+        );
+        let _ = app.update(Message::AskSnooze("demo-3".into()));
+        assert_eq!(app.menu, None);
+        let _ = press(&mut app, Key::X);
+        assert!(app.sent.is_empty(), "nor dismissed");
+    }
+
+    /// Task E8.5: the hub's "Done today" lists only what was done today.
+    #[test]
+    fn done_today_is_today() {
+        let early = loaded(&["--open", "done"]);
+        assert!(ids(&early).is_empty(), "done yesterday 12:30");
+        let late = loaded_late(&["--open", "done"]);
+        assert_eq!(ids(&late), ["demo-11"], "done today 01:30");
+        assert_eq!(late.title(), trf("Inbox · {view}", &[("view", &tr("Done today"))]));
+        let mut notices =
+            demo(&["--demo", "--now", "2026-10-13T10:30", "--view", "notifications", "--source", "agent:codex"]);
+        let _ = notices.update(Message::Show(View::Done));
+        load(&mut notices);
+        assert_eq!(ids(&notices), ["demo-11"], "other windows keep all of Done");
     }
 
     #[test]
-    fn moving_in_a_column_scrolls_that_column() {
+    fn moving_in_act_now_scrolls_it() {
         let mut app = overview_at(&[]);
-        let _ = press(&mut app, Key::L);
-        let sections = Sections::of(&app.items, Column::Notices, app.now);
-        let (_, first) = overview::row_span(&sections, false, "demo-1", Look::Rows, false).expect("the first card");
-        let _ = app.update(Message::ColumnScrolled(Column::Notices, 0.0, first));
-        assert_eq!(press(&mut app, Key::Down).units(), 0, "the first card is in view");
-        assert!(press(&mut app, Key::Down).units() > 0, "the second needs a scroll");
-        assert!(app.column_scroll[Column::Notices.index()].is_some_and(|(offset, _)| offset > 0.0));
-        assert_eq!(app.column_scroll[Column::Mail.index()], None, "the other column stays");
+        let sections = hub::Sections::of(&app.items, None);
+        let tiles = hub::tiles(&app.items).len();
+        let (_, first) = hub::span(&sections, tiles, app.hub_layout(), "demo-3").expect("the approval");
+        let _ = app.update(Message::Scrolled(0.0, first));
+        assert_eq!(press(&mut app, Key::Down).units(), 0, "the approval is in view");
+        assert!(press(&mut app, Key::Down).units() > 0, "the first agent needs a scroll");
+        assert!(app.scroll.is_some_and(|(offset, _)| offset > 0.0));
     }
 
     #[test]
     fn info_unfolds_with_a_click_and_the_keys_follow() {
-        let mut app = overview_at(&[]);
+        let mut app = overview_at(&["--view", "mail"]);
         for _ in 0..5 {
             let _ = press(&mut app, Key::Down);
         }
@@ -6125,31 +6386,27 @@ mod tests {
         assert_eq!(app.sent.len(), 1);
     }
 
+    /// Task E8.5: the hub has sections, no columns – "Mail | Notifications" changes nothing.
     #[test]
-    fn medium_and_narrow_choose_the_column_in_the_header() {
+    fn the_hub_has_no_columns_to_choose() {
         let mut app = overview_at(&[]);
         for size in [MEDIUM, NARROW] {
             let _ = app.update(Message::Resized(size));
             let _ = app.update(Message::ShowColumn(Column::Notices));
-            assert_eq!((app.column, cursor(&app)), (Column::Notices, None), "{size:?}: no cursor moves");
+            assert_eq!((app.column, cursor(&app)), (Column::Mail, None), "{size:?}");
             let _ = app.view();
-            let _ = app.update(Message::ShowColumn(Column::Mail));
         }
-        let _ = press(&mut app, Key::Down);
-        let _ = app.update(Message::ShowColumn(Column::Notices));
-        assert_eq!(cursor(&app), Some("demo-1"), "a cursor comes along");
-        let _ = app.update(Message::Select("demo-mail-4".into()));
-        assert_eq!(app.column, Column::Mail, "a click puts the cursor's column there");
     }
 
     #[test]
     fn open_overview_shows_the_action_bar_on_the_first_mail() {
-        let app = overview_at(&["--open", "overview"]);
+        let app = overview_at(&["--view", "mail", "--open", "overview"]);
         assert_eq!((app.view.clone(), app.column, cursor(&app)), (View::Overview, Column::Mail, Some("demo-mail-1")));
         let app = loaded(&["--open", "overview"]);
         assert_eq!(app.view, View::Overview, "a demo state wins over the lane");
-        let app = overview_at(&["--open", "overview-notices"]);
-        assert_eq!((app.column, cursor(&app)), (Column::Notices, Some("demo-1")), "the first card");
+        assert_eq!(cursor(&app), Some("demo-3"), "the hub: the first entry of Act now");
+        let app = overview_at(&["--view", "notifications", "--open", "overview-notices"]);
+        assert_eq!((app.column, cursor(&app)), (Column::Notices, Some("demo-6")), "the first card");
     }
 
     #[test]
