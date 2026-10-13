@@ -254,7 +254,8 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
 
 ### L.14 Paket Quattro (erinnert an Google Workspace)
-- [ ] erledigt
+- [x] erledigt (2026-10-13: Roboto Flex als feste Schnitte, alle übrigen Achsen auf ihrem Standard;
+  Radien 6/10/14/16; Kalenderfarben die vier Google-Farben plus Violett, Gelb als dunkles Ocker)
 - **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/quattro/`, `crates/torroworkplace/src/designs.rs`
 - Roboto Flex (OFL), Pastellflächen nach Material 3, große Radien, die vier Farben als Kalenderfarben. Kein
   Google-Name, kein Logo.

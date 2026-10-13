@@ -111,6 +111,20 @@ const EXAMPLES: &[Example] = &[
             pack_file!("guildr", "fonts/LICENSE.txt"),
         ],
     },
+    Example {
+        id: "quattro",
+        files: &[
+            pack_file!("quattro", "design.toml"),
+            pack_file!("quattro", "logo.svg"),
+            pack_file!("quattro", "tray.svg"),
+            pack_file!("quattro", "preview.png"),
+            pack_file!("quattro", "fonts/LICENSE.txt"),
+            pack_file!("quattro", "fonts/RobotoFlex-Bold.ttf"),
+            pack_file!("quattro", "fonts/RobotoFlex-Medium.ttf"),
+            pack_file!("quattro", "fonts/RobotoFlex-Regular.ttf"),
+            pack_file!("quattro", "fonts/RobotoFlex-SemiBold.ttf"),
+        ],
+    },
 ];
 
 /// Creates the designs folder `dir` with the example packs in it, if `dir` does not exist yet.
@@ -304,6 +318,7 @@ mod tests {
         let packs: &[(&str, &str, &str, &str)] = &[
             ("channelr", "Channelr", "Lato", "Lato"),
             ("guildr", "Guildr", "Figtree", "Figtree Tabular"),
+            ("quattro", "Quattro", "Roboto Flex", "Roboto Flex"),
             // further packs
         ];
         for (id, name, text, numbers) in packs {
@@ -345,7 +360,7 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("data").join("designs");
         assert!(install_if_missing(&dir).expect("install"));
-        for id in ["plex", "commitr", "ribbon", "channelr", "guildr"] {
+        for id in ["plex", "commitr", "ribbon", "channelr", "guildr", "quattro"] {
             assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
         }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();
