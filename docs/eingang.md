@@ -529,6 +529,7 @@ dazukommt.
 | 17 | Seitenleiste | **Keine Links zu anderen Apps** unten in der Seitenleiste |
 | 18 | Insights | **Statistik in der Zentrale**, um gezielt zu optimieren |
 | 19 | Später | **An einen Agenten geben** und **Fokus-Profile** werden eigens ausgearbeitet |
+| 20 | Namen | **„Torro Inbox“, „Torro Inbox Mail“, „Torro Inbox Notifications“.** TorroMail bleibt ein eigenes Produkt (eigene Konten, eigener MCP-Server); damit niemand das Mail-Fenster der Suite für TorroMail hält, trägt es „Inbox“ im Namen |
 
 ### Belege: was die dritte Spur wäre
 

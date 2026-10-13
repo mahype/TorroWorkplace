@@ -556,6 +556,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Window kinds of torroinbox (E8.1)
+    ("Mail · {view}", "E-Mail · {view}"),
+    ("Notifications · {view}", "Benachrichtigungen · {view}"),
     ("For me", "Für mich"),
     ("Info", "Zur Info"),
     ("Snoozed", "Vertagt"),
