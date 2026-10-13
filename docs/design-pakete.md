@@ -183,9 +183,18 @@ hat jeder Modus optional einen eigenen Satz für die **Rahmenfläche**:
 - **Zurückfallen auf die Werte desselben Pakets**, nicht des Standards: Setzt ein Paket nur `bg`, folgt die
   Seitenleiste seinem `bg`, und es sieht aus wie bisher.
 - Was in der Seitenleiste steht, zeichnet sich ohne Zutun der Apps in diesen Farben (Navigation, Gruppen, Mini-Monat
-  des Kalenders, Listen mit Farbpunkten, App-Umschalter, Fußzeilen). Akzent, Status- und Kalenderfarben bleiben
-  dieselben; sie müssen dann aber auch auf `sidebar` tragen (Regeln unten).
-- Zustände, die auf dem Fenster selbst liegen (Anmelden, Laden, Fehler vor dem Layout), bleiben auf `bg`.
+  des Kalenders, Listen mit Farbpunkten, App-Umschalter, Fußzeilen, die Knöpfe im Titelband). Die Shell zeichnet die
+  Leiste dafür in einem eigenen Theme; Menüs und Tooltips, die aus ihr aufgehen, bleiben im Theme des Fensters.
+- **Eigene Fläche** heißt: `sidebar` ist nicht `bg`. Nur dann werden in der Leiste auch `panel` zu `sidebar`, `raised`
+  zu `sidebar_hover` und `line_strong` zu `sidebar_line` (Flächen und Rahmen für den hellen Inhalt trügen die Schrift
+  der dunklen Leiste nicht), und nur dann gelten die Regeln für Grafik auf `sidebar`. Akzent, Status- und
+  Kalenderfarben bleiben dieselben und müssen auf beiden Flächen tragen.
+- Achtungs- und Fehlertext (`attention_text`, `error_text`) leitet die Leiste nach ihrer eigenen Helligkeit ab: Eine
+  dunkle Leiste im hellen Modus nimmt die Statusfarben wie der dunkle Modus. Sie werden dort nicht geprüft, denn die
+  Leiste zeigt Status als Punkt oder Symbol, und ein Rot, das als Text auf Weiß *und* auf einer dunklen Leiste
+  trägt, gibt es kaum.
+- Zustände, die auf dem Fenster selbst liegen (Anmelden, Laden, Fehler vor dem Layout), bleiben auf `bg`
+  (`shell::Surface::Window`); Seitenleiste und Rail laufen als `shell::Surface::Sidebar` bis ins Titelband.
 
 ## Regeln, die jedes Paket einhalten muss
 
@@ -199,7 +208,7 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Kontrast Text | `text`, `text_2`, `text_3` ≥ 4,5:1 auf `bg`, `panel`, `raised`, `hover`, `selected`, `menu` (hell und dunkel) |
 | Kontrast Bedienelemente | `focus_ring`, `merged`, Kalenderfarben ≥ 3:1 auf `panel`; Statusfarben ≥ 3:1 auf `panel` im dunklen Modus, `attention_text` und `error_text` ≥ 4,5:1 auf allen Flächen in beiden Modi; `line_selected` mindestens dreimal so deutlich wie `line_strong` und schwächer als `focus_ring` |
 | Akzent | `on_accent` auf `accent` ≥ 4,5:1 (Text auf dem Primärknopf) |
-| Seitenleiste | `sidebar_text`, `sidebar_text_2`, `sidebar_text_3` ≥ 4,5:1 auf `sidebar`, `sidebar_hover`, `sidebar_selected`; `focus_ring`, `accent`, Kalenderfarben und Statusfarben ≥ 3:1 auf `sidebar` (hell und dunkel). Gilt auch, wenn die Werte zurückfallen |
+| Seitenleiste | `sidebar_text`, `sidebar_text_2`, `sidebar_text_3` ≥ 4,5:1 auf `sidebar`, `sidebar_hover`, `sidebar_selected` (auch mit zurückgefallenen Werten). Hat die Leiste eine eigene Fläche (`sidebar` ≠ `bg`): `focus_ring`, `accent`, `merged` und Kalenderfarben ≥ 3:1 auf `sidebar`, Statusfarben im dunklen Modus ebenso. Ohne eigene Fläche gilt für Grafik nichts Neues, ältere Pakete bleiben gültig |
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; `read` von `body` bis 20; jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |
 | Layout-Abstände | `inset` 0–24; Innenränder 0–48; `section_gap` 8–64; `item_gap` 2–24 |
 | Abstände | `space` aufsteigend, 2–64; `radius` aufsteigend, 0–16 |
@@ -215,9 +224,11 @@ Tastenbelegung, Anordnung (Stufe 2).
 ## Ein Paket bauen
 
 Am Beispiel **Plex** (`designs/plex/` im Repository, Aufgabe L.5): IBM Plex Sans, mehr Luft, ein ruhiger
-Petrol-Akzent. Die Suite legt es beim ersten Start in den Design-Ordner, zusammen mit dem Ordner selbst (der Dienst
-beim Start, die Steuerzentrale bei „Open designs folder“). Gibt es den Ordner schon, schreibt sie nichts hinein: Ein
-gelöschtes oder geändertes Beispiel bleibt gelöscht oder geändert. Die Dateien stecken in `torroworkplace`
+Petrol-Akzent. Die Suite legt ihre Beispiele (Plex, Dracula, Commitr, Ribbon) in den Design-Ordner, der Dienst beim
+Start, die Steuerzentrale bei „Open designs folder“. Jedes Beispiel wird **einmal angeboten** (L.10): Die versteckte
+Datei `.torro-examples` im Ordner hält fest, welche schon da waren, und eine neue Fassung der Suite legt nur Beispiele
+nach, die dort noch nicht stehen und für die es keinen Ordner gleichen Namens gibt. Ein gelöschtes oder geändertes
+Beispiel bleibt gelöscht oder geändert; überschrieben wird nie etwas. Die Dateien stecken in `torroworkplace`
 (`src/designs.rs`), nicht im Kern, damit nicht jede App die Schriften mitschleppt.
 
 ### Schritte

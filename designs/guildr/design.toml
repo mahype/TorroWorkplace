@@ -1,0 +1,87 @@
+# Guildr – inspired by Discord (task L.13, issue #80): blurple, dark greys, round corners, Figtree
+# for the closed "gg sans". Not Discord's name or logo. Everything left out comes from "Torro".
+format = 1
+
+[about]
+name = "Guildr"
+version = "1.0.0"
+author = "Torro"
+description = "Inspired by Discord: blurple on dark grey, Figtree, round corners"
+font_license = "OFL-1.1"
+
+# Figtree (google/fonts, SIL OFL 1.1): static cuts of the variable font; Figtree Tabular has the
+# tabular figures frozen in, for clocks and counters.
+[fonts.text]
+family = "Figtree"
+regular = "fonts/Figtree-Regular.ttf"
+medium = "fonts/Figtree-Medium.ttf"
+semibold = "fonts/Figtree-SemiBold.ttf"
+bold = "fonts/Figtree-Bold.ttf"
+
+[fonts.numbers]
+family = "Figtree Tabular"
+regular = "fonts/FigtreeTabular-Regular.ttf"
+medium = "fonts/FigtreeTabular-Medium.ttf"
+
+[type.body]
+size = 14
+line = 20
+[type.body_strong]
+size = 14
+line = 20
+
+[radius]
+scale = [4, 6, 8, 12]
+
+# Dark is Discord's own; light follows its light theme. Moved for contrast: the dark error red is
+# lighter, the light calendar colours and focus ring darker.
+
+[colors.dark]
+bg = "#2B2D31"
+panel = "#313338"
+raised = "#383A40"
+hover = "#35373C"
+selected = "#404249"
+menu = "#111214"
+text = "#F2F3F5"
+text_2 = "#DBDEE1"
+text_3 = "#B5BAC1"
+line = "#FFFFFF0F"
+line_strong = "#FFFFFF1F"
+line_selected = "#FFFFFF4D"
+focus_ring = "#00A8FC"
+accent = "#5865F2"
+on_accent = "#FFFFFF"
+ok = "#23A55A"
+attention = "#F0B232"
+error = "#FB9094"
+merged = "#C084FC"
+calendar = ["#7984F5", "#23A55A", "#F0B232", "#EB459E", "#C084FC"]
+night = "#2E3036"
+
+[colors.light]
+bg = "#F2F3F5"
+panel = "#FFFFFF"
+raised = "#F7F8F9"
+hover = "#EBEDEF"
+selected = "#E3E5E8"
+menu = "#FFFFFF"
+text = "#060607"
+text_2 = "#313338"
+text_3 = "#4E5058"
+line = "#0607071A"
+line_strong = "#0607072B"
+line_selected = "#06060773"
+focus_ring = "#0070B0"
+accent = "#5865F2"
+on_accent = "#FFFFFF"
+ok = "#1A7F45"
+attention = "#B07E00"
+error = "#D12D33"
+merged = "#8B3CC7"
+calendar = ["#4752C4", "#1A7F45", "#B06A00", "#C2357F", "#8B3CC7"]
+night = "#ECEEF2"
+
+[logo]
+mark = "logo.svg"
+tray = "tray.svg"

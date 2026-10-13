@@ -43,7 +43,11 @@ aus einem Guss wirkt:
 - **Oben links der App-Umschalter** („T Calendar ▾“, wie Linears Workspace-Menü): öffnet die
   anderen Apps der Suite (Kern-Befehl `OpenApp`), daneben Suche und „Neu“ (Kasten-Knopf).
 - **Seitenleiste** auf dem Fenstergrund `BG`, **Inhalt** als eingesetzte Fläche `PANEL` mit 8 Rand
-  oben/rechts/unten, Radius 8, 1-px-Linie. Ohne Seitenleiste (Schmal) ist der Inhalt bündig
+  oben/rechts/unten, Radius 8, 1-px-Linie. Ein Design-Paket kann der Seitenleiste eigene Farben geben
+  (`sidebar…`, L.6): Die Shell zeichnet sie dann in einem eigenen Theme, `palette(theme)` liefert dort
+  die Farben der Leiste. In der Seitenleiste also nie Farben am Theme vorbei festlegen, sondern immer
+  über `palette(theme)` in der Stilfunktion; Fensterzustände (Anmelden, Laden) liegen auf
+  `Surface::Window` (`BG`), Seitenleiste und Rail auf `Surface::Sidebar`. Ohne Seitenleiste (Schmal) ist der Inhalt bündig
   ohne Rand und Radius; neben der Leiste (Mittel) ist er eingesetzt wie in Breit.
 - **Seitenleiste in drei Zuständen** (U.2, `shell::SidebarMode`): **ausgeklappt** (232), **Leiste**
   (`shell::rail()` = 52: nur Icons, Name und Zahl als Tooltip rechts, Gruppentitel als Linie,
@@ -93,7 +97,7 @@ aus einem Guss wirkt:
 
 | Token | Dunkel | Hell | Wofür |
 |---|---|---|---|
-| `BG` | `#08090A` | `#F4F5F6` | Fenstergrund, Seitenleiste |
+| `BG` | `#08090A` | `#F4F5F6` | Fenstergrund, Seitenleiste (ein Paket kann ihr mit `sidebar` eine eigene Fläche geben) |
 | `PANEL` | `#0F1011` | `#FFFFFF` | Inhaltsfläche |
 | `RAISED` | `#141518` | `#F8F9FA` | Knöpfe `secondary`, Chips, Gruppenköpfe in Listen |
 | `HOVER` | `#16171A` | `#F0F1F3` | Hover |

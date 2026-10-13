@@ -486,9 +486,66 @@ pub struct Palette {
     pub shadow: Rgba,
     pub scrim: Rgba,
     pub night: Rgba,
+    /// The frame of the window: the sidebar, the rail, the drawer, the margin around the content
+    /// panel and the title band over them. A pack that leaves it out gets its own `bg`.
+    pub sidebar: Rgba,
+    /// A sidebar row under the pointer (pack without it: its `hover`).
+    pub sidebar_hover: Rgba,
+    /// The chosen sidebar row (pack without it: its `selected`).
+    pub sidebar_selected: Rgba,
+    /// Text in the sidebar: the chosen row, titles (pack without it: its `text`).
+    pub sidebar_text: Rgba,
+    /// The rows of the sidebar (pack without it: its `text_2`).
+    pub sidebar_text_2: Rgba,
+    /// Group titles, counters, days outside the month (pack without it: its `text_3`).
+    pub sidebar_text_3: Rgba,
+    /// Lines in and at the sidebar (pack without it: its `line`).
+    pub sidebar_line: Rgba,
 }
 
+/// The sidebar keys of a palette with the key each falls back to when a pack leaves it out.
+pub(crate) const SIDEBAR_FALLBACK: [(&str, &str); 7] = [
+    ("sidebar", "bg"),
+    ("sidebar_hover", "hover"),
+    ("sidebar_selected", "selected"),
+    ("sidebar_text", "text"),
+    ("sidebar_text_2", "text_2"),
+    ("sidebar_text_3", "text_3"),
+    ("sidebar_line", "line"),
+];
+
 impl Palette {
+    /// Whether the sidebar has a surface of its own (`sidebar` is not `bg`), as Slack's aubergine
+    /// beside light content. Only then do raised surfaces and frames in it change too, see
+    /// [`Palette::in_sidebar`].
+    pub fn own_sidebar(&self) -> bool {
+        self.sidebar != self.bg
+    }
+
+    /// This palette as the sidebar draws with it: `bg`, `hover`, `selected`, the three text colours
+    /// and `line` are the `sidebar…` ones. With [`Palette::own_sidebar`] also `panel` (the
+    /// sidebar), `raised` (`sidebar_hover`) and `line_strong` (`sidebar_line`), because surfaces and
+    /// frames made for the light content would not carry the sidebar's text. Everything else
+    /// (accent, status, calendar colours, focus) stays; the rules hold it to the sidebar too.
+    ///
+    /// For a pack without sidebar keys (the standard among them) it is the palette itself.
+    pub fn in_sidebar(&self) -> Palette {
+        let own = self.own_sidebar();
+        Palette {
+            bg: self.sidebar,
+            panel: if own { self.sidebar } else { self.panel },
+            raised: if own { self.sidebar_hover } else { self.raised },
+            hover: self.sidebar_hover,
+            selected: self.sidebar_selected,
+            text: self.sidebar_text,
+            text_2: self.sidebar_text_2,
+            text_3: self.sidebar_text_3,
+            line: self.sidebar_line,
+            line_strong: if own { self.sidebar_line } else { self.line_strong },
+            ..*self
+        }
+    }
+
     /// The opaque surfaces text sits on, with their keys.
     pub fn surfaces(&self) -> [(&'static str, Rgba); 6] {
         [
@@ -545,6 +602,13 @@ impl Palette {
             "shadow" => &mut self.shadow,
             "scrim" => &mut self.scrim,
             "night" => &mut self.night,
+            "sidebar" => &mut self.sidebar,
+            "sidebar_hover" => &mut self.sidebar_hover,
+            "sidebar_selected" => &mut self.sidebar_selected,
+            "sidebar_text" => &mut self.sidebar_text,
+            "sidebar_text_2" => &mut self.sidebar_text_2,
+            "sidebar_text_3" => &mut self.sidebar_text_3,
+            "sidebar_line" => &mut self.sidebar_line,
             _ => return None,
         })
     }
@@ -750,6 +814,13 @@ const STANDARD_DARK: Palette = Palette {
     shadow: Rgba::black(0.5),
     scrim: Rgba::black(0.62),
     night: Rgba::hex(0x121626),
+    sidebar: Rgba::hex(0x08090A),
+    sidebar_hover: Rgba::hex(0x16171A),
+    sidebar_selected: Rgba::hex(0x1C1E22),
+    sidebar_text: Rgba::hex(0xEDEEF0),
+    sidebar_text_2: Rgba::hex(0xB4B8BF),
+    sidebar_text_3: Rgba::hex(0x8A8F98),
+    sidebar_line: Rgba::white(0.06),
 };
 
 const STANDARD_LIGHT: Palette = Palette {
@@ -778,6 +849,13 @@ const STANDARD_LIGHT: Palette = Palette {
     shadow: Rgba::black(0.12),
     scrim: Rgba::black(0.3),
     night: Rgba::hex(0xE3E7F1),
+    sidebar: Rgba::hex(0xF4F5F6),
+    sidebar_hover: Rgba::hex(0xF0F1F3),
+    sidebar_selected: Rgba::hex(0xE9EAED),
+    sidebar_text: Rgba::hex(0x18191B),
+    sidebar_text_2: Rgba::hex(0x4F535A),
+    sidebar_text_3: Rgba::hex(0x62666D),
+    sidebar_line: Rgba::black(0.07),
 };
 
 /// Whether `id` may name a pack folder: `a-z`, `0-9`, `-`, 1–32 characters, not [`STANDARD_ID`].

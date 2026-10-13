@@ -10,8 +10,8 @@ use serde::Deserialize;
 
 use super::files::{Kind, Root, has_font_license};
 use super::{
-    About, Design, DesignError, Face, Font, FontRole, Fonts, Level, Mode, Pad, Palette, Radius, Rgba, STANDARD_ID,
-    STANDARD_SIZE, Space, Weight, is_valid_id, rules,
+    About, Design, DesignError, Face, Font, FontRole, Fonts, Level, Mode, Pad, Palette, Radius, Rgba, SIDEBAR_FALLBACK,
+    STANDARD_ID, STANDARD_SIZE, Space, Weight, is_valid_id, rules,
 };
 
 /// One entry of [`list`]: a design and whether it can be used.
@@ -211,7 +211,7 @@ struct LogoFile {
 }
 
 /// The keys of `[colors.dark]` and `[colors.light]`: the fields of [`Palette`].
-const PALETTE_KEYS: [&str; 25] = [
+const PALETTE_KEYS: [&str; 32] = [
     "bg",
     "panel",
     "raised",
@@ -237,6 +237,13 @@ const PALETTE_KEYS: [&str; 25] = [
     "shadow",
     "scrim",
     "night",
+    "sidebar",
+    "sidebar_hover",
+    "sidebar_selected",
+    "sidebar_text",
+    "sidebar_text_2",
+    "sidebar_text_3",
+    "sidebar_line",
 ];
 const LEVEL_KEYS: [&str; 9] =
     ["micro", "caption", "meta", "body", "body_strong", "read", "title", "headline", "display"];
@@ -492,6 +499,18 @@ fn merge_palette(
             },
         }
     }
+    // A sidebar key the pack leaves out follows the pack's own colour, not the standard's: a pack
+    // that sets only `bg` gets a sidebar in its `bg`, and looks as before sidebar keys existed.
+    for (key, base) in SIDEBAR_FALLBACK {
+        if values.contains_key(key) {
+            continue;
+        }
+        if let Some(colour) = palette.slot_mut(base).map(|slot| *slot)
+            && let Some(slot) = palette.slot_mut(key)
+        {
+            *slot = colour;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -616,6 +635,52 @@ mod tests {
         assert_eq!(design.colors.light.accent, Rgba::hex(0x0B6B6A));
         assert_eq!(design.colors.light.bg, Design::standard().colors.light.bg);
         assert_eq!(design.logo, Logo { mark: Some(root.join("logo.svg")), tray: Some(root.join("tray.svg")) });
+    }
+
+    #[test]
+    fn sidebar_keys_fall_back_to_the_packs_own_colours() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        fs::create_dir(tmp.path().join("own-bg")).expect("dir");
+        write(
+            tmp.path().join("own-bg/design.toml"),
+            "format = 1\n[about]\nname = \"Own bg\"\nversion = \"1\"\n[colors.light]\nbg = \"#ECEEF0\"\ntext_2 = \"#474B52\"\n",
+        );
+        let design = load(tmp.path(), "own-bg").expect("valid");
+        let light = design.colors.light;
+        assert_eq!((light.sidebar, light.sidebar_text_2), (Rgba::hex(0xECEEF0), Rgba::hex(0x474B52)));
+        assert_eq!(light.sidebar_hover, light.hover, "not the standard's sidebar, the pack's own");
+        assert!(!light.own_sidebar());
+        assert_eq!(light.in_sidebar(), light, "without own sidebar keys the sidebar draws as before");
+        assert_eq!(design.colors.dark, Design::standard().colors.dark);
+    }
+
+    #[test]
+    fn a_dark_sidebar_beside_light_content_loads() {
+        let tmp = designs(&["sidebar-dark"]);
+        let design = load(tmp.path(), "sidebar-dark").expect("valid");
+        let light = design.colors.light;
+        assert!(light.own_sidebar());
+        assert_eq!(light.sidebar_line, Rgba { a: 31.0 / 255.0, ..Rgba::hex(0xFFFFFF) });
+        let side = light.in_sidebar();
+        assert_eq!((side.bg, side.panel, side.text), (Rgba::hex(0x24292F), Rgba::hex(0x24292F), Rgba::hex(0xF6F8FA)));
+        assert_eq!((side.raised, side.line_strong), (light.sidebar_hover, light.sidebar_line));
+        assert_eq!(side.accent, light.accent, "accent and status stay");
+    }
+
+    #[test]
+    fn a_dark_sidebar_with_the_contents_text_is_refused() {
+        let tmp = designs(&["sidebar-faint"]);
+        let found = problems(tmp.path(), "sidebar-faint");
+        let named = |fg: &str, on: &str| {
+            found.iter().any(|p| {
+                matches!(p, DesignError::TextContrast { fg: f, on: o, .. }
+                if f == &format!("colors.light.{fg}") && o == &format!("colors.light.{on}"))
+            })
+        };
+        assert!(named("sidebar_text", "sidebar"), "sidebar_text fell back to the dark text: {found:?}");
+        assert!(found.iter().any(|p| matches!(p, DesignError::ControlContrast { fg, on, .. }
+            if fg == "colors.light.accent" && on == "colors.light.sidebar")));
+        assert!(found.iter().all(|p| !matches!(p, DesignError::TextContrast { fg, .. } if fg == "colors.light.text")));
     }
 
     #[test]

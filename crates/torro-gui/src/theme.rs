@@ -182,6 +182,21 @@ pub struct Palette {
     /// 60 % over [`Palette::panel`] – the ground of an unfolded one. A cool, quiet blue-grey;
     /// `text_3` on it stays readable (≥ 4.5:1).
     pub night: Color,
+    /// The frame of the window: sidebar, rail, drawer, the margin around the content panel and the
+    /// title band over them. [`Palette::bg`] unless the design gives the sidebar a colour of its own.
+    pub sidebar: Color,
+    /// A sidebar row under the pointer.
+    pub sidebar_hover: Color,
+    /// The chosen sidebar row.
+    pub sidebar_selected: Color,
+    /// Text in the sidebar: the chosen row, titles.
+    pub sidebar_text: Color,
+    /// The rows of the sidebar.
+    pub sidebar_text_2: Color,
+    /// Group titles, counters, days outside the month in the sidebar.
+    pub sidebar_text_3: Color,
+    /// Lines in and at the sidebar.
+    pub sidebar_line: Color,
 }
 
 impl Palette {
@@ -198,7 +213,24 @@ impl Palette {
     /// The tokens of `mode` in `design`, with the derived colours (`attention_text`, `error_text`)
     /// computed from it and the shadow geometry of the suite (`0 12px 32px`, `torro.css`).
     pub fn of(design: &Design, mode: DesignMode) -> Palette {
-        let c = design.colors.get(mode);
+        Palette::from_tokens(design.colors.get(mode), mode)
+    }
+
+    /// The tokens of `mode` in `design` as the sidebar draws with them
+    /// (`torro_core::design::Palette::in_sidebar`): `bg`, `hover`, `selected`, the text colours and
+    /// `line` are the sidebar's. Views never ask for it: [`crate::shell`] draws the sidebar with a
+    /// theme of its own, and [`palette`] hands this out for it.
+    ///
+    /// `attention_text` and `error_text` are derived for the sidebar's own brightness, not the
+    /// mode's: a dark sidebar in light mode takes the status colours as dark mode does.
+    pub fn of_sidebar(design: &Design, mode: DesignMode) -> Palette {
+        let c = design.colors.get(mode).in_sidebar();
+        let dark = c.bg.luminance() < c.text.luminance();
+        Palette::from_tokens(&c, if dark { DesignMode::Dark } else { DesignMode::Light })
+    }
+
+    /// The design tokens `c` as Iced colours, the derived ones computed for `mode`.
+    fn from_tokens(c: &torro_core::design::Palette, mode: DesignMode) -> Palette {
         Palette {
             bg: rgba(c.bg),
             panel: rgba(c.panel),
@@ -227,6 +259,13 @@ impl Palette {
             shadow: Shadow { color: rgba(c.shadow), offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
             scrim: rgba(c.scrim),
             night: rgba(c.night),
+            sidebar: rgba(c.sidebar),
+            sidebar_hover: rgba(c.sidebar_hover),
+            sidebar_selected: rgba(c.sidebar_selected),
+            sidebar_text: rgba(c.sidebar_text),
+            sidebar_text_2: rgba(c.sidebar_text_2),
+            sidebar_text_3: rgba(c.sidebar_text_3),
+            sidebar_line: rgba(c.sidebar_line),
         }
     }
 
@@ -267,9 +306,27 @@ pub const fn rgba(c: Rgba) -> Color {
 /// The one way views reach colours: call it inside a style closure or a canvas `draw` with the
 /// `&Theme` Iced passes in, never store the result across frames (the mode and the design can
 /// change any time). Returns a copy; pass `&p` where a function wants `&Palette`.
+///
+/// Inside the sidebar the theme is the sidebar's ([`sidebar_theme`]) and this returns
+/// [`Palette::of_sidebar`]: the same code draws a row in the sidebar's colours there.
 pub fn palette(theme: &Theme) -> Palette {
-    let dark = theme.extended_palette().is_dark;
-    design::with(|t| if dark { t.dark } else { t.light })
+    design::with(|t| match t.sidebar_mode(theme) {
+        Some(DesignMode::Dark) => t.sidebar_dark,
+        Some(DesignMode::Light) => t.sidebar_light,
+        None if theme.extended_palette().is_dark => t.dark,
+        None => t.light,
+    })
+}
+
+/// The theme the sidebar draws its content with, for a window drawn in `theme`: an Iced theme of
+/// [`Palette::of_sidebar`] in the window's mode, so [`palette`] gives the sidebar's colours inside
+/// it. A sidebar theme stays itself. Used by [`crate::shell`]; views do not need it.
+pub fn sidebar_theme(theme: &Theme) -> Theme {
+    design::with(|t| match t.sidebar_mode(theme) {
+        Some(_) => theme.clone(),
+        None if theme.extended_palette().is_dark => t.sidebar_dark_theme.clone(),
+        None => t.sidebar_light_theme.clone(),
+    })
 }
 
 /// Text style in [`Palette::text`]: `typo::text(…).style(theme::text)`. Plain text already has
@@ -692,6 +749,18 @@ mod tests {
         assert_eq!(palette(&Theme::Dark), Palette::dark());
         assert_eq!(theme().to_string(), "Torro Dark");
         assert_eq!(light().to_string(), "Torro Light");
+    }
+
+    #[test]
+    fn the_standard_sidebar_draws_as_before() {
+        for (window, p) in [(theme(), Palette::dark()), (light(), Palette::light())] {
+            let sidebar = sidebar_theme(&window);
+            assert_ne!(sidebar, window, "a theme of its own");
+            assert_eq!(palette(&sidebar), p, "with the standard's colours");
+            assert_eq!(sidebar_theme(&sidebar), sidebar, "a sidebar theme stays itself");
+            assert_eq!((p.sidebar, p.sidebar_text_2, p.sidebar_line), (p.bg, p.text_2, p.line));
+        }
+        assert_eq!(palette(&sidebar_theme(&Theme::Light)), Palette::light(), "built-in themes too");
     }
 
     #[test]

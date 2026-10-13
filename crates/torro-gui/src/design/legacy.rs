@@ -116,6 +116,14 @@ pub const DARK: Palette = Palette {
     shadow: shadow(0.5),
     scrim: black(0.62),
     night: hex(0x121626),
+    // Before L.6 the sidebar drew with `bg`, `hover`, `selected`, the text colours and `line`.
+    sidebar: hex(0x08090A),
+    sidebar_hover: hex(0x16171A),
+    sidebar_selected: hex(0x1C1E22),
+    sidebar_text: hex(0xEDEEF0),
+    sidebar_text_2: hex(0xB4B8BF),
+    sidebar_text_3: hex(0x8A8F98),
+    sidebar_line: white(0.06),
 };
 
 pub const LIGHT: Palette = Palette {
@@ -146,6 +154,13 @@ pub const LIGHT: Palette = Palette {
     shadow: shadow(0.12),
     scrim: black(0.3),
     night: hex(0xE3E7F1),
+    sidebar: hex(0xF4F5F6),
+    sidebar_hover: hex(0xF0F1F3),
+    sidebar_selected: hex(0xE9EAED),
+    sidebar_text: hex(0x18191B),
+    sidebar_text_2: hex(0x4F535A),
+    sidebar_text_3: hex(0x62666D),
+    sidebar_line: black(0.07),
 };
 
 /// The Iced palette the old `iced_theme` built from a [`Palette`].
