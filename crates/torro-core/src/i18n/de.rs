@@ -556,6 +556,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Notifications window (E8.4)
+    ("Dismiss notification", "Verwerfen"),
+    ("Dismiss all", "Alle verwerfen"),
+    ("Dismissed", "Verworfen"),
+    ("{n} dismissed", "{n} verworfen"),
+    ("By app", "Nach App"),
+    ("By time", "Nach Zeit"),
+    ("Other apps", "Andere Apps"),
+    ("This window shows", "Dieses Fenster zeigt"),
+    ("Nothing new.", "Nichts Neues."),
+    ("What your apps report shows up here.", "Was deine Apps melden, erscheint hier."),
     // Mail window (E8.3)
     ("With attachments", "Mit Anhang"),
     ("Smart views", "Intelligente Ansichten"),
