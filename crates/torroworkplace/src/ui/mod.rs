@@ -1282,11 +1282,13 @@ async fn list_designs() -> Result<Vec<general::Pack>, String> {
     tokio::task::spawn_blocking(read).await.map_err(|err| err.to_string())
 }
 
-/// Creates the designs folder if it is missing and opens it with the system's file manager:
-/// `open` on macOS, the Explorer on Windows, `xdg-open` elsewhere (as the inbox opens a mail's
-/// folder). Returns what went wrong, for the notice above the page.
+/// Creates the designs folder if it is missing – with the example packs, as the core's first start
+/// does (`designs::install_examples`) – and opens it with the system's file manager: `open` on
+/// macOS, the Explorer on Windows, `xdg-open` elsewhere (as the inbox opens a mail's folder).
+/// Returns what went wrong, for the notice above the page.
 fn open_designs_folder() -> Result<(), String> {
     let dir = torro_core::design::dir().ok_or_else(|| tr("No home directory").to_string())?;
+    crate::designs::install_examples();
     std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
     #[cfg(target_os = "macos")]
     let program = "open";

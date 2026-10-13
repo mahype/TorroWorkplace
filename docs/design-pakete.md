@@ -40,6 +40,9 @@ designs/plex/
 
 ### `design.toml`
 
+Alle Schlüssel des Formats auf einmal (ein ausgedachtes Paket mit drei Schriften); das echte Beispielpaket steht unter
+[Ein Paket bauen](#ein-paket-bauen).
+
 ```toml
 format = 1                     # Version des Formats; unbekannte Version → Paket abgelehnt
 
@@ -174,6 +177,60 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 
 Was ein Paket **nicht** kann: andere Schwellen der Größenklassen, Laufweite und Großschreibung, Animationen, Ton, Texte,
 Tastenbelegung, Anordnung (Stufe 2).
+
+## Ein Paket bauen
+
+Am Beispiel **Plex** (`designs/plex/` im Repository, Aufgabe L.5): IBM Plex Sans, mehr Luft, ein ruhiger
+Petrol-Akzent. Die Suite legt es beim ersten Start in den Design-Ordner, zusammen mit dem Ordner selbst (der Dienst
+beim Start, die Steuerzentrale bei „Open designs folder“). Gibt es den Ordner schon, schreibt sie nichts hinein: Ein
+gelöschtes oder geändertes Beispiel bleibt gelöscht oder geändert. Die Dateien stecken in `torroworkplace`
+(`src/designs.rs`), nicht im Kern, damit nicht jede App die Schriften mitschleppt.
+
+### Schritte
+
+1. **Ordner anlegen:** `<data>/designs/<id>/`, `<id>` klein (`a-z`, `0-9`, `-`). Am schnellsten: Steuerzentrale ›
+   General › Design › „Open designs folder“, dort `plex` kopieren und umbenennen.
+2. **`design.toml` beginnen:** `format = 1`, `[about]` mit `name` und `version`. Damit ist das Paket schon gültig – es
+   sieht aus wie Torro. Ab hier nur eintragen, was abweicht.
+3. **Schrift:** TTF/OTF nach `fonts/`, die Lizenz als `fonts/LICENSE.txt`, `font_license` in `[about]`.
+   `family` ist der Familienname in der Datei (Plex: „IBM Plex Sans“; die Schnitte Medium und SemiBold tragen ihn als
+   typografische Familie, das reicht). Jedes Gewicht, das eine Stufe nutzt, braucht eine Datei; Torro nutzt
+   regular, medium und semibold. **Ziffern:** Sind die Standardziffern verschieden breit (Inter), gehört eine Familie
+   mit festen Ziffern nach `[fonts.numbers]`. Plex braucht keine: Alle Ziffern sind in allen vier Schnitten gleich
+   breit (600 von 1000 Einheiten), `numbers` fällt auf `text` zurück.
+4. **Stufen und Abstände:** Plex setzt `body` und `body_strong` auf 14/22, `meta` auf 12/18, `title` 17/24,
+   `headline` 24/30, `display` 30/36; Radien `[2, 4, 6, 8]` (eckiger als Torro); `[layout]` inset 10, Seiten 32 × 40,
+   Paneele 20 × 20, Zeilen 0 × 20, Knöpfe 0 × 12, Gruppen 32, Elemente 10; `[size]` Zeile 44, zweizeilig 56,
+   Seitenleiste 30 und 248 breit, Gruppenkopf 36, Kopfleiste 48, Knöpfe 30/34/40, Stunde und Zeitachse 56.
+5. **Farben hell und dunkel:** Flächen (`bg` bis `menu`), Textstufen, Linien, Akzent mit `on_accent`. Plex dunkel:
+   `bg #0C1013`, `panel #12171B`, `selected #1B2226`, Text `#E3E8EB` / `#A9B4BB` / `#86929A`, Akzent `#3AA6A0` mit
+   dunkler Schrift `#03201E` (5,8:1). Hell: `bg #ECF0F1`, `panel #FFFFFF`, `selected #DEE5E8`, Text `#141B1F` /
+   `#475359` / `#59656C`, Akzent `#0C6B66` mit Weiß (6,3:1). Status- und Kalenderfarben bleiben die des Standards.
+6. **Logo und Tray:** `logo.svg` quadratisch mit `viewBox`, nur Formen, keine Verweise; es steht auf hellem und
+   dunklem Grund, also eine eigene Fläche mitbringen (Plex: Petrol-Quadrat mit drei weißen Balken). `tray.svg` ist
+   eine Form in einer Farbe, die auf hellen und dunklen Leisten trägt; macOS färbt sie ohnehin selbst.
+7. **Vorschau:** `preview.png` höchstens 1200 × 800, am besten ein Ausschnitt des eigenen Demo-Fensters im
+   Seitenverhältnis 3 : 2 (Plex: 600 × 400, 60 KB).
+8. **Prüfen:** Steuerzentrale › General › Design › „Reload“: Das Paket steht in der Liste, ungültig mit jedem Grund
+   in einer eigenen Zeile. Ansehen ohne die eigene Einstellung zu ändern: `torrocalendar --demo --design <id>` (ebenso
+   `torrotasks`, `torroinbox`, `torroworkplace ui`), mit `--appearance light` und `dark`.
+
+### Häufige Fehler
+
+| Grund in der Steuerzentrale | Abhilfe |
+|---|---|
+| Unbekannter Schlüssel („Unknown setting …“) | Tippfehler; Namen wie in `torro_gui::theme::Palette` und `size`, z. B. `text_3`, `row_sidebar` |
+| `text_3` oder `error_text` unter 4,5:1 auf `selected` | `selected` ist die hellste Fläche im Dunkeln (die dunkelste im Hellen) und fällt zuerst durch. Bei Plex lag das Fehlerrot im Dunkeln erst bei 4,4:1 – `selected` wurde einen Hauch dunkler |
+| `on_accent` zu schwach | Heller Akzent → dunkle Schrift darauf, dunkler Akzent → Weiß. Ein Akzent, der im Dunkeln leuchtet, braucht meist dunkle Schrift |
+| Kante des Gewählten (`line_selected`) | muss mindestens dreimal so deutlich sein wie `line_strong` und schwächer als `focus_ring`; beim Ändern der Linien alle drei zusammen ansehen |
+| Gewicht ohne Datei | Eine Stufe nutzt `semibold`, aber `[fonts.text]` nennt keine SemiBold-Datei |
+| Familie stimmt nicht | `family` wie in der Datei, nicht wie der Dateiname („IBM Plex Sans“, nicht „IBMPlexSans“) |
+| Schrift ohne Lizenz | `fonts/LICENSE.txt` fehlt oder liegt woanders |
+| Logo nicht quadratisch, SVG mit Verweis | `viewBox="0 0 24 24"`; Bilder und Schriften nicht verlinken, sondern als Formen zeichnen |
+
+Nicht als Grund gemeldet, aber im Bild zu sehen: Höhere Zeilen in der Seitenleiste brauchen Platz. Die Seitenleiste
+des Kalenders rollt nicht; in niedrigen Fenstern schiebt sie dann „Settings“ unten aus dem Bild (gesehen mit
+Zeilen 32 bei 760 Höhe). Darum hat Plex Seitenleistenzeilen 30 statt 32.
 
 ## Wählen und wechseln
 

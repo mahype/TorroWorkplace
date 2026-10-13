@@ -195,6 +195,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
     .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())?;
     let store = Store::open_default().map_err(|err| err.to_string())?;
+    // The first start of the suite brings the example design packs (task L.5); later starts find
+    // the folder and leave it alone.
+    let _ = tokio::task::spawn_blocking(crate::designs::install_examples).await;
     let backend = torro_wm::detect(|key| std::env::var(key).ok());
     let pim = Arc::new(crate::pim::PimService::new());
     pim.start();

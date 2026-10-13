@@ -241,13 +241,16 @@ fn pack_row<'a>(pack: &'a Pack, drawn: bool) -> Element<'a, Message> {
         .collect::<Vec<_>>()
         .join(" · ");
     if !info.valid {
-        let reasons = format!("{} {}", tr("Can't be used:"), info.problems.join(" "));
         let mut lines = column![one_line(typo::text(typo::body(), info.name.as_str()))];
         if !byline.is_empty() {
             lines = lines.push(one_line(typo::text(typo::meta(), byline)));
         }
-        // The reasons stay readable at full strength and wrap: they say what to fix.
-        lines = lines.push(typo::text(typo::meta(), reasons).style(torro_gui::theme::text_2));
+        // The reasons stay readable at full strength and wrap: they say what to fix, one per line,
+        // so a pack with many can be worked through like a list.
+        lines = lines.push(typo::text(typo::meta(), tr("Can't be used:")).style(torro_gui::theme::text_2));
+        for reason in &info.problems {
+            lines = lines.push(typo::text(typo::meta(), reason.as_str()).style(torro_gui::theme::text_2));
+        }
         let content = row![unusable(), lines.width(Fill)].spacing(space::m()).align_y(Alignment::Center);
         let frame = container(content).width(Fill).padding([space::m(), space::l()]);
         return pressable(frame.into(), None);

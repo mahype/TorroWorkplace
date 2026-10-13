@@ -355,11 +355,15 @@ mit der Karte „Night“); Aufgaben: `detail pr more menu display drawer
 switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`: Detail mit
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard account-detail menu drawer switcher
-remove delete-template rename-template` und `--section overview|accounts|workspaces|apps|general`.
+remove delete-template rename-template design` (`design`: General › Design mit Beispielpaketen, eines
+davon ungültig mit seinen Gründen) und `--section overview|accounts|workspaces|apps|general`.
 `menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
 Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
 light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit
-entfällt jedes im Code erzwungene „hell“); `--now 2026-10-13T10:30` (Kalender, Aufgaben) fixiert
+entfällt jedes im Code erzwungene „hell“); `--design <id>` (nur mit `--demo`, alle Apps und die
+Steuerzentrale) zeichnet mit dem Design-Paket `<id>` aus dem Design-Ordner (`torro` = Standard, z. B.
+`plex` aus `designs/plex`; mit `TORRO_DATA_HOME` auf ein Temp-Verzeichnis mit `designs/plex` darin,
+damit der echte Ordner unberührt bleibt) – jede Ansicht mit beiden Paketen ansehen; `--now 2026-10-13T10:30` (Kalender, Aufgaben) fixiert
 „jetzt“ samt Demo-Daten für wiederholbare Bilder (auch im Aufgaben-Detail).
 Unbekannte Werte: Fehlermeldung mit den gültigen Werten, Exit-Code 64. Beispiel:
 

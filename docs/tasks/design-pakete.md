@@ -122,7 +122,9 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   Aufgaben-App), setzt sie jetzt ausdrücklich.
 
 ### L.5 Zweites Paket als Beispiel und Prüfstein
-- [ ] erledigt
+- [x] erledigt (2026-10-13: Plex ohne eigene Ziffernschrift – die Ziffern von IBM Plex Sans sind schon gleich breit;
+  Beispielpakete stecken in `torroworkplace` (`src/designs.rs`) und kommen beim ersten Start in den Ordner, nur wenn
+  er fehlt; Sichtprüfung auf macOS nur in der Fenstergröße, die das System vergibt)
 - **Modell:** Opus · **Braucht:** L.4 · **Dateien:** `designs/` (neu im Repo: `designs/plex/` mit `design.toml`,
   `logo.svg`, `tray.svg`, `preview.png`, Schriften IBM Plex Sans unter OFL mit `LICENSE.txt`), `docs/design-pakete.md`
   (Abschnitt „Ein Paket bauen“ mit diesem Beispiel), `crates/torroworkplace/src/…` nur falls die Suite Beispielpakete
