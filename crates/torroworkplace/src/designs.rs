@@ -66,8 +66,8 @@ const EXAMPLES: &[Example] = &[
             pack_file!("commitr", "fonts/MonaSans-Medium.ttf"),
             pack_file!("commitr", "fonts/MonaSans-SemiBold.ttf"),
             pack_file!("commitr", "fonts/MonaSans-Bold.ttf"),
-            pack_file!("commitr", "fonts/InterTabular-Regular.ttf"),
-            pack_file!("commitr", "fonts/InterTabular-Medium.ttf"),
+            pack_file!("commitr", "fonts/CommitrFigures-Regular.ttf"),
+            pack_file!("commitr", "fonts/CommitrFigures-Medium.ttf"),
         ],
     },
     Example {
@@ -247,7 +247,7 @@ mod tests {
         });
         assert_eq!(design.about.name, "Commitr");
         assert_eq!(design.fonts.text.family, "Mona Sans");
-        assert_eq!(design.fonts.numbers.family, "Inter Tabular", "Mona Sans's figures are proportional");
+        assert_eq!(design.fonts.numbers.family, "Commitr Figures", "Mona Sans's figures, made tabular");
         let light = design.colors.light;
         assert!(light.own_sidebar() && !design.colors.dark.own_sidebar(), "a dark sidebar in light mode only");
         assert_eq!(light.accent, torro_core::design::Rgba::hex(0x1F883D));

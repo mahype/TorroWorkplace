@@ -10,8 +10,9 @@ author = "Torro"
 description = "Inspired by GitHub: neutral greys, green primary button, blue focus, dark sidebar"
 font_license = "OFL-1.1"
 
-# Mona Sans 2.0.27 (github/mona-sans, SIL OFL 1.1). Its figures are proportional, so numbers take
-# Inter Tabular, the standard's tabular figures: clocks and counters keep their place.
+# Mona Sans 2.0.27 (github/mona-sans, SIL OFL 1.1). Its default figures are proportional, so numbers
+# take "Commitr Figures": Mona Sans with its tabular figures frozen in and made exactly one width
+# (task L.11; renamed, because "Mona" is a Reserved Font Name). Clocks and counters keep their place.
 [fonts.text]
 family = "Mona Sans"
 regular = "fonts/MonaSans-Regular.ttf"
@@ -20,9 +21,9 @@ semibold = "fonts/MonaSans-SemiBold.ttf"
 bold = "fonts/MonaSans-Bold.ttf"
 
 [fonts.numbers]
-family = "Inter Tabular"
-regular = "fonts/InterTabular-Regular.ttf"
-medium = "fonts/InterTabular-Medium.ttf"
+family = "Commitr Figures"
+regular = "fonts/CommitrFigures-Regular.ttf"
+medium = "fonts/CommitrFigures-Medium.ttf"
 
 # GitHub's base size is 14.
 [type.body]
