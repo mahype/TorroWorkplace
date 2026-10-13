@@ -66,8 +66,8 @@ const EXAMPLES: &[Example] = &[
             pack_file!("commitr", "fonts/MonaSans-Medium.ttf"),
             pack_file!("commitr", "fonts/MonaSans-SemiBold.ttf"),
             pack_file!("commitr", "fonts/MonaSans-Bold.ttf"),
-            pack_file!("commitr", "fonts/InterTabular-Regular.ttf"),
-            pack_file!("commitr", "fonts/InterTabular-Medium.ttf"),
+            pack_file!("commitr", "fonts/CommitrFigures-Regular.ttf"),
+            pack_file!("commitr", "fonts/CommitrFigures-Medium.ttf"),
         ],
     },
     Example {
@@ -81,6 +81,84 @@ const EXAMPLES: &[Example] = &[
             pack_file!("ribbon", "fonts/Selawik-Regular.ttf"),
             pack_file!("ribbon", "fonts/Selawik-SemiBold.ttf"),
             pack_file!("ribbon", "fonts/Selawik-Bold.ttf"),
+        ],
+    },
+    Example {
+        id: "channelr",
+        files: &[
+            pack_file!("channelr", "design.toml"),
+            pack_file!("channelr", "logo.svg"),
+            pack_file!("channelr", "tray.svg"),
+            pack_file!("channelr", "preview.png"),
+            pack_file!("channelr", "fonts/LICENSE.txt"),
+            pack_file!("channelr", "fonts/Lato-Bold.ttf"),
+            pack_file!("channelr", "fonts/Lato-Regular.ttf"),
+        ],
+    },
+    Example {
+        id: "guildr",
+        files: &[
+            pack_file!("guildr", "design.toml"),
+            pack_file!("guildr", "logo.svg"),
+            pack_file!("guildr", "tray.svg"),
+            pack_file!("guildr", "preview.png"),
+            pack_file!("guildr", "fonts/Figtree-Bold.ttf"),
+            pack_file!("guildr", "fonts/Figtree-Medium.ttf"),
+            pack_file!("guildr", "fonts/Figtree-Regular.ttf"),
+            pack_file!("guildr", "fonts/Figtree-SemiBold.ttf"),
+            pack_file!("guildr", "fonts/FigtreeTabular-Medium.ttf"),
+            pack_file!("guildr", "fonts/FigtreeTabular-Regular.ttf"),
+            pack_file!("guildr", "fonts/LICENSE.txt"),
+        ],
+    },
+    Example {
+        id: "quattro",
+        files: &[
+            pack_file!("quattro", "design.toml"),
+            pack_file!("quattro", "logo.svg"),
+            pack_file!("quattro", "tray.svg"),
+            pack_file!("quattro", "preview.png"),
+            pack_file!("quattro", "fonts/LICENSE.txt"),
+            pack_file!("quattro", "fonts/RobotoFlex-Bold.ttf"),
+            pack_file!("quattro", "fonts/RobotoFlex-Medium.ttf"),
+            pack_file!("quattro", "fonts/RobotoFlex-Regular.ttf"),
+            pack_file!("quattro", "fonts/RobotoFlex-SemiBold.ttf"),
+        ],
+    },
+    Example {
+        id: "nord",
+        files: &[
+            pack_file!("nord", "design.toml"),
+            pack_file!("nord", "logo.svg"),
+            pack_file!("nord", "tray.svg"),
+            pack_file!("nord", "preview.png"),
+        ],
+    },
+    Example {
+        id: "solarized",
+        files: &[
+            pack_file!("solarized", "design.toml"),
+            pack_file!("solarized", "logo.svg"),
+            pack_file!("solarized", "tray.svg"),
+            pack_file!("solarized", "preview.png"),
+        ],
+    },
+    Example {
+        id: "catppuccin",
+        files: &[
+            pack_file!("catppuccin", "design.toml"),
+            pack_file!("catppuccin", "logo.svg"),
+            pack_file!("catppuccin", "tray.svg"),
+            pack_file!("catppuccin", "preview.png"),
+        ],
+    },
+    Example {
+        id: "gruvbox",
+        files: &[
+            pack_file!("gruvbox", "design.toml"),
+            pack_file!("gruvbox", "logo.svg"),
+            pack_file!("gruvbox", "tray.svg"),
+            pack_file!("gruvbox", "preview.png"),
         ],
     },
 ];
@@ -247,7 +325,7 @@ mod tests {
         });
         assert_eq!(design.about.name, "Commitr");
         assert_eq!(design.fonts.text.family, "Mona Sans");
-        assert_eq!(design.fonts.numbers.family, "Inter Tabular", "Mona Sans's figures are proportional");
+        assert_eq!(design.fonts.numbers.family, "Commitr Figures", "Mona Sans's figures, made tabular");
         let light = design.colors.light;
         assert!(light.own_sidebar() && !design.colors.dark.own_sidebar(), "a dark sidebar in light mode only");
         assert_eq!(light.accent, torro_core::design::Rgba::hex(0x1F883D));
@@ -268,6 +346,30 @@ mod tests {
         assert_eq!((design.typo.caption.weight, design.typo.body_strong.weight), (Weight::Semibold, Weight::Semibold));
         assert!(!design.colors.light.own_sidebar() && !design.colors.dark.own_sidebar());
         assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some());
+    }
+
+    #[test]
+    fn the_further_packs_pass_every_rule() {
+        // id, name, text font, figures font
+        let packs: &[(&str, &str, &str, &str)] = &[
+            ("channelr", "Channelr", "Lato", "Lato"),
+            ("guildr", "Guildr", "Figtree", "Figtree Tabular"),
+            ("quattro", "Quattro", "Roboto Flex", "Roboto Flex"),
+            ("nord", "Nord", "Inter", "Inter Tabular"),
+            ("solarized", "Solarized", "Inter", "Inter Tabular"),
+            ("catppuccin", "Catppuccin", "Inter", "Inter Tabular"),
+            ("gruvbox", "Gruvbox", "Inter", "Inter Tabular"),
+            // further packs
+        ];
+        for (id, name, text, numbers) in packs {
+            let design = torro_core::design::load(&repo_designs(), id).unwrap_or_else(|problems| {
+                let reasons: Vec<String> = problems.iter().map(ToString::to_string).collect();
+                panic!("designs/{id} must be valid: {reasons:#?}")
+            });
+            assert_eq!(design.about.name, *name);
+            assert_eq!((design.fonts.text.family.as_str(), design.fonts.numbers.family.as_str()), (*text, *numbers));
+            assert!(design.logo.mark.is_some() && design.logo.tray.is_some() && design.preview.is_some(), "{id}");
+        }
     }
 
     #[test]
@@ -298,7 +400,9 @@ mod tests {
         let home = tempfile::tempdir().expect("temp dir");
         let dir = home.path().join("data").join("designs");
         assert!(install_if_missing(&dir).expect("install"));
-        for id in ["plex", "commitr", "ribbon"] {
+        for id in
+            ["plex", "commitr", "ribbon", "channelr", "guildr", "quattro", "nord", "solarized", "catppuccin", "gruvbox"]
+        {
             assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
         }
         let left: Vec<_> = fs::read_dir(home.path().join("data")).expect("data").flatten().collect();

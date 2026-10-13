@@ -1,4 +1,4 @@
-# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.10)
+# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.15)
 
 Konzept und Regeln für Pakete: [design-pakete.md](../design-pakete.md). Issue #72. Regeln für die Arbeit:
 [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`. Wer einen
@@ -11,7 +11,7 @@ Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review
 ```
 L.1 ── L.2 ── L.3 ── L.4 ── L.5 ── L.6 ─┬─ L.7 Commitr
                                         ├─ L.8 Dracula
-                                        └─ L.9 Ribbon ── L.10 neue Beispiele nachlegen
+                                        └─ L.9 Ribbon ── L.10 neue Beispiele nachlegen ── L.11 … L.15
 ```
 
 L.1–L.6 nacheinander: L.2 ändert jede App, L.3 den Katalog, L.6 das Format. L.7–L.9 (Issue #80) sind unabhängig
@@ -217,3 +217,62 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   Plex bleibt unverändert; alter Ordner ohne Plex bekommt Plex nicht zurück; ein nach dem Eintragen gelöschtes
   Beispiel kommt nicht wieder; ein eigener Ordner gleichen Namens bleibt unberührt; kein versteckter Arbeitsordner
   bleibt zurück.
+
+### L.11 Commitr mit eigenen festen Ziffern
+- [x] erledigt (2026-10-13: erzeugt mit fontTools 4.66.1 und opentype-feature-freezer 1.32.2 – `pyftfeatfreeze -f
+  tnum`, dann Breiten angleichen und umbenennen; was verändert ist, steht in `fonts/LICENSE.txt` des Pakets)
+- **Modell:** Opus · **Braucht:** L.7 · **Dateien:** `designs/commitr/`, `crates/torroworkplace/src/designs.rs`
+- Statt Inter Tabular eine Ziffernschrift aus Mona Sans: `pyftfeatfreeze -f tnum`, dann alle zehn Ziffern auf eine
+  Breite und mittig (die `.tf`-Ziffern von Mona Sans sind nicht ganz gleich breit, 576–590). Name **„Commitr
+  Figures“**, denn Mona Sans hat den reservierten Namen „Mona“, den eine veränderte Fassung nach OFL nicht tragen
+  darf. Copyright und Lizenz in der Datei bleiben unverändert.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.12 Paket Channelr (erinnert an Slack)
+- [x] erledigt (2026-10-13: Lato unverändert, nur Regular und Bold – Hervorhebungen fett wie bei Slack; gewählter
+  Kanal blau auf Aubergine; Akzent ist das Grün des Senden-Knopfs, eine Spur heller, damit es auch auf der Leiste
+  trägt; die vier Markenfarben als Kalenderfarben, in der Helligkeit angepasst)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/channelr/`, `crates/torroworkplace/src/designs.rs`
+- Lato (OFL), Aubergine-Seitenleiste in beiden Modi (L.6), rundere Ecken, fette Titel. Kein Slack-Name, kein Logo.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.13 Paket Guildr (erinnert an Discord)
+- [x] erledigt (2026-10-13: Figtree als feste Schnitte aus der variablen Schrift, Ziffern in
+  „Figtree Tabular“; dunkles Fehlerrot heller, im hellen Modus Kalenderfarben und Fokus dunkler)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/guildr/`, `crates/torroworkplace/src/designs.rs`
+- Figtree (OFL) statt der unfreien „gg sans“, Blurple `#5865F2` auf Dunkelgrau, Hell abgeleitet. Kein
+  Discord-Name, kein Logo.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.14 Paket Quattro (erinnert an Google Workspace)
+- [x] erledigt (2026-10-13: Roboto Flex als feste Schnitte, alle übrigen Achsen auf ihrem Standard;
+  Radien 6/10/14/16; Kalenderfarben die vier Google-Farben plus Violett, Gelb als dunkles Ocker)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/quattro/`, `crates/torroworkplace/src/designs.rs`
+- Roboto Flex (OFL), Pastellflächen nach Material 3, große Radien, die vier Farben als Kalenderfarben. Kein
+  Google-Name, kein Logo.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.15 Farbschemata Nord, Solarized, Catppuccin, Gruvbox
+- [x] erledigt (2026-10-13: vier Pakete ohne eigene Schriften; wo die Originalfarben die
+  Kontrastregeln nicht schaffen, sind sie in der Helligkeit verschoben – vor allem dritte Textfarbe, Fehler- und
+  Achtungsfarbe; die Abweichungen stehen je Paket als Kommentar in `design.toml`)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/{nord,solarized,catppuccin,gruvbox}/`,
+  `crates/torroworkplace/src/designs.rs`
+- Je ein Paket nach dem offenen Schema (MIT), hell und dunkel, Inter wie Torro; Autor und Lizenz in `[about]`.
+  Nord hell aus „Snow Storm“, Catppuccin Latte/Mocha, Solarized und Gruvbox in beiden Originalfassungen.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.

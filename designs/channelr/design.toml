@@ -1,0 +1,105 @@
+# Channelr – inspired by Slack (task L.12, issue #80): an aubergine sidebar in both modes with the
+# chosen channel in blue, Lato with bold emphasis, rounder corners. Not Slack's name or logo.
+# Everything left out here comes from the standard design "Torro".
+format = 1
+
+[about]
+name = "Channelr"
+version = "1.0.0"
+author = "Torro"
+description = "Inspired by Slack: aubergine sidebar, Lato, green send button"
+font_license = "OFL-1.1"
+
+# Lato (google/fonts, SIL OFL 1.1), unchanged: "Lato" is a Reserved Font Name. Regular and Bold
+# only, as Slack sets names and titles in bold. Its figures are tabular already.
+[fonts.text]
+family = "Lato"
+regular = "fonts/Lato-Regular.ttf"
+bold = "fonts/Lato-Bold.ttf"
+
+[type.caption]
+weight = "bold"
+[type.body]
+size = 14
+line = 20
+[type.body_strong]
+size = 14
+line = 20
+weight = "bold"
+[type.title]
+weight = "bold"
+[type.headline]
+weight = "bold"
+[type.display]
+weight = "bold"
+
+[radius]
+scale = [4, 6, 10, 14]
+
+# Slack's colours where they pass the rules. The four brand colours are the calendar colours,
+# moved in lightness so they carry on white and on the aubergine (light mode). The accent is the
+# send button's green, a shade lighter so it stands out on the aubergine too.
+
+[colors.light]
+bg = "#F8F8F8"
+panel = "#FFFFFF"
+raised = "#F8F8F8"
+hover = "#F4F4F4"
+selected = "#EAF2F9"
+menu = "#FFFFFF"
+text = "#1D1C1D"
+text_2 = "#454245"
+text_3 = "#5E5D60"
+line = "#1D1C1D17"
+line_strong = "#1D1C1D29"
+line_selected = "#1D1C1D70"
+focus_ring = "#1471B8"
+accent = "#007D5C"
+on_accent = "#FFFFFF"
+ok = "#007A5A"
+attention = "#C08B11"
+error = "#E01E5A"
+merged = "#A841B4"
+calendar = ["#1D9BD1", "#2BA873", "#C08B11", "#E01E5A", "#A841B4"]
+night = "#F1EEF3"
+sidebar = "#3F0E40"
+sidebar_hover = "#521E53"
+sidebar_selected = "#0F5890"
+sidebar_text = "#FFFFFF"
+sidebar_text_2 = "#E9DDEA"
+sidebar_text_3 = "#D6C6D7"
+sidebar_line = "#FFFFFF26"
+
+[colors.dark]
+bg = "#1A1D21"
+panel = "#1A1D21"
+raised = "#222529"
+hover = "#26292D"
+selected = "#2C2F33"
+menu = "#222529"
+text = "#F8F8F8"
+text_2 = "#D1D2D3"
+text_3 = "#ABABAD"
+line = "#FFFFFF14"
+line_strong = "#FFFFFF24"
+line_selected = "#FFFFFF5C"
+focus_ring = "#1D9BD1"
+accent = "#007D5C"
+on_accent = "#FFFFFF"
+ok = "#2BAC76"
+attention = "#ECB22E"
+error = "#F06B8F"
+merged = "#C779D0"
+calendar = ["#36C5F0", "#2EB67D", "#ECB22E", "#F06B8F", "#C779D0"]
+night = "#1F2228"
+sidebar = "#19171D"
+sidebar_hover = "#27242C"
+sidebar_selected = "#0F578E"
+sidebar_text = "#FFFFFF"
+sidebar_text_2 = "#D1D2D3"
+sidebar_text_3 = "#C8C9CB"
+sidebar_line = "#FFFFFF1A"
+
+[logo]
+mark = "logo.svg"
+tray = "tray.svg"
