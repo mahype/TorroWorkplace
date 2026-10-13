@@ -226,6 +226,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::MoveTodo { href, before, .. } => {
             [item(&Some(href.clone())), item(before)].into_iter().flatten().collect()
         }
+        // The list only (task E8.7a): never the mail account, the mail's id or its Message-ID,
+        // not even hashed – together they would tell which mail a person turned into a task.
+        Request::CreateTodoFromMail { collection: list, .. } => vec![collection(list)],
         // The account only, never the name of the new list (task G.7).
         Request::CreateTaskList { account: name, .. }
         | Request::CreateFilterList { account: name, .. }
@@ -246,8 +249,9 @@ pub fn ids(request: &Request) -> Vec<String> {
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()
         }
         Request::RemoveAccount { id: name } => vec![account(name)],
-        // Only names of the suite (a binary or a window class) are logged, never a free text.
-        Request::OpenApp { app } => match AppId::find(app).is_some() {
+        // Only names of the suite (a binary or a window class) are logged, never a free text, and
+        // never the target: it names a mail or a task (task E8.7a).
+        Request::OpenApp { app, .. } => match AppId::find(app).is_some() {
             true => vec![id("app", app)],
             false => Vec::new(),
         },
@@ -537,9 +541,9 @@ pub(crate) mod tests {
         assert_eq!(described, vec!["account:github:anna".to_string(), format!("repo:{}", hashed("anna/salary-talks"))]);
         assert!(!described.join(" ").contains("salary"), "{described:?}");
         assert_eq!(describe(" Anna/Salary-Talks"), described);
-        let open = Request::OpenApp { app: "Dinner with Anna".into() };
+        let open = Request::OpenApp { app: "Dinner with Anna".into(), target: None };
         assert_eq!(super::ids(&open), Vec::<String>::new());
-        let mail = Request::OpenApp { app: "torro-inbox-mail".into() };
+        let mail = Request::OpenApp { app: "torro-inbox-mail".into(), target: None };
         assert_eq!(super::ids(&mail), vec!["app:torro-inbox-mail".to_string()], "a window class of the suite");
         let set = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.5) };
         assert_eq!(super::ids(&set), vec!["setting:zoom".to_string()]);
@@ -587,6 +591,33 @@ pub(crate) mod tests {
         assert_eq!(account, vec![format!("account:hash:{}", hashed("Anna Smith"))]);
         let task = Request::CreateTaskFromItem { id: "e1".into(), collection: url.into(), title: None, due: None };
         assert_eq!(super::ids(&task), vec!["inbox:e1".to_string(), logged[0].clone()]);
+    }
+
+    /// Task E8.7a: a task made of a mail logs its list only, opening an app with a target the app
+    /// only: no account, mail id, Message-ID or target, not even hashed.
+    #[test]
+    fn mail_tasks_and_targets_log_no_mail() {
+        let list = "nextcloud:anna@cloud.example.org/https://cloud.example.org/remote.php/dav/calendars/anna/tasks/";
+        let task = Request::CreateTodoFromMail {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:0a1b2c3d".into(),
+            collection: list.into(),
+            title: Some("Answer the offer".into()),
+            due: None,
+        };
+        let logged = super::ids(&task);
+        assert_eq!(logged, vec![super::collection(list)]);
+        let message_id = "<offer@keller.example>";
+        let open = Request::OpenApp {
+            app: "torro-inbox-mail".into(),
+            target: Some(format!("mail:anna@mailbox.org:{message_id}")),
+        };
+        let opened = super::ids(&open);
+        assert_eq!(opened, vec!["app:torro-inbox-mail".to_string()]);
+        let all = [logged, opened].concat().join(" ");
+        for secret in ["m:0a1b2c3d", "keller", "offer", &hashed("m:0a1b2c3d"), &hashed(message_id), "Answer"] {
+            assert!(!all.contains(secret), "{secret} in {all}");
+        }
     }
 
     /// Security rule 3 of task M2.1: the account as it is, messages and folders only hashed, never

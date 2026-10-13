@@ -69,7 +69,7 @@ pub fn update(state: &mut State, message: Message, _data: &Data) -> Action {
             }
             Action::Send(Request::RemoveRule { id })
         }
-        Message::OpenInbox => Action::Send(Request::OpenApp { app: AppId::INBOX.binary.to_string() }),
+        Message::OpenInbox => Action::Send(Request::OpenApp { app: AppId::INBOX.binary.to_string(), target: None }),
     }
 }
 
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn open_starts_torro_inbox_through_the_core() {
         let action = update(&mut State::default(), Message::OpenInbox, &Data::default());
-        assert!(matches!(action, Action::Send(Request::OpenApp { ref app }) if app == "torroinbox"));
+        assert!(matches!(action, Action::Send(Request::OpenApp { ref app, .. }) if app == "torroinbox"));
     }
 
     #[test]

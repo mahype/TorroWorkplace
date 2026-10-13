@@ -784,7 +784,7 @@ impl Ui {
             }
             Switcher::OpenApp(app) => {
                 self.close_menus();
-                Action::Send(Request::OpenApp { app: app.to_string() })
+                Action::Send(Request::OpenApp { app: app.to_string(), target: None })
             }
             // The control centre has nothing to search yet; the button only closes open menus.
             Switcher::Search => {
@@ -1596,7 +1596,7 @@ mod tests {
         let mut ui = ui(Section::Overview);
         ui.menu = Some(Menu::Switcher);
         let action = ui.switcher(Switcher::OpenApp(AppId::CALENDAR.binary));
-        assert!(matches!(action, Action::Send(Request::OpenApp { ref app }) if app == "torrocalendar"));
+        assert!(matches!(action, Action::Send(Request::OpenApp { ref app, .. }) if app == "torrocalendar"));
         assert_eq!(ui.menu, None);
     }
 

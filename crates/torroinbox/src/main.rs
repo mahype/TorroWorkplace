@@ -25,6 +25,10 @@
 //! arguments (tray, control centre); a workspace template stores the window's whole command line,
 //! so `torroinbox --lane info` comes back as an "Info" window.
 //!
+//! `--message=m:…` names the mail the mail window starts on (task E8.7a): the core passes it when
+//! `apps.open_app` opens a mail (`mail:<address>:<Message-ID>`); a value that is no mail id of the
+//! core is refused (exit 64). The window shows it from task E8.7b on.
+//!
 //! `--compose` starts the compose window instead of the inbox (task E4.3, [`compose`]): its own
 //! window with the class `torro-compose`, started by the panel's Reply, Reply all and Forward and
 //! by "New" ([`mail::compose_command`]).
@@ -66,6 +70,15 @@ fn main() -> ExitCode {
             return ExitCode::from(64);
         }
     };
+    // The mail to show (task E8.7a): read and checked now, so the core's command line never fails;
+    // the mail window opens on it from task E8.7b on, until then it starts as without.
+    let _start_mail = match start_message(&args) {
+        Ok(message) => message,
+        Err(err) => {
+            eprintln!("{}: {err}", INBOX.binary);
+            return ExitCode::from(64);
+        }
+    };
     // The suite's settings (appearance, zoom) and "open another app" come from the core; with
     // `--demo` there is none and they stay in this process.
     let suite = Source::from_args(args.iter().cloned());
@@ -100,6 +113,35 @@ fn run<S: InboxSource + MailSource + 'static>(inbox: Arc<S>, suite: Source, laun
         .run()
 }
 
+/// The longest mail id `--message` takes, as the core's mail commands.
+const MESSAGE_MAX: usize = 300;
+
+/// The mail the window starts on (task E8.7a): `--message=m:…` or `--message m:…`, a mail id of the
+/// core's store, as the core builds it for `apps.open_app` with a `mail:` target. `None` without
+/// the flag; `Err` for a value that is no such id (it must start with `m:`, at most
+/// [`MESSAGE_MAX`] bytes, no spaces or control characters) or a flag without a value.
+fn start_message(args: &[String]) -> Result<Option<String>, String> {
+    let mut found = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        let value = match arg.strip_prefix("--message") {
+            Some("") => rest.next().cloned(),
+            Some(value) if value.starts_with('=') => Some(value[1..].to_string()),
+            _ => continue,
+        };
+        let value = value.ok_or_else(|| "--message needs a mail id (m:…)".to_string())?;
+        let valid = value.starts_with("m:")
+            && value.len() > 2
+            && value.len() <= MESSAGE_MAX
+            && !value.chars().any(|c| c.is_whitespace() || c.is_control());
+        if !valid {
+            return Err(format!("--message takes a mail id (m:…), not {value:?}"));
+        }
+        found = Some(value);
+    }
+    Ok(found)
+}
+
 /// The compose window on `source`: the core's client or the demo source.
 fn compose<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
     iced::application(move || Window::new(source.clone(), suite.clone(), launch.clone()), Window::update, Window::view)
@@ -110,4 +152,28 @@ fn compose<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, launch: La
         .subscription(Window::subscription)
         .window(compose::window_settings())
         .run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(line: &[&str]) -> Vec<String> {
+        line.iter().map(|arg| (*arg).to_string()).collect()
+    }
+
+    /// Task E8.7a: the core's `--message=m:…` is read in both forms; anything else is refused.
+    #[test]
+    fn the_start_mail_is_a_mail_id_of_the_core() {
+        assert_eq!(start_message(&args(&["--view", "mail", "--message=m:0a1b"])), Ok(Some("m:0a1b".into())));
+        assert_eq!(start_message(&args(&["--message", "m:0a1b"])), Ok(Some("m:0a1b".into())));
+        assert_eq!(start_message(&args(&["--view", "mail", "--messages"])), Ok(None), "another flag");
+        assert_eq!(start_message(&args(&[])), Ok(None));
+        for bad in
+            [&["--message"][..], &["--message=x"], &["--message=m:"], &["--message=m:a b"], &["--message", "--demo"]]
+        {
+            assert!(start_message(&args(bad)).is_err(), "{bad:?}");
+        }
+        assert!(start_message(&args(&[&format!("--message=m:{}", "a".repeat(MESSAGE_MAX))])).is_err(), "too long");
+    }
 }

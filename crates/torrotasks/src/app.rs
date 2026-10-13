@@ -3080,7 +3080,7 @@ async fn open_app(source: Source, app: &'static str) -> Result<(), String> {
     let Source::Core(client) = source else {
         return Ok(());
     };
-    match torro_ipc::client::call(&client.socket, &Request::OpenApp { app: app.to_string() }).await {
+    match torro_ipc::client::call(&client.socket, &Request::OpenApp { app: app.to_string(), target: None }).await {
         Ok(Response::Ok) => Ok(()),
         Ok(Response::Error { message, .. }) => Err(message),
         Ok(other) => Err(format!("unexpected answer: {other:?}")),

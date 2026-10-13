@@ -456,6 +456,20 @@ Weil der Kern beide Seiten kennt, kann er Bezug nehmen:
 - Wird die Aufgabe **erledigt**, fragt die Zentrale: „You finished … Anna is waiting for an answer“ mit „Reply“
   und „Mark mail done“.
 
+**Kern (E8.7a, umgesetzt):** Die Kennung ist `mail:<adresse>:<Message-ID>`, also die feste Konto-Id
+`mail:<adresse>` aus `accounts.list_accounts` (dieselbe wie in den Rechten und in der Quelle des Eintrags)
+und die Message-ID ohne spitze Klammern, wie der Mail-Speicher sie hält. Gefunden wird die Mail über einen
+Index auf der Message-ID in jedem Ordner. Ein Mail-Eintrag zeigt die Aufgabe, die auf eine seiner Mails oder
+auf eine Mail derselben Unterhaltung zeigt; so bleibt der Bezug, auch wenn die erste Mail verschoben wurde
+und der Eintrag nur noch die Antwort hält. Die Aufgabe zeigt ihre Mail mit Betreff, Absender, Datum und den
+Antworten, die danach kamen (die eigenen nicht mitgezählt). „You finished a task from a mail“ prüft die
+Routine der Suite jede Minute gegen den Aufgaben-Cache; wer erledigt hat (Suite, Nextcloud, ein Agent), ist
+gleich. Gemeldet wird einmal je Aufgabe (`task_notes` in `inbox.sqlite`), nur wenn die Unterhaltung noch
+offen im Eingang liegt, sonst nur vermerkt. Die Knöpfe „Reply“ und „Mark mail done“ baut E8.7b aus
+`task.link` und `task.mail_entry` des Eintrags. `apps.open_app` mit Ziel startet immer ein neues Fenster,
+weil ein laufendes Fenster noch keinen Weg hat, sich etwas anderes zeigen zu lassen. Befehle:
+[api.md](api.md), Fußnoten 12 und 13.
+
 ### Insights
 
 Die Zentrale zählt, damit Optimieren nicht beim Gefühl bleibt: je Tag, Quelle und Merkmal, was kam, was geöffnet,

@@ -1047,7 +1047,7 @@ impl PimSource for DemoSource {
             return Err(ProviderError::Other(format!("No filter list {collection}")));
         };
         let names_item = |id: &String| {
-            *id == item || Link { id: id.clone(), github: None }.web_url().is_some_and(|page| page == item)
+            *id == item || Link { id: id.clone(), github: None, mail: None }.web_url().is_some_and(|page| page == item)
         };
         let Some(at) = filter.pinned.iter().position(names_item) else {
             return Err(ProviderError::Other(format!("The list does not pin {item}")));

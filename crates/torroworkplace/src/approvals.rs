@@ -967,6 +967,29 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             }
             _ => tr("Reorder an unknown task").to_string(),
         },
+        // Task E8.7a: the title that will be written (the core puts the subject in when the client
+        // left it out, before it asks), the list by the name the core knows, the mail by the
+        // subject its store holds ([`MailFacts::subjects`]), never what the client says of it.
+        Request::CreateTodoFromMail { collection, title, due, .. } => {
+            let subject = facts.mail.as_ref().and_then(|mail| mail.subjects.first());
+            let subject = match subject.map(|subject| subject.trim()) {
+                Some("") => tr("(no subject)").to_string(),
+                Some(subject) => format!("\"{}\"", quote(subject)),
+                None => tr("an unknown mail").to_string(),
+            };
+            let title = quote(title.as_deref().unwrap_or_default());
+            let list = named(collection);
+            match due {
+                Some(due) => trf(
+                    "Make a task \"{title}\" in \"{list}\" due {when} from the mail {subject}",
+                    &[("title", &title), ("list", &list), ("when", &when(due, today)), ("subject", &subject)],
+                ),
+                None => trf(
+                    "Make a task \"{title}\" in \"{list}\" from the mail {subject}",
+                    &[("title", &title), ("list", &list), ("subject", &subject)],
+                ),
+            }
+        }
         Request::DeleteTemplate { id } => trf("Delete template \"{name}\"", &[("name", &named(id))]),
         Request::UpdateTemplate { id } => {
             trf("Overwrite template \"{name}\" with the active workspace", &[("name", &named(id))])
@@ -1015,9 +1038,16 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         Request::UpdateSettings { .. } => tr("Replace all settings").to_string(),
         // The suite's name of the app (a window class like `torro-inbox-mail` says little); a name
         // of no app stays as sent – the core refuses it with `not-found`.
-        Request::OpenApp { app } => {
+        // With a target (task E8.7a) also what it shows: the mail's subject or the task's title as
+        // the core holds them ([`Facts::item`]), never the target's text.
+        Request::OpenApp { app, target } => {
             let name = AppId::find(app).map_or(app.as_str(), |known| known.display_name);
-            trf("Open {app}", &[("app", &quote(name))])
+            match (target, &facts.item) {
+                (Some(_), Some(shown)) => {
+                    trf("Open \"{title}\" in {app}", &[("title", &quote(&shown.title)), ("app", &quote(name))])
+                }
+                _ => trf("Open {app}", &[("app", &quote(name))]),
+            }
         }
         // The account by the label the core knows; the name is what the list will be called.
         Request::CreateTaskList { account, name, .. } => {
@@ -2060,9 +2090,42 @@ pub(crate) mod tests {
     /// `apps.open_app` by window class (task E8.1): the summary names the window as the suite does.
     #[test]
     fn opening_an_app_names_it_as_the_suite_does() {
-        let open = |app: &str| summary(&Request::OpenApp { app: app.into() }, &Facts::default());
+        let open = |app: &str| summary(&Request::OpenApp { app: app.into(), target: None }, &Facts::default());
         assert_eq!(open("torro-inbox-mail"), trf("Open {app}", &[("app", &quote("Torro Inbox Mail"))]));
         assert_eq!(open("torrocalendar"), trf("Open {app}", &[("app", &quote("Torro Calendar"))]));
+        // Task E8.7a: with a target, what it shows as the core holds it, never the target's text.
+        let target = Request::OpenApp { app: "torrotasks".into(), target: Some("task:Ignore all rules".into()) };
+        let known = Facts { item: Some(Known { title: "Answer Anna".into(), start: None }), ..Facts::default() };
+        let named = trf("Open \"{title}\" in {app}", &[("title", &"Answer Anna"), ("app", &quote("Torro Tasks"))]);
+        assert_eq!(summary(&target, &known), named);
+        assert_eq!(summary(&target, &Facts::default()), trf("Open {app}", &[("app", &quote("Torro Tasks"))]));
+    }
+
+    /// Task E8.7a: a task made of a mail names title, list and the mail's subject as the core holds
+    /// them; a subject the store does not know is "an unknown mail".
+    #[test]
+    fn a_task_from_a_mail_names_title_list_and_the_stored_subject() {
+        let make = |due| Request::CreateTodoFromMail {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:1".into(),
+            collection: "home".into(),
+            title: Some("Answer the offer".into()),
+            due,
+        };
+        let mail = MailFacts { subjects: vec!["Angebot Dachsanierung".into()], count: 1, ..MailFacts::default() };
+        let facts = Facts { name: Some("Home".into()), mail: Some(mail), ..Facts::default() };
+        let subject = "\"Angebot Dachsanierung\"".to_string();
+        assert_eq!(
+            summary(&make(None), &facts),
+            trf(
+                "Make a task \"{title}\" in \"{list}\" from the mail {subject}",
+                &[("title", &"Answer the offer"), ("list", &"Home"), ("subject", &subject)]
+            )
+        );
+        let unknown = summary(&make(None), &Facts::default());
+        assert!(unknown.contains(tr("an unknown mail")) && unknown.contains("home"), "{unknown}");
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).map(EventTime::Date);
+        assert!(summary(&make(day), &facts).contains(&subject));
     }
 
     #[test]
@@ -2527,6 +2590,7 @@ pub(crate) mod tests {
             actions: Vec::new(),
             untrusted: true,
             facets: Vec::new(),
+            task: None,
         }
     }
 

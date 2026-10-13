@@ -32,7 +32,7 @@ pub enum Message {
 
 pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
     match message {
-        Message::Open(app) => Action::Send(Request::OpenApp { app }),
+        Message::Open(app) => Action::Send(Request::OpenApp { app, target: None }),
     }
 }
 
@@ -140,7 +140,7 @@ mod tests {
     fn open_asks_the_daemon_to_open_the_app() {
         let message = Message::Open("torro-calendar".into());
         let action = update(&mut State::default(), message, &Data::default());
-        assert!(matches!(action, Action::Send(Request::OpenApp { app }) if app == "torro-calendar"));
+        assert!(matches!(action, Action::Send(Request::OpenApp { app, .. }) if app == "torro-calendar"));
     }
 
     #[test]

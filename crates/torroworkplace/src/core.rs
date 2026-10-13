@@ -268,8 +268,11 @@ const INBOX_LINK: &str = "inbox:";
 ///   instructions (security rule 5), so the text of a foreign source is not changed.
 /// - `url`: the entry's web page when it links to one; the inbox keeps only `http`/`https` links
 ///   (security rule 6), checked here once more. Links to apps and windows stay with the entry.
-/// - `link`: `inbox:<entry id>` ([`INBOX_LINK`]), the way back to the entry while the inbox keeps
-///   it (done entries go after 30 days); apps that do not know the form leave it alone.
+/// - `link`: for a mail entry whose mail has a Message-ID (`origin`, task E8.7a) the mail's
+///   `mail:<address>:<Message-ID>`, which stays valid after the entry is gone and the mail moved,
+///   with the readable line "From mail: …" ([`crate::mail::inbox_feed::from_mail_line`]) after the
+///   text; else `inbox:<entry id>` ([`INBOX_LINK`]), the way back to the entry while the inbox
+///   keeps it (done entries go after 30 days). Apps that do not know a form leave it alone.
 ///
 /// New: no `uid`, `href` or `etag`; the server's client gives it its uid.
 fn task_from_entry(
@@ -277,6 +280,7 @@ fn task_from_entry(
     collection: String,
     title: Option<String>,
     due: Option<torro_pim::EventTime>,
+    origin: Option<MailOrigin>,
 ) -> torro_pim::Todo {
     let title = title.map(|title| title.trim().to_string()).filter(|title| !title.is_empty());
     let web = |url: &str| {
@@ -297,12 +301,139 @@ fn task_from_entry(
         priority: None,
         completed: false,
         parent: None,
-        description: entry.body.clone().filter(|body| !body.trim().is_empty()),
+        description: with_line(entry.body.clone(), origin.as_ref().map(|origin| origin.line.clone())),
         url,
         categories: Vec::new(),
         sort_order: None,
-        link: Some(torro_pim::model::Link { id: format!("{INBOX_LINK}{}", entry.id), github: None }),
+        link: Some(match origin {
+            Some(origin) => origin.link,
+            None => torro_pim::model::Link::new(format!("{INBOX_LINK}{}", entry.id)),
+        }),
     }
+}
+
+/// The fields of `tasks.create_todo_from_mail` ([`Request::CreateTodoFromMail`], task E8.7a).
+struct MailTask {
+    account: String,
+    id: String,
+    collection: String,
+    title: Option<String>,
+    due: Option<torro_pim::EventTime>,
+}
+
+/// The mail a task is made of (task E8.7a): its link `mail:<address>:<Message-ID>` and the line
+/// that names it in the task's description.
+struct MailOrigin {
+    link: torro_pim::model::Link,
+    line: String,
+}
+
+impl MailOrigin {
+    /// The origin of the mail `found` of `account`; `None` without a Message-ID, which a link needs.
+    fn of(account: &str, found: &crate::mail::inbox_feed::MailForTask) -> Option<MailOrigin> {
+        let message_id = found.rfc_message_id.as_deref().map(str::trim).filter(|id| !id.is_empty())?;
+        Some(MailOrigin {
+            link: torro_pim::model::Link::mail(account, message_id),
+            line: crate::mail::inbox_feed::from_mail_line(&found.summary),
+        })
+    }
+}
+
+/// `text` (blank counts as none) with `line` after an empty line, when there is one.
+fn with_line(text: Option<String>, line: Option<String>) -> Option<String> {
+    let text = text.filter(|text| !text.trim().is_empty());
+    match (text, line) {
+        (Some(text), Some(line)) => Some(format!("{}\n\n{line}", text.trim_end())),
+        (text, line) => text.or(line),
+    }
+}
+
+/// The task `tasks.create_todo_from_mail` makes of the mail `found` (task E8.7a): `title` (blank:
+/// the subject, "(no subject)" for none), `due`, the start of the mail and the line naming it as
+/// description, the mail's link. Like [`task_from_entry`] it is new: no `uid`, `href` or `etag`.
+fn task_from_mail(
+    found: &crate::mail::inbox_feed::MailForTask,
+    origin: MailOrigin,
+    collection: String,
+    title: Option<String>,
+    due: Option<torro_pim::EventTime>,
+) -> torro_pim::Todo {
+    torro_pim::Todo {
+        uid: String::new(),
+        collection,
+        href: None,
+        etag: None,
+        summary: mail_task_title(title.as_deref(), &found.summary.subject),
+        due,
+        priority: None,
+        completed: false,
+        parent: None,
+        description: with_line(Some(found.summary.snippet.clone()), Some(origin.line)),
+        url: None,
+        categories: Vec::new(),
+        sort_order: None,
+        link: Some(origin.link),
+    }
+}
+
+/// The title of a task made of a mail: `title` without the spaces around it, else the subject,
+/// else "(no subject)".
+fn mail_task_title(title: Option<&str>, subject: &str) -> String {
+    let given = title.map(str::trim).filter(|title| !title.is_empty());
+    match given.or(Some(subject.trim()).filter(|subject| !subject.is_empty())) {
+        Some(title) => title.to_string(),
+        None => tr("(no subject)").to_string(),
+    }
+}
+
+/// What a person allows when they allow `tasks.create_todo_from_mail` (task E8.7a): the mail as
+/// the store holds it (Message-ID, subject, conversation, date), hashed. Compared when the
+/// approval runs ([`Core::create_todo_from_mail`]); never shown to the client.
+fn mail_fingerprint(found: &crate::mail::inbox_feed::MailForTask) -> String {
+    use sha2::{Digest, Sha256};
+    let summary = &found.summary;
+    let parts = [
+        found.rfc_message_id.as_deref().unwrap_or_default(),
+        summary.subject.as_str(),
+        summary.thread_id.as_str(),
+        &summary.date.to_rfc3339(),
+    ];
+    let digest = Sha256::digest(parts.join("\u{0}").as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The longest account or mail id `tasks.create_todo_from_mail` takes, as the mail commands do.
+const MAIL_ID_MAX: usize = 300;
+
+/// The longest target `apps.open_app` takes.
+const TARGET_MAX: usize = 1000;
+
+/// A caller that may read the mail account `account`: the suite, or a client with read access to
+/// `mail` and the account in its `mail_accounts`.
+fn reads_mail(reach: Reach<'_>, account: &str) -> bool {
+    match reach {
+        Reach::Suite => true,
+        Reach::Client(rights) => rights.area(Area::Mail).allows(Access::Read) && rights.reaches_mail_account(account),
+    }
+}
+
+/// A caller that may read tasks: the suite, or a client with read access to `tasks`. Which lists
+/// it sees, [`PimService::todos_within`] decides.
+fn reads_tasks(reach: Reach<'_>) -> bool {
+    match reach {
+        Reach::Suite => true,
+        Reach::Client(rights) => rights.area(Area::Tasks).allows(Access::Read),
+    }
+}
+
+/// `(account id, Message-ID)` of `todo`'s mail link, if it has one.
+fn mail_link(todo: &torro_pim::Todo) -> Option<(&str, &str)> {
+    todo.link.as_ref()?.mail_ref()
+}
+
+/// The `not-found` of a mail that does not exist or that the caller may not see: the same answer.
+fn no_mail() -> Response {
+    Response::Error { code: "not-found".into(), message: "no such mail".into() }
 }
 
 /// `request` as it waits for approval (task E1.2c): `inbox.create_task_from_item` without a title
@@ -692,6 +823,18 @@ impl Core {
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return Ok(not_reached(&request, &outside));
         }
+        // A task made of a mail reads the mail, and opening one shows a mail or a task (task
+        // E8.7a): what the client may not read is `not-found` before anyone is asked.
+        if let Request::CreateTodoFromMail { account, .. } = &request
+            && !reads_mail(reach, account)
+        {
+            return Ok(no_mail());
+        }
+        if let Request::OpenApp { app, target: Some(target) } = &request
+            && let Err(refused) = self.open_target(app, target, reach).await
+        {
+            return Ok(*refused);
+        }
         // Ticking an issue of a filter list closes it on GitHub (task G.5): that needs write access
         // to `github` as well, refused before a person is asked to approve it. The handler checks
         // again for an approved run (`PimService::save_filter_todo`).
@@ -829,6 +972,32 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // A task made of a mail (task E8.7a): the mail as the store holds it, the title fixed
+            // now (the subject when the client left it out), the approval pinned to the mail.
+            (Request::CreateTodoFromMail { account, id, collection, title, due }, _) => {
+                let Some(info) = &info else { return Err(Refused::Forbidden { command }) };
+                let found = match self.mail_to_approve(account, id, &info.rights).await {
+                    Ok(found) => found,
+                    Err(refused) => return Ok(*refused),
+                };
+                let request = Request::CreateTodoFromMail {
+                    account: account.clone(),
+                    id: id.clone(),
+                    collection: collection.clone(),
+                    title: Some(mail_task_title(title.as_deref(), &found.summary.subject)),
+                    due: *due,
+                };
+                let mail = crate::approvals::MailFacts {
+                    account: account.strip_prefix(torro_mail::ACCOUNT_PREFIX).map(str::to_string),
+                    count: 1,
+                    subjects: vec![found.summary.subject.clone()],
+                    ..crate::approvals::MailFacts::default()
+                };
+                let facts = Facts { name: self.list_name(collection).await, mail: Some(mail), ..Facts::default() };
+                fingerprint = Some((mail_fingerprint(&found), Vec::new()));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             (_, Area::Inbox) => {
                 let mut facts = self.inbox.facts(&request);
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
@@ -848,6 +1017,12 @@ impl Core {
                     if !(rights.area(Area::Github).allows(Access::Write) && rights.reaches_repo(repo)) {
                         facts.issue = None;
                     }
+                }
+                // What a target shows (task E8.7a): the subject or title the core holds, looked up
+                // as the client may see it.
+                if let (Request::OpenApp { app, target: Some(target) }, Some(rights)) = (&request, rights) {
+                    let shown = self.open_target(app, target, Reach::Client(rights)).await.ok();
+                    facts.item = shown.map(|(_, title)| crate::approvals::Known { title, start: None });
                 }
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
@@ -1014,6 +1189,12 @@ impl Core {
         if let Request::SaveDraft { draft } = request {
             return self.save_draft(draft, reach, DraftAuthor::Client(client.to_string())).await;
         }
+        // A task made of a mail runs only on the mail the person was shown (task E8.7a); an
+        // approval without a fingerprint matches no mail.
+        if let Request::CreateTodoFromMail { account, id, collection, title, due } = request {
+            let approved = Some(fingerprint.unwrap_or_default());
+            return self.create_todo_from_mail(MailTask { account, id, collection, title, due }, reach, approved).await;
+        }
         // Sending runs only on what the person was shown: an approval without a fingerprint
         // (none is ever stored without one) matches nothing.
         if let Request::SendDraft { id: draft } = &request {
@@ -1162,11 +1343,15 @@ impl Core {
                 let _deciding = self.calendar_sign_ins.lock().await;
                 self.pim.handle_within(request, reach).await
             }
+            // Mail links come with what the mail store holds, for whom may read it (task E8.7a).
+            Request::Todos => self.todos_with_mail(reach).await,
+            Request::CreateTodoFromMail { account, id, collection, title, due } => {
+                self.create_todo_from_mail(MailTask { account, id, collection, title, due }, reach, None).await
+            }
             pim @ (Request::ConnectNextcloud { .. }
             | Request::CalendarCollections
             | Request::TaskCollections
             | Request::Events { .. }
-            | Request::Todos
             | Request::SaveEvent { .. }
             | Request::DeleteEvent { .. }
             | Request::DeleteTodo { .. }
@@ -1207,13 +1392,8 @@ impl Core {
                 Err(err) => error(&err),
             },
             // A binary or a window class: the inbox's mail window is `torro-inbox-mail` (task E8.1).
-            Request::OpenApp { app } => match AppId::find(&app) {
-                Some(app) => match self.open_app(app).await {
-                    Ok(()) => Response::Ok,
-                    Err(message) => Response::Error { code: "error".into(), message },
-                },
-                None => Response::Error { code: "not-found".into(), message: format!("no app {app:?}") },
-            },
+            // With a target, a new window showing a mail or a task (task E8.7a).
+            Request::OpenApp { app, target } => self.open_app_request(&app, target.as_deref(), reach).await,
             Request::ListApps => Response::Apps { apps: crate::apps::list() },
             Request::ListClients => Response::Clients { clients: self.clients.list() },
             Request::CreateClient { name, kind, template, agent } => {
@@ -1351,10 +1531,18 @@ impl Core {
                     return refused;
                 }
                 let done = matches!(request, Request::SetItemDone { done: true, .. });
-                let response = self.inbox.handle(request, client, Utc::now());
+                let reads = matches!(request, Request::ListItems { .. } | Request::GetItem { .. });
+                let mut response = self.inbox.handle(request, client, Utc::now());
                 // Done with a mail entry marks its mail read on the server (task E4.1).
                 if let (true, Response::Item { item }) = (done, &response) {
                     crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, item);
+                }
+                // Entries come with the task made of them, for whom may read it (task E8.7a).
+                let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
+                match (&mut response, reads) {
+                    (Response::Items { items }, true) => self.with_tasks(items, reach).await,
+                    (Response::Item { item }, true) => self.with_tasks(std::slice::from_mut(item), reach).await,
+                    _ => {}
                 }
                 response
             }
@@ -1418,7 +1606,8 @@ impl Core {
         if pin.is_some_and(|pin| !pin.holds(&entry)) {
             return entry_conflict();
         }
-        let todo = task_from_entry(&entry, collection, title, due);
+        let origin = self.mail_origin_of(&entry).await;
+        let todo = task_from_entry(&entry, collection, title, due, origin);
         let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
         let saved = match self.pim.handle_within(Request::SaveTodo { todo }, reach).await {
             Response::Todo { todo } => todo,
@@ -1434,6 +1623,224 @@ impl Core {
             _ => {}
         }
         Response::Todo { todo: saved }
+    }
+
+    /// For a mail entry: its newest mail ([`torro_inbox::Link::Mail`]) as a task's link and line
+    /// (task E8.7a). `None` for other entries, and when the mail has no Message-ID or the store
+    /// does not hold it any more: the task then links to the entry (`inbox:<id>`) as before.
+    async fn mail_origin_of(&self, entry: &torro_inbox::Item) -> Option<MailOrigin> {
+        let torro_inbox::Link::Mail { message } = entry.link.as_ref()? else { return None };
+        if entry.source.kind != torro_inbox::SourceKind::Mail {
+            return None;
+        }
+        let account = entry.source.key();
+        let found = crate::mail::inbox_feed::mail_for_task(&self.mail, &account, message).await.ok()?;
+        MailOrigin::of(&account, &found)
+    }
+
+    /// `tasks.create_todo_from_mail` (task E8.7a): makes a task of the mail `id` of `account` in
+    /// `collection` for `reach`; the mail stays as it is. With `fingerprint` (an approved run) the
+    /// mail must still be the one the person was shown ([`mail_fingerprint`]), else `conflict`.
+    ///
+    /// In this order: the lengths (`error`), the mail account for a client (read access to `mail`
+    /// and the account, else `not-found` as for none), the mail in the account's store
+    /// (`not-found`), the fingerprint, a Message-ID (`unsupported` without), then the task written
+    /// through the calendar service as `tasks.save_todo` writes it ([`task_from_mail`]). A client's
+    /// write access to tasks and the list were checked before ([`Core::handle_client`],
+    /// [`Core::run_approved`]: `Rights::allows`, [`PimService::out_of_reach`]).
+    async fn create_todo_from_mail(&self, mail: MailTask, reach: Reach<'_>, fingerprint: Option<&str>) -> Response {
+        let MailTask { account, id, collection, title, due } = mail;
+        if account.len() > MAIL_ID_MAX || id.len() > MAIL_ID_MAX {
+            return refusal("error", format!("account and id may hold at most {MAIL_ID_MAX} bytes"));
+        }
+        if !reads_mail(reach, &account) {
+            return no_mail();
+        }
+        let found = match crate::mail::inbox_feed::mail_for_task(&self.mail, &account, &id).await {
+            Ok(found) => found,
+            Err(crate::mail::service::MailError::NotFound) => return no_mail(),
+            Err(err) => return err.response(),
+        };
+        if fingerprint.is_some_and(|pinned| pinned != mail_fingerprint(&found)) {
+            return Response::Error {
+                code: "conflict".into(),
+                message: "the mail changed after the approval was asked for; nothing ran, ask again".into(),
+            };
+        }
+        let Some(origin) = MailOrigin::of(&account, &found) else {
+            return refusal("unsupported", "the mail has no Message-ID, so no task can link to it".into());
+        };
+        let todo = task_from_mail(&found, origin, collection, title, due);
+        self.pim.handle_within(Request::SaveTodo { todo }, reach).await
+    }
+
+    /// For the approval of `tasks.create_todo_from_mail` (task E8.7a): the mail as the store holds
+    /// it, or the answer when it is out of reach or gone (nobody is asked to approve what would be
+    /// refused anyway).
+    async fn mail_to_approve(
+        &self,
+        account: &str,
+        id: &str,
+        rights: &torro_ipc::api::Rights,
+    ) -> Result<crate::mail::inbox_feed::MailForTask, Box<Response>> {
+        if account.len() > MAIL_ID_MAX || id.len() > MAIL_ID_MAX {
+            return Err(Box::new(refusal("error", format!("account and id may hold at most {MAIL_ID_MAX} bytes"))));
+        }
+        if !reads_mail(Reach::Client(rights), account) {
+            return Err(Box::new(no_mail()));
+        }
+        match crate::mail::inbox_feed::mail_for_task(&self.mail, account, id).await {
+            Ok(found) => Ok(found),
+            Err(crate::mail::service::MailError::NotFound) => Err(Box::new(no_mail())),
+            Err(err) => Err(Box::new(err.response())),
+        }
+    }
+
+    /// `tasks.list_todos` with what the mail store holds about each mail link ([`Link::mail`],
+    /// task E8.7a): subject, sender, date and new replies, only for a caller that may read the
+    /// mail account ([`reads_mail`]); other links and callers keep the id alone.
+    async fn todos_with_mail(&self, reach: Reach<'_>) -> Response {
+        let mut todos = self.pim.todos_within(reach).await;
+        let mut known: HashMap<String, Option<torro_pim::model::MailDetails>> = HashMap::new();
+        for link in todos.iter_mut().filter_map(|todo| todo.link.as_mut()) {
+            let Some((account, message_id)) = link.mail_ref() else { continue };
+            if !reads_mail(reach, account) {
+                continue;
+            }
+            if !known.contains_key(&link.id) {
+                let details = crate::mail::inbox_feed::linked_details(&self.mail, account, message_id).await;
+                known.insert(link.id.clone(), details);
+            }
+            link.mail = known.get(&link.id).cloned().flatten().map(Box::new);
+        }
+        Response::Todos { todos }
+    }
+
+    /// `items` with the task each was made into ([`torro_inbox::Item::task`], task E8.7a): a task
+    /// `reach` sees whose link is `inbox:<entry id>` or, for a mail entry, a mail of the entry's
+    /// conversation (by Message-ID, or by the conversation of the linked mail when the store still
+    /// holds it). Open tasks before done ones. A caller that may not read tasks gets none; an entry
+    /// the suite filed with its task keeps it, and so does one no visible task points to.
+    async fn with_tasks(&self, items: &mut [torro_inbox::Item], reach: Reach<'_>) {
+        // A client never sees a stored task: only the suite's entries carry one, and no client sees
+        // those; cleared all the same, so a stored one could never pass the checks below.
+        if !reads_tasks(reach) || matches!(reach, Reach::Client(_)) {
+            items.iter_mut().for_each(|item| item.task = None);
+        }
+        if !reads_tasks(reach) {
+            return;
+        }
+        let mut todos: Vec<torro_pim::Todo> = self
+            .pim
+            .todos_within(reach)
+            .await
+            .into_iter()
+            .filter(|todo| {
+                todo.link.as_ref().is_some_and(|link| link.id.starts_with(INBOX_LINK) || link.mail_ref().is_some())
+            })
+            .collect();
+        if todos.is_empty() {
+            return;
+        }
+        todos.sort_by_key(|todo| todo.completed);
+        let lists = self.pim.task_lists_within(reach).await;
+        let name_of = |todo: &torro_pim::Todo| {
+            lists.iter().find(|list| list.id == todo.collection).map(|list| list.name.clone()).unwrap_or_default()
+        };
+        // The conversation of each linked mail, looked up once.
+        let mut threads: HashMap<String, Option<String>> = HashMap::new();
+        for item in items.iter_mut().filter(|item| item.task.is_none()) {
+            let by_entry = format!("{INBOX_LINK}{}", item.id);
+            let mut found = todos.iter().position(|todo| todo.link.as_ref().is_some_and(|link| link.id == by_entry));
+            let account = item.source.key();
+            let mailed: Vec<usize> =
+                (0..todos.len()).filter(|at| mail_link(&todos[*at]).is_some_and(|(of, _)| of == account)).collect();
+            if found.is_none() && item.source.kind == torro_inbox::SourceKind::Mail && !mailed.is_empty() {
+                let messages = self.inbox.mail_messages(&item.id).unwrap_or_default();
+                let (ids, conversations) = crate::mail::inbox_feed::mails_of(&self.mail, &account, messages).await;
+                for at in mailed {
+                    let Some((_, message_id)) = mail_link(&todos[at]) else { continue };
+                    let message_id = torro_pim::model::bare_message_id(message_id).to_string();
+                    if !threads.contains_key(&message_id) {
+                        let linked = crate::mail::inbox_feed::linked_mail(&self.mail, &account, &message_id).await;
+                        threads.insert(message_id.clone(), linked.map(|found| found.thread_id));
+                    }
+                    let thread = threads.get(&message_id).cloned().flatten();
+                    if ids.contains(&message_id) || thread.is_some_and(|thread| conversations.contains(&thread)) {
+                        found = Some(at);
+                        break;
+                    }
+                }
+            }
+            item.task = found.map(|at| crate::inbox::item_task(&todos[at], &name_of(&todos[at])));
+        }
+    }
+
+    /// What `target` of `apps.open_app` for `app` opens for `reach` (task E8.7a), with the title
+    /// of what it shows for an approval's summary: the window and the arguments the core builds
+    /// ([`crate::apps::target_command`]). `error` for a target of no known form, one longer than
+    /// [`TARGET_MAX`] or one that does not open in `app`; `not-found` for a mail or task `reach`
+    /// may not read or that is gone. Nothing of the target reaches a command line but the store's
+    /// own mail id or a task uid the cache holds.
+    async fn open_target(
+        &self,
+        app: &str,
+        target: &str,
+        reach: Reach<'_>,
+    ) -> Result<(crate::apps::Opened, String), Box<Response>> {
+        let bad = |message: String| Box::new(refusal("error", message));
+        if target.len() > TARGET_MAX {
+            return Err(bad(format!("a target may hold at most {TARGET_MAX} bytes")));
+        }
+        let wanted = crate::apps::Target::parse(target).map_err(|message| bad(message.to_string()))?;
+        let Some(app) = AppId::find(app) else {
+            return Err(Box::new(refusal("not-found", format!("no app {app:?}"))));
+        };
+        if !wanted.opens_in(app) {
+            return Err(bad(format!("this target opens in {}", wanted.app().display_name)));
+        }
+        match wanted {
+            crate::apps::Target::Mail { account, message_id } => {
+                if !reads_mail(reach, account) {
+                    return Err(Box::new(no_mail()));
+                }
+                let found = crate::mail::inbox_feed::linked_mail(&self.mail, account, message_id).await;
+                let found = found.ok_or_else(|| Box::new(no_mail()))?;
+                Ok((crate::apps::Opened::Mail { message: found.id }, found.subject))
+            }
+            crate::apps::Target::Task { uid } => {
+                let task = match reads_tasks(reach) {
+                    true => self.pim.todos_within(reach).await.into_iter().find(|todo| todo.uid == uid),
+                    false => None,
+                };
+                let task = task.ok_or_else(|| Box::new(refusal("not-found", "no such task".into())))?;
+                Ok((crate::apps::Opened::Task { uid: task.uid }, task.summary))
+            }
+        }
+    }
+
+    /// `apps.open_app` (task E8.1, with `target` task E8.7a): without a target the app's window
+    /// comes forward or starts ([`Core::open_app`]); with one a new window starts showing it
+    /// ([`Core::open_target`]), since a running window cannot be told to show something else yet.
+    async fn open_app_request(&self, app: &str, target: Option<&str>, reach: Reach<'_>) -> Response {
+        let started = match target {
+            None => match AppId::find(app) {
+                Some(app) => self.open_app(app).await,
+                None => return refusal("not-found", format!("no app {app:?}")),
+            },
+            Some(target) => match self.open_target(app, target, reach).await {
+                Ok((opened, _)) => {
+                    let program = sibling(opened.app().binary).to_string_lossy().into_owned();
+                    let command = crate::apps::target_command(program, &opened);
+                    SystemLauncher.spawn(&command).map(|_| ()).map_err(|err| err.to_string())
+                }
+                Err(refused) => return *refused,
+            },
+        };
+        match started {
+            Ok(()) => Response::Ok,
+            Err(message) => refusal("error", message),
+        }
     }
 
     /// The display name of the task list `id` as the calendar service caches it, for the summary
@@ -2318,6 +2725,10 @@ fn no_collection(collection: &str) -> Response {
 fn not_reached(request: &Request, outside: &str) -> Response {
     match request {
         Request::DescribeGithubRepo { .. } => crate::pim::no_repo(outside),
+        // A mail link to an account the client may not read (task E8.7a); account ids hold no `/`.
+        Request::SaveTodo { .. } if outside.starts_with(torro_mail::ACCOUNT_PREFIX) && !outside.contains('/') => {
+            Response::Error { code: "not-found".into(), message: format!("no mail account {outside:?}") }
+        }
         _ => no_collection(outside),
     }
 }
@@ -2343,6 +2754,8 @@ fn not_reached(request: &Request, outside: &str) -> Response {
 fn mail_out_of_reach(rights: &torro_ipc::api::Rights, request: &Request) -> Option<Response> {
     let named = match request {
         Request::UpdateMailAccount { id, .. } => Some(id.as_str()),
+        // A task made of a mail reads the mail (task E8.7a).
+        Request::CreateTodoFromMail { account, .. } => Some(account.as_str()),
         Request::RemoveAccount { id } if id.starts_with(torro_mail::ACCOUNT_PREFIX) => Some(id.as_str()),
         request => request.mail_account(),
     };
@@ -3457,7 +3870,7 @@ mod tests {
     #[tokio::test]
     async fn open_app_refuses_an_unknown_name() {
         let dir = tempfile::tempdir().unwrap();
-        let response = core(dir.path()).handle(Request::OpenApp { app: "torro-compose".into() }).await;
+        let response = core(dir.path()).handle(Request::OpenApp { app: "torro-compose".into(), target: None }).await;
         assert!(matches!(response, Response::Error { ref code, .. } if code == "not-found"), "{response:?}");
     }
 
@@ -5330,15 +5743,16 @@ mod tests {
             actions: Vec::new(),
             untrusted: true,
             facets: Vec::new(),
+            task: None,
         };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).map(torro_pim::EventTime::Date);
-        let task = task_from_entry(&item, "work".into(), Some("  Fix the deploy ".into()), due);
+        let task = task_from_entry(&item, "work".into(), Some("  Fix the deploy ".into()), due, None);
         assert_eq!((task.summary.as_str(), task.collection.as_str(), task.due), ("Fix the deploy", "work", due));
         assert_eq!(task.description.as_deref(), Some("Step 3 broke."));
         assert_eq!(task.url.as_deref(), Some("https://ci.example.org/run/7"));
         assert_eq!(task.link.map(|link| link.id), Some("inbox:e1".to_string()));
         assert!(task.uid.is_empty() && task.href.is_none() && task.etag.is_none(), "a new task");
-        let blank = task_from_entry(&item, "work".into(), Some(" ".into()), None);
+        let blank = task_from_entry(&item, "work".into(), Some(" ".into()), None, None);
         assert_eq!(blank.summary, "Deploy failed", "a blank title takes the entry's");
         // Apps and windows stay with the entry; a link that is no web page never becomes the task's.
         for link in [
@@ -5347,7 +5761,7 @@ mod tests {
             torro_inbox::Link::Url { url: "file:///etc/passwd".into() },
         ] {
             let other = torro_inbox::Item { link: Some(link), body: None, ..item.clone() };
-            let task = task_from_entry(&other, "work".into(), None, None);
+            let task = task_from_entry(&other, "work".into(), None, None, None);
             assert_eq!((task.url, task.description), (None, None));
         }
     }
@@ -7989,5 +8403,401 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         let titles: Vec<String> = listed().await.into_iter().map(|item| item.title).collect();
         assert!(!titles.contains(&"Winter sale".to_string()), "the hidden domain's mail is no entry: {titles:?}");
+    }
+
+    /// Tasks made of mail (task E8.7a): a fake IMAP server with Anna's mail, a fake CalDAV server
+    /// that takes every task, the mail feed filing new mail into the inbox.
+    mod mail_tasks {
+        use crate::account::github::tests::{MemoryTokens, accounts_file};
+        use crate::mail::service::tests::{PASSWORD, eventually, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+        use torro_pim::model::Link;
+
+        use super::*;
+
+        const ANNA: &str = "mail:anna@example.org";
+        /// The Message-ID of [`offer`], as the store keeps it.
+        const OFFER_ID: &str = "Offer@example.org";
+
+        /// A mail `subject` from Bernd; its Message-ID is the subject with dashes, a reply (a minute later) names the
+        /// one it answers.
+        fn letter(subject: &str, in_reply_to: Option<&str>) -> String {
+            let later = chrono::TimeDelta::minutes(i64::from(in_reply_to.is_some()));
+            let date = (Utc::now() + later).to_rfc2822();
+            let id = subject.replace([' ', ':'], "-");
+            let reply =
+                in_reply_to.map(|to| format!("In-Reply-To: <{to}>\r\nReferences: <{to}>\r\n")).unwrap_or_default();
+            format!(
+                "From: Bernd Beispiel <bernd@example.com>\r\nTo: anna@example.org\r\nSubject: {subject}\r\n\
+                 Date: {date}\r\nMessage-ID: <{id}@example.org>\r\n{reply}Content-Type: text/plain; charset=utf-8\r\n\
+                 \r\nPlease answer by Friday.\r\n"
+            )
+        }
+
+        fn offer() -> String {
+            letter("Offer", None)
+        }
+
+        /// The core with tasks on `fake`, Anna's mail on `server` (filed into the inbox) and its
+        /// tasks lists `work` and `home`.
+        async fn mail_and_tasks(dir: &std::path::Path) -> (Core, crate::pim::tests::FakeCalDav, FakeImap) {
+            let server = FakeImap::start(PASSWORD).await;
+            let secrets = MemoryTokens::default();
+            let mut account = mail_account("anna@example.org", &server.endpoint);
+            account.mail_settings = Some(torro_mail::MailSettings {
+                notify: torro_mail::Notify::All,
+                ..torro_mail::MailSettings::default()
+            });
+            store_accounts(dir, &secrets, &[(&account, PASSWORD)]);
+            let service = service_in(dir, &secrets);
+            service.reload().await;
+            let fake = crate::pim::tests::fake_caldav(SettingsStore::at(settings_file(dir))).await;
+            let core = core_on(dir, &fake).with_mail(service);
+            core.start_mail_feed(Some(accounts_file(dir)));
+            (core, fake, server)
+        }
+
+        /// The store's id (`m:…`) of the newest copy of the mail with `message_id`, once it synced.
+        async fn mail_id(core: &Core, message_id: &str) -> String {
+            for _ in 0..400 {
+                if let Some(found) = crate::mail::inbox_feed::linked_mail(&core.mail, ANNA, message_id).await {
+                    return found.id;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("the mail {message_id} never synced")
+        }
+
+        /// The open mail entry of Anna's account, once the feed filed it.
+        async fn mail_entry(core: &Core) -> torro_inbox::Item {
+            for _ in 0..400 {
+                let all = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+                if let Response::Items { items } = core.handle(all).await
+                    && let Some(found) =
+                        items.into_iter().find(|item| item.source.kind == torro_inbox::SourceKind::Mail)
+                {
+                    return found;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("the mail was never filed")
+        }
+
+        fn from_mail(id: &str, collection: &str, title: Option<&str>) -> Request {
+            Request::CreateTodoFromMail {
+                account: ANNA.into(),
+                id: id.into(),
+                collection: collection.into(),
+                title: title.map(str::to_string),
+                due: None,
+            }
+        }
+
+        /// Read access to tasks and mail of Anna's account, write access to tasks and both lists.
+        fn reader_of_mail() -> Rights {
+            let mut rights = RightsTemplate::FullAccess.rights();
+            rights.mail_accounts = Selection::Only(vec![ANNA.into()]);
+            rights
+        }
+
+        async fn sync_now(core: &Core) {
+            core.mail.sync_all(Reach::Suite).await.expect("synced");
+        }
+
+        /// The ids: a mail entry's task links to its mail by Message-ID with a line naming it, any
+        /// other entry's to the entry, and `inbox:` stays readable both ways.
+        #[tokio::test]
+        async fn a_mail_entry_becomes_a_task_linked_by_its_message_id() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, fake, server) = mail_and_tasks(dir.path()).await;
+            server.add("INBOX", &offer(), &[]);
+            sync_now(&core).await;
+            let entry = mail_entry(&core).await;
+            let app_key = crate::clients::tests::app_key(dir.path());
+            let Response::Todo { todo } = ask(&core, Some(&app_key), make_task(&entry.id, &fake.work)).await else {
+                panic!("a task")
+            };
+            assert_eq!(todo.link, Some(Link::mail(ANNA, OFFER_ID)), "the mail, not the entry");
+            let found = crate::mail::inbox_feed::linked_mail(&core.mail, ANNA, OFFER_ID).await.expect("the mail");
+            let line = crate::mail::inbox_feed::from_mail_line(&found);
+            assert!(line.contains("Bernd Beispiel") && line.contains("Offer"), "{line}");
+            assert!(todo.description.as_deref().is_some_and(|text| text.ends_with(&line)), "{todo:?}");
+
+            // Any other entry links to itself, and its task shows on it.
+            let other = posted_entry(&core).await;
+            let Response::Todo { todo } = ask(&core, Some(&app_key), make_task(&other, &fake.home)).await else {
+                panic!("a task")
+            };
+            assert_eq!(todo.link, Some(Link::new(format!("inbox:{other}"))));
+            let shown = entry_of(&core, &app_key, &other).await;
+            let task = shown.task.expect("the task made of it");
+            assert_eq!((task.uid, task.link, task.title), (todo.uid, format!("inbox:{other}"), todo.summary));
+            // The mail entry shows its task too, found by the Message-ID of its mail.
+            let shown = entry_of(&core, &app_key, &entry.id).await;
+            assert_eq!(shown.task.map(|task| task.link), Some(Link::mail(ANNA, OFFER_ID).id));
+        }
+
+        async fn entry_of(core: &Core, key: &Key, id: &str) -> torro_inbox::Item {
+            match ask(core, Some(key), Request::GetItem { id: id.into() }).await {
+                Response::Item { item } => item,
+                other => panic!("an entry: {other:?}"),
+            }
+        }
+
+        /// A mail in any folder becomes a task; the mail stays unread where it is. Without the
+        /// rights for mail, tasks or the list nothing is made.
+        #[tokio::test]
+        async fn a_mail_in_any_folder_becomes_a_task_only_with_the_rights_for_both() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, fake, server) = mail_and_tasks(dir.path()).await;
+            server.add_folder("Archive", "\\Archive", 9);
+            let uid = server.add("Archive", &offer(), &[]);
+            sync_now(&core).await;
+            let id = mail_id(&core, OFFER_ID).await;
+
+            let mut no_mail = RightsTemplate::FullAccess.rights();
+            no_mail.mail_accounts = Selection::Only(Vec::new());
+            let mut mail_unread = reader_of_mail();
+            mail_unread.areas.remove(&Area::Mail);
+            let mut tasks_read = reader_of_mail();
+            tasks_read.areas.insert(Area::Tasks, AreaRights { level: Level::Read, admin: false });
+            let mut home_only = reader_of_mail();
+            home_only.task_lists = Selection::Only(vec![fake.home.clone()]);
+            for (rights, wanted) in [
+                (no_mail, "not-found"),
+                (mail_unread, "not-found"),
+                (tasks_read, "forbidden"),
+                (home_only, "not-found"),
+            ] {
+                let (_, key) = client(&core, rights).await;
+                assert_eq!(code(&ask(&core, Some(&key), from_mail(&id, &fake.work, None)).await), wanted);
+            }
+            let (_, key) = client(&core, reader_of_mail()).await;
+            assert_eq!(code(&ask(&core, Some(&key), from_mail("m:nothing", &fake.work, None)).await), "not-found");
+            assert_eq!(created_on(&fake), 0, "{:?}", fake.lines());
+
+            let Response::Todo { todo } = ask(&core, Some(&key), from_mail(&id, &fake.work, Some(" "))).await else {
+                panic!("a task")
+            };
+            assert_eq!((todo.summary.as_str(), todo.link.clone()), ("Offer", Some(Link::mail(ANNA, OFFER_ID))));
+            assert!(todo.description.as_deref().is_some_and(|text| text.starts_with("Please answer")), "{todo:?}");
+            assert_eq!(created_on(&fake), 1);
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            assert!(server.flags("Archive", uid).is_empty(), "the mail stays unread");
+        }
+
+        /// Asked for approval, the title is fixed and the summary names the subject the store
+        /// holds; a mail that changed meanwhile makes nothing.
+        #[tokio::test]
+        async fn a_task_of_a_mail_waits_for_approval_on_the_mail_the_person_was_shown() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, fake, server) = mail_and_tasks(dir.path()).await;
+            server.add("INBOX", &offer(), &[]);
+            sync_now(&core).await;
+            let id = mail_id(&core, OFFER_ID).await;
+            let mut asking = reader_of_mail();
+            asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+            let (_, key) = client(&core, asking).await;
+            let asked = waits(ask(&core, Some(&key), from_mail(&id, &fake.work, None)).await);
+            assert_eq!(asked.command, "tasks.create_todo_from_mail");
+            assert!(asked.summary.contains("\"Offer\""), "the subject the store holds: {}", asked.summary);
+            assert_eq!(created_on(&fake), 0);
+            let app_key = crate::clients::tests::app_key(dir.path());
+            let ran = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+            let Response::Todo { todo } = ran_with(&ran) else { panic!("a task: {ran:?}") };
+            assert_eq!(todo.summary, "Offer", "the title fixed when asking");
+
+            // Run on another mail than the one shown: `conflict`, nothing written.
+            let found = MailTask { account: ANNA.into(), id, collection: fake.work.clone(), title: None, due: None };
+            let stale = core.create_todo_from_mail(found, Reach::Suite, Some("another mail")).await;
+            assert_eq!(code(&stale), "conflict");
+            assert_eq!(created_on(&fake), 1);
+        }
+
+        /// Tasks show their mail (also after it moved) and the replies since, only to who may read
+        /// the account; entries show their task only to who may read tasks and see its list.
+        #[tokio::test]
+        async fn mail_and_tasks_show_each_other_only_with_the_rights_for_both() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, fake, server) = mail_and_tasks(dir.path()).await;
+            let uid = server.add("INBOX", &offer(), &[]);
+            sync_now(&core).await;
+            let entry = mail_entry(&core).await;
+            let id = mail_id(&core, OFFER_ID).await;
+            let app_key = crate::clients::tests::app_key(dir.path());
+            let Response::Todo { todo } = ask(&core, Some(&app_key), from_mail(&id, &fake.work, None)).await else {
+                panic!("a task")
+            };
+            let details = |key: Key| {
+                let core = &core;
+                async move {
+                    let Response::Todos { todos } = ask(core, Some(&key), Request::Todos).await else {
+                        panic!("todos")
+                    };
+                    todos.into_iter().find_map(|todo| todo.link).expect("the link")
+                }
+            };
+            let shown = details(app_key.clone()).await;
+            let mail = shown.mail.expect("what the store holds");
+            assert_eq!(
+                (mail.subject.as_str(), mail.sender.as_deref(), mail.new_replies),
+                ("Offer", Some("Bernd Beispiel"), 0)
+            );
+            assert!(mail.untrusted);
+
+            // Moved by another program (a new copy, the old one gone) and answered by Bernd.
+            server.add_folder("Archive", "\\Archive", 9);
+            server.add("Archive", &offer(), &[]);
+            server.expunge("INBOX", uid);
+            server.add("INBOX", &letter("Re: Offer", Some(OFFER_ID)), &[]);
+            sync_now(&core).await;
+            eventually("the reply counted", || async {
+                details(app_key.clone()).await.mail.is_some_and(|m| m.new_replies == 1)
+            })
+            .await;
+
+            // Without read access to the mail account: the id only.
+            let mut blind = RightsTemplate::FullAccess.rights();
+            blind.mail_accounts = Selection::Only(Vec::new());
+            let (_, key) = client(&core, blind).await;
+            let shown = details(key).await;
+            assert_eq!((shown.id.as_str(), shown.mail), (Link::mail(ANNA, OFFER_ID).id.as_str(), None));
+
+            // The entry's task: for who reads tasks and sees the list, never for anyone else.
+            let mut no_tasks = reader_of_mail();
+            no_tasks.areas.remove(&Area::Tasks);
+            let mut home_only = reader_of_mail();
+            home_only.task_lists = Selection::Only(vec![fake.home.clone()]);
+            for (rights, sees) in [(reader_of_mail(), true), (no_tasks, false), (home_only, false)] {
+                let (_, key) = client(&core, rights).await;
+                let shown = entry_of(&core, &key, &entry.id).await;
+                assert_eq!(shown.task.map(|task| task.uid), sees.then(|| todo.uid.clone()));
+            }
+        }
+
+        /// A finished task of a waiting mail files the suite's entry once, whoever ticked it.
+        #[tokio::test]
+        async fn finishing_a_task_of_a_waiting_mail_is_reported_once() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, fake, server) = mail_and_tasks(dir.path()).await;
+            server.add("INBOX", &offer(), &[]);
+            sync_now(&core).await;
+            let entry = mail_entry(&core).await;
+            let task = |uid: &str, completed: bool| torro_pim::Todo {
+                uid: uid.into(),
+                collection: fake.work.clone(),
+                href: Some(format!("https://x/{uid}.ics")),
+                etag: Some("\"1\"".into()),
+                summary: "Answer Bernd".into(),
+                due: None,
+                priority: None,
+                completed,
+                parent: None,
+                description: None,
+                url: None,
+                categories: Vec::new(),
+                sort_order: None,
+                link: Some(Link::mail(ANNA, OFFER_ID)),
+            };
+            let suite = || async {
+                let request = Request::ListItems {
+                    lane: None,
+                    source: Some(torro_inbox::SourceRef::suite()),
+                    state: None,
+                    since: None,
+                    limit: None,
+                };
+                let Response::Items { items } = core.handle(request).await else { panic!("items") };
+                items.into_iter().filter(|item| item.thread_key.starts_with("task-done:")).collect::<Vec<_>>()
+            };
+            fake.service.cache_todos(vec![task("t1", false)]).await;
+            crate::inbox::file_finished_tasks(&core.inbox, &core.pim, &core.mail, Utc::now()).await;
+            assert!(suite().await.is_empty(), "still open");
+
+            fake.service.cache_todos(vec![task("t1", true)]).await;
+            crate::inbox::file_finished_tasks(&core.inbox, &core.pim, &core.mail, Utc::now()).await;
+            let filed = suite().await;
+            assert_eq!(filed.len(), 1, "{filed:?}");
+            assert_eq!(filed[0].title, tr("You finished a task from a mail"));
+            assert!(filed[0].untrusted && filed[0].lane == torro_inbox::Lane::Info);
+            assert!(
+                filed[0]
+                    .body
+                    .as_deref()
+                    .is_some_and(|body| body.contains("Answer Bernd") && body.contains("Bernd Beispiel"))
+            );
+            assert_eq!(filed[0].task.as_ref().and_then(|task| task.mail_entry.clone()), Some(entry.id.clone()));
+
+            // Opened and done again, and many times over: still one.
+            for round in 0..3 {
+                fake.service.cache_todos(vec![task("t1", round % 2 == 1)]).await;
+                crate::inbox::file_finished_tasks(&core.inbox, &core.pim, &core.mail, Utc::now()).await;
+            }
+            assert_eq!(suite().await.len(), 1);
+
+            // The mail no longer waits: a second task of it is noted, nothing filed.
+            let done = Request::SetItemDone { id: entry.id.clone(), done: true, dismissed: false };
+            assert!(matches!(core.handle(done).await, Response::Item { .. }));
+            fake.service.cache_todos(vec![task("t1", true), task("t2", true)]).await;
+            crate::inbox::file_finished_tasks(&core.inbox, &core.pim, &core.mail, Utc::now()).await;
+            assert_eq!(suite().await.len(), 1);
+            assert!(core.inbox.noted_tasks().expect("noted").contains("t2"));
+        }
+
+        /// `apps.open_app` with a target: the core finds what it shows and refuses what the caller
+        /// may not read, a wrong app and unknown forms, before anything starts.
+        #[tokio::test]
+        async fn a_target_opens_what_the_core_finds_for_who_may_read_it() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (core, fake, server) = mail_and_tasks(dir.path()).await;
+            server.add("INBOX", &offer(), &[]);
+            sync_now(&core).await;
+            let id = mail_id(&core, OFFER_ID).await;
+            let app_key = crate::clients::tests::app_key(dir.path());
+            let Response::Todo { todo } = ask(&core, Some(&app_key), from_mail(&id, &fake.work, None)).await else {
+                panic!("a task")
+            };
+            let mail = Link::mail(ANNA, OFFER_ID).id;
+            let task = format!("task:{}", todo.uid);
+            let opened = core.open_target("torro-inbox-mail", &mail, Reach::Suite).await.expect("the mail");
+            assert_eq!(opened, (crate::apps::Opened::Mail { message: id }, "Offer".to_string()));
+            let opened = core.open_target("torrotasks", &task, Reach::Suite).await.expect("the task");
+            assert_eq!(opened, (crate::apps::Opened::Task { uid: todo.uid.clone() }, "Offer".to_string()));
+
+            let open = |app: &str, target: &str| Request::OpenApp { app: app.into(), target: Some(target.into()) };
+            let (_, reader) = client(&core, reader_of_mail()).await;
+            assert_eq!(
+                code(&ask(&core, Some(&reader), open("torrotasks", &mail)).await),
+                "error",
+                "a mail opens in the inbox"
+            );
+            assert_eq!(code(&ask(&core, Some(&reader), open("torrotasks", "inbox:0a1b")).await), "error");
+            assert_eq!(code(&ask(&core, Some(&reader), open("torrotasks", "task:nothing")).await), "not-found");
+            let gone = Link::mail(ANNA, "<gone@example.org>").id;
+            assert_eq!(code(&ask(&core, Some(&reader), open("torro-inbox-mail", &gone)).await), "not-found");
+            let mut blind = RightsTemplate::FullAccess.rights();
+            blind.mail_accounts = Selection::Only(Vec::new());
+            blind.areas.remove(&Area::Tasks);
+            let (_, blind) = client(&core, blind).await;
+            assert_eq!(code(&ask(&core, Some(&blind), open("torro-inbox-mail", &mail)).await), "not-found");
+            assert_eq!(code(&ask(&core, Some(&blind), open("torrotasks", &task)).await), "not-found");
+            let long = format!("task:{}", "a".repeat(TARGET_MAX));
+            assert_eq!(code(&ask(&core, Some(&reader), open("torrotasks", &long)).await), "error");
+            // Asked for approval, the summary names what opens as the core holds it (not decided
+            // here: allowing would start the app).
+            let mut asking = reader_of_mail();
+            asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+            let (_, asking) = client(&core, asking).await;
+            let asked = waits(ask(&core, Some(&asking), open("torrotasks", &task)).await);
+            assert!(asked.summary.contains("Offer") && !asked.summary.contains(&todo.uid), "{}", asked.summary);
+        }
+
+        /// The due day of an entry's task reads like a task's on the wire.
+        #[test]
+        fn an_entrys_task_is_due_like_a_task() {
+            let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).expect("date");
+            let as_task = serde_json::to_value(torro_pim::EventTime::Date(day)).expect("json");
+            assert_eq!(serde_json::to_value(torro_inbox::item::TaskDue::Date(day)).expect("json"), as_task);
+        }
     }
 }

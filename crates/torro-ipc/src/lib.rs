@@ -522,6 +522,41 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         before: Option<String>,
     },
+    /// Makes a task of the mail `id` in the mail account `account`, in the task list `collection`
+    /// (task E8.7a): for mail in any folder, also one that is no inbox entry. The mail itself is
+    /// not changed (not marked read, not moved). Answered with [`Response::Todo`]: the new task as
+    /// stored, with its `href` and `etag` for later changes through `tasks.save_todo`.
+    ///
+    /// The task gets `title` (the mail's subject when it is left out or blank, "(no subject)" for
+    /// none), `due`, the start of the mail as description followed by one readable line ("From
+    /// mail: <sender>, “<subject>”, <day>", in the core's language), and the link
+    /// `mail:<address>:<Message-ID>` ([`torro_pim::model::Link::mail`]) as the way back, which stays
+    /// valid when the mail moves to another folder. A mail without a `Message-ID` header cannot be
+    /// linked: `unsupported`.
+    ///
+    /// Granted in the area `tasks` (Write), as every new task. The core checks the mail too, before
+    /// anyone is asked to approve it: read access in `mail` and the account in the client's
+    /// `mail_accounts`. Codes: `forbidden` without tasks write; `not-found` for an account, a mail
+    /// or a list the caller may not see or that does not exist (hidden lists and lists outside the
+    /// client's `task_lists` included); `error` for an id or account longer than 300 bytes;
+    /// `conflict` when the mail changed between asking for approval and running (the title is
+    /// fixed when asking, as for `inbox.create_task_from_item`); the server's errors as for
+    /// `tasks.save_todo` (`unsupported` for a GitHub filter list, `offline` …).
+    #[serde(rename = "tasks.create_todo_from_mail")]
+    CreateTodoFromMail {
+        /// The mail account: `mail:<address>` from `accounts.list_accounts`.
+        account: String,
+        /// The mail's id (`m:…`) from `mail.search_messages` or `mail.get_message`.
+        id: String,
+        /// The task list's id from `tasks.list_lists`.
+        collection: String,
+        /// The task's title; left out or blank: the mail's subject.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// When the task is due, a day or an instant; left out: no due date.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        due: Option<EventTime>,
+    },
     /// Creates a new task list on the server of the Nextcloud account `account` (task G.7): a
     /// CalDAV collection for tasks only (`MKCALENDAR` in the account's calendar home), named
     /// `name`, in `color`. Its address is a new one made of the name and a random part; one that
@@ -743,8 +778,26 @@ pub enum Request {
     /// their class, its binary `torroinbox` opens the hub. A missing window starts with the
     /// arguments of its kind (`torroinbox --view mail`). Answered with [`Response::Ok`]; `not-found`
     /// for a name of no app, `error` when the app does not start.
+    ///
+    /// With `target` (task E8.7a) the app shows one thing: `mail:<address>:<Message-ID>` (a task's
+    /// link, [`torro_pim::model::Link::mail_ref`]) a mail in the inbox's mail window
+    /// (`torroinbox --view mail --message m:…`), `task:<uid>` a task in the tasks app
+    /// (`torrotasks --task=<uid>`). `app` must be the app the target opens in (any inbox window for
+    /// a mail), else `error`. The core checks the target and builds the arguments; nothing of it
+    /// reaches a shell. A window open already cannot be told to show something else yet, so a
+    /// target always starts a new window. Codes besides the above: `not-found` for a mail or task
+    /// the caller may not see (a client needs read access to `mail` and the account, or to `tasks`
+    /// and the task's list) or that is gone; `error` for a target of another form or longer than
+    /// 1000 bytes.
     #[serde(rename = "apps.open_app")]
-    OpenApp { app: String },
+    OpenApp {
+        /// Binary name or window class, from `apps.list_apps`.
+        app: String,
+        /// What the app shows: `mail:<address>:<Message-ID>` or `task:<uid>`; left out: the app as
+        /// it starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        target: Option<String>,
+    },
     /// The suite's apps, the core itself excepted, and whether each is installed
     /// ([`Response::Apps`]).
     #[serde(rename = "apps.list_apps")]
@@ -933,8 +986,11 @@ pub enum Request {
     /// The task gets `title` (the entry's title when it is left out or blank), `due`, the
     /// entry's `body` as description (plain text, as it came), the entry's web page as `url`
     /// when it has an `http`/`https` link, and `link.id = "inbox:<entry id>"` as the way back to
-    /// the entry. The entry is done only once the task was saved; a task that cannot be saved
-    /// leaves the entry as it is.
+    /// the entry. A mail entry's task links to its newest mail instead,
+    /// `mail:<address>:<Message-ID>` ([`torro_pim::model::Link::mail`], task E8.7a), which outlives
+    /// the entry, with a line naming the mail at the end of the description; a mail without a
+    /// Message-ID keeps `inbox:<entry id>`. The entry is done only once the task was saved; a task
+    /// that cannot be saved leaves the entry as it is.
     ///
     /// The command is granted in the area `inbox` (Write), but it writes a task too, so the core
     /// checks the client's tasks rights itself, in this order: write access in `tasks`

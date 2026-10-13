@@ -113,7 +113,7 @@ pub(crate) fn to_todo(props: &[Property<'_>], collection: &str) -> Option<Todo> 
         link: get("X-TORRO-LINK")
             .map(|p| unescape(p.value).trim().to_string())
             .filter(|id| !id.is_empty())
-            .map(|id| Link { id, github: None }),
+            .map(Link::new),
     })
 }
 

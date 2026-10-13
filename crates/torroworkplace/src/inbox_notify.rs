@@ -228,7 +228,7 @@ pub fn request(answer: Answer, popup: &Popup, now: DateTime<Utc>) -> Option<Requ
         Answer::MarkRead => Some(Request::SetMailFlags { ids: messages()?, add: vec![Flag::Seen], remove: Vec::new() }),
         Answer::Done => Some(Request::SetItemDone { id: popup.entry()?.to_string(), done: true, dismissed: false }),
         Answer::Snooze => Some(Request::SnoozeItem { id: popup.entry()?.to_string(), until: Some(now + SNOOZE_FOR) }),
-        Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string() }),
+        Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string(), target: None }),
     }
 }
 
@@ -773,6 +773,7 @@ mod tests {
             actions: Vec::new(),
             untrusted: true,
             facets: Vec::new(),
+            task: None,
         }
     }
 
@@ -1016,7 +1017,7 @@ mod tests {
             request(Answer::Snooze, &popup, now),
             Some(Request::SnoozeItem { id: "a".into(), until: Some(now + TimeDelta::hours(1)) })
         );
-        let open = Some(Request::OpenApp { app: "torroinbox".into() });
+        let open = Some(Request::OpenApp { app: "torroinbox".into(), target: None });
         assert_eq!(request(Answer::Open, &popup, now), open);
         let bundle = Popup::Bundle { count: 4, urgent: false };
         assert_eq!((request(Answer::Done, &bundle, now), request(Answer::Snooze, &bundle, now)), (None, None));
@@ -1165,7 +1166,7 @@ mod tests {
         for popup in [other, bundle] {
             assert_eq!((request(Answer::Archive, &popup, now), request(Answer::MarkRead, &popup, now)), (None, None));
         }
-        let open = Some(Request::OpenApp { app: "torroinbox".into() });
+        let open = Some(Request::OpenApp { app: "torroinbox".into(), target: None });
         assert_eq!(request(Answer::Open, &popup, now), open, "a click opens the inbox");
     }
 

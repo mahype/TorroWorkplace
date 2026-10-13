@@ -78,12 +78,12 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `system` | `ping`, `status` | | | |
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
-| `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
+| `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules`, `list_mute_options` ¹¹ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
-| `apps` | `list_apps` | `open_app` | | |
+| `apps` | `list_apps` | `open_app` ¹³ | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 
@@ -349,6 +349,34 @@ news@shop.example” in every mail account for good (hidden)“). Ins Protokoll 
 Eintrags. Den Wert einer Regel für die Unterhaltung (den `thread_key`) sieht nur der App-Schlüssel.
 `set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
 Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
+
+¹² Aufgabe mit Rückbezug (E8.7a, Konzept [eingang.md](eingang.md#aufgabe-mit-rückbezug)). Eine Aufgabe
+aus einer Mail trägt in `link.id` (`X-TORRO-LINK`) `mail:<adresse>:<Message-ID>`: die feste Kennung des
+Mail-Kontos aus `accounts.list_accounts` (`mail:<adresse>`) und die Message-ID ohne spitze Klammern,
+wie der Mail-Speicher sie hält. Sie bleibt gültig, wenn die Mail den Ordner wechselt und der Eintrag
+längst aufgeräumt ist. `create_task_from_item` schreibt sie für Mail-Einträge (sonst wie bisher
+`inbox:<id>`), dazu eine lesbare Zeile am Ende der Beschreibung („From mail: …“).
+`create_todo_from_mail { account, id, collection, title?, due? }` macht aus einer beliebigen Mail eine
+Aufgabe, ohne die Mail zu ändern; `Write` im Bereich `tasks`, dazu prüft der Dienst vor der Freigabe
+Leserecht in `mail` und das Konto in `mail_accounts` (sonst `not-found`, wie für eine Mail, die es nicht
+gibt). Ohne Titel schreibt der Dienst beim Fragen den Betreff fest in die Anfrage; die Freigabe nennt
+Titel, Listenname aus dem Cache und Betreff aus dem Mail-Speicher und ist an die Mail gebunden
+(Fingerabdruck aus Message-ID, Betreff, Unterhaltung und Datum, nie beim Client): geändert →
+`conflict`. Beim Lesen füllt der Dienst `link.mail` (Betreff, Absender, Datum, Zahl neuer Antworten,
+`untrusted`) nur für Schlüssel mit Leserecht auf das Konto, und Einträge bekommen `task` (Titel, Liste,
+fällig, erledigt) nur für Schlüssel mit Leserecht in `tasks`, die die Liste sehen; gespeichert wird
+beides nie. Ein Client darf per `save_todo` einen `mail:`-Link nur zu einem Konto setzen, das er lesen
+darf (sonst `not-found`). Wird eine solche Aufgabe erledigt, meldet die Suite einmal je Aufgabe „You
+finished a task from a mail“ (Spur Info, kein Popup), wenn die Unterhaltung noch offen im Eingang
+liegt; Aufgabentitel und Absender stehen nur im Text, `untrusted`. Ins Protokoll kommt nur die Liste:
+nie Konto, Mail-Id oder Message-ID.
+
+¹³ `open_app` bekommt das optionale Feld `target` (E8.7a): `mail:<adresse>:<Message-ID>` öffnet ein
+neues Mail-Fenster mit der Mail (`torroinbox --view mail --message=m:…`), `task:<uid>` die Aufgaben-App
+mit der Aufgabe (`torrotasks --task=<uid>`). Der Dienst schlägt das Ziel nach und baut die Argumente
+selbst (Argumentliste, keine Shell); ein Client braucht Leserecht auf Konto bzw. Liste (sonst
+`not-found`), `app` muss zur Art des Ziels passen (sonst `error`). Die Freigabe nennt Betreff bzw.
+Titel aus dem Cache, das Protokoll nur die App.
 
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine
