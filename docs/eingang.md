@@ -261,6 +261,12 @@ weder Mail noch Slack).
 | Gespräch ausblenden, Mail bleibt ungelesen (E3.11) | Menü „Hide from inbox“ › „This conversation“ | `inbox.hide_sender` mit `conversation` · Write | `inbox_hide_sender` |
 | Absender oder Domain ausblenden, alle Konten (E3.10, E3.11) | Menü „Hide from inbox“ (`m`, „…“ im Paneel), Steuerzentrale › Inbox › Rules | `inbox.hide_sender` mit `sender`/`domain` · Admin | `inbox_hide_sender` |
 | Rückgängig nach Done, Later, Hide (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
+| Verwerfen, nur Benachrichtigungen (E8.4) | ✕ oben rechts auf der Karte | vorhandenes `inbox.set_item_done` · Write | `inbox_set_item_done` |
+| Was sich an einem Eintrag stummschalten lässt (E8.6a) | Glocke auf der Karte öffnet das Menü | `inbox.list_mute_options` · Read | `inbox_list_mute_options` |
+| Stummschalten nach Merkmal, für eine Zeit (E8.6a) | Menü der Glocke, Steuerzentrale › Inbox › Rules | `inbox.mute_item` · Write nur für die Unterhaltung, sonst Admin | `inbox_mute_item` |
+| Aufgabe aus einer Mail in einem Ordner (E8.7a) | „Task“ im Mail-Fenster | `tasks.create_todo_from_mail` · Write (prüft auch Leserecht auf das Konto) | `tasks_create_todo_from_mail` |
+| Mail bzw. Aufgabe des Rückbezugs öffnen (E8.7a) | „Open mail“, „Open task“ | `apps.open_app` mit `target` · wie bisher | `apps_open_app` |
+| Statistik (E8.8a) | Zentrale › Insights | `inbox.get_stats` · Read | `inbox_get_stats` |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 
@@ -316,6 +322,9 @@ doppelt. Ist sie nicht angebunden, ist die Mail der Weg (gut für Jira).
 
 ## Die App
 
+> **Geändert am 2026-10-13:** Aus einer Liste werden drei Fenster, siehe [Drei Fenster](#drei-fenster-entschieden-2026-10-13).
+> Dieser Abschnitt beschreibt den Stand bis E3.11.
+
 Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenklassen von
 `torro_gui::shell`, Konten und Quellen als Gruppen (keine Kontenleiste, entschieden in
 [mail.md](mail.md)).
@@ -332,6 +341,135 @@ Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenk
 - **Schreiben** (Mail, längere Antworten) in einem eigenen Fenster, siehe [mail.md](mail.md).
 - **Fenster je Ausschnitt** mit `--source mail` oder `--lane info`, gemerkt in der
   Workspace-Vorlage. So bekommt, wer will, eine reine Mail-Kachel neben einer Agenten-Kachel.
+
+## Drei Fenster (entschieden 2026-10-13)
+
+Rückmeldung zur Übersicht aus E3.9: Sie sieht aus wie ein halbes Mailprogramm und ist zu tabellarisch. Wer viel
+auf einmal sehen will, braucht Luft und Knöpfe, die man sieht. Entwürfe zum Durchgehen:
+https://claude.ai/artifact/HLPBoyvbSbt4U2zofqgjxV. Aufgaben: [tasks/eingang.md](tasks/eingang.md), Schritt E8.
+
+`torroinbox` bekommt **drei Fensterarten über denselben Einträgen im Kern**. Was in einem Fenster erledigt,
+vertagt oder stummgeschaltet wird, gilt sofort in allen, denn der Zustand liegt nur im Dienst. Damit fällt der
+Einwand gegen Weg B weg („zwei Orte, muss synchron sein“). Weg A bleibt im Kern gültig: Mail ist eine Quelle
+im Eingang, nur die Oberfläche teilt sich auf.
+
+| Fenster | Frage | Inhalt |
+|---|---|---|
+| **Mail** | Was ist reingekommen? | Nur Mail. Je größer das Fenster, desto mehr Desktop-Client (Konten, Ordner, Leser); je kleiner, desto mehr nur das Neue als Karten |
+| **Benachrichtigungen** | Was melden meine Apps? | Alles außer Mail, immer mit dem Icon der App: Slack, WhatsApp, GitHub, Nextcloud, Kalender, ntfy, Skripte. Breit als Spalten je App oder nach Zeit. Jedes Fenster hat seinen eigenen Quellen-Filter (eins nur Slack, eins nur WhatsApp) |
+| **Inbox, die Zentrale** | Was muss ich entscheiden oder weitergeben? | Kein Lesen, sondern Handeln: Freigaben, wartende Agenten, Sortieren (→ Aufgabe, → Termin, Later, Erledigt). Daneben, was weitergegeben wurde und was wiederkommt. Dazu **Insights** |
+
+- **Ein Programm, drei Einträge.** Ein Code, ein Binary (`torroinbox --view mail|notifications|hub`), aber drei
+  Einträge im App-Umschalter, in `apps.list_apps` und in den Workspace-Vorlagen, jeder mit eigener Fensterklasse,
+  damit Kachel-Regeln sie auseinanderhalten. Die Filter `--source` und `--lane` aus E3.6 bleiben.
+- **Agenten und Freigaben** zeigt die Zentrale. Im Benachrichtigungen-Fenster lassen sie sich als Quelle zuschalten.
+- **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
+  App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
+
+### Zwei Dichten
+
+Jedes Fenster hat oben rechts **Compact | Comfortable**, gemerkt je Fenster und mit der Workspace-Vorlage
+wiederhergestellt (`--density`).
+
+- **Compact** ist der Stand bis E3.11: eine Zeile je Eintrag, Aktionen an der Zeile unter Maus oder Cursor. Gut
+  für kleine Kacheln.
+- **Comfortable** zeigt **Karten**: mehr Abstand, Vorschau über zwei bis drei Zeilen, Chips (Anhang, „Answer by
+  Fri“), und **alle Knöpfe immer sichtbar**, nicht erst beim Überfahren. Vorbild für Mail ist Canary Mail. Lesetext
+  im Leser 14/22 (neue Schriftstufe).
+- Mini und Leiste bleiben Anzeigen wie bisher.
+
+### Knöpfe je Eintrag
+
+| Eintrag | Sichtbar | Im Menü |
+|---|---|---|
+| Mail (Mail-Fenster) | Reply · Task · Done · Later | Forward, Event, Hide from inbox |
+| Einladung | Accept · Maybe · Decline · Later · Task | – |
+| Chat (Slack, WhatsApp, Talk) | ✕ · Reply · Task · Later · Glocke | Open in app |
+| GitHub, Nextcloud, ntfy, Skripte | ✕ · Open · Task · Later · Glocke | – |
+| Erinnerung aus Kalender oder Aufgaben | ✕ · Open · In 5 min | – |
+| Freigabe | Allow · Deny · Go to window | – |
+| Agent wartet oder ist fertig | Go to window · Later · Done | Mute agent |
+
+- **Verwerfen (✕)** gibt es auf jeder Benachrichtigung: weg, ohne etwas zu tun. Es wirkt wie Erledigt
+  (`inbox.set_item_done`, auch das Zurückwirken auf die Quelle), heißt nur anders. **Nicht im Mail-Fenster**: Mails
+  bleiben dort vollständig, sie werden erledigt oder ausgeblendet.
+- **Later** (vertagen) gibt es überall, **Task** auf jeder Nachricht und jeder Mail, auch in Ordnern.
+- **Freigaben** haben weder ✕ noch Later: Sie warten auf Ja oder Nein, das darf nicht versehentlich verschwinden.
+- **Go to window / Open** holt das Fenster nach vorn und aktiviert es: bei Agenten das Terminal der Sitzung (E2.4,
+  am Mac E8.9), bei App-Quellen das Fenster der App.
+
+### Stummschalten nach Merkmalen
+
+Die Glocke auf jeder Benachrichtigung öffnet ein Menü. Was darin steht, baut der **Kern** aus den Merkmalen des
+Eintrags (`inbox.list_mute_options`), damit Oberfläche und Agenten dieselben Möglichkeiten sehen. Danach wählt man
+**wie lange** (1 Stunde, bis morgen, immer) und **was passiert**:
+
+- **No popup:** Der Eintrag kommt, aber ohne Popup und Ton.
+- **Only Info:** Er kommt unter „Zur Info“ und zählt nicht.
+- **Hide:** Er wird gar nicht erst Eintrag (wie `mute_source` und `hide_sender` heute).
+
+Welche Merkmale eine Quelle mitbringt, und damit, wonach sich verlässlich stummschalten lässt:
+
+| Quelle | Merkmale |
+|---|---|
+| Mail | Konto, Absender, Domain, Liste (`List-Id`), Massenmail (`Precedence`, `Auto-Submitted`), Unterhaltung |
+| Slack (E7) | Arbeitsbereich, Kanal, Thread, Person, Art (Direktnachricht, Erwähnung, Kanal), Bot |
+| GitHub (E5) | Repo, Grund (`review_requested`, `mention`, `ci_activity` …), Art (Pull Request, Issue, Prüflauf), Ergebnis (bestanden, fehlgeschlagen) |
+| Nextcloud (E5) | App (Dateien, Talk, Kalender …), Person |
+| ntfy (E5) | Thema, Priorität, Tags |
+| Agenten | Agent, Projekt, Art (wartet, fertig) |
+| Mitgelesene Desktop-Benachrichtigungen (WhatsApp und andere) | **nur** App, Titel (Chat oder Person) und Text, also grober |
+
+Freigaben und Einträge der Suite lassen sich nie stummschalten (Sicherheitsregel 1). Alle Regeln stehen in der
+Steuerzentrale › Inbox › Rules mit „Remove“; zeitlich begrenzte laufen von selbst ab.
+
+### Aufgabe mit Rückbezug
+
+Eine Aufgabe aus einer Nachricht behält ihre Herkunft, auch in Nextcloud. Gespeichert wird in der Eigenschaft
+`X-TORRO-LINK` der Aufgabe (gibt es seit P.2), aber mit einer **festen Kennung der Quelle** statt der Kennung des
+Eintrags: Einträge löscht der Kern 30 Tage nach dem Erledigen, die Kennung der Quelle bleibt.
+
+| Quelle | Kennung in `X-TORRO-LINK` |
+|---|---|
+| Mail | `mail:<konto>:<Message-ID>`; die Message-ID bleibt, auch wenn die Mail den Ordner wechselt |
+| GitHub | `github:<owner>/<repo>#<nummer>` (gibt es schon) |
+| Slack (E7) | `slack:<arbeitsbereich>:<kanal>:<ts>` |
+| alles andere | `inbox:<eintrag>` wie bisher (hält, solange der Kern den Eintrag kennt) |
+
+Dazu schreibt der Kern immer eine **lesbare Zeile** in die Beschreibung („From mail: Anna Keller, “Angebot
+Dachsanierung”, 13 Oct“), damit die Herkunft auch in Nextcloud Tasks und anderen Programmen sichtbar ist. Ob andere
+Programme `X-TORRO-LINK` beim Bearbeiten stehen lassen, wird getestet (Nextcloud Tasks, Apple Erinnerungen);
+verliert eines die Eigenschaft, bleibt die Zeile.
+
+Weil der Kern beide Seiten kennt, kann er Bezug nehmen:
+
+- Die **Mail** zeigt ihre Aufgabe (Titel, Liste, fällig, offen/erledigt) mit „Open task“.
+- Die **Aufgabe** zeigt ihre Mail mit „Open mail“ und neue Antworten darauf, seit sie angelegt wurde.
+- Wird die Aufgabe **erledigt**, fragt die Zentrale: „You finished … Anna is waiting for an answer“ mit „Reply“
+  und „Mark mail done“.
+
+### Insights
+
+Die Zentrale zählt, damit Optimieren nicht beim Gefühl bleibt: je Tag, Quelle und Merkmal, was kam, was geöffnet,
+verworfen, erledigt, vertagt oder zur Aufgabe wurde, wie viele Popups es gab und wie lange es bis zum Erledigen
+dauerte. Ansicht für Woche, Monat und Quartal: Nachrichten je Tag nach Quelle, Stoßzeiten, und **„Where you could cut
+back“** mit einem fertigen Vorschlag je Zeile („Mute channel“, „Only failed checks“, „Hide sender“).
+
+- Gezählt wird **nur lokal** im Kern, in Tagessummen, höchstens 13 Monate. Keine Titel, keine Texte; Absender und
+  Kanäle nur als Merkmal einer Zeile. Nichts davon kommt ins Protokoll.
+- Agenten lesen die Zahlen über `inbox_get_stats` („Wo lohnt sich Aufräumen?“), aber nur für Quellen, die sie sehen
+  dürfen.
+
+### Später, vorgemerkt
+
+- **An einen Agenten geben:** ein Eintrag (Review, Kundenanfrage) geht als Auftrag an einen Agenten. Die Idee ist
+  gut, wird aber eigens ausgearbeitet: welcher Agent, wie er startet, welche Rechte er dafür bekommt, wie das
+  Ergebnis zurückkommt. Eigener Request, nie ohne Freigabe.
+- **Fokus-Profile** wie der Fokus bei Apple: Profile („Work“, „Deep work“, „Evening“), wann sie angehen (Zeit,
+  Kalendertermin, Workspace-Vorlage, von Hand), was durchkommt, was bis zum Ende wartet, eine Sammelmeldung danach.
+  Erweitert „Ruhe“ (unten). Freigaben, wartende Agenten und „Server down“ kommen in jedem Profil durch.
+- **Slack und WhatsApp** als Quellen: Slack mit E7, WhatsApp über das Mitlesen von Desktop-Benachrichtigungen (unter
+  Linux, unter macOS gibt es keinen offiziellen Weg) oder Beeper.
 
 ## Verhältnis zu anderen Plänen
 
@@ -356,6 +494,7 @@ Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenk
 | **E5 Nextcloud, GitHub, ntfy** | drei Quellen ohne Firmenfreigabe | E1 |
 | **E6 Ruhe und Ordnung** | Screener, Lernen, Fokus mit dem Kalender, Sammelmeldung, Zusammenführen über Quellen | E4 |
 | **E7 Slack** | Assistent „eigene Slack-App“, Socket Mode | E1 |
+| **E8 Drei Fenster** | Mail, Benachrichtigungen, Zentrale; zwei Dichten; Verwerfen, Stummschalten nach Merkmal, Aufgabe mit Rückbezug, Insights, „Go to window“ am Mac | E3, E4 |
 | später | Mitlesen von Desktop-Benachrichtigungen (Linux), Beeper, GitLab/Linear, Teams, Zusammenfassungen durch ein Modell, Tagesplan | |
 
 E1 bis E3 brauchen weder Mail noch eine fremde Anmeldung und machen schon den Agenten-Alltag
@@ -377,6 +516,19 @@ dazukommt.
 | 9 | KI-Sortierung und Zusammenfassung | **Ja, aber immer optional.** Braucht KI-Konten in der Steuerzentrale, auch lokale Modelle, Zuordnung je Funktion mit Modell und Aufwand. Eigenes Konzept: [ki.md](ki.md) |
 | 10 | Messenger | **Im zweiten Schritt.** Gute Idee, aber eher privat als geschäftlich |
 | 11 | Erster Schritt | **E1–E3 zuerst**, ohne Mail. Aufgaben: [tasks/eingang.md](tasks/eingang.md). Start erst, wenn die Konten-Aufgaben M7.1/M7.2 fertig sind (gleiche Dateien) |
+
+### Entscheidungen (2026-10-13)
+
+| # | Frage | Entscheidung |
+|---|---|---|
+| 12 | Aufteilung | **Drei Fenster:** Mail, Benachrichtigungen, Inbox als Zentrale, aus einem Programm (siehe [Drei Fenster](#drei-fenster-entschieden-2026-10-13)). Ändert Weg A (Nr. 2) nur in der Oberfläche |
+| 13 | Dichte | **Zwei Ansichten je Fenster:** kompakt wie bisher und luftig mit Karten und immer sichtbaren Knöpfen |
+| 14 | Verwerfen | **Auf jeder Benachrichtigung**, nicht im Mail-Fenster, nicht bei Freigaben |
+| 15 | Aufgabe | **Aus jeder Nachricht und jeder Mail**, der Bezug bleibt erhalten, auch in Nextcloud |
+| 16 | Stummschalten | **Nach Quelle, Absender, Unterhaltung, Kanal oder Art**, für eine Zeit oder immer |
+| 17 | Seitenleiste | **Keine Links zu anderen Apps** unten in der Seitenleiste |
+| 18 | Insights | **Statistik in der Zentrale**, um gezielt zu optimieren |
+| 19 | Später | **An einen Agenten geben** und **Fokus-Profile** werden eigens ausgearbeitet |
 
 ### Belege: was die dritte Spur wäre
 

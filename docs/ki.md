@@ -20,8 +20,9 @@ benutzt nie den Schlüssel eines Agenten.
 
 1. **Immer optional.** Ohne KI-Konto fehlen die KI-Funktionen einfach; kein Hinweis-Banner, kein
    „Upgrade“. Jede Funktion arbeitet vorher schon vollständig ohne KI.
-2. **Lokal zuerst.** Die Suite ist Self-Hosting-First wie bei Nextcloud. Lokale Modelle sind
-   gleichberechtigt und stehen im Assistenten oben.
+2. **Open First: lokal und offen zuerst.** Die Suite ist Self-Hosting-First wie bei Nextcloud. Lokale Modelle sind
+   gleichberechtigt und stehen im Assistenten oben, danach offene Modelle über OpenRouter, dann
+   geschlossene Anbieter. Der Chat-Assistent ([assistent.md](assistent.md)) folgt derselben Reihenfolge.
 3. **Je Funktion das passende Modell.** Spur vorschlagen ist eine kleine Aufgabe (kleines, schnelles,
    lokales Modell), eine Tageszusammenfassung eine größere. Darum wird **je Funktion** ein Konto, ein
    Modell und ein Aufwand gewählt.
@@ -39,6 +40,7 @@ benutzt nie den Schlüssel eines Agenten.
 |---|---|---|
 | **Lokal** | Ollama, LM Studio, llama.cpp-Server, vLLM, LocalAI | OpenAI-kompatible Schnittstelle (`/v1/chat/completions`, `/v1/models`); Adresse, meist ohne Schlüssel |
 | **Selbst gehostet** | eigener Server mit einem der obigen; Nextcloud Assistant (TaskProcessing-API, z. B. mit lokalem LLM auf dem Nextcloud-Server) | OpenAI-kompatibel bzw. über das vorhandene Nextcloud-Konto, ohne neuen Schlüssel |
+| **Offene Modelle in der Cloud** | **OpenRouter** (Qwen, Llama, Mistral, DeepSeek … über einen Schlüssel; Filter „open weights“) | OpenAI-kompatibel (`https://openrouter.ai/api/v1`); API-Schlüssel |
 | **Anbieter** | Anthropic, OpenAI, Mistral, Google | eigene Schnittstelle (Anthropic) bzw. OpenAI-kompatibel; API-Schlüssel |
 
 Zwei Protokolle decken fast alles ab: **OpenAI-kompatibel** und **Anthropic**. Weitere kommen als
