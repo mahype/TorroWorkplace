@@ -273,14 +273,15 @@ impl Edit {
     }
 
     /// The hint once the edit is done, with its undo for `before` (the entry as it was), at `now`:
-    /// "Marked as done", "Snoozed until 18:30", "Moved to Info" … A remembered lane has no undo.
+    /// "Done", "Later until 18:30", "Moved to Info" … – the words of the buttons (task E8.1b). A
+    /// remembered lane has no undo.
     pub fn after(&self, before: &Item, now: DateTime<Utc>) -> After {
         let text = match self {
-            Edit::Done { done: true, .. } => tr("Marked as done").to_owned(),
+            Edit::Done { done: true, .. } => tr("Done").to_owned(),
             Edit::Done { done: false, .. } => tr("Reopened").to_owned(),
             Edit::Dismiss { .. } => tr("Dismissed").to_owned(),
             Edit::Snooze { until: Some(until), .. } => {
-                trf("Snoozed until {time}", &[("time", &list::wake_text(*until, now))])
+                trf("Later until {time}", &[("time", &list::wake_text(*until, now))])
             }
             Edit::Snooze { until: None, .. } => tr("No longer snoozed").to_owned(),
             Edit::Lane { lane, remember: false, .. } => trf("Moved to {lane}", &[("lane", &lane_name(*lane))]),
@@ -519,12 +520,13 @@ pub enum Sent {
     /// Its undo: these entries opened again.
     Reopen(Vec<String>),
     /// `tasks.create_todo_from_mail` (task E8.7b): account, message, list, title (`None`: the
-    /// subject).
+    /// subject) and due day (task E8.1b).
     MailTask {
         account: String,
         id: String,
         list: TaskList,
         title: Option<String>,
+        due: Option<NaiveDate>,
     },
     /// `apps.open_app` with a target (task E8.7b): the app and `task:<uid>` or `mail:<…>`.
     Target(String, String),
@@ -1369,7 +1371,7 @@ pub enum Message {
     PickDay(NaiveDate),
     /// The picker's time, an index into [`PICK_HOURS`].
     PickHour(usize),
-    /// The picker's "Snooze".
+    /// The picker's "Later".
     PickConfirm,
     /// The source's answer to muting or unmuting, with the hint to show (`None` after an undo).
     Muted(Result<(), String>, Option<Hint>),
@@ -3098,8 +3100,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     }
 
     /// Opens the dialog that makes a task of the folder's message `id` (task E8.7b): its subject as
-    /// title, the lists asked for anew, no due day ([`MailSource::create_todo_from_mail`] takes none).
-    /// A message with an entry goes through the entry, as `t` on it in "For me" does.
+    /// title, the lists asked for anew, no due day yet – the dialog asks for one as for an entry
+    /// (task E8.1b). A message with an entry goes through the entry, as `t` on it in "For me" does.
     fn ask_mail_task(&mut self, id: &str) -> Task<Message> {
         if let Some(entry) = self.entry_of(id) {
             return self.ask_task(&entry);
@@ -3166,11 +3168,13 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     }
 
     /// "Create task" for a folder's message (task E8.7b): sends `tasks.create_todo_from_mail` with
-    /// the dialog's list and title (none when blank: the core takes the subject) and closes the
-    /// dialog. The mail stays as it is; the reader shows the task's card once the answer is in.
+    /// the dialog's list, title (none when blank: the core takes the subject) and due day (task
+    /// E8.1b) and closes the dialog. The mail stays as it is; the reader shows the task's card once
+    /// the answer is in.
     fn create_mail_task(&mut self, message: MessageSummary) -> Task<Message> {
         let Some(list) = self.task.list.clone() else { return Task::none() };
         let title = Some(self.task.title.trim().to_owned()).filter(|title| !title.is_empty());
+        let due = self.task.due.day(self.now);
         self.last_list = Some(list.id.clone());
         self.close_menus();
         self.task_mail = None;
@@ -3181,11 +3185,14 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             id: id.clone(),
             list: list.clone(),
             title: title.clone(),
+            due,
         });
         let inbox = self.inbox.clone();
         let asked = id.clone();
         Task::perform(
-            async move { inbox.create_todo_from_mail(account, asked, list, title).await.map_err(|err| err.to_string()) },
+            async move {
+                inbox.create_todo_from_mail(account, asked, list, title, due).await.map_err(|err| err.to_string())
+            },
             move |result| Message::MailTaskCreated(id.clone(), result),
         )
     }
@@ -3679,7 +3686,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Some(widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu))
             }
             Some(Menu::Snooze) => {
-                Some(widgets::floating(snooze_at, below, self.choice_menu(tr("Snooze until")), Message::CloseMenu))
+                Some(widgets::floating(snooze_at, below, self.choice_menu(tr("Later until")), Message::CloseMenu))
             }
             Some(Menu::Lane) => {
                 let title = self.subject.as_ref().map_or_else(String::new, |item| {
@@ -4272,7 +4279,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     }
 
     /// The picker of "Pick…" as a floating card: the chosen moment as title ("Wed, 14 Oct · 09:00"),
-    /// the day with previous / next, the time of day as segments, and "Snooze" at the right (off
+    /// the day with previous / next, the time of day as segments, and "Later" at the right (off
     /// for a time already past). Iced has no date picker and the suite none of its own yet, so it
     /// steps through days instead of showing a month; ←/→ and ↑/↓ do the same from the keyboard.
     fn picker(&self) -> Element<'_, Message> {
@@ -4305,9 +4312,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         // At the right, where the action of a dialog is.
         let actions = vec![
             iced::widget::space::horizontal().into(),
-            widgets::text_button(Some(Icon::Clock), tr("Snooze"), style::button::primary, snooze),
+            widgets::text_button(Some(Icon::Clock), tr("Later"), style::button::primary, snooze),
         ];
-        widgets::popover(widgets::section_title(tr("Snooze until")), title, rows, actions)
+        widgets::popover(widgets::section_title(tr("Later until")), title, rows, actions)
     }
 
     /// The dialog of "Make task" as a floating card at the entry (the shape of `widgets::popover`,
@@ -4333,12 +4340,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Ok(lists)) if lists.is_empty() => widgets::prop_placeholder(tr("No task lists yet")),
             Some(Ok(lists)) => choice(lists.clone(), self.task.list.clone(), Message::TaskList),
         };
-        let mut rows = column![widgets::prop_line(tr("List"), Some(Mark::Icon(Icon::ListTodo)), list, None)];
-        // A folder's message (task E8.7b) gets no due day: its request cannot carry one from here.
-        if self.task_mail.is_none() {
-            let due = choice(Due::ALL.to_vec(), Some(self.task.due), Message::TaskDue);
-            rows = rows.push(widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), due, None));
-        }
+        // A folder's message asks for its due day as an entry does (task E8.1b).
+        let due = choice(Due::ALL.to_vec(), Some(self.task.due), Message::TaskDue);
+        let rows = column![
+            widgets::prop_line(tr("List"), Some(Mark::Icon(Icon::ListTodo)), list, None),
+            widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), due, None),
+        ];
         let create = self.task.list.is_some().then_some(Message::TaskConfirm);
         let actions = row![
             iced::widget::space::horizontal(),
@@ -4412,7 +4419,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Open::Undo) => {
                 if let Some(item) = self.items.first() {
                     self.hint = Some(Hint {
-                        text: tr("Marked as done").to_owned(),
+                        text: tr("Done").to_owned(),
                         undo: Some(Undo::Edit(Edit::Done { id: item.id.clone(), done: false })),
                         shown: Instant::now(),
                     });
@@ -5574,12 +5581,12 @@ mod tests {
         let _ = press(&mut app, Key::E);
         let done = Edit::Done { id: "demo-1".into(), done: true };
         let reopen = Edit::Done { id: "demo-1".into(), done: false };
-        let after = After { text: tr("Marked as done").into(), undo: Some(reopen.clone()) };
+        let after = After { text: tr("Done").into(), undo: Some(reopen.clone()) };
         assert_eq!(app.sent.last(), Some(&Sent::Edit(done, Some(after))));
         deliver(&mut app);
         assert!(!ids(&app).contains(&"demo-1"));
         assert_eq!(cursor(&app), Some("demo-3"), "on to the next row");
-        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Marked as done")));
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Done")));
         let _ = press(&mut app, Key::U);
         assert_eq!(app.sent.last(), Some(&Sent::Edit(reopen, None)));
         assert!(app.hint.is_none(), "the hint goes with the undo");
@@ -5622,7 +5629,7 @@ mod tests {
         let _ = press(&mut app, Key::Digit(2));
         let snooze = Edit::Snooze { id: "demo-2".into(), until: Some(tomorrow) };
         let back = Edit::Snooze { id: "demo-2".into(), until: None };
-        let text = trf("Snoozed until {time}", &[("time", &list::wake_text(tomorrow, app.now))]);
+        let text = trf("Later until {time}", &[("time", &list::wake_text(tomorrow, app.now))]);
         assert_eq!(app.sent.last(), Some(&Sent::Edit(snooze, Some(After { text, undo: Some(back.clone()) }))));
         assert!(app.menu.is_none(), "the menu closes");
         deliver(&mut app);
@@ -7257,6 +7264,24 @@ mod tests {
         assert_eq!(app.sent.len(), before);
     }
 
+    /// Task E8.1b: the notifications window showing the suite asks after a finished task too, with
+    /// the hub's Reply · Mark mail done · Not now, and closes the mail's entry it does not show.
+    #[test]
+    fn the_notifications_window_asks_after_a_finished_task_too() {
+        // Two sources, so the window asks for every entry: the demo's question is `uptime`'s notice
+        // until `demo_task` makes it the suite's.
+        let mut app = notifications_window(&["--source", "suite", "--source", "script:uptime"]);
+        let question = app.find("demo-9").cloned().expect("the suite's question");
+        assert!(hub::is_follow_up(&question));
+        let words: Vec<String> = notifications::card_buttons(&question, false).into_iter().map(|b| b.label).collect();
+        assert_eq!(words, [tr("Reply"), tr("Mark mail done"), tr("Not now")]);
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::MarkMailDone("demo-9".into()));
+        let ids = vec!["demo-mail-2".to_owned(), "demo-9".to_owned()];
+        assert_eq!(app.sent.last(), Some(&Sent::MailDone(ids)), "the mail's entry, though this window shows no mail");
+    }
+
     #[test]
     fn handed_off_lists_the_open_tasks_made_of_entries() {
         let app = overview_at(&[]);
@@ -7284,21 +7309,30 @@ mod tests {
         let task = app.reading().and_then(|reading| reading.task).map(|task| task.uid.clone());
         assert_eq!(task.as_deref(), Some("quarterly-report@torro-demo"));
         draw_everywhere(&mut app);
-        // A folder's message: `t` opens the dialog without a due day, "Create task" sends
-        // `tasks.create_todo_from_mail`, and the reader shows the task.
+        // A folder's message: `t` opens the dialog, which asks for a due day as for an entry (task
+        // E8.1b); "Create task" sends `tasks.create_todo_from_mail` with it, and the reader shows the
+        // task with its day.
         let mut app = in_folder("f:work-archive");
         let _ = press(&mut app, Key::Down);
         let id = cursor(&app).map(str::to_owned).expect("a message");
         let _ = press(&mut app, Key::T);
         assert_eq!((app.menu, app.task_mail.as_ref().map(|m| m.id.clone())), (Some(Menu::Task), Some(id.clone())));
+        assert_eq!(app.task.due, Due::None, "no due day until one is chosen");
         deliver_lists(&mut app);
         let _ = app.view();
+        let _ = app.update(Message::TaskDue(Due::Tomorrow));
         let _ = app.update(Message::TaskConfirm);
-        let Some(Sent::MailTask { account, id: sent, list, title }) = app.sent.pop() else { panic!("no mail task") };
+        let Some(Sent::MailTask { account, id: sent, list, title, due }) = app.sent.pop() else {
+            panic!("no mail task")
+        };
         assert_eq!((account.as_str(), sent.as_str()), (torro_inbox::demo::MAIL_ACCOUNTS[0], id.as_str()));
-        let made = block_on(app.inbox.create_todo_from_mail(account, sent, list, title)).map_err(|e| e.to_string());
+        let tomorrow = local_today(app.now) + Days::new(1);
+        assert_eq!(due, Some(tomorrow), "the day chosen");
+        let made =
+            block_on(app.inbox.create_todo_from_mail(account, sent, list, title, due)).map_err(|e| e.to_string());
         let _ = app.update(Message::MailTaskCreated(id.clone(), made));
-        assert!(app.task_of(&id).is_some(), "the reader shows the task made");
+        let task = app.task_of(&id).expect("the reader shows the task made");
+        assert_eq!(task.due, Some(torro_inbox::item::TaskDue::Date(tomorrow)));
         let _ = app.update(Message::Mail(MailAction::Read(true), id));
         draw_everywhere(&mut app);
     }

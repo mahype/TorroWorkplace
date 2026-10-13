@@ -740,7 +740,15 @@ E8.9   unabhängig (torro-wm, core.rs)
   Sichtprüfung je Fensterart in Breit und Schmal.
 
 ### E8.1b Nacharbeit: Fensterarten überall erkennen, Reste aus E8.5 und E8.7b
-- [ ] erledigt
+- [x] erledigt (`Link::App` über `AppId::find` beim Melden, Öffnen und im Paneel; Steuerzentrale › Apps wählt
+  Name und Beschreibung je Fensterklasse; Freigaben ohne „Later“ auch in `list::actions`; Toast „Done“ und
+  „Later until …“, Menü und Auswahl „Later until“, Knopf „Later“, Paneel-Status „Later until …“;
+  `InboxClient::create_todo_from_mail` mit Fälligkeit (`MailSource::create_todo_from_mail` bekam `due`), der Dialog
+  fragt sie auch für Ordner-Mails; Benachrichtigungen-Fenster: Karte und Zeile der Rückfrage mit Reply · Mark mail
+  done · Not now über `hub::acts`, ohne ✕. `de.rs` nicht angefasst, Übersetzungen im Bericht. **Offen:** Reply dort
+  öffnet das Mail-Fenster (das Fenster hält den Mail-Eintrag nicht), im Demo nur ein Hinweis; „No longer snoozed“,
+  „Unsnooze“, „Nothing snoozed.“ sagen noch „snooze“. **Sichtprüfung nicht möglich:** Bildschirm gesperrt, die App bekommt
+  dort kein Fenster)
 - **Modell:** Opus · **Braucht:** E8.1, E8.9, E8.5, E8.7b · **Dateien:** `crates/torroworkplace/src/inbox.rs`,
   `crates/torroinbox/src/{detail,list,app,mail,notifications}.rs`, `crates/torro-ipc/src/inbox.rs`,
   `crates/torroworkplace/src/ui/apps.rs`, `crates/torro-core/src/i18n/de.rs`

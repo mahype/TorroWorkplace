@@ -319,7 +319,8 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
 ///
 /// - "Task" (`t`) and "Done" (`e`, "Reopen" for a done entry) – not for an approval, which closes
 ///   once it is decided and becomes no task;
-/// - "Later" (`s`) for every entry that is not done;
+/// - "Later" (`s`) for every entry that is not done – not for an approval either (task E8.1b, as
+///   the hub's cards): it waits for yes or no and must not vanish by accident;
 /// - "Hide" (`m`) when the menu "Hide from inbox" has entries for it (`hidable`, from
 ///   `App::hide_choices`: never for an approval, and the suite is never muted).
 pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
@@ -332,7 +333,7 @@ pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
         let (mark, word) = if done { (Icon::Inbox, tr("Reopen")) } else { (Icon::Check, tr("Done")) };
         actions.push(RowAction::new(mark, word, "E", act(Command::Done)));
     }
-    if !done {
+    if !done && !approval {
         actions.push(RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
     }
     if hidable {
@@ -1209,7 +1210,7 @@ mod tests {
         let by_id = |id: &str| demo::sample(now()).into_iter().find(|i| i.id == id).expect("in the sample");
         let all = [tr("Task"), tr("Done"), tr("Later"), tr("Hide")];
         assert_eq!(labels(&actions(&by_id("demo-1"), true)), all, "a waiting agent");
-        assert_eq!(labels(&actions(&by_id("demo-3"), false)), [tr("Later")], "an approval: no task, no done, no hide");
+        assert!(actions(&by_id("demo-3"), false).is_empty(), "an approval: no task, no done, no later, no hide");
         assert_eq!(labels(&actions(&by_id("demo-5"), true)), all, "the suite's account problem: its own done");
         assert_eq!(labels(&actions(&by_id("demo-11"), true)), [tr("Task"), tr("Reopen"), tr("Hide")], "done: no later");
         let keys: Vec<&str> = actions(&by_id("demo-1"), true).iter().map(|action| action.key).collect();

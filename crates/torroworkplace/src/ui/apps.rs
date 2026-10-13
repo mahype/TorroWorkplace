@@ -72,7 +72,7 @@ fn app_row<'a>(app: &'a AppInfo) -> Element<'a, Message> {
     .spacing(space::s())
     .align_y(Alignment::Center);
     let mut lines = column![container(name).width(Fill).clip(true)];
-    let description = app_description(&app.binary);
+    let description = app_description(&app.window_class);
     if !description.is_empty() {
         lines = lines.push(one_line(typo::text(typo::meta(), description).style(theme::text_2)));
     }
@@ -90,20 +90,29 @@ fn open_message(app: &AppInfo) -> Option<Message> {
     app.installed.then(|| Message::Open(app.window_class.clone()))
 }
 
-/// The name shown for `app`: translated for the apps the suite ships, else the name the core reports.
+/// The name shown for `app`: translated for the windows the suite ships, else the name the core
+/// reports. Chosen by window class, not by binary (task E8.1b): the inbox's three windows share
+/// `torroinbox` and each has its own name, the one the app switcher shows.
 fn app_name(app: &AppInfo) -> String {
-    match app.binary.as_str() {
-        "torrocalendar" => tr("Calendar").to_string(),
-        "torrotasks" => tr("Tasks").to_string(),
+    match app.window_class.as_str() {
+        "torro-calendar" => tr("Calendar").to_string(),
+        "torro-tasks" => tr("Tasks").to_string(),
+        "torro-inbox" => tr("Inbox").to_string(),
+        "torro-inbox-mail" => tr("Mail").to_string(),
+        "torro-inbox-notifications" => tr("Notifications").to_string(),
         _ => app.name.clone(),
     }
 }
 
-/// The one-line description; empty for an app without one, which then gets no line.
-fn app_description(binary: &str) -> &'static str {
-    match binary {
-        "torrocalendar" => tr("Day, week, month and agenda"),
-        "torrotasks" => tr("Lists, due dates and subtasks"),
+/// The one-line description of the window with the class `window_class`; empty for one without,
+/// which then gets no line.
+fn app_description(window_class: &str) -> &'static str {
+    match window_class {
+        "torro-calendar" => tr("Day, week, month and agenda"),
+        "torro-tasks" => tr("Lists, due dates and subtasks"),
+        "torro-inbox" => tr("Decide, hand on and see where it all comes from"),
+        "torro-inbox-mail" => tr("Your mail, from a quick look to a full client"),
+        "torro-inbox-notifications" => tr("What your apps report, one column per app"),
         _ => "",
     }
 }
@@ -113,7 +122,17 @@ mod tests {
     use super::*;
 
     fn app(binary: &str, name: &str, installed: bool) -> AppInfo {
-        AppInfo { binary: binary.into(), name: name.into(), window_class: format!("torro-{binary}"), installed }
+        let window_class = match binary {
+            "torrocalendar" => "torro-calendar".to_string(),
+            "torrotasks" => "torro-tasks".to_string(),
+            other => format!("torro-{other}"),
+        };
+        AppInfo { binary: binary.into(), name: name.into(), window_class, installed }
+    }
+
+    /// One of the inbox's windows as the core lists it: the binary they share, its own class.
+    fn inbox(window_class: &str, name: &str) -> AppInfo {
+        AppInfo { binary: "torroinbox".into(), name: name.into(), window_class: window_class.into(), installed: true }
     }
 
     #[test]
@@ -148,15 +167,42 @@ mod tests {
         assert_eq!(app_name(&app("torrocalendar", "Torro Calendar", true)), tr("Calendar"));
         assert_eq!(app_name(&app("torrotasks", "Torro Tasks", true)), tr("Tasks"));
         assert_eq!(app_name(&app("torroother", "Other", true)), "Other");
-        assert_eq!(app_description("torroother"), "");
+        assert_eq!(app_description("torro-torroother"), "");
+    }
+
+    /// Task E8.1b: the inbox's three windows share a binary, yet each row has its own name and line.
+    #[test]
+    fn the_inbox_windows_have_their_own_name_and_description() {
+        let rows = [
+            inbox("torro-inbox-mail", "Torro Inbox Mail"),
+            inbox("torro-inbox-notifications", "Torro Inbox Notifications"),
+            inbox("torro-inbox", "Torro Inbox"),
+        ];
+        let names: Vec<String> = rows.iter().map(app_name).collect();
+        assert_eq!(names, [tr("Mail"), tr("Notifications"), tr("Inbox")]);
+        let lines: Vec<&str> = rows.iter().map(|row| app_description(&row.window_class)).collect();
+        assert_eq!(
+            lines,
+            [
+                tr("Your mail, from a quick look to a full client"),
+                tr("What your apps report, one column per app"),
+                tr("Decide, hand on and see where it all comes from"),
+            ]
+        );
+        let loaded = Data { apps: Some(rows.to_vec()), ..Data::default() };
+        let state = State::default();
+        let _page: Element<'_, Message> = view(&state, &loaded);
     }
 
     #[test]
     fn the_window_class_is_named_and_the_description_stays_apart() {
         let calendar = app("torrocalendar", "Torro Calendar", true);
-        assert_eq!(app_class(&calendar), trf("Window class: {class}", &[("class", &"torro-torrocalendar")]));
-        assert_eq!(app_description(&calendar.binary), tr("Day, week, month and agenda"));
-        assert!(!app_description(&calendar.binary).contains("torro-"), "the class is not part of the description");
+        assert_eq!(app_class(&calendar), trf("Window class: {class}", &[("class", &"torro-calendar")]));
+        assert_eq!(app_description(&calendar.window_class), tr("Day, week, month and agenda"));
+        assert!(
+            !app_description(&calendar.window_class).contains("torro-"),
+            "the class is not part of the description"
+        );
     }
 
     #[test]

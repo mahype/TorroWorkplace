@@ -1653,8 +1653,9 @@ fn opening(item: &Item) -> Result<Opening, Failure> {
     }
     match &item.link {
         Some(Link::Url { url }) => Ok(Opening::Url(url.clone())),
-        Some(Link::App { app }) => match AppId::ALL.iter().find(|known| known.binary == app) {
-            Some(app) => Ok(Opening::App(*app)),
+        // A binary or a window class (task E8.1b): `torro-inbox-mail` opens the inbox's mail window.
+        Some(Link::App { app }) => match AppId::find(app) {
+            Some(app) => Ok(Opening::App(app)),
             None => refused("no app of the suite"),
         },
         Some(Link::Window) => match item.agent.as_ref().map(|agent| agent.pids.clone()) {
@@ -1676,9 +1677,10 @@ fn cap_bytes(text: &str, max: usize) -> String {
     text[..end].to_string()
 }
 
-/// `app` is the binary of an app of the suite ([`AppId::ALL`]), so a link may open it.
+/// `app` names an app of the suite – its binary or the window class of one of its windows
+/// ([`AppId::find`], task E8.1b) –, so a link may open it. Anything else stays refused (rule 6).
 fn is_app_of_the_suite(app: &str) -> bool {
-    AppId::ALL.iter().any(|known| known.binary == app)
+    AppId::find(app).is_some()
 }
 
 /// The title the core writes itself for an agent's state (`agent_waiting`, `agent_done`), in the
@@ -4135,6 +4137,8 @@ pub(crate) mod tests {
         let app = |app: &str| Link::App { app: app.into() };
         assert_eq!(link_of(app("torrotasks")), Some(app("torrotasks")));
         assert_eq!(link_of(app("torroworkplace")), Some(app("torroworkplace")));
+        assert_eq!(link_of(app("torro-inbox-notifications")), Some(app("torro-inbox-notifications")));
+        assert_eq!(link_of(app("torro-compose")), None, "no window class of the suite");
         assert_eq!(link_of(app("rm -rf")), None);
         assert_eq!(link_of(Link::Window), None, "no window from a non-hook");
     }
@@ -4204,9 +4208,16 @@ pub(crate) mod tests {
         assert_eq!(inbox.opening(&app, None, at(9, 6)), Ok(Opening::App(AppId::TASKS)));
         let file = Item { link: Some(Link::Url { url: "file:///etc/passwd".into() }), ..stored.clone() };
         assert_eq!(code(&refused(&file)), "unsupported", "file:");
-        let unknown_app = Item { link: Some(Link::App { app: "rm".into() }), ..stored };
+        let unknown_app = Item { link: Some(Link::App { app: "rm".into() }), ..stored.clone() };
         assert_eq!(code(&refused(&unknown_app)), "unsupported", "no app of the suite");
         assert_eq!(code(&inbox.opening("nope", None, at(9, 7)).expect_err("unknown")), "not-found");
+
+        // Task E8.1b: a window class names one window of an app with several.
+        let mail = posted(inbox.handle(post(Link::App { app: "torro-inbox-mail".into() }), Some(&script()), at(9, 8)));
+        assert_eq!(get(&mail).link, Some(Link::App { app: "torro-inbox-mail".into() }), "kept when posted");
+        assert_eq!(inbox.opening(&mail, None, at(9, 9)), Ok(Opening::App(AppId::INBOX_MAIL)));
+        let unknown_class = Item { link: Some(Link::App { app: "torro-inbox-secret".into() }), ..stored };
+        assert_eq!(code(&refused(&unknown_class)), "unsupported", "an unknown window class");
     }
 
     #[test]

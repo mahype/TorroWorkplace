@@ -21,6 +21,9 @@
 //!   Later · Done. Buttons carry their words while they fit, else icons with the word as tooltip.
 //! - **Row** (compact density, `list::notice_content`): the row of every view with its action bar
 //!   ([`row_actions`]): Open, Task, Later, Mute, ✕.
+//! - **The question after a finished task** (task E8.1b): the suite's "You finished a task from a
+//!   mail" (`hub::is_follow_up`), shown when the window shows the suite, has the hub's buttons –
+//!   Reply · Mark mail done · Not now – on its card and in its row, and no ✕ beside "Not now".
 //!
 //! Everything a button does goes through the app (`Message::Act`, `Message::OpenRow`,
 //! `Message::Decide`), so it does what its key does at the entry: `x` dismisses, `m` mutes the
@@ -45,6 +48,7 @@ use torro_inbox::{Action, Item, Kind, Lane, Link, SourceInfo, SourceKind, Source
 
 use crate::app::{self, Message, View};
 use crate::detail;
+use crate::hub::{self, Act};
 use crate::keys::Command;
 use crate::list::{self, Rows};
 use crate::overview;
@@ -420,9 +424,20 @@ pub fn span(items: &[Item], board: Board, view: &View, density: Density, id: &st
 }
 
 /// Whether `item` has the ✕ (dismiss): every notification that is not done – not an approval, which
-/// waits for yes or no, and never mail, which is done or hidden in the mail window.
+/// waits for yes or no, never mail, which is done or hidden in the mail window, and not the suite's
+/// question after a finished task, whose "Not now" closes it ([`asks_to_follow_up`]).
 pub fn dismissable(item: &Item) -> bool {
-    !matches!(item.state, State::Done { .. }) && !detail::is_approval(item) && item.source.kind != SourceKind::Mail
+    !matches!(item.state, State::Done { .. })
+        && !detail::is_approval(item)
+        && item.source.kind != SourceKind::Mail
+        && !asks_to_follow_up(item)
+}
+
+/// Whether `item` is the suite's open "You finished a task from a mail" (task E8.1b,
+/// [`hub::is_follow_up`]): its card and row offer what the hub offers, Reply · Mark mail done · Not
+/// now ([`hub::acts`]).
+fn asks_to_follow_up(item: &Item) -> bool {
+    hub::is_follow_up(item) && item.state.is_open()
 }
 
 /// What "Dismiss all" dismisses of `items` (the entries shown): every one with the ✕
@@ -500,6 +515,8 @@ fn is_agent(item: &Item) -> bool {
 ///
 /// - an approval: Allow · Deny (disabled while `deciding` and once it is closed), Go to window when
 ///   its agent's window can be opened – no Task, no Later;
+/// - the suite's "You finished a task from a mail": Reply · Mark mail done · Not now, as in the hub
+///   ([`asks_to_follow_up`], task E8.1b);
 /// - a done entry: Reopen;
 /// - a coding agent: Go to window (when it can be opened) · Later · Done;
 /// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · Later.
@@ -509,6 +526,10 @@ pub fn card_buttons(item: &Item, deciding: bool) -> Vec<CardButton> {
     let act = |command| Some(Message::Act(item.id.clone(), command));
     let open = || Some(Message::OpenRow(item.id.clone()));
     let window = || CardButton::new(Icon::AppWindow, tr("Go to window"), open());
+    if asks_to_follow_up(item) {
+        let button = |act: Act| CardButton::new(act.icon(), act.label(), act.message(item, deciding));
+        return hub::acts(item).into_iter().map(button).collect();
+    }
     if detail::is_approval(item) {
         let decidable = item.state.is_open() && !deciding;
         let mut buttons: Vec<CardButton> = item
@@ -548,6 +569,23 @@ pub fn card_buttons(item: &Item, deciding: bool) -> Vec<CardButton> {
     buttons
 }
 
+/// The action bar of the suite's question after a finished task ([`asks_to_follow_up`]): the hub's
+/// buttons ([`hub::acts`]) with the keys that do the same at the entry – `r` replies, `e` is "Not
+/// now"; "Mark mail done" has no key of its own.
+fn follow_up_actions<'a>(item: &Item) -> Vec<RowAction<'a, Message>> {
+    hub::acts(item)
+        .into_iter()
+        .filter_map(|act| {
+            let key = match act {
+                Act::Reply => "R",
+                Act::NotNow => "E",
+                _ => "",
+            };
+            act.message(item, false).map(|message| RowAction::new(act.icon(), act.label(), key, message))
+        })
+        .collect()
+}
+
 /// The bell of `item`'s card and row: "Mute <source>", or "Unmute <source>" while its source is
 /// `muted`, which `m` does as well (`inbox.mute_source`, at once with an undo). Until E8.6b brings
 /// the bell's menu it mutes the whole source. None for the suite (never muted, security rule 1), an
@@ -564,8 +602,12 @@ pub fn bell(item: &Item, muted: bool) -> Option<CardButton> {
 
 /// The action bar of `item`'s row in the compact density (`widgets::row_actions`): Open or Go to
 /// window (`Enter`), Task (`t`), Later (`s`) or Reopen (`e`) for a done entry, the bell (`m`,
-/// [`bell`]) and the ✕ (`x`, [`dismissable`]) – only what works for the entry, as its card.
+/// [`bell`]) and the ✕ (`x`, [`dismissable`]) – only what works for the entry, as its card. The
+/// suite's question after a finished task has Reply (`r`), Mark mail done and Not now (`e`) instead.
 pub fn row_actions<'a>(item: &Item, muted: bool) -> Vec<RowAction<'a, Message>> {
+    if asks_to_follow_up(item) {
+        return follow_up_actions(item);
+    }
     let act = |command| Message::Act(item.id.clone(), command);
     let approval = detail::is_approval(item);
     let done = matches!(item.state, State::Done { .. });
@@ -1110,6 +1152,28 @@ mod tests {
         done.state = State::Done { at: now() };
         assert_eq!(words(&done), [tr("Reopen")]);
         assert!(!dismissable(&done));
+    }
+
+    /// Task E8.1b: the suite's "You finished a task from a mail" asks here what it asks in the hub.
+    #[test]
+    fn the_question_after_a_finished_task_has_the_hubs_buttons() {
+        let mut question = open().into_iter().find(|item| item.id == "demo-9").expect("in the demo");
+        app::demo_task(&mut question, now());
+        assert!(hub::is_follow_up(&question));
+        let words: Vec<String> = card_buttons(&question, false).into_iter().map(|b| b.label).collect();
+        assert_eq!(words, [tr("Reply"), tr("Mark mail done"), tr("Not now")]);
+        let sent: Vec<Option<Message>> = card_buttons(&question, false).into_iter().map(|b| b.on_press).collect();
+        assert!(matches!(&sent[0], Some(Message::Act(id, Command::Reply)) if id == "demo-9"));
+        assert!(matches!(&sent[1], Some(Message::MarkMailDone(id)) if id == "demo-9"));
+        assert!(matches!(&sent[2], Some(Message::Act(_, Command::Done))), "Not now closes the question");
+        assert!(!dismissable(&question) && bell(&question, false).is_none(), "no ✕ beside Not now, no bell");
+        let bar = row_actions(&question, false);
+        let labels: Vec<String> = bar.iter().map(|action| action.label.to_string()).collect();
+        assert_eq!(labels, words, "the row offers the same");
+        assert_eq!(bar.iter().map(|action| action.key).collect::<Vec<_>>(), ["R", "", "E"]);
+        // Answered, it is an entry like any other.
+        question.state = State::Done { at: now() };
+        assert_eq!(card_buttons(&question, false).into_iter().map(|b| b.label).collect::<Vec<_>>(), [tr("Reopen")]);
     }
 
     #[test]

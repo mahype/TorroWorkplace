@@ -24,11 +24,15 @@
 //! [`InboxClient::set_mail_flags`], [`InboxClient::move_mail`] and [`InboxClient::delete_mail`] –,
 //! with the errors mapped as above. Everything a message brings is data from outside
 //! (`untrusted`), never instructions; the client only passes it on.
+//!
+//! Tasks of folder mail (task E8.1b): [`InboxClient::create_todo_from_mail`] sends
+//! `tasks.create_todo_from_mail` and answers the task in the inbox's model ([`ItemTask`]), so the
+//! window needs no calendar model of its own for the due day.
 
 use std::path::PathBuf;
 
 use chrono::{DateTime, NaiveDate, Utc};
-use torro_inbox::item::{Hidden, HideScope, MuteEffect, MuteOption, MuteScope, Muted};
+use torro_inbox::item::{Hidden, HideScope, ItemTask, MuteEffect, MuteOption, MuteScope, Muted, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 use torro_mail::{Flag, Folder, Message, MessageSummary};
@@ -143,6 +147,46 @@ impl InboxClient {
     /// (moving them back).
     pub async fn delete_mail(&self, ids: Vec<String>) -> Result<(), InboxError> {
         self.ask_ok(Request::DeleteMail { ids, permanent: false }).await
+    }
+
+    /// `tasks.create_todo_from_mail` (task E8.7a; the inbox's "Task" on a folder's message, task
+    /// E8.1b): makes a task of the message `id` of the mail account `account` (`mail:<address>`) in
+    /// the task list `list` (one of [`InboxSource::list_task_lists`]), titled `title` (`None` or
+    /// blank: the core takes the subject), due on the local day `due` as an all-day date (`None`: no
+    /// due date) – as [`InboxSource::create_task_from_item`] sends its day. The mail itself is not
+    /// changed; the core links the task back with `mail:<address>:<Message-ID>`.
+    ///
+    /// Answers the task as an entry carries it ([`ItemTask`]): uid, list (`list.name`), title, due
+    /// and done as the core stored them, its link id (empty when the core sent none),
+    /// `mail_entry` `None`. Errors as mapped above: [`InboxError::NotFound`] for an account, mail or
+    /// list the app may not see, [`InboxError::Unsupported`] for a mail without a `Message-ID` or a
+    /// list that takes no tasks, [`InboxError::Forbidden`] without the right to write tasks.
+    pub async fn create_todo_from_mail(
+        &self,
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+    ) -> Result<ItemTask, InboxError> {
+        let request =
+            Request::CreateTodoFromMail { account, id, collection: list.id, title, due: due.map(EventTime::Date) };
+        match self.ask(request).await? {
+            Response::Todo { todo } => Ok(ItemTask {
+                uid: todo.uid,
+                collection: todo.collection,
+                list: list.name,
+                title: todo.summary,
+                due: todo.due.map(|due| match due {
+                    EventTime::Date(day) => TaskDue::Date(day),
+                    EventTime::DateTime(at) => TaskDue::DateTime(at),
+                }),
+                completed: todo.completed,
+                link: todo.link.map(|link| link.id).unwrap_or_default(),
+                mail_entry: None,
+            }),
+            other => Err(unexpected(other)),
+        }
     }
 
     /// `inbox.get_stats` (task E8.8a): what the core counted over `range` up to the local day
@@ -443,6 +487,31 @@ mod tests {
             Request::CreateTaskFromItem { .. } => {
                 Response::Error { code: "not-found".into(), message: "no task list \"gone\"".into() }
             }
+            // A mail of the account with a Message-ID; `m:bare` has none.
+            Request::CreateTodoFromMail { account, id, collection, title, due } if id == "m:1" => Response::Todo {
+                todo: torro_pim::Todo {
+                    uid: "from-mail".into(),
+                    collection,
+                    href: Some("https://cloud.example.org/t/from-mail.ics".into()),
+                    etag: Some("\"1\"".into()),
+                    summary: title.unwrap_or_else(|| "Budget Q4".into()),
+                    due,
+                    priority: None,
+                    completed: false,
+                    parent: None,
+                    description: None,
+                    url: None,
+                    categories: Vec::new(),
+                    sort_order: None,
+                    link: Some(torro_pim::model::Link::mail(&account, "<budget@example.org>")),
+                },
+            },
+            Request::CreateTodoFromMail { id, .. } if id == "m:bare" => {
+                Response::Error { code: "unsupported".into(), message: "the mail has no Message-ID".into() }
+            }
+            Request::CreateTodoFromMail { .. } => {
+                Response::Error { code: "not-found".into(), message: "no such mail".into() }
+            }
             Request::OpenItem { .. } => {
                 Response::Error { code: "unsupported".into(), message: "no window of the agent found".into() }
             }
@@ -607,6 +676,43 @@ mod tests {
         let core = start(|request| async move { answer(request) }).await;
         let lists = core.client().list_task_lists().await.expect("lists");
         assert_eq!(lists, vec![TaskList { id: "work".into(), name: "WORK".into() }]);
+    }
+
+    /// Task E8.1b: a task of a folder's message carries its day as an all-day due date, and comes
+    /// back in the inbox's model with the way back to the mail.
+    #[tokio::test]
+    async fn a_task_of_a_mail_sends_its_day_and_comes_back_as_the_entry_has_it() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let work = TaskList { id: "work".into(), name: "Work".into() };
+        let day = NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid date");
+        let account = "mail:anna@example.org".to_string();
+        let task = client
+            .create_todo_from_mail(account.clone(), "m:1".into(), work.clone(), None, Some(day))
+            .await
+            .expect("made");
+        assert_eq!(
+            task,
+            ItemTask {
+                uid: "from-mail".into(),
+                collection: "work".into(),
+                list: "Work".into(),
+                title: "Budget Q4".into(),
+                due: Some(TaskDue::Date(day)),
+                completed: false,
+                link: "mail:anna@example.org:budget@example.org".into(),
+                mail_entry: None,
+            }
+        );
+        let titled = client
+            .create_todo_from_mail(account.clone(), "m:1".into(), work.clone(), Some("Answer Anna".into()), None)
+            .await
+            .expect("made");
+        assert_eq!((titled.title.as_str(), titled.due), ("Answer Anna", None), "no day: no due date");
+        let bare = client.create_todo_from_mail(account.clone(), "m:bare".into(), work.clone(), None, None).await;
+        assert_eq!(bare, Err(InboxError::Unsupported), "no Message-ID");
+        let gone = client.create_todo_from_mail(account, "m:gone".into(), work, None, None).await;
+        assert_eq!(gone, Err(InboxError::NotFound));
     }
 
     #[tokio::test]

@@ -51,7 +51,6 @@ use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, State};
 use torro_ipc::inbox::InboxClient;
 use torro_ipc::mail::{MoveRole, MoveTarget};
-use torro_ipc::{IpcError, Request, Response};
 use torro_mail::{AttachmentInfo, Flag, Folder, MailAddress, Message as Mail, MessageSummary, Role};
 
 use crate::app::{INBOX, Message, View};
@@ -107,13 +106,13 @@ pub trait MailSource: Send + Sync {
     /// `tasks.create_todo_from_mail` (task E8.7a; "Task" on a folder's message, task E8.7b): makes a
     /// task of the message `id` of the mail account `account` (`mail:<address>`) in the task list
     /// `list` (one of [`torro_inbox::InboxSource::list_task_lists`]), titled `title` (`None`: the
-    /// core takes the subject). The core links it back with `mail:<address>:<Message-ID>`; the mail
-    /// itself is not changed.
+    /// core takes the subject), due on the local day `due` (`None`: no due date; task E8.1b, as the
+    /// dialog of "Make task" asks it for entries). The core links it back with
+    /// `mail:<address>:<Message-ID>`; the mail itself is not changed.
     ///
     /// Answers the new task as an entry would carry it ([`ItemTask`]: its uid, list – named
-    /// `list.name` –, title and link; `due` `None`, `completed` false, `mail_entry` `None`), so the
-    /// reader shows its card at once. No due day: the request takes it in the calendar model, which
-    /// the inbox does not depend on. Errors as the core maps them: [`InboxError::NotFound`] for an
+    /// `list.name` –, title, due day and link; `completed` false, `mail_entry` `None`), so the
+    /// reader shows its card at once. Errors as the core maps them: [`InboxError::NotFound`] for an
     /// account, mail or list the window may not see, [`InboxError::Unsupported`] for a mail without
     /// a `Message-ID`.
     fn create_todo_from_mail(
@@ -122,6 +121,7 @@ pub trait MailSource: Send + Sync {
         id: String,
         list: TaskList,
         title: Option<String>,
+        due: Option<NaiveDate>,
     ) -> impl Future<Output = Result<ItemTask, InboxError>> + Send;
 }
 
@@ -170,38 +170,15 @@ impl MailSource for InboxClient {
         InboxClient::delete_mail(self, ids).await
     }
 
-    /// Sent from here: the client in `torro-ipc` has no method for it yet. Errors mapped as the
-    /// client maps them (`torro_ipc::inbox`).
     async fn create_todo_from_mail(
         &self,
         account: String,
         id: String,
         list: TaskList,
         title: Option<String>,
+        due: Option<NaiveDate>,
     ) -> Result<ItemTask, InboxError> {
-        let request = Request::CreateTodoFromMail { account, id, collection: list.id.clone(), title, due: None };
-        match torro_ipc::client::call(&self.socket, &request).await {
-            Ok(Response::Todo { todo }) => Ok(ItemTask {
-                uid: todo.uid,
-                collection: todo.collection,
-                list: list.name,
-                title: todo.summary,
-                due: None,
-                completed: todo.completed,
-                link: todo.link.map(|link| link.id).unwrap_or_default(),
-                mail_entry: None,
-            }),
-            Ok(Response::Error { code, message }) => Err(match code.as_str() {
-                "not-found" => InboxError::NotFound,
-                "forbidden" => InboxError::Forbidden,
-                "busy" => InboxError::Busy,
-                "unsupported" => InboxError::Unsupported,
-                _ => InboxError::Other(message),
-            }),
-            Ok(other) => Err(InboxError::Other(format!("unexpected answer: {other:?}"))),
-            Err(IpcError::NotRunning) => Err(InboxError::Offline),
-            Err(err) => Err(InboxError::Other(err.to_string())),
-        }
+        InboxClient::create_todo_from_mail(self, account, id, list, title, due).await
     }
 }
 
@@ -245,14 +222,15 @@ impl MailSource for DemoSource {
     }
 
     /// The demo keeps no tasks of folder mail: it answers the task the core would make – the
-    /// subject as title when none is given –, linked by the message's id (its mail has no
-    /// Message-ID).
+    /// subject as title when none is given, the day as due date –, linked by the message's id (its
+    /// mail has no Message-ID).
     async fn create_todo_from_mail(
         &self,
         account: String,
         id: String,
         list: TaskList,
         title: Option<String>,
+        due: Option<NaiveDate>,
     ) -> Result<ItemTask, InboxError> {
         let mail = DemoSource::get_mail(self, &id)?;
         let title = title.filter(|title| !title.trim().is_empty()).unwrap_or_else(|| subject(&mail.summary));
@@ -261,7 +239,7 @@ impl MailSource for DemoSource {
             collection: list.id,
             list: list.name,
             title,
-            due: None,
+            due: due.map(TaskDue::Date),
             completed: false,
             link: format!("{account}:{}@demo", id.trim_start_matches("m:")),
             mail_entry: None,
@@ -312,6 +290,7 @@ impl MailSource for crate::empty::EmptySource {
         _id: String,
         _list: TaskList,
         _title: Option<String>,
+        _due: Option<NaiveDate>,
     ) -> Result<ItemTask, InboxError> {
         Err(InboxError::NotFound)
     }
@@ -1718,20 +1697,24 @@ mod tests {
         let _ = task_card(&task(false), now());
     }
 
-    /// Task E8.7b: "Task" on a folder's message makes a task of it in the demo, titled by its subject.
+    /// Task E8.7b: "Task" on a folder's message makes a task of it in the demo, titled by its subject;
+    /// task E8.1b: with the day asked for as due date.
     #[test]
     fn a_folder_message_becomes_a_task() {
         let demo = DemoSource::new(now());
         let list = TaskList { id: "demo/work".into(), name: "Work".into() };
+        let day = NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid date");
         let made = iced::futures::executor::block_on(MailSource::create_todo_from_mail(
             &demo,
             demo::MAIL_ACCOUNTS[0].into(),
             "m:w1".into(),
             list.clone(),
             None,
+            Some(day),
         ))
         .expect("the demo makes it");
         assert_eq!((made.title.as_str(), made.list.as_str(), made.completed), ("Budget review for Q4", "Work", false));
+        assert_eq!(made.due, Some(TaskDue::Date(day)));
         assert!(made.link.starts_with(demo::MAIL_ACCOUNTS[0]), "{}", made.link);
         let unknown = iced::futures::executor::block_on(MailSource::create_todo_from_mail(
             &demo,
@@ -1739,6 +1722,7 @@ mod tests {
             "m:nope".into(),
             list,
             Some("x".into()),
+            None,
         ));
         assert!(unknown.is_err());
     }

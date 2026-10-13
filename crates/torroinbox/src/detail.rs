@@ -177,7 +177,8 @@ pub fn status(item: &Item, now: DateTime<Utc>) -> (Status, String) {
     match item.state {
         State::Done { .. } => (Status::Ok, tr("Done").to_owned()),
         State::Snoozed { until } => {
-            (Status::Inactive, trf("Snoozed until {time}", &[("time", &list::wake_text(until, now))]))
+            // "Later", as the buttons say it in all three windows (task E8.1b).
+            (Status::Inactive, trf("Later until {time}", &[("time", &list::wake_text(until, now))]))
         }
         State::New | State::Seen if item.kind == Kind::AccountProblem => {
             (Status::Error, tr("Needs your attention").to_owned())
@@ -199,7 +200,8 @@ pub fn is_approval(item: &Item) -> bool {
 /// offer. The core checks again when it opens ([`Message::OpenItem`]).
 pub fn openable(item: &Item) -> Option<Link> {
     let link = item.link.clone()?;
-    let known_app = |app: &str| AppId::ALL.iter().any(|known| known.binary == app);
+    // A binary or a window class (task E8.1b), as the core reads it; anything else is no app.
+    let known_app = |app: &str| AppId::find(app).is_some();
     rules::may_open(item, known_app).then_some(link)
 }
 
@@ -217,8 +219,7 @@ fn link_label(link: &Link) -> String {
     match link {
         Link::Url { url } => url.clone(),
         Link::App { app } => {
-            let name =
-                AppId::ALL.iter().find(|known| known.binary == app).map_or(app.as_str(), |known| known.display_name);
+            let name = AppId::find(app).map_or(app.as_str(), |known| known.display_name);
             trf("Open {app}", &[("app", &name)])
         }
         Link::Window => tr("Go to window").to_owned(),
@@ -381,7 +382,7 @@ mod tests {
         assert_eq!(status(&sample("demo-11"), now()), (Status::Ok, tr("Done").to_owned()));
         let (dot, word) = status(&sample("demo-10"), now());
         assert_eq!(dot, Status::Inactive);
-        assert!(word.starts_with(tr("Snoozed until {time}").trim_end_matches("{time}")), "{word}");
+        assert!(word.starts_with(tr("Later until {time}").trim_end_matches("{time}")), "{word}");
     }
 
     #[test]
@@ -394,8 +395,13 @@ mod tests {
         assert_eq!(openable(&notice_with_window), None, "a window only on entries of hooks");
         let local_file = Item { link: Some(Link::Url { url: "file:///etc/passwd".into() }), ..deploy.clone() };
         assert_eq!(openable(&local_file), None);
-        let unknown_app = Item { link: Some(Link::App { app: "rm".into() }), ..deploy };
+        let unknown_app = Item { link: Some(Link::App { app: "rm".into() }), ..deploy.clone() };
         assert_eq!(openable(&unknown_app), None);
+        // Task E8.1b: a window of the suite by its class; an unknown class is no app.
+        let mail = Link::App { app: "torro-inbox-mail".into() };
+        assert_eq!(openable(&Item { link: Some(mail.clone()), ..deploy.clone() }), Some(mail));
+        let unknown_class = Item { link: Some(Link::App { app: "torro-inbox-secret".into() }), ..deploy };
+        assert_eq!(openable(&unknown_class), None);
     }
 
     #[test]
@@ -460,6 +466,11 @@ mod tests {
         assert_eq!(
             link_label(&Link::App { app: "torroworkplace".into() }),
             trf("Open {app}", &[("app", &"Torro Workplace")])
+        );
+        assert_eq!(
+            link_label(&Link::App { app: "torro-inbox-mail".into() }),
+            trf("Open {app}", &[("app", &AppId::INBOX_MAIL.display_name)]),
+            "a window class names its window"
         );
         assert_eq!(link_label(&Link::Url { url: "https://x.example".into() }), "https://x.example");
     }
