@@ -27,7 +27,8 @@
 //!
 //! `--message=m:…` names the mail the mail window starts on (task E8.7a): the core passes it when
 //! `apps.open_app` opens a mail (`mail:<address>:<Message-ID>`); a value that is no mail id of the
-//! core is refused (exit 64). The window shows it from task E8.7b on.
+//! core is refused (exit 64). The window shows it (task E8.7b): the mail's entry in the panel when
+//! there is one, else the mail in its folder.
 //!
 //! `--compose` starts the compose window instead of the inbox (task E4.3, [`compose`]): its own
 //! window with the class `torro-compose`, started by the panel's Reply, Reply all and Forward and
@@ -65,16 +66,16 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     // Refuse bad parameters before anything starts (the core, a window).
-    let launch = match Launch::parse(&args) {
+    let mut launch = match Launch::parse(&args) {
         Ok(launch) => launch,
         Err(err) => {
             eprintln!("{}: {err}", INBOX.binary);
             return ExitCode::from(64);
         }
     };
-    // The mail to show (task E8.7a): read and checked now, so the core's command line never fails;
-    // the mail window opens on it from task E8.7b on, until then it starts as without.
-    let _start_mail = match start_message(&args) {
+    // The mail to show (tasks E8.7a, E8.7b): read and checked now, so the core's command line never
+    // fails; the window opens on it once its first entries are in.
+    launch.message = match start_message(&args) {
         Ok(message) => message,
         Err(err) => {
             eprintln!("{}: {err}", INBOX.binary);

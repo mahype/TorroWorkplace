@@ -18,6 +18,8 @@
 //!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
 //!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3): Reply ·
 //!   Reply all · Forward | Done · Later · Task, the text in the reading level (`typo::read()`).
+//! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
+//!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
 //!
 //! **Mail is foreign text** (`untrusted`). The core turns HTML into text and fetches nothing it
 //! names, so no picture or other content from the web is ever loaded. The text is drawn as it is;
@@ -30,7 +32,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, responsive, rich_text, row, rule, scrollable, span, svg, text_input};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
@@ -44,9 +46,12 @@ use torro_gui::widgets::{self, Anchor, Mark, RowAction};
 use torro_gui::{datetime, style, typo};
 use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
+use torro_inbox::item::{ItemTask, TaskDue};
+use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, State};
 use torro_ipc::inbox::InboxClient;
 use torro_ipc::mail::{MoveRole, MoveTarget};
+use torro_ipc::{IpcError, Request, Response};
 use torro_mail::{AttachmentInfo, Flag, Folder, MailAddress, Message as Mail, MessageSummary, Role};
 
 use crate::app::{INBOX, Message, View};
@@ -98,6 +103,26 @@ pub trait MailSource: Send + Sync {
 
     /// `mail.delete_messages` into the account's trash, never for good.
     fn delete_mail(&self, ids: Vec<String>) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// `tasks.create_todo_from_mail` (task E8.7a; "Task" on a folder's message, task E8.7b): makes a
+    /// task of the message `id` of the mail account `account` (`mail:<address>`) in the task list
+    /// `list` (one of [`torro_inbox::InboxSource::list_task_lists`]), titled `title` (`None`: the
+    /// core takes the subject). The core links it back with `mail:<address>:<Message-ID>`; the mail
+    /// itself is not changed.
+    ///
+    /// Answers the new task as an entry would carry it ([`ItemTask`]: its uid, list – named
+    /// `list.name` –, title and link; `due` `None`, `completed` false, `mail_entry` `None`), so the
+    /// reader shows its card at once. No due day: the request takes it in the calendar model, which
+    /// the inbox does not depend on. Errors as the core maps them: [`InboxError::NotFound`] for an
+    /// account, mail or list the window may not see, [`InboxError::Unsupported`] for a mail without
+    /// a `Message-ID`.
+    fn create_todo_from_mail(
+        &self,
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+    ) -> impl Future<Output = Result<ItemTask, InboxError>> + Send;
 }
 
 /// One page of a folder ([`MailSource::search_mail`]).
@@ -144,6 +169,40 @@ impl MailSource for InboxClient {
     async fn delete_mail(&self, ids: Vec<String>) -> Result<(), InboxError> {
         InboxClient::delete_mail(self, ids).await
     }
+
+    /// Sent from here: the client in `torro-ipc` has no method for it yet. Errors mapped as the
+    /// client maps them (`torro_ipc::inbox`).
+    async fn create_todo_from_mail(
+        &self,
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+    ) -> Result<ItemTask, InboxError> {
+        let request = Request::CreateTodoFromMail { account, id, collection: list.id.clone(), title, due: None };
+        match torro_ipc::client::call(&self.socket, &request).await {
+            Ok(Response::Todo { todo }) => Ok(ItemTask {
+                uid: todo.uid,
+                collection: todo.collection,
+                list: list.name,
+                title: todo.summary,
+                due: None,
+                completed: todo.completed,
+                link: todo.link.map(|link| link.id).unwrap_or_default(),
+                mail_entry: None,
+            }),
+            Ok(Response::Error { code, message }) => Err(match code.as_str() {
+                "not-found" => InboxError::NotFound,
+                "forbidden" => InboxError::Forbidden,
+                "busy" => InboxError::Busy,
+                "unsupported" => InboxError::Unsupported,
+                _ => InboxError::Other(message),
+            }),
+            Ok(other) => Err(InboxError::Other(format!("unexpected answer: {other:?}"))),
+            Err(IpcError::NotRunning) => Err(InboxError::Offline),
+            Err(err) => Err(InboxError::Other(err.to_string())),
+        }
+    }
 }
 
 impl MailSource for DemoSource {
@@ -184,6 +243,30 @@ impl MailSource for DemoSource {
     async fn delete_mail(&self, ids: Vec<String>) -> Result<(), InboxError> {
         DemoSource::move_mail_to(self, &ids, Role::Trash)
     }
+
+    /// The demo keeps no tasks of folder mail: it answers the task the core would make – the
+    /// subject as title when none is given –, linked by the message's id (its mail has no
+    /// Message-ID).
+    async fn create_todo_from_mail(
+        &self,
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+    ) -> Result<ItemTask, InboxError> {
+        let mail = DemoSource::get_mail(self, &id)?;
+        let title = title.filter(|title| !title.trim().is_empty()).unwrap_or_else(|| subject(&mail.summary));
+        Ok(ItemTask {
+            uid: format!("demo-task-{id}"),
+            collection: list.id,
+            list: list.name,
+            title,
+            due: None,
+            completed: false,
+            link: format!("{account}:{}@demo", id.trim_start_matches("m:")),
+            mail_entry: None,
+        })
+    }
 }
 
 /// The empty inbox of the tests has no mail account: no folders, every message unknown.
@@ -220,6 +303,16 @@ impl MailSource for crate::empty::EmptySource {
     }
 
     async fn delete_mail(&self, _ids: Vec<String>) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn create_todo_from_mail(
+        &self,
+        _account: String,
+        _id: String,
+        _list: TaskList,
+        _title: Option<String>,
+    ) -> Result<ItemTask, InboxError> {
         Err(InboxError::NotFound)
     }
 }
@@ -728,8 +821,8 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
 }
 
 /// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row, as chips
-/// "Attachments" and "Flagged", and its buttons Reply (`r`) and Archive (`e`, what "done" is in a
-/// folder). "Task" comes to a folder's messages with E8.7b; a message has no "Later" of its own.
+/// "Attachments" and "Flagged", and its buttons Reply (`r`), Task (`t`, `tasks.create_todo_from_mail`,
+/// task E8.7b) and Archive (`e`, what "done" is in a folder); a message has no "Later" of its own.
 /// In the smart view of attachments, which holds every account's mail, the head names the account.
 fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32, words: bool) -> Element<'a, Message> {
     let mut chips = Vec::new();
@@ -742,6 +835,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     let id = || message.id.clone();
     let buttons = vec![
         RowAction::new(Icon::Reply, tr("Reply"), "R", Message::Mail(MailAction::Reply, id())),
+        RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id())),
         RowAction::new(Icon::Archive, tr("Archive"), "E", Message::Mail(MailAction::Archive, id())),
     ];
     let (name, domain) = sender_parts(message.from.as_ref());
@@ -859,6 +953,9 @@ pub struct Reading<'a> {
     /// The account's place among the mail accounts, for the colour of the reader's avatar
     /// (`list::account_index`).
     pub account: Option<usize>,
+    /// The task made of this mail (task E8.7b): the one its entry carries ([`Item::task`]), or the
+    /// one "Task" just made of a folder's message. Shown as a card over the text ([`task_card`]).
+    pub task: Option<&'a ItemTask>,
 }
 
 impl<'a> Reading<'a> {
@@ -892,6 +989,9 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     if let Some(summary) = reading.summary() {
         body = body.push(panel::inset(header(reading, summary)));
         body = body.push(panel::inset(actions(reading, summary)));
+    }
+    if let Some(task) = reading.task {
+        body = body.push(panel::inset(task_card(task, reading.now)));
     }
     match reading.loaded {
         None => body = body.push(panel::inset(note(tr("Loading the message…")))),
@@ -970,6 +1070,10 @@ fn reader_content<'a>(
     let level = if comfortable { typo::headline() } else { typo::title() };
     body = body.push(typo::text(level, subject(summary)).style(theme::text).wrapping(Wrapping::WordOrGlyph));
     body = body.push(reader_sender(reading, summary, comfortable, room));
+    // The mail knows its task (task E8.7b): between who wrote it and what it says, as the design.
+    if let Some(task) = reading.task {
+        body = body.push(task_card(task, reading.now));
+    }
     if !comfortable {
         body = body.push(rule::horizontal(size::HAIRLINE).style(style::rule));
     }
@@ -1065,8 +1169,8 @@ impl ReaderButton {
 }
 
 /// The reader's actions in one row (task E8.3): Reply (the window's one primary button), Reply
-/// all, Forward | Done, Later, Task on the mail's entry – "Archive" in their place for a folder's
-/// message, where `e` archives –, then at the right as icons Delete, Flag, read or unread, for an
+/// all, Forward | Done, Later, Task on the mail's entry – "Archive" and "Task" (task E8.7b,
+/// `tasks.create_todo_from_mail`) in their place for a folder's message, where `e` archives –, then at the right as icons Delete, Flag, read or unread, for an
 /// entry also Archive, "Move to …" and "…" (Hide from inbox), and Close. In comfortable the first
 /// six carry their words while they fit into `room`, else every button is its icon with the word
 /// as tooltip.
@@ -1124,7 +1228,12 @@ fn reader_actions<'a>(
                 tools.push(more.at(&anchors.hide));
             }
         }
-        None => triage.push(ReaderButton::new(Icon::Archive, tr("Archive"), mail(MailAction::Archive))),
+        None => {
+            triage.push(ReaderButton::new(Icon::Archive, tr("Archive"), mail(MailAction::Archive)));
+            // A folder's message becomes a task of its own (task E8.7b, `tasks.create_todo_from_mail`).
+            let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskMailTask(id.to_owned())));
+            triage.push(task.at(&anchors.task));
+        }
     }
     tools.push(ReaderButton::new(Icon::X, tr("Close"), Some(Message::CloseDetail)));
 
@@ -1226,11 +1335,19 @@ fn actions<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, M
     let (read_icon, read_label) =
         if read { (Icon::Mail, tr("Mark unread")) } else { (Icon::MailOpen, tr("Mark read")) };
     let delete = (!reading.in_trash).then(|| Message::Mail(MailAction::Delete, id.to_owned()));
+    // "Task" for a folder's message (task E8.7b); an entry's panel has "Make task" in its footer. Only
+    // a folder's panel shows the date (`dated`), so it tells the two apart.
+    let task = reading.dated.then(|| Message::AskMailTask(id.to_owned()));
+    let mut tools = row![].spacing(space::xs()).align_y(Alignment::Center);
+    if task.is_some() {
+        tools = tools.push(widgets::icon_button(Icon::ListTodo, tr("Task"), task));
+    }
     row![
         widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, act(MailAction::Reply)),
         widgets::icon_button(Icon::ReplyAll, tr("Reply all"), act(MailAction::ReplyAll)),
         widgets::icon_button(Icon::Forward, tr("Forward"), act(MailAction::Forward)),
         iced::widget::space::horizontal(),
+        tools,
         widgets::icon_button(Icon::Archive, tr("Archive"), act(MailAction::Archive)),
         widgets::icon_button(Icon::Trash2, tr("Delete"), delete),
         widgets::icon_button(
@@ -1293,6 +1410,69 @@ fn text_block<'a>(mail: &'a Mail, link: Color, level: typo::Level) -> Element<'a
 /// A quiet sentence (`META`, `text_3`).
 fn note<'a>(text: &'a str) -> Element<'a, Message> {
     typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
+}
+
+/// The day a task is due ([`ItemTask::due`]), in local time.
+pub fn due_day(due: TaskDue) -> NaiveDate {
+    match due {
+        TaskDue::Date(day) => day,
+        TaskDue::DateTime(at) => at.with_timezone(&Local).date_naive(),
+    }
+}
+
+/// The line under a task's title on its card (task E8.7b): "Task · Work · due Fri, 17 Oct · open" –
+/// the list when the core knows its name, the due day when there is one, and whether it is open or
+/// done (in words, never by colour alone).
+pub fn task_meta(task: &ItemTask, now: DateTime<Utc>) -> String {
+    let today = now.with_timezone(&Local).date_naive();
+    let mut parts = vec![tr("Task").to_owned()];
+    let list = list::one_line(&task.list);
+    if !list.is_empty() {
+        parts.push(list);
+    }
+    if let Some(due) = task.due {
+        let day = datetime::format_short_date(due_day(due), today);
+        parts.push(trf("due {day}", &[("day", &day)]));
+    }
+    parts.push(if task.completed { tr("done") } else { tr("open") }.to_owned());
+    parts.join(" · ")
+}
+
+/// The task made of a mail, as a card over the mail's text (task E8.7b, `docs/eingang.md`, "Aufgabe
+/// mit Rückbezug"): a ring for an open task, a check in the colour for "OK" for a done one, its title
+/// and [`task_meta`] on one line each, and "Open task", which opens it in the tasks app through the
+/// core (`apps.open_app` with `task:<uid>`). The title is foreign text like the mail's and shows as
+/// it is.
+pub fn task_card<'a>(task: &ItemTask, now: DateTime<Utc>) -> Element<'a, Message> {
+    let mark: Element<'a, Message> = if task.completed {
+        icon::icon(Icon::CircleCheck, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).ok) }).into()
+    } else {
+        task_ring()
+    };
+    let title = list::one_line(&task.title);
+    let words = column![
+        container(typo::text(typo::body_strong(), title).style(theme::text).wrapping(Wrapping::None)).clip(true),
+        container(typo::text(typo::meta(), task_meta(task, now)).style(theme::text_3).wrapping(Wrapping::None))
+            .clip(true),
+    ]
+    .width(Fill);
+    let open = Message::OpenTask(task.uid.clone());
+    let open = widgets::text_button(Some(Icon::ArrowUpRight), tr("Open task"), style::button::secondary, Some(open));
+    let line = row![mark, words, open].spacing(space::m()).align_y(Alignment::Center);
+    widgets::card(vec![line.into()], false, None)
+}
+
+/// The open task's ring: the tasks app's check before it is ticked, as large as an icon.
+fn task_ring<'a>() -> Element<'a, Message> {
+    let edge = icon::SIZE;
+    container(iced::widget::Space::new())
+        .width(edge)
+        .height(edge)
+        .style(move |t: &Theme| container::Style {
+            border: iced::border::rounded(edge / 2.0).color(palette(t).text_3).width(style::CHECK_BORDER),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// The hint after opening an attachment.
@@ -1481,11 +1661,14 @@ mod tests {
         ));
         let entry =
             all.expect("the demo answers").into_iter().find(|item| item.source.kind == SourceKind::Mail).expect("mail");
-        for message in &mail {
+        let open = task(false);
+        let done = ItemTask { due: Some(TaskDue::Date(now().date_naive())), ..task(true) };
+        for (message, task) in mail.iter().zip([None, Some(&open), Some(&done)].into_iter().cycle()) {
             let loaded = Ok(message.clone());
             for loaded in [None, Some(&loaded)] {
                 for read in [false, true] {
                     let reading = Reading {
+                        task,
                         id: &message.summary.id,
                         summary: Some(&message.summary),
                         loaded,
@@ -1504,6 +1687,60 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A task made of a mail, open or `completed`, in the list "Work", without a due day.
+    fn task(completed: bool) -> ItemTask {
+        ItemTask {
+            uid: "budget@demo".into(),
+            collection: "demo/work".into(),
+            list: "Work".into(),
+            title: "Check the travel budget".into(),
+            due: None,
+            completed,
+            link: "mail:anna@work.example.org:budget@work.example.org".into(),
+            mail_entry: None,
+        }
+    }
+
+    /// Task E8.7b: the card says what the task is, where it is, when it is due and whether it is open
+    /// – all in words.
+    #[test]
+    fn the_task_card_names_list_due_day_and_state() {
+        let today = now().with_timezone(&Local).date_naive();
+        assert_eq!(task_meta(&task(false), now()), format!("{} · Work · {}", tr("Task"), tr("open")));
+        let due = ItemTask { due: Some(TaskDue::Date(today)), list: String::new(), ..task(true) };
+        let day = datetime::format_short_date(today, today);
+        assert_eq!(
+            task_meta(&due, now()),
+            format!("{} · {} · {}", tr("Task"), trf("due {day}", &[("day", &day)]), tr("done"))
+        );
+        let _ = task_card(&task(false), now());
+    }
+
+    /// Task E8.7b: "Task" on a folder's message makes a task of it in the demo, titled by its subject.
+    #[test]
+    fn a_folder_message_becomes_a_task() {
+        let demo = DemoSource::new(now());
+        let list = TaskList { id: "demo/work".into(), name: "Work".into() };
+        let made = iced::futures::executor::block_on(MailSource::create_todo_from_mail(
+            &demo,
+            demo::MAIL_ACCOUNTS[0].into(),
+            "m:w1".into(),
+            list.clone(),
+            None,
+        ))
+        .expect("the demo makes it");
+        assert_eq!((made.title.as_str(), made.list.as_str(), made.completed), ("Budget review for Q4", "Work", false));
+        assert!(made.link.starts_with(demo::MAIL_ACCOUNTS[0]), "{}", made.link);
+        let unknown = iced::futures::executor::block_on(MailSource::create_todo_from_mail(
+            &demo,
+            demo::MAIL_ACCOUNTS[0].into(),
+            "m:nope".into(),
+            list,
+            Some("x".into()),
+        ));
+        assert!(unknown.is_err());
     }
 
     /// Task E8.3: the smart view keeps the messages with attachments of every inbox, newest first.

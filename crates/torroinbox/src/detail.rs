@@ -29,6 +29,11 @@
 //! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, actions, attachments,
 //! text) in place of its short text; the footer stays the entry's.
 //!
+//! Task with a way back (task E8.7b): an entry made into a task shows it in a section "Task" (the
+//! card of `mail::task_card` with "Open task"; a whole mail carries it over its text instead). The
+//! suite's "You finished a task from a mail" (`hub::is_follow_up`) has Reply and "Mark mail done" in
+//! its footer before "Done", and neither "Later" nor "Make task".
+//!
 //! Commands in a message ("cargo test --workspace") should not break at their hyphens: the message
 //! shows them as non-breaking hyphens ([`unbroken`]), which Inter draws the same.
 
@@ -47,7 +52,8 @@ use torro_gui::{datetime, style, typo};
 use torro_inbox::{Action, Item, Kind, Lane, Link, State, rules};
 
 use crate::app::{self, Message};
-use crate::list;
+use crate::keys::Command;
+use crate::{hub, list, mail};
 
 /// The triggers of the menus that open for an entry, made new in every `view` and shared with the
 /// floating layer ([`widgets::floating`]).
@@ -114,6 +120,10 @@ pub fn panel<'a>(
     // at the end of the body, where it still speaks of the title. A whole mail has its own.
     let mut untrusted = (item.untrusted && letter.is_none())
         .then(|| note(tr("This text comes from outside the suite and is shown as plain text.")));
+    // The task made of the entry (task E8.7b); a whole mail shows it over its text itself.
+    if let Some(task) = item.task.as_ref().filter(|_| letter.is_none()) {
+        body = body.push(column![section(tr("Task")), panel::inset(mail::task_card(task, now))].spacing(space::xs()));
+    }
     if let Some(letter) = letter {
         body = body.push(letter);
     } else if let Some(text) = item.body.as_deref().map(list::plain).filter(|text| !text.trim().is_empty()) {
@@ -232,8 +242,19 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 /// approval, and at the right "Move to …" and "…" (hide from the inbox) when there is a way to hide
 /// it.
 fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
-    let mut buttons = decide(item, footer.deciding);
-    if !matches!(item.state, State::Done { .. }) && !is_approval(item) {
+    let follow_up = hub::is_follow_up(item) && item.state.is_open();
+    let mut buttons = Vec::new();
+    // "You finished a task from a mail" (task E8.7b): answer the mail or mark it done, before
+    // closing the question; it is a task already and waits for nothing, so no "Make task", no "Later".
+    if follow_up {
+        let id = || item.id.clone();
+        let reply = Some(Message::Act(id(), Command::Reply));
+        buttons.push(widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, reply));
+        let done = Some(Message::MarkMailDone(id()));
+        buttons.push(widgets::text_button(Some(Icon::Check), tr("Mark mail done"), style::button::secondary, done));
+    }
+    buttons.extend(decide(item, footer.deciding));
+    if !matches!(item.state, State::Done { .. }) && !is_approval(item) && !follow_up {
         let snooze = widgets::text_button(
             Some(Icon::Clock),
             tr("Later"),
@@ -242,7 +263,7 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
         );
         buttons.push(widgets::anchored(&footer.anchors.snooze, snooze));
     }
-    if !is_approval(item) {
+    if !is_approval(item) && !follow_up {
         let task = widgets::icon_button(Icon::ListTodo, tr("Make task"), Some(Message::AskTask(item.id.clone())));
         buttons.push(widgets::anchored(&footer.anchors.task, task));
     }
@@ -253,8 +274,9 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
         trf("Move to {lane}", &[("lane", &lane_label(lane))]),
         Message::AskLane(item.id.clone()),
     );
-    // Beside "…" the words would push the last button out of the panel's 400.
-    let move_to = if footer.compact || footer.hide {
+    // Beside "…" – or beside Reply and "Mark mail done" – the words would push the last button out of
+    // the panel's 400.
+    let move_to = if footer.compact || footer.hide || follow_up {
         widgets::icon_button(icon, label, Some(ask))
     } else {
         widgets::text_button(Some(icon), label, style::button::ghost, Some(ask))
@@ -397,6 +419,22 @@ mod tests {
         assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 4);
         // Reopen, Make task, the gap, Move to, "…": a done entry is not snoozed.
         assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 5);
+    }
+
+    /// Task E8.7b: the question after a finished task answers or closes the mail, and is no task to
+    /// make or to put off; an entry made into a task shows it.
+    #[test]
+    fn a_finished_task_asks_to_reply_or_mark_the_mail_done() {
+        let mut question = sample("demo-9");
+        app::demo_task(&mut question, now());
+        assert!(hub::is_follow_up(&question));
+        // Reply, Mark mail done, Done, the gap, Move to.
+        assert_eq!(buttons(&question, &footer(false)).len(), 5);
+        let _ = panel(&question, tr("Act now").to_owned(), now(), footer(false), None);
+        let mut handed = sample("demo-11");
+        app::demo_task(&mut handed, now());
+        assert!(handed.task.as_ref().is_some_and(|task| !task.completed));
+        let _ = panel(&handed, tr("Done").to_owned(), now(), footer(true), None);
     }
 
     #[test]

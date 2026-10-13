@@ -258,6 +258,10 @@ pub struct Launch {
     pub appearance: Option<Appearance>,
     pub now: Option<NaiveDateTime>,
     pub design: Option<String>,
+    /// The task the app starts on (task E8.7b): `--task=<uid>`, read and checked by `main`
+    /// (`start_task`), as the core passes it for `apps.open_app` with a `task:` target. The app
+    /// opens it in the detail once the tasks are in ([`App::open_start_task`]).
+    pub task: Option<String>,
 }
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, as `ctl` does.
@@ -345,7 +349,7 @@ impl Launch {
                 return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
             }
         };
-        Ok(Launch { open, appearance, now, design })
+        Ok(Launch { open, appearance, now, design, task: None })
     }
 
     /// The data source: demo data around the fixed day with `--now`, else what
@@ -1004,8 +1008,11 @@ impl App {
                 connect::Action::OpenSettings => connect::open_settings(),
             },
             Message::Loaded(result) => match result {
-                Ok((collections, todos)) => {
+                Ok((collections, mut todos)) => {
                     let place = self.cursor_place();
+                    if self.source.is_demo() {
+                        todos.iter_mut().for_each(|todo| demo_mail_link(todo, self.today));
+                    }
                     self.collections = collections;
                     self.todos = todos;
                     self.loaded = true;
@@ -1028,7 +1035,8 @@ impl App {
                         }
                         _ => self.detail = None,
                     }
-                    return self.open_launched();
+                    let start = self.open_start_task();
+                    return Task::batch([start, self.open_launched()]);
                 }
                 Err(err) => self.error = Some(load_failed(&err)),
             },
@@ -2095,6 +2103,20 @@ impl App {
         widgets::menu(sections)
     }
 
+    /// The task of `--task` (task E8.7b), once the first tasks are in: its list becomes the view and
+    /// the task opens in the detail. Taken once ([`Launch::task`]); a uid the app does not hold
+    /// (gone, or in a list this app may not see) leaves the app as it starts and says so in the log.
+    fn open_start_task(&mut self) -> Task<Message> {
+        let Some(uid) = self.launch.task.take() else { return Task::none() };
+        let Some(index) = self.todos.iter().position(|todo| todo.uid == uid) else {
+            eprintln!("{}: the task to show is not among the tasks", AppId::TASKS.binary);
+            return Task::none();
+        };
+        self.filter = Filter::List(self.todos[index].collection.clone());
+        self.close_menus();
+        self.select(index)
+    }
+
     /// Opens `todos[index]` in the detail, saving what the open detail still holds.
     fn select(&mut self, index: usize) -> Task<Message> {
         let Some(todo) = self.todos.get(index).cloned() else { return Task::none() };
@@ -2159,9 +2181,35 @@ impl App {
                 )
             }
             detail::Action::AddLink { collection, url } => self.add_link(collection, url, None, None),
+            detail::Action::OpenMail { target, message } => self.open_mail(target, message),
             detail::Action::Previous => self.step(false),
             detail::Action::Next => self.step(true),
         }
+    }
+
+    /// "Open mail" (task E8.7b): the inbox's mail window on the mail the task was made of, through
+    /// the core (`apps.open_app` with the task's `mail:` link as `target`), which finds the mail and
+    /// checks the right to read it. The demo has no core: it starts the inbox's demo on the mail
+    /// (`torroinbox --view mail --demo --message=<id>`), when the link names one.
+    fn open_mail(&mut self, target: String, message: Option<String>) -> Task<Message> {
+        if self.source.is_demo() {
+            let Some(message) = message else { return Task::none() };
+            let mut command = std::process::Command::new(torro_gui::source::sibling(AppId::INBOX_MAIL.binary));
+            command.args(["--view", "mail", "--demo"]).arg(format!("--message={message}"));
+            if let Some(now) = self.launch.now {
+                command.arg("--now").arg(now.format("%Y-%m-%dT%H:%M").to_string());
+            }
+            let started = command.spawn().map(|mut child| {
+                // A thread waits for it, so it leaves no zombie.
+                std::thread::spawn(move || child.wait());
+            });
+            if let Err(err) = started {
+                eprintln!("cannot start the inbox: {err}");
+            }
+            return Task::none();
+        }
+        let source = self.source.clone();
+        Task::perform(open_target(source, AppId::INBOX_MAIL.window_class, target), Message::AppOpened)
     }
 
     fn toggle_menu(&mut self, menu: Menu) {
@@ -3086,6 +3134,47 @@ async fn open_app(source: Source, app: &'static str) -> Result<(), String> {
         Ok(other) => Err(format!("unexpected answer: {other:?}")),
         Err(err) => Err(err.to_string()),
     }
+}
+
+/// Asks the core to open `app` on `target` (task E8.7b, `apps.open_app` with `target`): the task's
+/// `mail:<address>:<Message-ID>` in the inbox's mail window. The core checks the target (and the
+/// right to read the mail) and starts the window with it. Demo data has no core: nothing opens.
+async fn open_target(source: Source, app: &'static str, target: String) -> Result<(), String> {
+    let Source::Core(client) = source else {
+        return Ok(());
+    };
+    let request = Request::OpenApp { app: app.to_string(), target: Some(target) };
+    match torro_ipc::client::call(&client.socket, &request).await {
+        Ok(Response::Ok) => Ok(()),
+        Ok(Response::Error { message, .. }) => Err(message),
+        Ok(other) => Err(format!("unexpected answer: {other:?}")),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// The demo's way back to a mail (task E8.7b), laid over its tasks so "From" can be seen without a
+/// core (the tasks app's demo data know no mail): "Write quarterly report" was made of Jonas's
+/// "Budget review for Q4" – `m:w1` in the inbox's demo, so "Open mail" opens it there – and two
+/// replies came since. Every other task stays as the demo source answers it.
+pub fn demo_mail_link(todo: &mut Todo, today: NaiveDate) {
+    if todo.uid != "quarterly-report@torro-demo" || todo.link.is_some() {
+        return;
+    }
+    let date = today
+        .and_hms_opt(9, 42, 0)
+        .and_then(|at| at.and_local_timezone(Local).earliest())
+        .map_or_else(Utc::now, |at| at.with_timezone(&Utc));
+    let details = torro_pim::model::MailDetails {
+        message: "m:w1".into(),
+        subject: "Budget review for Q4".into(),
+        sender: Some("Jonas Weber".into()),
+        sender_address: Some("jonas.weber@work.example.org".into()),
+        date,
+        new_replies: 2,
+        untrusted: true,
+    };
+    let link = Link::mail("mail:anna@work.example.org", "budget-q4@work.example.org");
+    todo.link = Some(Link { mail: Some(Box::new(details)), ..link });
 }
 
 /// The error text when the account or the tasks could not be loaded; the error state's "Retry"
@@ -4893,5 +4982,34 @@ mod tests {
         app.todos[issue] = Todo { completed: false, ..closed.clone() };
         let _ = app.update(Message::IssueChanged(Ok(closed)));
         assert!(app.notice.is_none());
+    }
+
+    /// Task E8.7b: `--task=<uid>` opens the task in the detail, on its list, once the tasks are in;
+    /// the demo's "Write quarterly report" knows the mail it came from.
+    #[test]
+    fn the_start_task_opens_in_the_detail_with_its_mail() {
+        let words = ["--demo", "--now", "2026-10-13T10:30"];
+        let mut launch = Launch::parse(&args(&words)).expect("valid parameters");
+        launch.task = Some("quarterly-report@torro-demo".into());
+        let (mut app, _) = App::new(launch.source(&args(&words)), launch);
+        let (collections, _, todos) = torro_pim::demo::sample(app.today);
+        connected(&mut app);
+        let _ = app.update(Message::Loaded(Ok((collections.clone(), todos.clone()))));
+        let detail = app.detail.as_ref().expect("the task is open");
+        assert_eq!(detail.original.uid, "quarterly-report@torro-demo");
+        assert_eq!(app.filter, Filter::List(detail.original.collection.clone()), "on its list");
+        let link = detail.original.link.as_ref().expect("the demo's mail link");
+        assert_eq!(link.mail.as_ref().map(|mail| mail.message.as_str()), Some("m:w1"));
+        assert!(app.launch.task.is_none(), "taken once");
+        // A reload keeps the app where the person is.
+        let _ = app.update(Message::Detail(detail::Message::Close));
+        let _ = app.update(Message::Loaded(Ok((collections.clone(), todos.clone()))));
+        assert!(app.detail.is_none());
+        // An unknown uid leaves the app as it starts.
+        let mut launch = Launch::parse(&args(&words)).expect("valid parameters");
+        launch.task = Some("gone".into());
+        let (mut app, _) = App::new(launch.source(&args(&words)), launch);
+        let _ = app.update(Message::Loaded(Ok((collections, todos))));
+        assert!(app.detail.is_none());
     }
 }

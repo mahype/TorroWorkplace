@@ -883,6 +883,9 @@ enum Hint {
     Subtasks(usize, usize),
     /// The task has notes.
     Notes,
+    /// The task was made of a mail (task E8.7b, a `mail:` link), with the number of replies that
+    /// came since (shown from one on).
+    Mail(u32),
 }
 
 impl Hint {
@@ -890,6 +893,7 @@ impl Hint {
         match self {
             Hint::Subtasks(done, total) => Some(format!("{done}/{total}")),
             Hint::Notes => None,
+            Hint::Mail(replies) => (replies > 0).then(|| replies.to_string()),
         }
     }
 
@@ -902,6 +906,7 @@ impl Hint {
         let which = match self {
             Hint::Subtasks(..) => Icon::ListChecks,
             Hint::Notes => Icon::AlignLeft,
+            Hint::Mail(_) => Icon::Mail,
         };
         let mut hint = row![toned(which, icon::SIZE_SM, Tone::Text3)].spacing(space::xs()).align_y(Alignment::Center);
         if let Some(text) = self.text() {
@@ -912,7 +917,8 @@ impl Hint {
     }
 }
 
-/// The hints of `todo`: its sub-tasks, then whether it has notes.
+/// The hints of `todo`: its sub-tasks, whether it has notes, then whether it was made of a mail
+/// (task E8.7b) and how many replies came since.
 fn hints_of(todo: &Todo, subtasks: &HashMap<(&str, &str), (usize, usize)>) -> Vec<Hint> {
     let mut hints = Vec::new();
     if let Some(&(done, total)) = subtasks.get(&(todo.collection.as_str(), todo.uid.as_str())) {
@@ -920,6 +926,9 @@ fn hints_of(todo: &Todo, subtasks: &HashMap<(&str, &str), (usize, usize)>) -> Ve
     }
     if todo.description.as_deref().is_some_and(|notes| !notes.trim().is_empty()) {
         hints.push(Hint::Notes);
+    }
+    if let Some(link) = todo.link.as_ref().filter(|link| link.mail_ref().is_some()) {
+        hints.push(Hint::Mail(link.mail.as_ref().map_or(0, |mail| mail.new_replies)));
     }
     hints
 }
@@ -1706,6 +1715,30 @@ mod tests {
         assert_eq!(hints_of(&todos[0], &counts), [Hint::Subtasks(1, 2), Hint::Notes]);
         assert!(hints_of(&todos[3], &counts).is_empty(), "blank notes are no notes");
         assert!(Hint::Subtasks(1, 2).width() > Hint::Notes.width());
+    }
+
+    /// Task E8.7b: a task made of a mail says so in its row, with the replies that came since.
+    #[test]
+    fn a_task_from_a_mail_shows_the_mail_and_its_new_replies() {
+        let link = torro_pim::model::Link::mail("mail:anna@work.example.org", "<a1@work.example.org>");
+        let plain = Todo { link: Some(link.clone()), ..todo("m", "from a mail") };
+        let counts = HashMap::new();
+        assert_eq!(hints_of(&plain, &counts), [Hint::Mail(0)], "no details: the mail all the same");
+        let details = torro_pim::model::MailDetails {
+            message: "m:1".into(),
+            subject: "Budget".into(),
+            sender: Some("Jonas Weber".into()),
+            sender_address: None,
+            date: chrono::Utc::now(),
+            new_replies: 2,
+            untrusted: true,
+        };
+        let replied = Todo { link: Some(torro_pim::model::Link { mail: Some(Box::new(details)), ..link }), ..plain };
+        assert_eq!(hints_of(&replied, &counts), [Hint::Mail(2)]);
+        assert_eq!(Hint::Mail(2).text().as_deref(), Some("2"));
+        assert_eq!(Hint::Mail(0).text(), None);
+        let github = Todo { link: Some(torro_pim::model::Link::github("a/b", 1)), ..todo("g", "issue") };
+        assert!(hints_of(&github, &counts).is_empty(), "only mail links");
     }
 
     #[test]
