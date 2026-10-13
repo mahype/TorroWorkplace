@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use torro_core::design;
-use torro_core::settings::{self, Language, ListOrderEntry, Night, Settings, Zoom};
+use torro_core::settings::{self, Language, ListOrderEntry, Night, Retention, Settings, Zoom};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
@@ -245,6 +245,8 @@ enum Change {
     QuietWhenBusy(bool),
     /// Whether the pack exists and is valid is [`SettingsStore::check_design`]'s check.
     Design(String),
+    /// How long the assistant keeps conversations (task C.1).
+    AssistantRetention(Retention),
 }
 
 impl Change {
@@ -268,6 +270,8 @@ impl Change {
             SettingKey::ListOrder => Change::ListOrder(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::QuietWhenBusy => Change::QuietWhenBusy(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::Design => Change::Design(serde_json::from_value(value.clone()).map_err(invalid)?),
+            // Strict, like the night: the file's reading falls back to 30 days instead.
+            SettingKey::AssistantRetention => Change::AssistantRetention(Retention::from_value(value)?),
         })
     }
 
@@ -282,6 +286,7 @@ impl Change {
             Change::ListOrder(entry) => settings.set_list_order(&entry.list, entry.order),
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
             Change::Design(id) => settings.design = id,
+            Change::AssistantRetention(retention) => settings.assistant_retention = retention,
         }
     }
 }
@@ -886,6 +891,7 @@ mod tests {
         Change::parse(SettingKey::Night, &night).expect("valid night").apply(&mut settings);
         Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
         Change::parse(SettingKey::Design, &json!("plex")).expect("an id").apply(&mut settings);
+        Change::parse(SettingKey::AssistantRetention, &json!("forever")).expect("forever").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -898,9 +904,11 @@ mod tests {
                 list_orders: Default::default(),
                 quiet_when_busy: false,
                 design: "plex".into(),
+                assistant_retention: Retention::Forever,
             }
         );
         assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
+        assert!(Change::parse(SettingKey::AssistantRetention, &json!(0)).is_err(), "at least a day");
     }
 
     #[test]

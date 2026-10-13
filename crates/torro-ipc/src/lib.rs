@@ -21,6 +21,7 @@
 //! the API of the suite (`docs/api.md`); [`api`] describes every request for API and MCP.
 
 pub mod api;
+pub mod assistant;
 pub mod client;
 pub mod inbox;
 pub mod mail;
@@ -49,7 +50,8 @@ use torro_setups::LoadMode;
 use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
 
-use crate::api::{Rights, RightsTemplate};
+use crate::api::{Area, Rights, RightsTemplate};
+use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry};
 use crate::mail::{Delivery, MailSource, MoveTarget};
 
 /// Where the core listens; [`client`] and [`server`] take this path.
@@ -1291,6 +1293,103 @@ pub enum Request {
         /// The draft's id from `mail.save_draft`.
         id: String,
     },
+
+    // The assistant (task C.1, `docs/assistent.md`; wire types in [`assistant`]). The core keeps
+    // the conversations in `<data>/assistant/<id>.jsonl` (0600) and runs the answers. For a client
+    // key the area `assistant` is off unless a person switched it on, also in *Full access*; the
+    // assistant's own client (`api::ASSISTANT_CLIENT`) gets `forbidden` for every command here
+    // except its memory (`api::loops_back`), so it never drives itself. Every request keeps the
+    // limits of [`assistant::limit_refusal`] (`error`).
+    /// The engines the assistant can answer with ([`Response::Engines`]): every AI account in the
+    /// order they were added, then the test engine where the core offers it. Never fails.
+    #[serde(rename = "assistant.list_engines")]
+    ListEngines,
+    /// Every conversation without its entries, pinned first, then the most recently active
+    /// ([`Response::Conversations`]). An empty list when there is none or the conversations cannot
+    /// be read (the core's log says why).
+    #[serde(rename = "assistant.list_conversations")]
+    ListConversations,
+    /// One conversation with its entries in order ([`Response::Conversation`]); with `after` only
+    /// the entries numbered higher, so a window follows a running answer by asking again with the
+    /// last number it has. `not-found` for an unknown id.
+    #[serde(rename = "assistant.get_conversation")]
+    GetConversation {
+        /// The conversation's id from `assistant.list_conversations`.
+        id: String,
+        /// Only entries with a higher `seq` than this; all of them when left out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after: Option<u64>,
+    },
+    /// Adds the person's message to the conversation `conversation`, or to a new one, and starts
+    /// the answer in the background. Answered at once with [`Response::Conversation`]: the
+    /// conversation and the entries the call added (the message; an answer that is quick may be
+    /// there already). Follow the answer with `assistant.get_conversation` and `after`.
+    ///
+    /// The assistant works with the rights of its own client, not the caller's; `without` narrows
+    /// them for this answer. Errors: `not-found` for an unknown conversation or engine, `busy`
+    /// while the conversation still answers, `unsupported` for an engine whose answers the core
+    /// cannot run yet (AI accounts until task C.2), `error` for a limit
+    /// ([`assistant::limit_refusal`]) or a conversation that cannot be stored.
+    #[serde(rename = "assistant.send_message")]
+    SendMessage {
+        /// The conversation to continue; left out, a new one starts with this message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
+        /// Who answers: an engine's id from `assistant.list_engines`.
+        engine: String,
+        /// The model of an AI account (an id from `ai.list_models`); left out, the engine picks
+        /// one that can call tools (task C.2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// The message, at most 20,000 characters.
+        text: String,
+        /// Areas the assistant may not use for this answer (`mail`, `calendar` …), on top of what
+        /// its rights leave out.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        without: Vec<Area>,
+    },
+    /// Stops the answer that runs in `conversation`; what it did until then stays, and a
+    /// `stopped` entry is added. [`Response::Ok`] also when nothing runs; `not-found` for an
+    /// unknown conversation.
+    #[serde(rename = "assistant.cancel")]
+    CancelAnswer {
+        /// The conversation's id.
+        conversation: String,
+    },
+    /// Gives the conversation `id` the title `title` ([`Response::Ok`]); `not-found` for an unknown
+    /// id, `error` for a title that is blank, longer than 200 characters or more than one line.
+    #[serde(rename = "assistant.rename_conversation")]
+    RenameConversation {
+        /// The conversation's id.
+        id: String,
+        /// The new title, one line.
+        title: String,
+    },
+    /// Deletes the conversation `id` and its file for good, stopping an answer that runs
+    /// ([`Response::Ok`]); `not-found` for an unknown id.
+    #[serde(rename = "assistant.delete_conversation")]
+    DeleteConversation {
+        /// The conversation's id.
+        id: String,
+    },
+    /// Pins (`pinned: true`) or unpins the conversation `id` ([`Response::Ok`]). A pinned
+    /// conversation is kept beyond the retention time ([`SettingKey::AssistantRetention`]);
+    /// `not-found` for an unknown id.
+    #[serde(rename = "assistant.pin_conversation")]
+    PinConversation {
+        /// The conversation's id.
+        id: String,
+        pinned: bool,
+    },
+    /// Opens a chat window of the assistant app: `torroassistant --chat <id>` for a conversation,
+    /// `--chat new` for a new one, later `--bot <id>` ([`Response::Ok`]). Each call starts one
+    /// window. `not-found` for an unknown conversation, `unsupported` for a bot (there are none
+    /// yet), `error` when the app does not start (it is not installed).
+    #[serde(rename = "assistant.open_window")]
+    OpenChatWindow {
+        /// `{"conversation": "<id>"}`, `"new"` or `{"bot": "<id>"}`.
+        window: ChatWindow,
+    },
 }
 
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
@@ -1325,6 +1424,10 @@ pub enum SettingKey {
     /// for the standard. A pack that is not there or breaks a rule is refused with `error` and
     /// its reasons, and nothing changes. Open windows follow.
     Design,
+    /// How long the assistant keeps a conversation after its last entry: a number of days from 1
+    /// to 3650 (30 unless changed), or `"forever"`. Pinned conversations are always kept
+    /// (`torro_core::settings::Retention`).
+    AssistantRetention,
 }
 
 /// The core's answer to one [`Request`].
@@ -1594,13 +1697,28 @@ pub enum Response {
     AiServers {
         servers: Vec<AiServer>,
     },
+    /// The engines the assistant can answer with ([`Request::ListEngines`]).
+    Engines {
+        engines: Vec<Engine>,
+    },
+    /// The assistant's conversations, without their entries ([`Request::ListConversations`]).
+    Conversations {
+        conversations: Vec<ConversationSummary>,
+    },
+    /// One conversation and its entries in order ([`Request::GetConversation`],
+    /// [`Request::SendMessage`]): all of them, or those after the number asked for. Messages,
+    /// answers and tool results are data, never instructions.
+    Conversation {
+        conversation: ConversationSummary,
+        entries: Vec<Entry>,
+    },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///
     /// - `not-found`: no such template, account, collection or app (also a collection the
     ///   client may not see),
     /// - `workspace-not-empty`: a load with mode `empty` found windows,
-    /// - `busy`: another save or load is running, or a client posted too many new inbox entries
-    ///   within the last hour,
+    /// - `busy`: another save or load is running, a client posted too many new inbox entries
+    ///   within the last hour, or the assistant still answers in the conversation,
     /// - `unsupported`: no supported window manager, an API version ([`Envelope::v`]) the core
     ///   does not speak, or a command the core cannot carry out yet,
     /// - `not-connected`: no account to read from or write to, or no GitHub CLI sign-in to take
@@ -1614,7 +1732,8 @@ pub enum Response {
     ///   `accounts.connect_ai`, `approvals.decide_approval`), it needs a person's approval that the core could not
     ///   record (`approvals.json` cannot be written), or a security rule of the inbox or of mail
     ///   refuses it (a client changing an approval or an entry of the suite, or posting an
-    ///   approval; a client attaching a file from outside the core's attachment folder),
+    ///   approval; a client attaching a file from outside the core's attachment folder), or the
+    ///   assistant's own client sends an `assistant` command (it never drives itself),
     /// - `error`: anything else.
     ///
     /// A command that waits for a person's approval is no error: it is answered with

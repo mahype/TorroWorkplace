@@ -69,6 +69,10 @@ pub struct Settings {
     /// the standard, and the control centre shows why.
     #[serde(default = "standard_design")]
     pub design: String,
+    /// How long the assistant keeps a conversation after its last entry (task C.1, decision 8 in
+    /// `docs/assistent.md`): 30 days unless changed, or forever. Pinned conversations stay anyway.
+    #[serde(default)]
+    pub assistant_retention: Retention,
 }
 
 /// The id of the standard design, for settings from before design packs.
@@ -93,6 +97,7 @@ impl Default for Settings {
             list_orders: BTreeMap::new(),
             quiet_when_busy: on(),
             design: standard_design(),
+            assistant_retention: Retention::default(),
         }
     }
 }
@@ -237,6 +242,101 @@ impl JsonSchema for Night {
             "additionalProperties": false,
             "description": "The night as two times of day on the quarter hour, usually over midnight \
                             ({\"from\": \"22:00\", \"to\": \"06:00\"}). The same time twice means no night."
+        })
+    }
+}
+
+/// How long the assistant keeps a conversation after its last entry (task C.1): a number of days,
+/// or forever. Written as the number (`30`) or `"forever"`.
+///
+/// Reading a settings file is lenient, like [`Night`], but towards keeping: a value that does not
+/// read gives [`Retention::Forever`], because a damaged file must never delete conversations the
+/// person meant to keep. A file without the field has the default of 30 days. A value sent to the
+/// core is checked with [`Retention::from_value`], which refuses it with a reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Retention {
+    /// This many days, from 1 to [`Retention::MAX_DAYS`].
+    Days(u16),
+    /// Conversations are kept until they are deleted.
+    Forever,
+}
+
+impl Retention {
+    /// The longest number of days: ten years. Longer is "forever".
+    pub const MAX_DAYS: u16 = 3650;
+
+    /// 30 days (decision 8 in `docs/assistent.md`).
+    pub const DEFAULT: Retention = Retention::Days(30);
+
+    /// The retention in `value`: a whole number of days from 1 to [`Retention::MAX_DAYS`], or
+    /// `"forever"`; otherwise why not. For `settings.set_setting`.
+    pub fn from_value(value: &serde_json::Value) -> Result<Retention, String> {
+        if value.as_str() == Some("forever") {
+            return Ok(Retention::Forever);
+        }
+        value
+            .as_u64()
+            .filter(|days| (1..=u64::from(Retention::MAX_DAYS)).contains(days))
+            .and_then(|days| u16::try_from(days).ok())
+            .map(Retention::Days)
+            .ok_or_else(|| {
+                format!("{value} is not a retention: send days from 1 to {} or \"forever\"", Retention::MAX_DAYS)
+            })
+    }
+
+    /// The retention as `settings.set_setting` takes it: the number of days or `"forever"`.
+    pub fn to_value(self) -> serde_json::Value {
+        match self {
+            Retention::Days(days) => serde_json::Value::from(days),
+            Retention::Forever => serde_json::Value::from("forever"),
+        }
+    }
+
+    /// How many days after its last entry a conversation is kept; `None` for forever.
+    pub fn days(self) -> Option<u16> {
+        match self {
+            Retention::Days(days) => Some(days),
+            Retention::Forever => None,
+        }
+    }
+}
+
+impl Default for Retention {
+    fn default() -> Retention {
+        Retention::DEFAULT
+    }
+}
+
+impl Serialize for Retention {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_value().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Retention {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Retention, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        Ok(Retention::from_value(&value).unwrap_or(Retention::Forever))
+    }
+}
+
+impl JsonSchema for Retention {
+    fn schema_name() -> Cow<'static, str> {
+        "Retention".into()
+    }
+
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn json_schema(_generator: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "anyOf": [
+                { "type": "integer", "minimum": 1, "maximum": Retention::MAX_DAYS },
+                { "const": "forever" }
+            ],
+            "description": "How many days the assistant keeps a conversation after its last entry, or \"forever\". \
+                            Pinned conversations are always kept."
         })
     }
 }
@@ -479,6 +579,31 @@ mod tests {
         }
     }
 
+    /// Task C.1: 30 days unless changed; days or "forever" from outside, anything else refused
+    /// there and read as "forever" from a file, so a damaged file deletes nothing.
+    #[test]
+    fn the_assistant_keeps_conversations_30_days_or_as_set() {
+        assert_eq!(Settings::default().assistant_retention, Retention::Days(30));
+        assert_eq!(Retention::from_value(&serde_json::json!(7)), Ok(Retention::Days(7)));
+        assert_eq!(Retention::from_value(&serde_json::json!("forever")), Ok(Retention::Forever));
+        for refused in
+            [serde_json::json!(0), serde_json::json!(3651), serde_json::json!(1.5), serde_json::json!("never")]
+        {
+            assert!(Retention::from_value(&refused).is_err(), "{refused}");
+        }
+        assert_eq!(Retention::Forever.days(), None);
+        assert_eq!(Retention::Days(7).days(), Some(7));
+        for retention in [Retention::Days(90), Retention::Forever] {
+            let written = serde_json::to_value(retention).expect("serializes");
+            assert_eq!(written, retention.to_value());
+            assert_eq!(serde_json::from_value::<Retention>(written).expect("reads"), retention);
+        }
+        let old: Settings = serde_json::from_str("{}").expect("a file from before the assistant");
+        assert_eq!(old.assistant_retention, Retention::DEFAULT);
+        let edited: Settings = serde_json::from_str(r#"{"assistantRetention": -3}"#).expect("lenient");
+        assert_eq!(edited.assistant_retention, Retention::Forever);
+    }
+
     #[test]
     fn missing_file_loads_defaults() {
         let dir = TempDir::new("missing");
@@ -512,6 +637,7 @@ mod tests {
             list_orders: BTreeMap::new(),
             quiet_when_busy: true,
             design: "torro".into(),
+            assistant_retention: Retention::DEFAULT,
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -582,6 +708,7 @@ mod tests {
             list_orders: BTreeMap::from([("work".to_string(), ListOrder::Manual)]),
             quiet_when_busy: false,
             design: "plex".into(),
+            assistant_retention: Retention::Days(90),
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

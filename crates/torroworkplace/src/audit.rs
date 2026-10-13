@@ -22,6 +22,7 @@ use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
+use torro_ipc::assistant::{ChatWindow, TEST_ENGINE};
 use torro_ipc::mail::MoveTarget;
 use torro_ipc::{ActivityEntry, Request, Response};
 
@@ -281,6 +282,24 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ConnectAi { .. } | Request::FindAiServers => Vec::new(),
         Request::AiModels { account: name, .. } => vec![account(name)],
         Request::UpdateMailAccount { id: name, .. } => vec![account(name)],
+        // The assistant (task C.1): the conversation as the core made it, and for a message the
+        // engine (decision 5: the log says which engine the assistant used), never a text, a title
+        // or a model's name.
+        Request::ListEngines | Request::ListConversations => Vec::new(),
+        Request::SendMessage { conversation, engine, .. } => {
+            let engine = checked("engine", engine, |value| value == TEST_ENGINE || is_account_id(value));
+            conversation.iter().map(|id| random("conversation", id)).chain([engine]).collect()
+        }
+        Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => vec![format!("bot:{}", hashed(bot))],
+        Request::OpenChatWindow { window: ChatWindow::New } => Vec::new(),
+        Request::GetConversation { id: conversation, .. }
+        | Request::CancelAnswer { conversation }
+        | Request::RenameConversation { id: conversation, .. }
+        | Request::DeleteConversation { id: conversation }
+        | Request::PinConversation { id: conversation, .. }
+        | Request::OpenChatWindow { window: ChatWindow::Conversation(conversation) } => {
+            vec![random("conversation", conversation)]
+        }
         mail @ (Request::MailFolders { .. }
         | Request::SearchMail { .. }
         | Request::GetMail { .. }
@@ -501,6 +520,46 @@ pub(crate) mod tests {
         let audit = Audit::system();
         audit.record(&line("a1", "system.ping", 1));
         assert_eq!(audit.recent("a1").expect("empty"), vec![]);
+    }
+
+    /// Task C.1: the assistant's lines name the conversation and the engine, never the message,
+    /// a title or a model; a conversation id without the core's form is hashed.
+    #[test]
+    fn assistant_lines_name_the_conversation_and_the_engine_only() {
+        let send = Request::SendMessage {
+            conversation: Some("0123456789abcdef".into()),
+            engine: "ai:ollama@localhost:11434".into(),
+            model: Some("secret-model".into()),
+            text: "Dinner with Anna".into(),
+            without: Vec::new(),
+        };
+        assert_eq!(
+            super::ids(&send),
+            vec!["conversation:0123456789abcdef".to_string(), "engine:ai:ollama@localhost:11434".to_string()]
+        );
+        let new = Request::SendMessage {
+            conversation: None,
+            engine: TEST_ENGINE.into(),
+            model: None,
+            text: "Hi".into(),
+            without: Vec::new(),
+        };
+        assert_eq!(super::ids(&new), vec!["engine:test".to_string()]);
+        let odd = Request::SendMessage {
+            conversation: None,
+            engine: "Anna's server".into(),
+            model: None,
+            text: "Hi".into(),
+            without: Vec::new(),
+        };
+        assert_eq!(super::ids(&odd), vec![format!("engine:hash:{}", hashed("Anna's server"))]);
+
+        let rename = Request::RenameConversation { id: "0123456789abcdef".into(), title: "Salary talks".into() };
+        assert_eq!(super::ids(&rename), vec!["conversation:0123456789abcdef".to_string()]);
+        let named = Request::DeleteConversation { id: "salary talks".into() };
+        assert_eq!(super::ids(&named), vec![format!("conversation:hash:{}", hashed("salary talks"))]);
+        assert_eq!(super::ids(&Request::OpenChatWindow { window: ChatWindow::New }), Vec::<String>::new());
+        assert_eq!(super::ids(&Request::ListConversations), Vec::<String>::new());
     }
 
     #[test]

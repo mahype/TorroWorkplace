@@ -33,6 +33,7 @@ use crate::account::ai::AiAccounts;
 use crate::account::github::{GithubAccounts, GithubError};
 use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
+use crate::assistant::Assistant;
 use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
@@ -43,7 +44,7 @@ use crate::settings_service::SettingsStore;
 use crate::ui::Section;
 
 /// `name` next to the daemon's binary, else from `PATH`.
-fn sibling(name: &str) -> std::path::PathBuf {
+pub(crate) fn sibling(name: &str) -> std::path::PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
@@ -425,6 +426,9 @@ pub struct Core {
     /// The separate TorroMail app, read only (task M7.4): the user's ([`TorroMail::system`]);
     /// none in tests unless they bring one ([`Core::with_torromail`]).
     torromail: TorroMail,
+    /// The assistant's conversations and running answers (task C.1): the user's
+    /// ([`Assistant::system`]); tests bring their own ([`Core::with_assistant`]).
+    assistant: Arc<Assistant>,
 }
 
 impl Core {
@@ -458,7 +462,15 @@ impl Core {
             searches: Searches::default(),
             calendar_sign_ins: Mutex::new(()),
             torromail: if cfg!(test) { TorroMail::none() } else { TorroMail::system() },
+            assistant: Arc::new(Assistant::system()),
         }
+    }
+
+    /// The core with `assistant` instead of the user's, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_assistant(mut self, assistant: Assistant) -> Core {
+        self.assistant = Arc::new(assistant);
+        self
     }
 
     /// The core with `torromail` instead of the user's TorroMail, for tests.
@@ -555,6 +567,18 @@ impl Core {
         self.ai.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
         self.mail.start();
+        // The assistant's retention (task C.1): read anew each time, so a changed setting applies
+        // from the next round.
+        let (assistant, settings) = (Arc::clone(&self.assistant), self.settings.clone());
+        tokio::spawn(async move {
+            loop {
+                let retention = settings.current().assistant_retention;
+                let assistant = Arc::clone(&assistant);
+                // Removing files blocks; never on the core's async threads.
+                let _ = tokio::task::spawn_blocking(move || assistant.clean_up(Utc::now(), retention)).await;
+                tokio::time::sleep(crate::assistant::CLEAN_UP_EVERY).await;
+            }
+        });
         let (pim, github) = (Arc::clone(&self.pim), Arc::clone(&self.github));
         tokio::spawn(async move {
             // The tokens come from the keychain in the background; the first refresh waits for
@@ -656,6 +680,11 @@ impl Core {
             Request::ApprovalStatus { id: approval } => return Ok(self.approval_status(Some(&id), approval).await),
             _ => {}
         }
+        // The assistant never drives itself (task C.1): fixed here, whatever its rights say, and
+        // before anything else, so its log line always says `forbidden`.
+        if self.loops_back(&id, request.operation()) {
+            return Err(Refused::Forbidden { command: request.operation().name() });
+        }
         // Mail limits and accounts first (task M2.1): nobody is asked to approve what is refused
         // anyway, and an account the client may not see looks like none.
         if let Some(refused) = torro_ipc::mail::limit_refusal(&request).or_else(|| mail_out_of_reach(&rights, &request))
@@ -690,6 +719,13 @@ impl Core {
         let reach = Reach::Client(&rights);
         if let Some(outside) = self.out_of_reach(reach, &request).await {
             return Ok(not_reached(&request, &outside));
+        }
+        // What the assistant would refuse anyway is nothing to approve (task C.1): limits, an
+        // unknown conversation or engine, a conversation that still answers, a bot.
+        if request.operation().area() == Area::Assistant
+            && let Some(refused) = self.assistant.refusal(&self.ai, &request).await
+        {
+            return Ok(refused);
         }
         // Ticking an issue of a filter list closes it on GitHub (task G.5): that needs write access
         // to `github` as well, refused before a person is asked to approve it. The handler checks
@@ -756,6 +792,14 @@ impl Core {
             return Ok(self.save_draft(draft, reach, DraftAuthor::Client(id)).await);
         }
         Ok(self.handle_within(request, reach).await)
+    }
+
+    /// Whether `operation` from the client `id` would let the assistant drive itself
+    /// ([`torro_ipc::api::loops_back`]): an `assistant` command from the assistant's own client.
+    /// A client removed meanwhile is refused by its rights already.
+    fn loops_back(&self, id: &str, operation: torro_ipc::api::Operation) -> bool {
+        operation.area() == Area::Assistant
+            && self.clients.list().iter().any(|info| info.id == id && torro_ipc::api::loops_back(&info.kind, operation))
     }
 
     /// Whether `request` of the client `client` is `inbox.open_item` on an entry that opens a web
@@ -893,8 +937,9 @@ impl Core {
     /// What the core holds about the things `request` names, for its approval's summary
     /// ([`Facts`]): the template's name from the store, the account's label (to remove it or to
     /// create a task list in it), and for calendars,
-    /// tasks and filter lists what the calendar service caches ([`PimService::facts`]). Looked up
-    /// by the ids the command runs with, after the client's reach was checked.
+    /// tasks and filter lists what the calendar service caches ([`PimService::facts`]), for the
+    /// assistant the conversation's title and the engine's name (task C.1). Looked up by the ids
+    /// the command runs with, after the client's reach was checked.
     async fn facts(&self, request: &Request) -> Facts {
         match request {
             Request::DeleteTemplate { id }
@@ -909,6 +954,19 @@ impl Core {
             | Request::CreateTaskList { account, .. } => {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
+            }
+            // The conversation by the title the assistant keeps for its id and the engine by its
+            // name (task C.1), never by what the client sends along.
+            request if request.operation().area() == Area::Assistant => {
+                let name = request.conversation().and_then(|id| self.assistant.title(id));
+                let engine = match request {
+                    Request::SendMessage { engine, .. } => {
+                        let engines = self.assistant.engines(&self.ai).await;
+                        engines.into_iter().find(|known| known.id == *engine).map(|known| known.name)
+                    }
+                    _ => None,
+                };
+                Facts { name, engine, ..Facts::default() }
             }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
@@ -989,7 +1047,7 @@ impl Core {
             return Response::Error { code: "forbidden".into(), message };
         };
         let rights = &info.rights;
-        if !rights.allows(request.operation()) {
+        if !rights.allows(request.operation()) || torro_ipc::api::loops_back(&info.kind, request.operation()) {
             return Refused::Forbidden { command }.response();
         }
         // An allowed question of an agent runs nothing: the answer is the approval's state, which
@@ -1316,6 +1374,17 @@ impl Core {
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }) => self.change_mail(request, reach).await,
+            // The assistant (task C.1): rights were checked in `handle_from`; the assistant runs
+            // with its own client, not with the caller's reach.
+            request @ (Request::ListEngines
+            | Request::ListConversations
+            | Request::GetConversation { .. }
+            | Request::SendMessage { .. }
+            | Request::CancelAnswer { .. }
+            | Request::RenameConversation { .. }
+            | Request::DeleteConversation { .. }
+            | Request::PinConversation { .. }
+            | Request::OpenChatWindow { .. }) => crate::assistant::answer(&self.assistant, &self.ai, request).await,
         }
     }
 
@@ -7872,6 +7941,140 @@ mod tests {
     }
 
     // ----- AI accounts (task KI.1a) -----
+
+    /// Every `assistant.*` request once, on the conversation `id`.
+    fn assistant_requests(id: &str) -> Vec<Request> {
+        vec![
+            Request::ListEngines,
+            Request::ListConversations,
+            Request::GetConversation { id: id.into(), after: None },
+            Request::SendMessage {
+                conversation: Some(id.into()),
+                engine: torro_ipc::assistant::TEST_ENGINE.into(),
+                model: None,
+                text: "Hi".into(),
+                without: Vec::new(),
+            },
+            Request::CancelAnswer { conversation: id.into() },
+            Request::RenameConversation { id: id.into(), title: "Renamed".into() },
+            Request::DeleteConversation { id: id.into() },
+            Request::PinConversation { id: id.into(), pinned: true },
+            Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::New },
+        ]
+    }
+
+    /// Task C.1, "Keine Schleife": the assistant's own client gets `forbidden` for every command of
+    /// its area, even with every right in it; its other rights work as for any client.
+    #[tokio::test]
+    async fn the_assistant_never_drives_itself_whatever_its_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            text: "What is on tomorrow?".into(),
+            without: Vec::new(),
+        };
+        let Response::Conversation { conversation, .. } = ask(&core, Some(&app_key), send).await else {
+            panic!("the person starts a conversation")
+        };
+
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: true });
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        let (info, key) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights)
+            .await
+            .expect("the assistant's client");
+        let id = info.id;
+        for request in assistant_requests(&conversation.id) {
+            let name = request.operation().name();
+            assert_eq!(
+                core.handle_from(Some(&key), request).await,
+                Err(Refused::Forbidden { command: name }),
+                "{name}"
+            );
+        }
+        assert!(matches!(ask(&core, Some(&key), Request::CalendarCollections).await, Response::Collections { .. }));
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nothing waits for approval");
+        let lines = audit_lines(dir.path());
+        assert!(
+            lines.iter().filter(|line| line.command.starts_with("assistant.")).all(|line| line.result == "forbidden")
+        );
+        assert!(lines.iter().all(|line| line.client.as_deref() == Some(id.as_str())));
+    }
+
+    /// Decision 7: no template opens the area `assistant` for an agent, *Full access* neither; a
+    /// person switches it on, then it works like any area: deleting waits for approval, an unknown
+    /// conversation is `not-found` before anyone is asked, and the log names the engine.
+    #[tokio::test]
+    async fn other_agents_reach_the_assistant_only_when_a_person_switches_it_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        for request in assistant_requests("0123456789abcdef") {
+            let name = request.operation().name();
+            assert_eq!(
+                core.handle_from(Some(&key), request).await,
+                Err(Refused::Forbidden { command: name }),
+                "{name}"
+            );
+        }
+
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+        core.clients.update(&id, rights).await.expect("switched on");
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            text: "Dinner with Anna".into(),
+            without: Vec::new(),
+        };
+        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), send).await else {
+            panic!("the agent starts a conversation")
+        };
+        let unknown = Request::DeleteConversation { id: "fedcba9876543210".into() };
+        assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
+        // Asking before every change, still nobody is asked about what would fail anyway.
+        let mut asking = RightsTemplate::ReadAndWrite.rights();
+        asking.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+        asking.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        core.clients.update(&id, asking.clone()).await.expect("asks first");
+        let nowhere = Request::SendMessage {
+            conversation: None,
+            engine: "ai:ollama@nowhere:1".into(),
+            model: None,
+            text: "Hi".into(),
+            without: Vec::new(),
+        };
+        assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
+        let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
+        assert_eq!(code(&ask(&core, Some(&key), bot).await), "unsupported");
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nothing to approve");
+        asking.confirm = torro_ipc::api::Confirm::OnDelete;
+        core.clients.update(&id, asking).await.expect("asks before deleting");
+        let delete = Request::DeleteConversation { id: conversation.id.clone() };
+        let asked = waits(ask(&core, Some(&key), delete).await);
+        // The person sees which conversation, by the title the core keeps (task C.1).
+        assert_eq!(
+            asked.summary,
+            trf("Delete the assistant conversation \"{title}\"", &[("title", &"Dinner with Anna")])
+        );
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Dinner"), "{log}");
+        let sent = audit_lines(dir.path())
+            .into_iter()
+            .find(|line| line.command == "assistant.send_message" && line.result == "ok")
+            .expect("logged");
+        assert_eq!(sent.ids, vec!["engine:test".to_string()]);
+    }
 
     use crate::account::ai::tests::{KEY as AI_KEY, NOBODY, fake_ollama, fake_openrouter};
 

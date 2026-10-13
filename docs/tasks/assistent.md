@@ -34,10 +34,13 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   Schlüssel erscheint in keiner Antwort und keinem Protokoll.
 
 ### C.1 Gerüst: Bereich `assistant`, Requests, Katalog, Speicher, Client-Art
-- [ ] erledigt
+- [x] erledigt (`docs/api-reference.md` gibt es noch nicht, A.9; Test-Antrieb `test` nur in Tests und mit
+  `TORRO_TEST_ENGINE=1`; Freigabe-Texte für `assistant.*` in `approvals.rs`, nachgetragen mit Freigabe)
 - **Modell:** Opus · **Braucht:** KI.1a · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
   `crates/torroworkplace/src/assistant/**` (neu), `crates/torroworkplace/src/{core,clients}.rs`,
-  `docs/api-reference.md`
+  `docs/api-reference.md`; nachgetragen (Rückfrage): `crates/torroworkplace/src/approvals.rs` (Freigabe-Texte),
+  `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/{settings_service,audit,daemon,pim,main}.rs`,
+  `crates/torroworkplace/src/ui/{agents,general}.rs` (Aufbewahrung, `match`-Zweige)
 - `Area::Assistant`; Requests und Katalog nach der Tabelle „Drei Wege“ im Konzept: `assistant.list_engines` (Read),
   `assistant.list_conversations` (Read), `assistant.get_conversation { id, after }` (Read),
   `assistant.send_message { conversation?, engine, model?, text, without }` (Write), `assistant.cancel` (Write),

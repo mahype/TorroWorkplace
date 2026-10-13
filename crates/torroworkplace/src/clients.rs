@@ -42,7 +42,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use torro_inbox::AgentKind;
-use torro_ipc::api::{HOOK_CLIENT, Operation, Rights, RightsTemplate, Selection};
+use torro_ipc::api::{ASSISTANT_CLIENT, HOOK_CLIENT, Operation, Rights, RightsTemplate, Selection};
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
 /// Keychain service all suite secrets are filed under (as for the accounts).
@@ -470,7 +470,9 @@ impl Clients {
     /// `name` and `kind` are trimmed and must not be empty ([`ClientsError::Invalid`]). A hook
     /// client ([`HOOK_CLIENT`]) must name the `agent` it reports for, and no other kind may
     /// ([`ClientsError::Invalid`]). A `script` client named `cli` or like another script client,
-    /// ignoring case, is [`ClientsError::Conflict`]: its name is its inbox source. While
+    /// ignoring case, is [`ClientsError::Conflict`]: its name is its inbox source. So is a second
+    /// client of the kind [`ASSISTANT_CLIENT`]: there is one assistant for every engine (decision 5
+    /// in `docs/assistent.md`), and the core tells it apart by its kind. While
     /// `clients.json` is damaged nothing is added ([`ClientsError::Damaged`]). When the file
     /// cannot be written, the client is taken back and its key leaves the keychain again.
     pub async fn add_client(
@@ -495,6 +497,9 @@ impl Clients {
         let _changing = self.shared.changing.lock().await;
         if kind == "script" && self.script_name_taken(name) {
             return Err(ClientsError::Conflict("a script client of this name exists, or the name is cli"));
+        }
+        if kind == ASSISTANT_CLIENT && self.lock().clients.iter().any(|entry| entry.record.kind == ASSISTANT_CLIENT) {
+            return Err(ClientsError::Conflict("the assistant has its client already"));
         }
         let id = self.new_id()?;
         let key = new_client_key(&id)?;
@@ -1874,6 +1879,21 @@ pub(crate) mod tests {
     }
 
     #[cfg(unix)]
+    /// Decision 5 in `docs/assistent.md`: one client "Assistant" for every engine. A second one is
+    /// `conflict`; its first-start rights read calendars, tasks and the inbox only.
+    #[tokio::test]
+    async fn there_is_one_assistant_client() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (assistant, _) = clients.add("Assistant", ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+        assert_eq!((assistant.kind.as_str(), &assistant.rights), (ASSISTANT_CLIENT, &Rights::assistant()));
+        let again = clients.add("Assistant 2", ASSISTANT_CLIENT, RightsTemplate::FullAccess.rights()).await;
+        assert!(matches!(again, Err(ClientsError::Conflict(_))), "{again:?}");
+        assert_eq!(clients.list().len(), 1);
+        clients.remove(&assistant.id).await.expect("removed");
+        clients.add("Assistant", ASSISTANT_CLIENT, Rights::assistant()).await.expect("again after removing it");
+    }
+
     #[test]
     fn an_existing_state_directory_is_made_private() {
         use std::os::unix::fs::PermissionsExt;
