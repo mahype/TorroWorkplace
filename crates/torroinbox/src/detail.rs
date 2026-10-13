@@ -9,20 +9,22 @@
 //! message with – right under it – a quiet note that the text comes from outside the suite, and a
 //! link to open when it is safe ([`openable`]). Every link opens through the core
 //! (`inbox.open_item`), the window of a coding agent included.
-//! Footer: "Mark as done" / "Reopen"; approvals show "Allow" and "Deny" instead, which send
+//! Footer: "Done" / "Reopen"; approvals show "Allow" and "Deny" instead, which send
 //! `approvals.decide_approval` (task E3.8; disabled while a decision is on its way) – an approval
-//! resolves itself once decided, so it has no "Mark as done".
+//! resolves itself once decided, so it has no "Done".
 //!
-//! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Snooze" (`s`)
-//! opens the snooze menu, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
+//! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Later" (`s`)
+//! opens the snooze menu – the words of the cards in all three windows (task E8.5: "Later" and
+//! "Done", no more "Snooze" and "Mark as done") –, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
 //! text button – only its icon in narrow windows, where the words do not fit ([`Footer::compact`]),
 //! and beside "…", which leaves no room for them in the panel's 400 either – and "…" (`m`, task
 //! E3.10), which opens the menu "Hide from inbox": the entry, its sender or
 //! domain, "Always to Info" and "Move to junk" for mail, muting the source for the others
 //! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". "Make task"
 //! (`t`, task E3.5) is an
-//! icon button next to "Snooze": its words would not fit beside the others in the panel's 400.
-//! Approvals have none – they close once decided, and a task would not decide them.
+//! icon button next to "Later": its words would not fit beside the others in the panel's 400.
+//! Approvals have none – they close once decided, and a task would not decide them – and no "Later"
+//! either (task E8.5): an approval waits for yes or no and must not vanish by accident.
 //!
 //! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, actions, attachments,
 //! text) in place of its short text; the footer stays the entry's.
@@ -53,7 +55,7 @@ use crate::list;
 pub struct Anchors {
     /// The row under the cursor in the list (registered by `list.rs`).
     pub row: Anchor,
-    /// The footer's "Snooze": the snooze menu and the picker open here while the panel is open.
+    /// The footer's "Later": the snooze menu and the picker open here while the panel is open.
     pub snooze: Anchor,
     /// The footer's "Move to …": the lane question opens here while the panel is open.
     pub lane: Anchor,
@@ -226,14 +228,15 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 }
 
 /// The buttons below the line: Allow/Deny for an approval, else done or reopen;
-/// then "Snooze" for an entry that is not done and "Make task" for one that is no approval, and at
-/// the right "Move to …" and "…" (hide from the inbox) when there is a way to hide it.
+/// then "Later" for an entry that is not done and no approval, "Make task" for one that is no
+/// approval, and at the right "Move to …" and "…" (hide from the inbox) when there is a way to hide
+/// it.
 fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     let mut buttons = decide(item, footer.deciding);
-    if !matches!(item.state, State::Done { .. }) {
+    if !matches!(item.state, State::Done { .. }) && !is_approval(item) {
         let snooze = widgets::text_button(
             Some(Icon::Clock),
-            tr("Snooze"),
+            tr("Later"),
             style::button::secondary,
             Some(Message::AskSnooze(item.id.clone())),
         );
@@ -295,12 +298,9 @@ pub(crate) fn decide(item: &Item, deciding: bool) -> Vec<Element<'_, Message>> {
         State::Done { .. } => {
             widgets::text_button(None, tr("Reopen"), style::button::secondary, Some(done(item, false)))
         }
-        State::New | State::Seen | State::Snoozed { .. } => widgets::text_button(
-            Some(Icon::Check),
-            tr("Mark as done"),
-            style::button::secondary,
-            Some(done(item, true)),
-        ),
+        State::New | State::Seen | State::Snoozed { .. } => {
+            widgets::text_button(Some(Icon::Check), tr("Done"), style::button::secondary, Some(done(item, true)))
+        }
     };
     vec![button]
 }
@@ -382,7 +382,7 @@ mod tests {
         assert!(is_approval(&approval));
         assert_eq!(decide(&approval, false).len(), 2, "Allow and Deny");
         assert!(!is_approval(&sample("demo-1")));
-        assert_eq!(decide(&sample("demo-1"), false).len(), 1, "Mark as done");
+        assert_eq!(decide(&sample("demo-1"), false).len(), 1, "Done");
     }
 
     fn footer(hide: bool) -> Footer {
@@ -391,10 +391,10 @@ mod tests {
 
     #[test]
     fn the_footer_offers_triage_to_the_mouse() {
-        // Mark as done, Snooze, Make task, the gap, Move to, "…".
+        // Done, Later, Make task, the gap, Move to, "…".
         assert_eq!(buttons(&sample("demo-1"), &footer(true)).len(), 6);
-        // Allow, Deny, Snooze, the gap, Move to: an approval has no way to hide it and no task.
-        assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 5);
+        // Allow, Deny, the gap, Move to: an approval has no way to hide it, no task and no Later.
+        assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 4);
         // Reopen, Make task, the gap, Move to, "…": a done entry is not snoozed.
         assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 5);
     }

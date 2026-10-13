@@ -1,0 +1,1181 @@
+//! The hub (task E8.5 in `docs/tasks/eingang.md`; `docs/eingang.md`, "Drei Fenster"): the inbox
+//! window that is about acting, not reading – "Act now".
+//!
+//! - **Sections** ([`Section`], [`Sections`]): the open entries of "For me" in three, top to bottom:
+//!   **Decide** (approvals: Allow · Deny · Go to window), **Agents** (coding agents waiting or done:
+//!   Go to window · Later · Done) and **To sort** (everything else, each with its targets: Task ·
+//!   Later · Done for mail, Open · Task · Later · ✕ for the rest). "Info" is not here: it is for
+//!   reading, which the mail and the notifications window do.
+//! - **Buttons** ([`acts`]): the concept's table "Knöpfe je Eintrag". An approval has **neither ✕
+//!   nor Later** – it waits for yes or no and must not vanish by accident. Every button sends what
+//!   its key sends at the entry (`Message::Act`, `Message::OpenRow`, `Message::Decide`).
+//! - **Tiles** ([`tiles`]): over the sections one tile per origin (mail, agents, the suite, each
+//!   script) with its number in `DISPLAY` and one line; a click filters the sections to it
+//!   (`Message::Filter`), a second click shows everything again. As many as fit in one row
+//!   ([`tile_columns`]), the busiest first.
+//! - **Coming back** ([`side`]): in the wide layout a column at the right with the snoozed entries
+//!   and when they wake, the soonest first.
+//! - **Sizes** ([`layout`]): wide and medium lay Decide and Agents out as a grid of cards, To sort
+//!   as one card per line with its buttons at the right; narrow shows the numbers instead of the
+//!   tiles, one card per line, big Allow and Deny, and To sort as cards with their buttons below.
+//!   The compact density draws Agents and To sort as rows with the action bar; approvals stay
+//!   cards, so Allow and Deny are always there. Mini and strip show the glance, as every window.
+//!
+//! Only the window: no request of its own. The app lists the entries (`inbox.list_items`, the
+//! snoozed ones for "Coming back") and sends the changes; the hub lays out, and its heights are
+//! plain functions ([`span`]) so the app can scroll the cursor into view.
+
+use chrono::{DateTime, Utc};
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, button, column, container, responsive, row, rule, scrollable};
+use iced::{Alignment, Color, Element, Fill, Padding, Theme};
+use torro_core::i18n::{tr, trf};
+use torro_gui::icon::{self, Icon};
+use torro_gui::layout::{self, SizeClass};
+use torro_gui::theme::{self, palette, size, space};
+use torro_gui::ui_state::Density;
+use torro_gui::widgets::{self, ButtonStyle, Mark, RowAction, TileFace, TileSize};
+use torro_gui::{style, typo};
+use torro_inbox::{Action, Item, Kind, Lane, Link, SourceKind, State};
+
+use crate::app::Message;
+use crate::keys::Command;
+use crate::list::{self, Rows};
+use crate::{detail, glance, notifications};
+
+/// How many lines of its text a card of Decide or Agents shows, as the notifications window's cards.
+const TEXT_LINES: usize = 2;
+
+/// The three sections of "Act now", top to bottom.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Section {
+    /// Approvals: the suite asks before an agent may do something.
+    Decide,
+    /// Coding agents waiting for the user or done with their turn.
+    Agents,
+    /// Every other entry for the user: to hand on (task, later) or to let go (done, ✕).
+    ToSort,
+}
+
+impl Section {
+    /// Top to bottom.
+    pub const ALL: [Section; 3] = [Section::Decide, Section::Agents, Section::ToSort];
+
+    /// The section `item` stands in: approvals in Decide, coding agents in Agents, every other open
+    /// entry of "For me" in To sort. `None` for entries that are not open or in "Info".
+    pub fn of(item: &Item) -> Option<Section> {
+        if !item.state.is_open() || item.lane != Lane::ForMe {
+            return None;
+        }
+        Some(match item.kind {
+            Kind::Approval => Section::Decide,
+            Kind::AgentWaiting | Kind::AgentDone => Section::Agents,
+            Kind::Notice | Kind::AccountProblem | Kind::Message => Section::ToSort,
+        })
+    }
+
+    /// The caption over the section ("Decide · 2").
+    pub fn title(self) -> &'static str {
+        match self {
+            Section::Decide => tr("Decide"),
+            Section::Agents => tr("Agents"),
+            Section::ToSort => tr("To sort"),
+        }
+    }
+
+    /// The word after its number, in the header bar's summary and the narrow numbers ("2 to
+    /// decide").
+    pub fn word(self) -> &'static str {
+        match self {
+            Section::Decide => tr("to decide"),
+            Section::Agents => tr("agents"),
+            Section::ToSort => tr("to sort"),
+        }
+    }
+}
+
+/// Where an entry comes from, as the tiles count it: all mail accounts together, all coding agents
+/// together, the suite, and every script on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    Mail,
+    Agents,
+    Suite,
+    /// A script or service, by its client's name.
+    Script(String),
+}
+
+impl Origin {
+    /// The origin of `item`, from its source.
+    pub fn of(item: &Item) -> Origin {
+        match item.source.kind {
+            SourceKind::Mail => Origin::Mail,
+            SourceKind::Agent => Origin::Agents,
+            SourceKind::Suite => Origin::Suite,
+            SourceKind::Script => Origin::Script(item.source.name.clone()),
+        }
+    }
+
+    /// The name in the tile and in "Coming back".
+    pub fn name(&self) -> String {
+        match self {
+            Origin::Mail => tr("Mail").to_owned(),
+            Origin::Agents => tr("Agents").to_owned(),
+            Origin::Suite => tr("Suite").to_owned(),
+            Origin::Script(name) => list::one_line(name),
+        }
+    }
+
+    /// The icon in the tile, as the sources have them (`list::source_icon`).
+    fn icon(&self) -> Icon {
+        match self {
+            Origin::Mail => Icon::Mail,
+            Origin::Agents => Icon::Sparkles,
+            Origin::Suite => Icon::LayoutGrid,
+            Origin::Script(_) => Icon::AppWindow,
+        }
+    }
+}
+
+/// The entries of "Act now" by section, each in the order of the app's entries (waiting first,
+/// then the newest).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Sections<'a> {
+    pub decide: Vec<&'a Item>,
+    pub agents: Vec<&'a Item>,
+    pub to_sort: Vec<&'a Item>,
+}
+
+impl<'a> Sections<'a> {
+    /// The entries of `items` in their sections ([`Section::of`]); with `filter` (a tile clicked)
+    /// only those of that origin.
+    pub fn of(items: &'a [Item], filter: Option<&Origin>) -> Sections<'a> {
+        let mut sections = Sections::default();
+        for item in items.iter().filter(|item| filter.is_none_or(|origin| Origin::of(item) == *origin)) {
+            match Section::of(item) {
+                Some(Section::Decide) => sections.decide.push(item),
+                Some(Section::Agents) => sections.agents.push(item),
+                Some(Section::ToSort) => sections.to_sort.push(item),
+                None => {}
+            }
+        }
+        sections
+    }
+
+    /// The entries of `section`.
+    pub fn get(&self, section: Section) -> &[&'a Item] {
+        match section {
+            Section::Decide => &self.decide,
+            Section::Agents => &self.agents,
+            Section::ToSort => &self.to_sort,
+        }
+    }
+
+    /// The sections drawn, with their entries: those with entries, top to bottom; only To sort
+    /// while the window shows To sort alone (`only_to_sort`).
+    pub fn shown(&self, only_to_sort: bool) -> Vec<(Section, &[&'a Item])> {
+        Section::ALL
+            .into_iter()
+            .filter(|section| !only_to_sort || *section == Section::ToSort)
+            .map(|section| (section, self.get(section)))
+            .filter(|(_, items)| !items.is_empty())
+            .collect()
+    }
+
+    /// The entries in the order the keys walk them: section after section, as drawn.
+    pub fn order(&self, only_to_sort: bool) -> Vec<&'a Item> {
+        self.shown(only_to_sort).into_iter().flat_map(|(_, items)| items.iter().copied()).collect()
+    }
+
+    /// Nothing to act on.
+    pub fn is_empty(&self) -> bool {
+        self.decide.is_empty() && self.agents.is_empty() && self.to_sort.is_empty()
+    }
+}
+
+/// The numbers of the sections that have entries, as `(number, word)`: "2" "to decide", "9" "to
+/// sort".
+pub fn numbers(sections: &Sections<'_>) -> Vec<(usize, &'static str)> {
+    Section::ALL
+        .into_iter()
+        .map(|section| (sections.get(section).len(), section.word()))
+        .filter(|(count, _)| *count > 0)
+        .collect()
+}
+
+/// The header bar's note beside "Act now": "2 to decide · 3 agents · 9 to sort" ([`numbers`]);
+/// empty when there is nothing to act on.
+pub fn summary(sections: &Sections<'_>) -> String {
+    numbers(sections).into_iter().map(|(count, word)| format!("{count} {word}")).collect::<Vec<_>>().join(" · ")
+}
+
+/// One tile over the sections: an origin, how many of its entries are for the user, and one line
+/// that says what they are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Tile {
+    pub origin: Origin,
+    pub count: usize,
+    /// Mail: the newest senders ("From Anna, Ben"); agents: how many wait and how many are done;
+    /// anything else: the newest entry's title.
+    pub line: String,
+}
+
+/// The tiles of `items`: one per origin of the entries in "Act now" ([`Section::of`]), the busiest
+/// first (ties in the order of `items`). Unfiltered: a tile stays while its filter is on.
+pub fn tiles(items: &[Item]) -> Vec<Tile> {
+    let mut by_origin: Vec<(Origin, Vec<&Item>)> = Vec::new();
+    for item in items.iter().filter(|item| Section::of(item).is_some()) {
+        let origin = Origin::of(item);
+        match by_origin.iter_mut().find(|(known, _)| *known == origin) {
+            Some((_, entries)) => entries.push(item),
+            None => by_origin.push((origin, vec![item])),
+        }
+    }
+    by_origin.sort_by_key(|(_, entries)| std::cmp::Reverse(entries.len()));
+    by_origin
+        .into_iter()
+        .map(|(origin, entries)| Tile { line: tile_line(&origin, &entries), count: entries.len(), origin })
+        .collect()
+}
+
+/// The line of a tile of `origin` over its `entries` ([`Tile::line`]).
+fn tile_line(origin: &Origin, entries: &[&Item]) -> String {
+    match origin {
+        Origin::Mail => {
+            let owned: Vec<Item> = entries.iter().map(|item| (*item).clone()).collect();
+            let senders = glance::latest_senders(&owned);
+            if senders.is_empty() { String::new() } else { glance::senders_text(&senders) }
+        }
+        Origin::Agents => {
+            let waiting = entries.iter().filter(|item| item.kind == Kind::AgentWaiting).count();
+            let finished = entries.len() - waiting;
+            let mut parts = Vec::new();
+            if waiting > 0 {
+                parts.push(trf("{n} waiting", &[("n", &waiting)]));
+            }
+            if finished > 0 {
+                parts.push(trf("{n} finished", &[("n", &finished)]));
+            }
+            parts.join(" · ")
+        }
+        Origin::Suite | Origin::Script(_) => {
+            entries.iter().max_by_key(|item| item.updated).map(|item| list::words(item).0).unwrap_or_default()
+        }
+    }
+}
+
+/// The narrowest a tile gets: two thirds of the properties column, room for a name, the number and
+/// a short line.
+fn tile_min() -> f32 {
+    size::props() * 2.0 / 3.0
+}
+
+/// How many tiles fit in one row `width` wide, [`size::card_gap()`] apart; at least one.
+pub fn tile_columns(width: f32) -> usize {
+    let gap = size::card_gap();
+    let count = ((width + gap) / (tile_min() + gap)).floor();
+    if count >= 1.0 { count as usize } else { 1 }
+}
+
+/// What a button of the hub does (the concept's table "Knöpfe je Eintrag").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Act {
+    /// Allow the approval with this id (`approvals.decide_approval`).
+    Allow(String),
+    /// Deny the approval with this id.
+    Deny(String),
+    /// Bring the agent's window to the front (`inbox.open_item`).
+    GoToWindow,
+    /// Open the page or the app the entry links to (`inbox.open_item`).
+    Open,
+    /// Make a task of the entry (`t`, `inbox.create_task_from_item`).
+    Task,
+    /// Put it off (`s`, `inbox.snooze_item`).
+    Later,
+    /// Mark it done (`e`, `inbox.set_item_done`).
+    Done,
+    /// Let it go without doing anything (`x`, `inbox.set_item_done` with `dismissed`).
+    Dismiss,
+    /// Open a done entry again (`e`).
+    Reopen,
+}
+
+/// Whether `item` is a coding agent's: waiting, or done with its turn.
+fn is_agent(item: &Item) -> bool {
+    matches!(item.kind, Kind::AgentWaiting | Kind::AgentDone)
+}
+
+/// The buttons of `item` from the left, as the concept's table has them:
+///
+/// - an approval: Allow · Deny, and Go to window when its agent's window can be opened – **no ✕, no
+///   Later, no Done**: it waits for yes or no;
+/// - a done entry: Reopen;
+/// - a coding agent: Go to window (when it can be opened) · Later · Done;
+/// - mail: Task · Later · Done – mail is done or hidden, never dismissed;
+/// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · Later ·
+///   ✕ ([`notifications::dismissable`], else Done).
+pub fn acts(item: &Item) -> Vec<Act> {
+    let window = detail::openable(item) == Some(Link::Window);
+    if detail::is_approval(item) {
+        let mut acts: Vec<Act> = item
+            .actions
+            .iter()
+            .map(|action| match action {
+                Action::Allow { approval } => Act::Allow(approval.clone()),
+                Action::Deny { approval } => Act::Deny(approval.clone()),
+            })
+            .collect();
+        if window {
+            acts.push(Act::GoToWindow);
+        }
+        return acts;
+    }
+    if matches!(item.state, State::Done { .. }) {
+        return vec![Act::Reopen];
+    }
+    if is_agent(item) {
+        let lead = window.then_some(Act::GoToWindow);
+        return lead.into_iter().chain([Act::Later, Act::Done]).collect();
+    }
+    if item.source.kind == SourceKind::Mail {
+        return vec![Act::Task, Act::Later, Act::Done];
+    }
+    let mut acts = Vec::new();
+    match detail::openable(item) {
+        Some(Link::Url { .. } | Link::App { .. }) => acts.push(Act::Open),
+        Some(Link::Window) => acts.push(Act::GoToWindow),
+        Some(Link::Mail { .. }) | None => {}
+    }
+    acts.extend([Act::Task, Act::Later]);
+    acts.push(if notifications::dismissable(item) { Act::Dismiss } else { Act::Done });
+    acts
+}
+
+impl Act {
+    /// The button's icon.
+    pub fn icon(&self) -> Icon {
+        match self {
+            Act::Allow(_) | Act::Done => Icon::Check,
+            Act::Deny(_) | Act::Dismiss => Icon::X,
+            Act::GoToWindow => Icon::AppWindow,
+            Act::Open => Icon::ArrowUpRight,
+            Act::Task => Icon::ListTodo,
+            Act::Later => Icon::Clock,
+            Act::Reopen => Icon::Inbox,
+        }
+    }
+
+    /// The button's word (its tooltip when it shows as icon).
+    pub fn label(&self) -> &'static str {
+        match self {
+            Act::Allow(_) => tr("Allow"),
+            Act::Deny(_) => tr("Deny"),
+            Act::GoToWindow => tr("Go to window"),
+            Act::Open => tr("Open"),
+            Act::Task => tr("Task"),
+            Act::Later => tr("Later"),
+            Act::Done => tr("Done"),
+            Act::Dismiss => tr("Dismiss"),
+            Act::Reopen => tr("Reopen"),
+        }
+    }
+
+    /// The key that does the same at the entry, for the action bar's tooltip; Allow and Deny have
+    /// none (they stand on cards, never in an action bar).
+    fn key(&self) -> &'static str {
+        match self {
+            Act::Allow(_) | Act::Deny(_) => "",
+            Act::GoToWindow | Act::Open => "Enter",
+            Act::Task => "T",
+            Act::Later => "S",
+            Act::Done | Act::Reopen => "E",
+            Act::Dismiss => "X",
+        }
+    }
+
+    /// What the button sends for `item`; `None` (disabled) for Allow and Deny while a decision is on
+    /// its way (`deciding`) or the approval is closed.
+    pub fn message(&self, item: &Item, deciding: bool) -> Option<Message> {
+        let act = |command| Some(Message::Act(item.id.clone(), command));
+        let decide = |approval: &String, allow| {
+            (item.state.is_open() && !deciding).then(|| Message::Decide { approval: approval.clone(), allow })
+        };
+        match self {
+            Act::Allow(approval) => decide(approval, true),
+            Act::Deny(approval) => decide(approval, false),
+            Act::GoToWindow | Act::Open => Some(Message::OpenRow(item.id.clone())),
+            Act::Task => act(Command::MakeTask),
+            Act::Later => act(Command::Snooze),
+            Act::Done | Act::Reopen => act(Command::Done),
+            Act::Dismiss => act(Command::Dismiss),
+        }
+    }
+
+    /// The button's look: quiet (`ghost`) for what ends the entry or steps aside – Done, ✕, Reopen,
+    /// Later beside an agent's window, the window beside Allow and Deny –, framed (`secondary`) for
+    /// the rest, as the design's cards.
+    fn style(&self, section: Section) -> ButtonStyle {
+        let quiet = match self {
+            Act::Done | Act::Dismiss | Act::Reopen => true,
+            Act::Later => section == Section::Agents,
+            Act::GoToWindow => section == Section::Decide,
+            Act::Allow(_) | Act::Deny(_) | Act::Open | Act::Task => false,
+        };
+        if quiet { style::button::ghost } else { style::button::secondary }
+    }
+}
+
+/// How "Act now" lays itself out at a width.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Layout {
+    /// The narrow layout: the numbers instead of the tiles, one card per line, big Allow and Deny,
+    /// To sort's buttons under its cards.
+    pub narrow: bool,
+    /// Agents and To sort as cards (the comfortable density); rows with the action bar in the
+    /// compact one ([`as_rows`]). Decide is cards in both.
+    pub cards: bool,
+    /// Cards of Decide and Agents per line.
+    pub columns: usize,
+    /// Tiles in their row; none in the narrow layout.
+    pub tiles: usize,
+    /// The window shows To sort alone (its sidebar entry): no tiles, no numbers, no other section.
+    pub only_to_sort: bool,
+}
+
+/// The layout of "Act now" in a window of `class` whose content is `width` wide (beside sidebar,
+/// rail, panel and "Coming back", without the hub's own inset), in `density`. Mini and strip show
+/// the glance; they count as narrow here.
+pub fn layout(width: f32, class: SizeClass, density: Density, only_to_sort: bool) -> Layout {
+    let narrow = !matches!(class, SizeClass::Wide | SizeClass::Medium);
+    let width = width.min(max_width() - sides(narrow));
+    Layout {
+        narrow,
+        cards: density == Density::Comfortable,
+        columns: if narrow { 1 } else { notifications::fit(width) },
+        tiles: if narrow { 0 } else { tile_columns(width) },
+        only_to_sort,
+    }
+}
+
+/// The widest "Act now" gets, its inset included: two reading widths – a wide window is not
+/// stretched; the room left stays free at the right.
+pub fn max_width() -> f32 {
+    2.0 * size::content_max()
+}
+
+/// The hub's inset around its content: a page's ([`layout::page_padding()`]), a panel's in the
+/// narrow layout, where every point of width counts.
+pub fn inset(narrow: bool) -> Padding {
+    if narrow { layout::panel_padding() } else { layout::page_padding() }
+}
+
+/// What [`inset`] takes from the width.
+pub fn sides(narrow: bool) -> f32 {
+    let inset = inset(narrow);
+    inset.left + inset.right
+}
+
+/// The cards of `section` per line: the layout's columns, at most two for Decide – an approval's
+/// title and what it is about need the room, and a decision should not look like one of many.
+fn per_line(section: Section, layout: Layout) -> usize {
+    let columns = layout.columns.max(1);
+    if section == Section::Decide { columns.min(2) } else { columns }
+}
+
+/// Whether `section` shows its entries as rows with the action bar: in the compact density, all but
+/// Decide – an approval keeps its card, so Allow and Deny are always there.
+fn as_rows(section: Section, layout: Layout) -> bool {
+    !layout.cards && section != Section::Decide
+}
+
+/// The gap between the blocks of "Act now" (tiles, sections).
+fn block_gap(narrow: bool) -> f32 {
+    if narrow { space::l() } else { layout::section_gap() }
+}
+
+/// The gap between a section's caption and its cards.
+fn caption_gap() -> f32 {
+    space::m()
+}
+
+/// The height of a tile: its inset, the name, the number and its line, [`space::xs()`] apart.
+fn tile_height() -> f32 {
+    let pad = layout::panel_padding();
+    let lines = 2.0 * typo::line_height(typo::meta()) + typo::line_height(typo::display());
+    pad.top + pad.bottom + lines + 2.0 * space::xs()
+}
+
+/// The height of a card's head: its tile, the title over the meta line, or the state's pill.
+fn head_height() -> f32 {
+    size::tile().max(typo::line_height(typo::body_strong()) + typo::line_height(typo::meta()))
+}
+
+/// The height the text of a card always takes, so a card's height never depends on its width.
+fn text_height() -> f32 {
+    TEXT_LINES as f32 * typo::line_height(typo::body())
+}
+
+/// The height of the buttons of `item`'s card: a row of buttons; in the narrow layout an
+/// approval's big Allow and Deny, with "Go to window" below when it has one.
+fn buttons_height(item: &Item, narrow: bool) -> f32 {
+    if !(narrow && detail::is_approval(item)) {
+        return size::control_sm();
+    }
+    let window = acts(item).contains(&Act::GoToWindow);
+    size::control_lg() + if window { space::s() + size::control_sm() } else { 0.0 }
+}
+
+/// The height of the card of `item` in Decide or Agents: the card's inset, the head, the text when
+/// there is one and the buttons, [`size::card_gap()`] between them.
+pub fn card_height(item: &Item, narrow: bool) -> f32 {
+    let pad = layout::panel_padding();
+    let gap = size::card_gap();
+    let text = if notifications::card_text(item).is_some() { text_height() + gap } else { 0.0 };
+    pad.top + pad.bottom + head_height() + gap + text + buttons_height(item, narrow)
+}
+
+/// The height of `item` in To sort (and in Agents, while they are rows): one line of a card with its
+/// buttons at the right, a card with its buttons below (narrow), or its row (compact).
+pub fn sort_height(item: &Item, layout: Layout) -> f32 {
+    let pad = layout::panel_padding();
+    match (layout.cards, layout.narrow) {
+        (false, _) => list::row_height_of(item),
+        (true, false) => pad.top + pad.bottom + head_height().max(size::avatar()).max(size::tile_lg()),
+        (true, true) => pad.top + pad.bottom + head_height() + size::card_gap() + size::control_sm(),
+    }
+}
+
+/// The gap between the entries of To sort: the cards' gap, none between rows (they have lines).
+fn sort_gap(layout: Layout) -> f32 {
+    if layout.cards { size::card_gap() } else { 0.0 }
+}
+
+/// Where the card or row of `id` lies in the scrolling content of "Act now" with `sections` laid out
+/// as `layout`, as `(top, bottom)`; the first of a section starts at its caption, so scrolling up to
+/// it shows the caption. `None` for an entry not shown. Counts what [`view`] draws: the inset, the
+/// tiles or the numbers, then section after section.
+pub fn span(sections: &Sections<'_>, tiles: usize, layout: Layout, id: &str) -> Option<(f32, f32)> {
+    let gap = block_gap(layout.narrow);
+    let mut y = inset(layout.narrow).top;
+    if !layout.only_to_sort {
+        if layout.narrow && !numbers(sections).is_empty() {
+            y += typo::line_height(typo::display()) + gap;
+        } else if !layout.narrow && tiles > 0 {
+            y += tile_height() + gap;
+        }
+    }
+    for (section, items) in sections.shown(layout.only_to_sort) {
+        let start = y;
+        y += typo::line_height(typo::caption()) + caption_gap();
+        if section == Section::ToSort || as_rows(section, layout) {
+            if as_rows(section, layout) {
+                y += size::HAIRLINE;
+            }
+            for (i, item) in items.iter().enumerate() {
+                let height = sort_height(item, layout);
+                if item.id == id {
+                    return Some((if i == 0 { start } else { y }, y + height));
+                }
+                y += height + sort_gap(layout);
+            }
+            y -= sort_gap(layout);
+        } else {
+            for (i, line) in items.chunks(per_line(section, layout)).enumerate() {
+                let tallest = line.iter().map(|item| card_height(item, layout.narrow)).fold(0.0, f32::max);
+                if line.iter().any(|item| item.id == id) {
+                    return Some((if i == 0 { start } else { y }, y + tallest));
+                }
+                y += tallest + size::card_gap();
+            }
+            y -= size::card_gap();
+        }
+        y += gap;
+    }
+    None
+}
+
+/// The entries of `snoozed` that come back, the soonest first ("Coming back").
+pub fn coming_back(snoozed: &[Item]) -> Vec<&Item> {
+    let mut back: Vec<&Item> = snoozed.iter().filter(|item| matches!(item.state, State::Snoozed { .. })).collect();
+    back.sort_by_key(|item| match item.state {
+        State::Snoozed { until } => Some(until),
+        State::New | State::Seen | State::Done { .. } => None,
+    });
+    back
+}
+
+/// What "Act now" gets to draw.
+pub struct HubData<'a> {
+    /// The open entries, in the app's order (waiting first, then the newest).
+    pub items: &'a [Item],
+    /// The tile clicked, whose entries alone show; `None` for all.
+    pub filter: Option<&'a Origin>,
+    pub layout: Layout,
+    /// The cursor, the time, the anchor for the menus, the mail accounts (`list::Rows`).
+    pub rows: Rows<'a>,
+    /// A decision of an approval is on its way: its Allow and Deny are disabled.
+    pub deciding: bool,
+    /// The theme's attention colour and its colour for "OK", for the states' pills.
+    pub attention: Color,
+    pub ok: Color,
+}
+
+/// "Act now": the empty state, or the tiles (the numbers in narrow windows) and the sections –
+/// scrolling as one ([`list::SCROLL`], so the app keeps the cursor in view), capped at
+/// [`max_width`].
+pub fn view<'a>(data: HubData<'a>) -> Element<'a, Message> {
+    let sections = Sections::of(data.items, data.filter);
+    if sections.is_empty() && data.filter.is_none() {
+        let (title, hint) = if data.layout.only_to_sort {
+            (tr("Nothing to sort."), tr("Mail and notices for you show up here."))
+        } else {
+            (tr("Nothing to act on."), tr("Approvals, waiting agents and entries to sort show up here."))
+        };
+        return list::empty_state(Icon::Layers, title, hint);
+    }
+    let content = responsive(move |bounds| {
+        let width = (bounds.width - sides(data.layout.narrow)).max(0.0);
+        let content = blocks(&data, width);
+        scrollable(container(content).padding(inset(data.layout.narrow)))
+            .id(list::SCROLL)
+            .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y, viewport.bounds().height))
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .style(style::scrollable)
+            .width(Fill)
+            .height(Fill)
+            .into()
+    });
+    container(content).width(Fill).max_width(max_width()).height(Fill).into()
+}
+
+/// The blocks of "Act now" `width` wide (inside the inset): the tiles or the numbers, then every
+/// section with entries.
+fn blocks<'a>(data: &HubData<'a>, width: f32) -> Element<'a, Message> {
+    let sections = Sections::of(data.items, data.filter);
+    let layout = data.layout;
+    let mut blocks: Vec<Element<'a, Message>> = Vec::new();
+    if !layout.only_to_sort {
+        if layout.narrow {
+            let numbers = numbers(&sections);
+            if !numbers.is_empty() {
+                blocks.push(numbers_line(numbers));
+            }
+        } else {
+            let tiles = tiles(data.items);
+            if !tiles.is_empty() {
+                blocks.push(tile_row(tiles, layout.tiles, data.filter, width));
+            }
+        }
+    }
+    for (section, items) in sections.shown(layout.only_to_sort) {
+        let body = if as_rows(section, layout) {
+            let rows = items.iter().map(|item| entry_row(item, data, width));
+            column![rule::horizontal(size::HAIRLINE).style(style::rule), column(rows)].width(Fill).into()
+        } else if section == Section::ToSort {
+            let cards = items.iter().map(|item| sort_card(item, data, width));
+            column(cards).spacing(sort_gap(layout)).width(Fill).into()
+        } else {
+            grid(items.iter().map(|item| card(item, section, data)).collect(), per_line(section, layout))
+        };
+        blocks.push(column![caption(section.title(), items.len()), body].spacing(caption_gap()).into());
+    }
+    column(blocks).spacing(block_gap(layout.narrow)).width(Fill).into()
+}
+
+/// The caption over a section: "Decide · 2" in `CAPTION` and `text_3`, sentence case.
+fn caption<'a>(label: &str, count: usize) -> Element<'a, Message> {
+    // No "0": an empty "Coming back" says so in its line below.
+    let words = if count > 0 { format!("{label} · {count}") } else { label.to_owned() };
+    typo::text(typo::caption(), words).style(theme::text_3).wrapping(Wrapping::None).into()
+}
+
+/// `cells` in lines of `columns`, [`size::card_gap()`] apart; the last line filled up with room, so
+/// its cells keep the width of the others.
+fn grid<'a>(cells: Vec<Element<'a, Message>>, columns: usize) -> Element<'a, Message> {
+    let columns = columns.max(1);
+    let gap = size::card_gap();
+    let mut lines = Vec::new();
+    let mut cells = cells.into_iter().peekable();
+    while cells.peek().is_some() {
+        let mut line: Vec<Element<'a, Message>> =
+            cells.by_ref().take(columns).map(|cell| container(cell).width(Fill).into()).collect();
+        let filler = columns - line.len();
+        line.extend((0..filler).map(|_| Space::new().width(Fill).into()));
+        lines.push(row(line).spacing(gap).into());
+    }
+    column(lines).spacing(gap).width(Fill).into()
+}
+
+/// The numbers of the narrow layout: each section's number in `DISPLAY`, its word beside it.
+fn numbers_line<'a>(numbers: Vec<(usize, &'static str)>) -> Element<'a, Message> {
+    let parts = numbers.into_iter().map(|(count, word)| {
+        row![
+            typo::text(typo::display().tabular(), count.to_string()).style(theme::text).wrapping(Wrapping::None),
+            typo::text(typo::body(), word).style(theme::text_2).wrapping(Wrapping::None),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
+    });
+    row(parts).spacing(space::xl()).align_y(Alignment::Center).into()
+}
+
+/// The row of tiles `width` wide: the first `columns` of `tiles`, the chosen one (`filter`) drawn
+/// selected.
+fn tile_row<'a>(tiles: Vec<Tile>, columns: usize, filter: Option<&Origin>, width: f32) -> Element<'a, Message> {
+    let columns = columns.max(1);
+    let gap = size::card_gap();
+    let pad = layout::panel_padding();
+    let inner = ((width - (columns as f32 - 1.0) * gap) / columns as f32 - pad.left - pad.right).max(0.0);
+    let cells = tiles.into_iter().take(columns).map(|tile| {
+        let chosen = filter == Some(&tile.origin);
+        tile_view(tile, chosen, inner)
+    });
+    let mut line: Vec<Element<'a, Message>> = cells.map(|cell| container(cell).width(Fill).into()).collect();
+    let filler = columns.saturating_sub(line.len());
+    line.extend((0..filler).map(|_| Space::new().width(Fill).into()));
+    row(line).spacing(gap).into()
+}
+
+/// One tile, its text `inner` wide: the origin's icon and name, the number in `DISPLAY`, the line –
+/// a card (`widgets::card`), whose click filters the sections to the origin.
+fn tile_view<'a>(tile: Tile, chosen: bool, inner: f32) -> Element<'a, Message> {
+    let mark = icon::icon(tile.origin.icon(), icon::SIZE_SM)
+        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_3) });
+    let name = typo::ellipsize(&tile.origin.name(), typo::meta(), inner - icon::SIZE_SM - space::s());
+    let head = row![mark, typo::text(typo::meta(), name).style(theme::text_3).wrapping(Wrapping::None)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    let figure =
+        typo::text(typo::display().tabular(), tile.count.to_string()).style(theme::text).wrapping(Wrapping::None);
+    let line = typo::ellipsize(&tile.line, typo::meta(), inner);
+    let line = typo::text(typo::meta(), line).style(theme::text_3).wrapping(Wrapping::None);
+    let words = column![head, figure, container(line).clip(true)].spacing(space::xs());
+    widgets::card(vec![words.into()], chosen, Some(Message::Filter(tile.origin)))
+}
+
+/// The meta line of a card of Decide or Agents: the agent (an approval says none – the suite asks),
+/// the number of reports from two on, and the time.
+fn card_meta(item: &Item, rows: &Rows<'_>) -> String {
+    let mut parts = Vec::new();
+    if is_agent(item) {
+        parts.push(item.source.label());
+    }
+    if item.count > 1 {
+        parts.push(trf("{n} reports", &[("n", &item.count)]));
+    }
+    parts.push(list::time_text(item, rows.view, rows.now));
+    parts.join(" · ")
+}
+
+/// The pill at the right of a card's head: "Waiting" while the entry waits, "Finished" for an agent
+/// done with its turn; colour only in its icon.
+fn state<'a>(item: &Item, data: &HubData<'_>) -> Option<Element<'a, Message>> {
+    if list::is_waiting(item) {
+        return Some(widgets::state_pill(Mark::Tinted(Icon::CircleDotDashed, data.attention), tr("Waiting")));
+    }
+    (item.kind == Kind::AgentDone)
+        .then(|| widgets::state_pill(Mark::Tinted(Icon::CircleCheck, data.ok), tr("Finished")))
+}
+
+/// The card of `item` in Decide or Agents, as high as [`card_height`]: the head (the source's tile,
+/// the title, the meta line, the state), the text on [`TEXT_LINES`] lines, the buttons ([`acts`]) –
+/// in the narrow layout an approval's big Allow and Deny. A click opens it in the panel; under the
+/// cursor it is selected and registers the anchor.
+fn card<'a>(item: &'a Item, section: Section, data: &HubData<'a>) -> Element<'a, Message> {
+    let selected = data.rows.selected == Some(item.id.as_str());
+    let (title, _) = list::words(item);
+    let mut head = row![widgets::card_head(Some(list::source_tile(item)), title, card_meta(item, &data.rows), None)]
+        .spacing(space::m())
+        .align_y(Alignment::Center);
+    if let Some(pill) = state(item, data) {
+        head = head.push(pill);
+    }
+    let mut parts: Vec<Element<'a, Message>> = vec![head.into()];
+    if let Some(text) = notifications::card_text(item) {
+        let lines = responsive(move |bounds| {
+            let lines = list::clamp_lines(&text, typo::body(), bounds.width, TEXT_LINES)
+                .into_iter()
+                .map(|line| typo::text(typo::body(), line).style(theme::text_2).wrapping(Wrapping::None).into());
+            column(lines).into()
+        });
+        parts.push(container(lines).width(Fill).height(text_height()).clip(true).into());
+    }
+    let acts = acts(item);
+    if data.layout.narrow && detail::is_approval(item) {
+        parts.push(big_decide(item, &acts, data.deciding));
+    } else {
+        parts.push(buttons(item, acts, section, data.deciding));
+    }
+    let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
+    if selected { widgets::anchored(&data.rows.anchor, card) } else { card }
+}
+
+/// The buttons of `item` in one row, from the left: as many with their words as fit (the first –
+/// what the entry is about – keeps its word longest, `notifications::worded`), the rest as icons
+/// with the word as tooltip.
+fn buttons<'a>(item: &Item, acts: Vec<Act>, section: Section, deciding: bool) -> Element<'a, Message> {
+    let pressed: Vec<notifications::CardButton> = acts
+        .iter()
+        .map(|act| notifications::CardButton {
+            icon: act.icon(),
+            label: act.label().to_owned(),
+            on_press: act.message(item, deciding),
+        })
+        .collect();
+    let line = responsive(move |bounds| {
+        let words = notifications::worded(&pressed, false, bounds.width);
+        let line = acts
+            .iter()
+            .zip(&pressed)
+            .enumerate()
+            .map(|(i, (act, button))| act_button(button.clone(), act.style(section), i < words));
+        row(line).spacing(space::s()).align_y(Alignment::Center).into()
+    });
+    container(line).width(Fill).height(size::control_sm()).into()
+}
+
+/// A button with its icon and word in `look`, or its icon alone with the word as tooltip.
+fn act_button<'a>(button: notifications::CardButton, look: ButtonStyle, words: bool) -> Element<'a, Message> {
+    if words {
+        widgets::text_button(Some(button.icon), button.label, look, button.on_press)
+    } else {
+        widgets::icon_button(button.icon, button.label, button.on_press)
+    }
+}
+
+/// The narrow layout's buttons of an approval: Allow and Deny side by side, each half the card wide
+/// and [`size::control_lg()`] high, "Go to window" below them when the agent's window can be opened.
+fn big_decide<'a>(item: &Item, acts: &[Act], deciding: bool) -> Element<'a, Message> {
+    let big = acts.iter().filter(|act| matches!(act, Act::Allow(_) | Act::Deny(_))).map(|act| {
+        let mark = icon::icon(act.icon(), icon::SIZE_SM)
+            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) });
+        let words = row![mark, typo::text(typo::caption(), act.label()).wrapping(Wrapping::None)]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+        button(container(words).center_x(Fill).center_y(Fill))
+            .width(Fill)
+            .height(size::control_lg())
+            .padding(style::button_padding())
+            .style(style::button::secondary)
+            .on_press_maybe(act.message(item, deciding))
+            .into()
+    });
+    let mut block = column![row(big).spacing(space::s())].spacing(space::s());
+    if acts.contains(&Act::GoToWindow) {
+        let window = Act::GoToWindow;
+        block = block.push(widgets::text_button(
+            Some(window.icon()),
+            window.label(),
+            style::button::ghost,
+            window.message(item, deciding),
+        ));
+    }
+    block.into()
+}
+
+/// The meta line of an entry of To sort: the sender of a mail, else the source; the number of
+/// reports from two on; the time.
+fn sort_meta(item: &Item, rows: &Rows<'_>) -> String {
+    let who = if item.source.kind == SourceKind::Mail { list::sender(item).0 } else { item.source.label() };
+    let mut parts = vec![who];
+    if item.count > 1 {
+        parts.push(trf("{n} reports", &[("n", &item.count)]));
+    }
+    parts.push(list::time_text(item, rows.view, rows.now));
+    parts.join(" · ")
+}
+
+/// What leads an entry of To sort: the sender's avatar for mail, else the source's tile.
+fn lead<'a>(item: &Item, rows: &Rows<'_>) -> Element<'a, Message> {
+    if item.source.kind == SourceKind::Mail {
+        let (name, _) = list::sender(item);
+        let account = list::account_index(item, &rows.accounts);
+        return list::avatar(&name, account, item.state == State::New, size::avatar());
+    }
+    widgets::source_tile(TileFace::Icon(list::source_icon(&item.source)), TileSize::Large, None)
+}
+
+/// The card of `item` in To sort `width` wide: one line – the lead, title and meta, the buttons at
+/// the right taking at most half the card, with words while they fit – or, in the narrow layout, the
+/// head with the buttons below it. A click opens it in the panel.
+fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32) -> Element<'a, Message> {
+    let selected = data.rows.selected == Some(item.id.as_str());
+    let (title, _) = list::words(item);
+    let meta = sort_meta(item, &data.rows);
+    let pad = layout::panel_padding();
+    let inner = (width - pad.left - pad.right).max(0.0);
+    let acts = acts(item);
+    let pressed: Vec<notifications::CardButton> = acts
+        .iter()
+        .map(|act| notifications::CardButton {
+            icon: act.icon(),
+            label: act.label().to_owned(),
+            on_press: act.message(item, data.deciding),
+        })
+        .collect();
+    let room = if data.layout.narrow { inner } else { inner / 2.0 };
+    let words = notifications::worded(&pressed, false, room);
+    let line = acts
+        .iter()
+        .zip(pressed)
+        .enumerate()
+        .map(|(i, (act, button))| act_button(button, act.style(Section::ToSort), i < words));
+    let line = row(line).spacing(space::s()).align_y(Alignment::Center);
+    let parts: Vec<Element<'a, Message>> = if data.layout.narrow {
+        vec![widgets::card_head(Some(lead(item, &data.rows)), title, meta, None), line.into()]
+    } else {
+        let words = container(widgets::card_head(None, title, meta, None)).width(Fill);
+        vec![row![lead(item, &data.rows), words, line].spacing(space::m()).align_y(Alignment::Center).into()]
+    };
+    let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
+    if selected { widgets::anchored(&data.rows.anchor, card) } else { card }
+}
+
+/// The row of `item` in Agents or To sort `width` wide (compact, [`as_rows`]): the mail or notice
+/// row of every view with the action bar of its [`acts`] on its first line, each button with its
+/// key.
+fn entry_row<'a>(item: &'a Item, data: &HubData<'a>, width: f32) -> Element<'a, Message> {
+    let selected = data.rows.selected == Some(item.id.as_str());
+    let height = list::row_height_of(item);
+    let content = if item.source.kind == SourceKind::Mail {
+        list::mail_content(list::MailLines::of(item, &data.rows), width)
+    } else {
+        list::notice_content(item, &data.rows, width)
+    };
+    let line = list::sized_row(content, selected, Message::Select(item.id.clone()), height);
+    let actions: Vec<RowAction<'a, Message>> = acts(item)
+        .into_iter()
+        .filter_map(|act| {
+            let message = act.message(item, data.deciding)?;
+            Some(RowAction::new(act.icon(), act.label(), act.key(), message))
+        })
+        .collect();
+    let words = widgets::row_actions_words(&actions, width);
+    let middle = list::first_line_middle(height, list::line_count(item));
+    let line = widgets::row_actions_at(line, actions, selected, words, middle);
+    if selected { widgets::anchored(&data.rows.anchor, line) } else { line }
+}
+
+/// The width the text of a row of "Coming back" gets: the properties column less its inset, the
+/// row's padding, the icon and the gap after it.
+fn side_room() -> f32 {
+    size::props() - 2.0 * space::s() - 2.0 * space::s() - icon::SIZE - space::m()
+}
+
+/// "Coming back" (the wide layout's column at the right): the snoozed entries, the soonest first,
+/// each with its title and its origin and when it wakes; a click opens it in the panel. Without any,
+/// a quiet line says what comes here.
+pub fn side<'a>(snoozed: &'a [Item], now: DateTime<Utc>, selected: Option<&'a str>) -> Element<'a, Message> {
+    let back = coming_back(snoozed);
+    let mut content =
+        column![container(caption(tr("Coming back"), back.len())).padding(Padding::new(0.0).left(space::s()))]
+            .spacing(space::xs())
+            .width(Fill);
+    if back.is_empty() {
+        let hint = typo::text(typo::meta(), tr("What you put off comes back here."))
+            .style(theme::text_3)
+            .wrapping(Wrapping::WordOrGlyph);
+        content = content.push(container(hint).padding(Padding::new(0.0).left(space::s()).right(space::s())));
+    }
+    for item in back {
+        let until = match item.state {
+            State::Snoozed { until } => list::wake_text(until, now),
+            State::New | State::Seen | State::Done { .. } => String::new(),
+        };
+        let title = typo::ellipsize(&list::words(item).0, typo::body(), side_room());
+        let meta = typo::ellipsize(&format!("{} · {until}", Origin::of(item).name()), typo::meta(), side_room());
+        let mark = icon::icon(Icon::Clock, icon::SIZE)
+            .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_2) });
+        let words = column![
+            typo::text(typo::body(), title).style(theme::text).wrapping(Wrapping::None),
+            typo::text(typo::meta().tabular(), meta).style(theme::text_3).wrapping(Wrapping::None),
+        ];
+        let line = row![mark, words].spacing(space::m()).align_y(Alignment::Center);
+        let chosen = selected == Some(item.id.as_str());
+        content = content.push(
+            button(line)
+                .width(Fill)
+                .padding(Padding::new(space::xs()).left(space::s()).right(space::s()))
+                .style(style::button::list_row(chosen))
+                .on_press(Message::Select(item.id.clone())),
+        );
+    }
+    content.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Local, TimeDelta, TimeZone};
+    use torro_inbox::demo::DemoSource;
+    use torro_inbox::{InboxSource, ItemFilter, StateFilter};
+
+    use super::*;
+
+    fn now() -> DateTime<Utc> {
+        Local.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time").to_utc()
+    }
+
+    /// The entries of the demo in `state`, waiting first – what the app holds.
+    fn entries(state: StateFilter) -> Vec<Item> {
+        let demo = DemoSource::new(now());
+        let filter = ItemFilter { state: Some(state), ..ItemFilter::default() };
+        let mut items = iced::futures::executor::block_on(demo.list_items(filter)).expect("the demo answers");
+        items.sort_by_key(|item| !list::is_waiting(item));
+        items
+    }
+
+    fn ids<'a>(items: &[&'a Item]) -> Vec<&'a str> {
+        items.iter().map(|item| item.id.as_str()).collect()
+    }
+
+    fn find(items: &[Item], id: &str) -> Item {
+        items.iter().find(|item| item.id == id).cloned().expect("in the demo")
+    }
+
+    #[test]
+    fn for_me_goes_into_decide_agents_and_to_sort() {
+        let items = entries(StateFilter::Open);
+        let sections = Sections::of(&items, None);
+        assert_eq!(ids(&sections.decide), ["demo-3"], "the approval");
+        assert_eq!(ids(&sections.agents), ["demo-1", "demo-2", "demo-4"], "waiting first, then the finished one");
+        assert_eq!(sections.to_sort.len(), 9);
+        assert!(sections.to_sort.iter().all(|item| item.lane == Lane::ForMe), "no Info");
+        let for_me = items.iter().filter(|item| item.lane == Lane::ForMe).count();
+        assert_eq!(sections.order(false).len(), for_me, "every entry for the user, once");
+        assert_eq!(sections.order(true), sections.to_sort, "To sort alone");
+        assert_eq!(summary(&sections), format!("1 {} · 3 {} · 9 {}", tr("to decide"), tr("agents"), tr("to sort")));
+        let done = entries(StateFilter::Done);
+        assert!(Sections::of(&done, None).is_empty(), "nothing done is to act on");
+    }
+
+    /// Task E8.5's acceptance: an approval has no button to dismiss or put it off – the list of
+    /// buttons per kind of entry.
+    #[test]
+    fn approvals_have_neither_dismiss_nor_later() {
+        let items = entries(StateFilter::Open);
+        let approval = find(&items, "demo-3");
+        let acts_of = acts(&approval);
+        let id = approval_id(&approval);
+        assert_eq!(acts_of, [Act::Allow(id.clone()), Act::Deny(id)]);
+        for act in &acts_of {
+            assert!(!matches!(act, Act::Dismiss | Act::Later | Act::Done | Act::Task), "{act:?}");
+        }
+        assert_eq!(acts(&find(&items, "demo-1")), [Act::GoToWindow, Act::Later, Act::Done], "an agent");
+        let mail = items.iter().find(|item| item.source.kind == SourceKind::Mail).expect("a mail entry");
+        assert_eq!(acts(mail), [Act::Task, Act::Later, Act::Done], "mail is never dismissed");
+        assert_eq!(acts(&find(&items, "demo-6")), [Act::Open, Act::Task, Act::Later, Act::Dismiss], "a notice");
+        assert_eq!(acts(&find(&items, "demo-12")), [Act::Task, Act::Later, Act::Dismiss], "without a link");
+        let done = entries(StateFilter::Done);
+        assert_eq!(acts(&find(&done, "demo-11")), [Act::Reopen]);
+    }
+
+    fn approval_id(item: &Item) -> String {
+        match item.actions.first() {
+            Some(Action::Allow { approval } | Action::Deny { approval }) => approval.clone(),
+            None => String::new(),
+        }
+    }
+
+    #[test]
+    fn buttons_send_what_their_keys_send() {
+        let items = entries(StateFilter::Open);
+        let approval = find(&items, "demo-3");
+        let id = approval_id(&approval);
+        assert!(matches!(Act::Allow(id.clone()).message(&approval, false), Some(Message::Decide { allow: true, .. })));
+        assert!(Act::Deny(id).message(&approval, true).is_none(), "disabled while deciding");
+        let notice = find(&items, "demo-6");
+        assert!(matches!(Act::Dismiss.message(&notice, false), Some(Message::Act(_, Command::Dismiss))));
+        assert!(matches!(Act::Later.message(&notice, false), Some(Message::Act(_, Command::Snooze))));
+        assert!(matches!(Act::Open.message(&notice, false), Some(Message::OpenRow(_))));
+    }
+
+    #[test]
+    fn tiles_count_the_origins_busiest_first_and_filter() {
+        let items = entries(StateFilter::Open);
+        let tiles = tiles(&items);
+        assert_eq!(tiles.first().map(|tile| (&tile.origin, tile.count)), Some((&Origin::Mail, 5)));
+        assert_eq!(tiles.iter().map(|tile| tile.count).sum::<usize>(), 13, "every entry for the user");
+        let agents = tiles.iter().find(|tile| tile.origin == Origin::Agents).expect("an agents tile");
+        assert_eq!(
+            agents.line,
+            format!("{} · {}", trf("{n} waiting", &[("n", &2)]), trf("{n} finished", &[("n", &1)]))
+        );
+        let mail = Sections::of(&items, Some(&Origin::Mail));
+        assert!(mail.decide.is_empty() && mail.agents.is_empty());
+        assert!(mail.to_sort.iter().all(|item| item.source.kind == SourceKind::Mail));
+        assert_eq!(tile_columns(0.0), 1);
+        assert!(tile_columns(1200.0) > tile_columns(600.0));
+    }
+
+    #[test]
+    fn layouts_change_with_the_size_and_the_density() {
+        let wide = layout(1000.0, SizeClass::Wide, Density::Comfortable, false);
+        assert!(!wide.narrow && wide.cards && wide.columns >= 2 && wide.tiles >= 3);
+        let narrow = layout(440.0, SizeClass::Narrow, Density::Compact, false);
+        assert!(narrow.narrow && !narrow.cards);
+        assert_eq!((narrow.columns, narrow.tiles), (1, 0), "one card per line, the numbers instead of tiles");
+        assert_eq!(
+            layout(9000.0, SizeClass::Wide, Density::Compact, false),
+            layout(max_width() - sides(false), SizeClass::Wide, Density::Compact, false),
+            "a huge window is not stretched"
+        );
+    }
+
+    #[test]
+    fn spans_count_tiles_captions_cards_and_rows() {
+        let items = entries(StateFilter::Open);
+        let sections = Sections::of(&items, None);
+        let wide = layout(1000.0, SizeClass::Wide, Density::Comfortable, false);
+        let top = inset(false).top;
+        let tiles = tiles(&items).len();
+        let first = top + tile_height() + block_gap(false);
+        let caption = typo::line_height(typo::caption()) + caption_gap();
+        let decide = card_height(sections.decide[0], false);
+        assert_eq!(span(&sections, tiles, wide, "demo-3"), Some((first, first + caption + decide)));
+        let agents = first + caption + decide + block_gap(false);
+        let (start, _) = span(&sections, tiles, wide, "demo-1").expect("the first agent");
+        assert_eq!(start, agents, "the first line starts at its caption");
+        let sort = span(&sections, tiles, wide, &sections.to_sort[1].id).expect("the second to sort");
+        let height = sort_height(sections.to_sort[1], wide);
+        assert_eq!(sort.1 - sort.0, height);
+        assert_eq!(span(&sections, tiles, wide, "demo-8"), None, "Info is not here");
+        // Narrow and compact: the numbers, then rows under a line.
+        let narrow = layout(440.0, SizeClass::Narrow, Density::Compact, false);
+        let (_, end) = span(&sections, 0, narrow, "demo-3").expect("the approval");
+        assert_eq!(
+            end,
+            inset(true).top
+                + typo::line_height(typo::display())
+                + block_gap(true)
+                + caption
+                + card_height(sections.decide[0], true)
+        );
+        assert!(card_height(sections.decide[0], true) > card_height(sections.decide[0], false), "big Allow and Deny");
+        // Compact: the agents are rows under a line, the approval keeps its card.
+        let agents = end + block_gap(true);
+        let (top_agent, bottom_agent) = span(&sections, 0, narrow, "demo-1").expect("the first agent");
+        assert_eq!(top_agent, agents);
+        assert_eq!(bottom_agent, agents + caption + size::HAIRLINE + list::row_height_of(sections.agents[0]));
+        // To sort alone starts with its caption.
+        let alone = layout(1000.0, SizeClass::Wide, Density::Comfortable, true);
+        let first = &sections.to_sort[0].id;
+        assert_eq!(
+            span(&sections, tiles, alone, first),
+            Some((top, top + caption + sort_height(sections.to_sort[0], alone)))
+        );
+        assert_eq!(span(&sections, tiles, alone, "demo-3"), None);
+    }
+
+    #[test]
+    fn coming_back_lists_the_snoozed_soonest_first() {
+        let mut snoozed = entries(StateFilter::Snoozed);
+        assert_eq!(coming_back(&snoozed).len(), 1);
+        let mut sooner = snoozed[0].clone();
+        sooner.id = "sooner".into();
+        sooner.state = State::Snoozed { until: now() + TimeDelta::hours(1) };
+        snoozed.push(sooner);
+        assert_eq!(coming_back(&snoozed).first().map(|item| item.id.as_str()), Some("sooner"));
+        assert!(coming_back(&entries(StateFilter::Open)).is_empty());
+    }
+}
