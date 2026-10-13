@@ -1,0 +1,8 @@
+# macOS: `cargo run` signs what it starts with the development identity "Torro Development", so the
+# keychain keeps "Always Allow" across builds (task X.14, scripts/macos-dev-run.sh). Without the
+# identity the runner only starts the program.
+[target.aarch64-apple-darwin]
+runner = "scripts/macos-dev-run.sh"
+
+[target.x86_64-apple-darwin]
+runner = "scripts/macos-dev-run.sh"

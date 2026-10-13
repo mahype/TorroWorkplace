@@ -239,3 +239,22 @@ X.2 (Konsolenfenster), X.3 (Autostart), X.9 (Paket) ┘
 - **Abnahme:** Tests mit einem Schlüsselbund im Speicher: viele Konten → ein Lesen; Umzug alter Einträge;
   Schreiben, Löschen, fehlgeschlagenes Schreiben lässt den Speicher wie vorher; unlesbarer Tresor wird nicht
   überschrieben; Einzeleinträge mit Zwischenspeicher. fmt, clippy, test (auch `TORRO_LANG=de`) grün.
+
+### X.14 Entwicklungs-Builds auf macOS stabil signieren
+- [x] erledigt (2026-10-13: dazu `scripts/macos-dev-sign.sh` zum Signieren ohne `cargo run`. Geprüft: Zertifikat
+  und Schlüssel landen im Wegwerf-Schlüsselbund, ein zweiter Lauf erkennt sie; ohne gültige Identität signieren
+  die Skripte nichts und der Runner startet Programme und Tests unverändert. **Nicht geprüft:** das Signieren
+  selbst – `codesign` braucht ein Zertifikat, dem für Codesignatur vertraut wird, und das Vertrauen lässt sich
+  nur in den Einstellungen der Person setzen; das tut `macos-dev-cert.sh` beim ersten Lauf)
+- **Modell:** Sonnet · **Dateien:** `scripts/macos-dev-{cert,sign,run}.sh` (neu),
+  `.cargo/config.toml` (neu), `docs/release.md`
+- Warum: Debug-Builds sind ad hoc signiert, mit einer Kennung, die sich mit jedem Build ändert
+  (`torroworkplace-<hash>`). macOS merkt sich „Immer erlauben“ für genau diese Signatur und fragt nach jedem Build
+  von vorn.
+- `scripts/macos-dev-cert.sh` legt einmalig ein selbst signiertes Zertifikat „Torro Development“ (Codesignatur)
+  im Anmelde-Schlüsselbund an; die Person führt es selbst aus. `scripts/macos-dev-run.sh` ist der Cargo-`runner`
+  für macOS: Gibt es die Identität, signiert er das Programm mit ihr und der festen Kennung `io.github.mahype.dev.<name>`,
+  dann startet er es; sonst startet er es unverändert (CI, andere Rechner).
+- **Oberfläche/API/MCP:** keine.
+- **Abnahme:** In einem Wegwerf-Schlüsselbund geprüft: Signatur und Kennung bleiben über zwei Builds gleich, die
+  designierte Anforderung hängt nur an Zertifikat und Kennung; ohne Identität startet das Programm unverändert.
