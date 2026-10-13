@@ -20,7 +20,7 @@ use std::sync::OnceLock;
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
-use torro_inbox::{AgentInfo, Item, Kind, Poster, SourceKind, SourceRef, rules};
+use torro_inbox::{AgentInfo, HideScope, Item, Kind, Poster, SourceKind, SourceRef, rules};
 use torro_setups::LoadMode;
 
 use crate::mail::{MoveRole, MoveTarget};
@@ -845,6 +845,9 @@ impl Request {
             Request::LoadTemplate { mode: LoadMode::Replace, .. } => Access::Delete,
             // Remembering the lane is a lasting rule for the whole source, like muting it.
             Request::SetItemLane { remember: true, .. } => Access::Admin,
+            // Hiding a sender or a domain keeps a lasting rule for every mail account (task E3.11);
+            // hiding one conversation only closes its entry, like done.
+            Request::HideSender { scope: HideScope::Sender | HideScope::Domain, .. } => Access::Admin,
             // Into the trash is deleting. A folder id with the role trash is upgraded by the core,
             // which alone knows the folder's role (task M3.2).
             Request::MoveMail { to: MoveTarget::Role(MoveRole::Trash), .. } => Access::Delete,
@@ -1750,15 +1753,16 @@ static MUTE_SOURCE: Command = Command {
 static HIDE_SENDER: Command = Command {
     name: "inbox.hide_sender",
     area: Area::Inbox,
-    access: Access::Admin,
+    access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Hides the sender of a mail entry (source `mail:<address>`) from the inbox: with `scope: sender` \
-                  every later mail from that address, with `scope: domain` every later mail from its domain \
-                  (exactly, not subdomains), in that mail account. Its open and snoozed entries there are done at \
-                  once; the mail itself stays unread and in place on the server. A lasting rule that needs admin \
-                  rights and the person's approval; returns the rule, which remove_rule takes back. `not-found` \
-                  for entries of mail accounts this key may not read, `error` for an entry that is no mail or \
-                  names no sender's address.",
+    description: "Hides a mail entry (source `mail:<address>`) from the inbox; the mail itself stays unread and in \
+                  place on the server. `scope: conversation` closes only this entry (write rights; a new reply \
+                  brings it back). `scope: sender` hides every later mail from that address, `scope: domain` \
+                  from its domain (exactly, not subdomains), in every mail account, and closes their open and \
+                  snoozed entries: a lasting rule that needs admin rights and the person's approval, which \
+                  remove_rule takes back. Returns the rule, whether it is new, and the ids it closed. \
+                  `not-found` for entries of mail accounts this key may not read, `error` for an entry that is \
+                  no mail or, for sender and domain, names no sender's address.",
 };
 
 static LIST_RULES: Command = Command {
@@ -1767,8 +1771,10 @@ static LIST_RULES: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Lists the lasting rules of the inbox, lanes remembered for a source or, for a mail account \
-                  (`mail:<address>`), for one `sender` of it, and muted sources, each with its id for \
-                  remove_rule; only rules about sources this key may see.",
+                  (`mail:<address>`), for one `sender` of it, muted sources and hidden senders and domains, each \
+                  with its id for remove_rule; only rules about sources this key may see. A hidden sender or \
+                  domain holds for every mail account but is listed under the account it was hidden in, so a key \
+                  that may not read that account does not see it.",
 };
 
 static REMOVE_RULE: Command = Command {
@@ -2085,7 +2091,7 @@ mod tests {
             Request::SnoozeItem { id: "i1".into(), until: Some(now) },
             Request::SetItemLane { id: "i1".into(), lane: Lane::Info, remember: false },
             Request::MuteSource { source: SourceRef::script("backup"), muted: true },
-            Request::HideSender { id: "i1".into(), scope: torro_inbox::item::HideScope::Domain },
+            Request::HideSender { id: "i1".into(), scope: HideScope::Domain },
             Request::ListRules,
             Request::RemoveRule { id: "r1".into() },
             connect_mail(),
@@ -2822,12 +2828,17 @@ mod tests {
         let rights = RightsTemplate::FullAccess.rights();
         assert!(!rights.allows(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: true }.operation()));
         assert!(rights.allows(Request::SetItemLane { id: "i".into(), lane: Lane::Info, remember: false }.operation()));
-        // Hiding a sender is a lasting rule too (task E3.10): write rights do not cover it.
-        for scope in [torro_inbox::item::HideScope::Sender, torro_inbox::item::HideScope::Domain] {
+        // Hiding a sender or domain is a lasting rule too (tasks E3.10, E3.11): write rights do not
+        // cover it. Hiding one conversation keeps no rule: write rights do.
+        for scope in [HideScope::Sender, HideScope::Domain] {
             let hide = Request::HideSender { id: "i".into(), scope };
             assert_eq!(access(hide.clone()), Access::Admin);
             assert!(!rights.allows(hide.operation()), "{scope:?}");
         }
+        let conversation = Request::HideSender { id: "i".into(), scope: HideScope::Conversation };
+        assert_eq!(access(conversation.clone()), Access::Write);
+        assert!(rights.allows(conversation.operation()));
+        assert_eq!(HIDE_SENDER.access, Access::Write, "the catalogue names the lowest scope");
     }
 
     #[test]

@@ -488,6 +488,7 @@ fn describe(request: &Request) -> String {
         Request::SetItemLane { id, .. } => format!("move inbox item {id}"),
         Request::MuteSource { source, muted } => format!("{} {source}", if *muted { "mute" } else { "unmute" }),
         // Never the address or the domain: they would name who writes to the person.
+        Request::HideSender { id, scope: torro_inbox::HideScope::Conversation } => format!("hide inbox item {id}"),
         Request::HideSender { id, .. } => format!("hide the sender of inbox item {id}"),
         Request::ListRules => "inbox rules".into(),
         Request::RemoveRule { id } => format!("remove inbox rule {id}"),

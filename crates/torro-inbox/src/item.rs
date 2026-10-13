@@ -387,15 +387,53 @@ pub enum RuleEffect {
     Muted,
 }
 
-/// What `inbox.hide_sender` hides of a mail entry's sender (task E3.10).
+/// What `inbox.hide_sender` hides of a mail entry (tasks E3.10, E3.11).
+///
+/// The scopes need different rights (`torro_ipc::api`, `Request::operation`): `conversation`
+/// changes one entry and keeps no rule, so write access covers it; `sender` and `domain` keep a
+/// lasting rule for every mail account and need admin rights, like muting a source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum HideScope {
-    /// Every mail from the entry's sender's address, e.g. `news@shop.example`.
+    /// Only this conversation (task E3.11): the entry is done, its mail stays unread and in place,
+    /// no rule is kept. A new reply in the conversation brings the entry back, as after "done".
+    Conversation,
+    /// Every mail from the entry's sender's address, e.g. `news@shop.example`, in every mail
+    /// account (task E3.11).
     Sender,
     /// Every mail from the domain of that address, e.g. `shop.example` – exactly that domain, not
-    /// its subdomains.
+    /// its subdomains –, in every mail account (task E3.11).
     Domain,
+}
+
+impl HideScope {
+    /// Whether hiding with this scope keeps a lasting rule (`sender`, `domain`); `conversation`
+    /// keeps none.
+    pub fn keeps_rule(self) -> bool {
+        !matches!(self, HideScope::Conversation)
+    }
+}
+
+/// What `inbox.hide_sender` did (task E3.11): enough to take it back exactly ("Undo" in the app).
+///
+/// Undo is `inbox.remove_rule { id: rule.id }` when `new_rule`, then `inbox.set_item_done { id,
+/// done: false }` for every id in `done` – nothing else changed, and no mail was touched. An entry
+/// that was snoozed before comes back open, not snoozed: the answer does not keep its time.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Hidden {
+    /// The lasting rule that hides the sender or domain in every mail account from now on, as
+    /// stored – also when it was there already. `None` for `scope: conversation`, which keeps
+    /// none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<Rule>,
+    /// Whether this call made `rule`: `false` when the same rule was there already, so taking the
+    /// call back must leave it.
+    #[serde(default)]
+    pub new_rule: bool,
+    /// The ids of the entries this call marked done – open or snoozed before –, as far as the
+    /// caller may see them. Empty when nothing was waiting (the entry was done already).
+    #[serde(default)]
+    pub done: Vec<String>,
 }
 
 #[cfg(test)]
@@ -430,6 +468,20 @@ mod tests {
         assert_eq!(serde_json::from_value::<Rule>(value).expect("deserialize"), for_domain);
         assert_eq!(json(HideScope::Sender), "sender");
         assert_eq!(json(HideScope::Domain), "domain");
+        assert_eq!(json(HideScope::Conversation), "conversation");
+        assert!(
+            !HideScope::Conversation.keeps_rule() && HideScope::Sender.keeps_rule() && HideScope::Domain.keeps_rule()
+        );
+    }
+
+    #[test]
+    fn hidden_names_the_rule_and_what_it_closed() {
+        let only = Hidden { rule: None, new_rule: false, done: vec!["e1".into()] };
+        let value = json(&only);
+        assert!(value.get("rule").is_none(), "no rule for a conversation: {value}");
+        assert_eq!(value["done"], serde_json::json!(["e1"]));
+        assert_eq!(serde_json::from_value::<Hidden>(value).expect("deserialize"), only);
+        assert_eq!(serde_json::from_value::<Hidden>(serde_json::json!({})).expect("deserialize"), Hidden::default());
     }
 
     #[test]

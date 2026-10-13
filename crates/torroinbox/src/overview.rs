@@ -4,7 +4,8 @@
 //! - **Columns** ([`Column`]): "Mail" holds the entries of mail accounts, "Notifications" every
 //!   other entry. Each starts with "For me", grouped ([`Group`]): "Waiting for you" (only
 //!   notifications – urgent and open), "Today", "Yesterday", "Earlier" by the local day the entry
-//!   last changed. At the end "Info · n" lies folded; a click unfolds it ([`Message::ToggleInfo`]).
+//!   last changed. At the end "Info · n" lies folded; a click unfolds it ([`Message::ToggleInfo`]),
+//!   and the window remembers it in `ui.json` (task E3.11, [`Column::info_key`]).
 //! - **Rows** are those of every view (`list::entry_row`): mail on three lines, the rest on two, each
 //!   with its action bar. Waiting notifications are **cards** instead ([`card`]): `raised`, framed,
 //!   with the panel's buttons – "Allow" and "Deny" for an approval (task E3.8), "Go to window" for a
@@ -80,6 +81,16 @@ impl Column {
         match self {
             Column::Mail => 0,
             Column::Notices => 1,
+        }
+    }
+
+    /// The name under which `ui.json` remembers that the column's "Info" is unfolded (task E3.11,
+    /// `torro_gui::ui_state::unfolded_from`). Never changed: a stored name must keep meaning the
+    /// same column.
+    pub fn info_key(self) -> &'static str {
+        match self {
+            Column::Mail => "overview.mail.info",
+            Column::Notices => "overview.notices.info",
         }
     }
 
@@ -518,11 +529,12 @@ mod tests {
         let items = open();
         let notices = Sections::of(&items, Column::Notices, now());
         let groups: Vec<Group> = notices.groups.iter().map(|(group, _)| *group).collect();
-        assert_eq!(groups, [Group::Waiting, Group::Today]);
+        assert_eq!(groups, [Group::Waiting, Group::Today, Group::Yesterday, Group::Earlier], "the demo has every day");
         assert_eq!(ids(&notices.groups[0].1), ["demo-1", "demo-3", "demo-2"], "waiting first, as the app sorts");
+        assert_eq!((ids(&notices.groups[2].1), ids(&notices.groups[3].1)), (vec!["demo-12"], vec!["demo-13"]));
         let mail = Sections::of(&items, Column::Mail, now());
         let groups: Vec<Group> = mail.groups.iter().map(|(group, _)| *group).collect();
-        assert_eq!(groups, [Group::Today], "no waiting group for mail; the demo's mail for the user is today's");
+        assert_eq!(groups, [Group::Today, Group::Yesterday, Group::Earlier], "no waiting group for mail");
         assert!(mail.groups.iter().flat_map(|(_, items)| items).all(|item| item.lane == Lane::ForMe));
         assert_eq!(mail.for_me() + notices.for_me(), items.iter().filter(|item| item.lane == Lane::ForMe).count());
     }
@@ -562,7 +574,12 @@ mod tests {
         let first = row_span(&notices, false, &today[0].id).expect("the first row of Today");
         assert_eq!(first, (block + head, block + 2.0 * head + size::row_notice()), "its head comes along");
         let rows: f32 = today.iter().map(|item| list::row_height_of(item)).sum();
-        let info = block + 2.0 * head + rows + size::row();
+        // Yesterday and Earlier, each with its head, lie between Today and Info.
+        let later: f32 = notices.groups[2..]
+            .iter()
+            .map(|(_, items)| head + items.iter().map(|item| list::row_height_of(item)).sum::<f32>())
+            .sum();
+        let info = block + 2.0 * head + rows + later + size::row();
         assert_eq!(row_span(&notices, true, "demo-8"), Some((info, info + size::row_notice())));
         // An approval's card has buttons, so it is taller than a card without.
         let approval = notices.groups[0].1.iter().find(|item| detail::is_approval(item)).expect("an approval");
@@ -603,5 +620,9 @@ mod tests {
         assert_eq!((Column::Mail.index(), Column::Notices.index()), (0, 1));
         assert_eq!(Column::default(), Column::Mail, "mail first");
         assert_ne!(Column::Mail.scroll_id(), Column::Notices.scroll_id());
+        assert_eq!(
+            (Column::Mail.info_key(), Column::Notices.info_key()),
+            ("overview.mail.info", "overview.notices.info")
+        );
     }
 }

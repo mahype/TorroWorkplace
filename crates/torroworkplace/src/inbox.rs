@@ -71,12 +71,18 @@
 //! Moving a mail with `remember` keeps the lane for its sender, not for the whole account
 //! ([`remember_lane`]).
 //!
-//! **Hiding a sender** (task E3.10, `inbox.hide_sender`) is a muting rule for one sender or domain
-//! of a mail account ([`hide_sender`]): its later mail is not filed ([`rules::drops`]), and its
-//! entries that are open or snoozed are done right away – here, in the inbox only. Unlike
-//! `inbox.set_item_done` nothing reaches the mail: the core marks mail read only after a done of
-//! `inbox.set_item_done` or `inbox.create_task_from_item` (`crate::mail::inbox_feed::mark_read`),
-//! and the mail feed settles only open entries, so a hidden mail stays unread and where it is.
+//! **Hiding** (tasks E3.10, E3.11, `inbox.hide_sender`, [`hide_sender`]) closes mail entries in the
+//! inbox only. One conversation is done and keeps no rule (a new reply brings it back, as after
+//! done). A sender or a domain gets a muting rule that holds for **every** mail account
+//! ([`rules::reaches`]; it is kept with the account it was made in, which decides who sees it):
+//! its later mail is not filed ([`rules::drops`]), and the open or snoozed entries it matches are
+//! done right away. Rules kept per account before E3.11 are read the same way, so they hold for
+//! every account too; the same sender hidden again from another account answers the rule already
+//! there. Unlike `inbox.set_item_done` nothing reaches the mail: the core marks mail read only
+//! after a done of `inbox.set_item_done` or `inbox.create_task_from_item`
+//! (`crate::mail::inbox_feed::mark_read`), and the mail feed settles only open entries, so a hidden
+//! mail stays unread and where it is. The answer names what changed ([`torro_inbox::Hidden`]), so
+//! the app can take it back exactly.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -95,8 +101,8 @@ use torro_core::paths::AppPaths;
 use torro_inbox::item::HideScope;
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, Poster};
 use torro_inbox::{
-    Action, AgentInfo, AgentKind, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo, SourceKind,
-    SourceRef, State, StateFilter,
+    Action, AgentInfo, AgentKind, Hidden, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo,
+    SourceKind, SourceRef, State, StateFilter,
 };
 use torro_ipc::api::{self, Access, Area, HOOK_CLIENT, InboxForbidden, Rights, Selection};
 use torro_ipc::{ApprovalInfo, ClientInfo, Request, Response};
@@ -347,7 +353,7 @@ impl Inbox {
             }
             Request::MuteSource { source, .. } => changeable_source(source, Some(client)),
             // Nobody is asked to approve hiding an entry that names no mail sender.
-            Request::HideSender { id, scope } => hide_target(&changeable(db, id, Some(client))?.item, *scope).map(drop),
+            Request::HideSender { id, scope } => check_hide(&changeable(db, id, Some(client))?.item, *scope),
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
             Request::OpenItem { id } => visible_item(db, id, Some(client)).map(drop),
             _ => Ok(()),
@@ -830,9 +836,9 @@ fn answer(
         }
         Request::HideSender { id, scope } => {
             let tx = db.transaction()?;
-            let rule = hide_sender(&tx, &id, scope, client, now)?;
+            let hidden = hide_sender(&tx, &id, scope, client, now)?;
             tx.commit()?;
-            Ok(Response::Rule { rule })
+            Ok(Response::Hidden(hidden))
         }
         // Opening needs the window manager, the browser or the apps: the core answers it with
         // `Inbox::opening` and `Inbox::opened`.
@@ -1462,49 +1468,101 @@ fn set_muted(db: &Connection, source: &SourceRef, muted: bool, now: DateTime<Utc
     insert_rule(db, rule)
 }
 
-/// What a hiding rule of `scope` for `item` is kept for ([`rules::hide_target`]): its sender's
-/// address or domain. `error` for an entry that is no mail or names no sender's address, which
-/// has nothing to hide by.
-fn hide_target(item: &Item, scope: HideScope) -> Result<String, Failure> {
-    rules::hide_target(item, scope).ok_or_else(|| Failure::Invalid("this entry names no mail sender to hide".into()))
+/// `item` can be hidden with `scope` ([`rules::may_hide`]); else `error`: an entry that is no mail,
+/// or a sender or domain for mail that names no sender's address, has nothing to hide by.
+fn check_hide(item: &Item, scope: HideScope) -> Result<(), Failure> {
+    if rules::may_hide(item, scope) {
+        Ok(())
+    } else {
+        Err(Failure::Invalid("this entry names no mail sender to hide".into()))
+    }
 }
 
-/// `inbox.hide_sender` (task E3.10) for `client` on `db`, a transaction: the entry `id` the client
-/// may change ([`changeable`]: `not-found`, `forbidden`), the muting rule for its sender's address
-/// or domain in its source (once: the same rule made again is the one already there), then every
-/// open or snoozed entry of the source the rule hides ([`rules::hides`]) done at `now`. Snoozed
-/// ones too, or they would come back with mail the person hid. Only the entries change: no mail
-/// is read or moved (module docs). Returns the rule as stored.
+/// `inbox.hide_sender` (tasks E3.10, E3.11) for `client` on `db`, a transaction: the entry `id`
+/// the client may change ([`changeable`]: `not-found`, `forbidden`) and may hide that way
+/// ([`check_hide`]), then
+///
+/// - `conversation`: the entry done at `now` when it was open or snoozed; no rule;
+/// - `sender`, `domain`: the muting rule for its sender's address or domain – the one already kept
+///   in a mail account the client sees, else a new one about the entry's account ([`hiding_rule`]) –,
+///   then every
+///   open or snoozed mail entry of any account the rule hides ([`rules::hides`]) done at `now`.
+///   Snoozed ones too, or they would come back with mail the person hid.
+///
+/// Only the entries change: no mail is read or moved (module docs). Returns the rule, whether it is
+/// new, and the ids of the entries done that `client` sees ([`Scope::sees`]) – a rule for every
+/// account may close entries of accounts the client may not read, which it must not learn of.
 fn hide_sender(
     db: &Connection,
     id: &str,
     scope: HideScope,
     client: Option<&ClientInfo>,
     now: DateTime<Utc>,
-) -> Result<Rule, Failure> {
+) -> Result<Hidden, Failure> {
     let item = changeable(db, id, client)?.item;
-    let target = hide_target(&item, scope)?;
-    let (sender, domain) = match scope {
-        HideScope::Sender => (Some(target), None),
-        HideScope::Domain => (None, Some(target)),
+    check_hide(&item, scope)?;
+    let (sender, domain) = match (scope, rules::hide_target(&item, scope)) {
+        (HideScope::Sender, Some(target)) => (Some(target), None),
+        (HideScope::Domain, Some(target)) => (None, Some(target)),
+        _ => (None, None),
     };
-    let rule =
-        Rule { id: new_id()?, source: item.source.clone(), sender, domain, effect: RuleEffect::Muted, created: now };
-    let (source, key) = (text(rule.source.key()), text(rule_key(&rule)));
-    insert_rule(db, rule)?;
-    let condition = "source = ? AND effect = 'muted' AND sender = ?";
-    let rule = read_rules(db, &Scope::All, condition, vec![source.clone(), key])?
-        .pop()
-        .ok_or_else(|| Failure::Invalid("the rule could not be kept".into()))?;
-    let waiting = "source = ? AND state IN ('new', 'seen', 'snoozed')";
-    for stored in read_items(db, &Scope::All, waiting, vec![source], "")? {
+    let (rule, new_rule) = if sender.is_some() || domain.is_some() {
+        let candidate = Rule {
+            id: new_id()?,
+            source: item.source.clone(),
+            sender,
+            domain,
+            effect: RuleEffect::Muted,
+            created: now,
+        };
+        let (rule, new_rule) = hiding_rule(db, candidate, client)?;
+        (Some(rule), new_rule)
+    } else {
+        (None, false)
+    };
+    let waiting = "instr(source, ?) = 1 AND state IN ('new', 'seen', 'snoozed')";
+    let scope_of_client = Scope::of(client);
+    let mut done = Vec::new();
+    for stored in read_items(db, &Scope::All, waiting, vec![text(ACCOUNT_PREFIX)], "")? {
         let mut entry = stored.item;
-        if rules::hides(&rule, &entry) {
+        let hidden = match &rule {
+            Some(rule) => rules::hides(rule, &entry),
+            None => entry.id == item.id,
+        };
+        if hidden {
             rules::set_done(&mut entry, true, now);
             update_item(db, &entry)?;
+            if scope_of_client.sees(&entry.source) {
+                done.push(entry.id);
+            }
         }
     }
-    Ok(rule)
+    Ok(Hidden { rule, new_rule, done })
+}
+
+/// The hiding rule for `candidate`'s sender or domain (task E3.11) as `client` hides it: the one
+/// kept already in a mail account the client sees – a rule holds for all accounts, so a second one
+/// would only make "Remove" in the control centre leave the sender hidden –, else `candidate`,
+/// stored now in the entry's account. With whether it is new.
+///
+/// A rule in an account the client may not read is never handed out, not even as "there is one":
+/// it would name that account and what the person hid there. The client then keeps a rule of its
+/// own beside it; the person (the app key) sees every account and never makes a second one.
+fn hiding_rule(db: &Connection, candidate: Rule, client: Option<&ClientInfo>) -> Result<(Rule, bool), Failure> {
+    let key = text(rule_key(&candidate));
+    let condition = "instr(source, ?) = 1 AND effect = 'muted' AND sender = ?";
+    let mut kept = read_rules(db, &Scope::of(client), condition, vec![text(ACCOUNT_PREFIX), key.clone()])?;
+    kept.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.id.cmp(&b.id)));
+    if let Some(rule) = kept.into_iter().next() {
+        return Ok((rule, false));
+    }
+    let source = text(candidate.source.key());
+    insert_rule(db, candidate)?;
+    let own = "source = ? AND effect = 'muted' AND sender = ?";
+    let rule = read_rules(db, &Scope::All, own, vec![source, key])?
+        .pop()
+        .ok_or_else(|| Failure::Invalid("the rule could not be kept".into()))?;
+    Ok((rule, true))
 }
 
 /// The column `sender` of `rule` ([`SCHEMA_V3`]): its sender's address, `@<domain>` for a hidden
@@ -2014,15 +2072,23 @@ fn file_mail(
     if filed {
         return Ok(None);
     }
-    let rules = read_rules(&tx, &Scope::All, "source = ?", vec![text(source.key())])?;
+    // The account's own rules, and the senders and domains hidden in any account (task E3.11).
+    let condition = "source = ? OR (instr(source, ?) = 1 AND effect = 'muted' AND sender <> '')";
+    let rules: Vec<Rule> = read_rules(&tx, &Scope::All, condition, vec![text(source.key()), text(ACCOUNT_PREFIX)])?
+        .into_iter()
+        .filter(|rule| rules::reaches(rule, &source))
+        .collect();
     let sender = rules::sender_key(mail.from.as_ref());
-    // A muted account, or its sender or domain hidden (task E3.10): not filed. The message is not
+    // A muted account, or a sender or domain hidden (task E3.10): not filed. The message is not
     // kept as filed either, so lifting the rule lets a catch-up file it while it is still unread.
     if rules.iter().any(|rule| rules::drops(rule, sender.as_deref())) {
         return Ok(None);
     }
-    let remembered =
-        rules.iter().filter(|rule| rule.sender.is_some() && rule.sender == sender).find_map(remembered_lane);
+    // Only the account's own lanes: a remembered lane stays per account.
+    let remembered = rules
+        .iter()
+        .filter(|rule| rule.source == source && rule.sender.is_some() && rule.sender == sender)
+        .find_map(remembered_lane);
     let lane = rules::mail_lane(mail.bulk, remembered);
     if notify == Notify::ForMeOnly && lane != Lane::ForMe {
         return Ok(None);
@@ -3750,17 +3816,23 @@ pub(crate) mod tests {
         assert!(inbox.refusal(&only_move, Some(&client)).is_none());
     }
 
-    // ----- hiding a sender or domain (task E3.10) -----
+    // ----- hiding a conversation, sender or domain (tasks E3.10, E3.11) -----
+
+    const WORK: &str = "mail:anna@work.example.org";
 
     fn hide(id: &str, scope: HideScope) -> Request {
         Request::HideSender { id: id.into(), scope }
     }
 
-    fn rule(response: Response) -> Rule {
+    fn hidden(response: Response) -> Hidden {
         match response {
-            Response::Rule { rule } => rule,
-            other => panic!("expected a rule, got {other:?}"),
+            Response::Hidden(hidden) => hidden,
+            other => panic!("expected what was hidden, got {other:?}"),
         }
+    }
+
+    fn rule(response: Response) -> Rule {
+        hidden(response).rule.expect("a rule")
     }
 
     fn from(message: &str, address: &str) -> NewMail {
@@ -3777,10 +3849,16 @@ pub(crate) mod tests {
         let orders = filed(&inbox, &from("m:3", "orders@shop.example"), at(9, 0));
         let bernd = filed(&inbox, &personal("m:4", "t:4", at(8, 0)), at(9, 0));
 
-        let hidden = rule(inbox.handle(hide(&news, HideScope::Sender), None, at(9, 5)));
-        assert_eq!((hidden.sender.as_deref(), hidden.domain.as_deref()), (Some("news@shop.example"), None));
-        assert_eq!((hidden.source.key().as_str(), hidden.effect), (ANNA, RuleEffect::Muted));
-        assert_eq!(rules_of(&inbox), std::slice::from_ref(&hidden));
+        let answer = hidden(inbox.handle(hide(&news, HideScope::Sender), None, at(9, 5)));
+        let kept = answer.rule.clone().expect("a rule");
+        assert_eq!((kept.sender.as_deref(), kept.domain.as_deref()), (Some("news@shop.example"), None));
+        assert_eq!((kept.source.key().as_str(), kept.effect, answer.new_rule), (ANNA, RuleEffect::Muted, true));
+        let mut done = answer.done.clone();
+        done.sort();
+        let mut expected = vec![news.clone(), snoozed.clone()];
+        expected.sort();
+        assert_eq!(done, expected, "the answer names what it closed");
+        assert_eq!(rules_of(&inbox), std::slice::from_ref(&kept));
         for done in [&news, &snoozed] {
             assert_eq!(item(get(&inbox, done, None)).state, State::Done { at: at(9, 5) }, "{done}");
         }
@@ -3799,37 +3877,93 @@ pub(crate) mod tests {
         assert!(sources.iter().all(|info| !info.muted), "hiding a sender mutes no source: {sources:?}");
 
         let again = rule(inbox.handle(hide(&orders, HideScope::Sender), None, at(10, 2)));
-        assert_ne!(again.id, hidden.id, "another sender, another rule");
-        assert_eq!(rule(inbox.handle(hide(&news, HideScope::Sender), None, at(10, 3))), hidden, "the same rule");
+        assert_ne!(again.id, kept.id, "another sender, another rule");
+        let same = hidden(inbox.handle(hide(&news, HideScope::Sender), None, at(10, 3)));
+        assert_eq!((same.rule, same.new_rule, same.done), (Some(kept), false, Vec::new()), "the same rule");
     }
 
     #[test]
-    fn a_hidden_domain_covers_its_addresses_but_no_subdomain() {
+    fn a_hidden_domain_covers_its_addresses_in_every_account_but_no_subdomain() {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         let news = filed(&inbox, &from("m:1", "news@shop.example"), at(9, 0));
         let orders = filed(&inbox, &from("m:2", "Orders@SHOP.example"), at(9, 0));
         let sub = filed(&inbox, &from("m:3", "news@mail.shop.example"), at(9, 0));
-        let other = NewMail { account: "mail:bernd@example.com".into(), ..from("m:4", "news@shop.example") };
-        let other = filed(&inbox, &other, at(9, 0));
+        let work = |message: &str, address: &str| NewMail { account: WORK.into(), ..from(message, address) };
+        let other = filed(&inbox, &work("m:4", "news@shop.example"), at(9, 0));
 
         let hidden = rule(inbox.handle(hide(&news, HideScope::Domain), None, at(9, 5)));
         assert_eq!((hidden.sender.as_deref(), hidden.domain.as_deref()), (None, Some("shop.example")));
-        for done in [&news, &orders] {
+        for done in [&news, &orders, &other] {
             assert!(matches!(item(get(&inbox, done, None)).state, State::Done { .. }), "{done}");
         }
         assert_eq!(item(get(&inbox, &sub, None)).state, State::New, "a subdomain is another domain");
-        assert_eq!(item(get(&inbox, &other, None)).state, State::New, "only the entry's account");
         assert_eq!(inbox.file_mail(&from("m:5", "sale@Shop.Example"), Notify::All, at(10, 0)), Ok(None));
-        assert!(inbox.file_mail(&from("m:6", "a@mail.shop.example"), Notify::All, at(10, 0)).expect("ok").is_some());
+        assert_eq!(inbox.file_mail(&work("m:6", "sale@shop.example"), Notify::All, at(10, 0)), Ok(None), "work too");
+        assert!(inbox.file_mail(&from("m:7", "a@mail.shop.example"), Notify::All, at(10, 0)).expect("ok").is_some());
 
-        // A sender of the domain hidden as well is a rule of its own beside it.
-        let sender = rule(inbox.handle(hide(&sub, HideScope::Sender), None, at(10, 1)));
+        // Hidden again from the other account: the one rule there is, nothing new.
+        let again = filed(&inbox, &work("m:8", "news@mail.shop.example"), at(10, 0));
+        let same = self::hidden(inbox.handle(hide(&other, HideScope::Domain), None, at(10, 1)));
+        assert_eq!((same.rule.as_ref(), same.new_rule), (Some(&hidden), false));
+        assert_eq!(item(get(&inbox, &again, None)).state, State::New);
+
+        // A sender of the subdomain hidden as well is a rule of its own beside it.
+        let sender = rule(inbox.handle(hide(&sub, HideScope::Sender), None, at(10, 2)));
         assert_eq!(rules_of(&inbox), [hidden.clone(), sender]);
+        assert!(matches!(item(get(&inbox, &again, None)).state, State::Done { .. }), "the other account too");
         // Unmuting the account leaves the hidden domain alone.
         let unmute = Request::MuteSource { source: SourceRef::mail("anna@example.org"), muted: false };
-        assert_eq!(inbox.handle(unmute, None, at(10, 2)), Response::Ok);
+        assert_eq!(inbox.handle(unmute, None, at(10, 3)), Response::Ok);
         assert_eq!(rules_of(&inbox).len(), 2);
+    }
+
+    /// Task E3.11: rules kept per account before hold for every account, and a remembered lane
+    /// stays the account's own.
+    #[test]
+    fn rules_of_one_account_hide_in_every_account_but_lanes_stay_per_account() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let kept = Rule {
+            id: "old".into(),
+            source: SourceRef::mail("anna@example.org"),
+            sender: Some("news@shop.example".into()),
+            domain: None,
+            effect: RuleEffect::Muted,
+            created: at(7, 0),
+        };
+        inbox.with(|db| insert_rule(db, kept)).expect("a rule as E3.10 kept it");
+        let work = NewMail { account: WORK.into(), ..from("m:1", "news@shop.example") };
+        assert_eq!(inbox.file_mail(&work, Notify::All, at(9, 0)), Ok(None), "read as every account's");
+
+        let lane = filed(&inbox, &personal("m:2", "t:2", at(8, 0)), at(9, 0));
+        let remember = Request::SetItemLane { id: lane, lane: Lane::Info, remember: true };
+        assert!(matches!(inbox.handle(remember, None, at(9, 1)), Response::Item { .. }));
+        let personal_work = NewMail { account: WORK.into(), ..personal("m:3", "t:3", at(8, 30)) };
+        let id = filed(&inbox, &personal_work, at(9, 2));
+        assert_eq!(item(get(&inbox, &id, None)).lane, Lane::ForMe, "the lane is the other account's");
+    }
+
+    #[test]
+    fn hiding_a_conversation_closes_only_its_entry_and_keeps_no_rule() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let first = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(9, 0));
+        let second = filed(&inbox, &personal("m:2", "t:2", at(8, 0)), at(9, 0));
+        let answer = hidden(inbox.handle(hide(&first, HideScope::Conversation), None, at(9, 5)));
+        assert_eq!(answer, Hidden { rule: None, new_rule: false, done: vec![first.clone()] });
+        assert_eq!(item(get(&inbox, &first, None)).state, State::Done { at: at(9, 5) });
+        assert_eq!(item(get(&inbox, &second, None)).state, State::New, "the same sender stays");
+        assert!(rules_of(&inbox).is_empty(), "no rule");
+        let twice = hidden(inbox.handle(hide(&first, HideScope::Conversation), None, at(9, 6)));
+        assert!(twice.done.is_empty(), "nothing open any more");
+        // A new reply brings the conversation back, as after done.
+        let reply = filed(&inbox, &personal("m:3", "t:1", at(9, 30)), at(9, 31));
+        assert_eq!(reply, first);
+        assert_eq!(item(get(&inbox, &first, None)).state, State::New);
+        // Undo as the app sends it.
+        let reopened = inbox.handle(Request::SetItemDone { id: second.clone(), done: false }, None, at(9, 40));
+        assert!(matches!(reopened, Response::Item { .. }));
     }
 
     #[test]
@@ -3846,21 +3980,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn only_mail_with_a_sender_can_be_hidden() {
+    fn only_mail_can_be_hidden_and_only_mail_with_a_sender_by_its_sender() {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         let anonymous = filed(&inbox, &NewMail { from: None, ..from("m:1", "x@y.example") }, at(9, 0));
         let notice = posted(inbox.handle(notice("Backup done", None), Some(&script()), at(9, 0)));
-        for id in [&anonymous, &notice] {
-            for scope in [HideScope::Sender, HideScope::Domain] {
-                assert_eq!(code(&inbox.handle(hide(id, scope), None, at(9, 1))), "error", "{id} {scope:?}");
-                let client = with_mail(Some(Level::Read), Selection::All);
-                assert_eq!(inbox.refusal(&hide(id, scope), Some(&client)).as_ref().map(code), Some("error"));
-            }
+        let client = with_mail(Some(Level::Read), Selection::All);
+        for (id, scope) in [
+            (&anonymous, HideScope::Sender),
+            (&anonymous, HideScope::Domain),
+            (&notice, HideScope::Conversation),
+            (&notice, HideScope::Sender),
+            (&notice, HideScope::Domain),
+        ] {
+            assert_eq!(code(&inbox.handle(hide(id, scope), None, at(9, 1))), "error", "{id} {scope:?}");
+            assert_eq!(inbox.refusal(&hide(id, scope), Some(&client)).as_ref().map(code), Some("error"));
         }
+        assert!(inbox.refusal(&hide(&anonymous, HideScope::Conversation), Some(&client)).is_none());
         assert_eq!(code(&inbox.handle(hide("nope", HideScope::Sender), None, at(9, 2))), "not-found");
         assert!(rules_of(&inbox).is_empty());
         assert_eq!(item(get(&inbox, &anonymous, None)).state, State::New, "nothing changed");
+        let conversation = hidden(inbox.handle(hide(&anonymous, HideScope::Conversation), None, at(9, 3)));
+        assert_eq!(conversation.done, [anonymous], "a conversation needs no sender");
     }
 
     #[test]
@@ -3868,16 +4009,51 @@ pub(crate) mod tests {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
         let news = filed(&inbox, &from("m:1", "news@shop.example"), at(9, 0));
+        let work = filed(&inbox, &NewMail { account: WORK.into(), ..from("m:2", "news@shop.example") }, at(9, 0));
         let blind = with_mail(Some(Level::Read), Selection::Only(vec!["mail:bernd@example.com".into()]));
-        assert_eq!(inbox.refusal(&hide(&news, HideScope::Sender), Some(&blind)).as_ref().map(code), Some("not-found"));
-        assert_eq!(code(&inbox.handle(hide(&news, HideScope::Sender), Some(&blind), at(9, 1))), "not-found");
+        for scope in [HideScope::Conversation, HideScope::Sender] {
+            assert_eq!(inbox.refusal(&hide(&news, scope), Some(&blind)).as_ref().map(code), Some("not-found"));
+            assert_eq!(code(&inbox.handle(hide(&news, scope), Some(&blind), at(9, 1))), "not-found");
+        }
         // Hiding reads and marks no mail: read access to it is enough, unlike done.
         let reader = with_mail(Some(Level::Read), Selection::Only(vec![ANNA.into()]));
+        assert!(inbox.refusal(&hide(&news, HideScope::Conversation), Some(&reader)).is_none());
         assert!(inbox.refusal(&hide(&news, HideScope::Sender), Some(&reader)).is_none());
-        let hidden = rule(inbox.handle(hide(&news, HideScope::Sender), Some(&reader), at(9, 2)));
-        assert_eq!(hidden.sender.as_deref(), Some("news@shop.example"));
+        let answer = hidden(inbox.handle(hide(&news, HideScope::Sender), Some(&reader), at(9, 2)));
+        assert_eq!(answer.rule.and_then(|rule| rule.sender).as_deref(), Some("news@shop.example"));
+        // The work account's entry is closed too, but the client does not learn of it.
+        assert_eq!(answer.done, std::slice::from_ref(&news));
+        assert!(matches!(item(get(&inbox, &work, None)).state, State::Done { .. }));
         let facts = inbox.facts(&hide(&news, HideScope::Sender));
         assert_eq!(facts.item.map(|item| item.id), Some(news), "the approval names the entry");
+    }
+
+    /// Task E3.11: a rule kept in an account the client may not read is never handed out – the
+    /// client keeps one of its own instead; the person, who sees every account, never makes two.
+    #[test]
+    fn a_rule_of_an_account_out_of_reach_stays_unknown_to_the_client() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let older = filed(&inbox, &from("m:1", "news@shop.example"), at(8, 0));
+        let work = filed(&inbox, &NewMail { account: WORK.into(), ..from("m:2", "news@shop.example") }, at(9, 0));
+        let theirs = rule(inbox.handle(hide(&work, HideScope::Sender), None, at(9, 1)));
+        assert_eq!(theirs.source.key(), WORK);
+        assert!(matches!(item(get(&inbox, &older, None)).state, State::Done { .. }), "hidden in every account");
+
+        let reader = with_mail(Some(Level::Read), Selection::Only(vec![ANNA.into()]));
+        let answer = hidden(inbox.handle(hide(&older, HideScope::Sender), Some(&reader), at(9, 4)));
+        let own = answer.rule.expect("a rule");
+        assert_ne!(own.id, theirs.id, "never the other account's rule");
+        assert_eq!((own.source.key().as_str(), answer.new_rule), (ANNA, true), "one of its own");
+        let listed = match inbox.handle(Request::ListRules, Some(&reader), at(9, 5)) {
+            Response::Rules { rules } => rules,
+            other => panic!("expected rules, got {other:?}"),
+        };
+        assert_eq!(listed, std::slice::from_ref(&own), "the client lists only its account's rule");
+        // The person sees both and gets the oldest; nothing new is made.
+        let again = hidden(inbox.handle(hide(&older, HideScope::Sender), None, at(9, 6)));
+        assert_eq!((again.rule, again.new_rule), (Some(theirs), false));
+        assert_eq!(rules_of(&inbox).len(), 2);
     }
 
     #[test]

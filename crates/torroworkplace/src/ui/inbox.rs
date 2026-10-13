@@ -8,8 +8,9 @@
 //!   flip sends `settings.set_setting { key: "quiet_when_busy", value }` at once, like the
 //!   switches of the General page; there is no Save button.
 //! - **Rules**: one row per rule of `inbox.list_rules` ([`Data::rules`]), remembered lanes first,
-//!   then muted sources, then hidden senders and domains of mail accounts (task E3.10: "Hidden:
-//!   news@shop.example", "Hidden: everything from shop.example", with the account below), each
+//!   then muted sources, then hidden senders and domains (task E3.10: "Hidden:
+//!   news@shop.example", "Hidden: everything from shop.example", with "All mail accounts" below –
+//!   such a rule holds for every account, task E3.11), each
 //!   with "Remove", which sends `inbox.remove_rule { id }`. Without rules the group says where they
 //!   come from.
 //! - **App**: "Open" starts or raises Torro Inbox through `apps.open_app`, where the entries
@@ -169,16 +170,29 @@ fn lane_name(lane: Lane) -> &'static str {
 }
 
 /// One rule: its sentence, wrapped rather than cut off (a source name can be long), and "Remove".
-/// A rule for one sender of a mail account names the account below, quietly: the same sender may
-/// write to two accounts, and a rule holds for one.
+/// A rule for one sender names where it holds below, quietly: a hidden sender or domain "All mail
+/// accounts" (task E3.11), a lane remembered for a sender its account, which it holds for alone.
 fn rule_row<'a>(state: &State, rule: &'a Rule) -> Element<'a, Message> {
     let remove = (!state.removing.contains(&rule.id)).then(|| Message::Remove(rule.id.clone()));
     let button = widgets::text_button(None, tr("Remove"), style::button::secondary, remove);
     let mut lines = column![typo::text(typo::body(), sentence(rule))];
-    if rule.sender.is_some() || rule.domain.is_some() {
-        lines = lines.push(typo::text(typo::meta(), rule.source.label()).style(theme::text_2));
+    if let Some(place) = place(rule) {
+        lines = lines.push(typo::text(typo::meta(), place).style(theme::text_2));
     }
     wrapping_row(lines, button)
+}
+
+/// Where a rule for one sender or domain holds, for the quiet line below its sentence: "All mail
+/// accounts" for a hidden one ([`is_hidden`], task E3.11), the account for a remembered lane;
+/// `None` for rules about a whole source, whose sentence names it.
+fn place(rule: &Rule) -> Option<String> {
+    if is_hidden(rule) {
+        Some(tr("All mail accounts").to_owned())
+    } else if rule.sender.is_some() || rule.domain.is_some() {
+        Some(rule.source.label())
+    } else {
+        None
+    }
 }
 
 /// The group "App": Torro Inbox with "Open"; off while the core has not reported the app as
@@ -306,6 +320,9 @@ mod tests {
             sentence(&lane),
             trf("Mail from {sender} goes to “{lane}”", &[("sender", &"news@shop.example"), ("lane", &tr("For me"))])
         );
+        assert_eq!(place(&sender).as_deref(), Some(tr("All mail accounts")), "hidden in every account");
+        assert_eq!(place(&lane).as_deref(), Some("anna@example.org"), "a lane holds for its account");
+        assert_eq!(place(&rule("m", SourceRef::script("cron"), RuleEffect::Muted)), None, "the sentence names it");
         let remove = update(&mut State::default(), Message::Remove("h".into()), &Data::default());
         assert!(matches!(remove, Action::Send(Request::RemoveRule { ref id }) if id == "h"), "removed like any rule");
     }

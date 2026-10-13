@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
-| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done` ⁸, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ | | `mute_source`, `hide_sender` ¹⁰, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done` ⁸, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `hide_sender` mit `conversation` ¹⁰ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -300,13 +300,24 @@ App-Schlüssel.
 Gründen ab. Pakete enthalten keine Geheimnisse, darum genügt `Read` zum Auflisten. Die Apps folgen
 der Einstellung wie dem Zoom: Sie fragen `get_settings` beim Start und bei jedem Takt.
 
-¹⁰ `hide_sender { id, scope: sender | domain }` (E3.10) ist immer `Admin`: eine dauerhafte Regel wie
-`mute_source`, die spätere Mails des Absenders bzw. der Domain (genau, ohne Subdomains) im Konto des
-Eintrags nicht mehr zu Einträgen macht und die offenen und vertagten passenden Einträge erledigt.
-Anders als `set_item_done` wirkt das **nicht** in die Quelle zurück: Die Mail bleibt ungelesen und
-an ihrem Platz, darum braucht es kein Schreibrecht für Mail (nur Leserecht, um den Eintrag zu
-sehen). Antwort ist die neue `Rule` (mit `sender` oder `domain`); `not-found` für Einträge, die der
-Schlüssel nicht sieht, `error` für Einträge ohne Mail-Absender; `remove_rule` hebt die Regel auf.
+¹⁰ `hide_sender { id, scope: conversation | sender | domain }` (E3.10, E3.11) hat je Umfang eine
+andere Stufe: `conversation` ist `Write` (nur dieser Eintrag wird erledigt, keine Regel; eine neue
+Antwort bringt ihn zurück), `sender` und `domain` sind `Admin` – eine dauerhafte Regel wie
+`mute_source`, die spätere Mails des Absenders bzw. der Domain (genau, ohne Subdomains) in **allen**
+Mail-Konten nicht mehr zu Einträgen macht und die offenen und vertagten passenden Einträge aller
+Konten erledigt. Der Katalog nennt `Write`, `Request::operation` hebt `sender` und `domain` auf
+`Admin` (wie `set_item_lane` mit `remember`). Anders als `set_item_done` wirkt keiner der Umfänge in
+die Quelle zurück: Die Mail bleibt ungelesen und an ihrem Platz, darum braucht es kein Schreibrecht
+für Mail (nur Leserecht, um den Eintrag zu sehen). Antwort `hidden`: die Regel (`rule`, bei
+`conversation` keine; dieselbe Regel noch einmal ergibt die vorhandene mit `new_rule: false`) und
+die Ids der Einträge, die der Aufruf erledigt hat (`done`, nur die der Schlüssel sehen darf) – damit
+lässt sich der Aufruf genau zurücknehmen: `remove_rule` bei `new_rule`, dann `set_item_done` mit
+`done: false` für jede Id (vorher vertagte Einträge kommen offen zurück, nicht wieder vertagt). Die
+Regel wird beim Konto des Eintrags gespeichert; `list_rules` und `remove_rule` zeigen sie nur
+Schlüsseln, die dieses Konto lesen dürfen, obwohl sie in allen Konten wirkt. Eine Regel aus einem
+Konto, das der Schlüssel nicht lesen darf, gibt `hide_sender` nie heraus (auch nicht als
+„gibt es schon“): Der Schlüssel bekommt dann eine eigene Regel in seinem Konto. `not-found` für Einträge, die der Schlüssel nicht sieht, `error` für
+Einträge, die keine Mail sind, und bei `sender`/`domain` für Mail ohne Absender.
 
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine

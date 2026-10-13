@@ -126,17 +126,27 @@ In dieser Reihenfolge, die erste passende Regel gewinnt:
    eine Zeile Zusammenfassung. Nur als Vorschlag, mit Kennzeichnung; ohne KI-Konto fehlt die Funktion
    einfach, nichts anderes ändert sich.
 
-**Ausblenden in Stufen (E3.10):** „Hide“ ist kein Spam. Das Menü „Hide from inbox“ (`m`, „…“ im
-Paneel) bietet für Mail „This conversation“ (erledigt wie `e` – das markiert die Mail wie jedes
-Erledigen als gelesen; eine neue Antwort bringt sie zurück),
-„Everything from <Adresse>“, „Everything from <Domain>“, dann „Always to Info“ und – nur wenn das
-Konto einen Ordner mit Rolle Junk hat – „Move to junk“; für andere Quellen „This entry“ und „Mute
-<Quelle>“, die Suite nie. Absender und Domain sind eine Regel (`inbox.hide_sender`): Neue Mail
-davon wird kein Eintrag, offene und vertagte passende Einträge werden erledigt. Die Mail selbst
+**Ausblenden in Stufen (E3.10, E3.11):** „Hide“ ist kein Spam. Das Menü „Hide from inbox“ (`m`, „…“
+im Paneel, „Hide“ in der Aktionsleiste) bietet für Mail „This conversation“ (`inbox.hide_sender` mit
+`conversation`: erledigt, aber anders als `e` bleibt die Mail ungelesen; eine neue Antwort bringt
+sie zurück), „Everything from <Adresse>“, „Everything from <Domain>“, dann „Always to Info“ und – nur
+wenn das Konto einen Ordner mit Rolle Junk hat – „Move to junk“; für andere Quellen „This entry“
+und „Mute <Quelle>“, die Suite nie. Absender und Domain sind eine Regel (`inbox.hide_sender`): Neue
+Mail davon wird kein Eintrag, offene und vertagte passende Einträge werden erledigt. Die Mail selbst
 bleibt **unverändert** im Postfach, nicht gelesen, nicht verschoben – anders als „erledigt“, das
 die Mail als gelesen markiert. Domain heißt der Teil nach `@`, klein, genau (keine Subdomains); die
-Regel gilt für das Konto des Eintrags. Die Regeln stehen in der Steuerzentrale › Inbox › Rules
-(„Hidden: news@shop.example“, „Hidden: everything from shop.example“) mit „Remove“.
+Regel gilt für **alle** Mail-Konten (E3.11), auch Regeln, die vorher für ein Konto angelegt wurden.
+Die Regeln stehen in der Steuerzentrale › Inbox › Rules („Hidden: news@shop.example“, „Hidden:
+everything from shop.example“, darunter „All mail accounts“) mit „Remove“.
+
+**Rückgängig (E3.11):** Nach Done, Later und Hide erscheint unten mittig ein Hinweis
+(`widgets::toast`) mit „Undo“; er verschwindet nach 5 s oder mit `Escape`. `u` in der Liste und
+`Ctrl+Z` (⌘Z auf macOS) lösen Undo aus. Undo nimmt genau die Wirkung zurück, mit vorhandenen
+Befehlen: Done → `set_item_done` wieder offen; Later → `snooze_item` ohne Zeit; Hide „This
+conversation“ → wieder offen; Hide Absender/Domain → `remove_rule` (nur wenn der Aufruf die Regel
+neu angelegt hat), dann die dadurch erledigten Einträge wieder offen (die Antwort von
+`hide_sender` nennt sie; vorher vertagte kommen offen zurück). Done einer Mail hat die Mail schon
+als gelesen markiert; Undo öffnet nur den Eintrag wieder.
 
 **Dringend** ist eine kleine, feste Menge (Freigabe, Agent wartet, Server down, CI rot auf dem
 eigenen PR) und ein Absender, den ich selbst als „VIP“ markiere. Mehr nicht.
@@ -248,7 +258,9 @@ weder Mail noch Slack).
 | Zu Aufgabe machen | Taste `t` | `inbox.create_task_from_item` · Write (braucht auch Tasks-Rechte) | `inbox_create_task_from_item` |
 | Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
 | Quelle stummschalten | Menü „Hide from inbox“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
-| Absender oder Domain ausblenden (E3.10) | Menü „Hide from inbox“ (`m`, „…“ im Paneel), Steuerzentrale › Inbox › Rules | `inbox.hide_sender` · Admin | `inbox_hide_sender` |
+| Gespräch ausblenden, Mail bleibt ungelesen (E3.11) | Menü „Hide from inbox“ › „This conversation“ | `inbox.hide_sender` mit `conversation` · Write | `inbox_hide_sender` |
+| Absender oder Domain ausblenden, alle Konten (E3.10, E3.11) | Menü „Hide from inbox“ (`m`, „…“ im Paneel), Steuerzentrale › Inbox › Rules | `inbox.hide_sender` mit `sender`/`domain` · Admin | `inbox_hide_sender` |
+| Rückgängig nach Done, Later, Hide (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 

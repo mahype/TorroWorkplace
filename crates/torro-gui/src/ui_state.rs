@@ -1,6 +1,7 @@
 //! What a window remembers about its own look between starts: whether the sidebar is collapsed
-//! (task U.2, [`UiState`]) and, in the tasks app, the repository last chosen for a GitHub filter
-//! list (task G.11, [`last_repo_from`]). `ui.json` in the app's state directory
+//! (task U.2, [`UiState`]), in the tasks app the repository last chosen for a GitHub filter list
+//! (task G.11, [`last_repo_from`]), and which foldable parts the person unfolded – "Info" in the
+//! columns of the inbox's overview (task E3.11, [`unfolded_from`]). `ui.json` in the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
 //!
@@ -35,6 +36,9 @@ pub const FILE: &str = "ui.json";
 /// The key of the repository last chosen for a GitHub filter list (`owner/name`), beside the
 /// fields of [`UiState`]. One value for all GitHub accounts of the app.
 const LAST_REPO: &str = "lastRepo";
+
+/// The key of the parts unfolded ([`unfolded_from`]): a list of names the app chooses.
+const UNFOLDED: &str = "unfolded";
 
 /// The remembered view state of one app. Add fields with `#[serde(default)]` so older files keep
 /// loading.
@@ -165,6 +169,47 @@ pub fn save_last_repo_task<T: Send + 'static>(app: AppId, repo: String) -> Task<
     .discard()
 }
 
+/// The names of the foldable parts unfolded in `path`, as [`save_unfolded_to`] stored them (task
+/// E3.11): names the app chooses, such as `overview.mail.info`. Empty when nothing is stored, the
+/// file cannot be read or the value is no list of names (other entries of a list are skipped).
+pub fn unfolded_from(path: &Path) -> Vec<String> {
+    let Some(value) =
+        fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return Vec::new();
+    };
+    let Some(names) = value.get(UNFOLDED).and_then(serde_json::Value::as_array) else { return Vec::new() };
+    names.iter().filter_map(serde_json::Value::as_str).map(str::to_string).collect()
+}
+
+/// Stores `names` as the foldable parts unfolded in `path` – all of them, replacing the list
+/// before –, keeping everything else in the file. Folding a part is leaving its name out.
+pub fn save_unfolded_to(path: &Path, names: &[String]) -> Result<(), Error> {
+    let mut fields = serde_json::Map::new();
+    let list = names.iter().cloned().map(serde_json::Value::String).collect();
+    fields.insert(UNFOLDED.into(), serde_json::Value::Array(list));
+    merge_into(path, fields)
+}
+
+/// [`unfolded_from`] for `app` in the background, for the start of an app:
+/// `ui_state::load_unfolded_task(app).map(Message::Unfolded)`. Like [`load_task`], tests that only
+/// build the app never run it.
+pub fn load_unfolded_task(app: AppId) -> Task<Vec<String>> {
+    Task::perform(async move { file(app).map(|path| unfolded_from(&path)).unwrap_or_default() }, |names| names)
+}
+
+/// [`save_unfolded_to`] for `app` in the background, after the person folded or unfolded a part. A
+/// failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_unfolded_task<T: Send + 'static>(app: AppId, names: Vec<String>) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_unfolded_to(&path, &names));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
 /// Writes `fields` into the JSON object in `path` – over the keys of the same name, beside the
 /// others – atomically, creating the directory if needed. A missing or broken file starts empty.
 fn merge_into(path: &Path, fields: serde_json::Map<String, serde_json::Value>) -> Result<(), Error> {
@@ -277,6 +322,29 @@ mod tests {
         for content in ["{ not json", r#"{"lastRepo":7}"#, r#"{"lastRepo":"  "}"#] {
             fs::write(&path, content).expect("write");
             assert_eq!(last_repo_from(&path), None, "{content}");
+        }
+    }
+
+    #[test]
+    fn unfolded_parts_are_kept_beside_the_sidebar_and_the_repository() {
+        let dir = TempDir::new("unfolded");
+        let path = dir.0.join(FILE);
+        assert!(unfolded_from(&path).is_empty(), "nothing unfolded yet");
+        save_to(&path, &UiState { sidebar: SidebarMode::Rail }).expect("save the sidebar");
+        save_last_repo_to(&path, "mahype/TorroWorkplace").expect("save the repository");
+        let names = vec!["overview.mail.info".to_string(), "overview.notices.info".to_string()];
+        save_unfolded_to(&path, &names).expect("save");
+        assert_eq!(unfolded_from(&path), names);
+        assert_eq!(load_from(&path).sidebar, SidebarMode::Rail, "the sidebar stays");
+        assert_eq!(last_repo_from(&path).as_deref(), Some("mahype/TorroWorkplace"), "the repository stays");
+        save_to(&path, &UiState::default()).expect("save the sidebar again");
+        assert_eq!(unfolded_from(&path), names, "saving the sidebar keeps them");
+        save_unfolded_to(&path, &names[1..]).expect("fold one");
+        assert_eq!(unfolded_from(&path), &names[1..]);
+        for content in ["{ not json", r#"{"unfolded":"overview"}"#, r#"{"unfolded":[7,"a"]}"#] {
+            fs::write(&path, content).expect("write");
+            let expected: &[&str] = if content.contains('7') { &["a"] } else { &[] };
+            assert_eq!(unfolded_from(&path), expected, "{content}");
         }
     }
 

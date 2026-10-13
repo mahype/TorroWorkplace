@@ -7,7 +7,9 @@
 //!    they never reach the list: the title field of "Make task" (task E3.5) takes letters, the
 //!    arrows and `Enter` (which creates the task through its `on_submit`).
 //! 2. [`command`] says what a [`Key`] does where the keys go ([`Focus`]): in the list `j`/`k` (and
-//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo, `s` snooze, `l` lane, `m` hide from the inbox
+//!    ↓/↑) move, `Enter` opens, `e` done, `u` undo (as Ctrl + Z, ⌘ + Z on macOS, does in the whole
+//!    window while the toast offers it – `widgets::undo_key`, task E3.11, not a key of this map:
+//!    `ctrl_guard` takes ⌘ + Z before any widget, only a subscription still hears it), `s` snooze, `l` lane, `m` hide from the inbox
 //!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides); in a menu of choices the digits pick
 //!    its entries; in the date picker the arrows change

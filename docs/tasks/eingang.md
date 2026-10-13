@@ -633,6 +633,41 @@ Zeilen gleich mit austauschbaren Werten entstehen.
   Größenklassen. `scripts/design-check.sh` sauber. Sichtprüfung `torro-design-review` in allen Größen, hell und dunkel
   (`--demo --open overview`).
 
+### E3.11 Nacharbeit: ungelesen ausblenden, Regeln für alle Konten, Undo
+- [x] erledigt (zusätzlich nur `torroinbox/src/empty.rs` (Trait-Methode `remove_rule`) und ein Audit-Text in
+  `torroworkplace/src/daemon.rs`; bestehende Regeln je Konto werden als „alle Konten“ gelesen, gespeichert beim
+  Konto ihrer Entstehung (bestimmt, wer sie sieht); ein Schlüssel ohne Zugriff auf jenes Konto bekommt eine eigene
+  Regel statt der fremden; Undo nach Done öffnet nur den Eintrag, die Mail bleibt gelesen; vorher vertagte Einträge
+  kommen nach Undo offen zurück; Ordner-Zeilen ohne Aktionsleiste; Sichtprüfung auf macOS hell/dunkel, Breit/Schmal)
+- **Modell:** Opus · **Braucht:** E3.9, E3.10 · **Dateien:** `crates/torro-inbox/src/{item,rules,source,demo}.rs`,
+  `crates/torro-ipc/src/{lib,api,inbox}.rs`, `crates/torroworkplace/src/{core,inbox,mcp,approvals}.rs`,
+  `crates/torroworkplace/src/ui/inbox.rs`, `crates/torroinbox/src/{app,list,overview,mail,detail,keys}.rs`,
+  `crates/torro-gui/src/{widgets,ui_state}.rs`, `crates/torro-gui/examples/gallery.rs`,
+  `.claude/skills/torro-design/SKILL.md`, `crates/torro-core/src/i18n/de.rs`; Doku: `docs/{api,eingang}.md`
+- **Entschieden 2026-10-13 (Nutzer):**
+  1. **„This conversation“ lässt die Mail ungelesen.** Ausblenden fasst das Postfach nie an. Schnittstelle (freigegeben):
+     `HideScope::Conversation` in `inbox.hide_sender`; Zugriff je Umfang: `conversation` Write (keine dauerhafte
+     Regel), `sender`/`domain` Admin. Neue Antworten im Gespräch kommen wieder.
+  2. **Absender- und Domain-Regeln gelten für alle Mail-Konten.** Eine Regel blendet in jedem Konto aus. Bestehende
+     Regeln je Konto gelten weiter (beim Laden zusammenführen oder als „alle Konten“ lesen; im Bericht begründen).
+     Steuerzentrale › Inbox › Rules zeigt „All mail accounts“ statt des Kontos.
+  3. **Undo nach Hide, Done und Later:** neuer Baustein `widgets::toast` (unten mittig, Fläche `MENU`, Rand
+     `LINE_STRONG`, Radius `MD`, Schatten, Text `BODY` + Knopf „Undo“, verschwindet nach 5 s oder mit `Escape`;
+     `Ctrl+Z` löst Undo aus). Undo nimmt genau die Wirkung zurück: Done → wieder offen; Later → nicht mehr vertagt;
+     Hide Gespräch → wieder offen; Hide Absender/Domain → Regel entfernen und die dadurch erledigten Einträge wieder
+     öffnen (dafür nennt die Antwort von `hide_sender` die erledigten Ids; Schnittstelle freigegeben). In Skill und
+     Galerie dokumentieren.
+- **Nacharbeit aus E3.9:**
+  - Aufgeklapptes „Info“ je Spalte in `ui.json` merken (Helfer in `torro_gui::ui_state`).
+  - Ordner-Ansichten (`mail.rs`) bekommen dieselben Mail-Zeilen wie die Übersicht.
+  - Demo: Mails und Hinweise auch von gestern und früher, damit alle Gruppen im Bild sind.
+  - Die Aktionsleiste sitzt auf der Höhe der ersten Zeile (Zeit) und deckt weder Vorschau noch Konto ab.
+- **API/MCP:** `inbox.hide_sender` (erweitert), `inbox_hide_sender` (Beschreibung: Umfang und Rechte je Umfang);
+  Undo nutzt vorhandene Requests (`set_item_done`, `snooze_item`, `remove_rule`).
+- **Abnahme:** Tests: Gespräch ausblenden lässt Mail ungelesen (Fake-IMAP, kein STORE), Write reicht für
+  `conversation`, nicht für `sender`; Regel wirkt in zwei Konten; Undo je Aktion; `ui.json` merkt „Info“.
+  `torro-api-review`; Sichtprüfung (Toast, Aktionsleiste, Ordner-Ansicht) hell und dunkel.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur

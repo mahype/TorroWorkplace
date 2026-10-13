@@ -46,7 +46,7 @@ use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
-use torro_inbox::{Item, Lane, Link, Rule, RuleEffect, SourceRef};
+use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceRef};
 use torro_ipc::api::Mcp;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 use torro_mail::{MailAddress, Role};
@@ -1213,31 +1213,32 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             trf("Unmute {source} in the inbox", &[("source", &source_name(source))])
         }
         // The sender or domain as the inbox holds it for the entry, never as the client says (task
-        // E3.10).
+        // E3.10); a rule holds for every mail account (task E3.11).
         Request::HideSender { scope, .. } => {
             let target = facts.item.as_ref().and_then(|item| torro_inbox::rules::hide_target(item, *scope));
-            let source =
-                facts.item.as_ref().map_or_else(|| tr("its source").to_string(), |item| source_name(&item.source));
             match (scope, target) {
-                (torro_inbox::item::HideScope::Sender, Some(sender)) => trf(
-                    "Hide mail from {sender} of {source} in the inbox; the mail stays unread",
-                    &[("sender", &format!("\"{}\"", quote(&sender))), ("source", &source)],
+                (HideScope::Conversation, _) => {
+                    trf("Hide {entry} from the inbox; the mail stays unread", &[("entry", &entry())])
+                }
+                (HideScope::Sender, Some(sender)) => trf(
+                    "Hide mail from {sender} in every mail account; the mail stays unread",
+                    &[("sender", &format!("\"{}\"", quote(&sender)))],
                 ),
-                (torro_inbox::item::HideScope::Domain, Some(domain)) => trf(
-                    "Hide mail from everyone at {domain} of {source} in the inbox; the mail stays unread",
-                    &[("domain", &format!("\"{}\"", quote(&domain))), ("source", &source)],
+                (HideScope::Domain, Some(domain)) => trf(
+                    "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
+                    &[("domain", &format!("\"{}\"", quote(&domain)))],
                 ),
                 (_, None) => trf("Hide the sender of {entry} in the inbox", &[("entry", &entry())]),
             }
         }
         Request::RemoveRule { .. } => match &facts.rule {
-            Some(Rule { source, sender: Some(sender), effect: RuleEffect::Muted, .. }) => trf(
-                "Show mail from {sender} of {source} in the inbox again",
-                &[("sender", &format!("\"{}\"", quote(sender))), ("source", &source_name(source))],
-            ),
-            Some(Rule { source, domain: Some(domain), effect: RuleEffect::Muted, .. }) => trf(
-                "Show mail from everyone at {domain} of {source} in the inbox again",
-                &[("domain", &format!("\"{}\"", quote(domain))), ("source", &source_name(source))],
+            // A hidden sender or domain is hidden in every mail account (task E3.11).
+            Some(Rule { sender: Some(sender), effect: RuleEffect::Muted, .. }) => {
+                trf("Show mail from {sender} in the inbox again", &[("sender", &format!("\"{}\"", quote(sender)))])
+            }
+            Some(Rule { domain: Some(domain), effect: RuleEffect::Muted, .. }) => trf(
+                "Show mail from everyone at {domain} in the inbox again",
+                &[("domain", &format!("\"{}\"", quote(domain)))],
             ),
             Some(Rule { source, effect: RuleEffect::Muted, .. }) => {
                 trf("Unmute {source} in the inbox", &[("source", &source_name(source))])
@@ -2571,25 +2572,29 @@ pub(crate) mod tests {
             )
         );
 
-        // Hiding a sender or domain (task E3.10): named from the entry, never from the request.
-        let anna = "\"anna@example.org\" (mail:anna@example.org)";
+        // Hiding (tasks E3.10, E3.11): named from the entry, never from the request; a sender or
+        // domain in every mail account, a conversation with its mail left unread.
         let hide = |scope| Request::HideSender { id: "e1".into(), scope };
         assert_eq!(
-            inbox_summary(&hide(torro_inbox::item::HideScope::Sender), &mail),
+            inbox_summary(&hide(HideScope::Conversation), &mail),
+            trf("Hide {entry} from the inbox; the mail stays unread", &[("entry", &news)])
+        );
+        assert_eq!(
+            inbox_summary(&hide(HideScope::Sender), &mail),
             trf(
-                "Hide mail from {sender} of {source} in the inbox; the mail stays unread",
-                &[("sender", &"\"news@shop.example\""), ("source", &anna)]
+                "Hide mail from {sender} in every mail account; the mail stays unread",
+                &[("sender", &"\"news@shop.example\"")]
             )
         );
         assert_eq!(
-            inbox_summary(&hide(torro_inbox::item::HideScope::Domain), &mail),
+            inbox_summary(&hide(HideScope::Domain), &mail),
             trf(
-                "Hide mail from everyone at {domain} of {source} in the inbox; the mail stays unread",
-                &[("domain", &"\"shop.example\""), ("source", &anna)]
+                "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
+                &[("domain", &"\"shop.example\"")]
             )
         );
         assert_eq!(
-            inbox_summary(&hide(torro_inbox::item::HideScope::Domain), &InboxFacts::default()),
+            inbox_summary(&hide(HideScope::Domain), &InboxFacts::default()),
             trf("Hide the sender of {entry} in the inbox", &[("entry", &unknown)])
         );
         let hidden = |sender: Option<&str>, domain: Option<&str>| InboxFacts {
@@ -2606,17 +2611,11 @@ pub(crate) mod tests {
         let remove_hidden = Request::RemoveRule { id: "r3".into() };
         assert_eq!(
             inbox_summary(&remove_hidden, &hidden(Some("news@shop.example"), None)),
-            trf(
-                "Show mail from {sender} of {source} in the inbox again",
-                &[("sender", &"\"news@shop.example\""), ("source", &anna)]
-            )
+            trf("Show mail from {sender} in the inbox again", &[("sender", &"\"news@shop.example\"")])
         );
         assert_eq!(
             inbox_summary(&remove_hidden, &hidden(None, Some("shop.example"))),
-            trf(
-                "Show mail from everyone at {domain} of {source} in the inbox again",
-                &[("domain", &"\"shop.example\""), ("source", &anna)]
-            )
+            trf("Show mail from everyone at {domain} in the inbox again", &[("domain", &"\"shop.example\"")])
         );
 
         let post = Request::PostItem {

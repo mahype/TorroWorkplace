@@ -222,7 +222,17 @@ aus einem Guss wirkt:
   `size::control_sm()` mit Icon und Wort (`widgets::RowAction`: Icon, Wort, Taste, Nachricht), Tooltip
   mit Wort und `kbd`. Wörter nur, solange die Leiste höchstens die halbe Zeile braucht
   (`widgets::row_actions_words`), sonst nur Icons. Nur Aktionen, die für den Eintrag gehen; ein Knopf
-  tut, was seine Taste an der Zeile tut.
+  tut, was seine Taste an der Zeile tut. Zeilen mit mehreren Zeilen Text (Mail-Zeile, Hinweis mit
+  Text) setzen die Leiste auf die erste Zeile, über die Zeit (`widgets::row_actions_at`, E3.11), damit
+  Vorschau und Konto darunter frei bleiben.
+- **Hinweis mit „Undo“** (E3.11, `widgets::toast`): nach einer Änderung, die sich zurücknehmen lässt
+  (Done, Later, Hide …), unten mittig `space::xl()` über dem Fensterrand; Fläche `MENU`, Rand
+  `LINE_STRONG`, Radius `radius::md()`, Schatten (`style::container::menu`), Text `typo::body()` in
+  `TEXT`, höchstens ein Knopf (`widgets::ToastAction::undo`: ghost „Undo“ mit `kbd` „Ctrl Z“/„Cmd Z“),
+  eine Zeile hoch `size::control_lg()`, höchstens `size::content_max()` breit. Ruhig: keine Animation,
+  er erscheint und geht – nach `widgets::TOAST_FOR` (5 s) oder mit `Escape` (vor dem Paneel).
+  `Ctrl+Z` (⌘Z) nimmt zurück, solange er „Undo“ zeigt (`widgets::undo_key`). Als eigene Ebene über
+  dem Fenster stapeln, immer (leer ohne Hinweis), damit das Fenster seinen Zustand behält.
 - **Menüs** (`widgets::menu`): Fläche `MENU`, Rand `LINE_STRONG`, Radius 8, Schatten, Innenrand 4;
   Einträge 30 hoch mit Icon, Text und rechts Zahl oder Tasten-Hinweis; Abschnitte mit `typo::caption()`-
   Titel; Trenner `LINE`.

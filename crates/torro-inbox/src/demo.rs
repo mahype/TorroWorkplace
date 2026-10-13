@@ -32,8 +32,8 @@ use torro_core::i18n::{tr, trf};
 use torro_mail::{AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
 
 use crate::item::{
-    Action, AgentInfo, AgentKind, HideScope, Item, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo, SourceRef,
-    State,
+    Action, AgentInfo, AgentKind, Hidden, HideScope, Item, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo,
+    SourceRef, State,
 };
 use crate::rules;
 use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
@@ -47,6 +47,8 @@ struct Data {
     muted: BTreeSet<SourceRef>,
     /// The senders and domains hidden from the inbox (task E3.10), in memory only.
     hidden: Vec<Rule>,
+    /// How many hiding rules were made, for their ids: one removed leaves no gap to reuse.
+    rules_made: usize,
     /// The tasks made from entries ("Make task", task E3.5), in memory only.
     tasks: Vec<DemoTask>,
     /// The folders of both mail accounts; their numbers are counted from `mail` when listed.
@@ -59,6 +61,27 @@ struct Data {
     sent: Vec<Draft>,
     /// How many drafts were given an id.
     draft_count: u32,
+}
+
+impl Data {
+    /// The rule hiding `sender` or `domain` in every mail account (task E3.11): the one already
+    /// kept for it in any account, else a new one about `source`; with whether it is new.
+    fn hiding_rule(
+        &mut self,
+        source: SourceRef,
+        sender: Option<String>,
+        domain: Option<String>,
+        now: DateTime<Utc>,
+    ) -> (Option<Rule>, bool) {
+        if let Some(known) = self.hidden.iter().find(|rule| rule.sender == sender && rule.domain == domain) {
+            return (Some(known.clone()), false);
+        }
+        self.rules_made += 1;
+        let id = format!("demo-rule-{}", self.rules_made);
+        let rule = Rule { id, source, sender, domain, effect: RuleEffect::Muted, created: now };
+        self.hidden.push(rule.clone());
+        (Some(rule), true)
+    }
 }
 
 /// A task the demo made from an entry: the list's id, the title and the due day.
@@ -100,6 +123,7 @@ impl DemoSource {
             items,
             muted: BTreeSet::new(),
             hidden: Vec::new(),
+            rules_made: 0,
             tasks: Vec::new(),
             folders: folder_sample(),
             mail,
@@ -171,7 +195,7 @@ fn agent(agent: AgentKind, session: &str, project: &str, branch: &str, title: Op
     })
 }
 
-/// The sample entries, eleven of them; times are relative to `now`.
+/// The sample entries, thirteen of them; times are relative to `now`.
 pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
     let claude = || SourceRef::agent(AgentKind::ClaudeCode.id());
     let codex = || SourceRef::agent(AgentKind::Codex.id());
@@ -270,6 +294,16 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
             link: Some(Link::Window),
             state: State::Done { at: now - TimeDelta::hours(22) },
             ..entry(now, 11, codex(), Kind::AgentDone, finished(AgentKind::Codex), 26 * 60)
+        },
+        // Yesterday and earlier (task E3.11), so the overview shows every group of its columns.
+        Item {
+            body: Some(tr("2 invoices could not be matched to a customer.").into()),
+            ..notice(now, 12, "invoices", Lane::ForMe, tr("Invoice run needs a check"), 22 * 60)
+        },
+        Item {
+            body: Some(tr("Renew it before 27 October to keep the intranet reachable.").into()),
+            state: State::Seen,
+            ..notice(now, 13, "certs", Lane::ForMe, tr("Certificate for the intranet expires in 14 days"), 3 * 24 * 60)
         },
     ]
 }
@@ -570,6 +604,28 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             flags: READ,
             text: "Photos from the summer trip are in the shared album.",
             ..Letter::new("m:p6", PRIVATE, "archive", "Summer photos")
+        },
+        // Unread mail of yesterday and before (task E3.11): every group of the overview has mail,
+        // and the shop writes to both accounts, so hiding its domain shows in both.
+        Letter {
+            from: ("Tom Richter", "tom.richter@work.example.org"),
+            minutes: 20 * 60,
+            text: "The rooms for the offsite are booked: two meeting rooms and the terrace. The agenda follows \
+                   on Monday.",
+            ..Letter::new("m:w13", WORK, "inbox", "Offsite: rooms are booked")
+        },
+        Letter {
+            from: ("Shop", "news@shop.example"),
+            minutes: 30 * 60,
+            bulk: true,
+            text: "Winter jackets are here. Members get free shipping until Friday.",
+            ..Letter::new("m:w14", WORK, "inbox", "Winter jackets are here")
+        },
+        Letter {
+            from: ("Clara Berg", "clara@example.org"),
+            minutes: 3 * 24 * 60,
+            text: "Dinner for Mum's birthday on the 24th? I would book the Italian place for seven.",
+            ..Letter::new("m:p7", PRIVATE, "inbox", "Birthday dinner on the 24th")
         },
     ];
     letters.into_iter().map(|l| letter(now, l)).collect()
@@ -926,38 +982,46 @@ impl InboxSource for DemoSource {
         Ok(())
     }
 
-    /// Keeps the rule (once, as the core does) and marks done the open and snoozed entries it hides
-    /// ([`rules::hides`]); unlike "done", their mail stays as it is – not read, not moved. Demo
-    /// mode gets no new mail, so the rule drops nothing later. [`InboxError::NotFound`] for an
-    /// unknown entry, [`InboxError::Other`] for one that names no mail sender.
-    async fn hide_sender(&self, id: String, scope: HideScope) -> Result<Rule, InboxError> {
+    /// As the core does (tasks E3.10, E3.11): a conversation is done; a sender or domain gets its
+    /// rule once – for every mail account, the same rule made again from another account is the one
+    /// already there – and the open and snoozed entries it hides ([`rules::hides`]) are done. Unlike
+    /// "done", their mail stays as it is – not read, not moved. Demo mode gets no new mail, so the
+    /// rule drops nothing later. [`InboxError::NotFound`] for an unknown entry,
+    /// [`InboxError::Other`] for one that cannot be hidden that way ([`rules::may_hide`]).
+    async fn hide_sender(&self, id: String, scope: HideScope) -> Result<Hidden, InboxError> {
         let now = self.now();
         let mut data = self.lock();
         let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
-        let target = rules::hide_target(item, scope)
-            .ok_or_else(|| InboxError::Other("this entry names no mail sender to hide".into()))?;
-        let (sender, domain) = match scope {
-            HideScope::Sender => (Some(target), None),
-            HideScope::Domain => (None, Some(target)),
+        if !rules::may_hide(item, scope) {
+            return Err(InboxError::Other("this entry names no mail sender to hide".into()));
+        }
+        let (source, target) = (item.source.clone(), rules::hide_target(item, scope));
+        let (rule, new_rule) = match (scope, target) {
+            (HideScope::Sender, Some(target)) => data.hiding_rule(source, Some(target), None, now),
+            (HideScope::Domain, Some(target)) => data.hiding_rule(source, None, Some(target), now),
+            _ => (None, false),
         };
-        let source = item.source.clone();
-        let known =
-            data.hidden.iter().find(|rule| rule.source == source && rule.sender == sender && rule.domain == domain);
-        let rule = match known {
-            Some(rule) => rule.clone(),
-            None => {
-                let id = format!("demo-rule-{}", data.hidden.len() + 1);
-                let rule = Rule { id, source, sender, domain, effect: RuleEffect::Muted, created: now };
-                data.hidden.push(rule.clone());
-                rule
-            }
-        };
-        for item in data.items.iter_mut().filter(|item| !matches!(item.state, State::Done { .. })) {
-            if rules::hides(&rule, item) {
-                rules::set_done(item, true, now);
+        let mut done = Vec::new();
+        for entry in data.items.iter_mut().filter(|entry| !matches!(entry.state, State::Done { .. })) {
+            let hidden = match &rule {
+                Some(rule) => rules::hides(rule, entry),
+                None => entry.id == id,
+            };
+            if hidden {
+                rules::set_done(entry, true, now);
+                done.push(entry.id.clone());
             }
         }
-        Ok(rule)
+        Ok(Hidden { rule, new_rule, done })
+    }
+
+    /// Removes a hidden sender or domain (the only rules demo mode keeps); muted sources are taken
+    /// back with [`InboxSource::mute_source`]. [`InboxError::NotFound`] for an unknown rule.
+    async fn remove_rule(&self, id: String) -> Result<(), InboxError> {
+        let mut data = self.lock();
+        let before = data.hidden.len();
+        data.hidden.retain(|rule| rule.id != id);
+        if data.hidden.len() == before { Err(InboxError::NotFound) } else { Ok(()) }
     }
 
     /// Demo mode has no window manager and no browser behind it: nothing comes to the front (the
@@ -1095,11 +1159,24 @@ mod tests {
     async fn for_me_lists_urgent_entries_first() {
         let demo = DemoSource::new(now());
         let for_me = demo.list_items(open_in(Lane::ForMe)).await.expect("list");
-        let urgent_first =
-            ["demo-1", "demo-3", "demo-2", "demo-mail-1", "demo-4", "demo-6", "demo-mail-4", "demo-5", "demo-mail-2"];
+        let urgent_first = [
+            "demo-1",
+            "demo-3",
+            "demo-2",
+            "demo-mail-1",
+            "demo-4",
+            "demo-6",
+            "demo-mail-4",
+            "demo-5",
+            "demo-mail-2",
+            "demo-mail-6",
+            "demo-12",
+            "demo-13",
+            "demo-mail-8",
+        ];
         assert_eq!(ids(&for_me), urgent_first);
         let info = demo.list_items(open_in(Lane::Info)).await.expect("list");
-        assert_eq!(ids(&info), ["demo-8", "demo-9", "demo-mail-3", "demo-mail-5", "demo-7"]);
+        assert_eq!(ids(&info), ["demo-8", "demo-9", "demo-mail-3", "demo-mail-5", "demo-7", "demo-mail-7"]);
     }
 
     #[tokio::test]
@@ -1151,8 +1228,10 @@ mod tests {
                 "agent:claude-code",
                 "agent:codex",
                 "script:backup",
+                "script:certs",
                 "script:ci",
                 "script:deploy",
+                "script:invoices",
                 "script:uptime",
                 "mail:anna@example.org",
                 "mail:anna@work.example.org"
@@ -1226,19 +1305,49 @@ mod tests {
     async fn hiding_a_sender_closes_its_entries_but_leaves_the_mail_unread() {
         let demo = DemoSource::new(now());
         let sale = demo.lock().items.iter().find(|item| item.title == "Autumn sale: 20% off").cloned().expect("sale");
+        let other = demo.lock().items.iter().find(|item| item.title == "Winter jackets are here").cloned();
+        let other = other.expect("mail from the same domain in the work account");
+        assert_ne!(other.source, sale.source, "two accounts");
         let Some(Link::Mail { message }) = sale.link.clone() else { panic!("a mail entry links its mail") };
-        let rule = demo.hide_sender(sale.id.clone(), HideScope::Domain).await.expect("hidden");
+        let hidden = demo.hide_sender(sale.id.clone(), HideScope::Domain).await.expect("hidden");
+        let rule = hidden.rule.clone().expect("a rule");
         assert_eq!((rule.sender.as_deref(), rule.domain.as_deref()), (None, Some("shop.example")));
-        assert_eq!((rule.source.clone(), rule.effect), (sale.source.clone(), RuleEffect::Muted));
-        assert!(matches!(entry_state(&demo, &sale.id), State::Done { .. }));
+        assert_eq!((rule.source.clone(), rule.effect, hidden.new_rule), (sale.source.clone(), RuleEffect::Muted, true));
+        assert_eq!(hidden.done, [sale.id.clone(), other.id.clone()], "in every mail account (task E3.11)");
+        assert!(matches!(entry_state(&demo, &other.id), State::Done { .. }));
         let mail = demo.lock().mail.iter().find(|m| m.summary.id == message).cloned().expect("the mail");
         assert!(!mail.summary.flags.contains(&Flag::Seen), "not read");
         assert!(mail.summary.folder.ends_with("-inbox"), "not moved");
-        let again = demo.hide_sender(sale.id.clone(), HideScope::Domain).await.expect("hidden again");
-        assert_eq!(again, rule, "the same rule");
+        let again = demo.hide_sender(other.id.clone(), HideScope::Domain).await.expect("hidden again");
+        assert_eq!(again, Hidden { rule: Some(rule.clone()), new_rule: false, done: Vec::new() }, "the same rule");
         let agent = demo.hide_sender("demo-1".into(), HideScope::Sender).await;
         assert!(matches!(agent, Err(InboxError::Other(_))), "no mail: {agent:?}");
         assert_eq!(demo.hide_sender("nope".into(), HideScope::Sender).await, Err(InboxError::NotFound));
+
+        // Undo, as the app does it: the rule goes, the entries open again.
+        demo.remove_rule(rule.id.clone()).await.expect("removed");
+        assert_eq!(demo.remove_rule(rule.id).await, Err(InboxError::NotFound), "once");
+        for id in hidden.done {
+            demo.set_item_done(id.clone(), false).await.expect("open again");
+            assert!(entry_state(&demo, &id).is_open(), "{id}");
+        }
+    }
+
+    #[tokio::test]
+    async fn hiding_a_conversation_leaves_its_mail_unread_and_keeps_no_rule() {
+        let demo = DemoSource::new(now());
+        let plans = demo.lock().items.iter().find(|item| item.title == "Weekend plans").cloned().expect("mail");
+        let Some(Link::Mail { message }) = plans.link.clone() else { panic!("a mail entry links its mail") };
+        let hidden = demo.hide_sender(plans.id.clone(), HideScope::Conversation).await.expect("hidden");
+        assert_eq!(hidden, Hidden { rule: None, new_rule: false, done: vec![plans.id.clone()] });
+        assert!(matches!(entry_state(&demo, &plans.id), State::Done { .. }));
+        let mail = demo.lock().mail.iter().find(|m| m.summary.id == message).cloned().expect("the mail");
+        assert!(!mail.summary.flags.contains(&Flag::Seen), "not read, unlike done");
+        assert!(demo.lock().hidden.is_empty(), "no rule");
+        let twice = demo.hide_sender(plans.id.clone(), HideScope::Conversation).await.expect("hidden again");
+        assert!(twice.done.is_empty(), "nothing was open any more");
+        let notice = demo.hide_sender("demo-6".into(), HideScope::Conversation).await;
+        assert!(matches!(notice, Err(InboxError::Other(_))), "only mail: {notice:?}");
     }
 
     fn folder<'a>(folders: &'a [Folder], id: &str) -> &'a Folder {
@@ -1260,7 +1369,7 @@ mod tests {
             assert_eq!(roles.iter().filter(|role| role.is_none()).count(), 1);
         }
         let inbox = folder(&folders, "f:work-inbox");
-        assert_eq!((inbox.unread, inbox.total), (3, 6));
+        assert_eq!((inbox.unread, inbox.total), (5, 8));
         assert_eq!(folder(&folders, "f:private-trash").total, 0, "an empty folder");
         let mail = mail_sample(now());
         assert!(mail.iter().all(|m| m.summary.untrusted), "mail is foreign text");
@@ -1274,7 +1383,7 @@ mod tests {
     #[test]
     fn unread_inbox_mail_is_filed_as_the_core_files_it() {
         let entries = mail_entries(&mail_sample(now()));
-        assert_eq!(entries.len(), 5, "every unread mail in an inbox, nothing else");
+        assert_eq!(entries.len(), 8, "every unread mail in an inbox, nothing else");
         for item in &entries {
             assert_eq!((item.kind, item.urgent, item.untrusted), (Kind::Message, false, true), "{}", item.id);
             assert!(rules::may_open(item, |_| false), "a mail entry opens its mail: {}", item.id);
@@ -1282,7 +1391,10 @@ mod tests {
         }
         let info: Vec<&str> =
             entries.iter().filter(|item| item.lane == Lane::Info).map(|item| item.title.as_str()).collect();
-        assert_eq!(info, ["[torro/workplace] Sidebar flickers on resize (#212)", "Autumn sale: 20% off"]);
+        assert_eq!(
+            info,
+            ["[torro/workplace] Sidebar flickers on resize (#212)", "Autumn sale: 20% off", "Winter jackets are here"]
+        );
     }
 
     #[test]
@@ -1290,9 +1402,9 @@ mod tests {
         let demo = DemoSource::new(now());
         let (first, next) = demo.search_mail("f:work-inbox", None, 4, None).expect("a page");
         let ids: Vec<&str> = first.iter().map(|m| m.id.as_str()).collect();
-        assert_eq!(ids, ["m:w1", "m:w2", "m:w3", "m:w4"], "newest first");
+        assert_eq!(ids, ["m:w1", "m:w2", "m:w3", "m:w13"], "newest first");
         let (rest, last) = demo.search_mail("f:work-inbox", None, 4, next.as_deref()).expect("the next page");
-        assert_eq!((rest.len(), last), (2, None));
+        assert_eq!((rest.len(), last), (4, None));
         let (found, _) = demo.search_mail("f:work-inbox", Some("JONAS minutes"), 50, None).expect("found");
         assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m:w6"], "every word, any case");
         let (by_file, _) = demo.search_mail("f:work-inbox", Some("budget-q4.csv"), 50, None).expect("found");

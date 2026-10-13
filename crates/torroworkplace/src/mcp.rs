@@ -364,9 +364,11 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 /// - `Read` is read-only.
 /// - `Delete` and `Admin` are destructive, and so are `workspaces.load_template`, whose mode
 ///   `replace` closes windows ([`Request::operation`] asks for `Delete` then), the saves of
-///   events and tasks, which overwrite the item on the server when they change it, and of mail
+///   events and tasks, which overwrite the item on the server when they change it, of mail
 ///   `mail.move_messages` (into the trash), `mail.save_draft` (replacing a draft) and
-///   `mail.send_draft` (it removes the draft and cannot be taken back).
+///   `mail.send_draft` (it removes the draft and cannot be taken back), and
+///   `inbox.hide_sender`, whose scopes `sender` and `domain` keep a rule for every mail account
+///   and close entries in all of them (admin then, task E3.11).
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
 ///   `apps`, `approvals`, `inbox`); calendar, tasks and accounts talk to servers, so their hint is
@@ -382,6 +384,7 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
                 | "mail.move_messages"
                 | "mail.save_draft"
                 | "mail.send_draft"
+                | "inbox.hide_sender"
         );
     let hints = ToolAnnotations::new()
         .read_only(read_only)
@@ -421,7 +424,8 @@ const IDEMPOTENT: &[&str] = &[
     "inbox.snooze_item",
     "inbox.set_item_lane",
     "inbox.mute_source",
-    // Hiding the same sender or domain again answers the rule already there (task E3.10).
+    // Hiding the same sender or domain again answers the rule already there (task E3.10), a
+    // hidden conversation again closes nothing more.
     "inbox.hide_sender",
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
@@ -1623,12 +1627,16 @@ mod tests {
         assert!(matches!(refused, Err(ToolError::Input(_))), "{refused:?}");
     }
 
-    /// Task E3.10: one entry and the scope, nothing else; an admin tool that waits for the person.
+    /// Tasks E3.10, E3.11: one entry and the scope, nothing else; the description names the rights
+    /// of each scope.
     #[test]
     fn inbox_hide_sender_hides_by_the_entry_and_a_scope() {
         let request = request_for("inbox_hide_sender", args(json!({"id": "i1", "scope": "domain"})), &Utc);
         let domain = torro_inbox::item::HideScope::Domain;
         assert_eq!(request, Ok(Request::HideSender { id: "i1".into(), scope: domain }));
+        let request = request_for("inbox_hide_sender", args(json!({"id": "i1", "scope": "conversation"})), &Utc);
+        let conversation = torro_inbox::item::HideScope::Conversation;
+        assert_eq!(request, Ok(Request::HideSender { id: "i1".into(), scope: conversation }));
         for wrong in [
             json!({"id": "i1"}),
             json!({"id": "i1", "scope": "subdomain"}),
@@ -1641,6 +1649,10 @@ mod tests {
         let hints = tool.annotations.clone().expect("hints");
         assert_eq!((hints.destructive_hint, hints.idempotent_hint), (Some(true), Some(true)));
         assert_eq!(hints.open_world_hint, Some(false));
+        let description = tool.description.as_deref().unwrap_or_default();
+        for words in ["write rights", "admin rights", "every mail account", "unread"] {
+            assert!(description.contains(words), "{words}: {description}");
+        }
     }
 
     #[test]

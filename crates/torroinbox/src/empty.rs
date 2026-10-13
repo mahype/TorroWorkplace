@@ -6,12 +6,12 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use torro_inbox::item::HideScope;
 use torro_inbox::source::TaskList;
-use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, Rule, SourceInfo, SourceRef};
+use torro_inbox::{Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
 
 /// An inbox without entries and without sources. Listing gives nothing (no task lists either);
 /// changing or opening an entry, making a task of it or deciding an approval gives
 /// [`InboxError::NotFound`] (there is none), muting [`InboxError::Offline`] (nothing would keep it);
-/// hiding a sender [`InboxError::NotFound`] (no entry to hide it by).
+/// hiding a sender and removing a rule [`InboxError::NotFound`] (no entry to hide it by, no rule).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct EmptySource;
 
@@ -40,7 +40,11 @@ impl InboxSource for EmptySource {
         Err(InboxError::Offline)
     }
 
-    async fn hide_sender(&self, _id: String, _scope: HideScope) -> Result<Rule, InboxError> {
+    async fn hide_sender(&self, _id: String, _scope: HideScope) -> Result<Hidden, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn remove_rule(&self, _id: String) -> Result<(), InboxError> {
         Err(InboxError::NotFound)
     }
 
@@ -83,6 +87,7 @@ mod tests {
         assert_eq!(block_on(source.set_item_lane("x".into(), Lane::Info, false)), Err(InboxError::NotFound));
         assert_eq!(block_on(source.mute_source(SourceRef::suite(), true)), Err(InboxError::Offline));
         assert_eq!(block_on(source.hide_sender("x".into(), HideScope::Sender)), Err(InboxError::NotFound));
+        assert_eq!(block_on(source.remove_rule("r".into())), Err(InboxError::NotFound));
         assert_eq!(block_on(source.open_item("x".into())), Err(InboxError::NotFound));
         assert_eq!(block_on(source.list_task_lists()), Ok(Vec::new()));
         assert_eq!(

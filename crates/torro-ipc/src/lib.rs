@@ -38,7 +38,7 @@ use torro_core::AppId;
 pub use torro_core::account::Secret;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
-use torro_inbox::item::HideScope;
+use torro_inbox::item::{Hidden, HideScope};
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
 use torro_mail::{Draft, Endpoint, Flag, Folder, MailSettings, Message, MessageSummary, Notify, Role, Services};
 use torro_pim::model::GitHubLabel;
@@ -1053,23 +1053,31 @@ pub enum Request {
         /// `true` mutes, `false` unmutes.
         muted: bool,
     },
-    /// Hides the sender of a mail entry from the inbox (task E3.10): every later mail from the
-    /// sender's address (`scope: sender`) or from its domain (`scope: domain`, exactly, no
-    /// subdomains) in the entry's mail account is dropped instead of becoming an entry, and the
-    /// open and snoozed entries of the account it matches are done at once. A lasting rule like
-    /// [`Request::MuteSource`] ([`torro_inbox::RuleEffect::Muted`] with `sender` or `domain`),
-    /// removed with [`Request::RemoveRule`].
+    /// Hides a mail entry from the inbox (tasks E3.10, E3.11), in one of three scopes:
     ///
-    /// Not spam and not done: the mail stays as it is on its server, neither read nor moved.
-    /// Answered with [`Response::Rule`], the rule as stored (the one already there when the same
-    /// rule is made again). `not-found` for an unknown entry or one the client may not see,
-    /// `forbidden` for one it may not change (rule 1), `error` for an entry that is no mail or
-    /// names no sender's address.
+    /// - `conversation`: only this entry is done; no rule is kept, a new reply in the conversation
+    ///   brings it back. Write access, like `inbox.set_item_done`.
+    /// - `sender`: every later mail from the sender's address, in **every** mail account, is
+    ///   dropped instead of becoming an entry, and the open and snoozed mail entries it matches are
+    ///   done at once. A lasting rule like [`Request::MuteSource`]
+    ///   ([`torro_inbox::RuleEffect::Muted`] with `sender`), removed with [`Request::RemoveRule`];
+    ///   admin access.
+    /// - `domain`: the same for every address of the sender's domain (exactly, no subdomains);
+    ///   admin access.
+    ///
+    /// Not spam and not done: the mail stays as it is on its server, neither read nor moved, in
+    /// every scope. Answered with [`Response::Hidden`]: the rule as stored (the one already there
+    /// when the same rule is made again, `new_rule: false`) and the ids of the entries it marked
+    /// done, as far as the client sees them – what "Undo" takes back. `not-found` for an unknown
+    /// entry or one the client may not see, `forbidden` for one it may not change (rule 1),
+    /// `error` for an entry that is no mail or, for `sender` and `domain`, names no sender's
+    /// address.
     #[serde(rename = "inbox.hide_sender")]
     HideSender {
         /// The mail entry's id.
         id: String,
-        /// `sender` hides its sender's address, `domain` everything from that address's domain.
+        /// `conversation` hides this entry only, `sender` its sender's address, `domain` everything
+        /// from that address's domain.
         scope: HideScope,
     },
     /// The lasting rules: lanes remembered for sources and muted sources ([`Response::Rules`]),
@@ -1450,10 +1458,9 @@ pub enum Response {
     Rules {
         rules: Vec<Rule>,
     },
-    /// One lasting rule of the inbox as stored ([`Request::HideSender`]).
-    Rule {
-        rule: Rule,
-    },
+    /// What hiding a mail entry changed ([`Request::HideSender`]): the rule (none for a
+    /// conversation), whether it is new, and the entries it marked done.
+    Hidden(Hidden),
     /// A mail account just connected ([`Request::ConnectMail`]), never with its password.
     MailConnected {
         /// The account as [`Request::Accounts`] lists it: one entry, also when it syncs calendars

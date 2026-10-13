@@ -1,5 +1,5 @@
 //! Building blocks of a Linear-style window: buttons (also busy), sidebar rows, list rows, group
-//! heads, the action bar of a row ([`row_actions`]), menus, floating cards, chips (also to choose), property rows (also with the name in
+//! heads, the action bar of a row ([`row_actions`]), the toast with "Undo" ([`toast`]), menus, floating cards, chips (also to choose), property rows (also with the name in
 //! front), label chips, state pills, progress bars, settings groups and the empty, loading and
 //! error states.
 //!
@@ -685,7 +685,32 @@ pub fn row_actions<'a, M: Clone + 'a>(
     shown: bool,
     words: bool,
 ) -> Element<'a, M> {
-    with_actions(row.into(), actions, shown, words, None)
+    with_actions(row.into(), actions, shown, words, Place::Middle)
+}
+
+/// [`row_actions`] for a row of several lines (task E3.11: the inbox's mail and notice rows): the
+/// bar is centred on the line whose middle lies `line_middle` below the row's top – the first line,
+/// where the time stands –, so it covers neither the preview nor the account further down. Shown
+/// and sized as in [`row_actions`]; [`row_actions_height`] is the bar's height.
+///
+/// ```ignore
+/// // A row 87 high whose three lines of 20 are centred: the first line's middle is 13.5 + 10 down.
+/// let middle = (87.0 - 3.0 * 20.0) / 2.0 + 20.0 / 2.0;
+/// widgets::row_actions_at(row, actions, selected, words, middle)
+/// ```
+pub fn row_actions_at<'a, M: Clone + 'a>(
+    row: impl Into<Element<'a, M>>,
+    actions: Vec<RowAction<'a, M>>,
+    shown: bool,
+    words: bool,
+    line_middle: f32,
+) -> Element<'a, M> {
+    with_actions(row.into(), actions, shown, words, Place::Line(line_middle))
+}
+
+/// The height of the action bar of [`row_actions`]: a button ([`size::control_sm()`]) in its frame.
+pub fn row_actions_height() -> f32 {
+    size::control_sm() + 2.0 * (BAR_INSET + LINE)
 }
 
 /// A card with the action bar of [`row_actions`], for a card whose last line is a row of buttons
@@ -699,17 +724,27 @@ pub fn card_actions<'a, M: Clone + 'a>(
     words: bool,
     inset: f32,
 ) -> Element<'a, M> {
-    with_actions(card.into(), actions, shown, words, Some(inset))
+    with_actions(card.into(), actions, shown, words, Place::Card(inset))
 }
 
-/// `base` with the bar of `actions` over it: centred at the right (`inset` `None`), or at the
-/// bottom right, centred on a button row `inset` in from the edges.
+/// Where the bar of [`with_actions`] sits at the right of what it lies over.
+#[derive(Debug, Clone, Copy)]
+enum Place {
+    /// Centred in the height ([`row_actions`]).
+    Middle,
+    /// Centred on a line whose middle lies this far below the top ([`row_actions_at`]).
+    Line(f32),
+    /// At the bottom, centred on a button row this far in from the edges ([`card_actions`]).
+    Card(f32),
+}
+
+/// `base` with the bar of `actions` over it, at `place`.
 fn with_actions<'a, M: Clone + 'a>(
     base: Element<'a, M>,
     actions: Vec<RowAction<'a, M>>,
     shown: bool,
     words: bool,
-    inset: Option<f32>,
+    place: Place,
 ) -> Element<'a, M> {
     if actions.is_empty() {
         return base;
@@ -727,10 +762,15 @@ fn with_actions<'a, M: Clone + 'a>(
             }
         });
     let layer = container(bar).width(Fill).height(Fill).align_right(Fill);
-    let layer = match inset {
-        None => layer.center_y(Fill).padding(Padding::new(0.0).right(layout::row_padding().right)),
+    let right = layout::row_padding().right;
+    let layer = match place {
+        Place::Middle => layer.center_y(Fill).padding(Padding::new(0.0).right(right)),
+        Place::Line(middle) => {
+            let top = (middle - row_actions_height() / 2.0).max(0.0);
+            layer.align_top(Fill).padding(Padding::new(0.0).right(right).top(top))
+        }
         // The bar is its frame taller than a button: half of that hangs below the button row.
-        Some(inset) => {
+        Place::Card(inset) => {
             layer.align_bottom(Fill).padding(Padding::new(0.0).right(inset).bottom(inset - BAR_INSET - LINE))
         }
     };
@@ -1103,6 +1143,108 @@ impl<M> canvas::Program<M> for CtrlGuard {
 /// changes, so the window keeps its state (focus, scroll positions).
 pub fn ctrl_guard<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
     stack![content.into(), canvas(CtrlGuard).width(Fill).height(Fill)].width(Fill).height(Fill).into()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Toast
+// ---------------------------------------------------------------------------------------------
+
+/// How long a [`toast`] stays: five seconds, then the app takes it away. Long enough to read it and
+/// to press "Undo", short enough not to linger over the list.
+pub const TOAST_FOR: Duration = Duration::from_secs(5);
+
+/// The one button of a [`toast`]: its word, the key that does the same (shown as [`kbd`]) and the
+/// message it sends.
+#[derive(Debug, Clone)]
+pub struct ToastAction<'a, M> {
+    /// The word on the button ("Undo"), sentence case through `tr`.
+    pub label: iced::widget::text::Fragment<'a>,
+    /// The key that does the same, shown after the button ([`undo_hint`] for "Undo"); `None`
+    /// shows none.
+    pub key: Option<&'static str>,
+    /// Sent when the button is pressed.
+    pub on_press: M,
+}
+
+impl<'a, M> ToastAction<'a, M> {
+    /// A button with `label` and the key hint `key` that sends `on_press`.
+    pub fn new(label: impl IntoFragment<'a>, key: Option<&'static str>, on_press: M) -> Self {
+        Self { label: label.into_fragment(), key, on_press }
+    }
+
+    /// "Undo" with the suite's undo key ([`undo_hint`]), sending `on_press`.
+    pub fn undo(on_press: M) -> Self {
+        Self::new(tr("Undo"), Some(undo_hint()), on_press)
+    }
+}
+
+/// A toast (task E3.11): what just happened, quietly at the bottom centre of the window, with at
+/// most one button – "Undo" after a change that can be taken back ([`ToastAction::undo`]).
+///
+/// Surface `menu`, frame `line_strong`, radius [`radius::md()`] and the menu's shadow
+/// (`style::container::menu`); the text in `BODY` and `text`, [`size::control_lg()`] high with one
+/// line, taller when a long text wraps, at most [`size::content_max()`] wide, [`space::xl()`] above
+/// the window's bottom edge. It does not move or fade: it appears and goes.
+///
+/// The toast is a layer as large as the window: stack it over the window's content, always (an
+/// empty [`blank`] when there is nothing to say), so the window keeps its state as it comes and
+/// goes. The app keeps when it appeared, takes it away after [`TOAST_FOR`] and on Escape, and
+/// listens to [`undo_key`] while it can be undone.
+///
+/// ```ignore
+/// let toast = match &self.toast {
+///     Some(toast) => widgets::toast(toast.text.as_str(), toast.undo.is_some().then(|| ToastAction::undo(Message::Undo))),
+///     None => Space::new().into(),
+/// };
+/// stack![self.window(), toast]
+/// ```
+pub fn toast<'a, M: Clone + 'a>(text: impl IntoFragment<'a>, action: Option<ToastAction<'a, M>>) -> Element<'a, M> {
+    let words = typo::text(typo::body(), text).style(theme::text).wrapping(Wrapping::WordOrGlyph);
+    let mut content = row![words].spacing(space::s()).align_y(Alignment::Center);
+    // Room at the right as at the left without a button; with one, its own padding makes up for it.
+    let mut right = space::m();
+    if let Some(action) = action {
+        content = content.push(text_button(None, action.label, style::button::ghost, Some(action.on_press)));
+        if let Some(key) = action.key {
+            content = content.push(kbd(key));
+        }
+        right = space::s();
+    }
+    // One line of 28 (the button) and 4 above and below is `control_lg`, the height of a toast.
+    let inset = (size::control_lg() - size::control_sm()) / 2.0;
+    let card = container(content)
+        .max_width(size::content_max())
+        .padding(Padding { top: inset, bottom: inset, left: space::m(), right })
+        .style(style::container::menu);
+    container(card).width(Fill).height(Fill).center_x(Fill).align_bottom(Fill).padding(space::xl()).into()
+}
+
+/// The suite's undo key as a key hint: "Cmd Z" on macOS, "Ctrl Z" elsewhere ([`is_undo_key`]).
+pub fn undo_hint() -> &'static str {
+    if cfg!(target_os = "macos") { "Cmd Z" } else { "Ctrl Z" }
+}
+
+/// Whether a key press is the suite's undo key: Ctrl + Z, ⌘ + Z on macOS (`Modifiers::command`),
+/// without Shift or Alt (Ctrl + Shift + Z is redo elsewhere), on any layout: the key that types Z
+/// (a German keyboard's Z sits where the US one has Y), on a non-Latin layout the key in Z's place
+/// (`to_latin`).
+pub fn is_undo_key(key: &keyboard::Key, physical_key: keyboard::key::Physical, modifiers: keyboard::Modifiers) -> bool {
+    modifiers.command() && !modifiers.shift() && !modifiers.alt() && key.to_latin(physical_key) == Some('z')
+}
+
+/// The undo key pressed ([`is_undo_key`]): subscribe while a toast can be undone and take it back,
+/// `widgets::undo_key().map(|()| Message::Undo)`. It listens to every key press, also those a text
+/// field or [`ctrl_guard`] took – Iced's fields have no undo of their own, and the guard captures
+/// ⌘ + Z on macOS.
+pub fn undo_key() -> Subscription<()> {
+    keyboard::listen().filter_map(|event| match event {
+        keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }
+            if is_undo_key(&key, physical_key, modifiers) =>
+        {
+            Some(())
+        }
+        _ => None,
+    })
 }
 
 /// A floating card (an event in the medium calendar): 320 wide, `menu` surface, radius 10,
@@ -2152,5 +2294,35 @@ mod tests {
         }
         let _: Element<'_, Msg> = row_actions(list_row(vec![], false, None), Vec::new(), true, true);
         let _: Element<'_, Msg> = card_actions(list_row(vec![], false, None), actions(), true, false, space::m());
+        let _: Element<'_, Msg> = row_actions_at(list_row(vec![], true, None), actions(), true, true, space::xl());
+        // A line nearer the top than half the bar keeps the bar inside the row.
+        let _: Element<'_, Msg> = row_actions_at(list_row(vec![], false, None), actions(), false, false, 0.0);
+        assert_eq!(row_actions_height(), size::control_sm() + 2.0 * (BAR_INSET + LINE));
+    }
+
+    #[test]
+    fn a_toast_builds_with_and_without_its_button() {
+        let _: Element<'_, Msg> = toast("Marked as done", Some(ToastAction::undo(Msg::Go)));
+        let _: Element<'_, Msg> = toast("Couldn't open the app.", None);
+        let undo = ToastAction::undo(Msg::Close);
+        assert_eq!((undo.label.as_ref(), undo.key, undo.on_press), (tr("Undo"), Some(undo_hint()), Msg::Close));
+        assert_eq!(TOAST_FOR, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn the_undo_key_is_ctrl_z_on_any_layout() {
+        use keyboard::key::Code;
+        let z = |key: &str, code: Code, modifiers: keyboard::Modifiers| {
+            is_undo_key(&keyboard::Key::Character(key.into()), keyboard::key::Physical::Code(code), modifiers)
+        };
+        let command = keyboard::Modifiers::COMMAND;
+        assert!(z("z", Code::KeyZ, command));
+        assert!(z("z", Code::KeyY, command), "a German keyboard has its Z where the US one has Y");
+        assert!(!z("y", Code::KeyZ, command), "and its Y is no Z");
+        assert!(z("я", Code::KeyZ, command), "Cyrillic: the key in Z's place");
+        assert!(!z("z", Code::KeyZ, keyboard::Modifiers::empty()), "plain z types");
+        assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::SHIFT), "redo");
+        assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::ALT), "AltGr");
+        assert!(!z("x", Code::KeyX, command));
     }
 }

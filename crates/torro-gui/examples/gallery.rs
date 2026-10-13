@@ -1686,15 +1686,41 @@ impl Gallery {
             let cells = vec![quiet(Icon::Mail, icon::SIZE), typo::text(typo::body(), title).width(Fill).into()];
             widgets::list_row(cells, selected, Some(Msg::Noop))
         };
+        // A row of three lines (task E3.11): the bar sits on the first line, over the time, and
+        // leaves the lines below free.
+        let three_lines = || {
+            let lines = column![
+                typo::text(typo::body_strong(), "Jonas Weber"),
+                typo::text(typo::body(), "Budget review for Q4"),
+                typo::text(typo::body(), "The numbers for Q4 are in.").style(theme::text_2),
+            ];
+            let content = row![quiet(Icon::Mail, icon::SIZE), lines.width(Fill)].spacing(space::m());
+            container(content).center_y(size::row_message()).padding(layout::row_padding()).style(|t: &Theme| {
+                container::Style { background: Some(palette(t).selected.into()), ..container::Style::default() }
+            })
+        };
+        let line = typo::line_height(typo::body());
+        let first_line = (size::row_message() - 3.0 * line) / 2.0 + line / 2.0;
         let bars = column![
             container(widgets::row_actions(entry("Budget review for Q4", true), actions(), true, true))
                 .width(size::list()),
             container(widgets::row_actions(entry("Weekend plans", false), actions(), true, false)).width(size::props()),
             container(widgets::row_actions(entry("Point at me", false), actions(), false, true)).width(size::list()),
+            container(widgets::row_actions_at(three_lines(), actions(), true, true, first_line)).width(size::list()),
         ]
         .spacing(space::s());
+        // The toast after a change (task E3.11), drawn in place instead of over the window.
+        let toasts = column![
+            container(widgets::toast("Marked as done", Some(widgets::ToastAction::undo(Msg::Noop))))
+                .width(size::list())
+                .height(size::control_lg() + 2.0 * space::xl()),
+            container(widgets::toast::<Msg>("Task created in Work", None))
+                .width(size::list())
+                .height(size::control_lg() + 2.0 * space::xl()),
+        ];
         let small = column![
             section("Row actions", bars.into()),
+            section("Toast", toasts.into()),
             section("State pills and label chips", pills.into()),
             section("Progress bar", sub_tasks.into()),
             section("Hints in a row, key hints", hints.into()),

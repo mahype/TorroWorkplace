@@ -30,8 +30,7 @@
 //!
 //! **No hard cut** (E3.2b): Iced 0.14 cannot end a line with "…", so a row works out the room of
 //! each text from its width and cuts it with an ellipsis itself (`typo::ellipsize`); the cells still
-//! clip, in case the estimate runs over. [`fit`], [`text_room`], [`line_room`] and [`tall_row`] serve
-//! the folders' message rows (`mail.rs`), which keep their one- and two-line rows.
+//! clip, in case the estimate runs over.
 //!
 //! The row under the cursor (E3.2) is the highlighted one; it registers [`Rows::anchor`], so the
 //! snooze menu and the lane question open beside it. The list reports its scroll position
@@ -95,10 +94,6 @@ pub struct ListData<'a> {
 
 /// The id of the list's scrollable, to scroll the cursor into view.
 pub const SCROLL: &str = "inbox-list";
-
-/// The free width a preview needs beside the title before it is shown at all: below that only a
-/// word or two would fit, which reads as noise rather than as a preview.
-pub const PREVIEW_ROOM: f32 = 120.0;
 
 /// The gap the row estimate counts between two cells: a little more than the rows' own (8),
 /// so the estimate cuts a letter early rather than running under the next cell.
@@ -185,16 +180,16 @@ pub fn groups(items: &[Item]) -> Vec<(Group, Range<usize>)> {
     groups
 }
 
-/// The height of a folder's message row (`mail.rs`): [`size::row()`] on one line,
-/// [`size::row_two()`] with the subject on a line of its own (narrow windows).
-pub fn row_height(two_line: bool) -> f32 {
-    if two_line { size::row_two() } else { size::row() }
-}
-
-/// The height of `item`'s row ([`entry_row`]): [`size::row_message()`] for mail,
+/// The height of `item`'s row ([`entry_row`]): [`message_height`] for mail,
 /// [`size::row_notice()`] for every other entry.
 pub fn row_height_of(item: &Item) -> f32 {
-    if item.source.kind == SourceKind::Mail { size::row_message() } else { size::row_notice() }
+    if item.source.kind == SourceKind::Mail { message_height() } else { size::row_notice() }
+}
+
+/// The height of a mail row, of an entry and of a folder's message alike (task E3.11):
+/// [`size::row_message()`].
+pub fn message_height() -> f32 {
+    size::row_message()
 }
 
 /// Where row `index` of `items` lies in the list's content as `(top, bottom)`, every row as high
@@ -255,14 +250,16 @@ pub(crate) fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message
 pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let selected = rows.selected == Some(item.id.as_str());
     let content = if item.source.kind == SourceKind::Mail {
-        message_content(item, rows, width)
+        mail_content(MailLines::of(item, rows), width)
     } else {
         notice_content(item, rows, width)
     };
-    let row = sized_row(content, selected, Message::Select(item.id.clone()), row_height_of(item));
+    let height = row_height_of(item);
+    let row = sized_row(content, selected, Message::Select(item.id.clone()), height);
     let actions = actions(item, rows.hidable.contains(&item.id.as_str()));
     let words = widgets::row_actions_words(&actions, width);
-    let row = widgets::row_actions(row, actions, selected, words);
+    // On the first line, over the time: the preview and the account below stay readable.
+    let row = widgets::row_actions_at(row, actions, selected, words, first_line_middle(height, line_count(item)));
     if selected { widgets::anchored(&rows.anchor, row) } else { row }
 }
 
@@ -322,12 +319,6 @@ pub(crate) fn sized_row<'a>(
     column![line, rule::horizontal(size::HAIRLINE).style(style::rule)].into()
 }
 
-/// A list row on two lines, [`size::row_two()`] high: the folders' message rows in narrow
-/// windows (`mail.rs`).
-pub(crate) fn tall_row<'a>(content: Element<'a, Message>, selected: bool, on_press: Message) -> Element<'a, Message> {
-    sized_row(content, selected, on_press, size::row_two())
-}
-
 /// The width the lines of a row `width` wide have beside the mark: minus the row's sides, the mark
 /// and the gap after it. Never negative.
 pub fn words_room(width: f32) -> f32 {
@@ -356,17 +347,60 @@ fn pill_width(count: &str) -> f32 {
     typo::text_width(count, typo::meta()) + 2.0 * space::s() + cell_gap()
 }
 
-/// The content of a mail entry's row: avatar, then sender · domain · time, subject (· count),
-/// preview (· account).
-fn message_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
-    let room = words_room(width);
-    let new = item.state == State::New;
-    let (name, domain) = sender(item);
-    let account = account_index(item, &rows.accounts);
+/// What a mail row shows, the same for a mail entry ([`MailLines::of`]) and for a message in a
+/// folder (`mail.rs`, task E3.11): three lines beside the avatar ([`mail_content`]).
+pub(crate) struct MailLines<'a> {
+    /// The sender's name, else the address ([`sender`]); also the avatar's initials.
+    pub name: String,
+    /// The domain of the address, when the name is not the address itself.
+    pub domain: Option<String>,
+    /// The time at the end of the first line.
+    pub time: String,
+    /// Small marks before the time (paperclip, flag), each with its width.
+    pub marks: Vec<(Element<'a, Message>, f32)>,
+    /// The subject on one line.
+    pub subject: String,
+    /// New or unread: the subject in medium weight, the dot at the avatar.
+    pub new: bool,
+    /// The number of messages from two on.
+    pub count: Option<String>,
+    /// The start of the text on one line.
+    pub preview: Option<String>,
+    /// The account's place among the mail accounts, for its colour ([`account_index`]).
+    pub account: Option<usize>,
+    /// The account's name at the end of the preview's line; `None` with one account (or in a
+    /// folder, which is one account's).
+    pub account_name: Option<String>,
+}
 
-    // Sender, then the domain in what is left, then the time.
-    let time = time_text(item, rows.view, rows.now);
-    let first_room = room - end_width(&time, typo::meta());
+impl<'a> MailLines<'a> {
+    /// The lines of a mail entry's row.
+    pub fn of(item: &Item, rows: &Rows<'a>) -> MailLines<'a> {
+        let (name, domain) = sender(item);
+        MailLines {
+            name,
+            domain,
+            time: time_text(item, rows.view, rows.now),
+            marks: Vec::new(),
+            subject: one_line(&item.title),
+            new: item.state == State::New,
+            count: (item.count > 1).then(|| item.count.to_string()),
+            preview: preview(item),
+            account: account_index(item, &rows.accounts),
+            account_name: (rows.accounts.len() > 1).then(|| account_label(&item.source)),
+        }
+    }
+}
+
+/// The content of a mail row `width` wide (task E3.9): avatar, then sender · domain · (marks) ·
+/// time, subject (· count), preview (· account).
+pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, Message> {
+    let room = words_room(width);
+    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name } = lines;
+
+    // Sender, then the domain in what is left, then the marks and the time.
+    let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
+    let first_room = room - end_width(&time, typo::meta()) - marks_width;
     let name_shown = typo::ellipsize(&name, typo::body_strong(), first_room);
     let left = first_room - typo::text_width(&name_shown, typo::body_strong()) - space::s();
     let domain = domain.map(|domain| typo::ellipsize(&domain, typo::meta(), left)).filter(|d| !d.is_empty());
@@ -376,23 +410,22 @@ fn message_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'
     if let Some(domain) = domain {
         who = who.push(typo::text(typo::meta(), domain).style(theme::text_3).wrapping(Wrapping::None));
     }
-    let first = line(who, vec![time_cell(time)]);
+    let mut ends: Vec<Element<'a, Message>> = marks.into_iter().map(|(mark, _)| mark).collect();
+    ends.push(time_cell(time));
+    let first = line(who, ends);
 
     // The subject, with the number of messages from two on.
-    let count = (item.count > 1).then(|| item.count.to_string());
     let level = if new { typo::body_strong() } else { typo::body() };
     let subject_room = room - count.as_deref().map_or(0.0, pill_width);
-    let subject = typo::ellipsize(&one_line(&item.title), level, subject_room);
+    let subject = typo::ellipsize(&subject, level, subject_room);
     let subject = typo::text(level, subject).style(theme::text).wrapping(Wrapping::None);
     let second = line(subject, count.map(|count| widgets::pill(None, count)).into_iter().collect());
 
     // The preview, with the account from two accounts on.
-    let account_name = (rows.accounts.len() > 1).then(|| account_label(&item.source));
     let account_room = account_name.as_deref().map_or(0.0, |name| {
         (typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap()).min(room / 3.0)
     });
-    let preview =
-        preview(item).map(|text| typo::ellipsize(&text, typo::body(), room - account_room)).unwrap_or_default();
+    let preview = preview.map(|text| typo::ellipsize(&text, typo::body(), room - account_room)).unwrap_or_default();
     let preview = typo::text(typo::body(), preview).style(theme::text_2).wrapping(Wrapping::None);
     let ends = account_name
         .map(|name| account_cell(account, typo::ellipsize(&name, typo::meta(), account_room - cell_gap())))
@@ -402,6 +435,25 @@ fn message_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'
 
     let words = column![first, second, third].width(Fill);
     row![avatar(&name, account, new), words].spacing(space::m()).align_y(Alignment::Start).into()
+}
+
+/// How far below a row's top the middle of its first line lies – where the action bar sits (task
+/// E3.11, `widgets::row_actions_at`): the row is `height` high with its line, its `lines` lines of
+/// text are centred in it.
+pub(crate) fn first_line_middle(height: f32, lines: usize) -> f32 {
+    let line = typo::line_height(typo::body());
+    (height - size::HAIRLINE - lines as f32 * line) / 2.0 + line / 2.0
+}
+
+/// How many lines of text `item`'s row has: three for mail, two for a notice with a text, else one.
+fn line_count(item: &Item) -> usize {
+    if item.source.kind == SourceKind::Mail {
+        3
+    } else if words(item).1.is_some_and(|text| !text.is_empty()) {
+        2
+    } else {
+        1
+    }
 }
 
 /// The content of any other entry's row: the source's tile, then title (· count) · time, and the
@@ -537,47 +589,6 @@ pub fn account_index(item: &Item, accounts: &[&str]) -> Option<usize> {
 /// tells two accounts of one person apart; the address when it has none.
 pub fn account_label(source: &SourceRef) -> String {
     rules::domain_of(&source.name).unwrap_or_else(|| one_line(&source.name))
-}
-
-/// The width left for the title in a row `width` wide: minus the row's sides, the icon, the count
-/// pill (when there is one) and the time, each with the gap before it. Never negative.
-pub fn text_room(width: f32, count: Option<&str>, time: &str) -> f32 {
-    let pill = count.map_or(0.0, |count| typo::text_width(count, typo::meta()) + 2.0 * space::s() + cell_gap());
-    let time = typo::text_width(time, typo::meta()) + cell_gap();
-    (line_room(width) - pill - time).max(0.0)
-}
-
-/// The width of the preview's own line in a two-line row `width` wide: the row minus its sides
-/// and the icon with its gap. Never negative.
-pub fn line_room(width: f32) -> f32 {
-    (width - 2.0 * space::l() - icon::SIZE - cell_gap()).max(0.0)
-}
-
-/// Title and preview cut to fit, with "…" where they were cut. The title in `level` gets `room`
-/// ([`text_room`]); the preview
-///
-/// - beside it (`below == None`) in `BODY` takes what is left after the gap, but only when that
-///   is at least [`PREVIEW_ROOM`] – else there is no preview;
-/// - on a line of its own (`below == Some(width)`, see [`line_room`]) in `META` gets that width.
-///
-/// A preview that would be cut to nothing is dropped.
-pub fn fit(
-    title: &str,
-    preview: Option<&str>,
-    level: Level,
-    room: f32,
-    below: Option<f32>,
-) -> (String, Option<String>) {
-    let title = typo::ellipsize(title, level, room);
-    let (preview_level, preview_room) = match below {
-        Some(width) => (typo::meta(), width),
-        None => (typo::body(), room - typo::text_width(&title, level) - space::s()),
-    };
-    let preview = preview
-        .filter(|_| below.is_some() || preview_room >= PREVIEW_ROOM)
-        .map(|preview| typo::ellipsize(preview, preview_level, preview_room))
-        .filter(|preview| !preview.is_empty());
-    (title, preview)
 }
 
 /// The empty state of a view: its icon over what shows up here and when – the shared
@@ -823,55 +834,6 @@ mod tests {
         assert_eq!(words(&notice), (one_line(&notice.title), preview(&notice)));
     }
 
-    const TITLE: &str = "Claude Code is waiting for you";
-    const PREVIEW: &str = "Claude needs your permission to use Bash: cargo test --workspace";
-
-    #[test]
-    fn a_preview_beside_the_title_needs_room_or_goes() {
-        let title = typo::text_width(TITLE, typo::body_strong());
-        // Plenty of room: both whole.
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::body_strong(), 2000.0, None);
-        assert_eq!((t.as_str(), p.as_deref()), (TITLE, Some(PREVIEW)));
-        // Less than the preview's room left beside the title: no preview, never a stub.
-        let tight = title + space::s() + PREVIEW_ROOM - 1.0;
-        assert_eq!(fit(TITLE, Some(PREVIEW), typo::body_strong(), tight, None), (TITLE.to_owned(), None));
-        // Enough for a part: the preview ends in "…" within its room.
-        let (_, p) = fit(TITLE, Some(PREVIEW), typo::body_strong(), title + space::s() + 200.0, None);
-        let p = p.expect("a preview");
-        assert!(p.ends_with(typo::ELLIPSIS), "{p}");
-        assert!(typo::text_width(&p, typo::body()) <= 200.0, "{p}");
-    }
-
-    #[test]
-    fn a_long_title_ends_in_an_ellipsis_and_leaves_no_preview() {
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::body_strong(), 150.0, None);
-        assert!(t.ends_with(typo::ELLIPSIS), "{t}");
-        assert!(typo::text_width(&t, typo::body_strong()) <= 150.0, "{t}");
-        assert_eq!(p, None);
-    }
-
-    #[test]
-    fn a_preview_below_gets_the_whole_line() {
-        let line = line_room(480.0);
-        let (t, p) = fit(TITLE, Some(PREVIEW), typo::body_strong(), 200.0, Some(line));
-        assert!(typo::text_width(&t, typo::body_strong()) <= 200.0, "{t}");
-        let p = p.expect("a preview below the title, however narrow the title's room");
-        assert!(typo::text_width(&p, typo::meta()) <= line, "{p}");
-        assert!(typo::text_width(&p, typo::meta()) > 200.0, "wider than the title's room: {p}");
-        assert_eq!(fit(TITLE, None, typo::body_strong(), 200.0, Some(line)).1, None);
-    }
-
-    #[test]
-    fn the_room_leaves_out_icon_count_and_time() {
-        let plain = text_room(480.0, None, "4 min");
-        let counted = text_room(480.0, Some("2"), "4 min");
-        assert!(plain < 480.0 - 2.0 * space::l() - icon::SIZE, "minus the sides and the icon");
-        assert!(counted < plain, "the count pill takes room too");
-        assert!(line_room(480.0) > plain, "the preview's own line has no time on it");
-        assert_eq!(text_room(10.0, Some("12"), "50 min"), 0.0, "never negative");
-        assert_eq!(line_room(10.0), 0.0, "never negative");
-    }
-
     #[test]
     fn waiting_entries_get_their_own_group() {
         let items: Vec<Item> = demo::sample(now()).into_iter().filter(|i| i.state.is_open()).collect();
@@ -914,7 +876,19 @@ mod tests {
         assert_eq!(row_span(&items, items.len()), None);
         let calm = &items[waiting..];
         assert_eq!(row_span(calm, 1), Some((notice, 2.0 * notice)), "no heads: plain rows");
-        assert_eq!((row_height(false), row_height(true)), (size::row(), size::row_two()), "a folder's rows");
+        assert_eq!(message_height(), message, "a folder's rows are the mail rows (task E3.11)");
+    }
+
+    #[test]
+    fn the_action_bar_sits_on_the_first_line() {
+        let line = typo::line_height(typo::body());
+        let mail = first_line_middle(size::row_message(), 3);
+        assert_eq!(mail, (size::row_message() - size::HAIRLINE - 3.0 * line) / 2.0 + line / 2.0);
+        let bar = widgets::row_actions_height();
+        assert!(mail + bar / 2.0 < size::row_message() - line, "the preview's line stays free");
+        assert!(mail - bar / 2.0 >= 0.0, "inside the row");
+        let one = first_line_middle(size::row_notice(), 1);
+        assert_eq!(one, (size::row_notice() - size::HAIRLINE) / 2.0, "a single line: the middle");
     }
 
     #[test]
