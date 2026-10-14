@@ -95,7 +95,7 @@ Agenten im Terminal.
   Rechte; auch die Seite „What the assistant may use“ ändert nur der Mensch (App-Schlüssel). Die
   Karte „Allow“ ist ein Klick des Menschen, nie ein Werkzeug des Modells.
 - **Keine Schleife:** Der Client des Assistenten darf im Bereich `assistant` nur sein Gedächtnis
-  (`list_memories`, `remember`, `forget`); Nachrichten schicken, Unterhaltungen und das eigene Profil
+  (`list_memories`, `remember`, `forget`) und Karten zeigen (`show_items`, `get_cards`); Nachrichten schicken, Unterhaltungen und das eigene Profil
   sind für ihn gesperrt, fest im Kern, nicht über Rechte.
 - **Sichtbar:** Kopf des Chats zeigt kurz, worauf der Assistent gerade Zugriff hat (kleine Symbole
   je Bereich), damit man nicht raten muss.
@@ -201,6 +201,102 @@ dem Kalender oder der Inbox, und mehrere Chats können gleichzeitig offen sein.
 Später: Tastenkürzel „Ask Torro…“ (Schnellfenster), Eintrag im Tray, „Ask about this“ aus Inbox,
 Kalender und Aufgaben mit dem Eintrag als Kontext.
 
+## Karten im Chat
+
+Stand: 2026-10-14. Findet oder ändert der Assistent einen Termin, eine Aufgabe oder eine Mail,
+erscheint im Verlauf nicht nur ein Satz, sondern eine **Karte**: der Eintrag in seiner eigenen
+Gestalt (Kalenderblatt, Karteikarte, Mail-Vorschau), mit Knöpfen zum Weitermachen. Entwurf:
+[`docs/prototypes/assistant/cards.html`](prototypes/assistant/cards.html).
+
+### Grundsätze
+
+- **Die Karte verweist, sie kopiert nicht.** Im Verlauf steht nur, *welcher* Eintrag gemeint ist
+  (neuer Eintrag `EntryContent::Card` mit Art, Konto bzw. Sammlung und Kennung). Was die Karte zeigt,
+  holt der Kern beim Anzeigen frisch. So bleibt sie aktuell, wenn der Termin später verschoben wird,
+  und das Modell kann nichts hineinschreiben. Wie bei Freigaben gilt: Was auf der Karte steht, kommt
+  vom Kern, nie aus dem Text des Modells.
+- **Mit den Rechten des Assistenten aufgelöst.** Die App darf mehr sehen als der Assistent. Darum löst
+  der Kern Karten mit den Rechten des Clients „Assistant“ auf, nicht mit denen der App. Ist ein Eintrag
+  gelöscht oder inzwischen gesperrt, zeigt die Karte „No longer available“.
+- **Knöpfe sind Klicks des Menschen.** Jeder Knopf schickt einen normalen `torro_ipc::Request` der
+  App, nie ein Werkzeug des Modells. Fast alle gibt es schon (`calendar.save_event`,
+  `tasks.save_todo`, `mail.respond_to_invitation` …).
+- **Mail bleibt `untrusted`.** Karten mit Text aus Mails tragen die Kennzeichnung sichtbar.
+- **Jede Karte hat eine Kurzform** von einer Zeile für Mini-Kachel und Schnellfenster.
+
+### Wie Karten entstehen (entschieden)
+
+Auf zwei Wegen:
+
+1. **Automatisch nach schreibenden Werkzeugen.** Hat der Assistent einen Termin angelegt oder
+   geändert, eine Aufgabe gespeichert oder erledigt, einen Entwurf gespeichert, hängt der Kern je
+   geändertem Eintrag eine Karte an. Das gilt unabhängig davon, wie gut das Modell ist.
+2. **Auf Anweisung bei Suchen.** Bei Ergebnissen von Suchen und Listen wählt das Modell mit dem neuen
+   Werkzeug `assistant.show_items`, was als Karte erscheint, damit nicht 40 Termine im Chat stehen.
+   Der Kern lässt nur Kennungen zu, die in einem Werkzeug-Ergebnis **dieser Unterhaltung** vorkamen,
+   und höchstens 10 je Aufruf. So kann das Modell weder etwas erfinden noch an Daten vorbei, die es
+   nie gelesen hat. `assistant.show_items` kommt zu den wenigen Befehlen im Bereich `assistant`, die der
+   Assistent selbst darf (neben dem Gedächtnis, siehe „Keine Schleife“).
+
+### Senden und Löschen auf der Karte (entschieden)
+
+- **Die Entwurfs-Karte ist die Freigabe.** Will der Assistent eine Mail senden (`mail.send_draft`),
+  entsteht wie bisher eine Freigabe. Im Chat erscheint dafür keine allgemeine Freigabe-Karte, sondern
+  die volle Vorschau der Mail (Von, An, Betreff, Text, Anhänge) mit **Send** (= Allow) und
+  **Discard** (= Deny), dazu „Edit in mail window“. In Tray, Inbox und Benachrichtigung steht dieselbe
+  Freigabe wie immer.
+- **Ohne offene Freigabe** (der Assistent hat nur einen Entwurf gespeichert) trägt die Karte ebenfalls
+  „Send“. Der Klick sendet direkt, mit den Rechten der App: Es ist dieselbe Entscheidung des Menschen,
+  nur ohne vorherige Anfrage des Modells.
+- **Gesendet wird, was man sieht.** Die Vorschau kommt aus dem gespeicherten Entwurf. Die Freigabe bzw.
+  der Knopf gilt für genau diesen Stand; ändert sich der Entwurf danach, wird „Send“ ungültig und die
+  Karte zeigt den neuen Stand. Ein „Undo send“ gibt es vorerst nicht.
+- **Löschen genauso:** Wartet eine Lösch-Freigabe für einen Termin oder eine Aufgabe, zeigt deren
+  Karte **Delete** (= Allow) und **Keep** (= Deny) statt einer allgemeinen Freigabe-Karte.
+- Das Modell selbst sendet und löscht weiter nur mit Freigabe; per Stimme lässt sich keine erteilen.
+
+### Die ersten Karten
+
+| Karte | Zeigt | Knöpfe | Neu nötig |
+|---|---|---|---|
+| **Termin** | Kalenderblatt (Monat, Tag, Wochentag), Titel, Zeit, Ort, Teilnehmer, Kalender als Farbe; Überschneidungen immer benannt (siehe unten) | Open in calendar · Send by mail · Edit · Delete; bei Einladungen Accept/Decline; Join bei Videolink | Termin als Anhang eines Entwurfs: `DraftAttachment::Event`, der Kern erzeugt die `.ics` |
+| **Aufgabe** | Haken, Titel, Fälligkeit (überfällig in Attention-Orange), Liste, Priorität, Links zu Mail oder Issue | Done · Later (morgen, nächste Woche) · Open in tasks · Block time | — |
+| **Mail-Entwurf** | Von, An, Cc, Betreff, Text, Anhänge (z. B. die `.ics`) | Send · Edit in mail window · Discard | — |
+
+**Überschneidungen werden immer benannt.** Kollidiert ein Termin mit einem anderen, zeigt die Karte
+den anderen Termin mit Namen und Zeit („Overlaps with Team sync 14:30–15:00“, Warnsymbol in
+Attention-Orange), bei mehreren alle bzw. die ersten zwei und „+ 2 more“. Der Kern berechnet das aus
+den Kalendern, die der Assistent sehen darf; das Modell muss nicht daran denken. Legt der Assistent
+einen Termin an, verschiebt ihn oder nimmt eine Einladung an, die kollidiert, nennt er die
+Überschneidung zusätzlich in seiner Antwort (fester Teil des Skills).
+
+„Send by mail“ am Termin legt einen Entwurf mit dem Termin als Anhang an und zeigt ihn als
+Entwurfs-Karte darunter: Man sieht immer, was rausgeht, bevor es rausgeht.
+
+### Issue-Entwurf
+
+Konzept: „Issues anlegen“ in [github.md](github.md). Sagt die Person „Mach daraus ein Issue“, ruft der
+Assistent `tasks.create_issue` (mit `from`: die Unterhaltung oder der gefundene Eintrag). Weil Issues
+nach außen gehen, wartet der Befehl auf Freigabe, und wie beim Mail-Entwurf **ist die Karte die
+Freigabe**:
+
+- **Zeigt:** Repo (`owner/repo`, mit „public“, wenn öffentlich, und dem Hinweis „Everyone can read
+  the issue.“, wenn der Text aus Mail oder Eingang stammt), Titel, Labels, Zuständige, Meilenstein,
+  Text als Markdown, die Zeile mit dem Weg zurück; darunter „Possibly the same as #41“ mit Link, wenn
+  der Kern ähnliche offene Issues findet; Schalter „Also add to tasks“ (Standard aus).
+- **Knöpfe:** **Create issue** (= Allow) · **Edit** (Felder auf der Karte; danach schickt die App einen
+  neuen Request mit ihrem Schlüssel und lehnt die alte Freigabe ab; das Protokoll verknüpft beide, damit
+  der Anstoß des Assistenten erkennbar bleibt) · **Discard** (= Deny); bei
+  Treffern zusätzlich „Add comment there instead“.
+- **Danach** wird sie zur Issue-Karte: `owner/repo#142`, Zustand offen, „Open on GitHub“, „Add to
+  tasks“, und bei einer Mail als Quelle „Reply with link“ (legt einen Mail-Entwurf an, der als
+  Entwurfs-Karte erscheint).
+
+Später, nach denselben Regeln: Tagesplan, Zeitvorschläge („Wann habe ich Zeit?“, braucht einen
+Freebusy-Befehl), gefundene Mail, Inbox-Eintrag, Workspace-Vorlage mit Skizze der Kacheln,
+GitHub-Issue/PR, Konto-Status, Bot-Vorschlag, „Gemerkt“, Änderung mit Rückgängig, Rückfrage mit
+Auswahl, Briefing, Person.
+
 ## Sprache: per Weckwort mit dem Assistenten reden
 
 Ziel: Man sagt ein **Weckwort** (zum Start fest „Hey Torro“, später frei wählbar) und spricht einfach los: „Was steht heute
@@ -271,7 +367,10 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | **Stufe 2:** Bot löschen | Bot-Editor | `bots.delete_bot` · Delete | `bots_delete_bot` |
 | **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf) | `bots_ask_bot` |
 | **Stufe 2:** Rechte eines Bots | Bot-Editor › Access | `clients.update_client` (gibt es) | **Never** (Punkt 2) |
-| Freigabe im Chat entscheiden | Karte „Allow“/„Deny“ | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
+| Freigabe im Chat entscheiden | Karte „Allow“/„Deny“, auf Entwurfs- und Eintragskarten „Send“/„Discard“ bzw. „Delete“/„Keep“ | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
+| Einträge als Karten zeigen | Karten im Verlauf | `assistant.show_items` · Write (nur Kennungen aus dieser Unterhaltung, max. 10) | `assistant_show_items` |
+| Karten einer Unterhaltung auflösen | Karten im Verlauf | `assistant.get_cards` · Read (mit den Rechten des Assistenten) | `assistant_get_cards` |
+| Termin als `.ics` an einen Entwurf hängen | „Send by mail“ auf der Termin-Karte | `mail.save_draft` mit `DraftAttachment::Event` · Write | `mail_save_draft` |
 
 Neue Bereiche `assistant` und (Stufe 2) `bots` im Katalog. Ein Bot (Client `bot`) darf im Bereich
 `bots` nichts (keine Ketten); der Hauptbot darf `bots.list_bots` und `bots.ask_bot`. Ein fremder Agent, der `assistant_send_message` darf, lässt
@@ -308,3 +407,13 @@ Getroffen am 2026-10-13.
 9. **Fremde MCP-Server im Chat** nicht in Stufe 1; Klärung in #79.
 10. **Mikrofon** einschalten ist neuer Punkt 6 in „Was nie nach außen geht“.
 11. **Weckwort** zum Start fest („Hey Torro“), frei wählbar in einer späteren Aufgabe.
+
+Getroffen am 2026-10-14 (Abschnitt „Karten im Chat“).
+
+12. **Karten entstehen auf zwei Wegen:** automatisch nach schreibenden Werkzeugen, bei Suchen über
+    `assistant.show_items` (nur Kennungen aus dieser Unterhaltung, max. 10). Aufgelöst werden sie mit
+    den Rechten des Assistenten.
+13. **Die Entwurfs-Karte ist die Freigabe:** Send = Allow, Discard = Deny. Ohne offene Freigabe sendet
+    der Klick direkt. Gilt nur für den angezeigten Stand des Entwurfs; vorerst kein „Undo send“.
+14. **Löschen auf der Karte:** Offene Lösch-Freigaben erscheinen als „Delete“/„Keep“ auf der Karte des
+    Termins oder der Aufgabe.
