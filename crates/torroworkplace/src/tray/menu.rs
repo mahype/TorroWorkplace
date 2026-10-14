@@ -5,11 +5,10 @@
 //!
 //! What waits for the person ([`Waiting`], task E3.3b) is **one** number: the open inbox entries
 //! "for me". Open approvals are such entries since E2.1, so the "Approvals (n)" of task A.8 went
-//! into it; the approvals page stays in the control centre ("Settings…"). While something waits,
-//! the menu starts with "Inbox (n)" and the five newest entries, all opening the Inbox app (it
-//! cannot be told yet which entry to show: that needs a channel into the running app). Titles of
-//! foreign sources are `untrusted`, so they reach the menu as [`plain`] text; what a front end
-//! must escape on top (DBusMenu's `_`, muda's `&`) it does itself.
+//! into it; the approvals page stays in the control centre ("Settings…"). The number stands only
+//! next to "Inbox" among the apps ("Inbox (3)"): single mails or notices never show in the menu,
+//! a tray that lists them gets in the way. What a front end must escape in a label (DBusMenu's
+//! `_`, muda's `&`) it does itself.
 //!
 //! The counts are part of the [`Snapshot`]; the daemon hands over a new one whenever something
 //! is written to the inbox or an approval changes, so the tray never asks the socket itself and
@@ -27,7 +26,7 @@ use torro_ipc::{Request, SettingKey, VoiceState};
 use torro_pim::AccountState;
 use torro_setups::{LoadMode, TemplateSummary};
 
-use crate::core::{InboxLine, Snapshot};
+use crate::core::Snapshot;
 use crate::daemon::Daemon;
 
 /// What a click on an entry does.
@@ -93,21 +92,12 @@ pub fn waiting_line(waiting: Waiting) -> String {
     }
 }
 
-/// The longest title of an entry in the menu, in characters, before it ends in "…"; with the
-/// source after it, that is about what Omarchy's bar shows of a line.
-const TITLE_IN_MENU: usize = 28;
-
-/// The longest source name of an entry in the menu, in characters.
-const SOURCE_IN_MENU: usize = 16;
-
-/// The menu from docs/core.md for one snapshot, with the inbox on top while something waits
-/// ([`inbox_section`]).
+/// The menu from docs/core.md for one snapshot.
 ///
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
     let mut menu = voice_section(snapshot.voice, snapshot.voice_enabled);
-    menu.extend(inbox_section(snapshot));
     if let Some(name) = &snapshot.unsupported {
         menu.push(info(trf("{name} not supported yet", &[("name", name)])));
         menu.push(Item::Separator);
@@ -132,9 +122,7 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
         menu.push(submenu(tr("Delete"), delete));
         menu.push(Item::Separator);
     }
-    menu.push(open(tr("Inbox"), AppId::INBOX));
-    menu.push(open(tr("Calendar"), AppId::CALENDAR));
-    menu.push(open(tr("Tasks"), AppId::TASKS));
+    menu.extend(apps_section(Waiting::of(snapshot)));
     menu.push(Item::Separator);
     menu.push(info(info_line(snapshot)));
     if let Some(line) = account_line(snapshot) {
@@ -172,38 +160,21 @@ fn voice_section(state: VoiceState, enabled: bool) -> Vec<Item> {
     vec![info(line.into()), entry(tr("Mute microphone"), mute), Item::Separator]
 }
 
-/// While something waits: "Inbox (n)" and the newest entries ("title · source"), then a
-/// separator. Empty when nothing waits; the Inbox app is still among the apps below.
-/// Every entry opens the Inbox app; jumping to one entry needs a channel into the app.
-fn inbox_section(snapshot: &Snapshot) -> Vec<Item> {
-    let waiting = Waiting::of(snapshot);
-    if waiting.total() == 0 {
-        return Vec::new();
-    }
-    let mut section = vec![open(&trf("Inbox ({n})", &[("n", &waiting.total())]), AppId::INBOX)];
-    section.extend(snapshot.inbox_newest.iter().map(|line| open(&entry_label(line), AppId::INBOX)));
-    section.push(Item::Separator);
-    section
-}
-
-/// "Title · Source" for one entry, both as [`plain`] text.
-fn entry_label(line: &InboxLine) -> String {
-    format!("{} · {}", plain(&line.title, TITLE_IN_MENU), plain(&line.source, SOURCE_IN_MENU))
-}
-
-/// `text` from outside the suite, cut to `max` characters, so that it shows exactly as written in
-/// a menu label: control characters (line breaks, tabs) become spaces, and the invisible marks
-/// that turn the direction of text are dropped, so a title cannot make the line read differently.
-/// Mnemonic marks are left to the front ends, which know their own (`linux.rs`, `desktop.rs`).
-fn plain(text: &str, max: usize) -> String {
-    let flat: String =
-        text.chars().filter(|c| !turns_direction(*c)).map(|c| if c.is_control() { ' ' } else { c }).collect();
-    crate::inbox::cap(flat.trim(), max)
-}
-
-/// The Unicode marks that embed, override or isolate a direction of text, and the plain marks.
-fn turns_direction(c: char) -> bool {
-    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+/// One entry per app of the suite; the control centre is "Settings…". Only the Inbox carries a
+/// number, what waits for the person ("Inbox (3)").
+fn apps_section(waiting: Waiting) -> Vec<Item> {
+    let inbox = match waiting.total() {
+        0 => tr("Inbox").to_string(),
+        n => trf("Inbox ({n})", &[("n", &n)]),
+    };
+    vec![
+        open(&inbox, AppId::INBOX),
+        open(tr("Mail"), AppId::INBOX_MAIL),
+        open(tr("Notifications"), AppId::INBOX_NOTIFICATIONS),
+        open(tr("Calendar"), AppId::CALENDAR),
+        open(tr("Tasks"), AppId::TASKS),
+        open(tr("Assistant"), AppId::ASSISTANT),
+    ]
 }
 
 /// `Workspace 3 · hyprland`, or what is going on instead.
@@ -277,6 +248,7 @@ fn info(label: String) -> Item {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::InboxLine;
 
     /// The menu as text: `▸` marks a submenu, parentheses a greyed-out entry, `-` a separator.
     fn labels(menu: &[Item]) -> Vec<String> {
@@ -325,8 +297,11 @@ mod tests {
                 sub(tr("Delete")),
                 "-".to_string(),
                 tr("Inbox").to_string(),
+                tr("Mail").to_string(),
+                tr("Notifications").to_string(),
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
+                tr("Assistant").to_string(),
                 "-".to_string(),
                 format!(
                     "({})",
@@ -347,8 +322,11 @@ mod tests {
             Some(Action::Run(Box::new(Request::SaveTemplate { name: None })))
         );
         assert_eq!(action_of(&menu, tr("Inbox")), Some(Action::OpenApp(AppId::INBOX)));
+        assert_eq!(action_of(&menu, tr("Mail")), Some(Action::OpenApp(AppId::INBOX_MAIL)));
+        assert_eq!(action_of(&menu, tr("Notifications")), Some(Action::OpenApp(AppId::INBOX_NOTIFICATIONS)));
         assert_eq!(action_of(&menu, tr("Calendar")), Some(Action::OpenApp(AppId::CALENDAR)));
         assert_eq!(action_of(&menu, tr("Tasks")), Some(Action::OpenApp(AppId::TASKS)));
+        assert_eq!(action_of(&menu, tr("Assistant")), Some(Action::OpenApp(AppId::ASSISTANT)));
         assert_eq!(
             action_of(&menu, tr("Settings…")),
             Some(Action::Run(Box::new(Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None })))
@@ -412,51 +390,36 @@ mod tests {
         assert!(menu.contains(&format!("({})", tr("Not connected to Nextcloud"))));
     }
 
-    fn line(title: &str, source: &str) -> InboxLine {
-        InboxLine { id: format!("id-{title}"), title: title.into(), source: source.into() }
-    }
-
-    /// Task E3.3b: one number for everything "for me", approvals included.
+    /// Task E3.3b: one number for everything "for me", approvals included, next to "Inbox" only;
+    /// single entries never show in the menu.
     #[test]
-    fn the_inbox_leads_the_menu_with_one_number() {
+    fn the_inbox_carries_one_number_and_no_entries() {
         let none = Waiting::of(&snapshot());
         assert_eq!(none, Waiting::default());
         assert_eq!(waiting_line(none), String::new());
-        assert_eq!(labels(&build(&snapshot()))[0], format!("{} ▸", tr("Load template")));
 
         // An approval and two notices; the snapshot still knows the approval apart, the tray not.
         let waiting = Snapshot {
             approvals_waiting: 1,
             inbox_for_me: 3,
             inbox_urgent: 1,
-            inbox_newest: vec![line("Delete event", "Suite"), line("Backup failed", "backup")],
+            inbox_newest: vec![InboxLine { id: "a".into(), title: "Backup failed".into(), source: "backup".into() }],
             ..snapshot()
         };
         let three = Waiting::of(&waiting);
         assert_eq!((three, three.total()), (Waiting { for_me: 3, urgent: 1 }, 3), "approvals are not counted twice");
         let menu = build(&waiting);
-        assert_eq!(
-            labels(&menu)[..4],
-            [
-                trf("Inbox ({n})", &[("n", &3)]),
-                "Delete event · Suite".to_string(),
-                "Backup failed · backup".to_string(),
-                "-".to_string(),
-            ]
-        );
-        assert!(
-            menu[..3]
-                .iter()
-                .all(|item| matches!(item, Item::Entry { action: Some(Action::OpenApp(AppId::INBOX)), .. })),
-            "every inbox line opens the Inbox app"
-        );
-        assert_eq!(labels(&menu)[4], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
+        let inbox = trf("Inbox ({n})", &[("n", &3)]);
+        assert_eq!(action_of(&menu, &inbox), Some(Action::OpenApp(AppId::INBOX)));
+        let quiet = labels(&build(&snapshot()));
+        let counted: Vec<String> =
+            quiet.iter().map(|l| if l == tr("Inbox") { inbox.clone() } else { l.clone() }).collect();
+        assert_eq!(labels(&menu), counted, "only the Inbox label changes, nothing is added");
+        assert!(!labels(&menu).iter().any(|l| l.contains("Backup failed")), "no single entry in the menu");
         assert!(!labels(&menu).contains(&trf("Approvals ({n})", &[("n", &1)])), "no second number for approvals");
         assert_eq!(waiting_line(three), trf("{n} for you", &[("n", &3)]));
     }
 
-    /// Titles come from agents and scripts: shown as written, never as a line break or turned
-    /// text, and short enough for the bar.
     /// Task C.9: while the listener runs the menu starts with what it does and "Mute microphone";
     /// voice off, there is nothing about it.
     #[test]
@@ -500,17 +463,5 @@ mod tests {
         );
         let off = Snapshot { voice: VoiceState::Off, voice_enabled: false, ..snapshot() };
         assert!(!labels(&build(&off)).contains(&tr("Mute microphone").to_string()), "voice off: nothing");
-    }
-
-    #[test]
-    fn foreign_titles_show_as_plain_text() {
-        let label = |title: &str, source: &str| entry_label(&line(title, source));
-        assert_eq!(label("fix_build", "my_script"), "fix_build · my_script", "mnemonics are the front ends' job");
-        assert_eq!(label("two\nlines\there", "x"), "two lines here · x");
-        assert_eq!(label("\u{202E}gnp.exe", "x"), "gnp.exe · x", "no turned text");
-        assert_eq!(label("<b>bold</b> &amp;", "x"), "<b>bold</b> &amp; · x", "markup stays text");
-        let long = "A very long title from an agent that goes on";
-        let cut: String = long.chars().take(TITLE_IN_MENU - 1).collect();
-        assert_eq!(label(long, "x"), format!("{cut}… · x"));
     }
 }
