@@ -390,6 +390,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("This week", "Diese Woche"),
     // Calendar: mini radars (K.30)
     ("Coming days", "Nächste Tage"),
+    // Calendar: links and copying in the event details (issue #126)
+    ("Copy notes", "Notizen kopieren"),
+    ("Join", "Beitreten"),
+    ("Links", "Links"),
     // Calendar: the night (K.27)
     ("Double-click to set the night", "Doppelklick legt die Nacht fest"),
     ("From", "Von"),

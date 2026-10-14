@@ -16,6 +16,8 @@
 //! - [`icon`]: the bundled Lucide icons.
 //! - [`layout`]: the size classes of tiled windows (`layout::of(size)`) and the layout gaps by role
 //!   (`layout::inset()`, `layout::page_padding()` …).
+//! - [`links`]: web and mail addresses in plain text (`links::pieces`, `links::openable`,
+//!   `links::meeting`), to make them clickable.
 //! - [`markdown`]: Markdown to read (GitHub texts) in the Torro look.
 //! - [`shell`]: the Linear window frame (sidebar, inset panel, header bar, properties column)
 //!   and the app switcher; the sidebar expanded, collapsed to a rail of icons, or as a drawer.
@@ -31,6 +33,7 @@ pub mod design;
 pub mod dialog;
 pub mod icon;
 pub mod layout;
+pub mod links;
 pub mod markdown;
 pub mod panel;
 pub mod shell;

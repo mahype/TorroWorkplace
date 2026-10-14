@@ -23,7 +23,13 @@
 //! not validate it.) A state that cannot be saved is not saved, also not when the panel is left.
 //!
 //! Recurring occurrences (`event.recurring`) and events of read-only calendars show the same panel
-//! with plain values instead of fields, a note why, and no footer.
+//! with plain values instead of fields, a note why, and no footer. Location and notes stay
+//! selectable there (read-only text editors: a selection and ⌘C / Ctrl+C work, typing does not).
+//!
+//! Links in the location and the notes (issue #126, `torro_gui::links`) are listed under the notes
+//! in "Links", each a row that opens it; a video call (Zoom, Teams, Meet, Talk …) comes first with
+//! a "Join" button. Only `http`, `https` and `mailto` are opened ([`Action::OpenLink`]). "Copy
+//! notes" puts the whole notes on the clipboard ([`Action::Copy`]).
 //!
 //! The form works on strings, as the user typed them. [`Form::build`] turns it into an
 //! [`Event`]: all-day events store an exclusive end date, so the form's inclusive end date
@@ -32,10 +38,11 @@
 use chrono::{Duration, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, svg, text, text_editor, text_input, toggler};
-use iced::{Alignment, Background, Border, Color, Element, Padding, Theme, keyboard};
+use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Theme, keyboard};
 use torro_core::i18n::tr;
 use torro_gui::datetime::{format_date, format_time, parse_date, parse_time, to_local, to_utc};
 use torro_gui::icon::{self, Icon, icon};
+use torro_gui::links;
 use torro_gui::panel::{self, Panel};
 use torro_gui::theme::{self, palette, space};
 use torro_gui::typo::text_width;
@@ -90,6 +97,11 @@ pub struct Editor {
     title: text_editor::Content,
     /// The notes as an editor widget; `form.notes` mirrors its text.
     notes: text_editor::Content,
+    /// The location as a read-only editor widget, so it can be selected in a read-only event (an
+    /// editable one types into a `text_input`).
+    location: text_editor::Content,
+    /// "Copy notes" was pressed and nothing else since: the row says "Copied".
+    copied: bool,
     /// The calendar menu is open (only drafts can choose their calendar).
     menu: bool,
     /// Set by the first press on "Delete event"; the second press confirms.
@@ -129,6 +141,12 @@ pub enum Message {
     EndTime(String),
     Location(String),
     Notes(text_editor::Action),
+    /// Selecting in the read-only location; edits are ignored.
+    LocationText(text_editor::Action),
+    /// A link of the "Links" section, or "Join".
+    OpenLink(String),
+    /// "Copy notes": the whole notes to the clipboard.
+    CopyNotes,
     /// Enter in a field: save now, and show what is missing if that is not possible.
     Save,
     /// Save what changed, quietly (the autosave tick, Escape in a field).
@@ -155,6 +173,11 @@ pub enum Action {
     Close,
     /// Give the keyboard focus to the input with this id (the first one with a problem).
     Focus(&'static str),
+    /// Open this address in the browser. It passed `torro_gui::links::openable`; check it again
+    /// right before opening.
+    OpenLink(String),
+    /// Put this text on the clipboard.
+    Copy(String),
 }
 
 /// Why the form cannot be saved yet. The first one found is shown as the hint.
@@ -414,6 +437,8 @@ impl Editor {
             day,
             title: text_editor::Content::with_text(&form.title),
             notes: text_editor::Content::with_text(&form.notes),
+            location: text_editor::Content::with_text(&form.location),
+            copied: false,
             base: form.clone(),
             form,
             sent: None,
@@ -425,9 +450,25 @@ impl Editor {
     }
 
     pub fn update(&mut self, message: Message) -> Action {
-        // A series or a read-only calendar: the panel only closes.
+        self.copied = matches!(message, Message::CopyNotes);
+        // Links and copying work everywhere, also in a read-only event.
+        if let Message::OpenLink(url) = &message {
+            return if links::openable(url) { Action::OpenLink(url.clone()) } else { Action::None };
+        }
+        if matches!(message, Message::CopyNotes) {
+            return Action::Copy(self.form.notes.clone());
+        }
+        // A series or a read-only calendar: location and notes can be selected, the panel closes.
         if self.read_only.is_some() {
             return match message {
+                Message::Notes(action) if !action.is_edit() => {
+                    self.notes.perform(action);
+                    Action::None
+                }
+                Message::LocationText(action) if !action.is_edit() => {
+                    self.location.perform(action);
+                    Action::None
+                }
                 Message::Close | Message::Escape => Action::Close,
                 _ => Action::None,
             };
@@ -461,6 +502,8 @@ impl Editor {
                 self.notes.perform(action);
                 self.form.notes = self.notes.text();
             }
+            // Handled above; the editable location is a `text_input`.
+            Message::OpenLink(_) | Message::CopyNotes | Message::LocationText(_) => {}
             Message::Save => return self.request_save(true),
             Message::Flush => return self.request_save(false),
             Message::Delete => {
@@ -698,14 +741,54 @@ impl Editor {
             .wrapping(Wrapping::WordOrGlyph)
             .style(|t, s| bare_editor(t, s, palette(t).text_2));
 
-        column![
+        let body = column![
             widgets::prop_section(tr("When"), when),
             widgets::prop_section(tr("Calendar"), calendar),
             widgets::prop_section(tr("Location"), vec![location]),
-            widgets::prop_section(tr("Notes"), vec![panel::inset(notes)]),
+            widgets::prop_section(tr("Notes"), self.notes_rows(notes.into())),
         ]
-        .spacing(space::l())
-        .into()
+        .spacing(space::l());
+        match self.links_section() {
+            Some(links) => body.push(links).into(),
+            None => body.into(),
+        }
+    }
+
+    /// The rows of "Notes": the notes, then "Copy notes" ("Copied" right after a press) when there
+    /// are any.
+    fn notes_rows<'a>(&'a self, notes: Element<'a, Message>) -> Vec<Element<'a, Message>> {
+        let mut rows = vec![panel::inset(notes)];
+        if !self.form.notes.trim().is_empty() {
+            let (mark, label) = if self.copied { (Icon::Check, tr("Copied")) } else { (Icon::Copy, tr("Copy notes")) };
+            let label = typo::text(typo::body(), label).style(theme::text_2);
+            rows.push(widgets::prop_row(Some(Mark::Icon(mark)), label, Some(Message::CopyNotes)));
+        }
+        rows
+    }
+
+    /// "Links" with a row per address of [`Editor::links`] (a video call with "Join"); `None`
+    /// without any.
+    fn links_section(&self) -> Option<Element<'_, Message>> {
+        let found = self.links();
+        if found.is_empty() {
+            return None;
+        }
+        Some(widgets::prop_section(tr("Links"), found.into_iter().map(link_row).collect()))
+    }
+
+    /// The addresses in the location and the notes (as typed) that may be opened, each once, video
+    /// calls first and otherwise in the order they appear.
+    fn links(&self) -> Vec<&str> {
+        let mut found = links::links(&self.form.location);
+        for link in links::links(&self.form.notes) {
+            if !found.contains(&link) {
+                found.push(link);
+            }
+        }
+        found.retain(|url| links::openable(url));
+        // A call is what one opens when the event starts; the sort is stable.
+        found.sort_by_key(|url| links::meeting(url).is_none());
+        found
     }
 
     /// The calendar with its dot; a draft with more than one calendar opens the menu from here.
@@ -728,7 +811,8 @@ impl Editor {
         column![panel::title(self.form.title.as_str()), note].spacing(space::s()).into()
     }
 
-    /// The same sections as the form, with the values as text; location and notes only when set.
+    /// The same sections as the form, with the values as text; location and notes only when set,
+    /// and selectable; then the links.
     fn read_only_body(&self) -> Element<'_, Message> {
         let form = &self.form;
         let width = label_width();
@@ -746,16 +830,18 @@ impl Editor {
             body = body.push(widgets::prop_section(tr("Calendar"), vec![calendar]));
         }
         if !form.location.trim().is_empty() {
-            let place = typo::text(typo::body(), form.location.as_str()).wrapping(Wrapping::WordOrGlyph);
+            let place = selectable(&self.location, Message::LocationText, |t| palette(t).text);
             let row = widgets::prop_row(Some(Mark::Icon(Icon::MapPin)), place, None);
             body = body.push(widgets::prop_section(tr("Location"), vec![row]));
         }
         if !form.notes.trim().is_empty() {
-            let notes =
-                typo::text(typo::body(), form.notes.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
-            body = body.push(widgets::prop_section(tr("Notes"), vec![panel::inset(notes)]));
+            let notes = selectable(&self.notes, Message::Notes, |t| palette(t).text_2);
+            body = body.push(widgets::prop_section(tr("Notes"), self.notes_rows(notes)));
         }
-        body.into()
+        match self.links_section() {
+            Some(links) => body.push(links).into(),
+            None => body.into(),
+        }
     }
 
     /// "Delete event" for a stored event that can be edited; after the first press the question
@@ -869,6 +955,42 @@ fn value_text<'a>(value: String) -> Element<'a, Message> {
     container(typo::text(typo::body().tabular(), value).wrapping(Wrapping::None))
         .padding(Padding::ZERO.left(style::INPUT_PADDING.left))
         .into()
+}
+
+/// A read-only text editor over `content` in `BODY`, coloured by `value`: it can be selected and
+/// copied (⌘C / Ctrl+C), typing does nothing ([`Editor::update`] drops edits). Iced 0.14 has no
+/// selectable text widget, so this is the way to select text that cannot be changed.
+fn selectable<'a>(
+    content: &'a text_editor::Content,
+    on_action: fn(text_editor::Action) -> Message,
+    value: fn(&Theme) -> Color,
+) -> Element<'a, Message> {
+    text_editor(content)
+        .on_action(on_action)
+        .font(typo::body().font)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .padding(Padding::ZERO)
+        .wrapping(Wrapping::WordOrGlyph)
+        .style(move |t, s| bare_editor(t, s, value(t)))
+        .into()
+}
+
+/// One row of "Links". A video call: the service's name and "Join" (the address as its tooltip);
+/// any other address: the whole address, cut with "…", the row opens it.
+fn link_row(url: &str) -> Element<'_, Message> {
+    let open = Message::OpenLink(url.to_owned());
+    match links::meeting(url) {
+        Some(service) => {
+            let join = widgets::text_button(None, tr("Join"), style::button::secondary, Some(open));
+            let value =
+                row![container(widgets::prop_value(service)).width(Length::Fill), widgets::with_tooltip(join, url)]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
+            widgets::prop_row(Some(Mark::Icon(Icon::Video)), value, None)
+        }
+        None => widgets::prop_row(Some(Mark::Icon(Icon::ArrowUpRight)), widgets::prop_value(url), Some(open)),
+    }
 }
 
 /// A problem under a "When" or calendar row, starting where the values of the rows start.
@@ -1434,6 +1556,63 @@ mod tests {
         editor.update(Message::StartDate("nonsense".into()));
         let _path = editor.path();
         let _ = Editor::new_event(&[], day(2026, 10, 11), None).panel(&anchor, |m| m);
+    }
+
+    /// Issue #126: a read-only event can be selected and copied, but not changed.
+    #[test]
+    fn a_read_only_event_can_be_selected_but_not_changed() {
+        let mut event = stored("Standup", EventTime::DateTime(to_utc(at(2026, 10, 11, 9, 0))), None);
+        event.recurring = true;
+        let mut editor = Editor::edit(&event, &calendars());
+        assert!(matches!(editor.update(Message::Notes(text_editor::Action::SelectAll)), Action::None));
+        assert_eq!(editor.notes.selection().as_deref(), Some("Bring slides"), "the notes can be selected");
+        editor.update(Message::LocationText(text_editor::Action::SelectAll));
+        assert_eq!(editor.location.selection().as_deref(), Some("Room 3"), "and the location");
+        let typed = text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("changed".to_string())));
+        editor.update(Message::Notes(typed.clone()));
+        editor.update(Message::LocationText(typed));
+        assert_eq!((editor.notes.text(), editor.location.text()), ("Bring slides".into(), "Room 3".into()));
+        assert_eq!(editor.form.notes, "Bring slides");
+        assert!(matches!(editor.update(Message::CopyNotes), Action::Copy(text) if text == "Bring slides"));
+        let _ = editor.panel(&Anchor::new(), |m| m);
+    }
+
+    #[test]
+    fn only_web_and_mail_links_are_opened() {
+        let mut editor = Editor::edit(&timed(), &calendars());
+        for url in ["https://example.org/agenda", "mailto:anna@example.org"] {
+            assert!(matches!(editor.update(Message::OpenLink(url.into())), Action::OpenLink(open) if open == url));
+        }
+        for url in ["file:///etc/passwd", "javascript:alert(1)", "smb://server/share"] {
+            assert!(matches!(editor.update(Message::OpenLink(url.into())), Action::None), "{url}");
+        }
+    }
+
+    #[test]
+    fn the_links_of_location_and_notes_come_once_with_calls_first() {
+        let mut event = timed();
+        event.location = Some("Room 3, or https://example.org/room".into());
+        event.description =
+            Some("Agenda: https://example.org/agenda.\nCall (https://meet.google.com/abc-defg-hij)\nhttps://example.org/room".into());
+        let editor = Editor::edit(&event, &calendars());
+        assert_eq!(
+            editor.links(),
+            ["https://meet.google.com/abc-defg-hij", "https://example.org/room", "https://example.org/agenda"]
+        );
+        assert!(Editor::edit(&timed(), &calendars()).links().is_empty(), "no links, no section");
+        let _ = editor.panel(&Anchor::new(), |m| m);
+    }
+
+    #[test]
+    fn copy_notes_copies_the_notes_as_typed_and_says_so() {
+        let mut editor = Editor::edit(&timed(), &calendars());
+        let paste = text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new(" and the plan".to_string())));
+        editor.update(Message::Notes(text_editor::Action::Move(text_editor::Motion::DocumentEnd)));
+        editor.update(Message::Notes(paste));
+        assert!(matches!(editor.update(Message::CopyNotes), Action::Copy(text) if text == "Bring slides and the plan"));
+        assert!(editor.copied, "the row says Copied");
+        editor.update(Message::Location("Room 4".into()));
+        assert!(!editor.copied, "until anything else happens");
     }
 
     #[test]

@@ -42,6 +42,7 @@ use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
+use torro_gui::links;
 use torro_gui::panel::{self, PanelMode};
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
@@ -473,6 +474,8 @@ pub enum Message {
     /// The answer to a save of the editor with this count ([`App::edits`]).
     Saved(u64, Result<Event, String>),
     Deleted(Result<(), String>),
+    /// A link of the editor was handed to the browser (issue #126).
+    LinkOpened(Result<(), String>),
     Tick,
     /// The desktop's light/dark preference (once at start, then whenever it changes).
     SystemMode(Mode),
@@ -906,6 +909,9 @@ impl App {
                 Ok(()) => return self.load(),
                 Err(err) => self.error = Some(trf("Delete failed: {error}", &[("error", &err)])),
             },
+            // Like the other apps: a browser that cannot be started is only logged.
+            Message::LinkOpened(Ok(())) => {}
+            Message::LinkOpened(Err(err)) => eprintln!("torrocalendar: cannot open the link in a browser: {err}"),
             Message::Tick => {
                 self.now = self.launch.now.unwrap_or_else(|| Local::now().naive_local());
                 let appearance =
@@ -1388,6 +1394,12 @@ impl App {
             // The first field with a problem, after Enter.
             editor::Action::Focus(id) => iced::widget::operation::focus(id),
             editor::Action::Save(event) => self.save(event),
+            // Checked again here: only web and mail addresses ever reach the browser.
+            editor::Action::OpenLink(url) if links::openable(&url) => {
+                Task::perform(async move { webbrowser::open(&url).map_err(|err| err.to_string()) }, Message::LinkOpened)
+            }
+            editor::Action::OpenLink(_) => Task::none(),
+            editor::Action::Copy(text) => iced::clipboard::write(text),
             editor::Action::Delete(event) => {
                 self.editor = None;
                 let source = self.source.clone();
