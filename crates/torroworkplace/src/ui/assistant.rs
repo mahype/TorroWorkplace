@@ -31,9 +31,20 @@
 //! There is no setting for a default engine: each chat picks its engine, and a new chat starts with
 //! the one used last (`docs/assistent.md`, "Woher das Modell kommt"). A key for it would be a new
 //! `torro_ipc::SettingKey`.
+//!
+//! **Voice** (task C.9, `docs/assistent.md`, "Sprache"), once the assistant is on: talking by voice
+//! on or off (`settings.set_setting voice_enabled`; only here and in the tray, since only the app
+//! key may switch the microphone on), the fixed wake word, "Speak answers", the microphone when the
+//! recording program can list them, and "Say something" (`settings.test_voice`), which shows what
+//! was understood. Below, the four programs it needs and whether each was found, with a hint how
+//! to install what is missing (`settings.voice_status`). The status is asked once when the
+//! control centre starts, after every change of a voice setting, and a few times after voice was
+//! switched, until the listener reports what it does ([`subscription`]).
+
+use std::time::Duration;
 
 use chrono::Utc;
-use iced::widget::{Space, column, responsive, svg};
+use iced::widget::{Space, column, responsive, svg, toggler};
 use iced::{Element, Length, Subscription, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Retention;
@@ -43,7 +54,9 @@ use torro_gui::style;
 use torro_gui::theme::palette;
 use torro_gui::widgets::{self, Status};
 use torro_ipc::api::{ASSISTANT_CLIENT, Rights, RightsTemplate};
-use torro_ipc::{ClientInfo, Request, Response, SettingKey};
+use torro_ipc::{
+    ClientInfo, Request, Response, SettingKey, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
+};
 
 use super::accounts::{Tone, status_line};
 use super::general::choice;
@@ -53,6 +66,13 @@ use super::{agent_wizard, agents};
 /// The name of the assistant's client, as the agents list and the audit log show it (decision 5:
 /// one client "Assistant").
 pub const CLIENT_NAME: &str = "Assistant";
+
+/// How often the voice status is asked while it is not known or voice was just switched.
+const VOICE_POLL: Duration = Duration::from_secs(2);
+
+/// How many times the voice status is asked after voice was switched, until the listener says it
+/// runs (or stopped).
+const VOICE_POLLS: u8 = 5;
 
 /// The retention times the page offers, shortest first; a number of days set through the API that
 /// is not among them is listed too ([`retention_options`]).
@@ -73,6 +93,40 @@ pub struct State {
     creating: Option<Rights>,
     /// "Turn off assistant…" asks first.
     confirm_off: bool,
+    /// Talking by voice (task C.9).
+    voice: Voice,
+}
+
+/// What the page knows of talking by voice.
+#[derive(Debug, Default)]
+struct Voice {
+    /// The last answer of `settings.voice_status`; `None` until one came.
+    status: Option<VoiceStatus>,
+    /// `settings.voice_status` is out.
+    asking: bool,
+    /// Asking failed; asked again only with "Check again".
+    failed: bool,
+    /// How many more times the status is asked after voice was switched to `expected`.
+    polls: u8,
+    /// Whether voice was last switched on (`Some(true)`) or off, until the listener follows.
+    expected: Option<bool>,
+    /// A voice setting was sent: the status is asked again once it is stored.
+    changed: bool,
+    /// "Say something" is recording.
+    testing: bool,
+    /// What the last test heard.
+    heard: Option<Heard>,
+}
+
+/// The outcome of "Say something".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Heard {
+    /// These words.
+    Text(String),
+    /// Nothing understood.
+    Nothing,
+    /// The test failed, with the core's message.
+    Failed(String),
 }
 
 impl Default for State {
@@ -83,6 +137,7 @@ impl Default for State {
             editor: agents::State::default(),
             creating: None,
             confirm_off: false,
+            voice: Voice::default(),
         }
     }
 }
@@ -143,6 +198,16 @@ pub enum Message {
     AskTurnOff,
     TurnOff,
     CloseDialog,
+    /// Ask how voice stands (`settings.voice_status`): on the clock, or "Check again".
+    CheckVoice,
+    /// "Talk to the assistant" on or off.
+    Voice(bool),
+    /// "Speak answers" on or off.
+    SpeakAnswers(bool),
+    /// A microphone's row; `None` for the system's default.
+    Microphone(Option<String>),
+    /// "Say something".
+    TestVoice,
 }
 
 /// The assistant's client as the core lists it; `None` before it was turned on.
@@ -192,7 +257,44 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.confirm_off = false;
             Action::None
         }
+        Message::CheckVoice => {
+            let voice = &mut state.voice;
+            if voice.asking {
+                return Action::None;
+            }
+            voice.asking = true;
+            voice.failed = false;
+            voice.polls = voice.polls.saturating_sub(1);
+            Action::Send(Request::VoiceStatus)
+        }
+        Message::Voice(on) => {
+            // Only switching on needs the programs; off is always possible.
+            if on && state.voice.status.as_ref().is_some_and(|status| !status.can_listen()) {
+                return Action::None;
+            }
+            state.voice.expected = Some(on);
+            state.voice.polls = VOICE_POLLS;
+            set_voice(state, SettingKey::VoiceEnabled, serde_json::Value::Bool(on))
+        }
+        Message::SpeakAnswers(speak) => set_voice(state, SettingKey::SpeakAnswers, serde_json::Value::Bool(speak)),
+        Message::Microphone(name) => {
+            set_voice(state, SettingKey::Microphone, name.map_or(serde_json::Value::Null, serde_json::Value::String))
+        }
+        Message::TestVoice => {
+            if state.voice.testing {
+                return Action::None;
+            }
+            state.voice.testing = true;
+            state.voice.heard = None;
+            Action::Send(Request::TestVoice)
+        }
     }
+}
+
+/// Sends a voice setting; the status is asked again once it is stored ([`answered`]).
+fn set_voice(state: &mut State, key: SettingKey, value: serde_json::Value) -> Action {
+    state.voice.changed = true;
+    Action::Send(Request::SetSetting { key, value })
 }
 
 /// A control of the rights view: on the assistant's client through the agents page's draft and
@@ -230,6 +332,9 @@ fn rights(state: &mut State, message: agents::Message, data: &Data) -> Action {
 /// then hands the answer to nobody else. An error ends "Turn on assistant" (the shell shows it).
 /// Every other answer goes to the rights editor (`ok` of a saved change, an error that drops it).
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
+    if let Some(next) = voice_answered(&mut state.voice, result) {
+        return next;
+    }
     if state.creating.is_some() {
         match result {
             Ok(Response::ClientKey { client, .. }) if client.kind == ASSISTANT_CLIENT => {
@@ -247,14 +352,66 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<
     None
 }
 
+/// The answers of the voice section: `Some` when `result` was one of its own (the status, a
+/// transcript), with what to send next; `None` to hand it on. After a voice setting was stored the
+/// status is asked again. An error ends a running test or check; the shell shows it.
+fn voice_answered(voice: &mut Voice, result: &Result<Response, String>) -> Option<Option<Action>> {
+    match result {
+        Ok(Response::Voice { voice: status }) => {
+            voice.asking = false;
+            let follows = match voice.expected {
+                Some(true) => status.listener != VoiceState::Off || status.problem.is_some(),
+                Some(false) => status.listener == VoiceState::Off,
+                None => true,
+            };
+            if follows {
+                voice.polls = 0;
+                voice.expected = None;
+            }
+            voice.status = Some(status.clone());
+            Some(None)
+        }
+        Ok(Response::Transcript { text }) => {
+            voice.testing = false;
+            voice.heard =
+                Some(if text.trim().is_empty() { Heard::Nothing } else { Heard::Text(text.trim().to_string()) });
+            Some(None)
+        }
+        Ok(Response::Ok) if voice.changed && !voice.asking => {
+            voice.changed = false;
+            voice.asking = true;
+            Some(Some(Action::Send(Request::VoiceStatus)))
+        }
+        Err(message) if voice.testing => {
+            voice.testing = false;
+            voice.heard = Some(Heard::Failed(message.clone()));
+            None
+        }
+        Err(_) if voice.asking => {
+            voice.asking = false;
+            voice.failed = true;
+            voice.polls = 0;
+            None
+        }
+        _ => None,
+    }
+}
+
 /// The shell loaded [`Data`] anew: saved rights are in it now.
 pub fn loaded(state: &mut State) {
     agents::loaded(&mut state.editor);
 }
 
-/// The clock that saves changed rights; none while nothing waits.
+/// The clock that saves changed rights, and the one that asks how voice stands: once at the start
+/// and a few times after voice was switched. None while nothing waits.
 pub fn subscription(state: &State) -> Subscription<Message> {
-    agents::subscription(&state.editor).map(Message::Rights)
+    let rights = agents::subscription(&state.editor).map(Message::Rights);
+    let voice = &state.voice;
+    let unknown = voice.status.is_none() && !voice.failed;
+    if voice.asking || !(unknown || voice.polls > 0) {
+        return rights;
+    }
+    Subscription::batch([rights, iced::time::every(VOICE_POLL).map(|_| Message::CheckVoice)])
 }
 
 /// What Escape means on this page: close the confirmation.
@@ -339,6 +496,9 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
                 .push(on_group(client, column))
                 .push(engines_group(data))
                 .extend(groups)
+                .push(voice_group(&state.voice, data, column))
+                .extend(microphone_group(&state.voice, data))
+                .push(programs_group(&state.voice, column))
                 .push(retention_group(data.settings.assistant_retention));
         }
     }
@@ -440,6 +600,195 @@ fn retention_group<'a>(current: Retention) -> Element<'a, Message> {
     widgets::group(tr("Keep conversations"), rows, Some(footer.to_string()))
 }
 
+/// "Voice": on or off with what the listener does, the wake word, "Speak answers" and the test.
+fn voice_group<'a>(voice: &'a Voice, data: &'a Data, column: Option<f32>) -> Element<'a, Message> {
+    let settings = &data.settings.voice;
+    let can_listen = voice.status.as_ref().is_none_or(VoiceStatus::can_listen);
+    let (status, detail) = voice_state(settings.enabled, voice.status.as_ref());
+    let switch = toggler(settings.enabled)
+        .size(style::CHECK_SIZE)
+        .style(style::toggler)
+        .on_toggle_maybe((settings.enabled || can_listen).then_some(Message::Voice));
+    let on = setting_row(
+        Some(widgets::status_dot(status)),
+        tr("Talk to the assistant"),
+        Some(detail),
+        agents::in_column(switch, column),
+    );
+    let word = torro_gui::typo::text(torro_gui::typo::body(), tr("Hey Torro")).style(torro_gui::theme::text_2);
+    let wake = setting_row(
+        None,
+        tr("Wake word"),
+        Some(tr("Your own wake word comes later").to_string()),
+        agents::in_column(word, column),
+    );
+    let speak =
+        toggler(settings.speak_answers).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::SpeakAnswers);
+    let speak = setting_row(
+        None,
+        tr("Speak answers"),
+        Some(tr("Read aloud with Piper as well as shown").to_string()),
+        agents::in_column(speak, column),
+    );
+    let test_button = match voice.testing {
+        true => widgets::busy_button(tr("Listening…"), style::button::secondary),
+        false => widgets::text_button(
+            None,
+            tr("Say something"),
+            style::button::secondary,
+            can_listen.then_some(Message::TestVoice),
+        ),
+    };
+    let test =
+        setting_row(None, tr("Test the microphone"), Some(heard_text(voice)), agents::in_column(test_button, column));
+    let footer = tr(
+        "Say “Hey Torro” and your question. Everything stays on this computer. Approvals are only given with a click, never by voice.",
+    );
+    widgets::group(tr("Voice"), vec![on, wake, speak, test], Some(footer.to_string()))
+}
+
+/// The dot and the line under "Talk to the assistant": off, or what the listener does.
+pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, String) {
+    let Some(status) = status else {
+        return (Status::Inactive, if enabled { tr("On") } else { tr("Off") }.to_string());
+    };
+    if !status.installed {
+        return (Status::Error, tr("The assistant app is not installed").to_string());
+    }
+    if !enabled {
+        let detail = if status.can_listen() { tr("Off") } else { tr("Install the programs below first") };
+        return (Status::Inactive, detail.to_string());
+    }
+    match (status.listener, &status.problem) {
+        (VoiceState::Listening, _) => (Status::Ok, tr("Listening for “Hey Torro”").to_string()),
+        (VoiceState::Recording, _) => (Status::Ok, tr("Recording …").to_string()),
+        (VoiceState::Answering, _) => (Status::Ok, tr("Answering …").to_string()),
+        (VoiceState::Off, Some(_)) => {
+            (Status::Error, tr("The listener stopped. Check the programs below.").to_string())
+        }
+        (VoiceState::Off, None) => (Status::Attention, tr("Starting …").to_string()),
+    }
+}
+
+/// The line under "Test the microphone": what was heard, or how to test.
+fn heard_text(voice: &Voice) -> String {
+    if voice.testing {
+        return tr("Speak now, it stops at a pause").to_string();
+    }
+    match &voice.heard {
+        None => tr("Shows what the assistant understands").to_string(),
+        Some(Heard::Text(text)) => trf("Heard: “{text}”", &[("text", text)]),
+        Some(Heard::Nothing) => tr("Nothing understood. Speak a little louder or closer.").to_string(),
+        Some(Heard::Failed(_)) => tr("The test failed. Check the programs below.").to_string(),
+    }
+}
+
+/// "Microphone": the system's default and every microphone the recording program lists, a check
+/// at the chosen one. None when it lists none.
+fn microphone_group<'a>(voice: &'a Voice, data: &'a Data) -> Option<Element<'a, Message>> {
+    let microphones = &voice.status.as_ref()?.microphones;
+    if microphones.is_empty() {
+        return None;
+    }
+    let chosen = data.settings.voice.microphone.as_deref();
+    let mut rows = vec![choice(tr("System default"), chosen.is_none(), Message::Microphone(None))];
+    rows.extend(
+        microphones
+            .iter()
+            .map(|name| choice(name.as_str(), chosen == Some(name.as_str()), Message::Microphone(Some(name.clone())))),
+    );
+    Some(widgets::group(tr("Microphone"), rows, None))
+}
+
+/// "Programs on this computer": the four parts with whether each was found, and "Check again".
+fn programs_group<'a>(voice: &'a Voice, column: Option<f32>) -> Element<'a, Message> {
+    let again = widgets::text_button(
+        None,
+        tr("Check again"),
+        style::button::ghost,
+        (!voice.asking).then_some(Message::CheckVoice),
+    );
+    let again = agents::in_column(again, column);
+    let rows = match &voice.status {
+        None if voice.asking || !voice.failed => {
+            vec![setting_row(None, tr("Looking for the programs …"), None, Space::new())]
+        }
+        None => vec![setting_row(None, tr("The programs could not be checked"), None, again)],
+        Some(status) if !status.installed => vec![setting_row(
+            Some(widgets::status_dot(Status::Error)),
+            tr("The assistant app is not installed"),
+            Some(tr("Install torroassistant next to Torro Workplace").to_string()),
+            again,
+        )],
+        Some(status) => {
+            let mut rows: Vec<Element<'a, Message>> = status.programs.iter().map(program_row).collect();
+            rows.push(setting_row(None, tr("Installed something?"), None, again));
+            rows
+        }
+    };
+    let footer = match voice.status.as_ref().and_then(|status| status.folder.as_deref()) {
+        Some(folder) => {
+            trf("Everything runs on this computer. Models and voices go into {folder}.", &[("folder", &folder)])
+        }
+        None => tr("Everything runs on this computer.").to_string(),
+    };
+    widgets::group(tr("Programs on this computer"), rows, Some(footer))
+}
+
+/// One part: its name, the program found or what to install, and a dot.
+fn program_row<'a>(program: &VoiceProgram) -> Element<'a, Message> {
+    let (status, detail) = program_state(program);
+    setting_row(Some(widgets::status_dot(status)), part_label(program.part), Some(detail), Space::new())
+}
+
+/// "Speech to text", …
+pub fn part_label(part: VoicePart) -> &'static str {
+    match part {
+        VoicePart::WakeWord => tr("Wake word"),
+        VoicePart::Recorder => tr("Recording"),
+        VoicePart::SpeechToText => tr("Speech to text"),
+        VoicePart::Speech => tr("Speech output"),
+    }
+}
+
+/// The dot and the line of a part: the program found, or how to get what is missing. The wake word
+/// and speech are optional (speech to text stands in for the one, the window for the other), so
+/// they are only orange when missing.
+pub fn program_state(program: &VoiceProgram) -> (Status, String) {
+    let optional = matches!(program.part, VoicePart::WakeWord | VoicePart::Speech);
+    let Some(missing) = program.missing else {
+        return (Status::Ok, program.program.clone().unwrap_or_default());
+    };
+    let hint = match (program.part, missing) {
+        (VoicePart::WakeWord, VoiceMissing::Program) => {
+            tr("Optional: pip install openwakeword. Until then speech to text listens for the wake word.")
+        }
+        (VoicePart::WakeWord, _) => {
+            tr("Put hey_torro.onnx into the voice folder. Until then speech to text listens for the wake word.")
+        }
+        (VoicePart::Recorder, _) => recorder_hint(),
+        (VoicePart::SpeechToText, VoiceMissing::Program) => tr("Install whisper.cpp, so that whisper-cli is found"),
+        (VoicePart::SpeechToText, _) => tr("Put a whisper.cpp model such as ggml-base.bin into the voice folder"),
+        (VoicePart::Speech, VoiceMissing::Program) => tr("Optional: install Piper to hear the answers"),
+        (VoicePart::Speech, VoiceMissing::Model) => {
+            tr("Put a Piper voice (.onnx with its .json) into the voice folder")
+        }
+        (VoicePart::Speech, VoiceMissing::Player) => tr("Install a program that plays sound, such as paplay"),
+    };
+    (if optional { Status::Attention } else { Status::Error }, hint.to_string())
+}
+
+/// How to get a recording program on this system.
+fn recorder_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        tr("Install SoX (brew install sox) or ffmpeg")
+    } else if cfg!(windows) {
+        tr("Install SoX or ffmpeg")
+    } else {
+        tr("Install pulseaudio-utils (parec) or alsa-utils (arecord)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -463,6 +812,11 @@ mod tests {
 
     fn with_assistant(rights: Rights) -> Data {
         Data { clients: vec![assistant(rights)], ..Data::default() }
+    }
+
+    /// A page whose voice status is known, so only the rights' clock can tick.
+    fn voice_known() -> State {
+        State { voice: Voice { status: Some(VoiceStatus::default()), ..Voice::default() }, ..State::default() }
     }
 
     /// Runs the clock past the delay and returns the request it sends.
@@ -543,7 +897,7 @@ mod tests {
     #[test]
     fn editing_the_assistants_rights_sends_update_client() {
         let data = with_assistant(Rights::assistant());
-        let mut state = State::default();
+        let mut state = voice_known();
         let _ = update(&mut state, Message::Rights(agents::Message::Level(Area::Tasks, Level::Write)), &data);
         let _ = update(&mut state, Message::Rights(agents::Message::All(agents::Pick::Calendars, false)), &data);
         assert_eq!(shown(&state, &data).area(Area::Tasks).level, Level::Write, "shown at once");
@@ -563,7 +917,7 @@ mod tests {
         assert!(agents::shows_area(Area::Assistant, "claude-code"), "other agents may get it, switched on by hand");
         assert!(agents::shows_area(Area::Calendar, ASSISTANT_CLIENT));
         let data = with_assistant(Rights::assistant());
-        let mut state = State::default();
+        let mut state = voice_known();
         for message in
             [agents::Message::Level(Area::Assistant, Level::Full), agents::Message::Admin(Area::Assistant, true)]
         {
@@ -627,6 +981,136 @@ mod tests {
         assert!(header(&state, &with_assistant(Rights::assistant()), SizeClass::Wide).actions.is_empty());
     }
 
+    fn status(listener: VoiceState, missing: Option<VoiceMissing>) -> VoiceStatus {
+        let part = |part| VoiceProgram { part, program: Some("x".into()), missing: None };
+        VoiceStatus {
+            listener,
+            installed: true,
+            problem: None,
+            programs: vec![
+                VoiceProgram { missing: Some(VoiceMissing::Program), program: None, ..part(VoicePart::WakeWord) },
+                part(VoicePart::Recorder),
+                VoiceProgram { missing, ..part(VoicePart::SpeechToText) },
+                part(VoicePart::Speech),
+            ],
+            microphones: vec!["alsa_input.usb".into()],
+            folder: Some("/home/anna/.local/share/torroassistant/voice".into()),
+        }
+    }
+
+    fn voice_on(data: &mut Data) {
+        data.settings.voice.enabled = true;
+    }
+
+    /// Task C.9: the switch, "Speak answers" and the microphone send `settings.set_setting`; the
+    /// status is asked again once a change is stored.
+    #[test]
+    fn voice_settings_send_set_setting() {
+        let data = with_assistant(Rights::assistant());
+        let mut state = State::default();
+        let sent = |action: Action| match action {
+            Action::Send(Request::SetSetting { key, value }) => (key, value),
+            other => panic!("expected settings.set_setting, got {other:?}"),
+        };
+        assert_eq!(
+            sent(update(&mut state, Message::Voice(true), &data)),
+            (SettingKey::VoiceEnabled, serde_json::json!(true))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::Voice(false), &data)),
+            (SettingKey::VoiceEnabled, serde_json::json!(false))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::SpeakAnswers(false), &data)),
+            (SettingKey::SpeakAnswers, serde_json::json!(false))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::Microphone(Some("alsa_input.usb".into())), &data)),
+            (SettingKey::Microphone, serde_json::json!("alsa_input.usb"))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::Microphone(None), &data)),
+            (SettingKey::Microphone, serde_json::Value::Null)
+        );
+        assert!(matches!(answered(&mut state, &Ok(Response::Ok)), Some(Action::Send(Request::VoiceStatus))));
+        assert!(answered(&mut state, &Ok(Response::Ok)).is_none(), "once");
+    }
+
+    /// Without the programs voice cannot be switched on; off always works.
+    #[test]
+    fn voice_needs_the_programs_to_switch_on() {
+        let data = with_assistant(Rights::assistant());
+        let mut state = State::default();
+        let missing = status(VoiceState::Off, Some(VoiceMissing::Model));
+        assert!(answered(&mut state, &Ok(Response::Voice { voice: missing.clone() })).is_none());
+        assert!(!missing.can_listen());
+        assert!(matches!(update(&mut state, Message::Voice(true), &data), Action::None));
+        assert!(matches!(update(&mut state, Message::Voice(false), &data), Action::Send(_)));
+        assert_eq!(voice_state(false, Some(&missing)).1, tr("Install the programs below first"));
+    }
+
+    #[test]
+    fn the_status_is_asked_at_the_start_and_after_switching() {
+        let data = with_assistant(Rights::assistant());
+        let mut state = State::default();
+        assert_eq!(subscription(&state).units(), 1, "the voice clock: nothing known yet");
+        assert!(matches!(update(&mut state, Message::CheckVoice, &data), Action::Send(Request::VoiceStatus)));
+        assert!(matches!(update(&mut state, Message::CheckVoice, &data), Action::None), "one at a time");
+        assert_eq!(subscription(&state).units(), 0, "waits for the answer");
+        let _ = answered(&mut state, &Ok(Response::Voice { voice: status(VoiceState::Off, None) }));
+        assert_eq!(subscription(&state).units(), 0, "known");
+
+        let _ = update(&mut state, Message::Voice(true), &data);
+        assert_eq!(subscription(&state).units(), 1, "until the listener runs");
+        let _ = answered(&mut state, &Ok(Response::Voice { voice: status(VoiceState::Off, None) }));
+        assert_eq!(subscription(&state).units(), 1, "still starting");
+        let _ = answered(&mut state, &Ok(Response::Voice { voice: status(VoiceState::Listening, None) }));
+        assert_eq!(subscription(&state).units(), 0);
+
+        let mut failed = State::default();
+        let _ = update(&mut failed, Message::CheckVoice, &data);
+        assert!(answered(&mut failed, &Err("offline".into())).is_none(), "the shell shows it");
+        assert_eq!(subscription(&failed).units(), 0, "not again by itself");
+    }
+
+    #[test]
+    fn say_something_shows_what_was_heard() {
+        let data = with_assistant(Rights::assistant());
+        let mut state = State::default();
+        assert!(matches!(update(&mut state, Message::TestVoice, &data), Action::Send(Request::TestVoice)));
+        assert!(matches!(update(&mut state, Message::TestVoice, &data), Action::None), "one test at a time");
+        assert_eq!(heard_text(&state.voice), tr("Speak now, it stops at a pause"));
+        let text = Response::Transcript { text: " What is on today? ".into() };
+        assert!(answered(&mut state, &Ok(text)).is_none());
+        assert_eq!(heard_text(&state.voice), trf("Heard: “{text}”", &[("text", &"What is on today?")]));
+        let _ = update(&mut state, Message::TestVoice, &data);
+        let _ = answered(&mut state, &Ok(Response::Transcript { text: String::new() }));
+        assert_eq!(heard_text(&state.voice), tr("Nothing understood. Speak a little louder or closer."));
+        let _ = update(&mut state, Message::TestVoice, &data);
+        assert!(answered(&mut state, &Err("no recorder".into())).is_none());
+        assert_eq!(heard_text(&state.voice), tr("The test failed. Check the programs below."));
+    }
+
+    #[test]
+    fn voice_states_and_programs_read_as_words() {
+        let listening = status(VoiceState::Listening, None);
+        assert_eq!(voice_state(true, Some(&listening)), (Status::Ok, tr("Listening for “Hey Torro”").to_string()));
+        assert_eq!(voice_state(true, Some(&status(VoiceState::Recording, None))).1, tr("Recording …"));
+        assert_eq!(voice_state(true, Some(&status(VoiceState::Off, None))).0, Status::Attention);
+        let stopped = VoiceStatus { problem: Some("the listener stopped".into()), ..status(VoiceState::Off, None) };
+        assert_eq!(voice_state(true, Some(&stopped)).0, Status::Error);
+        let missing = VoiceStatus { installed: false, ..VoiceStatus::default() };
+        assert_eq!(voice_state(false, Some(&missing)).1, tr("The assistant app is not installed"));
+        assert_eq!(voice_state(false, None).1, tr("Off"));
+
+        let program = |part, missing| VoiceProgram { part, program: Some("whisper-cli".into()), missing };
+        assert_eq!(program_state(&program(VoicePart::SpeechToText, None)), (Status::Ok, "whisper-cli".to_string()));
+        assert_eq!(program_state(&program(VoicePart::SpeechToText, Some(VoiceMissing::Model))).0, Status::Error);
+        assert_eq!(program_state(&program(VoicePart::WakeWord, Some(VoiceMissing::Program))).0, Status::Attention);
+        assert_eq!(program_state(&program(VoicePart::Speech, Some(VoiceMissing::Player))).0, Status::Attention);
+        assert_eq!(part_label(VoicePart::SpeechToText), tr("Speech to text"));
+    }
+
     #[test]
     fn the_page_builds_in_every_state() {
         let mut state = State::default();
@@ -642,6 +1126,21 @@ mod tests {
         let data = with_assistant(RightsTemplate::FullAccess.rights());
         for column in [None, Some(agents::segment_slot())] {
             drop(page(&State::default(), &data, column));
+        }
+        // Voice in each of its states.
+        let mut on = data.clone();
+        voice_on(&mut on);
+        for answer in [
+            Ok(Response::Voice { voice: status(VoiceState::Listening, None) }),
+            Ok(Response::Voice { voice: VoiceStatus::default() }),
+            Ok(Response::Transcript { text: "What is on today?".into() }),
+        ] {
+            let mut state = State::default();
+            let _ = answered(&mut state, &answer);
+            for column in [None, Some(agents::segment_slot())] {
+                drop(page(&state, &on, column));
+                drop(page(&state, &data, column));
+            }
         }
     }
 }

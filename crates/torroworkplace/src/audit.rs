@@ -296,6 +296,8 @@ pub fn ids(request: &Request) -> Vec<String> {
         // engine (decision 5: the log says which engine the assistant used), never a text, a title
         // or a model's name.
         Request::ListEngines | Request::ListConversations => Vec::new(),
+        // Voice (task C.9): no ids, never what was said.
+        Request::VoiceStatus | Request::TestVoice => Vec::new(),
         Request::SendMessage { conversation, engine, .. } => {
             conversation.iter().map(|id| random("conversation", id)).chain([engine_id(engine)]).collect()
         }

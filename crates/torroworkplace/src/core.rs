@@ -33,6 +33,7 @@ use crate::account::ai::AiAccounts;
 use crate::account::github::{GithubAccounts, GithubError};
 use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
+use crate::apps::Listener;
 use crate::assistant::Assistant;
 use crate::audit::Audit;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
@@ -461,6 +462,34 @@ fn entry_conflict() -> Response {
     }
 }
 
+/// How long `torroassistant --voice-status` may take: it starts Python once to see whether
+/// openWakeWord is there.
+const VOICE_STATUS_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// How long `torroassistant --voice-test` may take: a sentence is at most 15 seconds, then speech
+/// to text.
+const VOICE_TEST_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The arguments of a voice helper `mode` of the assistant app, with the voice settings.
+fn voice_args(mode: &str, voice: &torro_core::settings::Voice) -> Vec<String> {
+    vec![mode.to_string(), "--voice".to_string(), serde_json::to_string(voice).unwrap_or_default()]
+}
+
+/// What a voice helper answered instead of what was asked, by the kind of answer only: its
+/// content (a transcript, a conversation) never goes into a message or the log.
+fn unexpected_kind(response: &Response) -> String {
+    let kind = serde_json::to_value(response)
+        .ok()
+        .and_then(|value| value.get("result").and_then(|result| result.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    format!("unexpected answer {kind:?}")
+}
+
+/// The `error` answer of a voice helper that failed.
+fn voice_failure(message: &str) -> Response {
+    Response::Error { code: "error".into(), message: format!("the voice check failed: {message}") }
+}
+
 /// How long after an approval's `expires` [`Core::approvals_changed`] wakes: the timer runs on the
 /// monotonic clock, the expiry on the wall clock, and the snapshot must find it expired.
 const EXPIRY_SLACK: std::time::Duration = std::time::Duration::from_millis(20);
@@ -496,6 +525,9 @@ pub struct Snapshot {
     /// The design pack the settings name (task L.3), so the tray icon follows it: its symbol
     /// (`logo.tray`) or the grid in its accent colour. Empty counts as the standard.
     pub design: String,
+    /// What the voice listener does (task C.9): the tray shows that it listens, and clearly when
+    /// it records, and offers to mute the microphone.
+    pub voice: torro_ipc::VoiceState,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -568,6 +600,10 @@ pub struct Core {
     /// The assistant's conversations and running answers (task C.1): the user's
     /// ([`Assistant::system`]); tests bring their own ([`Core::with_assistant`]).
     assistant: Arc<Assistant>,
+    /// The voice listener `torroassistant --listen` (task C.9), running while the setting
+    /// `voice.enabled` is on ([`Core::follow_voice`]); tests start none unless they bring a fake
+    /// ([`Core::with_listener`]).
+    voice: Listener,
 }
 
 impl Core {
@@ -602,6 +638,7 @@ impl Core {
             calendar_sign_ins: Mutex::new(()),
             torromail: if cfg!(test) { TorroMail::none() } else { TorroMail::system() },
             assistant: Arc::new(Assistant::system()),
+            voice: if cfg!(test) { Listener::none() } else { Listener::system() },
         }
     }
 
@@ -609,6 +646,13 @@ impl Core {
     #[cfg(test)]
     pub(crate) fn with_assistant(mut self, assistant: Assistant) -> Core {
         self.assistant = Arc::new(assistant);
+        self
+    }
+
+    /// The core with the voice listener `listener` instead of none, for tests.
+    #[cfg(all(test, unix))]
+    pub(crate) fn with_listener(mut self, listener: Listener) -> Core {
+        self.voice = listener;
         self
     }
 
@@ -690,6 +734,8 @@ impl Core {
     /// `PimService::start`.
     pub fn start(self: &Arc<Self>) {
         self.attach_assistant();
+        // Voice switched on before the core stopped listens again (task C.9).
+        self.follow_voice();
         let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
         let (pim, github, mail) = (Arc::clone(&self.pim), Arc::clone(&self.github), Arc::clone(&self.mail));
         tokio::spawn(async move {
@@ -892,7 +938,8 @@ impl Core {
             return Ok(refused);
         }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
-        if !rights.allows(request.operation()) {
+        // Point 6 (task C.9): switching the microphone on is a person's, also with every right.
+        if !rights.allows_request(&request) || self.switches_microphone_on(&request) {
             return Err(Refused::Forbidden { command: request.operation().name() });
         }
         // Making a task of an inbox entry writes a task too, and an operation knows one area only:
@@ -1026,7 +1073,7 @@ impl Core {
         ids.push(crate::audit::engine_id(engine));
         let client = self.assistant_client();
         let answer = match &client {
-            Some(info) if info.rights.allows(request.operation()) => {
+            Some(info) if info.rights.allows_request(&request) => {
                 self.handle_client(info.id.clone(), info.rights.clone(), request).await
             }
             _ => Err(Refused::Forbidden { command }),
@@ -1317,7 +1364,10 @@ impl Core {
             return Response::Error { code: "forbidden".into(), message };
         };
         let rights = &info.rights;
-        if !rights.allows(request.operation()) || torro_ipc::api::loops_back(&info.kind, request.operation()) {
+        if !rights.allows_request(&request)
+            || self.switches_microphone_on(&request)
+            || torro_ipc::api::loops_back(&info.kind, request.operation())
+        {
             return Refused::Forbidden { command }.response();
         }
         // An allowed question of an agent runs nothing: the answer is the approval's state, which
@@ -1526,15 +1576,22 @@ impl Core {
                     true => self.settings.update_keeping_hidden(settings),
                     false => self.settings.update(settings),
                 };
+                self.follow_voice();
                 match updated {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
                 }
             }
-            Request::SetSetting { key, value } => match self.settings.set(key, &value) {
-                Ok(()) => Response::Ok,
-                Err(message) => Response::Error { code: "error".into(), message },
-            },
+            Request::SetSetting { key, value } => {
+                let set = self.settings.set(key, &value);
+                self.follow_voice();
+                match set {
+                    Ok(()) => Response::Ok,
+                    Err(message) => Response::Error { code: "error".into(), message },
+                }
+            }
+            Request::VoiceStatus => self.voice_status().await,
+            Request::TestVoice => self.test_voice().await,
             Request::SetCollectionShown { collection, shown } => self.set_collection_shown(&collection, shown).await,
             Request::ListDesigns => Response::Designs { designs: self.list_designs() },
             Request::Accounts => Response::Accounts { accounts: self.accounts_within(reach).await },
@@ -2767,6 +2824,7 @@ impl Core {
         }
         snapshot.account = Some(self.pim.account_state().await);
         snapshot.design = self.settings.current().design;
+        snapshot.voice = self.voice.state();
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
         let for_me = self.inbox.for_me(Utc::now(), TRAY_NEWEST).unwrap_or_default();
         snapshot.inbox_for_me = for_me.open;
@@ -2810,6 +2868,61 @@ impl Core {
         tokio::select! {
             changed = changes.changed() => changed.is_ok(),
             () = expired => true,
+        }
+    }
+
+    /// Starts or stops the voice listener as the setting `voice.enabled` says now (task C.9).
+    fn follow_voice(&self) {
+        self.voice.follow(self.settings.current().voice.enabled);
+    }
+
+    /// Wakes whenever what the voice listener does may have changed, for the tray.
+    pub fn voice_changes(&self) -> tokio::sync::watch::Receiver<()> {
+        self.voice.changes()
+    }
+
+    /// Whether `request` from a client switches the microphone on through the whole settings
+    /// (`settings.update_settings` with voice on while it is off): point 6, refused like
+    /// `settings.set_setting voice_enabled true` ([`torro_ipc::api::Rights::allows_request`]),
+    /// which carries the value itself.
+    fn switches_microphone_on(&self, request: &Request) -> bool {
+        matches!(request, Request::UpdateSettings { settings } if settings.voice.enabled)
+            && !self.settings.current().voice.enabled
+    }
+
+    /// `settings.voice_status` (task C.9): what the listener does, and what the assistant app
+    /// finds of the programs it needs (`torroassistant --voice-status`). Without the app only that
+    /// it is missing.
+    async fn voice_status(&self) -> Response {
+        let voice = self.settings.current().voice;
+        let mut status = match self.voice.program() {
+            None => torro_ipc::VoiceStatus::default(),
+            Some(_) => match self.voice.ask(&voice_args("--voice-status", &voice), VOICE_STATUS_WAIT).await {
+                Ok(Response::Voice { voice }) => voice,
+                Ok(other) => return voice_failure(&unexpected_kind(&other)),
+                Err(message) => return voice_failure(&message),
+            },
+        };
+        status.installed = self.voice.program().is_some();
+        status.listener = self.voice.state();
+        status.problem = self.voice.problem().filter(|_| voice.enabled);
+        Response::Voice { voice: status }
+    }
+
+    /// `settings.test_voice` (task C.9, app key only): one sentence from the microphone as text,
+    /// recorded by `torroassistant --voice-test`.
+    async fn test_voice(&self) -> Response {
+        if self.voice.program().is_none() {
+            return Response::Error {
+                code: "unsupported".into(),
+                message: format!("{} is not installed", AppId::ASSISTANT.binary),
+            };
+        }
+        let voice = self.settings.current().voice;
+        match self.voice.ask(&voice_args("--voice-test", &voice), VOICE_TEST_WAIT).await {
+            Ok(answer @ (Response::Transcript { .. } | Response::Error { .. })) => answer,
+            Ok(other) => voice_failure(&unexpected_kind(&other)),
+            Err(message) => voice_failure(&message),
         }
     }
 
@@ -3568,6 +3681,99 @@ mod tests {
         let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(settings(&core).await.start_at_login, "runs once a person allows it");
+    }
+
+    /// Task C.9, point 6 of "Was nie nach außen geht": no client switches the microphone on, not
+    /// with every right and the admin switch of every area, neither one setting at a time nor with
+    /// the whole settings; switching it off is an admin change like any other, after approval.
+    /// Only the app key switches it on.
+    #[tokio::test]
+    async fn only_people_switch_the_microphone_on_and_agents_may_switch_it_off() {
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let voice = |on: bool| Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::json!(on) };
+
+        assert_eq!(code(&ask(&core, Some(&key), voice(true)).await), "forbidden");
+        let mut whole = settings(&core).await;
+        whole.voice.enabled = true;
+        assert_eq!(
+            code(&ask(&core, Some(&key), Request::UpdateSettings { settings: whole.clone() }).await),
+            "forbidden"
+        );
+        assert_eq!(code(&ask(&core, Some(&key), Request::TestVoice).await), "forbidden", "the test opens it too");
+        assert!(!settings(&core).await.voice.enabled, "still off");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        // The person switches it on; the listener would start (none is installed in tests).
+        assert_eq!(ask(&core, Some(&app_key), voice(true)).await, Response::Ok);
+        assert!(settings(&core).await.voice.enabled);
+        // With voice on, the whole settings as read are no switching on.
+        let asked = waits(ask(&core, Some(&key), Request::UpdateSettings { settings: whole }).await);
+        assert_eq!(asked.command, "settings.update_settings");
+
+        // Off: an admin change of settings, so it waits for the person.
+        let asked = waits(ask(&core, Some(&key), voice(false)).await);
+        assert_eq!(asked.command, "settings.set_setting");
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert!(!settings(&core).await.voice.enabled, "off once the person allowed it");
+    }
+
+    /// Task C.9: the voice status and test come from the assistant app; without it the status says
+    /// it is missing and the test is `unsupported`. Reading the status is open to a client with
+    /// read access to the settings.
+    #[tokio::test]
+    async fn voice_status_without_the_assistant_app_says_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let Response::Voice { voice } = core.handle(Request::VoiceStatus).await else { panic!("a voice status") };
+        assert!(!voice.installed && voice.programs.is_empty());
+        assert_eq!(voice.listener, torro_ipc::VoiceState::Off);
+        assert_eq!(code(&core.handle(Request::TestVoice).await), "unsupported");
+
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        rights.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: false });
+        let (_, key) = client(&core, rights).await;
+        assert!(matches!(ask(&core, Some(&key), Request::VoiceStatus).await, Response::Voice { .. }));
+    }
+
+    /// Task C.9: with the app (a fake one that answers like `torroassistant`), the status and the
+    /// test are its answers, and switching voice on starts the listener, off stops it.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn voice_runs_through_the_assistant_app() {
+        use torro_ipc::{SettingKey, VoiceState};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let status = serde_json::to_string(&Response::Voice {
+            voice: torro_ipc::VoiceStatus { installed: true, microphones: vec!["usb".into()], ..Default::default() },
+        })
+        .expect("json");
+        let heard = serde_json::to_string(&Response::Transcript { text: "What is on today?".into() }).expect("json");
+        let body = format!(
+            "case \"$1\" in\n  --voice-status) echo '{status}' ;;\n  --voice-test) echo '{heard}' ;;\n  --listen) echo '\"listening\"'; sleep 30 ;;\nesac"
+        );
+        let program = crate::apps::tests::fake_program(dir.path(), &body);
+        let core = core(dir.path()).with_listener(crate::apps::Listener::at(program));
+
+        let Response::Voice { voice } = core.handle(Request::VoiceStatus).await else { panic!("a voice status") };
+        assert!(voice.installed);
+        assert_eq!(voice.microphones, ["usb"]);
+        assert_eq!(core.handle(Request::TestVoice).await, Response::Transcript { text: "What is on today?".into() });
+
+        let mut changes = core.voice_changes();
+        let set = |on: bool| Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::json!(on) };
+        assert_eq!(core.handle(set(true)).await, Response::Ok);
+        crate::apps::tests::until(&core.voice, &mut changes, VoiceState::Listening).await;
+        assert_eq!(core.snapshot().await.voice, VoiceState::Listening, "the tray shows it");
+        assert_eq!(core.handle(set(false)).await, Response::Ok);
+        assert_eq!(core.voice.state(), VoiceState::Off, "stopped at once");
     }
 
     #[tokio::test]

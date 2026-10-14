@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use torro_core::design;
-use torro_core::settings::{self, Language, ListOrderEntry, Night, Retention, Settings, Zoom};
+use torro_core::settings::{self, Language, ListOrderEntry, Night, Retention, Settings, Voice, Zoom};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
@@ -101,11 +101,18 @@ impl SettingsStore {
     /// meanwhile is not shown again. For clients, which never see the hidden collections nor the
     /// orders of lists outside their selection, and so cannot send them back; they change those
     /// with `set_collection_shown` and `set_setting`.
+    ///
+    /// Nor does a client switch the microphone on (point 6 of "Was nie nach außen geht",
+    /// task C.9): voice stays off when it is off as stored now, whatever `new` says. The core
+    /// refuses such a request before (`forbidden`); this keeps it so when a person switched voice
+    /// off between that check and the write.
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
             let list_orders = std::mem::take(&mut settings.list_orders);
-            *settings = Settings { hidden_collections: hidden, list_orders, ..new };
+            let enabled = settings.voice.enabled && new.voice.enabled;
+            let voice = Voice { enabled, ..new.voice.clone() };
+            *settings = Settings { hidden_collections: hidden, list_orders, voice, ..new };
         })
     }
 
@@ -247,6 +254,14 @@ enum Change {
     Design(String),
     /// How long the assistant keeps conversations (task C.1).
     AssistantRetention(Retention),
+    /// Voice on or off (task C.9). Who may switch it on is the core's check
+    /// (`Request::kept_for_people`).
+    VoiceEnabled(bool),
+    WakeWord(String),
+    Microphone(Option<String>),
+    SpeakAnswers(bool),
+    SttModel(Option<String>),
+    Voice(Option<String>),
 }
 
 impl Change {
@@ -272,6 +287,12 @@ impl Change {
             SettingKey::Design => Change::Design(serde_json::from_value(value.clone()).map_err(invalid)?),
             // Strict, like the night: the file's reading falls back to 30 days instead.
             SettingKey::AssistantRetention => Change::AssistantRetention(Retention::from_value(value)?),
+            SettingKey::VoiceEnabled => Change::VoiceEnabled(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::WakeWord => Change::WakeWord(Voice::wake_word_from(value)?),
+            SettingKey::Microphone => Change::Microphone(Voice::microphone_from(value)?),
+            SettingKey::SpeakAnswers => Change::SpeakAnswers(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::SttModel => Change::SttModel(Voice::file_from(value, "bin")?),
+            SettingKey::Voice => Change::Voice(Voice::file_from(value, "onnx")?),
         })
     }
 
@@ -287,6 +308,12 @@ impl Change {
             Change::QuietWhenBusy(quiet) => settings.quiet_when_busy = quiet,
             Change::Design(id) => settings.design = id,
             Change::AssistantRetention(retention) => settings.assistant_retention = retention,
+            Change::VoiceEnabled(enabled) => settings.voice.enabled = enabled,
+            Change::WakeWord(phrase) => settings.voice.wake_word = phrase,
+            Change::Microphone(name) => settings.voice.microphone = name,
+            Change::SpeakAnswers(speak) => settings.voice.speak_answers = speak,
+            Change::SttModel(path) => settings.voice.stt_model = path,
+            Change::Voice(path) => settings.voice.voice = path,
         }
     }
 }
@@ -905,10 +932,62 @@ mod tests {
                 quiet_when_busy: false,
                 design: "plex".into(),
                 assistant_retention: Retention::Forever,
+                voice: Voice::default(),
             }
         );
         assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
         assert!(Change::parse(SettingKey::AssistantRetention, &json!(0)).is_err(), "at least a day");
+    }
+
+    /// Task C.9: the voice settings are set one by one and checked; a client's whole settings
+    /// never switch the microphone on, but may switch it off.
+    #[test]
+    fn voice_settings_are_set_and_a_client_never_switches_the_microphone_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        let model = if cfg!(windows) { r"C:\voice\ggml-base.bin" } else { "/voice/ggml-base.bin" };
+        for (key, value) in [
+            (SettingKey::WakeWord, json!("Hey Torro")),
+            (SettingKey::Microphone, json!("alsa_input.usb")),
+            (SettingKey::SpeakAnswers, json!(false)),
+            (SettingKey::SttModel, json!(model)),
+        ] {
+            store.set(key, &value).expect("a valid value");
+        }
+        let voice = store.current().voice;
+        assert_eq!(
+            voice,
+            Voice {
+                microphone: Some("alsa_input.usb".into()),
+                speak_answers: false,
+                stt_model: Some(model.into()),
+                ..Voice::default()
+            }
+        );
+        for (key, value) in [
+            (SettingKey::WakeWord, json!("ok computer")),
+            (SettingKey::Microphone, json!("--help")),
+            (SettingKey::SttModel, json!("ggml-base.bin")),
+            (SettingKey::Voice, json!("/voices/thorsten.bin")),
+            (SettingKey::VoiceEnabled, json!("yes")),
+        ] {
+            assert!(store.set(key, &value).is_err(), "{key:?} {value}");
+        }
+        store.set(SettingKey::Microphone, &json!(null)).expect("back to the default");
+        assert_eq!(store.current().voice.microphone, None);
+
+        // A client sends the settings with voice on: it stays off.
+        let mut sent = store.current();
+        sent.voice.enabled = true;
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert!(!store.current().voice.enabled);
+        // Switched on by a person, a client may switch it off.
+        store.set(SettingKey::VoiceEnabled, &json!(true)).expect("the person");
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert!(store.current().voice.enabled, "on stays on");
+        sent.voice.enabled = false;
+        store.update_keeping_hidden(sent).expect("written");
+        assert!(!store.current().voice.enabled);
     }
 
     #[test]

@@ -57,8 +57,9 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation, JsonObject, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams, GetPromptResponse,
+    GetPromptResult, Implementation, JsonObject, ListPromptsResult, ListToolsResult, PaginatedRequestParams, Prompt,
+    PromptMessage, Role, ServerCapabilities, ServerConfig, Tool, ToolAnnotations,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
@@ -347,10 +348,26 @@ impl TorroMcp {
     }
 }
 
+/// The skill "Torro Workplace" for agents other than the assistant: the MCP prompt
+/// [`PROMPT_NAME`] and the Claude Code skill file of the connect wizard (task C.8). It is the
+/// very text the assistant's own prompt starts its rules with.
+pub fn agent_skill() -> &'static str {
+    crate::assistant::skill().trim_end()
+}
+
+/// The name of the MCP prompt that carries [`agent_skill`] (`prompts/list`, `prompts/get`).
+pub const PROMPT_NAME: &str = "torro_workplace";
+const PROMPT_DESCRIPTION: &str = "How to work with Torro Workplace: what the suite is, how its tools fit \
+    together, and how to treat the person's data.";
+
+fn skill_prompt() -> Prompt {
+    Prompt::from_raw(PROMPT_NAME, Some(PROMPT_DESCRIPTION), None)
+}
+
 impl ServerHandler for TorroMcp {
     fn get_info(&self) -> ServerConfig {
-        let mut config =
-            ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(INSTRUCTIONS);
+        let mut config = ServerConfig::new(ServerCapabilities::builder().enable_tools().enable_prompts().build())
+            .with_instructions(INSTRUCTIONS);
         config.server_info =
             Implementation::new("torroworkplace", env!("CARGO_PKG_VERSION")).with_title("Torro Workplace");
         config
@@ -371,6 +388,26 @@ impl ServerHandler for TorroMcp {
     ) -> Result<CallToolResponse, McpError> {
         let result = self.call(&request.name, request.arguments.unwrap_or_default()).await?;
         Ok(result.into())
+    }
+
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, McpError> {
+        Ok(ListPromptsResult::with_all_items(vec![skill_prompt()]))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, McpError> {
+        if request.name != PROMPT_NAME {
+            return Err(McpError::invalid_params(format!("there is no prompt named {}", request.name), None));
+        }
+        let message = PromptMessage::new_text(Role::User, agent_skill());
+        Ok(GetPromptResult::new(vec![message]).with_description(PROMPT_DESCRIPTION).into())
     }
 }
 
@@ -2106,6 +2143,7 @@ mod tests {
                     .await;
                 assert_eq!(init["result"]["serverInfo"]["name"], "torroworkplace", "{init}");
                 assert!(init["result"]["capabilities"].get("tools").is_some(), "{init}");
+                assert!(init["result"]["capabilities"].get("prompts").is_some(), "{init}");
                 session.send(json!({"jsonrpc": "2.0", "method": "notifications/initialized"})).await;
                 session
             }
@@ -2400,6 +2438,29 @@ mod tests {
             let offline = session.call("system_ping", json!({})).await;
             assert_eq!(offline["isError"], true, "{offline}");
             assert_eq!(offline["structuredContent"]["message"], NO_DESKTOP);
+        }
+
+        #[tokio::test]
+        async fn the_skill_comes_over_mcp_as_a_prompt_without_arguments() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let mut session = Session::start(TorroMcp::new(dir.path().join("core.sock"), None, false)).await;
+
+            let listed = session.request("prompts/list", json!({})).await;
+            let prompts = listed["result"]["prompts"].as_array().unwrap_or_else(|| panic!("prompts: {listed}"));
+            let prompt = prompts
+                .iter()
+                .find(|prompt| prompt["name"] == PROMPT_NAME)
+                .unwrap_or_else(|| panic!("{PROMPT_NAME} is listed: {listed}"));
+            assert_eq!(prompt["description"], PROMPT_DESCRIPTION, "{listed}");
+            assert!(prompt.get("arguments").is_none(), "the prompt takes no arguments: {listed}");
+
+            let got = session.request("prompts/get", json!({"name": PROMPT_NAME})).await;
+            let text = got["result"]["messages"][0]["content"]["text"].as_str().unwrap_or_else(|| panic!("{got}"));
+            assert_eq!(text, agent_skill(), "the fixed skill text, unchanged");
+            assert!(text.starts_with("# Torro Workplace"), "{text}");
+
+            let unknown = session.request("prompts/get", json!({"name": "no_such_prompt"})).await;
+            assert!(unknown.get("error").is_some(), "an unknown prompt is a protocol error: {unknown}");
         }
     }
 }

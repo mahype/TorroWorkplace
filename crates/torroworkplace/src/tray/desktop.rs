@@ -177,8 +177,9 @@ struct App {
     handle: Handle,
     daemon: Option<Arc<Daemon>>,
     tray: Option<TrayIcon>,
-    /// The design pack the icon shows (`Snapshot::design`); `None` until the icon exists.
-    design: Option<String>,
+    /// The design pack and voice mark the icon shows (`Snapshot::design`, `Snapshot::voice`);
+    /// `None` until the icon exists.
+    design: Option<(String, icon::Mark)>,
     /// The actions of the current menu; an entry's id holds its index here.
     actions: Vec<Action>,
     /// Counts the menus built so far. Ids carry it, so a click that arrives from a menu already
@@ -198,19 +199,20 @@ impl App {
             }
         };
         self.actions = actions;
-        let tooltip = tooltip(Waiting::of(snapshot));
+        let tooltip = tooltip(snapshot);
+        let look = (snapshot.design.clone(), icon::Mark::of(snapshot.voice));
         match &self.tray {
             Some(tray) => {
                 tray.set_menu(Some(Box::new(native)));
                 if let Err(err) = tray.set_tooltip(Some(&tooltip)) {
                     eprintln!("torroworkplace: cannot update the tray tooltip: {err}");
                 }
-                self.follow_design(&snapshot.design);
+                self.follow_design(look);
             }
-            None => match new_tray(native, &tooltip, &icon::Look::for_design(&snapshot.design)) {
+            None => match new_tray(native, &tooltip, &icon::Look::for_design(&look.0).marked(look.1)) {
                 Ok(tray) => {
                     self.tray = Some(tray);
-                    self.design = Some(snapshot.design.clone());
+                    self.design = Some(look);
                     // macOS draws a new status item only on the next pass of the run loop; a
                     // second event makes sure that pass comes now and not with the next click.
                     self.handle.send(Event::Wake);
@@ -221,24 +223,25 @@ impl App {
         }
     }
 
-    /// Draws the icon again when the snapshot names another design pack than the one it shows.
-    /// A failure keeps the old image and is tried again with the next snapshot.
-    fn follow_design(&mut self, design: &str) {
+    /// Draws the icon again when the snapshot names another design pack or voice mark than the
+    /// icon shows. A failure keeps the old image and is tried again with the next snapshot.
+    fn follow_design(&mut self, look: (String, icon::Mark)) {
         let Some(tray) = &self.tray else { return };
-        if self.design.as_deref() == Some(design) {
+        if self.design.as_ref() == Some(&look) {
             return;
         }
-        let image = match Icon::from_rgba(icon_image(&icon::Look::for_design(design)), ICON_SIDE, ICON_SIDE) {
-            Ok(image) => image,
-            Err(err) => return eprintln!("torroworkplace: {}", TrayError::Icon(err)),
-        };
+        let image =
+            match Icon::from_rgba(icon_image(&icon::Look::for_design(&look.0).marked(look.1)), ICON_SIDE, ICON_SIDE) {
+                Ok(image) => image,
+                Err(err) => return eprintln!("torroworkplace: {}", TrayError::Icon(err)),
+            };
         // macOS keeps it a template, so the menu bar tints it for light and dark.
         #[cfg(target_os = "macos")]
         let set = tray.set_icon_templated(Some(image));
         #[cfg(windows)]
         let set = tray.set_icon(Some(image));
         match set {
-            Ok(()) => self.design = Some(design.to_string()),
+            Ok(()) => self.design = Some(look),
             Err(err) => eprintln!("torroworkplace: cannot change the tray icon: {err}"),
         }
     }
@@ -271,13 +274,14 @@ impl ApplicationHandler<Event> for App {
     }
 }
 
-/// The tooltip of the icon: the name and, when something waits, how much
-/// ([`menu::waiting_line`]); never a title.
-fn tooltip(waiting: Waiting) -> String {
-    match menu::waiting_line(waiting) {
-        line if line.is_empty() => APP_NAME.to_string(),
-        line => format!("{APP_NAME} · {line}"),
-    }
+/// The tooltip of the icon: the name, what the voice listener does ([`menu::voice_line`]) and,
+/// when something waits, how much ([`menu::waiting_line`]); never a title.
+fn tooltip(snapshot: &Snapshot) -> String {
+    let lines = [menu::voice_line(snapshot.voice).to_string(), menu::waiting_line(Waiting::of(snapshot))];
+    std::iter::once(APP_NAME.to_string())
+        .chain(lines.into_iter().filter(|line| !line.is_empty()))
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// The name of the icon, as the notifications name the sender.
@@ -389,9 +393,13 @@ mod tests {
 
     #[test]
     fn the_tooltip_counts_what_waits() {
-        assert_eq!(tooltip(Waiting::default()), "Torro Workplace");
-        let waiting = Waiting { for_me: 3, urgent: 0 };
-        assert_eq!(tooltip(waiting), format!("Torro Workplace · {}", menu::waiting_line(waiting)));
+        assert_eq!(tooltip(&Snapshot::default()), "Torro Workplace");
+        let waiting = Snapshot { inbox_for_me: 3, ..Snapshot::default() };
+        let line = menu::waiting_line(Waiting::of(&waiting));
+        assert_eq!(tooltip(&waiting), format!("Torro Workplace · {line}"));
+        let listening = Snapshot { voice: torro_ipc::VoiceState::Listening, ..waiting };
+        let voice = menu::voice_line(torro_ipc::VoiceState::Listening);
+        assert_eq!(tooltip(&listening), format!("Torro Workplace · {voice} · {line}"));
     }
 
     #[test]

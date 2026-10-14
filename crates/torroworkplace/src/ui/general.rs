@@ -607,6 +607,7 @@ mod tests {
                 quiet_when_busy: false,
                 design: "plex".into(),
                 assistant_retention: Default::default(),
+                voice: Default::default(),
             },
             ..Data::default()
         };

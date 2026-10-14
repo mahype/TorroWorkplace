@@ -11,6 +11,10 @@
 //! `torro-assistant-chat`), which `assistant.open_window` starts and a workspace template brings
 //! back with its argument. `--bot <id>` is for stage 2 and refused until then. The start
 //! parameters are [`launch::Launch`]'s.
+//!
+//! Without a window: `--listen` waits for the wake word and talks with the assistant by voice
+//! (task C.9); `--voice-status` and `--voice-test` answer the core's `settings.voice_status` and
+//! `settings.test_voice` ([`voice::cli`]).
 
 mod app;
 mod backend;
@@ -18,6 +22,7 @@ mod chat;
 mod demo;
 mod launch;
 mod view;
+mod voice;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -33,6 +38,15 @@ fn main() -> ExitCode {
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{} {}", MAIN.binary, env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
+    }
+    // The voice modes run without a window (task C.9).
+    match voice::cli::Mode::parse(&args) {
+        Ok(Some(mode)) => return mode.run(),
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("{}: {err}", MAIN.binary);
+            return ExitCode::from(64);
+        }
     }
     // Refuse bad parameters before anything starts (the core, a window).
     let launch = match Launch::parse(&args) {

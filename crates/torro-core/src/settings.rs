@@ -73,6 +73,10 @@ pub struct Settings {
     /// `docs/assistent.md`): 30 days unless changed, or forever. Pinned conversations stay anyway.
     #[serde(default)]
     pub assistant_retention: Retention,
+    /// Talking to the assistant by voice (task C.9, `docs/assistent.md`, "Sprache"): off unless a
+    /// person switches it on in the control centre ([`Voice`]).
+    #[serde(default)]
+    pub voice: Voice,
 }
 
 /// The id of the standard design, for settings from before design packs.
@@ -98,6 +102,7 @@ impl Default for Settings {
             quiet_when_busy: on(),
             design: standard_design(),
             assistant_retention: Retention::default(),
+            voice: Voice::default(),
         }
     }
 }
@@ -338,6 +343,121 @@ impl JsonSchema for Retention {
             "description": "How many days the assistant keeps a conversation after its last entry, or \"forever\". \
                             Pinned conversations are always kept."
         })
+    }
+}
+
+/// The wake word while it cannot be chosen yet (decision 11 in `docs/assistent.md`).
+pub const WAKE_WORD: &str = "hey torro";
+
+/// Talking to the assistant by voice (task C.9): the listener `torroassistant --listen` waits for
+/// the wake word, records what follows, turns it into text and sends it to the assistant; the
+/// answer is shown and, if wanted, spoken. Everything runs on this computer with programs the
+/// person installed (openWakeWord, whisper.cpp, Piper).
+///
+/// Switching it on is a person's switch (point 6 of "Was nie nach außen geht" in `docs/api.md`):
+/// only the app key may set [`Voice::enabled`] to `true`; anyone allowed to change settings may
+/// switch it off. A file without the entry, or one that does not read, leaves it off.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct Voice {
+    /// The listener runs: the microphone is open for the wake word. Off unless switched on.
+    #[serde(default)]
+    pub enabled: bool,
+    /// The phrase that wakes the assistant; fixed to [`WAKE_WORD`] for now.
+    #[serde(default = "wake_word")]
+    pub wake_word: String,
+    /// The microphone by the name the recording program knows it (`pactl list sources`); `None`
+    /// for the system's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub microphone: Option<String>,
+    /// Speak the answers with Piper as well as showing them. On unless turned off.
+    #[serde(default = "on")]
+    pub speak_answers: bool,
+    /// The whisper.cpp model file (`ggml-base.bin`), an absolute path; `None` for the first
+    /// model found in the voice folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stt_model: Option<String>,
+    /// The Piper voice (`de_DE-thorsten-medium.onnx`, its `.onnx.json` next to it), an absolute
+    /// path; `None` for the first voice found in the voice folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
+}
+
+fn wake_word() -> String {
+    WAKE_WORD.to_string()
+}
+
+impl Default for Voice {
+    fn default() -> Voice {
+        Voice {
+            enabled: false,
+            wake_word: wake_word(),
+            microphone: None,
+            speak_answers: on(),
+            stt_model: None,
+            voice: None,
+        }
+    }
+}
+
+/// The longest microphone name `settings.set_setting` takes, in characters.
+const MAX_MICROPHONE_CHARS: usize = 200;
+
+/// The longest model or voice path `settings.set_setting` takes, in bytes.
+const MAX_PATH_BYTES: usize = 4096;
+
+impl Voice {
+    /// The wake word in `value`: [`WAKE_WORD`] in any case and spacing; anything else is refused
+    /// until the wake word can be chosen (decision 11). For `settings.set_setting`.
+    pub fn wake_word_from(value: &serde_json::Value) -> Result<String, String> {
+        let words = value.as_str().map(|text| text.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase());
+        match words.as_deref() {
+            Some(WAKE_WORD) => Ok(WAKE_WORD.to_string()),
+            _ => Err(format!("{value} is not a wake word: only \"{WAKE_WORD}\" can be used for now")),
+        }
+    }
+
+    /// The microphone in `value`: a name, or `null`, `""` or `"default"` for the system's default.
+    /// A name is one line of at most 200 characters and does not start with `-`, so a recording
+    /// program never reads it as an option. For `settings.set_setting`.
+    pub fn microphone_from(value: &serde_json::Value) -> Result<Option<String>, String> {
+        let refused = || {
+            format!(
+                "{value} is not a microphone: send its name (one line, at most {MAX_MICROPHONE_CHARS} characters) or null"
+            )
+        };
+        let name = match value {
+            serde_json::Value::Null => return Ok(None),
+            serde_json::Value::String(name) => name.trim(),
+            _ => return Err(refused()),
+        };
+        if name.is_empty() || name == "default" {
+            return Ok(None);
+        }
+        let fits = name.chars().count() <= MAX_MICROPHONE_CHARS
+            && !name.starts_with('-')
+            && !name.chars().any(char::is_control);
+        fits.then(|| Some(name.to_string())).ok_or_else(refused)
+    }
+
+    /// A model or voice file in `value`: an absolute path ending in `.{extension}`, or `null` or
+    /// `""` for the first one found in the voice folder. Whether the file exists is the
+    /// listener's check: it may be on a drive that is not mounted yet. For `settings.set_setting`.
+    pub fn file_from(value: &serde_json::Value, extension: &str) -> Result<Option<String>, String> {
+        let refused = || format!("{value} is not a .{extension} file: send an absolute path or null");
+        let path = match value {
+            serde_json::Value::Null => return Ok(None),
+            serde_json::Value::String(path) => path.trim(),
+            _ => return Err(refused()),
+        };
+        if path.is_empty() {
+            return Ok(None);
+        }
+        let fits = path.len() <= MAX_PATH_BYTES
+            && !path.chars().any(char::is_control)
+            && Path::new(path).is_absolute()
+            && Path::new(path).extension().is_some_and(|found| found.eq_ignore_ascii_case(extension));
+        fits.then(|| Some(path.to_string())).ok_or_else(refused)
     }
 }
 
@@ -604,6 +724,37 @@ mod tests {
         assert_eq!(edited.assistant_retention, Retention::Forever);
     }
 
+    /// Task C.9: voice is off unless switched on, answers are spoken unless turned off, and the
+    /// values from outside are checked.
+    #[test]
+    fn voice_is_off_and_checked_from_outside() {
+        use serde_json::json;
+        let old: Settings = serde_json::from_str("{}").expect("a file from before voice");
+        assert_eq!(old.voice, Voice::default());
+        assert!(!old.voice.enabled && old.voice.speak_answers);
+        assert_eq!(old.voice.wake_word, WAKE_WORD);
+        let partial: Settings = serde_json::from_str(r#"{"voice": {"enabled": true}}"#).expect("reads");
+        assert!(partial.voice.enabled && partial.voice.speak_answers);
+
+        assert_eq!(Voice::wake_word_from(&json!("Hey  Torro")), Ok(WAKE_WORD.to_string()));
+        assert!(Voice::wake_word_from(&json!("hey jarvis")).is_err(), "fixed for now");
+        assert!(Voice::wake_word_from(&json!(true)).is_err());
+
+        assert_eq!(Voice::microphone_from(&json!(null)), Ok(None));
+        assert_eq!(Voice::microphone_from(&json!("default")), Ok(None));
+        assert_eq!(Voice::microphone_from(&json!(" USB mic ")), Ok(Some("USB mic".into())));
+        for refused in [json!("-D hw:0"), json!("two\nlines"), json!(7), json!("m".repeat(201))] {
+            assert!(Voice::microphone_from(&refused).is_err(), "{refused}");
+        }
+
+        let model = if cfg!(windows) { r"C:\models\ggml-base.bin" } else { "/models/ggml-base.bin" };
+        assert_eq!(Voice::file_from(&json!(model), "bin"), Ok(Some(model.into())));
+        assert_eq!(Voice::file_from(&json!(""), "bin"), Ok(None));
+        for refused in [json!("ggml-base.bin"), json!("/models/ggml-base.onnx"), json!(1)] {
+            assert!(Voice::file_from(&refused, "bin").is_err(), "{refused}");
+        }
+    }
+
     #[test]
     fn missing_file_loads_defaults() {
         let dir = TempDir::new("missing");
@@ -638,6 +789,7 @@ mod tests {
             quiet_when_busy: true,
             design: "torro".into(),
             assistant_retention: Retention::DEFAULT,
+            voice: Voice::default(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -709,6 +861,14 @@ mod tests {
             quiet_when_busy: false,
             design: "plex".into(),
             assistant_retention: Retention::Days(90),
+            voice: Voice {
+                enabled: true,
+                microphone: Some("alsa_input.usb-Rode".into()),
+                speak_answers: false,
+                stt_model: Some("/models/ggml-base.bin".into()),
+                voice: Some("/voices/de_DE-thorsten-medium.onnx".into()),
+                ..Voice::default()
+            },
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

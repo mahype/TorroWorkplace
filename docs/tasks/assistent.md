@@ -131,21 +131,32 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** Tests mit einem Fake-Programm, das den Stream nachspielt; kein Test braucht einen echten Agenten.
 
 ### C.8 Skill-Datei und MCP-Prompt für fremde Agenten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** C.3 (Text) · **Dateien:** `crates/torroworkplace/src/{mcp,client_setup}.rs`
 - Der feste Teil aus C.3 als MCP-Prompt `torro_workplace`; „Connect agent“ legt ihn für Claude Code zusätzlich als
   Skill ab (zusammengeführt, wie die übrigen Einträge, und beim Trennen wieder entfernt).
 - **Abnahme:** Test, dass der Prompt über MCP kommt; Setup-Test mit Temp-Home.
 
 ### C.9 Sprache: Weckwort, Spracherkennung, Sprachausgabe (lokal)
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** C.4 · **Dateien:** `crates/torroassistant/src/voice/**`, `crates/torro-ipc/src/api.rs`
-  (Regel Mikrofon), `docs/api.md`, `Cargo.toml` (Wurzel: Audio, openWakeWord, whisper.cpp, Piper)
+- [x] erledigt (Weckwort, Aufnahme, Spracherkennung und Sprachausgabe als **externe lokale Programme**, zur Laufzeit
+  gesucht: openWakeWord mit `hey_torro.onnx`, sonst Weckwort über whisper.cpp; `parec`/`arecord`/SoX/`ffmpeg`;
+  `whisper-cli`; Piper mit `paplay`/`afplay`/PowerShell – keine neuen Systembibliotheken, nichts wird geladen.
+  Neu: `settings.voice_status` (Read, MCP) und `settings.test_voice` (Admin, Never, Punkt 6); Einschalten nur per
+  App-Schlüssel über `Rights::allows_request`. Globales Kürzel fehlt (bräuchte nativen Code); Stummschalten im Tray.)
+- **Modell:** Opus · **Braucht:** C.4 · **Dateien:** `crates/torroassistant/**` (`src/voice/**`, `--listen`,
+  `--voice-status`, `--voice-test`, `tests/fixtures/*.wav`), `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torro-core/src/settings.rs` (`Settings::voice`), `crates/torroworkplace/src/{apps,core,settings_service}.rs`,
+  `crates/torroworkplace/src/tray/**`, `crates/torroworkplace/src/ui/assistant.rs`, `docs/api.md`; nachgetragen
+  (zwingend mechanisch): `crates/torroworkplace/src/{daemon,audit,pim}.rs` (`match`-Zweige, Tray folgt dem Lauschen),
+  `crates/torroworkplace/src/ui/{launch,general}.rs` (Demo-Antworten, Testdaten)
 - `torroassistant --listen`: Weckwort lokal, Aufnahme, Spracherkennung lokal, `assistant.send_message`, Antwort per
   Piper und Schnellfenster. Standard aus; Tray zeigt Lauschen und Aufnahme; Kürzel zum Stummschalten.
-- **Oberfläche:** Steuerzentrale › Assistant › Voice, Tray · **API:** `settings.set_setting` (gibt es) ·
-  **MCP:** Mikrofon einschalten **Never** (Punkt 6 in „Was nie nach außen geht“), Weckwort zunächst fest
-  „Hey Torro“ (eigenes Wort später), Stimme und Weckwort über `settings_set_setting`
+- **Oberfläche:** Steuerzentrale › Assistant › Voice, Tray · **API:** `settings.set_setting` (gibt es; neue Schlüssel
+  `voice_enabled`, `wake_word`, `microphone`, `speak_answers`, `stt_model`, `voice`) ·
+  `Request::VoiceStatus` · `settings.voice_status` · Read · `Request::TestVoice` · `settings.test_voice` · Admin
+- **MCP:** Mikrofon einschalten **Never** (Punkt 6 in „Was nie nach außen geht“; `voice_enabled: true` wird nach Wert
+  abgelehnt), `settings_test_voice` **Never** (Punkt 6), `settings_voice_status`; Weckwort zunächst fest „Hey Torro“
+  (eigenes Wort später), Stimme und Weckwort über `settings_set_setting`
 - **Abnahme:** Tests mit Audiodateien unter `tests/fixtures/` (Weckwort erkannt / nicht erkannt, Text erkannt);
   kein Test braucht ein Mikrofon; Freigaben lassen sich nicht per Sprache erteilen.
 
