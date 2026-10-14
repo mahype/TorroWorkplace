@@ -1,0 +1,418 @@
+<!doctype html>
+<html lang="en">
+<!-- Entwurf: Karten im Chat des Assistenten (Termin, Aufgabe, Mail-Entwurf), siehe docs/assistent.md
+     „Karten im Chat“. Dunkel ist Standard; ?theme=light schaltet hell, ?size=s|m|l erzwingt eine
+     Größenklasse. Tokens und Bausteine aus ../linear/torro.css. -->
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat cards</title>
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--attention:#E8A33D;--ok:#3FB984;--error:#F2555A;--line-selected:rgba(255,255,255,.28)}
+:root[data-theme="light"]{--attention:#B06F12;--ok:#1F9D68;--error:#C9302C;--line-selected:rgba(0,0,0,.32)}
+body{overflow:auto;height:auto}
+.page{display:flex;gap:24px;align-items:flex-start;padding:8px}
+html[data-size="s"] .page,html[data-size="m"] .page{flex-direction:column;padding:0;gap:0}
+
+/* Chatfenster: eingesetzte Fläche mit Kopfleiste, Verlauf auf Lesebreite, Eingabe unten. */
+.chat{flex:0 1 760px;min-width:0;background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column}
+html:not([data-size="l"]) .chat{flex:none;width:100%;border:0;border-radius:0}
+.access{display:flex;gap:2px;color:var(--text3)}
+.access svg{width:14px;height:14px}
+.log{padding:24px;display:flex;flex-direction:column;gap:16px;max-width:720px;width:100%;margin:0 auto}
+html[data-size="s"] .log{padding:16px 12px}
+.me{align-self:flex-end;max-width:80%;background:var(--raised);border:1px solid var(--line-strong);border-radius:10px;padding:8px 12px}
+.say{color:var(--text)}
+.toolline{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;margin:-8px -8px;border-radius:6px;color:var(--text3);font-size:12px;font-weight:500}
+.toolline:hover{background:var(--hover);color:var(--text2)}
+.toolline svg{width:14px;height:14px}
+.toolline .chev{margin-left:auto}
+.composer{margin:0 24px 24px;max-width:672px;align-self:center;width:calc(100% - 48px);border:1px solid var(--line-strong);background:var(--raised);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:8px}
+html[data-size="s"] .composer{margin:0 12px 12px;width:calc(100% - 24px)}
+.composer .ph{color:var(--text3)}
+.composer .row{display:flex;align-items:center;gap:8px}
+
+/* Karte (widgets::card): RAISED, Rand LINE_STRONG, Radius 10, Innenrand 16, Teile 12 auseinander. */
+.card{background:var(--raised);border:1px solid var(--line-strong);border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:12px}
+.card.wait{border-color:var(--line-selected)}
+.head{display:flex;gap:12px;align-items:flex-start;min-width:0}
+.head .t{flex:1;min-width:0}
+.head .title{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.head .meta{font-size:12px;line-height:16px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.headline{font-size:16px;line-height:22px;font-weight:600}
+.actions{display:flex;flex-wrap:wrap;gap:8px}
+.actions .push{margin-left:auto}
+.btn.danger{border-color:transparent;background:none;color:var(--error)}
+.btn.danger:hover{background:var(--hover)}
+.btn kbd{margin-left:2px;border-color:rgba(255,255,255,.35);color:#fff}
+.btn:not(.primary) kbd{border-color:var(--line-strong);color:var(--text3)}
+.btn[disabled]{opacity:.4;pointer-events:none}
+html[data-size="s"] .actions .btn:not(.lead) .w{display:none}
+html[data-size="s"] .actions .btn:not(.lead){padding:0;width:28px;justify-content:center}
+html[data-size="s"] .actions .btn kbd,html[data-size="s"] .actions .btn:not(.lead) .chev{display:none}
+
+/* Kalenderblatt: Kalenderfarbe nur als 3-px-Kante und Tönung, Heute wäre der rote Kreis. */
+.sheet{--c:var(--c-work);width:56px;flex:none;border-radius:8px;overflow:hidden;background:var(--panel);border:1px solid var(--line-strong);text-align:center}
+.sheet .mo{height:20px;line-height:20px;font-size:11px;font-weight:500;color:var(--text);background:color-mix(in srgb,var(--c) var(--tint),var(--panel));border-top:3px solid var(--c);box-sizing:content-box}
+.sheet .day{font:600 22px/28px "Inter Tabular",Inter,sans-serif;margin-top:4px}
+.sheet .wd{font-size:11px;line-height:14px;color:var(--text3);margin-bottom:6px}
+.sheet.today .day span{display:inline-grid;place-items:center;width:28px;height:28px;font-size:16px;border-radius:50%;background:var(--accent);color:#fff}
+.sheet.sm{width:28px;border-radius:5px}
+.sheet.sm .mo{height:6px;font-size:0;border-top-width:2px}
+.sheet.sm .day{font-size:12px;line-height:16px;margin:2px 0 3px}
+
+/* Eigenschaftszeilen in Karten (prop_line, Bezeichnung als Icon). */
+.facts{display:flex;flex-direction:column}
+.fact{display:flex;align-items:center;gap:8px;min-height:28px;color:var(--text)}
+.fact svg{color:var(--text3)}
+.fact .faint{margin-left:auto}
+.fact a{color:var(--text);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+.avs{display:flex}
+.av{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:9px;font-weight:600;color:#fff;margin-left:-4px;border:2px solid var(--raised)}
+.av:first-child{margin-left:0}
+.pill{height:22px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:11px;border:1px solid var(--line-strong);background:var(--panel);font-size:12px;font-weight:500;color:var(--text);white-space:nowrap}
+.pill svg{width:14px;height:14px}
+.pill .dot{width:6px;height:6px}
+.c-att{color:var(--attention)} .c-ok{color:var(--ok)} .c-err{color:var(--error)}
+.note{display:flex;gap:8px;align-items:flex-start;font-size:12px;line-height:16px;color:var(--text2)}
+.note svg{width:14px;height:14px;margin-top:1px;color:var(--text3)}
+
+/* Aufgabe */
+.check{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--c,var(--text3));flex:none;margin-top:2px;display:grid;place-items:center}
+.check.done{background:var(--c);border-color:var(--c)}
+.check.done svg{width:11px;height:11px;color:#fff;stroke-width:3}
+.done-title{color:var(--text3);text-decoration:line-through}
+.prio{display:inline-flex;gap:1px;align-items:flex-end;height:12px}
+.prio i{width:3px;background:var(--text2);border-radius:1px}
+.prio i:nth-child(1){height:5px}.prio i:nth-child(2){height:8px}.prio i:nth-child(3){height:11px}
+.prio i.off{background:var(--line-strong)}
+.chips2{display:flex;flex-wrap:wrap;gap:6px}
+
+/* Mail-Entwurf: Kopfzeilen wie im Mail-Fenster, Lesetext 14/22. */
+.tile{width:36px;height:36px;border-radius:8px;flex:none;display:grid;place-items:center;background:var(--selected);border:1px solid var(--line-strong);color:var(--text)}
+.tile.sm{width:20px;height:20px;border-radius:4px}
+.tile.sm svg{width:12px;height:12px}
+.mail{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.mhead{padding:8px 12px;border-bottom:1px solid var(--line)}
+.mrow{display:flex;gap:8px;min-height:24px;align-items:center}
+.mrow .k{width:56px;flex:none;font-size:12px;color:var(--text3)}
+.mrow .v{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mrow .subj{font-weight:500}
+.mbody{padding:12px;font-size:14px;line-height:22px;color:var(--text)}
+.mbody p{margin:0 0 10px}
+.mbody p:last-child{margin:0}
+.att{display:flex;gap:8px;padding:0 12px 12px}
+.attach{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 10px 0 4px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised)}
+.attach .tile{width:28px;height:28px;border-radius:6px}
+.attach .tile svg{width:14px;height:14px}
+.attach small{font-size:12px;color:var(--text3)}
+.waitband{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:500;color:var(--text2)}
+.waitband svg{width:14px;height:14px;color:var(--attention)}
+.waitband .faint{margin-left:auto;font-weight:400}
+
+/* Spalte mit Zuständen und Kurzformen */
+.side{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:24px;padding:16px 8px 24px}
+html:not([data-size="l"]) .side{padding:24px 12px}
+.side h2{margin:0;font-size:16px;line-height:22px;font-weight:600}
+.side h3{margin:0 0 8px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.side .sub{color:var(--text2);margin:4px 0 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px;align-items:start}
+html[data-size="s"] .grid{grid-template-columns:1fr}
+.gone{display:flex;align-items:center;gap:12px;color:var(--text2)}
+.gone .tile{color:var(--text3)}
+
+/* Kurzform: eine Zeile, 40 hoch, für Mini-Kachel und Schnellfenster. */
+.minis{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.mini{display:flex;align-items:center;gap:8px;height:40px;padding:0 12px;border-bottom:1px solid var(--line)}
+.mini:last-child{border-bottom:0}
+.mini .grow{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini .faint{font-size:12px;font-family:"Inter Tabular",Inter,sans-serif}
+.tilebox{width:240px;height:160px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:12px;display:flex;flex-direction:column;gap:8px}
+.tilebox .big{font:600 28px/32px "Inter Tabular",Inter,sans-serif}
+.tiles{display:flex;gap:12px;flex-wrap:wrap}
+.legend{display:flex;gap:16px;flex-wrap:wrap;font-size:12px;color:var(--text3)}
+.legend a{color:var(--text2)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<!-- ───────────── Chat ───────────── -->
+<main class="chat">
+  <div class="header">
+    <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+    <div class="crumbs"><b>API review with Anna</b><span class="faint only-l">Qwen 3 14B · this computer</span></div>
+    <span class="grow"></span>
+    <div class="access" title="The assistant may use: Calendar, Tasks, Mail, Inbox">
+      <i data-lucide="calendar"></i><i data-lucide="list-checks"></i><i data-lucide="mail"></i><i data-lucide="inbox"></i>
+    </div>
+    <button class="iconbtn"><i data-lucide="ellipsis"></i></button>
+  </div>
+
+  <div class="log">
+    <div class="me">When is the API review with Anna?</div>
+
+    <div class="toolline"><i data-lucide="calendar-search"></i>Searched calendar · 3 results<i data-lucide="chevron-right" class="chev"></i></div>
+    <div class="say">It's on Thursday afternoon, in the small meeting room – and it overlaps with your team sync.</div>
+
+    <!-- Termin-Karte (über assistant.show_items) -->
+    <article class="card">
+      <div class="head">
+        <div class="sheet"><div class="mo">Oct</div><div class="day">16</div><div class="wd">Thu</div></div>
+        <div class="t">
+          <div class="headline">API review</div>
+          <div class="muted tab">Thu, 16 Oct · 14:00–15:00</div>
+          <div style="height:8px"></div>
+          <div class="facts">
+            <div class="fact"><i data-lucide="map-pin"></i>Room 2.14 · Office Berlin</div>
+            <div class="fact"><i data-lucide="video"></i><a>meet.example.org/api-review</a></div>
+            <div class="fact"><i data-lucide="users"></i>
+              <span class="avs"><span class="av" style="background:#B5509A">AB</span><span class="av" style="background:#3B78D8">JK</span><span class="av" style="background:#2E9E6B">SW</span></span>
+              Anna Berg, Jonas Klein, you
+            </div>
+            <div class="fact"><span class="dot" style="--c:var(--c-work)"></span>Work · cloud.example.org</div>
+          </div>
+        </div>
+        <button class="iconbtn" title="More"><i data-lucide="ellipsis"></i></button>
+      </div>
+      <div class="note"><i data-lucide="triangle-alert" style="color:var(--attention)"></i><span>Overlaps with <b style="font-weight:500;color:var(--text)">Team sync</b> 14:30–15:00</span></div>
+      <div class="actions">
+        <button class="btn lead"><i data-lucide="calendar" class="s14"></i><span class="w">Open in calendar</span></button>
+        <button class="btn"><i data-lucide="send" class="s14"></i><span class="w">Send by mail</span></button>
+        <button class="btn"><i data-lucide="video" class="s14"></i><span class="w">Join</span></button>
+        <button class="btn"><i data-lucide="pencil" class="s14"></i><span class="w">Edit</span></button>
+      </div>
+    </article>
+
+    <div class="me">Send it to Jonas and make me a task to prepare.</div>
+
+    <div class="toolline"><i data-lucide="list-plus"></i>Created task · Prepare API review<i data-lucide="chevron-right" class="chev"></i></div>
+
+    <!-- Aufgaben-Karte (automatisch nach tasks.save_todo) -->
+    <article class="card">
+      <div class="head">
+        <span class="check" style="--c:var(--c-work)"></span>
+        <div class="t">
+          <div class="title" style="font-size:14px">Prepare API review</div>
+          <div class="meta">Work · created by Torro</div>
+        </div>
+        <button class="iconbtn" title="More"><i data-lucide="ellipsis"></i></button>
+      </div>
+      <div class="chips2">
+        <span class="pill"><i data-lucide="calendar-clock" class="c-att"></i><span class="tab">Due Wed, 15 Oct</span></span>
+        <span class="pill"><span class="prio"><i></i><i></i><i class="off"></i></span>High</span>
+        <span class="pill"><span class="dot" style="--c:var(--c-work)"></span>Work</span>
+        <span class="pill"><i data-lucide="calendar"></i>API review · Thu 14:00</span>
+        <span class="pill"><i data-lucide="github"></i>torro/workplace#42</span>
+      </div>
+      <div class="actions">
+        <button class="btn lead"><i data-lucide="list-checks" class="s14"></i><span class="w">Open in tasks</span></button>
+        <button class="btn"><i data-lucide="calendar-plus" class="s14"></i><span class="w">Block time</span></button>
+        <button class="btn"><i data-lucide="clock" class="s14"></i><span class="w">Later</span><i data-lucide="chevron-down" class="s14 chev"></i></button>
+        <button class="btn ghost"><i data-lucide="check" class="s14"></i><span class="w">Done</span></button>
+      </div>
+    </article>
+
+    <div class="toolline"><i data-lucide="mail-plus"></i>Saved draft · to Jonas Klein<i data-lucide="chevron-right" class="chev"></i></div>
+    <div class="toolline"><i data-lucide="send"></i>Wants to send the draft · waiting for you<i data-lucide="chevron-right" class="chev"></i></div>
+
+    <!-- Entwurfs-Karte als Freigabe (mail.send_draft wartet) -->
+    <article class="card wait">
+      <div class="waitband"><i data-lucide="hand"></i>Torro wants to send this mail<span class="faint tab">asks until 10:52</span></div>
+      <div class="mail">
+        <div class="mhead">
+          <div class="mrow"><span class="k">From</span><span class="v">Sven Wagener &lt;sven@example.org&gt;</span></div>
+          <div class="mrow"><span class="k">To</span><span class="v">Jonas Klein &lt;jonas.klein@example.org&gt;</span></div>
+          <div class="mrow"><span class="k">Subject</span><span class="v subj">API review on Thursday</span></div>
+        </div>
+        <div class="mbody">
+          <p>Hi Jonas,</p>
+          <p>here's the invitation to the API review with Anna on Thursday, 16 October, 14:00–15:00 in room 2.14. The video link is in the event.</p>
+          <p>Best, Sven</p>
+        </div>
+        <div class="att">
+          <span class="attach"><span class="tile"><i data-lucide="calendar"></i></span><span>API review.ics <small>· 1 KB</small></span></span>
+        </div>
+      </div>
+      <div class="note"><i data-lucide="shield-check"></i><span>This is the draft as stored in Mail. Exactly this will be sent – if it changes, you'll see it again.</span></div>
+      <div class="actions">
+        <button class="btn primary lead"><i data-lucide="send" class="s14"></i><span class="w">Send</span><kbd>⌘↵</kbd></button>
+        <button class="btn"><i data-lucide="square-pen" class="s14"></i><span class="w">Edit in mail window</span></button>
+        <button class="btn ghost"><i data-lucide="x" class="s14"></i><span class="w">Discard</span></button>
+      </div>
+    </article>
+  </div>
+
+  <div class="composer">
+    <span class="ph">Ask Torro…</span>
+    <div class="row">
+      <button class="btn ghost" style="padding:0 6px"><i data-lucide="sliders-horizontal" class="s14"></i>All areas</button>
+      <span class="grow" style="flex:1"></span>
+      <button class="btn ghost">Qwen 3 14B<i data-lucide="chevron-down" class="s14 chev"></i></button>
+      <button class="iconbtn boxed"><i data-lucide="arrow-up"></i></button>
+    </div>
+  </div>
+</main>
+
+<!-- ───────────── Zustände ───────────── -->
+<section class="side">
+  <div>
+    <h2>Chat cards · states</h2>
+    <p class="sub">Every card shows what the core resolves with the assistant's rights; buttons are your clicks, never the model's.</p>
+    <div class="legend" style="margin-top:8px"><a href="?theme=dark">Dark</a><a href="?theme=light">Light</a><a href="?size=s">Narrow</a><a href="?size=m">Medium</a><a href="?">Auto</a></div>
+  </div>
+
+  <div>
+    <h3>Event</h3>
+    <div class="grid">
+      <!-- Einladung, heute -->
+      <article class="card">
+        <div class="head">
+          <div class="sheet today" style="--c:var(--c-personal)"><div class="mo">Oct</div><div class="day"><span>14</span></div><div class="wd">Tue</div></div>
+          <div class="t">
+            <div class="headline">Dinner at Lea's</div>
+            <div class="muted tab">Today · 19:30–22:00</div>
+            <div style="height:8px"></div>
+            <div class="chips2"><span class="pill"><i data-lucide="mail-question" class="c-att"></i>Invitation · not answered</span></div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn lead"><i data-lucide="check" class="s14"></i><span class="w">Accept</span></button>
+          <button class="btn"><i data-lucide="help-circle" class="s14"></i><span class="w">Maybe</span></button>
+          <button class="btn"><i data-lucide="x" class="s14"></i><span class="w">Decline</span></button>
+        </div>
+      </article>
+
+      <!-- Löschen wartet auf Freigabe -->
+      <article class="card wait">
+        <div class="waitband"><i data-lucide="hand"></i>Torro wants to delete this event</div>
+        <div class="head">
+          <div class="sheet" style="--c:var(--c-family)"><div class="mo">Oct</div><div class="day">18</div><div class="wd">Sat</div></div>
+          <div class="t">
+            <div class="headline">Car service</div>
+            <div class="muted tab">Sat, 18 Oct · 09:00–10:00</div>
+            <div class="meta" style="margin-top:4px"><span class="dot" style="--c:var(--c-family);display:inline-block;width:6px;height:6px;margin-right:4px"></span>Family · repeats yearly, only this one</div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn danger lead" style="border:1px solid var(--line-strong);background:var(--raised)"><i data-lucide="trash-2" class="s14"></i><span class="w">Delete</span></button>
+          <button class="btn ghost"><span class="w">Keep</span></button>
+        </div>
+      </article>
+    </div>
+  </div>
+
+  <div>
+    <h3>Task</h3>
+    <div class="grid">
+      <!-- Überfällig, aus Mail -->
+      <article class="card">
+        <div class="head">
+          <span class="check" style="--c:var(--c-personal)"></span>
+          <div class="t">
+            <div class="title" style="font-size:14px">Send the signed lease back</div>
+            <div class="meta">Personal</div>
+          </div>
+        </div>
+        <div class="chips2">
+          <span class="pill"><i data-lucide="calendar-clock" class="c-att"></i><span class="tab">Overdue · 2 days</span></span>
+          <span class="pill"><span class="prio" style="gap:0"><i style="width:10px;height:10px;border-radius:2px;background:var(--attention)"></i></span>Urgent</span>
+          <span class="pill"><i data-lucide="mail"></i>Re: Lease – Hausverwaltung</span>
+        </div>
+        <div class="actions">
+          <button class="btn lead"><i data-lucide="list-checks" class="s14"></i><span class="w">Open in tasks</span></button>
+          <button class="btn"><i data-lucide="clock" class="s14"></i><span class="w">Later</span><i data-lucide="chevron-down" class="s14 chev"></i></button>
+          <button class="btn ghost"><i data-lucide="check" class="s14"></i><span class="w">Done</span></button>
+        </div>
+      </article>
+
+      <!-- Erledigt (nach tasks.save_todo durch den Assistenten) -->
+      <article class="card">
+        <div class="head">
+          <span class="check done" style="--c:var(--c-work)"><i data-lucide="check"></i></span>
+          <div class="t">
+            <div class="title done-title" style="font-size:14px">Review API concept</div>
+            <div class="meta">Done by Torro · 10:41</div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn lead"><i data-lucide="list-checks" class="s14"></i><span class="w">Open in tasks</span></button>
+          <button class="btn ghost"><i data-lucide="undo-2" class="s14"></i><span class="w">Mark as open</span></button>
+        </div>
+      </article>
+    </div>
+  </div>
+
+  <div>
+    <h3>Mail draft</h3>
+    <div class="grid">
+      <!-- Gesendet -->
+      <article class="card">
+        <div class="head">
+          <span class="tile"><i data-lucide="mail-check"></i></span>
+          <div class="t">
+            <div class="title">API review on Thursday</div>
+            <div class="meta">To Jonas Klein · with API review.ics</div>
+          </div>
+        </div>
+        <div class="chips2"><span class="pill"><i data-lucide="circle-check" class="c-ok"></i><span class="tab">Sent · 10:43</span></span></div>
+        <div class="actions"><button class="btn lead"><i data-lucide="mail" class="s14"></i><span class="w">Open in mail</span></button></div>
+      </article>
+
+      <!-- Entwurf hat sich geändert: Send ungültig -->
+      <article class="card wait">
+        <div class="head">
+          <span class="tile"><i data-lucide="file-pen-line"></i></span>
+          <div class="t">
+            <div class="title">Offer for the workshop</div>
+            <div class="meta">To Anna Berg · draft</div>
+          </div>
+        </div>
+        <div class="note"><i data-lucide="refresh-cw" style="color:var(--attention)"></i><span>The draft changed after Torro asked. Look at it again before sending.</span></div>
+        <div class="actions">
+          <button class="btn lead"><i data-lucide="eye" class="s14"></i><span class="w">Show new version</span></button>
+          <button class="btn primary" disabled><i data-lucide="send" class="s14"></i><span class="w">Send</span></button>
+        </div>
+      </article>
+
+      <!-- Nicht mehr verfügbar -->
+      <article class="card">
+        <div class="gone">
+          <span class="tile"><i data-lucide="calendar-x"></i></span>
+          <div class="t"><div style="color:var(--text);font-weight:500">No longer available</div><div class="meta">The event was deleted or the assistant may no longer see it.</div></div>
+        </div>
+      </article>
+    </div>
+  </div>
+
+  <div>
+    <h3>Short forms · mini tile and quick window</h3>
+    <div class="minis" style="max-width:420px">
+      <div class="mini"><div class="sheet sm"><div class="mo"></div><div class="day">16</div></div><span class="grow">API review</span><span class="faint">Thu 14:00</span></div>
+      <div class="mini"><span class="check" style="--c:var(--c-work);margin:0"></span><span class="grow">Prepare API review</span><span class="faint" style="color:var(--attention)">Tomorrow</span></div>
+      <div class="mini"><span class="tile sm"><i data-lucide="mail"></i></span><span class="grow">Draft to Jonas Klein</span><span class="pill" style="height:20px"><i data-lucide="hand" class="c-att"></i>Waiting</span></div>
+    </div>
+    <div style="height:12px"></div>
+    <div class="tiles">
+      <div class="tilebox">
+        <div class="faint" style="font-size:12px">Torro · last answer</div>
+        <div style="display:flex;gap:8px;align-items:center"><div class="sheet sm"><div class="mo"></div><div class="day">16</div></div><b style="font-weight:500">API review</b></div>
+        <div class="big">14:00</div>
+        <div class="faint" style="font-size:12px">Thu · Room 2.14</div>
+      </div>
+      <div class="tilebox">
+        <div class="faint" style="font-size:12px">Torro · waiting for you</div>
+        <div style="display:flex;gap:8px;align-items:center"><span class="tile sm"><i data-lucide="mail"></i></span><b style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">Send mail to Jonas</b></div>
+        <span class="grow" style="flex:1"></span>
+        <button class="btn" style="align-self:flex-start"><i data-lucide="eye" class="s14"></i>Review</button>
+      </div>
+    </div>
+  </div>
+</section>
+</div>
+<script>lucide.createIcons();</script>
+</body>
+</html>
