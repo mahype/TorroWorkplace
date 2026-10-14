@@ -56,6 +56,9 @@ pub const APPROVAL_ID: &str = "demo-approval-1";
 struct Data {
     items: Vec<Item>,
     muted: BTreeSet<SourceRef>,
+    /// The ids of the entries dismissed ("✕"), as the core keeps them beside the entry: an entry
+    /// opened again or done for real leaves it (issue #117, [`ItemFilter::dismissed`]).
+    dismissed: BTreeSet<String>,
     /// The senders and domains hidden from the inbox (task E3.10) and the traits muted (task
     /// E8.6a), in memory only.
     hidden: Vec<Rule>,
@@ -168,6 +171,7 @@ impl DemoSource {
         let data = Data {
             items,
             muted: BTreeSet::new(),
+            dismissed: BTreeSet::new(),
             hidden: Vec::new(),
             rules_made: 0,
             tasks: Vec::new(),
@@ -1094,7 +1098,14 @@ impl InboxSource for DemoSource {
             rules::wake(item, now);
         }
         data.items.retain(|item| !rules::expired(item, now));
-        Ok(filter.apply(data.items.iter().cloned()))
+        // The filter cannot see the mark on an entry (`ItemFilter::matches`): applied here, as the
+        // core does with its column, and only on entries still done.
+        let data = &*data;
+        let shown = data.items.iter().filter(|item| {
+            let dismissed = matches!(item.state, State::Done { .. }) && data.dismissed.contains(&item.id);
+            filter.dismissed.is_none_or(|wanted| wanted == dismissed)
+        });
+        Ok(filter.apply(shown.cloned()))
     }
 
     async fn list_sources(&self) -> Result<Vec<SourceInfo>, InboxError> {
@@ -1118,15 +1129,20 @@ impl InboxSource for DemoSource {
     async fn set_item_done(&self, id: String, done: bool) -> Result<Item, InboxError> {
         let now = self.now();
         let item = self.change(&id, |item| rules::set_done(item, done, now))?;
+        // Done for real or open again: no longer dismissed ([`DemoSource::dismiss_item`] marks it after).
+        self.lock().dismissed.remove(&id);
         if let (true, Some(Link::Mail { message })) = (done, &item.link) {
             self.set_mail_flags(std::slice::from_ref(message), &[Flag::Seen], &[])?;
         }
         Ok(item)
     }
 
-    /// Done like [`InboxSource::set_item_done`]; demo mode keeps no statistics.
+    /// Done like [`InboxSource::set_item_done`] and marked dismissed, so "Done" leaves it out
+    /// (issue #117); demo mode keeps no statistics.
     async fn dismiss_item(&self, id: String) -> Result<Item, InboxError> {
-        self.set_item_done(id, true).await
+        let item = self.set_item_done(id.clone(), true).await?;
+        self.lock().dismissed.insert(id);
+        Ok(item)
     }
 
     async fn list_mute_options(&self, id: String) -> Result<Vec<MuteOption>, InboxError> {
@@ -1643,6 +1659,27 @@ mod tests {
         demo.remove_rule(rule.id).await.expect("removed like any rule");
         let dismissed = demo.dismiss_item("demo-8".into()).await.expect("dismissed");
         assert!(matches!(dismissed.state, State::Done { .. }));
+    }
+
+    /// Issue #117: a dismissed entry is neither open nor in the done entries that leave the
+    /// dismissed out; opened again it is an entry like any other.
+    #[tokio::test]
+    async fn dismissed_entries_leave_the_done_list_that_asks_so() {
+        let demo = DemoSource::new(now());
+        let ids = |items: Vec<Item>| items.into_iter().map(|item| item.id).collect::<Vec<_>>();
+        let list = |state, dismissed| ItemFilter { state: Some(state), dismissed, ..ItemFilter::default() };
+        demo.dismiss_item("demo-8".into()).await.expect("dismissed");
+        let open = ids(demo.list_items(list(StateFilter::Open, None)).await.expect("listed"));
+        assert!(!open.contains(&"demo-8".to_owned()));
+        let real = ids(demo.list_items(list(StateFilter::Done, Some(false))).await.expect("listed"));
+        assert!(!real.contains(&"demo-8".to_owned()), "{real:?}");
+        let gone = ids(demo.list_items(list(StateFilter::Done, Some(true))).await.expect("listed"));
+        assert_eq!(gone, ["demo-8"]);
+
+        demo.set_item_done("demo-8".into(), false).await.expect("opened again");
+        let open = ids(demo.list_items(list(StateFilter::Open, Some(false))).await.expect("listed"));
+        assert!(open.contains(&"demo-8".to_owned()));
+        assert!(demo.list_items(list(StateFilter::Done, Some(true))).await.expect("listed").is_empty());
     }
 
     /// Task E5.1: one entry of each remote source, placed and given its traits by the core's rules.

@@ -189,6 +189,13 @@ pub struct ItemFilter {
     /// Newest or oldest first by `updated` (task E8.15); urgent entries come first either way.
     #[serde(default)]
     pub order: Order,
+    /// `Some(false)` leaves out the entries dismissed ([`InboxSource::dismiss_item`]), `Some(true)`
+    /// keeps only those (issue #117: the app's "Done" shows only what was done for real). An
+    /// [`Item`] does not say whether it was dismissed, so [`ItemFilter::matches`] ignores this
+    /// field: the source applies it from what it keeps beside the entry (the core's column
+    /// `dismissed`, the demo's set of dismissed ids).
+    #[serde(default)]
+    pub dismissed: Option<bool>,
 }
 
 /// The states the views of the app show: "For me" and "Info" show open entries, "Snoozed" and
@@ -359,6 +366,7 @@ mod tests {
             since: Some(at(9)),
             limit: Some(50),
             order: Order::OldestFirst,
+            dismissed: Some(false),
         };
         let json = serde_json::to_string(&filter).expect("serialize");
         assert_eq!(serde_json::from_str::<ItemFilter>(&json).expect("deserialize"), filter);

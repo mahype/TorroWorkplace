@@ -1073,7 +1073,15 @@ mod tests {
         let unknown = post(&["--title", "x"], Some(Key::new("torro_00000000_nope"))).await.expect("ran");
         assert_eq!(unknown, ExitCode::FAILURE, "an unknown key is refused");
 
-        let all = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
+        let all = Request::ListItems {
+            lane: None,
+            source: None,
+            state: None,
+            since: None,
+            limit: None,
+            order: None,
+            dismissed: None,
+        };
         let Ok(Response::Items { items }) = torro_ipc::client::call(&socket, &all).await else {
             panic!("the app key lists the inbox");
         };

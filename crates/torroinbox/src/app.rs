@@ -867,7 +867,10 @@ impl View {
             View::Source(source) => (None, Some(source.clone()), StateFilter::Open),
             View::Folder(_) | View::Mail | View::Attachments | View::Invitations => return None,
         };
-        Some(ItemFilter { lane, source, state: Some(state), ..ItemFilter::default() })
+        // "Done" shows what was done for real: a dismissed entry is simply gone (issue #117), its
+        // toast's undo the only way back.
+        let dismissed = (state == StateFilter::Done).then_some(false);
+        Some(ItemFilter { lane, source, state: Some(state), dismissed, ..ItemFilter::default() })
     }
 
     /// The name in the sidebar, the header and the panel's path.
@@ -6397,6 +6400,7 @@ mod tests {
         );
         assert_eq!(View::Snoozed.filter().and_then(|f| f.state), Some(StateFilter::Snoozed));
         assert_eq!(View::Done.filter().and_then(|f| f.state), Some(StateFilter::Done));
+        assert_eq!(View::Done.filter().and_then(|f| f.dismissed), Some(false), "issue #117: without the dismissed");
         let codex = View::Source(SourceRef::agent("codex")).filter().expect("entries");
         assert_eq!((codex.lane, codex.source, codex.state), (None, Some(SourceRef::agent("codex")), open));
         assert_eq!(View::ForMe.name(), tr("For me"));
@@ -8854,6 +8858,14 @@ mod tests {
         assert!(!ids(&app).contains(&"demo-6"), "gone from New");
         assert!(matches!(stored(&app, "demo-6").state, State::Done { .. }), "done in the source, as after Done");
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Dismissed")));
+        // Issue #117: simply gone – "Done" lists only what was done for real.
+        let mut done = notifications_window(&[]);
+        block_on(done.inbox.dismiss_item("demo-6".into())).expect("the demo dismisses");
+        block_on(done.inbox.set_item_done("demo-7".into(), true)).expect("the demo marks it done");
+        let _ = done.update(Message::Show(View::Done));
+        load(&mut done);
+        assert!(!ids(&done).contains(&"demo-6"), "not in Done: {:?}", ids(&done));
+        assert!(ids(&done).contains(&"demo-7"), "done for real: {:?}", ids(&done));
         let _ = press(&mut app, Key::U);
         assert_eq!(app.sent.last(), Some(&Sent::Edit(reopen, None)));
         deliver(&mut app);

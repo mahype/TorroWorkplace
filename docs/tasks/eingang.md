@@ -1377,6 +1377,24 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Fixture mit den Kopfzeilen der Mail landet „for me“ (rein und über den Feed); Grund für Liste,
   gemerkten Absender, Stummschaltung; von Hand verschoben ohne Grund; beide Sprachen.
 
+### E8.17 Verwerfen heißt weg (Issue #117)
+- [x] erledigt (2026-10-14: ✕ „Dismiss“ (`x`) zuletzt in der Aktionsleiste der Eintragszeilen (`list::actions`) für
+  alles, was `notifications::dismissable` ist – „Act now“ und das Benachrichtigungsfenster hatten es schon; Hinweis
+  „Dismissed“ mit Undo wie bisher. Die Ansicht „Done“ (auch „Done today“ der Zentrale) fragt mit `dismissed: false`
+  und zeigt Verworfenes nicht mehr. Der Kern löscht die Marke `dismissed`, sobald ein Eintrag nicht mehr erledigt ist
+  (von Hand oder durch eine neue Meldung wieder offen), damit der Filter nie einen offenen Eintrag verbirgt.
+  Entscheidung: Mail wird weiter nicht verworfen – „Done“ tut bei Mail genau das (gelesen, nicht verschoben), ein
+  zweiter Knopf mit gleicher Wirkung wäre doppelt; das Paneel bleibt ohne ✕, `x` wirkt dort schon)
+- **Modell:** Opus · **Braucht:** E8.4, E8.6a · **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`,
+  `crates/torro-inbox/src/{source,demo}.rs`, `crates/torroworkplace/src/{inbox,mcp}.rs` (und `dismissed: None` in
+  Tests und internen Requests), `crates/torroinbox/src/{app,list}.rs`
+- **Oberfläche:** Aktionsleiste der Zeilen (Zentrale: Quellen, Later; Benachrichtigungen), Ansicht „Done“. **API:**
+  `Request::ListItems.dismissed` · `inbox.list_items` · Read (neues optionales Feld, verträglich); Verwerfen bleibt
+  `inbox.set_item_done` mit `dismissed: true`. **MCP:** `inbox_list_items` (Eingabe `dismissed`),
+  `inbox_set_item_done`.
+- **Abnahme:** Tests: verworfener Eintrag fehlt in offenen Einträgen und in „Done“ (Kern-SQL, Demo, App), kommt mit
+  neuer Meldung offen zurück; ✕ in der Zeilenleiste sendet `Dismiss`, Mail hat keins; MCP baut `dismissed` mit.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
