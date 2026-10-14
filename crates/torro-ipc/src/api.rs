@@ -2019,7 +2019,8 @@ static CREATE_TASK_FROM_ITEM: Command = Command {
                   that list as well (`forbidden` without tasks write; `not-found` for a list or entry this key may not \
                   see, also approvals and account problems); for a mail entry also write access to mail, since done \
                   marks its mail read. Done also reaches a remote source: a GitHub entry's notification is marked \
-                  done on GitHub (needs write access to GitHub as well, else `forbidden`), a Nextcloud entry's \
+                  done on GitHub (needs write access to GitHub as well, else `forbidden`) and GitHub's mail filed \
+                  with it is marked read (then also write access to mail and its accounts), a Nextcloud entry's \
                   notifications are deleted on the server, a Talk conversation is marked read up to its newest \
                   known message and its chat notifications are deleted; ntfy is not told. Waiting for approval, the \
                   title is fixed when asking, and an entry changed before the person allowed it is `conflict`. \
@@ -2039,7 +2040,8 @@ static CREATE_EVENT_FROM_ITEM: Command = Command {
                   write access to the calendar as well (`forbidden` without calendar write; `not-found` for a \
                   calendar or entry this key may not see, also approvals and account problems); for a mail entry \
                   also write access to mail, since done marks its mail read. Done reaches a remote source as in \
-                  create_task_from_item (a GitHub entry needs write access to GitHub). Waiting for approval, the \
+                  create_task_from_item (a GitHub entry needs write access to GitHub, and with GitHub's mail filed \
+                  with it to mail and its accounts). Waiting for approval, the \
                   title is fixed when asking, and an entry changed before the person allowed it is `conflict`. \
                   Returns the new event.",
 };
@@ -2093,7 +2095,9 @@ static SET_ITEM_DONE: Command = Command {
                   (source `mail:<address>`) also marks its mail read on the mail server, never moves it; that \
                   needs write access to mail (`forbidden` without). Done (dismissed too) also reaches a remote \
                   source: a GitHub entry's notification thread is marked done on GitHub (needs write access to \
-                  GitHub, `forbidden` without), a Nextcloud entry's notifications are deleted on the server, a \
+                  GitHub, `forbidden` without) and the mail GitHub sent about the same issue or pull request, \
+                  which the inbox files with that entry, is marked read (then also needs write access to mail and \
+                  its accounts), a Nextcloud entry's notifications are deleted on the server, a \
                   Talk conversation is marked read up to its newest known message and its chat notifications are \
                   deleted; ntfy is not told. `done: false`, snoozing, hiding and muting \
                   never reach the source. Approvals and account problems (the source `suite`) are the person's \

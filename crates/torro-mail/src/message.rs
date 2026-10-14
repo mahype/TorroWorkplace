@@ -247,6 +247,12 @@ pub struct MessageTraits {
     /// `Auto-Submitted:` (`auto-generated`, `auto-replied`; `no` means a person sent it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_submitted: Option<String>,
+    /// `X-GitHub-Reason:` (`review_requested`, `mention`, `comment` …), task E5.6: only small
+    /// letters and `_`, else `None`. Together with `From: notifications@github.com`, `List-Id` and
+    /// the `Message-ID` it marks a mail about a GitHub issue or pull request, which the inbox files
+    /// with that item's GitHub entry. A header from outside like the others: anyone can write it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<String>,
 }
 
 /// A message being written. The core keeps drafts in the account's drafts folder and remembers
@@ -363,5 +369,14 @@ mod tests {
         assert_eq!(partstats, ["ACCEPTED", "TENTATIVE", "DECLINED"]);
         assert_eq!(InvitationAnswer::from_name("decline"), Some(InvitationAnswer::Decline));
         assert_eq!(InvitationAnswer::from_name("maybe"), None);
+    }
+
+    #[test]
+    fn traits_without_a_github_reason_read_as_before() {
+        let traits: MessageTraits = serde_json::from_str(r#"{"list_unsubscribe": true}"#).expect("traits");
+        assert_eq!(traits.github, None);
+        assert!(serde_json::to_value(&traits).expect("json").get("github").is_none(), "left out when none");
+        let github = MessageTraits { github: Some("mention".into()), ..MessageTraits::default() };
+        assert_eq!(serde_json::to_value(&github).expect("json")["github"], "mention");
     }
 }

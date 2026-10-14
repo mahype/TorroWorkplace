@@ -3,7 +3,8 @@
 //! **Reading** ([`read`]) with `mail-parser`: headers, the text (the plain part first; an HTML-only
 //! message is turned into text, its HTML is never handed out and nothing it names is fetched, so a
 //! tracking image stays unseen), attachments without their content, `text/calendar` invitations
-//! and the headers that mark list and automatic mail. Parsing is pure: no network, no files.
+//! and the headers that mark list and automatic mail, `X-GitHub-Reason` among them (task E5.6).
+//! Parsing is pure: no network, no files.
 //! [`ReadMessage::into_message`] makes the `torro_mail::Message` the core hands out, once the core
 //! knows the message's id and place. [`attachment`] fetches one attachment's bytes.
 //!
@@ -458,8 +459,18 @@ fn traits(message: &mail_parser::Message<'_>) -> MessageTraits {
         auto_submitted: raw("Auto-Submitted")
             .and_then(|value| value.split(';').next().map(|keyword| keyword.trim().to_owned()))
             .filter(|keyword| !keyword.is_empty()),
+        github: raw("X-GitHub-Reason").filter(|reason| github_reason(reason)),
     }
 }
+
+/// A reason as GitHub writes them (`review_requested`, `ci_activity`): small letters and `_`, at
+/// most [`GITHUB_REASON_MAX`] of them. Anything else is no reason GitHub sent.
+fn github_reason(reason: &str) -> bool {
+    reason.len() <= GITHUB_REASON_MAX && reason.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+}
+
+/// The longest `X-GitHub-Reason` kept; GitHub's longest is `security_advisory_credit` (24).
+const GITHUB_REASON_MAX: usize = 40;
 
 fn addresses(list: &Address<'_>) -> Vec<MailAddress> {
     list.iter()
@@ -625,6 +636,26 @@ mod tests {
         assert!(!String::from_utf8_lossy(&plain.bytes).contains("multipart"), "a plain text stays one part");
         let header = CalendarPart { method: "REPLY\r\nBcc: eve@x".into(), ics: ics.into() };
         assert_eq!(build(&answer(Some(header))), Err(MimeError::Write), "the method carries no header");
+    }
+
+    #[test]
+    fn a_github_mail_keeps_its_reason_list_and_message_id() {
+        let read = read(include_bytes!("../tests/fixtures/mime/github_review_requested.eml")).expect("read");
+        assert_eq!(read.from.as_ref().map(|from| from.address.as_str()), Some("notifications@github.com"));
+        assert_eq!(read.traits.github.as_deref(), Some("review_requested"));
+        assert_eq!(read.traits.list_id.as_deref(), Some("torro/workplace <workplace.torro.github.com>"));
+        assert_eq!(read.message_id.as_deref(), Some("torro/workplace/pull/42/issue_event/1234567@github.com"));
+        assert_eq!(read.in_reply_to.as_deref(), Some("torro/workplace/pull/42@github.com"));
+        assert!(read.text.contains("requested your review"), "{}", read.text);
+
+        let odd = |reason: &str| {
+            let raw = format!("From: a@b.example\r\nX-GitHub-Reason: {reason}\r\nSubject: x\r\n\r\nText\r\n");
+            super::read(raw.as_bytes()).expect("read").traits.github
+        };
+        assert_eq!(odd("Mention"), Some("mention".into()), "lowercased like the other traits");
+        assert_eq!(odd("review requested"), None);
+        assert_eq!(odd(&"a".repeat(GITHUB_REASON_MAX + 1)), None);
+        assert_eq!(super::read(b"Subject: x\r\n\r\nText\r\n").expect("read").traits.github, None);
     }
 
     #[test]

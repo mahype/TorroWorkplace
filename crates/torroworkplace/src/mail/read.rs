@@ -1084,6 +1084,7 @@ pub(crate) mod tests {
             from: None,
             bulk: false,
             list: None,
+            github: None,
             date: Utc::now(),
         };
         inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("an entry");

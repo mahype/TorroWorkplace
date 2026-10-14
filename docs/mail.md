@@ -164,6 +164,16 @@ Vertrags-Fixtures als Testfälle.
 Erst Kopfzeilen, Inhalte der jüngsten Nachrichten im Voraus, der Rest beim Öffnen. Neue Mail →
 Benachrichtigung über den Kern (`notify-rust` ist da).
 
+**GitHub-Mail (E5.6):** Der Mail-Speicher je Konto (Schema 4) hält neben `List-Id`,
+`List-Unsubscribe`, `Precedence` und `Auto-Submitted` auch `X-GitHub-Reason`
+(`MessageTraits.github`, nur Kleinbuchstaben und `_`). Eine Mail gilt als GitHub-Mail zu einem
+Issue oder PR nur, wenn alle drei passen: `From: notifications@github.com` mit `X-GitHub-Reason`,
+`List-Id: <repo.owner.github.com>` und `Message-ID: <owner/repo/(pull|issues)/<n>…@github.com>`
+mit demselben Repo. `In-Reply-To` wird dafür nicht gespeichert und nicht gelesen: Jede Mail von
+GitHub nennt Repo und Nummer schon in ihrer eigenen `Message-ID`. Der Eingang ordnet sie dann dem
+GitHub-Eintrag zu ([eingang.md](eingang.md), Quelle GitHub); Erledigt dort markiert sie gelesen
+(`\Seen`), wie bei einem Mail-Eintrag.
+
 **Vorarbeit, die auch ohne Mail nötig ist:** mehrere Konten und Kontotypen. `AccountKind` bekommt
 `Mail`, `PimService` wird nach Konto geschlüsselt, Sammlungs-Kennungen bekommen das Konto vorne
 dran (`<account-id>/<url>`), `PimClient::account()` liefert eine Liste. Das löst auch das
