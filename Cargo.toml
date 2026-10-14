@@ -22,6 +22,8 @@ members = [
     "crates/torroassistant",
     "crates/torromailview",
 ]
+# Spikes are their own Cargo projects (task M9.4): their dependencies touch neither the workspace nor CI.
+exclude = ["spikes"]
 resolver = "3"
 
 [workspace.package]

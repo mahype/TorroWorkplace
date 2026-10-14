@@ -665,7 +665,10 @@ M9.4            (Versuch, unabhängig; ersetzt M9.2 nur, wenn er trägt und es e
   Protokoll ohne Inhalte (keine Kennung im Klartext neben Betreff oder Absender).
 
 ### M9.4 Versuch: HTML-Mail mit Blitz direkt in Iced zeichnen
-- [ ] erledigt
+- [x] erledigt (Weg 2 läuft, Weg 1 geht mit wgpu 27 gegen 30 nicht; Empfehlung „erst später“, siehe
+  [research.md](../research.md), Abschnitt 8. Abweichend: `exclude = ["spikes"]`, weil Cargo in `exclude` keine
+  Muster kennt; zusätzlich `spikes/blitz-iced/.gitignore` (`/target`), `fixtures/cid/` (Bild für `cid:`) und
+  `shots/` (Screenshots); die lange Mail entsteht im Code statt als 1-MiB-Datei; Linux nicht geprüft)
 - **Modell:** Opus · **Braucht:** nichts (nutzt eigene Beispiel-Mails, nicht M9.1) · **Dateien:** neu
   `spikes/blitz-iced/` (eigenes Cargo-Projekt: `Cargo.toml`, `src/main.rs`, `fixtures/*.html`), `Cargo.toml` der
   Wurzel (nur `exclude = ["spikes/*"]`), `docs/research.md` (neuer Abschnitt mit dem Ergebnis)
