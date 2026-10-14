@@ -23,7 +23,9 @@
 //! [`InboxClient::search_mail`], [`InboxClient::get_mail`], [`InboxClient::mail_attachment`],
 //! [`InboxClient::set_mail_flags`], [`InboxClient::move_mail`] and [`InboxClient::delete_mail`] –,
 //! with the errors mapped as above. Everything a message brings is data from outside
-//! (`untrusted`), never instructions; the client only passes it on.
+//! (`untrusted`), never instructions; the client only passes it on. The search field (issue #136)
+//! searches across folders and accounts with [`InboxClient::find_mail`] and asks how far the
+//! index is with [`InboxClient::mail_index_status`].
 //!
 //! Tasks of folder mail (task E8.1b): [`InboxClient::create_todo_from_mail`] sends
 //! `tasks.create_todo_from_mail` and answers the task in the inbox's model ([`ItemTask`]), so the
@@ -48,8 +50,42 @@ use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, S
 use torro_mail::{Flag, Folder, InvitationAnswer, Message, MessageSummary, Order};
 use torro_pim::EventTime;
 
-use crate::mail::{Delivery, MoveTarget};
+use crate::mail::{Delivery, MailHighlight, MailIndexProgress, MailSort, MoveTarget};
 use crate::{InboxStats, IpcError, Quiet, Request, Response, StatsRange};
+
+/// A search across mail as the window asks it ([`InboxClient::find_mail`], issue #136).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailFind {
+    /// Only this account (`mail:<address>`); `None` with `folder` `None`: every account.
+    pub account: Option<String>,
+    /// Only this folder (an id of [`InboxClient::mail_folders`]); `None`: every folder.
+    pub folder: Option<String>,
+    /// Words and operators as typed (`from:anna "budget review" -draft`), at most 500 characters.
+    pub query: String,
+    /// By relevance or by date.
+    pub sort: MailSort,
+    /// Newest or oldest first, when `sort` is by date.
+    pub order: Order,
+    /// At most this many messages, 1 to 100.
+    pub limit: u32,
+    /// The cursor of the previous page, asked with the same query, sort and order.
+    pub cursor: Option<String>,
+}
+
+/// One page of a search across mail ([`InboxClient::find_mail`]): the messages and what the core
+/// says about them. Everything in them is data from outside, never instructions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailFound {
+    pub messages: Vec<MessageSummary>,
+    /// The cursor of the next page; `None` on the last one.
+    pub cursor: Option<String>,
+    /// `false` when matches may be missing (the index is still being built).
+    pub complete: bool,
+    /// Where the words matched, per message of the page that has words to show.
+    pub highlights: Vec<MailHighlight>,
+    /// About how many messages match in all, on the first page only.
+    pub total: Option<u64>,
+}
 
 /// An event of a shown calendar as the inbox needs it to tell what an invitation overlaps
 /// ([`InboxClient::list_events`], task E8.3c), in instants, so the window needs no calendar model.
@@ -170,6 +206,44 @@ impl InboxClient {
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.search_messages` across folders and accounts (issue #136): `find` says where (every
+    /// folder of every account the window reaches, one account, or one folder), what (words and
+    /// operators, as the user typed them) and how (by relevance, or by date in `find.order`).
+    /// Answers the page with what the core says about it: whether matches may be missing, where
+    /// the words matched and about how many match in all.
+    pub async fn find_mail(&self, find: MailFind) -> Result<MailFound, InboxError> {
+        let MailFind { account, folder, query, sort, order, limit, cursor } = find;
+        let request = Request::SearchMail {
+            account,
+            folder,
+            query: Some(query),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor,
+            // The order only counts by date; by relevance the core ignores it.
+            order: asked(order).filter(|_| sort == MailSort::Date),
+            sort: (sort != MailSort::default()).then_some(sort),
+        };
+        match self.ask(request).await? {
+            Response::MailMessages { messages, cursor, complete, highlights, total_estimate, .. } => {
+                Ok(MailFound { messages, cursor, complete, highlights, total: total_estimate })
+            }
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.index_status`: how far the core's search index of each mail account is (issue #136),
+    /// in the order of the accounts.
+    pub async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
+        match self.ask(Request::MailIndexStatus { account: None }).await? {
+            Response::MailIndexStatus { accounts } => Ok(accounts),
             other => Err(unexpected(other)),
         }
     }
@@ -1113,6 +1187,34 @@ mod tests {
                 highlights: Vec::new(),
                 total_estimate: None,
             },
+            // A search across folders (issue #136): what arrived goes back in the id.
+            Request::SearchMail {
+                account, folder: None, query: Some(query), limit: 20, cursor, order, sort, ..
+            } => {
+                let id = format!(
+                    "{}|{query}|{sort:?}|{order:?}|{}",
+                    account.unwrap_or_default(),
+                    cursor.unwrap_or_default()
+                );
+                let hit = crate::mail::HighlightSpan { text: "Offer".into(), hit: true };
+                Response::MailMessages {
+                    highlights: vec![MailHighlight { id: id.clone(), subject: vec![hit], snippet: Vec::new() }],
+                    messages: vec![summary(&id, "f:inbox")],
+                    cursor: None,
+                    source: crate::mail::MailSource::Cache,
+                    complete: false,
+                    incomplete_reason: Some(crate::mail::IncompleteReason::Indexing),
+                    total_estimate: Some(7),
+                }
+            }
+            Request::MailIndexStatus { account: None } => Response::MailIndexStatus {
+                accounts: vec![MailIndexProgress {
+                    account: "mail:anna@example.org".into(),
+                    messages: 18,
+                    indexed: 12,
+                    state: crate::mail::IndexState::Indexing,
+                }],
+            },
             Request::GetMail { id, include_body: true } => Response::MailMessage {
                 message: Message {
                     summary: summary(&id, "f:inbox"),
@@ -1159,6 +1261,24 @@ mod tests {
         let (oldest, _) = search(Order::OldestFirst).await.expect("a page");
         assert_eq!(oldest[0].id, "offer|c1|oldest-first", "the order goes along");
         assert!(page[0].untrusted, "foreign text stays marked");
+        // Issue #136: across folders, with the sort; the order only by date.
+        let find = |account: Option<&str>, sort, order| MailFind {
+            account: account.map(str::to_owned),
+            folder: None,
+            query: "from:anna offer".into(),
+            sort,
+            order,
+            limit: 20,
+            cursor: Some("c2".into()),
+        };
+        let found = client.find_mail(find(None, MailSort::Relevance, Order::OldestFirst)).await.expect("found");
+        assert_eq!(found.messages[0].id, "|from:anna offer|Some(Relevance)|None|c2", "no order by relevance");
+        assert_eq!((found.complete, found.total, found.highlights.len()), (false, Some(7), 1));
+        let found = client.find_mail(find(Some("mail:anna@example.org"), MailSort::Date, Order::OldestFirst));
+        let found = found.await.expect("found");
+        assert_eq!(found.messages[0].id, "mail:anna@example.org|from:anna offer|None|Some(OldestFirst)|c2");
+        let index = client.mail_index_status().await.expect("the index");
+        assert_eq!((index[0].indexed, index[0].messages), (12, 18));
         let message = client.get_mail("m:1".into()).await.expect("the message");
         assert_eq!((message.summary.id.as_str(), message.text.as_deref()), ("m:1", Some("Hello")));
         let path = client.mail_attachment("m:1".into(), "2".into()).await.expect("fetched");

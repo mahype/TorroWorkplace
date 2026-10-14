@@ -47,6 +47,7 @@ mod list;
 mod mail;
 mod notifications;
 mod overview;
+mod search;
 
 use std::process::ExitCode;
 use std::sync::Arc;

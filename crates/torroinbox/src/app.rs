@@ -167,6 +167,7 @@ use torro_inbox::{
 };
 use torro_ipc::inbox::CalendarEvent;
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
+use torro_ipc::mail::{MailHighlight, MailSort};
 use torro_mail::{Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
 
 use crate::compose;
@@ -178,6 +179,7 @@ use crate::list::Look;
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
 use crate::notifications::{self, Arrange, Board, Shown};
 use crate::overview::{self, Column, Sections};
+use crate::search::{self, Found, Scope, ScopeChoice, SearchView, Sort, Suggestion};
 use crate::{detail, list};
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
@@ -868,6 +870,9 @@ pub enum View {
     /// The smart view "Invitations" of the mail window (task E8.3b): the messages of every account's
     /// inbox that invite to an event not over yet, the soonest first (`mail::invitations`).
     Invitations,
+    /// A search of mail (issue #136, the field over the list): the messages found, a page at a
+    /// time, by relevance or by date; `mail.*` only.
+    Search(SearchView),
 }
 
 impl View {
@@ -881,7 +886,7 @@ impl View {
             View::Snoozed => (None, None, StateFilter::Snoozed),
             View::Done => (None, None, StateFilter::Done),
             View::Source(source) => (None, Some(source.clone()), StateFilter::Open),
-            View::Folder(_) | View::Mail | View::Attachments | View::Invitations => return None,
+            View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_) => return None,
         };
         // "Done" shows what was done for real: a dismissed entry is simply gone (issue #117), its
         // toast's undo the only way back.
@@ -902,6 +907,7 @@ impl View {
             View::Mail => tr("Mail").into(),
             View::Attachments => tr("With attachments").into(),
             View::Invitations => tr("Invitations").into(),
+            View::Search(_) => tr("Search").into(),
         }
     }
 
@@ -917,6 +923,7 @@ impl View {
             View::Mail => Icon::Mail,
             View::Attachments => Icon::Paperclip,
             View::Invitations => Icon::Calendar,
+            View::Search(_) => Icon::Search,
         }
     }
 
@@ -928,10 +935,18 @@ impl View {
         }
     }
 
-    /// A view of mail: a folder, the smart view of attachments, or a window of mail waiting for its
+    /// A view of mail: a folder, a smart view, a search, or a window of mail waiting for its
     /// folders.
     pub fn is_mail(&self) -> bool {
-        matches!(self, View::Folder(_) | View::Mail | View::Attachments | View::Invitations)
+        matches!(self, View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_))
+    }
+
+    /// The search this view shows, if it is one.
+    pub fn search(&self) -> Option<&SearchView> {
+        match self {
+            View::Search(search) => Some(search),
+            _ => None,
+        }
     }
 
     /// What the messages held belong to, for a view that lists messages: the folder's id, or
@@ -941,6 +956,9 @@ impl View {
             View::Folder(folder) => Some(folder.id.clone()),
             View::Attachments => Some("attachments".to_owned()),
             View::Invitations => Some("invitations".to_owned()),
+            // One listing for every search: the results before stay while the next ones come, so
+            // typing does not flash "loading" (issue #136).
+            View::Search(_) => Some("search".to_owned()),
             _ => None,
         }
     }
@@ -1036,6 +1054,9 @@ pub enum Open {
     Folder,
     /// That inbox with its newest message in the panel.
     Mail,
+    /// A search of all mail for "budget" from the first account's inbox (issue #136), with its
+    /// results highlighted and the scopes of that folder.
+    Search,
     /// "For me" with its first mail entry in the panel, the whole mail loaded.
     MailEntry,
     /// The menu "Hide from inbox" of the first mail entry of "For me", at its row (task E3.10).
@@ -1075,7 +1096,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 37] = [
+    const ALL: [(&'static str, Open); 38] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1098,6 +1119,7 @@ impl Open {
         ("folder", Open::Folder),
         ("mail", Open::Mail),
         ("mail-entry", Open::MailEntry),
+        ("search", Open::Search),
         ("hide", Open::Hide),
         ("hide-panel", Open::HidePanel),
         ("overview", Open::Overview),
@@ -1521,6 +1543,8 @@ pub struct Loaded {
     /// Whether it is quiet now, for the hub's "Quiet" (task E8.5b, `inbox.get_quiet`); `None` when it
     /// is not, in every other window and view, and when the core could not say.
     pub quiet: Option<torro_ipc::Quiet>,
+    /// What the core said about a search beyond its messages (issue #136); `None` in other views.
+    pub found: Option<Box<Found>>,
 }
 
 /// Something that went wrong, as the window shows it: a whole sentence ("Couldn't load the
@@ -1653,8 +1677,22 @@ pub struct App<S> {
     /// The folder whose messages `messages` holds; another folder's view shows loading until its
     /// messages are in.
     listed: Option<String>,
-    /// What is typed into the folder's search field.
+    /// What is typed into the search field over the list (issue #136).
     search: String,
+    /// When what is typed should be searched for: [`search::DEBOUNCE`] after the last key.
+    search_due: Option<Instant>,
+    /// The view the search started from: "Clear search" goes back to it, and from a folder the bar
+    /// offers its account and the folder itself as scopes.
+    search_from: Option<View>,
+    /// The suggestions under the field show: from a key in it until the search is made, a
+    /// suggestion picked or Escape.
+    suggesting: bool,
+    /// The searches last made, newest first (`ui.json`, never sent anywhere).
+    recent: Vec<String>,
+    /// What the core said about the search shown beyond its messages.
+    found: Found,
+    /// Where the words of the search shown matched, per message.
+    highlights: Vec<MailHighlight>,
     /// The accounts folded away or unfolded by the person (`true`: unfolded), also as `ui.json`
     /// kept them (issue #121, [`account_key`]); the others follow [`App::account_open`].
     folds: Vec<(String, bool)>,
@@ -1914,12 +1952,24 @@ pub enum Message {
     MoreMail,
     /// The next page of the folder's view it was asked for.
     MoreLoaded(View, Order, Result<MailPage, String>),
-    /// What is typed into the search field.
+    /// What is typed into the search field: it is searched for [`search::DEBOUNCE`] later.
     SearchInput(String),
-    /// `Enter` in the search field: show the folder searched for it.
+    /// `Enter` in the search field: search now and remember the search.
     Search,
-    /// "Clear search": the whole folder again.
+    /// "Clear search" (or Escape in a search): back to the view the search started from.
     ClearSearch,
+    /// The timer of a search that waits ([`search::TICK`]): it runs once it is due.
+    SearchTick(Instant),
+    /// A suggestion under the field: this query in the field, searched for soon.
+    Suggest(String),
+    /// Where the search looks: all mail, this account, this folder.
+    SearchScope(Scope),
+    /// How the results are ordered: by relevance or by date.
+    SearchSort(MailSort),
+    /// The searches last made, as `ui.json` keeps them.
+    RecentSearches(Vec<String>),
+    /// "Clear" beside the searches last made: forget them.
+    ForgetSearches,
     /// An attachment of a message (message id, part) to fetch and open.
     OpenAttachment(String, String),
     /// What became of opening an attachment.
@@ -2052,10 +2102,11 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
             info: 0,
             sources: Vec::new(),
             folders: Vec::new(),
-            mail: view.listing().map(|_| MailPage { messages: Vec::new(), next: None }),
+            mail: view.listing().map(|_| MailPage::of(Vec::new(), None)),
             snoozed: Vec::new(),
             done: Vec::new(),
             quiet: None,
+            found: None,
         };
         return Ok(none);
     }
@@ -2100,9 +2151,20 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
     let folders = inbox.mail_folders().await.unwrap_or_default();
+    let mut found = None;
     let mail = match &view {
         View::Folder(folder) => {
-            Some(inbox.search_mail(folder.id.clone(), folder.query.clone(), limit, None, order).await.map_err(failed)?)
+            Some(inbox.search_mail(folder.id.clone(), None, limit, None, order).await.map_err(failed)?)
+        }
+        // Nothing typed yet: nothing to ask.
+        View::Search(search) if search.query.is_empty() => Some(MailPage::of(Vec::new(), None)),
+        View::Search(search) => {
+            let page = inbox.find_mail(search.find(order, limit.max(search::PAGE), None)).await.map_err(failed)?;
+            // How far the index is, only while matches may be missing; without an answer the line
+            // still says that some may be.
+            let index = if page.complete { Vec::new() } else { inbox.mail_index_status().await.unwrap_or_default() };
+            found = Some(Box::new(Found { complete: page.complete, total: page.total, index }));
+            Some(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
         }
         View::Attachments => {
             let mut pages = Vec::new();
@@ -2111,7 +2173,7 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
                     inbox.search_mail(inbox_folder.id.clone(), None, limit, None, order).await.map_err(failed)?;
                 pages.push(page.messages);
             }
-            Some(MailPage { messages: mail::attachments(pages, order), next: None })
+            Some(MailPage::of(mail::attachments(pages, order), None))
         }
         // The smart view "Invitations" (task E8.3b) the same way, from what the summaries say.
         View::Invitations => {
@@ -2123,7 +2185,7 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
                     inbox.search_mail(inbox_folder.id.clone(), None, limit, None, newest).await.map_err(failed)?;
                 pages.push(page.messages);
             }
-            Some(MailPage { messages: mail::invitations(pages, demo.unwrap_or_else(Utc::now)), next: None })
+            Some(MailPage::of(mail::invitations(pages, demo.unwrap_or_else(Utc::now)), None))
         }
         _ => None,
     };
@@ -2136,7 +2198,7 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
         ),
         _ => (Vec::new(), Vec::new(), None),
     };
-    Ok(Loaded { order, items, for_me, info, sources, folders, mail, snoozed, done, quiet })
+    Ok(Loaded { order, items, for_me, info, sources, folders, mail, snoozed, done, quiet, found })
 }
 
 impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
@@ -2158,7 +2220,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 Some(Open::Snoozed) => View::Snoozed,
                 Some(Open::Done) => View::Done,
                 // The first inbox, once the folders are in.
-                Some(Open::Folder | Open::Mail) => View::Mail,
+                // The search starts there too, so the bar offers the folder and its account.
+                Some(Open::Folder | Open::Mail | Open::Search) => View::Mail,
                 // The mail window's "For me" is its overview (task E8.3).
                 Some(Open::MailEntry) if launch.kind == Kind::Mail => View::Overview,
                 Some(Open::MailEntry) => View::ForMe,
@@ -2216,6 +2279,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             text: Selectable::default(),
             listed: None,
             search: String::new(),
+            search_due: None,
+            search_from: None,
+            suggesting: false,
+            recent: Vec::new(),
+            found: Found::default(),
+            highlights: Vec::new(),
             folds: Vec::new(),
             mail_only: launch.view == Some(View::Mail),
             shown: launch.shown.clone(),
@@ -2272,6 +2341,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
+            ui_state::load_searches_task(INBOX).map(Message::RecentSearches),
             density,
             order,
             split,
@@ -2308,9 +2378,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
             subscriptions.push(iced::event::listen_with(keys::listen));
+            // ⌘F / Ctrl + F, also when the search field or the window's guard took it (issue #136).
+            if !self.folders.is_empty() {
+                subscriptions.push(iced::event::listen_with(keys::find_key));
+            }
             // Escape closes an open menu, drawer, the toast or the panel; nothing listens while none is
             // open.
-            if self.menu.is_some() || self.drawer || self.panel_open() || self.hint.is_some() {
+            if self.menu.is_some()
+                || self.drawer
+                || self.panel_open()
+                || self.hint.is_some()
+                || self.view.search().is_some()
+            {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
             // Ctrl + Z (⌘ + Z) undoes while the toast offers it – not while the dialog of "Make task"
@@ -2321,6 +2400,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
         if self.hint.is_some() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
+        }
+        // A search waits for the typing to pause (issue #136).
+        if self.search_due.is_some() {
+            subscriptions.push(iced::time::every(search::TICK).map(Message::SearchTick));
         }
         // The end of a drag of the divider, wherever the button is released (issue #130).
         if self.split.dragging {
@@ -2387,8 +2470,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 self.sorting = false;
                 self.filter = None;
                 self.insights.shown = false;
-                // A folder from the sidebar comes whole; its search field starts empty.
-                self.search = view.folder().and_then(|folder| folder.query.clone()).unwrap_or_default();
+                // Another view leaves the search: its field starts empty.
+                if view.search().is_none() {
+                    self.leave_search_state();
+                }
                 if view != self.view {
                     self.view = view;
                     return self.load();
@@ -2622,10 +2707,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
             Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
             Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app.to_owned())),
-            // The search is a folder's (task E4.2): the button focuses its field there. "New" writes a
-            // message when there is a mail account to write from (task E4.3); the inbox has nothing
-            // else to create. Elsewhere the buttons only close what is open.
-            Message::Switcher(Switcher::Search) if self.view.folder().is_some() => return self.focus_search(),
+            // The search button focuses the field over the list of mail, or opens a search where the
+            // view has none (issue #136). "New" writes a message when there is a mail account to
+            // write from (task E4.3); the inbox has nothing else to create. Elsewhere the buttons only
+            // close what is open.
+            Message::Switcher(Switcher::Search) if !self.folders.is_empty() => return self.focus_search(),
             Message::Switcher(Switcher::New) if !self.folders.is_empty() => {
                 self.close_menus();
                 return self.compose_new();
@@ -2672,8 +2758,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 } else if self.hint.is_some() {
                     // The toast goes first: it lies over everything, and the panel stays.
                     self.hint = None;
-                } else {
+                } else if self.suggesting {
+                    self.suggesting = false;
+                } else if self.panel_open() || self.view.search().is_none() {
                     self.close_panel();
+                } else {
+                    // A search with nothing open in front of it: back to where it started.
+                    return self.clear_search();
                 }
             }
             Message::OpenApp(app) => {
@@ -2694,6 +2785,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 if self.messages.iter().any(|message| message.id == id) {
                     self.cursor = Some(id);
                     self.reading = true;
+                    // A result opened: the search was worth keeping (issue #136).
+                    if self.view.search().is_some() {
+                        self.suggesting = false;
+                        return self.remember_search();
+                    }
                 }
             }
             Message::LetterLoaded(id, result) => {
@@ -2725,19 +2821,51 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     return Task::none();
                 }
                 match result {
-                    Ok(page) => {
+                    Ok(mut page) => {
+                        search::with_passages(&mut page.messages, &page.highlights);
                         let known: Vec<String> = self.messages.iter().map(|message| message.id.clone()).collect();
                         self.messages.extend(page.messages.into_iter().filter(|message| !known.contains(&message.id)));
+                        self.highlights.extend(page.highlights);
                         self.more = page.next;
                     }
                     Err(err) => self.error = Some(Failure::new(tr("Couldn't load more messages."), err)),
                 }
             }
-            Message::SearchInput(text) => self.search = text,
-            Message::Search => return self.search_folder(self.search.clone()),
-            Message::ClearSearch => {
-                self.search.clear();
-                return self.search_folder(String::new());
+            Message::SearchInput(text) => return self.type_search(text),
+            Message::Search => {
+                self.suggesting = false;
+                let remembered = self.remember_search();
+                return Task::batch([self.run_search(), remembered]);
+            }
+            Message::ClearSearch => return self.clear_search(),
+            Message::SearchTick(now) => {
+                if self.search_due.is_some_and(|due| now >= due) {
+                    return self.run_search();
+                }
+            }
+            Message::Suggest(query) => {
+                // An operator picked waits for its value: its suggestions stay; a whole word is done.
+                let more = query.ends_with(':');
+                let typed = self.type_search(query);
+                self.suggesting = more;
+                return Task::batch([typed, operation::focus(search::FIELD)]);
+            }
+            Message::SearchScope(scope) => {
+                if let View::Search(shown) = &self.view {
+                    let view = View::Search(SearchView { scope, ..shown.clone() });
+                    return self.show_search(view);
+                }
+            }
+            Message::SearchSort(sort) => {
+                if let View::Search(shown) = &self.view {
+                    let view = View::Search(SearchView { sort, ..shown.clone() });
+                    return self.show_search(view);
+                }
+            }
+            Message::RecentSearches(recent) => self.recent = recent,
+            Message::ForgetSearches => {
+                self.recent.clear();
+                return ui_state::save_searches_task(INBOX, Vec::new());
             }
             Message::OpenAttachment(id, part) => {
                 #[cfg(test)]
@@ -3235,40 +3363,182 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
     }
 
-    /// Shows the folder searched for `query` (the whole folder for a blank one).
-    fn search_folder(&mut self, query: String) -> Task<Message> {
-        let Some(folder) = self.view.folder() else { return Task::none() };
-        let searched = folder.searching(&query);
-        if searched == *folder {
+    /// Whether the field of the search stands over the list (issue #136): in every view of the mail
+    /// window, and in the views of mail of the others – once there is a mail account.
+    fn shows_search(&self) -> bool {
+        !self.folders.is_empty() && (self.launch.kind == Kind::Mail || self.view.is_mail())
+    }
+
+    /// Puts the keyboard into the search field (`/`, ⌘F / Ctrl + F, the search button); where the
+    /// view has no field, an empty search opens with it.
+    fn focus_search(&mut self) -> Task<Message> {
+        self.close_menus();
+        if self.folders.is_empty() {
             return Task::none();
         }
-        self.view = View::Folder(searched);
+        if !self.shows_search() {
+            self.search_from = Some(self.view.clone());
+            self.view = View::Search(SearchView::new("", Scope::All, Sort::Relevance));
+            self.cursor = None;
+            self.detail = None;
+            self.reading = false;
+            self.messages.clear();
+            self.listed = self.view.listing();
+        }
+        operation::focus(search::FIELD)
+    }
+
+    /// Something was typed into the field: it is searched for [`search::DEBOUNCE`] from now; the
+    /// suggestions show. A blank field goes back to where the search started.
+    fn type_search(&mut self, text: String) -> Task<Message> {
+        self.search = text;
+        self.suggesting = true;
+        if self.search.trim().is_empty() {
+            self.search_due = None;
+            if self.view.search().is_none() {
+                return Task::none();
+            }
+            // Where the view the search came from has no field (the hub's views), the empty search
+            // stays, with the searches last made; elsewhere the field stands over that view's list.
+            let from_field = self.launch.kind == Kind::Mail || self.search_from.as_ref().is_some_and(View::is_mail);
+            if from_field {
+                return self.clear_search();
+            }
+            return self.show_search(View::Search(SearchView::new("", Scope::All, Sort::Relevance)));
+        }
+        self.search_due = Some(Instant::now() + search::DEBOUNCE);
+        Task::none()
+    }
+
+    /// Searches for what is typed now: the search view with it, in the scope and order shown (all
+    /// mail, by relevance, for a new search).
+    fn run_search(&mut self) -> Task<Message> {
+        self.search_due = None;
+        let (scope, sort) = match &self.view {
+            View::Search(shown) => (shown.scope.clone(), shown.sort),
+            _ => (Scope::All, Sort::Relevance),
+        };
+        let query = self.search.trim();
+        if query.is_empty() {
+            return Task::none();
+        }
+        self.show_search(View::Search(SearchView::new(query, scope, sort)))
+    }
+
+    /// Shows `view`, a search, remembering where the search started; the same search again asks
+    /// nothing.
+    fn show_search(&mut self, view: View) -> Task<Message> {
+        if view == self.view {
+            return Task::none();
+        }
+        if self.view.search().is_none() {
+            self.search_from = Some(self.view.clone());
+            self.reading = false;
+            self.detail = None;
+        }
+        self.view = view;
         self.cursor = None;
-        self.reading = false;
         self.load()
     }
 
-    /// Puts the keyboard into the search field of a folder.
-    fn focus_search(&mut self) -> Task<Message> {
-        self.close_menus();
-        if self.view.folder().is_none() {
+    /// Keeps the search shown among the searches last made, in `ui.json`.
+    fn remember_search(&mut self) -> Task<Message> {
+        let recent = search::remember(&self.recent, &self.search);
+        if recent == self.recent {
             return Task::none();
         }
-        operation::focus(mail::SEARCH)
+        self.recent = recent.clone();
+        ui_state::save_searches_task(INBOX, recent)
     }
 
-    /// "Load more": the folder's next page.
-    fn more_mail(&mut self) -> Task<Message> {
-        let (Some(folder), Some(cursor)) = (self.view.folder().cloned(), self.more.clone()) else {
+    /// "Clear search": the field empty, and back to the view the search started from (the window's
+    /// first view without one).
+    fn clear_search(&mut self) -> Task<Message> {
+        let back = self.search_from.clone();
+        self.leave_search_state();
+        if self.view.search().is_none() {
             return Task::none();
+        }
+        // Without one: the window's first view.
+        let back = back.unwrap_or(View::Overview);
+        self.update(Message::Show(back))
+    }
+
+    /// Forgets what belongs to a search: the field, the timer, where it started, its results' extras.
+    fn leave_search_state(&mut self) {
+        self.search.clear();
+        self.search_due = None;
+        self.search_from = None;
+        self.suggesting = false;
+        self.found = Found::default();
+        self.highlights.clear();
+    }
+
+    /// The scopes the bar offers: from a folder, its account and the folder itself.
+    fn search_scopes(&self) -> Option<ScopeChoice> {
+        let folder = self.search_from.as_ref().and_then(View::folder).or(self.view.folder())?;
+        let chosen = self.view.search().map_or(Scope::All, |search| search.scope.clone());
+        Some(ScopeChoice { folder: folder.clone(), chosen })
+    }
+
+    /// The suggestions under the field while they show.
+    fn search_suggestions(&self) -> Vec<Suggestion> {
+        let empty_search = self.view.search().is_some_and(|search| search.query.is_empty());
+        if !(self.suggesting || (empty_search && self.search.trim().is_empty())) {
+            return Vec::new();
+        }
+        search::suggestions(&self.search, &self.recent, &search::people(&self.messages), &self.folders)
+    }
+
+    /// `Tab`: the first suggestion, as a click on it.
+    fn take_suggestion(&mut self) -> Task<Message> {
+        match self.search_suggestions().into_iter().next() {
+            Some(first) => self.update(Message::Suggest(first.query)),
+            None => Task::none(),
+        }
+    }
+
+    /// The bar over the list: field, suggestions, scope and order, the line on the results.
+    fn search_bar(&self) -> Element<'_, Message> {
+        let search = self.view.search();
+        let status = search
+            .filter(|search| !search.query.is_empty() && self.listed == self.view.listing() && self.loaded)
+            .map(|_| search::status_line(self.messages.len(), self.more.is_some(), &self.found));
+        search::bar(search::Bar {
+            input: &self.search,
+            search,
+            scopes: self.search_scopes(),
+            suggestions: self.search_suggestions(),
+            status,
+        })
+    }
+
+    /// "Load more": the next page of the folder or the search.
+    fn more_mail(&mut self) -> Task<Message> {
+        let Some(cursor) = self.more.clone() else { return Task::none() };
+        let (inbox, view, order) = (self.inbox.clone(), self.view.clone(), self.order);
+        let next: std::pin::Pin<Box<dyn std::future::Future<Output = Result<MailPage, String>> + Send>> = match &view {
+            View::Folder(folder) => {
+                let folder = folder.id.clone();
+                let cursor = cursor.clone();
+                Box::pin(async move {
+                    inbox
+                        .search_mail(folder, None, mail::PAGE, Some(cursor), order)
+                        .await
+                        .map_err(|err| err.to_string())
+                })
+            }
+            View::Search(shown) => {
+                let find = shown.find(order, search::PAGE, Some(cursor.clone()));
+                Box::pin(async move {
+                    let page = inbox.find_mail(find).await.map_err(|err| err.to_string())?;
+                    Ok(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
+                })
+            }
+            _ => return Task::none(),
         };
         #[cfg(test)]
-        self.sent.push(Sent::More(cursor.clone()));
-        let (inbox, view, order) = (self.inbox.clone(), self.view.clone(), self.order);
-        let next = async move {
-            let page = inbox.search_mail(folder.id, folder.query, mail::PAGE, Some(cursor), order).await;
-            page.map_err(|err| err.to_string())
-        };
+        self.sent.push(Sent::More(cursor));
         Task::perform(next, move |result| Message::MoreLoaded(view.clone(), order, result))
     }
 
@@ -3370,11 +3640,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.info = loaded.info;
         self.sources = loaded.sources;
         self.folders = loaded.folders;
-        let page = loaded.mail.unwrap_or(MailPage { messages: Vec::new(), next: None });
+        let page = loaded.mail.unwrap_or(MailPage::of(Vec::new(), None));
         self.messages = page.messages;
         for message in &mut self.messages {
             keep_answer(&self.answers, message);
         }
+        search::with_passages(&mut self.messages, &page.highlights);
+        self.highlights = page.highlights;
+        self.found = loaded.found.map(|found| *found).unwrap_or_default();
         self.more = page.next;
         self.listed = self.view.listing();
         self.loaded = true;
@@ -3620,6 +3893,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Command::Forward => self.key_mail(MailAction::Forward),
             Command::Delete => self.key_mail(MailAction::Delete),
             Command::Search => self.focus_search(),
+            Command::Complete => self.take_suggestion(),
             Command::Done => match self.cursor_item().cloned() {
                 Some(item) if detail::is_approval(&item) => {
                     self.note(tr("An approval closes once it is decided.").to_owned());
@@ -5109,11 +5383,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return if self.sorting { sections.to_sort.len().to_string() } else { hub::summary(&sections) };
         }
         match self.view.folder() {
-            Some(folder) if folder.query.is_none() => {
+            Some(folder) => {
                 let all = self.folders.iter().find(|f| f.id == folder.id).map(|f| f.total as usize);
                 all.unwrap_or(self.messages.len()).to_string()
             }
-            Some(_) => self.messages.len().to_string(),
+            // A search counts what the core says it found in all, else what it shows (issue #136).
+            None if self.view.search().is_some_and(|search| !search.query.is_empty()) => {
+                self.found.total.map_or_else(|| self.messages.len().to_string(), |total| total.to_string())
+            }
             None if matches!(self.view, View::Attachments | View::Invitations) => self.messages.len().to_string(),
             None if self.view.is_mail() => String::new(),
             // As in the sidebar: what is for the user; "Info" lies folded. The notifications window
@@ -5182,9 +5459,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
         let attention = palette(&self.theme()).attention_text;
         let mut content = column![];
-        // The search stands above the error line: it belongs to the folder, the error to the list.
-        if let Some(folder) = self.view.folder() {
-            content = content.push(mail::search_bar(&self.search, folder));
+        // The search stands above the error line: it belongs to the mail, the error to the list.
+        if self.shows_search() {
+            content = content.push(self.search_bar());
         }
         if let Some(failure) = &self.error {
             content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
@@ -5218,6 +5495,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                         .map(|item| item.id.as_str())
                         .collect(),
                     folders: &self.folders,
+                    highlights: &self.highlights,
+                    text: palette(&self.theme()).text,
                 })
             }
         } else if self.is_board() {
@@ -5898,6 +6177,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Some(Open::Mail | Open::Invitation) => {
                 self.cursor = self.messages.first().map(|message| message.id.clone());
                 self.reading = self.cursor.is_some();
+            }
+            Some(Open::Search) => {
+                self.search = "budget".to_owned();
+                return self.run_search();
             }
             Some(Open::MailEntry) => {
                 self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
@@ -6701,7 +6984,8 @@ mod tests {
         {
             let _ = app.update(Message::Resized(size));
             assert_eq!(app.is_glance(), glance, "{size:?}");
-            let expected = if glance { wide - 2 } else { wide };
+            // The keys, ⌘F of the search (the demo has mail) and Escape.
+            let expected = if glance { wide - 3 } else { wide };
             assert_eq!(app.subscription().units(), expected, "no keys and no Escape in a glance: {size:?}");
             let _ = app.view();
         }
@@ -6763,7 +7047,7 @@ mod tests {
         assert_eq!(oldest, first, "the oldest page first");
         assert_ne!(oldest.first(), newest.first());
         // A page of "Load more" asked newest first does not belong any more.
-        let late = Ok(MailPage { messages: all.messages.clone(), next: None });
+        let late = Ok(MailPage::of(all.messages.clone(), None));
         let _ = app.update(Message::MoreLoaded(app.view.clone(), Order::NewestFirst, late));
         assert_eq!(app.messages.len(), oldest.len(), "dropped");
 
@@ -8353,18 +8637,23 @@ mod tests {
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This message is in the trash already.")));
     }
 
+    /// Issue #136: a search looks in all mail by default and shows what it found; clearing it goes
+    /// back to the folder it started from.
     #[test]
     fn a_search_shows_what_it_found_and_clearing_it_the_whole_folder() {
         let mut app = in_folder("f:work-inbox");
+        let folder = app.view.clone();
         let _ = app.update(Message::SearchInput("minutes".into()));
         let _ = app.update(Message::Search);
-        assert_eq!(app.view.folder().and_then(|folder| folder.query.as_deref()), Some("minutes"));
+        let shown = app.view.search().cloned().expect("a search");
+        assert_eq!((shown.query.as_str(), &shown.scope, shown.sort), ("minutes", &Scope::All, Sort::Relevance));
         load(&mut app);
         assert_eq!(message_ids(&app), ["m:w6"]);
         assert_eq!(app.count_note(), "1", "what it found");
+        assert_eq!(app.recent, ["minutes"], "Enter keeps the search");
         draw_everywhere(&mut app);
         let _ = app.update(Message::ClearSearch);
-        assert_eq!((app.search.as_str(), app.view.folder().and_then(|f| f.query.clone())), ("", None));
+        assert_eq!((app.search.as_str(), &app.view), ("", &folder), "back where it started");
         load(&mut app);
         assert_eq!(app.messages.len(), 8);
         let _ = app.update(Message::SearchInput("nothing like this".into()));
@@ -8372,6 +8661,105 @@ mod tests {
         load(&mut app);
         assert!(app.messages.is_empty());
         draw_everywhere(&mut app);
+    }
+
+    /// Issue #136: typing searches once the keys pause, not at every key; a blank field goes back.
+    #[test]
+    fn typing_searches_after_a_pause() {
+        let mut app = in_folder("f:work-inbox");
+        let folder = app.view.clone();
+        let _ = app.update(Message::SearchInput("bud".into()));
+        let due = app.search_due.expect("a search waits");
+        assert!(app.view.search().is_none(), "not at once");
+        let _ = app.update(Message::SearchTick(due - Duration::from_millis(10)));
+        assert!(app.view.search().is_none(), "still typing");
+        let _ = app.update(Message::SearchInput("budget".into()));
+        let due = app.search_due.expect("a search waits");
+        let _ = app.update(Message::SearchTick(due));
+        assert_eq!(app.view.search().map(|search| search.query.as_str()), Some("budget"));
+        assert!(app.search_due.is_none());
+        assert!(app.recent.is_empty(), "typing alone keeps no search");
+        load(&mut app);
+        assert!(!app.messages.is_empty() && !app.highlights.is_empty(), "found and highlighted");
+        let first = app.messages[0].id.clone();
+        let _ = app.update(Message::SelectMail(first));
+        assert_eq!(app.recent, ["budget"], "opening a result keeps it");
+        let _ = app.update(Message::SearchInput(String::new()));
+        assert_eq!(app.view, folder, "a blank field goes back");
+    }
+
+    /// Issue #136: from a folder the search can look in its account or the folder alone, by date;
+    /// an incomplete index is said, with how far it is.
+    #[test]
+    fn a_search_narrows_to_the_account_or_folder_and_says_what_is_missing() {
+        let mut app = in_folder("f:work-inbox");
+        let folder = app.view.folder().cloned().expect("a folder");
+        let _ = app.update(Message::SearchInput("budget".into()));
+        let _ = app.update(Message::Search);
+        load(&mut app);
+        assert!(!app.found.complete, "the demo still indexes an account");
+        assert!(!app.found.index.is_empty(), "how far, asked");
+        let scopes = app.search_scopes().expect("from a folder");
+        assert_eq!(scopes.folder, folder);
+        let _ = app.update(Message::SearchScope(Scope::Account(folder.account.clone())));
+        load(&mut app);
+        assert!(app.found.complete, "the work account is indexed");
+        assert!(app.messages.iter().all(|message| message.account == folder.account));
+        let _ = app.update(Message::SearchScope(Scope::Folder(folder.clone())));
+        let _ = app.update(Message::SearchSort(Sort::Date));
+        load(&mut app);
+        let shown = app.view.search().cloned().expect("a search");
+        assert_eq!((shown.scope, shown.sort), (Scope::Folder(folder.clone()), Sort::Date));
+        assert!(app.messages.iter().all(|message| message.folder == folder.id));
+        draw_everywhere(&mut app);
+    }
+
+    /// Issue #136: suggestions under the field – operators, people, folders, searches last made –,
+    /// Tab takes the first; ⌘F / Ctrl + F and `/` focus the field, the button opens a search where
+    /// the view has no field.
+    #[test]
+    fn suggestions_complete_the_search_and_the_keys_reach_the_field() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::RecentSearches(vec!["budget review".into()]));
+        let _ = app.update(Message::SearchInput("from:jo".into()));
+        let suggestions = app.search_suggestions();
+        assert!(suggestions.iter().any(|s| s.query.starts_with("from:jonas")), "{suggestions:?}");
+        let _ = app.update(Message::Key(Key::Tab));
+        assert!(app.search.starts_with("from:jonas") && app.search.ends_with(' '), "{}", app.search);
+        assert!(!app.suggesting, "taken");
+        let _ = app.update(Message::Escape);
+        let command =
+            if cfg!(target_os = "macos") { iced::keyboard::Modifiers::LOGO } else { iced::keyboard::Modifiers::CTRL };
+        let press = |modifiers| {
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Character("f".into()),
+                modified_key: iced::keyboard::Key::Character("f".into()),
+                physical_key: iced::keyboard::key::Physical::Unidentified(
+                    iced::keyboard::key::NativeCode::Unidentified,
+                ),
+                location: iced::keyboard::Location::Standard,
+                modifiers,
+                text: Some("f".into()),
+                repeat: false,
+            })
+        };
+        let captured = iced::event::Status::Captured;
+        let heard = keys::find_key(press(command), captured, iced::window::Id::unique());
+        assert!(matches!(heard, Some(Message::Key(Key::Find))), "also when the guard took it");
+        let plain = keys::find_key(press(iced::keyboard::Modifiers::empty()), captured, iced::window::Id::unique());
+        assert!(plain.is_none(), "a plain f is no search");
+        assert_eq!(keys::command(Focus::List, Key::Find), Some(Command::Search));
+        // In the hub, which lists no mail, the button opens an empty search with the searches last made.
+        let mut hub = overview_at(&["--view", "hub"]);
+        let _ = hub.update(Message::RecentSearches(vec!["budget review".into()]));
+        let _ = hub.update(Message::Switcher(Switcher::Search));
+        assert_eq!(hub.view.search().map(|search| search.query.as_str()), Some(""));
+        assert_eq!(hub.search_suggestions().first().map(|s| s.query.as_str()), Some("budget review"));
+        draw_everywhere(&mut hub);
+        let _ = hub.update(Message::ForgetSearches);
+        assert!(hub.recent.is_empty() && hub.search_suggestions().is_empty());
+        let _ = hub.update(Message::Escape);
+        assert_eq!(hub.view, View::Overview, "Escape goes back");
     }
 
     #[test]

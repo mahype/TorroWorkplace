@@ -581,6 +581,36 @@ ihre Texte im Bericht.
   (3 000 Mails) und von Hand `cargo test --release -p torroworkplace -- --ignored search_budget` (100 000 Mails,
   < 100 ms).
 
+### M8.2 Suchfeld über der Mail-Liste (Issue #136, Schritte 1 und 5)
+- [x] erledigt (2026-10-14: neues Modul `crates/torroinbox/src/search.rs` und Ansicht `View::Search`. Das Feld steht
+  über der Liste in jeder Ansicht des Mail-Fensters und in den Mail-Ansichten der anderen Fenster (sobald es ein
+  Mail-Konto gibt); Lupe, `/` und ⌘F/Strg+F fokussieren es (⌘F über `keys::find_key`, auch wenn der Strg-Schutz des
+  Fensters die Taste nimmt), wo kein Feld steht (Ansichten der Zentrale), öffnet die Lupe eine leere Suche mit den
+  letzten Suchen. Standard: alle Ordner und Konten; aus einem Ordner heraus bietet die Leiste „All mail | This
+  account | This folder“, dazu „Relevance | Date“ (Datum folgt „Newest/Oldest first“). Suche beim Tippen 150 ms nach
+  der letzten Taste (`search_due` + `SearchTick`), Enter sofort. Vorschläge als Chips unter dem Feld (letzte Suchen,
+  Absender/Empfänger der geladenen Mails als `from:`, Ordner als `in:`, Operatoren mit Tooltip), `Tab` nimmt den
+  ersten. Letzte Suchen in `ui.json` (`recentSearches`, höchstens 8, `ui_state::save_searches_task`), gemerkt bei
+  Enter und beim Öffnen eines Treffers, „Clear“ vergisst sie. Treffer hervorgehoben (`list::Hits`: Gewicht eine Stufe
+  höher und `TEXT`, nie nur Farbe); die Vorschau zeigt die Fundstelle statt des Mailanfangs. Zeile darunter: Zahl der
+  Treffer und – mit Icon und Worten – „Some matches may be missing …“ mit Indexstand aus `mail.index_status`.
+  Escape: erst das Feld, dann Vorschläge, dann zurück zur Ansicht vor der Suche. Die Ordnersuche über
+  `FolderView::query` entfällt, die Suche im Ordner ist jetzt der Bereich „This folder“. Entscheidungen: Vorschläge als
+  Chips statt schwebendem Menü (verdecken die Treffer nicht, keine eigene Tastenführung), Gruppierung nach
+  Konversation bleibt offen. Sichtprüfung auf macOS: Fenstergröße lässt sich ohne Bedienungshilfen-Recht nicht
+  setzen, geprüft in Mittel, hell/dunkel, kompakt/bequem)
+- **Modell:** Opus · **Braucht:** M8.1 · **Dateien:** `crates/torroinbox/src/{search,app,mail,list,keys,main}.rs`,
+  `crates/torro-ipc/src/inbox.rs` (`InboxClient::find_mail`, `mail_index_status`), `crates/torro-gui/src/{ui_state,icon}.rs`,
+  `crates/torro-gui/assets/icons/history.svg`, `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Suchfeld über der Mail-Liste (alle drei Fenster). **API:** nutzt `mail.search_messages`
+  (`Request::SearchMail` mit `account`/`folder`/`sort`) und `mail.index_status` – keine neuen Befehle. **MCP:**
+  `mail_search_messages`, `mail_index_status` (gab es schon). Letzte Suchen bleiben im Client (Issue #136), kein Weg
+  nach außen.
+- **Abnahme:** Tests: Suche erst nach der Pause, Enter und geöffneter Treffer merken die Suche; Bereich Konto/Ordner und
+  Sortierung gehen in die Anfrage; unvollständiger Index wird gesagt; Vorschläge je Eingabe, `Tab`; ⌘F auch, wenn der
+  Schutz die Taste nahm; Escape zurück; letzte Suchen in `ui.json` neben dem Rest; Client baut die Anfrage richtig.
+  Sichtprüfung `--demo --view mail --open search`.
+
 ### Danach
 - **M7.5 Einladungen (iMIP):** `calendar.respond_invitation` · Write + „Nach außen“ · MCP
   `calendar_respond_invitation`; im Paneel „Accept / Maybe / Decline“, Termin in den Standardkalender, Antwort per Mail.
