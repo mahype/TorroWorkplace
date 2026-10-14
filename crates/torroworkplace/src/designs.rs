@@ -1,4 +1,4 @@
-//! The example design packs the suite ships (tasks L.5, L.7–L.9, L.12–L.15): `designs/` in the repository,
+//! The example design packs the suite ships (tasks L.5, L.7–L.9, L.12–L.16): `designs/` in the repository,
 //! built into this binary and written to the designs folder when the suite starts.
 //!
 //! They live here rather than in `torro-core`, because only the core service and the control
@@ -168,6 +168,15 @@ const EXAMPLES: &[Example] = &[
             pack_file!("dracula", "logo.svg"),
             pack_file!("dracula", "tray.svg"),
             pack_file!("dracula", "preview.png"),
+        ],
+    },
+    Example {
+        id: "everforest",
+        files: &[
+            pack_file!("everforest", "design.toml"),
+            pack_file!("everforest", "logo.svg"),
+            pack_file!("everforest", "tray.svg"),
+            pack_file!("everforest", "preview.png"),
         ],
     },
 ];
@@ -378,6 +387,7 @@ mod tests {
             ("catppuccin", "Catppuccin", "Inter", "Inter Tabular"),
             ("gruvbox", "Gruvbox", "Inter", "Inter Tabular"),
             ("dracula", "Dracula", "Inter", "Inter Tabular"),
+            ("everforest", "Everforest", "Inter", "Inter Tabular"),
             // further packs
         ];
         for (id, name, text, numbers) in packs {
@@ -431,6 +441,7 @@ mod tests {
             "catppuccin",
             "gruvbox",
             "dracula",
+            "everforest",
         ] {
             assert!(torro_core::design::load(&dir, id).is_ok(), "the copy of {id} is valid too");
         }
