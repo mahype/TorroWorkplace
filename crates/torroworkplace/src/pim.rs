@@ -1109,6 +1109,8 @@ impl PimService {
             Request::ListItems { .. }
             | Request::GetItem { .. }
             | Request::OpenItem { .. }
+            | Request::SuggestTaskFromItem { .. }
+            | Request::SuggestEventFromItem { .. }
             | Request::ListSources
             | Request::PostItem { .. }
             | Request::ResolveItems { .. }

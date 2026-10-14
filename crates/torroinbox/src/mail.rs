@@ -1482,6 +1482,9 @@ pub struct ReaderEntry<'a> {
     pub item: &'a Item,
     /// "Hide from inbox" has entries for it (`App::hide_choices`): the reader shows its "…".
     pub hide: bool,
+    /// An AI is set up (issue #120): "AI task" and "AI event" after "Task" are on; else off, with
+    /// a tooltip that says to set one up first.
+    pub ai: bool,
 }
 
 /// The reader of the wide mail window (task E8.3), beside the list: the mail's actions at the top
@@ -1612,11 +1615,14 @@ struct ReaderButton {
     message: Option<Message>,
     /// Where its menu opens (Later, Task, Move to …, "…").
     anchor: Option<Anchor>,
+    /// A tooltip of its own (issue #120: an AI button off until an AI is set up says so); `None`:
+    /// the word, and only where the button shows its icon alone.
+    tip: Option<String>,
 }
 
 impl ReaderButton {
     fn new(icon: Icon, label: impl Into<String>, message: Option<Message>) -> Self {
-        ReaderButton { icon, label: label.into(), message, anchor: None }
+        ReaderButton { icon, label: label.into(), message, anchor: None, tip: None }
     }
 
     fn at(self, anchor: &Anchor) -> Self {
@@ -1625,10 +1631,14 @@ impl ReaderButton {
 
     /// The button with its word in `style`, or its icon alone.
     fn view<'a>(self, words: bool, style: widgets::ButtonStyle) -> Element<'a, Message> {
-        let button = if words {
-            widgets::text_button(Some(self.icon), self.label, style, self.message)
-        } else {
-            widgets::icon_button(self.icon, self.label, self.message)
+        let button = match (words, self.tip) {
+            (true, None) => widgets::text_button(Some(self.icon), self.label, style, self.message),
+            (true, Some(tip)) => {
+                widgets::with_tooltip(widgets::text_button(Some(self.icon), self.label, style, self.message), tip)
+            }
+            // An AI button that is off (issue #120) shows so in its icon too.
+            (false, Some(tip)) if self.message.is_none() => crate::suggest::off_button(self.icon, tip),
+            (false, tip) => widgets::icon_button(self.icon, tip.unwrap_or(self.label), self.message),
         };
         match self.anchor {
             Some(anchor) => widgets::anchored(&anchor, button),
@@ -1679,7 +1689,7 @@ fn reader_actions<'a>(
         },
     ];
     match entry {
-        Some(ReaderEntry { item, hide }) => {
+        Some(ReaderEntry { item, hide, ai }) => {
             let item_id = || item.id.clone();
             let done = matches!(item.state, State::Done { .. });
             triage.push(if done {
@@ -1693,6 +1703,13 @@ fn reader_actions<'a>(
             }
             let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskTask(item_id())));
             triage.push(task.at(&anchors.task));
+            // "AI task" and "AI event" after it (issue #120): the reader is where the mail was read.
+            for (wanted, message, tip) in crate::suggest::ai_buttons(&item.id, ai) {
+                triage.push(ReaderButton {
+                    tip: Some(tip),
+                    ..ReaderButton::new(Icon::Sparkles, wanted.label(), message)
+                });
+            }
             tools.insert(0, ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)));
             let lane = crate::app::other_lane(item.lane);
             let move_to =
@@ -2246,7 +2263,7 @@ mod tests {
                         invite: InviteSide::default(),
                     };
                     let _ = panel(&reading, Some(&folder));
-                    for entry in [None, Some(ReaderEntry { item: &entry, hide: true })] {
+                    for entry in [None, Some(ReaderEntry { item: &entry, hide: true, ai: false })] {
                         let _ = reader(reading, entry, detail::Anchors::default(), read);
                     }
                 }

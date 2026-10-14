@@ -1712,7 +1712,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
         },
         // The title that will be written: the client's, or – left out or blank – the entry's. The
         // core puts the entry's title into the request before it asks (task E1.2c).
-        Request::CreateTaskFromItem { collection, title, due, .. } => {
+        Request::CreateTaskFromItem { collection, title, due, notes, .. } => {
             let title = title.as_deref().filter(|title| !title.trim().is_empty());
             let title = quote(title.or(facts.item.as_ref().map(|item| item.title.as_str())).unwrap_or_default());
             let list = quote(facts.list.as_deref().unwrap_or(collection));
@@ -1727,11 +1727,11 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 ),
             };
             // Done reaches a remote source (task E5.2).
-            with_settling(made, facts.item.as_ref())
+            with_settling(with_extras(made, None, notes.as_deref()), facts.item.as_ref())
         }
         // The title that will be written, as for a task, the calendar by its cached name and the
         // start (task E8.5b).
-        Request::CreateEventFromItem { collection, title, start, .. } => {
+        Request::CreateEventFromItem { collection, title, start, location, notes, .. } => {
             let title = title.as_deref().filter(|title| !title.trim().is_empty());
             let title = quote(title.or(facts.item.as_ref().map(|item| item.title.as_str())).unwrap_or_default());
             let calendar = quote(facts.list.as_deref().unwrap_or(collection));
@@ -1739,7 +1739,14 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
                 &[("title", &title), ("when", &when(start, today)), ("calendar", &calendar), ("entry", &entry())],
             );
-            with_settling(made, facts.item.as_ref())
+            with_settling(with_extras(made, location.as_deref(), notes.as_deref()), facts.item.as_ref())
+        }
+        // Asking the person's AI (issue #120): it reads the entry, nothing is saved.
+        Request::SuggestTaskFromItem { .. } => {
+            trf("Ask your AI for a task from {entry}; nothing is saved", &[("entry", &entry())])
+        }
+        Request::SuggestEventFromItem { .. } => {
+            trf("Ask your AI for an event from {entry}; nothing is saved", &[("entry", &entry())])
         }
         // Done marks the mail of a mail entry read on its server (task E4.1).
         Request::SetItemDone { done: true, .. } if is_mail(facts.item.as_ref()) => {
@@ -1897,6 +1904,21 @@ fn reach_of(kind: SourceKind, key: FacetKey, what: String) -> String {
 /// that E5.6 attached to the entry is marked read too), "… and delete its Nextcloud notification",
 /// "… and mark the Talk conversation read". Unchanged for every other entry, ntfy
 /// too, which is not told.
+/// `summary` with the place and the note a client wrote into a task or event of an entry (issue
+/// #120), so the person sees what is written: "…, at 'Room 2'", "…, with the note 'Bring the
+/// slides'" – quoted and cut as every text of a summary ([`quote`]). Blank ones are left out.
+fn with_extras(summary: String, location: Option<&str>, notes: Option<&str>) -> String {
+    let filled = |text: Option<&str>| text.map(str::trim).filter(|text| !text.is_empty()).map(quote);
+    let mut summary = summary;
+    if let Some(place) = filled(location) {
+        summary = trf("{what}, at \"{place}\"", &[("what", &summary), ("place", &place)]);
+    }
+    if let Some(note) = filled(notes) {
+        summary = trf("{what}, with the note \"{note}\"", &[("what", &summary), ("note", &note)]);
+    }
+    summary
+}
+
 fn with_settling(summary: String, item: Option<&Item>) -> String {
     let what = [("what", &summary as &dyn std::fmt::Display)];
     match item.map(|item| item.source.kind) {
@@ -3703,7 +3725,13 @@ pub(crate) mod tests {
             (SourceRef::talk(cloud), "{what} and mark the Talk conversation read"),
         ] {
             assert_eq!(inbox_summary(&done, &entry(source.clone())), trf(words, &[("what", &marked)]), "{source}");
-            let task = Request::CreateTaskFromItem { id: "e1".into(), collection: "c".into(), title: None, due: None };
+            let task = Request::CreateTaskFromItem {
+                id: "e1".into(),
+                collection: "c".into(),
+                title: None,
+                due: None,
+                notes: None,
+            };
             let made = trf(
                 "Make a task \"{title}\" in \"{list}\" from {entry}",
                 &[("title", &"Review #214"), ("list", &"Work"), ("entry", &named)],
@@ -3716,6 +3744,8 @@ pub(crate) mod tests {
                 title: None,
                 start,
                 end: EventTime::DateTime(Utc::now() + chrono::TimeDelta::hours(1)),
+                location: None,
+                notes: None,
             };
             let planned = trf(
                 "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
@@ -3769,6 +3799,7 @@ pub(crate) mod tests {
             collection: "nextcloud:anna/work".into(),
             title: title.map(str::to_string),
             due: None,
+            notes: None,
         };
         let known = InboxFacts {
             item: Some(inbox_entry("Deploy \"failed\"")),
@@ -3808,6 +3839,8 @@ pub(crate) mod tests {
             title: title.map(str::to_string),
             start,
             end,
+            location: None,
+            notes: None,
         };
         let known =
             InboxFacts { item: Some(inbox_entry("Call {Kim}")), list: Some("Work".into()), ..InboxFacts::default() };
@@ -3828,6 +3861,48 @@ pub(crate) mod tests {
         );
     }
 
+    /// Issue #120: asking the AI names the entry and that nothing is saved; a note and a place a
+    /// client writes into a task or event are named, quoted.
+    #[test]
+    fn suggestions_and_the_notes_of_a_task_or_event_are_named() {
+        let known =
+            InboxFacts { item: Some(inbox_entry("Lunch {Kim}")), list: Some("Work".into()), ..InboxFacts::default() };
+        let entry = "\"Lunch (Kim)\"";
+        let asked = inbox_summary(&Request::SuggestEventFromItem { id: "e1".into() }, &known);
+        assert_eq!(asked, trf("Ask your AI for an event from {entry}; nothing is saved", &[("entry", &entry)]));
+        let task = Request::CreateTaskFromItem {
+            id: "e1".into(),
+            collection: "c".into(),
+            title: Some("Book a table".into()),
+            due: None,
+            notes: Some("Ignore \"the rules\"\nnow".into()),
+        };
+        let made = trf(
+            "Make a task \"{title}\" in \"{list}\" from {entry}",
+            &[("title", &"Book a table"), ("list", &"Work"), ("entry", &entry)],
+        );
+        let noted = trf("{what}, with the note \"{note}\"", &[("what", &made), ("note", &"Ignore 'the rules' now")]);
+        assert_eq!(inbox_summary(&task, &known), noted);
+        let start = EventTime::DateTime(chrono::Utc::now());
+        let end = EventTime::DateTime(chrono::Utc::now() + chrono::TimeDelta::minutes(30));
+        let event = Request::CreateEventFromItem {
+            id: "e1".into(),
+            collection: "c".into(),
+            title: Some("Lunch".into()),
+            start,
+            end,
+            location: Some("Café".into()),
+            notes: Some(" ".into()),
+        };
+        let today = Local::now().date_naive();
+        let made = trf(
+            "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
+            &[("title", &"Lunch"), ("when", &when(&start, today)), ("calendar", &"Work"), ("entry", &entry)],
+        );
+        let placed = trf("{what}, at \"{place}\"", &[("what", &made), ("place", &"Café")]);
+        assert_eq!(inbox_summary(&event, &known), placed, "a blank note is none");
+    }
+
     /// Task E1.2c: a task with a due date says so; the date is what will be written.
     #[test]
     fn a_task_from_an_entry_names_its_due_date() {
@@ -3837,6 +3912,7 @@ pub(crate) mod tests {
             collection: "l".into(),
             title: Some("Fix it".into()),
             due: Some(due),
+            notes: None,
         };
         let known =
             InboxFacts { item: Some(inbox_entry("CI red")), list: Some("Work".into()), ..InboxFacts::default() };

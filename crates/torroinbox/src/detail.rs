@@ -32,6 +32,9 @@
 //! so is "Make event" beside it (`c`, task E8.5b: the hub's dialog of an event).
 //! Approvals have neither – they close once decided, and a task would not decide them – and no
 //! "Later" either (task E8.5): an approval waits for yes or no and must not vanish by accident.
+//! Beside each stands its AI button (issue #120, `suggest::icon_button`): "AI task" and "AI event"
+//! open the same dialogs, filled in by the person's AI; without an AI they are off and say so. With
+//! them "Move to …" is its icon alone, as the words would no longer fit.
 //!
 //! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, actions, attachments,
 //! text) in place of its short text; the footer stays the entry's.
@@ -63,7 +66,7 @@ use torro_inbox::{Action, Item, Kind, Lane, Link, State, rules};
 
 use crate::app::{self, Message};
 use crate::keys::Command;
-use crate::{hub, list, mail};
+use crate::{hub, list, mail, suggest};
 
 /// The triggers of the menus that open for an entry, made new in every `view` and shared with the
 /// floating layer ([`widgets::floating`]). The window makes two sets (issue #122): one for the
@@ -144,6 +147,9 @@ pub struct Footer {
     /// Narrow windows (the panel fills the window): "Move to …" shows only its icon, with the
     /// words as tooltip; wider panels show icon and words.
     pub compact: bool,
+    /// An AI is set up (issue #120): "AI task" and "AI event" beside "Make task" and "Make event"
+    /// are on; without one they are off and their tooltip says to set one up first.
+    pub ai: bool,
 }
 
 /// The panel for `item`, reached through the view `view_name`; `now` for the times; the footer's
@@ -342,9 +348,12 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     if !is_approval(item) && !follow_up {
         let task = widgets::icon_button(Icon::ListTodo, tr("Make task"), Some(Message::AskTask(item.id.clone())));
         buttons.push(widgets::anchored(&footer.anchors.task, task));
+        // "AI task" beside it (issue #120): its dialog is the one of "Make task", at that button.
+        buttons.push(suggest::icon_button(suggest::Wanted::Task, &item.id, footer.ai));
         let event =
             widgets::icon_button(Icon::CalendarPlus, tr("Make event"), Some(Message::AskEvent(item.id.clone())));
         buttons.push(widgets::anchored(&footer.anchors.event, event));
+        buttons.push(suggest::icon_button(suggest::Wanted::Event, &item.id, footer.ai));
     }
     buttons.push(iced::widget::space::horizontal().into());
     let lane = app::other_lane(item.lane);
@@ -353,9 +362,9 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
         trf("Move to {lane}", &[("lane", &lane_label(lane))]),
         Message::AskLane(item.id.clone()),
     );
-    // Beside "…" – or beside Reply and "Mark mail done" – the words would push the last button out of
-    // the panel's 400.
-    let move_to = if footer.compact || footer.hide || follow_up {
+    // Beside "…" – or beside Reply and "Mark mail done", or the AI buttons (issue #120) – the words
+    // would push the last button out of the panel's 400.
+    let move_to = if footer.compact || footer.hide || follow_up || !is_approval(item) {
         widgets::icon_button(icon, label, Some(ask))
     } else {
         widgets::text_button(Some(icon), label, style::button::ghost, Some(ask))
@@ -566,18 +575,20 @@ mod tests {
     }
 
     fn footer(hide: bool) -> Footer {
-        Footer { anchors: Anchors::default(), hide, bell: false, deciding: false, compact: false }
+        Footer { anchors: Anchors::default(), hide, bell: false, deciding: false, compact: false, ai: false }
     }
 
     #[test]
     fn the_footer_offers_triage_to_the_mouse() {
-        // Done, Later, Make task, Make event (task E8.5b), the gap, Move to, "…".
-        assert_eq!(buttons(&sample("demo-1"), &footer(true)).len(), 7);
+        // Done, Later, Make task, AI task, Make event (task E8.5b), AI event (issue #120), the gap,
+        // Move to, "…".
+        assert_eq!(buttons(&sample("demo-1"), &footer(true)).len(), 9);
         // Allow, Deny, the gap, Move to: an approval has no way to hide it, no task, no event and no
         // Later.
         assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 4);
-        // Reopen, Make task, Make event, the gap, Move to, "…": a done entry is not snoozed.
-        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 6);
+        // Reopen, Make task, AI task, Make event, AI event, the gap, Move to, "…": a done entry is
+        // not snoozed.
+        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 8);
     }
 
     /// Task E8.7b: the question after a finished task answers or closes the mail, and is no task to

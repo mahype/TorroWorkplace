@@ -1492,6 +1492,38 @@ E8.9   unabhängig (torro-wm, core.rs)
   die Zwischenablage mit dem Klartext und zeigt „Copied“, Links ohne `mailto:`/`file:`, Knopfleiste in zwei Zeilen
   unter der Breite einer Icon-Zeile. Sichtprüfung: Markieren mit Maus und ⌘C.
 
+### E8.24 KI-Aufgabe und KI-Termin aus Eintrag oder Mail (Issue #120)
+- [x] erledigt (2026-10-14: zwei neue Requests `inbox.suggest_task_from_item` / `inbox.suggest_event_from_item`
+  (Bereich Inbox, Zugriff Write wegen KI-Kosten, MCP-Tools gleichen Namens, offene Welt). Der Kern liest den Eintrag
+  wie `inbox.get_item` (bei Mail den ganzen Text aus `mail.get_message`, sonst den Eintragstext), wählt die KI
+  (`suggest::choose`: Standard des Assistenten aus `assistant_default`, wenn das ein KI-Konto ist, sonst das erste
+  KI-Konto ohne Problem; Coding-Agenten zählen nicht) und fragt sie einmal ohne Werkzeuge nach genau einem
+  JSON-Objekt. Der Inhalt steht als Daten zwischen `<message>`-Marken (eine schließende Marke im Text wird
+  aufgebrochen), die Anweisung sagt, nichts darin zu befolgen. Datenregel: Einträge von Mail, Nextcloud und Talk gehen
+  nur an lokale Modelle (`data_rule::held_back`); dann wird ein lokales Konto statt des Standards genommen, ohne
+  eines `not-connected`. Daten liest der Kern in der Zeitzone der Person (`2026-10-16` → Tag,
+  `2026-10-16T14:30` → Zeitpunkt; ganztägiges Ende ist der letzte Tag). Gespeichert wird nichts; dafür bekommen
+  `inbox.create_task_from_item` ein optionales `notes` und `inbox.create_event_from_item` optionale `location` und
+  `notes` (vor den Eintragstext gesetzt, Grenzen 2000/200 Zeichen, Freigabe-Zusammenfassung nennt sie). App:
+  „AI task“ / „AI event“ (`Sparkles`) neben „Make task“ / „Make event“ im Paneel und nach „Task“ im Leser; ohne KI
+  aus, Tooltip „AI task · Set up an AI first“ (`assistant.list_engines` beim Start und je Takt). Der Knopf öffnet
+  den vorhandenen Dialog sofort, eine leise Zeile sagt „Asking your AI…“, dann füllt der Vorschlag Titel,
+  Fälligkeit (`Due::On` für andere Tage), Notiz bzw. Tag, Beginn, Dauer (`Length::Minutes`), Ort und Teilnehmer
+  („With: …“ als Notiz). Entscheidungen: Knöpfe nur in Paneel und Leser – dort, wo der Inhalt gelesen wurde, wie
+  „Reply“; Zeilen und Karten behalten ihre Leisten (`RowAction` kennt keinen ausgegrauten Zustand). Ganztägige
+  Vorschläge werden 09:00 für eine Stunde, weil der Dialog nur Termine mit Uhrzeit anlegt. Teilnehmer landen in der
+  Notiz, weil ein Termin der Suite keine Teilnehmer hat. Kein Tastenkürzel)
+- **Modell:** Opus · **Braucht:** E3.5, E8.5b, C.15 · **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`,
+  `crates/torroworkplace/src/{suggest,core,inbox,approvals,audit,daemon,mcp,pim,main}.rs`,
+  `crates/torroworkplace/src/assistant/{mod,data_rule}.rs`, `crates/torroinbox/src/{suggest,app,detail,mail,main}.rs`,
+  `crates/torroinbox/Cargo.toml`, `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Paneel eines Eintrags, Leser des Mail-Fensters; Dialoge „Make task“ / „Make event“.
+- **API:** `Request::SuggestTaskFromItem` · `inbox.suggest_task_from_item` · Zugriff Write;
+  `Request::SuggestEventFromItem` · `inbox.suggest_event_from_item` · Zugriff Write.
+- **MCP:** `inbox_suggest_task_from_item`, `inbox_suggest_event_from_item`.
+- **Abnahme:** Tests mit Fake-Provider: Datum im Text wird `due` bzw. Terminzeit (`suggest.rs`, Kern-Test mit
+  Ollama-/OpenRouter-Attrappe samt Datenregel). Ohne KI sind die Knöpfe gesperrt und zeigen den Tooltip (`tr(...)`).
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,

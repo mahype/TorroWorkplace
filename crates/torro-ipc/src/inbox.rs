@@ -35,6 +35,11 @@
 //! [`InboxClient::list_calendars`] and [`InboxClient::create_event_from_item`] make an event of an
 //! entry, its times as instants, so the window needs no calendar model either.
 //!
+//! The AI buttons (issue #120): [`InboxClient::ai_ready`] tells whether an AI account is set up,
+//! [`InboxClient::suggest_task_from_item`] and [`InboxClient::suggest_event_from_item`] ask for a
+//! suggestion, and [`InboxClient::create_task_with`] and [`InboxClient::create_event_with`] make the
+//! task or event with the note and place the person kept of it.
+//!
 //! Invitations (task E8.3c): [`InboxClient::respond_to_invitation`] sends
 //! `mail.respond_to_invitation` with the calendar the window chose, and
 //! [`InboxClient::list_events`] reads the events of the shown calendars around an invitation as
@@ -50,8 +55,9 @@ use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, S
 use torro_mail::{Flag, Folder, InvitationAnswer, Message, MessageSummary, Order};
 use torro_pim::EventTime;
 
+use crate::assistant::EngineKind;
 use crate::mail::{Delivery, MailHighlight, MailIndexProgress, MailSort, MoveTarget};
-use crate::{InboxStats, IpcError, Quiet, Request, Response, StatsRange};
+use crate::{EventSuggestion, InboxStats, IpcError, Quiet, Request, Response, StatsRange, TaskSuggestion};
 
 /// A search across mail as the window asks it ([`InboxClient::find_mail`], issue #136).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,12 +418,84 @@ impl InboxClient {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> Result<(), InboxError> {
+        self.create_event_with(id, calendar, EventFields { title, start, end, location: None, notes: None }).await
+    }
+
+    /// `inbox.create_event_from_item` with everything the dialog of an AI's suggestion holds (issue
+    /// #120): as [`InboxClient::create_event_from_item`], with the `location` and the `notes` put
+    /// before the entry's text (`None` or blank: left out). Errors as there.
+    pub async fn create_event_with(&self, id: String, calendar: String, fields: EventFields) -> Result<(), InboxError> {
+        let EventFields { title, start, end, location, notes } = fields;
         let (start, end) = (EventTime::DateTime(start), EventTime::DateTime(end));
-        match self.ask(Request::CreateEventFromItem { id, collection: calendar, title, start, end }).await? {
+        let request = Request::CreateEventFromItem { id, collection: calendar, title, start, end, location, notes };
+        match self.ask(request).await? {
             Response::Event { .. } => Ok(()),
             other => Err(unexpected(other)),
         }
     }
+
+    /// `inbox.create_task_from_item` with a note before the entry's text (issue #120, the dialog of
+    /// an AI's suggestion; `None` or blank: left out) and the day as an all-day due date. The core
+    /// answers with the new task, which the app does not need. Errors as for the other calls.
+    pub async fn create_task_with(
+        &self,
+        id: String,
+        list: String,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+        notes: Option<String>,
+    ) -> Result<(), InboxError> {
+        let due = due.map(EventTime::Date);
+        match self.ask(Request::CreateTaskFromItem { id, collection: list, title, due, notes }).await? {
+            Response::Todo { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// Whether an AI is set up for the AI buttons (issue #120): `assistant.list_engines` lists an
+    /// AI account ([`EngineKind::Ai`]) without a known problem. The suggestions take only AI
+    /// accounts, so a coding agent alone does not count. `false` when the core cannot be asked.
+    pub async fn ai_ready(&self) -> bool {
+        match self.ask(Request::ListEngines).await {
+            Ok(Response::Engines { engines }) => {
+                engines.iter().any(|engine| engine.kind == EngineKind::Ai && engine.problem.is_none())
+            }
+            _ => false,
+        }
+    }
+
+    /// `inbox.suggest_task_from_item` (issue #120, "AI task"): what the AI suggests as a task of the
+    /// entry `id`; nothing is saved. Errors as mapped above: [`InboxError::NotFound`] for an entry
+    /// the app may not see, [`InboxError::Offline`] while the core is not running, and
+    /// [`InboxError::Other`] with the core's words for everything about the AI (none set up, its
+    /// server offline, an answer that is no suggestion).
+    pub async fn suggest_task_from_item(&self, id: String) -> Result<TaskSuggestion, InboxError> {
+        match self.ask(Request::SuggestTaskFromItem { id }).await? {
+            Response::TaskSuggestion { suggestion } => Ok(suggestion),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.suggest_event_from_item` (issue #120, "AI event"): what the AI suggests as an event of
+    /// the entry `id`; nothing is saved. Errors as for [`InboxClient::suggest_task_from_item`].
+    pub async fn suggest_event_from_item(&self, id: String) -> Result<EventSuggestion, InboxError> {
+        match self.ask(Request::SuggestEventFromItem { id }).await? {
+            Response::EventSuggestion { suggestion } => Ok(suggestion),
+            other => Err(unexpected(other)),
+        }
+    }
+}
+
+/// What [`InboxClient::create_event_with`] makes of an entry besides its calendar (issue #120): the
+/// title (`None` or blank: the entry's), the instants it starts and ends, where, and a note before the
+/// entry's text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventFields {
+    pub title: Option<String>,
+    pub start: DateTime<Utc>,
+    pub end: DateTime<Utc>,
+    pub location: Option<String>,
+    pub notes: Option<String>,
 }
 
 /// The core's answer, or the error it reported, as the module documentation maps them.
@@ -559,11 +637,7 @@ impl InboxSource for InboxClient {
         title: Option<String>,
         due: Option<NaiveDate>,
     ) -> Result<(), InboxError> {
-        let due = due.map(EventTime::Date);
-        match self.ask(Request::CreateTaskFromItem { id, collection: list, title, due }).await? {
-            Response::Todo { .. } => Ok(()),
-            other => Err(unexpected(other)),
-        }
+        InboxClient::create_task_with(self, id, list, title, due, None).await
     }
 
     /// `approvals.decide_approval` with the app key (task E3.8). The core answers with the
@@ -699,7 +773,8 @@ mod tests {
             },
             Request::CalendarCollections => Response::Collections { collections: lists() },
             // Only the times the client should send make an event.
-            Request::CreateEventFromItem { id, collection, title, start, end }
+            // Issue #120: the place and the note come back in the event, so the tests see them.
+            Request::CreateEventFromItem { id, collection, title, start, end, location, notes }
                 if id == "i1" && start == EventTime::DateTime(at(14)) && end == EventTime::DateTime(at(15)) =>
             {
                 Response::Event {
@@ -711,13 +786,14 @@ mod tests {
                         summary: title.unwrap_or_default(),
                         start,
                         end: Some(end),
-                        location: None,
-                        description: None,
+                        location,
+                        description: notes,
                         recurring: false,
                         transparency: torro_pim::Transparency::Opaque,
                     },
                 }
             }
+            // Issue #120: one whose note says which arrived.
             Request::CreateEventFromItem { .. } => {
                 Response::Error { code: "forbidden".into(), message: "an approval is the person's".into() }
             }
@@ -750,7 +826,7 @@ mod tests {
             },
             Request::OpenItem { id } if id == "window" => Response::Ok,
             Request::TaskCollections => Response::Collections { collections: lists() },
-            Request::CreateTaskFromItem { id, collection, title, due } if id == "i1" => Response::Todo {
+            Request::CreateTaskFromItem { id, collection, title, due, notes } if id == "i1" => Response::Todo {
                 todo: torro_pim::Todo {
                     uid: "new".into(),
                     collection,
@@ -761,13 +837,75 @@ mod tests {
                     priority: None,
                     completed: false,
                     parent: None,
-                    description: None,
+                    description: notes,
                     url: None,
                     categories: Vec::new(),
                     sort_order: None,
                     link: None,
                 },
             },
+            // Issue #120: the note must arrive; a task without one for `i2` is refused.
+            Request::CreateTaskFromItem { id, notes: Some(notes), .. } if id == "i2" && notes == "Bring the slides" => {
+                Response::Todo {
+                    todo: torro_pim::Todo {
+                        uid: "noted".into(),
+                        collection: "work".into(),
+                        href: None,
+                        etag: None,
+                        summary: "Prepare".into(),
+                        due: None,
+                        priority: None,
+                        completed: false,
+                        parent: None,
+                        description: Some(notes),
+                        url: None,
+                        categories: Vec::new(),
+                        sort_order: None,
+                        link: None,
+                    },
+                }
+            }
+            Request::ListEngines => Response::Engines {
+                engines: vec![
+                    crate::assistant::Engine {
+                        id: "claude-code".into(),
+                        kind: EngineKind::Agent,
+                        name: "Claude Code".into(),
+                        problem: None,
+                        models: Vec::new(),
+                    },
+                    crate::assistant::Engine {
+                        id: "ai:openrouter@openrouter.ai".into(),
+                        kind: EngineKind::Ai,
+                        name: "OpenRouter".into(),
+                        problem: Some("no key".into()),
+                        models: Vec::new(),
+                    },
+                ],
+            },
+            Request::SuggestTaskFromItem { id } if id == "i1" => Response::TaskSuggestion {
+                suggestion: TaskSuggestion {
+                    title: "Send the report".into(),
+                    notes: None,
+                    due: Some(EventTime::Date(day(16))),
+                    engine: "ai:ollama@localhost:11434".into(),
+                    model: "qwen3:8b".into(),
+                },
+            },
+            Request::SuggestEventFromItem { id } if id == "i1" => Response::EventSuggestion {
+                suggestion: EventSuggestion {
+                    title: "Lunch with Kim".into(),
+                    start: Some(EventTime::DateTime(at(12))),
+                    end: None,
+                    location: Some("Café".into()),
+                    attendees: vec!["Kim".into()],
+                    engine: "ai:ollama@localhost:11434".into(),
+                    model: "qwen3:8b".into(),
+                },
+            },
+            Request::SuggestTaskFromItem { .. } | Request::SuggestEventFromItem { .. } => {
+                Response::Error { code: "not-connected".into(), message: "Set up an AI first.".into() }
+            }
             Request::CreateTaskFromItem { .. } => {
                 Response::Error { code: "not-found".into(), message: "no task list \"gone\"".into() }
             }
@@ -966,6 +1104,31 @@ mod tests {
 
     /// Task E8.3c: an answer sends the calendar chosen and comes back as how the reply went; the
     /// events around an invitation come in instants, all-day ones from local midnight, with busy.
+    /// Issue #120: the AI buttons ask whether an AI account is set up (a coding agent or an account
+    /// with a problem does not count), ask for suggestions, and save the note and the place.
+    #[tokio::test]
+    async fn suggestions_and_their_notes_go_through_the_core() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        assert!(!client.ai_ready().await, "only an agent and an account with a problem");
+        let task = client.suggest_task_from_item("i1".into()).await.expect("a suggestion");
+        assert_eq!((task.title.as_str(), task.due), ("Send the report", Some(EventTime::Date(day(16)))));
+        let event = client.suggest_event_from_item("i1".into()).await.expect("a suggestion");
+        assert_eq!((event.location.as_deref(), event.attendees.len()), (Some("Café"), 1));
+        let none = client.suggest_task_from_item("i9".into()).await;
+        assert_eq!(none, Err(InboxError::Other("Set up an AI first.".into())));
+        let noted = client.create_task_with("i2".into(), "work".into(), None, None, Some("Bring the slides".into()));
+        assert_eq!(noted.await, Ok(()));
+        let fields = EventFields {
+            title: Some("Call".into()),
+            start: at(14),
+            end: at(15),
+            location: Some("Room 2".into()),
+            notes: Some("Agenda".into()),
+        };
+        assert_eq!(client.create_event_with("i1".into(), "work".into(), fields).await, Ok(()));
+    }
+
     #[tokio::test]
     async fn invitations_send_the_calendar_and_events_come_in_instants() {
         let core = start(|request| async move { answer(request) }).await;

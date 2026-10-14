@@ -3347,4 +3347,39 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("write formatted mail", "formatierte E-Mails schreiben"),
     ("write plain text mail", "E-Mails als reinen Text schreiben"),
     ("{name} ({keys})", "{name} ({keys})"),
+    // Inbox: AI task and AI event (issue #120)
+    ("AI event", "KI-Termin"),
+    ("AI task", "KI-Aufgabe"),
+    (
+        "Ask your AI for a task from {entry}; nothing is saved",
+        "Deine KI um eine Aufgabe aus {entry} bitten; nichts wird gespeichert",
+    ),
+    (
+        "Ask your AI for an event from {entry}; nothing is saved",
+        "Deine KI um einen Termin aus {entry} bitten; nichts wird gespeichert",
+    ),
+    ("Asking your AI…", "Deine KI wird gefragt …"),
+    (
+        "Mail, Nextcloud and Talk go only to an AI on this computer. Connect a local AI such as Ollama.",
+        "Mail, Nextcloud und Talk gehen nur an eine KI auf diesem Computer. Verbinde eine lokale KI wie Ollama.",
+    ),
+    ("No suggestion: {why}", "Kein Vorschlag: {why}"),
+    ("Set up an AI first", "Richte zuerst eine KI ein"),
+    (
+        "Set up an AI first: connect an AI account in the control centre.",
+        "Richte zuerst eine KI ein: Verbinde ein KI-Konto in der Steuerzentrale.",
+    ),
+    (
+        "Suggested by your AI. Check it before you create it.",
+        "Von deiner KI vorgeschlagen. Prüfe es, bevor du es anlegst.",
+    ),
+    ("The AI account offers no model.", "Das KI-Konto bietet kein Modell an."),
+    (
+        "The AI's answer held no suggestion. Try again or pick another model.",
+        "Die Antwort der KI enthielt keinen Vorschlag. Versuche es noch einmal oder wähle ein anderes Modell.",
+    ),
+    ("With:", "Mit:"),
+    ("{n} minutes", "{n} Minuten"),
+    ("{what}, at \"{place}\"", "{what}, Ort „{place}“"),
+    ("{what}, with the note \"{note}\"", "{what}, mit der Notiz „{note}“"),
 ];

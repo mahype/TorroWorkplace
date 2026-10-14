@@ -272,6 +272,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::AskPermission { .. } => Vec::new(),
         Request::GetItem { id: entry }
         | Request::OpenItem { id: entry }
+        // The entry only, never what the AI suggested (issue #120).
+        | Request::SuggestTaskFromItem { id: entry }
+        | Request::SuggestEventFromItem { id: entry }
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
         | Request::SetItemLane { id: entry, .. }
@@ -756,7 +759,13 @@ pub(crate) mod tests {
         assert_eq!(client, vec![format!("client:hash:{}", hashed("Anna's laptop"))]);
         let account = super::ids(&Request::RemoveAccount { id: "Anna Smith".into() });
         assert_eq!(account, vec![format!("account:hash:{}", hashed("Anna Smith"))]);
-        let task = Request::CreateTaskFromItem { id: "e1".into(), collection: url.into(), title: None, due: None };
+        let task = Request::CreateTaskFromItem {
+            id: "e1".into(),
+            collection: url.into(),
+            title: None,
+            due: None,
+            notes: None,
+        };
         assert_eq!(super::ids(&task), vec!["inbox:e1".to_string(), logged[0].clone()]);
         // Task E8.5b: an event of an entry logs the entry and the calendar, never title or times.
         let at = torro_pim::EventTime::DateTime(chrono::Utc::now());
@@ -766,6 +775,8 @@ pub(crate) mod tests {
             title: Some("Secret call".into()),
             start: at,
             end: at,
+            location: None,
+            notes: None,
         };
         assert_eq!(super::ids(&event), vec!["inbox:e1".to_string(), logged[0].clone()]);
         assert!(super::ids(&Request::GetQuiet).is_empty());
