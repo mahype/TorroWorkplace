@@ -8364,6 +8364,7 @@ mod tests {
             from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
             bulk: true,
             list: None,
+            github: None,
             date: Utc::now(),
         };
         let id =
@@ -8422,6 +8423,7 @@ mod tests {
             from: Some(torro_inbox::Sender { name: "Bernd".into(), address: Some("bernd@example.com".into()) }),
             bulk: false,
             list: None,
+            github: None,
             date: Utc::now(),
         };
         let id = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
@@ -8453,6 +8455,7 @@ mod tests {
             from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
             bulk: true,
             list: None,
+            github: None,
             date: Utc::now(),
         };
         let id =
@@ -10078,6 +10081,7 @@ mod tests {
             from: None,
             bulk: false,
             list: None,
+            github: None,
             date: Utc::now(),
         };
         core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed");
@@ -12842,6 +12846,7 @@ mod tests {
                 from: None,
                 bulk: false,
                 list: None,
+                github: None,
                 date: Utc::now(),
             };
             let entry =

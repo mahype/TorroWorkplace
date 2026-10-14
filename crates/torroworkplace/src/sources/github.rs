@@ -37,7 +37,9 @@
 //!
 //! **Reaching back** ([`settle_done`]): done here marks the thread done on GitHub (`DELETE
 //! /notifications/threads/{id}`, question 1 of E5), once per time the entry became done
-//! ([`Settled`]); undo changes nothing on GitHub.
+//! ([`Settled`]); undo changes nothing on GitHub. The mail GitHub sent about the same issue or pull
+//! request is filed with the entry by the inbox (task E5.6, `Inbox::file_mail`) and marked read by
+//! the core beside it (`crate::mail::inbox_feed::mark_read`), not here.
 //!
 //! **Health** (`inbox.list_sources`): `signed_out` while the account needs a new sign-in (GitHub
 //! refused the token; the account problem itself comes from `GithubAccounts::check_all` as before,
@@ -960,6 +962,65 @@ mod tests {
         super::super::settle_done(&world.sources, &undone);
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(deleted.calls_async().await, 1, "exactly one DELETE");
+    }
+
+    #[tokio::test]
+    async fn done_on_an_entry_with_github_mail_marks_the_thread_done_and_the_mail_read() {
+        use crate::mail::inbox_feed::tests::{GITHUB_LIST, REVIEW_ID, anna, github_letter, idling, synced};
+        use crate::mail::service::tests::{PASSWORD, eventually, service_in};
+        use crate::mail::sync::fake::FakeImap;
+
+        let world = World::new().await;
+        let deleted = world.deletes().await;
+        let listing = world.lists(None, on(&world.server, json!([review(-5)])), 60, STAMP).await;
+        world.round(0).await;
+        listing.delete_async().await;
+        let id = world.item("101").id;
+
+        // Anna's mail account gets GitHub's mail about the same pull request.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let imap = FakeImap::start(PASSWORD).await;
+        let uid = imap.add("INBOX", &github_letter(REVIEW_ID, GITHUB_LIST, "notifications@github.com", 1), &[]);
+        let secrets = anna(dir.path(), &imap, torro_mail::Notify::All);
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        let accounts = crate::account::github::tests::accounts_file(dir.path());
+        crate::mail::inbox_feed::start(Arc::clone(&world.sources.inbox), Arc::clone(&mail), Some(accounts));
+        mail.reload().await;
+        eventually("synced", || synced(&mail)).await;
+        eventually("the inbox watched", || async { idling(&imap) }).await;
+        eventually("filed with the entry", || async {
+            world.inbox().mail_by_account(&id).is_ok_and(|filed| !filed.is_empty())
+        })
+        .await;
+        assert_eq!(world.items().len(), 1, "no entry of its own");
+
+        // Done as the core does it (`Core::settle`): the thread on GitHub, the mail on its server.
+        let request = Request::SetItemDone { id: id.clone(), done: true, dismissed: false };
+        let answer = world.inbox().handle(request.clone(), None, Utc::now());
+        let Response::Item { item } = &answer else { panic!("done: {answer:?}") };
+        crate::mail::inbox_feed::mark_read(world.inbox(), &mail, item);
+        super::super::settle_done(&world.sources, item);
+        eventually("read on the mail server", || async { imap.flags("INBOX", uid).contains(&"\\Seen".to_string()) })
+            .await;
+        for _ in 0..200 {
+            if deleted.calls_async().await > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(deleted.calls_async().await, 1, "done on GitHub");
+
+        // What the audit log would keep of it names the entry, never the subject or the repository.
+        let line = crate::audit::entry(
+            Some("cc03".into()),
+            "inbox.set_item_done",
+            crate::audit::ids(&request),
+            &answer,
+            at(0),
+        );
+        let line = serde_json::to_string(&line).expect("json");
+        assert!(line.contains(&id), "{line}");
+        assert!(!line.contains("Add the inbox") && !line.contains("torro/workplace"), "{line}");
     }
 
     #[test]

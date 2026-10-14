@@ -47,7 +47,7 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 /// Version 2 (task E8.7a): messages found by their `Message-ID`, which a task's link names
 /// ([`MailStore::messages_by_rfc_id`]), without reading the whole table.
@@ -57,6 +57,12 @@ const SCHEMA_V2: &str = "CREATE INDEX IF NOT EXISTS messages_by_rfc_id ON messag
 /// answer) and the answer given from the suite (`accept`, `tentative`, `decline`).
 const SCHEMA_V3: &str = "ALTER TABLE messages ADD COLUMN invite_json TEXT;
 ALTER TABLE messages ADD COLUMN invite_answer TEXT;";
+
+/// Version 4 (task E5.6): the header `X-GitHub-Reason` (`torro_mail::MessageTraits::github`), which
+/// with `From`, `List-Id` and `Message-ID` tells a GitHub mail. `In-Reply-To` is not kept: the
+/// `Message-ID` of every GitHub mail names its issue or pull request already. Rows from before
+/// read as none.
+const SCHEMA_V4: &str = "ALTER TABLE messages ADD COLUMN github_reason TEXT;";
 
 const FLAG_SEEN: i64 = 1;
 const FLAG_FLAGGED: i64 = 2;
@@ -650,7 +656,7 @@ impl MailStore {
     pub fn message(&self, id: &str) -> Result<Option<Message>, MailStoreError> {
         let sql = format!(
             "SELECT {SUMMARY_COLUMNS}, m.cc_json, m.reply_to_json, m.list_id, m.list_unsubscribe, m.precedence,
-                    m.auto_submitted, m.invitation, b.text, b.from_html, b.attachments_json
+                    m.auto_submitted, m.invitation, b.text, b.from_html, b.attachments_json, m.github_reason
              FROM messages m LEFT JOIN bodies b ON b.seq = m.seq WHERE m.id = ?1"
         );
         let row = self.db.query_row(&sql, [id], |row| {
@@ -671,6 +677,7 @@ impl MailStore {
                     list_unsubscribe: row.get(15)?,
                     precedence: row.get(16)?,
                     auto_submitted: row.get(17)?,
+                    github: row.get(22)?,
                 },
                 invitation: row.get(18)?,
             })
@@ -900,6 +907,9 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 3 {
         tx.execute_batch(SCHEMA_V3)?;
     }
+    if version < 4 {
+        tx.execute_batch(SCHEMA_V4)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -922,13 +932,13 @@ const SUMMARY_COLUMNS: &str = "m.id, m.folder_id, m.thread_id, m.from_json, m.to
 
 const INSERT_HEADERS: &str = "INSERT INTO messages (id, folder_id, uid, rfc_message_id, thread_id, from_json, to_json,
     cc_json, reply_to_json, subject, sender, recipients, date, snippet, flags, has_attachments, list_id,
-    list_unsubscribe, precedence, auto_submitted, invitation)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+    list_unsubscribe, precedence, auto_submitted, invitation, github_reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 const UPDATE_HEADERS: &str = "UPDATE messages SET rfc_message_id = ?2, thread_id = ?3, from_json = ?4, to_json = ?5,
     cc_json = ?6, reply_to_json = ?7, subject = ?8, sender = ?9, recipients = ?10, date = ?11, snippet = ?12,
     flags = ?13, has_attachments = ?14, list_id = ?15, list_unsubscribe = ?16, precedence = ?17,
-    auto_submitted = ?18, invitation = ?19 WHERE seq = ?1";
+    auto_submitted = ?18, invitation = ?19, github_reason = ?20 WHERE seq = ?1";
 
 /// The header values in the order the two statements above take them after their leading columns.
 fn header_values(new: &NewMessage) -> Result<Vec<Value>, MailStoreError> {
@@ -958,6 +968,7 @@ fn header_values(new: &NewMessage) -> Result<Vec<Value>, MailStoreError> {
         optional(&new.traits.precedence),
         optional(&new.traits.auto_submitted),
         Value::Integer(i64::from(new.invitation)),
+        optional(&new.traits.github),
     ])
 }
 
@@ -1205,11 +1216,33 @@ mod tests {
         assert!(!store.set_invite_answer("m:nope", None).expect("none"));
 
         // A store as version 2 left it: the columns are added, the messages stay.
+        store.db.execute_batch("ALTER TABLE messages DROP COLUMN github_reason;").expect("drop");
         store.db.execute_batch("ALTER TABLE messages DROP COLUMN invite_json;").expect("drop");
         store.db.execute_batch("ALTER TABLE messages DROP COLUMN invite_answer; PRAGMA user_version = 2").expect("v2");
         drop(store);
         let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
         assert_eq!(store.summary(&id).expect("summary").expect("kept").invite, None);
+    }
+
+    #[test]
+    fn a_store_of_version_3_learns_the_github_reason_and_keeps_its_messages() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let mut new = message(1, "Add the inbox");
+        new.traits.github = Some("review_requested".into());
+        let id = add(&store, &inbox, &new);
+        store.db.execute_batch("ALTER TABLE messages DROP COLUMN github_reason; PRAGMA user_version = 3").expect("v3");
+        drop(store);
+
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        let version: i64 = store.db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+        let kept = store.message(&id).expect("read").expect("kept");
+        assert_eq!((kept.summary.subject.as_str(), kept.traits.github), ("Add the inbox", None), "old rows: none");
+        let again = add(&store, &inbox, &new);
+        assert_eq!(again, id, "the same UID");
+        let read = store.message(&id).expect("read").expect("there");
+        assert_eq!(read.traits.github.as_deref(), Some("review_requested"), "written from now on");
     }
 
     #[test]
@@ -1240,6 +1273,7 @@ mod tests {
             list_unsubscribe: true,
             precedence: Some("bulk".into()),
             auto_submitted: Some("auto-generated".into()),
+            github: Some("review_requested".into()),
         };
         let id = add(&store, &inbox, &new);
         assert!(id.starts_with("m:") && id.len() > 10, "{id}");

@@ -1584,7 +1584,15 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   je 50 Einträge und Runde.
 
 ### E5.6 GitHub-Mail dem GitHub-Eintrag zuordnen
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `MessageTraits.github` = `X-GitHub-Reason` (nur `a–z` und `_`), im Mail-Speicher Schema 4
+  (`github_reason`); `NewMail.github: Option<IssueRef>` aus `inbox_feed::github_thread` nur, wenn `From`, `List-Id` und
+  `Message-ID` passen – nur die `Message-ID`, `In-Reply-To` wird nicht gespeichert (jede GitHub-Mail nennt ihr Issue
+  selbst, `docs/mail.md`); `inbox.sqlite` Schema 9 (`mail_messages.github`): mit offenem oder zurückgestelltem
+  GitHub-Eintrag derselben Nummer einer nicht stummen Quelle wird die Mail kein Eintrag und zählt nicht, sonst ein
+  Mail-Eintrag, der beim Kommen (oder Wiederöffnen) des GitHub-Eintrags in ihn aufgeht (erledigt, nicht als erledigt
+  gezählt); ein erledigter GitHub-Eintrag nimmt keine Mail; `Inbox::mail_by_account`; `check_done` verlangt bei
+  angehängter Mail Schreiben in `mail` und jedes Konto; `mark_read` setzt `\Seen` auch für GitHub-Einträge. Offen: die
+  Freigabe-Zusammenfassung (`approvals.rs`) nennt die Mail noch nicht)
 - **Modell:** Opus · **Braucht:** E5.4, E4.1, Freigabe 12 · **Dateien:** `crates/torro-mail/src/message.rs`,
   `crates/torro-mail-imap/src/mime.rs` (+ Fixture einer GitHub-Mail), `crates/torroworkplace/src/mail/inbox_feed.rs`,
   `crates/torroworkplace/src/inbox.rs`, `crates/torroworkplace/src/sources/github.rs`; Doku: `docs/{eingang,mail}.md`

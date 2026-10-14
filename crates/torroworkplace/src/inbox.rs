@@ -130,6 +130,19 @@
 //! and the entry's repository besides the source ([`Scope::of`]: the column `repo`, and for rules
 //! and statistics the trait `repo`, filtered in SQL), and marks one done only with write access to
 //! GitHub ([`check_done`]), since that marks the notification done on GitHub.
+//!
+//! **GitHub mail** (task E5.6): a mail GitHub sent about an issue or a pull request
+//! ([`NewMail::github`], told by the mail feed from its headers) belongs to that item's GitHub
+//! entry. With an open or snoozed GitHub entry of the same repository and number, of a source the
+//! person did not mute, the mail becomes no entry of its own: it is filed with the GitHub entry
+//! (`mail_messages`, counted nowhere, the GitHub entry stays as it is). Without one it is an
+//! ordinary mail entry that remembers the item (`mail_messages.github`); when the GitHub entry
+//! comes (or opens again), the open mail entries of the item hand their GitHub mail over to it and
+//! are done once they hold no other mail ([`take_github_mail`], counted as merged, not as done).
+//! Done on the GitHub entry then marks its mail read as well (`crate::mail::inbox_feed::mark_read`),
+//! so a client needs write access to mail and those accounts besides GitHub ([`check_done`]). The
+//! headers come from outside: at worst a forged mail joins an existing GitHub entry of the
+//! repository and number it names; without such an entry no mail disappears.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -157,6 +170,7 @@ use torro_ipc::{
     StatsSuggestion,
 };
 use torro_mail::{ACCOUNT_PREFIX, Notify};
+use torro_pim_github::IssueRef;
 
 use crate::account::github::GithubAccounts;
 use crate::approvals::{Approvals, InboxFacts};
@@ -169,7 +183,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -404,6 +418,16 @@ CREATE TABLE cursors (
 );
 ";
 
+/// From schema version 8 to 9 (task E5.6, GitHub mail): `mail_messages` gets `github`, the GitHub
+/// issue or pull request a GitHub mail is about ([`github_key`]: `owner/repo#<n>` in small letters),
+/// empty for every other mail. A GitHub mail filed before its GitHub entry came is found by it, and
+/// moves to that entry when it comes ([`take_github_mail`]); a row whose `item` is a GitHub entry is
+/// a mail filed with that entry ([`Inbox::mail_by_account`]). Rows of version 8 are no GitHub mail.
+const SCHEMA_V9: &str = "
+ALTER TABLE mail_messages ADD COLUMN github TEXT NOT NULL DEFAULT '';
+CREATE INDEX mail_messages_by_github ON mail_messages (github);
+";
+
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
 
@@ -579,7 +603,7 @@ impl Inbox {
             Request::SetItemDone { id, done: true, .. }
             | Request::CreateTaskFromItem { id, .. }
             | Request::CreateEventFromItem { id, .. } => {
-                check_done(&changeable(db, id, Some(client))?.item, Some(client))
+                check_done(db, &changeable(db, id, Some(client))?.item, Some(client))
             }
             // Nobody is asked to approve remembering a mail's lane when there is no sender to keep it for.
             Request::SetItemLane { id, remember: true, .. } => {
@@ -684,7 +708,7 @@ impl Inbox {
         self.with(|db| {
             wake_due(db, now)?;
             let item = changeable(db, id, client)?.item;
-            check_done(&item, client)?;
+            check_done(db, &item, client)?;
             Ok(item)
         })
         .map_err(|failure| Box::new(failure.response()))
@@ -715,7 +739,8 @@ impl Inbox {
 
     /// The person read the mail `message` (`m:…`) of the mail account `account` (`mail:<address>`)
     /// at `now`, in the mail window (`mail.get_message` with the app key, task E8.8b): when the mail
-    /// is filed into an open entry (new or seen, not snoozed or done), the entry counts as opened,
+    /// is filed into an open entry (new or seen, not snoozed or done; a GitHub entry too, for the
+    /// GitHub mail filed with it, task E5.6), the entry counts as opened,
     /// once per entry and local day – also when `inbox.open_item` opened it that day already. Nothing
     /// else changes: the entry keeps its state, as reading a mail does not mark it read either. A
     /// failure is only logged: the mail was read anyway.
@@ -953,9 +978,10 @@ impl Inbox {
     }
 
     /// The messages filed into the entry `id` (`m:…` of its account), oldest first; empty for an
-    /// entry that is no mail entry or does not exist. The core reads them the moment a mail entry
-    /// is done, to mark exactly that mail read on its server (task E4.1). `Err` holds the message
-    /// for the log.
+    /// entry without mail or that does not exist. A GitHub entry holds the GitHub mail filed with it
+    /// (task E5.6), perhaps of several accounts: [`Inbox::mail_by_account`] tells them apart. The
+    /// core reads them the moment a mail entry is done, to mark exactly that mail read on its
+    /// server (task E4.1). `Err` holds the message for the log.
     pub fn mail_messages(&self, id: &str) -> Result<Vec<String>, String> {
         self.with(|db| {
             let mut statement = db.prepare("SELECT message FROM mail_messages WHERE item = ?1 ORDER BY rowid")?;
@@ -963,6 +989,15 @@ impl Inbox {
             Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
         })
         .map_err(|failure| failure.to_string())
+    }
+
+    /// The mail filed into the entry `id`, by account (`mail:<address>` → `m:…`, oldest first): the
+    /// messages of a mail entry (task E4.1), and the GitHub mail filed with a GitHub entry (task
+    /// E5.6), which can come from several accounts. Empty for any other entry or none. The core
+    /// reads it the moment an entry is done, to mark exactly that mail read on its server
+    /// (`crate::mail::inbox_feed::mark_read`). `Err` holds the message for the log.
+    pub fn mail_by_account(&self, id: &str) -> Result<BTreeMap<String, Vec<String>>, String> {
+        self.with(|db| mail_of(db, id)).map_err(|failure| failure.to_string())
     }
 
     /// The UIDs of the finished tasks made of a mail the core has seen already (task E8.7a,
@@ -1674,15 +1709,29 @@ fn mail_reach(rights: &Rights) -> Selection {
     }
 }
 
+/// The mail filed into the entry `id`, by account ([`Inbox::mail_by_account`]).
+fn mail_of(db: &Connection, id: &str) -> Result<BTreeMap<String, Vec<String>>, Failure> {
+    let mut statement = db.prepare("SELECT account, message FROM mail_messages WHERE item = ?1 ORDER BY rowid")?;
+    let rows = statement.query_map([id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+    let mut by_account: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in rows {
+        let (account, message) = row?;
+        by_account.entry(account).or_default().push(message);
+    }
+    Ok(by_account)
+}
+
 /// `client` may mark `item` done: marking a mail entry done marks its mail read on the server
 /// (task E4.1), which takes write access to mail, and marking a GitHub entry done marks its
-/// notification done on GitHub (task E5.2), which takes write access to GitHub; without it
-/// `forbidden`. (A repository out of reach never got this far: such an entry is `not-found`.) The
+/// notification done on GitHub (task E5.2), which takes write access to GitHub, and the GitHub mail
+/// filed with it read (task E5.6), which takes write access to mail and each of its accounts among
+/// the client's `mail_accounts`; without it `forbidden`. (A repository out of reach never got this
+/// far: such an entry is `not-found`.) The
 /// app key (`None`) and every other entry pass: deleting a Nextcloud notification or marking a Talk
 /// conversation read touches nothing beyond the inbox's own matter. Checked before an approval
 /// ([`Inbox::refusal`]) and again when the command runs ([`answer`], [`Inbox::entry_for_task`]), so
 /// rights narrowed meanwhile hold.
-fn check_done(item: &Item, client: Option<&ClientInfo>) -> Result<(), Failure> {
+fn check_done(db: &Connection, item: &Item, client: Option<&ClientInfo>) -> Result<(), Failure> {
     let Some(client) = client else { return Ok(()) };
     let writes = |area: Area| client.rights.area(area).allows(Access::Write);
     match item.source.kind {
@@ -1692,6 +1741,17 @@ fn check_done(item: &Item, client: Option<&ClientInfo>) -> Result<(), Failure> {
         SourceKind::Github if !writes(Area::Github) => Err(Failure::Forbidden(InboxForbidden(
             "marking a GitHub entry done marks its notification done on GitHub, which needs write access to GitHub",
         ))),
+        SourceKind::Github => {
+            let reaches = |account: &String| writes(Area::Mail) && client.rights.mail_accounts.contains(account);
+            if mail_of(db, &item.id)?.keys().all(reaches) {
+                Ok(())
+            } else {
+                Err(Failure::Forbidden(InboxForbidden(
+                    "marking this GitHub entry done also marks its mail read, which needs write access to mail and \
+                     its account",
+                )))
+            }
+        }
         _ => Ok(()),
     }
 }
@@ -2205,7 +2265,8 @@ fn set_done(
     now: DateTime<Utc>,
 ) -> Result<Item, Failure> {
     if done {
-        check_done(&changeable(db, id, client)?.item, client)?;
+        let item = changeable(db, id, client)?.item;
+        check_done(db, &item, client)?;
     }
     let tx = db.transaction()?;
     let mut was_done = false;
@@ -2767,6 +2828,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 8 {
         tx.execute_batch(SCHEMA_V8)?;
     }
+    if version < 9 {
+        tx.execute_batch(SCHEMA_V9)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -3209,6 +3273,80 @@ pub struct NewMail {
     pub list: Option<String>,
     /// When it was sent: where its entry stands in the list.
     pub date: DateTime<Utc>,
+    /// The GitHub issue or pull request the mail is about (task E5.6), when GitHub sent it:
+    /// `From: notifications@github.com` with `X-GitHub-Reason`, the repository of `List-Id` and the
+    /// number of the `Message-ID`, all agreeing (`crate::mail::inbox_feed::github_thread`); `None`
+    /// for every other mail. Headers from outside: [`Inbox::file_mail`] lets it at most join a
+    /// GitHub entry of that very repository and number, never hide a mail otherwise.
+    pub github: Option<IssueRef>,
+}
+
+/// The value of `mail_messages.github` for a mail about `issue` (task E5.6): `owner/repo#<n>` in
+/// small letters, as GitHub compares repositories without regard to case.
+fn github_key(issue: &IssueRef) -> String {
+    format!("{}#{}", issue.repo.to_ascii_lowercase(), issue.number)
+}
+
+/// The issue or pull request the GitHub entry `item` is about: its link, which the GitHub module
+/// built on github.com from checked parts (`/pull/<n>`, `/issues/<n>`), with the repository of its
+/// trait `repo`. `None` for every other entry, and for one whose link names another repository.
+fn github_issue(item: &Item) -> Option<IssueRef> {
+    if item.source.kind != SourceKind::Github {
+        return None;
+    }
+    let Some(Link::Url { url }) = &item.link else { return None };
+    let issue = torro_pim_github::address::issue_ref(url)?;
+    let repo = item.facets.iter().find(|facet| facet.key == FacetKey::Repo)?;
+    repo.value.eq_ignore_ascii_case(&issue.repo).then_some(issue)
+}
+
+/// The open or snoozed GitHub entry about `issue` (task E5.6) of a source the person did not mute,
+/// the one updated last; `None` without one.
+fn open_github_entry(db: &Connection, issue: &IssueRef) -> Result<Option<String>, Failure> {
+    let condition = "instr(source, ?) = 1 AND lower(repo) = ? AND state IN ('new', 'seen', 'snoozed')";
+    let values = vec![text(GITHUB_PREFIX), text(issue.repo.to_ascii_lowercase())];
+    let mut found = read_items(db, &Scope::All, condition, values, " ORDER BY updated DESC")?;
+    found.retain(|stored| github_issue(&stored.item).is_some_and(|its| its.same(issue)));
+    for Stored { item, .. } in found {
+        let muted = "source = ? AND effect = 'muted' AND sender = '' AND facet = ''";
+        if read_rules(db, &Scope::All, muted, vec![text(item.source.key())])?.is_empty() {
+            return Ok(Some(item.id));
+        }
+    }
+    Ok(None)
+}
+
+/// Hands the GitHub mail about `issue` of the open and snoozed mail entries over to the GitHub
+/// entry `entry` (task E5.6), which was just filed or opened again at `now`: their rows of
+/// `mail_messages` move to it, and a mail entry left without mail is done. Done because it was
+/// merged into the GitHub entry, not because the person dealt with it: not counted as done, and its
+/// mail stays unread until the GitHub entry is done.
+fn take_github_mail(db: &Connection, issue: &IssueRef, entry: &str, now: DateTime<Utc>) -> Result<(), Failure> {
+    let key = github_key(issue);
+    let waiting: Vec<String> = {
+        let mut statement = db.prepare(
+            "SELECT DISTINCT m.item FROM mail_messages m JOIN items i ON i.id = m.item
+             WHERE m.github = ?1 AND i.owner = m.account AND i.state IN ('new', 'seen', 'snoozed')",
+        )?;
+        let rows = statement.query_map([&key], |row| row.get::<_, String>(0))?;
+        rows.collect::<rusqlite::Result<Vec<String>>>()?
+    };
+    for mail_entry in waiting {
+        db.execute(
+            "UPDATE mail_messages SET item = ?1 WHERE item = ?2 AND github = ?3",
+            params![entry, mail_entry, key],
+        )?;
+        let left: i64 =
+            db.query_row("SELECT COUNT(*) FROM mail_messages WHERE item = ?1", [&mail_entry], |row| row.get(0))?;
+        if left > 0 {
+            continue;
+        }
+        for Stored { mut item, .. } in read_items(db, &Scope::All, "id = ?", vec![text(mail_entry.as_str())], "")? {
+            rules::set_done(&mut item, true, now);
+            update_item(db, &item)?;
+        }
+    }
+    Ok(())
 }
 
 /// An open mail entry and the messages filed into it ([`Inbox::open_mail_entries`]).
@@ -3306,6 +3444,18 @@ fn file_mail(
         tx.commit()?;
         return Ok(None);
     }
+    let github = mail.github.as_ref().map(github_key).unwrap_or_default();
+    // A GitHub mail whose GitHub entry is open goes with it (task E5.6): no entry, not counted.
+    if let Some(issue) = &mail.github
+        && let Some(entry) = open_github_entry(&tx, issue)?
+    {
+        tx.execute(
+            "INSERT INTO mail_messages (account, message, item, github) VALUES (?1, ?2, ?3, ?4)",
+            params![mail.account, mail.message, entry, github],
+        )?;
+        tx.commit()?;
+        return Ok(Some(entry));
+    }
     if let Some((_, MuteEffect::Info)) = muting {
         rules::set_lane(&mut incoming, Lane::Info);
     }
@@ -3333,8 +3483,8 @@ fn file_mail(
         None => insert_item(&tx, &mail.account, &incoming)?,
     }
     tx.execute(
-        "INSERT INTO mail_messages (account, message, item) VALUES (?1, ?2, ?3)",
-        params![mail.account, mail.message, id],
+        "INSERT INTO mail_messages (account, message, item, github) VALUES (?1, ?2, ?3, ?4)",
+        params![mail.account, mail.message, id, github],
     )?;
     // Filed once per message (above), so counted once (task E8.8a).
     let remembering = remembering.filter(|rule| remembered_lane(rule) == Some(lane));
@@ -3497,7 +3647,7 @@ fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Resu
         rules::set_lane(&mut incoming, Lane::Info);
     }
     let counted = incoming.clone();
-    match existing {
+    let stored = match existing {
         Some(existing) => {
             // An older report of the matter, filed late, does not take the place of the newest.
             if date < existing.updated {
@@ -3508,9 +3658,20 @@ fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Resu
                 incoming.link = existing.link.clone();
                 incoming.facets = existing.facets.clone();
             }
-            update_item(&tx, &rules::merge(existing, incoming))?;
+            let merged = rules::merge(existing, incoming);
+            update_item(&tx, &merged)?;
+            merged
         }
-        None => insert_item(&tx, &owner, &incoming)?,
+        None => {
+            insert_item(&tx, &owner, &incoming)?;
+            incoming
+        }
+    };
+    // The GitHub mail about its item that came first goes with it now (task E5.6).
+    if !matches!(stored.state, State::Done { .. })
+        && let Some(issue) = github_issue(&stored)
+    {
+        take_github_mail(&tx, &issue, &id, now)?;
     }
     for remote_id in &ids {
         tx.execute(
@@ -5379,6 +5540,7 @@ pub(crate) mod tests {
             bulk,
             list: None,
             date,
+            github: None,
         }
     }
 
@@ -5852,6 +6014,159 @@ pub(crate) mod tests {
         assert!(matches!(item(inbox.handle(done(&id, false), Some(&writer), at(9, 2))).state, State::Done { .. }));
     }
 
+    // ----- GitHub mail (task E5.6) -----
+
+    /// A mail GitHub sent Anna about `torro/workplace#<number>`, as the mail feed hands it.
+    fn github_mail(message: &str, thread: &str, number: u64, date: DateTime<Utc>) -> NewMail {
+        let issue = IssueRef { repo: "Torro/Workplace".into(), number };
+        NewMail {
+            list: Some("torro/workplace <workplace.torro.github.com>".into()),
+            github: Some(issue),
+            ..mail(message, thread, "Re: [torro/workplace] Add the inbox", "notifications@github.com", true, date)
+        }
+    }
+
+    /// The GitHub entry of the tests about pull request `number` of `torro/workplace`.
+    fn github_entry(number: u64, date: DateTime<Utc>) -> Remote {
+        remote(github(), &number.to_string(), &[&number.to_string()], date)
+    }
+
+    #[test]
+    fn a_github_mail_after_its_github_entry_joins_it_and_counts_nowhere() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let entry_id = filed_remote(&inbox, &github_entry(42, at(8, 0)), at(8, 0));
+        let joined = inbox.file_mail(&github_mail("m:1", "t:1", 42, at(8, 1)), Notify::All, at(8, 2));
+        assert_eq!(joined, Ok(Some(entry_id.clone())), "filed with the GitHub entry");
+        let listed = items(inbox.handle(all(), None, at(9, 0)));
+        assert_eq!(
+            listed.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            [entry_id.as_str()],
+            "no mail entry"
+        );
+        let github_entry = entry(&inbox, &entry_id);
+        assert_eq!((github_entry.count, github_entry.state), (1, State::New), "the GitHub entry stays as it was");
+        let filed: BTreeMap<String, Vec<String>> = [(ANNA.to_string(), vec!["m:1".to_string()])].into();
+        assert_eq!(inbox.mail_by_account(&entry_id), Ok(filed));
+        assert_eq!(of(&stats(&inbox, None, at(9, 0)), &SourceRef::mail("anna@example.org")).new, 0, "not twice");
+        assert_eq!(inbox.file_mail(&github_mail("m:1", "t:1", 42, at(8, 1)), Notify::All, at(8, 3)), Ok(None));
+    }
+
+    #[test]
+    fn a_github_mail_before_its_github_entry_goes_over_to_it_when_it_comes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let mail_entry = filed(&inbox, &github_mail("m:1", "t:1", 42, at(8, 0)), at(8, 0));
+        let other = filed(&inbox, &github_mail("m:2", "t:2", 7, at(8, 0)), at(8, 0));
+        assert!(entry(&inbox, &mail_entry).state.is_open(), "without a GitHub entry the mail is the way");
+
+        let entry_id = filed_remote(&inbox, &github_entry(42, at(8, 5)), at(8, 5));
+        assert!(matches!(entry(&inbox, &mail_entry).state, State::Done { .. }), "merged into the GitHub entry");
+        assert!(inbox.mail_messages(&mail_entry).expect("read").is_empty());
+        assert_eq!(inbox.mail_by_account(&entry_id).expect("read").get(ANNA), Some(&vec!["m:1".to_string()]));
+        assert!(entry(&inbox, &other).state.is_open(), "another number stays");
+        let mail_source = of(&stats(&inbox, None, at(9, 0)), &SourceRef::mail("anna@example.org"));
+        assert_eq!((mail_source.new, mail_source.done), (2, 0), "merged, not done by the person");
+
+        // A reply later joins the GitHub entry at once.
+        assert_eq!(filed(&inbox, &github_mail("m:3", "t:1", 42, at(8, 10)), at(8, 10)), entry_id);
+        assert_eq!(inbox.mail_by_account(&entry_id).expect("read")[ANNA], ["m:1", "m:3"]);
+    }
+
+    #[test]
+    fn a_github_mail_never_disappears_without_an_open_github_entry_of_its_repository_and_number() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let entry_id = filed_remote(&inbox, &github_entry(42, at(8, 0)), at(8, 0));
+        let other_number = filed(&inbox, &github_mail("m:1", "t:1", 43, at(8, 1)), at(8, 1));
+        let elsewhere = NewMail {
+            github: Some(IssueRef { repo: "torro/site".into(), number: 42 }),
+            ..github_mail("m:2", "t:2", 42, at(8, 1))
+        };
+        let other_repo = filed(&inbox, &elsewhere, at(8, 1));
+        let ordinary = filed(&inbox, &NewMail { github: None, ..github_mail("m:3", "t:3", 42, at(8, 1)) }, at(8, 1));
+        for id in [&other_number, &other_repo, &ordinary] {
+            assert_ne!(id, &entry_id);
+            assert!(entry(&inbox, id).state.is_open(), "an entry of its own");
+        }
+
+        // The GitHub entry done: a mail about it is a mail again, until GitHub reports news.
+        inbox.handle(done(&entry_id, false), None, at(8, 2));
+        let while_done = filed(&inbox, &github_mail("m:4", "t:4", 42, at(8, 3)), at(8, 3));
+        assert_ne!(while_done, entry_id);
+        assert!(entry(&inbox, &while_done).state.is_open());
+        assert_eq!(filed_remote(&inbox, &github_entry(42, at(8, 4)), at(8, 4)), entry_id, "news on GitHub");
+        assert!(matches!(entry(&inbox, &while_done).state, State::Done { .. }), "then it goes over");
+
+        // A muted GitHub source takes no mail.
+        let mute = Request::MuteSource { source: github(), muted: true };
+        assert_eq!(inbox.handle(mute, None, at(8, 5)), Response::Ok);
+        let muted = filed(&inbox, &github_mail("m:5", "t:5", 42, at(8, 6)), at(8, 6));
+        assert_ne!(muted, entry_id);
+        assert!(entry(&inbox, &muted).state.is_open());
+    }
+
+    #[test]
+    fn done_on_a_github_entry_with_mail_needs_write_access_to_mail_and_its_account() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let entry_id = filed_remote(&inbox, &github_entry(42, at(8, 0)), at(8, 0));
+        let bare = filed_remote(&inbox, &github_entry(43, at(8, 0)), at(8, 0));
+        filed(&inbox, &github_mail("m:1", "t:1", 42, at(8, 1)), at(8, 1));
+        let reading_mail = with_rights(|rights| {
+            rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        });
+        let other_account = with_rights(|rights| {
+            rights.mail_accounts = Selection::Only(vec!["mail:bernd@example.com".into()]);
+        });
+        let task =
+            Request::CreateTaskFromItem { id: entry_id.clone(), collection: "a/list".into(), title: None, due: None };
+        for client in [&reading_mail, &other_account] {
+            for request in [done(&entry_id, false), done(&entry_id, true), task.clone()] {
+                assert_eq!(inbox.refusal(&request, Some(client)).as_ref().map(code), Some("forbidden"), "{request:?}");
+            }
+            assert_eq!(code(&inbox.handle(done(&entry_id, false), Some(client), at(9, 0))), "forbidden");
+            assert!(inbox.refusal(&done(&bare, false), Some(client)).is_none(), "without mail GitHub alone");
+        }
+        let Response::Error { message, .. } = inbox.handle(done(&entry_id, false), Some(&reading_mail), at(9, 0))
+        else {
+            panic!("refused")
+        };
+        assert!(!message.contains("Add the inbox") && !message.contains("anna"), "names nothing of the mail");
+        assert!(entry(&inbox, &entry_id).state.is_open(), "nothing changed");
+        let writer = with_rights(|rights| rights.mail_accounts = Selection::Only(vec![ANNA.into()]));
+        assert!(inbox.refusal(&done(&entry_id, false), Some(&writer)).is_none());
+        assert!(matches!(
+            item(inbox.handle(done(&entry_id, false), Some(&writer), at(9, 1))).state,
+            State::Done { .. }
+        ));
+    }
+
+    #[test]
+    fn a_file_of_schema_8_keeps_its_mail_and_learns_the_github_mail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let mail_id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 0));
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
+                     PRAGMA user_version = 8;",
+                )?;
+                Ok(())
+            })
+            .expect("back to schema 8");
+        drop(inbox);
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.mail_messages(&mail_id), Ok(vec!["m:1".to_string()]));
+        let entry_id = filed_remote(&inbox, &github_entry(42, at(9, 0)), at(9, 0));
+        assert!(entry(&inbox, &mail_id).state.is_open(), "a mail of before is no GitHub mail");
+        assert_eq!(filed(&inbox, &github_mail("m:2", "t:2", 42, at(9, 1)), at(9, 1)), entry_id);
+        let db = Connection::open(file_in(dir.path())).expect("opens");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
     #[test]
     fn a_file_of_schema_7_keeps_everything_and_learns_the_remote_sources() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -5863,6 +6178,7 @@ pub(crate) mod tests {
             .with(|db| {
                 db.execute_batch(
                     "DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
+                     DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
                      PRAGMA user_version = 7;",
                 )?;
                 Ok(())
@@ -7018,6 +7334,7 @@ pub(crate) mod tests {
                     "DROP TABLE stats; DROP TABLE muted_mail; DROP TABLE opened_items;
                      ALTER TABLE rules DROP COLUMN counted_since;
                      DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
+                     DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
                      PRAGMA user_version = 5;",
                 )?;
                 Ok(())
