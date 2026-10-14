@@ -24,7 +24,7 @@
 //! A mail account (task M5.2, `AccountInfo::mail`) has a page of its own ([`mail_detail`]): the
 //! state of each service (mail, calendars and tasks) with its last sync and problem and "Sync now",
 //! the question "Which folder holds sent mail?" while the server left a folder role open, the
-//! sender name and signature (typed into a draft, saved with "Save"), "Show new mail in Inbox",
+//! sender name and signature (typed into a draft, saved with "Save"), "Show new mail in the Notification Hub",
 //! the services as switches, and the connection: "Server settings…" and "Change password…" open
 //! dialogs that send `ConnectMail` again (the only way to change servers or password; the
 //! password lives in the dialog as a [`Secret`] until it is sent). Everything else goes through
@@ -352,7 +352,7 @@ pub enum Message {
     SignatureEdited(text_editor::Action),
     /// "Save": sender name and signature, as far as they differ from the stored ones.
     SaveMail,
-    /// "Show new mail in Inbox" was set.
+    /// "Show new mail in the Notification Hub" was set.
     SetNotify(Notify),
     /// "Write new mail as" was set (issue #125).
     SetFormat(MailFormat),
@@ -1346,7 +1346,7 @@ fn role_question(role: Role) -> &'static str {
     }
 }
 
-/// "Show new mail in Inbox" as a choice of a pick list.
+/// "Show new mail in the Notification Hub" as a choice of a pick list.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct NotifyChoice(Notify);
 
@@ -1526,7 +1526,7 @@ fn writing_group(mail: &MailView) -> Element<'_, Message> {
     widgets::group(tr("Writing"), vec![row], Some(footer.to_string()))
 }
 
-/// "Show new mail in Inbox": all, only what the inbox's rules put into "For me", or none.
+/// "Show new mail in the Notification Hub": all, only what the inbox's rules put into "For me", or none.
 fn inbox_group(mail: &MailView) -> Element<'_, Message> {
     let choice =
         pick_list(NOTIFY_CHOICES, Some(NotifyChoice(mail.settings.notify)), |choice| Message::SetNotify(choice.0))
@@ -1536,9 +1536,9 @@ fn inbox_group(mail: &MailView) -> Element<'_, Message> {
             .font(typo::caption().font)
             .style(style::pick_list)
             .menu_style(style::pick_list_menu);
-    let row = setting_row(None, tr("Show new mail in Inbox"), None, choice);
+    let row = setting_row(None, tr("Show new mail in the Notification Hub"), None, choice);
     let footer = tr("Only \"For me\" leaves out newsletters and other automatic mail.");
-    widgets::group(tr("Inbox"), vec![row], Some(footer.to_string()))
+    widgets::group(tr("Notification Hub"), vec![row], Some(footer.to_string()))
 }
 
 /// The services as switches. Calendars and tasks need the account's calendar address; without
@@ -1813,11 +1813,13 @@ pub struct Feed {
 
 /// The inbox sources an account brings (its id is the source's key): a GitHub account its
 /// notifications, a Nextcloud account its notifications and Talk. Every other account none here;
-/// a mail account has its own "Show new mail in Inbox", an ntfy account is nothing but its topics.
+/// a mail account has its own "Show new mail in the Notification Hub", an ntfy account is nothing but its topics.
 pub fn feeds(account: &AccountInfo) -> Vec<Feed> {
     let Ok(source) = account.id.parse::<SourceRef>() else { return Vec::new() };
     match source.kind {
-        SourceKind::Github => vec![Feed { source, name: tr("Show notifications in the Inbox"), summary: None }],
+        SourceKind::Github => {
+            vec![Feed { source, name: tr("Show notifications in the Notification Hub"), summary: None }]
+        }
         SourceKind::Nextcloud => {
             let talk = SourceRef::talk(source.name.clone());
             vec![
@@ -1882,7 +1884,7 @@ fn inbox_sources_group<'a>(account: &AccountInfo, data: &Data) -> Option<Element
             }
         })
         .collect();
-    Some(widgets::group(tr("Inbox"), rows, footer))
+    Some(widgets::group(tr("Notification Hub"), rows, footer))
 }
 
 // ----- An ntfy account's page (task E5.14) --------------------------------------------------
@@ -1938,7 +1940,9 @@ fn topics_group(view: &NtfyView, health: Option<SourceHealth>) -> Element<'_, Me
     rows.push(row_frame(on_axis(add), false));
     let footer = match health {
         Some(health) => health_text(SourceKind::Ntfy, health),
-        None => tr("The Inbox shows each topic by its label. On a public server a topic name works like a password."),
+        None => tr(
+            "The Notification Hub shows each topic by its label. On a public server a topic name works like a password.",
+        ),
     };
     widgets::group(tr("Topics"), rows, Some(footer.to_string()))
 }
@@ -1964,7 +1968,7 @@ fn topic_dialog<'a>(edit: &'a TopicEdit, account: &'a AccountInfo) -> Element<'a
     let (title, purpose) = if new {
         (tr("Add topic"), trf("Subscribe {account} to another topic.", &[("account", &account.label)]))
     } else {
-        (tr("Edit topic"), tr("The Inbox shows the topic by its label.").to_string())
+        (tr("Edit topic"), tr("The Notification Hub shows the topic by its label.").to_string())
     };
     let head = column![typo::text(typo::title(), title), typo::text(typo::body(), purpose).style(theme::text_2)]
         .spacing(space::xs());
@@ -1985,7 +1989,7 @@ fn topic_dialog<'a>(edit: &'a TopicEdit, account: &'a AccountInfo) -> Element<'a
         widgets::group(
             tr("Label"),
             vec![row_frame(label, false)],
-            Some(tr("Shown in the Inbox instead of the name.").to_string())
+            Some(tr("Shown in the Notification Hub instead of the name.").to_string())
         ),
     ]
     .spacing(layout::section_gap());
@@ -2021,7 +2025,7 @@ fn unsubscribe_confirm<'a>(edit: &'a TopicEdit) -> Element<'a, Message> {
     let label = edit.stored.as_deref().unwrap_or_default();
     confirm(
         tr("Unsubscribe from this topic?"),
-        trf("{label} no longer comes to the Inbox. Its entries stay there.", &[("label", &label)]),
+        trf("{label} no longer comes to the Notification Hub. Its entries stay there.", &[("label", &label)]),
         tr("Unsubscribe"),
         Message::Unsubscribe,
         Message::CancelUnsubscribe,
@@ -2820,7 +2824,10 @@ mod tests {
             let account = data.accounts.iter().find(|account| account.id == id).expect("demo account");
             feeds(account).into_iter().map(|feed| (feed.source.key(), feed.name)).collect::<Vec<_>>()
         };
-        assert_eq!(of("github:anna-dev"), [("github:anna-dev".to_string(), tr("Show notifications in the Inbox"))]);
+        assert_eq!(
+            of("github:anna-dev"),
+            [("github:anna-dev".to_string(), tr("Show notifications in the Notification Hub"))]
+        );
         assert_eq!(
             of("nextcloud:anna@cloud.example.org"),
             [

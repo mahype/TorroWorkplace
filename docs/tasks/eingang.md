@@ -1550,6 +1550,26 @@ E8.9   unabhängig (torro-wm, core.rs)
   eine Unterhaltung für eine Weile hält weitere Mails aus „For me“ (Kern); Ordnernachricht ohne Eintrag nur mit
   Merkmalen, für Clients nur mit Konto, Freigabe nennt den Absender aus dem Speicher.
 
+### E8.26 Fenster unterscheidbar: Notification Hub, Mail, App Feed (Issue #127)
+- [x] erledigt (2026-10-14: Entscheidung 21 in [eingang.md](../eingang.md). Zentrale „Notification Hub“
+  (de „Mitteilungszentrale“), Mail-Fenster „Mail“, Benachrichtigungen-Fenster „App Feed“ (de „App-Feed“), weil
+  „Notification Hub“ und „Notifications“ sich ähnelten. Lange Namen „Torro Notification Hub“, „Torro Workplace
+  Mail“ (nicht „Torro Mail“: TorroMail ist ein eigenes Produkt), „Torro App Feed“. Umbenannt in Tray-Menü,
+  App-Umschalter, Titeln, Steuerzentrale (Abschnitt, Konten, Agenten, Assistent), Freigaben, CLI, Desktop-Hinweisen,
+  Assistent und API-Beschreibungen; „Inbox“ heißt nur noch der Mail-Ordner. Erkennungszeichen `shell::app_mark`:
+  Icon des Fensters in eigener Farbe (Standardfarben der Listen: Zentrale orange, Mail blau, App Feed pink) auf
+  getönter Kachel statt des Logos im Umschalter und in der Leiste, ohne Seitenleiste und Leiste (Schmal) vorn in der
+  Kopfleiste. „For me“ im Mail-Fenster mit `UserCheck`. Aktive Seitenleistenzeile bleibt neutral (Design-Regel
+  „Auswahl neutral“). Unverändert: Fensterklassen, `AppId`, `--view`, API-Bereich `inbox`)
+- **Modell:** Opus · **Braucht:** E8.1 · **Dateien:** `crates/torro-core/src/{app.rs,i18n/de.rs}`,
+  `crates/torro-gui/src/shell.rs`, `crates/torroinbox/src/{app,overview,list,detail,mail,keys}.rs`,
+  `crates/torroworkplace/src/{tray/*,ui/*,approvals,cli,core,inbox_notify,mcp}.rs`, `crates/torro-ipc/src/api.rs`,
+  `crates/torro-inbox/src/source.rs`, `crates/torroassistant/src/{chat,view}.rs`, `docs/{eingang,app-catalog}.md`
+- **Oberfläche:** alle drei Fenster, Tray, Steuerzentrale. **API/MCP:** keine neuen Befehle, nur Beschreibungen
+  (`apps.open_app`, `inbox.list_items`, `inbox.open_item`, Fehlertexte der Sicherheitsregel 1, MCP-Anleitung).
+- **Abnahme:** Tests: die drei Namen teilen kein Wort (beide Sprachen), jedes Fenster eigenes Icon und eigene Farbe,
+  Titel „Notification Hub · …“ / „Mail · …“ / „App Feed · …“, „For me“ ohne `Icon::Inbox`.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,

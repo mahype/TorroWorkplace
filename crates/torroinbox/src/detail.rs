@@ -21,9 +21,9 @@
 //! "Done", no more "Snooze" and "Mark as done") –, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
 //! text button – only its icon in narrow windows, where the words do not fit ([`Footer::compact`]),
 //! and beside "…", which leaves no room for them in the panel's 400 either – and "…" (`m`, task
-//! E3.10), which opens the menu "Hide from inbox": the entry, muting the source
+//! E3.10), which opens the menu "Hide from Notification Hub": the entry, muting the source
 //! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". In the
-//! notifications window and for mail (issue #123: mail's "Hide from inbox" went into the bell's
+//! notifications window and for mail (issue #123: mail's "Hide from Notification Hub" went into the bell's
 //! menu) the bell stands there instead ([`Footer::bell`], task E8.6b): it opens the
 //! bell's menu, as `m` and the bell of the card do; it is the crossed-out bell (`BellOff`, task
 //! E8.10). "Move to Info" has the circled "i" (`app::lane_icon`), never a bell. "Make task"
@@ -85,7 +85,7 @@ pub struct Anchors {
     pub task: Anchor,
     /// "Make event": its dialog opens here (task E8.5b).
     pub event: Anchor,
-    /// "…" / "Hide": the menu "Hide from inbox" opens here (task E3.10); in the notifications window
+    /// "…" / "Hide": the menu "Hide from Notification Hub" opens here (task E3.10); in the notifications window
     /// and for mail the bell, where the bell's menu opens (task E8.6b, issue #123).
     pub hide: Anchor,
 }
@@ -377,7 +377,11 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
             // the row; in the notifications window and for mail it opens the bell's menu.
             widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::AskHide(item.id.clone())))
         } else {
-            widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())))
+            widgets::icon_button(
+                Icon::Ellipsis,
+                tr("Hide from Notification Hub"),
+                Some(Message::AskHide(item.id.clone())),
+            )
         };
         buttons.push(widgets::anchored(&footer.anchors.hide, hide));
     }

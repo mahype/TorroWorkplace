@@ -264,7 +264,7 @@ impl fmt::Display for InboxError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             InboxError::NotFound => f.write_str(tr("This entry no longer exists.")),
-            InboxError::Forbidden => f.write_str(tr("Only you can change this entry, in the Inbox app.")),
+            InboxError::Forbidden => f.write_str(tr("Only you can change this entry, in the Notification Hub.")),
             InboxError::Busy => f.write_str(tr("Too many entries at once. Try again later.")),
             InboxError::Unsupported => f.write_str(tr("Can't open this from here. The window may have closed.")),
             InboxError::Settled => f.write_str(tr("This was decided already or has expired.")),
