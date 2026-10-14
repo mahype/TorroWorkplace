@@ -461,8 +461,11 @@ pub fn titlebar<'a, M: Clone + 'a>(
         let buttons = if on_sidebar { in_sidebar(buttons) } else { buttons };
         let band = stack![band(surface, cover), buttons];
         let band = container(band).width(Fill).height(TITLEBAR / zoom);
+        let below = column![blank().height(TITLEBAR / zoom), container(content).width(Fill).height(Fill)];
+        // The band lies over the content, not merely above it: the shadow of a side panel or the
+        // drawer blurs up past their top edge, and drawn first the band showed it as a grey strip.
         // The buttons capture their presses, so only the free band drags the window.
-        column![mouse_area(band).on_press(on_drag), container(content).width(Fill).height(Fill)].into()
+        stack![below, mouse_area(band).on_press(on_drag)].into()
     }
     #[cfg(not(target_os = "macos"))]
     {
