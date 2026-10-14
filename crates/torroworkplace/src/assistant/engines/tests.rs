@@ -34,7 +34,7 @@ impl Host for FakeHost {
         Box::pin(async { Err(AiError::NotFound("no AI accounts here".into())) })
     }
 
-    fn run<'a>(&'a self, _request: Request, _engine: &'a str) -> BoxFuture<'a, Response> {
+    fn run<'a>(&'a self, _request: Request, _engine: &'a str, _untrusted: bool) -> BoxFuture<'a, Response> {
         Box::pin(async { Response::Ok })
     }
 

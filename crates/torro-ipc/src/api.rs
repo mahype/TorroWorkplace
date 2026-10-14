@@ -1729,8 +1729,9 @@ static CREATE_CLIENT: Command = Command {
     area: Area::Clients,
     access: Access::Admin,
     mcp: Mcp::Never,
-    description: "Connects a new agent or script with the rights of a template and returns its key. The key is in \
-                  this answer only; the core keeps just its hash. A `hook` client names the agent it reports for.",
+    description: "Connects a new agent or script with the rights of a template, or with the rights given (narrowed \
+                  to what its kind may hold and checked like clients.update_client), and returns its key. The key is \
+                  in this answer only; the core keeps just its hash. A `hook` client names the agent it reports for.",
 };
 
 static UPDATE_CLIENT: Command = Command {
@@ -2253,7 +2254,9 @@ static REMEMBER: Command = Command {
     description: "Saves a note in the assistant's memory, which it reads in every conversation. Use it only when the \
                   person explicitly asks you to remember something (\"Remember that …\"); never store anything on \
                   your own. One short sentence in the person's words, at most 500 characters. With `replaces` (a \
-                  note's id) it changes that note instead, which may wait for the person's approval.",
+                  note's id) it changes that note instead. It may wait for the person's approval: always after the \
+                  conversation read mail, GitHub or inbox entries marked untrusted, and always for an agent that \
+                  runs as the assistant.",
 };
 
 static FORGET: Command = Command {
@@ -2409,6 +2412,7 @@ mod tests {
                 kind: "claude-code".into(),
                 template: RightsTemplate::ReadAndWrite,
                 agent: None,
+                rights: None,
             },
             Request::UpdateClient { id: "3fa9c1d2".into(), rights: RightsTemplate::ReadOnly.rights() },
             Request::NewClientKey { id: "3fa9c1d2".into() },

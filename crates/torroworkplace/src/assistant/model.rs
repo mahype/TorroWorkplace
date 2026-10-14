@@ -15,7 +15,9 @@
 //! read anew for every answer (task C.10). A note the model asks to keep (`assistant_remember`) is
 //! marked `local_only` when the model runs on this computer and the conversation read mail before
 //! ([`Answering::read_mail`]): what a local model writes then may retell a mail, and the data rule
-//! keeps mail from models elsewhere.
+//! keeps mail from models elsewhere. Once the conversation read anything the tools mark
+//! `untrusted` (mail, GitHub, inbox entries of agents, scripts and mail; [`Answering::untrusted`]),
+//! every note waits for a person's approval (task C.11), wherever the model runs.
 //!
 //! A command that waits for a person (`pending`) puts an approval entry into the conversation; the
 //! loop asks for its state every [`Limits::approval_poll`] and goes on once the person decided (the
@@ -57,8 +59,14 @@ pub trait Host: Send + Sync {
     /// for the area `assistant` but its memory, `torro_ipc::api::own_memory`), its collections
     /// (`not-found`), and an approval where its rights ask for one ([`Response::Pending`]). Writes
     /// the line of the audit log with the engine `engine` among its ids. `forbidden` when there is
-    /// no assistant client.
-    fn run<'a>(&'a self, request: Request, engine: &'a str) -> BoxFuture<'a, Response>;
+    /// no assistant client. An approval it asks for keeps `engine`, so the log lines of the
+    /// person's decision name it too.
+    ///
+    /// `untrusted`: the conversation read data from outside the suite (what the tools mark
+    /// `untrusted`, [`super::tools::untrusted`]). An `assistant.remember` must then wait for a
+    /// person's approval ([`Response::Pending`]) whatever the rights say (task C.11): the note
+    /// could carry what a mail, an agent's entry or an issue said into every later prompt.
+    fn run<'a>(&'a self, request: Request, engine: &'a str, untrusted: bool) -> BoxFuture<'a, Response>;
 
     /// `approvals.approval_status` of the approval `id` as the assistant's own client: its own
     /// approvals only ([`Response::Approval`], else an error answer).
@@ -126,6 +134,10 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         EntryContent::Tool { name, .. } => data_rule::reads_mail(name),
         _ => false,
     });
+    let untrusted = job.history.iter().any(|entry| match &entry.content {
+        EntryContent::Tool { name, .. } => tools::may_have_read_untrusted(name),
+        _ => false,
+    });
     let mut run = Answering {
         limits: assistant.limits,
         assistant,
@@ -135,6 +147,7 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         persona,
         memory,
         read_mail,
+        untrusted,
     };
     if let Err(error) = run.go().await {
         let entry = EntryContent::Error { code: error.code().into(), message: error.to_string() };
@@ -158,6 +171,11 @@ struct Answering {
     /// tool of this answer gave what the data rule keeps from models elsewhere. A note a local
     /// model keeps from then on is marked `local_only` ([`Answering::kept_local`]).
     read_mail: bool,
+    /// The conversation read data from outside the suite: a tool of an earlier turn that may have
+    /// ([`tools::may_have_read_untrusted`]; its answer is not kept, so counted when it might), or an
+    /// answer of this one the tools marked `untrusted`. From then on every note waits for a person
+    /// (task C.11, [`Host::run`]).
+    untrusted: bool,
 }
 
 /// Why an answer ended early, for its error entry.
@@ -314,6 +332,10 @@ impl Answering {
                 // local model keeps may retell it.
                 self.read_mail |= data_rule::for_model(&request, &response, Place::Remote).withheld;
                 let screened = data_rule::for_model(&request, &response, place);
+                // Data from outside the suite (task C.11), judged on the whole answer: also what the
+                // data rule kept from this model counts, so no screening can hide it.
+                let whole = serde_json::to_value(response.as_ref()).unwrap_or(Value::Null);
+                self.untrusted |= tools::untrusted(area, &whole);
                 let error = match response.as_ref() {
                     Response::Error { code, .. } => Some(code.clone()),
                     _ => None,
@@ -371,8 +393,8 @@ impl Answering {
     /// Hands `request` to the core as the assistant's client and waits for a person where it must.
     /// The core runs it on a task of its own, so stopping the answer never stops a command half way.
     async fn run(&self, request: Request) -> Option<Outcome> {
-        let (host, engine) = (Arc::clone(&self.host), self.job.engine.clone());
-        let ran = tokio::spawn(async move { host.run(request, &engine).await }).await;
+        let (host, engine, untrusted) = (Arc::clone(&self.host), self.job.engine.clone(), self.untrusted);
+        let ran = tokio::spawn(async move { host.run(request, &engine, untrusted).await }).await;
         let response = ran.unwrap_or_else(|err| failed(&format!("the command did not finish: {err}")));
         let Response::Pending { approval } = response else { return Some(Outcome::Answered(Box::new(response))) };
         if !self.add(EntryContent::Approval { id: approval.id.clone() }, false).await {
@@ -619,6 +641,8 @@ pub(crate) mod tests {
         script: Arc<Script>,
         answer: fn(&Request) -> Response,
         ran: Mutex<Vec<(Request, String)>>,
+        /// Whether each request of `ran` came after the conversation read untrusted data.
+        untrusted: Mutex<Vec<bool>>,
     }
 
     impl Host for FakeHost {
@@ -640,9 +664,10 @@ pub(crate) mod tests {
             })
         }
 
-        fn run<'a>(&'a self, request: Request, engine: &'a str) -> BoxFuture<'a, Response> {
+        fn run<'a>(&'a self, request: Request, engine: &'a str, untrusted: bool) -> BoxFuture<'a, Response> {
             Box::pin(async move {
                 let response = (self.answer)(&request);
+                self.untrusted.lock().expect("lock").push(untrusted);
                 self.ran.lock().expect("lock").push((request, engine.to_string()));
                 response
             })
@@ -720,7 +745,14 @@ pub(crate) mod tests {
     ) -> (Arc<Assistant>, Arc<FakeHost>) {
         let limits = Limits { max_steps: 4, approval_poll: Duration::from_millis(5) };
         let assistant = Arc::new(assistant_in(dir, Duration::ZERO).with_limits(limits));
-        let host = Arc::new(FakeHost { rights, place, script, answer: answers, ran: Mutex::new(Vec::new()) });
+        let host = Arc::new(FakeHost {
+            rights,
+            place,
+            script,
+            answer: answers,
+            ran: Mutex::new(Vec::new()),
+            untrusted: Mutex::new(Vec::new()),
+        });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
         assistant.attach(weak);
@@ -843,6 +875,45 @@ pub(crate) mod tests {
             })
             .collect();
         assert_eq!(kept, [false, true, true], "before the mail entry not, after it always");
+    }
+
+    /// Task C.11: once the conversation read an answer the tools mark `untrusted` (here an inbox
+    /// entry), every later request tells the core so – also in a later answer of the conversation,
+    /// and for a model elsewhere – so a note waits for a person. Before, it does not. The C.10 mark
+    /// `local_only` stays a matter of mail and a model on this computer.
+    #[tokio::test]
+    async fn requests_after_untrusted_data_say_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls("assistant_remember", json!({"text": "Anna works in sales."})),
+            calls("inbox_list_items", json!({})),
+            calls("assistant_remember", json!({"text": "ACME sent invoice 42."})),
+            says("Noted."),
+            calls("assistant_remember", json!({"text": "Call ACME on Monday."})),
+            says("Noted too."),
+        ]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Remote, Arc::clone(&script));
+        let id = ask(&assistant, None, "Remember Anna, then check my inbox.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        ask(&assistant, Some(&id), "Remember to call ACME on Monday.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let untrusted = host.untrusted.lock().expect("lock").clone();
+        assert_eq!(untrusted, [false, false, true, true], "remember, inbox, remember, remember");
+        let local: Vec<bool> = remembered(&host)
+            .into_iter()
+            .map(|request| matches!(request, Request::Remember { local_only: true, .. }))
+            .collect();
+        assert_eq!(local, [false, false, false], "a model elsewhere never read the mail");
+        assert!(tools::may_have_read_untrusted("tasks.describe_github_repo"), "GitHub");
+        assert!(tools::may_have_read_untrusted("tasks.list_todos"), "issues of filter lists");
+        assert!(tools::may_have_read_untrusted("mail.get_message"));
+        assert!(!tools::may_have_read_untrusted("calendar.list_events"));
+        assert!(!tools::may_have_read_untrusted("tasks.list_lists"));
+        let issue = json!({"result": "todos", "todos": [{"collection": "github:mahype/00ff", "summary": "Hi"}]});
+        let linked = json!({"result": "todos", "todos": [{"collection": "a/b", "link": {"id": "github:o/r#1"}}]});
+        let own = json!({"result": "todos", "todos": [{"collection": "nextcloud:anna/tasks", "summary": "Hi"}]});
+        assert!(tools::untrusted(Area::Tasks, &issue) && tools::untrusted(Area::Tasks, &linked));
+        assert!(!tools::untrusted(Area::Tasks, &own));
     }
 
     #[tokio::test]

@@ -47,7 +47,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceRef};
-use torro_ipc::api::Mcp;
+use torro_ipc::api::{Area, Mcp, Rights};
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 use torro_mail::{MailAddress, Role};
 use torro_pim::{Event, EventTime, Todo};
@@ -408,12 +408,49 @@ impl EntryPin {
     }
 }
 
+/// Where a client's command came from besides its client (task C.11), kept with its approval and
+/// handed back with the decision ([`Decision`]), so what runs and what the log says after a
+/// person's decision match the request as it came in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    /// The assistant's engine that asked: the tools of engine A (an AI account id), or an agent
+    /// with a lent key (`claude-code`, [`crate::clients::Clients::lent_for`]). The log lines of the
+    /// decision name it like the request's (`engine:<id>`, [`crate::audit::engine_id`]). `None`
+    /// for every other client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The areas taken out of the client's rights for the key it asked with
+    /// ([`crate::clients::Clients::lent_without`]: always mail for an agent). An allowed command
+    /// runs with the client's rights of then minus these ([`Origin::narrow`]), whether the lease
+    /// still lives or not. Empty for every other key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<Area>,
+}
+
+impl Origin {
+    /// Nothing besides the client: a request with the client's own key.
+    fn is_plain(&self) -> bool {
+        *self == Origin::default()
+    }
+
+    /// `rights` without the areas [`Origin::without`] names, as the lent key had them.
+    pub fn narrow(&self, rights: &Rights) -> Rights {
+        let mut rights = rights.clone();
+        rights.areas.retain(|area, _| !self.without.contains(area));
+        rights
+    }
+}
+
 /// One approval in `approvals.json`: what the API shows, the request that runs when a person
 /// allows it, and for an `inbox.*` command what its entry looked like then ([`EntryPin`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entry {
     info: ApprovalInfo,
     request: Request,
+    /// Missing in approvals stored before task C.11 (they expire within ten minutes), and for a
+    /// client that asked with its own key ([`Origin`]).
+    #[serde(default, skip_serializing_if = "Origin::is_plain")]
+    origin: Origin,
     /// Missing in approvals stored before task E1.2c, and for every other command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pin: Option<EntryPin>,
@@ -499,15 +536,18 @@ impl std::error::Error for ApprovalsError {}
 /// What a person's decision leaves to do.
 #[derive(Debug)]
 pub enum Decision {
-    /// Denied; nothing runs. `request` is what was asked for, for the audit log's ids.
-    Denied { approval: ApprovalInfo, request: Box<Request> },
+    /// Denied; nothing runs. `request` is what was asked for, for the audit log's ids, and
+    /// `origin` where it came from ([`Origin::engine`] for the log).
+    Denied { approval: ApprovalInfo, request: Box<Request>, origin: Origin },
     /// Allowed: the approval is [`ApprovalState::Running`]. Run `request` for the client `client`
     /// (rights and collections checked again) and store its answer with [`Approvals::finish`].
     /// With a `pin`, the inbox entry the request names must still hold it ([`EntryPin::holds`]),
     /// else the core answers `conflict` and runs nothing. With a `fingerprint`
     /// ([`Approvals::open_with_fingerprint`], `mail.send_draft`), the message built now must have
-    /// the same one, else the core answers `conflict` and sends nothing.
-    Run { client: String, request: Box<Request>, pin: Option<EntryPin>, fingerprint: Option<String> },
+    /// the same one, else the core answers `conflict` and sends nothing. `origin` is where the
+    /// request came from: it runs without [`Origin::without`] and is logged with
+    /// [`Origin::engine`].
+    Run { client: String, request: Box<Request>, pin: Option<EntryPin>, fingerprint: Option<String>, origin: Origin },
 }
 
 /// The open and recent approvals of the core.
@@ -574,6 +614,9 @@ impl Approvals {
     /// stored: such a request may carry a secret. A client with [`OPEN_MAX`] open approvals, or
     /// asking with [`QUESTIONS_OPEN_MAX`] questions open, gets [`ApprovalsError::TooMany`]. When the file cannot be written nothing is opened, and the
     /// caller must refuse the command.
+    ///
+    /// For tests since task C.11: the core opens every approval with [`Approvals::open_from`].
+    #[cfg(test)]
     pub async fn open(
         &self,
         client: &str,
@@ -583,7 +626,7 @@ impl Approvals {
         summary: String,
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
-        self.open_entry(client, client_name, request, (pin, None), (summary, Vec::new()), now).await
+        self.open_entry(client, client_name, request, (pin, None, Origin::default()), (summary, Vec::new()), now).await
     }
 
     /// [`Approvals::open`] for a command that must run on exactly what the person was shown
@@ -594,6 +637,9 @@ impl Approvals {
     ///
     /// `(summary, details)` is what the person is shown: the summary ([`summary`]) and the lines
     /// below it ([`details`], task M3.5), both stored in [`ApprovalInfo`].
+    ///
+    /// For tests since task C.11: the core opens every approval with [`Approvals::open_from`].
+    #[cfg(test)]
     pub async fn open_with_fingerprint(
         &self,
         client: &str,
@@ -603,16 +649,40 @@ impl Approvals {
         (summary, details): (String, Vec<String>),
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
-        self.open_entry(client, client_name, request, (None, Some(fingerprint)), (summary, details), now).await
+        self.open_entry(
+            client,
+            client_name,
+            request,
+            (None, Some(fingerprint), Origin::default()),
+            (summary, details),
+            now,
+        )
+        .await
     }
 
-    /// [`Approvals::open`] with the entry's pin and fingerprint, and the details it shows.
+    /// [`Approvals::open`] and [`Approvals::open_with_fingerprint`] in one, for a request that came
+    /// from `origin` (task C.11): the approval keeps `pin`, `fingerprint` and `origin` and hands them
+    /// back with the decision ([`Decision`]); `(summary, details)` is what the person is shown. The
+    /// core opens every approval of a client this way.
+    pub async fn open_from(
+        &self,
+        client: &str,
+        client_name: &str,
+        request: Request,
+        kept: (Option<EntryPin>, Option<String>, Origin),
+        shown: (String, Vec<String>),
+        now: DateTime<Utc>,
+    ) -> Result<ApprovalInfo, ApprovalsError> {
+        self.open_entry(client, client_name, request, kept, shown, now).await
+    }
+
+    /// [`Approvals::open`] with the entry's pin, fingerprint and origin, and the details it shows.
     async fn open_entry(
         &self,
         client: &str,
         client_name: &str,
         request: Request,
-        (pin, fingerprint): (Option<EntryPin>, Option<String>),
+        (pin, fingerprint, origin): (Option<EntryPin>, Option<String>, Origin),
         (summary, details): (String, Vec<String>),
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
@@ -647,7 +717,7 @@ impl Approvals {
             decided: None,
             state: ApprovalState::Pending,
         };
-        state.entries.push(Entry { info: info.clone(), request, pin, fingerprint });
+        state.entries.push(Entry { info: info.clone(), request, origin, pin, fingerprint });
         if let Err(err) = self.write(&state).await {
             state.entries.pop();
             return Err(err);
@@ -751,8 +821,9 @@ impl Approvals {
                 request,
                 pin: entry.pin,
                 fingerprint: entry.fingerprint.clone(),
+                origin: entry.origin.clone(),
             },
-            false => Decision::Denied { approval: entry.info.clone(), request },
+            false => Decision::Denied { approval: entry.info.clone(), request, origin: entry.origin.clone() },
         };
         if let Err(err) = self.write(&state).await {
             state.entries[index].info = before;
@@ -1963,7 +2034,8 @@ pub(crate) mod tests {
         let first = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
         let second = approvals.open("c1", "One", delete("b"), None, "b".into(), at(0)).await.expect("opened");
 
-        let Ok(Decision::Run { client, request, pin, fingerprint }) = approvals.decide(&first.id, true, at(1)).await
+        let Ok(Decision::Run { client, request, pin, fingerprint, .. }) =
+            approvals.decide(&first.id, true, at(1)).await
         else {
             panic!("allowed runs");
         };
@@ -1973,7 +2045,7 @@ pub(crate) mod tests {
         assert_eq!(done.state, ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(matches!(approvals.decide(&first.id, false, at(2)).await, Err(ApprovalsError::NotOpen(_))));
 
-        let Ok(Decision::Denied { approval: denied, request }) = approvals.decide(&second.id, false, at(2)).await
+        let Ok(Decision::Denied { approval: denied, request, .. }) = approvals.decide(&second.id, false, at(2)).await
         else {
             panic!("denied")
         };
@@ -2729,6 +2801,45 @@ pub(crate) mod tests {
         assert_eq!((fingerprint.as_deref(), *request), (Some("f00d"), send));
         let listed = serde_json::to_string(&restarted.list(Some("c1"), at(1)).await.expect("listed")).expect("json");
         assert!(!listed.contains("f00d"), "the client never sees it: {listed}");
+    }
+
+    /// Task C.11: where a request came from (engine, areas a lent key was lent without) survives a
+    /// restart and comes back with either decision; the client never sees it, and an approval of
+    /// a client's own key keeps nothing of it.
+    #[tokio::test]
+    async fn an_approval_keeps_where_its_request_came_from() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let origin = Origin { engine: Some("claude-code".into()), without: vec![Area::Mail] };
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        let kept = (None, None, origin.clone());
+        let shown = || ("Delete".to_string(), Vec::new());
+        let first = approvals.open_from("c1", "One", delete("a"), kept.clone(), shown(), at(0)).await.expect("opened");
+        let second = approvals.open_from("c1", "One", delete("b"), kept, shown(), at(0)).await.expect("opened");
+        let plain = approvals.open("c1", "One", delete("c"), None, "Delete".into(), at(0)).await.expect("opened");
+
+        let restarted = quiet_in(dir.path());
+        let Ok(Decision::Run { origin: ran, .. }) = restarted.decide(&first.id, true, at(1)).await else {
+            panic!("allowed runs");
+        };
+        assert_eq!(ran, origin);
+        let Ok(Decision::Denied { origin: denied, .. }) = restarted.decide(&second.id, false, at(1)).await else {
+            panic!("denied");
+        };
+        assert_eq!(denied, origin);
+        let Ok(Decision::Run { origin: own, .. }) = restarted.decide(&plain.id, true, at(1)).await else {
+            panic!("allowed runs");
+        };
+        assert_eq!(own, Origin::default());
+        let listed = serde_json::to_string(&restarted.list(Some("c1"), at(1)).await.expect("listed")).expect("json");
+        assert!(!listed.contains("claude-code"), "the client never sees it: {listed}");
+
+        let mut rights = Rights::assistant();
+        rights
+            .areas
+            .insert(Area::Mail, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Read, admin: false });
+        assert_eq!(origin.narrow(&rights).area(Area::Mail), torro_ipc::api::AreaRights::NONE);
+        assert_eq!(origin.narrow(&rights).area(Area::Calendar), rights.area(Area::Calendar), "the rest stays");
     }
 
     #[test]

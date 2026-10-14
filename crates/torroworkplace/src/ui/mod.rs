@@ -1871,7 +1871,7 @@ mod tests {
         };
         let key = torro_ipc::IssuedKey::new(torro_ipc::Key::new("torro_a51c3e88_00ff"));
         let next = real.update(Message::Sent(Ok(Response::ClientKey { client, key })));
-        assert_eq!(next.units(), 2, "clients.update_client with the chosen rights, and the reload");
+        assert_eq!(next.units(), 1, "only the reload: the rights came with clients.create_client (task C.11)");
         assert_eq!(real.notice, None);
         let _ = real.update(Message::Select(Section::Agents));
         assert!(real.page_overlay().is_none(), "the agents page never shows the assistant's key");

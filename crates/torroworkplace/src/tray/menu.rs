@@ -15,9 +15,11 @@
 //! is written to the inbox or an approval changes, so the tray never asks the socket itself and
 //! nothing polls.
 //!
-//! While the voice listener runs (task C.9, [`voice_section`]) the menu says so ("Listening for
-//! “Hey Torro”", "Recording …") and offers "Mute microphone", which switches voice off. Switching
-//! it on is in the control centre, where the microphone is chosen and tested.
+//! While voice is on (task C.9, [`voice_section`]) the menu says what the listener does ("Listening
+//! for “Hey Torro”", "Recording …", or "Not listening" when it stopped) and offers "Mute
+//! microphone", which switches voice off – also when the listener crashed (task C.11), so the way
+//! out never depends on it. Switching it on is in the control centre, where the microphone is
+//! chosen and tested.
 
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -104,7 +106,7 @@ const SOURCE_IN_MENU: usize = 16;
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
-    let mut menu = voice_section(snapshot.voice);
+    let mut menu = voice_section(snapshot.voice, snapshot.voice_enabled);
     menu.extend(inbox_section(snapshot));
     if let Some(name) = &snapshot.unsupported {
         menu.push(info(trf("{name} not supported yet", &[("name", name)])));
@@ -154,14 +156,20 @@ pub fn voice_line(state: VoiceState) -> &'static str {
     }
 }
 
-/// While the voice listener runs: what it does and "Mute microphone", which switches voice off
-/// (`settings.set_setting voice_enabled false`), then a separator. Empty while voice is off.
-fn voice_section(state: VoiceState) -> Vec<Item> {
-    if state == VoiceState::Off {
+/// While voice is on (`enabled`, the setting) or the listener still runs: what it does – "Not
+/// listening" when it does not run although voice is on – and "Mute microphone", which switches
+/// voice off (`settings.set_setting voice_enabled false`), then a separator. Empty while voice is
+/// off and the listener stopped.
+fn voice_section(state: VoiceState, enabled: bool) -> Vec<Item> {
+    if state == VoiceState::Off && !enabled {
         return Vec::new();
     }
+    let line = match state {
+        VoiceState::Off => tr("Not listening"),
+        state => voice_line(state),
+    };
     let mute = Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::Value::Bool(false) };
-    vec![info(voice_line(state).into()), entry(tr("Mute microphone"), mute), Item::Separator]
+    vec![info(line.into()), entry(tr("Mute microphone"), mute), Item::Separator]
 }
 
 /// While something waits: "Inbox (n)" and the newest entries ("title · source"), then a
@@ -471,6 +479,27 @@ mod tests {
         }
         assert_eq!(voice_line(VoiceState::Recording), tr("Recording …"));
         assert_eq!(voice_line(VoiceState::Off), "");
+    }
+
+    /// Task C.11: voice on but the listener gone (crashed, or it could not start) still offers
+    /// "Mute microphone", which switches voice off; the line says it does not listen.
+    #[test]
+    fn mute_stays_when_the_listener_crashed() {
+        let crashed = Snapshot { voice: VoiceState::Off, voice_enabled: true, ..snapshot() };
+        let menu = build(&crashed);
+        assert_eq!(
+            labels(&menu)[..3],
+            [format!("({})", tr("Not listening")), tr("Mute microphone").to_string(), "-".to_string()]
+        );
+        assert_eq!(
+            action_of(&menu, tr("Mute microphone")),
+            Some(Action::Run(Box::new(Request::SetSetting {
+                key: SettingKey::VoiceEnabled,
+                value: serde_json::json!(false)
+            })))
+        );
+        let off = Snapshot { voice: VoiceState::Off, voice_enabled: false, ..snapshot() };
+        assert!(!labels(&build(&off)).contains(&tr("Mute microphone").to_string()), "voice off: nothing");
     }
 
     #[test]

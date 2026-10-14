@@ -811,11 +811,13 @@ pub enum Request {
     /// All clients with their rights, never with keys ([`Response::Clients`]).
     #[serde(rename = "clients.list_clients")]
     ListClients,
-    /// Connects a new client with the rights of `template` and answers with
-    /// [`Response::ClientKey`], the only time its key leaves the core. An empty `name` or `kind`
-    /// is `error`, so is a hook client without `agent` or another kind with one. A `script`
-    /// client named `cli` or like another script client is `conflict`: its name is its inbox
-    /// source (`script:<name>`), and the app key reports as `script:cli`.
+    /// Connects a new client with the rights of `template`, or with `rights` when they are given,
+    /// and answers with [`Response::ClientKey`], the only time its key leaves the core. An empty
+    /// `name` or `kind` is `error`, so is a hook client without `agent` or another kind with one,
+    /// and `rights` that [`Request::UpdateClient`] would refuse (a collection named by a bare URL,
+    /// a bad GitHub or mail selection); nothing is created then. A `script` client named `cli` or
+    /// like another script client is `conflict`: its name is its inbox source (`script:<name>`),
+    /// and the app key reports as `script:cli`.
     #[serde(rename = "clients.create_client")]
     CreateClient {
         /// What the person calls it: `Claude Code`.
@@ -830,6 +832,11 @@ pub enum Request {
         /// and refuses reports that name another one ([`api::post_source`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<AgentKind>,
+        /// The rights to start with instead of the template's (task C.11), so a client never
+        /// holds other rights for a moment; narrowed to what its kind may hold
+        /// ([`api::Rights::for_kind`]). Missing: the template's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rights: Option<Rights>,
     },
     /// Replaces the rights of the client `id`; they apply from its next request. Answered with
     /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
