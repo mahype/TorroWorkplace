@@ -619,10 +619,15 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
     let day = |offset: u64| monday + Days::new(offset);
     let mut events = Vec::new();
 
-    // The daily standup is one series: the same uid, one occurrence per weekday, read-only.
+    // The daily standup is one series: the same uid, one occurrence per weekday, read-only. Its
+    // call and board are links (issue #126: links in the details open, a call gets "Join").
     for offset in [0, 1, 2, 3, 4, 7, 8, 9, 10, 11] {
         events.push(Event {
             recurring: true,
+            location: Some("https://cloud.example.org/call/daily7k2p".into()),
+            description: Some(
+                "What I did, what I will do, what blocks me. Board: https://example.org/board/sprint-12.".into(),
+            ),
             ..event(WORK, "daily-standup@torro-demo", "Daily Standup", at(day(offset), 9, 30), at(day(offset), 9, 45))
         });
     }
@@ -630,7 +635,11 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
     events.extend([
         Event {
             location: Some("Meeting room Elbe".into()),
-            description: Some("Agree on goals and scope for the next sprint.".into()),
+            description: Some(
+                "Agree on goals and scope for the next sprint. Backlog (sorted by priority): \
+                 https://example.org/backlog.\nRemote: https://us02web.zoom.us/j/81234567890"
+                    .into(),
+            ),
             ..event(WORK, "sprint-planning@torro-demo", "Sprint planning", at(day(0), 10, 0), at(day(0), 11, 30))
         },
         Event {

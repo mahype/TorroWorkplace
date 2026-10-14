@@ -5385,6 +5385,7 @@ dependencies = [
  "torro-gui",
  "torro-ipc",
  "torro-pim",
+ "webbrowser",
  "winresource",
 ]
 

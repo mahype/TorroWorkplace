@@ -713,6 +713,29 @@ danach K.29. K.29 färbt auch die Mini-Radare aus K.30.
   bewegen, `range` über Tag und Seite, „Today“ mit und ohne heute auf der Seite; fmt, clippy, test
   (auch `TORRO_LANG=de`) grün; Sichtprüfung Breit dunkel.
 
+### K.36 Termindetails markierbar, Links klickbar (Issue #126)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** K.12 · **Dateien:** `crates/torro-gui/src/links.rs` (neu),
+  `crates/torro-gui/src/lib.rs`, `crates/torrocalendar/src/editor.rs`, `crates/torrocalendar/src/app.rs`,
+  `crates/torrocalendar/Cargo.toml`, `crates/torro-pim/src/demo.rs` (Links in den Beispielterminen),
+  `crates/torro-core/src/i18n/de.rs`
+- Wunsch (2026-10-14): In den Termindetails Text markieren und kopieren, Links darin anklicken.
+- **Oberfläche:**
+  - `torro_gui::links` (für den Eingang wiederverwendbar): `pieces` schneidet Text in Wörter und Adressen
+    (`http`, `https`, `mailto` am Wortanfang; Satzzeichen und Klammern ohne Gegenstück gehören zum Satz),
+    `links`, `openable` (nur diese drei Schemata), `meeting` (Zoom, Teams, Meet, Webex, Jitsi, Nextcloud Talk).
+  - Nur lesbare Termine (Serien, schreibgeschützte Kalender): Ort und Notizen als nur lesbarer Texteditor,
+    markierbar, ⌘C/Strg+C kopiert, Tippen bewirkt nichts.
+  - Abschnitt „Links“ unter den Notizen (alle Termine): jede Adresse aus Ort und Notizen einmal, eine Zeile
+    öffnet sie im Browser; Videokonferenzen zuerst, mit Dienstname und Knopf „Join“ (`secondary`, die Adresse
+    als Tooltip).
+  - Zeile „Copy notes“ unter den Notizen kopiert die ganzen Notizen; danach „Copied“ bis zur nächsten Aktion.
+  - Neue Texte: „Copy notes“ → „Notizen kopieren“, „Join“ → „Beitreten“, „Links“ → „Links“.
+- **API / MCP:** keiner – nur Oberfläche, die Texte kommen schon mit `calendar.list_events`.
+- **Abnahme:** Tests: Link-Erkennung (Satzzeichen, Klammern, Wortanfang), nur erlaubte Schemata, Dienste der
+  Videokonferenzen, nur lesbare Details markierbar und unverändert, Links einmal mit Konferenz zuerst,
+  Kopieren; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Sichtprüfung des Paneels.
+
 ### Spur Kern (Nextcloud)
 
 ### K.3 CalDAV lesen: Aufgaben, href und ETag
