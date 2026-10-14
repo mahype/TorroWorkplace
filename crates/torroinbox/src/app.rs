@@ -3707,7 +3707,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             } else {
                 trf("Mute {source}", &[("source", &label)])
             };
-            choices.push(Choice::new(Icon::Moon, mute, Message::AskMute(id())));
+            choices.push(Choice::new(Icon::BellOff, mute, Message::AskMute(id())));
         }
         choices
     }
