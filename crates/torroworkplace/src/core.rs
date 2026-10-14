@@ -645,9 +645,17 @@ impl Core {
             Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
             Err(refused) => (self.client_of(key), Err(refused)),
         };
-        let (command, ids) = (request.operation().name(), crate::audit::ids(&request));
+        let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
+        // A key lent to an agent that drives the assistant (task C.7): the log names the engine,
+        // as for the assistant's own tools (decision 5 in `docs/assistent.md`).
+        if let Some(engine) = key.and_then(|key| self.clients.lent_for(key)) {
+            ids.push(crate::audit::engine_id(&engine));
+        }
         let answer = match admitted {
-            Ok((id, rights)) => self.handle_client(id, rights, request).await,
+            Ok((id, rights)) => match key.and_then(|key| self.clients.lent_approvals(key).map(|own| (key, own))) {
+                Some((key, own)) => self.handle_lent(key, &own, id, rights, request).await,
+                None => self.handle_client(id, rights, request).await,
+            },
             Err(refused) => Err(refused),
         };
         let shown = match &answer {
@@ -666,6 +674,44 @@ impl Core {
             Ok(Caller::Client { id, .. }) => Some(id),
             _ => None,
         }
+    }
+
+    /// [`Core::handle_client`] for a key lent to an agent that drives the assistant (task C.7,
+    /// [`Clients::lend`]): of the approvals of its client it sees only those it asked for itself
+    /// (`own`), since the others may hold what its areas keep from it (a mail to send that a local
+    /// model prepared); it cannot ask the person questions (`approvals.ask_permission`, no tool of
+    /// the assistant with a model either); an approval it asks for becomes one of its own.
+    async fn handle_lent(
+        &self,
+        key: &Key,
+        own: &[String],
+        id: String,
+        rights: torro_ipc::api::Rights,
+        request: Request,
+    ) -> Result<Response, Refused> {
+        match &request {
+            Request::ListApprovals => {
+                return Ok(match self.list_approvals(Some(&id)).await {
+                    Response::Approvals { mut approvals } => {
+                        approvals.retain(|approval| own.contains(&approval.id));
+                        Response::Approvals { approvals }
+                    }
+                    other => other,
+                });
+            }
+            Request::ApprovalStatus { id: approval } if !own.contains(approval) => {
+                return Ok(ApprovalsError::NotFound(approval.clone()).response());
+            }
+            Request::AskPermission { .. } => {
+                return Err(Refused::Forbidden { command: request.operation().name() });
+            }
+            _ => {}
+        }
+        let answer = self.handle_client(id, rights, request).await;
+        if let Ok(Response::Pending { approval }) = &answer {
+            self.clients.note_lent_approval(key, &approval.id);
+        }
+        answer
     }
 
     /// Steps 2 to 4 of [`Core::handle_from`] for the client `id`, admitted with `rights`.
@@ -2426,6 +2472,19 @@ impl crate::assistant::Host for Core {
                 None => Refused::Forbidden { command: "approvals.approval_status" }.response(),
             }
         })
+    }
+
+    /// A key of the assistant's own client for one run of an agent (task C.7): in memory only,
+    /// gone when the run drops it ([`Clients::lend`]).
+    fn lend(&self, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
+        let client = self.assistant_client()?;
+        match self.clients.lend(&client.id, engine, without) {
+            Ok(lent) => Some(lent),
+            Err(err) => {
+                eprintln!("torroworkplace: cannot lend the assistant a key for {engine}: {err}");
+                None
+            }
+        }
     }
 }
 
@@ -8435,6 +8494,87 @@ mod tests {
                 (Some(client), "workspaces.list_templates".into(), vec![engine_id], "forbidden".into()),
             ]
         );
+    }
+
+    /// Task C.7: the key lent to an agent that drives the assistant runs as the assistant's
+    /// client without the areas it was lent without, the log names the engine and never the key,
+    /// and once the run drops it the key is worth nothing.
+    #[tokio::test]
+    async fn a_key_lent_to_an_agent_is_the_assistants_logged_with_the_engine_and_taken_back() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        assert!(Host::lend(&core, "claude-code", &[]).is_none(), "no assistant client, no key");
+        let mut rights = Rights::assistant();
+        rights
+            .areas
+            .insert(Area::Mail, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Read, admin: false });
+        let (client, _) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the client");
+
+        let lent = Host::lend(&core, "claude-code", &[Area::Mail]).expect("lent");
+        let key = lent.key().clone();
+        assert!(matches!(ask(&core, Some(&key), Request::CalendarCollections).await, Response::Collections { .. }));
+        let mail = ask(&core, Some(&key), Request::MailFolders { account: None }).await;
+        assert_eq!(code(&mail), "forbidden", "lent without mail");
+        assert_eq!(code(&ask(&core, Some(&key), Request::ListConversations).await), "forbidden", "never itself");
+        drop(lent);
+        assert_eq!(code(&ask(&core, Some(&key), Request::CalendarCollections).await), "unauthorized");
+
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!text.contains(key.expose()) && !text.contains("torro_"), "no key in the log:\n{text}");
+        let engine = crate::audit::engine_id("claude-code");
+        let lines: Vec<_> = audit_lines(dir.path())
+            .into_iter()
+            .map(|line| (line.client, line.command, line.ids, line.result))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                (Some(client.id.clone()), "calendar.list_calendars".into(), vec![engine.clone()], "ok".into()),
+                (Some(client.id.clone()), "mail.list_folders".into(), vec![engine.clone()], "forbidden".into()),
+                (Some(client.id.clone()), "assistant.list_conversations".into(), vec![engine], "forbidden".into()),
+                (None, "calendar.list_calendars".into(), Vec::new(), "unauthorized".into()),
+            ]
+        );
+    }
+
+    /// Task C.7: a lent key sees only the approvals it asked for itself, never the other ones of
+    /// the assistant's client (they may hold mail a local model prepared), and asks no questions.
+    #[tokio::test]
+    async fn a_lent_key_sees_only_its_own_approvals() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        save_template(&core, "dev");
+        save_template(&core, "old");
+        let mut rights = Rights::assistant();
+        rights
+            .areas
+            .insert(Area::Workspaces, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Full, admin: false });
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, own_key) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the client");
+        let other = waits(ask(&core, Some(&own_key), Request::DeleteTemplate { id: "dev".into() }).await);
+
+        let lent = Host::lend(&core, "claude-code", &[Area::Mail]).expect("lent");
+        let key = lent.key().clone();
+        let listed = ask(&core, Some(&key), Request::ListApprovals).await;
+        assert_eq!(listed, Response::Approvals { approvals: Vec::new() }, "not the client's other approvals");
+        let status = ask(&core, Some(&key), Request::ApprovalStatus { id: other.id.clone() }).await;
+        assert_eq!(code(&status), "not-found");
+
+        let mine = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "old".into() }).await);
+        let Response::Approvals { approvals } = ask(&core, Some(&key), Request::ListApprovals).await else {
+            panic!("expected approvals");
+        };
+        assert_eq!(approvals.iter().map(|approval| approval.id.as_str()).collect::<Vec<_>>(), [mine.id.as_str()]);
+        assert_eq!(approval(ask(&core, Some(&key), Request::ApprovalStatus { id: mine.id.clone() }).await).id, mine.id);
+        let question = Request::AskPermission { tool: "Bash".into(), details: "ls".into(), project: None, title: None };
+        assert_eq!(code(&ask(&core, Some(&key), question).await), "forbidden");
+        // The client's own key still sees both.
+        let Response::Approvals { approvals } = ask(&core, Some(&own_key), Request::ListApprovals).await else {
+            panic!("expected approvals");
+        };
+        assert_eq!(approvals.len(), 2);
     }
 
     /// Task C.2: a command that waits for a person shows as an approval in the conversation; the

@@ -53,9 +53,10 @@ pub struct Context<'a> {
     /// The areas the person switched off for this conversation (`assistant.send_message`'s
     /// `without`).
     pub without: &'a [Area],
-    /// The engine that answers (the AI account's id).
+    /// The engine that answers (the AI account's id, or an agent's name).
     pub engine: &'a str,
-    /// The model that answers.
+    /// The model that answers; empty for an agent (engine B, task C.7), which picks its model
+    /// itself: the line then names the agent only.
     pub model: &'a str,
     /// Where the model runs, for the data rule's note.
     pub place: Place,
@@ -112,12 +113,19 @@ fn generated(context: &Context<'_>) -> String {
             names(context.without)
         ));
     }
-    lines.push(format!(
-        "- You answer with the model {} of the AI account {}. {}",
-        one_line(context.model),
-        one_line(context.engine),
-        data_rule_note(context.place)
-    ));
+    lines.push(match context.model.trim().is_empty() {
+        true => format!(
+            "- You answer as the agent {}, outside the person's computers (remote). The person's data rule keeps \
+             mail on their own computers, so mail is not among your areas here.",
+            one_line(context.engine)
+        ),
+        false => format!(
+            "- You answer with the model {} of the AI account {}. {}",
+            one_line(context.model),
+            one_line(context.engine),
+            data_rule_note(context.place)
+        ),
+    });
     lines.join("\n")
 }
 
@@ -252,6 +260,17 @@ mod tests {
         assert!(!prompt.contains("Switched off"), "{prompt}");
         assert!(!prompt.contains("The person's name"), "{prompt}");
         assert!(prompt.contains("(remote)") && prompt.contains("keeps mail content from it"), "{prompt}");
+    }
+
+    #[test]
+    fn an_agent_is_named_without_a_model_and_told_that_mail_stays_local() {
+        let mut context = context(&[Area::Calendar], &[]);
+        (context.engine, context.model, context.place) = ("Claude Code", "", Place::Remote);
+        let prompt = system(None, &context);
+        let answer = line(&prompt, "- You answer").expect("the engine's line");
+        assert!(answer.starts_with("- You answer as the agent Claude Code, outside"), "{answer}");
+        assert!(answer.contains("mail is not among your areas"), "{answer}");
+        assert!(!answer.contains("model"), "{answer}");
     }
 
     #[test]

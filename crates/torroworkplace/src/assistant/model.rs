@@ -56,6 +56,16 @@ pub trait Host: Send + Sync {
     /// `approvals.approval_status` of the approval `id` as the assistant's own client: its own
     /// approvals only ([`Response::Approval`], else an error answer).
     fn approval<'a>(&'a self, id: &'a str) -> BoxFuture<'a, Response>;
+
+    /// A key of the assistant's own client lent for one run of an agent (engine B, task C.7,
+    /// [`crate::clients::Clients::lend`]): requests with it run as that client with its rights of
+    /// now minus the areas `without`, and the audit log names `engine`. The key is in memory
+    /// only and taken back when the returned value is dropped. `None` when there is no assistant
+    /// client (or the key cannot be made); the default for hosts that run no agents.
+    fn lend(&self, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
+        let _ = (engine, without);
+        None
+    }
 }
 
 /// The model of an AI account and where it runs.
@@ -351,7 +361,7 @@ async fn default_model(provider: &dyn Provider) -> Result<String, AiError> {
 /// turns), tool lines left out (their results are not kept). An answer the data rule keeps from
 /// the model ([`data_rule::history_allowed`]) is replaced by a note; a turn without an answer gets
 /// one too.
-fn history(entries: &[Entry], engine: &str, place: Place) -> Vec<ChatMessage> {
+pub(super) fn history(entries: &[Entry], engine: &str, place: Place) -> Vec<ChatMessage> {
     let mut messages = Vec::new();
     let mut turn: Option<Turn> = None;
     for entry in entries {
@@ -406,7 +416,7 @@ impl Turn {
 
 /// The catalogue name of the tool `tool` (`calendar.list_events`), for the conversation's tool
 /// line; for a name the catalogue does not know, the name the model sent, at most 64 characters.
-fn command_name(tool: &str) -> String {
+pub(super) fn command_name(tool: &str) -> String {
     torro_ipc::api::CATALOGUE
         .iter()
         .find(|command| command.tool_name() == tool)
