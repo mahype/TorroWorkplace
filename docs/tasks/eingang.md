@@ -1694,7 +1694,7 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   Login über `http` zu einem anderen Rechner → abgelehnt; `Secret` nicht in `Debug`.
 
 ### E5.12 ntfy-Konto: Gerüst, Requests, Katalog
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `AccountKind::Ntfy`, `Account::ntfy`, `NtfyConfig`/`NtfyTopic` und `torro_ipc::TopicName` (Name nie im `Debug`); `account/ntfy.rs` mit `NtfyAccounts::{connect, set_login, set_topic, remove, infos(names), label_of, changes}` und `NtfyAccountError`; Etikett Pflicht (eine Zeile, höchstens 60 Zeichen), höchstens 50 Themen; `set_ntfy_login` ergänzt bei einem vorhandenen Konto die Themen, statt sie zu ersetzen; `set_ntfy_topic` antwortet `ok`; `AccountInfo.ntfy` (`NtfyView`, Themen-Namen nur für den App-Schlüssel); Freigabe nennt Server und Etikett (`Facts::topic`); Haken für E5.13 ist `NtfyAccounts::changes` – `Sources` bekommt die ntfy-Konten erst in E5.13, weil `sources/{github,nextcloud}.rs` `Sources` in Tests wörtlich bauen)
 - **Modell:** Opus · **Braucht:** E5.2, E5.11, Freigabe 13, 14, 16 · **Dateien:** `crates/torro-core/src/account.rs`,
   neu `crates/torroworkplace/src/account/ntfy.rs` (`NtfyAccounts`, wie `AiAccounts`),
   `crates/torroworkplace/src/{account,core,mcp,approvals,audit,daemon}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,

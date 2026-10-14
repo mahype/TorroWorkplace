@@ -37,7 +37,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
-pub use torro_core::account::Secret;
+pub use torro_core::account::{NtfyTopic, Secret};
 use torro_core::ai::{AiModel, AiProvider};
 use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
@@ -483,6 +483,92 @@ pub enum Request {
         /// of an answer, an error message, a log or an approval.
         #[serde(default, skip_serializing_if = "Secret::is_blank")]
         key: Secret,
+    },
+    /// Connects an ntfy server's topics that need no login (task E5.12): the inbox subscribes to
+    /// them as the source `ntfy:<host>` (task E5.13).
+    ///
+    /// The core writes the address as `torro_ntfy::Server::parse` does (empty is
+    /// `https://ntfy.sh`, without a scheme `https://`), asks the server whether it is an ntfy
+    /// server that is up (`GET /v1/health`), then whether the topics can be read without a login
+    /// (`?poll=1&since=latest`, nothing of the answer is kept). Only then does it add the account
+    /// `ntfy:<host>` with the topics and their labels. Answered with [`Response::Account`]: the
+    /// account as `accounts.list_accounts` lists it for the app key.
+    ///
+    /// Error codes: `auth` when a topic needs a login (the person then signs in with
+    /// [`Request::SetNtfyLogin`]), `offline`, `busy`, `conflict` when the server has an account
+    /// already (change its topics with [`Request::SetNtfyTopic`]), `error` for an address that is
+    /// no ntfy server's, a topic name that is not 1 to 64 of `A-Z a-z 0-9 _ -`, a blank label, no
+    /// topic, or a list that cannot be written.
+    ///
+    /// A client key never connects one: for it the core opens the control centre's accounts page
+    /// (`torroworkplace ui --section accounts`), where a person finishes, answers
+    /// [`Response::Opened`] and stores nothing, like [`Request::ConnectGithub`].
+    #[serde(rename = "accounts.connect_ntfy")]
+    ConnectNtfy {
+        /// The server's address: `ntfy.sh`, `https://push.example.org`, `http://localhost:8080`;
+        /// empty for the public server `https://ntfy.sh`.
+        #[serde(default)]
+        server: String,
+        /// The topics to subscribe to, each with the label the inbox shows instead of its name.
+        topics: Vec<NtfyTopic>,
+    },
+    /// Connects an ntfy server with a login, or replaces the login of the account there (task
+    /// E5.12): a user name and password, or an access token (`tk_…`) without a user name.
+    ///
+    /// The login goes only over `https` or to this computer (`torro_ntfy::Server::may_send_login`):
+    /// any other address is refused before anything is sent. The core asks the server whether it is
+    /// up, then whether the topics can be read with this login: for a new account the `topics`
+    /// given, for an existing one its topics together with those given (they are added, or take
+    /// the new label; none is removed). Only then does it keep the secret in the system keychain
+    /// under the account id and write the account. Answered with [`Response::Account`], never with
+    /// the secret.
+    ///
+    /// Error codes: `auth` when the server refuses the login or the topics, `offline`, `busy`,
+    /// `error` for a login over plain `http` to another computer, a blank secret, an address,
+    /// topic or label as in [`Request::ConnectNtfy`], no topic at all, or a keychain or list that
+    /// cannot be written. Only the app key may send it: every client key gets `forbidden`, whatever
+    /// its rights, because it hands the core a secret (`docs/api.md`, "Was nie nach außen geht",
+    /// 5); it never waits for an approval either.
+    #[serde(rename = "accounts.set_ntfy_login")]
+    SetNtfyLogin {
+        /// The server's address, as in [`Request::ConnectNtfy`].
+        #[serde(default)]
+        server: String,
+        /// Topics to add (or to give a new label); may be empty for an account that has topics.
+        #[serde(default)]
+        topics: Vec<NtfyTopic>,
+        /// The user name for a password; left out (or blank) when `secret` is an access token.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        user: Option<String>,
+        /// The password or the access token. It goes into the system keychain only and is never
+        /// part of an answer, an error message, a log or an approval.
+        secret: Secret,
+    },
+    /// Subscribes the ntfy account `account` to a topic, gives a topic a new label or unsubscribes
+    /// it (task E5.12); the inbox follows from its next connection (task E5.13).
+    ///
+    /// With `subscribed: true` a topic the account does not have is checked with the server (with
+    /// the account's login, if any) and added; it needs a `label`. One it has takes the new
+    /// `label`, or stays as it is without one. With `subscribed: false` the topic is removed; its
+    /// inbox entries stay. Answered with [`Response::Ok`].
+    ///
+    /// Error codes: `not-found` for an account that is no ntfy account and for unsubscribing a
+    /// topic the account does not have, `auth` when the server refuses the new topic, `offline`,
+    /// `busy`, `error` for a topic name or label as in [`Request::ConnectNtfy`] or a list that
+    /// cannot be written. The approval names the server and the label, never the topic's name.
+    #[serde(rename = "accounts.set_ntfy_topic")]
+    SetNtfyTopic {
+        /// The account: `ntfy:<host>` from `accounts.list_accounts`.
+        account: String,
+        /// The topic's name on the server (1 to 64 of `A-Z a-z 0-9 _ -`). Only the app key sees the
+        /// names of an account's topics in `accounts.list_accounts`; others see their labels.
+        topic: TopicName,
+        /// What the inbox calls the topic: a single line of at most 60 characters. Needed to
+        /// subscribe a new topic; left out, an existing topic keeps its label.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        label: Option<String>,
+        /// `true` to subscribe (or to relabel), `false` to unsubscribe.
+        subscribed: bool,
     },
     /// The models of the AI account `account` (task KI.1a), asked from its server now, in the
     /// server's order ([`Response::AiModels`]). Each says whether it can call tools and whether
@@ -2041,13 +2127,13 @@ pub enum Response {
         key: IssuedKey,
     },
     /// The account a sign-in just connected ([`Request::ConnectGithub`],
-    /// [`Request::SetGithubToken`], [`Request::ConnectAi`]), as [`Request::Accounts`] lists it;
-    /// never with its secret.
+    /// [`Request::SetGithubToken`], [`Request::ConnectAi`], [`Request::ConnectNtfy`],
+    /// [`Request::SetNtfyLogin`]), as [`Request::Accounts`] lists it; never with its secret.
     Account {
         account: AccountInfo,
     },
     /// The control centre was opened so a person can finish the request there (a client's
-    /// [`Request::ConnectGithub`]); nothing has changed yet.
+    /// [`Request::ConnectGithub`] or [`Request::ConnectNtfy`]); nothing has changed yet.
     Opened,
     /// What [`Request::DiscoverServices`] found. Built from what was found only: never a
     /// server's content or headers.
@@ -2361,8 +2447,9 @@ pub struct AccountInfo {
     /// each of its collection ids (`<id>/<collection URL>`). Empty for a sign-in that runs.
     pub id: String,
     /// Provider: `nextcloud`, `github`, `caldav` (a mail provider's or any other CalDAV
-    /// server, task M7.1), `mail` (task M2.1) or `ai` (an AI account, task KI.1a: `state` holds
-    /// its server's base address and no login name; later `slack`, …).
+    /// server, task M7.1), `mail` (task M2.1), `ai` (an AI account, task KI.1a: `state` holds
+    /// its server's base address and no login name) or `ntfy` (task E5.12: details in
+    /// [`AccountInfo::ntfy`]; later `slack`, …).
     pub kind: String,
     /// `anna@cloud.example.org`; for GitHub the login; for CalDAV the login when it is an e-mail
     /// address, else `<login>@<provider>`.
@@ -2382,6 +2469,88 @@ pub struct AccountInfo {
     /// and left out of the JSON then, so older clients read the answer as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<MailView>,
+    /// For an ntfy account (`kind: "ntfy"`, task E5.12) its server, topics and login, never the
+    /// secret. `None` for every other kind, and left out of the JSON then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ntfy: Option<NtfyView>,
+}
+
+/// An ntfy account as `accounts.list_accounts` lists it in [`AccountInfo::ntfy`] (task E5.12).
+/// Never the secret of its login, which lives in the system keychain only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NtfyView {
+    /// The server's base address, as `torro_ntfy::Server` writes it (`https://ntfy.sh`).
+    pub server: String,
+    /// The topics the account subscribes to, in the order they were added.
+    pub topics: Vec<NtfyTopicView>,
+    /// The user name of a login with a password; `None` for no login or an access token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+    /// A secret for the login (password or access token) is stored on this device.
+    pub login: bool,
+}
+
+/// One topic of an ntfy account ([`NtfyView::topics`]). On a public server whoever knows a topic's
+/// name can read it (open question 10 of E5), so only the app key gets the name; every client key
+/// sees the label alone. `Debug` never shows the name.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NtfyTopicView {
+    /// What the person calls the topic, as the inbox shows it.
+    pub label: String,
+    /// The topic's name on the server; only in answers to the app key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<String>,
+}
+
+/// The name of an ntfy topic in a request ([`Request::SetNtfyTopic`]). On a public server whoever
+/// knows it can read the topic, so it is handled like a password: `Debug` shows `TopicName(…)`.
+/// On the wire it is a plain string; the core checks it (`torro_ntfy::Topic::parse`).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TopicName(String);
+
+impl TopicName {
+    pub fn new(name: impl Into<String>) -> TopicName {
+        TopicName(name.into())
+    }
+
+    /// The name itself, for the core to look it up and to address the server. Never log it.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for TopicName {
+    fn from(name: &str) -> TopicName {
+        TopicName::new(name)
+    }
+}
+
+impl fmt::Debug for TopicName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("TopicName(…)")
+    }
+}
+
+impl JsonSchema for TopicName {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "TopicName".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({ "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" })
+    }
+}
+
+impl fmt::Debug for NtfyTopicView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let topic = self.topic.as_ref().map(|_| "…");
+        f.debug_struct("NtfyTopicView").field("label", &self.label).field("topic", &topic).finish()
+    }
 }
 
 /// How much one rule of `inbox.list_rules` caught (task E8.8a, [`Response::Rules`]): the reports

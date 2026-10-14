@@ -1486,6 +1486,7 @@ mod tests {
             collections: vec![],
             scopes: None,
             mail: None,
+            ntfy: None,
         }
     }
 

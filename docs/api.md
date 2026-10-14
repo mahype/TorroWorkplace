@@ -81,7 +81,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
-| `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
+| `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
@@ -508,6 +508,16 @@ außerhalb), bekommt `not-found`, mit Lesen ohne Schreiben `forbidden`. **Assist
 wie Mail nur als Kennung; GitHub und ntfy gehen durch (bis KI.1). Das Protokoll nennt wie immer nur die Kennung des
 Eintrags, nie Titel, Text oder Merkmalswerte.
 
+¹⁸ **ntfy-Konten** (E5.12, [tasks/eingang.md › E5.12](tasks/eingang.md#e512-ntfy-konto-gerüst-requests-katalog)):
+`connect_ntfy` prüft Server (`/v1/health`) und Themen ohne Anmeldung und legt das Konto `ntfy:<host>` an
+(`auth`, wenn ein Thema eine Anmeldung braucht, `conflict` bei einem zweiten Konto desselben Servers); ein
+Client-Schlüssel öffnet wie bei `connect_github` nur die Steuerzentrale und bekommt `opened`. `set_ntfy_login`
+(Benutzer und Passwort oder Token `tk_…`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`, Punkt 5); die Anmeldung
+geht nur über `https` oder an diesen Rechner, sonst `error`, und liegt nur im Schlüsselbund. `set_ntfy_topic`
+abonniert, benennt um oder bestellt ab; die Freigabe nennt Server und Etikett. Themen-Namen sind auf öffentlichen
+Servern Passwörter: `list_accounts` zeigt sie nur dem App-Schlüssel (`AccountInfo.ntfy`), Clients sehen die
+Etiketten; Protokoll nur mit der Konto-Kennung.
+
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
 Merkmal einer Zeile da und verraten trotzdem, wer dem Menschen schreibt und wie oft; darum gelten für
@@ -588,7 +598,7 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav` und `accounts.connect_mail`, API-Schlüssel eines
-   KI-Kontos `accounts.connect_ai`, Import aus einem fremden
+   KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Import aus einem fremden
    Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Durchgesetzt in `Rights::allows` (auch ein Script-Schlüssel mit Admin-Rechten

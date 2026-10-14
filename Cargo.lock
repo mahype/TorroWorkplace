@@ -5449,6 +5449,7 @@ dependencies = [
  "torro-mail",
  "torro-mail-imap",
  "torro-nextcloud",
+ "torro-ntfy",
  "torro-pim",
  "torro-pim-caldav",
  "torro-pim-github",

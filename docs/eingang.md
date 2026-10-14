@@ -271,6 +271,7 @@ weder Mail noch Slack).
 | Termin aus einem Eintrag (E8.5b) | „Event“ bei „To sort“, Paneel, Taste `c` | `inbox.create_event_from_item` · Write (braucht auch Kalender-Schreibrecht) | `inbox_create_event_from_item` |
 | Einladung beantworten (E8.3b) | Mail-Fenster: Karte (Accept · Maybe · Decline · Task), Leser und Paneel (Karte des Termins), Smart view „Invitations“ | `mail.respond_to_invitation` · Write + „Nach außen“ (prüft auch Kalender-Schreibrecht, beim Ablehnen Löschrecht) | `mail_respond_to_invitation` |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
+| ntfy: Konto, Anmeldung, Themen (E5.12) | Steuerzentrale › Accounts (E5.14) | `accounts.connect_ntfy`, `accounts.set_ntfy_login`, `accounts.set_ntfy_topic` · Admin | `accounts_connect_ntfy` (Client: öffnet nur die Steuerzentrale), `accounts_set_ntfy_topic`; `set_ntfy_login` **Never** (Geheimnis) |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 
 **Sicherheit, neu durch den Eingang:**

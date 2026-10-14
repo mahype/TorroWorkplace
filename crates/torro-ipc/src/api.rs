@@ -1006,6 +1006,9 @@ impl Request {
             Request::TorroMailAccounts => &LIST_TORROMAIL_ACCOUNTS,
             Request::ImportTorroMailAccount { .. } => &IMPORT_TORROMAIL_ACCOUNT,
             Request::ConnectAi { .. } => &CONNECT_AI,
+            Request::ConnectNtfy { .. } => &CONNECT_NTFY,
+            Request::SetNtfyLogin { .. } => &SET_NTFY_LOGIN,
+            Request::SetNtfyTopic { .. } => &SET_NTFY_TOPIC,
             Request::AiModels { .. } => &LIST_MODELS,
             Request::FindAiServers => &FIND_LOCAL_SERVERS,
             Request::MailFolders { .. } => &LIST_FOLDERS,
@@ -1127,6 +1130,9 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_TORROMAIL_ACCOUNTS,
     &IMPORT_TORROMAIL_ACCOUNT,
     &CONNECT_AI,
+    &CONNECT_NTFY,
+    &SET_NTFY_LOGIN,
+    &SET_NTFY_TOPIC,
     &REMOVE_ACCOUNT,
     &LIST_MODELS,
     &FIND_LOCAL_SERVERS,
@@ -1691,6 +1697,49 @@ static CONNECT_AI: Command = Command {
                   the address and API key a person entered in the control centre: checks it with the server, keeps \
                   the key in the system keychain and adds the account. Returns the account, never the key. Only the \
                   app key may use it.",
+};
+
+// Like `connect_github`: for agents and scripts the core only shows the control centre, where a
+// person enters topics and, if they need one, the login; the caller learns nothing it did not send.
+static CONNECT_NTFY: Command = Command {
+    name: "accounts.connect_ntfy",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Asks for an ntfy server's topics to be connected to the inbox. For agents and scripts the core \
+                  only shows the Torro Workplace control centre on its accounts page, where a person enters the \
+                  topics with their labels and, if a topic needs one, the login, and answers `opened`; nothing is \
+                  stored by this call. The control centre itself checks the server and the topics without a login \
+                  and adds the account `ntfy:<host>`; `auth` means a topic needs a login, `conflict` that the \
+                  server has an account already.",
+};
+
+// Never an MCP tool, and for the app key only: it hands the core a password or an access token
+// (`docs/api.md`, "Was nie nach außen geht", 5), like `set_github_token`.
+static SET_NTFY_LOGIN: Command = Command {
+    name: "accounts.set_ntfy_login",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Never,
+    description: "Connects an ntfy server with the login a person entered in the control centre (a user and \
+                  password, or an access token), or replaces the login of the account there: checks the server \
+                  and the topics with it, keeps the secret in the system keychain and returns the account, never \
+                  the secret. Only the app key may use it.",
+};
+
+// Admin: it decides what the inbox subscribes to (`docs/eingang.md`, security rule 3 with E5: a
+// topic's priority 5 is urgent). The approval names the server and the label from the account,
+// never the topic's name, which is a password on a public server.
+static SET_NTFY_TOPIC: Command = Command {
+    name: "accounts.set_ntfy_topic",
+    area: Area::Accounts,
+    access: Access::Admin,
+    mcp: Mcp::Tool,
+    description: "Subscribes an ntfy account (id `ntfy:<host>` from list_accounts) to a topic with a label \
+                  (`subscribed: true`; the server is asked whether the topic can be read), gives a topic a new \
+                  label, or unsubscribes it (`subscribed: false`; its inbox entries stay). Messages of the topic \
+                  become inbox entries, priority 5 as urgent alerts. Topic names you are not given stay hidden: \
+                  list_accounts shows only their labels. Always waits for the person's approval.",
 };
 
 static REMOVE_ACCOUNT: Command = Command {
@@ -2704,6 +2753,22 @@ mod tests {
                 key: crate::Secret::new("sk-or-v1-example"),
             },
             Request::AiModels { account: "ai:openrouter@openrouter.ai".into(), all: true },
+            Request::ConnectNtfy {
+                server: "ntfy.sh".into(),
+                topics: vec![crate::NtfyTopic { topic: "backups".into(), label: "Backups".into() }],
+            },
+            Request::SetNtfyLogin {
+                server: "https://push.example.org".into(),
+                topics: Vec::new(),
+                user: Some("anna".into()),
+                secret: crate::Secret::new("example"),
+            },
+            Request::SetNtfyTopic {
+                account: "ntfy:ntfy.sh".into(),
+                topic: "backups".into(),
+                label: Some("Backups".into()),
+                subscribed: true,
+            },
             Request::FindAiServers,
             Request::CalendarCollections,
             Request::Events { start: now, end: now },
@@ -3021,6 +3086,7 @@ mod tests {
                         | "accounts.connect_mail"
                         | "accounts.import_torromail_account"
                         | "accounts.connect_ai"
+                        | "accounts.set_ntfy_login"
                         | "approvals.decide_approval"
                         // Point 6: the microphone. Switching voice on through settings.set_setting
                         // is kept back by value (`the_microphone_is_switched_on_by_people_only`).
@@ -3414,6 +3480,59 @@ mod tests {
         assert!(!rights.allows(token.operation()));
         assert!(rights.allows(Request::ConnectGithub.operation()), "asking a person to connect is an admin command");
         assert_eq!(Request::ConnectGithub.operation().access, Access::Admin);
+    }
+
+    /// Task E5.12: an agent may ask for ntfy to be connected and change topics, both admin commands
+    /// that wait for a person; handing in a login is the app key's alone.
+    #[test]
+    fn only_the_app_key_may_hand_in_an_ntfy_login() {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let login = Request::SetNtfyLogin {
+            server: "https://push.example.org".into(),
+            topics: Vec::new(),
+            user: None,
+            secret: crate::Secret::new("tk_example"),
+        };
+        assert!(!rights.allows(login.operation()));
+        assert_eq!((login.operation().command.mcp, login.operation().access), (Mcp::Never, Access::Admin));
+        let connect = Request::ConnectNtfy { server: String::new(), topics: Vec::new() };
+        let topic =
+            Request::SetNtfyTopic { account: "ntfy:ntfy.sh".into(), topic: "t".into(), label: None, subscribed: false };
+        for request in [connect, topic] {
+            let operation = request.operation();
+            assert!(rights.allows(operation), "{}", operation.name());
+            assert_eq!(
+                (operation.area(), operation.access, operation.command.mcp),
+                (Area::Accounts, Access::Admin, Mcp::Tool)
+            );
+            assert!(rights.needs_approval(operation.access), "{}", operation.name());
+        }
+        // The secret is `writeOnly` in the schema, as every secret a request carries.
+        let schema = SET_NTFY_LOGIN.input_schema().expect("schema");
+        let secret = schema.as_value().pointer("/properties/secret").expect("secret is a field");
+        assert_eq!(secret.get("writeOnly"), Some(&serde_json::json!(true)));
+        // A topic's name never shows in `Debug`, also not inside a request.
+        let shown = format!(
+            "{:?}",
+            Request::ConnectNtfy {
+                server: String::new(),
+                topics: vec![crate::NtfyTopic { topic: "secret_topic".into(), label: "Backups".into() }],
+            }
+        );
+        assert!(!shown.contains("secret_topic") && shown.contains("Backups"), "{shown}");
+        let topic = Request::SetNtfyTopic {
+            account: "ntfy:ntfy.sh".into(),
+            topic: "secret_topic".into(),
+            label: None,
+            subscribed: true,
+        };
+        assert!(!format!("{topic:?}").contains("secret_topic"), "{topic:?}");
+        let json = serde_json::to_value(&topic).expect("json");
+        assert_eq!(json["topic"], "secret_topic", "a plain string on the wire");
+        assert_eq!(serde_json::from_value::<Request>(json).expect("reads back"), topic);
     }
 
     #[test]
