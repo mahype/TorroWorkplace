@@ -141,7 +141,7 @@ use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_input};
+use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_editor, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -150,6 +150,7 @@ use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
+use torro_gui::selectable::Selectable;
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::split::{self, Limits, Split, SplitEvent};
@@ -1646,6 +1647,9 @@ pub struct App<S> {
     /// The whole mail in the panel: of the message under the cursor in a folder, or of the mail
     /// entry in the panel ([`App::wanted_letter`]).
     letter: Option<Letter>,
+    /// The text of the mail or the entry the panel or reader shows, to select and copy (issue #119):
+    /// follows them after every message ([`App::follow_text`]).
+    text: Selectable,
     /// The folder whose messages `messages` holds; another folder's view shows loading until its
     /// messages are in.
     listed: Option<String>,
@@ -1920,8 +1924,13 @@ pub enum Message {
     OpenAttachment(String, String),
     /// What became of opening an attachment.
     AttachmentOpened(Result<Opened, String>),
-    /// A web address in a mail's text was clicked.
+    /// A web address under a mail's or an entry's text ("Links") was clicked.
     OpenMailLink(String),
+    /// A click, drag or key on the text in the panel or the reader (issue #119): selects, never
+    /// changes it (`Selectable::perform`).
+    Text(text_editor::Action),
+    /// "Copy text": the whole text in the panel or the reader to the clipboard, with "Copied".
+    CopyText,
     /// The title of an account's group: fold its folders away or show them, and remember it.
     ToggleAccount(String),
     /// The title of the sidebar's "Sources": fold them away or show them, and remember it (issue #121).
@@ -2204,6 +2213,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             more: None,
             reading: false,
             letter: None,
+            text: Selectable::default(),
             listed: None,
             search: String::new(),
             folds: Vec::new(),
@@ -2334,7 +2344,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let task = self.handle(message);
         // Whatever changed, the panel's mail follows the cursor and the entry in the panel.
         let letter = self.follow_letter();
+        self.follow_text();
         Task::batch([task, letter])
+    }
+
+    /// The text shown in the panel or the reader ([`App::text`]): the loaded mail's, else the
+    /// entry's message; empty for neither. Made new only when it changes, so a selection stays.
+    fn follow_text(&mut self) {
+        let shown = match (&self.letter, &self.detail) {
+            (Some(Letter { loaded: Some(Ok(mail)), .. }), _) => mail::text_of(mail),
+            (_, Some(item)) => detail::message_text(item),
+            _ => String::new(),
+        };
+        if shown != self.text.text() {
+            self.text = Selectable::new(&shown);
+        }
     }
 
     /// What `message` does; [`App::update`] lets the panel's mail follow afterwards.
@@ -2730,6 +2754,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 return self.open_url(url);
             }
             Message::OpenMailLink(_) => {}
+            Message::Text(action) => self.text.perform(action),
+            Message::CopyText => {
+                if self.text.text().trim().is_empty() {
+                    return Task::none();
+                }
+                self.note(tr("Copied").to_owned());
+                return iced::clipboard::write(self.text.text().to_owned());
+            }
             Message::ToggleAccount(account) => {
                 let open = !self.account_open(&account);
                 self.folds.retain(|(folded, _)| *folded != account);
@@ -4919,7 +4951,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
                 let letter = self.reading().map(|reading| mail::body(&reading));
-                detail::panel(item, self.view_label(), self.now, footer, letter)
+                detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };
         let placed = panel::place(class, self.body(class, &rows), detail, layer);
@@ -5117,7 +5149,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             summary,
             loaded: letter.loaded.as_ref(),
             now: self.now,
-            link: colours.text,
+            text: &self.text,
             attention: colours.attention_text,
             in_trash: self.in_trash(&letter.id),
             dated: self.view.is_mail(),
@@ -8387,6 +8419,32 @@ mod tests {
         let opened = Opened::Folder(std::path::PathBuf::from("/tmp/setup.exe"));
         let _ = app.update(Message::AttachmentOpened(Ok(opened.clone())));
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(mail::opened_text(&opened)));
+    }
+
+    /// Issue #119: the text in the reader and the panel can be selected – never changed – and "Copy
+    /// text" puts all of it on the clipboard, as written, with "Copied".
+    #[test]
+    fn copy_text_puts_the_whole_plain_text_on_the_clipboard() {
+        let mut app = in_folder("f:work-inbox");
+        assert!(app.update(Message::CopyText).units() == 0 && app.hint.is_none(), "nothing to copy yet");
+        let _ = app.update(Message::SelectMail("m:w1".into()));
+        deliver_letter(&mut app, "m:w1");
+        let Some(Letter { loaded: Some(Ok(mail)), .. }) = app.letter.clone() else { panic!("the mail is loaded") };
+        let plain = mail::text_of(&mail);
+        assert!(!plain.trim().is_empty());
+        assert_eq!(app.text.text(), plain, "the reader's text follows the mail");
+        let _ = app.update(Message::Text(text_editor::Action::SelectAll));
+        let _ = app.update(Message::Text(text_editor::Action::Edit(text_editor::Edit::Delete)));
+        assert_eq!(app.text.text(), plain, "selecting and typing leave it as it is");
+        assert_eq!(app.update(Message::CopyText).units(), 1, "one clipboard::write");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Copied")));
+        draw_everywhere(&mut app);
+
+        // An entry's message in the panel.
+        let mut entry = loaded(&["--open", "detail"]);
+        let item = entry.detail.clone().expect("an entry in the panel");
+        assert_eq!(entry.text.text(), detail::message_text(&item));
+        draw_everywhere(&mut entry);
     }
 
     #[test]

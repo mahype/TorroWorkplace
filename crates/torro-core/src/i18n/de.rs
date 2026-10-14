@@ -2175,6 +2175,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Attachments", "Anhänge"),
     ("Clear search", "Suche leeren"),
     ("Connect one in Settings, under Accounts.", "Verbinde eines in den Einstellungen unter Konten."),
+    ("Copy text", "Text kopieren"),
     ("Couldn't change the mail.", "Die Mail konnte nicht geändert werden."),
     ("Couldn't load more messages.", "Weitere Nachrichten konnten nicht geladen werden."),
     ("Couldn't load the message.", "Die Nachricht konnte nicht geladen werden."),

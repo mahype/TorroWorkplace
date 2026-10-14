@@ -24,8 +24,8 @@
 //!
 //! **Mail is foreign text** (`untrusted`). The core turns HTML into text and fetches nothing it
 //! names, so no picture or other content from the web is ever loaded. The text is drawn as it is;
-//! web addresses in it ([`pieces`]) become links that show the whole address and open only on a
-//! click. An attachment is fetched by the core into its attachment folder and opened with the
+//! the text can be selected and copied (issue #119, `torro_gui::selectable`, "Copy text"), and the web
+//! addresses in it are listed under it as "Links" that open only on a click. An attachment is fetched by the core into its attachment folder and opened with the
 //! system, except files that could run programs ([`runs_programs`]): their folder opens instead.
 
 use std::future::Future;
@@ -35,12 +35,13 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, responsive, rich_text, row, rule, scrollable, span, svg, text_input};
+use iced::widget::{column, container, responsive, row, rule, scrollable, svg, text_input};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::panel;
+use torro_gui::selectable::{self, Selectable};
 use torro_gui::source;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Anchor, Mark, RowAction};
@@ -730,59 +731,6 @@ pub async fn open_attachment<S: MailSource>(source: Arc<S>, id: String, part: St
     Ok(Opened::File(path))
 }
 
-/// A piece of a mail's text: words, or a web address that may be opened by a click.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Piece<'a> {
-    Text(&'a str),
-    /// An `http://` or `https://` address, whole: the link shows exactly where it goes.
-    Link(&'a str),
-}
-
-/// `text` cut into words and web addresses. An address starts with `http://` or `https://` (any
-/// case) and runs to the next white space or `<`, `>`, `"`; a full stop, comma, closing bracket
-/// and the like at its end belong to the sentence. Nothing else is a link: no `mailto:`, no
-/// `file:`, no address hidden behind other words.
-pub fn pieces(text: &str) -> Vec<Piece<'_>> {
-    let mut pieces = Vec::new();
-    let mut rest = text;
-    while let Some(start) = link_start(rest) {
-        let tail = &rest[start..];
-        let end = tail.find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"')).unwrap_or(tail.len());
-        let link = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'']);
-        let scheme = if tail.to_ascii_lowercase().starts_with("https://") { "https://".len() } else { "http://".len() };
-        if link.len() <= scheme {
-            // Only the scheme: words, not a link.
-            pieces.push(Piece::Text(&rest[..start + end]));
-            rest = &rest[start + end..];
-            continue;
-        }
-        if start > 0 {
-            pieces.push(Piece::Text(&rest[..start]));
-        }
-        pieces.push(Piece::Link(link));
-        rest = &rest[start + link.len()..];
-    }
-    if !rest.is_empty() {
-        pieces.push(Piece::Text(rest));
-    }
-    pieces
-}
-
-/// Where the first web address in `text` starts, at the start of a word.
-fn link_start(text: &str) -> Option<usize> {
-    let lower = text.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some(found) = lower[from..].find("http") {
-        let at = from + found;
-        let word_start = at == 0 || !lower[..at].ends_with(|c: char| c.is_alphanumeric());
-        if word_start && (lower[at..].starts_with("http://") || lower[at..].starts_with("https://")) {
-            return Some(at);
-        }
-        from = at + 4;
-    }
-    None
-}
-
 /// `name <address>`, or the address alone, on one line.
 pub fn person(who: &MailAddress) -> String {
     match who.name.as_deref().map(list::one_line).filter(|name| !name.is_empty()) {
@@ -1403,8 +1351,9 @@ pub struct Reading<'a> {
     /// The whole message: `None` while it loads, then the answer.
     pub loaded: Option<&'a Result<Mail, String>>,
     pub now: DateTime<Utc>,
-    /// The colour of links (the text colour, underlined: never Torro red).
-    pub link: Color,
+    /// The mail's text as the window keeps it to select and copy (issue #119): made from the loaded
+    /// mail's text ([`text_of`]); empty while it loads.
+    pub text: &'a Selectable,
     /// The attention colour, for the flag.
     pub attention: Color,
     /// The message lies in the trash: it is not deleted again from here.
@@ -1480,7 +1429,10 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
                 let rows = files.into_iter().map(|file| attachment_row(reading.id, file)).collect();
                 body = body.push(widgets::prop_section(tr("Attachments"), rows));
             }
-            body = body.push(panel::inset(text_block(mail, reading.link, text_level(reading.read))));
+            body = body.push(panel::inset(text_block(mail, reading.text, text_level(reading.read), true)));
+            if let Some(links) = text_links(reading.text) {
+                body = body.push(links);
+            }
         }
     }
     body.into()
@@ -1573,7 +1525,10 @@ fn reader_content<'a>(
             body = body.push(column![what, why].spacing(space::xs()));
         }
         Some(Ok(mail)) => {
-            body = body.push(text_block(mail, reading.link, text_level(reading.read)));
+            body = body.push(text_block(mail, reading.text, text_level(reading.read), false));
+            if let Some(links) = text_links(reading.text) {
+                body = body.push(links);
+            }
             let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
             if !files.is_empty() {
                 let cards = files.into_iter().map(|file| attachment_card(reading.id, file));
@@ -1723,27 +1678,69 @@ fn reader_actions<'a>(
             triage.push(task.at(&anchors.task));
         }
     }
+    // "Copy text" (issue #119) once there is a text to copy.
+    let copy = matches!(reading.loaded, Some(Ok(_))) && !reading.text.text().trim().is_empty();
+    tools.push(ReaderButton::new(Icon::Copy, tr("Copy text"), copy.then_some(Message::CopyText)));
     tools.push(ReaderButton::new(Icon::X, tr("Close"), Some(Message::CloseDetail)));
 
-    let count = write.len() + triage.len() + tools.len();
-    let gaps = count as f32 * space::xs() + space::l();
     let spoken: f32 = write.iter().chain(&triage).map(ReaderButton::width).sum();
-    let words = comfortable && spoken + tools.len() as f32 * size::control_sm() + gaps <= room;
-    let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
+    let fit = bar_fit(comfortable, spoken, write.len() + triage.len(), tools.len(), room);
+    let words = fit == BarFit::Words;
+    let mut lead = row![].spacing(space::xs()).align_y(Alignment::Center);
     for (i, button) in write.into_iter().enumerate() {
         let style = if i == 0 { style::button::primary } else { style::button::secondary };
-        bar = bar.push(button.view(words, style));
+        lead = lead.push(button.view(words, style));
     }
     let line = container(rule::vertical(size::HAIRLINE).style(style::rule)).height(typo::line_height(typo::body()));
-    bar = bar.push(container(line).padding(Padding::new(0.0).left(space::xs()).right(space::xs())));
+    lead = lead.push(container(line).padding(Padding::new(0.0).left(space::xs()).right(space::xs())));
     for button in triage {
-        bar = bar.push(button.view(words, style::button::ghost));
+        lead = lead.push(button.view(words, style::button::ghost));
     }
-    bar = bar.push(iced::widget::space::horizontal());
+    let mut rest = row![].spacing(space::xs()).align_y(Alignment::Center);
     for button in tools {
-        bar = bar.push(button.view(false, style::button::ghost));
+        rest = rest.push(button.view(false, style::button::ghost));
     }
-    bar.into()
+    match fit {
+        BarFit::Words | BarFit::Icons => {
+            row![lead, iced::widget::space::horizontal(), rest].spacing(space::xs()).align_y(Alignment::Center).into()
+        }
+        // Below about 450 the icons no longer fit in one row (issue #119): the tools go to a second
+        // row at the right, and each row wraps rather than leave the window in a very narrow one.
+        BarFit::TwoRows => column![
+            lead.wrap().vertical_spacing(space::xs()),
+            container(rest.wrap().vertical_spacing(space::xs()).align_x(Alignment::End)).align_right(Fill),
+        ]
+        .spacing(space::xs())
+        .into(),
+    }
+}
+
+/// How the reader's actions fit into `room` ([`reader_actions`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarFit {
+    /// One row, the write and triage buttons with their words (comfortable only).
+    Words,
+    /// One row of icons.
+    Icons,
+    /// Too narrow for one row of icons: the tools in a second row.
+    TwoRows,
+}
+
+/// How the reader's actions fit into `room`: `lead` buttons (write and triage, `spoken` wide with
+/// their words), the separator, and `tools` icons at the right, `space::xs()` between them all and
+/// `space::l()` at least before the tools.
+fn bar_fit(comfortable: bool, spoken: f32, lead: usize, tools: usize, room: f32) -> BarFit {
+    let count = lead + tools;
+    let separator = 2.0 * space::xs() + size::HAIRLINE;
+    let gaps = count as f32 * space::xs() + space::l() + separator;
+    let icons = tools as f32 * size::control_sm() + gaps;
+    if comfortable && spoken + icons <= room {
+        BarFit::Words
+    } else if icons + lead as f32 * size::control_sm() <= room {
+        BarFit::Icons
+    } else {
+        BarFit::TwoRows
+    }
 }
 
 /// "Move to Info" or "Move to For me": the reader's button that moves the entry to `lane`.
@@ -1864,35 +1861,48 @@ fn attachment_row<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
     widgets::prop_row(Some(Mark::Icon(Icon::Paperclip)), line, Some(open))
 }
 
-/// The text in `level` with its web addresses as links ([`pieces`]: the whole address shows,
-/// underlined, and opens on a click), then the notes on foreign text.
-fn text_block<'a>(mail: &'a Mail, link: Color, level: typo::Level) -> Element<'a, Message> {
-    let text = mail.text.as_deref().map(list::plain).unwrap_or_default();
+/// The text of `mail` as the window shows, selects and copies it (issue #119): plain, without
+/// control characters ([`list::plain`]); empty for a mail without text.
+pub fn text_of(mail: &Mail) -> String {
+    mail.text.as_deref().map(list::plain).unwrap_or_default()
+}
+
+/// The text in `level`, to select with the mouse and copy (issue #119, [`Selectable`]), then the
+/// notes on foreign text – with "Copy text" at their right where no row of actions carries it
+/// (`copy`: the panel; the reader has it among its actions). The web addresses in the text follow
+/// as "Links" ([`text_links`]), which the caller places.
+fn text_block<'a>(mail: &'a Mail, text: &'a Selectable, level: typo::Level, copy: bool) -> Element<'a, Message> {
     let mut block = column![].spacing(space::s());
-    if !text.trim().is_empty() {
-        let spans: Vec<iced::widget::text::Span<'a, String>> = pieces(&text)
-            .into_iter()
-            .map(|piece| match piece {
-                Piece::Text(words) => span(words.to_owned()),
-                Piece::Link(url) => span(url.to_owned()).color(link).underline(true).link(url.to_owned()),
-            })
-            .collect();
-        let message = rich_text(spans)
-            .size(level.size)
-            .line_height(level.line_height)
-            .font(level.font)
-            .style(theme::text_2)
-            .wrapping(Wrapping::WordOrGlyph)
-            .on_link_click(Message::OpenMailLink);
-        block = block.push(message);
+    let has_text = !text.text().trim().is_empty();
+    if has_text {
+        block = block.push(text.view(level, theme::text_2, Message::Text));
     }
-    block = block.push(note(detail::foreign_note()));
+    let mut notes = column![note(detail::foreign_note())].spacing(space::s());
     if mail.from_html {
-        block = block.push(note(tr("Made from HTML. Pictures and other content from the web are not loaded.")));
+        notes = notes.push(note(tr("Made from HTML. Pictures and other content from the web are not loaded.")));
     }
     // No title over the text: the headers above already say whose mail it is (and "Message" reads
     // as a notice in German, the entries' word).
-    block.into()
+    if copy && has_text {
+        block
+            .push(row![container(notes).width(Fill), copy_button()].spacing(space::s()).align_y(Alignment::Center))
+            .into()
+    } else {
+        block.push(notes).into()
+    }
+}
+
+/// "Links": the web addresses in the mail's text (`torro_gui::selectable::web_links`), each a row
+/// that opens it ([`Message::OpenMailLink`]); `None` without any. The text itself is selectable and
+/// cannot hold clickable links, so they stand here.
+fn text_links<'a>(text: &Selectable) -> Option<Element<'a, Message>> {
+    selectable::links_section(selectable::web_links(text.text()), Message::OpenMailLink)
+}
+
+/// "Copy text": puts the whole text shown on the clipboard ([`Message::CopyText`]), as an icon
+/// with its words as tooltip.
+pub fn copy_button<'a>() -> Element<'a, Message> {
+    widgets::icon_button(Icon::Copy, tr("Copy text"), Some(Message::CopyText))
 }
 
 /// A quiet sentence (`META`, `text_3`).
@@ -2070,27 +2080,37 @@ mod tests {
         assert_eq!(flags_after(&[Flag::Seen, Flag::Flagged], &unread), [Flag::Flagged]);
     }
 
+    /// Issue #119: the text is selectable, so its web addresses stand under it as "Links" – the same
+    /// cut as the calendar's (`torro_gui::links`); nothing but `http` and `https` opens.
     #[test]
     fn web_addresses_are_links_and_nothing_else_is() {
         let text = "See https://intranet.example.org/budget/q4. Or (http://a.example/x), mailto:me@x.example, \
                     xhttps://no.example and https:// alone.";
-        let links: Vec<&str> = pieces(text)
-            .into_iter()
-            .filter_map(|piece| match piece {
-                Piece::Link(url) => Some(url),
-                Piece::Text(_) => None,
-            })
-            .collect();
+        let links = selectable::web_links(text);
         assert_eq!(links, ["https://intranet.example.org/budget/q4", "http://a.example/x"]);
-        let whole: String = pieces(text)
-            .into_iter()
-            .map(|piece| match piece {
-                Piece::Text(words) | Piece::Link(words) => words,
-            })
-            .collect();
-        assert_eq!(whole, text, "nothing is lost or added");
-        assert_eq!(pieces("HTTPS://Example.org"), [Piece::Link("HTTPS://Example.org")]);
-        assert_eq!(pieces(""), []);
+        assert!(text_links(&Selectable::new(text)).is_some());
+        assert!(text_links(&Selectable::new("no address")).is_none(), "no section without links");
+    }
+
+    /// Issue #119: below about 450 the reader's icons no longer fit in one row; the tools go to a
+    /// second row instead of leaving the window (Close, Move to … were cut off).
+    #[test]
+    fn the_reader_actions_take_a_second_row_when_narrow() {
+        // Reply, Reply all, Forward | Done, Later, Task; Archive, Delete, Flag, Read, Move to, "…",
+        // Copy text, Close.
+        let (lead, tools, spoken) = (6, 8, 360.0);
+        assert_eq!(bar_fit(true, spoken, lead, tools, size::content_max()), BarFit::Words);
+        assert_eq!(bar_fit(false, spoken, lead, tools, size::content_max()), BarFit::Icons);
+        assert_eq!(bar_fit(true, spoken, lead, tools, 600.0), BarFit::Icons, "no room for the words");
+        assert_eq!(bar_fit(true, spoken, lead, tools, 400.0), BarFit::TwoRows);
+        assert_eq!(bar_fit(false, spoken, lead, tools, 250.0), BarFit::TwoRows);
+        // The icons of one row, as wide as they are, fit exactly.
+        let one_row = (lead + tools) as f32 * (size::control_sm() + space::xs())
+            + space::l()
+            + 2.0 * space::xs()
+            + size::HAIRLINE;
+        assert_eq!(bar_fit(false, spoken, lead, tools, one_row), BarFit::Icons);
+        assert_eq!(bar_fit(false, spoken, lead, tools, one_row - 1.0), BarFit::TwoRows);
     }
 
     #[test]
@@ -2175,6 +2195,7 @@ mod tests {
         let done = ItemTask { due: Some(TaskDue::Date(now().date_naive())), ..task(true) };
         for (message, task) in mail.iter().zip([None, Some(&open), Some(&done)].into_iter().cycle()) {
             let loaded = Ok(message.clone());
+            let text = Selectable::new(&text_of(message));
             for loaded in [None, Some(&loaded)] {
                 for read in [false, true] {
                     let reading = Reading {
@@ -2183,7 +2204,7 @@ mod tests {
                         summary: Some(&message.summary),
                         loaded,
                         now: now(),
-                        link: Color::BLACK,
+                        text: &text,
                         attention: Color::BLACK,
                         in_trash: false,
                         dated: true,

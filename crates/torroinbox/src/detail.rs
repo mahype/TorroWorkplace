@@ -41,17 +41,20 @@
 //! suite's "You finished a task from a mail" (`hub::is_follow_up`) has Reply and "Mark mail done" in
 //! its footer before "Done", and neither "Later" nor "Make task".
 //!
-//! Commands in a message ("cargo test --workspace") should not break at their hyphens: the message
-//! shows them as non-breaking hyphens ([`unbroken`]), which Inter draws the same.
+//! The message can be selected with the mouse and copied (issue #119, `torro_gui::selectable`), and
+//! "Copy text" beside its title puts all of it on the clipboard; the web addresses in it follow as
+//! "Links". It shows exactly as written, so what is copied is what the source said – a command like
+//! "cargo test --workspace" may break at its hyphens in a narrow panel.
 
 use chrono::{DateTime, Local, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row};
-use iced::{Alignment, Element};
+use iced::{Alignment, Element, Fill};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::panel::{self, Panel};
+use torro_gui::selectable::{self, Selectable};
 use torro_gui::theme::{self, space};
 
 use torro_gui::widgets::{self, Anchor, Mark, RowAction, Status};
@@ -149,12 +152,16 @@ pub struct Footer {
 /// `letter` is the whole mail of a mail entry (task E4.2, `mail::body`: headers, actions,
 /// attachments, text). It stands in place of the entry's own short text and brings its own note on
 /// foreign text; `None` for every other entry.
+///
+/// `text` is the entry's message as the window keeps it to select and copy (issue #119): made from
+/// [`message_text`] of `item`; unused beside a `letter`.
 pub fn panel<'a>(
     item: &'a Item,
     view_name: String,
     now: DateTime<Utc>,
     footer: Footer,
     letter: Option<Element<'a, Message>>,
+    text: &'a Selectable,
 ) -> Panel<'a, Message> {
     let path = panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name]);
     let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::l());
@@ -182,13 +189,21 @@ pub fn panel<'a>(
     }
     if let Some(letter) = letter {
         body = body.push(letter);
-    } else if let Some(text) = item.body.as_deref().map(list::plain).filter(|text| !text.trim().is_empty()) {
-        let message = typo::text(typo::body(), unbroken(&text)).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
-        let mut block = column![message].spacing(space::s());
+    } else if !text.text().trim().is_empty() {
+        let mut block = column![text.view(typo::body(), theme::text_2, Message::Text)].spacing(space::s());
         if let Some(note) = untrusted.take() {
             block = block.push(note);
         }
-        body = body.push(column![section(tr("Message")), panel::inset(block)].spacing(space::xs()));
+        body = body.push(column![message_title(), panel::inset(block)].spacing(space::xs()));
+        // The addresses in the text, but the entry's own link, which has its row below.
+        let own = match &link {
+            Some(Link::Url { url }) => Some(url.as_str()),
+            _ => None,
+        };
+        let urls = selectable::web_links(text.text()).into_iter().filter(|url| Some(url.as_str()) != own).collect();
+        if let Some(links) = selectable::links_section(urls, Message::OpenMailLink) {
+            body = body.push(links);
+        }
     }
     // A mail is shown in this app itself (task E4.2), not opened from a link row.
     if let Some(link) = link.filter(|link| !matches!(link, Link::Window | Link::Mail { .. })) {
@@ -426,11 +441,16 @@ fn section<'a>(title: &'a str) -> Element<'a, Message> {
     panel::inset(widgets::section_title(title))
 }
 
-/// `text` with every hyphen-minus as a non-breaking hyphen (U+2011, in Inter), so a command like
-/// "cargo test --workspace" wraps before "--workspace" instead of between its dashes. Only for
-/// showing: the entry keeps its text.
-pub fn unbroken(text: &str) -> String {
-    text.replace('-', "\u{2011}")
+/// The entry's message as the panel shows, selects and copies it (issue #119): its body, plain
+/// ([`list::plain`]); empty without one.
+pub fn message_text(item: &Item) -> String {
+    item.body.as_deref().map(list::plain).unwrap_or_default()
+}
+
+/// "Message" over the entry's text, with "Copy text" at the right (issue #119, `mail::copy_button`).
+fn message_title<'a>() -> Element<'a, Message> {
+    let title = container(widgets::section_title(tr("Message"))).width(Fill);
+    panel::inset(row![title, mail::copy_button()].spacing(space::s()).align_y(Alignment::Center))
 }
 
 /// The note under foreign text, in this panel and under a whole mail (`mail::body`, task E8.13):
@@ -569,11 +589,13 @@ mod tests {
         assert!(hub::is_follow_up(&question));
         // Reply, Mark mail done, Done, the gap, Move to.
         assert_eq!(buttons(&question, &footer(false)).len(), 5);
-        let _ = panel(&question, tr("Act now").to_owned(), now(), footer(false), None);
+        let text = Selectable::new(&message_text(&question));
+        let _ = panel(&question, tr("Act now").to_owned(), now(), footer(false), None, &text);
         let mut handed = sample("demo-11");
         app::demo_task(&mut handed, now());
         assert!(handed.task.as_ref().is_some_and(|task| !task.completed));
-        let _ = panel(&handed, tr("Done").to_owned(), now(), footer(true), None);
+        let text = Selectable::new(&message_text(&handed));
+        let _ = panel(&handed, tr("Done").to_owned(), now(), footer(true), None, &text);
     }
 
     #[test]
@@ -582,10 +604,14 @@ mod tests {
         assert_eq!(buttons(&sample("demo-1"), &compact).len(), buttons(&sample("demo-1"), &footer(true)).len());
     }
 
+    /// Issue #119: the message is shown and copied as written, so a command keeps its dashes.
     #[test]
-    fn commands_keep_their_dashes_together() {
-        assert_eq!(unbroken("cargo test --workspace"), "cargo test \u{2011}\u{2011}workspace");
-        assert_eq!(unbroken("no dashes"), "no dashes");
+    fn the_message_is_copied_as_written() {
+        let mut item = sample("demo-1");
+        item.body = Some("Run cargo test --workspace\u{7}".into());
+        assert_eq!(message_text(&item), "Run cargo test --workspace");
+        item.body = None;
+        assert_eq!(message_text(&item), "");
     }
 
     /// Issue #128: an entry a rule put in its lane says why beside the lane; moved by hand, only
@@ -629,7 +655,8 @@ mod tests {
     #[test]
     fn every_sample_entry_builds_a_panel() {
         for item in demo::sample(now()) {
-            let _ = panel(&item, tr("For me").to_owned(), now(), footer(false), None);
+            let text = Selectable::new(&message_text(&item));
+            let _ = panel(&item, tr("For me").to_owned(), now(), footer(false), None, &text);
         }
     }
 }
