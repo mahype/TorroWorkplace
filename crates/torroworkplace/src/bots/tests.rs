@@ -140,6 +140,7 @@ async fn deleting_a_bot_removes_its_client_and_folder_and_keeps_its_conversation
         effort: None,
         text: "Plan Lisbon".into(),
         without: Vec::new(),
+        mode: torro_ipc::assistant::Mode::Default,
         bot: Some(bot.id.clone()),
     };
     let Response::Conversation { conversation, .. } = crate::assistant::answer(&assistant, &ai, send).await else {
@@ -169,6 +170,7 @@ async fn deleting_a_bot_removes_its_client_and_folder_and_keeps_its_conversation
         effort: None,
         text: "And Porto?".into(),
         without: Vec::new(),
+        mode: torro_ipc::assistant::Mode::Default,
         bot: Some(bot.id.clone()),
     };
     assert_eq!(code(&crate::assistant::answer(&assistant, &ai, more).await), "not-found");
@@ -270,6 +272,7 @@ async fn asking_a_bot_starts_its_conversation() {
         effort: None,
         text: "Hi".into(),
         without: Vec::new(),
+        mode: torro_ipc::assistant::Mode::Default,
         bot: None,
     };
     assert_eq!(code(&crate::assistant::answer(&assistant, &ai, to_assistant).await), "error");

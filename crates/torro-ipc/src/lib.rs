@@ -1743,6 +1743,12 @@ pub enum Request {
         /// its rights leave out.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         without: Vec<Area>,
+        /// The permission mode of this answer (issue #132): `read_only` (only commands that change
+        /// nothing; the others are `forbidden`), `ask` (every change waits for the person's
+        /// approval) or `default` (the rights as stored; also when left out). It only ever narrows
+        /// the rights, never widens them, and an approval asked for keeps it.
+        #[serde(default, skip_serializing_if = "assistant::Mode::is_default")]
+        mode: assistant::Mode,
         /// Chat with this bot instead of the assistant (task B.1): its id from `bots.list_bots`. The
         /// bot answers with its own client's rights and its own prompt, with `engine` and `model`
         /// as given (left without `model`, the bot's own when `engine` is the bot's). A new

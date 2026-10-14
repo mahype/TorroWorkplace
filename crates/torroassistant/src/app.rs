@@ -68,6 +68,7 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
 use torro_ipc::api::{Area, Rights};
+use torro_ipc::assistant::Mode as PermissionMode;
 use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
 use torro_ipc::bots::{Bot, BotSummary};
 use torro_ipc::{ApprovalInfo, Request, Response};
@@ -150,6 +151,8 @@ pub enum Menu {
     Picker,
     /// The effort of the composer (issue #131).
     Effort,
+    /// The permission mode under the composer (issue #132).
+    Mode,
     /// The areas of the composer ("Without Mail").
     Areas,
     /// The menu of a conversation: Rename, Pin, Open in new window, Delete; at the header's "…"
@@ -310,6 +313,8 @@ pub enum Message {
     Pick(Choice),
     /// From the effort's menu (issue #131); `None` for "Automatic".
     PickEffort(Option<Effort>),
+    /// From the permission mode's menu (issue #132).
+    PickMode(PermissionMode),
     /// "Show all models" in the picker: AI accounts list closed models too (issue #131).
     ToggleAllModels,
     /// Switch an area off for this conversation, or on again.
@@ -446,7 +451,9 @@ pub struct App {
     pub(crate) chosen: Chosen,
     /// The areas switched off for the next message.
     pub(crate) without: Vec<Area>,
-    /// The areas of the open conversation's last message are taken once it is loaded.
+    /// The permission mode of the next message (issue #132): it only narrows the rights.
+    pub(crate) mode: PermissionMode,
+    /// The areas and the mode of the open conversation's last message are taken once it is loaded.
     pub(crate) take_without: bool,
     /// The message is on its way.
     pub(crate) sending: bool,
@@ -527,11 +534,13 @@ impl App {
             effort: None,
             chosen: Chosen::Default,
             without: Vec::new(),
+            mode: PermissionMode::Default,
             take_without: true,
             sending: false,
             menu: match open {
                 Some(Open::Picker) => Some(Menu::Picker),
                 Some(Open::Effort) => Some(Menu::Effort),
+                Some(Open::Mode) => Some(Menu::Mode),
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 Some(Open::Menu) => Some(Menu::Conversation { id: demo::TOOLS.into(), at: MenuAt::Header }),
                 Some(Open::BotMenu) => Some(Menu::Bot { id: demo::TRAVEL.into() }),
@@ -742,6 +751,10 @@ impl App {
             Message::PickEffort(effort) => {
                 self.effort = effort;
                 self.chosen = Chosen::Person;
+                self.menu = None;
+            }
+            Message::PickMode(mode) => {
+                self.mode = mode;
                 self.menu = None;
             }
             Message::ToggleAllModels => {
@@ -1193,6 +1206,7 @@ impl App {
             self.take_without = false;
             let usable = self.switchable();
             self.without = self.transcript.last_without().unwrap_or_default();
+            self.mode = self.transcript.last_mode().unwrap_or_default();
             if self.access != Access::Unknown {
                 self.without.retain(|area| usable.contains(area));
             }
@@ -1335,6 +1349,7 @@ impl App {
         self.stream = None;
         self.follow_bottom = true;
         self.without.clear();
+        self.mode = PermissionMode::Default;
         self.take_without = true;
     }
 
@@ -1350,14 +1365,19 @@ impl App {
         if self.bot_gone() {
             return Task::none();
         }
-        let without = if self.chat_bot().is_some() { Vec::new() } else { self.without.clone() };
+        // A bot answers with its own client's rights: nothing of the assistant's to narrow.
+        let (without, mode) = if self.chat_bot().is_some() {
+            (Vec::new(), PermissionMode::Default)
+        } else {
+            (self.without.clone(), self.mode)
+        };
         let effort = self.offered_effort();
         let Some(request) = chat::send_request(
             self.current.as_deref(),
             self.choice.as_ref(),
             effort,
             &self.draft(),
-            &without,
+            (&without, mode),
             self.chat_bot(),
         ) else {
             return Task::none();
@@ -1373,9 +1393,9 @@ impl App {
                 self.editor = Content::new();
                 self.mini.clear();
                 if self.current.as_ref() != Some(&summary.id) {
-                    let without = std::mem::take(&mut self.without);
+                    let (without, mode) = (std::mem::take(&mut self.without), self.mode);
                     self.reset_chat(Some(summary.id.clone()));
-                    self.without = without;
+                    (self.without, self.mode) = (without, mode);
                     self.take_without = false;
                     self.transcript = Transcript::new(summary, entries);
                 } else {

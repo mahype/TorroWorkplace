@@ -2149,9 +2149,16 @@ mod tests {
                 effort: None,
                 text: "What is on tomorrow?".into(),
                 without: vec![Area::Mail],
+                mode: torro_ipc::assistant::Mode::Default,
                 bot: None,
             })
         );
+        // Issue #132: the permission mode comes through as given.
+        let narrowed = args(json!({"engine": "test", "text": "Look only", "mode": "read_only"}));
+        assert!(matches!(
+            request_for("assistant_send_message", narrowed, &Utc),
+            Ok(Request::SendMessage { mode: torro_ipc::assistant::Mode::ReadOnly, .. })
+        ));
         // Issue #131: the model and the effort come through as given.
         let thinking =
             args(json!({"engine": "claude-code", "model": "opus", "effort": "high", "text": "Plan my week"}));

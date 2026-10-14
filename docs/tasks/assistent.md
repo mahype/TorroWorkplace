@@ -288,6 +288,32 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** Tests: Request-Body je Anbieter enthält den Aufwand; Claude-Code-Argumente enthalten Modell und
   `--effort`; Aufwand in jeder Anfrage einer Antwort; Standard der Steuerzentrale im Chat; Einstellung geprüft.
 
+### C.16 Berechtigungsmodus im Chat (Issue #132)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** C.13, C.14 · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
+  `crates/torroworkplace/src/{core,clients,approvals,mcp}.rs`, `crates/torroworkplace/src/assistant/**`,
+  `crates/torroassistant/src/**`, `crates/torro-core/src/i18n/de.rs`; mechanisch nachgezogen (neues Feld in
+  Literalen): `audit.rs`, `bots/tests.rs`
+- **Modus** `torro_ipc::assistant::Mode`: `read_only` (jeder Bereich höchstens lesen, kein Admin, kein Senden; alles
+  über Lesen `forbidden` mit Grund `Lack::ReadOnly`, auch das eigene Gedächtnis), `ask` (`confirm = OnEveryChange`:
+  jede Änderung wartet auf eine Freigabe), `default` (gespeicherte Rechte). `Mode::narrow` macht nur enger.
+- **Angewendet:** Antrieb A über `Host::run_in` (der Kern verengt den Client, die Freigabe behält den Modus in
+  `approvals::Origin::mode`, ein späteres „Allow“ läuft verengt); Antrieb B über einen im Modus geliehenen Schlüssel
+  (`Clients::lend_in_mode`, `Clients::lent_mode`) und `--disallowedTools` für schreibende Tools bei `read_only`; ein
+  gefragter Bot läuft im Modus des Assistenten (`Delegation::mode`, `Host::ask_bot_in`). `assistant.my_access` nennt
+  den Modus (`MyAccess::mode`).
+- **Gemerkt** am Nachrichteneintrag wie `without` (`EntryContent::Message::mode`); eine wieder geöffnete
+  Unterhaltung übernimmt ihn, ein neuer Chat beginnt mit „Default access“.
+- **„Auto“ nicht angeboten:** ohne Rückfrage bis zur gespeicherten Grenze hieße bei `confirm = OnDelete` weiter
+  machen als gespeichert; der Modus darf nur enger machen.
+- **Oberfläche:** unter dem Eingabefeld Knopf mit dem Modus und daneben eine Zeile, was gerade erlaubt ist
+  („Mail: Read · Calendar: Write · asks before changes“, aus `MyAccess`); in Bot-Chats nicht (der Bot hat eigene
+  Rechte). **API:** `assistant.send_message` + `mode` (optional, verträglich). **MCP:** `assistant_send_message`
+  erbt das Feld; der Modus engt nur ein, daher für Agenten erlaubt.
+- **Abnahme:** Tests: Read only verbietet Schreiben (Antrieb A, geliehener Schlüssel, Werkzeugliste, Claude-Code-
+  Argumente); Ask before changes erzeugt Freigaben, auch mit geliehenem Schlüssel; kein Modus öffnet, was die Rechte
+  schließen (Tabellentest über den Katalog, Kern-Test); die Freigabe behält den Modus.
+
 ## Stufe 2: Bots (B.1–B.4)
 
 Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Geplant am 2026-10-14 nach Stufe 1.

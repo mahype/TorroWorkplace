@@ -590,6 +590,7 @@ mod tests {
                 model: None,
                 effort: None,
                 without: Vec::new(),
+                mode: torro_ipc::assistant::Mode::Default,
             },
         };
         let answer = |seq: u64| Entry {

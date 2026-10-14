@@ -49,6 +49,7 @@ use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
 use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceKind, SourceRef};
 use torro_ipc::api::{Area, Mcp, Rights};
+use torro_ipc::assistant::Mode;
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 use torro_mail::{MailAddress, Role};
 use torro_pim::{Event, EventTime, Todo};
@@ -446,6 +447,11 @@ pub struct Origin {
     /// had. `None` for every other request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behalf: Option<String>,
+    /// The permission mode of the assistant's answer that asked (issue #132): an allowed command
+    /// runs with the rights narrowed by it as well ([`Origin::narrow`]), so a person's "Allow" never
+    /// runs more than the conversation allowed. [`Mode::Default`] for every other request.
+    #[serde(default, skip_serializing_if = "Mode::is_default")]
+    pub mode: Mode,
 }
 
 impl Origin {
@@ -454,9 +460,10 @@ impl Origin {
         *self == Origin::default()
     }
 
-    /// `rights` without the areas [`Origin::without`] names, as the lent key had them.
+    /// `rights` without the areas [`Origin::without`] names, as the lent key had them, and in the
+    /// permission mode [`Origin::mode`] (issue #132).
     pub fn narrow(&self, rights: &Rights) -> Rights {
-        let mut rights = rights.clone();
+        let mut rights = self.mode.narrow(rights);
         rights.areas.retain(|area, _| !self.without.contains(area));
         rights
     }
@@ -2690,6 +2697,7 @@ pub(crate) mod tests {
             effort: None,
             text: "Secret plans for Anna".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
@@ -3254,7 +3262,8 @@ pub(crate) mod tests {
     async fn an_approval_keeps_where_its_request_came_from() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let origin = Origin { engine: Some("claude-code".into()), without: vec![Area::Mail], behalf: None };
+        let origin =
+            Origin { engine: Some("claude-code".into()), without: vec![Area::Mail], behalf: None, mode: Mode::Default };
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let kept = (None, None, origin.clone());
         let shown = || ("Delete".to_string(), Vec::new());
@@ -3284,6 +3293,18 @@ pub(crate) mod tests {
             .insert(Area::Mail, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Read, admin: false });
         assert_eq!(origin.narrow(&rights).area(Area::Mail), torro_ipc::api::AreaRights::NONE);
         assert_eq!(origin.narrow(&rights).area(Area::Calendar), rights.area(Area::Calendar), "the rest stays");
+        // Issue #132: the mode of the answer that asked narrows what an allowed command runs with.
+        let read_only = Origin { mode: Mode::ReadOnly, ..origin.clone() };
+        let mut writing = rights.clone();
+        writing
+            .areas
+            .insert(Area::Tasks, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Full, admin: true });
+        let narrowed = read_only.narrow(&writing);
+        assert_eq!(narrowed.area(Area::Tasks).level, torro_ipc::api::Level::Read);
+        assert!(!narrowed.area(Area::Tasks).admin);
+        let written = serde_json::to_value(&read_only).expect("json");
+        assert_eq!(written["mode"], "read_only");
+        assert!(serde_json::to_value(&origin).expect("json").get("mode").is_none(), "the default is left out");
     }
 
     #[test]

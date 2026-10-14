@@ -2670,6 +2670,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "The assistant answers with the models of these accounts. Each chat picks one; a new chat starts with the one set below.",
         "Der Assistent antwortet mit den Modellen dieser Konten. Jeder Chat wählt eines; ein neuer Chat beginnt mit dem unten eingestellten.",
     ),
+    // Assistant: tool lines in a read-only conversation (issue #132)
+    ("Read only in this conversation", "In dieser Unterhaltung nur lesend"),
     // Assistant: new chats, model and effort (issue #131)
     ("Effort", "Aufwand"),
     (
@@ -2719,6 +2721,20 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Effort: {level}", "Aufwand: {level}"),
     ("How hard the model thinks", "Wie gründlich das Modell nachdenkt"),
     ("Show all models", "Alle Modelle zeigen"),
+    // Assistant app: permission mode (issue #132)
+    ("Ask before changes", "Vor Änderungen fragen"),
+    ("Default access", "Standardzugriff"),
+    ("No access to your data", "Kein Zugriff auf deine Daten"),
+    (
+        "This conversation is read only. Pick another mode under the message field to let it change things.",
+        "Diese Unterhaltung ist nur lesend. Wähle unter dem Eingabefeld einen anderen Modus, damit er etwas ändern darf.",
+    ),
+    ("What the assistant may do here", "Was der Assistent hier darf"),
+    ("asks before changes", "fragt vor Änderungen"),
+    ("asks before deleting", "fragt vor dem Löschen"),
+    ("asks only for settings", "fragt nur bei Einstellungen"),
+    ("changes nothing", "ändert nichts"),
+    ("{area}: {level}", "{area}: {level}"),
     ("Block the afternoon", "Nachmittag blocken"),
     ("Change access", "Zugriff ändern"),
     ("Choose what the assistant may use", "Wähle, was der Assistent nutzen darf"),

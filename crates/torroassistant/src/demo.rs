@@ -139,8 +139,8 @@ impl Demo {
             Request::ListClients => Response::Clients { clients: state.client().into_iter().collect() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
-            Request::SendMessage { conversation, engine, model, effort, text, without, bot } => {
-                state.send(conversation, (engine, model, effort), text, without, bot)
+            Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot } => {
+                state.send(conversation, (engine, model, effort), text, (without, mode), bot)
             }
             // No default for new chats in the demo: the one used last (issue #131).
             Request::Settings => Response::Settings { settings: torro_core::settings::Settings::default() },
@@ -279,7 +279,7 @@ impl State {
         conversation: Option<String>,
         (engine, model, effort): (String, Option<String>, Option<Effort>),
         text: String,
-        without: Vec<Area>,
+        (without, mode): (Vec<Area>, torro_ipc::assistant::Mode),
         bot: Option<String>,
     ) -> Response {
         let now = self.now;
@@ -320,7 +320,7 @@ impl State {
         }
         (conversation.summary.engine, conversation.summary.model, conversation.summary.effort) =
             (engine.clone(), model.clone(), effort);
-        let message = conversation.push(now, EntryContent::Message { text, engine, model, effort, without });
+        let message = conversation.push(now, EntryContent::Message { text, engine, model, effort, without, mode });
         conversation.summary.running = true;
         conversation.growing = Some(Growing { text: tr(reply).to_owned(), shown: 0, frozen: false });
         Response::Conversation { conversation: conversation.summary.clone(), entries: vec![message] }
@@ -466,6 +466,7 @@ fn message(text: &str) -> EntryContent {
         model: Some("qwen3:14b".into()),
         effort: None,
         without: Vec::new(),
+        mode: torro_ipc::assistant::Mode::Default,
     }
 }
 
@@ -836,6 +837,7 @@ mod tests {
             effort: None,
             text: "Hello".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         let (summary, entries) = conversation(demo.answer(send));

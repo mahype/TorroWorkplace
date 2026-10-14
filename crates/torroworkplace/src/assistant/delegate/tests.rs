@@ -28,6 +28,7 @@ fn run(contents: Vec<EntryContent>) -> Response {
         model: None,
         effort: None,
         without: Vec::new(),
+        mode: torro_ipc::assistant::Mode::Default,
     };
     let entries: Vec<Entry> = std::iter::once(message)
         .chain(contents)

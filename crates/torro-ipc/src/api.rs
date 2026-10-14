@@ -637,6 +637,9 @@ pub enum Lack {
     /// outside the person's computers, and the data rule keeps mail on them
     /// (`NEVER_TO_AGENTS` in the core, task C.7).
     NeverToAgents { area: Area },
+    /// The person set the conversation to read only (issue #132,
+    /// [`crate::assistant::Mode::ReadOnly`]): nothing that changes something runs there.
+    ReadOnly,
 }
 
 impl Lack {
@@ -688,6 +691,25 @@ impl Lack {
         })
     }
 
+    /// [`Lack::of`] in the permission mode `mode` of a conversation (issue #132): what the engine never
+    /// gets, what is switched off and what only people may do come first, then
+    /// [`Lack::ReadOnly`] for a command beyond reading in a read-only conversation, then the rights.
+    /// `rights` may be the stored ones or those already narrowed by `mode`; the answer is the same.
+    pub fn of_in(
+        kind: &str,
+        rights: &Rights,
+        operation: Operation,
+        switched_off: &[Area],
+        never: &[Area],
+        mode: crate::assistant::Mode,
+    ) -> Option<Lack> {
+        match Lack::of(kind, rights, operation, switched_off, never) {
+            Some(lack @ (Lack::NeverToAgents { .. } | Lack::SwitchedOff { .. } | Lack::ForPeople)) => Some(lack),
+            _ if mode.refuses(operation) => Some(Lack::ReadOnly),
+            other => other,
+        }
+    }
+
     /// The reason for an agent, in English, to follow "this client may not use <command>: ". It
     /// tells what is missing and who can change it, never a secret or a value of the request.
     pub fn message(self) -> String {
@@ -714,6 +736,11 @@ impl Lack {
                  their own computers. Changing the rights does not change this; say so instead of trying",
                 area.name()
             ),
+            Lack::ReadOnly => {
+                "the person set this conversation to read only; nothing that changes something runs here, so \
+                 say what you would do instead of trying"
+                    .into()
+            }
         }
     }
 
@@ -733,7 +760,7 @@ impl Lack {
             | Lack::Admin { area }
             | Lack::SwitchedOff { area }
             | Lack::NeverToAgents { area } => Some(area),
-            Lack::Outbound | Lack::ForPeople => None,
+            Lack::Outbound | Lack::ForPeople | Lack::ReadOnly => None,
         }
     }
 }
@@ -2647,7 +2674,9 @@ static SEND_MESSAGE: Command = Command {
     mcp: Mcp::Tool,
     description: "Sends a message to the assistant of Torro Workplace and starts its answer, in `conversation` or \
                   in a new one when it is left out. The assistant acts with its own rights, not the caller's; \
-                  `without` switches areas off for this answer. `model` picks a model of the engine and `effort` \
+                  `without` switches areas off for this answer, and `mode` narrows it further: \"read_only\" \
+                  (nothing that changes something runs) or \"ask\" (every change waits for the person's \
+                  approval). `model` picks a model of the engine and `effort` \
                   how hard it thinks (only for a model whose `reasoning` is not false). The MCP tool waits up to \
                   60 seconds for the answer and returns the new entries; the API answers at once. While `running` \
                   is true, follow the answer with get_conversation and `after` set to the conversation's `last`. \
@@ -3205,6 +3234,7 @@ mod tests {
                 effort: None,
                 text: "What is on tomorrow?".into(),
                 without: vec![Area::Mail],
+                mode: crate::assistant::Mode::Default,
                 bot: None,
             },
             Request::CancelAnswer { conversation: "0123456789abcdef".into() },
@@ -3478,6 +3508,7 @@ mod tests {
             effort: None,
             text: "Hi".into(),
             without: Vec::new(),
+            mode: crate::assistant::Mode::Default,
             bot: None,
         };
         for template in RightsTemplate::ALL {

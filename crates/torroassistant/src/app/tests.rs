@@ -237,6 +237,36 @@ fn the_effort_goes_with_the_message_where_the_model_thinks() {
     assert_eq!(asked, [true, true], "each AI account again, closed models too");
 }
 
+/// Issue #132: the mode picked under the composer goes with the message, a new chat starts with the
+/// stored rights, and a conversation opened again keeps the mode of its last message.
+#[test]
+fn the_permission_mode_goes_with_the_message_and_stays_with_the_conversation() {
+    let mut app = started(&["--open", "mode"]);
+    assert_eq!((app.menu.as_ref(), app.mode), (Some(&Menu::Mode), PermissionMode::Default));
+    let _ = app.update(Message::PickMode(PermissionMode::ReadOnly));
+    assert_eq!((app.menu.as_ref(), app.mode), (None, PermissionMode::ReadOnly));
+    sent(&mut app);
+    let _ = app.update(Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Look".into())))));
+    let _ = app.update(Message::Send);
+    assert!(matches!(sent(&mut app).as_slice(), [Request::SendMessage { mode: PermissionMode::ReadOnly, .. }]));
+    let _ = app.update(Message::Sent(Err(Refusal::new("error", "not now"))));
+
+    let _ = app.update(Message::NewChat);
+    assert_eq!(app.mode, PermissionMode::Default, "a new chat starts with the stored rights");
+    settle(&mut app);
+    let _ = app.update(Message::PickMode(PermissionMode::Ask));
+    let _ = app.update(Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Plan".into())))));
+    let _ = app.update(Message::Send);
+    settle(&mut app);
+    let id = app.current.clone().expect("a conversation");
+    assert_eq!(app.mode, PermissionMode::Ask, "kept after sending");
+    let _ = app.update(Message::NewChat);
+    settle(&mut app);
+    let _ = app.update(Message::Select(id));
+    settle(&mut app);
+    assert_eq!(app.mode, PermissionMode::Ask, "the conversation's last message");
+}
+
 /// Issue #131: a default set in the control centre is what a new chat starts with.
 #[test]
 fn a_new_chat_starts_with_the_default_of_the_control_centre() {
@@ -272,6 +302,7 @@ fn sending_starts_a_conversation_and_the_growing_answer_replaces_itself() {
             effort: None,
             text: "What is on tomorrow?".into(),
             without: vec![Area::Mail],
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         }]
     );

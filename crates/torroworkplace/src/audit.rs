@@ -619,6 +619,7 @@ pub(crate) mod tests {
             effort: None,
             text: "Dinner with Anna".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         assert_eq!(
@@ -632,6 +633,7 @@ pub(crate) mod tests {
             effort: None,
             text: "Hi".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         assert_eq!(super::ids(&new), vec!["engine:test".to_string()]);
@@ -642,6 +644,7 @@ pub(crate) mod tests {
             effort: None,
             text: "Hi".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         assert_eq!(super::ids(&odd), vec![format!("engine:hash:{}", hashed("Anna's server"))]);

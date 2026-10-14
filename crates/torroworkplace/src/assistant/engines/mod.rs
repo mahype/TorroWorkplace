@@ -75,7 +75,7 @@ use torro_core::ai::Role;
 use torro_core::i18n::{self, tr, trf};
 use torro_core::paths::AppPaths;
 use torro_ipc::api::Area;
-use torro_ipc::assistant::{Engine, EngineKind, EntryContent};
+use torro_ipc::assistant::{Engine, EngineKind, EntryContent, Mode};
 use torro_ipc::{Key, Response};
 
 use super::data_rule::Place;
@@ -328,10 +328,13 @@ impl Running {
         }
         // Lent for this conversation (task B.2): the core then knows where the agent asks a bot from,
         // and for a bot that runs for the assistant, what both clients may.
-        let lent = host.lend_in(&actor, &self.job.conversation, &self.job.engine, &without);
+        // In the permission mode of the message (issue #132): the key, the tools and the prompt.
+        let mode = self.job.mode;
+        let lent = host.lend_in_mode(&actor, &self.job.conversation, &self.job.engine, &without, mode);
         let Some(lent) = lent else { return Err(no_client()) };
-        let areas = allowed_areas(actor.kind(), &client.rights, &without);
-        self.rights = Some(client.rights.clone());
+        let rights = mode.narrow(&client.rights);
+        let areas = allowed_areas(actor.kind(), &rights, &without, mode);
+        self.rights = Some(rights.clone());
         // The personality and the memory (task C.10); the prompt keeps the notes marked
         // `local_only` from the agent, which runs elsewhere. A bot has its own personality and no
         // memory (task B.1).
@@ -345,7 +348,7 @@ impl Running {
             person: None,
             areas: &areas,
             without: &self.job.without,
-            rights: Some(&client.rights),
+            rights: Some(&rights),
             withheld: NEVER_TO_AGENTS,
             engine: self.agent.name(),
             model: "",
@@ -363,7 +366,7 @@ impl Running {
         // The tools of the areas it does not get are not offered at all (issue #133): the model then
         // never tries them, and the prompt says why.
         let arguments =
-            claude::arguments(&folder.config(), &system, self.job.model.as_deref(), self.job.effort, &without);
+            claude::arguments(&folder.config(), &system, self.job.model.as_deref(), self.job.effort, &without, mode);
         let mut child = start(&command, &arguments, folder.path(), lent.key())
             .await
             .map_err(|err| Failed::Start(detail(&err.to_string(), lent.key(), &[folder.path(), &home])))?;
@@ -470,7 +473,7 @@ impl Running {
         let tool = tools::callable(tool.strip_prefix(claude::TOOL_PREFIX).unwrap_or(tool))?;
         let operation = torro_ipc::api::Operation { command: tool.command, access: tool.command.access };
         let kind = self.job.actor.kind();
-        tools::lack_of(kind, self.rights.as_ref(), operation, &self.job.without, NEVER_TO_AGENTS)
+        tools::lack_in(kind, self.rights.as_ref(), operation, &self.job.without, NEVER_TO_AGENTS, self.job.mode)
     }
 
     /// Adds `content` while this run is the conversation's running answer; `last` ends it.
@@ -484,12 +487,12 @@ impl Running {
     }
 }
 
-/// The areas a client of `kind` (the assistant's or a bot's) has tools in, without `without`: what
-/// the prompt names.
-fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area]) -> Vec<Area> {
+/// The areas a client of `kind` (the assistant's or a bot's) has tools in, without `without` and in
+/// the permission mode `mode`: what the prompt names.
+fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area], mode: Mode) -> Vec<Area> {
     // The memory (task C.10) and the bots (task B.2) are the assistant's own, not areas the person
     // granted.
-    let mut areas: Vec<Area> = tools::allowed_for(kind, Some(rights), without)
+    let mut areas: Vec<Area> = tools::allowed_in(kind, Some(rights), without, mode)
         .iter()
         .map(|tool| tool.command.area)
         .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
