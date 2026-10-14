@@ -1444,6 +1444,122 @@ pub enum Request {
         /// The note's id from `assistant.list_memories`.
         id: String,
     },
+    /// How talking to the assistant by voice stands (task C.9, [`Response::Voice`]): whether the
+    /// listener runs and hears or records, and which of the local programs it needs are found
+    /// (wake word, recording, speech to text, speech). Asks nothing of the microphone. The
+    /// settings themselves are `settings.get_settings` (`voice`).
+    #[serde(rename = "settings.voice_status")]
+    VoiceStatus,
+    /// Records one sentence from the microphone and turns it into text, for the control centre's
+    /// "Say something" ([`Response::Transcript`]): up to 15 seconds, ending at a pause. Nothing is
+    /// sent to the assistant and nothing is kept. Only with the app key: it opens the microphone
+    /// (point 6 of "Was nie nach außen geht" in `docs/api.md`). `unsupported` when the programs
+    /// it needs are missing, `error` when the recording fails.
+    #[serde(rename = "settings.test_voice")]
+    TestVoice,
+}
+
+/// Whether the voice listener (`torroassistant --listen`) runs and what it does (task C.9). The
+/// tray shows it; clients must accept states they do not know.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceState {
+    /// Not running: voice is off, or the listener could not start or stopped.
+    #[default]
+    Off,
+    /// Waiting for the wake word. Nothing is kept: a few seconds stay in memory.
+    Listening,
+    /// The wake word was heard: what is said now is recorded, until a pause.
+    Recording,
+    /// The sentence is turned into text, sent, and the answer shown and spoken.
+    Answering,
+}
+
+/// One part the listener needs, found or not (`settings.voice_status`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VoicePart {
+    /// Hears the wake word: openWakeWord (Python) with the model `hey_torro.onnx`; without it the
+    /// listener finds the wake word with speech to text, which costs more computing time.
+    WakeWord,
+    /// Takes the sound from the microphone: `parec`, `arecord`, `rec` (SoX) or `ffmpeg`.
+    Recorder,
+    /// Turns speech into text: whisper.cpp (`whisper-cli`) with a model (`ggml-base.bin`).
+    SpeechToText,
+    /// Speaks answers: Piper with a voice (`*.onnx`) and a program that plays sound.
+    Speech,
+}
+
+/// What is missing for a [`VoicePart`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceMissing {
+    /// The program is not installed (not on `PATH`).
+    Program,
+    /// The program is there, its model or voice file is not.
+    Model,
+    /// Speech only: Piper is there, but no program to play sound.
+    Player,
+}
+
+/// One [`VoicePart`] as the listener would use it now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VoiceProgram {
+    pub part: VoicePart,
+    /// The program found (`whisper-cli`, `piper`, `openWakeWord`), as its file name; `None` when
+    /// none is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub program: Option<String>,
+    /// What keeps the part from working; `None` when it works.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing: Option<VoiceMissing>,
+}
+
+impl VoiceProgram {
+    /// Whether the part works as found.
+    pub fn works(&self) -> bool {
+        self.missing.is_none()
+    }
+}
+
+/// How talking by voice stands ([`Request::VoiceStatus`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct VoiceStatus {
+    /// What the listener does now.
+    pub listener: VoiceState,
+    /// Whether the assistant app (`torroassistant`), which listens, is installed. Without it
+    /// nothing else is known: [`VoiceStatus::programs`] is empty.
+    pub installed: bool,
+    /// Why the listener is not running although voice is on (it stopped, the app is missing),
+    /// for people; `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// Every [`VoicePart`] in order: wake word, recorder, speech to text, speech.
+    #[serde(default)]
+    pub programs: Vec<VoiceProgram>,
+    /// The microphones the recording program can name, for the setting `microphone`; empty when
+    /// they cannot be listed (then only the system's default is offered).
+    #[serde(default)]
+    pub microphones: Vec<String>,
+    /// The folder where the listener looks for models and voices (`ggml-*.bin`, `*.onnx`,
+    /// `hey_torro.onnx`) when the settings name none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+}
+
+impl VoiceStatus {
+    /// The part `part`, if it was looked at.
+    pub fn program(&self, part: VoicePart) -> Option<&VoiceProgram> {
+        self.programs.iter().find(|program| program.part == part)
+    }
+
+    /// Whether the listener can run: it records and turns speech into text (the wake word falls
+    /// back to speech to text; speaking is optional).
+    pub fn can_listen(&self) -> bool {
+        [VoicePart::Recorder, VoicePart::SpeechToText]
+            .into_iter()
+            .all(|part| self.program(part).is_some_and(VoiceProgram::works))
+    }
 }
 
 /// A setting [`Request::SetSetting`] can change, with the `value` it takes.
@@ -1482,6 +1598,24 @@ pub enum SettingKey {
     /// to 3650 (30 unless changed), or `"forever"`. Pinned conversations are always kept
     /// (`torro_core::settings::Retention`).
     AssistantRetention,
+    /// Talking to the assistant by voice (task C.9): `true` or `false`. Only the app key may send
+    /// `true` – a person in the control centre or the tray (point 6 of "Was nie nach außen geht",
+    /// `docs/api.md`); a client gets `forbidden`, whatever its rights. Any client allowed to
+    /// change settings may send `false`. The core starts or stops the listener.
+    VoiceEnabled,
+    /// The phrase that wakes the assistant: only `"hey torro"` for now.
+    WakeWord,
+    /// The microphone to listen with, by the name `settings.voice_status` lists; `""` (or `null`)
+    /// for the system's default.
+    Microphone,
+    /// Speak the answers as well as showing them: `true` (the default) or `false`.
+    SpeakAnswers,
+    /// The whisper.cpp model, an absolute path to a `.bin` file; `""` (or `null`) for the first one in the
+    /// voice folder (`settings.voice_status`).
+    SttModel,
+    /// The Piper voice, an absolute path to an `.onnx` file; `""` (or `null`) for the first one in the voice
+    /// folder.
+    Voice,
 }
 
 /// The core's answer to one [`Request`].
@@ -1779,6 +1913,14 @@ pub enum Response {
     Conversation {
         conversation: ConversationSummary,
         entries: Vec<Entry>,
+    },
+    /// How talking by voice stands ([`Request::VoiceStatus`]).
+    Voice {
+        voice: VoiceStatus,
+    },
+    /// What was said, as text ([`Request::TestVoice`]); empty when nothing was understood.
+    Transcript {
+        text: String,
     },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///

@@ -103,7 +103,7 @@ pub enum Open {
     Inbox,
     /// The inbox page without any rules: the group says where they come from.
     InboxEmpty,
-    /// General › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
+    /// Appearance › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
     Design,
     /// The Assistant page with the demo's assistant (task C.6): rights of its own, its engines and
     /// how long it keeps conversations.
@@ -195,8 +195,8 @@ impl Open {
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|workspaces|apps|assistant|agents|approvals|inbox|general`: the page
-///   to start on. The states of `--open` that belong to a page choose that page themselves. Other
+/// - `--section overview|accounts|workspaces|apps|assistant|agents|approvals|inbox|appearance|general`:
+///   the page to start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section assistant` from the assistant's
 ///   chat when it may not use something, task C.6).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
@@ -303,7 +303,7 @@ impl Launch {
     }
 }
 
-/// The design packs of `--demo` (General › Design, task L.4), in memory like all its data: the
+/// The design packs of `--demo` (Appearance › Design, task L.4), in memory like all its data: the
 /// standard; "Harbor" (teal accent, cool surfaces) and "Paper" (warm light surfaces, blue accent),
 /// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. The
 /// samples use Inter, the only font the demo has without a folder.
@@ -756,6 +756,29 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     ]
 }
 
+/// The voice status of the demo: openWakeWord without its model, `parec`, whisper.cpp with a model,
+/// Piper without a voice; two microphones.
+fn demo_voice() -> torro_ipc::VoiceStatus {
+    use torro_ipc::{VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
+    let part = |part, program: &str, missing| VoiceProgram { part, program: Some(program.into()), missing };
+    VoiceStatus {
+        listener: VoiceState::Off,
+        installed: true,
+        problem: None,
+        programs: vec![
+            part(VoicePart::WakeWord, "openWakeWord", Some(VoiceMissing::Model)),
+            part(VoicePart::Recorder, "parec", None),
+            part(VoicePart::SpeechToText, "whisper-cli", None),
+            part(VoicePart::Speech, "piper", Some(VoiceMissing::Model)),
+        ],
+        microphones: vec![
+            "alsa_input.pci-0000_00_1f.3.analog-stereo".into(),
+            "alsa_input.usb-RODE_NT-USB-00.analog-stereo".into(),
+        ],
+        folder: Some("~/.local/share/torroassistant/voice".into()),
+    }
+}
+
 /// The sample answer `--demo` gives to a request whose answer is a state of its own: an agent's
 /// activity, a new key and a new client of "Connect agent" (made-up keys, never working ones; the
 /// new client is not added to the list). Every other request gets none and is dropped, so the
@@ -818,6 +841,10 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         // TorroMail (task M7.4): four accounts, one of them connected already; Fastmail's keychain
         // entry cannot be read, so its take-over fails and offers the password field.
         Request::TorroMailAccounts => Some(Response::TorroMailAccounts { accounts: demo_torromail(data) }),
+        // Voice (task C.9): every program found but Piper's voice, two microphones; the test hears
+        // a sentence. Nothing records.
+        Request::VoiceStatus => Some(Response::Voice { voice: demo_voice() }),
+        Request::TestVoice => Some(Response::Transcript { text: "What is on my calendar today?".into() }),
         Request::ImportTorroMailAccount { id } if id == DEMO_LOCKED => Some(Response::Error {
             code: "error".into(),
             message: tr("The password could not be read from TorroMail. Enter it to connect.").into(),
@@ -1166,7 +1193,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, workspaces, apps, assistant, agents, approvals, inbox, general"
+                "valid values: overview, accounts, workspaces, apps, assistant, agents, approvals, inbox, appearance, general"
             ),
             "{err}"
         );

@@ -401,7 +401,15 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
 
 6. **Mikrofon einschalten** (Weckwort und Sprache des Assistenten, [assistent.md](assistent.md)): nur
    mit dem App-Schlüssel, also nur durch einen Menschen in der Steuerzentrale oder im Tray. Kein
-   Agent und kein Modell kann das Lauschen einschalten; ausschalten darf jeder.
+   Agent und kein Modell kann das Lauschen einschalten; ausschalten darf jeder, der Einstellungen
+   ändern darf (Admin-Recht in `settings`, mit Freigabe). Eingeschaltet wird
+   mit `settings.set_setting` und `voice_enabled: true`; weil hier der Wert entscheidet und nicht
+   der Befehl, setzt `Rights::allows_request` (`Request::kept_for_people`) es durch: Ein Client
+   bekommt `forbidden`, auch mit Admin-Rechten, ebenso für `settings.update_settings`, das die
+   Sprache einschalten würde (Tests `the_microphone_is_switched_on_by_people_only` in `torro-ipc` und
+   `only_people_switch_the_microphone_on_and_agents_may_switch_it_off` im Kern). `voice_enabled:
+   false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest der Steuerzentrale
+   (`settings.test_voice`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`).
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

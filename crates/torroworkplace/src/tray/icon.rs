@@ -7,11 +7,16 @@
 //! size, so one description serves every pixmap size, and each pixel is anti-aliased by
 //! supersampling. Linux gets ARGB32 pixmaps ([`Look::argb32`], ksni), macOS and Windows an RGBA
 //! image ([`Look::rgba`], tray-icon).
+//!
+//! While the voice listener runs (task C.9) the icon carries a [`Mark`] in its lower right corner,
+//! cut free from the symbol: a ring while it waits for the wake word, a solid dot while it records.
+//! Shape, not colour, tells them apart, since macOS tints the whole image.
 
 use std::path::Path;
 
 use resvg::{tiny_skia, usvg};
 use torro_core::design::{self, Design, Rgba, STANDARD_ID};
+use torro_ipc::VoiceState;
 
 /// Pixmap sizes handed to the tray. The desktop picks the one that fits its panel.
 #[cfg(any(target_os = "linux", test))]
@@ -31,6 +36,52 @@ const SECOND: f32 = MARGIN + TILE + GAP;
 const TILES: [(f32, f32); 4] = [(MARGIN, MARGIN), (SECOND, MARGIN), (MARGIN, SECOND), (SECOND, SECOND)];
 /// Samples per pixel side. 4×4 gives 16 coverage levels for the edges.
 const SAMPLES: u32 = 4;
+/// Centre of the voice mark, as a fraction of the icon size (both axes).
+const MARK_CENTRE: f32 = 0.78;
+/// Radius of the voice mark.
+const MARK_RADIUS: f32 = 0.2;
+/// Inner radius of the ring while listening.
+const MARK_HOLE: f32 = 0.11;
+/// Radius of the space cut free around the mark, so it stands apart from the symbol.
+const MARK_CLEARING: f32 = 0.29;
+
+/// What the icon marks besides the symbol: the voice listener (task C.9).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mark {
+    /// Voice is off: the symbol alone.
+    #[default]
+    None,
+    /// Waiting for the wake word, or answering: a ring.
+    Listening,
+    /// Recording what is said: a solid dot.
+    Recording,
+}
+
+impl Mark {
+    /// The mark for what the listener does.
+    pub fn of(state: VoiceState) -> Mark {
+        match state {
+            VoiceState::Off => Mark::None,
+            VoiceState::Listening | VoiceState::Answering => Mark::Listening,
+            VoiceState::Recording => Mark::Recording,
+        }
+    }
+
+    /// Whether a point (in fractions of the icon size) lies on the mark.
+    fn covers(self, px: f32, py: f32) -> bool {
+        let distance = ((px - MARK_CENTRE).powi(2) + (py - MARK_CENTRE).powi(2)).sqrt();
+        match self {
+            Mark::None => false,
+            Mark::Listening => (MARK_HOLE..=MARK_RADIUS).contains(&distance),
+            Mark::Recording => distance <= MARK_RADIUS,
+        }
+    }
+
+    /// Whether a point lies in the space cut free around the mark.
+    fn clears(self, px: f32, py: f32) -> bool {
+        self != Mark::None && ((px - MARK_CENTRE).powi(2) + (py - MARK_CENTRE).powi(2)).sqrt() <= MARK_CLEARING
+    }
+}
 
 /// What the tray icon looks like under one design: the pack's symbol, or the grid in its accent.
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +92,8 @@ pub struct Look {
     /// The colour of the grid: the design's dark accent. The tray has no light or dark of its
     /// own to follow (macOS tints the image anyway, it is a template there).
     color: [u8; 3],
+    /// The voice mark on top ([`Look::marked`]).
+    mark: Mark,
 }
 
 impl Look {
@@ -53,7 +106,7 @@ impl Look {
     /// the pack was checked) gives the grid.
     pub fn of(design: &Design) -> Look {
         let svg = design.logo.tray.as_deref().and_then(|path| std::fs::read(path).ok());
-        Look { svg, color: rgb8(design.colors.dark.accent) }
+        Look { svg, color: rgb8(design.colors.dark.accent), mark: Mark::None }
     }
 
     /// The icon for the design the settings name (`Settings::design`, as `Snapshot::design`
@@ -72,6 +125,11 @@ impl Look {
             return Look::standard();
         }
         design::load(dir, id).map(|design| Look::of(&design)).unwrap_or_else(|_| Look::standard())
+    }
+
+    /// The icon with `mark` in its corner.
+    pub fn marked(self, mark: Mark) -> Look {
+        Look { mark, ..self }
     }
 
     /// The ARGB32 pixmap of the icon, `size` × `size` pixels, as ksni expects it: four bytes per
@@ -106,11 +164,39 @@ impl Look {
     /// The icon as `size` × `size` straight (not premultiplied) RGBA pixels, row by row. An SVG
     /// that does not render falls back to the grid, so the tray never shows an empty slot.
     fn pixels(&self, size: u32) -> Vec<[u8; 4]> {
-        if let Some(pixels) = self.svg.as_deref().and_then(|svg| svg_pixels(svg, size)) {
-            return pixels;
+        let symbol = match self.svg.as_deref().and_then(|svg| svg_pixels(svg, size)) {
+            Some(pixels) => pixels,
+            None => {
+                let [r, g, b] = self.color;
+                (0..size * size).map(|i| [r, g, b, coverage(i % size, i / size, size)]).collect()
+            }
+        };
+        if self.mark == Mark::None {
+            return symbol;
         }
+        symbol
+            .into_iter()
+            .enumerate()
+            .map(|(i, pixel)| self.with_mark(pixel, i as u32 % size, i as u32 / size, size))
+            .collect()
+    }
+
+    /// `pixel` at `(x, y)` with the space around the mark cut free and the mark drawn over it in
+    /// the symbol's colour (straight alpha, "over").
+    fn with_mark(&self, pixel: [u8; 4], x: u32, y: u32, size: u32) -> [u8; 4] {
+        let mark = self.mark;
+        let cleared = 1.0 - share(x, y, size, |px, py| mark.clears(px, py) && !mark.covers(px, py));
+        let dot = share(x, y, size, |px, py| mark.covers(px, py));
+        let below = f32::from(pixel[3]) / 255.0 * cleared;
+        let alpha = dot + below * (1.0 - dot);
+        if alpha <= 0.0 {
+            return [0, 0, 0, 0];
+        }
+        let blend = |top: u8, under: u8| {
+            ((f32::from(top) * dot + f32::from(under) * below * (1.0 - dot)) / alpha).round().clamp(0.0, 255.0) as u8
+        };
         let [r, g, b] = self.color;
-        (0..size * size).map(|i| [r, g, b, coverage(i % size, i / size, size)]).collect()
+        [blend(r, pixel[0]), blend(g, pixel[1]), blend(b, pixel[2]), (alpha * 255.0).round() as u8]
     }
 }
 
@@ -143,6 +229,23 @@ fn svg_pixels(svg: &[u8], size: u32) -> Option<Vec<[u8; 4]>> {
             })
             .collect(),
     )
+}
+
+/// The share (0 to 1) of the samples of pixel `(x, y)` for which `inside` holds, the point given in
+/// fractions of the icon size.
+fn share(x: u32, y: u32, size: u32, inside: impl Fn(f32, f32) -> bool) -> f32 {
+    let size = size as f32;
+    let mut count = 0;
+    for sy in 0..SAMPLES {
+        for sx in 0..SAMPLES {
+            let px = (x as f32 + (sx as f32 + 0.5) / SAMPLES as f32) / size;
+            let py = (y as f32 + (sy as f32 + 0.5) / SAMPLES as f32) / size;
+            if inside(px, py) {
+                count += 1;
+            }
+        }
+    }
+    count as f32 / (SAMPLES * SAMPLES) as f32
 }
 
 /// Alpha of one pixel: the share of its samples that lie inside the grid.
@@ -313,7 +416,28 @@ mod tests {
 
     #[test]
     fn an_svg_that_does_not_render_falls_back_to_the_grid() {
-        let broken = Look { svg: Some(b"<svg".to_vec()), color: [TORRO_RED.0, TORRO_RED.1, TORRO_RED.2] };
+        let broken =
+            Look { svg: Some(b"<svg".to_vec()), color: [TORRO_RED.0, TORRO_RED.1, TORRO_RED.2], mark: Mark::None };
         assert_eq!(broken.argb32(22), argb32(22));
+    }
+
+    /// Task C.9: a ring while listening, a dot while recording, cut free from the grid; off, the
+    /// icon is as before.
+    #[test]
+    fn the_voice_mark_shows_listening_and_recording() {
+        assert_eq!(Look::standard().marked(Mark::of(VoiceState::Off)).argb32(32), argb32(32));
+        let size = 32;
+        let centre = (MARK_CENTRE * size as f32) as u32;
+        let ring = (MARK_CENTRE * size as f32 + (MARK_HOLE + MARK_RADIUS) / 2.0 * size as f32) as u32;
+        let clearing = ((MARK_CENTRE - (MARK_RADIUS + MARK_CLEARING) / 2.0) * size as f32) as u32;
+        let alpha = |look: &Look, x, y| pixel(&look.argb32(size), size, x, y)[0];
+        let listening = Look::standard().marked(Mark::of(VoiceState::Listening));
+        assert_eq!(alpha(&listening, centre, centre), 0, "the ring's hole");
+        assert_eq!(alpha(&listening, ring, centre), 255, "the ring");
+        assert_eq!(alpha(&listening, clearing, centre), 0, "cut free from the grid");
+        assert_eq!(Mark::of(VoiceState::Answering), Mark::Listening);
+        let recording = Look::standard().marked(Mark::of(VoiceState::Recording));
+        assert_eq!(pixel(&recording.argb32(size), size, centre, centre), [255, TORRO_RED.0, TORRO_RED.1, TORRO_RED.2]);
+        assert_eq!(alpha(&recording, size / 4, size / 4), 255, "the rest of the grid stays");
     }
 }

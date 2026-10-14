@@ -255,10 +255,13 @@ async fn serve(shows: Shows) -> Result<(), String> {
     // refreshes the menu.
     let approval_changes = core.approval_changes();
     let inbox_changes = core.inbox().changes();
+    // The tray shows whether the voice listener listens or records (task C.9).
+    let voice_changes = core.voice_changes();
     let front = Front::start(&daemon, shows, core.snapshot().await).await?;
     tokio::spawn(refresher(Arc::clone(&core), refresh_rx, front.clone()));
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(inbox_changes, refresh_tx.clone()));
+    tokio::spawn(watch_inbox(voice_changes, refresh_tx.clone()));
 
     match core.events().await {
         Ok(mut events) => {
@@ -531,6 +534,8 @@ fn describe(request: &Request) -> String {
         Request::Remember { replaces: Some(id), .. } => format!("change note {id}"),
         Request::Remember { .. } => "remember a note".into(),
         Request::Forget { id } => format!("forget note {id}"),
+        Request::VoiceStatus => "voice status".into(),
+        Request::TestVoice => "voice test".into(),
     }
 }
 

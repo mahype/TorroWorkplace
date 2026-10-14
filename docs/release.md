@@ -50,7 +50,7 @@ Gründe:
 |---|---|---|
 | 1 | Maintainer | `version` in `[workspace.package]` der Wurzel-`Cargo.toml` erhöhen (heute `0.0.1`), `cargo check` (aktualisiert `Cargo.lock`), CHANGELOG/Notizen nachziehen. |
 | 2 | Maintainer | `dist plan --tag v0.1.0` zeigt, was gebaut wird. Muss ohne Fehler laufen; ein Tag, der nicht zur Version passt, bricht ab. |
-| 3 | Maintainer | Commit nach `main` (per PR, CI grün), dann `git tag v0.1.0 && git push origin v0.1.0`. Ein Tag mit Suffix (`v0.1.0-rc.1`) wird als Prerelease markiert und aktualisiert Tap und AUR nicht. |
+| 3 | Maintainer | Commit nach `main` (per PR, `scripts/ci-local.sh` grün), dann `git tag v0.1.0 && git push origin v0.1.0`. Ein Tag mit Suffix (`v0.1.0-rc.1`) wird als Prerelease markiert und aktualisiert Tap und AUR nicht. |
 | 4 | CI `plan` | Liest den Tag, entscheidet, welche Apps und Ziele gebaut werden. |
 | 5 | CI `build-local-artifacts` | Baut je Ziel `.tar.xz` (Windows `.zip`) mit Binary, Lizenzen, README: macOS arm64 (`macos-14`), macOS x86_64 (`macos-15-intel`), Linux x86_64 (`ubuntu-22.04`), Linux arm64 (`ubuntu-22.04-arm`), Windows (`windows-2022`). |
 | 6 | CI `build-global-artifacts` | Erzeugt Shell-/PowerShell-Installer je App, Homebrew-Formeln, `sha256.sum`, `source.tar.gz`. |
@@ -62,8 +62,13 @@ Wo die Artefakte landen: GitHub Release `v0.1.0` im Repository (Archive, Install
 Tap `mahype/homebrew-torro` (`Formula/*.rb`); AUR-Repositories `torroworkplace-bin`, `torrocalendar-bin`,
 `torrotasks-bin`, `torro-suite`.
 
-Pull Requests laufen nur bis `plan` (`pr-run-mode = "plan"`), das ist billig und fängt eine kaputte
-`dist`-Konfiguration früh.
+Pull Requests und Merges starten keinen Workflow (`pr-run-mode = "skip"`, `ci.yml` nur bei Tags und von
+Hand): Jede Minute auf GitHub Actions kostet Geld, macOS- und Windows-Runner ein Vielfaches. Die Prüfungen
+laufen lokal mit `scripts/ci-local.sh`, automatisch über die Git-Hooks in `.githooks/`. Ein Tag startet das
+Release, und das ruft zuerst `ci.yml` auf (`plan-jobs`: clippy, Design-Check und Tests auf Linux, macOS,
+Windows). Schlägt eine Prüfung fehl, baut es nichts und veröffentlicht nichts; `release.yml` trägt dafür eine
+Handänderung am Job `host` (`allow-dirty = ["ci"]`, nach `dist generate` wieder einsetzen). Vor einem Tag
+lässt sich die CI von Hand starten: `gh workflow run CI --ref main`. Eine geänderte `dist`-Konfiguration prüft `dist plan` lokal.
 
 ## Pro Betriebssystem
 

@@ -1096,7 +1096,9 @@ impl PimService {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
-            | Request::OpenChatWindow { .. } => return None,
+            | Request::OpenChatWindow { .. }
+            | Request::VoiceStatus
+            | Request::TestVoice => return None,
             // No collection: the assistant's profile and memory are its own (task C.10).
             Request::GetProfile
             | Request::UpdateProfile { .. }

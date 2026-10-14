@@ -96,11 +96,14 @@ pub enum Section {
     Approvals,
     /// How loud the inbox is and its lasting rules (task E3.7).
     Inbox,
+    /// Light or dark, the design pack and the zoom of all apps (task S.14). Opened directly with
+    /// `torroworkplace ui --section appearance`.
+    Appearance,
     General,
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::Overview,
         Section::Accounts,
         Section::Workspaces,
@@ -109,6 +112,7 @@ impl Section {
         Section::Agents,
         Section::Approvals,
         Section::Inbox,
+        Section::Appearance,
         Section::General,
     ];
 
@@ -128,6 +132,7 @@ impl Section {
             Section::Agents => tr("Agents & API"),
             Section::Approvals => tr("Approvals"),
             Section::Inbox => tr("Inbox"),
+            Section::Appearance => tr("Appearance"),
             Section::General => tr("General"),
         }
     }
@@ -148,6 +153,8 @@ impl Section {
             Section::Approvals => Icon::UserCheck,
             // The same tray as the Inbox app's "For me".
             Section::Inbox => Icon::Inbox,
+            // Light and dark: the suite has no palette icon; the sun stands for how it looks.
+            Section::Appearance => Icon::Sun,
             Section::General => Icon::Settings,
         }
     }
@@ -163,6 +170,7 @@ impl Section {
             Section::Agents => "agents",
             Section::Approvals => "approvals",
             Section::Inbox => "inbox",
+            Section::Appearance => "appearance",
             Section::General => "general",
         }
     }
@@ -218,7 +226,7 @@ pub enum Action {
     OpenUrl(String),
     /// Jump to another section.
     Select(Section),
-    /// Zoom every window of the suite one step (General › Zoom). Goes through the window's own
+    /// Zoom every window of the suite one step (Appearance › Zoom). Goes through the window's own
     /// zoom, so it applies at once and, with `--demo`, stays in the process.
     Zoom(zoom::Step),
     /// Put this text on the clipboard (a new key, task A.6).
@@ -226,10 +234,10 @@ pub enum Action {
     /// Find, connect or disconnect a coding agent's MCP entry (task A.7) on a blocking thread;
     /// the outcome goes to the agents page. The demo answers it itself and touches nothing.
     Setup(crate::client_setup::Job),
-    /// List the design packs (`settings.list_designs`) for General › Design, with the look of each
+    /// List the design packs (`settings.list_designs`) for Appearance › Design, with the look of each
     /// read from its folder ([`general::Pack::new`]). The demo lists its sample packs.
     ListDesigns,
-    /// Draw with the design pack of this id (General › Design): this window at once, then saved
+    /// Draw with the design pack of this id (Appearance › Design): this window at once, then saved
     /// (`settings.set_setting design`), which the other windows follow within two seconds. The
     /// demo only draws, with its sample pack.
     Design(String),
@@ -301,14 +309,14 @@ pub struct Ui {
     /// The stored appearance. Kept apart from `data` so a core that does not answer for a moment
     /// (an empty `Data`) does not flip the colours.
     appearance: Appearance,
-    /// The suite-wide zoom (Ctrl + Plus / Minus / 0 and General › Zoom), the factor of the whole
-    /// window. `data.settings.zoom` follows it, so the General page shows the level the window
+    /// The suite-wide zoom (Ctrl + Plus / Minus / 0 and Appearance › Zoom), the factor of the whole
+    /// window. `data.settings.zoom` follows it, so the Appearance page shows the level the window
     /// uses, also while a change is being saved.
     zoom: Zoom,
     /// Follows the design pack of `data.settings` (task L.3): the page reloads the settings, so
     /// the design comes with them instead of a request of its own.
     design: Follow,
-    /// The design pack chosen on the General page while its saving is on its way (task L.4). A
+    /// The design pack chosen on the Appearance page while its saving is on its way (task L.4). A
     /// reload that left before the save still carries the old one; it must not switch back.
     pending_design: Option<String>,
     data: Data,
@@ -359,7 +367,7 @@ pub enum Message {
     Zoom(zoom::Message),
     /// The fonts of a new design pack are loaded.
     Design(design::Message),
-    /// The design packs for General › Design ([`Action::ListDesigns`]); `Err` when the core did
+    /// The design packs for Appearance › Design ([`Action::ListDesigns`]); `Err` when the core did
     /// not list them.
     Designs(Result<Vec<general::Pack>, String>),
     /// Escape: close the open menu, or else whatever dialog the current page has open.
@@ -428,7 +436,7 @@ impl Ui {
             // No service to ask: the sample data is there from the first frame.
             ui.data = launch::demo_data();
             ui.appearance = ui.data.settings.appearance;
-            // The check mark of General › Design at the pack `--design` draws with.
+            // The check mark of Appearance › Design at the pack `--design` draws with.
             if let Some(id) = ui.launch.design.clone() {
                 ui.data.settings.design = id;
             }
@@ -437,8 +445,8 @@ impl Ui {
         if let Some(open) = open {
             ui.open(open);
         }
-        // A start on the General page lists the design packs, as opening it does.
-        let designs = match ui.section == Section::General && general::unlisted(&ui.general) {
+        // A start on the Appearance page lists the design packs, as opening it does.
+        let designs = match ui.section == Section::Appearance && general::unlisted(&ui.general) {
             true => ui.perform(Action::ListDesigns),
             false => Task::none(),
         };
@@ -621,7 +629,7 @@ impl Ui {
                 messages
             }
             // The design packs: the demo's sample packs, one of them broken.
-            Open::Design => vec![Message::Select(Section::General)],
+            Open::Design => vec![Message::Select(Section::Appearance)],
             // No rules, so the rules group says where they come from.
             Open::InboxEmpty => {
                 self.data.rules.clear();
@@ -697,7 +705,7 @@ impl Ui {
                 self.select(section);
                 self.notice = None;
                 // The packs may have changed in the folder since the page was last open.
-                if section == Section::General { Action::ListDesigns } else { Action::None }
+                if section == Section::Appearance { Action::ListDesigns } else { Action::None }
             }
             Message::ToggleMenu(menu) => {
                 self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
@@ -900,7 +908,7 @@ impl Ui {
             }
             Action::Select(section) => {
                 self.select(section);
-                if section == Section::General {
+                if section == Section::Appearance {
                     return self.perform(Action::ListDesigns);
                 }
                 Task::none()
@@ -942,7 +950,7 @@ impl Ui {
     }
 
     /// Hands `message` to the window's zoom. The window keeps its pixels, so the size kept for
-    /// `update` changes with the zoom; the General page shows the new level.
+    /// `update` changes with the zoom; the Appearance page shows the new level.
     fn zoom(&mut self, message: zoom::Message) -> Task<Message> {
         let before = self.zoom.factor();
         let task = self.zoom.update(message).map(Message::Zoom);
@@ -1155,6 +1163,7 @@ impl Ui {
             Section::Agents => agents::view(&self.agents, &self.data).map(Message::Agents),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
             Section::Inbox => inbox::view(&self.inbox, &self.data).map(Message::Inbox),
+            Section::Appearance => general::appearance(&self.general, &self.data).map(Message::General),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
@@ -1558,12 +1567,12 @@ mod tests {
         assert!(design::active().is_standard(), "the parameter beats the stored design");
     }
 
-    /// General › Design (task L.4): opening the page lists the packs; the demo has its samples,
+    /// Appearance › Design (task L.4): opening the page lists the packs; the demo has its samples,
     /// one of them broken.
     #[test]
     fn the_design_state_lists_the_demo_packs() {
         let demo = started(&["--demo", "--open", "design"]);
-        assert_eq!(demo.section, Section::General);
+        assert_eq!(demo.section, Section::Appearance);
         let ids: Vec<&str> = ["torro", "harbor", "paper", "neon"]
             .into_iter()
             .filter(|id| general::design_of(&demo.general, id).is_some())
@@ -1572,11 +1581,12 @@ mod tests {
 
         let mut real = ui(Section::Overview);
         assert!(general::unlisted(&real.general));
-        assert!(real.update(Message::Select(Section::General)).units() > 0, "opening the page asks the core");
+        assert!(real.update(Message::Select(Section::Appearance)).units() > 0, "opening the page asks the core");
+        assert!(real.update(Message::Select(Section::General)).units() == 0, "General no longer shows them");
         assert!(real.update(Message::Select(Section::Accounts)).units() == 0, "other pages do not");
     }
 
-    /// A design chosen on the General page is drawn in this window at once and saved; a reload that
+    /// A design chosen on the Appearance page is drawn in this window at once and saved; a reload that
     /// left before the save does not switch back, a refusal does.
     #[test]
     fn a_chosen_design_is_drawn_at_once_and_saved() {
@@ -1695,6 +1705,8 @@ mod tests {
             }
         }
         assert!(Section::nav().all(|section| section != Section::General), "General sits at the foot");
+        assert!(Section::nav().any(|section| section == Section::Appearance), "Appearance is in plain sight");
+        assert_eq!(Section::from_arg("appearance"), Some(Section::Appearance));
     }
 
     #[test]
