@@ -565,6 +565,8 @@ Darstellung in einem eigenen Fenster mit System-Webview, externe Bilder werden i
 ```
 M8.1 ─┬─ M8.2
       └─ M8.3   (M8.3 braucht das Fenster aus M8.2 zum Öffnen, die Demo-Daten nicht)
+
+M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es entschieden ist)
 ```
 
 ### M8.1 HTML im Kern: aufheben, bereinigen, herausgeben
@@ -652,6 +654,43 @@ M8.1 ─┬─ M8.2
 - **Abnahme:** Sichtprüfung mit `--demo` (Breit/Mittel/Schmal, hell/dunkel); Tests der Nachrichten: `v` und
   `Enter` starten das Fenster nur bei Mails mit HTML, ohne HTML bleibt alles wie bisher; Übersetzung „View as HTML“.
   Protokoll ohne Inhalte (keine Kennung im Klartext neben Betreff oder Absender).
+
+### M8.4 Versuch: HTML-Mail mit Blitz direkt in Iced zeichnen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** nichts (nutzt eigene Beispiel-Mails, nicht M8.1) · **Dateien:** neu
+  `spikes/blitz-iced/` (eigenes Cargo-Projekt: `Cargo.toml`, `src/main.rs`, `fixtures/*.html`), `Cargo.toml` der
+  Wurzel (nur `exclude = ["spikes/*"]`), `docs/research.md` (neuer Abschnitt mit dem Ergebnis)
+- **Warum:** Iced zeichnet kein HTML, deshalb plant M8.2 ein eigenes Fenster mit System-Webview. Blitz (Dioxus:
+  Stylo für CSS, Taffy für Layout, Vello zum Zeichnen) stellt HTML und CSS ohne JavaScript und ohne Webview dar.
+  Trägt das, kann die Mail als Widget im Iced-Fenster stehen: kein zweites Fenster, keine Grenze unter Wayland,
+  keine WebKitGTK-Pakete, kein JavaScript, das abzuschalten wäre.
+- **Versuch, kein Produktcode:** Das Projekt liegt außerhalb des Workspace (`exclude`), damit seine Abhängigkeiten
+  (Blitz-Crates, ggf. andere `wgpu`-Version) weder Workspace noch CI berühren. Workspace-Regeln gelten sinngemäß
+  (kein `unsafe`, kein `unwrap()`), Tests sind nicht nötig. Am Ende wird nichts davon in `crates/` übernommen; das
+  wäre eine eigene Aufgabe nach der Entscheidung.
+- Ein kleines Iced-Programm (gleiche Iced-Version wie der Workspace) zeigt links eine Liste der Beispiel-Mails,
+  rechts die gewählte Mail, gezeichnet mit Blitz. Zwei Wege probieren, den ersten zuerst:
+  1. **Gemeinsame GPU:** Blitz/Vello zeichnet über Iceds `shader`-Widget in dieselbe `wgpu`-Instanz. Vorher
+     prüfen, ob die `wgpu`-Versionen von Iced und Vello zusammenpassen; wenn nicht, notieren und Weg 2.
+  2. **Bild:** Blitz zeichnet per CPU (Vello CPU bzw. `anyrender`-CPU-Backend) in ein Pixelbild, Iced zeigt es
+     als `image`; neu zeichnen bei Größenänderung und Scrollen.
+- Mindestens: Breite folgt dem Fenster (Neu-Layout beim Ziehen), Scrollen, Klick auf Link wird erkannt (URL nur
+  ausgeben, nicht öffnen), externe Bilder werden geladen (Blitz-Netzwerk), `cid:`-Bilder aus einer Datei neben der
+  Fixture, Text markieren und kopieren (wenn Blitz es kann, sonst notieren), hell/dunkel.
+- **Beispiel-Mails** unter `fixtures/`, nur selbst gebaute oder öffentlich zugängliche Newsletter, **keine echten
+  privaten Mails**: Newsletter mit verschachtelten Tabellen und Bildern, Rechnung eines Shops, typische
+  Outlook-Mail (`<o:p>`, MSO-Kommentare, `font`), Mail mit `<style>`-Block und Media Queries, schlichte Textmail
+  als `<pre>`, sehr lange Mail (über 1 MiB). Jeweils mit `ammonia` wie in M8.1 bereinigt, damit der Versuch das
+  HTML sieht, das später wirklich ankommt.
+- **API/MCP:** keine. Ein Versuch ohne Funktion für Nutzer; er nutzt keinen Request und ändert keinen. Kommt Blitz
+  später ins Produkt, ändert sich nur die Oberfläche von M8.2/M8.3, die Befehle aus M8.1 bleiben.
+- **Abnahme:** Abschnitt „Blitz in Iced (Versuch M8.4)“ in `docs/research.md` mit: welcher Weg lief, Versionen
+  (Iced, Blitz, `wgpu`, Vello), Screenshots je Beispiel-Mail neben derselben Mail in einem Browser, Zeit für das
+  erste Zeichnen und beim Neu-Layout (grob, auf dem eigenen Rechner), Größe des Release-Binaries mit und ohne
+  Blitz, was fehlt oder falsch aussieht, Lizenzen der neuen Abhängigkeiten (Stylo ist MPL-2.0) und eine klare
+  Empfehlung: **Blitz statt `torromailview`**, **erst später** oder **nicht**. Läuft der Versuch auf macOS und
+  Linux (Hyprland)? Windows nur, wenn es ohne Umwege geht. Entschieden wird danach mit dem Menschen, nicht in
+  dieser Aufgabe.
 
 ### Später zu M8
 - Antworten und Weiterleiten mit dem HTML der Vorlage (zitiert als HTML), Schreiben mit einfacher Formatierung.
