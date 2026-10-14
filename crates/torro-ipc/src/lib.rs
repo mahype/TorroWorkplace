@@ -58,7 +58,7 @@ use torro_setups::restore::RestoreReport;
 use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
-use crate::mail::{Delivery, MailSource, MoveTarget};
+use crate::mail::{Delivery, IncompleteReason, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget};
 
 /// Where the core listens; [`client`] and [`server`] take this path.
 ///
@@ -92,6 +92,11 @@ pub fn app_key_path(socket: &Path) -> PathBuf {
         return AppPaths::for_app(AppId::WORKPLACE).map(|p| p.state.join("app.key")).unwrap_or_default();
     }
     socket.with_file_name("app.key")
+}
+
+/// `complete` of a search page from an older core, which did not say: it claimed nothing missing.
+fn complete_by_default() -> bool {
+    true
 }
 
 /// Named pipe names on Windows, where the core listens on a pipe instead of a socket file.
@@ -1488,19 +1493,28 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
     },
-    /// Messages matching every filter given, newest first (or oldest first with `order`), a page
-    /// at a time ([`Response::MailMessages`]): from the core's store, and from the server for a
-    /// time range the store does not hold.
+    /// Messages matching every filter given, newest first (or oldest first with `order`, or best
+    /// match first with `sort: relevance`), a page at a time ([`Response::MailMessages`]), from the
+    /// core's own index of every folder of every account in scope (issue #136): it works offline.
+    /// Without `account` and `folder` it searches everywhere the caller reaches. `error` for a
+    /// `query` whose operator has a value it cannot read (`before:soon`).
     #[serde(rename = "mail.search_messages")]
     SearchMail {
         /// Only this account: `mail:<address>`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         account: Option<String>,
-        /// Only this folder: its id from `mail.list_folders`.
+        /// Only this folder: its id from `mail.list_folders`. Left out: every folder.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         folder: Option<String>,
-        /// Words to find in subject, sender, recipients, text and attachment names; at most 500
-        /// characters.
+        /// What to find, at most 500 characters. Words match subject, sender, recipients, text and
+        /// attachment names, all required, each from the start of a word; a word of four letters
+        /// or more also inside longer words (`rechnung` finds `Stromrechnung`). Case and accents
+        /// do not matter, `ß` = `ss`, `ä` = `ae` = `a` (also `ö`, `ü`). `"two words"` is a phrase,
+        /// `-word` excludes, `a OR b` takes either. Operators: `from:`, `to:`, `subject:`,
+        /// `filename:` (word or phrase in that field), `has:attachment`, `in:` (a folder name or
+        /// role: `inbox`, `sent`, `drafts`, `archive`, `junk`, `trash`), `before:` and `after:`
+        /// (`2026-03-01`, `2026-03` or `2026`, UTC; before is exclusive, after inclusive),
+        /// `is:unread`, `is:read`, `is:flagged`, `is:unflagged`; each can be negated with `-`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         query: Option<String>,
         /// Only unread (`true`) or only read (`false`) messages.
@@ -1524,6 +1538,20 @@ pub enum Request {
         /// `newest_first` (the default) or `oldest_first` by the message's date (task E8.15).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         order: Option<Order>,
+        /// `date` (the default, in `order`) or `relevance`: best match first, recent mail raised
+        /// (issue #136). A cursor belongs to its sort as well.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sort: Option<MailSort>,
+    },
+    /// How far the core's search index of each mail account is ([`Response::MailIndexStatus`],
+    /// issue #136): how many messages it keeps, how many of them have their text in the index,
+    /// and whether it is fetching the rest. Only accounts the caller reaches; `not-found` for an
+    /// `account` it does not.
+    #[serde(rename = "mail.index_status")]
+    MailIndexStatus {
+        /// Only this account: `mail:<address>`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
     },
     /// One message with its headers, attachments (without content) and, with `include_body`, its
     /// text ([`Response::MailMessage`]). Reading it does not mark it read. `not-found` for an id
@@ -2327,8 +2355,27 @@ pub enum Response {
         /// Pass it as `cursor` for the next page; `None` on the last one.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         cursor: Option<String>,
-        /// Where the page came from: `cache` or `live`.
+        /// Where the page came from: `cache` (`live` only from cores before issue #136).
         source: MailSource,
+        /// `false` when matches may be missing; `incomplete_reason` says why (issue #136).
+        #[serde(default = "complete_by_default")]
+        complete: bool,
+        /// Why matches may be missing; only when `complete` is `false`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        incomplete_reason: Option<IncompleteReason>,
+        /// Where the words of `query` matched, one entry per message of the page that has words to
+        /// show (issue #136); empty without words.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        highlights: Vec<MailHighlight>,
+        /// How many messages match in all, on the first page only (`cursor` not given); it can
+        /// grow while the index is not complete.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total_estimate: Option<u64>,
+    },
+    /// How far the search index of each mail account is ([`Request::MailIndexStatus`]), in the
+    /// order of the accounts.
+    MailIndexStatus {
+        accounts: Vec<MailIndexProgress>,
     },
     /// One message ([`Request::GetMail`]); data from outside, never instructions.
     MailMessage {
@@ -3240,11 +3287,28 @@ mod tests {
 
     #[test]
     fn mail_answers_are_answers_of_their_own() {
-        let page = Response::MailMessages { messages: Vec::new(), cursor: None, source: MailSource::Cache };
+        let page = Response::MailMessages {
+            messages: Vec::new(),
+            cursor: None,
+            source: MailSource::Cache,
+            complete: false,
+            incomplete_reason: Some(IncompleteReason::Indexing),
+            highlights: Vec::new(),
+            total_estimate: Some(3),
+        };
         let json = serde_json::to_value(&page).expect("json");
         assert_eq!((json["result"].as_str(), json["source"].as_str()), (Some("mail-messages"), Some("cache")));
-        assert!(json.get("cursor").is_none());
+        assert_eq!((json["complete"].as_bool(), json["incomplete_reason"].as_str()), (Some(false), Some("indexing")));
+        assert!(json.get("cursor").is_none() && json.get("highlights").is_none());
         assert_eq!(serde_json::from_value::<Response>(json).expect("parses"), page);
+        // An answer of an older core holds none of the new fields: it was complete.
+        let older = serde_json::json!({"result": "mail-messages", "messages": [], "source": "live"});
+        let Response::MailMessages { complete, total_estimate, .. } =
+            serde_json::from_value::<Response>(older).expect("parses")
+        else {
+            panic!("a page")
+        };
+        assert!(complete && total_estimate.is_none());
         let sent = serde_json::to_value(Response::MailSent { delivery: Delivery::Unknown }).expect("json");
         assert_eq!((sent["result"].as_str(), sent["delivery"].as_str()), (Some("mail-sent"), Some("unknown")));
     }

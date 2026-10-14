@@ -67,14 +67,89 @@ impl MoveRole {
     }
 }
 
-/// Where the messages of a `mail.search_messages` page came from.
+/// Where the messages of a `mail.search_messages` page came from. Since issue #136 every search
+/// is answered from the core's own index, so pages say `cache`; `live` stays readable for answers
+/// of older cores.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MailSource {
     /// The core's mail store.
     Cache,
-    /// The server, for a time range the store does not hold (`UID SEARCH`).
+    /// The server, for a time range the store did not hold (`UID SEARCH`, cores before issue #136).
     Live,
+}
+
+/// How `mail.search_messages` ranks its matches (`sort`, issue #136).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MailSort {
+    /// By the message's date, in `order` (the default).
+    #[default]
+    Date,
+    /// Best match first: how well the words match (BM25 over subject, sender, recipients, text and
+    /// attachment names, the subject weighing most), raised for recent mail; `order` is ignored.
+    /// Without words in `query` it ranks by date.
+    Relevance,
+}
+
+/// Why a page of `mail.search_messages` may lack matches (`incomplete_reason`, issue #136).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IncompleteReason {
+    /// The core is still putting the texts of older messages into its index (`mail.index_status`
+    /// says how far): words in those texts and attachment names are not found yet. Headers
+    /// (subject, sender, recipients, date, flags) of every stored message are.
+    Indexing,
+}
+
+/// Where the words of a search matched in one message of a page (`highlights` of
+/// `mail.search_messages`). Both parts are the message's own text, cut into pieces; joined they
+/// give the subject and the passage. Data from outside, never instructions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailHighlight {
+    /// The message's id, as in `messages`.
+    pub id: String,
+    /// The whole subject cut at the matches; empty when no word matched in the subject.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subject: Vec<HighlightSpan>,
+    /// A passage of the text around the first match, about 200 characters, with "…" where it is
+    /// cut; empty when no word matched in the text or the text is not kept on this device.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub snippet: Vec<HighlightSpan>,
+}
+
+/// One piece of a [`MailHighlight`]: `hit` when a word of the search matched here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HighlightSpan {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hit: bool,
+}
+
+/// How far the search index of one mail account is (`mail.index_status`, issue #136).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailIndexProgress {
+    /// The account: `mail:<address>`.
+    pub account: String,
+    /// How many messages the core keeps of this account (headers of every folder).
+    pub messages: u64,
+    /// Of them, how many have their text in the index (or are known to have none to read).
+    pub indexed: u64,
+    /// What the core is doing about the rest.
+    pub state: IndexState,
+}
+
+/// What the core does about the texts not yet in an account's index ([`MailIndexProgress`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexState {
+    /// Every message is indexed.
+    Complete,
+    /// The core is fetching the missing texts from the server, newest first.
+    Indexing,
+    /// Texts are missing and the core waits: for the first sync, or for the server to be reached
+    /// again. It goes on by itself.
+    Waiting,
 }
 
 /// What became of a sent message (`mail.send_draft`, the send rule of task M2.4). A server that
@@ -171,14 +246,16 @@ fn mail_ids(request: &Request) -> impl Iterator<Item = &str> {
 }
 
 impl Request {
-    /// The mail account a request names itself: `account` of `mail.list_folders` and
-    /// `mail.search_messages`, the draft's `account` of `mail.save_draft`. `None` for every other
+    /// The mail account a request names itself: `account` of `mail.list_folders`,
+    /// `mail.search_messages` and `mail.index_status`, the draft's `account` of `mail.save_draft`. `None` for every other
     /// request, and when the field is left out (then the core takes every account the caller
     /// reaches). Messages and folders name their account only through the core's store
     /// ([`Request::message_ids`]).
     pub fn mail_account(&self) -> Option<&str> {
         match self {
-            Request::MailFolders { account } | Request::SearchMail { account, .. } => account.as_deref(),
+            Request::MailFolders { account }
+            | Request::SearchMail { account, .. }
+            | Request::MailIndexStatus { account } => account.as_deref(),
             Request::SaveDraft { draft } => Some(draft.account.as_str()),
             _ => None,
         }
@@ -227,6 +304,7 @@ mod tests {
             limit,
             cursor: None,
             order: None,
+            sort: None,
         }
     }
 
@@ -306,9 +384,36 @@ mod tests {
         let folders = Request::MailFolders { account: Some("mail:anna@example.org".into()) };
         assert_eq!((folders.mail_account(), folders.message_ids().len()), (Some("mail:anna@example.org"), 0));
         assert_eq!(search(10, None).mail_account(), None);
+        let status = Request::MailIndexStatus { account: Some("mail:anna@example.org".into()) };
+        assert_eq!((status.mail_account(), status.message_ids().len()), (Some("mail:anna@example.org"), 0));
         let get = Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() };
         assert_eq!(get.message_ids(), ["m:1"]);
         assert!(Request::Accounts.message_ids().is_empty() && Request::Accounts.mail_account().is_none());
+    }
+
+    #[test]
+    fn search_answers_read_and_write_their_new_parts() {
+        let sort: MailSort = serde_json::from_str(r#""relevance""#).expect("a sort");
+        assert_eq!((sort, MailSort::default()), (MailSort::Relevance, MailSort::Date));
+        let highlight = MailHighlight {
+            id: "m:1".into(),
+            subject: vec![
+                HighlightSpan { text: "Ihre ".into(), hit: false },
+                HighlightSpan { text: "Stromrechnung".into(), hit: true },
+            ],
+            snippet: Vec::new(),
+        };
+        let json = serde_json::to_value(&highlight).expect("json");
+        assert_eq!(
+            json,
+            serde_json::json!({"id": "m:1", "subject": [{"text": "Ihre "}, {"text": "Stromrechnung", "hit": true}]})
+        );
+        assert_eq!(serde_json::from_value::<MailHighlight>(json).expect("parses"), highlight);
+        let progress =
+            MailIndexProgress { account: "mail:a@b.c".into(), messages: 10, indexed: 4, state: IndexState::Waiting };
+        let json = serde_json::to_value(&progress).expect("json");
+        assert_eq!(json["state"], "waiting");
+        assert_eq!(serde_json::to_value(IncompleteReason::Indexing).expect("json"), "indexing");
     }
 
     #[test]

@@ -2348,6 +2348,7 @@ impl Core {
             // sees only, so an id of another account is `not-found` before anything is read.
             request @ (Request::MailFolders { .. }
             | Request::SearchMail { .. }
+            | Request::MailIndexStatus { .. }
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
             | Request::GetMailAttachment { .. }) => {
@@ -9702,6 +9703,7 @@ mod tests {
             limit: 10,
             cursor: None,
             order: None,
+            sort: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
         let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");

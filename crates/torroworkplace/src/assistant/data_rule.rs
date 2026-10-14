@@ -278,8 +278,15 @@ mod tests {
     fn mail_goes_to_local_models_only() {
         let search: Request =
             serde_json::from_value(json!({"method": "mail.search_messages", "limit": 10})).expect("a search");
-        let page =
-            Response::MailMessages { messages: Vec::<MessageSummary>::new(), cursor: None, source: MailSource::Cache };
+        let page = Response::MailMessages {
+            messages: Vec::<MessageSummary>::new(),
+            cursor: None,
+            source: MailSource::Cache,
+            complete: true,
+            incomplete_reason: None,
+            highlights: Vec::new(),
+            total_estimate: None,
+        };
         let local = for_model(&search, &page, Place::Local);
         assert!(!local.withheld);
         assert_eq!(local.value["result"], "mail-messages");

@@ -80,7 +80,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
-| `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
+| `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
 | `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` ¹³ | | |

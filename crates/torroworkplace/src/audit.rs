@@ -353,6 +353,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         }
         mail @ (Request::MailFolders { .. }
         | Request::SearchMail { .. }
+        | Request::MailIndexStatus { .. }
         | Request::GetMail { .. }
         | Request::GetMailThread { .. }
         | Request::GetMailAttachment { .. }
@@ -819,6 +820,7 @@ pub(crate) mod tests {
             limit: 20,
             cursor: None,
             order: None,
+            sort: None,
         };
         let logged = super::ids(&search);
         assert_eq!(logged, vec!["account:mail:anna@mailbox.org".to_string(), format!("folder:{}", hashed("f:0a1b"))]);

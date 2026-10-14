@@ -515,6 +515,33 @@ ihre Texte im Bericht.
 - **API/MCP:** nutzt M2.7, `accounts.sync`, `accounts.remove_account`.
 - **Abnahme:** Sichtprüfung (Breit, Schmal, hell/dunkel), Tests der Nachrichten.
 
+### M8.1 Mailsuche im Kern: Index, Tokenizer, Abfragesprache (Issue #136, Schritte 2–4)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** M3.1 · **Dateien:** `crates/torro-ipc/src/{lib,mail,api,inbox}.rs`,
+  `crates/torroworkplace/src/mail/{mod,store,read,sync,service}.rs`, neu `mail/{fold,query,store_corpus}.rs`,
+  `crates/torroworkplace/src/{core,pim,audit,daemon,mcp}.rs` (Request-Fall durchreichen),
+  `tests/fixtures/mail/search-corpus.json`, `torro-core/src/i18n/de.rs`
+- **Index:** Texte aller Mails bleiben im Suchindex; nur der Lesetext älterer Mails (über 90 Tage) wird weiter
+  gelöscht. Ein Indexer je Konto holt ältere Texte (und solche über 5 MiB) nach der ersten Synchronisierung im
+  Hintergrund nach, neueste zuerst, eine Nachricht je Griff auf die Befehlsverbindung (`sync::backfill`).
+  Kopfzeilen aller Mails sind sofort durchsuchbar. Gesucht wird nur noch lokal (kein `UID SEARCH` mehr), also auch
+  offline; solange Texte fehlen, sagt die Antwort `complete: false`, `incomplete_reason: indexing`.
+- **Tokenizer:** Index und Suche falten gleich (`mail/fold.rs`): Groß/klein, Akzente, `ß` = `ss`,
+  `ä` = `ae` = `a` (ö, ü). Zweiter FTS5-Index `trigram` für Wortteile ab 4 Zeichen (`rechnung` findet
+  `Stromrechnung`). `sort: relevance` = BM25 (Betreff zählt am meisten) plus Aktualität. Hervorhebung aus dem
+  Originaltext: Betreff und Textstelle um den ersten Treffer, in Stücken mit `hit`.
+- **Abfragesprache** (`mail/query.rs`): Wörter, `"Phrasen"`, `-wort`, `OR`, `from:` `to:` `subject:` `filename:`
+  `has:attachment` `in:` `before:` `after:` `is:unread|read|flagged|unflagged`.
+- **Oberfläche:** Suchfeld über der Liste ist Schritt 1 von #136 (eigene Aufgabe); Vorschläge, Fortschritt
+  und Hinweis „unvollständig“ Schritt 5. **API:** `mail.search_messages` mit `sort`; Antwort mit `complete`,
+  `incomplete_reason`, `highlights`, `total_estimate` (alles optional, verträglich); neu `Request::MailIndexStatus`
+  · `mail.index_status` · Read. **MCP:** `mail_search_messages`, `mail_index_status`.
+- **Abnahme:** Parser-Tests (Operatoren, Phrasen, OR, Verneinung, Fehler); Testkorpus
+  `search-corpus.json` (deutsch/englisch, HTML, Komposita, Umlaute, alte Mails) findet genau die erwarteten Mails
+  zwischen Füllmails; Handler-Tests: Nachindizieren, offline, Hervorhebung, Zählung, Relevanz; Laufzeit-Test
+  (3 000 Mails) und von Hand `cargo test --release -p torroworkplace -- --ignored search_budget` (100 000 Mails,
+  < 100 ms).
+
 ### Danach
 - **M7.5 Einladungen (iMIP):** `calendar.respond_invitation` · Write + „Nach außen“ · MCP
   `calendar_respond_invitation`; im Paneel „Accept / Maybe / Decline“, Termin in den Standardkalender, Antwort per Mail.

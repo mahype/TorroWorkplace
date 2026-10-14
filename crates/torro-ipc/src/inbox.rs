@@ -166,6 +166,7 @@ impl InboxClient {
             limit,
             cursor,
             order: asked(order),
+            sort: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -1094,6 +1095,7 @@ mod tests {
                 limit: 50,
                 cursor,
                 order,
+                sort: None,
             } => Response::MailMessages {
                 messages: vec![summary(
                     &format!(
@@ -1106,6 +1108,10 @@ mod tests {
                 )],
                 cursor: Some("next".into()),
                 source: crate::mail::MailSource::Cache,
+                complete: true,
+                incomplete_reason: None,
+                highlights: Vec::new(),
+                total_estimate: None,
             },
             Request::GetMail { id, include_body: true } => Response::MailMessage {
                 message: Message {
