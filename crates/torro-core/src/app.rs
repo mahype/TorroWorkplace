@@ -81,10 +81,30 @@ impl AppId {
         args: &["--view", "notifications"],
     };
 
+    /// The assistant's main window (task C.4, `docs/assistent.md`): its conversations and the chat.
+    /// The same binary opens single chat windows (`torroassistant --chat <id>|new`) with a class of
+    /// their own, `torro-assistant-chat`; such a window is no app of its own, so it is not listed
+    /// here, as the inbox's compose window is not. A workspace template stores the window's whole
+    /// command line, so a chat window comes back with its conversation.
+    pub const ASSISTANT: AppId = AppId {
+        window_class: "torro-assistant",
+        binary: "torroassistant",
+        dir: "torroassistant",
+        display_name: "Torro Assistant",
+        args: &[],
+    };
+
     /// Every app of the suite, in launcher order. Of the entries sharing a binary, the one the
     /// binary starts without arguments comes first: a lookup by binary finds it.
-    pub const ALL: &'static [AppId] =
-        &[AppId::WORKPLACE, AppId::INBOX, AppId::INBOX_MAIL, AppId::INBOX_NOTIFICATIONS, AppId::TASKS, AppId::CALENDAR];
+    pub const ALL: &'static [AppId] = &[
+        AppId::WORKPLACE,
+        AppId::INBOX,
+        AppId::INBOX_MAIL,
+        AppId::INBOX_NOTIFICATIONS,
+        AppId::TASKS,
+        AppId::CALENDAR,
+        AppId::ASSISTANT,
+    ];
 
     /// The entry of [`AppId::ALL`] that `name` names: a window class (`torro-inbox-mail`) names its
     /// entry; a binary (`torroinbox`) the first entry with that binary. `None` for anything else.

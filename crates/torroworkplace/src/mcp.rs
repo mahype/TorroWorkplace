@@ -40,6 +40,12 @@
 //! the tool error `pending` ("waiting for approval") with the approval's id, so the agent can ask
 //! later with `approvals_approval_status`. The tool never decides: only a person can.
 //!
+//! `assistant_send_message` waits for the answer too (task C.5): it polls `assistant.get_conversation`
+//! with `after` every second until the conversation stops running or 60 seconds are over, then returns
+//! the entries of the call with the conversation, whose `last` is the cursor for
+//! `assistant_get_conversation`. An answer still waiting for a person's approval is reported as the
+//! tool error `pending` with that approval's id, like the commands above.
+//!
 //! The server starts the core like the apps do, but only in a desktop session
 //! ([`desktop_session`]): a core started from an SSH login or a container would run without
 //! the window manager and tray the person expects.
@@ -63,6 +69,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use torro_inbox::{Kind, Lane, Link, SourceRef, StateFilter};
 use torro_ipc::api::{Access, Area, CATALOGUE, Command, Mcp};
+use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent};
 use torro_ipc::{ApprovalInfo, ApprovalState, IpcError, Key, Request, Response, client, socket_path};
 use torro_pim::{Event, EventTime, Todo};
 
@@ -83,6 +90,10 @@ const APPROVAL_WAIT: Duration = Duration::from_secs(60);
 
 /// How often a waiting tool asks the core whether a person decided.
 const APPROVAL_POLL: Duration = Duration::from_secs(1);
+
+/// How long `assistant_send_message` waits for its answer to finish (task C.5); then it returns
+/// what the answer has so far, and the agent goes on with `assistant_get_conversation`.
+const ANSWER_WAIT: Duration = Duration::from_secs(60);
 
 /// The answer when no core runs and none may be started here.
 const NO_DESKTOP: &str = "cannot reach the Torro Workplace core: start Torro Workplace in your desktop session";
@@ -172,6 +183,8 @@ pub struct TorroMcp {
     started: Mutex<Option<Instant>>,
     /// How long a call waits for a person's decision ([`APPROVAL_WAIT`]; shorter in tests).
     approval_wait: Duration,
+    /// How long `assistant_send_message` waits for its answer ([`ANSWER_WAIT`]; shorter in tests).
+    answer_wait: Duration,
 }
 
 impl TorroMcp {
@@ -180,7 +193,14 @@ impl TorroMcp {
     /// ([`TorroMcp::start_core`]) and waits for it up to 10 seconds; without, it answers that
     /// the person should start Torro Workplace in their desktop session.
     pub fn new(socket: PathBuf, key: Option<Key>, start_core: bool) -> TorroMcp {
-        TorroMcp { socket, key, start_core, started: Mutex::new(None), approval_wait: APPROVAL_WAIT }
+        TorroMcp {
+            socket,
+            key,
+            start_core,
+            started: Mutex::new(None),
+            approval_wait: APPROVAL_WAIT,
+            answer_wait: ANSWER_WAIT,
+        }
     }
 
     /// The server waiting `wait` instead of a minute for a person's decision. Only the end-to-end
@@ -188,6 +208,13 @@ impl TorroMcp {
     #[cfg(all(test, unix))]
     fn with_approval_wait(mut self, wait: Duration) -> TorroMcp {
         self.approval_wait = wait;
+        self
+    }
+
+    /// The server waiting `wait` instead of a minute for an answer of the assistant (task C.5).
+    #[cfg(all(test, unix))]
+    fn with_answer_wait(mut self, wait: Duration) -> TorroMcp {
+        self.answer_wait = wait;
         self
     }
 
@@ -226,6 +253,9 @@ impl TorroMcp {
         };
         Ok(match self.send(&request).await {
             Ok(Response::Pending { approval }) => self.wait_for_decision(approval).await,
+            Ok(Response::Conversation { conversation, entries }) if matches!(request, Request::SendMessage { .. }) => {
+                self.wait_for_answer(conversation, entries).await
+            }
             Ok(response) => result_of(response),
             Err(IpcError::NotRunning) if !self.start_core => failure("error", NO_DESKTOP),
             Err(err) => failure("error", &format!("cannot reach the Torro Workplace core: {err}")),
@@ -266,6 +296,34 @@ impl TorroMcp {
                 Ok(other) => return result_of(other),
                 Err(err) => return failure("error", &format!("cannot reach the Torro Workplace core: {err}")),
             }
+        }
+    }
+
+    /// Waits for the answer to a message the agent sent (task C.5): asks the core every second with
+    /// `assistant.get_conversation` and the conversation's `last` as `after`, until the conversation
+    /// stops running or [`ANSWER_WAIT`] is over. Returns the entries of the call and what came since,
+    /// with the conversation's summary, whose `last` is the cursor for the next read. Only reads.
+    async fn wait_for_answer(&self, mut conversation: ConversationSummary, mut entries: Vec<Entry>) -> CallToolResult {
+        let deadline = tokio::time::Instant::now() + self.answer_wait;
+        while conversation.running {
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            tokio::time::sleep(APPROVAL_POLL.min(deadline - now)).await;
+            let read = Request::GetConversation { id: conversation.id.clone(), after: Some(conversation.last) };
+            match self.send(&read).await {
+                Ok(Response::Conversation { conversation: latest, entries: fresh }) => {
+                    merge_entries(&mut entries, fresh);
+                    conversation = latest;
+                }
+                Ok(other) => return result_of(other),
+                Err(err) => return failure("error", &format!("cannot reach the Torro Workplace core: {err}")),
+            }
+        }
+        match awaited_approval(&entries) {
+            Some(approval) if conversation.running => waiting_for_answer(approval, &conversation),
+            _ => result_of(Response::Conversation { conversation, entries }),
         }
     }
 
@@ -543,6 +601,40 @@ fn waiting(approval: &ApprovalInfo) -> CallToolResult {
         CallToolResult::structured_error(json!({ "code": "pending", "message": message, "approval": approval }));
     result.content = vec![ContentBlock::text(format!("pending: {message}"))];
     result
+}
+
+/// The tool error for an answer that waits for a person's approval when [`ANSWER_WAIT`] is over: code
+/// `pending` with the approval's id, like [`waiting`]; the entries are read with the conversation's
+/// `last` as `after` (task C.5).
+fn waiting_for_answer(approval: &str, conversation: &ConversationSummary) -> CallToolResult {
+    let message = format!(
+        "waiting for approval: a person has to decide on approval {approval:?} in Torro Workplace before the \
+         assistant's answer goes on. Read the conversation later with assistant_get_conversation and after {}.",
+        conversation.last
+    );
+    let mut result = CallToolResult::structured_error(
+        json!({ "code": "pending", "message": message, "approval": { "id": approval }, "conversation": conversation }),
+    );
+    result.content = vec![ContentBlock::text(format!("pending: {message}"))];
+    result
+}
+
+/// The approval an answer waits for: its last entry, when that is an approval. The entries after
+/// it come once a person decided (a tool line with the outcome).
+fn awaited_approval(entries: &[Entry]) -> Option<&str> {
+    match &entries.last()?.content {
+        EntryContent::Approval { id } => Some(id.as_str()),
+        _ => None,
+    }
+}
+
+/// Adds `fresh` (the entries after a cursor) to `entries`. The core sends a growing answer again
+/// with every read, numbered after the conversation's last stored entry, so an entry from `fresh`
+/// replaces the one the agent had with the same number and everything after it.
+fn merge_entries(entries: &mut Vec<Entry>, fresh: Vec<Entry>) {
+    let Some(first) = fresh.first().map(|entry| entry.seq) else { return };
+    entries.retain(|entry| entry.seq < first);
+    entries.extend(fresh);
 }
 
 /// A tool error the agent reads: `code: message` as text, `{code, message}` as structured content.
@@ -1819,6 +1911,82 @@ mod tests {
         assert!(!format!("{server:?}").contains("secret"));
     }
 
+    #[test]
+    fn the_assistant_tools_are_all_there_as_assistant_underscore_names() {
+        let names: BTreeSet<&str> = tools().iter().map(|tool| tool.name.as_ref()).collect();
+        let catalogue: BTreeSet<String> = CATALOGUE
+            .iter()
+            .filter(|command| command.area == Area::Assistant && command.mcp == Mcp::Tool)
+            .map(|command| command.tool_name())
+            .collect();
+        assert_eq!(catalogue.len(), 9, "{catalogue:?}");
+        assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
+        assert!(CATALOGUE.iter().filter(|c| c.area == Area::Assistant).all(|c| c.mcp == Mcp::Tool));
+    }
+
+    #[test]
+    fn send_message_builds_its_request() {
+        let arguments = args(json!({
+            "conversation": "0123456789abcdef",
+            "engine": "test",
+            "text": "What is on tomorrow?",
+            "without": ["mail"]
+        }));
+        assert_eq!(
+            request_for("assistant_send_message", arguments, &Utc),
+            Ok(Request::SendMessage {
+                conversation: Some("0123456789abcdef".into()),
+                engine: "test".into(),
+                model: None,
+                text: "What is on tomorrow?".into(),
+                without: vec![Area::Mail],
+            })
+        );
+        let read = request_for("assistant_get_conversation", args(json!({"id": "0123456789abcdef", "after": 4})), &Utc);
+        assert_eq!(read, Ok(Request::GetConversation { id: "0123456789abcdef".into(), after: Some(4) }));
+    }
+
+    fn message(seq: u64, text: &str) -> Entry {
+        let content = EntryContent::Answer { text: text.into(), engine: "test".into(), model: None };
+        Entry { seq, time: Utc::now(), content }
+    }
+
+    #[test]
+    fn a_growing_answer_replaces_what_the_agent_had_from_its_number_on() {
+        let mut entries = vec![message(1, "Hi"), message(2, "Hel")];
+        merge_entries(&mut entries, vec![message(2, "Hello"), message(3, "!")]);
+        let texts: Vec<(u64, String)> = entries
+            .iter()
+            .map(|entry| match &entry.content {
+                EntryContent::Answer { text, .. } => (entry.seq, text.clone()),
+                _ => (entry.seq, String::new()),
+            })
+            .collect();
+        assert_eq!(texts, [(1, "Hi".into()), (2, "Hello".into()), (3, "!".into())]);
+        merge_entries(&mut entries, Vec::new());
+        assert_eq!(entries.len(), 3, "an empty read changes nothing");
+    }
+
+    #[test]
+    fn an_answer_that_ends_on_an_approval_waits_for_a_person() {
+        let approval =
+            Entry { seq: 3, time: Utc::now(), content: EntryContent::Approval { id: "9c1f0a7e3b2d4c58".into() } };
+        assert_eq!(awaited_approval(&[message(1, "Hi"), approval.clone()]), Some("9c1f0a7e3b2d4c58"));
+        // A tool line after it means the person decided and the answer goes on.
+        let tool = Entry {
+            seq: 4,
+            time: Utc::now(),
+            content: EntryContent::Tool {
+                name: "calendar.list_events".into(),
+                input: json!({}),
+                summary: "2 events".into(),
+                error: None,
+            },
+        };
+        assert_eq!(awaited_approval(&[approval, tool]), None);
+        assert_eq!(awaited_approval(&[]), None);
+    }
+
     // --- End to end: an MCP client on one side, a core in a temp directory on the other. -------
     // Unix only: the socket server is not there on Windows yet.
     #[cfg(unix)]
@@ -1826,7 +1994,7 @@ mod tests {
         use std::sync::Arc;
 
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use torro_ipc::api::RightsTemplate;
+        use torro_ipc::api::{ASSISTANT_CLIENT, AreaRights, Level, Rights, RightsTemplate};
         use torro_ipc::server;
         use torro_setups::storage::Store;
         use torro_wm::Backend;
@@ -1854,14 +2022,29 @@ mod tests {
             Store::at(dir.to_path_buf()).save(&template).expect("saved");
         }
 
-        /// A core over `dir` listening on `dir/core.sock`, with two clients: read and write, and read
-        /// only. Nothing of the user's: templates, settings, keys, keychain and approvals live in
-        /// `dir`, and approvals show no notification.
-        async fn start_core(dir: &std::path::Path) -> (PathBuf, Key, Key) {
+        /// The keys of [`start_core_with`]: `writer` (read and write, no assistant), `reader` (read
+        /// only), `chat` (read, write and the assistant area in full) and `assistant` (the
+        /// assistant's own client, kind `assistant`).
+        struct Keys {
+            writer: Key,
+            reader: Key,
+            chat: Key,
+            assistant: Key,
+        }
+
+        /// A core over `dir` listening on `dir/core.sock`, with the clients of [`Keys`] and an
+        /// assistant whose test engine takes `step` per step. Nothing of the user's: templates,
+        /// settings, keys, keychain, approvals and conversations live in `dir`, and approvals show
+        /// no notification.
+        async fn start_core_with(dir: &std::path::Path, step: Duration) -> (PathBuf, Keys) {
             let clients = crate::clients::tests::open_in(dir);
             let (_, writer) =
                 clients.add("Writer", "claude-code", RightsTemplate::ReadAndWrite.rights()).await.expect("added");
             let (_, reader) = clients.add("Reader", "script", RightsTemplate::ReadOnly.rights()).await.expect("added");
+            let mut chat_rights = RightsTemplate::ReadAndWrite.rights();
+            chat_rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+            let (_, chat) = clients.add("Chat", "claude-code", chat_rights).await.expect("added");
+            let (_, assistant) = clients.add("Assistant", ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
             let settings = SettingsStore::at(dir.join("config").join("settings.json"));
             let core = Arc::new(
                 Core::new(
@@ -1871,7 +2054,8 @@ mod tests {
                     clients,
                 )
                 .with_approvals(crate::approvals::tests::quiet_in(dir))
-                .with_inbox(crate::inbox::tests::inbox_in(dir)),
+                .with_inbox(crate::inbox::tests::inbox_in(dir))
+                .with_assistant(crate::assistant::tests::assistant_in(dir, step)),
             );
             let socket = dir.join("core.sock");
             let path = socket.clone();
@@ -1884,11 +2068,17 @@ mod tests {
             });
             for _ in 0..100 {
                 if client::call_with_key(&socket, None, &Request::Ping).await.is_ok() {
-                    return (socket, writer, reader);
+                    return (socket, Keys { writer, reader, chat, assistant });
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             panic!("the test core does not answer");
+        }
+
+        /// [`start_core_with`] with the test engine's usual pace and the keys as the other tests use them.
+        async fn start_core(dir: &std::path::Path) -> (PathBuf, Key, Key) {
+            let (socket, keys) = start_core_with(dir, Duration::from_millis(50)).await;
+            (socket, keys.writer, keys.reader)
         }
 
         /// An MCP client speaking JSON-RPC lines to a [`TorroMcp`] over an in-memory pipe.
@@ -2092,6 +2282,91 @@ mod tests {
             assert_eq!(denied["structuredContent"]["code"], "forbidden");
             let listed = session.call("workspaces_list_templates", json!({})).await;
             assert_eq!(listed["structuredContent"]["templates"][0]["id"], "focus", "denied: still there");
+        }
+
+        /// A conversation id the tests may name; the core answers `forbidden` or `not-found` for it.
+        const CONVERSATION: &str = "0123456789abcdef";
+
+        #[tokio::test]
+        async fn the_assistants_own_client_is_forbidden_every_assistant_tool() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (socket, keys) = start_core_with(dir.path(), Duration::from_millis(50)).await;
+            let mut session = Session::start(TorroMcp::new(socket, Some(keys.assistant), false)).await;
+
+            let calls = [
+                ("assistant_list_engines", json!({})),
+                ("assistant_list_conversations", json!({})),
+                ("assistant_get_conversation", json!({"id": CONVERSATION})),
+                ("assistant_send_message", json!({"engine": "test", "text": "Hello"})),
+                ("assistant_cancel", json!({"conversation": CONVERSATION})),
+                ("assistant_rename_conversation", json!({"id": CONVERSATION, "title": "Renamed"})),
+                ("assistant_delete_conversation", json!({"id": CONVERSATION})),
+                ("assistant_pin_conversation", json!({"id": CONVERSATION, "pinned": true})),
+                ("assistant_open_window", json!({"window": "new"})),
+            ];
+            let tools: BTreeSet<&str> =
+                tools().iter().map(|tool| tool.name.as_ref()).filter(|name| name.starts_with("assistant_")).collect();
+            let called: BTreeSet<&str> = calls.iter().map(|(name, _)| *name).collect();
+            assert_eq!(called, tools, "every assistant tool is checked here");
+            for (name, arguments) in calls {
+                let answer = session.call(name, arguments).await;
+                assert_eq!(answer["isError"], true, "{name}: {answer}");
+                assert_eq!(answer["structuredContent"]["code"], "forbidden", "{name}: {answer}");
+            }
+        }
+
+        #[tokio::test]
+        async fn send_message_waits_for_the_answer_and_returns_it_with_the_cursor() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (socket, keys) = start_core_with(dir.path(), Duration::from_millis(50)).await;
+            // Without the assistant area a person switched on, even a read and write key is refused.
+            let mut refused = Session::start(TorroMcp::new(socket.clone(), Some(keys.writer), false)).await;
+            let answer = refused.call("assistant_send_message", json!({"engine": "test", "text": "Hi"})).await;
+            assert_eq!(answer["structuredContent"]["code"], "forbidden", "{answer}");
+
+            let mut session = Session::start(TorroMcp::new(socket, Some(keys.chat), false)).await;
+            let sent =
+                session.call("assistant_send_message", json!({"engine": "test", "text": "What is on tomorrow?"})).await;
+            assert_eq!(sent["isError"], false, "{sent}");
+            let result = &sent["structuredContent"];
+            assert_eq!(result["result"], "conversation", "{sent}");
+            assert_eq!(result["conversation"]["running"], false, "the test engine's answer is finished: {sent}");
+            let kinds: Vec<&str> = result["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .filter_map(|entry| entry["kind"].as_str())
+                .collect();
+            assert_eq!(kinds, ["message", "tool", "answer"], "{sent}");
+            assert_eq!(result["conversation"]["last"], json!(3), "the cursor is the newest entry");
+
+            // Reading on from the cursor finds nothing new.
+            let (id, cursor) = (result["conversation"]["id"].clone(), result["conversation"]["last"].clone());
+            let next = session.call("assistant_get_conversation", json!({"id": id, "after": cursor})).await;
+            assert_eq!(next["isError"], false, "{next}");
+            assert_eq!(next["structuredContent"]["entries"], json!([]), "{next}");
+        }
+
+        #[tokio::test]
+        async fn send_message_returns_what_there_is_when_the_answer_takes_longer() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            // The test engine waits an hour before its first step, so the answer outlasts the wait.
+            let (socket, keys) = start_core_with(dir.path(), Duration::from_secs(3600)).await;
+            let server = TorroMcp::new(socket, Some(keys.chat), false).with_answer_wait(Duration::from_millis(300));
+            let mut session = Session::start(server).await;
+
+            let sent = session.call("assistant_send_message", json!({"engine": "test", "text": "Hello"})).await;
+            assert_eq!(sent["isError"], false, "{sent}");
+            let result = &sent["structuredContent"];
+            assert_eq!(result["conversation"]["running"], true, "{sent}");
+            let kinds: Vec<&str> = result["entries"]
+                .as_array()
+                .expect("entries")
+                .iter()
+                .filter_map(|entry| entry["kind"].as_str())
+                .collect();
+            assert_eq!(kinds, ["message"], "{sent}");
+            assert_eq!(result["conversation"]["last"], json!(1), "the agent goes on from here: {sent}");
         }
 
         #[tokio::test]

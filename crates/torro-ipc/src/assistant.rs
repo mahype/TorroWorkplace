@@ -12,6 +12,11 @@
 //! An entry is numbered ([`Entry::seq`], from 1 up, never reused within a conversation), so a
 //! window that follows a running answer asks `assistant.get_conversation` with `after` set to the
 //! last number it has and gets only what is new.
+//!
+//! While a model writes (task C.2), its text so far comes as one more [`EntryContent::Answer`]
+//! numbered [`ConversationSummary::last`] + 1, which `last` does not count yet: a window asks again
+//! with `after` = `last` and gets it longer, until it is stored under that number and `last` reaches
+//! it. A window keeps one entry per number and replaces it when it comes again.
 
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
@@ -84,7 +89,8 @@ pub struct ConversationSummary {
     pub pinned: bool,
     /// An answer is running: `assistant.cancel` stops it, `assistant.send_message` waits (`busy`).
     pub running: bool,
-    /// The number of the newest entry ([`Entry::seq`]); 0 without entries. Pass it as `after`.
+    /// The number of the newest stored entry ([`Entry::seq`]); 0 without entries. Pass it as
+    /// `after`. An answer a model is still writing comes after it and is not counted yet.
     pub last: u64,
 }
 
@@ -114,7 +120,9 @@ pub enum EntryContent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         without: Vec<Area>,
     },
-    /// The assistant's answer, with the engine and the model that wrote it.
+    /// The assistant's answer, with the engine and the model that wrote it. One answer can come in
+    /// several entries, between the tools it used. While the model writes, the entry after
+    /// [`ConversationSummary::last`] grows (see the module's documentation).
     Answer {
         text: String,
         engine: String,
@@ -136,7 +144,8 @@ pub enum EntryContent {
     },
     /// A command of the assistant waits for a person's approval: its id for
     /// `approvals.approval_status`. The summary to show comes from the approval, never from the
-    /// model.
+    /// model. Once the person decided, the answer goes on with a [`EntryContent::Tool`] line of that
+    /// command (its `error` is `denied` or `expired` when it did not run).
     Approval { id: String },
     /// The answer failed; `code` as in every error answer, `message` for people.
     Error { code: String, message: String },

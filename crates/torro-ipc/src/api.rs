@@ -2170,10 +2170,11 @@ static SEND_MESSAGE: Command = Command {
     area: Area::Assistant,
     access: Access::Write,
     mcp: Mcp::Tool,
-    description: "Sends a message to the assistant of Torro Workplace and starts its answer in the background, in \
-                  `conversation` or in a new one when it is left out. The assistant acts with its own rights, not \
-                  the caller's; `without` switches areas off for this answer. Returns the conversation with the new \
-                  entries; follow the answer with get_conversation and `after`. `busy` while the conversation \
+    description: "Sends a message to the assistant of Torro Workplace and starts its answer, in `conversation` or \
+                  in a new one when it is left out. The assistant acts with its own rights, not the caller's; \
+                  `without` switches areas off for this answer. The MCP tool waits up to 60 seconds for the answer \
+                  and returns the new entries; the API answers at once. While `running` is true, follow the answer \
+                  with get_conversation and `after` set to the conversation's `last`. `busy` while the conversation \
                   still answers.",
 };
 

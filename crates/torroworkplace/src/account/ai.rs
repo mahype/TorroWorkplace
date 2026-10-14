@@ -363,6 +363,13 @@ impl AiAccounts {
         self.slots.read().await.iter().any(|slot| slot.account.id == id)
     }
 
+    /// The kind of server and the base address of the account `id`, for the assistant's data rule
+    /// (task C.2: where its model runs); `None` for an id that is no AI account.
+    pub async fn server(&self, id: &str) -> Option<(AiProvider, String)> {
+        let slots = self.slots.read().await;
+        slots.iter().find(|slot| slot.account.id == id).map(|slot| (slot.provider(), slot.account.server.clone()))
+    }
+
     /// The model behind the account `id`, for whatever asks it (the assistant, task C.2).
     /// [`AiError::NotFound`] for an id that is no AI account, [`AiError::NoKey`] when the account
     /// needs a key and none is stored on this device.

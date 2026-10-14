@@ -685,9 +685,11 @@ impl Core {
     /// GitHub accounts and checks their tokens, then refreshes their filter lists now and every
     /// five minutes (task G.2), and files approvals and account problems in the inbox now and
     /// every minute (task E2.1, [`crate::inbox::tend_suite`]). Starts the sync of the mail
-    /// accounts (task M2.6, [`MailService::start`]). The daemon calls it once, next to
+    /// accounts (task M2.6, [`MailService::start`]). Hands the assistant the core to run its tools
+    /// with (task C.2, [`Core::attach_assistant`]). The daemon calls it once, next to
     /// `PimService::start`.
-    pub fn start(&self) {
+    pub fn start(self: &Arc<Self>) {
+        self.attach_assistant();
         let (inbox, approvals) = (Arc::clone(&self.inbox), Arc::clone(&self.approvals));
         let (pim, github, mail) = (Arc::clone(&self.pim), Arc::clone(&self.github), Arc::clone(&self.mail));
         tokio::spawn(async move {
@@ -712,9 +714,8 @@ impl Core {
         tokio::spawn(async move {
             loop {
                 let retention = settings.current().assistant_retention;
-                let assistant = Arc::clone(&assistant);
-                // Removing files blocks; never on the core's async threads.
-                let _ = tokio::task::spawn_blocking(move || assistant.clean_up(Utc::now(), retention)).await;
+                // The files are removed on blocking threads (`Assistant::clean_up`).
+                assistant.clean_up(Utc::now(), retention).await;
                 tokio::time::sleep(crate::assistant::CLEAN_UP_EVERY).await;
             }
         });
@@ -953,6 +954,43 @@ impl Core {
             && self.clients.list().iter().any(|info| info.id == id && torro_ipc::api::loops_back(&info.kind, operation))
     }
 
+    /// Hands the assistant this core to run its tools with (task C.2, [`crate::assistant::Host`]):
+    /// weakly, since the core holds the assistant. Part of [`Core::start`]; tests call it on their
+    /// own core.
+    pub(crate) fn attach_assistant(self: &Arc<Self>) {
+        let host = Arc::downgrade(self);
+        let host: std::sync::Weak<dyn crate::assistant::Host> = host;
+        self.assistant.attach(host);
+    }
+
+    /// The assistant's own client (kind `assistant`, decision 5 in `docs/assistent.md`) as stored
+    /// now; `None` until a person set it up.
+    fn assistant_client(&self) -> Option<torro_ipc::ClientInfo> {
+        self.clients.list().into_iter().find(|info| info.kind == torro_ipc::api::ASSISTANT_CLIENT)
+    }
+
+    /// A tool call of the assistant while it answers with the engine `engine` (task C.2): what
+    /// [`Core::handle_from`] does for a request with the key of the assistant's own client, with
+    /// its rights of now instead of a key ([`Clients::admit`] for a client: `forbidden` when they
+    /// do not cover the command), then [`Core::handle_client`] (collections, the fixed refusals,
+    /// approvals), and a line in the audit log that names the engine besides the ids. Without an
+    /// assistant client every call is `forbidden`.
+    async fn handle_as_assistant(&self, request: Request, engine: &str) -> Response {
+        let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
+        ids.push(crate::audit::engine_id(engine));
+        let client = self.assistant_client();
+        let answer = match &client {
+            Some(info) if info.rights.allows(request.operation()) => {
+                self.handle_client(info.id.clone(), info.rights.clone(), request).await
+            }
+            _ => Err(Refused::Forbidden { command }),
+        };
+        let response = answer.unwrap_or_else(Refused::response);
+        let line = crate::audit::entry(client.map(|info| info.id), command, ids, &response, Utc::now());
+        self.audit.record(&line);
+        response
+    }
+
     /// Whether `request` of the client `client` is `inbox.open_item` on an entry that opens a web
     /// page (task E1.2c). That always waits for a person, whatever the rights say: an agent could
     /// post a link and open it on the person's screen itself, and a page can do more than show
@@ -1141,7 +1179,10 @@ impl Core {
             // The conversation by the title the assistant keeps for its id and the engine by its
             // name (task C.1), never by what the client sends along.
             request if request.operation().area() == Area::Assistant => {
-                let name = request.conversation().and_then(|id| self.assistant.title(id));
+                let name = match request.conversation() {
+                    Some(id) => self.assistant.title(id).await,
+                    None => None,
+                };
                 let engine = match request {
                     Request::SendMessage { engine, .. } => {
                         let engines = self.assistant.engines(&self.ai).await;
@@ -2805,6 +2846,42 @@ const FILTER_LISTS_EVERY: std::time::Duration = std::time::Duration::from_secs(5
 const TOKEN_WAIT_ROUNDS: u32 = 30;
 const TOKEN_WAIT_STEP: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The core as the assistant uses it while it answers with a model (task C.2): its own client, the
+/// models of the AI accounts, and every tool as a request of that client.
+impl crate::assistant::Host for Core {
+    fn client(&self) -> Option<torro_ipc::ClientInfo> {
+        self.assistant_client()
+    }
+
+    fn model<'a>(
+        &'a self,
+        engine: &'a str,
+    ) -> torro_core::ai::BoxFuture<'a, Result<crate::assistant::ModelAccess, torro_core::ai::AiError>> {
+        Box::pin(async move {
+            let provider = self.ai.provider(engine).await?;
+            // An account removed meanwhile counts as elsewhere: nothing of mail goes to it.
+            let place = match self.ai.server(engine).await {
+                Some((kind, server)) => crate::assistant::place_of(kind, &server),
+                None => crate::assistant::Place::Remote,
+            };
+            Ok(crate::assistant::ModelAccess { provider, place })
+        })
+    }
+
+    fn run<'a>(&'a self, request: Request, engine: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(self.handle_as_assistant(request, engine))
+    }
+
+    fn approval<'a>(&'a self, id: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            match self.assistant_client() {
+                Some(info) => self.approval_status(Some(&info.id), id).await,
+                None => Refused::Forbidden { command: "approvals.approval_status" }.response(),
+            }
+        })
+    }
+}
+
 /// Fetches the filter lists of every GitHub account the core knows, one account after the other,
 /// then brings the links in the task lists in step with GitHub (task G.6,
 /// [`PimService::reconcile_links`]).
@@ -3978,7 +4055,14 @@ mod tests {
         // The inbox is three windows of one binary (task E8.1).
         assert_eq!(
             classes,
-            ["torro-inbox", "torro-inbox-mail", "torro-inbox-notifications", "torro-tasks", "torro-calendar"]
+            [
+                "torro-inbox",
+                "torro-inbox-mail",
+                "torro-inbox-notifications",
+                "torro-tasks",
+                "torro-calendar",
+                "torro-assistant"
+            ]
         );
         assert!(apps[..3].iter().all(|app| app.binary == "torroinbox"));
     }
@@ -9270,5 +9354,254 @@ mod tests {
         );
         // Account ids are logged as for every account; the address typed for a connection is not.
         assert!(audit_lines(dir.path())[0].ids.is_empty(), "{log}");
+    }
+
+    // ----- The assistant's answers with a model (task C.2) -----
+
+    use crate::assistant::tests::{Script, Scripted, calls, says};
+    use crate::assistant::{Host, Limits, ModelAccess, Place};
+
+    /// The core as the assistant uses it, with a scripted model in place of the AI account's.
+    struct ScriptedCore {
+        core: Arc<Core>,
+        script: Arc<Script>,
+    }
+
+    impl Host for ScriptedCore {
+        fn client(&self) -> Option<torro_ipc::ClientInfo> {
+            Host::client(&*self.core)
+        }
+
+        fn model<'a>(
+            &'a self,
+            _engine: &'a str,
+        ) -> torro_core::ai::BoxFuture<'a, Result<ModelAccess, torro_core::ai::AiError>> {
+            let provider = Box::new(Scripted(Arc::clone(&self.script)));
+            Box::pin(async move { Ok(ModelAccess { provider, place: Place::Local }) })
+        }
+
+        fn run<'a>(&'a self, request: Request, engine: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::run(&*self.core, request, engine)
+        }
+
+        fn approval<'a>(&'a self, id: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::approval(&*self.core, id)
+        }
+    }
+
+    /// A core in `dir` with an Ollama account at `ollama`, an assistant client with `rights`, and
+    /// `script` as the account's model. Answers with the core, the scripted host (keep it: the
+    /// assistant holds it weakly), the account's id and the client's id.
+    async fn assistant_core(
+        dir: &std::path::Path,
+        ollama: &httpmock::MockServer,
+        rights: Rights,
+        script: Arc<Script>,
+    ) -> (Arc<Core>, Arc<ScriptedCore>, String, String) {
+        let keys = MemoryTokens::default();
+        let limits = Limits { max_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
+        let assistant = crate::assistant::tests::assistant_in(dir, std::time::Duration::ZERO).with_limits(limits);
+        let core = Arc::new(core_with_ai(dir, &keys, Vec::new()).with_assistant(assistant));
+        let account = core
+            .ai
+            .connect(AiProvider::Ollama, Some(&ollama.url("/v1")), torro_core::account::Secret::default())
+            .await
+            .expect("connected");
+        let (client, _) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the client");
+        let host = Arc::new(ScriptedCore { core: Arc::clone(&core), script });
+        let weak = Arc::downgrade(&host);
+        let weak: std::sync::Weak<dyn Host> = weak;
+        core.assistant.attach(weak);
+        (core, host, account.id, client.id)
+    }
+
+    /// The person sends `text` to the engine `engine`; answers the conversation's id.
+    async fn tell(core: &Core, engine: &str, text: &str) -> String {
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: engine.into(),
+            model: Some("qwen3:8b".into()),
+            text: text.into(),
+            without: Vec::new(),
+        };
+        match core.handle(send).await {
+            Response::Conversation { conversation, .. } => conversation.id,
+            other => panic!("expected a conversation, got {other:?}"),
+        }
+    }
+
+    /// Reads conversation `id` until `done` holds for its state, at most four seconds.
+    async fn conversation_until(
+        core: &Core,
+        id: &str,
+        done: impl Fn(bool, &[torro_ipc::assistant::Entry]) -> bool,
+    ) -> Vec<torro_ipc::assistant::Entry> {
+        for _ in 0..800 {
+            let Response::Conversation { conversation, entries } =
+                core.handle(Request::GetConversation { id: id.into(), after: None }).await
+            else {
+                panic!("the conversation {id} is gone")
+            };
+            if done(conversation.running, &entries) {
+                return entries;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("the conversation {id} never got there");
+    }
+
+    /// The tool lines of `entries`: name and error.
+    fn tool_lines(entries: &[torro_ipc::assistant::Entry]) -> Vec<(String, Option<String>)> {
+        entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                torro_ipc::assistant::EntryContent::Tool { name, error, .. } => Some((name.clone(), error.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// What the model read as the result of its call of `tool`.
+    fn read_by_model(script: &Script, tool: &str) -> String {
+        let call = format!("call_{tool}");
+        script
+            .asked()
+            .into_iter()
+            .flat_map(|request| request.messages)
+            .find(|message| message.tool_call_id.as_deref() == Some(call.as_str()))
+            .map(|message| message.content)
+            .unwrap_or_else(|| panic!("the model never read the result of {tool}"))
+    }
+
+    /// Task C.2: the model's tools run as the assistant's own client – what its rights allow runs,
+    /// the rest comes back `forbidden` to the model – and the log names the client and the engine.
+    #[tokio::test]
+    async fn the_assistant_runs_tools_with_its_own_clients_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama().await;
+        let script = Script::new(vec![
+            calls("calendar_list_calendars", serde_json::json!({})),
+            calls("workspaces_list_templates", serde_json::json!({})),
+            says("You have no calendars, and I may not see your templates."),
+        ]);
+        let (core, _host, engine, client) =
+            assistant_core(dir.path(), &ollama, Rights::assistant(), Arc::clone(&script)).await;
+
+        let id = tell(&core, &engine, "What do I have?").await;
+        let entries = conversation_until(&core, &id, |running, _| !running).await;
+        assert_eq!(
+            tool_lines(&entries),
+            [
+                ("calendar.list_calendars".to_string(), None),
+                ("workspaces.list_templates".to_string(), Some("forbidden".to_string())),
+            ]
+        );
+        assert!(read_by_model(&script, "workspaces_list_templates").contains("forbidden"));
+        assert!(read_by_model(&script, "calendar_list_calendars").contains("collections"));
+
+        // Never its own area, nor what only the person decides, whatever the model asks for.
+        for request in
+            [Request::ListConversations, Request::DecideApproval { id: "0123456789abcdef".into(), allow: true }]
+        {
+            assert_eq!(code(&Host::run(&*core, request, &engine).await), "forbidden");
+        }
+        let lines: Vec<_> = audit_lines(dir.path())
+            .into_iter()
+            .take(2)
+            .map(|line| (line.client, line.command, line.ids, line.result))
+            .collect();
+        let engine_id = format!("engine:{engine}");
+        assert_eq!(
+            lines,
+            [
+                (Some(client.clone()), "calendar.list_calendars".into(), vec![engine_id.clone()], "ok".into()),
+                (Some(client), "workspaces.list_templates".into(), vec![engine_id], "forbidden".into()),
+            ]
+        );
+    }
+
+    /// Task C.2: a command that waits for a person shows as an approval in the conversation; the
+    /// answer goes on once they allow it (the command ran) or deny it (the model hears so).
+    #[tokio::test]
+    async fn a_tool_waiting_for_approval_goes_on_after_allow_and_after_deny() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama().await;
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Workspaces, AreaRights { level: Level::Full, admin: false });
+        let delete = || calls("workspaces_delete_template", serde_json::json!({"id": "old-plans"}));
+        let script = Script::new(vec![delete(), says("Deleted."), delete(), says("You kept it.")]);
+        let (core, _host, engine, _) = assistant_core(dir.path(), &ollama, rights, Arc::clone(&script)).await;
+        let save = || {
+            core.store
+                .save(&torro_setups::Template {
+                    schema_version: torro_setups::SCHEMA_VERSION,
+                    id: "old-plans".into(),
+                    name: "Old plans".into(),
+                    wm: "hyprland".into(),
+                    created: chrono::Utc::now(),
+                    updated: chrono::Utc::now(),
+                    source: torro_setups::Source { workspace: "1".into(), monitor: None, monitor_rect: None },
+                    tree: None,
+                    windows: vec![],
+                })
+                .expect("saved")
+        };
+        let approval_in = |entries: &[torro_ipc::assistant::Entry]| {
+            entries.iter().find_map(|entry| match &entry.content {
+                torro_ipc::assistant::EntryContent::Approval { id } => Some(id.clone()),
+                _ => None,
+            })
+        };
+
+        for allow in [true, false] {
+            save();
+            let id = tell(&core, &engine, "Delete my old plans").await;
+            let waiting = conversation_until(&core, &id, |_, entries| approval_in(entries).is_some()).await;
+            let approval = approval_in(&waiting).expect("an approval");
+            assert!(tool_lines(&waiting).is_empty(), "nothing ran yet");
+            assert!(core.store.load("old-plans").is_ok());
+
+            core.handle(Request::DecideApproval { id: approval, allow }).await;
+            let entries = conversation_until(&core, &id, |running, _| !running).await;
+            let error = if allow { None } else { Some("denied".to_string()) };
+            assert_eq!(tool_lines(&entries), [("workspaces.delete_template".to_string(), error)], "allow: {allow}");
+            assert_eq!(core.store.load("old-plans").is_ok(), !allow, "allow: {allow}");
+            assert!(
+                matches!(&entries.last().map(|e| &e.content), Some(torro_ipc::assistant::EntryContent::Answer { .. })),
+                "the answer goes on: {entries:?}"
+            );
+        }
+        assert!(read_by_model(&script, "workspaces_delete_template").contains("\"result\":\"ok\""));
+        let denied = script.asked().last().map(|request| serde_json::to_string(&request.messages).expect("json"));
+        assert!(denied.is_some_and(|told| told.contains("denied")), "the model heard of the denial");
+    }
+
+    /// Task C.2: the core reports Ollama as local and OpenRouter as elsewhere, for the data rule.
+    #[tokio::test]
+    async fn the_core_tells_where_an_accounts_model_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let local = core
+            .ai
+            .connect(AiProvider::Ollama, Some(&ollama.url("/v1")), torro_core::account::Secret::default())
+            .await
+            .expect("ollama");
+        let remote = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        let place = |engine: String| {
+            let core = &core;
+            async move { Host::model(core, &engine).await.map(|access| access.place).expect("a model") }
+        };
+        assert_eq!(place(local.id).await, Place::Local);
+        assert_eq!(place(remote.id).await, Place::Remote, "its address is on this computer, but it is OpenRouter");
+        assert!(Host::client(&core).is_none(), "no assistant client yet");
+        let forbidden = Host::run(&core, Request::CalendarCollections, "test").await;
+        assert_eq!(code(&forbidden), "forbidden", "without its client the assistant may do nothing");
     }
 }

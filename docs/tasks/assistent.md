@@ -56,8 +56,13 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   Vertragstest Tool ↔ Katalog; `TORRO_BLESS=1 cargo test -p torro-ipc`.
 
 ### C.2 Antrieb A: Unterhaltung mit KI-Konto und Werkzeugen
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/assistant/**`
+- [x] erledigt (Datenregel fest: Mail und Mail-Einträge des Eingangs nur an Ollama, LM Studio oder einen Server auf
+  diesem Rechner, KI.1 ersetzt `assistant/data_rule.rs`; Werkzeuge über `Host::run` als Client des Assistenten;
+  Systemprompt vorläufig in `assistant/prompt.rs`, C.3 ersetzt ihn)
+- **Modell:** Opus · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/assistant/**`; nachgetragen
+  (Koordination): `crates/torroworkplace/src/{core,audit}.rs` (`Host` für den Kern, `Core::start` mit `Arc`,
+  Protokoll mit Antrieb), `crates/torroworkplace/src/account/ai.rs` (`AiAccounts::server`),
+  `crates/torro-ipc/src/assistant.rs` (Doku: wachsende Antwort)
 - Schleife: Modell ruft Werkzeug → Kern führt den Request **mit dem Client des Assistenten** aus (Rechte, Sammlungen,
   Freigaben wie bei jedem Client) → Ergebnis gekürzt zurück → bis zur Antwort. Höchstzahl Schritte je Nachricht.
 - Werkzeuge nur aus erlaubten und nicht abgeschalteten Bereichen; bei kleinen Modellen zuerst nur lesende; ab einer
@@ -69,7 +74,8 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   zu viele Schritte.
 
 ### C.3 Kontext: Skill „Torro Workplace“
-- [ ] erledigt
+- [x] erledigt (Name der Person bleibt leer, solange die Suite keinen kennt; Persönlichkeit hat den Platz vor dem
+  Skill, C.10 füllt ihn; nachgetragen: Verdrahtung in `assistant/model.rs`)
 - **Modell:** Opus · **Braucht:** C.2 · **Dateien:** `crates/torroworkplace/src/assistant/prompt.rs`,
   `crates/torroworkplace/assets/assistant/skill.md` (neu)
 - Fester Teil (englisch) und erzeugter Teil (Datum, Zeitzone, Sprache, erlaubte Bereiche) nach dem Konzept.
@@ -77,9 +83,15 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   Bereiche nennt; Test mit Mock-Modell, dass der Prompt ankommt.
 
 ### C.4 App `torroassistant`
-- [ ] erledigt
+- [x] erledigt (Chatfenster-Klasse `torro-assistant-chat` als `app::CHAT` in der App wie `torro-compose` der Inbox,
+  kein eigener Eintrag in `apps.list_apps`: Vorlagen merken die Befehlszeile; „Set up access“ öffnet die
+  Steuerzentrale über `apps.open_app`, die Seite „Assistant“ kommt mit C.6; `--bot` wird bis Stufe 2 abgelehnt;
+  `--size WxH` nur mit `--demo` für Bilder ohne Tiling-Manager; Sichtprüfung auf macOS ohne Hyprland)
 - **Modell:** Opus · **Braucht:** C.1 (Test-Antrieb reicht) · **Dateien:** `crates/torroassistant/**` (neu),
-  `Cargo.toml` (Wurzel, Mitglied), `crates/torro-core/src/app.rs` (`AppId::ASSISTANT`)
+  `Cargo.toml` (Wurzel, Mitglied), `crates/torro-core/src/app.rs` (`AppId::ASSISTANT`); nachgetragen (Koordination,
+  Listen der Apps): `crates/torro-gui/src/shell.rs` (Name und Symbol im App-Umschalter),
+  `scripts/design-check.sh`, `scripts/macos-dev-sign.sh`, `crates/torroworkplace/src/core.rs` (Test, der die Apps
+  zählt)
 - Seitenleiste, Verlauf, Eingabefeld mit Konto/Modell und „without …“, Werkzeug-Zeilen aufklappbar, Freigabe-Karte
   (`approvals.decide_approval` per Klick), Stop, erster Start mit Auswahl der Rechte (öffnet C.6-Ansicht), `--demo`.
 - **Eigene Chatfenster** (Abschnitt „Eigene Chatfenster“ im Konzept): `--chat <id>|new`, Fensterklasse
@@ -90,13 +102,15 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** `torro-design-review` in allen Größenklassen; Texte über `tr()`, Übersetzungen im Bericht.
 
 ### C.5 MCP-Tools `assistant_*`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
 - Je Katalogeintrag ein Tool; `assistant_send_message` wartet bis zur Antwort oder 60 s, dann Stand mit `after`.
 - **Abnahme:** Vertragstest; Test, dass ein Client der Art `assistant` `forbidden` bekommt.
 
 ### C.6 Steuerzentrale › Assistant
-- [ ] erledigt
+- [x] erledigt (direkt erreichbar mit `torroworkplace ui --section assistant`; kein Standard-Antrieb als
+  Einstellung, dafür fehlt ein `SettingKey` in `torro-ipc` – die Seite zeigt die Antriebe, ein neuer Chat nimmt
+  den zuletzt benutzten; der Assistent steht in Agents & API mit Verweis auf diese Seite)
 - **Modell:** Opus · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/ui/**`
 - Seite „Assistant“: Standard-Antrieb, Aufbewahrung, „What the assistant may use“ (dieselbe Rechte-Ansicht wie bei
   Clients, Vorlagen, Sammlungen). Erreichbar auch aus dem Hinweis bei `forbidden` im Chat.

@@ -443,8 +443,12 @@ fn zoom_control<'a>(level: Zoom) -> Element<'a, Message> {
 
 /// One choice of a list: the whole row is the button; the chosen one has a check mark at the end,
 /// neutral like the current item of a menu.
-fn choice<'a>(label: &'a str, chosen: bool, on_press: Message) -> Element<'a, Message> {
-    let check: Option<Element<'a, Message>> = chosen.then(|| {
+pub(super) fn choice<'a, M: Clone + 'a>(
+    label: impl text::IntoFragment<'a>,
+    chosen: bool,
+    on_press: M,
+) -> Element<'a, M> {
+    let check: Option<Element<'a, M>> = chosen.then(|| {
         icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) }).into()
     });
     pressable(setting_row(None, label, None, check), Some(on_press))

@@ -1465,7 +1465,7 @@ pub enum Request {
     /// The assistant works with the rights of its own client, not the caller's; `without` narrows
     /// them for this answer. Errors: `not-found` for an unknown conversation or engine, `busy`
     /// while the conversation still answers, `unsupported` for an engine whose answers the core
-    /// cannot run yet (AI accounts until task C.2), `error` for a limit
+    /// cannot run (an AI account while the core has not started), `error` for a limit
     /// ([`assistant::limit_refusal`]) or a conversation that cannot be stored.
     #[serde(rename = "assistant.send_message")]
     SendMessage {
@@ -1475,7 +1475,7 @@ pub enum Request {
         /// Who answers: an engine's id from `assistant.list_engines`.
         engine: String,
         /// The model of an AI account (an id from `ai.list_models`); left out, the engine picks
-        /// one that can call tools (task C.2).
+        /// an open-weights one that can call tools.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
         /// The message, at most 20,000 characters.

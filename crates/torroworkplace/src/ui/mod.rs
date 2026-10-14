@@ -1,5 +1,6 @@
 //! `torroworkplace ui`: the control centre – one place for everything that concerns the
-//! whole suite (accounts, workspaces, apps, agents, approvals, inbox, general settings). Concept: `docs/settings.md`,
+//! whole suite (accounts, workspaces, apps, the assistant, agents, approvals, inbox, general
+//! settings). Concept: `docs/settings.md`,
 //! tasks: `docs/tasks/steuerzentrale.md`.
 //!
 //! A separate Iced process (app id `torro-workplace`) that talks to the daemon over the
@@ -42,6 +43,7 @@ mod agent_wizard;
 mod agents;
 mod approvals;
 mod apps;
+mod assistant;
 mod general;
 mod glance;
 mod inbox;
@@ -84,6 +86,9 @@ pub enum Section {
     Accounts,
     Workspaces,
     Apps,
+    /// The assistant: what it may use, its engines and how long it keeps conversations (task C.6).
+    /// Opened directly with `torroworkplace ui --section assistant`.
+    Assistant,
     /// The agents, hooks and scripts that use the API, and their rights (task A.6).
     Agents,
     /// What agents wait for and what was decided (task A.8).
@@ -94,11 +99,12 @@ pub enum Section {
 }
 
 impl Section {
-    pub const ALL: [Section; 8] = [
+    pub const ALL: [Section; 9] = [
         Section::Overview,
         Section::Accounts,
         Section::Workspaces,
         Section::Apps,
+        Section::Assistant,
         Section::Agents,
         Section::Approvals,
         Section::Inbox,
@@ -117,6 +123,7 @@ impl Section {
             Section::Accounts => tr("Accounts"),
             Section::Workspaces => tr("Workspaces"),
             Section::Apps => tr("Apps"),
+            Section::Assistant => tr("Assistant"),
             Section::Agents => tr("Agents & API"),
             Section::Approvals => tr("Approvals"),
             Section::Inbox => tr("Inbox"),
@@ -131,6 +138,9 @@ impl Section {
             Section::Accounts => Icon::Cloud,
             Section::Workspaces => Icon::Layers,
             Section::Apps => Icon::AppWindow,
+            // Someone to talk to. The suite has no chat bubble icon yet; the sparkles are the
+            // agents'.
+            Section::Assistant => Icon::User,
             // The suite has no robot icon; the sparkles stand for AI agents.
             Section::Agents => Icon::Sparkles,
             // A person who confirms: the agent asks, the person decides.
@@ -148,6 +158,7 @@ impl Section {
             Section::Accounts => "accounts",
             Section::Workspaces => "workspaces",
             Section::Apps => "apps",
+            Section::Assistant => "assistant",
             Section::Agents => "agents",
             Section::Approvals => "approvals",
             Section::Inbox => "inbox",
@@ -303,6 +314,7 @@ pub struct Ui {
     accounts: accounts::State,
     workspaces: workspaces::State,
     apps: apps::State,
+    assistant: assistant::State,
     agents: agents::State,
     approvals: approvals::State,
     inbox: inbox::State,
@@ -352,6 +364,7 @@ pub enum Message {
     Accounts(accounts::Message),
     Workspaces(workspaces::Message),
     Apps(apps::Message),
+    Assistant(assistant::Message),
     Agents(agents::Message),
     Approvals(approvals::Message),
     Inbox(inbox::Message),
@@ -401,6 +414,7 @@ impl Ui {
             accounts: accounts::State::default(),
             workspaces: workspaces::State::default(),
             apps: apps::State::default(),
+            assistant: assistant::State::default(),
             agents: agents::State::default(),
             approvals: approvals::State::default(),
             inbox: inbox::State::default(),
@@ -561,6 +575,25 @@ impl Ui {
                 messages
             }
             Open::Inbox => vec![Message::Select(Section::Inbox)],
+            // The assistant with rights of its own (the demo's), before it has a client (the
+            // first start), with the rights offered on that first start (read only), and asking
+            // whether to turn it off.
+            Open::Assistant => vec![Message::Select(Section::Assistant)],
+            Open::AssistantFirstStart => {
+                self.data.clients.retain(|client| client.kind != torro_ipc::api::ASSISTANT_CLIENT);
+                vec![Message::Select(Section::Assistant)]
+            }
+            Open::AssistantReadOnly => {
+                for client in &mut self.data.clients {
+                    if client.kind == torro_ipc::api::ASSISTANT_CLIENT {
+                        client.rights = torro_ipc::api::Rights::assistant();
+                    }
+                }
+                vec![Message::Select(Section::Assistant)]
+            }
+            Open::AssistantTurnOff => {
+                vec![Message::Select(Section::Assistant), Message::Assistant(assistant::Message::AskTurnOff)]
+            }
             // The design packs: the demo's sample packs, one of them broken.
             Open::Design => vec![Message::Select(Section::General)],
             // No rules, so the rules group says where they come from.
@@ -620,8 +653,9 @@ impl Ui {
             iced::event::listen_with(keys),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             self.zoom.subscription().map(Message::Zoom),
-            // Ticks only while a change of an agent's rights waits to be saved.
+            // Ticks only while a change of an agent's or the assistant's rights waits to be saved.
             agents::subscription(&self.agents).map(Message::Agents),
+            assistant::subscription(&self.assistant).map(Message::Assistant),
         ];
         // The demo has nothing to reload.
         if !self.launch.demo {
@@ -694,6 +728,7 @@ impl Ui {
                     false => None,
                 };
                 agents::loaded(&mut self.agents);
+                assistant::loaded(&mut self.assistant);
                 // A mail account's page follows changes from outside while nothing is typed.
                 accounts::loaded(&mut self.accounts, &self.data);
                 // The add-account dialog follows the sign-in through the reloaded accounts.
@@ -712,8 +747,13 @@ impl Ui {
                 let in_dialog = accounts::answered(&mut self.accounts, &result);
                 approvals::answered(&mut self.approvals);
                 inbox::answered(&mut self.inbox);
-                // The "Connect agent" dialog shows its errors itself, and may go on with a job.
-                let next = agents::answered(&mut self.agents, &result);
+                // Turning the assistant on goes on with its rights; its new client's key is the
+                // Assistant page's alone, so the agents page never shows it. The "Connect agent"
+                // dialog shows its errors itself, and may go on with a job.
+                let next = match assistant::answered(&mut self.assistant, &result) {
+                    Some(next) => Some(next),
+                    None => agents::answered(&mut self.agents, &result),
+                };
                 // A refused design (the core checks it too) goes back to the stored one with the
                 // next reload; the notice says why.
                 if result.is_err() {
@@ -754,6 +794,7 @@ impl Ui {
                     Section::Accounts => accounts::escape(&self.accounts).map(Message::Accounts),
                     Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
                     Section::Agents => agents::escape(&self.agents).map(Message::Agents),
+                    Section::Assistant => assistant::escape(&self.assistant).map(Message::Assistant),
                     _ => None,
                 };
                 return match page {
@@ -765,6 +806,7 @@ impl Ui {
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
             Message::Workspaces(m) => workspaces::update(&mut self.workspaces, m, &self.data),
             Message::Apps(m) => apps::update(&mut self.apps, m, &self.data),
+            Message::Assistant(m) => assistant::update(&mut self.assistant, m, &self.data),
             Message::Agents(m) => agents::update(&mut self.agents, m, &self.data),
             Message::Approvals(m) => approvals::update(&mut self.approvals, m, &self.data),
             Message::Inbox(m) => inbox::update(&mut self.inbox, m, &self.data),
@@ -1020,6 +1062,7 @@ impl Ui {
         match self.section {
             Section::Accounts => accounts::header(&self.accounts, &self.data, class).map(Message::Accounts),
             Section::Agents => agents::header(&self.agents, &self.data, class).map(Message::Agents),
+            Section::Assistant => assistant::header(&self.assistant, &self.data, class).map(Message::Assistant),
             _ => Header::default(),
         }
     }
@@ -1032,6 +1075,7 @@ impl Ui {
                 workspaces::overlay(&self.workspaces, &self.data).map(|e| e.map(Message::Workspaces))
             }
             Section::Agents => agents::overlay(&self.agents, &self.data).map(|e| e.map(Message::Agents)),
+            Section::Assistant => assistant::overlay(&self.assistant, &self.data).map(|e| e.map(Message::Assistant)),
             _ => None,
         }
     }
@@ -1080,6 +1124,7 @@ impl Ui {
             Section::Accounts => accounts::view(&self.accounts, &self.data).map(Message::Accounts),
             Section::Workspaces => workspaces::view(&self.workspaces, &self.data).map(Message::Workspaces),
             Section::Apps => apps::view(&self.apps, &self.data).map(Message::Apps),
+            Section::Assistant => assistant::view(&self.assistant, &self.data).map(Message::Assistant),
             Section::Agents => agents::view(&self.agents, &self.data).map(Message::Agents),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
             Section::Inbox => inbox::view(&self.inbox, &self.data).map(Message::Inbox),
@@ -1738,13 +1783,63 @@ mod tests {
         assert_eq!(empty.trail(Section::Agents), Trail::None);
     }
 
+    /// Task C.6: the Assistant page opens directly (the chat's way here), its demo states show the
+    /// assistant off, on and reading only, and the key of its new client never reaches the agents
+    /// page.
+    #[test]
+    fn the_assistant_page_opens_directly_and_keeps_its_key_from_the_agents_page() {
+        use torro_ipc::api::{ASSISTANT_CLIENT, Rights, RightsTemplate};
+        assert_eq!(started(&["--section", "assistant"]).section, Section::Assistant);
+        let first = started(&["--demo", "--open", "assistant-first-start"]);
+        assert_eq!(first.section, Section::Assistant);
+        assert!(assistant::assistant_client(&first.data).is_none());
+        let on = started(&["--demo", "--open", "assistant"]);
+        let rights = assistant::assistant_client(&on.data).map(|client| client.rights.clone());
+        assert!(rights.is_some_and(|rights| rights != Rights::assistant()), "rights of its own");
+        let read_only = started(&["--demo", "--open", "assistant-read-only"]);
+        let rights = assistant::assistant_client(&read_only.data).map(|client| client.rights.clone());
+        assert_eq!(rights, Some(Rights::assistant()));
+        let mut off = started(&["--demo", "--open", "assistant-turn-off"]);
+        assert!(off.page_overlay().is_some(), "Turn off the assistant?");
+        let _ = off.update(Message::Escape);
+        assert!(off.page_overlay().is_none());
+        for ui in [&first, &on, &read_only] {
+            for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+                let _ = ui.window(class);
+            }
+        }
+
+        // The agents list shows the assistant; its row leads here.
+        let mut agents = started(&["--demo", "--section", "agents"]);
+        let _ = agents.update(Message::Agents(agents::Message::ShowAssistant));
+        assert_eq!(agents.section, Section::Assistant);
+
+        let mut real = ui(Section::Assistant);
+        assert_eq!(real.update(Message::Assistant(assistant::Message::TurnOn)).units(), 1, "clients.create_client");
+        let client = ClientInfo {
+            id: "a51c3e88".into(),
+            name: assistant::CLIENT_NAME.into(),
+            kind: ASSISTANT_CLIENT.into(),
+            created: chrono::Utc::now(),
+            last_used: None,
+            rights: RightsTemplate::ReadOnly.rights(),
+            agent: None,
+        };
+        let key = torro_ipc::IssuedKey::new(torro_ipc::Key::new("torro_a51c3e88_00ff"));
+        let next = real.update(Message::Sent(Ok(Response::ClientKey { client, key })));
+        assert_eq!(next.units(), 2, "clients.update_client with the chosen rights, and the reload");
+        assert_eq!(real.notice, None);
+        let _ = real.update(Message::Select(Section::Agents));
+        assert!(real.page_overlay().is_none(), "the agents page never shows the assistant's key");
+    }
+
     #[test]
     fn connect_agent_runs_through_the_demo_without_touching_anything() {
         for state in ["agent-wizard", "agent-wizard-rights", "agent-wizard-done", "agent-wizard-key"] {
             let mut ui = started(&["--demo", "--open", state]);
             assert_eq!(ui.section, Section::Agents, "{state}");
             assert!(ui.agents.wizard.is_some() && ui.page_overlay().is_some(), "{state}: the dialog is open");
-            assert_eq!(ui.data.clients.len(), 4, "{state}: the demo changes nothing");
+            assert_eq!(ui.data.clients.len(), 5, "{state}: the demo changes nothing");
             let _ = ui.update(Message::Escape);
             assert!(ui.agents.wizard.is_none(), "{state}: Escape closes it");
         }
@@ -1763,7 +1858,7 @@ mod tests {
         assert_eq!(demo.perform(Action::Copy("torro_x".into())).units(), 0, "the demo leaves the clipboard alone");
         let removed = demo.update(Message::Agents(agents::Message::Open(id)));
         assert_eq!(removed.units(), 0);
-        assert_eq!(demo.data.clients.len(), 4, "the demo changes nothing");
+        assert_eq!(demo.data.clients.len(), 5, "the demo changes nothing");
     }
 
     #[test]
