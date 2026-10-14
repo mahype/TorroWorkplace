@@ -1,0 +1,18 @@
+this is not json
+[1,2,3]
+"message"
+{"id":"aaaaaaaaaa","time":1760427000,"topic":"backups_x7Qp2","message":"no event"}
+{"event":5,"id":"aaaaaaaaaa","time":1760427000,"topic":"backups_x7Qp2"}
+{"id":"a-b","time":1760427000,"event":"message","topic":"backups_x7Qp2","message":"bad id"}
+{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","time":1760427000,"event":"message","topic":"backups_x7Qp2","message":"long id"}
+{"time":1760427000,"event":"message","topic":"backups_x7Qp2","message":"no id"}
+{"id":"bbbbbbbbbb","event":"message","topic":"backups_x7Qp2","message":"no time"}
+{"id":"cccccccccc","time":"1760427000","event":"message","topic":"backups_x7Qp2","message":"time as text"}
+{"id":"dddddddddd","time":1e+30,"event":"message","topic":"backups_x7Qp2","message":"time too large"}
+{"id":"eeeeeeeeee","time":1760427000,"event":"message","topic":"a/b","message":"bad topic"}
+{"id":"ffffffffff","time":1760427000,"event":"message","message":"no topic"}
+{"id":"gggggggggg","time":1760427000,"event":"message","topic":"ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt","message":"long topic"}
+{"id":"hhhhhhhhhh","time":1760427000,"event":"message","topic":"backups_x7Qp2,alerts_9Kd","message":"two topics"}
+{"id":"iiiiiiiiii","time":1760427000,"event":"poll_request","topic":"backups_x7Qp2"}
+{"id":"jjjjjjjjjj","time":1760427000,"event":"something_new","topic":"backups_x7Qp2","message":"later"}
+{"id":"kkkkkkkkkk","time":1760427000,"event":"message","topic":"backups_x7Qp2","message":"cut off

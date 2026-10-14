@@ -1669,7 +1669,7 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   kein Passwort; Anmeldefehler → weiter abfragen.
 
 ### E5.11 ntfy: Protokoll (Crate `torro-ntfy`)
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `Server`, `Topic`, `Login`, `Ntfy::{health,check,subscribe}`, `Subscription::next`, `read_event`; Fixtures nach der ntfy-Doku ohne Netz, gegen einen echten Server ungeprüft)
 - **Modell:** Opus · **Braucht:** – (sofort möglich nach Freigabe 10) · **Dateien:** neu `crates/torro-ntfy/`
   (`Cargo.toml`, `src/{lib,server,subscribe,message}.rs`, `tests/fixtures/*.ndjson`), Wurzel-`Cargo.toml`
 - **Server:** Adresse vereinheitlichen (ohne Schema `https`; leer = `https://ntfy.sh`); `may_send_login`: Zugangsdaten

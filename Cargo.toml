@@ -5,6 +5,7 @@ members = [
     "crates/torro-inbox",
     "crates/torro-pim-caldav",
     "crates/torro-pim-github",
+    "crates/torro-ntfy",
     "crates/torro-mail",
     "crates/torro-mail-imap",
     "crates/torro-ipc",
@@ -35,6 +36,7 @@ torro-pim = { path = "crates/torro-pim" }
 torro-inbox = { path = "crates/torro-inbox" }
 torro-pim-caldav = { path = "crates/torro-pim-caldav" }
 torro-pim-github = { path = "crates/torro-pim-github" }
+torro-ntfy = { path = "crates/torro-ntfy" }
 torro-mail = { path = "crates/torro-mail" }
 torro-mail-imap = { path = "crates/torro-mail-imap" }
 torro-tui = { path = "crates/torro-tui" }
