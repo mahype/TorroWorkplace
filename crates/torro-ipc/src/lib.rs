@@ -1979,7 +1979,8 @@ pub struct StatsCounts {
     /// a conversation, a repeated post). Dropped reports are in `muted`, not here.
     #[serde(default)]
     pub new: u32,
-    /// Entries opened while they were new (`inbox.open_item`).
+    /// Entries opened, at most once per entry and day: through `inbox.open_item`, or a mail entry read
+    /// in the mail window (`mail.get_message` with the app key, task E8.8b).
     #[serde(default)]
     pub opened: u32,
     /// Entries dismissed ("✕", `inbox.set_item_done` with `dismissed`); not in `done`.

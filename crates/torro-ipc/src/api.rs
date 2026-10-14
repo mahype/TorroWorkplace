@@ -1999,8 +1999,9 @@ static GET_STATS: Command = Command {
     access: Access::Read,
     mcp: Mcp::Tool,
     description: "Counts of the inbox over `range` `week`, `month` or `quarter` (7, 30, 90 days) up to `until` (a \
-                  local day, default today): per day and source the reports that came, were opened, dismissed, \
-                  done, snoozed, made a task or muted, popups and those quiet held back; reports per hour; totals \
+                  local day, default today): per day and source the reports that came, were opened (once per entry and \
+                  day, a mail read in the mail window too), dismissed, done, snoozed, made a task or muted, popups and \
+                  those quiet held back; reports per hour; totals \
                   with the median minutes until done; and suggestions what to mute (a trait of many entries of \
                   which few were opened): to act on one, call mute_item with its `item` as `id` and \
                   `option.scope` as `scope`; that keeps a rule, needs admin rights and usually waits for the \

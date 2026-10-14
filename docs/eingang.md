@@ -474,7 +474,8 @@ weil ein laufendes Fenster noch keinen Weg hat, sich etwas anderes zeigen zu las
 
 Die Zentrale zählt, damit Optimieren nicht beim Gefühl bleibt: je Tag, Quelle und Merkmal, was kam, was geöffnet,
 verworfen, erledigt, vertagt oder zur Aufgabe wurde, wie viele Popups es gab und wie lange es bis zum Erledigen
-dauerte. Ansicht für Woche, Monat und Quartal: Nachrichten je Tag nach Quelle, Stoßzeiten, und **„Where you could cut
+dauerte. „Geöffnet“ zählt höchstens einmal je Eintrag und Tag, über „Open“ oder indem man die Mail im Mail-Fenster
+liest. Ansicht für Woche, Monat und Quartal: Nachrichten je Tag nach Quelle, Stoßzeiten, und **„Where you could cut
 back“** mit einem fertigen Vorschlag je Zeile („Mute channel“, „Only failed checks“, „Hide sender“).
 
 - Gezählt wird **nur lokal** im Kern, in Tagessummen, höchstens 13 Monate. Keine Titel, keine Texte; Absender und
