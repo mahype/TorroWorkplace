@@ -2416,9 +2416,11 @@ static ASK_BOT: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Sends a message to a bot and starts its answer with the bot's engine and model, in `conversation` \
-                  (one of this bot) or in a new one. The bot acts with its own rights, not the caller's. The API \
-                  answers at once; follow the answer with assistant_get_conversation (needs read access to the \
-                  assistant) and `after` while `running` is true. `busy` while the conversation still answers.",
+                  (one of this bot) or in a new one. The bot acts with its own rights, not the caller's. The MCP \
+                  tool waits up to a minute for the answer, like assistant_send_message, and returns it with the \
+                  cursor `after`; the API answers at once, so follow the answer with assistant.get_conversation \
+                  (needs read access to the assistant) and `after` while `running` is true. `busy` while the \
+                  conversation still answers.",
 };
 
 #[cfg(test)]

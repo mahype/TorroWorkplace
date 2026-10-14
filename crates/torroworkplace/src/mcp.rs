@@ -46,6 +46,10 @@
 //! `assistant_get_conversation`. An answer still waiting for a person's approval is reported as the
 //! tool error `pending` with that approval's id, like the commands above.
 //!
+//! `bots_ask_bot` waits the same way (task B.4): the bot's answer, polled with
+//! `assistant.get_conversation`, up to 60 seconds; a client without read access to `assistant`
+//! gets the immediate answer with its cursor and a note instead.
+//!
 //! The server starts the core like the apps do, but only in a desktop session
 //! ([`desktop_session`]): a core started from an SSH login or a container would run without
 //! the window manager and tray the person expects.
@@ -254,7 +258,9 @@ impl TorroMcp {
         };
         Ok(match self.send(&request).await {
             Ok(Response::Pending { approval }) => self.wait_for_decision(approval).await,
-            Ok(Response::Conversation { conversation, entries }) if matches!(request, Request::SendMessage { .. }) => {
+            Ok(Response::Conversation { conversation, entries })
+                if matches!(request, Request::SendMessage { .. } | Request::AskBot { .. }) =>
+            {
                 self.wait_for_answer(conversation, entries).await
             }
             Ok(response) => result_of(response),
@@ -317,6 +323,11 @@ impl TorroMcp {
                 Ok(Response::Conversation { conversation: latest, entries: fresh }) => {
                     merge_entries(&mut entries, fresh);
                     conversation = latest;
+                }
+                // Without read access to `assistant` the answer cannot be followed: the immediate
+                // result goes back with its cursor, and the result says so (task B.4).
+                Ok(Response::Error { code, .. }) if code == "forbidden" => {
+                    return unfollowed_answer(conversation, entries);
                 }
                 Ok(other) => return result_of(other),
                 Err(err) => return failure("error", &format!("cannot reach the Torro Workplace core: {err}")),
@@ -649,6 +660,19 @@ fn waiting_for_answer(approval: &str, conversation: &ConversationSummary) -> Cal
         json!({ "code": "pending", "message": message, "approval": { "id": approval }, "conversation": conversation }),
     );
     result.content = vec![ContentBlock::text(format!("pending: {message}"))];
+    result
+}
+
+/// The answer when the agent may not read the assistant, so the wait cannot follow it (task B.4):
+/// the entries and the conversation as they are, with a note that the cursor goes on from here.
+fn unfollowed_answer(conversation: ConversationSummary, entries: Vec<Entry>) -> CallToolResult {
+    let note = format!(
+        "This client may not read the assistant (read access to `assistant` is missing), so the answer is not \
+         awaited. Follow it with assistant_get_conversation and after {} once the conversation stops running.",
+        conversation.last
+    );
+    let mut result = result_of(Response::Conversation { conversation, entries });
+    result.content.push(ContentBlock::text(note));
     result
 }
 
@@ -1868,6 +1892,34 @@ mod tests {
         assert!(assistant.clone().all(|c| c.mcp == Mcp::Tool));
     }
 
+    /// Task B.4: every `bots` command with a tool is a `bots_*` tool, the five of task B.1, and
+    /// each one builds its request.
+    #[test]
+    fn the_bot_tools_are_all_there_as_bots_underscore_names() {
+        let names: BTreeSet<&str> = tools().iter().map(|tool| tool.name.as_ref()).collect();
+        let catalogue: BTreeSet<String> = CATALOGUE
+            .iter()
+            .filter(|command| command.area == Area::Bots && command.mcp == Mcp::Tool)
+            .map(|command| command.tool_name())
+            .collect();
+        let five: BTreeSet<String> =
+            ["bots_list_bots", "bots_get_bot", "bots_save_bot", "bots_delete_bot", "bots_ask_bot"]
+                .map(String::from)
+                .into_iter()
+                .collect();
+        assert_eq!(catalogue, five);
+        assert!(five.iter().all(|name| names.contains(name.as_str())));
+        assert_eq!(
+            request_for("bots_ask_bot", args(json!({"bot": "1a2b3c4d", "text": "Hi"})), &Utc),
+            Ok(Request::AskBot { bot: "1a2b3c4d".into(), text: "Hi".into(), conversation: None })
+        );
+        assert_eq!(request_for("bots_list_bots", args(json!({})), &Utc), Ok(Request::ListBots));
+        assert_eq!(
+            request_for("bots_get_bot", args(json!({"id": "1a2b3c4d"})), &Utc),
+            Ok(Request::GetBot { id: "1a2b3c4d".into() })
+        );
+    }
+
     #[test]
     fn send_message_builds_its_request() {
         let arguments = args(json!({
@@ -1971,7 +2023,7 @@ mod tests {
         use std::sync::Arc;
 
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use torro_ipc::api::{ASSISTANT_CLIENT, AreaRights, Level, Rights, RightsTemplate};
+        use torro_ipc::api::{ASSISTANT_CLIENT, AreaRights, BOT_CLIENT, Level, Rights, RightsTemplate};
         use torro_ipc::server;
         use torro_setups::storage::Store;
         use torro_wm::Backend;
@@ -2000,13 +2052,18 @@ mod tests {
         }
 
         /// The keys of [`start_core_with`]: `writer` (read and write, no assistant), `reader` (read
-        /// only), `chat` (read, write and the assistant area in full) and `assistant` (the
-        /// assistant's own client, kind `assistant`).
+        /// only), `chat` (read, write and the assistant area in full), `assistant` (the assistant's
+        /// own client, kind `assistant`), `bot` (a bot's client, kind `bot`, with every right it may
+        /// never use), `bots_chat` (writes `bots`, reads `assistant`) and `bots_only` (writes `bots`,
+        /// no assistant at all).
         struct Keys {
             writer: Key,
             reader: Key,
             chat: Key,
             assistant: Key,
+            bot: Key,
+            bots_chat: Key,
+            bots_only: Key,
         }
 
         /// A core over `dir` listening on `dir/core.sock`, with the clients of [`Keys`] and an
@@ -2022,6 +2079,17 @@ mod tests {
             chat_rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
             let (_, chat) = clients.add("Chat", "claude-code", chat_rights).await.expect("added");
             let (_, assistant) = clients.add("Assistant", ASSISTANT_CLIENT, Rights::assistant()).await.expect("added");
+            let mut bot_rights = RightsTemplate::ReadAndWrite.rights();
+            bot_rights.areas.insert(Area::Bots, AreaRights { level: Level::Full, admin: true });
+            bot_rights.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: true });
+            let (_, bot) = clients.add("Bot", BOT_CLIENT, bot_rights).await.expect("added");
+            let mut bots_chat_rights = RightsTemplate::ReadAndWrite.rights();
+            bots_chat_rights.areas.insert(Area::Bots, AreaRights { level: Level::Write, admin: false });
+            bots_chat_rights.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+            let (_, bots_chat) = clients.add("Bots chat", "claude-code", bots_chat_rights).await.expect("added");
+            let mut bots_only_rights = RightsTemplate::ReadAndWrite.rights();
+            bots_only_rights.areas.insert(Area::Bots, AreaRights { level: Level::Write, admin: false });
+            let (_, bots_only) = clients.add("Bots only", "claude-code", bots_only_rights).await.expect("added");
             let settings = SettingsStore::at(dir.join("config").join("settings.json"));
             let core = Arc::new(
                 Core::new(
@@ -2045,7 +2113,7 @@ mod tests {
             });
             for _ in 0..100 {
                 if client::call_with_key(&socket, None, &Request::Ping).await.is_ok() {
-                    return (socket, Keys { writer, reader, chat, assistant });
+                    return (socket, Keys { writer, reader, chat, assistant, bot, bots_chat, bots_only });
                 }
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
@@ -2365,6 +2433,112 @@ mod tests {
                 .collect();
             assert_eq!(kinds, ["message"], "{sent}");
             assert_eq!(result["conversation"]["last"], json!(1), "the agent goes on from here: {sent}");
+        }
+
+        /// Makes a bot the way the person does, with the app key (`bots.save_bot`), and returns its id.
+        async fn bot_in(socket: &std::path::Path, dir: &std::path::Path) -> String {
+            let request = Request::SaveBot {
+                id: None,
+                name: "Travel planner".into(),
+                description: String::new(),
+                avatar: None,
+                engine: "test".into(),
+                model: None,
+                personality: String::new(),
+                instructions: String::new(),
+                skills: Vec::new(),
+            };
+            let app = crate::clients::tests::app_key(dir);
+            match client::call_with_key(socket, Some(&app), &request).await.expect("the core answers") {
+                Response::Bot { bot } => bot.id,
+                other => panic!("the bot is saved, got {other:?}"),
+            }
+        }
+
+        /// Task B.4: a bot's client gets `forbidden` for every `bots_*` tool, even with every right
+        /// in `bots` and `assistant` stored for it ("Keine Ketten").
+        #[tokio::test]
+        async fn a_bot_client_gets_forbidden_for_every_bots_tool() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (socket, keys) = start_core_with(dir.path(), Duration::from_millis(50)).await;
+            let id = bot_in(&socket, dir.path()).await;
+            let mut session = Session::start(TorroMcp::new(socket, Some(keys.bot), false)).await;
+
+            let calls = [
+                ("bots_list_bots", json!({})),
+                ("bots_get_bot", json!({"id": id})),
+                ("bots_save_bot", json!({"name": "Other", "engine": "test"})),
+                ("bots_delete_bot", json!({"id": id})),
+                ("bots_ask_bot", json!({"bot": id, "text": "Hello"})),
+            ];
+            let tools: BTreeSet<&str> =
+                tools().iter().map(|tool| tool.name.as_ref()).filter(|name| name.starts_with("bots_")).collect();
+            let called: BTreeSet<&str> = calls.iter().map(|(name, _)| *name).collect();
+            assert_eq!(called, tools, "every bots tool is checked here");
+            for (name, arguments) in calls {
+                let answer = session.call(name, arguments).await;
+                assert_eq!(answer["isError"], true, "{name}: {answer}");
+                assert_eq!(answer["structuredContent"]["code"], "forbidden", "{name}: {answer}");
+            }
+        }
+
+        /// Task B.4: `bots_ask_bot` waits like `assistant_send_message` and returns the bot's answer
+        /// with the cursor; the cursor reads on from there and finds nothing new.
+        #[tokio::test]
+        async fn ask_bot_waits_for_the_answer_and_returns_it_with_the_cursor() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (socket, keys) = start_core_with(dir.path(), Duration::from_millis(50)).await;
+            let id = bot_in(&socket, dir.path()).await;
+            let mut session = Session::start(TorroMcp::new(socket, Some(keys.bots_chat), false)).await;
+
+            let asked = session.call("bots_ask_bot", json!({"bot": id, "text": "What is on tomorrow?"})).await;
+            assert_eq!(asked["isError"], false, "{asked}");
+            let result = &asked["structuredContent"];
+            assert_eq!(result["result"], "conversation", "{asked}");
+            assert_eq!(result["conversation"]["running"], false, "the test engine's answer is finished: {asked}");
+            assert_eq!(result["conversation"]["bot"], json!(id), "the conversation is the bot's: {asked}");
+            let entries = result["entries"].as_array().expect("entries");
+            assert_eq!(entries.last().and_then(|entry| entry["kind"].as_str()), Some("answer"), "{asked}");
+            let (conversation, cursor) = (result["conversation"]["id"].clone(), result["conversation"]["last"].clone());
+            assert_eq!(cursor, json!(entries.len()), "the cursor is the newest entry: {asked}");
+
+            let next = session.call("assistant_get_conversation", json!({"id": conversation, "after": cursor})).await;
+            assert_eq!(next["structuredContent"]["entries"], json!([]), "{next}");
+        }
+
+        /// Task B.4: an answer that outlasts the wait comes back running, with the cursor to go on from.
+        #[tokio::test]
+        async fn ask_bot_returns_what_there_is_when_the_answer_takes_longer() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            // The test engine waits an hour before its first step, so the answer outlasts the wait.
+            let (socket, keys) = start_core_with(dir.path(), Duration::from_secs(3600)).await;
+            let id = bot_in(&socket, dir.path()).await;
+            let server =
+                TorroMcp::new(socket, Some(keys.bots_chat), false).with_answer_wait(Duration::from_millis(300));
+            let mut session = Session::start(server).await;
+
+            let asked = session.call("bots_ask_bot", json!({"bot": id, "text": "Hello"})).await;
+            assert_eq!(asked["isError"], false, "{asked}");
+            let result = &asked["structuredContent"];
+            assert_eq!(result["conversation"]["running"], true, "{asked}");
+            assert_eq!(result["conversation"]["last"], json!(1), "the agent goes on from here: {asked}");
+            assert_eq!(asked["content"].as_array().map(Vec::len), Some(1), "no note: the answer was read: {asked}");
+        }
+
+        /// Task B.4: a client without read access to `assistant` gets the immediate answer with its
+        /// cursor and a note that the answer is not awaited, instead of an error.
+        #[tokio::test]
+        async fn ask_bot_without_read_access_to_the_assistant_returns_at_once_with_a_note() {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let (socket, keys) = start_core_with(dir.path(), Duration::from_secs(3600)).await;
+            let id = bot_in(&socket, dir.path()).await;
+            let mut session = Session::start(TorroMcp::new(socket, Some(keys.bots_only), false)).await;
+
+            let asked = session.call("bots_ask_bot", json!({"bot": id, "text": "Hello"})).await;
+            assert_eq!(asked["isError"], false, "{asked}");
+            assert_eq!(asked["structuredContent"]["conversation"]["running"], true, "{asked}");
+            let note = asked["content"][1]["text"].as_str().unwrap_or_default();
+            assert!(note.contains("assistant_get_conversation"), "the note says how to go on: {asked}");
         }
 
         #[tokio::test]
