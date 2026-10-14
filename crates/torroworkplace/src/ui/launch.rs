@@ -708,6 +708,29 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     ]
 }
 
+/// The voice status of the demo: openWakeWord without its model, `parec`, whisper.cpp with a model,
+/// Piper without a voice; two microphones.
+fn demo_voice() -> torro_ipc::VoiceStatus {
+    use torro_ipc::{VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
+    let part = |part, program: &str, missing| VoiceProgram { part, program: Some(program.into()), missing };
+    VoiceStatus {
+        listener: VoiceState::Off,
+        installed: true,
+        problem: None,
+        programs: vec![
+            part(VoicePart::WakeWord, "openWakeWord", Some(VoiceMissing::Model)),
+            part(VoicePart::Recorder, "parec", None),
+            part(VoicePart::SpeechToText, "whisper-cli", None),
+            part(VoicePart::Speech, "piper", Some(VoiceMissing::Model)),
+        ],
+        microphones: vec![
+            "alsa_input.pci-0000_00_1f.3.analog-stereo".into(),
+            "alsa_input.usb-RODE_NT-USB-00.analog-stereo".into(),
+        ],
+        folder: Some("~/.local/share/torroassistant/voice".into()),
+    }
+}
+
 /// The sample answer `--demo` gives to a request whose answer is a state of its own: an agent's
 /// activity, a new key and a new client of "Connect agent" (made-up keys, never working ones; the
 /// new client is not added to the list). Every other request gets none and is dropped, so the
@@ -770,6 +793,10 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         // TorroMail (task M7.4): four accounts, one of them connected already; Fastmail's keychain
         // entry cannot be read, so its take-over fails and offers the password field.
         Request::TorroMailAccounts => Some(Response::TorroMailAccounts { accounts: demo_torromail(data) }),
+        // Voice (task C.9): every program found but Piper's voice, two microphones; the test hears
+        // a sentence. Nothing records.
+        Request::VoiceStatus => Some(Response::Voice { voice: demo_voice() }),
+        Request::TestVoice => Some(Response::Transcript { text: "What is on my calendar today?".into() }),
         Request::ImportTorroMailAccount { id } if id == DEMO_LOCKED => Some(Response::Error {
             code: "error".into(),
             message: tr("The password could not be read from TorroMail. Enter it to connect.").into(),

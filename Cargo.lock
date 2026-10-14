@@ -5341,6 +5341,8 @@ dependencies = [
  "chrono",
  "iced",
  "serde_json",
+ "tempfile",
+ "tokio",
  "torro-core",
  "torro-gui",
  "torro-ipc",

@@ -18,4 +18,9 @@ torro-ipc.workspace = true
 chrono.workspace = true
 iced.workspace = true
 serde_json.workspace = true
+# The voice listener (`--listen`, task C.9) asks the core from a plain loop, without a window.
+tokio.workspace = true
 webbrowser.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
