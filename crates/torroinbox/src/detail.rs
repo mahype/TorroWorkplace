@@ -4,7 +4,9 @@
 //! Head: the source and the view as path. Title: the entry's title, wrapping; for a coding agent's
 //! session with a name (task E2.6) the name, with the entry's title below it in `text_2`
 //! ([`heading`]). Body: "Properties"
-//! (status as dot and word, lane, source, time with how long ago, merged reports), for coding
+//! (status as dot and word – "Urgent" for an ntfy alert –, lane, source, for a service what its
+//! traits say – repository and reason, app and person, topic and priority, task E5.15 –, time with
+//! how long ago, merged reports), for coding
 //! agents "Agent" (agent, project, branch and – for a hook's entry – "Go to window", E2.4), the
 //! message with – right under it – a quiet note that the text comes from outside the suite, and a
 //! link to open when it is safe ([`openable`]). Every link opens through the core
@@ -165,7 +167,9 @@ fn heading<'a>(item: &Item) -> Element<'a, Message> {
     column![panel::title(name), state].spacing(space::xs()).into()
 }
 
-/// Status, lane, source, time and – from two on – the number of merged reports.
+/// Status, lane, source, what a service's traits say (task E5.15, `list::facet_words`: repository
+/// and reason, app and person, kind of conversation, topic and priority – each a row with its
+/// icon, foreign values as plain text), time and – from two on – the number of merged reports.
 fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
     let (status, word) = status(item, now);
     let dot = container(widgets::status_dot(status)).center_x(icon::SIZE);
@@ -173,8 +177,9 @@ fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message
         widgets::prop_row(None, row![dot, one_line_text(word)].spacing(space::s()).align_y(Alignment::Center), None),
         value_row(app::lane_icon(item.lane), lane_label(item.lane).to_owned()),
         value_row(list::source_icon(&item.source), item.source.label()),
-        value_row(Icon::Clock, when(item.updated, now)),
     ];
+    rows.extend(list::facet_words(item).into_iter().map(|(mark, word)| value_row(mark, word)));
+    rows.push(value_row(Icon::Clock, when(item.updated, now)));
     if item.count > 1 {
         rows.push(value_row(Icon::Repeat, trf("{n} reports", &[("n", &item.count)])));
     }
@@ -192,7 +197,8 @@ pub fn status(item: &Item, now: DateTime<Utc>) -> (Status, String) {
         State::New | State::Seen if item.kind == Kind::AccountProblem => {
             (Status::Error, tr("Needs your attention").to_owned())
         }
-        State::New | State::Seen if item.urgent => (Status::Attention, tr("Waiting for you").to_owned()),
+        // "Urgent" for an alert (task E5.15), which waits for nobody.
+        State::New | State::Seen if item.urgent => (Status::Attention, list::waiting_word(item).to_owned()),
         State::New => (Status::Inactive, tr("New").to_owned()),
         State::Seen => (Status::Inactive, tr("Seen").to_owned()),
     }
@@ -413,6 +419,18 @@ mod tests {
         let (dot, word) = status(&sample("demo-10"), now());
         assert_eq!(dot, Status::Inactive);
         assert!(word.starts_with(tr("Later until {time}").trim_end_matches("{time}")), "{word}");
+        // Task E5.15: an alert is urgent, nobody waits there.
+        assert_eq!(status(&sample("demo-18"), now()), (Status::Attention, tr("Urgent").to_owned()));
+    }
+
+    /// Task E5.15: a service's traits stand among the properties, one row each.
+    #[test]
+    fn a_service_shows_its_traits_as_properties() {
+        let plain = properties(&sample("demo-6"), now()).len();
+        assert_eq!(properties(&sample("demo-14"), now()).len(), plain + 2, "repository and reason");
+        assert_eq!(properties(&sample("demo-16"), now()).len(), plain + 2, "app and person");
+        assert_eq!(properties(&sample("demo-17"), now()).len() - 1, plain + 1, "kind, and two reports");
+        assert_eq!(properties(&sample("demo-18"), now()).len(), plain + 2, "topic and priority");
     }
 
     #[test]

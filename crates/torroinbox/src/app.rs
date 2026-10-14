@@ -637,7 +637,8 @@ pub fn mute_icon(scope: MuteScope) -> Icon {
             FacetKey::Conversation => Icon::ListTree,
             FacetKey::Repo => Icon::FolderGit2,
             FacetKey::Reason | FacetKey::Result => Icon::CircleDot,
-            FacetKey::App | FacetKey::Topic => Icon::AppWindow,
+            FacetKey::App => Icon::Cloud,
+            FacetKey::Topic => Icon::RadioTower,
             FacetKey::Person => Icon::User,
             FacetKey::Priority => Icon::SignalHigh,
             FacetKey::Tag => Icon::Tag,
@@ -4963,6 +4964,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 deciding: self.deciding.is_some(),
                 single_source: self.shown.single().is_some(),
                 icon: self.launch.kind.view_icon(&self.view),
+                sources: &self.sources,
+                attention: palette(&self.theme()).attention,
             });
             return container(content.push(board).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_insights() {
@@ -5117,11 +5120,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             .iter()
             .map(|info| {
                 let view = View::Source(info.source.clone());
-                let label = if info.muted {
-                    trf("{source} (muted)", &[("source", &info.source.label())])
-                } else {
-                    info.source.label()
-                };
+                // Two accounts of one service are told apart by the account (task E5.15).
+                let name = list::source_name(&info.source, self.sources.iter().map(|info| &info.source));
+                let label = if info.muted { trf("{source} (muted)", &[("source", &name)]) } else { name };
                 let count = usize::try_from(info.open).ok().filter(|&open| open > 0);
                 NavEntry {
                     mark: Mark::Icon(view.icon()),
@@ -6325,8 +6326,8 @@ mod tests {
         assert_eq!(groups, [(list::Group::Waiting, 0..4), (list::Group::Other, 4..18)], "waiting entries get a head");
         assert_eq!(
             app.sources.len(),
-            15,
-            "suite, two agents, six scripts, two mail accounts, GitHub, Nextcloud, Talk, ntfy"
+            14,
+            "suite, two agents, five scripts, two mail accounts, GitHub, Nextcloud, Talk, ntfy"
         );
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("For me"))]));
     }

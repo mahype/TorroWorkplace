@@ -60,7 +60,7 @@ use torro_gui::{style, typo};
 use torro_inbox::demo::DemoSource;
 use torro_inbox::item::ItemTask;
 use torro_inbox::source::TaskList;
-use torro_inbox::{Action, InboxError, InboxSource, Item, Kind, Lane, Link, SourceKind, State};
+use torro_inbox::{Action, InboxError, InboxSource, Item, Kind, Lane, Link, SourceKind, SourceRef, State};
 use torro_ipc::Quiet;
 use torro_ipc::inbox::InboxClient;
 
@@ -282,14 +282,18 @@ pub fn handed_off<'a>(items: &'a [Item], done: &'a [Item]) -> Vec<&'a ItemTask> 
 }
 
 /// Where an entry comes from, as the tiles count it: all mail accounts together, all coding agents
-/// together, the suite, and every script on its own.
+/// together, the suite, every script on its own, and each connected service with all its accounts
+/// together (task E5.15).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Origin {
     Mail,
     Agents,
     Suite,
-    /// A script or service, by its client's name.
+    /// A script, by its client's name.
     Script(String),
+    /// A connected service – [`SourceKind::Github`], [`SourceKind::Nextcloud`], [`SourceKind::Talk`]
+    /// or [`SourceKind::Ntfy`] –, every account of it together, as all mail accounts are one tile.
+    Service(SourceKind),
 }
 
 impl Origin {
@@ -300,30 +304,37 @@ impl Origin {
             SourceKind::Agent => Origin::Agents,
             SourceKind::Suite => Origin::Suite,
             SourceKind::Script => Origin::Script(item.source.name.clone()),
-            // For now like a script, by the product's name (task E5.1); E5.15 gives them their own.
-            SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
-                Origin::Script(item.source.label())
+            kind @ (SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy) => {
+                Origin::Service(kind)
             }
         }
     }
 
-    /// The name in the tile and in "Coming back".
+    /// A source of the origin's kind without an account, for its name and icon.
+    fn service(kind: SourceKind) -> SourceRef {
+        SourceRef { kind, name: String::new() }
+    }
+
+    /// The name in the tile and in "Coming back": "Mail", "Agents", "Suite", the script's name, the
+    /// service's ("GitHub", "Nextcloud", "Talk", "ntfy").
     pub fn name(&self) -> String {
         match self {
             Origin::Mail => tr("Mail").to_owned(),
             Origin::Agents => tr("Agents").to_owned(),
             Origin::Suite => tr("Suite").to_owned(),
             Origin::Script(name) => list::one_line(name),
+            Origin::Service(kind) => Origin::service(*kind).label(),
         }
     }
 
     /// The icon in the tile, as the sources have them (`list::source_icon`).
-    fn icon(&self) -> Icon {
+    pub fn icon(&self) -> Icon {
         match self {
             Origin::Mail => Icon::Mail,
             Origin::Agents => Icon::Sparkles,
             Origin::Suite => Icon::LayoutGrid,
             Origin::Script(_) => Icon::AppWindow,
+            Origin::Service(kind) => list::source_icon(&Origin::service(*kind)),
         }
     }
 }
@@ -452,7 +463,7 @@ fn tile_line(origin: &Origin, entries: &[&Item]) -> String {
             }
             parts.join(" · ")
         }
-        Origin::Suite | Origin::Script(_) => {
+        Origin::Suite | Origin::Script(_) | Origin::Service(_) => {
             entries.iter().max_by_key(|item| item.updated).map(|item| list::words(item).0).unwrap_or_default()
         }
     }
@@ -1230,11 +1241,16 @@ fn big_decide<'a>(item: &Item, acts: &[Act], deciding: bool) -> Element<'a, Mess
     block.into()
 }
 
-/// The meta line of an entry of To sort: the sender of a mail, else the source; the number of
-/// reports from two on; the time.
+/// The meta line of an entry of To sort: the sender of a mail, else the source; "Urgent" or "Waiting
+/// for you" while it waits; what a service's traits say ("torro/workplace · Review requested",
+/// `list::facet_line`, task E5.15); the number of reports from two on; the time.
 fn sort_meta(item: &Item, rows: &Rows<'_>) -> String {
     let who = if item.source.kind == SourceKind::Mail { list::sender(item).0 } else { item.source.label() };
     let mut parts = vec![who];
+    if list::is_waiting(item) {
+        parts.push(list::waiting_word(item).to_owned());
+    }
+    parts.extend(list::facet_line(item));
     if item.count > 1 {
         parts.push(trf("{n} reports", &[("n", &item.count)]));
     }
@@ -1242,14 +1258,17 @@ fn sort_meta(item: &Item, rows: &Rows<'_>) -> String {
     parts.join(" · ")
 }
 
-/// What leads an entry of To sort: the sender's avatar for mail, else the source's tile.
-fn lead<'a>(item: &Item, rows: &Rows<'_>) -> Element<'a, Message> {
+/// What leads an entry of To sort: the sender's avatar for mail, else the source's tile – tinted in
+/// `attention` while the entry waits (an ntfy alert, task E5.15), so urgency shows without Torro red
+/// and, with the meta line's word, not by colour alone.
+fn lead<'a>(item: &Item, rows: &Rows<'_>, attention: Color) -> Element<'a, Message> {
     if item.source.kind == SourceKind::Mail {
         let (name, _) = list::sender(item);
         let account = list::account_index(item, &rows.accounts);
         return list::avatar(&name, account, item.state == State::New, size::avatar());
     }
-    widgets::source_tile(TileFace::Icon(list::source_icon(&item.source)), TileSize::Large, None)
+    let tint = list::is_waiting(item).then_some(attention);
+    widgets::source_tile(TileFace::Icon(list::source_icon(&item.source)), TileSize::Large, tint)
 }
 
 /// Where an act of To sort stands in the fixed columns of its buttons ([`SortSlots`]): what the
@@ -1338,7 +1357,7 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
         let line =
             buttons.into_iter().enumerate().map(|(i, button)| notifications::card_button(button, words.worded(i)));
         let line = row(line).spacing(space::s()).align_y(Alignment::Center);
-        vec![widgets::card_head(Some(lead(item, &data.rows)), title, meta, None), line.into()]
+        vec![widgets::card_head(Some(lead(item, &data.rows, data.attention)), title, meta, None), line.into()]
     } else {
         let mut line = row![].spacing(space::s()).align_y(Alignment::Center);
         for (slot, width) in slots.widths.iter().enumerate() {
@@ -1350,7 +1369,12 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
             line = line.push(container(cell).width(width));
         }
         let words = container(widgets::card_head(None, title, meta, None)).width(Fill);
-        vec![row![lead(item, &data.rows), words, line].spacing(space::m()).align_y(Alignment::Center).into()]
+        vec![
+            row![lead(item, &data.rows, data.attention), words, line]
+                .spacing(space::m())
+                .align_y(Alignment::Center)
+                .into(),
+        ]
     };
     let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
     if selected { widgets::anchored(&data.rows.anchor, card) } else { card }
@@ -1644,6 +1668,57 @@ mod tests {
         assert!(mail.to_sort.iter().all(|item| item.source.kind == SourceKind::Mail));
         assert_eq!(tile_columns(0.0), 1);
         assert!(tile_columns(1200.0) > tile_columns(600.0));
+    }
+
+    /// Task E5.15: one tile per service, all its accounts together, with the service's icon; its
+    /// entries in To sort say what their traits say, an alert that it is urgent.
+    #[test]
+    fn services_have_a_tile_each_and_say_their_traits() {
+        let mut items = entries(StateFilter::Open);
+        // A second GitHub account joins the tile of the first.
+        let mut other = find(&items, "demo-14");
+        other.id = "demo-14b".into();
+        other.source = SourceRef::github("anna-work");
+        items.push(other);
+        let tiles = tiles(&items);
+        let service = |kind| tiles.iter().find(|tile| tile.origin == Origin::Service(kind)).map(|tile| tile.count);
+        assert_eq!(service(SourceKind::Github), Some(4), "both accounts, Info not counted");
+        assert_eq!([SourceKind::Nextcloud, SourceKind::Talk, SourceKind::Ntfy].map(service), [Some(1); 3]);
+        assert!(!tiles.iter().any(|tile| matches!(&tile.origin, Origin::Script(name) if name == "github")));
+        let names = [SourceKind::Github, SourceKind::Nextcloud, SourceKind::Talk, SourceKind::Ntfy]
+            .map(|kind| (Origin::Service(kind).name(), Origin::Service(kind).icon()));
+        assert_eq!(
+            names,
+            [
+                ("GitHub".to_owned(), Icon::Github),
+                ("Nextcloud".to_owned(), Icon::Cloud),
+                ("Talk".to_owned(), Icon::MessageCircle),
+                ("ntfy".to_owned(), Icon::RadioTower)
+            ]
+        );
+        let github = Sections::of(&items, Some(&Origin::Service(SourceKind::Github)));
+        assert_eq!(github.to_sort.len(), 4);
+
+        let view = crate::app::View::Overview;
+        let rows = Rows {
+            view: &view,
+            selected: None,
+            now: now(),
+            anchor: widgets::Anchor::new(),
+            accounts: Vec::new(),
+            hidable: Vec::new(),
+            look: list::Look::Rows,
+        };
+        let review = find(&items, "demo-14");
+        let time = list::time_text(&review, &view, now());
+        assert_eq!(
+            sort_meta(&review, &rows),
+            format!("GitHub · torro/workplace · {} · {time}", tr("Review requested"))
+        );
+        let alert = find(&items, "demo-18");
+        assert!(sort_meta(&alert, &rows).contains(tr("Urgent")), "an alert says it is urgent");
+        assert_eq!(acts(&alert), [Act::Open, Act::Task, Act::Event, Act::Later, Act::Dismiss]);
+        assert_eq!(acts(&find(&items, "demo-17")), [Act::Open, Act::Task, Act::Event, Act::Later, Act::Dismiss]);
     }
 
     #[test]

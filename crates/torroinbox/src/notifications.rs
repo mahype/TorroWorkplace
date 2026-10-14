@@ -28,6 +28,13 @@
 //!   ([`source_chips`]).
 //! - **Row** (compact density, `list::notice_content`): the row of every view with its action bar
 //!   ([`row_actions`]): Open, Task, Later, Mute, ✕.
+//! - **Services** (task E5.15): GitHub, Nextcloud, Talk and ntfy have their own icons
+//!   (`list::source_icon`) and columns; with two accounts of one service its columns, chips and
+//!   checks name the account (`list::source_name`). The meta line says what the traits say
+//!   ("torro/workplace · Review requested", "Files · Jonas Weber", "Server · Priority 5",
+//!   `list::facet_line`). Their buttons are those of every app – ✕ · Open · Task · Later · bell, Talk
+//!   without Reply until a source can answer. An ntfy alert is urgent: its tile is tinted in the
+//!   attention colour and its meta line says "Urgent" – never Torro red, never colour alone.
 //! - **The question after a finished task** (task E8.1b): the suite's "You finished a task from a
 //!   mail" (`hub::is_follow_up`), shown when the window shows the suite, has the hub's buttons –
 //!   Reply · Mark mail done · Not now – on its card and in its row, and no ✕ beside "Not now".
@@ -477,19 +484,23 @@ pub struct Names {
     pub lane: bool,
 }
 
-/// The line under a card's title: the source and the lane as far as `names` asks (in "New" only),
-/// "Waiting for you" while it waits, the number of reports from two on, and the time
-/// (`list::time_text`), with " · " between them.
-pub fn meta_line(item: &Item, rows: &Rows<'_>, names: Names) -> String {
+/// The line under a card's title: the source as far as `names` asks (with its account where
+/// `known`, every source the inbox lists, has two of its service, `list::source_name`), "Waiting for
+/// you" – "Urgent" for an alert – while it waits, else the lane as far as `names` asks (in "New"
+/// only), what its traits say (`list::facet_line`, task E5.15), the number of reports from two on,
+/// and the time (`list::time_text`), with " · " between them. The urgency comes before the traits, so
+/// a narrow card cuts the traits, never the word.
+pub fn meta_line(item: &Item, rows: &Rows<'_>, names: Names, known: &[SourceInfo]) -> String {
     let mut parts = Vec::new();
     if names.source {
-        parts.push(item.source.label());
+        parts.push(list::source_name(&item.source, known.iter().map(|info| &info.source)));
     }
     if list::is_waiting(item) {
-        parts.push(tr("Waiting for you").to_owned());
+        parts.push(list::waiting_word(item).to_owned());
     } else if names.lane && item.lane == Lane::Info && *rows.view == View::Overview {
         parts.push(tr("Info").to_owned());
     }
+    parts.extend(list::facet_line(item));
     if item.count > 1 {
         parts.push(trf("{n} reports", &[("n", &item.count)]));
     }
@@ -683,6 +694,11 @@ pub struct BoardData<'a> {
     pub single_source: bool,
     /// The icon of the view, for its empty state.
     pub icon: Icon,
+    /// Every source the inbox lists (`inbox.list_sources`), so two accounts of one service are told
+    /// apart in the heads of the columns and on the cards (`list::source_name`, task E5.15).
+    pub sources: &'a [SourceInfo],
+    /// The theme's attention colour: the tile of a card that waits is tinted in it (an alert).
+    pub attention: Color,
 }
 
 /// What the empty state of `view` says in the notifications window: "Nothing new." for "New", as
@@ -792,7 +808,7 @@ fn columns<'a>(data: &BoardData<'a>, count: usize, width: f32) -> Element<'a, Me
     let shown = columns.len().max(1) as f32;
     let inner = ((width - list::cards_side() - (shown - 1.0) * gap) / shown).max(0.0);
     let inset = list::cards_inset();
-    let heads = columns.iter().map(|column| container(head(column, inner)).width(Fill).into());
+    let heads = columns.iter().map(|column| container(head(column, inner, data.sources)).width(Fill).into());
     let heads = container(row(heads).spacing(gap))
         .padding(Padding::new(0.0).top(inset.top).left(inset.left).right(inset.right));
     let item_gap = if data.density == Density::Comfortable { gap } else { 0.0 };
@@ -805,11 +821,15 @@ fn columns<'a>(data: &BoardData<'a>, count: usize, width: f32) -> Element<'a, Me
     column![heads, scroll(bodies.into())].width(Fill).height(Fill).into()
 }
 
-/// The head of a column `width` wide: the source's tile, its name and the number of its entries, as
-/// high as a property row ([`size::control()`]).
-fn head<'a>(column: &AppColumn<'_>, width: f32) -> Element<'a, Message> {
+/// The head of a column `width` wide: the source's tile, its name – with the account where `known`
+/// has two of its service (`list::source_name`) – and the number of its entries, as high as a
+/// property row ([`size::control()`]).
+fn head<'a>(column: &AppColumn<'_>, width: f32, known: &[SourceInfo]) -> Element<'a, Message> {
     let (face, name) = match &column.head {
-        Head::Source(source) => (TileFace::Icon(list::source_icon(source)), source.label()),
+        Head::Source(source) => (
+            TileFace::Icon(list::source_icon(source)),
+            list::source_name(source, known.iter().map(|info| &info.source)),
+        ),
         // Not the suite's grid: the layers of "the rest".
         Head::Others => (TileFace::Icon(Icon::Layers), tr("Other apps").to_owned()),
     };
@@ -839,11 +859,13 @@ fn lane_name(lane: Lane) -> &'static str {
 /// the menus of its buttons open at it. A click opens it in the panel.
 fn card<'a>(item: &'a Item, data: &BoardData<'a>, names: Names) -> Element<'a, Message> {
     let selected = data.rows.selected == Some(item.id.as_str());
-    let tile = widgets::source_tile(TileFace::Icon(list::source_icon(&item.source)), TileSize::Medium, None);
+    // Tinted in the attention colour while it waits (an alert), as rows tint their icon.
+    let tint = list::is_waiting(item).then_some(data.attention);
+    let tile = widgets::source_tile(TileFace::Icon(list::source_icon(&item.source)), TileSize::Medium, tint);
     let (title, _) = list::words(item);
-    let mut head = row![widgets::card_head(Some(tile), title, meta_line(item, &data.rows, names), None)]
-        .spacing(space::m())
-        .align_y(Alignment::Center);
+    let meta = meta_line(item, &data.rows, names, data.sources);
+    let mut head =
+        row![widgets::card_head(Some(tile), title, meta, None)].spacing(space::m()).align_y(Alignment::Center);
     if dismissable(item) {
         let dismiss = Message::Act(item.id.clone(), Command::Dismiss);
         head = head.push(widgets::icon_button(Icon::X, tr("Dismiss notification"), Some(dismiss)));
@@ -940,7 +962,8 @@ pub fn source_rows<'a>(
             let open = sources.iter().find(|info| info.source == *source).map_or(0, |info| info.open);
             let trail = usize::try_from(open).ok().filter(|&open| open > 0).map_or(Trail::None, Trail::Count);
             let mark = Mark::Check(colour, shown.shows(source));
-            widgets::sidebar_item_in(mode, mark, source.label(), trail, false, Message::ToggleSource(source.clone()))
+            let name = list::source_name(source, listed);
+            widgets::sidebar_item_in(mode, mark, name, trail, false, Message::ToggleSource(source.clone()))
         })
         .collect()
 }
@@ -957,7 +980,8 @@ pub fn source_chips<'a>(listed: &[SourceRef], shown: &Shown, flush: bool) -> Ele
         .map(|source| {
             let on = shown.shows(source);
             let press = (!on || shown.can_hide(source, listed)).then(|| Message::ToggleSource(source.clone()));
-            widgets::choice_chip(source.label(), Some(Mark::Icon(list::source_icon(source))), on, press)
+            let name = list::source_name(source, listed);
+            widgets::choice_chip(name, Some(Mark::Icon(list::source_icon(source))), on, press)
         })
         .collect();
     let (left, right) = if flush {
@@ -1076,14 +1100,14 @@ mod tests {
         assert_eq!(columns.len(), 3);
         assert_eq!(columns[0].head, Head::Source(script("deploy")), "the most entries first");
         assert_eq!(ids(&columns[0].items), ["demo-6", "demo-6c", "demo-6b"], "For me before Info");
-        assert_eq!(columns[1].head, Head::Source(SourceRef::agent("claude-code")), "ties as the items come");
+        assert_eq!(columns[1].head, Head::Source(SourceRef::github("anna-berg")), "three as well: ties as they come");
         assert_eq!(columns[2].head, Head::Others);
         let all: usize = columns.iter().map(|column| column.items.len()).sum();
         assert_eq!(all, items.len(), "nothing lost");
         // The order of the keys is the same however many columns fit.
         let walk = |count| order(&items, Board::Columns(count), &View::Overview).into_iter().map(|i| i.id.clone());
         assert_eq!(walk(2).collect::<Vec<_>>(), walk(6).collect::<Vec<_>>());
-        assert_eq!(app_columns(&items, 100).len(), 13, "one column per source when there is room");
+        assert_eq!(app_columns(&items, 100).len(), 12, "one column per source when there is room");
     }
 
     #[test]
@@ -1238,13 +1262,86 @@ mod tests {
         let time = list::time_text(backup, &view, now());
         let reports = trf("{n} reports", &[("n", &3)]);
         let all = Names { source: true, lane: true };
-        assert_eq!(meta_line(backup, &rows, all), format!("backup · {} · {reports} · {time}", tr("Info")));
+        assert_eq!(meta_line(backup, &rows, all, &[]), format!("backup · {} · {reports} · {time}", tr("Info")));
         let in_column = Names { source: false, lane: true };
-        assert_eq!(meta_line(backup, &rows, in_column), format!("{} · {reports} · {time}", tr("Info")));
+        assert_eq!(meta_line(backup, &rows, in_column, &[]), format!("{} · {reports} · {time}", tr("Info")));
         let under_caption = Names { source: true, lane: false };
-        assert_eq!(meta_line(backup, &rows, under_caption), format!("backup · {reports} · {time}"));
+        assert_eq!(meta_line(backup, &rows, under_caption, &[]), format!("backup · {reports} · {time}"));
         let waiting = items.iter().find(|item| item.id == "demo-1").expect("a waiting agent");
-        assert!(meta_line(waiting, &rows, in_column).starts_with(tr("Waiting for you")));
+        assert!(meta_line(waiting, &rows, in_column, &[]).starts_with(tr("Waiting for you")));
+
+        // Task E5.15: a service's card says what its traits say, an alert that it is urgent, and the
+        // account where two of one service are listed.
+        let review = items.iter().find(|item| item.id == "demo-14").expect("the review");
+        let time = list::time_text(review, &view, now());
+        let said = format!("torro/workplace · {} · {time}", tr("Review requested"));
+        assert_eq!(meta_line(review, &rows, in_column, &[]), said);
+        let info = |source: SourceRef| SourceInfo { source, open: 1, muted: false, health: None };
+        let two = [info(SourceRef::github("anna-berg")), info(SourceRef::github("anna-work"))];
+        assert_eq!(meta_line(review, &rows, all, &two), format!("GitHub · anna-berg · {said}"));
+        assert_eq!(meta_line(review, &rows, all, &two[..1]), format!("GitHub · {said}"));
+        let alert = items.iter().find(|item| item.id == "demo-18").expect("the alert");
+        let alert_time = list::time_text(alert, &view, now());
+        let priority = trf("Priority {n}", &[("n", &5)]);
+        assert_eq!(
+            meta_line(alert, &rows, in_column, &[]),
+            format!("{} · Server · {priority} · {alert_time}", tr("Urgent"))
+        );
+    }
+
+    /// Task E5.15: the demo's services each get a column of their own, with their own icon – GitHub
+    /// with its three entries, none of them from a script.
+    #[test]
+    fn every_service_has_its_column_and_icon() {
+        let items = open();
+        let columns = app_columns(&items, 100);
+        let of = |source: SourceRef| columns.iter().find(|column| column.head == Head::Source(source.clone()));
+        let github = of(SourceRef::github("anna-berg")).expect("GitHub's column");
+        assert_eq!(ids(&github.items), ["demo-14", "demo-15", "demo-13"]);
+        for source in [
+            SourceRef::nextcloud("anna@cloud.example.org"),
+            SourceRef::talk("anna@cloud.example.org"),
+            SourceRef::ntfy("ntfy.sh"),
+        ] {
+            assert_eq!(of(source.clone()).map(|column| column.items.len()), Some(1), "{source}");
+        }
+        assert!(of(script("github")).is_none(), "no script dressed as GitHub");
+        let icon = |source: SourceRef| list::source_icon(&source);
+        assert_eq!(
+            [
+                icon(SourceRef::github("anna-berg")),
+                icon(SourceRef::nextcloud("anna@cloud.example.org")),
+                icon(SourceRef::talk("anna@cloud.example.org")),
+                icon(SourceRef::ntfy("ntfy.sh")),
+            ],
+            [Icon::Github, Icon::Cloud, Icon::MessageCircle, Icon::RadioTower]
+        );
+    }
+
+    /// Task E5.15, the concept's table "Knöpfe je Eintrag": GitHub, Nextcloud and ntfy have ✕ · Open
+    /// · Task · Later · bell; Talk the same, without Reply until a source can answer.
+    #[test]
+    fn services_have_open_task_later_bell_and_dismiss() {
+        let items = open();
+        for id in ["demo-14", "demo-15", "demo-16", "demo-17", "demo-18"] {
+            let item = items.iter().find(|item| item.id == id).expect("in the demo");
+            let words: Vec<String> = card_buttons(item, false).into_iter().map(|b| b.label).collect();
+            assert_eq!(words, [tr("Open"), tr("Task"), tr("Later")], "{id}");
+            assert!(card_buttons(item, false)[0].lead, "{id}: Open leads");
+            assert!(dismissable(item) && bell(item).is_some(), "{id}: ✕ and the bell");
+            let bar: Vec<String> = row_actions(item).iter().map(|action| action.label.to_string()).collect();
+            assert_eq!(bar, [tr("Open"), tr("Task"), tr("Later"), tr("Mute…"), tr("Dismiss notification")], "{id}");
+        }
+    }
+
+    /// Task E5.15: with two accounts of one service, its columns, checks and chips name the account.
+    #[test]
+    fn two_accounts_of_a_service_are_told_apart() {
+        let listed = vec![SourceRef::github("anna-berg"), SourceRef::github("anna-work"), script("ci")];
+        let names: Vec<String> = listed.iter().map(|source| list::source_name(source, &listed)).collect();
+        assert_eq!(names, ["GitHub · anna-berg", "GitHub · anna-work", "ci"]);
+        let column = AppColumn { head: Head::Source(listed[0].clone()), items: Vec::new() };
+        let _ = head(&column, size::props(), &[]);
     }
 
     /// Task E8.12 (finding 4): a card's bar shows all its words or none – only its lead ("Go to

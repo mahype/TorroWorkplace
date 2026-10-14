@@ -5,15 +5,16 @@
 //! list always read "4 min", "2 h" and so on. It has every kind of entry the first steps bring:
 //! two waiting agents, a finished one, an approval, an account problem, script notices in both
 //! lanes, a snoozed and a done entry. The agents' sessions have names (task E2.6), except the done
-//! one of Codex, which shows how an entry without a name looks. One script reports for an app the
-//! inbox has an icon for (`github`, task E8.13), so the columns "By app" show one app's own icon.
-//! Quotes in titles and texts are typographic (“…”, ’), as in the rest of the suite's texts.
+//! one of Codex, which shows how an entry without a name looks. Quotes in titles and texts are
+//! typographic (“…”, ’), as in the rest of the suite's texts.
 //!
 //! The remote sources of task E5.1 have one entry of each kind ([`remote_sample`]): a review
 //! requested and a failed workflow run on GitHub, a file shared on Nextcloud, a one-to-one chat in
-//! Talk and an ntfy alert "Backup failed" with priority 5. They are placed and given their traits
-//! by the rules the core uses ([`rules::github_place`] …, [`rules::remote_facets`]). Their texts
-//! come from servers in the real app, so they stay as they are, like mail.
+//! Talk and an ntfy alert "Backup failed" with priority 5 and a page to open. They are placed and
+//! given their traits by the rules the core uses ([`rules::github_place`] …,
+//! [`rules::remote_facets`]). GitHub also has a security alert seen three days ago (`demo-13`, until
+//! task E5.15 a script named `github`), so its column has three entries. Their texts come from
+//! servers in the real app, so they stay as they are, like mail.
 //!
 //! Mail (task E4.2): two mail accounts ([`MAIL_ACCOUNTS`], private and work) with their folders
 //! and messages, and the entries the core would file for their new mail (task E4.1). The methods
@@ -241,8 +242,7 @@ fn agent(agent: AgentKind, session: &str, project: &str, branch: &str, title: Op
     })
 }
 
-/// The sample entries, thirteen of them and the five of [`remote_sample`]; times are relative to
-/// `now`.
+/// The sample entries, twelve of them and the six of [`remote_sample`]; times are relative to `now`.
 pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
     let claude = || SourceRef::agent(AgentKind::ClaudeCode.id());
     let codex = || SourceRef::agent(AgentKind::Codex.id());
@@ -347,12 +347,6 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
             body: Some(tr("2 invoices could not be matched to a customer.").into()),
             ..notice(now, 12, "invoices", Lane::ForMe, tr("Invoice run needs a check"), 22 * 60)
         },
-        // An app with its own icon (task E8.13): GitHub's, in its column and on its card.
-        Item {
-            body: Some(tr("Dependabot found 2 vulnerable packages in website.").into()),
-            state: State::Seen,
-            ..notice(now, 13, "github", Lane::ForMe, tr("2 security alerts in website"), 3 * 24 * 60)
-        },
     ]
     .into_iter()
     // The traits the core gives every report (task E8.6a).
@@ -366,7 +360,8 @@ fn remote_facets(kind: SourceKind, pairs: &[(FacetKey, &str)]) -> Vec<Facet> {
     rules::remote_facets(kind, pairs.iter().map(|&(key, value)| Facet { key, value: value.into() }).collect())
 }
 
-/// One entry of each remote source of task E5.1, `demo-14` to `demo-18` (see the module docs).
+/// One entry of each remote source of task E5.1, `demo-14` to `demo-18`, and GitHub's security alert
+/// `demo-13` (task E5.15; see the module docs).
 pub fn remote_sample(now: DateTime<Utc>) -> Vec<Item> {
     let github = || SourceRef::github("anna-berg");
     let cloud = "anna@cloud.example.org";
@@ -379,10 +374,25 @@ pub fn remote_sample(now: DateTime<Utc>) -> Vec<Item> {
         (FacetKey::Reason, "ci_activity"),
         (FacetKey::Result, "failed"),
     ];
+    let alerts = [
+        (FacetKey::Kind, "repository_vulnerability_alert"),
+        (FacetKey::Repo, "torro/website"),
+        (FacetKey::Reason, "security_alert"),
+    ];
     let lena = Sender { name: "Lena Hoffmann".into(), address: None };
     let jonas = Sender { name: "Jonas Weber".into(), address: None };
     let (alert, alert_lane) = rules::ntfy_place(5);
     vec![
+        // Seen three days ago, so the overview has an entry before yesterday (task E3.11). Until
+        // task E5.15 a script named `github` reported it.
+        Item {
+            thread_key: "8812345513".into(),
+            lane: rules::github_place("security_alert", "repository_vulnerability_alert", None),
+            state: State::Seen,
+            link: Some(Link::Url { url: "https://github.com/torro/website/security/dependabot".into() }),
+            facets: remote_facets(SourceKind::Github, &alerts),
+            ..entry(now, 13, github(), Kind::Notice, "2 vulnerable packages in website".into(), 3 * 24 * 60)
+        },
         Item {
             thread_key: "8812345601".into(),
             lane: rules::github_place("review_requested", "pull_request", None),
@@ -429,6 +439,8 @@ pub fn remote_sample(now: DateTime<Utc>) -> Vec<Item> {
             thread_key: "backup:Backup failed".into(),
             lane: alert_lane,
             body: Some("rsync to the NAS stopped: “No space left on device”.".into()),
+            // ntfy's `click`: the page the message points to.
+            link: Some(Link::Url { url: "https://nas.example.org/backups".into() }),
             facets: remote_facets(
                 SourceKind::Ntfy,
                 &[
@@ -1324,7 +1336,8 @@ mod tests {
     }
 
     /// Task E8.13: titles and texts quote typographically – no straight quote or apostrophe in the
-    /// entries or the mail, in either language – and one app reports with its own icon (`github`).
+    /// entries or the mail, in either language. Task E5.15: GitHub's entries come from a GitHub
+    /// source, none from a script that calls itself `github`.
     #[test]
     fn the_sample_quotes_typographically_and_has_an_app_of_its_own() {
         let items = sample(now());
@@ -1337,7 +1350,9 @@ mod tests {
         for text in texts {
             assert!(!text.contains(['"', '\'']), "straight quote in {text:?}");
         }
-        assert!(items.iter().any(|i| i.source == SourceRef::script("github")), "GitHub's column");
+        assert!(!items.iter().any(|i| i.source == SourceRef::script("github")), "no script dressed as GitHub");
+        let github = items.iter().filter(|i| i.source.kind == SourceKind::Github).map(|i| i.id.as_str());
+        assert_eq!(github.collect::<Vec<_>>(), ["demo-13", "demo-14", "demo-15"], "GitHub's column");
     }
 
     #[test]
@@ -1452,7 +1467,6 @@ mod tests {
                 "script:backup",
                 "script:ci",
                 "script:deploy",
-                "script:github",
                 "script:invoices",
                 "script:uptime",
                 "mail:anna@example.org",
@@ -1648,7 +1662,10 @@ mod tests {
         assert!(alert.urgent && alert.lane == Lane::ForMe, "priority 5 is urgent");
         assert_eq!(keys(alert), [FacetKey::Topic, FacetKey::Priority, FacetKey::Tag, FacetKey::Tag]);
         assert_eq!(alert.title, "Backup failed");
-        assert!(items.iter().all(|item| item.untrusted && item.state == State::New), "foreign text, all new");
+        assert!(items.iter().all(|item| item.untrusted), "foreign text");
+        let old = of("demo-13");
+        assert_eq!((old.source.kind, old.state, old.lane), (SourceKind::Github, State::Seen, Lane::ForMe));
+        assert!(items.iter().filter(|item| item.id != "demo-13").all(|item| item.state == State::New), "the rest new");
         // Talk and Nextcloud share the account, Talk with its own key.
         assert_eq!(shared.source.name, chat.source.name);
         assert_eq!(chat.source.key(), "talk:anna@cloud.example.org");

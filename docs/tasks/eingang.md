@@ -1757,7 +1757,14 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   und Schmal, hell, dunkel, Plex.
 
 ### E5.15 App: Icons, Spalten und Knöpfe der neuen Quellen
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `Icon::{MessageCircle, RadioTower}`; `list::source_icon` nur nach der Art (Skript `github`
+  → `AppWindow`), `list::{source_name, facet_words, facet_line, waiting_word}`: Konto im Namen nur bei zwei Konten
+  einer Art (Spaltenköpfe, Karten, „This window shows“, Chips, Seitenleiste), Metazeile aus den Merkmalen in Karten,
+  To sort und als zweite Zeile ohne Text, Merkmale als Eigenschaften im Paneel; Alarm „Urgent“ und Kachel in
+  `attention` getönt; `hub::Origin::Service(SourceKind)`, Insights `Group::Source(Origin)`; Knöpfe schon wie in der
+  Tabelle (Tests je Art); Demo `demo-13` aus GitHub, ntfy mit Link; Galerie zeigt die Quellen-Icons; Sichtprüfung auf
+  macOS (AeroSpace, nur das eigene Fenster schwebend) `--view notifications|hub` in sechs Größen, beiden Dichten, hell,
+  dunkel, Plex; ntfy weiter nur aus der Demo, E5.13 offen)
 - **Modell:** Opus · **Braucht:** E5.1; Sichtprüfung mit echten Daten nach E5.4, E5.8, E5.13 · **Dateien:**
   `crates/torro-gui/src/icon.rs`, neu `crates/torro-gui/assets/icons/{message-circle,radio-tower}.svg` (Lucide 0.469.0,
   Kopf und Strichstärke wie E8.10), `crates/torro-gui/examples/gallery.rs`,

@@ -625,12 +625,14 @@ impl Gallery {
         .spacing(size::card_gap())
         .width(size::props());
 
+        // The inbox's services (task E5.15): GitHub, Nextcloud, Talk and ntfy with their Lucide icons.
         let faces = [
             (TileFace::Icon(Icon::Github), None),
+            (TileFace::Icon(Icon::Cloud), None),
+            (TileFace::Icon(Icon::MessageCircle), None),
+            (TileFace::Icon(Icon::RadioTower), None),
             (TileFace::Icon(Icon::Calendar), None),
             (TileFace::letter("whatsapp"), Some(colours[1])),
-            (TileFace::letter("nextcloud"), Some(colours[0])),
-            (TileFace::letter("ntfy"), None),
         ];
         let tiles = column(
             [("Small 20", TileSize::Small), ("Medium 28", TileSize::Medium), ("Large 36", TileSize::Large)].map(
