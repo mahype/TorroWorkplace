@@ -32,6 +32,9 @@
 //! the one used last (`docs/assistent.md`, "Woher das Modell kommt"). A key for it would be a new
 //! `torro_ipc::SettingKey`.
 //!
+//! Profile and memory (task C.10) are pages below this one, opened from the rows under the status
+//! ([`persona`]): the page here only hands them their messages, header, dialog and view.
+//!
 //! **Voice** (task C.9, `docs/assistent.md`, "Sprache"), once the assistant is on: talking by voice
 //! on or off (`settings.set_setting voice_enabled`; only here and in the tray, since only the app
 //! key may switch the microphone on), the fixed wake word, "Speak answers", the microphone when the
@@ -61,7 +64,7 @@ use torro_ipc::{
 use super::accounts::{Tone, status_line};
 use super::general::choice;
 use super::{Action, Data, Header, Section, chevron, confirm, pressable, setting_row};
-use super::{agent_wizard, agents};
+use super::{agent_wizard, agents, persona};
 
 /// The name of the assistant's client, as the agents list and the audit log show it (decision 5:
 /// one client "Assistant").
@@ -93,6 +96,8 @@ pub struct State {
     creating: Option<Rights>,
     /// "Turn off assistant…" asks first.
     confirm_off: bool,
+    /// The pages Profile and Memory below this one (task C.10).
+    persona: persona::State,
     /// Talking by voice (task C.9).
     voice: Voice,
 }
@@ -137,6 +142,7 @@ impl Default for State {
             editor: agents::State::default(),
             creating: None,
             confirm_off: false,
+            persona: persona::State::default(),
             voice: Voice::default(),
         }
     }
@@ -198,6 +204,8 @@ pub enum Message {
     AskTurnOff,
     TurnOff,
     CloseDialog,
+    /// The pages Profile and Memory and their rows here (task C.10).
+    Persona(persona::Message),
     /// Ask how voice stands (`settings.voice_status`): on the clock, or "Check again".
     CheckVoice,
     /// "Talk to the assistant" on or off.
@@ -257,6 +265,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.confirm_off = false;
             Action::None
         }
+        Message::Persona(message) => persona::update(&mut state.persona, message, data),
         Message::CheckVoice => {
             let voice = &mut state.voice;
             if voice.asking {
@@ -332,6 +341,7 @@ fn rights(state: &mut State, message: agents::Message, data: &Data) -> Action {
 /// then hands the answer to nobody else. An error ends "Turn on assistant" (the shell shows it).
 /// Every other answer goes to the rights editor (`ok` of a saved change, an error that drops it).
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
+    persona::answered(&mut state.persona, result);
     if let Some(next) = voice_answered(&mut state.voice, result) {
         return next;
     }
@@ -397,9 +407,10 @@ fn voice_answered(voice: &mut Voice, result: &Result<Response, String>) -> Optio
     }
 }
 
-/// The shell loaded [`Data`] anew: saved rights are in it now.
-pub fn loaded(state: &mut State) {
+/// The shell loaded [`Data`] anew: saved rights are in it now, and the stored profile and notes.
+pub fn loaded(state: &mut State, data: &Data) {
     agents::loaded(&mut state.editor);
+    persona::loaded(&mut state.persona, data);
 }
 
 /// The clock that saves changed rights, and the one that asks how voice stands: once at the start
@@ -414,13 +425,19 @@ pub fn subscription(state: &State) -> Subscription<Message> {
     Subscription::batch([rights, iced::time::every(VOICE_POLL).map(|_| Message::CheckVoice)])
 }
 
-/// What Escape means on this page: close the confirmation.
+/// What Escape means on this page: close the confirmation; on Profile and Memory what they say.
 pub fn escape(state: &State) -> Option<Message> {
-    state.confirm_off.then_some(Message::CloseDialog)
+    match persona::escape(&state.persona) {
+        Some(message) => Some(Message::Persona(message)),
+        None => state.confirm_off.then_some(Message::CloseDialog),
+    }
 }
 
 /// "Turn off the assistant?" while it is open.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    if let Some(dialog) = persona::overlay(&state.persona, data) {
+        return Some(dialog.map(Message::Persona));
+    }
     if !state.confirm_off || assistant_client(data).is_none() {
         return None;
     }
@@ -470,6 +487,9 @@ pub fn retention_label(retention: Retention) -> String {
 // ----- Views --------------------------------------------------------------------------------
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    if let Some(sub) = persona::view(&state.persona, data) {
+        return sub.map(Message::Persona);
+    }
     responsive(move |size| page(state, data, agents::control_column(size.width))).height(Length::Shrink).into()
 }
 
@@ -489,11 +509,13 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
         None => {
             page = page.push(off_group()).push(preset_group(rights)).extend(groups);
         }
-        // Status and engines first, then the rights – the reason the chat's hint opens this page –
-        // and the retention, which is set once and rarely again.
+        // Status, who the assistant is (profile and memory) and its engines first, then the rights –
+        // the reason the chat's hint opens this page –, voice, and the retention, which is set once
+        // and rarely again.
         Some(client) => {
             page = page
                 .push(on_group(client, column))
+                .push(persona::profile_rows(data).map(Message::Persona))
                 .push(engines_group(data))
                 .extend(groups)
                 .push(voice_group(&state.voice, data, column))
@@ -509,6 +531,12 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
 /// button, where it stays in sight while the rights below are chosen; busy while the core creates
 /// the client. Only its icon in narrow windows.
 pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
+    if let Some(sub) = persona::header(&state.persona, class) {
+        return Header {
+            sub_page: sub.sub_page.map(|(name, back)| (name, Message::Persona(back))),
+            actions: sub.actions.into_iter().map(|action| action.map(Message::Persona)).collect(),
+        };
+    }
     if assistant_client(data).is_some() {
         return Header::default();
     }
@@ -852,7 +880,7 @@ mod tests {
         let on = Data { clients: vec![created], ..Data::default() };
         assert_eq!(shown(&state, &on), &Rights::assistant());
         assert!(answered(&mut state, &Ok(Response::Ok)).is_none());
-        loaded(&mut state);
+        loaded(&mut state, &on);
         assert_eq!(shown(&state, &on), &RightsTemplate::ReadOnly.rights(), "then what the core holds");
     }
 

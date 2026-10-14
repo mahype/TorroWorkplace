@@ -11,6 +11,12 @@
 //! ([`super::data_rule::for_model`]) and shortened ([`super::tools::for_model`]); the conversation
 //! keeps a tool line with the result in a few words.
 //!
+//! The prompt ([`prompt::system`]) carries the person's personality and the notes of the memory,
+//! read anew for every answer (task C.10). A note the model asks to keep (`assistant_remember`) is
+//! marked `local_only` when the model runs on this computer and the conversation read mail before
+//! ([`Answering::read_mail`]): what a local model writes then may retell a mail, and the data rule
+//! keeps mail from models elsewhere.
+//!
 //! A command that waits for a person (`pending`) puts an approval entry into the conversation; the
 //! loop asks for its state every [`Limits::approval_poll`] and goes on once the person decided (the
 //! command's answer, or "denied"/"expired" for the model). `assistant.cancel` aborts the loop at
@@ -26,7 +32,7 @@ use serde_json::{Value, json};
 use torro_core::ai::{AiError, BoxFuture, ChatMessage, ChatReply, ChatRequest, Provider, ToolCall, open_weights_only};
 use torro_core::i18n::{self, tr, trf};
 use torro_ipc::api::Area;
-use torro_ipc::assistant::{Entry, EntryContent};
+use torro_ipc::assistant::{Entry, EntryContent, Note};
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
 
 use super::data_rule::{self, Place};
@@ -48,9 +54,10 @@ pub trait Host: Send + Sync {
 
     /// Runs `request` as the assistant's own client, exactly as a request with its key would run
     /// (`Core::handle_from`): its rights of now (`forbidden` when they do not cover it, and always
-    /// for the area `assistant`), its collections (`not-found`), and an approval where its rights ask
-    /// for one ([`Response::Pending`]). Writes the line of the audit log with the engine `engine`
-    /// among its ids. `forbidden` when there is no assistant client.
+    /// for the area `assistant` but its memory, `torro_ipc::api::own_memory`), its collections
+    /// (`not-found`), and an approval where its rights ask for one ([`Response::Pending`]). Writes
+    /// the line of the audit log with the engine `engine` among its ids. `forbidden` when there is
+    /// no assistant client.
     fn run<'a>(&'a self, request: Request, engine: &'a str) -> BoxFuture<'a, Response>;
 
     /// `approvals.approval_status` of the approval `id` as the assistant's own client: its own
@@ -114,7 +121,21 @@ enum Outcome {
 /// Runs the answer `job` of `assistant` with the model of its engine and the tools of `host`, until
 /// the model answers, fails, takes too many steps, or the run is stopped. Its last entry ends the run.
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job) {
-    let mut run = Answering { limits: assistant.limits, assistant, host, job, loaded: BTreeSet::new() };
+    let (persona, memory) = assistant.persona_and_notes().await;
+    let read_mail = job.history.iter().any(|entry| match &entry.content {
+        EntryContent::Tool { name, .. } => data_rule::reads_mail(name),
+        _ => false,
+    });
+    let mut run = Answering {
+        limits: assistant.limits,
+        assistant,
+        host,
+        job,
+        loaded: BTreeSet::new(),
+        persona,
+        memory,
+        read_mail,
+    };
     if let Err(error) = run.go().await {
         let entry = EntryContent::Error { code: error.code().into(), message: error.to_string() };
         run.add(entry, true).await;
@@ -129,6 +150,14 @@ struct Answering {
     limits: Limits,
     /// The tools [`FIND_TOOLS`] added.
     loaded: BTreeSet<String>,
+    /// The person's personality, read when the answer started (task C.10); empty for none.
+    persona: String,
+    /// The notes of the memory, read when the answer started.
+    memory: Vec<Note>,
+    /// The conversation read mail content: a tool of an earlier turn read mail or the inbox, or a
+    /// tool of this answer gave what the data rule keeps from models elsewhere. A note a local
+    /// model keeps from then on is marked `local_only` ([`Answering::kept_local`]).
+    read_mail: bool,
 }
 
 /// Why an answer ended early, for its error entry.
@@ -177,7 +206,9 @@ impl Answering {
         for _ in 0..self.limits.max_steps {
             let rights = self.host.client().map(|client| client.rights);
             let allowed = tools::allowed(rights.as_ref(), &self.job.without);
-            let areas: BTreeSet<Area> = allowed.iter().map(|tool| tool.command.area).collect();
+            // The memory is the assistant's own, not an area the person granted.
+            let areas: BTreeSet<Area> =
+                allowed.iter().map(|tool| tool.command.area).filter(|area| *area != Area::Assistant).collect();
             let areas: Vec<Area> = areas.into_iter().collect();
             let context = prompt::Context {
                 now: Local::now(),
@@ -189,9 +220,9 @@ impl Answering {
                 engine: &self.job.engine,
                 model: &model,
                 place: access.place,
+                memory: &self.memory,
             };
-            // The personality joins with task C.10 (`<config>/assistant/persona.md`).
-            messages[0] = ChatMessage::system(prompt::system(None, &context));
+            messages[0] = ChatMessage::system(prompt::system(Some(&self.persona), &context));
             let request = ChatRequest {
                 model: model.clone(),
                 messages: messages.clone(),
@@ -272,13 +303,16 @@ impl Answering {
             return self.refused(name, input, "forbidden", &message).await;
         }
         let request = match tools::request_for(&call.name, &call.arguments) {
-            Ok(request) => request,
+            Ok(request) => self.kept_local(request, place),
             Err(message) => return self.refused(name, input, "error", &message).await,
         };
         let area = request.operation().area();
         let outcome = self.run(request.clone()).await?;
         let (result, summary, error) = match outcome {
             Outcome::Answered(response) => {
+                // What a model elsewhere could not read is mail content: from now on a note a
+                // local model keeps may retell it.
+                self.read_mail |= data_rule::for_model(&request, &response, Place::Remote).withheld;
                 let screened = data_rule::for_model(&request, &response, place);
                 let error = match response.as_ref() {
                     Response::Error { code, .. } => Some(code.clone()),
@@ -300,6 +334,21 @@ impl Answering {
         };
         let line = EntryContent::Tool { name, input, summary, error };
         self.add(line, false).await.then_some(result)
+    }
+
+    /// `request` with `assistant.remember` marked `local_only` when the model runs on this computer
+    /// at `place` and the conversation read mail ([`Answering::read_mail`]): the note may retell a
+    /// mail, so it stays with models on this computer (the data rule). Every other request as it is;
+    /// the model cannot take the mark off.
+    fn kept_local(&self, request: Request, place: Place) -> Request {
+        match request {
+            Request::Remember { text, replaces, local_only } => Request::Remember {
+                text,
+                replaces,
+                local_only: local_only || (place == Place::Local && self.read_mail),
+            },
+            other => other,
+        }
     }
 
     /// [`FIND_TOOLS`]: the matches among what the assistant may use now, loaded for the next steps.
@@ -725,6 +774,75 @@ pub(crate) mod tests {
             .find(|message| message.tool_call_id.as_deref() == Some(id.as_str()))
             .map(|message| message.content)
             .unwrap_or_else(|| panic!("the model never got the result of {tool}"))
+    }
+
+    /// The `assistant.remember` requests the model's calls became, as the core got them.
+    fn remembered(host: &FakeHost) -> Vec<Request> {
+        let ran = host.ran.lock().expect("lock");
+        ran.iter()
+            .map(|(request, _)| request.clone())
+            .filter(|request| matches!(request, Request::Remember { .. }))
+            .collect()
+    }
+
+    /// Task C.10: the personality comes first in the system prompt and the notes in its generated
+    /// part; a model elsewhere reads no note a local model kept after reading mail.
+    #[tokio::test]
+    async fn the_personality_and_the_memory_reach_the_model() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![says("Hello Anna.")]);
+        let (assistant, _host) = set_up(dir.path(), Some(reader()), Place::Remote, Arc::clone(&script));
+        let change = super::super::profile::Change {
+            personality: Some("Speak like a calm butler.".into()),
+            ..super::super::profile::Change::default()
+        };
+        assert!(matches!(assistant.update_profile(change).await, Response::Profile { .. }));
+        assert!(matches!(assistant.remember("Anna works in sales.", None, false, true).await, Response::Memory { .. }));
+        assert!(matches!(assistant.remember("ACME owes 400 €.", None, true, true).await, Response::Memory { .. }));
+
+        let id = ask(&assistant, None, "Who am I?", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let system = script.asked()[0].messages[0].content.clone();
+        assert!(system.starts_with(prompt::PERSONALITY_HEADING), "{system}");
+        assert!(system.contains("> Speak like a calm butler."), "{system}");
+        let skill = system.find(prompt::skill()).expect("the skill");
+        assert!(system.find("calm butler").is_some_and(|at| at < skill), "the personality before the rules");
+        let generated = system.split_once("## This conversation").map(|(_, rest)| rest).expect("its part");
+        assert!(generated.contains("] Anna works in sales."), "{generated}");
+        assert!(!system.contains("ACME"), "a remote model reads no local note: {system}");
+        let asked = script.asked();
+        let offered: Vec<&str> = asked[0].tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert!(offered.contains(&"assistant_remember") && !offered.contains(&"assistant_update_profile"));
+    }
+
+    /// Task C.10, the data rule: a note a model on this computer keeps after the conversation read
+    /// mail is marked `local_only`, whatever the model says – also in a later answer of the same
+    /// conversation; before it read mail not.
+    #[tokio::test]
+    async fn a_note_kept_after_reading_mail_stays_on_this_computer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls("assistant_remember", json!({"text": "Anna works in sales."})),
+            calls("inbox_list_items", json!({})),
+            calls("assistant_remember", json!({"text": "ACME sent invoice 42.", "local_only": false})),
+            says("Noted."),
+            calls("assistant_remember", json!({"text": "Call ACME on Monday."})),
+            says("Noted too."),
+        ]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let id =
+            ask(&assistant, None, "Remember Anna, then check my inbox and remember the invoice.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        ask(&assistant, Some(&id), "Remember to call ACME on Monday.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let kept: Vec<bool> = remembered(&host)
+            .into_iter()
+            .map(|request| match request {
+                Request::Remember { local_only, .. } => local_only,
+                _ => false,
+            })
+            .collect();
+        assert_eq!(kept, [false, true, true], "before the mail entry not, after it always");
     }
 
     #[tokio::test]

@@ -689,7 +689,10 @@ impl Core {
             Ok(Caller::App | Caller::Anonymous) => return Ok(self.handle(request).await),
             Ok(Caller::Client { id, rights }) => (Some(id.clone()), Ok((id, rights))),
             Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
-            Err(refused) => (self.client_of(key), Err(refused)),
+            Err(refused) => match self.admit_own_memory(key, &request) {
+                Some((id, rights)) => (Some(id.clone()), Ok((id, rights))),
+                None => (self.client_of(key), Err(refused)),
+            },
         };
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         // A key lent to an agent that drives the assistant (task C.7): the log names the engine,
@@ -710,6 +713,27 @@ impl Core {
         };
         self.audit.record(&shown);
         answer
+    }
+
+    /// The assistant's own client with `key` and its rights (lent ones narrowed as lent), when its
+    /// rights refused `request` but it is the assistant's own memory
+    /// ([`torro_ipc::api::own_memory`], task C.10): the area `assistant` never opens for that
+    /// client, yet its memory is its own. `None` for every other key and request. `system.ping` is
+    /// open to every client key, so admitting it tells whose key it is and with which rights.
+    fn admit_own_memory(&self, key: Option<&Key>, request: &Request) -> Option<(String, torro_ipc::api::Rights)> {
+        let operation = request.operation();
+        if !torro_ipc::api::own_memory(torro_ipc::api::ASSISTANT_CLIENT, operation) {
+            return None;
+        }
+        let Ok(Caller::Client { id, rights }) = self.clients.admit(key, &Request::Ping) else { return None };
+        self.is_own_memory(&id, operation).then_some((id, rights))
+    }
+
+    /// Whether `operation` of the client `id` is the assistant's own memory: the client is the
+    /// assistant's own and the command one of its memory ([`torro_ipc::api::own_memory`]).
+    fn is_own_memory(&self, id: &str, operation: torro_ipc::api::Operation) -> bool {
+        operation.area() == Area::Assistant
+            && self.clients.list().iter().any(|info| info.id == id && torro_ipc::api::own_memory(&info.kind, operation))
     }
 
     /// The id of the client whose `key` was refused a command, for its line in the audit log.
@@ -799,8 +823,10 @@ impl Core {
             return Ok(refused);
         }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
-        // Point 6 (task C.9): switching the microphone on is a person's, also with every right.
-        if !rights.allows_request(&request) || self.switches_microphone_on(&request) {
+        // Point 6 (task C.9): switching the microphone on is a person's, also with every right. The
+        // assistant's own memory is its own whatever its rights in `assistant` say (task C.10).
+        let allowed = rights.allows_request(&request) || self.is_own_memory(&id, request.operation());
+        if !allowed || self.switches_microphone_on(&request) {
             return Err(Refused::Forbidden { command: request.operation().name() });
         }
         // Making a task of an inbox entry writes a task too, and an operation knows one area only:
@@ -819,6 +845,10 @@ impl Core {
         if request.operation().area() == Area::Assistant
             && let Some(refused) = self.assistant.refusal(&self.ai, &request).await
         {
+            return Ok(refused);
+        }
+        // A note the client does not see, or a full memory (task C.10): nothing to approve either.
+        if let Some(refused) = self.assistant.memory_refusal(&request, sees_local_notes(reach)).await {
             return Ok(refused);
         }
         // Ticking an issue of a filter list closes it on GitHub (task G.5): that needs write access
@@ -861,8 +891,15 @@ impl Core {
         }
         // A question of an agent (task E2.5) is nothing but an approval: it always asks.
         let question = matches!(request, Request::AskPermission { .. });
+        // A note kept on this computer was written after the assistant read mail (task C.10): what
+        // a mail says must never become a lasting part of the assistant's prompt unseen.
+        let from_mail = matches!(request, Request::Remember { local_only: true, .. });
         // `needs_approval_of`: sending mail also waits as `Rights::outbound` says (task M2.1).
-        if question || rights.needs_approval_of(operation) || self.opens_a_web_page(&request, inbox_client.as_ref()) {
+        if question
+            || from_mail
+            || rights.needs_approval_of(operation)
+            || self.opens_a_web_page(&request, inbox_client.as_ref())
+        {
             return self.ask_approval(&id, request).await;
         }
         // A client sends as itself: its own drafts only, checked again where it runs (task M3.3).
@@ -922,7 +959,10 @@ impl Core {
         ids.push(crate::audit::engine_id(engine));
         let client = self.assistant_client();
         let answer = match &client {
-            Some(info) if info.rights.allows_request(&request) => {
+            Some(info)
+                if info.rights.allows_request(&request)
+                    || torro_ipc::api::own_memory(&info.kind, request.operation()) =>
+            {
                 self.handle_client(info.id.clone(), info.rights.clone(), request).await
             }
             _ => Err(Refused::Forbidden { command }),
@@ -999,6 +1039,15 @@ impl Core {
                 // Everything the summary leaves out goes into the details (task M3.5), from the
                 // same draft.
                 let facts = Facts { mail: Some(mail), ..Facts::default() };
+                fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
+            // The assistant's profile and memory (task C.10): every text whole in the details, and
+            // a note pinned to the text the person was shown.
+            (Request::UpdateProfile { .. } | Request::Remember { .. } | Request::Forget { .. }, _) => {
+                let facts = self.facts(&request).await;
+                let pinned = crate::approvals::note_fingerprint(&facts);
                 fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
@@ -1085,6 +1134,14 @@ impl Core {
             | Request::CreateTaskList { account, .. } => {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
+            }
+            // A note by its text as the memory keeps it (task C.10), the profile by its stored name;
+            // looked up after the client's reach was checked, so a note it may not see is unknown.
+            Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => {
+                Facts { name: self.assistant.note(id, true).await.map(|note| note.text), ..Facts::default() }
+            }
+            Request::UpdateProfile { .. } => {
+                Facts { name: Some(self.assistant.profile().await.name), ..Facts::default() }
             }
             // The conversation by the title the assistant keeps for its id and the engine by its
             // name (task C.1), never by what the client sends along.
@@ -1181,7 +1238,8 @@ impl Core {
             return Response::Error { code: "forbidden".into(), message };
         };
         let rights = &info.rights;
-        if !rights.allows_request(&request)
+        let allowed = rights.allows_request(&request) || torro_ipc::api::own_memory(&info.kind, request.operation());
+        if !allowed
             || self.switches_microphone_on(&request)
             || torro_ipc::api::loops_back(&info.kind, request.operation())
         {
@@ -1207,6 +1265,14 @@ impl Core {
         }
         if let Request::SaveDraft { draft } = request {
             return self.save_draft(draft, reach, DraftAuthor::Client(client.to_string())).await;
+        }
+        // A note is forgotten or changed only as the person was shown it (task C.10).
+        if let Request::Forget { id } | Request::Remember { replaces: Some(id), .. } = &request
+            && let Some(note) = self.assistant.note(id, true).await
+            && crate::audit::hashed(&note.text) != fingerprint.unwrap_or_default()
+        {
+            let message = "the note changed after the approval was asked for; it was left as it is".into();
+            return Response::Error { code: "conflict".into(), message };
         }
         // Sending runs only on what the person was shown: an approval without a fingerprint
         // (none is ever stored without one) matches nothing.
@@ -1529,6 +1595,15 @@ impl Core {
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
             | Request::OpenChatWindow { .. }) => crate::assistant::answer(&self.assistant, &self.ai, request).await,
+            // Profile and memory (task C.10): a note kept from remote models only for the app key
+            // and clients that may read mail.
+            request @ (Request::GetProfile
+            | Request::UpdateProfile { .. }
+            | Request::ListMemories
+            | Request::Remember { .. }
+            | Request::Forget { .. }) => {
+                crate::assistant::answer_own(&self.assistant, request, sees_local_notes(reach)).await
+            }
         }
     }
 
@@ -2646,6 +2721,16 @@ fn not_reached(request: &Request, outside: &str) -> Response {
     match request {
         Request::DescribeGithubRepo { .. } => crate::pim::no_repo(outside),
         _ => no_collection(outside),
+    }
+}
+
+/// Whether `reach` may see notes of the assistant's memory kept from remote models
+/// ([`torro_ipc::assistant::Note::local_only`], task C.10): the suite, and a client with read access
+/// to mail – such a note may retell a mail. A key lent to an agent never has mail.
+fn sees_local_notes(reach: Reach<'_>) -> bool {
+    match reach {
+        Reach::Suite => true,
+        Reach::Client(rights) => rights.area(Area::Mail).allows(Access::Read),
     }
 }
 
@@ -8302,7 +8387,159 @@ mod tests {
             Request::DeleteConversation { id: id.into() },
             Request::PinConversation { id: id.into(), pinned: true },
             Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::New },
+            Request::GetProfile,
+            Request::UpdateProfile { name: Some("Jarvis".into()), description: None, avatar: None, personality: None },
         ]
+    }
+
+    /// A note for the assistant's memory, as the person or a client asks for it.
+    fn remember(text: &str, local_only: bool) -> Request {
+        Request::Remember { text: text.into(), replaces: None, local_only }
+    }
+
+    /// The note an answer of `assistant.remember` holds.
+    fn kept(response: Response) -> torro_ipc::assistant::Note {
+        match response {
+            Response::Memory { note } => note,
+            other => panic!("expected a note, got {other:?}"),
+        }
+    }
+
+    /// The notes an answer of `assistant.list_memories` holds, by text.
+    fn listed_notes(response: Response) -> Vec<String> {
+        match response {
+            Response::Memories { notes } => notes.into_iter().map(|note| note.text).collect(),
+            other => panic!("expected notes, got {other:?}"),
+        }
+    }
+
+    /// Task C.10: the assistant's own client reads, adds and forgets its notes whatever its rights
+    /// in the area say – forgetting waits for the person, as deleting does – and is refused its
+    /// profile and everything else of its area. A note kept from remote models is not there for it
+    /// without read access to mail. The memory file is private and the log holds no note.
+    #[tokio::test]
+    async fn the_assistant_keeps_its_memory_but_never_its_profile() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let local = kept(ask(&core, Some(&app_key), remember("ACME owes us 400 €.", true)).await);
+        assert!(local.local_only);
+
+        let (info, key) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant())
+            .await
+            .expect("the assistant's client");
+        let note = kept(ask(&core, Some(&key), remember("Anna works in sales.", false)).await);
+        assert!(note.id.len() == 8 && !note.local_only, "{note:?}");
+        assert_eq!(listed_notes(ask(&core, Some(&key), Request::ListMemories).await), ["Anna works in sales."]);
+        assert_eq!(code(&ask(&core, Some(&key), Request::Forget { id: local.id.clone() }).await), "not-found");
+        let replace = Request::Remember { text: "x".into(), replaces: Some(local.id.clone()), local_only: false };
+        assert_eq!(code(&ask(&core, Some(&key), replace).await), "not-found", "nor can it change it");
+        let asked = waits(ask(&core, Some(&key), Request::Forget { id: note.id.clone() }).await);
+        // The person sees the whole note, and it is forgotten only as they were shown it.
+        assert!(asked.details.join("\n").contains("Anna works in sales."), "{:?}", asked.details);
+        let change = Request::Remember {
+            text: "Anna works in marketing.".into(),
+            replaces: Some(note.id.clone()),
+            local_only: false,
+        };
+        assert!(matches!(core.handle(change).await, Response::Memory { .. }));
+        let decided = approval(core.handle(Request::DecideApproval { id: asked.id.clone(), allow: true }).await);
+        assert!(
+            matches!(decided.state, torro_ipc::ApprovalState::Done { ref response } if code(response) == "conflict"),
+            "{decided:?}"
+        );
+        // A note kept on this computer was written after reading mail: it always waits.
+        let local = waits(ask(&core, Some(&key), remember("ACME wants 400 €.", true)).await);
+        assert_eq!(
+            local.summary,
+            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &"ACME wants 400 €.")])
+        );
+        assert_eq!(asked.summary, trf("Forget the assistant's note \"{note}\"", &[("note", &"Anna works in sales.")]));
+        for request in [Request::GetProfile, Request::ListConversations] {
+            let name = request.operation().name();
+            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+        }
+        // The person sees every note.
+        assert_eq!(
+            listed_notes(core.handle(Request::ListMemories).await),
+            ["ACME owes us 400 €.", "Anna works in marketing."]
+        );
+
+        // With read access to mail it sees the local note too.
+        let mut reading_mail = Rights::assistant();
+        reading_mail.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        core.clients.update(&info.id, reading_mail).await.expect("updated");
+        assert_eq!(listed_notes(ask(&core, Some(&key), Request::ListMemories).await).len(), 2);
+
+        let file = dir.path().join("config/assistant/memory.md");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).expect("memory.md").permissions().mode() & 0o777, 0o600);
+        }
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Anna") && !log.contains("ACME"), "{log}");
+        assert!(log.contains(&format!("note:{}", note.id)), "{log}");
+    }
+
+    /// Task C.10: an agent changes the profile only with the admin switch of `assistant`, and then
+    /// only with a person's approval, whose summary names the stored profile; it reads the profile
+    /// with read access. The person changes it at once; the new personality is what the next
+    /// answer reads.
+    #[tokio::test]
+    async fn changing_the_profile_waits_for_a_person_and_the_app_key_changes_it_at_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let update = Request::UpdateProfile {
+            name: Some("Jarvis".into()),
+            description: None,
+            avatar: Some("sun".into()),
+            personality: Some("Formal and precise.".into()),
+        };
+
+        let mut reading = RightsTemplate::ReadOnly.rights();
+        reading.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        let (id, key) = client(&core, reading.clone()).await;
+        let Response::Profile { profile } = ask(&core, Some(&key), Request::GetProfile).await else {
+            panic!("an agent with read access reads the profile")
+        };
+        assert_eq!((profile.name.as_str(), profile.avatar.as_str()), ("Torro", "letter"), "the defaults");
+        assert_eq!(code(&ask(&core, Some(&key), update.clone()).await), "forbidden", "no admin switch");
+
+        reading.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: true });
+        reading.confirm = torro_ipc::api::Confirm::Never;
+        core.clients.update(&id, reading).await.expect("admin on");
+        let asked = waits(ask(&core, Some(&key), update.clone()).await);
+        assert!(asked.summary.starts_with(&trf(
+            "Change the profile of the assistant \"{name}\": {changes}",
+            &[("name", &"Torro"), ("changes", &"")]
+        )));
+        assert!(asked.summary.contains("Jarvis") && asked.summary.contains("Formal and precise."), "{}", asked.summary);
+        let unchanged = core.handle(Request::GetProfile).await;
+        assert!(
+            matches!(unchanged, Response::Profile { ref profile } if profile.name == "Torro"),
+            "nothing before the approval"
+        );
+        let blank =
+            Request::UpdateProfile { name: Some(" ".into()), description: None, avatar: None, personality: None };
+        assert_eq!(code(&ask(&core, Some(&key), blank).await), "error", "refused before anyone is asked");
+
+        let Response::Profile { profile } = ask(&core, Some(&app_key), update).await else {
+            panic!("the person changes it at once")
+        };
+        assert_eq!(
+            (profile.name.as_str(), profile.avatar.as_str(), profile.personality.as_str()),
+            ("Jarvis", "sun", "Formal and precise.")
+        );
+        let Response::Profile { profile: read } = core.handle(Request::GetProfile).await else { panic!("a profile") };
+        assert_eq!(read, profile, "stored");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Jarvis") && !log.contains("Formal"), "{log}");
     }
 
     /// Task C.1, "Keine Schleife": the assistant's own client gets `forbidden` for every command of

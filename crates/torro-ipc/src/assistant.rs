@@ -1,7 +1,8 @@
 //! The assistant on the wire (task C.1, `docs/assistent.md`): what the `assistant.*` requests and
 //! answers carry – engines ([`Engine`]), conversations ([`ConversationSummary`]) and their
-//! entries ([`Entry`]), the window to open ([`ChatWindow`]) – and the limits every `assistant.*`
-//! request keeps ([`limit_refusal`]).
+//! entries ([`Entry`]), the window to open ([`ChatWindow`]), its profile ([`Profile`]) and its
+//! memory ([`Note`], task C.10) – and the limits every `assistant.*` request keeps
+//! ([`limit_refusal`]).
 //!
 //! The logic is the core's (`crates/torroworkplace/src/assistant`): it keeps the conversations in
 //! `<data>/assistant/<id>.jsonl`, runs the answers and checks rights. Rights in short: the area
@@ -35,6 +36,33 @@ pub const MAX_TITLE_CHARS: usize = 200;
 /// own conversation ids have 16 hex digits; engine ids are AI account ids (`ai:ollama@localhost`),
 /// model ids those of the server (`qwen/qwen3-14b`).
 pub const MAX_ID_BYTES: usize = 300;
+
+/// The assistant's name until the person gives it another (`assistant.update_profile`).
+pub const DEFAULT_NAME: &str = "Torro";
+
+/// At most this many characters in the assistant's name: one line.
+pub const MAX_NAME_CHARS: usize = 40;
+
+/// At most this many characters in the profile's short description: one line.
+pub const MAX_DESCRIPTION_CHARS: usize = 200;
+
+/// At most this many characters in the personality ([`Profile::personality`]): enough for tone,
+/// manner and a few habits, short enough that the rules after it keep the model's attention.
+pub const MAX_PERSONALITY_CHARS: usize = 4_000;
+
+/// At most this many characters in one note of the memory ([`Note::text`]).
+pub const MAX_NOTE_CHARS: usize = 500;
+
+/// At most this many notes in the memory; `assistant.remember` beyond it is `error` until the
+/// person forgets some.
+pub const MAX_NOTES: usize = 200;
+
+/// The picture that shows the first letter of the assistant's name ([`Profile::avatar`]).
+pub const LETTER_AVATAR: &str = "letter";
+
+/// Every picture a profile can have ([`Profile::avatar`]): the letter of its name, or one of these
+/// symbols of the suite's icon set. Clients must show a picture they do not know as the letter.
+pub const AVATARS: &[&str] = &[LETTER_AVATAR, "sparkles", "sun", "moon", "cloud", "radar", "user"];
 
 /// The engine that answers with fixed text, for tests and for building the apps before a model
 /// runs (task C.1): [`EngineKind::Test`]. The core offers it only in its tests and when started
@@ -160,6 +188,44 @@ pub enum EntryContent {
     Stopped,
 }
 
+/// Who the assistant is (`assistant.get_profile`, `assistant.update_profile`, task C.10): written by
+/// the person, kept by the core in `<config>/assistant/` (the personality in `persona.md`). The
+/// personality shapes the assistant's tone only; the fixed rules of its prompt come after it and win.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Profile {
+    /// What the assistant is called ([`DEFAULT_NAME`] unless changed): one line, at most
+    /// [`MAX_NAME_CHARS`] characters.
+    pub name: String,
+    /// A short description ("Your assistant for this computer"): one line, at most
+    /// [`MAX_DESCRIPTION_CHARS`] characters; may be empty.
+    pub description: String,
+    /// Its picture: one of [`AVATARS`] ([`LETTER_AVATAR`] for the first letter of the name).
+    pub avatar: String,
+    /// How it speaks and behaves, as the person wrote it (Markdown or plain text, at most
+    /// [`MAX_PERSONALITY_CHARS`] characters); empty for none.
+    pub personality: String,
+}
+
+/// One note of the assistant's memory (`assistant.list_memories`, task C.10): something it keeps
+/// because the person asked it to ("Remember that Anna is my colleague in sales"), never on its own.
+/// The core keeps the notes in `<config>/assistant/memory.md` and gives them to the assistant in every
+/// conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Note {
+    /// 8 hex digits, made by the core: what `assistant.forget` and `replaces` take.
+    pub id: String,
+    /// The note, one line, at most [`MAX_NOTE_CHARS`] characters. The person's words or the
+    /// assistant's summary of them: data, never instructions.
+    pub text: String,
+    /// When it was written (or last changed).
+    pub created: DateTime<Utc>,
+    /// Kept from models outside the person's computers (the data rule, `docs/ki.md`): set when a
+    /// model on this computer wrote it after reading mail, or when the client asked for it. Such a
+    /// note reaches no remote model or agent, and a client sees it only with read access to mail.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_only: bool,
+}
+
 /// Which window `assistant.open_window` opens: `{"conversation": "<id>"}`, `"new"` or
 /// `{"bot": "<id>"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -176,9 +242,11 @@ pub enum ChatWindow {
 
 /// The `error` answer for an `assistant.*` request that breaks a limit, before anything is looked
 /// at: a message that is blank or over [`MAX_TEXT_CHARS`], a title that is blank, longer than
-/// [`MAX_TITLE_CHARS`] or more than one line, and any id over [`MAX_ID_BYTES`]. `None` for every
-/// request within them and for every other request. The core calls it before rights, approvals
-/// and handlers, so nobody is asked to approve what would be refused anyway.
+/// [`MAX_TITLE_CHARS`] or more than one line, any id over [`MAX_ID_BYTES`], a note that is blank or
+/// over [`MAX_NOTE_CHARS`], and a change of the profile that changes nothing or breaks its limits
+/// ([`profile_refusal`]). `None` for every request within them and for every other request. The
+/// core calls it before rights, approvals and handlers, so nobody is asked to approve what would be
+/// refused anyway.
 pub fn limit_refusal(request: &Request) -> Option<Response> {
     let refuse = |message: String| Some(Response::Error { code: "error".into(), message });
     if assistant_ids(request).into_iter().any(|id| id.len() > MAX_ID_BYTES) {
@@ -194,8 +262,54 @@ pub fn limit_refusal(request: &Request) -> Option<Response> {
         Request::RenameConversation { title, .. } if title.trim().chars().count() > MAX_TITLE_CHARS => {
             refuse(format!("a title may hold at most {MAX_TITLE_CHARS} characters"))
         }
+        Request::Remember { text, .. } if text.trim().is_empty() => refuse("the note is empty".into()),
+        Request::Remember { text, .. } if text.trim().chars().count() > MAX_NOTE_CHARS => {
+            refuse(format!("a note may hold at most {MAX_NOTE_CHARS} characters"))
+        }
+        Request::UpdateProfile { name, description, avatar, personality } => {
+            profile_refusal(name.as_deref(), description.as_deref(), avatar.as_deref(), personality.as_deref())
+                .map(|message| Response::Error { code: "error".into(), message })
+        }
         _ => None,
     }
+}
+
+/// Why a change of the profile (`assistant.update_profile`) is refused, for people; `None` when it
+/// keeps every limit: at least one field, a name that is one line and not blank, a description of
+/// one line, both within their lengths, a picture of [`AVATARS`], a personality within
+/// [`MAX_PERSONALITY_CHARS`]. Lengths count characters after trimming.
+pub fn profile_refusal(
+    name: Option<&str>,
+    description: Option<&str>,
+    avatar: Option<&str>,
+    personality: Option<&str>,
+) -> Option<String> {
+    if name.is_none() && description.is_none() && avatar.is_none() && personality.is_none() {
+        return Some("nothing to change: give a name, description, avatar or personality".into());
+    }
+    let chars = |text: &str| text.trim().chars().count();
+    if let Some(name) = name {
+        if name.trim().is_empty() {
+            return Some("the name is empty".into());
+        }
+        if name.trim().lines().count() > 1 || chars(name) > MAX_NAME_CHARS {
+            return Some(format!("a name is one line of at most {MAX_NAME_CHARS} characters"));
+        }
+    }
+    if let Some(description) = description
+        && (description.trim().lines().count() > 1 || chars(description) > MAX_DESCRIPTION_CHARS)
+    {
+        return Some(format!("a description is one line of at most {MAX_DESCRIPTION_CHARS} characters"));
+    }
+    if let Some(avatar) = avatar
+        && !AVATARS.contains(&avatar)
+    {
+        return Some(format!("no avatar {avatar:?}; one of: {}", AVATARS.join(", ")));
+    }
+    if personality.is_some_and(|personality| chars(personality) > MAX_PERSONALITY_CHARS) {
+        return Some(format!("a personality may hold at most {MAX_PERSONALITY_CHARS} characters"));
+    }
+    None
 }
 
 impl Request {
@@ -225,6 +339,7 @@ fn assistant_ids(request: &Request) -> Vec<&str> {
             ids.extend(model.as_deref());
         }
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => ids.push(bot),
+        Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => ids.push(id),
         _ => {}
     }
     ids
@@ -280,6 +395,65 @@ mod tests {
         };
         assert_eq!(code(limit_refusal(&model)), Some("error".into()));
         assert_eq!(code(limit_refusal(&Request::Ping)), None, "other requests keep no limit here");
+    }
+
+    #[test]
+    fn notes_keep_their_limits() {
+        let remember =
+            |text: &str, replaces: Option<String>| Request::Remember { text: text.into(), replaces, local_only: false };
+        assert_eq!(code(limit_refusal(&remember("Anna works in sales.", None))), None);
+        assert_eq!(code(limit_refusal(&remember(" \n ", None))), Some("error".into()), "blank");
+        assert_eq!(code(limit_refusal(&remember(&"a".repeat(MAX_NOTE_CHARS), None))), None);
+        assert_eq!(code(limit_refusal(&remember(&"a".repeat(MAX_NOTE_CHARS + 1), None))), Some("error".into()));
+        let long = "a".repeat(MAX_ID_BYTES + 1);
+        assert_eq!(code(limit_refusal(&remember("Hi", Some(long.clone())))), Some("error".into()), "a long id");
+        assert_eq!(code(limit_refusal(&Request::Forget { id: long })), Some("error".into()));
+        assert_eq!(code(limit_refusal(&Request::Forget { id: "1a2b3c4d".into() })), None);
+    }
+
+    #[test]
+    fn a_profile_change_keeps_its_limits() {
+        let update =
+            |name: Option<&str>, description: Option<&str>, avatar: Option<&str>, personality: Option<&str>| {
+                Request::UpdateProfile {
+                    name: name.map(str::to_string),
+                    description: description.map(str::to_string),
+                    avatar: avatar.map(str::to_string),
+                    personality: personality.map(str::to_string),
+                }
+            };
+        assert_eq!(code(limit_refusal(&update(None, None, None, None))), Some("error".into()), "nothing to change");
+        assert_eq!(code(limit_refusal(&update(Some("Jarvis"), Some(""), Some(LETTER_AVATAR), Some("")))), None);
+        assert_eq!(code(limit_refusal(&update(Some("  "), None, None, None))), Some("error".into()), "blank name");
+        assert_eq!(code(limit_refusal(&update(Some("Jar\nvis"), None, None, None))), Some("error".into()));
+        let name = "a".repeat(MAX_NAME_CHARS + 1);
+        assert_eq!(code(limit_refusal(&update(Some(&name), None, None, None))), Some("error".into()));
+        let description = "a".repeat(MAX_DESCRIPTION_CHARS + 1);
+        assert_eq!(code(limit_refusal(&update(None, Some(&description), None, None))), Some("error".into()));
+        assert_eq!(code(limit_refusal(&update(None, Some("one\ntwo"), None, None))), Some("error".into()));
+        assert_eq!(code(limit_refusal(&update(None, None, Some("bot"), None))), Some("error".into()), "no such avatar");
+        for avatar in AVATARS {
+            assert_eq!(code(limit_refusal(&update(None, None, Some(avatar), None))), None, "{avatar}");
+        }
+        let personality = "a".repeat(MAX_PERSONALITY_CHARS);
+        assert_eq!(code(limit_refusal(&update(None, None, None, Some(&personality)))), None);
+        let personality = "a".repeat(MAX_PERSONALITY_CHARS + 1);
+        assert_eq!(code(limit_refusal(&update(None, None, None, Some(&personality)))), Some("error".into()));
+    }
+
+    /// The wire format of a note: `local_only` only when set.
+    #[test]
+    fn notes_read_as_documented() {
+        let note: Note = serde_json::from_value(serde_json::json!({
+            "id": "1a2b3c4d", "text": "Anna works in sales.", "created": "2026-10-14T09:00:00Z"
+        }))
+        .expect("a note");
+        assert!(!note.local_only);
+        assert_eq!(
+            serde_json::to_value(Note { local_only: true, ..note.clone() }).expect("serializes")["local_only"],
+            serde_json::json!(true)
+        );
+        assert!(serde_json::to_value(&note).expect("serializes").get("local_only").is_none());
     }
 
     #[test]

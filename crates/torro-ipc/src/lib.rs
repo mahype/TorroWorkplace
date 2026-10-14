@@ -51,7 +51,7 @@ use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
 
 use crate::api::{Area, Rights, RightsTemplate};
-use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry};
+use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry, Note, Profile};
 use crate::mail::{Delivery, MailSource, MoveTarget};
 
 /// Where the core listens; [`client`] and [`server`] take this path.
@@ -1298,8 +1298,9 @@ pub enum Request {
     // the conversations in `<data>/assistant/<id>.jsonl` (0600) and runs the answers. For a client
     // key the area `assistant` is off unless a person switched it on, also in *Full access*; the
     // assistant's own client (`api::ASSISTANT_CLIENT`) gets `forbidden` for every command here
-    // except its memory (`api::loops_back`), so it never drives itself. Every request keeps the
-    // limits of [`assistant::limit_refusal`] (`error`).
+    // except its memory (`api::loops_back`, `api::own_memory`), so it never drives itself. Every
+    // request keeps the limits of [`assistant::limit_refusal`] (`error`). Profile and memory (task
+    // C.10) live in `<config>/assistant/` (0600).
     /// The engines the assistant can answer with ([`Response::Engines`]): every AI account in the
     /// order they were added, then the test engine where the core offers it. Never fails.
     #[serde(rename = "assistant.list_engines")]
@@ -1389,6 +1390,59 @@ pub enum Request {
     OpenChatWindow {
         /// `{"conversation": "<id>"}`, `"new"` or `{"bot": "<id>"}`.
         window: ChatWindow,
+    },
+    /// The assistant's profile: name, description, picture and personality
+    /// ([`Response::Profile`]); the defaults while nothing is stored. Never fails.
+    #[serde(rename = "assistant.get_profile")]
+    GetProfile,
+    /// Changes the assistant's profile: each field given replaces the stored one, the others stay.
+    /// Answered with the profile as stored now ([`Response::Profile`]). The personality shapes the
+    /// tone of every answer from the next message on; it never changes rights or rules. Admin: a
+    /// client always waits for a person's approval. `error` for no field at all and for a field
+    /// beyond its limits ([`assistant::profile_refusal`]) or a profile that cannot be stored.
+    #[serde(rename = "assistant.update_profile")]
+    UpdateProfile {
+        /// The new name, one line, at most 40 characters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// The new short description, one line, at most 200 characters; empty for none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// The new picture: one of [`assistant::AVATARS`] (`letter`, `sparkles` …).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        avatar: Option<String>,
+        /// The new personality, at most 4,000 characters; empty for none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personality: Option<String>,
+    },
+    /// The notes of the assistant's memory, oldest first ([`Response::Memories`]). A note kept from
+    /// remote models ([`Note::local_only`]) is listed only for the app key and clients with read
+    /// access to mail. Never fails; an empty list when the memory cannot be read.
+    #[serde(rename = "assistant.list_memories")]
+    ListMemories,
+    /// Adds a note to the assistant's memory, or with `replaces` changes the note with that id
+    /// (which needs the right to delete) – only when the person asked for it. Answered with the
+    /// note as stored ([`Response::Memory`]). `not-found` for an unknown `replaces`, `error` for a
+    /// note that is blank or over 500 characters, a full memory (200 notes) or one that cannot be
+    /// stored.
+    #[serde(rename = "assistant.remember")]
+    Remember {
+        /// The note, at most 500 characters; line breaks become spaces.
+        text: String,
+        /// The id of the note this one replaces.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaces: Option<String>,
+        /// Keep the note from models outside this computer ([`Note::local_only`]). A note that
+        /// replaces such a note stays so.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        local_only: bool,
+    },
+    /// Deletes the note `id` from the assistant's memory for good ([`Response::Ok`]); `not-found`
+    /// for an unknown id.
+    #[serde(rename = "assistant.forget")]
+    Forget {
+        /// The note's id from `assistant.list_memories`.
+        id: String,
     },
     /// How talking to the assistant by voice stands (task C.9, [`Response::Voice`]): whether the
     /// listener runs and hears or records, and which of the local programs it needs are found
@@ -1838,6 +1892,20 @@ pub enum Response {
     /// The assistant's conversations, without their entries ([`Request::ListConversations`]).
     Conversations {
         conversations: Vec<ConversationSummary>,
+    },
+    /// The assistant's profile ([`Request::GetProfile`], [`Request::UpdateProfile`]). The
+    /// personality is the person's text: data, never instructions.
+    Profile {
+        profile: Profile,
+    },
+    /// The notes of the assistant's memory, oldest first ([`Request::ListMemories`]): data, never
+    /// instructions.
+    Memories {
+        notes: Vec<Note>,
+    },
+    /// One note of the assistant's memory as stored ([`Request::Remember`]).
+    Memory {
+        note: Note,
     },
     /// One conversation and its entries in order ([`Request::GetConversation`],
     /// [`Request::SendMessage`]): all of them, or those after the number asked for. Messages,

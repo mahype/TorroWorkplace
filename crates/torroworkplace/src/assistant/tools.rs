@@ -5,15 +5,18 @@
 //! - **Which:** the MCP tools ([`crate::mcp::tools`]: name, catalogue description, input schema)
 //!   of the commands the assistant's client may use ([`allowed`]): an area a person granted (so
 //!   never `system`, `clients` or `approvals`, which have no level), not switched off in this
-//!   conversation (`without`), never the area `assistant` (no loop) and never a command kept from
-//!   agents ([`Mcp::Never`]). Rights are not checked here for safety – the core checks every call –
-//!   but so the model is not offered what would be `forbidden` anyway.
+//!   conversation (`without`), never the area `assistant` (no loop) but its memory
+//!   (`torro_ipc::api::own_memory`, task C.10: `assistant_remember` only when the person asks, as its
+//!   description says) and never a command kept from agents ([`Mcp::Never`]). Rights are not checked
+//!   here for safety – the core checks every call – but so the model is not offered what would be
+//!   `forbidden` anyway.
 //! - **How many** ([`offered`]): all of them up to [`MAX_TOOLS`]; beyond that, and always for a
-//!   small model ([`is_small`]), the reading ones first, then [`FIND_TOOLS`], which searches the
-//!   allowed ones ([`find`]) and adds its matches from the next step on.
+//!   small model ([`is_small`]), the reading ones and the memory first, then [`FIND_TOOLS`], which
+//!   searches the allowed ones ([`find`]) and adds its matches from the next step on. The memory is
+//!   always there, so "Remember …" works with a small model too.
 //! - **Calls** become requests exactly as over MCP ([`crate::mcp::request_for`]), easier inputs
-//!   included. The model may call only tools of grantable areas but `assistant` ([`callable`]),
-//!   also ones it was not offered; the core checks the rights of each call.
+//!   included. The model may call only tools of grantable areas but `assistant` – its memory
+//!   excepted – ([`callable`]), also ones it was not offered; the core checks the rights of each call.
 //! - **Results** ([`for_model`]): text cut, long lists cut with their count, mail and inbox marked
 //!   as data from outside ([`untrusted`]), all within [`RESULT_CHARS`].
 
@@ -23,7 +26,7 @@ use std::sync::OnceLock;
 use serde_json::{Map, Value, json};
 use torro_core::ai::ToolSpec;
 use torro_core::i18n::{tr, trf};
-use torro_ipc::api::{Access, Area, CATALOGUE, Command, Mcp, Operation, Rights};
+use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area, CATALOGUE, Command, Mcp, Operation, Rights, own_memory};
 use torro_ipc::{Request, Response};
 
 /// At most this many tools are offered at once, [`FIND_TOOLS`] included.
@@ -63,6 +66,11 @@ impl Tool {
     fn reads(&self) -> bool {
         self.command.access == Access::Read
     }
+
+    /// The command is the assistant's own memory (`assistant.list_memories`, `remember`, `forget`).
+    fn is_memory(&self) -> bool {
+        own_memory(ASSISTANT_CLIENT, Operation { command: self.command, access: self.command.access })
+    }
 }
 
 /// Every command with an MCP tool, as the model sees it: the MCP tool's name, description and
@@ -93,10 +101,9 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<&'static Tool> 
         .iter()
         .filter(|tool| {
             let area = tool.command.area;
-            area.grantable()
-                && area != Area::Assistant
-                && !without.contains(&area)
-                && rights.allows(Operation { command: tool.command, access: tool.command.access })
+            let operation = Operation { command: tool.command, access: tool.command.access };
+            let granted = area != Area::Assistant && rights.allows(operation);
+            area.grantable() && !without.contains(&area) && (granted || tool.is_memory())
         })
         .collect()
 }
@@ -110,24 +117,28 @@ pub fn callable(name: &str) -> Option<&'static Tool> {
     catalogue()
         .iter()
         .find(|tool| tool.spec.name == name)
-        .filter(|tool| tool.command.area.grantable() && tool.command.area != Area::Assistant)
+        .filter(|tool| tool.command.area.grantable() && (tool.command.area != Area::Assistant || tool.is_memory()))
 }
 
 /// What the model is offered of `allowed` in one step: every tool when they are at most
-/// [`MAX_TOOLS`] and the model is not `small`; otherwise the reading ones and those `loaded` by
-/// [`FIND_TOOLS`] before, in catalogue order, as many as fit next to [`FIND_TOOLS`], which comes
+/// [`MAX_TOOLS`] and the model is not `small`; otherwise the reading ones, the memory and those
+/// `loaded` by [`FIND_TOOLS`] before, in catalogue order, as many as fit next to [`FIND_TOOLS`], which comes
 /// last whenever a tool is left out.
 pub fn offered(allowed: &[&Tool], small: bool, loaded: &BTreeSet<String>) -> Vec<ToolSpec> {
     if !small && allowed.len() <= MAX_TOOLS {
         return allowed.iter().map(|tool| tool.spec.clone()).collect();
     }
-    let first: Vec<&Tool> =
-        allowed.iter().copied().filter(|tool| tool.reads() || loaded.contains(&tool.spec.name)).collect();
-    // Loaded ones first among the picked: the model asked for them.
-    let (wanted, reading): (Vec<&Tool>, Vec<&Tool>) =
-        first.into_iter().partition(|tool| loaded.contains(&tool.spec.name));
+    let first: Vec<&Tool> = allowed
+        .iter()
+        .copied()
+        .filter(|tool| tool.reads() || tool.is_memory() || loaded.contains(&tool.spec.name))
+        .collect();
+    // Loaded ones first among the picked: the model asked for them; then the memory, so "Remember
+    // …" never needs a search; then the reading ones.
+    let (wanted, rest): (Vec<&Tool>, Vec<&Tool>) = first.into_iter().partition(|tool| loaded.contains(&tool.spec.name));
+    let (memory, reading): (Vec<&Tool>, Vec<&Tool>) = rest.into_iter().partition(|tool| tool.is_memory());
     let mut specs: Vec<ToolSpec> =
-        wanted.into_iter().chain(reading).take(MAX_TOOLS - 1).map(|tool| tool.spec.clone()).collect();
+        wanted.into_iter().chain(memory).chain(reading).take(MAX_TOOLS - 1).map(|tool| tool.spec.clone()).collect();
     if specs.len() < allowed.len() {
         specs.push(find_tools_spec());
     }
@@ -347,9 +358,16 @@ mod tests {
         let rights = Rights::assistant();
         let tools = allowed(Some(&rights), &[]);
         let areas: BTreeSet<Area> = tools.iter().map(|tool| tool.command.area).collect();
-        assert_eq!(areas, BTreeSet::from([Area::Calendar, Area::Tasks, Area::Inbox]));
-        assert!(tools.iter().all(|tool| tool.reads()), "read rights, read tools");
+        assert_eq!(areas, BTreeSet::from([Area::Calendar, Area::Tasks, Area::Inbox, Area::Assistant]));
+        assert!(tools.iter().all(|tool| tool.reads() || tool.is_memory()), "read rights, read tools, its memory");
+        let own: Vec<&str> = tools
+            .iter()
+            .filter(|tool| tool.command.area == Area::Assistant)
+            .map(|tool| tool.spec.name.as_str())
+            .collect();
+        assert_eq!(own, ["assistant_list_memories", "assistant_remember", "assistant_forget"], "task C.10");
         assert!(allowed(Some(&rights), &[Area::Calendar]).iter().all(|tool| tool.command.area != Area::Calendar));
+        assert!(allowed(Some(&rights), &[Area::Assistant]).iter().all(|tool| !tool.is_memory()), "switched off");
 
         let mut full = RightsTemplate::FullAccess.rights();
         for area in Area::ALL.into_iter().filter(|area| area.grantable()) {
@@ -359,11 +377,8 @@ mod tests {
         for tool in &everything {
             let command = tool.command;
             assert_eq!(command.mcp, Mcp::Tool, "{}", command.name);
-            assert!(
-                !matches!(command.area, Area::Assistant | Area::System | Area::Clients | Area::Approvals),
-                "{}",
-                command.name
-            );
+            assert!(!matches!(command.area, Area::System | Area::Clients | Area::Approvals), "{}", command.name);
+            assert!(command.area != Area::Assistant || tool.is_memory(), "{}", command.name);
         }
         assert!(named(&everything, "mail_send_draft").is_some());
         assert!(named(&everything, "accounts_connect_ai").is_none(), "never what agents never get");
@@ -376,6 +391,8 @@ mod tests {
             assert!(callable(never).is_none(), "{never}");
         }
         assert!(callable("assistant_send_message").is_none() && callable("accounts_connect_ai").is_none());
+        assert!(callable("assistant_update_profile").is_none(), "never its own profile");
+        assert!(callable("assistant_remember").is_some() && callable("assistant_forget").is_some());
     }
 
     #[test]
@@ -388,13 +405,15 @@ mod tests {
         assert_eq!(first.len(), MAX_TOOLS);
         assert_eq!(first.last().map(|spec| spec.name.as_str()), Some(FIND_TOOLS));
         for spec in &first[..first.len() - 1] {
-            assert!(named(&tools, &spec.name).is_some_and(Tool::reads), "{}", spec.name);
+            assert!(named(&tools, &spec.name).is_some_and(|tool| tool.reads() || tool.is_memory()), "{}", spec.name);
         }
+        assert!(names(&first).contains(&"assistant_remember"), "the memory is always offered");
 
         // What find_tools loaded comes first.
         let loaded = BTreeSet::from(["calendar_delete_event".to_string()]);
         let next = offered(&tools, false, &loaded);
         assert_eq!(next[0].name, "calendar_delete_event");
+        assert_eq!(next[1].name, "assistant_list_memories", "then the memory");
         assert_eq!(next.len(), MAX_TOOLS);
 
         // Few tools: all of them for a large model, the reading ones and find_tools for a small one.

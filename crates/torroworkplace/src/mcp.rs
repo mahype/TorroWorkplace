@@ -1861,7 +1861,7 @@ mod tests {
             .filter(|command| command.area == Area::Assistant && command.mcp == Mcp::Tool)
             .map(|command| command.tool_name())
             .collect();
-        assert_eq!(catalogue.len(), 9, "{catalogue:?}");
+        assert_eq!(catalogue.len(), 14, "nine of task C.1, five of C.10: {catalogue:?}");
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         assert!(CATALOGUE.iter().filter(|c| c.area == Area::Assistant).all(|c| c.mcp == Mcp::Tool));
     }
@@ -1886,6 +1886,38 @@ mod tests {
         );
         let read = request_for("assistant_get_conversation", args(json!({"id": "0123456789abcdef", "after": 4})), &Utc);
         assert_eq!(read, Ok(Request::GetConversation { id: "0123456789abcdef".into(), after: Some(4) }));
+    }
+
+    /// Task C.10: the memory and profile tools build their requests; a note's optional fields stay
+    /// out when not given.
+    #[test]
+    fn the_memory_and_profile_tools_build_their_requests() {
+        assert_eq!(
+            request_for("assistant_remember", args(json!({"text": "Anna works in sales."})), &Utc),
+            Ok(Request::Remember { text: "Anna works in sales.".into(), replaces: None, local_only: false })
+        );
+        assert_eq!(
+            request_for("assistant_remember", args(json!({"text": "x", "replaces": "1a2b3c4d"})), &Utc),
+            Ok(Request::Remember { text: "x".into(), replaces: Some("1a2b3c4d".into()), local_only: false })
+        );
+        assert_eq!(
+            request_for("assistant_forget", args(json!({"id": "1a2b3c4d"})), &Utc),
+            Ok(Request::Forget { id: "1a2b3c4d".into() })
+        );
+        assert_eq!(request_for("assistant_list_memories", args(json!({})), &Utc), Ok(Request::ListMemories));
+        assert_eq!(
+            request_for("assistant_update_profile", args(json!({"personality": "Brief."})), &Utc),
+            Ok(Request::UpdateProfile {
+                name: None,
+                description: None,
+                avatar: None,
+                personality: Some("Brief.".into())
+            })
+        );
+        assert!(matches!(
+            request_for("assistant_remember", args(json!({"note": "x"})), &Utc),
+            Err(ToolError::Input(_))
+        ));
     }
 
     fn message(seq: u64, text: &str) -> Entry {
@@ -2230,13 +2262,18 @@ mod tests {
         /// A conversation id the tests may name; the core answers `forbidden` or `not-found` for it.
         const CONVERSATION: &str = "0123456789abcdef";
 
+        /// "Keine Schleife" (tasks C.1, C.10): the assistant's own client is refused every assistant
+        /// tool but its memory, which it reads, adds to and forgets from, whatever its rights in the
+        /// area say; forgetting waits for the person, as deleting does with its rights.
         #[tokio::test]
-        async fn the_assistants_own_client_is_forbidden_every_assistant_tool() {
+        async fn the_assistants_own_client_gets_its_memory_and_no_other_assistant_tool() {
             let dir = tempfile::tempdir().expect("temp dir");
             let (socket, keys) = start_core_with(dir.path(), Duration::from_millis(50)).await;
-            let mut session = Session::start(TorroMcp::new(socket, Some(keys.assistant), false)).await;
+            let server =
+                TorroMcp::new(socket, Some(keys.assistant), false).with_approval_wait(Duration::from_millis(50));
+            let mut session = Session::start(server).await;
 
-            let calls = [
+            let forbidden = [
                 ("assistant_list_engines", json!({})),
                 ("assistant_list_conversations", json!({})),
                 ("assistant_get_conversation", json!({"id": CONVERSATION})),
@@ -2246,16 +2283,31 @@ mod tests {
                 ("assistant_delete_conversation", json!({"id": CONVERSATION})),
                 ("assistant_pin_conversation", json!({"id": CONVERSATION, "pinned": true})),
                 ("assistant_open_window", json!({"window": "new"})),
+                ("assistant_get_profile", json!({})),
+                ("assistant_update_profile", json!({"name": "Jarvis"})),
             ];
+            let own = ["assistant_list_memories", "assistant_remember", "assistant_forget"];
             let tools: BTreeSet<&str> =
                 tools().iter().map(|tool| tool.name.as_ref()).filter(|name| name.starts_with("assistant_")).collect();
-            let called: BTreeSet<&str> = calls.iter().map(|(name, _)| *name).collect();
+            let called: BTreeSet<&str> = forbidden.iter().map(|(name, _)| *name).chain(own).collect();
             assert_eq!(called, tools, "every assistant tool is checked here");
-            for (name, arguments) in calls {
+            for (name, arguments) in forbidden {
                 let answer = session.call(name, arguments).await;
                 assert_eq!(answer["isError"], true, "{name}: {answer}");
                 assert_eq!(answer["structuredContent"]["code"], "forbidden", "{name}: {answer}");
             }
+
+            let kept = session.call("assistant_remember", json!({"text": "Anna works in sales."})).await;
+            assert_ne!(kept["isError"], true, "{kept}");
+            let id = kept["structuredContent"]["note"]["id"].as_str().expect("the note's id").to_string();
+            let listed = session.call("assistant_list_memories", json!({})).await;
+            assert_eq!(listed["structuredContent"]["notes"][0]["text"], "Anna works in sales.", "{listed}");
+            let unknown = session.call("assistant_forget", json!({"id": "00000000"})).await;
+            assert_eq!(unknown["structuredContent"]["code"], "not-found", "{unknown}");
+            // Deleting waits for the person (the assistant's rights ask before deleting); the MCP
+            // tool gives up after its wait with `pending`.
+            let forget = session.call("assistant_forget", json!({"id": id})).await;
+            assert_eq!(forget["structuredContent"]["code"], "pending", "{forget}");
         }
 
         #[tokio::test]

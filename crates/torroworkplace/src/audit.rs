@@ -301,6 +301,11 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::OpenChatWindow { window: ChatWindow::Conversation(conversation) } => {
             vec![random("conversation", conversation)]
         }
+        // The assistant's profile and memory (task C.10): a note by the id the core made, never
+        // its text, a name or the personality.
+        Request::GetProfile | Request::UpdateProfile { .. } | Request::ListMemories => Vec::new(),
+        Request::Remember { replaces, .. } => replaces.iter().map(|id| random("note", id)).collect(),
+        Request::Forget { id: note } => vec![random("note", note)],
         mail @ (Request::MailFolders { .. }
         | Request::SearchMail { .. }
         | Request::GetMail { .. }

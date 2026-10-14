@@ -18,6 +18,11 @@
 //! every entry). The approvals, whose summaries and answers can quote mail, are no tool of the
 //! assistant at all (`tools::callable`).
 //!
+//! The assistant's memory (task C.10): a note a model on this computer kept after the conversation
+//! read mail is marked `local_only` (`super::model`), and a model elsewhere never reads such a note –
+//! neither in its prompt (`super::prompt`) nor in what `assistant.list_memories` answers
+//! ([`for_model`]).
+//!
 //! Known limit, for KI.1: a task made from a mail entry keeps the subject as its title, and
 //! `tasks.list_todos` shows it to every model; tasks are the person's own data from then on.
 
@@ -25,6 +30,7 @@ use serde_json::{Value, json};
 use torro_core::ai::{AiProvider, is_this_computer};
 use torro_inbox::{Item, Rule, SourceKind};
 use torro_ipc::api::Area;
+use torro_ipc::assistant::Note;
 use torro_ipc::{Request, Response};
 
 /// What a model reads in place of content its data rule keeps from it. English: it is for the
@@ -99,8 +105,24 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
             let withheld = rules.iter().any(|rule| rule.sender.is_some() || rule.domain.is_some());
             Screened { value: json!({ "result": result, "rules": shown }), withheld }
         }
+        // Notes a local model kept after reading mail (task C.10).
+        Response::Memories { notes } => {
+            let shown: Vec<&Note> = notes.iter().filter(|note| !note.local_only).collect();
+            let withheld = shown.len() < notes.len();
+            Screened { value: json!({ "result": result, "notes": shown }), withheld }
+        }
+        Response::Memory { note } if note.local_only => Screened {
+            value: json!({ "result": result, "note": { "id": note.id, "withheld": WITHHELD } }),
+            withheld: true,
+        },
         _ => Screened { value, withheld: false },
     }
+}
+
+/// Whether the command `name` (a catalogue name) reads mail content or may: every `mail.*` and
+/// `inbox.*` command. An answer after one in the same turn may retell a mail.
+pub fn reads_mail(name: &str) -> bool {
+    name.starts_with("mail.") || name.starts_with("inbox.")
 }
 
 /// An inbox entry from a mail account is mail content.
@@ -138,7 +160,7 @@ fn rule_for_remote(rule: &Rule) -> Value {
 /// there. Its own answers never held mail content (it read [`WITHHELD`] instead), and of another
 /// engine the core may no longer know where it ran, so those are withheld.
 pub fn history_allowed(commands: &[&str], answered_by: &str, engine: &str, place: Place) -> bool {
-    let read_mail = commands.iter().any(|name| name.starts_with("mail.") || name.starts_with("inbox."));
+    let read_mail = commands.iter().any(|name| reads_mail(name));
     place == Place::Local || !read_mail || answered_by == engine
 }
 
@@ -248,6 +270,27 @@ mod tests {
         let text = remote.value.to_string();
         assert!(remote.withheld && !text.contains("acme") && text.contains("r1") && text.contains("r2"), "{text}");
         assert!(for_model(&list, &rules, Place::Local).value.to_string().contains("acme"));
+    }
+
+    /// Task C.10: notes a local model kept after reading mail stay with local models.
+    #[test]
+    fn notes_kept_after_mail_are_withheld_from_remote_models() {
+        let created = Utc.with_ymd_and_hms(2026, 10, 14, 9, 0, 0).single().expect("valid time");
+        let note = |id: &str, text: &str, local_only| Note { id: id.into(), text: text.into(), created, local_only };
+        let notes = Response::Memories {
+            notes: vec![note("1a2b3c4d", "Anna works in sales.", false), note("5e6f7a8b", "ACME owes 400 €.", true)],
+        };
+        let list = Request::ListMemories;
+        let remote = for_model(&list, &notes, Place::Remote);
+        let text = remote.value.to_string();
+        assert!(remote.withheld && !text.contains("ACME") && !text.contains("5e6f7a8b") && text.contains("Anna"));
+        assert!(for_model(&list, &notes, Place::Local).value.to_string().contains("ACME"));
+
+        let remember = Request::Remember { text: "x".into(), replaces: None, local_only: true };
+        let kept = Response::Memory { note: note("5e6f7a8b", "ACME owes 400 €.", true) };
+        let screened = for_model(&remember, &kept, Place::Remote);
+        assert!(screened.withheld && !screened.value.to_string().contains("ACME"));
+        assert!(reads_mail("mail.get_message") && reads_mail("inbox.list_items") && !reads_mail("tasks.list_todos"));
     }
 
     #[test]

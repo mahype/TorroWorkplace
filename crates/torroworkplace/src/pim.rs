@@ -1099,6 +1099,12 @@ impl PimService {
             | Request::OpenChatWindow { .. }
             | Request::VoiceStatus
             | Request::TestVoice => return None,
+            // No collection: the assistant's profile and memory are its own (task C.10).
+            Request::GetProfile
+            | Request::UpdateProfile { .. }
+            | Request::ListMemories
+            | Request::Remember { .. }
+            | Request::Forget { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

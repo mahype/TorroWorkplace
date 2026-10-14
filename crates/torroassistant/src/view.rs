@@ -348,7 +348,12 @@ impl App {
         if narrow_main && !shell::has_band() {
             leading.push(shell::sidebar_toggle(Message::ToggleSidebar));
         }
-        let note = (class != SizeClass::Narrow).then(|| self.engine_note()).flatten();
+        // Who answers: the assistant's picture, and its name before the engine (task C.10).
+        leading.push(avatar(self.assistant_name(), self.assistant_avatar(), header_avatar()));
+        // A new chat has no engine yet: its picture says who answers, the welcome says the name.
+        let note = (class != SizeClass::Narrow)
+            .then(|| self.engine_note().map(|engine| format!("{} · {engine}", self.assistant_name())))
+            .flatten();
         let title = shell::header_title(None, self.conversation_title(), note);
         let mut trailing = Vec::new();
         if narrow_main {
@@ -445,11 +450,35 @@ impl App {
                 Some((tr("Add an AI account"), Message::OpenSettings)),
             );
         }
-        prompt_state(
-            tr("What can I do for you?"),
-            tr("Ask about your calendar, tasks, inbox or mail. The assistant uses only what you allowed."),
-            None,
-        )
+        self.greeting()
+    }
+
+    /// The welcome of a new chat (task C.10): who answers – the assistant's picture, name and
+    /// description close together –, then "What can I do for you?" and what it can be asked about.
+    fn greeting(&self) -> Element<'_, Message> {
+        let mut who = column![
+            avatar(self.assistant_name(), self.assistant_avatar(), size::control_lg()),
+            typo::text(typo::meta(), self.assistant_name().to_owned()).style(theme::text_2).wrapping(Wrapping::None),
+        ]
+        .spacing(space::xs())
+        .align_x(Alignment::Center);
+        if let Some(description) = self.profile.as_ref().map(|p| p.description.as_str()).filter(|d| !d.is_empty()) {
+            who = who
+                .push(typo::text(typo::meta(), description.to_owned()).style(theme::text_3).align_x(Alignment::Center));
+        }
+        let ask = column![
+            typo::text(typo::body_strong(), tr("What can I do for you?")).align_x(Alignment::Center),
+            typo::text(
+                typo::body(),
+                tr("Ask about your calendar, tasks, inbox or mail. The assistant uses only what you allowed."),
+            )
+            .style(theme::text_2)
+            .align_x(Alignment::Center)
+        ]
+        .spacing(space::s())
+        .align_x(Alignment::Center);
+        let content = column![who, ask].spacing(space::l()).align_x(Alignment::Center).max_width(size::panel());
+        container(content).center(Fill).padding(space::xl()).into()
     }
 
     /// The entries in order, the growing answer last; tool lines close together, everything else
@@ -896,6 +925,49 @@ fn outcome<'a>(mark: Element<'a, Message>, word: &'a str) -> Element<'a, Message
 /// A quiet line in the sidebar ("No conversations yet").
 fn sidebar_note<'a>(text: &'a str) -> Element<'a, Message> {
     container(typo::text(typo::meta(), text).style(theme::text_3)).padding(style::ITEM_PADDING.top(space::m())).into()
+}
+
+/// The assistant's picture in the header: smaller than a control, so the title keeps its line.
+fn header_avatar() -> f32 {
+    size::control_sm() - space::s()
+}
+
+/// The symbol of a picture of the profile ([`torro_ipc::assistant::AVATARS`]); `None` for the
+/// letter and for a picture this window does not know, which shows as the letter.
+pub fn avatar_icon(id: &str) -> Option<Icon> {
+    match id {
+        "sparkles" => Some(Icon::Sparkles),
+        "sun" => Some(Icon::Sun),
+        "moon" => Some(Icon::Moon),
+        "cloud" => Some(Icon::Cloud),
+        "radar" => Some(Icon::Radar),
+        "user" => Some(Icon::User),
+        _ => None,
+    }
+}
+
+/// The assistant's picture, round, `edge` across: its symbol, else the first letter of `name`
+/// (`?` without one), in `text` on `selected` – neutral, the red is the app logo's. The same look
+/// as in the control centre's Assistant › Profile.
+fn avatar<'a>(name: &str, avatar: &str, edge: f32) -> Element<'a, Message> {
+    // A symbol keeps a ring of room in a small circle.
+    let symbol_edge = if edge < size::control_sm() { icon::SIZE_SM } else { icon::SIZE };
+    let face: Element<'a, Message> = match avatar_icon(avatar) {
+        Some(symbol) => tinted(symbol, symbol_edge, |p| p.text),
+        None => {
+            let letter = name.trim().chars().next().map_or_else(|| "?".to_owned(), |c| c.to_uppercase().to_string());
+            let style = if edge >= size::control_lg() { typo::title() } else { typo::caption() };
+            typo::text(style, letter).style(theme::text).wrapping(Wrapping::None).into()
+        }
+    };
+    container(face)
+        .center(edge)
+        .style(move |t: &Theme| container::Style {
+            background: Some(Background::Color(palette(t).selected)),
+            border: iced::border::rounded(edge / 2.0),
+            ..container::Style::default()
+        })
+        .into()
 }
 
 /// A state in the middle of the chat: what this is (`title`), what to do (`hint`), and a button

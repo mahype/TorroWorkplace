@@ -29,12 +29,21 @@
 //!   the results the model reads.
 //! - **Audit**: the core logs the conversation id and the engine, never a text
 //!   ([`crate::audit::ids`]); the lines of the assistant's tools name the engine too.
+//! - **Profile and memory** (task C.10, [`profile`]): `<config>/assistant/` holds the name,
+//!   description and picture, the personality (`persona.md`) and the notes (`memory.md`), all
+//!   0600, changed under one lock ([`Assistant::own`]). Every answer reads them anew: the
+//!   personality first in the prompt, the notes in its generated part ([`prompt`]). A note marked
+//!   [`Note::local_only`] – written by a model on this computer after it read mail – reaches no
+//!   remote model or agent ([`data_rule`]) and no client without read access to mail
+//!   ([`answer_own`]'s `sees_local`). The assistant's own client may read, add and forget notes,
+//!   nothing else of its area (`torro_ipc::api::own_memory`).
 //!
 //! What goes to a client never names a path; the core's log does.
 
 mod data_rule;
 mod engines;
 mod model;
+mod profile;
 mod prompt;
 mod store;
 mod tools;
@@ -54,7 +63,9 @@ use torro_core::i18n::tr;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Retention;
 use torro_ipc::api::Area;
-use torro_ipc::assistant::{ChatWindow, Engine, EngineKind, Entry, EntryContent, TEST_ENGINE};
+use torro_ipc::assistant::{
+    ChatWindow, Engine, EngineKind, Entry, EntryContent, MAX_NOTES, Note, Profile, TEST_ENGINE,
+};
 use torro_ipc::{Request, Response};
 use torro_pim::AccountState;
 use torro_setups::launch::{Launcher, SystemLauncher};
@@ -99,6 +110,13 @@ pub struct Assistant {
     host: OnceLock<Weak<dyn Host>>,
     /// An async lock: it is held while a file is read or written on a blocking thread.
     state: Mutex<State>,
+    /// `<config>/assistant`, where the profile and the memory live (task C.10); `None` without a
+    /// home directory and in tests that pass none: then the defaults show and every change is
+    /// `error`.
+    config: Option<PathBuf>,
+    /// Held while the profile or the memory is read for a change and written, so two changes never
+    /// lose one another.
+    own: Mutex<()>,
 }
 
 /// What [`Assistant`] holds in memory.
@@ -167,6 +185,7 @@ impl Assistant {
         let test = std::env::var(TEST_ENGINE_VAR).is_ok_and(|value| value == "1");
         let mut assistant = Assistant::new(dir, test.then_some(TEST_STEP), start_app);
         assistant.agents = engines::Agents::system();
+        assistant.config = AppPaths::for_app(AppId::WORKPLACE).map(|paths| profile::folder(&paths.config));
         assistant
     }
 
@@ -182,7 +201,16 @@ impl Assistant {
             agents: engines::Agents::none(),
             host: OnceLock::new(),
             state: Mutex::new(State::default()),
+            config: None,
+            own: Mutex::new(()),
         }
+    }
+
+    /// The assistant keeping its profile and memory in `dir` (`<config>/assistant`), for tests.
+    #[cfg(test)]
+    pub(crate) fn with_config(mut self, dir: PathBuf) -> Assistant {
+        self.config = Some(dir);
+        self
     }
 
     /// The assistant with other bounds for its answers, for tests.
@@ -648,6 +676,174 @@ impl Assistant {
     }
 }
 
+impl Assistant {
+    /// `assistant.get_profile`: the stored profile, the defaults where nothing is stored or the files
+    /// cannot be read (the core's log says why).
+    pub async fn profile(&self) -> Profile {
+        let default = tr("Your assistant for this computer").to_string();
+        let Some(dir) = self.config.clone() else { return profile::default_profile(&default) };
+        let fallback = default.clone();
+        blocking(move || profile::load_profile(&dir, &default)).await.unwrap_or_else(|err| {
+            eprintln!("torroworkplace: cannot read the assistant's profile: {err}");
+            profile::default_profile(&fallback)
+        })
+    }
+
+    /// `assistant.update_profile` once its limits were checked: `change` applied to the stored
+    /// profile and written. Answers with the profile as stored now.
+    pub async fn update_profile(&self, change: profile::Change) -> Response {
+        let Some(dir) = self.config.clone() else { return failure(NO_PLACE) };
+        let _own = self.own.lock().await;
+        let updated = profile::apply(self.profile().await, change);
+        let saved = updated.clone();
+        match blocking(move || profile::save_profile(&dir, &saved)).await {
+            Ok(()) => Response::Profile { profile: updated },
+            Err(err) => {
+                eprintln!("torroworkplace: cannot store the assistant's profile: {err}");
+                failure("the profile cannot be stored")
+            }
+        }
+    }
+
+    /// Every note of the memory, oldest first; none when the memory cannot be read (the core's log
+    /// says why).
+    pub async fn notes(&self) -> Vec<Note> {
+        let Some(dir) = self.config.clone() else { return Vec::new() };
+        blocking(move || profile::load_notes(&dir)).await.unwrap_or_else(|err| {
+            eprintln!("torroworkplace: cannot read the assistant's memory: {err}");
+            Vec::new()
+        })
+    }
+
+    /// The note `id` when the caller may see it: every note when `sees_local`, else none marked
+    /// [`Note::local_only`].
+    pub async fn note(&self, id: &str, sees_local: bool) -> Option<Note> {
+        self.notes().await.into_iter().find(|note| note.id == id && (sees_local || !note.local_only))
+    }
+
+    /// What `assistant.remember` or `assistant.forget` would be refused with anyway, checked
+    /// before anyone is asked to approve it and again by the handlers: a note the caller does not
+    /// see (`not-found`, also one kept from it, [`Assistant::note`]), a full memory for a new note
+    /// (`error`). `None` for every other request.
+    pub async fn memory_refusal(&self, request: &Request, sees_local: bool) -> Option<Response> {
+        match request {
+            Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => {
+                self.note(id, sees_local).await.is_none().then(|| no_note(id))
+            }
+            Request::Remember { replaces: None, .. } if self.notes().await.len() >= MAX_NOTES => Some(full()),
+            _ => None,
+        }
+    }
+
+    /// `assistant.list_memories`: every note the caller may see ([`Assistant::note`]).
+    pub async fn list_memories(&self, sees_local: bool) -> Response {
+        let notes = self.notes().await.into_iter().filter(|note| sees_local || !note.local_only).collect();
+        Response::Memories { notes }
+    }
+
+    /// `assistant.remember`: a new note with `text` (one line, cleaned), or the note `replaces`
+    /// changed in its place with a new time; `local_only` as asked, and kept for a note that
+    /// replaces one marked so. Answers with the note as stored.
+    pub async fn remember(&self, text: &str, replaces: Option<&str>, local_only: bool, sees_local: bool) -> Response {
+        let Some(dir) = self.config.clone() else { return failure(NO_PLACE) };
+        let _own = self.own.lock().await;
+        let mut notes = self.notes().await;
+        let text = profile::clean_line(text, torro_ipc::assistant::MAX_NOTE_CHARS);
+        let note = match replaces {
+            Some(id) => {
+                let Some(old) = notes.iter_mut().find(|note| note.id == id && (sees_local || !note.local_only)) else {
+                    return no_note(id);
+                };
+                old.text = text;
+                old.created = Utc::now();
+                old.local_only |= local_only;
+                old.clone()
+            }
+            None if notes.len() >= MAX_NOTES => return full(),
+            None => {
+                let id = match profile::new_note_id(&notes) {
+                    Ok(id) => id,
+                    Err(err) => return failure(&err),
+                };
+                let note = Note { id, text, created: Utc::now(), local_only };
+                notes.push(note.clone());
+                note
+            }
+        };
+        match blocking(move || profile::save_notes(&dir, &notes)).await {
+            Ok(()) => Response::Memory { note },
+            Err(err) => {
+                eprintln!("torroworkplace: cannot store the assistant's memory: {err}");
+                failure("the memory cannot be stored")
+            }
+        }
+    }
+
+    /// `assistant.forget`: removes the note `id` the caller may see for good.
+    pub async fn forget(&self, id: &str, sees_local: bool) -> Response {
+        let Some(dir) = self.config.clone() else { return failure(NO_PLACE) };
+        let _own = self.own.lock().await;
+        let mut notes = self.notes().await;
+        let before = notes.len();
+        notes.retain(|note| note.id != id || (!sees_local && note.local_only));
+        if notes.len() == before {
+            return no_note(id);
+        }
+        match blocking(move || profile::save_notes(&dir, &notes)).await {
+            Ok(()) => Response::Ok,
+            Err(err) => {
+                eprintln!("torroworkplace: cannot store the assistant's memory: {err}");
+                failure("the memory cannot be stored")
+            }
+        }
+    }
+
+    /// What an answer reads of the profile and the memory: the personality and every note. The
+    /// prompt keeps notes marked [`Note::local_only`] from remote models itself ([`prompt::system`]).
+    async fn persona_and_notes(&self) -> (String, Vec<Note>) {
+        (self.profile().await.personality, self.notes().await)
+    }
+}
+
+/// Answers the requests of the assistant's profile and memory (task C.10): `get_profile`,
+/// `update_profile`, `list_memories`, `remember` and `forget`, for the app key and for a client the
+/// core admitted. `sees_local`: the caller may see notes kept from remote models – the app key, and
+/// a client with read access to mail; for any other a note marked so behaves as if it were not
+/// there. What would be refused anyway comes first ([`Assistant::memory_refusal`]).
+pub async fn answer_own(assistant: &Assistant, request: Request, sees_local: bool) -> Response {
+    if let Some(refused) = torro_ipc::assistant::limit_refusal(&request) {
+        return refused;
+    }
+    if let Some(refused) = assistant.memory_refusal(&request, sees_local).await {
+        return refused;
+    }
+    match request {
+        Request::GetProfile => Response::Profile { profile: assistant.profile().await },
+        Request::UpdateProfile { name, description, avatar, personality } => {
+            assistant.update_profile(profile::Change { name, description, avatar, personality }).await
+        }
+        Request::ListMemories => assistant.list_memories(sees_local).await,
+        Request::Remember { text, replaces, local_only } => {
+            assistant.remember(&text, replaces.as_deref(), local_only, sees_local).await
+        }
+        Request::Forget { id } => assistant.forget(&id, sees_local).await,
+        other => failure(&format!("{} is no command of the assistant's profile", other.operation().name())),
+    }
+}
+
+/// Why a profile or a note cannot be changed without a home directory.
+const NO_PLACE: &str = "there is no place to keep the assistant's profile and memory (no home directory)";
+
+/// The `not-found` answer for note `id`.
+fn no_note(id: &str) -> Response {
+    Response::Error { code: "not-found".into(), message: format!("no note {id:?}") }
+}
+
+/// The `error` answer for a new note in a full memory.
+fn full() -> Response {
+    failure(&format!("the memory is full ({MAX_NOTES} notes); forget some first"))
+}
+
 /// Runs `work` on a blocking thread; a thread that panicked is an I/O error.
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
     tokio::task::spawn_blocking(work).await.unwrap_or_else(|err| Err(io::Error::other(err)))
@@ -742,7 +938,7 @@ pub(crate) mod tests {
 
     /// An assistant in `dir/assistant` with the test engine taking `step` per step, starting no app.
     pub(crate) fn assistant_in(dir: &std::path::Path, step: Duration) -> Assistant {
-        Assistant::new(Some(dir.join("assistant")), Some(step), no_app)
+        Assistant::new(Some(dir.join("assistant")), Some(step), no_app).with_config(dir.join("config/assistant"))
     }
 
     /// AI accounts in `dir` that know none and ask no server.

@@ -14,7 +14,7 @@ use chrono::{DateTime, Duration, Utc};
 use torro_core::ai::AiModel;
 use torro_core::i18n::tr;
 use torro_ipc::api::{Area, AreaRights, Level, Rights};
-use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent};
+use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
 use torro_ipc::{ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
 
 /// "Plan for tomorrow": messages, tool lines and an answer in Markdown. Pinned.
@@ -128,6 +128,8 @@ impl Demo {
             },
             Request::DecideApproval { id, allow } => state.decide(&id, allow),
             Request::OpenApp { .. } => Response::Ok,
+            // The assistant's profile (task C.10): a name and a symbol of its own.
+            Request::GetProfile => Response::Profile { profile: profile() },
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }
     }
@@ -534,6 +536,16 @@ fn open_window(state: &State, window: ChatWindow) -> Response {
     #[cfg(test)]
     let _ = target;
     Response::Ok
+}
+
+/// The demo's assistant (task C.10): "Torro" with the sparkles, as a person might set it up.
+pub fn profile() -> Profile {
+    Profile {
+        name: "Torro".into(),
+        description: tr("Your assistant for this computer").into(),
+        avatar: "sparkles".into(),
+        personality: String::new(),
+    }
 }
 
 fn refused(code: &str, message: &str) -> Response {

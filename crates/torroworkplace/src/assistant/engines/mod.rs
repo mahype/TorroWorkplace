@@ -11,7 +11,8 @@
 //!   (`<state>/assistant-runs/<random>`, 0700) with the MCP configuration (0600, the suite's
 //!   server only, no key), starts the agent there with its flags ([`claude::arguments`]: no
 //!   built-in tool, no other MCP server, nothing but `mcp__torroworkplace__*`, the system prompt
-//!   of task C.3 appended), writes the message to its input and closes it, and turns what it
+//!   of task C.3 appended with the personality and the memory of task C.10, without notes marked
+//!   `local_only`), writes the message to its input and closes it, and turns what it
 //!   writes into entries: text as a growing answer, then answer entries, a tool line per call
 //!   (name, input, result in a few words), an error entry when it fails. The folder is removed
 //!   when the run ends, however it ends.
@@ -295,6 +296,9 @@ impl Running {
         }
         let Some(lent) = host.lend(&self.job.engine, &without) else { return Err(Failed::NoClient) };
         let areas = allowed_areas(&client.rights, &without);
+        // The personality and the memory (task C.10); the prompt keeps the notes marked
+        // `local_only` from the agent, which runs elsewhere.
+        let (persona, memory) = self.assistant.persona_and_notes().await;
         let context = prompt::Context {
             now: Local::now(),
             lang: i18n::lang(),
@@ -304,9 +308,9 @@ impl Running {
             engine: self.agent.name(),
             model: "",
             place: Place::Remote,
+            memory: &memory,
         };
-        // The personality joins with task C.10.
-        let system = prompt::system(None, &context);
+        let system = prompt::system(Some(&persona), &context);
         let folder = RunFolder::make(&runs, &program).map_err(|err| {
             eprintln!("torroworkplace: cannot prepare a run of {} in {}: {err}", self.agent.name(), runs.display());
             Failed::Prepare
@@ -421,7 +425,12 @@ impl Running {
 
 /// The areas the assistant's client has tools in, without `without`: what the prompt names.
 fn allowed_areas(rights: &torro_ipc::api::Rights, without: &[Area]) -> Vec<Area> {
-    let mut areas: Vec<Area> = tools::allowed(Some(rights), without).iter().map(|tool| tool.command.area).collect();
+    // The memory is the assistant's own, not an area the person granted (task C.10).
+    let mut areas: Vec<Area> = tools::allowed(Some(rights), without)
+        .iter()
+        .map(|tool| tool.command.area)
+        .filter(|area| *area != Area::Assistant)
+        .collect();
     areas.sort();
     areas.dedup();
     areas
