@@ -119,7 +119,7 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** Tests mit einem Fake-Programm, das den Stream nachspielt; kein Test braucht einen echten Agenten.
 
 ### C.8 Skill-Datei und MCP-Prompt für fremde Agenten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** C.3 (Text) · **Dateien:** `crates/torroworkplace/src/{mcp,client_setup}.rs`
 - Der feste Teil aus C.3 als MCP-Prompt `torro_workplace`; „Connect agent“ legt ihn für Claude Code zusätzlich als
   Skill ab (zusammengeführt, wie die übrigen Einträge, und beim Trennen wieder entfernt).

@@ -30,6 +30,11 @@
 //!   Claude Code's and Codex's `PermissionRequest` hook runs with `--answer` and a longer timeout
 //!   ([`ANSWER_TIMEOUT_SECS`]): it puts the request to the person and hands the agent their
 //!   decision (task E2.5). Connecting again updates an older set up the same way.
+//! - **Skill** ([`skill_file`], task C.8): for Claude Code the wizard also writes the skill "Torro
+//!   Workplace" to `~/.claude/skills/torro-workplace/SKILL.md`, with the frontmatter Claude Code
+//!   reads. It is written before the entry, with the same care, and noted in the record of the
+//!   entry, so disconnecting removes it (and its folder, once empty). A file there that the record
+//!   does not name was not written by us: it is left as it is and connecting is refused.
 //! - **Disconnect** ([`disconnect`], [`unhook`]): removes the entry again, but only for a client
 //!   the wizard set up. Which one that was is noted in `client_setup.json` in the core's config
 //!   directory (0600, never a key): one [`Record`] per target with the client's id and the way it
@@ -351,6 +356,9 @@ pub enum SetupError {
     TimedOut(Tool),
     /// No home directory, so nothing is known.
     NoHome,
+    /// A file the wizard would write is there, but the wizard did not write it (task C.8). Left as
+    /// it is, and nothing else is written either.
+    Foreign(PathBuf),
 }
 
 impl SetupError {
@@ -364,6 +372,10 @@ impl SetupError {
             SetupError::Unreadable(path) => {
                 trf("{file} could not be read, so it was left as it is.", &[("file", &path.display())])
             }
+            SetupError::Foreign(path) => trf(
+                "{file} exists and was not written by Torro Workplace, so it was left as it is.",
+                &[("file", &path.display())],
+            ),
             SetupError::Io { path, err } => {
                 trf("{file} could not be written: {error}", &[("file", &path.display()), ("error", err)])
             }
@@ -867,6 +879,70 @@ fn strip_our_hooks(root: &mut Map<String, Value>, agent: AgentKind) -> bool {
     changed
 }
 
+// ----- The skill for Claude Code (task C.8) -----------------------------------------------------
+
+/// The skill's folder name, which is also the `name` in its frontmatter.
+pub const SKILL_NAME: &str = "torro-workplace";
+/// The skill's one-line `description`: when Claude Code should load it.
+const SKILL_DESCRIPTION: &str = "Use when the person asks about their calendar, tasks, inbox, mail, workspace \
+    templates, accounts or the apps of Torro Workplace, or when one of its tools is needed.";
+
+/// Where Claude Code finds the skill: `~/.claude/skills/torro-workplace/SKILL.md`.
+pub fn skill_file(env: &Env) -> PathBuf {
+    env.home.join(".claude/skills").join(SKILL_NAME).join("SKILL.md")
+}
+
+/// The file's text: the frontmatter Claude Code reads, then the skill itself ([`crate::mcp::agent_skill`]).
+fn skill_text() -> String {
+    format!("---\nname: {SKILL_NAME}\ndescription: {SKILL_DESCRIPTION}\n---\n\n{}\n", crate::mcp::agent_skill())
+}
+
+/// Whether the file at `file` is the skill the wizard wrote before: the record names it. Any other
+/// file there is the person's and is never overwritten.
+fn skill_is_ours(records: &Records, file: &Path) -> bool {
+    records.written.iter().any(|record| record.skill.as_deref() == Some(file))
+}
+
+/// Writes the skill over `file`, whose content was `before` (`None`: no file). [`replace`] keeps
+/// the old content as a backup and follows a link.
+fn write_skill(file: &Path, before: Option<&str>) -> Result<(), SetupError> {
+    replace(file, before, &skill_text())
+}
+
+/// Puts the skill back as it was before [`connect`] wrote it, when the entry then failed: the old
+/// content, or no file at all.
+fn undo_skill(file: &Path, before: Option<&str>) {
+    match before {
+        Some(text) => {
+            let now = skill_text();
+            let _ = replace(file, Some(now.as_str()), text);
+        }
+        None => {
+            let _ = remove_skill(file);
+        }
+    }
+}
+
+/// Removes the skill file and its folder once that is empty. A link is followed to the file it
+/// leads to, which goes; the link goes too once it leads nowhere, since a link to nothing would
+/// refuse the next connect.
+fn remove_skill(file: &Path) -> Result<(), SetupError> {
+    let target = fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    match fs::remove_file(&target) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(SetupError::io(&target)(err)),
+    }
+    if target != file && !file.exists() {
+        let _ = fs::remove_file(file);
+    }
+    if let Some(folder) = file.parent() {
+        // Only an empty folder goes; anything else the person keeps there stays.
+        let _ = fs::remove_dir(folder);
+    }
+    Ok(())
+}
+
 // ----- The record of what the wizard wrote ------------------------------------------------------
 
 /// One client the wizard set up: which client got which target's entry, and how.
@@ -876,6 +952,10 @@ pub struct Record {
     pub client: String,
     pub target: Target,
     pub method: Method,
+    /// The skill file written with the entry ([`skill_file`], Claude Code only, task C.8); removed
+    /// with it. Absent in records of older versions and for every other client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill: Option<PathBuf>,
 }
 
 /// The hooks the wizard wrote for one agent (task E2.3).
@@ -940,6 +1020,10 @@ pub fn hook_records(env: &Env) -> Result<Vec<HookRecord>, SetupError> {
 /// Sets up `target` through `method` for the client `client` with its `key`: notes it first (so
 /// a half-written entry can still be removed), then writes the entry ([`add`]). The note takes
 /// over an older one of the same target. If writing fails, the note goes again.
+///
+/// Claude Code also gets the skill ([`skill_file`], task C.8). That file is checked before
+/// anything is written: one that is not ours refuses the connect ([`SetupError::Foreign`]). The
+/// skill is written before the entry and taken back if the entry fails.
 pub fn connect(
     env: &Env,
     target: Target,
@@ -950,12 +1034,32 @@ pub fn connect(
 ) -> Result<(), SetupError> {
     let mut records = load_records(env)?;
     let previous = records.clone();
+    let skill = (target == Target::ClaudeCode).then(|| skill_file(env));
+    let before = match &skill {
+        Some(file) => {
+            let text = read_text(file)?;
+            if text.is_some() && !skill_is_ours(&records, file) {
+                return Err(SetupError::Foreign(file.clone()));
+            }
+            text
+        }
+        None => None,
+    };
     records.written.retain(|record| record.target != target);
-    records.written.push(Record { client: client.to_string(), target, method: method.clone() });
+    records.written.push(Record { client: client.to_string(), target, method: method.clone(), skill: skill.clone() });
     save_records(env, &records)?;
+    if let Some(file) = &skill
+        && let Err(err) = write_skill(file, before.as_deref())
+    {
+        let _ = save_records(env, &previous);
+        return Err(err);
+    }
     let server = Server { program: &env.program, key: key.expose() };
     add(method, &server, runner).inspect_err(|_| {
         let _ = save_records(env, &previous);
+        if let Some(file) = &skill {
+            undo_skill(file, before.as_deref());
+        }
     })
 }
 
@@ -1027,13 +1131,17 @@ pub fn unhook(env: &Env, client: &str) -> Result<Vec<String>, SetupError> {
     Ok(gone.into_iter().map(|record| record.client).filter(|hook| hook != client).collect())
 }
 
-/// Removes the entry the wizard wrote for the client `client` ([`remove`]) and its note. Returns
-/// the target it was in, `None` when the wizard did not set that client up (nothing to do).
+/// Removes the entry the wizard wrote for the client `client` ([`remove`]), its skill file if it
+/// has one ([`remove_skill`]) and its note. Returns the target it was in, `None` when the wizard
+/// did not set that client up (nothing to do).
 pub fn disconnect(env: &Env, client: &str, runner: &dyn Runner) -> Result<Option<Target>, SetupError> {
     let mut records = load_records(env)?;
     let Some(index) = records.written.iter().position(|record| record.client == client) else { return Ok(None) };
     let record = records.written.remove(index);
     remove(&record.method, runner)?;
+    if let Some(file) = &record.skill {
+        remove_skill(file)?;
+    }
     save_records(env, &records)?;
     Ok(Some(record.target))
 }
@@ -1447,7 +1555,10 @@ mod tests {
         let fake = Fake::default();
         connect(&env, Target::Cursor, &method, "c1", &key(), &fake).expect("connected");
         let noted = records(&env).expect("records");
-        assert_eq!(noted, vec![Record { client: "c1".into(), target: Target::Cursor, method: method.clone() }]);
+        assert_eq!(
+            noted,
+            vec![Record { client: "c1".into(), target: Target::Cursor, method: method.clone(), skill: None }]
+        );
         let record_text = fs::read_to_string(env.config_dir.join(RECORD_FILE)).expect("record");
         assert!(!record_text.contains(KEY), "the record holds no key");
         #[cfg(unix)]
@@ -1479,6 +1590,122 @@ mod tests {
         fake.calls.borrow_mut().clear();
         assert_eq!(disconnect(&env, "c1", &fake).expect("removed"), Some(Target::Codex));
         assert_eq!(fake.calls.borrow()[0].1.join(" "), "mcp remove torroworkplace");
+    }
+
+    fn claude_code() -> Method {
+        Method::Cli { tool: Tool::Claude, executable: PathBuf::from("/usr/bin/claude") }
+    }
+
+    #[test]
+    fn connecting_claude_code_writes_the_skill_and_disconnect_removes_it() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let file = skill_file(&env);
+        assert_eq!(file, env.home.join(".claude/skills/torro-workplace/SKILL.md"));
+        let fake = Fake::default();
+        connect(&env, Target::ClaudeCode, &claude_code(), "c1", &key(), &fake).expect("connected");
+
+        let text = fs::read_to_string(&file).expect("skill");
+        let mut lines = text.lines();
+        assert_eq!(lines.next(), Some("---"));
+        assert_eq!(lines.next(), Some("name: torro-workplace"));
+        let description = lines.next().expect("a description line");
+        assert!(description.starts_with("description: ") && description.len() > "description: ".len(), "{text}");
+        assert_eq!(lines.next(), Some("---"));
+        assert!(text.ends_with(&format!("\n{}\n", crate::mcp::agent_skill())), "the skill text follows");
+        assert!(!text.contains(KEY), "the key is in no skill file");
+        #[cfg(unix)]
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(records(&env).expect("records")[0].skill, Some(file.clone()));
+
+        assert_eq!(disconnect(&env, "c1", &fake).expect("removed"), Some(Target::ClaudeCode));
+        assert!(!file.exists(), "the skill is removed");
+        assert!(!file.parent().expect("folder").exists(), "its empty folder too");
+        assert!(env.home.join(".claude").is_dir(), "the folder above stays");
+        assert!(records(&env).expect("records").is_empty());
+    }
+
+    #[test]
+    fn only_claude_code_gets_the_skill_and_a_folder_of_the_person_stays() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let codex = Method::Cli { tool: Tool::Codex, executable: PathBuf::from("/usr/bin/codex") };
+        connect(&env, Target::Codex, &codex, "c1", &key(), &Fake::default()).expect("connected");
+        assert!(!skill_file(&env).exists(), "Codex gets no skill");
+
+        let fake = Fake::default();
+        connect(&env, Target::ClaudeCode, &claude_code(), "c2", &key(), &fake).expect("connected");
+        let own = skill_file(&env).with_file_name("notes.md");
+        write(&own, "mine");
+        disconnect(&env, "c2", &fake).expect("removed");
+        assert!(!skill_file(&env).exists());
+        assert!(own.exists(), "a file of the person in the folder keeps it");
+    }
+
+    #[test]
+    fn a_skill_file_that_is_not_ours_is_left_alone_and_the_connect_is_refused() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let file = skill_file(&env);
+        write(&file, "my own skill\n");
+        let fake = Fake::default();
+        let err = connect(&env, Target::ClaudeCode, &claude_code(), "c1", &key(), &fake).expect_err("refused");
+        assert!(matches!(err, SetupError::Foreign(_)), "{err:?}");
+        assert!(err.message().contains("was not written by Torro Workplace"), "{}", err.message());
+        assert_eq!(fs::read_to_string(&file).expect("file"), "my own skill\n", "never overwritten");
+        assert!(fake.calls.borrow().is_empty(), "the entry was not written either");
+        assert!(records(&env).expect("records").is_empty(), "nothing is noted");
+
+        // Disconnecting leaves it too: no record names it.
+        assert_eq!(disconnect(&env, "c1", &fake).expect("nothing to do"), None);
+        assert_eq!(fs::read_to_string(&file).expect("file"), "my own skill\n");
+    }
+
+    #[test]
+    fn a_reconnect_replaces_our_skill_and_a_takeover_keeps_it_for_the_new_client() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let file = skill_file(&env);
+        let fake = Fake::default();
+        connect(&env, Target::ClaudeCode, &claude_code(), "c1", &key(), &fake).expect("connected");
+        connect(&env, Target::ClaudeCode, &claude_code(), "c2", &key(), &fake).expect("ours, so it is replaced");
+        assert!(fs::read_to_string(&file).expect("skill").starts_with("---\n"));
+        assert_eq!(disconnect(&env, "c1", &fake).expect("nothing to do"), None);
+        assert!(file.exists(), "the new client's skill stays");
+        assert_eq!(disconnect(&env, "c2", &fake).expect("removed"), Some(Target::ClaudeCode));
+        assert!(!file.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_skill_file_stays_a_link_and_a_dangling_one_is_refused() {
+        let dir = TempDir::new().expect("tmp");
+        let env = env(&dir);
+        let file = skill_file(&env);
+        let fake = Fake::default();
+        fs::create_dir_all(file.parent().expect("folder")).expect("folder");
+
+        let gone = dir.path().join("dotfiles/SKILL.md");
+        std::os::unix::fs::symlink(&gone, &file).expect("link");
+        let refused = connect(&env, Target::ClaudeCode, &claude_code(), "c1", &key(), &fake);
+        assert!(matches!(refused, Err(SetupError::Unreadable(_))), "{refused:?}");
+        assert!(fs::symlink_metadata(&file).expect("link").file_type().is_symlink(), "still a link");
+        assert!(!gone.exists(), "nothing written where it points");
+        assert!(records(&env).expect("records").is_empty());
+        fs::remove_file(&file).expect("the dangling link is ours to remove in this test");
+
+        connect(&env, Target::ClaudeCode, &claude_code(), "c1", &key(), &fake).expect("connected");
+        fs::create_dir_all(gone.parent().expect("dotfiles")).expect("dotfiles");
+        fs::rename(&file, &gone).expect("moved into the dotfiles");
+        std::os::unix::fs::symlink(&gone, &file).expect("linked back");
+
+        connect(&env, Target::ClaudeCode, &claude_code(), "c1", &key(), &fake).expect("written through the link");
+        assert!(fs::symlink_metadata(&file).expect("link").file_type().is_symlink(), "still a link");
+        assert!(fs::read_to_string(&gone).expect("real file").starts_with("---\n"));
+
+        disconnect(&env, "c1", &fake).expect("removed");
+        assert!(fs::symlink_metadata(&file).is_err(), "the link goes with the file it led to");
+        assert!(!gone.exists());
     }
 
     #[test]
