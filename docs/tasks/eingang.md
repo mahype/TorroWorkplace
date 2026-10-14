@@ -1538,7 +1538,7 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   (Fine-grained), 429 mit `Retry-After`, DELETE 204; Token nicht in `Debug`.
 
 ### E5.4 GitHub als Quelle im Kern
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `sources/github.rs` mit einer Schleife für alle Konten (`Poller`, alle 10 s fällige Konten, Takt `X-Poll-Interval`/60 s, `Last-Modified` und `first-poll` in `cursors`); jede Abfrage reicht nur bis 3 Tage vor der ersten des Kontos (auch nach einer Änderung), alte Threads bleiben draußen; 401 → `signed_out`, `check_all` macht es zum Kontoproblem, Pause bis zur neuen Anmeldung; 403 → `missing_scope`, `offline`; stumm → keine Abfrage; Konto weg → `retire_remote` + `forget_source`; `settle_done` schickt `DELETE` nur beim Übergang offen → erledigt (`Settled`, im Speicher); `GithubAccounts::notifications`; `task_from_entry` mit `github:<owner>/<repo>#<n>`. Ohne GitHub-Lesen ist der Eintrag unsichtbar, also `not-found` statt `forbidden` (Freigabe 7); Lesen ohne Schreiben `forbidden`)
 - **Modell:** Opus · **Braucht:** E5.2, E5.3, G.1 · **Dateien:** `crates/torroworkplace/src/sources/github.rs`,
   `crates/torroworkplace/src/account.rs` (nur `GithubAccounts::notifications(id)`), `crates/torroworkplace/src/core.rs`
   (nur `task_from_entry`: Kennung `github:`); Doku: `docs/{api,eingang}.md`

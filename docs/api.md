@@ -473,9 +473,18 @@ Ausblenden und Stummschalten wirken nie zurück. Die Freigabe nennt es („… a
 nennt in `health`, warum eine fremde Quelle gerade nichts bringt (`missing_app`, `missing_scope`, `signed_out`,
 `offline`), auch ohne Einträge; nur im Speicher. **Konto entfernt:** Die offenen Einträge der Quelle (bei Nextcloud
 auch die von Talk) sind erledigt, Statistik, Lesestand (`cursors`) und Kennungen gehen mit, und die Quelle
-verschwindet aus den Rechten aller Clients. **Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
-wie Mail nur als Kennung; GitHub und ntfy gehen durch (bis KI.1). Das Protokoll nennt wie immer nur die Kennung des
-Eintrags, nie Titel, Text oder Merkmalswerte.
+verschwindet aus den Rechten aller Clients. **GitHub** (E5.4, `sources/github.rs`): ein Eintrag je Thread der
+Benachrichtigungen (`GET /notifications`, höchstens im Takt von `X-Poll-Interval`, mindestens 60 s, mit
+`If-Modified-Since`; jede Abfrage reicht nur bis 3 Tage vor der ersten des Kontos); Titel des Themas, kein Text,
+Merkmale `repo`, `reason`, `kind`, `result`, Link nur auf `https://github.com/<owner>/<repo>/…`. Ein Thread, der in
+einer vollständigen Liste fehlt, wurde anderswo gelesen: Eintrag erledigt. Erledigt schickt genau ein `DELETE` je
+Übergang offen → erledigt, Undo keins. Eine stumme Quelle fragt GitHub nicht. `health`: `signed_out` (Token
+abgelehnt, bis zur neuen Anmeldung keine Abfrage), `missing_scope` (Fine-grained-Token oder ohne `notifications`;
+keine Einträge), `offline`. `create_task_from_item` bei Issue und PR: `link.id` `github:<owner>/<repo>#<n>`, sonst
+`inbox:<id>`, immer mit der Web-Seite als `url`; wer den Eintrag nicht sieht (ohne Lesen in `github` oder Repo
+außerhalb), bekommt `not-found`, mit Lesen ohne Schreiben `forbidden`. **Assistent:** Einträge von Nextcloud und Talk
+sehen entfernte Modelle wie Mail nur als Kennung; GitHub und ntfy gehen durch (bis KI.1). Das Protokoll nennt wie
+immer nur die Kennung des Eintrags, nie Titel, Text oder Merkmalswerte.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

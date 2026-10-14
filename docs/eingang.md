@@ -170,7 +170,7 @@ einrichten, ohne Freigabe einer Firma oder eine bei Torro registrierte App.
 | **Gemini CLI, Cursor** | Hooks (`Notification` bzw. `stop`) | nein | Cursor hat keinen Hook für „wartet“ |
 | **Mail** | IMAP IDLE aus dem Mail-Kern ([mail.md](mail.md)) | gelesen, archivieren | größte Quelle |
 | **Nextcloud** | Benachrichtigungen (OCS) und Talk (ungelesen, Erwähnungen); Push über `notify_push`, sonst Abfrage | ja (löschen, gelesen) | Konto gibt es schon, steht in [api.md](api.md) als vorgemerkt |
-| **GitHub** | `GET /notifications`, Grund je Eintrag (`review_requested`, `mention`, `ci_activity`, `agent_session_finished` …), Abfrage im Takt von `X-Poll-Interval` | ja („done“ = Thread löschen) | Konto ist in [settings.md](settings.md) geplant; braucht klassisches Token mit `notifications` |
+| **GitHub** | `GET /notifications`, Grund je Eintrag (`review_requested`, `mention`, `ci_activity`, `agent_session_finished` …), Abfrage im Takt von `X-Poll-Interval` | ja („done“ = Thread löschen) | Seit E5.4 im Kern (`sources/github.rs`): je Konto, nie weiter zurück als 3 Tage vor der ersten Abfrage, `Last-Modified` im Lesestand; braucht klassisches Token mit `notifications` (Fine-grained: `health: missing_scope`, keine Einträge) |
 | **ntfy / Gotify** | Themen abonnieren (JSON-Strom/WebSocket) | nein | **Universeller Eingang** für alles, was selbst melden kann: CI, Home Assistant, Uptime Kuma, cron, eigene Skripte. Löst auch „Webhook braucht öffentliche URL“: Webhooks gehen an ntfy, der Kern abonniert |
 | **Eigene Skripte** | `torroworkplace notify --title … --source backup` bzw. `inbox.post_item` mit Skript-Schlüssel | – | eine Zeile Shell |
 

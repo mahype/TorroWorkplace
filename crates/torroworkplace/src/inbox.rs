@@ -1045,7 +1045,6 @@ impl Inbox {
     /// `Err` holds the message for the log, without anything the server sent: a source that is no
     /// remote source, a kind other than `notice`, `message` or `alert`, a matter that is empty or
     /// longer than [`THREAD_KEY_MAX`] bytes, a report without an id, or the file.
-    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
     pub fn file_remote(&self, remote: &Remote, now: DateTime<Utc>) -> Result<Option<String>, String> {
         if !is_remote(remote.source.kind) {
             return Err(format!("{} is no remote source", remote.source.key()));
@@ -1058,7 +1057,6 @@ impl Inbox {
     /// any id is done, snoozed or not, and counted as done; entries with ids left, entries done
     /// already and ids never filed stay as they are. Returns how many entries were done. `Err`
     /// holds the message for the log.
-    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
     pub fn resolve_remote(&self, source: &SourceRef, gone: &[String], now: DateTime<Utc>) -> Result<usize, String> {
         self.with(|db| {
             let tx = db.transaction()?;
@@ -1147,7 +1145,6 @@ impl Inbox {
     /// the server filed into it, oldest entry first (task E5.2). For its module: an id the server
     /// no longer lists in a complete listing goes to [`Inbox::resolve_remote`]. `Err` holds the
     /// message for the log.
-    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
     pub fn open_remote(&self, source: &SourceRef) -> Result<Vec<RemoteEntry>, String> {
         self.with(|db| {
             let mut statement = db.prepare(
@@ -1174,7 +1171,6 @@ impl Inbox {
     /// (`last-modified`, `etag`, `since`: the module's own names), as [`Inbox::set_cursor`] kept it;
     /// `None` before the first. Survives a restart, goes with [`Inbox::forget_source`]. `Err` holds
     /// the message for the log.
-    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
     pub fn cursor(&self, source: &SourceRef, name: &str) -> Result<Option<String>, String> {
         self.work(false, |db| {
             let value = db
@@ -1192,7 +1188,6 @@ impl Inbox {
     /// Keeps `value` as where the module of `source` stopped reading under `name`, replacing the
     /// one before; `None` removes it. Changes nothing the tray or the popups show. `Err` holds the
     /// message for the log.
-    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
     pub fn set_cursor(&self, source: &SourceRef, name: &str, value: Option<&str>) -> Result<(), String> {
         self.work(false, |db| {
             match value {
@@ -3356,7 +3351,6 @@ fn file_mail(
 /// (E5.4, E5.8, E5.9, E5.13); the inbox applies the security rules (owner, `untrusted`, traits,
 /// links, lengths), so a module cannot get around them.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
 pub struct Remote {
     /// The account's source, whose key is the account's id (`github:<login>`,
     /// `nextcloud:<login>@<host>`, `ntfy:<host>`) or, for Talk, the Nextcloud account's with `talk`
@@ -3396,7 +3390,6 @@ pub struct Remote {
 
 /// An open entry of a remote source and the server's ids filed into it ([`Inbox::open_remote`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
 pub struct RemoteEntry {
     /// The entry's id.
     pub id: String,
@@ -3405,7 +3398,6 @@ pub struct RemoteEntry {
 }
 
 /// [`Inbox::file_remote`] on the open database.
-#[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
 fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Result<Option<String>, Failure> {
     let kind = match remote.kind {
         Kind::Notice | Kind::Message | Kind::Alert => remote.kind,

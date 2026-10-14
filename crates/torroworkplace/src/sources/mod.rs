@@ -50,7 +50,6 @@ pub struct Sources {
     /// The inbox they file into.
     pub inbox: Arc<Inbox>,
     /// The GitHub accounts and their tokens (task E5.4: `GithubAccounts::notifications`).
-    #[allow(dead_code, reason = "read by the source of task E5.4")]
     pub github: Arc<GithubAccounts>,
     /// The calendar service, which holds the Nextcloud accounts and their app passwords (tasks E5.8,
     /// E5.9: `PimService::nextcloud_access`).

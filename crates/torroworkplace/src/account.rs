@@ -923,6 +923,18 @@ pub mod github {
             Some(torro_pim_github::Api::new(http, self.graphql.clone(), token))
         }
 
+        /// What the inbox's GitHub source needs to read and mark the notifications of account `id`
+        /// (task E5.4, `crate::sources`): the HTTP client, GitHub's REST address – this service's
+        /// GraphQL endpoint without `/graphql` (`https://api.github.com`; a fake server in tests) –
+        /// and the account's token, which stays inside the core. `None` for an unknown account, one
+        /// without a token, or without an HTTP client.
+        pub async fn notifications(&self, id: &str) -> Option<torro_pim_github::notifications::Notifications> {
+            let http = self.http.clone()?;
+            let token = self.slots.read().await.iter().find(|slot| slot.account.id == id)?.token.clone()?;
+            let rest = self.graphql.strip_suffix("/graphql").unwrap_or(&self.graphql);
+            Some(torro_pim_github::notifications::Notifications::new(http, rest, token))
+        }
+
         /// Takes over the GitHub CLI's sign-in ([`cli_token`]) and connects its account
         /// ([`GithubAccounts::connect_token`]).
         pub async fn connect_cli(&self) -> Result<AccountInfo, GithubError> {
