@@ -17,7 +17,8 @@
 //!
 //! Topic names are passwords on a public server (open question 10 of E5): only the app key sees
 //! them ([`NtfyAccounts::infos`] with `names`), clients see the labels; no error message, approval
-//! or log line names one.
+//! or log line names one. The subscriptions of the inbox (task E5.13, `crate::sources`) get names
+//! and login from [`NtfyAccounts::access`], for the account's server only.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -115,6 +116,45 @@ impl From<NtfyError> for NtfyAccountError {
     fn from(err: NtfyError) -> NtfyAccountError {
         NtfyAccountError::Ntfy(err)
     }
+}
+
+/// What the subscription of one ntfy account needs ([`NtfyAccounts::access`], task E5.13).
+/// `Debug` shows the server and the labels, never a topic's name (`torro_ntfy::Topic`) or the
+/// secret (`torro_ntfy::Login`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NtfyAccess {
+    /// The account's server.
+    pub server: Server,
+    /// The topics subscribed, in the account's order.
+    pub topics: Vec<AccessTopic>,
+    /// The login, `None` for topics anyone may read.
+    pub login: Option<Login>,
+}
+
+impl NtfyAccess {
+    /// The topics' names, as `torro_ntfy::Ntfy::subscribe` takes them.
+    pub fn names(&self) -> Vec<Topic> {
+        self.topics.iter().map(|topic| topic.name.clone()).collect()
+    }
+
+    /// The label the person gave `name`; `None` for a topic the account does not have.
+    pub fn label(&self, name: &Topic) -> Option<&str> {
+        self.topics.iter().find(|topic| topic.name == *name).map(|topic| topic.label.as_str())
+    }
+
+    /// Whether `other` reads the same stream: the same server, topics and login (labels aside), so
+    /// a change of labels alone keeps the subscription open.
+    pub fn same_stream(&self, other: &NtfyAccess) -> bool {
+        self.server == other.server && self.login == other.login && self.names() == other.names()
+    }
+}
+
+/// A topic of [`NtfyAccess`]: its name, which only the server sees, and the label the person gave
+/// it, which the inbox shows (trait `topic`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessTopic {
+    pub name: Topic,
+    pub label: String,
 }
 
 /// What to do with the secret of an account when it is written ([`NtfyAccounts::store`]).
@@ -293,9 +333,38 @@ impl NtfyAccounts {
     /// topics changed, or it was removed. The value only counts; read the accounts anew on every
     /// change. For the subscriptions (task E5.13): a removed account or a changed topic ends or
     /// renews its subscription.
-    #[allow(dead_code)] // Read by the subscriptions of task E5.13.
     pub fn changes(&self) -> watch::Receiver<u64> {
         self.changed.subscribe()
+    }
+
+    /// The ids of the accounts held now (`ntfy:<host>`), in the order of `accounts.json`: whose
+    /// topics the inbox subscribes to (task E5.13, `crate::sources`).
+    pub async fn ids(&self) -> Vec<String> {
+        self.slots.read().await.iter().map(|slot| slot.account.id.clone()).collect()
+    }
+
+    /// What the subscription of the account `id` needs (task E5.13): its server, its topics with
+    /// their labels and its login; `None` for an account the core does not hold (removed).
+    ///
+    /// For the core's own use only: the topics' names and the secret go to the account's server and
+    /// nowhere else (no answer, no log line). A stored name that is no longer a valid topic is left
+    /// out. An account with a user name whose password the keychain did not give has no login here;
+    /// its server then refuses topics that need one, and the source shows `signed_out` until the
+    /// person signs in again.
+    pub async fn access(&self, id: &str) -> Option<NtfyAccess> {
+        let slots = self.slots.read().await;
+        let slot = slots.iter().find(|slot| slot.account.id == id)?;
+        let config = slot.config();
+        let server = Server::parse(&slot.account.server).ok()?;
+        let topics = config
+            .topics
+            .iter()
+            .filter_map(|topic| {
+                Some(AccessTopic { name: Topic::parse(&topic.topic).ok()?, label: topic.label.clone() })
+            })
+            .collect();
+        let login = slot.secret.clone().map(|secret| Login::new(config.user.as_deref(), secret));
+        Some(NtfyAccess { server, topics, login })
     }
 
     /// `accounts.connect_ntfy` of the app key: checks the server (`/v1/health`) and the `topics`
@@ -716,6 +785,37 @@ pub(crate) mod tests {
         let none = ntfy.connect("ntfy.sh", &[]).await;
         assert!(matches!(none, Err(NtfyAccountError::Invalid(_))));
         assert!(secrets.get_plain("ntfy:push.example.org").is_none() && ntfy.infos(true).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_subscription_gets_server_topics_and_login_and_nothing_once_removed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secrets = MemoryTokens::default();
+        let server = fake_ntfy().await;
+        let ntfy = service(dir.path(), &secrets);
+        let topics = [topic("secret_alerts", "Alerts"), topic("open_backups", "Backups")];
+        let id = ntfy.set_login(&base(&server), &topics, None, &Secret::new(TOKEN)).await.expect("signed in").id;
+        assert_eq!(ntfy.ids().await, std::slice::from_ref(&id));
+
+        let access = ntfy.access(&id).await.expect("access");
+        assert_eq!(access.server.as_str(), base(&server));
+        let names: Vec<&str> = access.topics.iter().map(|topic| topic.name.as_str()).collect();
+        assert_eq!(names, ["secret_alerts", "open_backups"]);
+        assert_eq!(access.label(&Topic::parse("open_backups").expect("topic")), Some("Backups"));
+        assert_eq!(access.login, Some(Login::Token(Secret::new(TOKEN))));
+        let shown = format!("{access:?}");
+        assert!(!shown.contains("secret_alerts") && !shown.contains("SECRET") && shown.contains("Alerts"), "{shown}");
+
+        // A new label is the same stream, a topic less is another.
+        ntfy.set_topic(&id, "open_backups", Some("Nightly"), true).await.expect("relabeled");
+        let relabeled = ntfy.access(&id).await.expect("access");
+        assert!(relabeled.same_stream(&access) && relabeled != access);
+        ntfy.set_topic(&id, "open_backups", None, false).await.expect("unsubscribed");
+        assert!(!ntfy.access(&id).await.expect("access").same_stream(&access));
+
+        ntfy.remove(&id).await.expect("removed");
+        assert_eq!(ntfy.access(&id).await, None);
+        assert!(ntfy.ids().await.is_empty());
     }
 
     #[tokio::test]

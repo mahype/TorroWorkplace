@@ -1027,9 +1027,15 @@ impl Core {
     }
 
     /// What the remote sources of the inbox reach (task E5.2, [`crate::sources`]): this core's
-    /// inbox, GitHub accounts and calendar service, so a test's own inbox is theirs too.
+    /// inbox, GitHub accounts, calendar service and ntfy accounts, so a test's own inbox is theirs
+    /// too.
     fn sources(&self) -> Sources {
-        Sources { inbox: Arc::clone(&self.inbox), github: Arc::clone(&self.github), pim: Arc::clone(&self.pim) }
+        Sources {
+            inbox: Arc::clone(&self.inbox),
+            github: Arc::clone(&self.github),
+            pim: Arc::clone(&self.pim),
+            ntfy: Arc::clone(&self.ntfy),
+        }
     }
 
     /// After `inbox.set_item_done`, `inbox.create_task_from_item` or `inbox.create_event_from_item`
