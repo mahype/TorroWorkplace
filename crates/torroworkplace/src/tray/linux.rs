@@ -146,7 +146,7 @@ fn ksni_item(item: Item) -> MenuItem<Tray> {
 }
 
 /// `label` as DBusMenu shows it as written: it takes an underscore as the mark of an access key,
-/// so each one is doubled. Inbox titles and template names may hold any (`fix_build`).
+/// so each one is doubled. Template names may hold any (`fix_build`).
 fn label_text(label: &str) -> String {
     label.replace('_', "__")
 }
@@ -195,8 +195,11 @@ mod tests {
                 sub(tr("Delete")),
                 "-".to_string(),
                 tr("Inbox").to_string(),
+                tr("Mail").to_string(),
+                tr("Notifications").to_string(),
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
+                tr("Assistant").to_string(),
                 "-".to_string(),
                 format!(
                     "({})",
@@ -264,8 +267,7 @@ mod tests {
 
     #[test]
     fn ksni_draws_the_shared_menu_entry_for_entry() {
-        let line = crate::core::InboxLine { id: "a".into(), title: "Backup failed".into(), source: "backup".into() };
-        let waiting = Snapshot { inbox_for_me: 1, inbox_newest: vec![line], ..snapshot() };
+        let waiting = Snapshot { inbox_for_me: 1, ..snapshot() };
         for snapshot in [snapshot(), Snapshot { workspace_windows: 0, ..snapshot() }, Snapshot::default(), waiting] {
             assert_eq!(ksni_tree(&build_menu(&snapshot)), model_tree(&menu::build(&snapshot)));
         }
@@ -278,25 +280,13 @@ mod tests {
         assert_eq!(item_status(Waiting { for_me: 4, urgent: 1 }), ksni::Status::NeedsAttention);
     }
 
-    /// The inbox section of the shared menu reaches the bar, with underscores shown as themselves
-    /// instead of as access keys.
+    /// The count next to "Inbox" reaches the bar, and underscores show as themselves instead of
+    /// as access keys.
     #[test]
-    fn the_inbox_leads_the_ksni_menu_and_underscores_show() {
-        let waiting = Snapshot {
-            inbox_for_me: 2,
-            inbox_urgent: 1,
-            inbox_newest: vec![crate::core::InboxLine {
-                id: "a".into(),
-                title: "fix_build".into(),
-                source: "my_script".into(),
-            }],
-            ..snapshot()
-        };
-        let menu = build_menu(&waiting);
-        assert_eq!(
-            labels(&menu)[..3],
-            [trf("Inbox ({n})", &[("n", &2)]), "fix__build · my__script".to_string(), "-".to_string()]
-        );
+    fn the_inbox_count_reaches_the_ksni_menu_and_underscores_show() {
+        let waiting = Snapshot { inbox_for_me: 2, inbox_urgent: 1, ..snapshot() };
+        assert!(labels(&build_menu(&waiting)).contains(&trf("Inbox ({n})", &[("n", &2)])));
+        assert_eq!(label_text("fix_build"), "fix__build");
         assert_eq!(label_text("Mail_Chat"), "Mail__Chat");
     }
 
