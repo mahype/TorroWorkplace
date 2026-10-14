@@ -41,6 +41,7 @@ use std::sync::Arc;
 use torro_inbox::{Item, SourceKind, State};
 
 use crate::account::github::GithubAccounts;
+use crate::account::ntfy::NtfyAccounts;
 use crate::inbox::Inbox;
 use crate::pim::PimService;
 
@@ -54,6 +55,8 @@ pub struct Sources {
     /// The calendar service, which holds the Nextcloud accounts and their app passwords (tasks E5.8,
     /// E5.9: `PimService::nextcloud_access`).
     pub pim: Arc<PimService>,
+    /// The ntfy accounts, their topics and logins (task E5.13: `NtfyAccounts::access`).
+    pub ntfy: Arc<NtfyAccounts>,
 }
 
 /// Starts every remote source on the current runtime: each module runs its own loop and returns at

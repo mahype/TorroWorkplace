@@ -590,6 +590,7 @@ pub(super) mod tests {
             inbox: Arc::new(crate::inbox::tests::inbox_in(dir)),
             github: Arc::new(github),
             pim: Arc::new(PimService::with_settings(settings)),
+            ntfy: Arc::new(crate::account::ntfy::NtfyAccounts::new(None, Arc::new(MemoryTokens::default()))),
         }
     }
 

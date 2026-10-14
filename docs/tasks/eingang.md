@@ -1729,7 +1729,7 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   je Schlüssel; `torro-api-review` ohne hohen Befund.
 
 ### E5.13 ntfy: Themen abonnieren
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `sources/ntfy.rs` mit einer Schleife je Konto (`Subscriber::session`, Ende `Gone`/`Renew`/`Retry`/`Paused`/`Muted`), Pause 1 s doppelnd bis 5 min, nach 1 min stabiler Verbindung wieder 1 s; Lesestand `since` = letzte Id, bei der ersten Verbindung die Unix-Zeit ihres `open`, beim Stummschalten gelöscht; neues Thema → neu ab jetzt, neues Etikett hält die Verbindung; 401/403 und Login ohne TLS → `signed_out`, `offline`; Vorgang `<16 hex SHA-256(Salz + Thema)>:<24 hex SHA-256(Titel)>` mit zufälligem Salz der Quelle in `cursors` (`thread_key` geht an Clients und entfernte Modelle); Drossel im Speicher, „More from {topic}“ je Thema; nach dem Entfernen wird nichts mehr abgelegt; `NtfyAccounts::{ids, access}` mit `NtfyAccess`/`AccessTopic`; `Sources.ntfy`, verdrahtet in `Core::sources`)
 - **Modell:** Opus · **Braucht:** E5.12 · **Dateien:** `crates/torroworkplace/src/sources/ntfy.rs`,
   `crates/torroworkplace/src/account/ntfy.rs` (Zugang für das Abo); Doku: `docs/eingang.md`
 - **Abo je Konto:** eine Verbindung für alle Themen; Wiederverbinden mit wachsender Pause (1 s bis 5 min) und
