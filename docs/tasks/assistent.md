@@ -177,6 +177,25 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** Test, dass eine Persönlichkeit mit „ignore the rules“ die festen Regeln nicht verdrängt (Reihenfolge
   im Prompt); Profil- und Gedächtnis-Handler-Tests; `torro-design-review`.
 
+### C.11 Nacharbeiten: Lücken aus C.2, C.6, C.7, C.9 und C.10 schließen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** C.10 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,clients,approvals,audit}.rs`, `crates/torroworkplace/src/assistant/**`,
+  `crates/torroworkplace/src/ui/assistant.rs`, `crates/torroworkplace/src/tray/**`
+- **Rechte gleich beim Anlegen** (aus C.6): `clients.create_client` bekommt ein optionales Feld `rights` (verträglich);
+  die Seite „Assistant“ legt den Client damit in einem Schritt an. Keine Millisekunden mehr mit *Read only* auf alle
+  Mail-Konten, kein Rest, wenn das Update scheitert.
+- **Freigaben im Lauf eines Agenten** (aus C.7): Ein freigegebener Befehl eines geliehenen Schlüssels läuft mit den
+  eingeschränkten Rechten des Laufs (ohne Mail, ohne abgeschaltete Bereiche), nicht mit den vollen Rechten des Clients.
+- **Antrieb im Protokoll nach Freigaben** (aus C.2): Erlaubt oder lehnt ein Mensch einen Befehl des Assistenten ab,
+  trägt auch diese Protokollzeile `engine:<id>`.
+- **Notizen aus fremden Daten** (aus C.10): Hat die Unterhaltung Daten mit `untrusted` gelesen (Eingang von Agenten
+  und Skripten, GitHub, Mail), braucht `assistant.remember` immer eine Freigabe, nicht nur nach Mail.
+- **Stummschalten immer erreichbar** (aus C.9): „Mute microphone“ steht im Tray, solange `voice_enabled` an ist, auch
+  wenn der Zuhör-Prozess abgestürzt ist.
+- **Oberfläche/API/MCP:** nur das neue optionale Feld `rights` an `clients.create_client` (bleibt **Never**, Punkt 2).
+- **Abnahme:** je Punkt ein Test; `torro-api-review` ohne Muss-Punkt.
+
 ## Stufe 2: Bots (Planung folgt)
 
 Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Grobe Aufteilung, Einzelheiten nach Stufe 1:
