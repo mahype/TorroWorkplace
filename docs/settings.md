@@ -125,7 +125,7 @@ Tray, Apps und Steuerzentrale immer denselben Stand.
 
 Das gewählte Design gilt in allen offenen Fenstern sofort, auf demselben Weg wie hell/dunkel und
 der Zoom: Jede App fragt die Einstellungen beim Start (vor dem ersten Bild) und bei jedem Takt, lädt
-das Paket, lädt seine Schriften nach und zeichnet neu; das Tray-Symbol wechselt mit. Ist das Paket
+das Paket, lädt seine Schriften nach und zeichnet neu; nur das Tray-Symbol bleibt fest (Issue #114). Ist das Paket
 weg oder ungültig, zeichnen alle mit dem Standardpaket, die Einstellung bleibt stehen. Zum
 Ausprobieren ohne Dienst: `--demo --design <id>` in jeder App.
 

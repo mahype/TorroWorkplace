@@ -734,9 +734,6 @@ pub struct Snapshot {
     /// The most recently updated of [`Snapshot::inbox_for_me`], newest first, at most
     /// [`TRAY_NEWEST`].
     pub inbox_newest: Vec<InboxLine>,
-    /// The design pack the settings name (task L.3), so the tray icon follows it: its symbol
-    /// (`logo.tray`) or the grid in its accent colour. Empty counts as the standard.
-    pub design: String,
     /// What the voice listener does (task C.9): the tray shows that it listens, and clearly when
     /// it records, and offers to mute the microphone.
     pub voice: torro_ipc::VoiceState,
@@ -3930,7 +3927,6 @@ impl Core {
         }
         snapshot.account = Some(self.pim.account_state().await);
         let settings = self.settings.current();
-        snapshot.design = settings.design;
         snapshot.voice = self.voice.state();
         snapshot.voice_enabled = settings.voice.enabled;
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
@@ -4763,7 +4759,6 @@ mod tests {
         let active: Vec<String> =
             list(core.handle(Request::ListDesigns).await).into_iter().filter(|d| d.active).map(|d| d.id).collect();
         assert_eq!(active, ["teal"]);
-        assert_eq!(core.snapshot().await.design, "teal", "the tray icon follows");
     }
 
     #[tokio::test]

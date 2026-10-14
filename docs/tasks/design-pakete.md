@@ -290,3 +290,16 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   `--demo --design everforest`.
 - **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
   `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.17 Tray-Symbol fest: vier runde Quadrate (Issue #114)
+- [x] erledigt (2026-10-14: `logo.tray` bleibt im Format und wird weiter geprüft, damit vorhandene Pakete gültig
+  bleiben, das Tray zeigt es aber nicht mehr; `Snapshot::design` entfällt)
+- **Modell:** Opus · **Braucht:** L.3 · **Dateien:** `crates/torroworkplace/src/tray/{icon,desktop,linux}.rs`,
+  `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/Cargo.toml`, `crates/torro-core/src/design.rs`
+  (Doc-Kommentar), `docs/design-pakete.md`
+- Das Symbol im Tray bzw. in der Menüleiste ist immer das 2×2-Raster aus vier kleinen, gefüllten Quadraten mit leicht
+  runden Ecken in Torro-Rot, unabhängig vom Design-Paket: Wechselt es mit dem Design, findet man es schwer wieder.
+  Auf macOS bleibt es ein Template-Bild, die Sprachmarke (C.9) bleibt.
+- **Abnahme:** Test, dass `Look` nur noch von der Sprachmarke abhängt und das rote Raster zeichnet; Sichtprüfung hell
+  und dunkel in der macOS-Menüleiste.
+- **Oberfläche/API/MCP:** keine neue Funktion, kein Request.
