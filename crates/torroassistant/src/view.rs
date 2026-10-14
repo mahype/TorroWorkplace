@@ -44,6 +44,8 @@ struct Anchors {
     picker: Anchor,
     /// The effort of the composer (issue #131).
     effort: Anchor,
+    /// The permission mode under the composer (issue #132).
+    mode: Anchor,
     areas: Anchor,
     row: Anchor,
     /// A bot's row in the sidebar, for its menu.
@@ -235,6 +237,9 @@ impl App {
                 self.bot_menu(id),
                 Message::CloseMenu,
             ),
+            Menu::Mode => {
+                widgets::floating(&anchors.mode, Placement::Below(Align::Start), self.mode_menu(), Message::CloseMenu)
+            }
             Menu::Effort => widgets::floating(
                 &anchors.effort,
                 Placement::Below(Align::Start),
@@ -839,7 +844,29 @@ impl App {
             let ready = self.choice.is_some() && !self.editor.text().trim().is_empty();
             widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, ready.then_some(Message::Send))
         });
-        column![editor, controls].spacing(space::s()).into()
+        let mut composer = column![editor, controls].spacing(space::s());
+        // What the next message may do (issue #132): the mode, and the access it leaves in words.
+        if let (Access::Granted(rights), None) = (&self.access, self.chat_bot()) {
+            let mode =
+                widgets::select_button(&anchors.mode, chat::mode_name(self.mode), Message::ToggleMenu(Menu::Mode));
+            let line = chat::access_line(rights, &self.without, self.mode);
+            let line = widgets::ellipsized(typo::meta(), line, theme::text_3);
+            let row = row![mode, container(line).width(Fill)].spacing(space::s()).align_y(Alignment::Center);
+            composer = composer.push(row);
+        }
+        composer.into()
+    }
+
+    /// The permission mode's menu (issue #132): each mode, the narrowest first, a check at the chosen.
+    fn mode_menu(&self) -> Element<'_, Message> {
+        let check = palette(&self.theme()).text_2;
+        let items = torro_ipc::assistant::Mode::ALL
+            .into_iter()
+            .map(|mode| {
+                MenuItem::new(Mark::Check(check, self.mode == mode), chat::mode_name(mode), Message::PickMode(mode))
+            })
+            .collect();
+        widgets::menu(vec![MenuSection::titled(tr("What the assistant may do here"), items)])
     }
 
     /// The picker: each engine with the models that can call tools; an engine whose models did

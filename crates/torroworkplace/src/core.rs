@@ -17,6 +17,7 @@ use torro_core::account::AccountKind;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrderEntry;
 use torro_ipc::api::{Access, Area};
+use torro_ipc::assistant::Mode;
 use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_mail::MailSettings;
 use torro_mail_imap::discover::{LoginHint, MailDiscoverer, MailDiscovery};
@@ -1238,15 +1239,17 @@ impl Core {
         }
         // Taken back meanwhile: the key is worth nothing now, and nothing may be asked for without
         // knowing what it was lent without.
-        let (Some(engine), Some(without)) = (self.clients.lent_for(key), self.clients.lent_without(key)) else {
+        let (Some(engine), Some(without), Some(mode)) =
+            (self.clients.lent_for(key), self.clients.lent_without(key), self.clients.lent_mode(key))
+        else {
             return Err(Refused::Unauthorized { command: request.operation().name() });
         };
-        let origin = crate::approvals::Origin { engine: Some(engine), without: without.clone(), behalf: None };
+        let origin = crate::approvals::Origin { engine: Some(engine), without: without.clone(), behalf: None, mode };
         let mut via = Via { origin, untrusted: true, asking: None };
         let mut rights = rights;
         match scope {
             Some(LentFor::Conversation(conversation)) => {
-                via.asking = Some(AskedFrom { conversation, without, read_mail: false });
+                via.asking = Some(AskedFrom { conversation, without, read_mail: false, mode });
             }
             Some(LentFor::Delegated(delegation)) => {
                 // The lease took its areas out of the bot's rights already; the assistant's, narrowed
@@ -1293,6 +1296,11 @@ impl Core {
         if self.loops_back(&id, request.operation()) {
             return Err(Refused::Forbidden { command: request.operation().name() });
         }
+        // A read-only answer of the assistant (issue #132) changes nothing, also not what its kind
+        // may do whatever its rights say (its memory, proposing a bot).
+        if via.origin.mode.refuses(request.operation()) {
+            return Err(Refused::Lacks { command: request.operation().name(), lack: torro_ipc::api::Lack::ReadOnly });
+        }
         // Mail limits and accounts first (task M2.1): nobody is asked to approve what is refused
         // anyway, and an account the client may not see looks like none.
         if let Some(refused) = torro_ipc::mail::limit_refusal(&request).or_else(|| mail_out_of_reach(&rights, &request))
@@ -1325,7 +1333,7 @@ impl Core {
                 true => Some(torro_ipc::api::Lack::ForPeople),
                 false => {
                     let kind = self.client_kind(&id).unwrap_or_default();
-                    torro_ipc::api::Lack::of(&kind, &rights, operation, &[], &[])
+                    torro_ipc::api::Lack::of_in(&kind, &rights, operation, &[], &[], via.origin.mode)
                 }
             };
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
@@ -1354,6 +1362,7 @@ impl Core {
                 assistant: &id,
                 without: &asking.without,
                 read_mail: asking.read_mail,
+                mode: asking.mode,
             };
             return Ok(self.assistant.delegate(&self.ai, &from, request).await);
         }
@@ -1529,7 +1538,7 @@ impl Core {
     /// (task C.11); `untrusted`: the conversation read data from outside the suite, so
     /// `assistant.remember` waits for a person ([`Via::untrusted`]).
     async fn handle_as_assistant(&self, request: Request, engine: &str, untrusted: bool) -> Response {
-        self.handle_as(self.assistant_client(), request, engine, untrusted, Scope::Own).await
+        self.handle_as(self.assistant_client(), request, engine, untrusted, Scope::Own, Mode::Default).await
     }
 
     /// The client of the bot whose client id is `client` (kind `torro_ipc::api::BOT_CLIENT`) as
@@ -1554,7 +1563,8 @@ impl Core {
     /// B.1). Without one every call is `forbidden`. `scope` (task B.2): the assistant's conversation
     /// for a `bots.ask_bot`, or a bot's run for the assistant (`client` then holds the narrowed
     /// rights, [`Core::delegated_client`]): its approvals keep the narrowing and its log line names
-    /// the bot and the assistant's client.
+    /// the bot and the assistant's client. `mode` (issue #132): the permission mode of the answer,
+    /// which narrows the client's rights as well and is kept by the approvals it asks for.
     async fn handle_as(
         &self,
         client: Option<torro_ipc::ClientInfo>,
@@ -1562,23 +1572,34 @@ impl Core {
         engine: &str,
         untrusted: bool,
         scope: Scope<'_>,
+        mode: Mode,
     ) -> Response {
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         ids.push(crate::audit::engine_id(engine));
-        let mut origin =
-            crate::approvals::Origin { engine: Some(engine.to_string()), without: Vec::new(), behalf: None };
+        let mut origin = crate::approvals::Origin {
+            engine: Some(engine.to_string()),
+            without: Vec::new(),
+            behalf: None,
+            mode: Mode::Default,
+        };
         let mut asking = None;
         match scope {
             Scope::Own => {}
             Scope::Asking { conversation, without, read_mail } => {
                 let conversation = conversation.to_string();
-                asking = Some(AskedFrom { conversation, without: without.to_vec(), read_mail });
+                asking = Some(AskedFrom { conversation, without: without.to_vec(), read_mail, mode });
             }
             Scope::Delegated(delegation) => {
                 ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
                 origin = delegation_origin(Some(engine), delegation);
             }
         }
+        // A delegated bot runs in its delegation's mode already; the narrower of both counts.
+        origin.mode = origin.mode.stricter(mode);
+        let client = client.map(|mut info| {
+            info.rights = origin.mode.narrow(&info.rights);
+            info
+        });
         let answer = match &client {
             Some(info)
                 if info.rights.allows_request(&request)
@@ -1589,7 +1610,9 @@ impl Core {
             }
             // Issue #133: the answer says what the rights lack.
             Some(info) => {
-                Err(match torro_ipc::api::Lack::of(&info.kind, &info.rights, request.operation(), &[], &[]) {
+                let lack =
+                    torro_ipc::api::Lack::of_in(&info.kind, &info.rights, request.operation(), &[], &[], origin.mode);
+                Err(match lack {
                     Some(lack) => Refused::Lacks { command, lack },
                     None => Refused::Forbidden { command },
                 })
@@ -4175,6 +4198,24 @@ impl crate::assistant::Host for Core {
         Box::pin(self.handle_as_assistant(request, engine, untrusted))
     }
 
+    /// A tool call in the permission mode of the answer (issue #132): the client's rights narrowed by
+    /// it, and its approvals keep it ([`Core::handle_as`]).
+    fn run_in<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+        mode: Mode,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        let client = crate::assistant::Host::client_of(self, actor);
+        let scope = match actor {
+            crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
+            _ => Scope::Own,
+        };
+        Box::pin(self.handle_as(client, request, engine, untrusted, scope, mode))
+    }
+
     fn approval<'a>(&'a self, id: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
         Box::pin(async move {
             match self.assistant_client() {
@@ -4215,12 +4256,7 @@ impl crate::assistant::Host for Core {
         engine: &'a str,
         untrusted: bool,
     ) -> torro_core::ai::BoxFuture<'a, Response> {
-        let client = crate::assistant::Host::client_of(self, actor);
-        let scope = match actor {
-            crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
-            _ => Scope::Own,
-        };
-        Box::pin(self.handle_as(client, request, engine, untrusted, scope))
+        crate::assistant::Host::run_in(self, actor, request, engine, untrusted, Mode::Default)
     }
 
     fn approval_as<'a>(
@@ -4268,6 +4304,29 @@ impl crate::assistant::Host for Core {
         engine: &str,
         without: &[Area],
     ) -> Option<crate::clients::LentKey> {
+        crate::assistant::Host::lend_in_mode(self, actor, conversation, engine, without, Mode::Default)
+    }
+
+    /// [`crate::assistant::Host::lend_in`] in the permission mode `mode` (issue #132): the key's
+    /// requests run with the client's rights narrowed by it, and for a bot's run for the assistant in
+    /// the narrower of `mode` and the delegation's.
+    fn lend_in_mode(
+        &self,
+        actor: &crate::assistant::Actor,
+        conversation: &str,
+        engine: &str,
+        without: &[Area],
+        mode: Mode,
+    ) -> Option<crate::clients::LentKey> {
+        let lend =
+            |client: &str, without: &[Area], mode: Mode| match self.clients.lend_in_mode(client, engine, without, mode)
+            {
+                Ok(lent) => Some(lent),
+                Err(err) => {
+                    eprintln!("torroworkplace: cannot lend a key for {engine}: {err}");
+                    None
+                }
+            };
         match actor {
             crate::assistant::Actor::Delegated(delegation) => {
                 self.delegated_client(delegation)?;
@@ -4277,23 +4336,20 @@ impl crate::assistant::Host for Core {
                         delegation.without.push(*area);
                     }
                 }
-                let lent = match self.clients.lend(&delegation.client, engine, &delegation.without) {
-                    Ok(lent) => lent,
-                    Err(err) => {
-                        eprintln!("torroworkplace: cannot lend a bot a key for {engine}: {err}");
-                        return None;
-                    }
-                };
+                delegation.mode = delegation.mode.stricter(mode);
+                let lent = lend(&delegation.client, &delegation.without, delegation.mode)?;
                 self.remember_lent(&lent, LentFor::Delegated(delegation));
                 Some(lent)
             }
             crate::assistant::Actor::Assistant => {
-                let lent = crate::assistant::Host::lend(self, engine, without)?;
+                let client = self.assistant_client()?;
+                let lent = lend(&client.id, without, mode)?;
                 self.remember_lent(&lent, LentFor::Conversation(conversation.to_string()));
                 Some(lent)
             }
             crate::assistant::Actor::Bot(_) => {
-                let lent = crate::assistant::Host::lend_as(self, actor, engine, without)?;
+                let client = crate::assistant::Host::client_of(self, actor)?;
+                let lent = lend(&client.id, without, mode)?;
                 self.remember_lent(&lent, LentFor::Own);
                 Some(lent)
             }
@@ -4310,7 +4366,20 @@ impl crate::assistant::Host for Core {
         without: &'a [Area],
     ) -> torro_core::ai::BoxFuture<'a, Response> {
         let scope = Scope::Asking { conversation: main, without, read_mail };
-        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope))
+        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, Mode::Default))
+    }
+
+    /// `bots.ask_bot` in the permission mode of the answer (issue #132): the bot then runs in it as
+    /// well ([`crate::assistant::Delegation::mode`]).
+    fn ask_bot_in<'a>(
+        &'a self,
+        from: crate::assistant::AskedIn<'a>,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        let scope = Scope::Asking { conversation: from.main, without: from.without, read_mail: from.read_mail };
+        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope, from.mode))
     }
 }
 
@@ -4335,6 +4404,8 @@ struct AskedFrom {
     without: Vec<Area>,
     /// The assistant's model read mail there (never with a lent key: lent without mail).
     read_mail: bool,
+    /// The permission mode of the assistant's answer (issue #132): the bot runs in it as well.
+    mode: Mode,
 }
 
 /// What a key lent for one run of engine B is for (task B.2), so its requests are checked as the
@@ -4373,6 +4444,7 @@ fn delegation_origin(engine: Option<&str>, delegation: &crate::assistant::Delega
         engine: engine.map(str::to_string),
         without: delegation.without.clone(),
         behalf: Some(delegation.assistant.clone()),
+        mode: delegation.mode,
     }
 }
 
@@ -4470,7 +4542,7 @@ fn my_access(rights: &torro_ipc::api::Rights, origin: &crate::approvals::Origin)
     let never = origin.engine.as_deref().map_or(&[][..], crate::assistant::never_given);
     let switched_off: Vec<Area> = origin.without.iter().filter(|area| !never.contains(area)).copied().collect();
     let access = torro_ipc::assistant::MyAccess::of(rights.clone(), origin.engine.clone());
-    Response::MyAccess { access: access.withholding(never).switching_off(&switched_off) }
+    Response::MyAccess { access: access.withholding(never).switching_off(&switched_off).in_mode(origin.mode) }
 }
 
 fn sees_local_notes(reach: Reach<'_>) -> bool {
@@ -11237,6 +11309,7 @@ mod tests {
                 effort: None,
                 text: "Hi".into(),
                 without: Vec::new(),
+                mode: torro_ipc::assistant::Mode::Default,
                 bot: None,
             },
             Request::CancelAnswer { conversation: id.into() },
@@ -11414,6 +11487,7 @@ mod tests {
             effort: None,
             text: "What is on tomorrow?".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         let Response::Conversation { conversation, .. } = ask(&core, Some(&app_key), send).await else {
@@ -11470,6 +11544,7 @@ mod tests {
             effort: None,
             text: "Dinner with Anna".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         let Response::Conversation { conversation, .. } = ask(&core, Some(&key), send).await else {
@@ -11489,6 +11564,7 @@ mod tests {
             effort: None,
             text: "Hi".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
@@ -11565,6 +11641,7 @@ mod tests {
             effort: None,
             text: "Plan a weekend in Lisbon".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.into()),
         }
     }
@@ -11909,6 +11986,29 @@ mod tests {
         ) -> torro_core::ai::BoxFuture<'a, Response> {
             Host::ask_bot(&*self.core, main, request, engine, untrusted, read_mail, without)
         }
+
+        // The permission mode (issue #132) as the core applies it.
+
+        fn run_in<'a>(
+            &'a self,
+            actor: &'a crate::assistant::Actor,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+            mode: Mode,
+        ) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::run_in(&*self.core, actor, request, engine, untrusted, mode)
+        }
+
+        fn ask_bot_in<'a>(
+            &'a self,
+            from: crate::assistant::AskedIn<'a>,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+        ) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::ask_bot_in(&*self.core, from, request, engine, untrusted)
+        }
     }
 
     /// A core in `dir` with an Ollama account at `ollama`, an assistant client with `rights`, and
@@ -11947,6 +12047,7 @@ mod tests {
             effort: None,
             text: text.into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         match core.handle(send).await {
@@ -12045,6 +12146,60 @@ mod tests {
         );
     }
 
+    /// Issue #132: the permission mode only ever narrows the assistant's rights. Read only refuses
+    /// every change with its reason and lets reading run; ask before changes turns a change into an
+    /// approval that keeps the mode; neither opens what the rights keep closed; a key lent in a mode
+    /// is narrowed the same way, and `assistant.my_access` says the mode.
+    #[tokio::test]
+    async fn a_permission_mode_only_narrows_the_assistants_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama().await;
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::Write, admin: false });
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        let (core, _host, engine, client) = assistant_core(dir.path(), &ollama, rights, Script::new(vec![])).await;
+        let actor = crate::assistant::Actor::Assistant;
+        let run = |request: Request, mode: Mode| {
+            let (core, actor, engine) = (Arc::clone(&core), actor.clone(), engine.clone());
+            async move { Host::run_in(&*core, &actor, request, &engine, false, mode).await }
+        };
+
+        let posted = run(notice("As stored"), Mode::Default).await;
+        assert!(!matches!(posted, Response::Error { .. } | Response::Pending { .. }), "{posted:?}");
+
+        let refused = run(notice("Read only"), Mode::ReadOnly).await;
+        assert_eq!(code(&refused), "forbidden");
+        let Response::Error { message, .. } = &refused else { panic!("an error") };
+        assert!(message.contains("read only"), "{message}");
+        assert!(matches!(run(Request::CalendarCollections, Mode::ReadOnly).await, Response::Collections { .. }));
+        let remember = Request::Remember { text: "Anna works in sales.".into(), replaces: None, local_only: false };
+        assert_eq!(code(&run(remember, Mode::ReadOnly).await), "forbidden", "not even its memory");
+
+        let Response::Pending { approval } = run(notice("Ask first"), Mode::Ask).await else {
+            panic!("a change waits for the person");
+        };
+        let decided = core.handle(decide(&approval.id, true)).await;
+        assert!(matches!(decided, Response::Approval { .. }), "{decided:?}");
+
+        // No mode opens what the rights keep closed.
+        for mode in Mode::ALL {
+            assert_eq!(code(&run(Request::ListTemplates, mode).await), "forbidden", "{mode:?}");
+        }
+
+        // A key lent in a mode (engine B) is narrowed the same way, and knows its mode.
+        let lent = core.clients.lend_in_mode(&client, "claude-code", &[], Mode::ReadOnly).expect("lent");
+        assert_eq!(code(&ask(&core, Some(lent.key()), notice("Lent")).await), "forbidden");
+        assert!(matches!(
+            ask(&core, Some(lent.key()), Request::CalendarCollections).await,
+            Response::Collections { .. }
+        ));
+        let access = my_access_of(&ask(&core, Some(lent.key()), Request::MyAccess).await);
+        assert_eq!(access.mode, Mode::ReadOnly);
+        assert_eq!(access.rights.area(Area::Inbox).level, Level::Read);
+        let asking = core.clients.lend_in_mode(&client, "claude-code", &[], Mode::Ask).expect("lent");
+        assert!(matches!(ask(&core, Some(asking.key()), notice("Lent, asking")).await, Response::Pending { .. }));
+    }
+
     /// The access in an answer of `assistant.my_access` (issue #134).
     fn my_access_of(response: &Response) -> torro_ipc::assistant::MyAccess {
         match response {
@@ -12084,6 +12239,7 @@ mod tests {
             effort: None,
             text: "Which rights do you have?".into(),
             without: vec![Area::Calendar],
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
@@ -12279,6 +12435,7 @@ mod tests {
         let origin = crate::approvals::Origin {
             engine: Some("claude-code".into()),
             without: vec![Area::Workspaces],
+            mode: torro_ipc::assistant::Mode::Default,
             behalf: None,
         };
         let request = Request::DeleteTemplate { id: "dev".into() };
@@ -12419,6 +12576,7 @@ mod tests {
             effort: None,
             text: text.into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
@@ -12497,6 +12655,7 @@ mod tests {
             effort: None,
             text: "Then ask the travel planner".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         assert!(matches!(core.handle(named).await, Response::Conversation { .. }));
@@ -12585,6 +12744,7 @@ mod tests {
                 client: bot.client.clone(),
                 assistant: client.id.clone(),
                 without,
+                mode: torro_ipc::assistant::Mode::Default,
             })
         };
         let actor = delegation(Vec::new());
@@ -12699,6 +12859,7 @@ mod tests {
             effort: None,
             text: "Now ask the travel planner".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         assert!(matches!(ask(&core, Some(&agent_key), by_agent).await, Response::Conversation { .. }));
@@ -12759,6 +12920,7 @@ mod tests {
             client: bot.client.clone(),
             assistant: client.id.clone(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
         });
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let first = waits(Host::run_as(&core, &actor, delete("old"), "test", false).await);
@@ -12842,6 +13004,7 @@ mod tests {
             client: bot.client.clone(),
             assistant: client.id.clone(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
         });
         assert!(Host::lend_as(&core, &actor, "claude-code", &[]).is_none(), "only with the narrowing remembered");
         // A bot's key the core lent without knowing its run does nothing; lent for the bot's own run

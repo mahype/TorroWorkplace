@@ -142,6 +142,7 @@ async fn ask(setup: &Setup, conversation: Option<&str>, text: &str, without: Vec
         effort: None,
         text: text.into(),
         without,
+        mode: torro_ipc::assistant::Mode::Default,
         bot: None,
         on_behalf: None,
         person: false,
@@ -252,6 +253,7 @@ fn send_to_claude() -> Request {
         effort: None,
         text: "Hi".into(),
         without: Vec::new(),
+        mode: torro_ipc::assistant::Mode::Default,
         bot: None,
     }
 }
@@ -530,6 +532,7 @@ async fn the_model_and_the_effort_go_to_claude_code() {
         effort: Some(torro_core::ai::Effort::High),
         text: "Hi".into(),
         without: Vec::new(),
+        mode: torro_ipc::assistant::Mode::Default,
         bot: None,
         on_behalf: None,
         person: false,

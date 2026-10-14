@@ -23,7 +23,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::api::{Area, Rights, Selection};
+use crate::api::{Access, Area, Confirm, Level, Operation, Outbound, Rights, Selection};
 use crate::{Request, Response};
 
 /// At most this many characters in a message to the assistant (`assistant.send_message`).
@@ -108,6 +108,64 @@ pub enum EngineKind {
     Test,
 }
 
+/// What the assistant may do in one answer (issue #132, `assistant.send_message`'s `mode`), like the
+/// permission modes of coding agents, ordered from the widest to the narrowest: it only ever narrows the rights of its client
+/// ([`Mode::narrow`]), never widens them, so an agent may choose it too. The core applies it to every
+/// command of the answer, to a key lent for it and to the approvals it asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Mode {
+    /// The rights as stored.
+    #[default]
+    Default,
+    /// Every command that changes something waits for the person's approval
+    /// ([`Confirm::OnEveryChange`]); sending mail too.
+    Ask,
+    /// Only commands that change nothing: every area at most read, no admin, no sending.
+    ReadOnly,
+}
+
+impl Mode {
+    /// Every mode, the narrowest first, as the composer lists them.
+    pub const ALL: [Mode; 3] = [Mode::ReadOnly, Mode::Ask, Mode::Default];
+
+    /// The narrower of `self` and `other` (the modes are ordered from the widest to the narrowest):
+    /// what a bot runs in when the assistant asked it in one mode and its own run names another.
+    pub fn stricter(self, other: Mode) -> Mode {
+        self.max(other)
+    }
+
+    /// The rights as stored ([`Mode::Default`]); `mode` is then left out on the wire.
+    pub fn is_default(&self) -> bool {
+        *self == Mode::Default
+    }
+
+    /// `rights` in this mode: [`Mode::ReadOnly`] caps every area at read, switches admin and sending
+    /// off; [`Mode::Ask`] asks before every change; [`Mode::Default`] leaves them. Never more than
+    /// `rights`.
+    pub fn narrow(self, rights: &Rights) -> Rights {
+        let mut rights = rights.clone();
+        match self {
+            Mode::Default => {}
+            Mode::Ask => rights.confirm = rights.confirm.max(Confirm::OnEveryChange),
+            Mode::ReadOnly => {
+                for held in rights.areas.values_mut() {
+                    held.level = held.level.min(Level::Read);
+                    held.admin = false;
+                }
+                rights.outbound = Outbound::Never;
+            }
+        }
+        rights
+    }
+
+    /// Whether the mode refuses `operation` whatever the rights and the client's kind say: in
+    /// [`Mode::ReadOnly`] everything beyond reading, also the assistant's own memory.
+    pub fn refuses(self, operation: Operation) -> bool {
+        self == Mode::ReadOnly && operation.access != Access::Read
+    }
+}
+
 /// One conversation without its entries (`assistant.list_conversations`, and the head of
 /// `assistant.get_conversation`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -173,6 +231,9 @@ pub enum EntryContent {
         /// The areas switched off for its answer: the assistant's rights, narrowed, never widened.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         without: Vec<Area>,
+        /// The permission mode of its answer (issue #132); left out for [`Mode::Default`].
+        #[serde(default, skip_serializing_if = "Mode::is_default")]
+        mode: Mode,
     },
     /// The assistant's answer, with the engine and the model that wrote it. One answer can come in
     /// several entries, between the tools it used. While the model writes, the entry after
@@ -276,12 +337,24 @@ pub struct MyAccess {
     /// The areas the person switched off for this conversation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub switched_off: Vec<Area>,
+    /// The permission mode of the answer that asks (issue #132); [`MyAccess::rights`] are narrowed by
+    /// it already. Left out for [`Mode::Default`].
+    #[serde(default, skip_serializing_if = "Mode::is_default")]
+    pub mode: Mode,
 }
 
 impl MyAccess {
     /// `rights` as they are for a client's own key: nothing withheld or switched off.
     pub fn of(rights: Rights, engine: Option<String>) -> MyAccess {
-        MyAccess { rights, engine, withheld: Vec::new(), switched_off: Vec::new() }
+        MyAccess { rights, engine, withheld: Vec::new(), switched_off: Vec::new(), mode: Mode::Default }
+    }
+
+    /// `self` in the permission mode `mode` (issue #132): the rights narrowed ([`Mode::narrow`]) and
+    /// the mode named.
+    pub fn in_mode(mut self, mode: Mode) -> MyAccess {
+        self.rights = mode.narrow(&self.rights);
+        self.mode = mode;
+        self
     }
 
     /// `self` with the areas `areas` withheld by the engine: closed ([`close`]) and listed in
@@ -466,6 +539,7 @@ mod tests {
             effort: None,
             text: text.into(),
             without: Vec::new(),
+            mode: Mode::Default,
             bot: None,
         }
     }
@@ -475,6 +549,39 @@ mod tests {
             Response::Error { code, .. } => code,
             other => panic!("expected an error, got {other:?}"),
         })
+    }
+
+    /// Issue #132: a mode only narrows: read only caps every area at read without admin or sending,
+    /// ask asks before every change, and neither ever opens what the rights keep closed.
+    #[test]
+    fn a_mode_only_narrows() {
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Mail, crate::api::AreaRights { level: Level::Full, admin: true });
+        rights.areas.insert(Area::Tasks, crate::api::AreaRights { level: Level::Write, admin: false });
+        rights.outbound = Outbound::Free;
+        rights.confirm = Confirm::Never;
+        let read = Mode::ReadOnly.narrow(&rights);
+        assert!(read.areas.values().all(|held| held.level <= Level::Read && !held.admin));
+        assert_eq!(read.outbound, Outbound::Never);
+        assert_eq!(read.area(Area::Github), rights.area(Area::Github), "closed stays closed");
+        let ask = Mode::Ask.narrow(&rights);
+        assert_eq!((ask.confirm, ask.areas.clone()), (Confirm::OnEveryChange, rights.areas.clone()));
+        assert_eq!(Mode::Default.narrow(&rights), rights);
+        for mode in Mode::ALL {
+            let narrowed = mode.narrow(&rights);
+            for command in crate::api::CATALOGUE {
+                let operation = Operation { command, access: command.access };
+                assert!(!narrowed.allows(operation) || rights.allows(operation), "{mode:?} widened {}", command.name);
+                // What every client may (asking the person, `approvals.ask_permission`) is no grant; the core
+                // refuses it in a read-only answer as well (`Mode::refuses`).
+                let granted = command.area.grantable() && narrowed.allows(operation);
+                assert!(!granted || !mode.refuses(operation), "{mode:?} {}", command.name);
+            }
+        }
+        assert_eq!(serde_json::to_value(Mode::ReadOnly).expect("json"), "read_only");
+        assert_eq!(serde_json::to_value(Mode::Ask).expect("json"), "ask");
+        let access = MyAccess::of(rights.clone(), None).in_mode(Mode::ReadOnly);
+        assert_eq!((access.mode, access.rights), (Mode::ReadOnly, read));
     }
 
     /// Issue #134: an area withheld or switched off is closed with what it selects, and listed once.
@@ -527,6 +634,7 @@ mod tests {
             effort: None,
             text: "Hi".into(),
             without: Vec::new(),
+            mode: Mode::Default,
             bot: None,
         };
         assert_eq!(code(limit_refusal(&model)), Some("error".into()));
@@ -537,6 +645,7 @@ mod tests {
             effort: None,
             text: "Hi".into(),
             without: Vec::new(),
+            mode: Mode::Default,
             bot: Some(long),
         };
         assert_eq!(code(limit_refusal(&bot)), Some("error".into()));
@@ -639,6 +748,7 @@ mod tests {
             model: None,
             effort: None,
             without: vec![Area::Mail],
+            mode: Mode::Default,
         };
         assert_eq!(
             serde_json::to_value(&message).expect("serializes"),
@@ -650,6 +760,7 @@ mod tests {
             model: Some("opus".into()),
             effort: Some(torro_core::ai::Effort::High),
             without: Vec::new(),
+            mode: Mode::Default,
         };
         assert_eq!(
             serde_json::to_value(&thought).expect("serializes"),

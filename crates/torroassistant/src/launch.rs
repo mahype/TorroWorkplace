@@ -53,6 +53,8 @@ pub enum Open {
     Picker,
     /// The effort menu of the composer (issue #131).
     Effort,
+    /// The permission mode menu under the composer (issue #132).
+    Mode,
     /// The "…" menu of the open conversation (Rename, Pin, Open in new window, Delete).
     Menu,
     /// The dialog that renames the open conversation.
@@ -95,7 +97,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 26] = [
+    pub const ALL: [(&'static str, Open); 27] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -103,6 +105,7 @@ impl Open {
         ("forbidden", Open::Forbidden),
         ("picker", Open::Picker),
         ("effort", Open::Effort),
+        ("mode", Open::Mode),
         ("menu", Open::Menu),
         ("rename", Open::Rename),
         ("delete", Open::Delete),

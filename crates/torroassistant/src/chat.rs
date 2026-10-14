@@ -8,7 +8,8 @@
 //!   ([`default_choice`], first the default of the control centre: [`preferred_choice`]). Beside
 //!   it the effort, offered only for a model that thinks ([`can_reason`], issue #131).
 //! - The areas the person can switch off for one conversation ([`switchable_areas`], the
-//!   `without` of `assistant.send_message`).
+//!   `without` of `assistant.send_message`), the permission mode ([`mode_name`], issue #132) and
+//!   the line under the composer that says what the assistant may do now ([`access_line`]).
 //! - The requests the window sends for a click ([`send_request`], [`decide_request`]) and the words
 //!   of a tool line ([`tool_title`], [`tool_outcome`]), and under a refused one why, with "Change
 //!   access" only where that helps ([`refusal_hint`], issue #133).
@@ -22,7 +23,7 @@ use torro_core::i18n::{tr, trf};
 use torro_core::settings::AssistantDefault;
 use torro_ipc::Request;
 use torro_ipc::api::{Access, Area, CATALOGUE, Lack, Level, Rights};
-use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent};
+use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent, Mode, MyAccess};
 
 /// The entries of one conversation as the window has them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -118,6 +119,14 @@ impl Transcript {
     pub fn last_without(&self) -> Option<Vec<Area>> {
         self.entries.iter().rev().find_map(|entry| match &entry.content {
             EntryContent::Message { without, .. } => Some(without.clone()),
+            _ => None,
+        })
+    }
+
+    /// The permission mode of the newest message (issue #132): a conversation opened again keeps it.
+    pub fn last_mode(&self) -> Option<Mode> {
+        self.entries.iter().rev().find_map(|entry| match &entry.content {
+            EntryContent::Message { mode, .. } => Some(*mode),
             _ => None,
         })
     }
@@ -233,13 +242,58 @@ pub fn effort_name(effort: Option<Effort>) -> &'static str {
     }
 }
 
+/// The areas the composer shows, in this order.
+const SHOWN: [Area; 6] = [Area::Mail, Area::Calendar, Area::Tasks, Area::Inbox, Area::Workspaces, Area::Github];
+
 /// The areas the composer offers to switch off, in this order: those of the assistant's own
 /// client that it may use at all (`rights`, from `clients.list_clients`). Without a client, none:
 /// the assistant can use no tool then.
 pub fn switchable_areas(rights: Option<&Rights>) -> Vec<Area> {
-    const SHOWN: [Area; 6] = [Area::Mail, Area::Calendar, Area::Tasks, Area::Inbox, Area::Workspaces, Area::Github];
     let Some(rights) = rights else { return Vec::new() };
     SHOWN.into_iter().filter(|area| rights.area(*area).level != Level::NoAccess).collect()
+}
+
+/// The name of a permission mode in the composer and its menu (issue #132): "Read only", "Ask
+/// before changes", "Default access".
+pub fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::ReadOnly => tr("Read only"),
+        Mode::Ask => tr("Ask before changes"),
+        Mode::Default => tr("Default access"),
+    }
+}
+
+/// The line under the composer (issue #132): what the assistant may do with the next message, as
+/// `assistant.my_access` would answer it ([`MyAccess`], issue #134) – the stored `rights` of its
+/// client without the areas `without`, in the mode `mode`. Each area it may use with its level, then
+/// when it asks: "Mail: Read · Calendar: Write · asks before changes".
+pub fn access_line(rights: &Rights, without: &[Area], mode: Mode) -> String {
+    let access = MyAccess::of(rights.clone(), None).switching_off(without).in_mode(mode);
+    let mut parts: Vec<String> = SHOWN
+        .into_iter()
+        .filter_map(|area| {
+            let level = match access.rights.area(area).level {
+                Level::NoAccess => return None,
+                Level::Read => tr("Read"),
+                Level::Write => tr("Write"),
+                Level::Full => tr("Full"),
+            };
+            Some(trf("{area}: {level}", &[("area", &area_name(area)), ("level", &level)]))
+        })
+        .collect();
+    if parts.is_empty() {
+        parts.push(tr("No access to your data").to_owned());
+    }
+    parts.push(
+        match (mode, access.rights.confirm) {
+            (Mode::ReadOnly, _) => tr("changes nothing"),
+            (_, torro_ipc::api::Confirm::OnEveryChange) => tr("asks before changes"),
+            (_, torro_ipc::api::Confirm::OnDelete) => tr("asks before deleting"),
+            (_, torro_ipc::api::Confirm::Never) => tr("asks only for settings"),
+        }
+        .to_owned(),
+    );
+    parts.join(" · ")
 }
 
 /// The request of "Send": `assistant.send_message` with the text as typed (trailing blank lines
@@ -251,7 +305,7 @@ pub fn send_request(
     choice: Option<&Choice>,
     effort: Option<Effort>,
     text: &str,
-    without: &[Area],
+    (without, mode): (&[Area], Mode),
     bot: Option<&str>,
 ) -> Option<Request> {
     let text = text.trim_end();
@@ -266,6 +320,7 @@ pub fn send_request(
         effort,
         text: text.to_owned(),
         without: without.to_vec(),
+        mode,
         bot: bot.map(str::to_owned),
     })
 }
@@ -394,6 +449,10 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>) -> (String, bool) {
         Lack::Outbound => tr("Sending mail on your behalf is switched off for the assistant.").to_owned(),
         Lack::ForPeople => tr("Only you can do this, in Torro Workplace.").to_owned(),
         Lack::SwitchedOff { area } => trf("You switched off {area} for this conversation.", &[("area", &name(area))]),
+        Lack::ReadOnly => {
+            tr("This conversation is read only. Pick another mode under the message field to let it change things.")
+                .to_owned()
+        }
         Lack::NeverToAgents { area } => trf(
             "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
             &[("area", &name(area))],
@@ -470,6 +529,7 @@ mod tests {
                 model: None,
                 effort: None,
                 without: Vec::new(),
+                mode: torro_ipc::assistant::Mode::Default,
             },
         }
     }
@@ -608,7 +668,7 @@ mod tests {
                 Some(&choice),
                 Some(Effort::High),
                 "What is on tomorrow?\n\n",
-                &[Area::Mail],
+                (&[Area::Mail], Mode::Ask),
                 None
             ),
             Some(Request::SendMessage {
@@ -618,13 +678,15 @@ mod tests {
                 effort: Some(Effort::High),
                 text: "What is on tomorrow?".into(),
                 without: vec![Area::Mail],
+                mode: Mode::Ask,
                 bot: None,
             })
         );
-        assert_eq!(send_request(None, Some(&choice), None, " \n ", &[], None), None, "blank");
-        assert_eq!(send_request(None, None, None, "Hi", &[], None), None, "no engine");
+        let none: (&[Area], Mode) = (&[], Mode::Default);
+        assert_eq!(send_request(None, Some(&choice), None, " \n ", none, None), None, "blank");
+        assert_eq!(send_request(None, None, None, "Hi", none, None), None, "no engine");
         // Task B.3: a message to a bot names it; the core runs it with the bot's client.
-        let to_bot = send_request(None, Some(&choice), None, "Plan Lisbon", &[], Some("b0000001"));
+        let to_bot = send_request(None, Some(&choice), None, "Plan Lisbon", none, Some("b0000001"));
         assert!(matches!(to_bot, Some(Request::SendMessage { bot: Some(ref bot), .. }) if bot == "b0000001"));
     }
 
@@ -679,6 +741,46 @@ mod tests {
         assert!(!can_reason(None, &pick("x", Some("qwen3:8b")), Some(&listed)));
         assert_eq!(effort_name(None), tr("Automatic"));
         assert_eq!(effort_name(Some(Effort::High)), tr("High"));
+    }
+
+    /// Issue #132: the line under the composer says what the assistant may do with the next message,
+    /// narrowed by the switched-off areas and the mode, never more than the rights.
+    #[test]
+    fn the_access_line_says_what_the_next_message_may_do() {
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        rights.areas.insert(Area::Calendar, AreaRights { level: Level::Write, admin: false });
+        let part = |area: &'static str, level: &'static str| {
+            trf("{area}: {level}", &[("area", &tr(area)), ("level", &tr(level))])
+        };
+        let line = access_line(&rights, &[], Mode::Ask);
+        assert!(line.starts_with(&part("Mail", "Read")), "{line}");
+        assert!(line.contains(&part("Calendar", "Write")), "{line}");
+        assert!(line.ends_with(tr("asks before changes")), "{line}");
+        let read_only = access_line(&rights, &[Area::Mail], Mode::ReadOnly);
+        assert!(!read_only.contains(&part("Mail", "Read")), "switched off: {read_only}");
+        assert!(read_only.contains(&part("Calendar", "Read")), "capped at read: {read_only}");
+        assert!(read_only.ends_with(tr("changes nothing")), "{read_only}");
+        assert!(access_line(&rights, &[], Mode::Default).ends_with(tr("asks before deleting")));
+        assert!(access_line(&Rights::none(), &[], Mode::Default).starts_with(tr("No access to your data")));
+        assert_eq!(mode_name(Mode::Ask), tr("Ask before changes"));
+
+        let mut transcript = Transcript::new(summary("c1", 1, false), vec![message(1, "Hi")]);
+        assert_eq!(transcript.last_mode(), Some(Mode::Default));
+        let asked = Entry {
+            seq: 2,
+            time: at(3),
+            content: EntryContent::Message {
+                text: "Look only".into(),
+                engine: "e".into(),
+                model: None,
+                effort: None,
+                without: Vec::new(),
+                mode: Mode::ReadOnly,
+            },
+        };
+        transcript.merge(summary("c1", 2, false), vec![asked]);
+        assert_eq!(transcript.last_mode(), Some(Mode::ReadOnly));
     }
 
     #[test]

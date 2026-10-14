@@ -353,6 +353,7 @@ where
             effort: None,
             text: text.to_string(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         let (id, mut after) = match self.request(send)? {
@@ -543,8 +544,14 @@ mod tests {
                 Request::SendMessage { conversation, engine, text, model, .. } => {
                     let id = conversation.unwrap_or_else(|| "c9".into());
                     let conversation = ConversationSummary { model, ..summary(&id, &text, &engine, 14, 1, true) };
-                    let message =
-                        EntryContent::Message { text, engine, model: None, effort: None, without: Vec::new() };
+                    let message = EntryContent::Message {
+                        text,
+                        engine,
+                        model: None,
+                        effort: None,
+                        without: Vec::new(),
+                        mode: torro_ipc::assistant::Mode::Default,
+                    };
                     Ok(Response::Conversation { conversation, entries: vec![entry(1, message)] })
                 }
                 Request::RenameConversation { .. } => Ok(Response::Ok),
