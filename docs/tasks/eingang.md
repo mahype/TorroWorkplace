@@ -1429,6 +1429,16 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: Klick in der Zeile → Zeilenknopf auch bei offenem Leser, Klick im Leser → Leserknopf, Taste → Leser
   bzw. Zeile; Tasten im offenen Menü verschieben es nicht; Knopf ↔ Anker; Rückfall-Kette und Mitte in `torro-gui`.
 
+### E8.20 Mail-Liste ohne Leser über die ganze Breite (Issue #129)
+- [x] erledigt (2026-10-14: `App::list_cap` nimmt dem Mail-Fenster die Lesebreite 720: „For me“ und die Ordner füllen
+  in Mittel und Schmal die ganze Inhaltsfläche, in Breit ihre Spalte neben dem Leser; die Karten rechnen mit derselben
+  Breite (`App::card_width`). Zentrale und Benachrichtigungen behalten ihre Lesebreite. Entscheidung: keine eigenen
+  Spalten (Absender | Betreff | Zeit) für sehr breite Listen – das Mail-Fenster zeigt in Breit immer die Spalte des
+  Lesers, eine Liste ohne Leser gibt es dort nicht; bleibt bei Bedarf eine eigene Aufgabe)
+- **Modell:** Opus · **Braucht:** E8.11 · **Dateien:** `crates/torroinbox/src/app.rs`
+- **Oberfläche:** Liste des Mail-Fensters (kompakt und bequem). **API/MCP:** keine – Darstellung.
+- **Abnahme:** Test: keine Begrenzung im Mail-Fenster, Karten so breit wie die Fläche, andere Fenster begrenzt.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
