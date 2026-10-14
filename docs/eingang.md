@@ -267,6 +267,8 @@ weder Mail noch Slack).
 | Aufgabe aus einer Mail in einem Ordner (E8.7a) | „Task“ im Mail-Fenster | `tasks.create_todo_from_mail` · Write (prüft auch Leserecht auf das Konto) | `tasks_create_todo_from_mail` |
 | Mail bzw. Aufgabe des Rückbezugs öffnen (E8.7a) | „Open mail“, „Open task“ | `apps.open_app` mit `target` · wie bisher | `apps_open_app` |
 | Statistik (E8.8a) | Zentrale › Insights | `inbox.get_stats` · Read | `inbox_get_stats` |
+| Ruhe-Status (E8.5b) | Zentrale rechts „Quiet“, in Schmal und Mittel eine Zeile unter den Zahlen bzw. Kacheln | `inbox.get_quiet` · Read (Termintitel nur mit Kalender-Leserecht) | `inbox_get_quiet` |
+| Termin aus einem Eintrag (E8.5b) | „Event“ bei „To sort“, Paneel, Taste `c` | `inbox.create_event_from_item` · Write (braucht auch Kalender-Schreibrecht) | `inbox_create_event_from_item` |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 
@@ -590,6 +592,10 @@ Ruhe heißt **keine Popups und keine Töne**, sonst ändert sich nichts:
 - Einstellung in der Steuerzentrale (Seite „Inbox“ bzw. „General“): „Quiet during busy events“ (an/aus,
   Standard an) und später „Quiet during focus sessions“. Termine mit Frei/Belegt „frei“ oder ganztägige
   Termine lösen keine Ruhe aus.
+- Ob gerade Ruhe gilt und bis wann, sagt `inbox.get_quiet` (E8.5b): Die Zentrale zeigt es rechts als
+  „Quiet“ („Until 15:00“, darunter der Termin), wo diese Spalte fehlt, als Zeile „Quiet until 15:00 ·
+  Kundentermin“ unter den Zahlen bzw. Kacheln. Den Titel des Termins bekommen Agenten nur mit Leserecht auf
+  den Kalender, sonst steht dort „A busy event“.
 
 ## Quellen der Recherche
 

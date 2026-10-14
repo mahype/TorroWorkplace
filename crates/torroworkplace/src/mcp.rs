@@ -431,7 +431,8 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
 ///   `apps`, `approvals`, `inbox`); calendar, tasks and accounts talk to servers, so their hint is
-///   left open, and so is `inbox.create_task_from_item`, which writes a task to the server.
+///   left open, and so is it for `inbox.create_task_from_item` and `inbox.create_event_from_item`
+///   (task E8.5b), which write a task or an event to the server.
 pub fn annotations(command: &Command) -> ToolAnnotations {
     let read_only = command.access == Access::Read;
     let destructive = matches!(command.access, Access::Delete | Access::Admin)
@@ -451,13 +452,16 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
         .destructive(destructive)
         .idempotent(read_only || IDEMPOTENT.contains(&command.name));
     match command.area {
-        Area::Inbox if command.name == "inbox.create_task_from_item" => hints,
+        Area::Inbox if WRITES_TO_A_SERVER.contains(&command.name) => hints,
         Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox => {
             hints.open_world(false)
         }
         _ => hints,
     }
 }
+
+/// The inbox commands that write to a calendar server: their open-world hint stays open.
+const WRITES_TO_A_SERVER: &[&str] = &["inbox.create_task_from_item", "inbox.create_event_from_item"];
 
 /// Commands that change something, but nothing more when repeated with the same input.
 const IDEMPOTENT: &[&str] = &[
@@ -1050,11 +1054,11 @@ mod tests {
             if matches!(command.access, Access::Delete | Access::Admin) {
                 assert_eq!(hints.destructive_hint, Some(true), "{}", tool.name);
             }
-            // Making a task of an inbox entry writes to the task server (task E3.5).
+            // Making a task or an event of an inbox entry writes to the server (tasks E3.5, E8.5b).
             let local = matches!(
                 command.area,
                 Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox
-            ) && command.name != "inbox.create_task_from_item";
+            ) && !WRITES_TO_A_SERVER.contains(&command.name);
             assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);
         }
         let schema = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").input_schema.clone();
@@ -1712,6 +1716,37 @@ mod tests {
         );
         let refused = request_for("inbox_create_task_from_item", args(json!({"id": "i1"})), &Utc);
         assert!(matches!(refused, Err(ToolError::Input(_))), "the list is needed: {refused:?}");
+    }
+
+    /// Task E8.5b: the tool takes the entry, the calendar, start and end and optionally a title; it
+    /// writes a new event to the server every time. Quiet takes nothing and only reads.
+    #[test]
+    fn inbox_create_event_from_item_builds_its_request() {
+        let arguments = json!({
+            "id": "i1", "collection": "work", "title": "Call Kim",
+            "start": {"datetime": "2026-10-14T13:00:00Z"}, "end": {"datetime": "2026-10-14T13:30:00Z"}
+        });
+        let request = request_for("inbox_create_event_from_item", args(arguments), &Utc);
+        let wanted = Request::CreateEventFromItem {
+            id: "i1".into(),
+            collection: "work".into(),
+            title: Some("Call Kim".into()),
+            start: EventTime::DateTime(utc("2026-10-14T13:00:00Z")),
+            end: EventTime::DateTime(utc("2026-10-14T13:30:00Z")),
+        };
+        assert_eq!(request, Ok(wanted));
+        let without_end = json!({"id": "i1", "collection": "work", "start": {"date": "2026-10-14"}});
+        let refused = request_for("inbox_create_event_from_item", args(without_end), &Utc);
+        assert!(matches!(refused, Err(ToolError::Input(_))), "the end is needed: {refused:?}");
+        let tool = tools().iter().find(|tool| tool.name == "inbox_create_event_from_item").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(
+            (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint, hints.open_world_hint),
+            (Some(false), Some(false), Some(false), None),
+        );
+        assert_eq!(request_for("inbox_get_quiet", args(json!({})), &Utc), Ok(Request::GetQuiet));
+        let quiet = tools().iter().find(|tool| tool.name == "inbox_get_quiet").expect("tool");
+        assert_eq!(quiet.annotations.clone().expect("hints").read_only_hint, Some(true));
     }
 
     /// Task E8.7a: the tool takes account, mail and list, optionally title and due day; it writes a

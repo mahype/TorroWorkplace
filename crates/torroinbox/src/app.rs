@@ -106,6 +106,13 @@
 //! marks the entry done; the hint says in which list. There is no undo: taking the task back
 //! would delete it, and deleting is for the tasks app.
 //!
+//! Make event (task E8.5b): `c`, "Event" in the hub's To sort and the panel's "Make event" open the
+//! same kind of dialog ([`App::ask_event`]) – the title, the calendar (from
+//! [`HubSource::list_calendars`]), the day, the start (every half hour, the next one first) and the
+//! duration. "Create event" or `Enter` sends `inbox.create_event_from_item`; the core makes the event
+//! with the way back in its text and marks the entry done. No undo either, as for tasks. The hub
+//! also asks whether it is quiet (`inbox.get_quiet`, [`Loaded::quiet`]) with its entries.
+//!
 //! Mail (task E4.2, `mail.rs`): the sidebar lists the folders of the mail accounts with their
 //! unread numbers – under "Mail" with one account, under each account's address with two or more
 //! (foldable, as the calendars group by account). A folder is a view of its own
@@ -159,7 +166,7 @@ use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
 
 use crate::compose;
 use crate::glance::{self, GlanceData};
-use crate::hub::{self, Origin};
+use crate::hub::{self, HubSource, Origin};
 use crate::insights::{self, Insights, InsightsData, StatsSource};
 use crate::keys::{self, Command, Focus, Key};
 use crate::list::Look;
@@ -197,6 +204,103 @@ const PICK_DAYS: u64 = 60;
 
 /// The id of the title field in the dialog of "Make task", which takes the focus as it opens.
 const TASK_TITLE: &str = "task-title";
+
+/// The id of the title field in the dialog of "Make event" (task E8.5b).
+const EVENT_TITLE: &str = "event-title";
+
+/// The start times the dialog of "Make event" offers: every half hour of the day.
+const EVENT_STEP_MINUTES: u32 = 30;
+
+/// When an event made of an entry starts (task E8.5b): a time of the day in local time, shown as
+/// "09:30" in the dialog's list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct StartTime(pub NaiveTime);
+
+impl StartTime {
+    /// Every half hour of a day, from midnight.
+    pub fn all() -> Vec<StartTime> {
+        (0..24 * 60 / EVENT_STEP_MINUTES)
+            .filter_map(|step| NaiveTime::from_num_seconds_from_midnight_opt(step * EVENT_STEP_MINUTES * 60, 0))
+            .map(StartTime)
+            .collect()
+    }
+}
+
+impl fmt::Display for StartTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&datetime::format_time(self.0))
+    }
+}
+
+/// How long an event made of an entry takes (task E8.5b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Length {
+    Quarter,
+    #[default]
+    Half,
+    Hour,
+    TwoHours,
+}
+
+impl Length {
+    /// In the order the dialog lists them.
+    pub const ALL: [Length; 4] = [Length::Quarter, Length::Half, Length::Hour, Length::TwoHours];
+
+    /// The length in minutes.
+    pub fn minutes(self) -> i64 {
+        match self {
+            Length::Quarter => 15,
+            Length::Half => 30,
+            Length::Hour => 60,
+            Length::TwoHours => 120,
+        }
+    }
+}
+
+impl fmt::Display for Length {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Length::Quarter => tr("15 minutes"),
+            Length::Half => tr("30 minutes"),
+            Length::Hour => tr("1 hour"),
+            Length::TwoHours => tr("2 hours"),
+        })
+    }
+}
+
+/// What the dialog of "Make event" holds while it is open, for the entry in `App::subject` (task
+/// E8.5b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventDraft {
+    /// The event's title; starts as the entry's. Left blank, the core takes the entry's.
+    pub title: String,
+    /// The calendar chosen; `None` until the calendars are in (then the last one used, else the
+    /// first).
+    pub calendar: Option<TaskList>,
+    /// The local day it starts on.
+    pub day: NaiveDate,
+    /// The local time it starts at.
+    pub start: StartTime,
+    pub length: Length,
+}
+
+impl EventDraft {
+    /// A draft for an entry titled `title`, seen from `now`: today (or tomorrow late at night) at
+    /// the next half hour, half an hour long.
+    pub fn new(title: String, now: DateTime<Utc>) -> EventDraft {
+        let local = datetime::to_local(now);
+        let step = i64::from(EVENT_STEP_MINUTES) * 60;
+        let seconds = i64::from(chrono::Timelike::num_seconds_from_midnight(&local.time()));
+        let next = local.date().and_time(NaiveTime::MIN) + TimeDelta::seconds((seconds / step + 1) * step);
+        EventDraft { title, calendar: None, day: next.date(), start: StartTime(next.time()), length: Length::Half }
+    }
+
+    /// When the event starts and ends, as instants.
+    pub fn span(&self) -> (DateTime<Utc>, DateTime<Utc>) {
+        let start = datetime::to_utc(self.day.and_time(self.start.0));
+        (start, start + TimeDelta::minutes(self.length.minutes()))
+    }
+}
 
 /// When a task made of an entry is due (task E3.5): a day counted as the snooze menu counts it,
 /// or none.
@@ -690,6 +794,16 @@ pub enum Sent {
     /// "Mark mail done" (task E8.7b): `inbox.set_item_done` for these entries – the mail's, then the
     /// question's.
     MailDone(Vec<String>),
+    /// The calendars were asked for (the dialog of "Make event" opened, task E8.5b).
+    Calendars,
+    /// `inbox.create_event_from_item`: entry, calendar, title (`None`: the entry's), start and end.
+    Event {
+        id: String,
+        calendar: TaskList,
+        title: Option<String>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    },
     /// `inbox.list_mute_options` for the entry with this id (the bell's menu opened, task E8.6b).
     MuteOptions(String),
     /// `inbox.mute_item`: entry, scope, end and effect.
@@ -809,6 +923,8 @@ pub enum Menu {
     Lane,
     /// The dialog that makes a task of `App::subject` (task E3.5).
     Task,
+    /// The dialog that makes an event of `App::subject` (task E8.5b).
+    Event,
     /// "Hide from inbox" for `App::subject` (task E3.10): the ways to hide it, by `m` or the
     /// panel's "…" ([`App::hide_choices`]).
     Hide,
@@ -861,6 +977,9 @@ pub enum Open {
     /// The panel of the first entry of "For me" that is no approval, with the dialog of "Make
     /// task" open at its footer (task E3.5).
     Task,
+    /// The panel of the first entry of To sort, with the dialog of "Make event" open at its footer
+    /// (task E8.5b).
+    Event,
     /// The first account's inbox as a folder (task E4.2).
     Folder,
     /// That inbox with its newest message in the panel.
@@ -899,7 +1018,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 34] = [
+    const ALL: [(&'static str, Open); 35] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -918,6 +1037,7 @@ impl Open {
         ("mute", Open::Mute),
         ("undo", Open::Undo),
         ("task", Open::Task),
+        ("event", Open::Event),
         ("folder", Open::Folder),
         ("mail", Open::Mail),
         ("mail-entry", Open::MailEntry),
@@ -1336,6 +1456,9 @@ pub struct Loaded {
     /// The done entries, for "Handed off" beside the hub's "Act now" (task E8.7b: an entry made into
     /// a task is done, its [`Item::task`] still open); empty in every other window and view.
     pub done: Vec<Item>,
+    /// Whether it is quiet now, for the hub's "Quiet" (task E8.5b, `inbox.get_quiet`); `None` when it
+    /// is not, in every other window and view, and when the core could not say.
+    pub quiet: Option<torro_ipc::Quiet>,
 }
 
 /// Something that went wrong, as the window shows it: a whole sentence ("Couldn't load the
@@ -1409,6 +1532,14 @@ pub struct App<S> {
     lists: Option<Result<Vec<TaskList>, String>>,
     /// The id of the list the last task went into; the dialog chooses it first next time.
     last_list: Option<String>,
+    /// The dialog of "Make event" while [`Menu::Event`] is open (task E8.5b).
+    event: EventDraft,
+    /// The calendars for that dialog: `None` while they load, then the answer.
+    calendars: Option<Result<Vec<TaskList>, String>>,
+    /// The id of the calendar the last event went into; the dialog chooses it first next time.
+    last_calendar: Option<String>,
+    /// Whether it is quiet now (task E8.5b), as the last load of the hub's "Act now" said.
+    quiet: Option<torro_ipc::Quiet>,
     /// The ways to mute `subject` for the bell's menu (task E8.6b): `None` while they load, then
     /// the core's answer.
     mute_options: Option<Result<Vec<MuteOption>, String>>,
@@ -1606,6 +1737,25 @@ pub enum Message {
     /// The source's answer to `inbox.create_task_from_item`, with the name of the list for the
     /// hint.
     TaskCreated(Result<(), String>, String),
+    /// From the panel, "Event" or `c`: the dialog that makes an event of the entry with this id
+    /// (task E8.5b).
+    AskEvent(String),
+    /// The calendars for that dialog, or why they could not be read.
+    Calendars(Result<Vec<TaskList>, String>),
+    /// The dialog's title field.
+    EventTitle(String),
+    /// The dialog's calendar.
+    EventCalendar(TaskList),
+    /// The dialog's day.
+    EventDay(NaiveDate),
+    /// The dialog's start time.
+    EventStart(StartTime),
+    /// The dialog's duration.
+    EventLength(Length),
+    /// "Create event", or `Enter` in the dialog.
+    EventConfirm,
+    /// The source's answer to `inbox.create_event_from_item`, with the calendar's name for the hint.
+    EventCreated(Result<(), String>, String),
     /// The browser could not be started (or was); only logged, as in the other apps.
     LinkOpened(Result<(), String>),
     Refresh,
@@ -1724,12 +1874,13 @@ pub enum Message {
 /// source the requests ask for it alone (the API's `source`), with more the entries of the others
 /// are left out here.
 ///
-/// The hub's overview (task E8.5) also asks for the snoozed entries, for "Coming back", and the done
-/// ones, for "Handed off" (task E8.7b).
+/// The hub's overview (task E8.5) also asks for the snoozed entries, for "Coming back", the done
+/// ones, for "Handed off" (task E8.7b), and whether it is quiet (task E8.5b) – a core that cannot
+/// say leaves "Quiet" out rather than the entries.
 ///
 /// `demo` is the demo's "now" with `--demo` (else `None`): the entries get the demo's tasks
 /// ([`demo_task`]) before they are sorted into the window, as the core's would come.
-pub async fn fetch<S: InboxSource + MailSource>(
+pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     inbox: Arc<S>,
     view: View,
     empty: bool,
@@ -1747,6 +1898,7 @@ pub async fn fetch<S: InboxSource + MailSource>(
             mail: view.listing().map(|_| MailPage { messages: Vec::new(), next: None }),
             snoozed: Vec::new(),
             done: Vec::new(),
+            quiet: None,
         };
         return Ok(none);
     }
@@ -1801,17 +1953,18 @@ pub async fn fetch<S: InboxSource + MailSource>(
         _ => None,
     };
     // "Coming back" (task E8.5) and "Handed off" (task E8.7b) beside the hub's "Act now".
-    let (snoozed, done) = match (kind, &view) {
+    let (snoozed, done, quiet) = match (kind, &view) {
         (Kind::Hub, View::Overview) => (
             keep(inbox.list_items(View::Snoozed.filter().unwrap_or_default()).await.map_err(failed)?),
             keep(inbox.list_items(View::Done.filter().unwrap_or_default()).await.map_err(failed)?),
+            inbox.get_quiet().await.ok().flatten(),
         ),
-        _ => (Vec::new(), Vec::new()),
+        _ => (Vec::new(), Vec::new(), None),
     };
-    Ok(Loaded { items, for_me, info, sources, folders, mail, snoozed, done })
+    Ok(Loaded { items, for_me, info, sources, folders, mail, snoozed, done, quiet })
 }
 
-impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
+impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     pub fn new(inbox: Arc<S>, suite: Source, launch: Launch) -> (App<S>, Task<Message>) {
         let open = launch.open;
         let offset = launch.now.map_or(TimeDelta::zero(), |now| datetime::to_utc(now) - Utc::now());
@@ -1863,6 +2016,10 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
             task: TaskDraft::default(),
             lists: None,
             last_list: None,
+            event: EventDraft::new(String::new(), Utc::now() + offset),
+            calendars: None,
+            last_calendar: None,
+            quiet: None,
             mute_options: None,
             mute_for: MuteFor::default(),
             mute_effect: MuteEffect::Info,
@@ -1962,7 +2119,7 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
             }
             // Ctrl + Z (⌘ + Z) undoes while the toast offers it – not while the dialog of "Make task"
             // or the picker has the keys.
-            if self.can_undo() && !matches!(self.menu, Some(Menu::Task | Menu::Pick)) {
+            if self.can_undo() && !matches!(self.menu, Some(Menu::Task | Menu::Event | Menu::Pick)) {
                 subscriptions.push(widgets::undo_key().map(|()| Message::Undo));
             }
         }
@@ -2163,6 +2320,21 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
             }
             Message::TaskCreated(Err(err), _) => {
                 self.error = Some(Failure::new(tr("Couldn't create the task."), err));
+            }
+            Message::AskEvent(id) => return self.ask_event(&id),
+            Message::Calendars(result) => self.take_calendars(result),
+            Message::EventTitle(title) => self.event.title = title,
+            Message::EventCalendar(calendar) => self.event.calendar = Some(calendar),
+            Message::EventDay(day) => self.event.day = day,
+            Message::EventStart(start) => self.event.start = start,
+            Message::EventLength(length) => self.event.length = length,
+            Message::EventConfirm => return self.create_event(),
+            Message::EventCreated(Ok(()), calendar) => {
+                self.note(trf("Event created in {calendar}", &[("calendar", &calendar)]));
+                return self.load();
+            }
+            Message::EventCreated(Err(err), _) => {
+                self.error = Some(Failure::new(tr("Couldn't create the event."), err));
             }
             // The entry is seen now; the list shows it.
             Message::ItemOpened(Ok(())) => return self.load(),
@@ -2456,7 +2628,9 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
         let side = if self.hub_side() { size::props() } else { 0.0 };
         let layout = hub::layout(0.0, class, self.density(), self.sorting);
         let width = self.size.width - chrome - panel - side - hub::sides(layout.narrow);
-        hub::layout(width.max(0.0), class, self.density(), self.sorting)
+        // Quiet as a line where the column at the right does not say it (task E8.5b).
+        let quiet = self.quiet.is_some() && !self.hub_side() && !self.sorting;
+        hub::Layout { quiet, ..hub::layout(width.max(0.0), class, self.density(), self.sorting) }
     }
 
     /// Whether "Coming back" stands beside "Act now": in the wide layout, while no panel takes its
@@ -2875,6 +3049,7 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
             self.items.retain(|item| matches!(item.state, State::Done { at } if local_today(at) == today));
         }
         self.snoozed = loaded.snoozed;
+        self.quiet = loaded.quiet;
         self.for_me = loaded.for_me;
         self.for_me.sort_by_key(|item| !list::is_waiting(item));
         self.info = loaded.info;
@@ -3041,7 +3216,7 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
             Some(Menu::Snooze | Menu::Lane | Menu::Hide) => Focus::Choices,
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
-            Some(Menu::Task) => Focus::Task,
+            Some(Menu::Task | Menu::Event) => Focus::Task,
             Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
             // Insights has no rows: the keys of entries must not act on "Act now" hidden behind it.
@@ -3114,6 +3289,12 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
                 self.cursor.clone().map_or_else(Task::none, |id| self.ask_mail_task(&id))
             }
             Command::MakeTask => cursor.map_or_else(Task::none, |id| self.ask_task(&id)),
+            // A folder's message becomes an event only through its entry (task E8.5b).
+            Command::MakeEvent if self.view.is_mail() => match self.cursor.clone().and_then(|id| self.entry_of(&id)) {
+                Some(entry) => self.ask_event(&entry),
+                None => Task::none(),
+            },
+            Command::MakeEvent => cursor.map_or_else(Task::none, |id| self.ask_event(&id)),
             Command::Choose(n) => match self.choices().into_iter().nth(n.wrapping_sub(1)) {
                 Some(choice) => self.update(choice.message),
                 None => Task::none(),
@@ -3131,6 +3312,7 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
             Command::EarlierTime => self.update(Message::PickHour(self.pick.hour.saturating_sub(1))),
             Command::LaterTime => self.update(Message::PickHour(self.pick.hour + 1)),
             Command::Confirm if self.menu == Some(Menu::Task) => self.create_task(),
+            Command::Confirm if self.menu == Some(Menu::Event) => self.create_event(),
             Command::Confirm => self.update(Message::PickConfirm),
             Command::Sidebar => self.toggle_sidebar(),
         }
@@ -3567,6 +3749,71 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
                 inbox.create_todo_from_mail(account, asked, list, title, due).await.map_err(|err| err.to_string())
             },
             move |result| Message::MailTaskCreated(id.clone(), result),
+        )
+    }
+
+    /// Opens the dialog that makes an event of the entry with `id` (task E8.5b): its title to change,
+    /// the next half hour today for half an hour, the calendars asked for anew, the title field
+    /// focused. An approval closes once it is decided; it becomes no event.
+    fn ask_event(&mut self, id: &str) -> Task<Message> {
+        let Some(item) = self.find(id).cloned() else { return Task::none() };
+        if detail::is_approval(&item) {
+            self.note(tr("An approval closes once it is decided.").to_owned());
+            return Task::none();
+        }
+        self.drawer = false;
+        self.event = EventDraft::new(list::one_line(&item.title), self.now);
+        self.subject = Some(item);
+        self.menu = Some(Menu::Event);
+        self.calendars = None;
+        #[cfg(test)]
+        self.sent.push(Sent::Calendars);
+        let inbox = self.inbox.clone();
+        let calendars = async move { inbox.list_calendars().await.map_err(|err| err.to_string()) };
+        Task::batch([Task::perform(calendars, Message::Calendars), operation::focus(EVENT_TITLE)])
+    }
+
+    /// The calendars for the open dialog: the one chosen is the one used last, else the first.
+    fn take_calendars(&mut self, result: Result<Vec<TaskList>, String>) {
+        if self.menu != Some(Menu::Event) {
+            return;
+        }
+        if let Ok(calendars) = &result {
+            let last = calendars.iter().find(|calendar| Some(&calendar.id) == self.last_calendar.as_ref());
+            self.event.calendar = last.or(calendars.first()).cloned();
+        }
+        self.calendars = Some(result);
+    }
+
+    /// "Create event": sends `inbox.create_event_from_item` for the dialog's entry, calendar, title
+    /// (none when blank: the core takes the entry's) and times, and closes the dialog. Nothing
+    /// without a calendar.
+    fn create_event(&mut self) -> Task<Message> {
+        let (Some(item), Some(calendar)) = (self.subject.clone(), self.event.calendar.clone()) else {
+            return Task::none();
+        };
+        let title = Some(self.event.title.trim().to_owned()).filter(|title| !title.is_empty());
+        let (start, end) = self.event.span();
+        self.last_calendar = Some(calendar.id.clone());
+        self.close_menus();
+        #[cfg(test)]
+        self.sent.push(Sent::Event {
+            id: item.id.clone(),
+            calendar: calendar.clone(),
+            title: title.clone(),
+            start,
+            end,
+        });
+        let inbox = self.inbox.clone();
+        let TaskList { id: calendar_id, name } = calendar;
+        Task::perform(
+            async move {
+                inbox
+                    .create_event_from_item(item.id, calendar_id, title, start, end)
+                    .await
+                    .map_err(|err| err.to_string())
+            },
+            move |result| Message::EventCreated(result, name.clone()),
         )
     }
 
@@ -4063,10 +4310,10 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
         let anchors = detail::Anchors::default();
         // Menus for an entry open at the panel's buttons while it is open (the row may be under
         // it), else at the cursor's row.
-        let (snooze_at, lane_at, task_at, hide_at) = if self.detail.is_some() {
-            (&anchors.snooze, &anchors.lane, &anchors.task, &anchors.hide)
+        let (snooze_at, lane_at, task_at, event_at, hide_at) = if self.detail.is_some() {
+            (&anchors.snooze, &anchors.lane, &anchors.task, &anchors.event, &anchors.hide)
         } else {
-            (&anchors.row, &anchors.row, &anchors.row, &anchors.row)
+            (&anchors.row, &anchors.row, &anchors.row, &anchors.row, &anchors.row)
         };
         let below = Placement::Below(Align::End);
         let layer = match self.menu {
@@ -4091,6 +4338,7 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
             }
             Some(Menu::Pick) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
             Some(Menu::Task) => Some(widgets::floating(task_at, below, self.task_dialog(), Message::CloseMenu)),
+            Some(Menu::Event) => Some(widgets::floating(event_at, below, self.event_dialog(), Message::CloseMenu)),
             Some(Menu::Hide) => {
                 Some(widgets::floating(hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
             }
@@ -4131,7 +4379,8 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
         // "Coming back" beside the hub's "Act now" in the wide layout (task E8.5), in the shell's
         // column at the right.
         let side = self.hub_side().then(|| {
-            hub::side(&self.snoozed, hub::handed_off(&self.items, &self.done), self.now, self.cursor.as_deref())
+            let handed = hub::handed_off(&self.items, &self.done);
+            hub::side(&self.snoozed, handed, self.quiet.as_ref(), self.now, self.cursor.as_deref())
         });
         shell::shell(class, sidebar, header, placed.body, side)
             .rail(rail)
@@ -4393,6 +4642,7 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
                 deciding: self.deciding.is_some(),
                 attention: colours.attention,
                 ok: colours.ok,
+                quiet: self.quiet.as_ref(),
             });
             return container(content.push(hub).width(Fill).height(Fill)).width(Fill).into();
         } else if self.view == View::Overview {
@@ -4874,6 +5124,70 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
             .into()
     }
 
+    /// The dialog of "Make event" (task E8.5b) as a floating card at the entry, built as the one of
+    /// "Make task": "Make event" over the title field, the calendar, the day (with previous / next,
+    /// as the picker), the start and the duration as properties, and at the right "Cancel" and
+    /// "Create event" (off until a calendar is chosen). The calendar row says so while the calendars
+    /// load, when there are none and when they could not be read.
+    fn event_dialog(&self) -> Element<'_, Message> {
+        let inset = Padding::new(0.0).left(space::s()).right(space::s());
+        let title = text_input(tr("Event title"), &self.event.title)
+            .id(EVENT_TITLE)
+            .size(typo::body().size)
+            .line_height(typo::body().line_height)
+            .font(typo::body().font)
+            .padding(style::INPUT_PADDING)
+            .width(Fill)
+            .style(style::text_input)
+            .on_input(Message::EventTitle)
+            .on_submit(Message::EventConfirm);
+        let calendar: Element<'_, Message> = match &self.calendars {
+            None => widgets::prop_placeholder(tr("Loading calendars…")),
+            Some(Err(_)) => widgets::prop_placeholder(tr("Couldn't load the calendars.")),
+            Some(Ok(calendars)) if calendars.is_empty() => widgets::prop_placeholder(tr("No calendars yet")),
+            Some(Ok(calendars)) => choice(calendars.clone(), self.event.calendar.clone(), Message::EventCalendar),
+        };
+        let (today, day) = (local_today(self.now), self.event.day);
+        let previous = (day > today).then(|| Message::EventDay(day - Days::new(1)));
+        let next = (day < today + Days::new(PICK_DAYS)).then(|| Message::EventDay(day + Days::new(1)));
+        let day_row = row![
+            widgets::icon_button(Icon::ChevronLeft, tr("Previous day"), previous),
+            typo::text(typo::body(), day_name(day, today)).style(theme::text).wrapping(Wrapping::None),
+            widgets::icon_button(Icon::ChevronRight, tr("Next day"), next),
+        ]
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
+        let start = choice(StartTime::all(), Some(self.event.start), Message::EventStart);
+        let length = choice(Length::ALL.to_vec(), Some(self.event.length), Message::EventLength);
+        let rows = column![
+            widgets::prop_line(tr("Calendar"), Some(Mark::Icon(Icon::Calendar)), calendar, None),
+            widgets::prop_line(tr("Day"), Some(Mark::Icon(Icon::CalendarDays)), day_row, None),
+            widgets::prop_line(tr("Starts"), Some(Mark::Icon(Icon::CalendarClock)), start, None),
+            widgets::prop_line(tr("Duration"), Some(Mark::Icon(Icon::Clock)), length, None),
+        ];
+        let create = self.event.calendar.is_some().then_some(Message::EventConfirm);
+        let actions = row![
+            iced::widget::space::horizontal(),
+            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseMenu)),
+            widgets::text_button(Some(Icon::Check), tr("Create event"), style::button::primary, create),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        let card = column![
+            container(widgets::section_title(tr("Make event"))).padding(inset.bottom(space::xs())),
+            container(title).padding(Padding::new(0.0).bottom(space::s())),
+            rows,
+            column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
+                .spacing(space::m())
+                .padding(inset.top(space::m())),
+        ];
+        container(card)
+            .width(widgets::POPOVER_WIDTH)
+            .padding([space::l(), space::s()])
+            .style(style::container::popover)
+            .into()
+    }
+
     fn toggle_menu(&mut self, menu: Menu) {
         self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
     }
@@ -4935,6 +5249,15 @@ impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
                     self.cursor = Some(item.id.clone());
                     self.detail = Some(item.clone());
                     return self.ask_task(&item.id);
+                }
+            }
+            Some(Open::Event) => {
+                let sort = hub::Sections::of(&self.items, None).to_sort.first().map(|item| (*item).clone());
+                if let Some(item) = sort.or_else(|| self.items.iter().find(|item| !detail::is_approval(item)).cloned())
+                {
+                    self.cursor = Some(item.id.clone());
+                    self.detail = Some(item.clone());
+                    return self.ask_event(&item.id);
                 }
             }
             Some(Open::Mail) => {
@@ -5332,7 +5655,7 @@ mod tests {
     }
 
     /// What the source answers for the app's view, handed to `update` as the task would.
-    fn load<S: InboxSource + MailSource + StatsSource + 'static>(app: &mut App<S>) {
+    fn load<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &mut App<S>) {
         let empty = app.launch.open == Some(Open::Empty);
         let window = (app.launch.kind, app.shown.clone());
         let demo = app.launch.demo.then_some(app.now);
@@ -5969,7 +6292,10 @@ mod tests {
 
     // ----- Triage (E3.2) ---------------------------------------------------------------------
 
-    fn press<S: InboxSource + MailSource + StatsSource + 'static>(app: &mut App<S>, key: Key) -> Task<Message> {
+    fn press<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(
+        app: &mut App<S>,
+        key: Key,
+    ) -> Task<Message> {
         app.update(Message::Key(key))
     }
 
@@ -6839,6 +7165,141 @@ mod tests {
         }
     }
 
+    // ----- Make event and quiet (task E8.5b) --------------------------------------------------
+
+    /// The demo's calendars, handed to `update` as the task of the dialog would.
+    fn deliver_calendars(app: &mut App<DemoSource>) {
+        assert_eq!(app.sent.last(), Some(&Sent::Calendars), "the dialog asked for the calendars");
+        let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
+        let _ = app.update(Message::Calendars(calendars));
+    }
+
+    fn demo_calendar(index: usize) -> TaskList {
+        let (id, name) = hub::DEMO_CALENDARS[index];
+        TaskList { id: id.into(), name: name.into() }
+    }
+
+    #[test]
+    fn c_opens_the_event_dialog_and_create_sends_the_event_then_the_entry_is_done() {
+        let mut app = at("demo-6");
+        let title = app.find("demo-6").map(|item| item.title.clone()).expect("demo-6");
+        let _ = press(&mut app, Key::C);
+        assert_eq!((app.menu, app.subject.as_ref().map(|i| i.id.as_str())), (Some(Menu::Event), Some("demo-6")));
+        assert_eq!(app.event.title, title, "the entry's title to change");
+        assert_eq!(app.event.calendar, None, "no calendar before the calendars are in");
+        deliver_calendars(&mut app);
+        assert_eq!(app.event.calendar, Some(demo_calendar(0)), "the first calendar");
+
+        let tomorrow = local_today(app.now) + Days::new(1);
+        let nine = StartTime(NaiveTime::from_hms_opt(9, 0, 0).expect("a time"));
+        let _ = app.update(Message::EventTitle("Call the CI team".into()));
+        let _ = app.update(Message::EventCalendar(demo_calendar(1)));
+        let _ = app.update(Message::EventDay(tomorrow));
+        let _ = app.update(Message::EventStart(nine));
+        let _ = app.update(Message::EventLength(Length::Hour));
+        // The keys of the list stay out while the dialog is open; Enter creates the event.
+        let _ = press(&mut app, Key::E);
+        assert_eq!(app.menu, Some(Menu::Event), "e is no triage key in the dialog");
+        let _ = press(&mut app, Key::Enter);
+        let start = datetime::to_utc(tomorrow.and_time(nine.0));
+        assert_eq!(
+            app.sent.last(),
+            Some(&Sent::Event {
+                id: "demo-6".into(),
+                calendar: demo_calendar(1),
+                title: Some("Call the CI team".into()),
+                start,
+                end: start + TimeDelta::hours(1),
+            })
+        );
+        assert!(app.menu.is_none(), "the dialog closes");
+        let Some(Sent::Event { id, calendar, title, start, end }) = app.sent.pop() else { panic!("no event sent") };
+        let made = block_on(app.inbox.create_event_from_item(id, calendar.id, title, start, end));
+        let _ = app.update(Message::EventCreated(made.map_err(|err| err.to_string()), calendar.name.clone()));
+        load(&mut app);
+        let hint = app.hint.as_ref().expect("a hint");
+        assert_eq!(hint.text, trf("Event created in {calendar}", &[("calendar", &calendar.name)]));
+        assert!(!ids(&app).contains(&"demo-6"), "the entry is done and left For me");
+
+        // The next one starts in the calendar used last.
+        let next = app.items.iter().find(|item| !detail::is_approval(item)).map(|item| item.id.clone());
+        let _ = app.update(Message::AskEvent(next.expect("another entry")));
+        deliver_calendars(&mut app);
+        assert_eq!(app.event.calendar, Some(demo_calendar(1)), "the calendar used last");
+    }
+
+    #[test]
+    fn create_needs_a_calendar_and_an_approval_becomes_no_event() {
+        let mut app = at("demo-6");
+        let _ = press(&mut app, Key::C);
+        let _ = app.update(Message::EventConfirm);
+        assert_eq!(app.sent.last(), Some(&Sent::Calendars), "nothing sent while the calendars load");
+        let _ = app.update(Message::Calendars(Ok(Vec::new())));
+        let _ = app.update(Message::EventConfirm);
+        assert_eq!((app.menu, app.sent.last()), (Some(Menu::Event), Some(&Sent::Calendars)), "no calendar");
+        let _ = app.update(Message::Calendars(Ok(vec![demo_calendar(0)])));
+        let _ = app.update(Message::EventTitle("   ".into()));
+        let _ = app.update(Message::EventConfirm);
+        assert!(matches!(app.sent.last(), Some(Sent::Event { title: None, .. })), "{:?}", app.sent.last());
+        let _ = app.update(Message::EventCreated(Err("offline".into()), "Work".into()));
+        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't create the event.")));
+
+        let mut approval = at("demo-3");
+        let _ = press(&mut approval, Key::C);
+        assert!(approval.menu.is_none());
+        assert!(approval.sent.is_empty(), "the calendars are not even asked for");
+    }
+
+    #[test]
+    fn an_event_starts_at_the_next_half_hour_for_half_an_hour() {
+        use chrono::Timelike;
+        let at = |h, m| datetime::to_utc(local_today(Utc::now()).and_hms_opt(h, m, 0).expect("a time"));
+        let draft = EventDraft::new("Call".into(), at(10, 30));
+        assert_eq!((draft.start.0.hour(), draft.start.0.minute(), draft.length), (11, 0, Length::Half));
+        assert_eq!(EventDraft::new("Call".into(), at(10, 10)).start.0.minute(), 30);
+        let late = EventDraft::new("Call".into(), at(23, 45));
+        assert_eq!((late.day, late.start.0.hour()), (local_today(at(23, 45)) + Days::new(1), 0), "after midnight");
+        let (start, end) = draft.span();
+        assert_eq!((start, end - start), (at(11, 0), TimeDelta::minutes(30)));
+        assert_eq!(StartTime::all().len(), 48, "every half hour");
+        assert_eq!(Length::ALL.map(Length::minutes), [15, 30, 60, 120]);
+    }
+
+    #[test]
+    fn the_event_state_opens_the_dialog_at_the_panel_and_every_size_draws_it() {
+        let mut app = overview_at(&["--view", "hub", "--open", "event"]);
+        assert_eq!(app.menu, Some(Menu::Event));
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), app.subject.as_ref().map(|i| i.id.as_str()));
+        let calendars =
+            [None, Some(Ok(Vec::new())), Some(Err("offline".to_string())), Some(Ok(vec![demo_calendar(0)]))];
+        for calendars in calendars {
+            app.calendars = calendars;
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+    }
+
+    /// Task E8.5b: the hub knows whether it is quiet; the line shows where no column at the right
+    /// says it, and To sort offers "Event".
+    #[test]
+    fn the_hub_says_when_it_is_quiet() {
+        let mut hub = overview_at(&["--view", "hub"]);
+        let quiet = hub.quiet.clone().expect("the demo is quiet");
+        assert_eq!(quiet.title.as_deref(), Some("Customer call"));
+        let _ = hub.update(Message::Resized(Size::new(1600.0, 1000.0)));
+        assert!(hub.hub_side() && !hub.hub_layout().quiet, "wide: the column at the right says it");
+        let _ = hub.view();
+        let _ = hub.update(Message::Resized(Size::new(480.0, 900.0)));
+        assert!(hub.hub_layout().quiet, "narrow: a line under the numbers");
+        let _ = hub.view();
+        // Only the hub asks.
+        assert!(loaded(&[]).quiet.is_none());
+        let sort = hub::Sections::of(&hub.items, None).to_sort.first().map(|item| (*item).clone()).expect("to sort");
+        assert!(hub::acts(&sort).contains(&hub::Act::Event));
+    }
+
     // Mail (task E4.2).
 
     /// The view of the demo folder `id`.
@@ -6875,7 +7336,7 @@ mod tests {
         let _ = app.update(Message::LetterLoaded(id.into(), mail));
     }
 
-    fn draw_everywhere<S: InboxSource + MailSource + StatsSource + 'static>(app: &mut App<S>) {
+    fn draw_everywhere<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &mut App<S>) {
         for size in SIZES {
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
@@ -7180,7 +7641,7 @@ mod tests {
         app
     }
 
-    fn rows_of<S: InboxSource + MailSource + StatsSource + 'static>(app: &App<S>) -> Vec<&str> {
+    fn rows_of<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &App<S>) -> Vec<&str> {
         app.rows().iter().map(|item| item.id.as_str()).collect()
     }
 

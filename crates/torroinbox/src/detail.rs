@@ -25,9 +25,10 @@
 //! bell's menu, as `m` and the bell of the card do. "Move to Info" has the eye, not the bell
 //! (`app::lane_icon`): the bell mutes. "Make task"
 //! (`t`, task E3.5) is an
-//! icon button next to "Later": its words would not fit beside the others in the panel's 400.
-//! Approvals have none – they close once decided, and a task would not decide them – and no "Later"
-//! either (task E8.5): an approval waits for yes or no and must not vanish by accident.
+//! icon button next to "Later": its words would not fit beside the others in the panel's 400, and
+//! so is "Make event" beside it (`c`, task E8.5b: the hub's dialog of an event).
+//! Approvals have neither – they close once decided, and a task would not decide them – and no
+//! "Later" either (task E8.5): an approval waits for yes or no and must not vanish by accident.
 //!
 //! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, actions, attachments,
 //! text) in place of its short text; the footer stays the entry's.
@@ -70,6 +71,8 @@ pub struct Anchors {
     pub lane: Anchor,
     /// The footer's "Make task": its dialog opens here while the panel is open (task E3.5).
     pub task: Anchor,
+    /// The footer's "Make event": its dialog opens here while the panel is open (task E8.5b).
+    pub event: Anchor,
     /// The footer's "…": the menu "Hide from inbox" opens here while the panel is open (task
     /// E3.10); in the notifications window the footer's bell, where the bell's menu opens (task
     /// E8.6b).
@@ -246,9 +249,9 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 }
 
 /// The buttons below the line: Allow/Deny for an approval, else done or reopen;
-/// then "Later" for an entry that is not done and no approval, "Make task" for one that is no
-/// approval, and at the right "Move to …" and "…" (hide from the inbox) when there is a way to hide
-/// it.
+/// then "Later" for an entry that is not done and no approval, "Make task" and "Make event" for one
+/// that is no approval, and at the right "Move to …" and "…" (hide from the inbox) when there is a
+/// way to hide it.
 fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     let follow_up = hub::is_follow_up(item) && item.state.is_open();
     let mut buttons = Vec::new();
@@ -274,6 +277,9 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     if !is_approval(item) && !follow_up {
         let task = widgets::icon_button(Icon::ListTodo, tr("Make task"), Some(Message::AskTask(item.id.clone())));
         buttons.push(widgets::anchored(&footer.anchors.task, task));
+        let event =
+            widgets::icon_button(Icon::CalendarPlus, tr("Make event"), Some(Message::AskEvent(item.id.clone())));
+        buttons.push(widgets::anchored(&footer.anchors.event, event));
     }
     buttons.push(iced::widget::space::horizontal().into());
     let lane = app::other_lane(item.lane);
@@ -430,12 +436,13 @@ mod tests {
 
     #[test]
     fn the_footer_offers_triage_to_the_mouse() {
-        // Done, Later, Make task, the gap, Move to, "…".
-        assert_eq!(buttons(&sample("demo-1"), &footer(true)).len(), 6);
-        // Allow, Deny, the gap, Move to: an approval has no way to hide it, no task and no Later.
+        // Done, Later, Make task, Make event (task E8.5b), the gap, Move to, "…".
+        assert_eq!(buttons(&sample("demo-1"), &footer(true)).len(), 7);
+        // Allow, Deny, the gap, Move to: an approval has no way to hide it, no task, no event and no
+        // Later.
         assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 4);
-        // Reopen, Make task, the gap, Move to, "…": a done entry is not snoozed.
-        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 5);
+        // Reopen, Make task, Make event, the gap, Move to, "…": a done entry is not snoozed.
+        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 6);
     }
 
     /// Task E8.7b: the question after a finished task answers or closes the mail, and is no task to

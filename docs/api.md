@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
-| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `create_event_from_item` ¹⁵, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -104,7 +104,8 @@ Zusammenfassung nennt den Host, wie der Browser ihn liest (ohne Benutzerteil vor
 ⁴ `create_task_from_item` (E3.5) schreibt eine Aufgabe und markiert den Eintrag als erledigt. Weil eine
 Operation nur einen Bereich kennt, prüft der Dienst vorher eigens Schreibrecht in `tasks` (sonst
 `forbidden`, genannt als `tasks.save_todo`) und die Aufgabenliste wie bei `tasks.save_todo` (sonst
-`not-found`), vor der Freigabe und bei ihrer Ausführung noch einmal.
+`not-found`), vor der Freigabe und bei ihrer Ausführung noch einmal. `create_event_from_item` (E8.5b, ¹⁵)
+macht es genauso mit einem Kalender.
 
 ⁵ `ask_permission { tool, details, project?, title? }` (E2.5) stellt dem Menschen eine Rückfrage „darf der
 Agent dieses Werkzeug benutzen?“, wie sie der Hook `PermissionRequest` von Claude Code und Codex
@@ -277,11 +278,12 @@ Anweisungen. Die Sicherheitsregeln aus
 - Die Freigabe eines `inbox.*`-Befehls nennt Eintrag, Regel und Quelle aus dem Speicher des Eingangs
   (`approvals::inbox_summary`, nachgeschlagen über die Kennung), nie aus dem Text des Clients.
   `open_item` nennt, was sich öffnet (Host, App oder Fenster des Agenten), `create_task_from_item`
-  Titel, Liste und Fälligkeit.
+  Titel, Liste und Fälligkeit, `create_event_from_item` Titel, Beginn und Kalender (Name aus dem Cache).
 - Eine Freigabe für einen Eintrag merkt sich, wie er beim Fragen aussah (`updated` und Zahl der
   Meldungen, `approvals::EntryPin`). Hat der Client bis zur Ausführung in denselben Faden neu
   gemeldet, antwortet der Dienst `conflict` und führt nichts aus (E1.2c). `create_task_from_item`
-  ohne Titel bekommt beim Fragen den Titel des Eintrags fest in die Anfrage geschrieben.
+  und `create_event_from_item` ohne Titel bekommen beim Fragen den Titel des Eintrags fest in die Anfrage
+  geschrieben.
 
 Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur noch
 `accounts.list_accounts` und `accounts.remove_account`. Die Liste der Apps (`apps.list_apps`)
@@ -394,6 +396,26 @@ sehen nichts. Werte von Merkmalen sind Fremdtext (`option.untrusted`). Ein unbek
 Einträge sie seit ihrem Anlegen ausgeblendet, nach „Info“ verschoben, ohne Popup gelassen oder in ihre
 Spur gelegt hat, gezählt nur in den Quellen, die der Schlüssel sieht; für Regeln von vor E8.8a ab dem
 Update.
+
+¹⁵ Ruhe und Termin aus einem Eintrag (E8.5b). `get_quiet {}` (`Read`) sagt, ob gerade Ruhe gilt: Antwort
+`quiet` mit `quiet: null` oder `{ reason: "busy", until, title? }`. Ruhe gilt, solange ein Termin „busy“ läuft
+(undurchsichtig, nicht ganztägig, in einem Kalender, den die Suite zeigt) und die Einstellung
+`quiet_when_busy` an ist; `until` ist das Ende des am längsten laufenden dieser Termine, `title` der Titel
+des zuerst begonnenen, aber nur für den App-Schlüssel und für Clients mit Leserecht in `calendar` und dem
+Kalender in `calendars` – sonst fehlt er („a busy event“ in der Oberfläche). Dass Ruhe gilt und bis wann,
+erfährt bewusst jeder Client mit Leserecht in `inbox`, auch wenn der Termin in einem Kalender liegt, den er
+nicht sieht: Er soll wissen, ob eine Meldung jetzt durchkommt. Hook-Clients sehen nichts:
+immer `null`. Ein Kalender, der sich nicht lesen lässt, hält nichts ruhig. Fokus-Profile kommen später als
+weiterer `reason`. `create_event_from_item { id, collection, title?, start, end }` (`Write`) macht aus dem
+Eintrag einen Termin (busy) und markiert ihn als erledigt (gezählt als `done`): Titel (sonst der des
+Eintrags), `start`/`end` beide als Tag oder beide als Zeitpunkt, `end` nach `start` (sonst `error`), Text des
+Eintrags als Beschreibung mit dem Rückbezug am Ende – bei Mail die Zeile „From mail: …“ wie bei Aufgaben,
+sonst der `http`/`https`-Link des Eintrags (ein Termin hat kein eigenes Feld dafür). Rechte wie ⁴: Schreibrecht
+in `calendar` (sonst `forbidden`, genannt als `calendar.save_event`), der Kalender wie bei
+`calendar.save_event` (sonst `not-found`, auch ausgeblendete), dann der Eintrag (`not-found`, `forbidden`
+für Freigaben und Einträge der Suite, bei Mail Schreibrecht in `mail`). Das Protokoll nennt nur Eintrag
+und Kalender, nie Titel oder Zeiten. Für entfernte Modelle des Assistenten ist die Antwort zurückgehalten wie
+bei `create_task_from_item` (der Titel kann der Betreff einer Mail sein).
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

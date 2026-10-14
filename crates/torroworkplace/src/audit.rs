@@ -215,7 +215,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ResolveItems { .. }
         | Request::ListRules
         // The span only, never what was counted (task E8.8a).
-        | Request::GetStats { .. } => Vec::new(),
+        | Request::GetStats { .. }
+        // Never the event's title or times (task E8.5b).
+        | Request::GetQuiet => Vec::new(),
         Request::UpdateTemplate { id: template }
         | Request::DeleteTemplate { id: template }
         | Request::LoadTemplate { id: template, .. }
@@ -279,6 +281,10 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
         Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
             vec![random("inbox", entry), collection(list)]
+        }
+        // The entry and the calendar, never the title or the times (task E8.5b).
+        Request::CreateEventFromItem { id: entry, collection: calendar, .. } => {
+            vec![random("inbox", entry), collection(calendar)]
         }
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
         Request::RemoveRule { id: rule } => vec![random("rule", rule)],
@@ -672,6 +678,17 @@ pub(crate) mod tests {
         assert_eq!(account, vec![format!("account:hash:{}", hashed("Anna Smith"))]);
         let task = Request::CreateTaskFromItem { id: "e1".into(), collection: url.into(), title: None, due: None };
         assert_eq!(super::ids(&task), vec!["inbox:e1".to_string(), logged[0].clone()]);
+        // Task E8.5b: an event of an entry logs the entry and the calendar, never title or times.
+        let at = torro_pim::EventTime::DateTime(chrono::Utc::now());
+        let event = Request::CreateEventFromItem {
+            id: "e1".into(),
+            collection: url.into(),
+            title: Some("Secret call".into()),
+            start: at,
+            end: at,
+        };
+        assert_eq!(super::ids(&event), vec!["inbox:e1".to_string(), logged[0].clone()]);
+        assert!(super::ids(&Request::GetQuiet).is_empty());
     }
 
     /// Task E8.7a: a task made of a mail logs its list only, opening an app with a target the app

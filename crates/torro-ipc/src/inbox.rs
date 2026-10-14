@@ -28,6 +28,10 @@
 //! Tasks of folder mail (task E8.1b): [`InboxClient::create_todo_from_mail`] sends
 //! `tasks.create_todo_from_mail` and answers the task in the inbox's model ([`ItemTask`]), so the
 //! window needs no calendar model of its own for the due day.
+//!
+//! The hub (task E8.5b): [`InboxClient::get_quiet`] asks whether it is quiet now,
+//! [`InboxClient::list_calendars`] and [`InboxClient::create_event_from_item`] make an event of an
+//! entry, its times as instants, so the window needs no calendar model either.
 
 use std::path::PathBuf;
 
@@ -39,7 +43,7 @@ use torro_mail::{Flag, Folder, Message, MessageSummary};
 use torro_pim::EventTime;
 
 use crate::mail::MoveTarget;
-use crate::{InboxStats, IpcError, Request, Response, StatsRange};
+use crate::{InboxStats, IpcError, Quiet, Request, Response, StatsRange};
 
 /// Talks to the core at its socket.
 #[derive(Debug, Clone)]
@@ -196,6 +200,51 @@ impl InboxClient {
     pub async fn get_stats(&self, range: StatsRange, until: Option<NaiveDate>) -> Result<InboxStats, InboxError> {
         match self.ask(Request::GetStats { range, until }).await? {
             Response::Stats(stats) => Ok(stats),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.get_quiet` (task E8.5b): whether the inbox is quiet now, why and until when, for the
+    /// hub's "Quiet". `None` when it is not quiet. The app key always gets the event's title.
+    /// Errors as for the other calls.
+    pub async fn get_quiet(&self) -> Result<Option<Quiet>, InboxError> {
+        match self.ask(Request::GetQuiet).await? {
+            Response::Quiet { quiet } => Ok(quiet),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `calendar.list_calendars`, without the calendars nothing can be written to (read-only
+    /// shares) and without collections that hold no events: the calendars an event of an entry can
+    /// go to (task E8.5b), each with its id and name in a [`TaskList`], the inbox's pair of both.
+    pub async fn list_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
+        match self.ask(Request::CalendarCollections).await? {
+            Response::Collections { collections } => Ok(collections
+                .into_iter()
+                .filter(|calendar| calendar.writable && calendar.kind.has_events() && calendar.source.is_none())
+                .map(|calendar| TaskList { id: calendar.id, name: calendar.name })
+                .collect()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.create_event_from_item` (task E8.5b, "Event" in the hub and the panel): makes an
+    /// event of the entry `id` in the calendar `calendar` (an id of [`InboxClient::list_calendars`])
+    /// from `start` to `end`, titled `title` (`None` or blank: the core takes the entry's), and
+    /// marks the entry done. The core answers with the new event, which the app does not need.
+    /// Errors as mapped above: [`InboxError::NotFound`] for an entry or calendar the app may not
+    /// see, [`InboxError::Forbidden`] for an approval or an entry of the suite.
+    pub async fn create_event_from_item(
+        &self,
+        id: String,
+        calendar: String,
+        title: Option<String>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<(), InboxError> {
+        let (start, end) = (EventTime::DateTime(start), EventTime::DateTime(end));
+        match self.ask(Request::CreateEventFromItem { id, collection: calendar, title, start, end }).await? {
+            Response::Event { .. } => Ok(()),
             other => Err(unexpected(other)),
         }
     }
@@ -464,6 +513,33 @@ mod tests {
                 median_done_minutes: None,
                 suggestions: Vec::new(),
             }),
+            Request::GetQuiet => Response::Quiet {
+                quiet: Some(Quiet { reason: crate::QuietReason::Busy, until: at(15), title: Some("Call".into()) }),
+            },
+            Request::CalendarCollections => Response::Collections { collections: lists() },
+            // Only the times the client should send make an event.
+            Request::CreateEventFromItem { id, collection, title, start, end }
+                if id == "i1" && start == EventTime::DateTime(at(14)) && end == EventTime::DateTime(at(15)) =>
+            {
+                Response::Event {
+                    event: torro_pim::Event {
+                        uid: "new".into(),
+                        collection,
+                        href: Some("https://cloud.example.org/c/new.ics".into()),
+                        etag: Some("\"1\"".into()),
+                        summary: title.unwrap_or_default(),
+                        start,
+                        end: Some(end),
+                        location: None,
+                        description: None,
+                        recurring: false,
+                        transparency: torro_pim::Transparency::Opaque,
+                    },
+                }
+            }
+            Request::CreateEventFromItem { .. } => {
+                Response::Error { code: "forbidden".into(), message: "an approval is the person's".into() }
+            }
             Request::OpenItem { id } if id == "window" => Response::Ok,
             Request::TaskCollections => Response::Collections { collections: lists() },
             Request::CreateTaskFromItem { id, collection, title, due } if id == "i1" => Response::Todo {
@@ -633,6 +709,23 @@ mod tests {
         assert_eq!((stats.range, stats.until, stats.totals.new), (StatsRange::Month, day, 30));
         let today = core.client().get_stats(StatsRange::Week, None).await.expect("stats");
         assert_eq!((today.until, today.totals.new), (NaiveDate::default(), 7));
+    }
+
+    /// Task E8.5b: quiet is one request, an event of an entry sends its times as instants, and
+    /// only calendars an event can be written to are offered.
+    #[tokio::test]
+    async fn quiet_and_events_send_their_requests() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let quiet = client.get_quiet().await.expect("quiet").expect("it is quiet");
+        assert_eq!((quiet.until, quiet.title.as_deref()), (at(15), Some("Call")));
+        let calendars = client.list_calendars().await.expect("calendars");
+        let names: Vec<&str> = calendars.iter().map(|calendar| calendar.name.as_str()).collect();
+        assert_eq!(names, ["WORK", "EVENTS"], "no read-only share, no filter list, no list of tasks only");
+        let made = client.create_event_from_item("i1".into(), "work".into(), Some("Call".into()), at(14), at(15));
+        assert_eq!(made.await, Ok(()));
+        let approval = client.create_event_from_item("a1".into(), "work".into(), None, at(14), at(15));
+        assert_eq!(approval.await, Err(InboxError::Forbidden));
     }
 
     #[tokio::test]

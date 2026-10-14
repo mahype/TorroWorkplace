@@ -33,7 +33,8 @@
 //!   any more, **one** message tells how many of the held-back entries are still open. It names
 //!   the event when there was one: it is the person's own calendar on the person's own desktop,
 //!   and `docs/eingang.md` asks for exactly that ("While you were in …"). Its title is shown as
-//!   plain text like every other text here.
+//!   plain text like every other text here. Whether it is quiet now and until when ([`quiet_now`])
+//!   is also what `inbox.get_quiet` answers (task E8.5b).
 //!
 //! - **No popup by choice** (task E8.6a): an entry a muted trait with "no popup" holds for comes
 //!   without one ([`crate::inbox::Inbox::no_popup`], [`Popups::step_except`]), and not later either.
@@ -583,6 +584,23 @@ pub fn quiet_during(quiet_when_busy: bool, events: &[Event], now: DateTime<Utc>)
     events.iter().filter(|event| event.busy()).filter(runs).min_by_key(|event| event.start)
 }
 
+/// The quiet at `now` among `events` (task E8.5b, `inbox.get_quiet`): the busy event that makes it
+/// quiet ([`quiet_during`]) and when the last of the busy events running now ends. `None` when it
+/// is not quiet.
+pub fn quiet_span(quiet_when_busy: bool, events: &[Event], now: DateTime<Utc>) -> Option<(&Event, DateTime<Utc>)> {
+    let first = quiet_during(quiet_when_busy, events, now)?;
+    let end = |event: &Event| match event.end {
+        Some(EventTime::DateTime(end)) => Some(end),
+        _ => None,
+    };
+    let running = events.iter().filter(|event| event.busy()).filter(|event| match (event.start, end(event)) {
+        (EventTime::DateTime(start), Some(end)) => start <= now && now < end,
+        _ => false,
+    });
+    let until = running.filter_map(end).max()?;
+    Some((first, until))
+}
+
 /// Shows `popups` on `desktop`; each answer goes to `send` as the request [`request`] makes of it.
 pub fn show_all(popups: Vec<Popup>, desktop: &dyn Desktop, send: &Arc<dyn Fn(Request) + Send + Sync>) {
     for popup in popups {
@@ -663,17 +681,23 @@ fn whole_conversation(inbox: &crate::inbox::Inbox, popup: &mut Popup) {
     }
 }
 
-/// The title of the busy event that makes it quiet at `now` ([`quiet_during`]), from the settings
-/// and the calendars the suite shows. A calendar that cannot be read keeps nothing quiet: better
-/// a popup too many than a missed one.
+/// The title of the busy event that makes it quiet at `now` ([`quiet_during`], [`quiet_now`]).
 async fn busy_title(core: &Core, now: DateTime<Utc>) -> Option<String> {
+    quiet_now(core, now).await.map(|(event, _)| event.summary)
+}
+
+/// The quiet at `now` from the settings and the calendars the suite shows ([`quiet_span`]): the
+/// busy event that makes it quiet and when it ends, for the popups and `inbox.get_quiet` (task
+/// E8.5b). A calendar that cannot be read keeps nothing quiet: better a popup too many than a
+/// missed one.
+pub async fn quiet_now(core: &Core, now: DateTime<Utc>) -> Option<(Event, DateTime<Utc>)> {
     let Response::Settings { settings } = core.handle(Request::Settings).await else { return None };
     if !settings.quiet_when_busy {
         return None;
     }
     let window = Request::Events { start: now, end: now + TimeDelta::minutes(1) };
     let Response::Events { events } = core.handle(window).await else { return None };
-    quiet_during(true, &events, now).map(|event| event.summary.clone())
+    quiet_span(true, &events, now).map(|(event, until)| (event.clone(), until))
 }
 
 /// The desktop's notifications. Linux and the BSDs show the buttons; macOS and Windows show the
@@ -980,6 +1004,22 @@ mod tests {
         }
         let earlier = Event { summary: "Workshop".into(), ..event(at(10, 0) - TimeDelta::hours(1), Some(at(59, 0))) };
         assert_eq!(quiet_during(true, &[running, earlier.clone()], now), Some(&earlier), "the earliest started");
+    }
+
+    /// Task E8.5b: quiet lasts until the last busy event running now ends, and is named after the
+    /// one that began first; nothing runs, nothing is quiet.
+    #[test]
+    fn quiet_lasts_until_the_last_running_busy_event_ends() {
+        let now = at(30, 0);
+        let call = Event { summary: "Call".into(), ..event(at(0, 0), Some(at(45, 0))) };
+        let workshop = Event { summary: "Workshop".into(), ..event(at(20, 0), Some(at(59, 0))) };
+        let free = Event { transparency: Transparency::Transparent, ..event(at(0, 0), Some(at(59, 30))) };
+        let events = [call.clone(), workshop, free];
+        assert_eq!(quiet_span(true, &events, now), Some((&call, at(59, 0))));
+        assert_eq!(quiet_span(true, std::slice::from_ref(&call), now), Some((&call, at(45, 0))));
+        assert_eq!(quiet_span(false, &events, now), None, "quiet turned off");
+        assert_eq!(quiet_span(true, &[], now), None, "no event");
+        assert_eq!(quiet_span(true, &events, at(59, 0)), None, "every busy event ended");
     }
 
     #[test]

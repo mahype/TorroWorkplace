@@ -896,7 +896,18 @@ E8.9   unabhängig (torro-wm, core.rs)
   Vertagen (Test auf die Knopfliste je Eintragsart).
 
 ### E8.5b Ruhe-Status und Termin aus einem Eintrag
-- [ ] erledigt
+- [x] erledigt (`inbox.get_quiet` antwortet `quiet: null` oder `{ reason: busy, until, title? }`, `until` = Ende
+  des am längsten laufenden Termins „busy“, Titel nur mit Kalender-Leserecht und Kalender in der Auswahl, Hook-Clients
+  nie; Logik in `inbox_notify::quiet_now`, die auch die Popups nutzen. `inbox.create_event_from_item`: Termin
+  „busy“, Rückbezug als letzte Zeile der Beschreibung (Mail-Zeile, sonst der Web-Link; `Event` hat kein URL-Feld),
+  Eintrag danach erledigt und als `done` gezählt (keine eigene Statistik-Spalte). Zentrale: rechts „Quiet“ über
+  „Handed off“, in Mittel und Schmal eine Zeile unter Kacheln bzw. Zahlen; „Event“ bei To sort, „Make event“ im
+  Paneel, Taste `c`, Dialog mit Kalender, Tag, Beginn (halbstündlich) und Dauer, `--open event`; Anfragen über
+  neues `hub::HubSource` (dafür `torroinbox/src/main.rs` eine Zeile Trait-Schranke). Datenschutz: Antwort von
+  `create_event_from_item` für entfernte Modelle zurückgehalten. **Offen:** `assistant/model.rs` bildet das neue Tool
+  noch nicht auf `[inbox, calendar]` ab (Datei nicht freigegeben), ein im Gespräch abgeschalteter Kalender greift
+  dort also nicht. Sichtprüfung am Mac ohne AeroSpace (Fenster-Id über die PID): Zentrale sechs Größen dunkel,
+  Dialog breit und schmal hell)
 - **Modell:** Opus · **Braucht:** E8.5, E3.4 · **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`,
   `crates/torroworkplace/src/{core,inbox,inbox_notify,pim,mcp,approvals,audit,daemon}.rs`,
   `crates/torroinbox/src/{app,hub,detail,keys}.rs`, `crates/torro-core/src/i18n/de.rs`; Doku: `docs/{api,eingang}.md`.

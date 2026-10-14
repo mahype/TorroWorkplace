@@ -32,6 +32,9 @@
 //! The hub's "Act now" (task E8.5) is one list of sections, so it takes the keys of the list
 //! ([`Focus::List`]): `j`/`k` walk Decide, Agents and To sort, `l` moves an entry to the other lane.
 //! `s` on an approval opens no snooze menu – an approval waits for yes or no.
+//!
+//! `c` makes an event of the entry (task E8.5b, "Event" in To sort and the panel): its dialog takes
+//! the keys as the one of "Make task" does ([`Focus::Task`]), `Enter` creates the event.
 
 use iced::keyboard::{self, Key as Name, key::Named};
 use torro_gui::shell;
@@ -67,6 +70,8 @@ pub enum Key {
     X,
     /// `t`.
     T,
+    /// `c`.
+    C,
     /// `r`.
     R,
     /// `a`.
@@ -97,7 +102,8 @@ pub enum Focus {
     Mute,
     /// The date and time picker of "Pick…" is open.
     Picker,
-    /// The dialog of "Make task" is open (task E3.5); its title field takes what is typed.
+    /// The dialog of "Make task" (task E3.5) or of "Make event" (task E8.5b) is open; its title
+    /// field takes what is typed.
     Task,
     /// The navigation menu, the app switcher or the drawer is open; only `[` works.
     Elsewhere,
@@ -131,6 +137,8 @@ pub enum Command {
     Hide,
     /// Open the dialog that makes a task of the entry (task E3.5).
     MakeTask,
+    /// Open the dialog that makes an event of the entry (task E8.5b).
+    MakeEvent,
     /// Reply to the mail under the cursor (task E4.2).
     Reply,
     /// Reply to everyone on the mail under the cursor.
@@ -155,7 +163,7 @@ pub enum Command {
     EarlierTime,
     /// Picker: the next time of the day.
     LaterTime,
-    /// Picker: snooze to the picked time; dialog of "Make task": create the task.
+    /// Picker: snooze to the picked time; dialog of "Make task" or "Make event": create it.
     Confirm,
     /// Collapse or expand the sidebar, open or close the drawer.
     Sidebar,
@@ -193,6 +201,7 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Character("m") => Key::M,
         Name::Character("x") => Key::X,
         Name::Character("t") => Key::T,
+        Name::Character("c") => Key::C,
         Name::Character("r") => Key::R,
         Name::Character("a") => Key::A,
         Name::Character("f") => Key::F,
@@ -223,6 +232,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::M) => Some(Command::Hide),
         (Focus::List, Key::X) => Some(Command::Dismiss),
         (Focus::List, Key::T) => Some(Command::MakeTask),
+        (Focus::List, Key::C) => Some(Command::MakeEvent),
         (Focus::List, Key::R) => Some(Command::Reply),
         (Focus::List, Key::A) => Some(Command::ReplyAll),
         (Focus::List, Key::F) => Some(Command::Forward),
@@ -294,6 +304,7 @@ mod tests {
             (char("m"), Command::Hide),
             (char("x"), Command::Dismiss),
             (char("t"), Command::MakeTask),
+            (char("c"), Command::MakeEvent),
             (char("r"), Command::Reply),
             (char("a"), Command::ReplyAll),
             (char("f"), Command::Forward),
@@ -378,7 +389,7 @@ mod tests {
     #[test]
     fn the_task_dialog_takes_enter_and_nothing_of_the_list() {
         assert_eq!(command(Focus::Task, Key::Enter), Some(Command::Confirm));
-        for key in [Key::Down, Key::E, Key::S, Key::T, Key::U, Key::Digit(1), Key::Sidebar] {
+        for key in [Key::Down, Key::E, Key::S, Key::T, Key::C, Key::U, Key::Digit(1), Key::Sidebar] {
             assert_eq!(command(Focus::Task, key), None, "{key:?} stays out of the dialog");
         }
     }
