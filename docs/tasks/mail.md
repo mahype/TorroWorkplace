@@ -556,21 +556,21 @@ ihre Texte im Bericht.
 - **M7.6 Kontakte (CardDAV)**, Empfänger-Vorschläge im Schreibfenster.
 - Sieve (Filter, Abwesenheit), OAuth für Google/Microsoft (braucht registrierte Client-IDs), JMAP.
 
-## HTML-Mail (M8)
+## HTML-Mail (M9)
 
 Entschieden 2026-10-14 (siehe [mail.md](../mail.md), Entscheidung 8): Mail wird als HTML gezeigt, nicht mehr
 nur als Text. Das ersetzt „HTML nur zu Text umgewandelt“ (M2.4) und „Externe Bilder werden nie geladen“ (E4.2).
 Darstellung in einem eigenen Fenster mit System-Webview, externe Bilder werden immer geladen.
 
 ```
-M8.1 ─┬─ M8.2
-      └─ M8.3   (M8.3 braucht das Fenster aus M8.2 zum Öffnen, die Demo-Daten nicht)
+M9.1 ─┬─ M9.2
+      └─ M9.3   (M9.3 braucht das Fenster aus M9.2 zum Öffnen, die Demo-Daten nicht)
 
-M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es entschieden ist)
+M9.4            (Versuch, unabhängig; ersetzt M9.2 nur, wenn er trägt und es entschieden ist)
 ```
 
-### M8.1 HTML im Kern: aufheben, bereinigen, herausgeben
-- [ ] erledigt
+### M9.1 HTML im Kern: aufheben, bereinigen, herausgeben
+- [x] erledigt (zusätzlich: `crates/torroworkplace/src/mail/store_corpus.rs` (Testhilfe `Body::of`); erlaubt auch `colspan`/`rowspan`, `face`/`size`; `docs/api-reference.md` gibt es noch nicht, A.9)
 - **Modell:** Opus · **Braucht:** M3.1 · **Dateien:** `Cargo.toml` (`ammonia` in `[workspace.dependencies]`),
   `crates/torro-mail/src/message.rs`, `crates/torro-mail-imap/{Cargo.toml,src/mime.rs,tests/mime_roundtrip.rs}`,
   `crates/torroworkplace/src/mail/{store,read,sync,write}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
@@ -595,7 +595,7 @@ M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es e
   agents rarely need it, the text is enough. It is `untrusted` and may name pictures on the web“). Kein neuer
   Befehl.
 - **MCP:** `mail_get_message` reicht `include_html` durch (Voreinstellung `false`).
-- **Oberfläche:** M8.2 (Mail-Fenster), M8.3 (TorroInbox).
+- **Oberfläche:** M9.2 (Mail-Fenster), M9.3 (TorroInbox).
 - **Abnahme:** Tests: Mail mit Text- und HTML-Teil → `text` aus dem Textteil, `html` bereinigt; Skript,
   `onclick`, `<form>`, `<iframe>`, `javascript:`-Link sind weg, `style` und `cid:`-Bild bleiben; `content_id` der
   Inline-Teile gesetzt; ohne `include_html` kein `html` in der Antwort; alte Cache-Zeile ohne HTML wird nachgeholt,
@@ -603,9 +603,9 @@ M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es e
   `not-found`). Protokoll ohne Inhalte: kein HTML, kein Ausschnitt (auch nicht in Fehlern der Bereinigung), keine
   `content_id`, Bild- oder Link-URLs, kein Betreff, kein Absender. API-Referenz neu erzeugt.
 
-### M8.2 Mail-Fenster `torromailview`
+### M9.2 Mail-Fenster `torromailview`
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** M8.1 · **Dateien:** `Cargo.toml` (`wry`, `tao` in `[workspace.dependencies]`,
+- **Modell:** Opus · **Braucht:** M9.1 · **Dateien:** `Cargo.toml` (`wry`, `tao` in `[workspace.dependencies]`,
   Mitglied `crates/torromailview`), neu `crates/torromailview/` (`Cargo.toml`, `src/main.rs`, `src/page.rs`,
   `build.rs` wie bei den anderen Programmen), `scripts/ci-local.sh` und `.github/workflows/ci.yml`
   (Linux-Pakete `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`), `docs/mail.md` (nur falls sich beim Bau etwas
@@ -618,7 +618,7 @@ M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es e
 - Seite: `mail.get_message` mit `include_body` und `include_html`. Oben ein schlichter Kopf aus eigenem HTML (Von,
   An, Cc, Datum, Betreff, Anhänge als Liste; Farben und Schrift aus dem aktiven Design, hell/dunkel), darunter die
   Mail. Mail ohne HTML → Text in `<pre>`-artigem Block mit Zeilenumbruch. Alles aus der Mail wird escaped bzw. kommt
-  nur als bereinigtes HTML aus M8.1.
+  nur als bereinigtes HTML aus M9.1.
 - **Sicherheit im Fenster** (zweite Schicht nach der Bereinigung): Meta-CSP `default-src 'none'; script-src
   'none'; base-uri 'none'; form-action 'none'; img-src https: http: data: torro-cid:; style-src 'unsafe-inline' https: http:; font-src https: http:
   data:`; keine Skripte von uns in der Seite; wo wry es erlaubt, JavaScript abschalten (Linux über die
@@ -637,9 +637,9 @@ M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es e
   keine `content_id`, kein Betreff, kein Absender, kein HTML. Baut auf Linux, macOS, Windows (`scripts/ci-local.sh`). Sichtprüfung mit `--demo`
   (Newsletter mit Tabellen und Bildern, reine Textmail), hell/dunkel; im Bericht die neuen Übersetzungen nennen.
 
-### M8.3 TorroInbox: HTML-Mail öffnen
+### M9.3 TorroInbox: HTML-Mail öffnen
 - [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** M8.1, M8.2 · **Dateien:** `crates/torroinbox/src/{mail,keys,app}.rs`,
+- **Modell:** Sonnet · **Braucht:** M9.1, M9.2 · **Dateien:** `crates/torroinbox/src/{mail,keys,app}.rs`,
   `crates/torro-inbox/src/demo.rs` (Demo-Newsletter mit `html`), `crates/torro-core/src/i18n/de.rs` (nur wenn nicht
   parallel, sonst im Bericht)
 - **Oberfläche:** Das Paneel zeigt weiter Kopf, Anhänge und Knöpfe. Hat die Mail HTML, steht über dem Text der Knopf
@@ -650,17 +650,17 @@ M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es e
 - `apps.open_app` mit Ziel `mail:` öffnet weiter `torroinbox --view mail` (Fußnote 13 in [api.md](../api.md)):
   Das ist die Mail-Ansicht des Eingangs, `torromailview` zeigt nur eine einzelne Mail und wird aus ihr heraus
   geöffnet. Agenten brauchen das HTML-Fenster nicht, sie lesen über `mail_get_message`.
-- **API/MCP:** nutzt M8.1, keine neuen Befehle.
+- **API/MCP:** nutzt M9.1, keine neuen Befehle.
 - **Abnahme:** Sichtprüfung mit `--demo` (Breit/Mittel/Schmal, hell/dunkel); Tests der Nachrichten: `v` und
   `Enter` starten das Fenster nur bei Mails mit HTML, ohne HTML bleibt alles wie bisher; Übersetzung „View as HTML“.
   Protokoll ohne Inhalte (keine Kennung im Klartext neben Betreff oder Absender).
 
-### M8.4 Versuch: HTML-Mail mit Blitz direkt in Iced zeichnen
+### M9.4 Versuch: HTML-Mail mit Blitz direkt in Iced zeichnen
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** nichts (nutzt eigene Beispiel-Mails, nicht M8.1) · **Dateien:** neu
+- **Modell:** Opus · **Braucht:** nichts (nutzt eigene Beispiel-Mails, nicht M9.1) · **Dateien:** neu
   `spikes/blitz-iced/` (eigenes Cargo-Projekt: `Cargo.toml`, `src/main.rs`, `fixtures/*.html`), `Cargo.toml` der
   Wurzel (nur `exclude = ["spikes/*"]`), `docs/research.md` (neuer Abschnitt mit dem Ergebnis)
-- **Warum:** Iced zeichnet kein HTML, deshalb plant M8.2 ein eigenes Fenster mit System-Webview. Blitz (Dioxus:
+- **Warum:** Iced zeichnet kein HTML, deshalb plant M9.2 ein eigenes Fenster mit System-Webview. Blitz (Dioxus:
   Stylo für CSS, Taffy für Layout, Vello zum Zeichnen) stellt HTML und CSS ohne JavaScript und ohne Webview dar.
   Trägt das, kann die Mail als Widget im Iced-Fenster stehen: kein zweites Fenster, keine Grenze unter Wayland,
   keine WebKitGTK-Pakete, kein JavaScript, das abzuschalten wäre.
@@ -680,11 +680,11 @@ M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es e
 - **Beispiel-Mails** unter `fixtures/`, nur selbst gebaute oder öffentlich zugängliche Newsletter, **keine echten
   privaten Mails**: Newsletter mit verschachtelten Tabellen und Bildern, Rechnung eines Shops, typische
   Outlook-Mail (`<o:p>`, MSO-Kommentare, `font`), Mail mit `<style>`-Block und Media Queries, schlichte Textmail
-  als `<pre>`, sehr lange Mail (über 1 MiB). Jeweils mit `ammonia` wie in M8.1 bereinigt, damit der Versuch das
+  als `<pre>`, sehr lange Mail (über 1 MiB). Jeweils mit `ammonia` wie in M9.1 bereinigt, damit der Versuch das
   HTML sieht, das später wirklich ankommt.
 - **API/MCP:** keine. Ein Versuch ohne Funktion für Nutzer; er nutzt keinen Request und ändert keinen. Kommt Blitz
-  später ins Produkt, ändert sich nur die Oberfläche von M8.2/M8.3, die Befehle aus M8.1 bleiben.
-- **Abnahme:** Abschnitt „Blitz in Iced (Versuch M8.4)“ in `docs/research.md` mit: welcher Weg lief, Versionen
+  später ins Produkt, ändert sich nur die Oberfläche von M9.2/M9.3, die Befehle aus M9.1 bleiben.
+- **Abnahme:** Abschnitt „Blitz in Iced (Versuch M9.4)“ in `docs/research.md` mit: welcher Weg lief, Versionen
   (Iced, Blitz, `wgpu`, Vello), Screenshots je Beispiel-Mail neben derselben Mail in einem Browser, Zeit für das
   erste Zeichnen und beim Neu-Layout (grob, auf dem eigenen Rechner), Größe des Release-Binaries mit und ohne
   Blitz, was fehlt oder falsch aussieht, Lizenzen der neuen Abhängigkeiten (Stylo ist MPL-2.0) und eine klare
@@ -692,6 +692,6 @@ M8.4            (Versuch, unabhängig; ersetzt M8.2 nur, wenn er trägt und es e
   Linux (Hyprland)? Windows nur, wenn es ohne Umwege geht. Entschieden wird danach mit dem Menschen, nicht in
   dieser Aufgabe.
 
-### Später zu M8
+### Später zu M9
 - Antworten und Weiterleiten mit dem HTML der Vorlage (zitiert als HTML), Schreiben mit einfacher Formatierung.
 - Schalter „Load pictures from the web“ (immer / pro Absender / nie), falls das Laden stört.
