@@ -2137,4 +2137,46 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Withheld from the model by your data rule", "Durch deine Datenregel dem Modell vorenthalten"),
     ("You denied this", "Von dir abgelehnt"),
     ("{count} results", "{count} Ergebnisse"),
+    // Assistant page in the control centre (C.6)
+    ("1 year", "1 Jahr"),
+    (
+        "A starting point: every row below can be changed. None of them sends mail without asking.",
+        "Ein Ausgangspunkt: Jede Zeile darunter lässt sich ändern. Keiner davon verschickt Mail, ohne zu fragen.",
+    ),
+    (
+        "Add Ollama on this computer or OpenRouter under Accounts",
+        "Füge unter Konten Ollama auf diesem Rechner oder OpenRouter hinzu",
+    ),
+    ("Choose what it may use below, then turn it on.", "Wähle unten, was er nutzen darf, und schalte ihn dann ein."),
+    (
+        "Conversations are deleted this long after their last message. Pinned ones are kept.",
+        "Unterhaltungen werden so lange nach ihrer letzten Nachricht gelöscht. Angeheftete bleiben.",
+    ),
+    ("Engines", "Antriebe"),
+    ("Forever", "Für immer"),
+    (
+        "It chats with you and works in Torro Workplace with only what you allow here. You can change it any time.",
+        "Er chattet mit dir und arbeitet in Torro Workplace nur mit dem, was du hier erlaubst. Du kannst das jederzeit ändern.",
+    ),
+    (
+        "It loses access to everything at once. Your conversations stay. Turn it on again to choose what it may use.",
+        "Er verliert sofort jeden Zugriff. Deine Unterhaltungen bleiben. Schalte ihn wieder ein, um festzulegen, was er nutzen darf.",
+    ),
+    ("Keep conversations", "Unterhaltungen behalten"),
+    ("No AI account yet", "Noch kein KI-Konto"),
+    ("Reads calendars, tasks and the inbox", "Liest Kalender, Aufgaben und den Eingang"),
+    ("Suggested", "Empfohlen"),
+    (
+        "The assistant answers with the models of these accounts. Each chat picks one; a new chat starts with the one you used last.",
+        "Der Assistent antwortet mit den Modellen dieser Konten. Jeder Chat wählt eines; ein neuer Chat beginnt mit dem zuletzt benutzten.",
+    ),
+    ("The assistant is off", "Der Assistent ist aus"),
+    ("The assistant is on", "Der Assistent ist an"),
+    ("Turn off", "Ausschalten"),
+    ("Turn off assistant…", "Assistent ausschalten…"),
+    ("Turn off the assistant?", "Assistent ausschalten?"),
+    ("Turn on assistant", "Assistent einschalten"),
+    ("Turning on…", "Wird eingeschaltet …"),
+    ("What the assistant may use", "Was der Assistent nutzen darf"),
+    ("{n} days", "{n} Tage"),
 ];

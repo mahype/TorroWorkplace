@@ -74,7 +74,8 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   zu viele Schritte.
 
 ### C.3 Kontext: Skill „Torro Workplace“
-- [ ] erledigt
+- [x] erledigt (Name der Person bleibt leer, solange die Suite keinen kennt; Persönlichkeit hat den Platz vor dem
+  Skill, C.10 füllt ihn; nachgetragen: Verdrahtung in `assistant/model.rs`)
 - **Modell:** Opus · **Braucht:** C.2 · **Dateien:** `crates/torroworkplace/src/assistant/prompt.rs`,
   `crates/torroworkplace/assets/assistant/skill.md` (neu)
 - Fester Teil (englisch) und erzeugter Teil (Datum, Zeitzone, Sprache, erlaubte Bereiche) nach dem Konzept.
@@ -101,13 +102,15 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** `torro-design-review` in allen Größenklassen; Texte über `tr()`, Übersetzungen im Bericht.
 
 ### C.5 MCP-Tools `assistant_*`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
 - Je Katalogeintrag ein Tool; `assistant_send_message` wartet bis zur Antwort oder 60 s, dann Stand mit `after`.
 - **Abnahme:** Vertragstest; Test, dass ein Client der Art `assistant` `forbidden` bekommt.
 
 ### C.6 Steuerzentrale › Assistant
-- [ ] erledigt
+- [x] erledigt (direkt erreichbar mit `torroworkplace ui --section assistant`; kein Standard-Antrieb als
+  Einstellung, dafür fehlt ein `SettingKey` in `torro-ipc` – die Seite zeigt die Antriebe, ein neuer Chat nimmt
+  den zuletzt benutzten; der Assistent steht in Agents & API mit Verweis auf diese Seite)
 - **Modell:** Opus · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/ui/**`
 - Seite „Assistant“: Standard-Antrieb, Aufbewahrung, „What the assistant may use“ (dieselbe Rechte-Ansicht wie bei
   Clients, Vorlagen, Sammlungen). Erreichbar auch aus dem Hinweis bei `forbidden` im Chat.

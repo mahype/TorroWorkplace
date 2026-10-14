@@ -24,7 +24,7 @@ use std::time::Duration;
 use chrono::{Local, Utc};
 use serde_json::{Value, json};
 use torro_core::ai::{AiError, BoxFuture, ChatMessage, ChatReply, ChatRequest, Provider, ToolCall, open_weights_only};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{self, tr, trf};
 use torro_ipc::api::Area;
 use torro_ipc::assistant::{Entry, EntryContent};
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
@@ -168,7 +168,20 @@ impl Answering {
             let rights = self.host.client().map(|client| client.rights);
             let allowed = tools::allowed(rights.as_ref(), &self.job.without);
             let areas: BTreeSet<Area> = allowed.iter().map(|tool| tool.command.area).collect();
-            messages[0] = ChatMessage::system(prompt::system(Local::now(), &areas.into_iter().collect::<Vec<_>>()));
+            let areas: Vec<Area> = areas.into_iter().collect();
+            let context = prompt::Context {
+                now: Local::now(),
+                lang: i18n::lang(),
+                // The suite keeps no name of the person yet (no setting holds one).
+                person: None,
+                areas: &areas,
+                without: &self.job.without,
+                engine: &self.job.engine,
+                model: &model,
+                place: access.place,
+            };
+            // The personality joins with task C.10 (`<config>/assistant/persona.md`).
+            messages[0] = ChatMessage::system(prompt::system(None, &context));
             let request = ChatRequest {
                 model: model.clone(),
                 messages: messages.clone(),
@@ -744,6 +757,15 @@ pub(crate) mod tests {
             "{}",
             first.messages[0].content
         );
+        let system = &first.messages[0].content;
+        assert!(system.starts_with(prompt::skill()), "without a personality the skill comes first: {system}");
+        assert!(system.contains("model qwen3:8b of the AI account ai:ollama@localhost:11434"), "{system}");
+        assert!(system.contains("(local)") && !system.contains("Switched off"), "{system}");
+        assert!(
+            asked.iter().all(|request| request.messages[0].role == torro_core::ai::Role::System
+                && request.messages[0].content.starts_with(prompt::skill())),
+            "every step starts with the system prompt"
+        );
         assert!(first.tools.iter().any(|tool| tool.name == "calendar_list_events"));
         assert!(first.tools.iter().all(|tool| !tool.name.starts_with("mail_")), "no mail rights, no mail tools");
         assert!(tool_result(&script, "calendar_list_calendars").contains("collections"));
@@ -809,6 +831,9 @@ pub(crate) mod tests {
         assert!(tool_result(&script, "inbox_create_task_from_item").contains("switched off tasks"));
         assert!(tool_result(&script, "inbox_list_sources").contains("invalid input"));
         assert!(script.asked()[0].tools.iter().all(|tool| !tool.name.starts_with("calendar_")));
+        let system = &script.asked()[0].messages[0].content;
+        assert!(system.contains("- Switched off for this conversation: calendar, tasks."), "{system}");
+        assert!(system.contains("- Areas you may use: inbox."), "{system}");
     }
 
     #[tokio::test]
@@ -826,6 +851,16 @@ pub(crate) mod tests {
             assert_eq!(result.contains("Invoice 42"), shown, "{place:?}: {result}");
             assert_eq!(result.contains(data_rule::WITHHELD), !shown, "{place:?}: {result}");
             assert_eq!(result.contains(tools::UNTRUSTED_NOTE), shown, "outside data stays marked: {result}");
+            // What a tool read stays in the tool's message: the system prompt of the next step is
+            // made anew and holds nothing of the inbox.
+            let told_remote = script.asked()[0].messages[0].content.contains("(remote)");
+            assert_eq!(told_remote, !shown, "{place:?}: the prompt says where the model runs");
+            for request in script.asked() {
+                let system = &request.messages[0].content;
+                for content in ["Invoice 42", "ACME", "anna@example.org", "send me your password"] {
+                    assert!(!system.contains(content), "{place:?}: {content:?} in the system prompt");
+                }
+            }
             let summary = entries.iter().find_map(|entry| match &entry.content {
                 EntryContent::Tool { summary, .. } => Some(summary.clone()),
                 _ => None,
