@@ -1651,7 +1651,11 @@ mod tests {
         let fake = Fake::default();
         let err = connect(&env, Target::ClaudeCode, &claude_code(), "c1", &key(), &fake).expect_err("refused");
         assert!(matches!(err, SetupError::Foreign(_)), "{err:?}");
-        assert!(err.message().contains("was not written by Torro Workplace"), "{}", err.message());
+        let expected = trf(
+            "{file} exists and was not written by Torro Workplace, so it was left as it is.",
+            &[("file", &file.display())],
+        );
+        assert_eq!(err.message(), expected);
         assert_eq!(fs::read_to_string(&file).expect("file"), "my own skill\n", "never overwritten");
         assert!(fake.calls.borrow().is_empty(), "the entry was not written either");
         assert!(records(&env).expect("records").is_empty(), "nothing is noted");

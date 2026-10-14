@@ -2137,4 +2137,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Withheld from the model by your data rule", "Durch deine Datenregel dem Modell vorenthalten"),
     ("You denied this", "Von dir abgelehnt"),
     ("{count} results", "{count} Ergebnisse"),
+    // Skill for agents (C.8)
+    (
+        "{file} exists and was not written by Torro Workplace, so it was left as it is.",
+        "{file} ist vorhanden und wurde nicht von Torro Workplace geschrieben, daher wurde es nicht verändert.",
+    ),
 ];

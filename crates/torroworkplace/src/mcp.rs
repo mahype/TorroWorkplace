@@ -350,11 +350,9 @@ impl TorroMcp {
 
 /// The skill "Torro Workplace" for agents other than the assistant: the MCP prompt
 /// [`PROMPT_NAME`] and the Claude Code skill file of the connect wizard (task C.8). It is the
-/// same file the assistant's prompt is built from (`assistant/prompt.rs`), which keeps that
-/// module private.
+/// very text the assistant's own prompt starts its rules with.
 pub fn agent_skill() -> &'static str {
-    const SKILL: &str = include_str!("../assets/assistant/skill.md");
-    SKILL.trim_end()
+    crate::assistant::skill().trim_end()
 }
 
 /// The name of the MCP prompt that carries [`agent_skill`] (`prompts/list`, `prompts/get`).
