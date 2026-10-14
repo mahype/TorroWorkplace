@@ -68,7 +68,7 @@ Aus der API-Prüfung des Plans am 2026-10-11:
 3. ~~Sicherheitsteil von E2.5~~: **freigegeben am 2026-10-12.**
 4. ~~A.6 (Agents & API): Auswahl der Inbox-Quellen auf der Detailseite~~, erledigt mit A.6.
 5. ~~Schnittstellen von E8 (drei Fenster)~~: **freigegeben am 2026-10-13**, Liste unter [E8](#e8-drei-fenster-2026-10-13).
-6. Schnittstellen und offene Fragen von E5 (Quellen): **offen**, Liste unter [E5](#e5-nextcloud-github-ntfy-als-quellen-plan-2026-10-14).
+6. ~~Schnittstellen und offene Fragen von E5 (Quellen)~~: **freigegeben bzw. nach Empfehlung entschieden am 2026-10-14**, Liste unter [E5](#e5-nextcloud-github-ntfy-als-quellen-plan-2026-10-14).
 
 ## E1 Kern
 
@@ -1362,9 +1362,9 @@ E5.15 nach E5.1 (mit Demo); Sichtprüfung mit echten Daten nach E5.4, E5.8, E5.1
   Dev-Abhängigkeit `httpmock.workspace = true`), feste Uhr. Kein Test spricht mit github.com, einer Nextcloud oder
   ntfy.sh.
 
-### Freizugeben vor dem Start
+### Schnittstellen, freigegeben am 2026-10-14
 
-Schnittstellen nach CLAUDE.md. Ohne Freigabe startet nur, was oben „sofort möglich“ ist.
+Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
 
 1. **E5.1 – `SourceKind`:** neue Fälle `Github`, `Nextcloud`, `Talk`, `Ntfy`; Schlüssel gleich der Konto-Id
    (`github:<login>`, `nextcloud:<login>@<host>`, `ntfy:<host>`), Talk mit dem Rest der Nextcloud-Konto-Id
@@ -1767,7 +1767,7 @@ Schnittstellen nach CLAUDE.md. Ohne Freigabe startet nur, was oben „sofort mö
   Talk, ntfy im Demo; Knopfliste je Art; Reihen von Insights; `scripts/design-check.sh`; Galerie mit den neuen Icons;
   Sichtprüfung `--view notifications|hub --demo` in allen Größen, beiden Dichten, hell, dunkel, Plex.
 
-### Offene Fragen zu E5 (mit Empfehlung)
+### Fragen zu E5, entschieden am 2026-10-14 (alle nach Empfehlung)
 
 1. **GitHub „Erledigt“:** Thread als *done* löschen (`DELETE`) oder nur *gelesen* (`PATCH`)? Empfehlung: `DELETE` für
    Erledigt und ✕; Öffnen ändert auf GitHub nichts.
