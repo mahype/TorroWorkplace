@@ -565,6 +565,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{what} in every Nextcloud account", "{what} in allen Nextcloud-Konten"),
     ("{what} in Talk of every Nextcloud account", "{what} in Talk aller Nextcloud-Konten"),
     ("{what} on every ntfy server", "{what} auf allen ntfy-Servern"),
+    // Talk as an inbox source (E5.9)
+    ("{name}: {text}", "{name}: {text}"),
     // New inbox sources (E5.1)
     ("Everything from {repo}", "Alles aus {repo}"),
     ("Review requests", "Review-Anfragen"),

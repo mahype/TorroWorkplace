@@ -27,8 +27,12 @@
 //! - **Reaching back** ([`settle_done`]): done deletes every notification of the entry on the
 //!   server.
 //!
-//! Task E5.9 (Talk) can join the same loop: [`Poller`] keeps the capabilities (`talk`), and
-//! [`wanted`] is where Talk's chat notifications are left out while Talk runs.
+//! - **Talk** (task E5.9, `super::talk`) runs in the same loop: on a server with Talk each round
+//!   also lists the conversations for the source `talk:<login>@<host>`, unless that one is muted
+//!   (a round asks nothing only when both are). Sign-in, capabilities and refusals are shared, so
+//!   a refusal or an unreachable server shows on both sources. While the server has Talk, its
+//!   chat notifications (`spreed`, object `chat`) are left out here ([`wanted`]): the conversation
+//!   is the entry; calls and invitations stay.
 //!
 //! Logs name the account's id and a code ([`code`]), never a title, a text, a person or an app.
 
@@ -44,6 +48,7 @@ use torro_ipc::{Request, Response};
 use torro_nextcloud::{Capabilities, Listing, Notification, NotificationId, OcsError};
 
 use super::Sources;
+use super::talk::{self, Talk};
 use crate::inbox::{Remote, RemoteEntry, THREAD_KEY_MAX};
 use crate::pim::NextcloudAccess;
 
@@ -96,7 +101,8 @@ fn lock(running: &Mutex<HashSet<String>>) -> std::sync::MutexGuard<'_, HashSet<S
 
 /// The loop of the account `id`: a round ([`Poller::tick`]) and the wait it asks for, as long as
 /// the account is there with its app password. When the loop ends, the health is `signed_out`
-/// for an account left without its app password (it needs a new sign-in), else cleared.
+/// for an account left without its app password (it needs a new sign-in), else cleared; for its
+/// Talk too when the server has Talk.
 async fn follow(sources: &Sources, id: &str) {
     let Ok(source) = id.parse::<SourceRef>() else { return };
     let mut poller = Poller::default();
@@ -105,23 +111,26 @@ async fn follow(sources: &Sources, id: &str) {
         tokio::time::sleep(wait).await;
     }
     let listed = sources.pim.nextcloud_accounts().await.iter().any(|known| known == id);
-    sources.inbox.set_source_health(&source, listed.then_some(SourceHealth::SignedOut));
+    poller.set_health(sources, &source, listed.then_some(SourceHealth::SignedOut));
 }
 
 /// What the loop of one account keeps between its rounds, in memory. No `Debug`: `refused` is
 /// derived from the app password.
 #[derive(Default)]
-struct Poller {
+pub(super) struct Poller {
     /// The server's capabilities and when they were read.
     capabilities: Option<(Capabilities, DateTime<Utc>)>,
     /// The sign-in the server refused ([`NextcloudAccess::sign_in`]): nothing is asked with it.
     refused: Option<[u8; 32]>,
+    /// Talk's conversations of the account (task E5.9).
+    talk: Talk,
 }
 
 impl Poller {
-    /// One round for `source` with `access` at `now` (see the module docs); returns how long to
-    /// wait before the next one. Sets the source's health: `None` when the round worked.
-    async fn tick(
+    /// One round for `source` (and its Talk) with `access` at `now` (see the module docs);
+    /// returns how long to wait before the next one. Sets the sources' health: `None` when the
+    /// round worked.
+    pub(super) async fn tick(
         &mut self,
         sources: &Sources,
         source: &SourceRef,
@@ -132,33 +141,86 @@ impl Poller {
             return POLL;
         }
         self.refused = None;
-        if is_muted(sources, source, now) {
+        let muted = is_muted(sources, source, now);
+        if muted {
             // What comes while muted stays out, also once the source is heard again.
             keep_cursor(sources, source, SINCE, Some(&now.to_rfc3339()));
+        }
+        let talk_muted = is_muted(sources, &talk::source_of(source), now);
+        if talk_muted {
+            self.talk.mute();
+        }
+        if muted && talk_muted {
             return POLL;
         }
-        match self.read(sources, source, access, now).await {
-            Ok(health) => {
-                sources.inbox.set_source_health(source, health);
-                POLL
-            }
+        match self.read(sources, source, access, now, muted, talk_muted).await {
+            Ok(()) => POLL,
             Err(error) => self.failed(sources, source, access, &error),
         }
     }
 
-    /// Reads the capabilities when due and the listing, files and resolves. `Ok` with the health
-    /// to show (`missing_app` or none).
+    /// Reads the capabilities when due, then what of the notifications and of Talk is not muted,
+    /// and sets the health of each that was read (`missing_app` or none). `Err` for what concerns
+    /// both: a refusal, an unreachable server, maintenance, a throttle.
     async fn read(
         &mut self,
         sources: &Sources,
         source: &SourceRef,
         access: &NextcloudAccess,
         now: DateTime<Utc>,
-    ) -> Result<Option<SourceHealth>, OcsError> {
+        muted: bool,
+        talk_muted: bool,
+    ) -> Result<(), OcsError> {
         let due = self.capabilities.as_ref().is_none_or(|(_, at)| now - *at >= CAPABILITIES_EVERY);
         if due {
             self.capabilities = Some((access.client.capabilities().await?, now));
         }
+        let has_talk = self.has_talk();
+        if !muted {
+            let health = self.notifications(sources, source, access, now, has_talk).await?;
+            sources.inbox.set_source_health(source, health);
+        }
+        let talk = talk::source_of(source);
+        if !has_talk {
+            // No Talk on the server: no source of its own, so no health either.
+            sources.inbox.set_source_health(&talk, None);
+        } else if !talk_muted {
+            let health = match self.talk.round(sources, &talk, &access.client, now).await {
+                Ok(()) => None,
+                Err(OcsError::MissingApp) => {
+                    // Read the capabilities again next round: Talk may be gone, or come back.
+                    self.capabilities = None;
+                    Some(SourceHealth::MissingApp)
+                }
+                Err(error) => return Err(error),
+            };
+            sources.inbox.set_source_health(&talk, health);
+        }
+        Ok(())
+    }
+
+    /// Whether the server has Talk, as its capabilities said last.
+    fn has_talk(&self) -> bool {
+        self.capabilities.as_ref().is_some_and(|(capabilities, _)| capabilities.talk.is_some())
+    }
+
+    /// Sets `health` for `source` and, while the server has Talk, for its Talk source.
+    fn set_health(&self, sources: &Sources, source: &SourceRef, health: Option<SourceHealth>) {
+        sources.inbox.set_source_health(source, health);
+        let talk = health.filter(|_| self.has_talk());
+        sources.inbox.set_source_health(&talk::source_of(source), talk);
+    }
+
+    /// Lists the notifications, files and resolves; `has_talk` leaves Talk's chat notifications
+    /// out ([`wanted`]). `Ok` with the health to show (`missing_app` or none).
+    async fn notifications(
+        &mut self,
+        sources: &Sources,
+        source: &SourceRef,
+        access: &NextcloudAccess,
+        now: DateTime<Utc>,
+        has_talk: bool,
+    ) -> Result<Option<SourceHealth>, OcsError> {
         if self.capabilities.as_ref().is_some_and(|(capabilities, _)| capabilities.notifications.is_none()) {
             return Ok(Some(SourceHealth::MissingApp));
         }
@@ -178,16 +240,16 @@ impl Poller {
         if !sources.pim.nextcloud_accounts().await.contains(&source.key()) {
             return Ok(None);
         }
-        let filed = file(sources, source, access.client.server(), &notifications, since, now);
+        let filed = file(sources, source, access.client.server(), &notifications, since, has_talk, now);
         resolve(sources, source, &notifications, now);
         // Only a listing filed in full is not asked for again (a 304 would hide what failed).
         keep_cursor(sources, source, ETAG, etag.as_deref().filter(|_| filed));
         Ok(None)
     }
 
-    /// After the round failed with `error`: the health it means (kept as it was after an
-    /// unexpected answer; cleared in maintenance and when throttled, as the server is there and
-    /// takes the sign-in), and how long to wait.
+    /// After the round failed with `error`: the health it means for the source and its Talk
+    /// (kept as it was after an unexpected answer; cleared in maintenance and when throttled, as
+    /// the server is there and takes the sign-in), and how long to wait.
     fn failed(
         &mut self,
         sources: &Sources,
@@ -209,7 +271,7 @@ impl Poller {
                 return POLL;
             }
         };
-        sources.inbox.set_source_health(source, health);
+        self.set_health(sources, source, health);
         match error {
             OcsError::Throttled { retry_after } => (*retry_after).max(POLL),
             _ => POLL,
@@ -218,12 +280,12 @@ impl Poller {
 }
 
 /// Whether the person muted `source` (`inbox.mute_source`), as `inbox.list_sources` says.
-fn is_muted(sources: &Sources, source: &SourceRef, now: DateTime<Utc>) -> bool {
+pub(super) fn is_muted(sources: &Sources, source: &SourceRef, now: DateTime<Utc>) -> bool {
     listed(sources, source, now).is_some_and(|info| info.muted)
 }
 
 /// Whether the loop of `source` found the server refusing the sign-in (health `signed_out`).
-fn is_signed_out(sources: &Sources, source: &SourceRef, now: DateTime<Utc>) -> bool {
+pub(super) fn is_signed_out(sources: &Sources, source: &SourceRef, now: DateTime<Utc>) -> bool {
     listed(sources, source, now).is_some_and(|info| info.health == Some(SourceHealth::SignedOut))
 }
 
@@ -248,31 +310,35 @@ fn since(sources: &Sources, source: &SourceRef, now: DateTime<Utc>) -> DateTime<
     })
 }
 
-fn read_cursor(sources: &Sources, source: &SourceRef, name: &str) -> Option<String> {
+/// The cursor `name` of `source`; `None` also when it cannot be read (logged).
+pub(super) fn read_cursor(sources: &Sources, source: &SourceRef, name: &str) -> Option<String> {
     sources.inbox.cursor(source, name).unwrap_or_else(|err| {
         eprintln!("torroworkplace: inbox: cannot read where {source} stopped: {err}");
         None
     })
 }
 
-fn keep_cursor(sources: &Sources, source: &SourceRef, name: &str, value: Option<&str>) {
+/// Keeps `value` as the cursor `name` of `source` (`None` removes it); failures to the log.
+pub(super) fn keep_cursor(sources: &Sources, source: &SourceRef, name: &str, value: Option<&str>) {
     if let Err(err) = sources.inbox.set_cursor(source, name, value) {
         eprintln!("torroworkplace: inbox: cannot keep where {source} stopped: {err}");
     }
 }
 
-/// Files the notifications of `listed` that are [`wanted`] and not older than `since`, oldest
-/// first, so the newest gives its matter's entry the texts. Whether every one was filed.
+/// Files the notifications of `listed` that are [`wanted`] (with `has_talk`) and not older than
+/// `since`, oldest first, so the newest gives its matter's entry the texts. Whether every one was
+/// filed.
 fn file(
     sources: &Sources,
     source: &SourceRef,
     server: &str,
     listed: &[Notification],
     since: DateTime<Utc>,
+    has_talk: bool,
     now: DateTime<Utc>,
 ) -> bool {
     let mut filed = true;
-    for notification in listed.iter().rev().filter(|n| n.time >= since && wanted(n)) {
+    for notification in listed.iter().rev().filter(|n| n.time >= since && wanted(n, has_talk)) {
         if let Err(err) = sources.inbox.file_remote(&report(source, server, notification), now) {
             eprintln!("torroworkplace: inbox: cannot file a notification of {source}: {err}");
             filed = false;
@@ -281,10 +347,11 @@ fn file(
     filed
 }
 
-/// Whether `notification` becomes part of the inbox. All of them for now; task E5.9 leaves out
-/// Talk's chat notifications (`spreed`, `chat`) here while Talk is a source of its own.
-fn wanted(_notification: &Notification) -> bool {
-    true
+/// Whether `notification` becomes part of the inbox: all but Talk's chat notifications (`spreed`,
+/// object `chat`: messages, mentions, replies, reactions) while the server has Talk (`has_talk`),
+/// as the Talk source files the conversation itself (task E5.9). Calls and invitations stay.
+fn wanted(notification: &Notification, has_talk: bool) -> bool {
+    !(has_talk && notification.app == "spreed" && notification.object_type == "chat")
 }
 
 /// The report of `notification` of `source` on `server` (see the module docs).
@@ -401,7 +468,7 @@ fn log_line(source: &SourceRef, error: &OcsError) -> String {
 }
 
 /// A fixed word for `error`, for the log.
-fn code(error: &OcsError) -> &'static str {
+pub(super) fn code(error: &OcsError) -> &'static str {
     match error {
         OcsError::Refused => "auth",
         OcsError::Forbidden => "forbidden",
@@ -414,7 +481,7 @@ fn code(error: &OcsError) -> &'static str {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::path::Path;
 
     use chrono::TimeZone;
@@ -429,23 +496,25 @@ mod tests {
     use crate::pim::PimService;
     use crate::settings_service::SettingsStore;
 
-    const LIST_PATH: &str = "/ocs/v2.php/apps/notifications/api/v2/notifications";
-    const CAPABILITIES_PATH: &str = "/ocs/v2.php/cloud/capabilities";
+    pub(in crate::sources) const LIST_PATH: &str = "/ocs/v2.php/apps/notifications/api/v2/notifications";
+    pub(in crate::sources) const CAPABILITIES_PATH: &str = "/ocs/v2.php/cloud/capabilities";
     const PASSWORD: &str = "app-password-SECRET";
 
-    fn now() -> DateTime<Utc> {
+    pub(in crate::sources) fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 10, 14, 10, 0, 0).single().expect("valid time")
     }
 
-    struct Fixture {
+    /// A Nextcloud account `anna` on a mock server, with its inbox in a temp directory (also used
+    /// by the tests of `super::talk`).
+    pub(in crate::sources) struct Fixture {
         _dir: tempfile::TempDir,
-        server: MockServer,
-        sources: Sources,
-        source: SourceRef,
+        pub(in crate::sources) server: MockServer,
+        pub(in crate::sources) sources: Sources,
+        pub(in crate::sources) source: SourceRef,
     }
 
     impl Fixture {
-        async fn new() -> Fixture {
+        pub(in crate::sources) async fn new() -> Fixture {
             let dir = tempfile::tempdir().expect("temp dir");
             let server = MockServer::start_async().await;
             let sources = sources_in(dir.path());
@@ -459,12 +528,12 @@ mod tests {
             self.sources.pim.nextcloud_access(&self.source.key()).await.expect("connected")
         }
 
-        async fn tick(&self, poller: &mut Poller, now: DateTime<Utc>) -> Duration {
+        pub(in crate::sources) async fn tick(&self, poller: &mut Poller, now: DateTime<Utc>) -> Duration {
             let access = self.access().await;
             poller.tick(&self.sources, &self.source, &access, now).await
         }
 
-        async fn capabilities(&self, notifications: bool) -> Mock<'_> {
+        pub(in crate::sources) async fn capabilities(&self, notifications: bool) -> Mock<'_> {
             let capabilities = match notifications {
                 true => json!({ "notifications": { "ocs-endpoints": ["list", "get", "delete"] } }),
                 false => json!({ "theming": { "name": "Nextcloud" } }),
@@ -480,7 +549,7 @@ mod tests {
 
         /// The listing `notifications` with the ETag `etag`, for a request without `If-None-Match`
         /// or with another one.
-        async fn listing(&self, notifications: &[Value], etag: &str) -> Mock<'_> {
+        pub(in crate::sources) async fn listing(&self, notifications: &[Value], etag: &str) -> Mock<'_> {
             let body = envelope(Value::Array(notifications.to_vec())).to_string();
             let etag = etag.to_string();
             self.server
@@ -492,19 +561,19 @@ mod tests {
         }
 
         /// The open entries of the source, newest state as stored.
-        fn open(&self) -> Vec<Item> {
+        pub(in crate::sources) fn open(&self) -> Vec<Item> {
             let open = self.sources.inbox.open_remote(&self.source).expect("open entries");
             open.iter().map(|entry| self.item(&entry.id)).collect()
         }
 
-        fn item(&self, id: &str) -> Item {
+        pub(in crate::sources) fn item(&self, id: &str) -> Item {
             match self.sources.inbox.handle(Request::GetItem { id: id.into() }, None, now()) {
                 Response::Item { item } => item,
                 other => panic!("expected an item, got {other:?}"),
             }
         }
 
-        fn health(&self) -> Option<SourceHealth> {
+        pub(in crate::sources) fn health(&self) -> Option<SourceHealth> {
             match self.sources.inbox.handle(Request::ListSources, None, now()) {
                 Response::Sources { sources } => {
                     sources.into_iter().find(|info| info.source == self.source).and_then(|info| info.health)
@@ -524,7 +593,7 @@ mod tests {
         }
     }
 
-    fn envelope(data: Value) -> Value {
+    pub(in crate::sources) fn envelope(data: Value) -> Value {
         json!({ "ocs": { "meta": { "status": "ok", "statuscode": 200, "message": "OK" }, "data": data } })
     }
 
@@ -801,7 +870,12 @@ mod tests {
         assert!(matches!(fixture.sources.inbox.handle(mute, None, now()), Response::Ok | Response::Muted(_)));
         let mut poller = Poller::default();
         fixture.tick(&mut poller, now()).await;
-        assert_eq!(capabilities.calls_async().await + listing.calls_async().await, 0);
+        assert_eq!(listing.calls_async().await, 0);
+        assert_eq!(capabilities.calls_async().await, 1, "for Talk, which is not muted");
+        let talk = Request::MuteSource { source: talk::source_of(&fixture.source), muted: true };
+        fixture.sources.inbox.handle(talk, None, now());
+        fixture.tick(&mut Poller::default(), now()).await;
+        assert_eq!(capabilities.calls_async().await + listing.calls_async().await, 1, "both muted: nothing");
         let unmute = Request::MuteSource { source: fixture.source.clone(), muted: false };
         fixture.sources.inbox.handle(unmute, None, now());
         listing.delete_async().await;
