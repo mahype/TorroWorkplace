@@ -77,7 +77,7 @@ use torro_inbox::{SourceKind, SourceRef};
 use torro_ipc::{
     AccountInfo, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, ServiceState, TopicName,
 };
-use torro_mail::{Notify, Role, Security, Services};
+use torro_mail::{MailFormat, Notify, Role, Security, Services};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
@@ -241,6 +241,7 @@ struct MailChange {
     notify: Option<Notify>,
     services: Option<Services>,
     folder_roles: Option<BTreeMap<Role, String>>,
+    format: Option<MailFormat>,
 }
 
 impl MailChange {
@@ -256,6 +257,7 @@ impl MailChange {
             notify: self.notify,
             services: self.services,
             folder_roles: self.folder_roles,
+            format: self.format,
         }
     }
 }
@@ -352,6 +354,8 @@ pub enum Message {
     SaveMail,
     /// "Show new mail in Inbox" was set.
     SetNotify(Notify),
+    /// "Write new mail as" was set (issue #125).
+    SetFormat(MailFormat),
     /// The switch of a service of the mail account.
     SetService(MailService, bool),
     /// A folder was picked for a role the server left open.
@@ -495,6 +499,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::SaveMail => save_mail(state, data),
         Message::SetNotify(notify) => with_mail(state, data, |mail| {
             (notify != mail.settings.notify).then(|| MailChange { notify: Some(notify), ..MailChange::default() })
+        }),
+        Message::SetFormat(format) => with_mail(state, data, |mail| {
+            (format != mail.settings.format).then(|| MailChange { format: Some(format), ..MailChange::default() })
         }),
         // Calendars and tasks of an account without a calendar address (task M3.5): the switch
         // asks for the address in "Server settings", which switches the service on with it.
@@ -1356,6 +1363,21 @@ impl fmt::Display for NotifyChoice {
     }
 }
 
+/// "Write new mail as" as a choice of a pick list (issue #125).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FormatChoice(MailFormat);
+
+const FORMAT_CHOICES: [FormatChoice; 2] = [FormatChoice(MailFormat::Html), FormatChoice(MailFormat::Plain)];
+
+impl fmt::Display for FormatChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            MailFormat::Html => tr("Formatted (HTML)"),
+            MailFormat::Plain => tr("Plain text"),
+        })
+    }
+}
+
 /// The room of the signature field: four lines of text and the padding of a field.
 const SIGNATURE_LINES: f32 = 4.0;
 
@@ -1380,7 +1402,8 @@ fn mail_detail<'a>(
     if let Some(draft) = state.mail.as_ref().filter(|draft| draft.account == account.id) {
         page = page.push(sender_groups(draft, mail));
     }
-    page.push(inbox_group(mail))
+    page.push(writing_group(mail))
+        .push(inbox_group(mail))
         .push(services_group(mail))
         .push(mail_connection_group(account, mail))
         .push(remove_button())
@@ -1486,6 +1509,21 @@ fn sender_groups<'a>(draft: &'a MailDraft, mail: &MailView) -> Element<'a, Messa
     .spacing(layout::section_gap());
     // "Save" belongs to both groups, so it sits close under them.
     column![groups, row![blank::horizontal(), save]].spacing(space::m()).into()
+}
+
+/// "Write new mail as": formatted (HTML with a plain text copy) or plain text (issue #125).
+fn writing_group(mail: &MailView) -> Element<'_, Message> {
+    let choice =
+        pick_list(FORMAT_CHOICES, Some(FormatChoice(mail.settings.format)), |choice| Message::SetFormat(choice.0))
+            .padding(style::pick_list_padding())
+            .text_size(typo::caption().size)
+            .text_line_height(typo::caption().line_height)
+            .font(typo::caption().font)
+            .style(style::pick_list)
+            .menu_style(style::pick_list_menu);
+    let row = setting_row(None, tr("Write new mail as"), None, choice);
+    let footer = tr("Formatted mail can hold bold text, lists, links and quotes; a plain text copy goes along.");
+    widgets::group(tr("Writing"), vec![row], Some(footer.to_string()))
 }
 
 /// "Show new mail in Inbox": all, only what the inbox's rules put into "For me", or none.
@@ -2466,7 +2504,7 @@ mod tests {
         let request = sent(update(&mut state, Message::SaveMail, &data));
         assert!(
             matches!(&request, Request::UpdateMailAccount { id, sender_name: Some(name), signature: None,
-                notify: None, services: None, folder_roles: None } if id == MAILBOX && name == "Anna Beispiel"),
+                notify: None, services: None, folder_roles: None, format: None } if id == MAILBOX && name == "Anna Beispiel"),
             "{request:?}"
         );
         // Emptying the signature removes it: the empty text is sent.
@@ -2525,6 +2563,16 @@ mod tests {
             "{request:?}"
         );
         assert!(matches!(update(&mut state, Message::SetService(MailService::Mail, true), &data), Action::None));
+        // Issue #125: how mail is written, one setting too.
+        let request = sent(update(&mut state, Message::SetFormat(MailFormat::Plain), &data));
+        assert!(
+            matches!(
+                &request,
+                Request::UpdateMailAccount { format: Some(MailFormat::Plain), notify: None, services: None, .. }
+            ),
+            "{request:?}"
+        );
+        assert!(matches!(update(&mut state, Message::SetFormat(MailFormat::Html), &data), Action::None), "as stored");
     }
 
     #[test]

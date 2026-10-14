@@ -1136,7 +1136,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             *subscribed,
         ),
         Request::RemoveAccount { id } => trf("Remove the account {account}", &[("account", &named(id))]),
-        Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles } => trf(
+        Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles, format } => trf(
             "Change the mail account {account}: {changes}",
             &[
                 ("account", &named(id)),
@@ -1148,6 +1148,7 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                         notify.is_some(),
                         services.as_ref(),
                         folder_roles.as_ref(),
+                        *format,
                     ),
                 ),
             ],
@@ -2059,6 +2060,7 @@ fn mail_account_changes(
     notify: bool,
     services: Option<&torro_mail::Services>,
     folder_roles: Option<&BTreeMap<Role, String>>,
+    format: Option<torro_mail::MailFormat>,
 ) -> String {
     let mut changes = Vec::new();
     match sender_name {
@@ -2085,6 +2087,11 @@ fn mail_account_changes(
     }
     for (role, path) in folder_roles.into_iter().flatten() {
         changes.push(trf("{role} → \"{path}\"", &[("role", &role_word(*role)), ("path", &quote(path))]));
+    }
+    match format {
+        Some(torro_mail::MailFormat::Html) => changes.push(tr("write formatted mail").to_string()),
+        Some(torro_mail::MailFormat::Plain) => changes.push(tr("write plain text mail").to_string()),
+        None => {}
     }
     if changes.is_empty() {
         return tr("nothing").to_string();
@@ -3105,6 +3112,7 @@ pub(crate) mod tests {
             bcc: Vec::new(),
             subject: "Claimed \"title\"".into(),
             body: String::new(),
+            html: None,
             in_reply_to: None,
             attachments: Vec::new(),
         };
@@ -3310,6 +3318,7 @@ pub(crate) mod tests {
     #[test]
     fn changing_a_mail_account_names_it_and_what_changes() {
         let update = |signature: Option<&str>, services| Request::UpdateMailAccount {
+            format: None,
             id: "mail:anna@mailbox.org".into(),
             sender_name: None,
             signature: signature.map(str::to_string),
@@ -3342,11 +3351,13 @@ pub(crate) mod tests {
         .join(", ");
         let account: (&str, &dyn std::fmt::Display) = ("account", &"mail:anna@mailbox.org");
         assert_eq!(said, trf("Change the mail account {account}: {changes}", &[account, ("changes", &changes)]));
-        assert_eq!(mail_account_changes(None, None, false, None, None), tr("nothing"));
+        assert_eq!(mail_account_changes(None, None, false, None, None, None), tr("nothing"));
+        let plain = mail_account_changes(None, None, false, None, None, Some(torro_mail::MailFormat::Plain));
+        assert_eq!(plain, tr("write plain text mail"), "issue #125: the writing format is named");
 
         // Each role with the path it gets, the path made harmless.
         let roles = BTreeMap::from([(Role::Sent, "INBOX.Sent \"x\"".to_string()), (Role::Drafts, "Drafts".into())]);
-        let said = mail_account_changes(None, None, false, None, Some(&roles));
+        let said = mail_account_changes(None, None, false, None, Some(&roles), None);
         let drafts = trf("{role} → \"{path}\"", &[("role", &tr("Drafts")), ("path", &"Drafts")]);
         let sent = trf("{role} → \"{path}\"", &[("role", &tr("Sent")), ("path", &"INBOX.Sent 'x'")]);
         assert_eq!(said, format!("{drafts}, {sent}"));

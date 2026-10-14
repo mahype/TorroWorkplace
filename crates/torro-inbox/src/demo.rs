@@ -1857,6 +1857,7 @@ mod tests {
 
     fn draft(account: &str, to: &[&str]) -> Draft {
         Draft {
+            html: None,
             id: None,
             account: account.into(),
             to: to.iter().map(|to| address("", to)).collect(),

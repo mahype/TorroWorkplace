@@ -13,7 +13,9 @@
 //! MIME bytes to send and the SMTP [`Envelope`]. The core gives the `Message-ID` and the date, so
 //! building the same draft twice gives the same bytes (the fingerprint of an approval, task M3.3).
 //! Bcc recipients are in the envelope only, never in a header, so neither the recipients nor the
-//! Sent copy show them. An answer to an invitation (task E8.3b) carries its iCalendar object as a
+//! Sent copy show them. Formatted mail (issue #125, [`Outgoing::html`]) goes as
+//! `multipart/alternative`: the plain text made from the HTML, then the HTML, both with the
+//! signature in front of the quoted history. An answer to an invitation (task E8.3b) carries its iCalendar object as a
 //! second form of the text ([`Outgoing::calendar`]): `multipart/alternative` with the plain text
 //! and `text/calendar; method=REPLY`, as iMIP (RFC 6047, 2.4) asks, so calendars of every kind
 //! read it as an answer and not as a file.
@@ -30,7 +32,7 @@ use mail_builder::headers::content_type::ContentType;
 use mail_builder::headers::message_id::MessageId;
 use mail_builder::mime::MimePart;
 use mail_parser::{Address, HeaderValue, MessageParser, MessagePart, MimeHeaders, PartType};
-use torro_mail::{AttachmentInfo, Flag, MailAddress, Message, MessageSummary, MessageTraits};
+use torro_mail::{AttachmentInfo, Flag, MailAddress, Message, MessageSummary, MessageTraits, html};
 
 use crate::smtp::Envelope;
 
@@ -96,6 +98,10 @@ pub struct ReadMessage {
     pub text: String,
     /// `text` was made from HTML.
     pub from_html: bool,
+    /// The first HTML part of the text as it is, uncleaned; `None` when there is none. Only for
+    /// the core, to send a stored draft as it was written ([`Outgoing::html`], cleaned there):
+    /// never handed out, and nothing it names is fetched.
+    pub html: Option<String>,
     /// The attachments, inline parts included, without content.
     pub attachments: Vec<AttachmentInfo>,
     pub traits: MessageTraits,
@@ -153,8 +159,13 @@ pub struct Outgoing {
     pub bcc: Vec<MailAddress>,
     /// Line breaks become spaces.
     pub subject: String,
-    /// The plain text; any line ends.
+    /// The plain text; any line ends. Not used when `html` is given.
     pub body: String,
+    /// The text as HTML (issue #125); `None` for plain text only. [`build`] cleans it
+    /// (`torro_mail::html::sanitize`), puts the signature in front of the quoted history
+    /// (`torro_mail::html::sign`) and sends `multipart/alternative`: the plain text made from that
+    /// HTML (`torro_mail::html::to_text`), then the HTML.
+    pub html: Option<String>,
     /// The account's signature, put under the text after the separator `-- ` (RFC 3676); blank
     /// for none.
     pub signature: Option<String>,
@@ -216,6 +227,7 @@ pub fn read(raw: &[u8]) -> Result<ReadMessage, MimeError> {
         date: message.date().and_then(|date| DateTime::from_timestamp(date.to_timestamp(), 0)),
         text,
         from_html,
+        html: html_part(&message),
         attachments: message
             .attachments
             .iter()
@@ -337,27 +349,38 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
             .in_reply_to(reply.in_reply_to.as_str())
             .references(MessageId::new_list(reply.references.iter().map(String::as_str)));
     }
-    let text = crlf(&with_signature(&outgoing.body, outgoing.signature.as_deref()));
+    // Formatted mail: the signature into the HTML, and the plain text made from both, so the two
+    // forms say the same.
+    let signed = outgoing.html.as_deref().map(|markup| html::sign(markup, outgoing.signature.as_deref()));
+    let text = crlf(&match &signed {
+        Some(signed) => html::to_text(signed),
+        None => with_signature(&outgoing.body, outgoing.signature.as_deref()),
+    });
     // `mail-builder` makes up a random boundary; one from the Message-ID keeps the bytes the same
     // for the same draft. `=_` never occurs in quoted-printable or base64 text, so the boundary
     // cannot appear inside a part.
     let boundary: String = outgoing.message_id.chars().filter(char::is_ascii_alphanumeric).take(48).collect();
-    let text_part = match &outgoing.calendar {
-        None => MimePart::new("text/plain", text.clone()),
-        Some(calendar) => {
-            if calendar.method.is_empty() || !calendar.method.chars().all(|c| c.is_ascii_alphabetic()) {
-                return Err(MimeError::Write);
-            }
-            let kind = ContentType::new("text/calendar")
-                .attribute("method", calendar.method.to_ascii_uppercase())
-                .attribute("charset", "utf-8");
-            let parts = vec![MimePart::new("text/plain", text.clone()), MimePart::new(kind, crlf(&calendar.ics))];
-            let kind =
-                ContentType::new("multipart/alternative").attribute("boundary", format!("=_torro_alt_{boundary}"));
-            MimePart::new(kind, parts)
+    let mut forms = vec![MimePart::new("text/plain", text.clone())];
+    if let Some(signed) = &signed {
+        forms.push(MimePart::new("text/html", crlf(&html_document(signed))));
+    }
+    if let Some(calendar) = &outgoing.calendar {
+        if calendar.method.is_empty() || !calendar.method.chars().all(|c| c.is_ascii_alphabetic()) {
+            return Err(MimeError::Write);
         }
+        let kind = ContentType::new("text/calendar")
+            .attribute("method", calendar.method.to_ascii_uppercase())
+            .attribute("charset", "utf-8");
+        forms.push(MimePart::new(kind, crlf(&calendar.ics)));
+    }
+    let alternative = forms.len() > 1;
+    let text_part = if alternative {
+        let kind = ContentType::new("multipart/alternative").attribute("boundary", format!("=_torro_alt_{boundary}"));
+        MimePart::new(kind, forms)
+    } else {
+        MimePart::new("text/plain", text.clone())
     };
-    builder = if outgoing.attachments.is_empty() && outgoing.calendar.is_none() {
+    builder = if outgoing.attachments.is_empty() && !alternative {
         builder.text_body(text)
     } else if outgoing.attachments.is_empty() {
         builder.body(text_part)
@@ -539,6 +562,19 @@ fn with_signature(body: &str, signature: Option<&str>) -> String {
     }
 }
 
+/// The HTML part of a message: `body` (cleaned HTML) in a document of its own.
+fn html_document(body: &str) -> String {
+    format!("<!DOCTYPE html>\n<html><head><meta charset=\"utf-8\"></head><body>\n{body}\n</body></html>\n")
+}
+
+/// The first HTML part of the text of `message`, as it is.
+fn html_part(message: &mail_parser::Message<'_>) -> Option<String> {
+    message.html_body.iter().filter_map(|&id| message.parts.get(id as usize)).find_map(|part| match &part.body {
+        PartType::Html(markup) => Some(markup.to_string()),
+        _ => None,
+    })
+}
+
 /// Line ends as CRLF, whatever came in.
 fn crlf(text: &str) -> String {
     text.replace("\r\n", "\n").replace('\r', "\n").replace('\n', "\r\n")
@@ -606,6 +642,7 @@ mod tests {
             bcc: vec![],
             subject: "Accepted: Planning".into(),
             body: "Anna has accepted.".into(),
+            html: None,
             signature: None,
             reply: None,
             attachments: vec![],
@@ -672,6 +709,7 @@ mod tests {
             date: None,
             text: String::new(),
             from_html: false,
+            html: None,
             attachments: vec![],
             traits: MessageTraits::default(),
             invitation: false,

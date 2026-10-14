@@ -3292,4 +3292,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{area} geht nie an Coding-Agenten wie Claude Code: Deine Datenregel hält es auf deinen Computern. Wähle dafür ein KI-Konto auf diesem Computer.",
     ),
     ("Never gets your mail", "Bekommt nie deine Mails"),
+    // Formatted mail (issue #125)
+    ("Bold", "Fett"),
+    ("Bulleted list", "Aufzählung"),
+    (
+        "Formatted mail can hold bold text, lists, links and quotes; a plain text copy goes along.",
+        "Formatierte E-Mails können fetten Text, Listen, Links und Zitate enthalten; eine Fassung als reiner Text geht mit.",
+    ),
+    ("Formatted (HTML)", "Formatiert (HTML)"),
+    ("Italic", "Kursiv"),
+    ("Numbered list", "Nummerierte Liste"),
+    ("Plain text", "Nur Text"),
+    ("Quote", "Zitat"),
+    ("Underline", "Unterstrichen"),
+    ("Write new mail as", "Neue E-Mails schreiben als"),
+    ("write formatted mail", "formatierte E-Mails schreiben"),
+    ("write plain text mail", "E-Mails als reinen Text schreiben"),
+    ("{name} ({keys})", "{name} ({keys})"),
 ];

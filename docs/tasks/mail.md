@@ -499,6 +499,37 @@ ihre Texte im Bericht.
 - **Oberfläche:** Schreibfenster (Neu, Antworten, Weiterleiten). **API/MCP:** keine – Darstellung.
 - **Abnahme:** Sichtprüfung Schmal/Mittel/Breit.
 
+### E4.6 Formatierter Text beim Schreiben und Antworten (Issue #125)
+- [x] erledigt (2026-10-14: Modell `Draft.html`, `Outgoing.html`, `ReadMessage.html`, `MailSettings.format`
+  (`html` | `plain`, Standard `html`); neu `torro_mail::html` (säubern mit eigener Allowlist – Absätze, Umbrüche,
+  Überschriften, fett/kursiv/unterstrichen/durchgestrichen, Code, Listen, Zitate, einfache Tabellen, Links nur `http`,
+  `https`, `mailto`; keine Bilder, Stile, Skripte, Formulare, Attribute –, Klartext aus HTML, Signatur vor
+  `<div class="torro-quote">`) und `torro_mail::markup` (Markdown-ähnliche Auszeichnung → HTML, Hervorhebung im
+  Editor). `mime::build` schreibt `multipart/alternative` (text/plain aus dem HTML, dann text/html), auch mit Anhängen
+  und Kalenderteil. Der Kern säubert beim Speichern und beim Senden (auch Entwürfe anderer Programme), der Klartext
+  entsteht immer aus dem HTML; die Freigabe zeigt diesen Klartext. Schreibfenster: Werkzeugleiste (Fett, Kursiv,
+  Unterstrichen, Link | Aufzählung, Nummeriert, Zitat), ⌘B/⌘I/⌘U/⌘K bzw. Strg, Enter setzt Listen fort, der Editor
+  zeigt die Zeichen leise (`TEXT_3`) und Zitate in `TEXT_2`; Fett und Kursiv fragt er als Schnitt an, Iced 0.14 zeichnet
+  im Editor auf macOS aber nur einen Schnitt; Demo-Zustand `--compose --demo --open format`. Antworten: Verlauf als `<blockquote type="cite">` mit „On … wrote:“, nicht als
+  Auszeichnung gelesen; die Signatur steht im HTML und im Klartext über dem Verlauf. Steuerzentrale › Konto › Writing:
+  „Write new mail as“ Formatted (HTML) / Plain text. Entscheidungen: eigene Allowlist statt neuer Abhängigkeit
+  (`ammonia`); einfache Klartext-Konten behalten die Signatur am Ende (kein Verlauf-Marker im Klartext);
+  Unterstreichen ist im Editor nur an den Zeichen `__` zu sehen. Offen (eigene Issues): Anhänge per Drag & Drop,
+  Entwürfe wieder öffnen, verschachtelte Listen)
+- **Modell:** Opus · **Braucht:** E4.3, E4.5 · **Dateien:** neu `crates/torro-mail/src/{html,markup}.rs`,
+  `crates/torro-mail/src/{lib,account,message}.rs`, `crates/torro-mail-imap/src/mime.rs`,
+  `crates/torroworkplace/src/mail/{write,send,sync}.rs`, `crates/torroworkplace/src/{core,approvals}.rs`,
+  `crates/torroworkplace/src/ui/accounts.rs`, `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroinbox/src/compose.rs`,
+  `crates/torro-gui/src/icon.rs` (+ 5 Lucide-Icons), `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Schreibfenster (Werkzeugleiste, Tasten), Steuerzentrale › Konten › Mail-Konto › Writing.
+- **API:** `Request::SaveDraft` · `mail.save_draft` · Write – neues optionales Feld `draft.html` (gesäubert);
+  `Request::UpdateMailAccount` · `accounts.update_mail_account` · Admin – neues optionales Feld `format`.
+- **MCP:** `mail_save_draft` (mit `html`), `accounts_update_mail_account` (mit `format`).
+- **Abnahme:** Tests: MIME mit beiden Teilen (mit und ohne Anhang), Klartext aus HTML, Säubern (Skripte, Bilder,
+  Handler, `javascript:`), Zitat beim Antworten mit Signatur darüber, Kern speichert gesäubert und sendet beide Teile,
+  Werkzeugleiste und Tasten auf dem Text; Sichtprüfung der Werkzeugleiste (dunkel/hell in der Startgröße; die Steuerzentrale-Zeile „Write new mail as“
+  nicht angesehen, `--open account-detail` öffnet ein Nextcloud-Konto).
+
 ### M5.1 Steuerzentrale: Mail-Konto im Assistenten
 - [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M2.7, M7.2 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,accounts}.rs`

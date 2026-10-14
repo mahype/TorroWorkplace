@@ -18,6 +18,13 @@
 //!   with unsaved changes asks first. "Send" saves what is not saved and then sends the draft
 //!   (`mail.send_draft`); an error stays in the window with the text, the draft stays where it
 //!   is, and one can try again. Only after a send that the server took the window closes.
+//! - **Formatted mail** (issue #125, for accounts that write HTML, `MailSettings::format`): a
+//!   toolbar over the text and the keys `Cmd+B`/`I`/`U`/`K` (`Ctrl` elsewhere) write the marks of
+//!   [`torro_mail::markup`] (`**bold**`, `*italic*`, `__underline__`, `[text](address)`, `- ` and
+//!   `1. ` lists, `> ` quotes); Enter in a list item starts the next one. The editor shows the marks
+//!   quietly and quotes in the secondary colour ([`markup::looks`]). Saved, the text becomes
+//!   the draft's HTML ([`markup::to_html`]); the quoted history of an answer stays someone else's
+//!   text (only its quote marks count), and the core puts the signature above it.
 //! - **Keys:** `Ctrl+Enter` (`Cmd+Enter` on macOS) sends, `Esc` closes (asking when something is
 //!   unsaved), `Tab` moves between the fields.
 //! - **Sizes** ([`torro_gui::layout`]): wide and medium show the form with a header bar, narrow
@@ -29,16 +36,19 @@
 //! brings is cleaned of control and direction characters before it enters the text.
 
 use std::future::Future;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
+use iced::advanced::text::highlighter::{self, Highlighter};
+use iced::font::Style as FontStyle;
 use iced::keyboard::{self, Key, key::Named};
 use iced::theme::Mode;
 use iced::widget::operation;
 use iced::widget::text::Wrapping;
-use iced::widget::text_editor::{self, Binding, Content};
+use iced::widget::text_editor::{self, Binding, Content, Cursor, Edit, Motion, Position};
 use iced::widget::{Space, column, container, row, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
@@ -57,7 +67,7 @@ use torro_inbox::demo::DemoSource;
 use torro_ipc::inbox::InboxClient;
 use torro_ipc::mail::{Delivery, MAX_ATTACHMENTS, MAX_FILE_BYTES};
 use torro_ipc::{AccountInfo, IpcError, Request, Response};
-use torro_mail::{AttachmentInfo, Draft, DraftAttachment, MailAddress, Message as Mail};
+use torro_mail::{AttachmentInfo, Draft, DraftAttachment, MailAddress, MailFormat, Message as Mail, html, markup};
 
 use crate::app::{Launch, LaunchError, flag_value};
 use crate::{list, mail};
@@ -178,10 +188,12 @@ pub enum Open {
     Loading,
     /// The message to answer could not be loaded.
     Failed,
+    /// Formatted text: bold, italic, a link, lists and a quote (issue #125).
+    Format,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 8] = [
+    const ALL: [(&'static str, Open); 9] = [
         ("cc", Open::Cc),
         ("attach", Open::Attach),
         ("error", Open::Error),
@@ -190,6 +202,7 @@ impl Open {
         ("menu", Open::Menu),
         ("loading", Open::Loading),
         ("failed", Open::Failed),
+        ("format", Open::Format),
     ];
 }
 
@@ -281,6 +294,9 @@ pub struct Sender {
     pub name: String,
     /// What the core puts under the message.
     pub signature: Option<String>,
+    /// The account writes formatted mail (`MailFormat::Html`, issue #125): the window shows the
+    /// toolbar and saves the text as HTML too.
+    pub html: bool,
 }
 
 impl Sender {
@@ -304,6 +320,7 @@ pub fn senders_of(accounts: &[AccountInfo]) -> Vec<Sender> {
                 address: view.address.clone(),
                 name: view.sender_name.clone(),
                 signature: view.settings.signature.clone().filter(|signature| !signature.trim().is_empty()),
+                html: view.settings.format == MailFormat::Html,
             })
         })
         .collect()
@@ -439,6 +456,8 @@ impl ComposeSource for DemoSource {
                 account: sender.account,
                 name: sender.name,
                 signature: sender.signature,
+                // The demo writes formatted mail, as accounts do unless the person chose plain text.
+                html: true,
             })
             .collect())
     }
@@ -537,6 +556,9 @@ pub struct Opening {
     pub attachments: Vec<Attached>,
     /// The message answered (`Draft::in_reply_to`); a forward is no reply.
     pub in_reply_to: Option<String>,
+    /// The line of `body` where the quoted history starts ("On … wrote:", or the first line of
+    /// the forwarded header): from there on the text is someone else's ([`markup::to_html`]).
+    pub history: Option<String>,
 }
 
 /// `Re: ` in front of `subject` (not twice, `AW:` counts as `Re:`).
@@ -589,10 +611,9 @@ pub fn attribution(message: &Mail) -> String {
 
 /// The lines in front of a forwarded text: who wrote it, when, about what, to whom.
 pub fn forward_header(message: &Mail) -> String {
-    let dashes = "----------";
     let people = |people: &[MailAddress]| people.iter().map(mail::person).collect::<Vec<_>>().join(", ");
     let mut lines = vec![
-        format!("{dashes} {} {dashes}", tr("Forwarded message")),
+        forward_line(),
         format!("{}: {}", tr("From"), sender_of(message)),
         format!("{}: {}", tr("Date"), when(message.summary.date)),
         format!("{}: {}", tr("Subject"), list::one_line(&message.summary.subject)),
@@ -604,6 +625,12 @@ pub fn forward_header(message: &Mail) -> String {
         lines.push(format!("{}: {}", tr("Cc"), people(&message.cc)));
     }
     lines.join("\n")
+}
+
+/// The first line of [`forward_header`]: "---------- Forwarded message ----------".
+fn forward_line() -> String {
+    let dashes = "----------";
+    format!("{dashes} {} {dashes}", tr("Forwarded message"))
 }
 
 /// Whether `address` is one of `own` (lower case), ignoring case.
@@ -634,6 +661,7 @@ pub fn opening(kind: &Kind, message: Option<&Mail>, own: &[String]) -> Opening {
             subject: forward_subject(&summary.subject),
             body: format!("\n\n{}\n\n{}", forward_header(message), list::plain(text).trim()),
             attachments: attachments.collect(),
+            history: Some(forward_line()),
             ..Opening::default()
         };
     }
@@ -660,6 +688,7 @@ pub fn opening(kind: &Kind, message: Option<&Mail>, own: &[String]) -> Opening {
         body: format!("\n\n{}\n{}", attribution(message), quote(text)),
         attachments: Vec::new(),
         in_reply_to: Some(summary.id.clone()),
+        history: Some(attribution(message)),
     }
 }
 
@@ -767,7 +796,7 @@ pub fn format_addresses(people: &[MailAddress]) -> String {
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Call {
-    Save(Draft),
+    Save(Box<Draft>),
     Send(String),
     Discard(String),
     Exit,
@@ -843,6 +872,8 @@ pub enum Message {
     Bcc(String),
     Subject(String),
     Body(text_editor::Action),
+    /// A button of the toolbar or its key (formatted mail only).
+    Format(Format),
     ShowCc,
     ShowBcc,
     /// The From menu opens or closes.
@@ -856,7 +887,7 @@ pub enum Message {
     /// "Send" (`Ctrl+Enter`).
     Send,
     /// A save finished: the revision it saved and the draft the core answered.
-    Saved(u64, Result<Draft, ComposeError>),
+    Saved(u64, Box<Result<Draft, ComposeError>>),
     /// A send finished.
     Sent(Result<Delivery, ComposeError>),
     /// A draft that is replaced by one in another account was moved to the trash.
@@ -901,6 +932,8 @@ pub struct Window<S> {
     body: Content,
     attachments: Vec<Attached>,
     in_reply_to: Option<String>,
+    /// Where the quoted history starts in the text ([`Opening::history`]).
+    history: Option<String>,
     /// The draft as the core answered the last save: its id, and the account it lives in.
     draft: Option<(String, String)>,
     /// Counts every change; a save remembers the number it saved.
@@ -953,6 +986,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             body: Content::new(),
             attachments: Vec::new(),
             in_reply_to: None,
+            history: None,
             draft: None,
             revision: 0,
             saved: 0,
@@ -1012,6 +1046,11 @@ impl<S: ComposeSource + 'static> Window<S> {
 
     fn sender(&self) -> Option<&Sender> {
         self.senders.get(self.from)
+    }
+
+    /// The account writes formatted mail: toolbar, keys and HTML.
+    fn formatted(&self) -> bool {
+        self.sender().is_some_and(|sender| sender.html)
     }
 
     /// The title of the window: the subject, else what is being written.
@@ -1081,10 +1120,24 @@ impl<S: ComposeSource + 'static> Window<S> {
             Message::Bcc(text) => self.edited(|window| window.bcc = text),
             Message::Subject(text) => self.edited(|window| window.subject = text),
             Message::Body(action) => {
+                // Enter in a list item starts the next one (an empty one ends the list).
+                let enter = matches!(action, text_editor::Action::Edit(Edit::Enter));
+                if enter && self.formatted() && continue_list(&mut self.body) {
+                    self.touch();
+                    return Task::none();
+                }
                 let edits = action.is_edit();
                 self.body.perform(action);
                 if edits {
                     self.touch();
+                }
+            }
+            Message::Format(format) => {
+                if self.editable() && self.formatted() {
+                    apply_format(&mut self.body, format);
+                    self.touch();
+                    // A click on the toolbar took the focus from the text.
+                    return operation::focus(BODY);
                 }
             }
             Message::ShowCc => {
@@ -1112,7 +1165,7 @@ impl<S: ComposeSource + 'static> Window<S> {
                 }
             }
             Message::Send => return self.send(),
-            Message::Saved(revision, result) => return self.saved(revision, result),
+            Message::Saved(revision, result) => return self.saved(revision, *result),
             Message::Sent(result) => return self.sent(result),
             Message::Cleaned => {}
             Message::Escape => return self.escape(),
@@ -1177,6 +1230,7 @@ impl<S: ComposeSource + 'static> Window<S> {
         self.body = Content::with_text(&opened.body);
         self.attachments = opened.attachments;
         self.in_reply_to = opened.in_reply_to;
+        self.history = opened.history;
         self.phase = Phase::Ready;
         self.apply_open();
         let focus = if self.to.is_empty() { TO } else { BODY };
@@ -1222,6 +1276,15 @@ impl<S: ComposeSource + 'static> Window<S> {
                 self.asking = true;
             }
             Some(Open::Menu) => self.menu = self.senders.len() > 1,
+            Some(Open::Format) => {
+                self.to = "Jonas Weber <jonas.weber@work.example.org>".to_owned();
+                self.subject = "Budget review for Q4".to_owned();
+                self.body = Content::with_text(concat!(
+                    "Hi Jonas,\n\nthe numbers look **fine** to me, *except* the travel budget. ",
+                    "See [the sheet](https://intranet.work.example.org/budget/q4).\n\n",
+                    "- Flights\n- Hotels\n\n1. Check\n2. __Approve__\n\n> Could you look before Thursday?\n\nAnna",
+                ));
+            }
             Some(Open::Loading | Open::Failed) | None => {}
         }
     }
@@ -1277,6 +1340,12 @@ impl<S: ComposeSource + 'static> Window<S> {
         // A draft that lives in another account cannot be replaced by one in this one: the core
         // would not find it. A new one is saved and the old one goes to the trash afterwards.
         let id = self.draft.as_ref().filter(|(_, in_account)| *in_account == account).map(|(id, _)| id.clone());
+        let text = self.body.text().replace("\r\n", "\n");
+        // Formatted mail: the marks as HTML, and the plain text the core would make of it.
+        let html = self
+            .formatted()
+            .then(|| markup::to_html(&text, self.history.as_deref()))
+            .filter(|markup| !markup.is_empty());
         Draft {
             id,
             account,
@@ -1284,7 +1353,8 @@ impl<S: ComposeSource + 'static> Window<S> {
             cc: parse_addresses(&self.cc).0,
             bcc: parse_addresses(&self.bcc).0,
             subject: list::one_line(&self.subject),
-            body: self.body.text().replace("\r\n", "\n"),
+            body: html.as_deref().map_or(text, html::to_text),
+            html,
             in_reply_to: self.in_reply_to.clone(),
             attachments: self.attachments.iter().map(Attached::draft).collect(),
         }
@@ -1316,10 +1386,10 @@ impl<S: ComposeSource + 'static> Window<S> {
         self.saving = Some(self.revision);
         let revision = self.revision;
         #[cfg(test)]
-        self.calls.push(Call::Save(draft.clone()));
+        self.calls.push(Call::Save(Box::new(draft.clone())));
         let source = self.source.clone();
         let saved = Task::perform(async move { save_with_fallback(source, draft).await }, move |result| {
-            Message::Saved(revision, result)
+            Message::Saved(revision, Box::new(result))
         });
         match old {
             Some(old) => Task::batch([saved, self.discard(old)]),
@@ -1688,7 +1758,13 @@ impl<S: ComposeSource + 'static> Window<S> {
         if editable {
             editor = editor.on_action(Message::Body);
         }
-        let mut form = column![fields, editor].spacing(space::s()).height(Fill);
+        let mut form = column![fields].spacing(space::s()).height(Fill);
+        if self.formatted() {
+            form = form.push(self.toolbar());
+            form = form.push(editor.highlight_with::<MarkupHighlighter>((), look_format));
+        } else {
+            form = form.push(editor);
+        }
         if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
             form = form.push(signature_block(signature));
         }
@@ -1696,6 +1772,23 @@ impl<S: ComposeSource + 'static> Window<S> {
         // of its own, sized by the tiling manager, so a reading width would only leave a gap.
         let padding = if narrow { Padding::new(space::m()) } else { Padding::new(space::l()) };
         container(form).width(Fill).height(Fill).padding(padding).into()
+    }
+
+    /// The toolbar of formatted mail (issue #125): bold, italic, underline, link | lists, quote.
+    /// Each button does what its key does; the tooltip names the key.
+    fn toolbar(&self) -> Element<'_, Message> {
+        let editable = self.editable();
+        let button = |format: Format| -> Element<'_, Message> {
+            let tip = match format.key() {
+                Some(key) => trf("{name} ({keys})", &[("name", &format.name()), ("keys", &shortcut(key))]),
+                None => format.name().to_owned(),
+            };
+            widgets::icon_button(format.icon(), tip, editable.then_some(Message::Format(format)))
+        };
+        let divider = container(iced::widget::rule::vertical(size::HAIRLINE).style(style::rule)).height(space::l());
+        let inline = [Format::Bold, Format::Italic, Format::Underline, Format::Link].map(button);
+        let blocks = [Format::Bullets, Format::Numbers, Format::Quote].map(button);
+        row(inline).push(divider).extend(blocks).spacing(space::xs()).align_y(Alignment::Center).into()
     }
 
     /// A single-line field of the form.
@@ -1794,7 +1887,337 @@ fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
     if matches!(press.key.as_ref(), Key::Named(Named::Enter)) && press.modifiers.command() {
         return Some(Binding::Custom(Message::Send));
     }
+    if let Some(format) = format_key(&press.key, press.modifiers) {
+        return Some(Binding::Custom(Message::Format(format)));
+    }
     Binding::from_key_press(press)
+}
+
+/// The formatting of `Cmd`/`Ctrl` and B, I, U or K (no Shift, no Alt); `None` for other keys.
+fn format_key(key: &Key, modifiers: keyboard::Modifiers) -> Option<Format> {
+    let Key::Character(letter) = key.as_ref() else { return None };
+    if !modifiers.command() || modifiers.shift() || modifiers.alt() {
+        return None;
+    }
+    Format::ALL.into_iter().find(|format| format.key().is_some_and(|key| key.eq_ignore_ascii_case(letter)))
+}
+
+/// `Cmd+B` on macOS, `Ctrl+B` elsewhere, for tooltips.
+fn shortcut(key: &str) -> String {
+    let command = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+    format!("{command}+{key}")
+}
+
+// ---------------------------------------------------------------------------------------------
+// Formatting the text (issue #125)
+// ---------------------------------------------------------------------------------------------
+
+/// What a button of the toolbar or its key does to the text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    /// `**…**` around the selection, or an empty pair to type into.
+    Bold,
+    /// `*…*`, likewise.
+    Italic,
+    /// `__…__`, likewise.
+    Underline,
+    /// `[selection](address)`: the selection's own address when it is one, else the cursor waits
+    /// between the parentheses.
+    Link,
+    /// `- ` before the lines of the selection (or the cursor's line); again: taken away.
+    Bullets,
+    /// `1. `, `2. ` … likewise.
+    Numbers,
+    /// `> ` likewise.
+    Quote,
+}
+
+impl Format {
+    /// In the order of the toolbar.
+    pub const ALL: [Format; 7] = [
+        Format::Bold,
+        Format::Italic,
+        Format::Underline,
+        Format::Link,
+        Format::Bullets,
+        Format::Numbers,
+        Format::Quote,
+    ];
+
+    /// The mark around text, for bold, italic and underline.
+    fn mark(self) -> Option<&'static str> {
+        match self {
+            Format::Bold => Some("**"),
+            Format::Italic => Some("*"),
+            Format::Underline => Some("__"),
+            Format::Link | Format::Bullets | Format::Numbers | Format::Quote => None,
+        }
+    }
+
+    /// The letter that does it with `Cmd`/`Ctrl`.
+    fn key(self) -> Option<&'static str> {
+        match self {
+            Format::Bold => Some("B"),
+            Format::Italic => Some("I"),
+            Format::Underline => Some("U"),
+            Format::Link => Some("K"),
+            Format::Bullets | Format::Numbers | Format::Quote => None,
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Format::Bold => Icon::Bold,
+            Format::Italic => Icon::Italic,
+            Format::Underline => Icon::Underline,
+            Format::Link => Icon::Link,
+            Format::Bullets => Icon::List,
+            Format::Numbers => Icon::ListOrdered,
+            Format::Quote => Icon::TextQuote,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Format::Bold => tr("Bold"),
+            Format::Italic => tr("Italic"),
+            Format::Underline => tr("Underline"),
+            Format::Link => tr("Link"),
+            Format::Bullets => tr("Bulleted list"),
+            Format::Numbers => tr("Numbered list"),
+            Format::Quote => tr("Quote"),
+        }
+    }
+}
+
+/// Does `format` to `content` where its cursor or selection is ([`Format`]).
+pub fn apply_format(content: &mut Content, format: Format) {
+    match format.mark() {
+        Some(mark) => wrap(content, mark),
+        None if format == Format::Link => link(content),
+        None => prefix_lines(content, format),
+    }
+}
+
+fn paste(content: &mut Content, text: &str) {
+    content.perform(text_editor::Action::Edit(Edit::Paste(Arc::new(text.to_owned()))));
+}
+
+fn step(content: &mut Content, motion: Motion, times: usize) {
+    for _ in 0..times {
+        content.perform(text_editor::Action::Move(motion));
+    }
+}
+
+/// `mark` around each line of the selection (taken away where it is there already), or an empty
+/// pair with the cursor between.
+fn wrap(content: &mut Content, mark: &str) {
+    match content.selection().filter(|selected| !selected.trim().is_empty()) {
+        Some(selected) => {
+            let lines: Vec<String> = selected.split('\n').map(|line| toggle_mark(line, mark)).collect();
+            paste(content, &lines.join("\n"));
+        }
+        None => {
+            paste(content, &format!("{mark}{mark}"));
+            step(content, Motion::Left, mark.len());
+        }
+    }
+}
+
+/// `line` with `mark` around its text, or without it when it has it; blank lines and the white
+/// space at the ends stay.
+fn toggle_mark(line: &str, mark: &str) -> String {
+    let text = line.trim();
+    if text.is_empty() {
+        return line.to_owned();
+    }
+    let start = line.len() - line.trim_start().len();
+    let (lead, trail) = (&line[..start], &line[start + text.len()..]);
+    let inner = text.strip_prefix(mark).and_then(|rest| rest.strip_suffix(mark)).filter(|inner| !inner.is_empty());
+    match inner {
+        Some(inner) => format!("{lead}{inner}{trail}"),
+        None => format!("{lead}{mark}{text}{mark}{trail}"),
+    }
+}
+
+/// `[selection](address)` ([`Format::Link`]); without a selection `[]()` with the cursor in the
+/// brackets.
+fn link(content: &mut Content) {
+    match content.selection().filter(|selected| !selected.trim().is_empty() && !selected.contains('\n')) {
+        Some(selected) => match html::safe_url(selected.trim()) {
+            Some(address) => paste(content, &format!("[{selected}]({address})")),
+            None => {
+                paste(content, &format!("[{selected}]()"));
+                step(content, Motion::Left, 1);
+            }
+        },
+        None => {
+            paste(content, "[]()");
+            step(content, Motion::Left, 3);
+        }
+    }
+}
+
+/// The length of the mark of `format` at the start of `line` (with the white space before it):
+/// `- ` or `* ` of an item, `12. ` of a numbered one, `>` (and one space) of a quote. `None` when
+/// the line has none.
+fn line_mark(line: &str, format: Format) -> Option<usize> {
+    let rest = line.trim_start();
+    let lead = line.len() - rest.len();
+    let len = match format {
+        Format::Bullets => (rest.starts_with("- ") || rest.starts_with("* ")).then_some(2)?,
+        Format::Numbers => {
+            let digits = rest.find(|c: char| !c.is_ascii_digit()).filter(|end| (1..=6).contains(end))?;
+            rest[digits..].starts_with(". ").then_some(digits + 2)?
+        }
+        Format::Quote => {
+            let after = rest.strip_prefix('>')?;
+            1 + usize::from(after.starts_with(' '))
+        }
+        Format::Bold | Format::Italic | Format::Underline | Format::Link => return None,
+    };
+    Some(lead + len)
+}
+
+/// The mark of a list item of either kind at the start of `line`.
+fn list_mark(line: &str) -> Option<usize> {
+    line_mark(line, Format::Bullets).or_else(|| line_mark(line, Format::Numbers))
+}
+
+/// Takes away the first `len` characters of line `at` (white space and ASCII marks only).
+fn cut_start(content: &mut Content, at: usize, len: usize) {
+    content.move_to(Cursor { position: Position { line: at, column: 0 }, selection: None });
+    if len == 0 {
+        return;
+    }
+    for _ in 0..len {
+        content.perform(text_editor::Action::Select(Motion::Right));
+    }
+    content.perform(text_editor::Action::Edit(Edit::Backspace));
+}
+
+/// The mark of `format` before every line from the cursor's to the selection's end (blank lines
+/// of a selection left as they are); when all of them have it, it is taken away instead. A list
+/// mark of the other kind is replaced. The cursor ends at the end of the last line.
+fn prefix_lines(content: &mut Content, format: Format) {
+    let cursor = content.cursor();
+    let other = cursor.selection.unwrap_or(cursor.position);
+    let (first, last) = (cursor.position.line.min(other.line), cursor.position.line.max(other.line));
+    let lines: Vec<String> =
+        (first..=last).filter_map(|at| content.line(at).map(|line| line.text.into_owned())).collect();
+    let filled: Vec<&String> = lines.iter().filter(|line| !line.trim().is_empty()).collect();
+    let remove = !filled.is_empty() && filled.iter().all(|line| line_mark(line, format).is_some());
+    let mut number = 0;
+    for (offset, line) in lines.iter().enumerate() {
+        if line.trim().is_empty() && first != last {
+            continue;
+        }
+        let at = first + offset;
+        let existing = if remove {
+            line_mark(line, format)
+        } else if format == Format::Quote {
+            None
+        } else {
+            list_mark(line)
+        };
+        cut_start(content, at, existing.unwrap_or(0));
+        if !remove {
+            number += 1;
+            let mark = match format {
+                Format::Numbers => format!("{number}. "),
+                Format::Quote => "> ".to_owned(),
+                _ => "- ".to_owned(),
+            };
+            paste(content, &mark);
+        }
+    }
+    content.move_to(Cursor { position: Position { line: last, column: 0 }, selection: None });
+    content.perform(text_editor::Action::Move(Motion::End));
+}
+
+/// Enter in a list item: a new item below (`- `, or the next number), or, in an empty item, the
+/// end of the list (its mark goes). `false` when the cursor is not in the text of a list item, so
+/// Enter does what it always does.
+fn continue_list(content: &mut Content) -> bool {
+    let cursor = content.cursor();
+    if cursor.selection.is_some() {
+        return false;
+    }
+    let at = cursor.position.line;
+    let Some(line) = content.line(at).map(|line| line.text.into_owned()) else { return false };
+    let Some(len) = list_mark(&line) else { return false };
+    if cursor.position.column < len {
+        return false;
+    }
+    if line[len..].trim().is_empty() {
+        cut_start(content, at, line.chars().count());
+        return true;
+    }
+    let mark = &line[..len];
+    let next = match line_mark(&line, Format::Numbers) {
+        Some(_) => {
+            let lead = &mark[..mark.len() - mark.trim_start().len()];
+            let number: u32 = mark.trim().trim_end_matches('.').parse().unwrap_or(0);
+            format!("{lead}{}. ", number.saturating_add(1))
+        }
+        None => mark.to_owned(),
+    };
+    content.perform(text_editor::Action::Edit(Edit::Enter));
+    paste(content, &next);
+    true
+}
+
+/// The highlighter of the text of formatted mail: [`markup::looks`] line by line, drawn by
+/// [`look_format`].
+struct MarkupHighlighter {
+    line: usize,
+}
+
+impl Highlighter for MarkupHighlighter {
+    type Settings = ();
+    type Highlight = markup::Look;
+    type Iterator<'a> = std::vec::IntoIter<(Range<usize>, markup::Look)>;
+
+    fn new(_settings: &()) -> MarkupHighlighter {
+        MarkupHighlighter { line: 0 }
+    }
+
+    fn update(&mut self, _settings: &()) {
+        self.line = 0;
+    }
+
+    fn change_line(&mut self, line: usize) {
+        self.line = self.line.min(line);
+    }
+
+    fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
+        self.line += 1;
+        markup::looks(line).into_iter()
+    }
+
+    fn current_line(&self) -> usize {
+        self.line
+    }
+}
+
+/// How a [`markup::Look`] is drawn: marks in `TEXT_3`, quotes in `TEXT_2`; bold asks for the
+/// strong weight and italic for the italic style of the text font. The marks stay visible, so the
+/// text reads right also where the editor draws one weight only (Iced 0.14 on macOS keeps the
+/// line's weight) and for underline, which has no form in the editor.
+fn look_format(look: &markup::Look, theme: &Theme) -> highlighter::Format<iced::Font> {
+    let colors = palette(theme);
+    let color = if look.mark {
+        Some(colors.text_3)
+    } else if look.quote {
+        Some(colors.text_2)
+    } else {
+        None
+    };
+    let base = typo::body().font;
+    // The design names the strong weight as a font of its own (its family may differ per weight).
+    let weight = if look.strong { theme::font_semibold() } else { base };
+    let font = iced::Font { style: if look.emphasis { FontStyle::Italic } else { weight.style }, ..weight };
+    highlighter::Format { color, font: (font != base).then_some(font) }
 }
 
 /// A labelled row of the form: the label in `META` on the left, the control beside it.
@@ -1912,8 +2335,8 @@ mod tests {
             panic!("a save was started")
         };
         let revision = window.saving.expect("a save is running");
-        let result = block_on(save_with_fallback(window.source.clone(), draft));
-        window.update(Message::Saved(revision, result))
+        let result = block_on(save_with_fallback(window.source.clone(), *draft));
+        window.update(Message::Saved(revision, Box::new(result)))
     }
 
     fn type_in<S: ComposeSource + 'static>(window: &mut Window<S>, to: &str, subject: &str, text: &str) {
@@ -2074,6 +2497,7 @@ mod tests {
             address: address.into(),
             name: String::new(),
             signature: None,
+            html: true,
         };
         let senders = [sender("anna@work.example.org"), sender("anna@example.org")];
         let message = demo_mail("m:p1");
@@ -2100,7 +2524,8 @@ mod tests {
                 "address": address, "sender_name": name,
                 "imap": {"host": "imap.example.org", "port": 993, "security": "tls"},
                 "smtp": {"host": "smtp.example.org", "port": 587, "security": "starttls"},
-                "settings": {"signature": signature, "services": {"mail": mail_on, "calendars": false, "tasks": false}},
+                "settings": {"signature": signature, "services": {"mail": mail_on, "calendars": false, "tasks": false},
+                    "format": if address.starts_with("blank") { "plain" } else { "html" }},
                 "mail": {}
             })
         };
@@ -2127,16 +2552,18 @@ mod tests {
                     account: "mail:anna@example.org".into(),
                     address: "anna@example.org".into(),
                     name: "Anna".into(),
-                    signature: Some("Anna\nBerg".into())
+                    signature: Some("Anna\nBerg".into()),
+                    html: true,
                 },
                 Sender {
                     account: "mail:blank@example.org".into(),
                     address: "blank@example.org".into(),
                     name: String::new(),
-                    signature: None
+                    signature: None,
+                    html: false,
                 },
             ],
-            "no other kind, no account with mail off, a blank signature is none"
+            "no other kind, no account with mail off, a blank signature is none, the format as set"
         );
         assert_eq!(senders[0].label(), "Anna <anna@example.org>");
         assert_eq!(senders[1].label(), "blank@example.org");
@@ -2286,6 +2713,7 @@ mod tests {
     fn a_draft_that_is_gone_is_saved_again_instead_of_lost() {
         let source = Arc::new(DemoSource::new(Utc::now()));
         let draft = |id: Option<&str>| Draft {
+            html: None,
             id: id.map(str::to_owned),
             account: "mail:anna@example.org".into(),
             to: vec![who("", "bob@example.org")],
@@ -2377,6 +2805,7 @@ mod tests {
     fn the_demo_refuses_a_draft_without_recipient_as_the_core_does() {
         let demo = DemoSource::new(Utc::now());
         let draft = Draft {
+            html: None,
             id: None,
             account: "mail:anna@example.org".into(),
             to: Vec::new(),
@@ -2555,6 +2984,154 @@ mod tests {
         assert!(matches!(map(press(Key::Named(Named::Tab), none)), Some(Message::Focus(true))));
         assert!(matches!(map(press(Key::Named(Named::Tab), keyboard::Modifiers::SHIFT)), Some(Message::Focus(false))));
         assert!(map(press(Key::Character("a".into()), none)).is_none());
+    }
+
+    // ----- formatted mail (issue #125) -----
+
+    fn text_of(content: &Content) -> String {
+        content.text().trim_end_matches('\n').to_owned()
+    }
+
+    /// `text` in an editor with the cursor at its end.
+    fn editor(text: &str) -> Content {
+        let mut content = Content::with_text(text);
+        content.perform(text_editor::Action::Move(Motion::DocumentEnd));
+        content
+    }
+
+    fn select_all(content: &mut Content) {
+        content.perform(text_editor::Action::SelectAll);
+    }
+
+    #[test]
+    fn bold_italic_and_underline_wrap_the_selection_or_wait_for_text() {
+        let mut content = editor("Hello world");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Bold);
+        assert_eq!(text_of(&content), "**Hello world**");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Bold);
+        assert_eq!(text_of(&content), "Hello world", "again takes it away");
+
+        let mut content = editor("Hi ");
+        apply_format(&mut content, Format::Italic);
+        paste(&mut content, "there");
+        assert_eq!(text_of(&content), "Hi *there*", "the cursor waits between the marks");
+
+        let mut content = editor("one\n\n  two ");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Underline);
+        assert_eq!(text_of(&content), "__one__\n\n  __two__ ", "each line, blank ones and edges left");
+    }
+
+    #[test]
+    fn links_take_the_selection_and_an_address_of_its_own() {
+        let mut content = editor("https://example.org/q4");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Link);
+        assert_eq!(text_of(&content), "[https://example.org/q4](https://example.org/q4)");
+
+        let mut content = editor("the sheet");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Link);
+        paste(&mut content, "https://example.org");
+        assert_eq!(text_of(&content), "[the sheet](https://example.org)", "the cursor waits for the address");
+
+        let mut content = editor("See ");
+        apply_format(&mut content, Format::Link);
+        paste(&mut content, "this");
+        assert_eq!(text_of(&content), "See [this]()");
+    }
+
+    #[test]
+    fn lists_and_quotes_mark_the_lines_and_take_the_mark_away_again() {
+        let mut content = editor("one\ntwo\n\nthree");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Numbers);
+        assert_eq!(text_of(&content), "1. one\n2. two\n\n3. three");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Bullets);
+        assert_eq!(text_of(&content), "- one\n- two\n\n- three", "the other kind of list is replaced");
+        select_all(&mut content);
+        apply_format(&mut content, Format::Bullets);
+        assert_eq!(text_of(&content), "one\ntwo\n\nthree", "again takes it away");
+
+        let mut content = editor("first\nsecond");
+        apply_format(&mut content, Format::Quote);
+        assert_eq!(text_of(&content), "first\n> second", "without a selection the cursor's line");
+        apply_format(&mut content, Format::Quote);
+        assert_eq!(text_of(&content), "first\nsecond");
+    }
+
+    #[test]
+    fn enter_in_a_list_item_starts_the_next_and_an_empty_one_ends_the_list() {
+        let mut content = editor("- milk");
+        assert!(continue_list(&mut content));
+        paste(&mut content, "bread");
+        assert_eq!(text_of(&content), "- milk\n- bread");
+        let mut content = editor("  9. nine");
+        assert!(continue_list(&mut content));
+        assert_eq!(text_of(&content), "  9. nine\n  10. ");
+        assert!(continue_list(&mut content), "an empty item");
+        assert_eq!(content.line_count(), 2, "the line stays");
+        assert_eq!(text_of(&content), "  9. nine", "without its mark: the list ends");
+        let mut plain = editor("no list");
+        assert!(!continue_list(&mut plain), "Enter as always");
+    }
+
+    #[test]
+    fn the_keys_of_formatting_are_command_and_a_letter() {
+        let command = keyboard::Modifiers::COMMAND;
+        let key = |letter: &str| Key::Character(letter.into());
+        assert_eq!(format_key(&key("b"), command), Some(Format::Bold));
+        assert_eq!(format_key(&key("I"), command), Some(Format::Italic));
+        assert_eq!(format_key(&key("u"), command), Some(Format::Underline));
+        assert_eq!(format_key(&key("k"), command), Some(Format::Link));
+        assert_eq!(format_key(&key("b"), keyboard::Modifiers::empty()), None, "typing a b");
+        assert_eq!(format_key(&key("b"), command | keyboard::Modifiers::SHIFT), None);
+        assert_eq!(format_key(&key("x"), command), None);
+        let tip = trf("{name} ({keys})", &[("name", &tr("Bold")), ("keys", &shortcut("B"))]);
+        assert!(tip.contains("+B"), "{tip}");
+    }
+
+    #[test]
+    fn formatted_mail_is_saved_as_html_with_the_history_marked_and_plain_mail_as_text() {
+        let mut window = ready(&["--reply", "m:w1"]);
+        assert!(window.formatted(), "the demo writes formatted mail");
+        let _ = window.update(Message::Body(text_editor::Action::Move(Motion::DocumentStart)));
+        let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Paste(Arc::new("Thanks, ".into())))));
+        let _ = window.update(Message::Format(Format::Bold));
+        let _ = window.update(Message::Body(text_editor::Action::Edit(Edit::Paste(Arc::new("Jonas".into())))));
+        let draft = window.draft();
+        let html = draft.html.expect("formatted");
+        assert!(html.starts_with("<p>Thanks, <strong>Jonas</strong></p><div class=\"torro-quote\">"), "{html}");
+        assert!(html.contains("<blockquote type=\"cite\">"), "the history is quoted: {html}");
+        assert_eq!(html::sanitize(&html), html, "nothing the core would take away");
+        assert!(draft.body.starts_with("Thanks, Jonas\n\n"), "the plain text beside it: {}", draft.body);
+        assert!(window.unsaved(), "formatting is a change");
+
+        // An account that writes plain text: no toolbar, no HTML, the marks stay as typed.
+        window.senders.iter_mut().for_each(|sender| sender.html = false);
+        let _ = window.update(Message::Format(Format::Italic));
+        let plain = window.draft();
+        assert_eq!(plain.html, None);
+        assert!(plain.body.starts_with("Thanks, **Jonas**"), "{}", plain.body);
+        for size in [WIDE, NARROW] {
+            let _ = window.update(Message::Resized(size));
+            let _ = window.view();
+        }
+    }
+
+    #[test]
+    fn answers_and_forwards_know_where_the_history_starts() {
+        let message = demo_mail("m:w1");
+        let reply = opening(&Kind::Reply("m:w1".into()), Some(&message), &own());
+        assert_eq!(reply.history.as_deref(), Some(attribution(&message).as_str()));
+        let forward = opening(&Kind::Forward("m:w1".into()), Some(&message), &own());
+        let first = forward_header(&message).lines().next().map(str::to_owned);
+        assert_eq!(forward.history, first);
+        let html = markup::to_html(&forward.body, forward.history.as_deref());
+        assert!(html.starts_with("<div class=\"torro-quote\">"), "the forwarded text is not own text: {html}");
     }
 
     #[test]
