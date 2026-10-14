@@ -556,6 +556,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Invitations in the inbox, overlaps (E8.3c)
+    ("No conflicts", "Keine Überschneidungen"),
+    ("Overlaps with {title} at {time}", "Überschneidet sich mit {title} um {time}"),
+    ("Overlaps with {title} at {time} and {n} more", "Überschneidet sich mit {title} um {time} und {n} weiteren"),
+    ("Team sync", "Team-Abstimmung"),
     // Answering invitations (E8.3b)
     ("Accepted: {title}", "Angenommen: {title}"),
     ("Tentative: {title}", "Vorläufig: {title}"),

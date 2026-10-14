@@ -1210,6 +1210,22 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests mit dem Fake-Fenstermanager: mehrere Fenster, Auswahl über den Titel, kein Treffer →
   `unsupported` mit Grund. Von Hand am Mac mit Terminal.app und einem zweiten Terminal geprüft, im Bericht.
 
+### E8.10 Fehlende Icons nachrüsten
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E8.6b, E8.8b · **Dateien:** `crates/torro-gui/src/icon.rs`,
+  `crates/torro-gui/assets/icons/{bell-off,info,chart-column,table}.svg` (neu), `crates/torro-gui/examples/gallery.rs`,
+  `crates/torroinbox/src/{app,detail,notifications,insights,list}.rs`, `.claude/skills/torro-design/SKILL.md`
+- **Lücke aus E8.6b und E8.8b:** Im Icon-Satz fehlen eine durchgestrichene Glocke (Stummschalten), Info (Spur
+  „Info“) und ein Säulendiagramm (Insights); dort stehen bisher `Bell`, `Eye` und `ChartGantt`. Für „Table view“ fehlt
+  ein Tabellen-Icon.
+- **Umsetzung:** Die vier Lucide-Icons (0.469.0) als Dateien im Format der vorhandenen anlegen (Kopf
+  `<!-- @license lucide-static v0.469.0 - ISC -->`, `stroke-width="1.75"`), Varianten `BellOff`, `Info`, `ChartColumn`,
+  `Table` in `Icon`. Einsetzen: Glocke zum Stummschalten → `BellOff`; Spur Info → `Info`; Insights → `ChartColumn`;
+  „Table view“ → `Table`. `Bell` bleibt für Benachrichtigungen allgemein (Fenster, Spalte).
+- **API/MCP:** keine Funktion, nur Darstellung.
+- **Abnahme:** Galerie zeigt die vier Icons; Test, dass jede Variante eine Datei hat (falls vorhanden, sonst neu);
+  `scripts/design-check.sh` sauber; Sichtprüfung der Stellen hell und dunkel.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur
