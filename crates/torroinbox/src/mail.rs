@@ -1638,8 +1638,6 @@ impl ReaderButton {
             (true, Some(tip)) => {
                 widgets::with_tooltip(widgets::text_button(Some(self.icon), self.label, style, self.message), tip)
             }
-            // An AI button that is off (issue #120) shows so in its icon too.
-            (false, Some(tip)) if self.message.is_none() => crate::suggest::off_button(self.icon, tip),
             (false, tip) => widgets::icon_button(self.icon, tip.unwrap_or(self.label), self.message),
         };
         match self.anchor {
