@@ -1325,6 +1325,20 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests (Wortregel an der Einladungskarte, Demo-Icons); `scripts/ci-local.sh`; kurze Sichtprüfung, wenn
   der Bildschirm offen ist.
 
+### E8.14 Uhrzeit statt „17 h“ (Issue #115)
+- [x] erledigt (2026-10-14: `list::stamp` ersetzt `list::ago` in Zeilen und Karten aller Fensterarten, im Mail-Fenster
+  und im Blick; heute „16:40“, gestern „Yesterday 16:40“, sonst das kurze Datum; das Paneel behält „4 min ago“ neben
+  Datum und Uhrzeit; `torrotasks` bleibt bei „Synced 2 min ago“, das ist ein Stand, kein Eingang)
+- **Modell:** Opus · **Braucht:** E8.13 · **Dateien:** `crates/torroinbox/src/{list,glance,mail}.rs`,
+  `crates/torro-core/src/i18n/de.rs`
+- Ein Eintrag oder eine Mail von heute zeigt die Uhrzeit, nicht wie lange es her ist; relative Angaben muss man
+  zurückrechnen. Gestern mit Uhrzeit, damit „16:40“ nicht für heute gehalten wird; ältere mit kurzem Datum. Die
+  Zeitgruppen „Today/Yesterday“ bleiben.
+- **Oberfläche:** Zeilen und Karten (Eingang, Benachrichtigungen, Zentrale, Mail), Blick. **API/MCP:** keine (nur
+  Darstellung).
+- **Abnahme:** Tests für `stamp` (vor 5 min, vor 23 h am selben Tag und am Vortag, letzte Woche, Uhr vorgehend), in
+  beiden Sprachen.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,

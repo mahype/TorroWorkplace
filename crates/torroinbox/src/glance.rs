@@ -3,12 +3,12 @@
 //!
 //! - **Mini** ([`mini`]): at the top the numbers, each a big figure (`DISPLAY`) with its word beside
 //!   it – "6 for you  3 ● waiting" (the second part only while something waits) – then as many
-//!   open entries of "For me" as fit the height, at least the top [`SHOWN`], as rows: the source's icon, the title cut to fit, how long
-//!   ago at the right. Nothing for the user: a calm "Nothing for you right now." under the inbox
+//!   open entries of "For me" as fit the height, at least the top [`SHOWN`], as rows: the source's icon, the title cut to fit, when
+//!   it came at the right ("16:40"). Nothing for the user: a calm "Nothing for you right now." under the inbox
 //!   icon.
 //! - **Strip** ([`strip`]): the same numbers at the left – the figure in `DISPLAY` as in the mini
 //!   tile (task E8.11) –, the same entries beside them as cells in one row – icon and title, below it
-//!   the source and how long ago – sharing the width, each at most [`cell_max()`] wide (a wide strip
+//!   the source and when it came – sharing the width, each at most [`cell_max()`] wide (a wide strip
 //!   keeps them together at the left), the last one taking what is left ([`cell_widths`], task
 //!   E8.12), so the strip's end is not empty.
 //!
@@ -107,7 +107,7 @@ pub struct GlanceData<'a> {
     pub selected: Option<&'a str>,
     /// The folders of the mail accounts (empty without mail), for the unread numbers.
     pub folders: &'a [Folder],
-    /// "Now", for the times ("4 min").
+    /// "Now", for the times ("16:40", "Yesterday 16:40").
     pub now: DateTime<Utc>,
     /// A later call that failed, as one quiet line (the glance has no retry button).
     pub error: Option<&'a str>,
@@ -312,10 +312,10 @@ fn source_mark(item: &Item) -> Element<'static, Message> {
         .into()
 }
 
-/// How long ago the entry last changed ("4 min"), quiet and tabular; a waiting one has the
+/// When the entry last changed ("16:40", `list::stamp`), quiet and tabular; a waiting one has the
 /// attention dot in front of it.
 fn time_view(item: &Item, now: DateTime<Utc>) -> Element<'static, Message> {
-    let time = typo::text(typo::meta().tabular(), list::ago(item.updated, now)).style(theme::text_3);
+    let time = typo::text(typo::meta().tabular(), list::stamp(item.updated, now)).style(theme::text_3);
     let mut line = row![].spacing(space::xs()).align_y(Alignment::Center);
     if list::is_waiting(item) {
         line = line.push(widgets::status_dot(widgets::Status::Attention));
@@ -326,7 +326,7 @@ fn time_view(item: &Item, now: DateTime<Utc>) -> Element<'static, Message> {
 /// The width of [`time_view`] for `item`.
 fn time_width(item: &Item, now: DateTime<Utc>) -> f32 {
     let dot = if list::is_waiting(item) { dot() + space::xs() } else { 0.0 };
-    dot + text_width(&list::ago(item.updated, now), typo::meta())
+    dot + text_width(&list::stamp(item.updated, now), typo::meta())
 }
 
 /// A clickable row or cell: `content` on a sidebar-row surface (hover, and `selected` while it is
@@ -530,7 +530,7 @@ fn numbers_width(parts: &[(String, bool)], senders: &[String]) -> f32 {
 }
 
 /// One entry of the strip as a cell `width` wide: the icon beside the title (`BODY`), below the
-/// title the source and how long ago in `META` (a waiting one with the dot in front).
+/// title the source and when it came in `META` (a waiting one with the dot in front).
 fn cell(item: &Item, data: &GlanceData<'_>, width: f32) -> Element<'static, Message> {
     let room = (width - 2.0 * side() - icon::SIZE - space::s()).max(0.0);
     let title = title(item);

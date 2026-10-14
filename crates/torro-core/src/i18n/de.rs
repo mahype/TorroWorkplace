@@ -460,6 +460,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Nothing to do", "Nichts zu tun"),
     ("Tomorrow", "Morgen"),
     ("Yesterday", "Gestern"),
+    ("Yesterday {time}", "Gestern {time}"),
     ("Signing in did not finish. Try again.", "Die Anmeldung wurde nicht abgeschlossen. Versuch es noch einmal."),
     (
         "Torro Workplace did not answer as expected. Try again.",
