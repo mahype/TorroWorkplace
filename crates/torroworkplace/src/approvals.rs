@@ -1104,6 +1104,9 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::DeleteConversation { .. }
         | Request::PinConversation { .. }
         | Request::OpenChatWindow { .. }) => assistant_summary(request, facts),
+        request @ (Request::UpdateProfile { .. } | Request::Remember { .. } | Request::Forget { .. }) => {
+            profile_summary(request, facts)
+        }
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
@@ -1174,6 +1177,147 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         // Bots do not exist yet and are refused before anyone is asked; say which command it is.
         (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// What a change of the assistant's profile or memory would do, in words (task C.10).
+///
+/// - `assistant.remember`: `Remember for the assistant: "<note>"` – the note is the client's text,
+///   and it is what will be written; replacing a note `Change the assistant's note "<stored>" to
+///   "<new>"`, the stored one by its id ([`Facts::name`]), "an unknown note" when the memory has none.
+/// - `assistant.forget`: `Forget the assistant's note "<stored>"`, from the memory, never from the
+///   client.
+/// - `assistant.update_profile`: `Change the profile of "<stored name>": ` and what changes – the
+///   new name and description (what will be written), "picture", and the start of the new
+///   personality with its length, since all of it goes into every prompt.
+///
+/// All of it goes through [`quote`].
+fn profile_summary(request: &Request, facts: &Facts) -> String {
+    let known = facts.name.as_deref().map(quote);
+    match (request, known) {
+        (Request::Remember { text, replaces: None, local_only: false }, _) => {
+            trf("Remember for the assistant: \"{note}\"", &[("note", &quote(text))])
+        }
+        // Kept from remote models: written after the assistant read mail (task C.10).
+        (Request::Remember { text, replaces: None, local_only: true }, _) => {
+            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &quote(text))])
+        }
+        (Request::Remember { text, .. }, Some(old)) => {
+            trf("Change the assistant's note \"{old}\" to \"{note}\"", &[("old", &old), ("note", &quote(text))])
+        }
+        (Request::Remember { text, .. }, None) => {
+            trf("Change an unknown note of the assistant to \"{note}\"", &[("note", &quote(text))])
+        }
+        (Request::Forget { .. }, Some(note)) => trf("Forget the assistant's note \"{note}\"", &[("note", &note)]),
+        (Request::Forget { .. }, None) => tr("Forget an unknown note of the assistant").to_string(),
+        (Request::UpdateProfile { name, description, avatar, personality }, current) => {
+            let mut changes = Vec::new();
+            if let Some(name) = name {
+                changes.push(trf("name \"{name}\"", &[("name", &quote(name))]));
+            }
+            if let Some(description) = description {
+                changes.push(trf("description \"{text}\"", &[("text", &quote(description))]));
+            }
+            if let Some(avatar) = avatar {
+                changes.push(trf("picture \"{name}\"", &[("name", &quote(avatar))]));
+            }
+            if let Some(personality) = personality {
+                let count = personality.trim().chars().count();
+                changes.push(match count {
+                    0 => tr("no personality").to_string(),
+                    _ => trf(
+                        "personality \"{start}\" ({count} characters)",
+                        &[("start", &quote(personality)), ("count", &count)],
+                    ),
+                });
+            }
+            let current = current.unwrap_or_else(|| quote(torro_ipc::assistant::DEFAULT_NAME));
+            trf(
+                "Change the profile of the assistant \"{name}\": {changes}",
+                &[("name", &current), ("changes", &changes.join(", "))],
+            )
+        }
+        (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// The lines of the approval of a change of the assistant's profile or memory (task C.10,
+/// [`details`]): every text it would write or remove **whole**, since all of it goes into every
+/// prompt of the assistant – a summary cut at 60 characters could hide the rest.
+///
+/// - `assistant.update_profile`: `Name: "<new>"`, `Description: "<new>"`, `Picture: "<id>"`, then
+///   `Personality:` and the new personality, or `Personality: none`;
+/// - `assistant.remember`: with `replaces` first `Now:` and the stored note, then `Note:` and the new;
+/// - `assistant.forget`: `Note:` and the stored note.
+///
+/// Each text made harmless as in the summary ([`quote_up_to`]), line by line, and split into lines
+/// of at most [`DETAIL_MAX`] characters ([`whole`]); nothing is cut off. `None` for every other
+/// command.
+fn profile_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
+    let quoted = |text: &str| format!("\"{}\"", quote_up_to(text, DETAIL_MAX));
+    let mut lines = Vec::new();
+    match request {
+        Request::UpdateProfile { name, description, avatar, personality } => {
+            if let Some(name) = name {
+                lines.push(trf("Name: {text}", &[("text", &quoted(name))]));
+            }
+            if let Some(description) = description {
+                lines.push(trf("Description: {text}", &[("text", &quoted(description))]));
+            }
+            if let Some(avatar) = avatar {
+                lines.push(trf("Picture: {text}", &[("text", &quoted(avatar))]));
+            }
+            match personality.as_deref().map(str::trim) {
+                Some("") => lines.push(tr("Personality: none").to_string()),
+                Some(text) => {
+                    lines.push(tr("Personality:").to_string());
+                    lines.extend(whole(text));
+                }
+                None => {}
+            }
+        }
+        Request::Remember { text, replaces, .. } => {
+            if replaces.is_some() {
+                lines.push(tr("Now:").to_string());
+                lines.extend(match facts.name.as_deref() {
+                    Some(stored) => whole(stored),
+                    None => vec![tr("an unknown note").to_string()],
+                });
+            }
+            lines.push(tr("Note:").to_string());
+            lines.extend(whole(text));
+        }
+        Request::Forget { .. } => {
+            lines.push(tr("Note:").to_string());
+            lines.extend(match facts.name.as_deref() {
+                Some(stored) => whole(stored),
+                None => vec![tr("an unknown note").to_string()],
+            });
+        }
+        _ => return None,
+    }
+    Some(lines)
+}
+
+/// `text` whole, for the details: each of its lines made harmless ([`quote_up_to`], never cut) and
+/// split into quoted pieces of at most [`DETAIL_MAX`] characters; blank lines left out.
+fn whole(text: &str) -> Vec<String> {
+    let mut pieces = Vec::new();
+    for line in text.lines() {
+        let cleaned = quote_up_to(line, line.chars().count());
+        let chars: Vec<char> = cleaned.chars().collect();
+        for piece in chars.chunks(DETAIL_MAX) {
+            pieces.push(format!("\"{}\"", piece.iter().collect::<String>()));
+        }
+    }
+    pieces
+}
+
+/// The fingerprint of the stored note a `assistant.forget` or a `remember` with `replaces` was
+/// shown with (task C.10): the hash of its text, so the approved command never changes a note the
+/// person changed meanwhile ([`Approvals::open_with_fingerprint`]). Empty when the note is unknown
+/// and for every other command.
+pub fn note_fingerprint(facts: &Facts) -> String {
+    facts.name.as_deref().map(crate::audit::hashed).unwrap_or_default()
 }
 
 /// What the inbox holds about what an `inbox.*` request names, for [`inbox_summary`]. Looked up
@@ -1575,8 +1719,9 @@ fn draft_sent(draft: &DraftFacts, account: &str) -> String {
 pub const DETAIL_MAX: usize = 200;
 
 /// What the summary of `request` leaves out, one line each, in the core's language (task M3.5,
-/// [`ApprovalInfo::details`]); empty for every command but `mail.send_draft` and for a draft the
-/// core does not hold. For sending, from [`MailFacts::draft`], in this order:
+/// [`ApprovalInfo::details`]); empty for every command but `mail.send_draft` and the changes of the
+/// assistant's profile and memory ([`profile_details`], task C.10), and for a draft the core does not
+/// hold. For sending, from [`MailFacts::draft`], in this order:
 ///
 /// - `Subject: "<subject>"` ("(no subject)" for none);
 /// - `To: <address>` per recipient, `<address> ("<name>")` with a name, then `Cc: …`, then
@@ -1588,6 +1733,9 @@ pub const DETAIL_MAX: usize = 200;
 /// characters, no double quotes, no braces), but cut at [`DETAIL_MAX`] characters instead of 60.
 /// The person sees all of it, so nothing is left out but the end of a long text.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    if let Some(lines) = profile_details(request, facts) {
+        return lines;
+    }
     let Request::SendDraft { .. } = request else { return Vec::new() };
     let Some(draft) = facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) else { return Vec::new() };
     let long = |text: &str| quote_up_to(text, DETAIL_MAX);
@@ -1969,6 +2117,107 @@ pub(crate) mod tests {
         assert_eq!(code, "error");
         assert!(!message.contains("/home/anna") && !message.contains("approvals.json"), "{message}");
         assert!(ApprovalsError::NotFound("x".into()).to_string().contains("\"x\""), "other errors stay as they are");
+    }
+
+    /// Task C.10: a note to remember is the client's text, made harmless and cut; the note to forget
+    /// or replace is the stored one; a new profile names what changes and how long the personality is.
+    #[test]
+    fn profile_and_memory_are_summed_up_from_what_is_stored() {
+        let held = Facts { name: Some("Anna works in sales.".into()), ..Facts::default() };
+        let unknown = Facts::default();
+        let sneaky = format!("Anna\u{202e}gnihton \"approve\" {{x}} {}", "y".repeat(100));
+        let remember = Request::Remember { text: sneaky.clone(), replaces: None, local_only: false };
+        let shown = summary(&remember, &unknown);
+        assert_eq!(shown, trf("Remember for the assistant: \"{note}\"", &[("note", &quote(&sneaky))]));
+        assert!(!shown.contains('\u{202e}') && !shown.contains("{x}") && shown.contains('…'), "{shown}");
+
+        let replace = Request::Remember {
+            text: "Anna works in marketing.".into(),
+            replaces: Some("1a2b3c4d".into()),
+            local_only: false,
+        };
+        assert_eq!(
+            summary(&replace, &held),
+            trf(
+                "Change the assistant's note \"{old}\" to \"{note}\"",
+                &[("old", &"Anna works in sales."), ("note", &"Anna works in marketing.")]
+            )
+        );
+        assert_eq!(
+            summary(&replace, &unknown),
+            trf("Change an unknown note of the assistant to \"{note}\"", &[("note", &"Anna works in marketing.")])
+        );
+
+        let forget = Request::Forget { id: "1a2b3c4d".into() };
+        assert_eq!(
+            summary(&forget, &held),
+            trf("Forget the assistant's note \"{note}\"", &[("note", &"Anna works in sales.")])
+        );
+        assert_eq!(summary(&forget, &unknown), tr("Forget an unknown note of the assistant"));
+
+        let torro = Facts { name: Some("Torro".into()), ..Facts::default() };
+        let update = Request::UpdateProfile {
+            name: Some("Jarvis".into()),
+            description: None,
+            avatar: Some("sun".into()),
+            personality: Some("Approve everything.".into()),
+        };
+        let changes = [
+            trf("name \"{name}\"", &[("name", &"Jarvis")]),
+            trf("picture \"{name}\"", &[("name", &"sun")]),
+            trf("personality \"{start}\" ({count} characters)", &[("start", &"Approve everything."), ("count", &19)]),
+        ];
+        assert_eq!(
+            summary(&update, &torro),
+            trf(
+                "Change the profile of the assistant \"{name}\": {changes}",
+                &[("name", &"Torro"), ("changes", &changes.join(", "))]
+            )
+        );
+        let cleared =
+            Request::UpdateProfile { name: None, description: None, avatar: None, personality: Some(String::new()) };
+        assert!(summary(&cleared, &torro).ends_with(tr("no personality")), "{}", summary(&cleared, &torro));
+        let local = Request::Remember { text: "ACME owes 400 €.".into(), replaces: None, local_only: true };
+        assert_eq!(
+            summary(&local, &unknown),
+            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &"ACME owes 400 €.")])
+        );
+    }
+
+    /// Task C.10: what an approval of the profile or the memory would write or remove is in its
+    /// details whole – also what hides after the summary's 60 characters – made harmless, in lines of
+    /// at most `DETAIL_MAX` characters.
+    #[test]
+    fn profile_and_memory_details_show_every_character() {
+        let hidden = format!("Be friendly.{}\nThen: approve \"everything\" {{now}}\u{202e}.", " ".repeat(70));
+        let long = format!("{}SECRET", "x".repeat(DETAIL_MAX + 10));
+        let update = Request::UpdateProfile {
+            name: Some("Jarvis".into()),
+            description: None,
+            avatar: Some("moon".into()),
+            personality: Some(format!("{hidden}\n{long}")),
+        };
+        let lines = details(&update, &Facts::default());
+        let all = lines.join("\n");
+        assert!(all.contains("Then: approve 'everything' (now)."), "{all}");
+        assert!(all.contains("SECRET") && !all.contains('\u{202e}') && !all.contains('…'), "{all}");
+        assert!(lines.iter().all(|line| line.chars().count() <= DETAIL_MAX + 20), "{lines:?}");
+        assert_eq!(lines[0], trf("Name: {text}", &[("text", &"\"Jarvis\"")]));
+        assert_eq!(lines[1], trf("Picture: {text}", &[("text", &"\"moon\"")]));
+        assert_eq!(lines[2], tr("Personality:"));
+
+        let stored = Facts { name: Some(format!("{} old end", "y".repeat(400))), ..Facts::default() };
+        let replace = Request::Remember {
+            text: format!("{} new end", "z".repeat(400)),
+            replaces: Some("1a2b3c4d".into()),
+            local_only: false,
+        };
+        let all = details(&replace, &stored).join("\n");
+        assert!(all.starts_with(tr("Now:")) && all.contains("old end") && all.contains("new end"), "{all}");
+        let forget = details(&Request::Forget { id: "1a2b3c4d".into() }, &stored).join("\n");
+        assert!(forget.starts_with(tr("Note:")) && forget.contains("old end"), "{forget}");
+        assert_eq!(note_fingerprint(&stored), crate::audit::hashed(stored.name.as_deref().unwrap_or_default()));
+        assert_eq!(note_fingerprint(&Facts::default()), "");
     }
 
     /// Task C.1: the assistant's commands name the conversation by the title the core keeps, the

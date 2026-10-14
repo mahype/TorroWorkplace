@@ -116,10 +116,20 @@ pub enum Open {
     AssistantReadOnly,
     /// The "Turn off the assistant?" confirmation.
     AssistantTurnOff,
+    /// Assistant › Profile with the demo's profile (task C.10).
+    AssistantProfile,
+    /// Assistant › Memory with the demo's notes, one of them kept on this computer.
+    AssistantMemory,
+    /// Assistant › Memory without notes: its empty row.
+    AssistantMemoryEmpty,
+    /// Assistant › Memory with a new note being typed.
+    AssistantNote,
+    /// The "Forget this note?" confirmation.
+    AssistantForget,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 55] = [
+    pub const ALL: [(&'static str, Open); 60] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -175,6 +185,11 @@ impl Open {
         ("assistant-first-start", Open::AssistantFirstStart),
         ("assistant-read-only", Open::AssistantReadOnly),
         ("assistant-turn-off", Open::AssistantTurnOff),
+        ("assistant-profile", Open::AssistantProfile),
+        ("assistant-memory", Open::AssistantMemory),
+        ("assistant-memory-empty", Open::AssistantMemoryEmpty),
+        ("assistant-note", Open::AssistantNote),
+        ("assistant-forget", Open::AssistantForget),
     ];
 }
 
@@ -545,8 +560,41 @@ pub fn demo_data() -> Data {
         settings: Settings { start_at_login: true, hidden_collections, ..Settings::default() },
         apps: Some(apps),
         approvals: demo_approvals(now),
+        profile: Some(demo_profile()),
+        memories: demo_memories(now),
         error: None,
     }
+}
+
+/// The demo's assistant (task C.10): a name of its own, a symbol and a friendly personality.
+pub fn demo_profile() -> torro_ipc::assistant::Profile {
+    torro_ipc::assistant::Profile {
+        name: "Torro".into(),
+        description: tr("Your assistant for this computer").into(),
+        avatar: "sparkles".into(),
+        personality: super::persona::Template::Friendly.text().into(),
+    }
+}
+
+/// The demo's notes: three the person asked for, one of them kept on this computer, one long.
+fn demo_memories(now: DateTime<Utc>) -> Vec<torro_ipc::assistant::Note> {
+    let note = |id: &str, text: &str, days: i64, local_only| torro_ipc::assistant::Note {
+        id: id.into(),
+        text: text.into(),
+        created: now - Duration::days(days),
+        local_only,
+    };
+    vec![
+        note("1a2b3c4d", "Anna Berger is my colleague in sales; she prefers calls to mail.", 20, false),
+        note(
+            "5e6f7a8b",
+            "The invoice from ACME for the October workshop is due on the 31st; remind me a week before and keep \
+             the amount to yourself.",
+            3,
+            true,
+        ),
+        note("9c0d1e2f", "Mornings before ten are for focus work: no meetings then.", 1, false),
+    ]
 }
 
 /// A connected mail account of the demo: no calendars or lists, as long as it is mail only. Its

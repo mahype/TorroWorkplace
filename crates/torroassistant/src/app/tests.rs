@@ -82,6 +82,10 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
         }
         Request::DeleteConversation { id } => Message::Deleted(id.clone(), result.map(|_| ())),
         Request::OpenChatWindow { .. } => Message::WindowOpened(result.map(|_| ())),
+        Request::GetProfile => Message::Profile(result.and_then(|response| match response {
+            Response::Profile { profile } => Ok(profile),
+            other => Err(Refusal::unexpected(&other)),
+        })),
         other => panic!("the window sent an unexpected request: {other:?}"),
     }
 }
@@ -418,4 +422,27 @@ fn the_test_engine_is_offered_by_its_name() {
     let _ = app.update(Message::Engines(Ok(engines)));
     assert_eq!(app.engines.last().map(|engine| engine.id.as_str()), Some(TEST_ENGINE), "last");
     let _ = app.view();
+}
+
+/// Task C.10: the window reads the assistant's profile with everything else and shows its name and
+/// picture; before the core answered, or with a core that has no profiles, the default name.
+#[test]
+fn the_window_shows_the_assistants_name_and_picture() {
+    let app = start(&[]);
+    assert_eq!((app.assistant_name(), app.assistant_avatar()), ("Torro", "letter"), "before the answer");
+    let mut app = started(&[]);
+    assert_eq!(app.profile.as_ref().map(|profile| profile.avatar.as_str()), Some("sparkles"));
+    let renamed = Profile { name: "Jarvis".into(), ..demo::profile() };
+    let _ = app.update(Message::Profile(Ok(renamed)));
+    assert_eq!(app.assistant_name(), "Jarvis");
+    let _ = app.update(Message::Profile(Err(Refusal::new("unsupported", "an old core"))));
+    assert_eq!(app.assistant_name(), "Jarvis", "an error keeps what was shown");
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+    assert!(crate::view::avatar_icon("dragon").is_none(), "an unknown picture is the letter");
+    for id in torro_ipc::assistant::AVATARS {
+        assert_eq!(crate::view::avatar_icon(id).is_none(), *id == torro_ipc::assistant::LETTER_AVATAR, "{id}");
+    }
 }

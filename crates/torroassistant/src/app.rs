@@ -50,7 +50,7 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
 use torro_ipc::api::{Area, Rights};
-use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent};
+use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
 use torro_ipc::{ApprovalInfo, Request, Response};
 
 use crate::backend::{Backend, Refusal};
@@ -185,6 +185,8 @@ pub enum Message {
     Models(String, Result<Vec<AiModel>, Refusal>),
     /// The rights of the assistant's own client; `Ok(None)` when there is none.
     Client(Result<Option<Rights>, Refusal>),
+    /// The assistant's profile (task C.10): its name and picture for the header and the welcome.
+    Profile(Result<Profile, Refusal>),
     /// The whole conversation with this id.
     Opened(String, Loaded),
     /// What is new in the conversation with this id since the number asked for.
@@ -290,6 +292,9 @@ pub struct App {
     /// The models of each AI account, by engine id, as listed (the picker filters them).
     pub(crate) models: HashMap<String, Result<Vec<AiModel>, String>>,
     pub(crate) access: Access,
+    /// The assistant's profile as last read; `None` until the core answered (or with an old core):
+    /// then the window shows [`torro_ipc::assistant::DEFAULT_NAME`] and its letter.
+    pub(crate) profile: Option<Profile>,
 
     /// The open conversation; `None` is a new chat.
     pub(crate) current: Option<String>,
@@ -363,6 +368,7 @@ impl App {
             engines_loaded: false,
             models: HashMap::new(),
             access: Access::Unknown,
+            profile: None,
             current,
             transcript: Transcript::default(),
             chat_error: None,
@@ -511,6 +517,9 @@ impl App {
                 let usable = self.switchable();
                 self.without.retain(|area| usable.contains(area));
             }
+            // An old core without profiles, or none: the window keeps what it showed.
+            Message::Profile(Ok(profile)) => self.profile = Some(profile),
+            Message::Profile(Err(_)) => {}
             Message::Opened(id, loaded) => return self.opened(id, loaded),
             Message::Followed(id, loaded) => return self.followed(id, loaded),
             Message::Approval(id, Ok(approval)) => {
@@ -695,7 +704,23 @@ impl App {
                 }
             }))
         });
-        Task::batch([self.load_list(), engines, client])
+        let profile = self.ask(Request::GetProfile, |result| {
+            Message::Profile(result.and_then(|response| match response {
+                Response::Profile { profile } => Ok(profile),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        });
+        Task::batch([self.load_list(), engines, client, profile])
+    }
+
+    /// The assistant's name as the window shows it: the profile's, else the default.
+    pub(crate) fn assistant_name(&self) -> &str {
+        self.profile.as_ref().map_or(torro_ipc::assistant::DEFAULT_NAME, |profile| profile.name.as_str())
+    }
+
+    /// The assistant's picture ([`torro_ipc::assistant::AVATARS`]): the profile's, else the letter.
+    pub(crate) fn assistant_avatar(&self) -> &str {
+        self.profile.as_ref().map_or(torro_ipc::assistant::LETTER_AVATAR, |profile| profile.avatar.as_str())
     }
 
     fn load_list(&mut self) -> Task<Message> {

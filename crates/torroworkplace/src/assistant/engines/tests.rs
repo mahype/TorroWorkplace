@@ -468,3 +468,30 @@ fn details_lose_the_key_and_stay_short() {
     assert_eq!(error_code("not-found: no calendar"), "not-found");
     assert_eq!(error_code("Claude requested permissions to use X"), "error");
 }
+
+/// Task C.10: the agent's prompt carries the personality first and the notes of the memory, but no
+/// note kept from remote models – the agent runs elsewhere.
+#[tokio::test]
+async fn the_agent_reads_the_personality_and_no_local_note() {
+    let transcript = [init(), says("Hello."), done("Hello.")];
+    let setup = set_up(&transcript, "", Duration::from_secs(10), true).await;
+    let change = super::super::profile::Change {
+        personality: Some("Answer like a ship's captain.".into()),
+        ..super::super::profile::Change::default()
+    };
+    assert!(matches!(setup.assistant.update_profile(change).await, Response::Profile { .. }));
+    assert!(matches!(
+        setup.assistant.remember("Anna works in sales.", None, false, true).await,
+        Response::Memory { .. }
+    ));
+    assert!(matches!(setup.assistant.remember("ACME owes 400 €.", None, true, true).await, Response::Memory { .. }));
+
+    let id = ask(&setup, None, "Hi", Vec::new()).await;
+    finished(&setup.assistant, &id).await;
+    let arguments = setup.read("args");
+    let prompt = arguments.split_once("--append-system-prompt=").map(|(_, rest)| rest).expect("the prompt");
+    assert!(prompt.starts_with(super::super::prompt::PERSONALITY_HEADING), "{prompt}");
+    assert!(prompt.contains("> Answer like a ship's captain."), "{prompt}");
+    assert!(prompt.contains("] Anna works in sales."), "{prompt}");
+    assert!(!arguments.contains("ACME"), "{arguments}");
+}

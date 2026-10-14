@@ -524,6 +524,13 @@ fn describe(request: &Request) -> String {
             format!("{} conversation {id}", if *pinned { "pin" } else { "unpin" })
         }
         Request::OpenChatWindow { .. } => "open an assistant window".into(),
+        // Ids only, never a note or the personality (task C.10).
+        Request::GetProfile => "assistant profile".into(),
+        Request::UpdateProfile { .. } => "change the assistant profile".into(),
+        Request::ListMemories => "assistant memory".into(),
+        Request::Remember { replaces: Some(id), .. } => format!("change note {id}"),
+        Request::Remember { .. } => "remember a note".into(),
+        Request::Forget { id } => format!("forget note {id}"),
     }
 }
 

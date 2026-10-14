@@ -150,7 +150,11 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   kein Test braucht ein Mikrofon; Freigaben lassen sich nicht per Sprache erteilen.
 
 ### C.10 Persönlichkeit und Gedächtnis des Hauptbots
-- [ ] erledigt
+- [x] erledigt (Bild: Buchstabe oder ein Symbol der Suite, kein Hochladen; Notizen, die ein lokales Modell nach dem
+  Lesen von Mail anlegt, sind `local_only`: nie an entfernte Modelle oder Agenten, für Clients nur mit Leserecht auf
+  Mail, und sie warten immer auf eine Freigabe; Freigaben zeigen Persönlichkeit und Notizen ganz in den Details;
+  `docs/api-reference.md` gibt es noch nicht, A.9; nachgetragen (Match-Zweige): `crates/torroworkplace/src/{audit,
+  daemon,pim}.rs`)
 - **Modell:** Opus · **Braucht:** C.3 · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
   `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/{mcp,core}.rs`, `crates/torroworkplace/src/ui/**`,
   `crates/torroassistant/src/**`, `docs/api-reference.md`

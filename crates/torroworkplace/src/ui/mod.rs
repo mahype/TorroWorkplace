@@ -49,6 +49,7 @@ mod glance;
 mod inbox;
 mod launch;
 mod overview;
+mod persona;
 mod server_fields;
 mod wizard;
 mod workspaces;
@@ -195,6 +196,10 @@ pub struct Data {
     pub sources: Vec<SourceInfo>,
     /// The lasting rules of the inbox (`inbox.list_rules`): remembered lanes and muted sources.
     pub rules: Vec<Rule>,
+    /// The assistant's profile (`assistant.get_profile`, task C.10); `None` until the first answer.
+    pub profile: Option<torro_ipc::assistant::Profile>,
+    /// The notes of the assistant's memory, oldest first (`assistant.list_memories`).
+    pub memories: Vec<torro_ipc::assistant::Note>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -231,6 +236,8 @@ pub enum Action {
     /// Open the designs folder in the system's file manager, created first if it is missing. The
     /// demo opens nothing.
     OpenDesignsFolder,
+    /// Put the keyboard focus into the text field with this id (a note's field, task C.10).
+    Focus(&'static str),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -591,6 +598,28 @@ impl Ui {
             Open::AssistantTurnOff => {
                 vec![Message::Select(Section::Assistant), Message::Assistant(assistant::Message::AskTurnOff)]
             }
+            // Profile and memory (task C.10): the demo's profile and notes, none, a new note, and
+            // asking before one is forgotten.
+            Open::AssistantProfile => {
+                let open = assistant::Message::Persona(persona::Message::OpenProfile);
+                vec![Message::Select(Section::Assistant), Message::Assistant(open)]
+            }
+            Open::AssistantMemory | Open::AssistantMemoryEmpty | Open::AssistantNote | Open::AssistantForget => {
+                if open == Open::AssistantMemoryEmpty {
+                    self.data.memories.clear();
+                }
+                let persona = |message| Message::Assistant(assistant::Message::Persona(message));
+                let mut messages = vec![Message::Select(Section::Assistant), persona(persona::Message::OpenMemory)];
+                match open {
+                    Open::AssistantNote => messages.push(persona(persona::Message::AddNote)),
+                    Open::AssistantForget => {
+                        let first = self.data.memories.first().map(|note| note.id.clone());
+                        messages.extend(first.map(|id| persona(persona::Message::AskForget(id))));
+                    }
+                    _ => {}
+                }
+                messages
+            }
             // The design packs: the demo's sample packs, one of them broken.
             Open::Design => vec![Message::Select(Section::General)],
             // No rules, so the rules group says where they come from.
@@ -725,7 +754,7 @@ impl Ui {
                     false => None,
                 };
                 agents::loaded(&mut self.agents);
-                assistant::loaded(&mut self.assistant);
+                assistant::loaded(&mut self.assistant, &self.data);
                 // A mail account's page follows changes from outside while nothing is typed.
                 accounts::loaded(&mut self.accounts, &self.data);
                 // The add-account dialog follows the sign-in through the reloaded accounts.
@@ -886,6 +915,7 @@ impl Ui {
                 }
                 Task::none()
             }
+            Action::Focus(id) => iced::widget::operation::focus(id),
             Action::Zoom(step) => self.zoom(zoom::Message::Step(step)),
             Action::Copy(text) => iced::clipboard::write(text),
             Action::Setup(job) => Task::perform(crate::client_setup::perform(job), |outcome| {
@@ -1320,6 +1350,12 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Rules { rules }) = client::call(&socket, &Request::ListRules).await {
                 data.rules = rules;
+            }
+            if let Ok(Response::Profile { profile }) = client::call(&socket, &Request::GetProfile).await {
+                data.profile = Some(profile);
+            }
+            if let Ok(Response::Memories { notes }) = client::call(&socket, &Request::ListMemories).await {
+                data.memories = notes;
             }
             data
         },
@@ -1827,6 +1863,32 @@ mod tests {
         assert_eq!(real.notice, None);
         let _ = real.update(Message::Select(Section::Agents));
         assert!(real.page_overlay().is_none(), "the agents page never shows the assistant's key");
+    }
+
+    /// Task C.10: Profile and Memory open below the Assistant page in every demo state, build in
+    /// every size, and go back with the header's button; "Forget this note?" closes with Escape.
+    #[test]
+    fn profile_and_memory_open_below_the_assistant_page() {
+        for state in
+            ["assistant-profile", "assistant-memory", "assistant-memory-empty", "assistant-note", "assistant-forget"]
+        {
+            let ui = started(&["--demo", "--open", state]);
+            assert_eq!(ui.section, Section::Assistant, "{state}");
+            let header = ui.page_header(SizeClass::Wide);
+            assert!(header.sub_page.is_some(), "{state}: a page below Assistant");
+            for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+                let _ = ui.window(class);
+            }
+        }
+        assert!(started(&["--demo", "--open", "assistant-memory-empty"]).data.memories.is_empty());
+        let mut forget = started(&["--demo", "--open", "assistant-forget"]);
+        assert!(forget.page_overlay().is_some(), "Forget this note?");
+        let _ = forget.update(Message::Escape);
+        assert!(forget.page_overlay().is_none());
+        let mut profile = started(&["--demo", "--open", "assistant-profile"]);
+        let back = assistant::Message::Persona(persona::Message::Back);
+        let _ = profile.update(Message::Assistant(back));
+        assert!(profile.page_header(SizeClass::Wide).sub_page.is_none(), "back on the Assistant page");
     }
 
     #[test]
