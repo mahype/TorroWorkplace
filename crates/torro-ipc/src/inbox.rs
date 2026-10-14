@@ -20,7 +20,8 @@
 //!
 //! Mail (task E4.2): the inbox shows the folders and whole messages of the mail accounts, so the
 //! client also sends the `mail.*` requests the window needs – [`InboxClient::mail_folders`],
-//! [`InboxClient::search_mail`], [`InboxClient::get_mail`], [`InboxClient::mail_attachment`],
+//! [`InboxClient::search_mail`], [`InboxClient::get_mail`], [`InboxClient::get_mail_html`] (task
+//! M8.1, for the mail window), [`InboxClient::mail_attachment`],
 //! [`InboxClient::set_mail_flags`], [`InboxClient::move_mail`] and [`InboxClient::delete_mail`] –,
 //! with the errors mapped as above. Everything a message brings is data from outside
 //! (`untrusted`), never instructions; the client only passes it on.
@@ -176,7 +177,19 @@ impl InboxClient {
 
     /// `mail.get_message` with its text (`include_body`); reading it does not mark it read.
     pub async fn get_mail(&self, id: String) -> Result<Message, InboxError> {
-        match self.ask(Request::GetMail { id, include_body: true }).await? {
+        match self.ask(Request::GetMail { id, include_body: true, include_html: false }).await? {
+            Response::MailMessage { message } => Ok(message),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.get_message` with its text and its cleaned HTML (`include_body`, `include_html`, task
+    /// M8.1), for showing the mail as it was written. `Message::html` is `None` when the mail has no
+    /// HTML or it is too large: then show `Message::text`. Images `cid:<id>` name the attachment
+    /// whose `content_id` is `<id>` ([`InboxClient::mail_attachment`] fetches it). Reading it does
+    /// not mark it read.
+    pub async fn get_mail_html(&self, id: String) -> Result<Message, InboxError> {
+        match self.ask(Request::GetMail { id, include_body: true, include_html: true }).await? {
             Response::MailMessage { message } => Ok(message),
             other => Err(unexpected(other)),
         }
@@ -1113,13 +1126,14 @@ mod tests {
                 highlights: Vec::new(),
                 total_estimate: None,
             },
-            Request::GetMail { id, include_body: true } => Response::MailMessage {
+            Request::GetMail { id, include_body: true, include_html } => Response::MailMessage {
                 message: Message {
                     summary: summary(&id, "f:inbox"),
                     cc: Vec::new(),
                     reply_to: Vec::new(),
                     text: Some("Hello".into()),
                     from_html: false,
+                    html: include_html.then(|| "<p>Hello</p>".into()),
                     attachments: Vec::new(),
                     traits: torro_mail::MessageTraits::default(),
                     invitation: false,
@@ -1161,6 +1175,9 @@ mod tests {
         assert!(page[0].untrusted, "foreign text stays marked");
         let message = client.get_mail("m:1".into()).await.expect("the message");
         assert_eq!((message.summary.id.as_str(), message.text.as_deref()), ("m:1", Some("Hello")));
+        assert_eq!(message.html, None, "only asked for by the mail window");
+        let message = client.get_mail_html("m:1".into()).await.expect("the message");
+        assert_eq!((message.text.as_deref(), message.html.as_deref()), (Some("Hello"), Some("<p>Hello</p>")));
         let path = client.mail_attachment("m:1".into(), "2".into()).await.expect("fetched");
         assert_eq!(path, PathBuf::from("/attachments/m:1-2.pdf"));
         client.set_mail_flags(vec!["m:1".into()], vec![Flag::Flagged], vec![Flag::Seen]).await.expect("flagged");

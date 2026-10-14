@@ -329,7 +329,7 @@ mod tests {
         assert_eq!(limit_refusal(&Request::Ping), None);
 
         let long = "m".repeat(MAX_ID_BYTES + 1);
-        assert!(refused(&Request::GetMail { id: long.clone(), include_body: true }));
+        assert!(refused(&Request::GetMail { id: long.clone(), include_body: true, include_html: false }));
         assert!(refused(&Request::GetMailAttachment { id: "m:1".into(), attachment: long.clone() }));
         let mut paged = search(10, None);
         if let Request::SearchMail { cursor, .. } = &mut paged {

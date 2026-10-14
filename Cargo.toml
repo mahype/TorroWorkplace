@@ -61,6 +61,8 @@ httpmock = { version = "0.8.3", default-features = false }
 lettre = { version = "0.11.23", default-features = false, features = ["aws-lc-rs", "builder", "hostname", "rustls-platform-verifier", "smtp-transport", "tokio1", "tokio1-rustls"] }
 mail-builder = { version = "1.0.0", default-features = false }
 mail-parser = { version = "0.11.9", features = ["full_encoding"] }
+# The HTML part of a mail, cleaned through an allow list before the core keeps or hands it out (task M8.1).
+ammonia = "4.2.3"
 rustls = "0.23.45"
 rustls-platform-verifier = "0.7.1"
 tokio-rustls = "0.26.6"

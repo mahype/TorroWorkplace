@@ -1285,7 +1285,9 @@ mod tests {
         assert!(matches!(&paged, Ok(Request::SearchMail { query: Some(q), limit: 5, cursor: Some(c), .. })
             if q == "invoice" && c == "c:5"));
         let get = call("mail_get_message", json!({"id": "m:1", "include_body": true}));
-        assert_eq!(get, Ok(Request::GetMail { id: "m:1".into(), include_body: true }));
+        assert_eq!(get, Ok(Request::GetMail { id: "m:1".into(), include_body: true, include_html: false }), "no HTML");
+        let html = call("mail_get_message", json!({"id": "m:1", "include_body": true, "include_html": true}));
+        assert_eq!(html, Ok(Request::GetMail { id: "m:1".into(), include_body: true, include_html: true }));
         assert_eq!(call("mail_get_thread", json!({"id": "m:1"})), Ok(Request::GetMailThread { id: "m:1".into() }));
         let attachment = call("mail_get_attachment", json!({"id": "m:1", "attachment": "2"}));
         assert_eq!(attachment, Ok(Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() }));

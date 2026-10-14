@@ -9663,7 +9663,8 @@ mod tests {
     }
 
     /// Task M3.1: a client reads the mail of its account; the audit log names the account and
-    /// hashed ids, never the words searched, a folder's name or an attachment's file name.
+    /// hashed ids, never the words searched, a folder's name or an attachment's file name. Task
+    /// M8.1: nor the HTML, a link or picture it names, or a part's content id.
     #[tokio::test]
     async fn reading_mail_logs_no_words_folder_names_or_file_names() {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
@@ -9673,7 +9674,13 @@ mod tests {
         let raw = format!(
             "From: Bernd <bernd@example.com>\r\nTo: anna@example.org\r\nSubject: Bonus\r\nDate: {date}\r\n\
              Message-ID: <bonus@example.org>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
-             --b\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n--b\r\nContent-Type: application/pdf\r\n\
+             --b\r\nContent-Type: multipart/related; boundary=\"r\"\r\n\r\n\
+             --r\r\nContent-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+             --a\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n\
+             --a\r\nContent-Type: text/html\r\n\r\n<p class=\"lead\">See attached.</p><img src=\"cid:chart@example.org\">\
+             <a href=\"https://payroll.example.com/x\">Payroll</a>\r\n--a--\r\n\
+             --r\r\nContent-Type: image/png\r\nContent-ID: <chart@example.org>\r\n\r\nPNG\r\n--r--\r\n\
+             --b\r\nContent-Type: application/pdf\r\n\
              Content-Disposition: attachment; filename=\"salary-2026.pdf\"\r\n\r\n%PDF\r\n--b--\r\n"
         );
         server.add("Archive", &raw, &[]);
@@ -9708,16 +9715,21 @@ mod tests {
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
         let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");
         let Response::MailMessage { message } =
-            ask(&core, Some(&key), Request::GetMail { id: id.clone(), include_body: true }).await
+            ask(&core, Some(&key), Request::GetMail { id: id.clone(), include_body: true, include_html: true }).await
         else {
             panic!("a message")
         };
-        let part = message.attachments.first().map(|attachment| attachment.part.clone()).expect("an attachment");
-        let fetched = ask(&core, Some(&key), Request::GetMailAttachment { id, attachment: part }).await;
+        assert!(message.html.as_deref().is_some_and(|html| html.contains("payroll.example.com")), "{message:?}");
+        let chart = message.attachments.iter().find(|attachment| attachment.inline).expect("the inline picture");
+        assert_eq!(chart.content_id.as_deref(), Some("chart@example.org"));
+        let part = message.attachments.iter().find(|attachment| !attachment.inline).expect("an attachment");
+        let request = Request::GetMailAttachment { id, attachment: part.part.clone() };
+        let fetched = ask(&core, Some(&key), request).await;
         assert!(matches!(&fetched, Response::MailAttachment { path, .. } if path.ends_with("salary-2026.pdf")));
 
         let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
-        for content in ["salary", "Archive", "Bonus", ".pdf", "See attached"] {
+        for content in ["salary", "Archive", "Bonus", ".pdf", "See attached", "lead", "<p", "cid:", "chart@", "payroll"]
+        {
             assert!(!text.contains(content), "{content:?} in the audit log:\n{text}");
         }
         let shown: Vec<(String, String)> =
@@ -9733,7 +9745,7 @@ mod tests {
         let message = messages[0].id.clone();
         let fetches = server.lines().iter().filter(|line| line.contains("UID FETCH")).count();
         for request in [
-            Request::GetMail { id: message.clone(), include_body: true },
+            Request::GetMail { id: message.clone(), include_body: true, include_html: true },
             Request::GetMailThread { id: message.clone() },
             Request::GetMailAttachment { id: message, attachment: "1".into() },
         ] {

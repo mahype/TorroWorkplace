@@ -583,6 +583,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             content_type: kind.into(),
             size,
             inline: false,
+            content_id: None,
         })
         .collect();
     Message {
@@ -605,6 +606,8 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
         reply_to: Vec::new(),
         text: Some(letter.text.into()),
         from_html: letter.from_html,
+        // The demo newsletter with HTML comes with task M8.3.
+        html: None,
         attachments,
         traits: MessageTraits {
             list_id: letter.bulk.then(|| "<news.example>".to_owned()),

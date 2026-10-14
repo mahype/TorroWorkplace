@@ -1,10 +1,16 @@
 //! Reading and building messages (task M2.4).
 //!
 //! **Reading** ([`read`]) with `mail-parser`: headers, the text (the plain part first; an HTML-only
-//! message is turned into text, its HTML is never handed out and nothing it names is fetched, so a
-//! tracking image stays unseen), attachments without their content, `text/calendar` invitations
-//! and the headers that mark list and automatic mail, `X-GitHub-Reason` among them (task E5.6).
-//! Parsing is pure: no network, no files.
+//! message is turned into text, and nothing the HTML names is fetched, so a tracking image stays
+//! unseen), attachments without their content, `text/calendar` invitations and the headers that
+//! mark list and automatic mail, `X-GitHub-Reason` among them (task E5.6). Parsing is pure: no
+//! network, no files.
+//!
+//! **HTML** (task M8.1): beside the text, the first HTML part is read and cleaned with `ammonia`
+//! through an allow list ([`clean_html`]), so the person can see the mail as it was written: text
+//! markup, tables, links, images and styles stay; scripts, forms, frames, objects, `svg`, `base`,
+//! `meta`, `link` and event attributes go. The cleaned HTML is the only HTML that leaves here; it
+//! is kept up to [`HTML_MAX`] bytes. Cleaning fetches nothing either.
 //! [`ReadMessage::into_message`] makes the `torro_mail::Message` the core hands out, once the core
 //! knows the message's id and place. [`attachment`] fetches one attachment's bytes.
 //!
@@ -36,6 +42,11 @@ use crate::smtp::Envelope;
 
 /// The longest snippet, in characters.
 const SNIPPET_MAX: usize = 200;
+/// The largest cleaned HTML kept and handed out (2 MiB); a larger mail is shown as its text.
+pub const HTML_MAX: usize = 2 * 1024 * 1024;
+/// The largest HTML part that is cleaned at all (16 MiB): cleaning parses the whole part, and
+/// what is left of a larger one would hardly fit into [`HTML_MAX`].
+const HTML_INPUT_MAX: usize = 16 * 1024 * 1024;
 /// The most message ids a reply's `References:` keeps (the first and the latest), so long threads
 /// do not grow the header without end (RFC 5322, 3.6.4).
 const REFERENCES_MAX: usize = 20;
@@ -96,6 +107,9 @@ pub struct ReadMessage {
     pub text: String,
     /// `text` was made from HTML.
     pub from_html: bool,
+    /// The first HTML part, cleaned ([`clean_html`]); `None` when the message has none (or only
+    /// its headers were read), or when the cleaned HTML is larger than [`HTML_MAX`].
+    pub html: Option<String>,
     /// The attachments, inline parts included, without content.
     pub attachments: Vec<AttachmentInfo>,
     pub traits: MessageTraits,
@@ -216,6 +230,7 @@ pub fn read(raw: &[u8]) -> Result<ReadMessage, MimeError> {
         date: message.date().and_then(|date| DateTime::from_timestamp(date.to_timestamp(), 0)),
         text,
         from_html,
+        html: body_html(&message),
         attachments: message
             .attachments
             .iter()
@@ -254,7 +269,8 @@ impl ReadMessage {
     }
 
     /// The message as the core hands it out. `include_body: false` leaves the text out (lists,
-    /// `mail.get_message` without `include_body`); the snippet stays.
+    /// `mail.get_message` without `include_body`); the snippet stays. The HTML is always left out:
+    /// the core adds it only when it is asked for (`include_html`).
     pub fn into_message(self, place: Place, include_body: bool) -> Message {
         let snippet = self.snippet();
         let has_attachments = self.has_attachments();
@@ -279,6 +295,7 @@ impl ReadMessage {
             reply_to: self.reply_to,
             text: include_body.then_some(self.text),
             from_html: self.from_html,
+            html: None,
             attachments: self.attachments,
             traits: self.traits,
             invitation: self.invitation,
@@ -408,6 +425,153 @@ fn body_text(message: &mail_parser::Message<'_>) -> (String, bool) {
     }
 }
 
+/// The first HTML part, cleaned ([`clean_html`]); `None` without one, for a part larger than
+/// `HTML_INPUT_MAX`, or when the cleaned HTML is empty or larger than [`HTML_MAX`]. A message of
+/// plain text alone has none: `mail-parser` lists its text part among the HTML bodies too, but as
+/// text, not HTML.
+fn body_html(message: &mail_parser::Message<'_>) -> Option<String> {
+    let markup =
+        message.html_body.iter().filter_map(|&id| message.parts.get(id as usize)).find_map(|part| {
+            match &part.body {
+                PartType::Html(markup) => Some(markup),
+                _ => None,
+            }
+        })?;
+    if markup.len() > HTML_INPUT_MAX {
+        return None;
+    }
+    let cleaned = clean_html(markup);
+    (!cleaned.trim().is_empty() && cleaned.len() <= HTML_MAX).then_some(cleaned)
+}
+
+/// The tags an HTML mail keeps: text markup and structure, lists, tables, links, images and the
+/// `style` element. Everything else goes; the text inside an unknown tag stays.
+const HTML_TAGS: &[&str] = &[
+    "p",
+    "div",
+    "span",
+    "br",
+    "hr",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "b",
+    "strong",
+    "i",
+    "em",
+    "u",
+    "s",
+    "small",
+    "sub",
+    "sup",
+    "font",
+    "center",
+    "blockquote",
+    "pre",
+    "code",
+    "ul",
+    "ol",
+    "li",
+    "dl",
+    "dt",
+    "dd",
+    "table",
+    "thead",
+    "tbody",
+    "tfoot",
+    "tr",
+    "td",
+    "th",
+    "colgroup",
+    "col",
+    "caption",
+    "a",
+    "img",
+    "style",
+];
+
+/// Attributes every kept tag may have: layout and text direction, nothing that runs or loads.
+const HTML_ATTRIBUTES: &[&str] = &[
+    "style",
+    "class",
+    "id",
+    "align",
+    "valign",
+    "width",
+    "height",
+    "bgcolor",
+    "color",
+    "border",
+    "cellpadding",
+    "cellspacing",
+    "alt",
+    "title",
+    "dir",
+    "lang",
+];
+
+/// Tags whose content goes with them: what would run, what a frame or object shows, and text
+/// that is no part of the mail's body (the document's `title`, a form's choices).
+const HTML_DROPPED_WITH_CONTENT: &[&str] = &[
+    "script", "noscript", "template", "title", "iframe", "frame", "frameset", "object", "embed", "applet", "svg",
+    "math", "select", "textarea",
+];
+
+/// Cleans the HTML of a mail through an allow list (task M8.1): the tags of `HTML_TAGS` with the
+/// attributes of `HTML_ATTRIBUTES` (and `colspan`/`rowspan` on cells, `face`/`size` on `font`, so
+/// the layout of tables and old mail holds), `href` on `a` only to `http`, `https` and `mailto`,
+/// `src` on `img` only from `http`, `https`, `cid:` and `data:image/png|jpeg|gif|webp`. Relative
+/// links and images, comments (Outlook's conditional ones too), every other tag and attribute
+/// (`script`, `iframe`, `object`, `embed`, `form`, `input`, `button`, `base`, `meta`, `link`, `svg`,
+/// `on…`) go; links get `rel="noopener noreferrer"`. Fetches nothing.
+pub fn clean_html(markup: &str) -> String {
+    let mut builder = ammonia::Builder::empty();
+    builder
+        .add_tags(HTML_TAGS)
+        .clean_content_tags(HTML_DROPPED_WITH_CONTENT.iter().copied().collect())
+        .add_generic_attributes(HTML_ATTRIBUTES)
+        .add_tag_attributes("a", &["href"])
+        .add_tag_attributes("img", &["src"])
+        .add_tag_attributes("td", &["colspan", "rowspan"])
+        .add_tag_attributes("th", &["colspan", "rowspan"])
+        .add_tag_attributes("font", &["face", "size"])
+        .url_schemes(["http", "https", "mailto", "cid", "data"].into_iter().collect())
+        .url_relative(ammonia::UrlRelative::Deny)
+        .attribute_filter(|element, attribute, value| match (element, attribute) {
+            ("a", "href") => allowed_url(value, &["http://", "https://", "mailto:"]),
+            ("img", "src") => allowed_url(value, IMAGE_SOURCES),
+            _ => Some(value.into()),
+        });
+    builder.clean(markup).to_string()
+}
+
+/// Where a mail's image may come from: the web, an inline part (`cid:`) or the image itself in
+/// one of four picture formats (no SVG, which can carry script).
+const IMAGE_SOURCES: &[&str] = &[
+    "http://",
+    "https://",
+    "cid:",
+    "data:image/png;",
+    "data:image/png,",
+    "data:image/jpeg;",
+    "data:image/jpeg,",
+    "data:image/gif;",
+    "data:image/gif,",
+    "data:image/webp;",
+    "data:image/webp,",
+];
+
+/// `value` without the white space around it, when it starts with one of `prefixes` (case
+/// ignored); `None` drops the attribute.
+fn allowed_url<'a>(value: &str, prefixes: &[&str]) -> Option<std::borrow::Cow<'a, str>> {
+    let value = value.trim_matches(|c: char| c.is_ascii_whitespace() || c.is_ascii_control());
+    let starts = |prefix: &&str| value.get(..prefix.len()).is_some_and(|start| start.eq_ignore_ascii_case(prefix));
+    prefixes.iter().any(starts).then(|| value.to_owned().into())
+}
+
 /// A text part that is plain text, not a calendar or another text type.
 fn is_plain(part: &MessagePart<'_>) -> bool {
     part.content_type().is_none_or(|kind| {
@@ -429,6 +593,10 @@ fn attachment_info(id: u32, part: &MessagePart<'_>) -> AttachmentInfo {
         content_type: content_type(part),
         size: part.len() as u64,
         inline,
+        content_id: part
+            .content_id()
+            .map(|id| clean(id.trim().trim_start_matches('<').trim_end_matches('>')))
+            .filter(|id| !id.is_empty()),
     }
 }
 
@@ -672,6 +840,7 @@ mod tests {
             date: None,
             text: String::new(),
             from_html: false,
+            html: None,
             attachments: vec![],
             traits: MessageTraits::default(),
             invitation: false,

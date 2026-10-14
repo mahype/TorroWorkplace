@@ -1554,14 +1554,21 @@ pub enum Request {
         account: Option<String>,
     },
     /// One message with its headers, attachments (without content) and, with `include_body`, its
-    /// text ([`Response::MailMessage`]). Reading it does not mark it read. `not-found` for an id
-    /// the caller does not reach.
+    /// text, with `include_html` its cleaned HTML ([`Response::MailMessage`]). Reading it does not
+    /// mark it read. `not-found` for an id the caller does not reach; `offline` and the account's
+    /// other errors when the text or HTML is not kept and the server cannot be asked.
     #[serde(rename = "mail.get_message")]
     GetMail {
         /// The message's id (`m:…`).
         id: String,
         /// Also the text: the plain text part, or the HTML part made text.
         include_body: bool,
+        /// Also the HTML part, cleaned by the core (no scripts, forms or frames), for showing the
+        /// mail to a person; left out when the message has none or it is larger than 2 MiB. Fetched
+        /// from the server without marking the message read when the core does not keep it, so it
+        /// may fail with `offline`. Agents rarely need it: the text is enough.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_html: bool,
     },
     /// The conversation the message belongs to, oldest first, each message with its text
     /// ([`Response::MailThread`]); only messages in accounts the caller reaches.
