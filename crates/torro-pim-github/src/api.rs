@@ -5,7 +5,8 @@
 //! miss an item that stopped matching (`docs/github.md`, "Technik").
 //!
 //! For the dialog of a filter list (task G.9) it also reads the repositories the account reaches
-//! ([`Api::repos`]) and what can be picked in one of them ([`Api::describe_repo`]).
+//! ([`Api::repos`]) and what can be picked in one of them ([`Api::describe_repo`]). For the inbox
+//! (task E5.5) it reads how the issues and pull requests of its entries stand ([`Api::standing`]).
 
 use std::future::Future;
 
@@ -24,7 +25,8 @@ pub const MAX_MATCHES: usize = 1000;
 /// How many items one search page asks for; GitHub allows 100.
 const PAGE_SIZE: usize = 100;
 
-/// How many pinned items one call asks for, so a document stays well inside GitHub's limits.
+/// How many pinned items one call asks for, so a document stays well inside GitHub's limits; the
+/// inbox's check of its entries ([`Api::standing`]) as well.
 const PINNED_PER_CALL: usize = 50;
 
 /// How many pages of 100 repositories [`Api::repos`] reads at most: enough for a person's own and
@@ -78,6 +80,20 @@ impl Api {
             items.extend(graphql::read_items(&answer, chunk.len())?);
         }
         Ok(items)
+    }
+
+    /// How the items `refs` stand, for the inbox's GitHub entries (task E5.5): each item as
+    /// [`Api::items`] reads it, with when it was closed and whether a pull request still asks the
+    /// signed-in account for a review ([`graphql::Standing`]). One call per 50 refs, in order;
+    /// items that are gone or out of the token's reach are left out ([`graphql::read_standing`]).
+    /// Only reads: nothing changes on GitHub. The first failure fails it all.
+    pub async fn standing(&self, refs: &[IssueRef]) -> Result<Vec<graphql::Standing>, Error> {
+        let mut standing = Vec::new();
+        for chunk in refs.chunks(PINNED_PER_CALL) {
+            let answer = self.post(graphql::standing_body(chunk)).await?;
+            standing.extend(graphql::read_standing(&answer, chunk)?);
+        }
+        Ok(standing)
     }
 
     /// The whole list: every match of each of `queries` (up to [`MAX_MATCHES`] each) and the

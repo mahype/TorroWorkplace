@@ -1,0 +1,147 @@
+{
+  "data": {
+    "i0": {
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 42,
+        "title": "Add the inbox",
+        "body": "",
+        "url": "https://github.com/mahype/TorroWorkplace/pull/42",
+        "state": "MERGED",
+        "isDraft": false,
+        "updatedAt": "2026-10-13T09:50:00Z",
+        "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "reviewDecision": "APPROVED",
+        "mergeable": "UNKNOWN",
+        "commits": { "nodes": [] },
+        "closedAt": "2026-10-13T09:50:00Z",
+        "reviewRequests": { "nodes": [] }
+      }
+    },
+    "i1": {
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 43,
+        "title": "Review given, another person still asked",
+        "body": "",
+        "url": "https://github.com/mahype/TorroWorkplace/pull/43",
+        "state": "OPEN",
+        "isDraft": false,
+        "updatedAt": "2026-10-13T09:40:00Z",
+        "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergeable": "MERGEABLE",
+        "commits": { "nodes": [] },
+        "closedAt": null,
+        "reviewRequests": {
+          "nodes": [ { "requestedReviewer": { "__typename": "User", "isViewer": false } } ]
+        }
+      }
+    },
+    "i2": {
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 44,
+        "title": "Still waiting for the review",
+        "body": "",
+        "url": "https://github.com/mahype/TorroWorkplace/pull/44",
+        "state": "OPEN",
+        "isDraft": false,
+        "updatedAt": "2026-10-13T09:30:00Z",
+        "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "reviewDecision": "REVIEW_REQUIRED",
+        "mergeable": "MERGEABLE",
+        "commits": { "nodes": [] },
+        "closedAt": null,
+        "reviewRequests": {
+          "nodes": [
+            { "requestedReviewer": { "__typename": "Bot" } },
+            { "requestedReviewer": { "__typename": "User", "isViewer": true } }
+          ]
+        }
+      }
+    },
+    "i3": {
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 45,
+        "title": "A team is asked",
+        "body": "",
+        "url": "https://github.com/mahype/TorroWorkplace/pull/45",
+        "state": "OPEN",
+        "isDraft": true,
+        "updatedAt": "2026-10-13T09:20:00Z",
+        "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "reviewDecision": null,
+        "mergeable": "MERGEABLE",
+        "commits": { "nodes": [] },
+        "closedAt": null,
+        "reviewRequests": {
+          "nodes": [ { "requestedReviewer": { "__typename": "Team" } }, { "requestedReviewer": null } ]
+        }
+      }
+    },
+    "i4": {
+      "issueOrPullRequest": {
+        "__typename": "Issue",
+        "number": 7,
+        "title": "Closed as completed",
+        "body": "",
+        "url": "https://github.com/mahype/TorroWorkplace/issues/7",
+        "state": "CLOSED",
+        "updatedAt": "2026-10-13T09:45:00Z",
+        "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "parent": null,
+        "closedAt": "2026-10-13T09:45:00Z"
+      }
+    },
+    "i5": {
+      "issueOrPullRequest": {
+        "__typename": "Issue",
+        "number": 8,
+        "title": "Still open",
+        "body": "",
+        "url": "https://github.com/mahype/TorroWorkplace/issues/8",
+        "state": "OPEN",
+        "updatedAt": "2026-10-13T09:10:00Z",
+        "repository": { "nameWithOwner": "mahype/TorroWorkplace" },
+        "labels": { "nodes": [] },
+        "assignees": { "nodes": [] },
+        "milestone": null,
+        "parent": null,
+        "closedAt": null
+      }
+    },
+    "i6": null,
+    "i7": null
+  },
+  "errors": [
+    {
+      "type": "NOT_FOUND",
+      "path": ["i6"],
+      "locations": [ { "line": 1, "column": 400 } ],
+      "message": "Could not resolve to a Repository with the name 'mahype/secret'."
+    },
+    {
+      "type": "FORBIDDEN",
+      "path": ["i7"],
+      "locations": [ { "line": 1, "column": 520 } ],
+      "message": "Resource protected by organization SAML enforcement. You must grant your Personal Access token access to this organization."
+    }
+  ]
+}

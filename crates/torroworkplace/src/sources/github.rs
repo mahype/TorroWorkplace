@@ -25,6 +25,16 @@
 //! not complete (too many pages) or that is the account's first resolves nothing: a missing thread
 //! says nothing there (the first may meet entries of a reach forgotten since).
 //!
+//! **Done when the matter went away** ([`check_open`], task E5.5, scene 4 of `docs/eingang.md`):
+//! right after a listing GitHub answered, at most every [`CHECK_EVERY`], the open and snoozed
+//! entries about an issue or a pull request are checked on GitHub, one GraphQL call per 50
+//! ([`torro_pim_github::Api::standing`]). An entry is done ([`gone`]) when its issue or pull
+//! request was closed or merged, or, for a request to review, when the pull request no longer
+//! asks the account. It is done like by hand (`inbox.set_item_done` as the app), so its ids stay
+//! filed: GitHub listing the thread again as it was changes nothing, new activity opens it again.
+//! An item that is gone or whose repository the token does not reach stays as it is. Nothing
+//! reaches back to GitHub: the notification stays as it is there.
+//!
 //! **Reaching back** ([`settle_done`]): done here marks the thread done on GitHub (`DELETE
 //! /notifications/threads/{id}`, question 1 of E5), once per time the entry became done
 //! ([`Settled`]); undo changes nothing on GitHub.
@@ -47,8 +57,12 @@ use std::time::Duration;
 
 use chrono::{DateTime, SecondsFormat, TimeDelta, Utc};
 use torro_inbox::item::{Facet, FacetKey, SourceHealth};
-use torro_inbox::{Item, Kind, SourceKind, SourceRef, State, rules};
+use torro_inbox::{Item, Kind, Link, SourceKind, SourceRef, State, StateFilter, rules};
 use torro_ipc::{Request, Response};
+use torro_pim::model::{GitHubKind, GitHubState};
+use torro_pim_github::IssueRef;
+use torro_pim_github::address;
+use torro_pim_github::graphql::Standing;
 use torro_pim_github::notifications::{self, Listing, NotificationsError, RunResult, Thread, ThreadId, Threads};
 
 use super::Sources;
@@ -78,6 +92,19 @@ const FIRST_POLL: &str = "first-poll";
 /// How long after an entry became done its notification may still be marked done on GitHub
 /// ([`Settled`]): the core calls [`settle_done`] right after the command that did it.
 const SETTLE_FRESH: Duration = Duration::from_secs(60);
+
+/// How often the open entries about issues and pull requests are checked on GitHub at most
+/// ([`check_open`], task E5.5).
+const CHECK_EVERY: Duration = Duration::from_secs(5 * 60);
+
+/// A close younger than this waits for the next check: GitHub's own notification about the close
+/// or merge is filed first then, so it does not open the entry again right after it was done.
+const CLOSE_SETTLE: Duration = Duration::from_secs(2 * 60);
+
+/// Activity on an entry up to this long after its issue or pull request was closed belongs to the
+/// close (a closing comment, GitHub's notification about it). Later activity is news the person
+/// has not dealt with: the close no longer makes that entry done.
+const CLOSE_GRACE: Duration = Duration::from_secs(5 * 60);
 
 /// Starts the notifications of every GitHub account on the current runtime and returns at once:
 /// one loop ([`Poller`]) every [`TICK`].
@@ -167,12 +194,17 @@ struct Pace {
     next: Option<DateTime<Utc>>,
     /// The account needed a new sign-in when last seen: once it no longer does, it is read at once.
     signed_out: bool,
+    /// When its open entries were last checked on GitHub ([`check_open`]); `None` checks them
+    /// after the next listing GitHub answers.
+    checked: Option<DateTime<Utc>>,
 }
 
 impl Poller {
     /// One round at `now`: nothing until the GitHub accounts are loaded; the entries of accounts
     /// gone are retired ([`Poller::retire`]); then every account that is due is read
     /// ([`poll`]), except one that needs a new sign-in (health `signed_out`, nothing is sent).
+    /// After a listing GitHub answered, the account's open entries are checked ([`check_open`])
+    /// when the last check is [`CHECK_EVERY`] ago.
     async fn round(&mut self, sources: &Sources, now: DateTime<Utc>) {
         let Some(checks) = sources.github.account_checks().await else { return };
         let active: Vec<String> = checks.iter().map(|check| check.account.clone()).collect();
@@ -192,8 +224,13 @@ impl Poller {
             if pace.next.is_some_and(|next| next > now) {
                 continue;
             }
-            let wait = poll(sources, &source, now).await;
-            pace.next = Some(now + delta(wait));
+            let polled = poll(sources, &source, now).await;
+            pace.next = Some(now + delta(polled.wait));
+            let due = pace.checked.is_none_or(|checked| now.signed_duration_since(checked) >= delta(CHECK_EVERY));
+            if polled.answered && due {
+                pace.checked = Some(now);
+                check_open(sources, &source, now).await;
+            }
         }
     }
 
@@ -223,32 +260,161 @@ impl Poller {
     }
 }
 
+/// What one [`poll`] came to.
+#[derive(Debug, Clone, Copy)]
+struct Polled {
+    /// How long to wait before the next listing.
+    wait: Duration,
+    /// GitHub answered the listing (`200` or `304`): the token works and GitHub can be reached,
+    /// so the open entries may be checked too ([`check_open`]).
+    answered: bool,
+}
+
 /// Reads the unread threads of the account of `source` at `now` and files them ([`file`]);
-/// answers how long to wait before the next listing: GitHub's poll interval, the time a rate limit
-/// names, or [`RETRY_REFUSED`] after a refusal. A muted source and an account without a token
-/// are not asked (the next round looks again after a minute).
-async fn poll(sources: &Sources, source: &SourceRef, now: DateTime<Utc>) -> Duration {
+/// answers how long to wait before the next listing – GitHub's poll interval, the time a rate
+/// limit names, or [`RETRY_REFUSED`] after a refusal – and whether GitHub answered. A muted
+/// source and an account without a token are not asked (the next round looks again after a
+/// minute).
+async fn poll(sources: &Sources, source: &SourceRef, now: DateTime<Utc>) -> Polled {
+    let unasked = Polled { wait: notifications::MIN_POLL, answered: false };
     let inbox = &sources.inbox;
     if muted(inbox, source, now) {
-        return notifications::MIN_POLL;
+        return unasked;
     }
     let account = source.key();
-    let Some(api) = sources.github.notifications(&account).await else { return notifications::MIN_POLL };
+    let Some(api) = sources.github.notifications(&account).await else { return unasked };
     let started = cursor(inbox, source, FIRST_POLL).and_then(|stamp| stamp.parse::<DateTime<Utc>>().ok());
     let reach = Reach { since: started.unwrap_or(now) - TimeDelta::days(FIRST_DAYS), first: started.is_none() };
     let last_modified = cursor(inbox, source, LAST_MODIFIED);
     match api.list(last_modified.as_deref(), Some(reach.since)).await {
         Ok(Listing::Unchanged { poll }) => {
             inbox.set_source_health(source, None);
-            poll
+            Polled { wait: poll, answered: true }
         }
         Ok(Listing::Read(threads)) => {
             inbox.set_source_health(source, None);
             let poll = threads.poll;
             file(inbox, source, threads, reach, now);
-            poll
+            Polled { wait: poll, answered: true }
         }
-        Err(err) => refused(sources, source, err, now).await,
+        Err(err) => Polled { wait: refused(sources, source, err, now).await, answered: false },
+    }
+}
+
+/// An open or snoozed entry of a GitHub source about an issue or a pull request ([`watched`]).
+#[derive(Debug, Clone)]
+struct Watched {
+    /// The entry's id.
+    id: String,
+    /// Its issue or pull request, read from its link (built on github.com from checked parts).
+    issue: IssueRef,
+    /// It is a request to review a pull request (trait `reason` = `review_requested`).
+    review: bool,
+    /// Its latest activity: the `updated_at` of the thread's newest report.
+    updated: DateTime<Utc>,
+}
+
+/// Checks on GitHub how the issues and pull requests of the open and snoozed entries of `source`
+/// stand ([`watched`], [`torro_pim_github::Api::standing`]: one call per 50) and marks done at
+/// `now` those whose matter went away ([`gone`]), as the app would (`inbox.set_item_done`): the
+/// entry keeps its ids, so the thread listed again as it was changes nothing, and nothing reaches
+/// GitHub (the core's `settle_done` is not called). Entries about anything else, and items that
+/// are gone or out of the token's reach, stay as they are. Failures only to the log, with the
+/// account and a code; the next check tries again.
+async fn check_open(sources: &Sources, source: &SourceRef, now: DateTime<Utc>) {
+    let inbox = &sources.inbox;
+    let open = watched(inbox, source, now);
+    if open.is_empty() {
+        return;
+    }
+    let account = source.key();
+    let Some(api) = sources.github.api(&account).await else { return };
+    let mut refs: Vec<IssueRef> = open.iter().map(|entry| entry.issue.clone()).collect();
+    refs.sort_by_key(|issue| (issue.repo.to_ascii_lowercase(), issue.number));
+    refs.dedup_by(|a, b| a.same(b));
+    let standing = match api.standing(&refs).await {
+        Ok(standing) => standing,
+        Err(err) => {
+            eprintln!(
+                "torroworkplace: inbox: the GitHub issues and pull requests of {account} were not checked: {}",
+                err.code()
+            );
+            return;
+        }
+    };
+    for entry in open {
+        // GitHub's answer for the item asked for, and about that very number (a transferred issue
+        // answers with another one: it stays).
+        let found = standing.iter().find(|standing| standing.asked.same(&entry.issue));
+        let Some(found) = found.filter(|found| found.item.id.number == entry.issue.number) else { continue };
+        if !gone(&entry, found, now) {
+            continue;
+        }
+        let done = Request::SetItemDone { id: entry.id, done: true, dismissed: false };
+        if let Response::Error { code, .. } = inbox.handle(done, None, now) {
+            eprintln!("torroworkplace: inbox: a GitHub entry of {account} whose matter went away stays open: {code}");
+        }
+    }
+}
+
+/// The open and snoozed entries of `source` about an issue or a pull request, as the app key sees
+/// them at `now`: trait `kind` `issue` or `pull_request`, and a link to its page on github.com.
+fn watched(inbox: &Inbox, source: &SourceRef, now: DateTime<Utc>) -> Vec<Watched> {
+    let mut open = Vec::new();
+    for state in [StateFilter::Open, StateFilter::Snoozed] {
+        let list = Request::ListItems {
+            lane: None,
+            source: Some(source.clone()),
+            state: Some(state),
+            since: None,
+            limit: None,
+        };
+        match inbox.handle(list, None, now) {
+            Response::Items { items } => open.extend(items.iter().filter_map(watch)),
+            other => eprintln!(
+                "torroworkplace: inbox: the open GitHub entries of {} were not read: {}",
+                source.key(),
+                code(&other)
+            ),
+        }
+    }
+    open
+}
+
+/// `item` as [`Watched`], or `None` for an entry about anything but an issue or a pull request.
+fn watch(item: &Item) -> Option<Watched> {
+    let trait_of = |key| item.facets.iter().find(|facet| facet.key == key).map(|facet| facet.value.as_str());
+    let kind = trait_of(FacetKey::Kind)?;
+    if !matches!(kind, "issue" | "pull_request") {
+        return None;
+    }
+    let Some(Link::Url { url }) = &item.link else { return None };
+    let issue = address::issue_ref(url)?;
+    let review = kind == "pull_request" && trait_of(FacetKey::Reason) == Some("review_requested");
+    Some(Watched { id: item.id.clone(), issue, review, updated: item.updated })
+}
+
+/// The matter of `entry` went away by `now`, as `standing` of its item says: the issue or pull
+/// request was closed or merged – at least [`CLOSE_SETTLE`] ago, and not more than [`CLOSE_GRACE`]
+/// before the entry's latest activity – or, for a request to review, the pull request is open and
+/// no longer asks the account (it reviewed, or the request was taken back).
+fn gone(entry: &Watched, standing: &Standing, now: DateTime<Utc>) -> bool {
+    if standing.item.state != GitHubState::Open {
+        return match standing.closed_at {
+            Some(closed) => {
+                now.signed_duration_since(closed) >= delta(CLOSE_SETTLE) && entry.updated <= closed + delta(CLOSE_GRACE)
+            }
+            None => true,
+        };
+    }
+    entry.review && standing.item.kind == GitHubKind::PullRequest && !standing.asks_viewer
+}
+
+/// The code of an error answer, for the log; `error` for any other answer.
+fn code(response: &Response) -> &str {
+    match response {
+        Response::Error { code, .. } => code,
+        _ => "error",
     }
 }
 
@@ -476,6 +642,44 @@ mod tests {
                 .await
         }
 
+        /// GitHub lists `threads` with `X-Poll-Interval: 60` and `Last-Modified: stamp` to every
+        /// listing, whatever it sends.
+        async fn lists_always(&self, threads: Value, stamp: &str) -> Mock<'_> {
+            self.server
+                .mock_async(|when, then| {
+                    when.method(GET).path("/notifications");
+                    then.status(200).header("X-Poll-Interval", "60").header("Last-Modified", stamp).json_body(threads);
+                })
+                .await
+        }
+
+        /// GitHub's GraphQL endpoint answers the check of the open entries with `answer`.
+        async fn stands(&self, answer: Value) -> Mock<'_> {
+            self.server
+                .mock_async(|when, then| {
+                    when.method(POST)
+                        .path("/graphql")
+                        .body_includes("issueOrPullRequest")
+                        .header("authorization", format!("Bearer {TOKEN}"));
+                    then.status(200).json_body(answer);
+                })
+                .await
+        }
+
+        /// Any `DELETE` (a notification marked done on GitHub).
+        async fn deletes(&self) -> Mock<'_> {
+            self.server
+                .mock_async(|when, then| {
+                    when.method(DELETE);
+                    then.status(204);
+                })
+                .await
+        }
+
+        fn is_done(&self, thread: &str) -> bool {
+            matches!(self.item(thread).state, State::Done { .. })
+        }
+
         async fn round(&self, minutes: i64) {
             self.poller.lock().await.round(&self.sources, at(minutes)).await;
         }
@@ -517,11 +721,12 @@ mod tests {
         }
     }
 
-    /// GitHub's GraphQL endpoint answers the check of a token with `status`: 200 takes it.
+    /// GitHub's GraphQL endpoint answers the check of a token with `status`: 200 takes it. Not
+    /// the check of the open entries ([`World::stands`]).
     async fn signs_in(server: &MockServer, status: u16) {
         server
             .mock_async(|when, then| {
-                when.method(POST).path("/graphql");
+                when.method(POST).path("/graphql").body_excludes("issueOrPullRequest");
                 then.status(status).header("X-OAuth-Scopes", "notifications, repo").body(viewer(LOGIN));
             })
             .await;
@@ -852,5 +1057,155 @@ mod tests {
         assert_eq!((report.matter.as_str(), report.ids.as_slice()), ("101", ["101".to_string()].as_slice()));
         assert_eq!(report.url.as_deref(), Some("https://github.com/torro/workplace"));
         assert_eq!((report.kind, report.lane, report.date), (Kind::Notice, Lane::ForMe, at(0)));
+    }
+
+    /// GitHub's answer to the check of the entries of [`went_away`], `tests/fixtures/github/`:
+    /// `torro/secret#1` out of reach, `torro/site#5` merged and `torro/workplace#7` closed ten
+    /// minutes before [`at`]`(0)`, `#8` open, `#42` no longer asks the account, `#44` still does.
+    fn standing_answer() -> Value {
+        serde_json::from_str(include_str!("../../tests/fixtures/github/standing.json")).expect("fixture")
+    }
+
+    /// The threads the fixture [`standing_answer`] answers for, and a workflow run.
+    fn went_away(updated: i64) -> Value {
+        json!([
+            thread("201", "torro/site", "PullRequest", 5, "review_requested", "Merged meanwhile", -30),
+            thread("202", "torro/workplace", "PullRequest", 42, "review_requested", "Reviewed meanwhile", -30),
+            thread("203", "torro/workplace", "Issue", 7, "comment", "Closed meanwhile", updated),
+            thread("204", "torro/workplace", "PullRequest", 44, "review_requested", "Still asked", -30),
+            thread("205", "torro/workplace", "Issue", 8, "subscribed", "Still open", -40),
+            thread("206", "torro/secret", "PullRequest", 1, "review_requested", "Out of reach", -30),
+            failed_run(-10),
+        ])
+    }
+
+    #[tokio::test]
+    async fn merged_closed_and_reviewed_entries_are_done_and_nothing_reaches_github() {
+        let world = World::new().await;
+        let deleted = world.deletes().await;
+        let stands = world.stands(standing_answer()).await;
+        let listing = world.lists_always(on(&world.server, went_away(-20)), STAMP).await;
+        world.round(0).await;
+        assert_eq!(stands.calls_async().await, 1, "checked right after the first listing, six items in one call");
+        let done: Vec<bool> = ["201", "202", "203"].iter().map(|thread| world.is_done(thread)).collect();
+        assert_eq!(done, [true; 3], "merged, reviewed, closed");
+        let open: Vec<bool> = ["204", "205", "206", "102"].iter().map(|thread| world.is_done(thread)).collect();
+        assert_eq!(open, [false; 4], "still asked, still open, out of reach, no issue at all");
+        assert_eq!(world.item("201").count, 1);
+        stands.delete_async().await;
+
+        // GitHub lists the threads again as they were: they stay done, and no check before five
+        // minutes. Then only the open ones are asked for: `torro/secret#1`, `#8` and `#44`.
+        let stands = world.stands(pick(&standing_answer(), &["i0", "i3", "i5"])).await;
+        world.round(1).await;
+        world.round(4).await;
+        assert!(listing.calls_async().await >= 3);
+        assert_eq!(stands.calls_async().await, 0, "at most every five minutes");
+        assert!(world.is_done("201") && world.is_done("202") && world.is_done("203"));
+        world.round(5).await;
+        assert_eq!(stands.calls_async().await, 1);
+        assert!(!world.is_done("204") && !world.is_done("205") && !world.is_done("206"), "nothing else went away");
+        listing.delete_async().await;
+        stands.delete_async().await;
+
+        // A comment on the closed issue long after it was closed: news, the close does not hide it.
+        let stands = world.stands(pick(&standing_answer(), &["i0", "i2", "i3", "i5"])).await;
+        world.lists_always(on(&world.server, went_away(15)), "Tue, 13 Oct 2026 10:15:00 GMT").await;
+        world.round(15).await;
+        assert_eq!(stands.calls_async().await, 1);
+        let reopened = world.item("203");
+        assert_eq!((reopened.state, reopened.count), (State::New, 2), "new activity stays");
+        assert_eq!(deleted.calls_async().await, 0, "nothing marked done on GitHub");
+    }
+
+    /// The answers `keys` of `answer`, as GitHub would send them when asked for those only.
+    fn pick(answer: &Value, keys: &[&str]) -> Value {
+        let data: serde_json::Map<String, Value> =
+            keys.iter().enumerate().map(|(k, key)| (format!("i{k}"), answer["data"][*key].clone())).collect();
+        json!({ "data": data })
+    }
+
+    #[tokio::test]
+    async fn the_check_asks_github_at_most_once_per_fifty_entries_and_round() {
+        let world = World::new().await;
+        let threads: Vec<Value> = (1..=51)
+            .map(|n| thread(&(3000 + n).to_string(), "torro/workplace", "PullRequest", n, "review_requested", "PR", -5))
+            .collect();
+        world.lists_always(on(&world.server, Value::Array(threads)), STAMP).await;
+        let stands = world.stands(json!({"data": {}})).await;
+        world.round(0).await;
+        assert_eq!(world.items().len(), 51);
+        assert_eq!(stands.calls_async().await, 2, "51 entries: two calls");
+        world.round(1).await;
+        world.round(2).await;
+        assert_eq!(stands.calls_async().await, 2, "no more in the next rounds");
+        world.round(5).await;
+        assert_eq!(stands.calls_async().await, 4);
+        assert!(world.items().iter().all(|item| item.state == State::New), "nothing GitHub did not report is done");
+    }
+
+    #[tokio::test]
+    async fn a_muted_source_or_a_failed_listing_checks_nothing() {
+        let world = World::new().await;
+        // Nothing went away: every item open, every review still asked.
+        let stands = world.stands(json!({"data": {}})).await;
+        let listing = world.lists_always(on(&world.server, went_away(-20)), STAMP).await;
+        world.round(0).await;
+        assert_eq!(stands.calls_async().await, 1);
+
+        let mute = |muted| Request::MuteSource { source: source(), muted };
+        assert_eq!(world.inbox().handle(mute(true), None, at(5)), Response::Ok);
+        world.round(5).await;
+        assert_eq!((listing.calls_async().await, stands.calls_async().await), (1, 1), "muted: nothing asked");
+        assert_eq!(world.inbox().handle(mute(false), None, at(5)), Response::Ok);
+        listing.delete_async().await;
+
+        let failing = world
+            .server
+            .mock_async(|when, then| {
+                when.method(GET).path("/notifications");
+                then.status(502);
+            })
+            .await;
+        world.round(10).await;
+        assert_eq!((failing.calls_async().await, stands.calls_async().await), (1, 1), "a failed listing");
+        failing.delete_async().await;
+        world.lists_always(on(&world.server, went_away(-20)), STAMP).await;
+        world.round(11).await;
+        assert_eq!(stands.calls_async().await, 2, "checked once GitHub answers again");
+    }
+
+    /// How GitHub reports `kind` (`PullRequest`, `Issue`) `torro/workplace#42` in `state`, closed
+    /// at `closed` (minutes after [`at`]), asking the account for a review or not.
+    fn standing(kind: &str, state: &str, closed: Option<i64>, asks: bool) -> Standing {
+        let closed = closed.map(|minutes| at(minutes).to_rfc3339_opts(SecondsFormat::Secs, true));
+        let who = json!({"requestedReviewer": {"__typename": "User", "isViewer": asks}});
+        let answer = json!({"data": {"i0": {"issueOrPullRequest": {
+            "__typename": kind, "number": 42, "title": "T", "url": "https://github.com/torro/workplace/pull/42",
+            "state": state, "repository": {"nameWithOwner": "torro/workplace"}, "closedAt": closed,
+            "reviewRequests": {"nodes": [who]},
+        }}}});
+        let asked = IssueRef { repo: "torro/workplace".into(), number: 42 };
+        torro_pim_github::graphql::read_standing(&answer, &[asked]).expect("read").remove(0)
+    }
+
+    #[test]
+    fn a_close_counts_once_it_settled_and_only_for_activity_around_it() {
+        let issue = IssueRef { repo: "torro/workplace".into(), number: 42 };
+        let entry = |review, updated| Watched { id: "e".into(), issue: issue.clone(), review, updated: at(updated) };
+        let merged = standing("PullRequest", "MERGED", Some(0), false);
+        assert!(!gone(&entry(true, -30), &merged, at(1)), "a minute after the merge: GitHub's notice first");
+        assert!(gone(&entry(true, -30), &merged, at(2)));
+        assert!(gone(&entry(false, 4), &merged, at(10)), "a closing comment belongs to the close");
+        assert!(!gone(&entry(false, 6), &merged, at(10)), "a comment later is news");
+        let closed = standing("Issue", "CLOSED", Some(-60), false);
+        assert!(gone(&entry(false, -90), &closed, at(0)), "a comment before the close");
+        assert!(!gone(&entry(false, -30), &closed, at(0)), "half an hour after it");
+
+        let open = |asks| standing("PullRequest", "OPEN", None, asks);
+        assert!(gone(&entry(true, -30), &open(false), at(0)), "reviewed, or the request taken back");
+        assert!(!gone(&entry(true, -30), &open(true), at(0)), "still asked");
+        assert!(!gone(&entry(false, -30), &open(false), at(0)), "a comment on an open pull request stays");
+        assert!(!gone(&entry(true, -30), &standing("Issue", "OPEN", None, false), at(0)));
     }
 }
