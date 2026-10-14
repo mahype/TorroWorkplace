@@ -158,8 +158,8 @@ use torro_gui::{datetime, style, typo};
 use torro_inbox::item::{FacetKey, HideScope, MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::source::TaskList;
 use torro_inbox::{
-    Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, Link, Rule, SourceInfo, SourceKind, SourceRef, State,
-    StateFilter, rules,
+    Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, Link, Order, Rule, SourceInfo, SourceKind, SourceRef,
+    State, StateFilter, rules,
 };
 use torro_ipc::inbox::CalendarEvent;
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
@@ -1462,6 +1462,9 @@ const DEMO_ERROR: &str = "The server did not answer (demo)";
 /// "Info", the sources.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Loaded {
+    /// The order the lists were asked in (task E8.15); an answer in another order than the window's
+    /// now is dropped.
+    pub order: Order,
     pub items: Vec<Item>,
     /// Open entries in "For me", whatever the view: their number is the one in the sidebar, the
     /// first of them are what the glance shows (mini, strip).
@@ -1658,6 +1661,11 @@ pub struct App<S> {
     /// The density chosen for this window (task E8.2): `--density`, else the one remembered in
     /// `ui.json`, else `None` – then the layout decides ([`App::density`]).
     density: Option<Density>,
+    /// Newest or oldest first in this window's lists (task E8.15): remembered in `ui.json` under
+    /// the density's key ([`Launch::density_key`]), newest first until chosen.
+    order: Order,
+    /// The order was turned in this window before `ui.json` answered: what it remembers is late.
+    order_chosen: bool,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
     /// Follows the design pack the suite settings name (task L.3).
@@ -1828,6 +1836,11 @@ pub enum Message {
     SetDensity(Density),
     /// The density remembered for this window in `ui.json`, loaded at start (none: not chosen yet).
     StoredDensity(Option<Density>),
+    /// "Newest first | Oldest first" in the header bar (task E8.15): turn the order, remember it and
+    /// list anew.
+    ToggleOrder,
+    /// The order remembered for this window in `ui.json`, loaded at start (none: not chosen yet).
+    StoredOrder(Option<Order>),
     /// Close the open menu and the drawer (click beside them).
     CloseMenu,
     /// Escape: closes the innermost open thing – menu or drawer, then the panel.
@@ -1849,7 +1862,7 @@ pub enum Message {
     /// "Load more" at the end of a folder's messages.
     MoreMail,
     /// The next page of the folder's view it was asked for.
-    MoreLoaded(View, Result<MailPage, String>),
+    MoreLoaded(View, Order, Result<MailPage, String>),
     /// What is typed into the search field.
     SearchInput(String),
     /// `Enter` in the search field: show the folder searched for it.
@@ -1962,16 +1975,20 @@ fn keep_answer(answers: &[(String, InvitationAnswer)], message: &mut MessageSumm
     }
 }
 
+/// What `view` lists, asked of `inbox`: its entries and, in a view of mail, the first `limit`
+/// messages, both in `order` (task E8.15); beside them what the sidebar, the glance and the hub need
+/// – "For me" always newest first, as the glance shows it.
 pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     inbox: Arc<S>,
     view: View,
     empty: bool,
-    limit: u32,
+    (limit, order): (u32, Order),
     (kind, shown): (Kind, Shown),
     demo: Option<DateTime<Utc>>,
 ) -> Result<Loaded, String> {
     if empty {
         let none = Loaded {
+            order,
             items: Vec::new(),
             for_me: Vec::new(),
             info: 0,
@@ -2006,15 +2023,18 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     };
     let for_me_filter = || narrow(View::ForMe.filter().unwrap_or_default());
     let items = match view.filter() {
-        Some(filter) => keep(inbox.list_items(narrow(filter)).await.map_err(failed)?),
+        Some(filter) => keep(inbox.list_items(ItemFilter { order, ..narrow(filter) }).await.map_err(failed)?),
         None => Vec::new(),
     };
     // The overview lists both lanes: its entries hold "For me" and "Info" already.
-    let for_me = match view {
+    let mut for_me = match view {
         View::ForMe => items.clone(),
         View::Overview => items.iter().filter(|item| item.lane == Lane::ForMe).cloned().collect(),
         _ => keep(inbox.list_items(for_me_filter()).await.map_err(failed)?),
     };
+    if order != Order::NewestFirst {
+        rules::sort(&mut for_me);
+    }
     let info = match view {
         View::Info => items.len(),
         View::Overview => items.iter().filter(|item| item.lane == Lane::Info).count(),
@@ -2024,21 +2044,25 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     let folders = inbox.mail_folders().await.unwrap_or_default();
     let mail = match &view {
         View::Folder(folder) => {
-            Some(inbox.search_mail(folder.id.clone(), folder.query.clone(), limit, None).await.map_err(failed)?)
+            Some(inbox.search_mail(folder.id.clone(), folder.query.clone(), limit, None, order).await.map_err(failed)?)
         }
         View::Attachments => {
             let mut pages = Vec::new();
             for inbox_folder in folders.iter().filter(|folder| folder.role == Some(Role::Inbox)) {
-                let page = inbox.search_mail(inbox_folder.id.clone(), None, limit, None).await.map_err(failed)?;
+                let page =
+                    inbox.search_mail(inbox_folder.id.clone(), None, limit, None, order).await.map_err(failed)?;
                 pages.push(page.messages);
             }
-            Some(MailPage { messages: mail::attachments(pages), next: None })
+            Some(MailPage { messages: mail::attachments(pages, order), next: None })
         }
         // The smart view "Invitations" (task E8.3b) the same way, from what the summaries say.
         View::Invitations => {
             let mut pages = Vec::new();
             for inbox_folder in folders.iter().filter(|folder| folder.role == Some(Role::Inbox)) {
-                let page = inbox.search_mail(inbox_folder.id.clone(), None, limit, None).await.map_err(failed)?;
+                // The soonest event first: the order of arrival does not apply.
+                let newest = Order::NewestFirst;
+                let page =
+                    inbox.search_mail(inbox_folder.id.clone(), None, limit, None, newest).await.map_err(failed)?;
                 pages.push(page.messages);
             }
             Some(MailPage { messages: mail::invitations(pages, demo.unwrap_or_else(Utc::now)), next: None })
@@ -2054,7 +2078,7 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
         ),
         _ => (Vec::new(), Vec::new(), None),
     };
-    Ok(Loaded { items, for_me, info, sources, folders, mail, snoozed, done, quiet })
+    Ok(Loaded { order, items, for_me, info, sources, folders, mail, snoozed, done, quiet })
 }
 
 impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
@@ -2162,6 +2186,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
             sidebar: SidebarMode::default(),
             density: launch.density,
+            order: Order::default(),
+            order_chosen: false,
             launch,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
@@ -2174,10 +2200,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Some(_) => Task::none(),
             None => ui_state::load_density_task(INBOX, app.launch.density_key()).map(Message::StoredDensity),
         };
+        let order = ui_state::load_order_task(INBOX, app.launch.density_key()).map(Message::StoredOrder);
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
             density,
+            order,
             app.load(),
             app.fetch_appearance(),
             app.zoom.fetch().map(Message::Zoom),
@@ -2252,8 +2280,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
             Message::Loaded(view, result) => {
-                // An answer for a view the user has left since would show the wrong entries.
-                if view != self.view {
+                // An answer for a view the user has left since would show the wrong entries; one in
+                // the order before the last turn (task E8.15) the wrong way round.
+                if view != self.view || result.as_ref().is_ok_and(|loaded| loaded.order != self.order) {
                     return Task::none();
                 }
                 match result {
@@ -2497,6 +2526,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     self.density = stored;
                 }
             }
+            Message::ToggleOrder => return self.set_order(self.order.toggled()),
+            Message::StoredOrder(stored) => {
+                // A turn made before the file answered wins; the first lists went out newest first.
+                if let Some(stored) = stored.filter(|stored| !self.order_chosen && *stored != self.order) {
+                    self.order = stored;
+                    self.more = None;
+                    return self.load();
+                }
+            }
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
                 if self.menu.is_some() || self.drawer {
@@ -2551,8 +2589,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 return self.load();
             }
             Message::MoreMail => return self.more_mail(),
-            Message::MoreLoaded(view, result) => {
-                if view != self.view {
+            Message::MoreLoaded(view, order, result) => {
+                // A page of a view left since, or asked before the order turned, does not belong.
+                if view != self.view || order != self.order {
                     return Task::none();
                 }
                 match result {
@@ -3069,11 +3108,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         };
         #[cfg(test)]
         self.sent.push(Sent::More(cursor.clone()));
-        let (inbox, view) = (self.inbox.clone(), self.view.clone());
+        let (inbox, view, order) = (self.inbox.clone(), self.view.clone(), self.order);
         let next = async move {
-            inbox.search_mail(folder.id, folder.query, mail::PAGE, Some(cursor)).await.map_err(|err| err.to_string())
+            let page = inbox.search_mail(folder.id, folder.query, mail::PAGE, Some(cursor), order).await;
+            page.map_err(|err| err.to_string())
         };
-        Task::perform(next, move |result| Message::MoreLoaded(view.clone(), result))
+        Task::perform(next, move |result| Message::MoreLoaded(view.clone(), order, result))
     }
 
     /// Opens the entry `id` if it is the one in the panel: a message can outlive the entry it came
@@ -3255,14 +3295,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     fn rows(&self) -> Vec<&Item> {
         // The notifications window walks its board (task E8.4).
         if self.is_board() {
-            return notifications::order(&self.items, self.board(), &self.view);
+            return notifications::order(&self.items, self.board(), &self.view, self.order);
         }
         // The hub walks its sections (task E8.5): Decide, Agents, To sort – or To sort alone.
         if self.is_hub() {
             return hub::Sections::of(&self.items, self.filter.as_ref()).order(self.sorting);
         }
         if self.view == View::Overview {
-            Sections::of(&self.items, self.column, self.now).order(self.info_open[self.column.index()])
+            Sections::of(&self.items, self.column, self.now)
+                .ordered(self.order)
+                .order(self.info_open[self.column.index()])
         } else {
             self.items.iter().collect()
         }
@@ -3517,12 +3559,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             let span = self
                 .rows()
                 .get(index)
-                .and_then(|item| notifications::span(&self.items, board, &self.view, density, &item.id));
+                .and_then(|item| notifications::span(&self.items, board, &self.view, density, &item.id, self.order));
             (self.scroll, span, list::SCROLL)
         } else if overview {
             // The overview: the column with the cursor, which scrolls on its own.
             let column = self.column;
-            let sections = Sections::of(&self.items, column, self.now);
+            let sections = Sections::of(&self.items, column, self.now).ordered(self.order);
             let open = self.info_open[column.index()];
             let (look, lead, width) = (self.look(), self.lead().is_some(), self.card_width());
             let span = sections
@@ -4434,6 +4476,27 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         ui_state::save_density_task(INBOX, self.launch.density_key(), density)
     }
 
+    /// "Newest first | Oldest first" (task E8.15): the window lists in `order` from now on – asked
+    /// anew, since a folder's next pages and an entry list's `limit` follow the order –, and
+    /// remembers it for its key ([`Launch::density_key`]) – not in the demo, which stores nothing.
+    fn set_order(&mut self, order: Order) -> Task<Message> {
+        self.order = order;
+        self.order_chosen = true;
+        self.more = None;
+        let load = self.load();
+        if self.launch.demo {
+            return load;
+        }
+        Task::batch([load, ui_state::save_order_task(INBOX, self.launch.density_key(), order)])
+    }
+
+    /// Whether the header offers "Newest first | Oldest first" (task E8.15): where the window lists
+    /// entries or messages by arrival – not on the hub's "Act now" and Insights, which are sorted by
+    /// what to do, nor in "Invitations", sorted by the event.
+    fn orderable(&self) -> bool {
+        !self.is_hub() && self.view != View::Invitations
+    }
+
     /// The density the window shows its entries in (task E8.2): the one chosen (`--density`, the
     /// switch, `ui.json`), else the layout's ([`Density::default_for`]: compact when narrow).
     /// Mini and strip are glances and ignore it.
@@ -4744,6 +4807,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         // room: wide, and medium unless "Mail | Notifications" or "By app | By time" takes the room;
         // narrow icons only.
         let words = class == SizeClass::Wide || (class == SizeClass::Medium && !choose_column && !arrange);
+        // "Newest first | Oldest first" (task E8.15) where the window lists by arrival, with its word
+        // where the density switch has its words.
+        if self.orderable() {
+            trailing.push(order_button(self.order, words));
+        }
         trailing.push(widgets::density_switch(self.density(), words, Message::SetDensity));
         // "Dismiss all" in "New" of the notifications window (task E8.4), with its word in the wide
         // layout; off while nothing can be dismissed.
@@ -4966,6 +5034,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 icon: self.launch.kind.view_icon(&self.view),
                 sources: &self.sources,
                 attention: palette(&self.theme()).attention,
+                sort: self.order,
             });
             return container(content.push(board).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_insights() {
@@ -5036,7 +5105,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
             columns = columns.push(overview::column_view(overview::ColumnData {
                 column,
-                sections: Sections::of(&self.items, column, self.now),
+                sections: Sections::of(&self.items, column, self.now).ordered(self.order),
                 info_open: self.info_open[column.index()],
                 rows: self.rows_data(anchor),
                 deciding: self.deciding.is_some(),
@@ -5664,7 +5733,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let limit = self.page_limit();
         let window = (self.launch.kind, self.shown.clone());
         let demo = self.launch.demo.then_some(self.now);
-        let entries = Task::perform(fetch(inbox, view.clone(), empty, limit, window, demo), move |result| {
+        let asked = (limit, self.order);
+        let entries = Task::perform(fetch(inbox, view.clone(), empty, asked, window, demo), move |result| {
             Message::Loaded(view.clone(), result)
         });
         // Insights asks for its numbers with every load (task E8.8b): after muting, after an undo, on
@@ -5777,6 +5847,22 @@ fn mute_menu_width(choices: &[Choice]) -> f32 {
     let frame = 2.0 * (style::MENU_INSET + space::s());
     let segments = segmented_width(&spans).max(segmented_width(&effects)) + frame;
     choice_menu_width(choices).max(segments.ceil()).min(size::panel())
+}
+
+/// The header's button that turns the order (task E8.15): the icon and word of the order shown
+/// now ("Newest first", "Oldest first"), the word beside the icon with `words`, else as tooltip; a
+/// click turns it.
+fn order_button<'a>(order: Order, words: bool) -> Element<'a, Message> {
+    let (icon, word) = match order {
+        Order::NewestFirst => (Icon::ArrowDownWideNarrow, tr("Newest first")),
+        Order::OldestFirst => (Icon::ArrowUpNarrowWide, tr("Oldest first")),
+    };
+    let toggle = Some(Message::ToggleOrder);
+    if words {
+        widgets::text_button(Some(icon), word, style::button::ghost, toggle)
+    } else {
+        widgets::icon_button(icon, word, toggle)
+    }
 }
 
 /// Whether a narrow window of `kind` counts its view beside the title, as wider ones do: the
@@ -6039,7 +6125,8 @@ mod tests {
         let empty = app.launch.open == Some(Open::Empty);
         let window = (app.launch.kind, app.shown.clone());
         let demo = app.launch.demo.then_some(app.now);
-        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, app.page_limit(), window, demo));
+        let asked = (app.page_limit(), app.order);
+        let result = block_on(fetch(app.inbox.clone(), app.view.clone(), empty, asked, window, demo));
         let _ = app.update(Message::Loaded(app.view.clone(), result));
     }
 
@@ -6422,6 +6509,61 @@ mod tests {
         app
     }
 
+    /// Task E8.15: "Oldest first" turns the folder and its "Load more", and the entry lists with
+    /// the waiting ones on top; a page asked in the order before is dropped.
+    #[test]
+    fn the_order_turns_folders_and_entry_lists() {
+        let mut app = in_folder("f:work-inbox");
+        let newest: Vec<String> = app.messages.iter().map(|message| message.id.clone()).collect();
+        assert!(app.orderable());
+        let _ = app.update(Message::ToggleOrder);
+        assert_eq!(app.order, Order::OldestFirst);
+        load(&mut app);
+        let oldest: Vec<String> = app.messages.iter().map(|message| message.id.clone()).collect();
+        let all = block_on(MailSource::search_mail(
+            app.inbox.as_ref(),
+            "f:work-inbox".into(),
+            None,
+            50,
+            None,
+            Order::OldestFirst,
+        ))
+        .expect("the demo answers");
+        let first: Vec<String> = all.messages.iter().take(oldest.len()).map(|message| message.id.clone()).collect();
+        assert_eq!(oldest, first, "the oldest page first");
+        assert_ne!(oldest.first(), newest.first());
+        // A page of "Load more" asked newest first does not belong any more.
+        let late = Ok(MailPage { messages: all.messages.clone(), next: None });
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), Order::NewestFirst, late));
+        assert_eq!(app.messages.len(), oldest.len(), "dropped");
+
+        let mut app = loaded(&["--view", "notifications"]);
+        let _ = app.update(Message::ToggleOrder);
+        load(&mut app);
+        let waiting = app.items.iter().take_while(|item| list::is_waiting(item)).count();
+        let rest: Vec<_> = app.items[waiting..].iter().map(|item| item.updated).collect();
+        assert!(rest.windows(2).all(|pair| pair[0] <= pair[1]), "the others oldest first");
+        assert!(app.items[waiting..].iter().all(|item| !list::is_waiting(item)), "waiting ones on top");
+    }
+
+    /// Task E8.15: the remembered order lists anew; a turn made before the file answered wins.
+    #[test]
+    fn the_remembered_order_comes_unless_turned_before() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::StoredOrder(Some(Order::OldestFirst)));
+        assert_eq!(app.order, Order::OldestFirst);
+        let mut turned = in_folder("f:work-inbox");
+        let _ = turned.update(Message::ToggleOrder);
+        let _ = turned.update(Message::StoredOrder(Some(Order::NewestFirst)));
+        assert_eq!(turned.order, Order::OldestFirst, "the turn wins");
+        let mut hub = loaded(&[]);
+        assert!(hub.orderable(), "the hub's For me lists by arrival");
+        hub.view = View::Overview;
+        assert!(!hub.orderable(), "the hub's Act now is sorted by what to do");
+        let _ = hub.update(Message::StoredOrder(None));
+        assert_eq!(hub.order, Order::NewestFirst);
+    }
+
     #[test]
     fn an_answer_for_a_view_left_behind_is_dropped() {
         let mut app = loaded_late(&[]);
@@ -6429,7 +6571,7 @@ mod tests {
             app.inbox.clone(),
             View::ForMe,
             false,
-            mail::PAGE,
+            (mail::PAGE, Order::NewestFirst),
             (app.launch.kind, Shown::Everything),
             None,
         ));
@@ -7975,10 +8117,10 @@ mod tests {
         app.more = Some("4".into());
         let _ = app.update(Message::MoreMail);
         assert_eq!(app.sent.last(), Some(&Sent::More("4".into())));
-        let page =
-            block_on(MailSource::search_mail(app.inbox.as_ref(), "f:work-inbox".into(), None, 4, Some("4".into())))
-                .map_err(|err| err.to_string());
-        let _ = app.update(Message::MoreLoaded(app.view.clone(), page));
+        let more =
+            MailSource::search_mail(app.inbox.as_ref(), "f:work-inbox".into(), None, 4, Some("4".into()), app.order);
+        let page = block_on(more).map_err(|err| err.to_string());
+        let _ = app.update(Message::MoreLoaded(app.view.clone(), app.order, page));
         assert_eq!(app.messages.len(), 8, "nothing twice");
         assert_eq!(app.more, None);
         assert_eq!(app.page_limit(), mail::PAGE, "a load asks for a page at least");
@@ -8950,7 +9092,8 @@ mod tests {
 
         let _ = app.update(Message::Arrange(Arrange::ByTime));
         assert!(matches!(app.board(), Board::Grid(_)));
-        let newest = notifications::by_time(&app.items).into_iter().map(|item| item.id.as_str()).collect::<Vec<_>>();
+        let newest = notifications::by_time(&app.items, Order::NewestFirst);
+        let newest = newest.into_iter().map(|item| item.id.as_str()).collect::<Vec<_>>();
         assert_eq!(rows_of(&app), newest);
 
         let _ = app.update(Message::Resized(NARROW));
@@ -8966,7 +9109,7 @@ mod tests {
         let _ = app.update(Message::Resized(NARROW));
         let first = app.rows()[0].id.clone();
         let (_, bottom) =
-            notifications::span(&app.items, app.board(), &app.view, app.density(), &first).expect("shown");
+            notifications::span(&app.items, app.board(), &app.view, app.density(), &first, app.order).expect("shown");
         let _ = app.update(Message::Scrolled(0.0, bottom));
         assert_eq!(press(&mut app, Key::Down).units(), 0, "the first card is in view");
         assert!(press(&mut app, Key::Down).units() > 0, "the second needs a scroll");

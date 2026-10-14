@@ -12,6 +12,7 @@ use chrono::{DateTime, NaiveDate, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use torro_core::i18n::tr;
+use torro_mail::Order;
 
 use crate::item::{
     Hidden, HideScope, Item, Lane, MuteEffect, MuteOption, MuteScope, Muted, SourceInfo, SourceRef, State,
@@ -21,7 +22,8 @@ use crate::rules;
 /// What the app can do with the inbox. Every method is one `inbox.*` request; the core checks
 /// rights and the security rules, a source never decides them itself.
 pub trait InboxSource: Send + Sync {
-    /// The entries `filter` selects, sorted by [`rules::order`] and cut to `filter.limit`.
+    /// The entries `filter` selects, sorted by [`rules::order_in`] in `filter.order` and cut to
+    /// `filter.limit`.
     /// Snoozed entries that are due are woken first ([`rules::wake`]).
     fn list_items(&self, filter: ItemFilter) -> impl Future<Output = Result<Vec<Item>, InboxError>> + Send;
 
@@ -181,9 +183,12 @@ pub struct ItemFilter {
     /// Only entries `updated` at this instant or later.
     #[serde(default)]
     pub since: Option<DateTime<Utc>>,
-    /// At most this many entries, the first ones by [`rules::order`].
+    /// At most this many entries, the first ones by [`rules::order_in`] in `order`.
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Newest or oldest first by `updated` (task E8.15); urgent entries come first either way.
+    #[serde(default)]
+    pub order: Order,
 }
 
 /// The states the views of the app show: "For me" and "Info" show open entries, "Snoozed" and
@@ -216,11 +221,11 @@ impl ItemFilter {
             && self.since.is_none_or(|since| item.updated >= since)
     }
 
-    /// The entries of `items` that match, sorted by [`rules::order`] and cut to `limit`: the
-    /// answer of [`InboxSource::list_items`] for entries already woken.
+    /// The entries of `items` that match, sorted by [`rules::order_in`] in `order` and cut to
+    /// `limit`: the answer of [`InboxSource::list_items`] for entries already woken.
     pub fn apply(&self, items: impl IntoIterator<Item = Item>) -> Vec<Item> {
         let mut selected: Vec<Item> = items.into_iter().filter(|item| self.matches(item)).collect();
-        rules::sort(&mut selected);
+        rules::sort_in(&mut selected, self.order);
         if let Some(limit) = self.limit {
             selected.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
         }
@@ -333,6 +338,17 @@ mod tests {
         assert_eq!(ids(&since.apply(sample())), ["c3", "c2"]);
     }
 
+    /// Task E8.15: oldest first, and `limit` takes the first ones of that order.
+    #[test]
+    fn the_order_turns_and_the_limit_follows_it() {
+        let oldest = ItemFilter { order: Order::OldestFirst, ..ItemFilter::default() };
+        assert_eq!(ids(&oldest.apply(sample())), ["b1", "c1", "b2", "c2", "c3"]);
+        let first_two = ItemFilter { limit: Some(2), ..oldest.clone() };
+        assert_eq!(ids(&first_two.apply(sample())), ["b1", "c1"]);
+        let newest_two = ItemFilter { limit: Some(2), ..ItemFilter::default() };
+        assert_eq!(ids(&newest_two.apply(sample())), ["c3", "c2"]);
+    }
+
     #[test]
     fn filters_survive_a_serde_round_trip() {
         let filter = ItemFilter {
@@ -341,6 +357,7 @@ mod tests {
             state: Some(StateFilter::Open),
             since: Some(at(9)),
             limit: Some(50),
+            order: Order::OldestFirst,
         };
         let json = serde_json::to_string(&filter).expect("serialize");
         assert_eq!(serde_json::from_str::<ItemFilter>(&json).expect("deserialize"), filter);

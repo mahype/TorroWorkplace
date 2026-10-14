@@ -2009,8 +2009,9 @@ static LIST_ITEMS: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists inbox entries, urgent first, then the most recently updated, filtered by lane (`for_me`, \
-                  `info`), source, state (`open`, `snoozed`, `done`), `since` and `limit`; only sources this key \
+    description: "Lists inbox entries, urgent first, then the most recently updated (`order: oldest_first` for the \
+                  oldest first, urgent still on top), filtered by lane (`for_me`, `info`), source, state (`open`, \
+                  `snoozed`, `done`), `since` and `limit`; only sources this key \
                   may see, never the person's own (`suite`: approvals, account problems); new mail of a mail \
                   account (source `mail:<address>`) only with read access to mail and that account; GitHub \
                   notifications (`github:<login>`) only with read access to GitHub and the entry's repository. \
@@ -2315,8 +2316,9 @@ static SEARCH_MESSAGES: Command = Command {
     area: Area::Mail,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Searches mail, newest first, one page of `limit` (1 to 100) messages at a time; pass `cursor` from \
-                  the answer for the next page. Filters: account, folder id, words in subject, sender, recipients, \
+    description: "Searches mail, newest first (`order: oldest_first` for the oldest first), one page of `limit` (1 \
+                  to 100) messages at a time; pass `cursor` from the answer, with the same `order`, for the next \
+                  page. Filters: account, folder id, words in subject, sender, recipients, \
                   text and attachment names (`query`, at most 500 characters), unread, flagged, since, before. \
                   Returns headers, a short snippet and flags. Texts older than 90 days are searched on the mail \
                   server after the local matches (`source: live`): slower, only messages already synced, and \
@@ -2849,6 +2851,7 @@ mod tests {
                 state: Some(StateFilter::Open),
                 since: None,
                 limit: Some(50),
+                order: None,
             },
             Request::GetItem { id: "i1".into() },
             Request::OpenItem { id: "i1".into() },
@@ -2924,6 +2927,7 @@ mod tests {
                 before: None,
                 limit: 20,
                 cursor: None,
+                order: Some(crate::Order::OldestFirst),
             },
             Request::GetMail { id: "m:1".into(), include_body: true },
             Request::GetMailThread { id: "m:1".into() },
@@ -3295,6 +3299,7 @@ mod tests {
                     before: None,
                     limit: 10,
                     cursor: None,
+                    order: None,
                 }
                 .operation()
             )

@@ -818,6 +818,7 @@ pub(crate) mod tests {
             before: None,
             limit: 20,
             cursor: None,
+            order: None,
         };
         let logged = super::ids(&search);
         assert_eq!(logged, vec!["account:mail:anna@mailbox.org".to_string(), format!("folder:{}", hashed("f:0a1b"))]);

@@ -54,6 +54,10 @@ pub enum Icon {
     CirclePlus,
     PanelLeft,
     ArrowUpRight,
+    /// "Newest first" (task E8.15): sorted descending by arrival.
+    ArrowDownWideNarrow,
+    /// "Oldest first" (task E8.15): sorted ascending by arrival.
+    ArrowUpNarrowWide,
     Bell,
     SquareCheck,
     Square,
@@ -192,6 +196,8 @@ impl Icon {
         Icon::CirclePlus,
         Icon::PanelLeft,
         Icon::ArrowUpRight,
+        Icon::ArrowDownWideNarrow,
+        Icon::ArrowUpNarrowWide,
         Icon::Bell,
         Icon::SquareCheck,
         Icon::Square,
@@ -295,6 +301,8 @@ impl Icon {
             Icon::CirclePlus => include_bytes!("../assets/icons/circle-plus.svg"),
             Icon::PanelLeft => include_bytes!("../assets/icons/panel-left.svg"),
             Icon::ArrowUpRight => include_bytes!("../assets/icons/arrow-up-right.svg"),
+            Icon::ArrowDownWideNarrow => include_bytes!("../assets/icons/arrow-down-wide-narrow.svg"),
+            Icon::ArrowUpNarrowWide => include_bytes!("../assets/icons/arrow-up-narrow-wide.svg"),
             Icon::Bell => include_bytes!("../assets/icons/bell.svg"),
             Icon::SquareCheck => include_bytes!("../assets/icons/square-check.svg"),
             Icon::Square => include_bytes!("../assets/icons/square.svg"),

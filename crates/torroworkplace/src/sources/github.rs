@@ -370,6 +370,7 @@ fn watched(inbox: &Inbox, source: &SourceRef, now: DateTime<Utc>) -> Vec<Watched
             state: Some(state),
             since: None,
             limit: None,
+            order: None,
         };
         match inbox.handle(list, None, now) {
             Response::Items { items } => open.extend(items.iter().filter_map(watch)),
@@ -701,6 +702,7 @@ mod tests {
                     state: Some(state),
                     since: None,
                     limit: None,
+                    order: None,
                 };
                 match self.inbox().handle(list, None, at(600)) {
                     Response::Items { items } => all.extend(items),

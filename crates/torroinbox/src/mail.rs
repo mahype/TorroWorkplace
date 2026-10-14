@@ -53,7 +53,7 @@ use torro_inbox::{Item, Lane, Link, State};
 use torro_ipc::inbox::{CalendarEvent, InboxClient};
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
 use torro_mail::{
-    AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message as Mail, MessageSummary, Role,
+    AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message as Mail, MessageSummary, Order, Role,
 };
 
 use crate::app::{INBOX, Message, View};
@@ -75,15 +75,16 @@ pub trait MailSource: Send + Sync {
     /// role and numbers. Empty without a mail account.
     fn mail_folders(&self) -> impl Future<Output = Result<Vec<Folder>, InboxError>> + Send;
 
-    /// `mail.search_messages` in the folder `folder` (a [`Folder::id`]): at most `limit` messages,
-    /// newest first, holding every word of `query` when there is one, from `cursor` on (the
-    /// [`MailPage::next`] of the page before).
+    /// `mail.search_messages` in the folder `folder` (a [`Folder::id`]): at most `limit` messages
+    /// in `order` (task E8.15), holding every word of `query` when there is one, from `cursor` on
+    /// (the [`MailPage::next`] of the page before, asked in the same `order`).
     fn search_mail(
         &self,
         folder: String,
         query: Option<String>,
         limit: u32,
         cursor: Option<String>,
+        order: Order,
     ) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// `mail.get_message` with its text. Reading does not mark it read.
@@ -176,8 +177,9 @@ impl MailSource for InboxClient {
         query: Option<String>,
         limit: u32,
         cursor: Option<String>,
+        order: Order,
     ) -> Result<MailPage, InboxError> {
-        let (messages, next) = InboxClient::search_mail(self, folder, query, limit, cursor).await?;
+        let (messages, next) = InboxClient::search_mail(self, folder, query, limit, cursor, order).await?;
         Ok(MailPage { messages, next })
     }
 
@@ -238,8 +240,10 @@ impl MailSource for DemoSource {
         query: Option<String>,
         limit: u32,
         cursor: Option<String>,
+        order: Order,
     ) -> Result<MailPage, InboxError> {
-        let (mut messages, next) = DemoSource::search_mail(self, &folder, query.as_deref(), limit, cursor.as_deref())?;
+        let (mut messages, next) =
+            DemoSource::search_mail(self, &folder, query.as_deref(), limit, cursor.as_deref(), order)?;
         for message in &mut messages {
             message.invite = demo_invite(&message.id, message.date);
         }
@@ -337,6 +341,7 @@ impl MailSource for crate::empty::EmptySource {
         _query: Option<String>,
         _limit: u32,
         _cursor: Option<String>,
+        _order: Order,
     ) -> Result<MailPage, InboxError> {
         Err(InboxError::NotFound)
     }
@@ -1006,13 +1011,13 @@ fn account_name(account: &str) -> String {
     torro_inbox::rules::domain_of(address).unwrap_or_else(|| list::one_line(address))
 }
 
-/// The smart view "With attachments" (task E8.3): of the messages of every account's inbox, newest
-/// first, those with attachments, newest first. `pages` are the first pages of the inboxes as
-/// `mail.search_messages` answered them; nothing new is asked of the core.
-pub fn attachments(pages: Vec<Vec<MessageSummary>>) -> Vec<MessageSummary> {
+/// The smart view "With attachments" (task E8.3): of the messages of every account's inbox, those
+/// with attachments, in `order` by date (task E8.15). `pages` are the first pages of the inboxes
+/// as `mail.search_messages` answered them in that order; nothing new is asked of the core.
+pub fn attachments(pages: Vec<Vec<MessageSummary>>, order: Order) -> Vec<MessageSummary> {
     let mut found: Vec<MessageSummary> =
         pages.into_iter().flatten().filter(|message| message.has_attachments).collect();
-    found.sort_by_key(|message| std::cmp::Reverse(message.date));
+    found.sort_by(|a, b| order.apply(b.date.cmp(&a.date)));
     found
 }
 
@@ -2262,9 +2267,16 @@ mod tests {
     fn invitations_are_the_ones_not_over_yet_soonest_first() {
         let demo = DemoSource::new(now());
         let page = |folder: &str| {
-            iced::futures::executor::block_on(MailSource::search_mail(&demo, folder.into(), None, 50, None))
-                .expect("a page")
-                .messages
+            iced::futures::executor::block_on(MailSource::search_mail(
+                &demo,
+                folder.into(),
+                None,
+                50,
+                None,
+                Order::NewestFirst,
+            ))
+            .expect("a page")
+            .messages
         };
         let folders = iced::futures::executor::block_on(MailSource::mail_folders(&demo)).expect("folders");
         let inboxes: Vec<_> =
@@ -2363,10 +2375,12 @@ mod tests {
             .iter()
             .map(|account| mail.iter().filter(|m| m.summary.account == *account).map(|m| m.summary.clone()).collect())
             .collect();
-        let found = attachments(pages);
+        let found = attachments(pages.clone(), Order::NewestFirst);
         assert!(!found.is_empty(), "the demo has mail with attachments");
         assert!(found.iter().all(|message| message.has_attachments));
         assert!(found.windows(2).all(|pair| pair[0].date >= pair[1].date), "newest first");
+        let oldest = attachments(pages, Order::OldestFirst);
+        assert!(oldest.windows(2).all(|pair| pair[0].date <= pair[1].date), "oldest first (task E8.15)");
         let wanted = mail.iter().filter(|m| m.summary.has_attachments).count();
         assert_eq!(found.len(), wanted, "from every account");
     }

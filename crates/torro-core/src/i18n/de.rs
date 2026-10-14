@@ -1037,6 +1037,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Density of the inbox windows (E8.2)
     ("Compact", "Kompakt"),
     ("Comfortable", "Komfortabel"),
+    ("Newest first", "Neueste zuerst"),
+    ("Oldest first", "Älteste zuerst"),
     // Window kinds of torroinbox (E8.1)
     ("Mail · {view}", "E-Mail · {view}"),
     ("Notifications · {view}", "Benachrichtigungen · {view}"),

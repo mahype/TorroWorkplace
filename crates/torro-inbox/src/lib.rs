@@ -19,3 +19,5 @@ pub use item::{
 };
 pub use rules::Poster;
 pub use source::{InboxError, InboxSource, ItemFilter, StateFilter};
+/// Newest or oldest first, shared with mail (task E8.15).
+pub use torro_mail::Order;

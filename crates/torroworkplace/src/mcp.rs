@@ -16,7 +16,7 @@
 //! - `calendar_save_event`: `collection`, `summary`, `start`, … to create an event,
 //! - `tasks_save_todo`: `collection`, `summary`, `due`, … to create a task,
 //! - `inbox_list_items`: without arguments what waits for the person (lane `for_me`, state
-//!   `open`, 50 entries); `all` for lane or state selects every one,
+//!   `open`, 50 entries, newest first); `all` for lane or state selects every one,
 //! - `inbox_post_item`: `title`, optional `body`, `url`, `lane` and `thread_key`, always a
 //!   `notice` (the only kind a client key reports anyway).
 //!
@@ -75,7 +75,7 @@ use serde_json::{Value, json};
 use torro_inbox::{Kind, Lane, Link, SourceRef, StateFilter};
 use torro_ipc::api::{Access, Area, CATALOGUE, Command, Mcp};
 use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent};
-use torro_ipc::{ApprovalInfo, ApprovalState, IpcError, Key, Request, Response, client, socket_path};
+use torro_ipc::{ApprovalInfo, ApprovalState, IpcError, Key, Order, Request, Response, client, socket_path};
 use torro_pim::{Event, EventTime, Todo};
 
 /// The environment variable that holds the agent's client key.
@@ -830,6 +830,9 @@ struct ItemsInput {
     since: Option<String>,
     /// At most this many entries, urgent first, then the most recently updated. 50 when left out.
     limit: Option<u32>,
+    /// `newest_first` (the default) or `oldest_first` by the time an entry last changed; urgent
+    /// entries come first either way, and `limit` takes the first ones of this order.
+    order: Option<Order>,
 }
 
 /// The lane `inbox_list_items` lists.
@@ -896,7 +899,7 @@ fn ask_permission(input: AskInput) -> Request {
 }
 
 fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, ToolError> {
-    let ItemsInput { lane, source, state, since, limit } = input;
+    let ItemsInput { lane, source, state, since, limit, order } = input;
     let lane = match lane.unwrap_or(LaneChoice::ForMe) {
         LaneChoice::ForMe => Some(Lane::ForMe),
         LaneChoice::Info => Some(Lane::Info),
@@ -909,7 +912,7 @@ fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, Too
         StateChoice::All => None,
     };
     let since = since.map(|since| instant(time(&since, "since", zone)?, zone, "since")).transpose()?;
-    Ok(Request::ListItems { lane, source, state, since, limit: Some(limit.unwrap_or(INBOX_LIMIT)) })
+    Ok(Request::ListItems { lane, source, state, since, limit: Some(limit.unwrap_or(INBOX_LIMIT)), order })
 }
 
 /// Always a notice: from a client key the core makes every other kind one or refuses it.
@@ -1264,6 +1267,8 @@ mod tests {
     fn the_mail_reading_tools_build_their_requests() {
         let call = |name: &str, input: Value| request_for(name, args(input), &Utc);
         assert_eq!(call("mail_list_folders", json!({})), Ok(Request::MailFolders { account: None }));
+        let oldest = call("mail_search_messages", json!({"limit": 5, "order": "oldest_first"}));
+        assert!(matches!(oldest, Ok(Request::SearchMail { order: Some(Order::OldestFirst), .. })), "{oldest:?}");
         let paged = call("mail_search_messages", json!({"query": "invoice", "limit": 5, "cursor": "c:5"}));
         assert!(matches!(&paged, Ok(Request::SearchMail { query: Some(q), limit: 5, cursor: Some(c), .. })
             if q == "invoice" && c == "c:5"));
@@ -1622,7 +1627,7 @@ mod tests {
     }
 
     fn list_items_request(lane: Option<Lane>, state: Option<StateFilter>, limit: u32) -> Request {
-        Request::ListItems { lane, source: None, state, since: None, limit: Some(limit) }
+        Request::ListItems { lane, source: None, state, since: None, limit: Some(limit), order: None }
     }
 
     #[test]
@@ -1653,8 +1658,12 @@ mod tests {
                 state: Some(StateFilter::Open),
                 since: Some(utc("2026-10-13T22:00:00Z")),
                 limit: Some(50),
+                order: None,
             })
         );
+        // Task E8.15: the order goes along as given.
+        let oldest = request_for("inbox_list_items", args(json!({"order": "oldest_first"})), &Utc);
+        assert!(matches!(oldest, Ok(Request::ListItems { order: Some(Order::OldestFirst), .. })), "{oldest:?}");
         let suite = request_for("inbox_list_items", args(json!({"source": {"kind": "suite"}})), &Utc);
         assert!(matches!(suite, Ok(Request::ListItems { source: Some(source), .. }) if source == SourceRef::suite()));
 

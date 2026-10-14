@@ -38,7 +38,9 @@ use std::sync::{Mutex, MutexGuard};
 
 use chrono::{DateTime, NaiveDate, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
-use torro_mail::{AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
+use torro_mail::{
+    AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Order, Role,
+};
 
 use crate::item::{
     Action, AgentInfo, AgentKind, Facet, FacetKey, Hidden, HideScope, Item, Kind, Lane, Link, MuteEffect, MuteOption,
@@ -877,7 +879,7 @@ impl DemoSource {
             .collect())
     }
 
-    /// `mail.search_messages` in the folder `folder`: newest first, those holding every word of
+    /// `mail.search_messages` in the folder `folder`, in `order` by date: those holding every word of
     /// `query` (in subject, sender, text and attachment names, ignoring case), at most `limit` from
     /// `cursor` on; the cursor is the place of the next page. [`InboxError::NotFound`] for an
     /// unknown folder, [`InboxError::Other`] for a cursor the demo did not give out.
@@ -887,6 +889,7 @@ impl DemoSource {
         query: Option<&str>,
         limit: u32,
         cursor: Option<&str>,
+        order: Order,
     ) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
         let data = self.lock();
         if !data.folders.iter().any(|known| known.id == folder) {
@@ -899,7 +902,7 @@ impl DemoSource {
         let words: Vec<String> = query.unwrap_or_default().split_whitespace().map(str::to_lowercase).collect();
         let mut found: Vec<&Message> =
             data.mail.iter().filter(|m| m.summary.folder == folder && matches_words(m, &words)).collect();
-        found.sort_by_key(|m| std::cmp::Reverse(m.summary.date));
+        found.sort_by(|a, b| order.apply(b.summary.date.cmp(&a.summary.date)));
         let limit = usize::try_from(limit).unwrap_or(usize::MAX);
         let page: Vec<MessageSummary> = found.iter().skip(start).take(limit).map(|m| m.summary.clone()).collect();
         let next = (start + page.len() < found.len()).then(|| (start + page.len()).to_string());
@@ -1738,16 +1741,26 @@ mod tests {
     #[test]
     fn folders_are_searched_a_page_at_a_time() {
         let demo = DemoSource::new(now());
-        let (first, next) = demo.search_mail("f:work-inbox", None, 4, None).expect("a page");
+        let newest = Order::NewestFirst;
+        let (first, next) = demo.search_mail("f:work-inbox", None, 4, None, newest).expect("a page");
         let ids: Vec<&str> = first.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["m:w1", "m:w2", "m:w3", "m:w13"], "newest first");
-        let (rest, last) = demo.search_mail("f:work-inbox", None, 4, next.as_deref()).expect("the next page");
+        let (rest, last) = demo.search_mail("f:work-inbox", None, 4, next.as_deref(), newest).expect("the next page");
         assert_eq!((rest.len(), last), (4, None));
-        let (found, _) = demo.search_mail("f:work-inbox", Some("JONAS minutes"), 50, None).expect("found");
+        let (found, _) = demo.search_mail("f:work-inbox", Some("JONAS minutes"), 50, None, newest).expect("found");
         assert_eq!(found.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["m:w6"], "every word, any case");
-        let (by_file, _) = demo.search_mail("f:work-inbox", Some("budget-q4.csv"), 50, None).expect("found");
+        let (by_file, _) = demo.search_mail("f:work-inbox", Some("budget-q4.csv"), 50, None, newest).expect("found");
         assert_eq!(by_file.len(), 1, "attachment names count");
-        assert_eq!(demo.search_mail("f:nope", None, 50, None), Err(InboxError::NotFound));
+        assert_eq!(demo.search_mail("f:nope", None, 50, None, newest), Err(InboxError::NotFound));
+
+        // Task E8.15: oldest first, a page at a time as well – the reverse of newest first.
+        let all = |order| demo.search_mail("f:work-inbox", None, 50, None, order).expect("all").0;
+        let mut reversed = all(newest);
+        reversed.reverse();
+        let (first, next) = demo.search_mail("f:work-inbox", None, 4, None, Order::OldestFirst).expect("a page");
+        assert_eq!(first, reversed[..4]);
+        let (rest, _) = demo.search_mail("f:work-inbox", None, 4, next.as_deref(), Order::OldestFirst).expect("more");
+        assert_eq!(rest, reversed[4..]);
     }
 
     #[tokio::test]

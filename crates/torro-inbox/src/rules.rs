@@ -18,6 +18,7 @@ use std::cmp::Ordering;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use torro_core::i18n::{tr, trf};
+use torro_mail::Order;
 
 use crate::item::{
     AgentKind, Facet, FacetKey, HideScope, Item, Kind, Lane, Link, MuteEffect, MuteOption, MuteScope, Rule, RuleEffect,
@@ -724,14 +725,26 @@ pub fn expired(item: &Item, now: DateTime<Utc>) -> bool {
 }
 
 /// The order of the list: urgent entries first, then the most recently `updated`; ties by id so
-/// every app shows the same order.
+/// every app shows the same order. [`order_in`] with [`Order::NewestFirst`].
 pub fn order(a: &Item, b: &Item) -> Ordering {
-    b.urgent.cmp(&a.urgent).then_with(|| b.updated.cmp(&a.updated)).then_with(|| a.id.cmp(&b.id))
+    order_in(a, b, Order::NewestFirst)
+}
+
+/// The order of the list in `order` (task E8.15): urgent entries first either way – what waits
+/// stays on top –, then by `updated` newest or oldest first; ties by id ascending in both, so
+/// every app shows the same order.
+pub fn order_in(a: &Item, b: &Item, order: Order) -> Ordering {
+    b.urgent.cmp(&a.urgent).then_with(|| order.apply(b.updated.cmp(&a.updated))).then_with(|| a.id.cmp(&b.id))
 }
 
 /// Sorts `items` by [`order`].
 pub fn sort(items: &mut [Item]) {
-    items.sort_by(order);
+    sort_in(items, Order::NewestFirst);
+}
+
+/// Sorts `items` by [`order_in`] in `order`.
+pub fn sort_in(items: &mut [Item], order: Order) {
+    items.sort_by(|a, b| order_in(a, b, order));
 }
 
 #[cfg(test)]
@@ -1458,6 +1471,12 @@ mod tests {
         sort(&mut items);
         let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
         assert_eq!(ids, ["urgent-new", "urgent-old", "new", "new-b", "old"]);
+
+        // Task E8.15: oldest first keeps urgent entries on top and turns only the time around;
+        // the tie keeps its id order.
+        sort_in(&mut items, Order::OldestFirst);
+        let ids: Vec<&str> = items.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, ["urgent-old", "urgent-new", "old", "new", "new-b"]);
     }
 
     #[test]

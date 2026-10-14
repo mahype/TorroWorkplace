@@ -4996,6 +4996,7 @@ mod tests {
             state: None,
             since: None,
             limit: None,
+            order: None,
         };
         let entries = |response: Response| match response {
             Response::Items { items } => items,
@@ -5985,6 +5986,7 @@ mod tests {
             state: None,
             since: None,
             limit: None,
+            order: None,
         };
         let Response::Items { items } = core.handle(suite).await else { panic!("items") };
         let titles: Vec<(torro_inbox::Kind, &str)> =
@@ -7902,6 +7904,7 @@ mod tests {
             state: None,
             since: None,
             limit: None,
+            order: None,
         };
         let Response::Items { items } = ask(&core, Some(&app_key), suite).await else { panic!("items") };
         let approval = items.first().expect("the approval's entry").id.clone();
@@ -8247,7 +8250,8 @@ mod tests {
         };
         assert_eq!(item.source, torro_inbox::SourceRef::agent("claude-code"), "the source comes from the client");
 
-        let list = || Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+        let list =
+            || Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
         assert_eq!(code(&ask(&core, Some(&hook_key), list()).await), "not-found");
         assert!(matches!(ask(&core, Some(&hook_key), notice("Done")).await, Response::Posted { id: Some(_) }));
         // The hook's thread "t" is its own; the client's entry stays open.
@@ -8729,6 +8733,7 @@ mod tests {
             state: None,
             since: None,
             limit: None,
+            order: None,
         };
         let Response::Items { items } = ask(&core, Some(&app_key), suite).await else { panic!("items") };
         let [entry] = items.as_slice() else { panic!("one entry: {items:?}") };
@@ -8811,7 +8816,7 @@ mod tests {
         let status = || Request::ApprovalStatus { id: asked.id.clone() };
         assert_eq!(ask(&core, Some(&codex), Request::ListApprovals).await, Response::Approvals { approvals: vec![] });
         assert_eq!(code(&ask(&core, Some(&codex), status()).await), "not-found");
-        let list = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+        let list = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
         assert_eq!(code(&ask(&core, Some(&codex), list.clone()).await), "not-found");
         assert_eq!(code(&ask(&core, Some(&claude), list).await), "not-found");
         // The asking hook reads its own question, still open.
@@ -9632,6 +9637,7 @@ mod tests {
             before: None,
             limit: 10,
             cursor: None,
+            order: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
         let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");
@@ -10682,7 +10688,8 @@ mod tests {
         .with_mail(service);
         core.start_mail_feed(Some(accounts_file(dir.path())));
         let listed = || async {
-            let all = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+            let all =
+                Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
             match core.handle(all).await {
                 Response::Items { items } => items,
                 other => panic!("expected items, got {other:?}"),
@@ -10802,7 +10809,8 @@ mod tests {
         /// The open mail entry of Anna's account, once the feed filed it.
         async fn mail_entry(core: &Core) -> torro_inbox::Item {
             for _ in 0..400 {
-                let all = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+                let all =
+                    Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
                 if let Response::Items { items } = core.handle(all).await
                     && let Some(found) =
                         items.into_iter().find(|item| item.source.kind == torro_inbox::SourceKind::Mail)
@@ -11037,6 +11045,7 @@ mod tests {
                     state: None,
                     since: None,
                     limit: None,
+                    order: None,
                 };
                 let Response::Items { items } = core.handle(request).await else { panic!("items") };
                 items.into_iter().filter(|item| item.thread_key.starts_with("task-done:")).collect::<Vec<_>>()
@@ -12855,7 +12864,8 @@ mod tests {
             };
             let entry =
                 core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
-            let list = || Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+            let list =
+                || Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
             let invite_in = |response: Response| match response {
                 Response::Items { items } => {
                     items.into_iter().find(|item| item.id == entry).and_then(|item| item.invite)

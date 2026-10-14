@@ -2,7 +2,8 @@
 //! (task U.2, [`UiState`]), in the tasks app the repository last chosen for a GitHub filter list
 //! (task G.11, [`last_repo_from`]), and which foldable parts the person unfolded – "Info" in the
 //! columns of the inbox's overview (task E3.11, [`unfolded_from`]), and the density each window of the
-//! inbox shows its entries in (task E8.2, [`Density`], [`density_from`]). `ui.json` in the app's state directory
+//! inbox shows its entries in (task E8.2, [`Density`], [`density_from`]) and in which order by arrival
+//! (task E8.15, [`order_from`]). `ui.json` in the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
 //!
@@ -28,6 +29,7 @@ use iced::Task;
 use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
+use torro_ipc::Order;
 
 use crate::layout::SizeClass;
 use crate::shell::SidebarMode;
@@ -45,6 +47,10 @@ const UNFOLDED: &str = "unfolded";
 /// The key of the densities chosen ([`density_from`]): an object from a window's key to its
 /// [`Density`].
 const DENSITY: &str = "density";
+
+/// The key of the orders chosen ([`order_from`]): an object from a window's key to its
+/// [`Order`] word.
+const ORDER: &str = "order";
 
 /// How close together a window shows its entries (task E8.2, `docs/eingang.md` "Zwei Dichten"):
 /// one row each, or cards with room, a longer preview and their buttons always shown. Chosen with
@@ -309,6 +315,48 @@ pub fn save_density_task<T: Send + 'static>(app: AppId, key: String, density: De
     .discard()
 }
 
+/// The order by arrival remembered for the window `key` in `path` (task E8.15), as
+/// [`save_order_to`] stored it; `None` when there is none, the file cannot be read or the value is
+/// no order word ([`Order::word`]). Windows are keyed as for [`density_from`].
+pub fn order_from(path: &Path, key: &str) -> Option<Order> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Order::parse(value.get(ORDER)?.get(key)?.as_str()?)
+}
+
+/// Stores `order` for the window `key` in `path`, keeping the orders of the other windows and
+/// everything else in the file.
+pub fn save_order_to(path: &Path, key: &str, order: Order) -> Result<(), Error> {
+    let mut orders = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get(ORDER).and_then(serde_json::Value::as_object).cloned())
+        .unwrap_or_default();
+    orders.insert(key.to_string(), serde_json::Value::String(order.word().to_string()));
+    let mut fields = serde_json::Map::new();
+    fields.insert(ORDER.into(), serde_json::Value::Object(orders));
+    merge_into(path, fields)
+}
+
+/// [`order_from`] for the window `key` of `app` in the background, for the start of a window:
+/// `ui_state::load_order_task(app, key).map(Message::StoredOrder)`. Like [`load_task`], tests that
+/// only build the app never run it.
+pub fn load_order_task(app: AppId, key: String) -> Task<Option<Order>> {
+    Task::perform(async move { file(app).and_then(|path| order_from(&path, &key)) }, |order| order)
+}
+
+/// [`save_order_to`] for the window `key` of `app` in the background, after the person turned the
+/// order. A failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_order_task<T: Send + 'static>(app: AppId, key: String, order: Order) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_order_to(&path, &key, order));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
 /// Writes `fields` into the JSON object in `path` – over the keys of the same name, beside the
 /// others – atomically, creating the directory if needed. A missing or broken file starts empty.
 fn merge_into(path: &Path, fields: serde_json::Map<String, serde_json::Value>) -> Result<(), Error> {
@@ -469,6 +517,26 @@ mod tests {
         for content in ["{ not json", r#"{"density":"compact"}"#, r#"{"density":{"mail":"roomy"}}"#] {
             fs::write(&path, content).expect("write");
             assert_eq!(density_from(&path, "mail"), None, "{content}");
+        }
+    }
+
+    /// Task E8.15: every window keeps its own order beside its density and the other keys.
+    #[test]
+    fn orders_are_kept_per_window_beside_the_rest() {
+        let dir = TempDir::new("order");
+        let path = dir.0.join(FILE);
+        assert_eq!(order_from(&path, "mail"), None, "nothing chosen yet");
+        save_density_to(&path, "mail", Density::Compact).expect("save the density");
+        save_order_to(&path, "mail", Order::OldestFirst).expect("save the mail window");
+        save_order_to(&path, "notifications", Order::NewestFirst).expect("save another window");
+        assert_eq!(order_from(&path, "mail"), Some(Order::OldestFirst));
+        assert_eq!(order_from(&path, "notifications"), Some(Order::NewestFirst));
+        assert_eq!(order_from(&path, "hub"), None);
+        assert_eq!(density_from(&path, "mail"), Some(Density::Compact), "the density stays");
+        assert!(fs::read_to_string(&path).expect("read").contains(r#""mail": "oldest-first""#));
+        for content in ["{ not json", r#"{"order":"oldest-first"}"#, r#"{"order":{"mail":"oldest"}}"#] {
+            fs::write(&path, content).expect("write");
+            assert_eq!(order_from(&path, "mail"), None, "{content}");
         }
     }
 

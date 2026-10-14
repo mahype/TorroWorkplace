@@ -42,7 +42,7 @@ use torro_gui::shell;
 use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::widgets::{self, Mark};
 use torro_gui::{datetime, style, typo};
-use torro_inbox::{Item, Lane, Link, SourceKind};
+use torro_inbox::{Item, Lane, Link, Order, SourceKind};
 
 use crate::app::Message;
 use crate::detail;
@@ -209,6 +209,17 @@ impl<'a> Sections<'a> {
         let order = [Group::Waiting, Group::Today, Group::Yesterday, Group::Earlier];
         sections.groups = order.into_iter().zip(by_group).filter(|(_, items)| !items.is_empty()).collect();
         sections
+    }
+
+    /// The sections with the day groups in `sort` (task E8.15): oldest first "Earlier",
+    /// "Yesterday", "Today" – the entries in them come in that order from the source already –,
+    /// "Waiting for you" on top either way.
+    pub fn ordered(mut self, sort: Order) -> Sections<'a> {
+        if sort == Order::OldestFirst {
+            let days = usize::from(self.groups.first().is_some_and(|(group, _)| *group == Group::Waiting));
+            self.groups[days..].reverse();
+        }
+        self
     }
 
     /// How many entries of "For me" the column has: the number in its head.
@@ -706,6 +717,14 @@ mod tests {
         assert_eq!(groups, [Group::Today, Group::Yesterday, Group::Earlier], "no waiting group for mail");
         assert!(mail.groups.iter().flat_map(|(_, items)| items).all(|item| item.lane == Lane::ForMe));
         assert_eq!(mail.for_me() + notices.for_me(), items.iter().filter(|item| item.lane == Lane::ForMe).count());
+
+        // Task E8.15: oldest first the days turn around, "Waiting for you" stays on top.
+        let turned = |sections: Sections<'_>| {
+            sections.ordered(Order::OldestFirst).groups.iter().map(|(group, _)| *group).collect::<Vec<_>>()
+        };
+        let notices = turned(Sections::of(&items, Column::Notices, now()));
+        assert_eq!(notices, [Group::Waiting, Group::Earlier, Group::Yesterday, Group::Today]);
+        assert_eq!(turned(Sections::of(&items, Column::Mail, now())), [Group::Earlier, Group::Yesterday, Group::Today]);
     }
 
     #[test]

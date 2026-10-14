@@ -48,7 +48,7 @@ use torro_core::i18n::tr;
 use torro_ipc::Response;
 use torro_ipc::mail::MailSource;
 use torro_ipc::{Request, mail::limit_refusal};
-use torro_mail::{Invite, MailAddress, Message, MessageSummary};
+use torro_mail::{Invite, MailAddress, Message, MessageSummary, Order};
 use torro_mail_imap::imap::Session;
 use torro_mail_imap::mime::{self, MimeError, ReadMessage};
 
@@ -97,8 +97,9 @@ pub async fn answer(mail: &MailService, reach: Reach<'_>, request: Request) -> R
     }
     let answered = match request {
         Request::MailFolders { account } => list_folders(mail, reach, account.as_deref()).await,
-        Request::SearchMail { account, folder, query, unread, flagged, since, before, limit, cursor } => {
-            let search = Search { account, folder, query, unread, flagged, since, before, limit, cursor };
+        Request::SearchMail { account, folder, query, unread, flagged, since, before, limit, cursor, order } => {
+            let order = order.unwrap_or_default();
+            let search = Search { account, folder, query, unread, flagged, since, before, limit, cursor, order };
             search_messages(mail, reach, search, Utc::now()).await
         }
         Request::GetMail { id, include_body } => get_message(mail, reach, &id, include_body).await,
@@ -166,6 +167,8 @@ pub struct Search {
     pub limit: u32,
     /// Where the page starts, as the previous page handed it out.
     pub cursor: Option<String>,
+    /// Newest or oldest first (task E8.15).
+    pub order: Order,
 }
 
 /// How deep a search pages into each of its parts: a page starts at most at the 10 000th match.
@@ -180,6 +183,21 @@ enum Cursor {
 }
 
 impl Cursor {
+    /// The part this cursor pages through.
+    fn part(self) -> Part {
+        match self {
+            Cursor::Cache(_) => Part::Cache,
+            Cursor::Live(_) => Part::Live,
+        }
+    }
+
+    /// How many matches of its part lie before the page.
+    fn offset(self) -> u32 {
+        match self {
+            Cursor::Cache(n) | Cursor::Live(n) => n,
+        }
+    }
+
     /// No text: the first page. `None` for a text this search does not hand out, or one deeper
     /// than [`CURSOR_MAX`].
     fn parse(text: Option<&str>) -> Option<Cursor> {
@@ -203,6 +221,30 @@ impl Cursor {
     }
 }
 
+/// The two parts of a search: the store's (from the text cutoff on) and the server's (before it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Cache,
+    Live,
+}
+
+impl Part {
+    /// The cursor `offset` matches into this part.
+    fn at(self, offset: u32) -> Cursor {
+        match self {
+            Part::Cache => Cursor::Cache(offset),
+            Part::Live => Cursor::Live(offset),
+        }
+    }
+
+    fn source(self) -> MailSource {
+        match self {
+            Part::Cache => MailSource::Cache,
+            Part::Live => MailSource::Live,
+        }
+    }
+}
+
 /// The time range whose texts only the server has: from `since` (or the beginning) to `until`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Older {
@@ -210,10 +252,12 @@ struct Older {
     until: DateTime<Utc>,
 }
 
-/// One page of a search as of `now`, newest first: the store's matches from the text cutoff
-/// (`now` minus [`BODY_RETENTION_DAYS`]) on, then, for a search with words that reaches back
-/// before it, the server's matches before the cutoff ([`live_matches`]). Without words the store
-/// answers alone: it holds the headers of every message.
+/// One page of a search as of `now`, in `search.order`: the store's matches from the text cutoff
+/// (`now` minus [`BODY_RETENTION_DAYS`]) on and, for a search with words that reaches back before
+/// it, the server's matches before the cutoff ([`live_matches`]). Newest first the store's part
+/// comes first, oldest first the server's (task E8.15), so the pages follow the order across both;
+/// a page never mixes them. Without words the store answers alone: it holds the headers of every
+/// message.
 ///
 /// `not-found` for a `folder` no reachable store knows (or one outside `account`), `error` for a
 /// cursor this search did not hand out.
@@ -230,7 +274,7 @@ pub async fn search_messages(
         stores = vec![(account, store)];
         folder = Some(found);
     }
-    let cursor = Cursor::parse(search.cursor.as_deref()).ok_or_else(bad_cursor)?;
+    let asked = search.cursor.as_deref().map(|text| Cursor::parse(Some(text)).ok_or_else(bad_cursor)).transpose()?;
     let words = search.query.as_deref().map(str::trim).filter(|words| !words.is_empty()).map(str::to_string);
     let cutoff = now - Duration::days(BODY_RETENTION_DAYS);
     let older = words.as_ref().and_then(|_| {
@@ -251,43 +295,58 @@ pub async fn search_messages(
         flagged: search.flagged,
         since: cache_since,
         before: search.before,
+        order: search.order,
+    };
+    let parts = parts(older.is_some(), search.order);
+    let cursor = asked.unwrap_or(parts[0].at(0));
+    // A cursor of a part this search does not have (a server's cursor for a search without words)
+    // ends the search.
+    let Some(start) = parts.iter().position(|&part| part == cursor.part()) else {
+        return Ok(Response::MailMessages { messages: Vec::new(), cursor: None, source: cursor.part().source() });
     };
     let limit = search.limit as usize;
-
-    if let Cursor::Cache(offset) = cursor {
-        let page = if cache_empty { Vec::new() } else { cache_page(&stores, &query, offset, limit + 1).await? };
+    for (index, &part) in parts.iter().enumerate().skip(start) {
+        let offset = if index == start { cursor.offset() } else { 0 };
+        let page = match (part, &words, older) {
+            (Part::Cache, _, _) if cache_empty => Vec::new(),
+            (Part::Cache, _, _) => cache_page(&stores, &query, offset, limit + 1).await?,
+            (Part::Live, Some(words), Some(older)) => {
+                let filter = Filter { older, unread: search.unread, flagged: search.flagged };
+                let found = live_matches(mail, &stores, folder.as_ref(), words, &filter, search.order).await?;
+                found.into_iter().skip(offset as usize).take(limit + 1).collect()
+            }
+            (Part::Live, _, _) => Vec::new(),
+        };
         let more = page.len() > limit;
         let messages: Vec<MessageSummary> = page.into_iter().take(limit).collect();
         let deeper = offset.saturating_add(search.limit);
-        let next = match (more && deeper <= CURSOR_MAX, older) {
-            (true, _) => Some(Cursor::Cache(deeper)),
-            (false, Some(_)) if !messages.is_empty() => Some(Cursor::Live(0)),
-            (false, _) => None,
+        let next = match parts.get(index + 1) {
+            _ if more && deeper <= CURSOR_MAX => Some(part.at(deeper)),
+            Some(following) if !messages.is_empty() => Some(following.at(0)),
+            _ => None,
         };
-        // An exhausted store part goes on with the server's part at once, not with an empty page.
-        if !messages.is_empty() || older.is_none() {
+        // An exhausted part goes on with the next one at once, not with an empty page.
+        if !messages.is_empty() || index + 1 == parts.len() {
             let cursor = next.map(Cursor::text);
-            return Ok(Response::MailMessages { messages, cursor, source: MailSource::Cache });
+            return Ok(Response::MailMessages { messages, cursor, source: part.source() });
         }
     }
-    let (Some(words), Some(older)) = (words, older) else {
-        return Ok(Response::MailMessages { messages: Vec::new(), cursor: None, source: MailSource::Live });
-    };
-    let offset = match cursor {
-        Cursor::Live(offset) => offset as usize,
-        Cursor::Cache(_) => 0,
-    };
-    let filter = Filter { older, unread: search.unread, flagged: search.flagged };
-    let found = live_matches(mail, &stores, folder.as_ref(), &words, &filter).await?;
-    let more = found.len() > offset.saturating_add(limit);
-    let messages: Vec<MessageSummary> = found.into_iter().skip(offset).take(limit).collect();
-    let deeper = u32::try_from(offset + limit).unwrap_or(u32::MAX);
-    let cursor = (more && deeper <= CURSOR_MAX).then(|| Cursor::Live(deeper).text());
-    Ok(Response::MailMessages { messages, cursor, source: MailSource::Live })
+    Ok(Response::MailMessages { messages: Vec::new(), cursor: None, source: MailSource::Cache })
 }
 
-/// The store's matches `offset` to `offset + count` over all `stores`, newest first. Each store
-/// gives its first `offset + count`, so pages of several accounts interleave by date.
+/// The parts of a search in the order its pages come: the store alone without a part on the
+/// server; with one, the store's (the newer messages) first when newest first, the server's (the
+/// older ones) first when oldest first.
+fn parts(live: bool, order: Order) -> Vec<Part> {
+    match (live, order) {
+        (false, _) => vec![Part::Cache],
+        (true, Order::NewestFirst) => vec![Part::Cache, Part::Live],
+        (true, Order::OldestFirst) => vec![Part::Live, Part::Cache],
+    }
+}
+
+/// The store's matches `offset` to `offset + count` over all `stores`, in `query.order`. Each
+/// store gives its first `offset + count`, so pages of several accounts interleave by date.
 async fn cache_page(
     stores: &[(String, SharedStore)],
     query: &SearchQuery,
@@ -300,9 +359,14 @@ async fn cache_page(
         let query = query.clone();
         all.extend(store.run(move |store| store.search(&query, wanted, 0)).await.map_err(store_failed)?);
     }
-    // Stable: the same date keeps the account order and each store's own order.
-    all.sort_by_key(|summary| std::cmp::Reverse(summary.date));
+    sort_by_date(&mut all, query.order);
     Ok(all.into_iter().skip(offset as usize).take(count).collect())
+}
+
+/// Sorts `found` by date in `order`. Stable: the same date keeps the account order and each
+/// store's own order.
+fn sort_by_date(found: &mut [MessageSummary], order: Order) {
+    found.sort_by(|a, b| order.apply(b.date.cmp(&a.date)));
 }
 
 /// What a message found on the server must also hold to be a match.
@@ -324,7 +388,7 @@ impl Filter {
     }
 }
 
-/// Every match of the server's part, newest first: `UID SEARCH TEXT` in each folder in scope
+/// Every match of the server's part in `order`: `UID SEARCH TEXT` in each folder in scope
 /// (`folder`, else every folder the store knows), the UIDs found mapped to the store's messages
 /// and checked against `filter` with what the store knows (date, flags). Messages the sync has not
 /// stored yet are left out: they have no id yet, a later search finds them.
@@ -338,6 +402,7 @@ async fn live_matches(
     folder: Option<&FolderRef>,
     words: &str,
     filter: &Filter,
+    order: Order,
 ) -> Answer<Vec<MessageSummary>> {
     // A day more on each side: the server compares its own receiving day, the store the `Date:`
     // header; the filter afterwards is exact.
@@ -381,7 +446,7 @@ async fn live_matches(
     if let (false, Some(err)) = (asked, failure) {
         return Err(err.response().into());
     }
-    found.sort_by_key(|summary| std::cmp::Reverse(summary.date));
+    sort_by_date(&mut found, order);
     Ok(found)
 }
 
@@ -943,6 +1008,7 @@ pub(crate) mod tests {
             before: None,
             limit,
             cursor,
+            order: None,
         }
     }
 
@@ -950,7 +1016,29 @@ pub(crate) mod tests {
     fn find(query: Option<&str>, folder: Option<String>, since: Option<DateTime<Utc>>) -> Request {
         let query = query.map(str::to_string);
         let (unread, flagged, before, cursor) = (None, None, None, None);
-        Request::SearchMail { account: None, folder, query, unread, flagged, since, before, limit: 10, cursor }
+        Request::SearchMail {
+            account: None,
+            folder,
+            query,
+            unread,
+            flagged,
+            since,
+            before,
+            limit: 10,
+            cursor,
+            order: None,
+        }
+    }
+
+    /// [`search`] oldest first (task E8.15).
+    fn oldest(query: Option<&str>, limit: u32, cursor: Option<String>) -> Request {
+        match search(query, limit, cursor) {
+            Request::SearchMail { account, folder, query, unread, flagged, since, before, limit, cursor, .. } => {
+                let order = Some(Order::OldestFirst);
+                Request::SearchMail { account, folder, query, unread, flagged, since, before, limit, cursor, order }
+            }
+            other => other,
+        }
     }
 
     fn page(response: Response) -> (Vec<String>, Option<String>, MailSource) {
@@ -1008,6 +1096,11 @@ pub(crate) mod tests {
         assert_eq!((subjects, source), (vec!["Answer".to_string(), "Question".into()], MailSource::Cache));
         let (rest, last, _) = page(answer(&service, Reach::Suite, search(None, 2, cursor)).await);
         assert_eq!((rest, last), (vec!["Kept".to_string()], None));
+        // Task E8.15: oldest first, with its own cursor.
+        let (subjects, cursor, _) = page(answer(&service, Reach::Suite, oldest(None, 2, None)).await);
+        assert_eq!(subjects, ["Kept", "Question"]);
+        let (rest, last, _) = page(answer(&service, Reach::Suite, oldest(None, 2, cursor)).await);
+        assert_eq!((rest, last), (vec!["Answer".to_string()], None));
         let archive = listed.iter().find(|folder| folder.role == Some(Role::Archive)).map(|folder| folder.id.clone());
         let in_archive = find(None, archive, None);
         assert_eq!(page(answer(&service, Reach::Suite, in_archive).await).0, ["Kept"]);
@@ -1202,6 +1295,13 @@ pub(crate) mod tests {
         let (second, last, source) = page(answer(&service, Reach::Suite, search(Some("zebra"), 1, cursor)).await);
         assert_eq!((second, last, source), (vec!["Old one".to_string()], None, MailSource::Live));
 
+        // Task E8.15: oldest first the server's older part comes first, then the store's.
+        let (first, cursor, source) = page(answer(&service, Reach::Suite, oldest(Some("zebra"), 1, None)).await);
+        assert_eq!((first, source), (vec!["Old one".to_string()], MailSource::Live));
+        assert_eq!(cursor.as_deref(), Some("c:0"), "the server is done, the store comes next");
+        let (second, last, source) = page(answer(&service, Reach::Suite, oldest(Some("zebra"), 1, cursor)).await);
+        assert_eq!((second, last, source), (vec!["Recent zebra".to_string()], None, MailSource::Cache));
+
         // Only the server knows: the page goes there at once, for words that are not ASCII too.
         let (found, last, source) = page(answer(&service, Reach::Suite, search(Some("müller"), 10, None)).await);
         assert_eq!((found, last, source), (vec!["Old one".to_string()], None, MailSource::Live));
@@ -1212,6 +1312,8 @@ pub(crate) mod tests {
         let lines_before = server.lines().len();
         let (all, ..) = page(answer(&service, Reach::Suite, search(None, 10, None)).await);
         assert_eq!(all, ["Recent zebra", "Old one", "Older one"]);
+        let (all, ..) = page(answer(&service, Reach::Suite, oldest(None, 10, None)).await);
+        assert_eq!(all, ["Older one", "Old one", "Recent zebra"]);
         let recent = find(Some("zebra"), None, Some(Utc::now() - Duration::days(30)));
         assert_eq!(
             page(answer(&service, Reach::Suite, recent).await),

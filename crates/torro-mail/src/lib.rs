@@ -9,6 +9,7 @@
 //!   The account id is `mail:<address>` ([`account_id`]).
 //! - [`message`]: folders and their roles, message summaries and whole messages as the core
 //!   hands them out, drafts as clients write them.
+//! - [`order`]: newest or oldest first ([`Order`]), for mail and for the inbox.
 //!
 //! **Ids are opaque.** Folders (`f:…`) and messages (`m:…`) get ids from the core's mail store,
 //! which resolves them; no client takes one apart, and nothing is ever split at a path separator.
@@ -19,6 +20,7 @@
 
 pub mod account;
 pub mod message;
+pub mod order;
 
 pub use account::{
     ACCOUNT_PREFIX, Endpoint, InvalidAddress, MailAccountConfig, MailSettings, Notify, Security, Services, account_id,
@@ -28,3 +30,4 @@ pub use message::{
     AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message,
     MessageSummary, MessageTraits, Role,
 };
+pub use order::Order;

@@ -38,7 +38,8 @@ use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
 use torro_mail::{
-    AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message, MessageSummary, MessageTraits, Role,
+    AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message, MessageSummary, MessageTraits, Order,
+    Role,
 };
 
 use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
@@ -240,8 +241,8 @@ pub struct Body {
     pub invite: Option<Invite>,
 }
 
-/// A search over the cache; every field narrows the result (`mail.search_messages`). All `None`
-/// lists everything, newest first.
+/// A search over the cache; every field but `order` narrows the result (`mail.search_messages`).
+/// All `None` lists everything, newest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchQuery {
     /// Only this folder (an id from [`MailStore::folders`]).
@@ -257,6 +258,9 @@ pub struct SearchQuery {
     pub since: Option<DateTime<Utc>>,
     /// Sent before this time.
     pub before: Option<DateTime<Utc>>,
+    /// Newest or oldest first by date (task E8.15); the same date by the order the store took the
+    /// messages in, turned along.
+    pub order: Order,
 }
 
 /// The store of one account. `Send`, not `Sync`: share it as `Arc<Mutex<MailStore>>` and call it
@@ -692,8 +696,8 @@ impl MailStore {
         self.search(&query, limit, offset)
     }
 
-    /// Searches the cache, newest first; `limit` and `offset` page through the result. A search
-    /// whose words hold nothing searchable (only punctuation) finds nothing.
+    /// Searches the cache in `query.order`; `limit` and `offset` page through the result. A
+    /// search whose words hold nothing searchable (only punctuation) finds nothing.
     pub fn search(&self, query: &SearchQuery, limit: u32, offset: u32) -> Result<Vec<MessageSummary>, MailStoreError> {
         let mut from = "messages m".to_string();
         let mut conditions: Vec<&str> = Vec::new();
@@ -723,8 +727,13 @@ impl MailStore {
             values.push(Value::Integer(before.timestamp()));
         }
         let filter = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
-        let sql =
-            format!("SELECT {SUMMARY_COLUMNS} FROM {from} {filter} ORDER BY m.date DESC, m.seq DESC LIMIT ? OFFSET ?");
+        let direction = match query.order {
+            Order::NewestFirst => "DESC",
+            Order::OldestFirst => "ASC",
+        };
+        let sql = format!(
+            "SELECT {SUMMARY_COLUMNS} FROM {from} {filter} ORDER BY m.date {direction}, m.seq {direction} LIMIT ? OFFSET ?"
+        );
         values.push(Value::Integer(i64::from(limit)));
         values.push(Value::Integer(i64::from(offset)));
         let mut statement = self.db.prepare(&sql)?;
@@ -1393,6 +1402,11 @@ mod tests {
         assert_eq!(list(&in_inbox, 2, 4), ["Message 1"]);
         assert_eq!(store.list_messages(&archive, 10, 0).expect("list")[0].id, other);
         assert_eq!(list(&SearchQuery::default(), 1, 0), ["Elsewhere"], "newest of all folders first");
+        // Task E8.15: oldest first, paged the same way.
+        let oldest = SearchQuery { order: Order::OldestFirst, ..in_inbox.clone() };
+        assert_eq!(list(&oldest, 2, 0), ["Message 1", "Message 2"]);
+        assert_eq!(list(&oldest, 2, 2), ["Message 3", "Message 4"]);
+        assert_eq!(list(&oldest, 2, 4), ["Message 5"]);
 
         let unread = SearchQuery { unread: Some(true), folder: Some(inbox.clone()), ..SearchQuery::default() };
         assert_eq!(list(&unread, 10, 0), ["Message 5", "Message 3", "Message 1"]);

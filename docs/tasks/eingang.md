@@ -1339,6 +1339,28 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests für `stamp` (vor 5 min, vor 23 h am selben Tag und am Vortag, letzte Woche, Uhr vorgehend), in
   beiden Sprachen.
 
+### E8.15 Nach Eingang sortieren, auf- und absteigend (Issue #116)
+- [x] erledigt (2026-10-14: `torro_mail::Order { NewestFirst, OldestFirst }`, wieder ausgeführt als
+  `torro_inbox::Order` und `torro_ipc::Order`; `order` in `mail.search_messages` (`SearchQuery`, SQL, beide Teile der
+  Suche: älteste zuerst erst die Treffer auf dem Server, dann die des Speichers, Cursor je Reihenfolge) und in
+  `inbox.list_items` (`ItemFilter`, `rules::order_in`, SQL, Demo); Dringendes bleibt oben, nur innerhalb der Gruppen
+  gedreht, die Tagesgruppen der Übersicht drehen mit; Knopf „Newest first“/„Oldest first“ in der Kopfleiste
+  (Lucide `arrow-down-wide-narrow` / `arrow-up-narrow-wide`, Wort wie beim Dichte-Umschalter), gemerkt je Fenster in
+  `ui.json` (`ui_state::order_from`, Schlüssel wie die Dichte); nicht auf „Act now“ und Insights der Zentrale und
+  nicht in „Invitations“; Blick (Mini, Leiste) bleibt neueste zuerst)
+- **Modell:** Opus · **Braucht:** E8.14 · **Dateien:** `crates/torro-mail/src/{lib,order}.rs`,
+  `crates/torro-inbox/src/{lib,source,rules,demo}.rs`, `crates/torro-ipc/src/{lib,api,inbox,mail}.rs`,
+  `crates/torroworkplace/src/{inbox,mcp}.rs`, `crates/torroworkplace/src/mail/{read,store}.rs` (und `order: None` in
+  Tests und internen Requests), `crates/torro-gui/src/{icon,ui_state}.rs`, zwei Icons,
+  `crates/torroinbox/src/{app,mail,notifications,overview}.rs`, `crates/torro-core/src/i18n/de.rs`
+- Nur im Client umdrehen geht nicht: „Load more“ (Cursor) und `limit` folgen der Reihenfolge.
+- **Oberfläche:** Kopfleiste jeder Liste im Mail-, Benachrichtigungs- und Zentrale-Fenster. **API:**
+  `Request::SearchMail.order` · `mail.search_messages` · Read; `Request::ListItems.order` · `inbox.list_items` · Read
+  (neues optionales Feld, verträglich). **MCP:** `mail_search_messages` und `inbox_list_items` (Eingabe `order`).
+- **Abnahme:** Tests: Reihenfolge und Cursor in beiden Richtungen im Mail-Speicher, in der Suche über Speicher und
+  Server, in `inbox.list_items` (SQL) und `ItemFilter::apply`; MCP baut `order` mit; `ui.json` je Fenster; App dreht
+  Ordner, „Load more“ und Eintragslisten und verwirft Seiten der alten Reihenfolge.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
