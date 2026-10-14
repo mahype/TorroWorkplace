@@ -4586,9 +4586,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// The width the mail window's cards get (task E8.11; their previews take the lines they need at
     /// it): the list's width less the cards' inset – in the wide layout the list beside the reader
     /// ([`size::list()`]), else the window less the rail with the inset beside the content (as
-    /// [`App::board_width`]), the overview's column at most [`size::content_max()`]. An estimate from
-    /// the window's size, because the keys need the cards' heights as well as the drawing; a few
-    /// points off only move the scrolling a little.
+    /// [`App::board_width`]) – the whole of it, as the list without a reader fills it (issue #129,
+    /// [`App::list_cap`]). An estimate from the window's size, because the keys need the cards'
+    /// heights as well as the drawing; a few points off only move the scrolling a little.
     fn card_width(&self) -> f32 {
         let class = self.class();
         let list = if class == SizeClass::Wide {
@@ -4600,9 +4600,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 None => 0.0,
             };
             let room = self.size.width - chrome;
-            if self.view == View::Overview { room.min(overview::width(1)) } else { room }
+            match self.list_cap(1) {
+                Some(cap) if self.view == View::Overview => room.min(cap),
+                _ => room,
+            }
         };
         (list - list::cards_side()).max(0.0)
+    }
+
+    /// How wide the list of `columns` columns may grow: [`overview::width`] – lists of entries stay
+    /// readable, more room goes to what stands beside them. `None` in the mail window (issue #129):
+    /// its list fills the room it has – beside the reader its column, without one the whole window –
+    /// instead of ending in an empty strip that reads as broken.
+    fn list_cap(&self, columns: usize) -> Option<f32> {
+        (self.launch.kind != Kind::Mail).then(|| overview::width(columns))
     }
 
     /// What the narrow mail window's "For me" leads with (task E8.3, "N new for you"; task E8.11 in
@@ -5133,10 +5144,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let list = container(content.push(rows).width(Fill).height(Fill)).width(Fill);
         // Only the wide layout caps the width: in the medium one the content is at most a little
         // over `CONTENT_MAX` anyway, and a cap there would leave a thin empty strip at the right
-        // (at 800 wide about 20) that reads as a mistake rather than as a margin.
-        match class {
-            SizeClass::Wide => list.max_width(size::content_max()).into(),
-            SizeClass::Medium | SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => list.into(),
+        // (at 800 wide about 20) that reads as a mistake rather than as a margin. The mail window's
+        // list never stops short (issue #129, [`App::list_cap`]).
+        match (class, self.list_cap(1)) {
+            (SizeClass::Wide, Some(cap)) => list.max_width(cap).into(),
+            _ => list.into(),
         }
     }
 
@@ -5171,7 +5183,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     ) -> Element<'a, Message> {
         let wide = class == SizeClass::Wide;
         let shown = overview::shown(class, self.detail.as_ref(), self.column, self.launch.kind.columns());
-        let cap = overview::width(shown.len());
+        let cap = self.list_cap(shown.len());
         let mut columns = row![].width(Fill).height(Fill);
         for (i, column) in shown.into_iter().enumerate() {
             if i > 0 {
@@ -5189,8 +5201,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 lead: self.lead(),
             }));
         }
-        // Each column at most `CONTENT_MAX`, as the list of a view.
-        container(columns).width(Fill).max_width(cap).into()
+        // Each column at most `CONTENT_MAX`, as the list of a view; the mail window's fills the width.
+        let columns = container(columns).width(Fill);
+        match cap {
+            Some(cap) => columns.max_width(cap).into(),
+            None => columns.into(),
+        }
     }
 
     /// The views with their icon, then one entry per source.
@@ -8594,6 +8610,26 @@ mod tests {
         assert_eq!(compact.look(), Look::Rows);
         let hub = overview_at(&["--view", "hub", "--density", "comfortable"]);
         assert_eq!(hub.look(), Look::Rows, "the hub's cards come with E8.5");
+    }
+
+    /// Issue #129: without a reader beside it the mail window's list fills the window – in "For me"
+    /// as in a folder, in both densities –; the lists of the other windows keep their reading width.
+    #[test]
+    fn the_mail_list_fills_the_window_without_a_reader() {
+        let medium = Size::new(1000.0, 700.0);
+        let room = medium.width - shell::rail() - layout::inset();
+        for density in ["comfortable", "compact"] {
+            let mut app = mail_window(density, &[]);
+            let _ = app.update(Message::Resized(medium));
+            assert_eq!(app.list_cap(1), None, "{density}");
+            assert!(room > overview::width(1), "a window where the cap would show");
+            let _ = app.view();
+        }
+        let mut cards = mail_window("comfortable", &[]);
+        let _ = cards.update(Message::Resized(medium));
+        assert_eq!(cards.card_width(), room - list::cards_side(), "the cards take the whole room");
+        let hub = overview_at(&["--view", "hub"]);
+        assert_eq!(hub.list_cap(2), Some(overview::width(2)), "other windows keep the reading width");
     }
 
     /// Task E8.3: the narrow comfortable "For me" leads with how many mails are new for the user.
