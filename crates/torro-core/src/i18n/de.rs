@@ -2137,6 +2137,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Withheld from the model by your data rule", "Durch deine Datenregel dem Modell vorenthalten"),
     ("You denied this", "Von dir abgelehnt"),
     ("{count} results", "{count} Ergebnisse"),
+    // Skill for agents (C.8)
+    (
+        "{file} exists and was not written by Torro Workplace, so it was left as it is.",
+        "{file} ist vorhanden und wurde nicht von Torro Workplace geschrieben, daher wurde es nicht verändert.",
+    ),
     // Assistant page in the control centre (C.6)
     ("1 year", "1 Jahr"),
     (
@@ -2322,5 +2327,30 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "This is the demo, so nothing was looked up. With an AI account the assistant reads your calendar, tasks, inbox and mail – as far as you allowed it – and answers here.",
         "Das ist die Demo, darum wurde nichts nachgesehen. Mit einem KI-Konto liest der Assistent deinen Kalender, deine Aufgaben, deinen Eingang und deine Mail – soweit du es erlaubt hast – und antwortet hier.",
+    ),
+    // Agents as engines (C.7)
+    ("The agent gave no answer. Try again.", "Der Agent hat nicht geantwortet. Versuch es noch einmal."),
+    (
+        "The assistant could not prepare {agent}. Try again.",
+        "Der Assistent konnte {agent} nicht vorbereiten. Versuch es noch einmal.",
+    ),
+    (
+        "The assistant has no access yet. Choose what it may use in Torro Workplace › Assistant.",
+        "Der Assistent hat noch keinen Zugriff. Leg in Torro Workplace › Assistent fest, was er nutzen darf.",
+    ),
+    (
+        "This agent cannot answer now. Check that it is installed, then try again.",
+        "Dieser Agent kann gerade nicht antworten. Prüf, ob er installiert ist, und versuch es noch einmal.",
+    ),
+    ("Waiting for your approval", "Wartet auf deine Freigabe"),
+    ("it is not installed", "er ist nicht installiert"),
+    ("{agent} could not be started: {why}", "{agent} ließ sich nicht starten: {why}"),
+    ("{agent} reported an error: {why}", "{agent} meldet einen Fehler: {why}"),
+    ("{agent} stopped without an answer.", "{agent} hat ohne Antwort aufgehört."),
+    ("{agent} stopped without an answer: {why}", "{agent} hat ohne Antwort aufgehört: {why}"),
+    ("{agent} took too long and was stopped.", "{agent} hat zu lange gebraucht und wurde angehalten."),
+    (
+        "{agent} was stopped before it answered: it offered tools besides Torro Workplace ({tools}).",
+        "{agent} wurde vor der Antwort angehalten: Er bot Werkzeuge außer Torro Workplace an ({tools}).",
     ),
 ];

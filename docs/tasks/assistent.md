@@ -119,7 +119,11 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** `torro-design-review`; Änderung wirkt in einer laufenden Unterhaltung ab der nächsten Anfrage.
 
 ### C.7 Antrieb B: Claude Code und Codex
-- [ ] erledigt
+- [x] erledigt (nur Claude Code: Codex hat keine Positivliste für Werkzeuge, „Dateien und Shell immer aus“ lässt sich
+  dort nicht zusichern; Schlüssel je Lauf geliehen, nur im Speicher und in der Umgebung des Agenten; Mail nie an
+  Agenten (Datenregel); Verlauf wird je Nachricht mitgeschickt, keine Sitzung beim Agenten; nachgetragen
+  (Koordination): `crates/torroworkplace/src/{clients,core}.rs` (geliehene Schlüssel, Protokoll mit Antrieb),
+  `crates/torro-ipc/src/assistant.rs` (`EngineKind::Agent`))
 - **Modell:** Opus · **Braucht:** C.2 · **Dateien:** `crates/torroworkplace/src/assistant/engines/**`
 - Claude Code mit `stream-json` in beide Richtungen, eigene `--mcp-config` mit `--strict-mcp-config`, nur
   `mcp__torroworkplace__*`, Schlüssel des Assistenten-Clients in `TORRO_TOKEN`, Skill über `--append-system-prompt`.
@@ -127,7 +131,7 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** Tests mit einem Fake-Programm, das den Stream nachspielt; kein Test braucht einen echten Agenten.
 
 ### C.8 Skill-Datei und MCP-Prompt für fremde Agenten
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** C.3 (Text) · **Dateien:** `crates/torroworkplace/src/{mcp,client_setup}.rs`
 - Der feste Teil aus C.3 als MCP-Prompt `torro_workplace`; „Connect agent“ legt ihn für Claude Code zusätzlich als
   Skill ab (zusammengeführt, wie die übrigen Einträge, und beim Trennen wieder entfernt).
