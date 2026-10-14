@@ -135,12 +135,13 @@ pub fn is_local(engine: &Engine) -> bool {
 }
 
 /// `engines` in the order the picker lists them (Open First): AI accounts first, those on this
-/// computer on top, then the rest in the core's order; the test engine last.
+/// computer on top, then agents such as Claude Code, the test engine last.
 pub fn ordered(mut engines: Vec<Engine>) -> Vec<Engine> {
     engines.sort_by_key(|engine| match engine.kind {
         EngineKind::Ai if is_local(engine) => 0,
         EngineKind::Ai => 1,
-        EngineKind::Test => 2,
+        EngineKind::Agent => 2,
+        EngineKind::Test => 3,
     });
     engines
 }

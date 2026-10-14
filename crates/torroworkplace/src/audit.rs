@@ -334,12 +334,15 @@ pub fn ids(request: &Request) -> Vec<String> {
     }
 }
 
+/// The ids of the agents that can drive the assistant (task C.7); fixed names, nothing a client chose.
+const AGENT_ENGINES: [&str; 1] = ["claude-code"];
+
 /// The assistant's engine for the log (decision 5 in `docs/assistent.md`: the log says which engine
-/// the assistant used): `engine:<id>` for the test engine and an AI account's id, any other text
-/// hashed (`engine:hash:<hash>`). Next to the ids of `assistant.send_message`, and of every tool
-/// the assistant runs while it answers (task C.2).
+/// the assistant used): `engine:<id>` for the test engine, the agents the core starts itself
+/// (task C.7) and an AI account's id, any other text hashed (`engine:hash:<hash>`). Next to the ids
+/// of `assistant.send_message`, and of every tool the assistant runs while it answers (task C.2).
 pub fn engine_id(engine: &str) -> String {
-    match engine == TEST_ENGINE || is_account_id(engine) {
+    match engine == TEST_ENGINE || AGENT_ENGINES.contains(&engine) || is_account_id(engine) {
         true => format!("engine:{}", cut(engine)),
         false => format!("engine:hash:{}", hashed(engine)),
     }
@@ -573,6 +576,7 @@ pub(crate) mod tests {
             without: Vec::new(),
         };
         assert_eq!(super::ids(&odd), vec![format!("engine:hash:{}", hashed("Anna's server"))]);
+        assert_eq!(super::engine_id("claude-code"), "engine:claude-code", "an agent the core starts is named");
 
         let rename = Request::RenameConversation { id: "0123456789abcdef".into(), title: "Salary talks".into() };
         assert_eq!(super::ids(&rename), vec!["conversation:0123456789abcdef".to_string()]);

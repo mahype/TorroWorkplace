@@ -26,6 +26,12 @@
 //! is taken back, changed rights fall to what old and new both allow, and a client whose new key
 //! could not be stored is locked out.
 //!
+//! **Lent keys** ([`Clients::lend`], task C.7): the core runs a coding agent as an engine of the
+//! assistant and hands it a key of the assistant's client for that one run, in the agent's
+//! environment only. Such a key lives in memory only (never in `clients.json`, never in the
+//! keychain), stands for its client with the client's rights of now narrowed by the areas it was
+//! lent without, and stops working when the run drops it ([`LentKey`]) or the client is removed.
+//!
 //! **Older files:** a client in a `clients.json` from before rights existed (A.1) gets the
 //! template *Read only* ([`legacy_rights`]): its person never chose rights, and reading is the
 //! least that keeps it useful.
@@ -35,14 +41,14 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use torro_inbox::AgentKind;
-use torro_ipc::api::{ASSISTANT_CLIENT, HOOK_CLIENT, Operation, Rights, RightsTemplate, Selection};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area, HOOK_CLIENT, Operation, Rights, RightsTemplate, Selection};
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
 /// Keychain service all suite secrets are filed under (as for the accounts).
@@ -318,9 +324,53 @@ struct Entry {
 
 struct State {
     clients: Vec<Entry>,
+    /// The keys lent out now ([`Clients::lend`]); only in memory.
+    leases: Vec<Lease>,
     /// `clients.json` could not be read at start. Nothing is written to it then, so the person
     /// can still repair it, and only the app key gets in.
     damaged: bool,
+}
+
+/// A key lent to a client ([`Clients::lend`]), as the gate keeps it: never the key itself.
+struct Lease {
+    client: String,
+    /// What it was lent for: the engine of the assistant that runs with it.
+    engine: String,
+    hash: KeyHash,
+    /// The areas taken out of the client's rights for requests with this key.
+    without: Vec<Area>,
+    /// The approvals asked for with this key: the only ones it sees ([`Clients::lent_approvals`]).
+    approvals: Vec<String>,
+}
+
+/// A key lent to a client for as long as this value lives ([`Clients::lend`]). Dropping it takes
+/// the key back: the next request with it is `unauthorized`. Its `Debug` never shows the key.
+pub struct LentKey {
+    key: Key,
+    hash: KeyHash,
+    shared: Weak<Shared>,
+}
+
+impl LentKey {
+    /// The key itself, for the environment of the program it is lent to. Never print it, never
+    /// put it on a command line or into a file.
+    pub fn key(&self) -> &Key {
+        &self.key
+    }
+}
+
+impl Drop for LentKey {
+    fn drop(&mut self) {
+        if let Some(shared) = self.shared.upgrade() {
+            shared.lock().leases.retain(|lease| !same(&lease.hash, &self.hash));
+        }
+    }
+}
+
+impl fmt::Debug for LentKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("LentKey(…)")
+    }
 }
 
 /// The gate of the core: knows the app key and the clients and decides who gets in.
@@ -369,11 +419,11 @@ impl Clients {
                 {
                     qualified = qualify_legacy_selections(&mut clients, &owner);
                 }
-                State { clients, damaged: false }
+                State { clients, leases: Vec::new(), damaged: false }
             }
             Err(err) => {
                 eprintln!("torroworkplace: {err}; only the suite's own programs are let in");
-                State { clients: Vec::new(), damaged: true }
+                State { clients: Vec::new(), leases: Vec::new(), damaged: true }
             }
         };
         let shared = Shared {
@@ -439,16 +489,90 @@ impl Clients {
                 found = Some(index);
             }
         }
+        // A lent key stands for its client, with the areas it was lent without taken out of the
+        // client's rights of now ([`Clients::lend`]).
+        let mut without: &[Area] = &[];
+        for lease in &state.leases {
+            if same(&lease.hash, &hash) {
+                found = state.clients.iter().position(|entry| entry.record.id == lease.client && !entry.locked);
+                without = &lease.without;
+            }
+        }
         let Some(index) = found else {
             return Caller::Anonymous;
         };
+        let without = without.to_vec();
         let record = &mut state.clients[index].record;
-        let caller = Caller::Client { id: record.id.clone(), rights: record.rights.clone() };
+        let mut rights = record.rights.clone();
+        rights.areas.retain(|area, _| !without.contains(area));
+        let caller = Caller::Client { id: record.id.clone(), rights };
         if note_use(record, Utc::now()) {
             drop(state);
             self.note_in_background();
         }
         caller
+    }
+
+    /// Lends client `id` a key of its own for one run of a program the core starts itself: an
+    /// agent that drives the assistant (task C.7). Requests with the key run as the client, with
+    /// its rights of the moment each request comes, minus the areas `without`; so the client's
+    /// rights, collections, approvals and fixed refusals (the assistant never drives itself) all
+    /// apply. The key is made here, kept only as a hash in memory, never written to
+    /// `clients.json` or the keychain, and works until the [`LentKey`] is dropped or the client
+    /// is removed or locked. `engine` names what it was lent for ([`Clients::lent_for`]), for the
+    /// audit log.
+    ///
+    /// [`ClientsError::NotFound`] for no such client (or a locked one), [`ClientsError::Damaged`]
+    /// while `clients.json` is.
+    pub fn lend(&self, id: &str, engine: &str, without: &[Area]) -> Result<LentKey, ClientsError> {
+        let mut state = self.lock();
+        if state.damaged {
+            return Err(ClientsError::Damaged(self.shared.file.clone()));
+        }
+        if !state.clients.iter().any(|entry| entry.record.id == id && !entry.locked) {
+            return Err(ClientsError::NotFound(id.to_string()));
+        }
+        let key = new_client_key(id)?;
+        let hash = hash(&key);
+        state.leases.push(Lease {
+            client: id.to_string(),
+            engine: engine.to_string(),
+            hash,
+            without: without.to_vec(),
+            approvals: Vec::new(),
+        });
+        Ok(LentKey { key: Key::new(key), hash, shared: Arc::downgrade(&self.shared) })
+    }
+
+    /// What `key` was lent for ([`Clients::lend`]) while it is lent; `None` for every other key.
+    pub fn lent_for(&self, key: &Key) -> Option<String> {
+        self.with_lease(key, |lease| lease.engine.clone())
+    }
+
+    /// The approvals asked for with the lent `key` ([`Clients::note_lent_approval`]); `None` for
+    /// a key that is not lent. A lent key sees only these, never the other approvals of its
+    /// client: they may hold what its areas keep from it (a mail to send, asked for by engine A).
+    pub fn lent_approvals(&self, key: &Key) -> Option<Vec<String>> {
+        self.with_lease(key, |lease| lease.approvals.clone())
+    }
+
+    /// Notes that the lent `key` asked for the approval `id`; nothing for a key that is not lent.
+    pub fn note_lent_approval(&self, key: &Key, id: &str) {
+        self.with_lease(key, |lease| lease.approvals.push(id.to_string()));
+    }
+
+    /// Runs `with` on the lease of `key`, compared with every lease as keys are; `None` for a key
+    /// that is not lent.
+    fn with_lease<T>(&self, key: &Key, with: impl FnOnce(&mut Lease) -> T) -> Option<T> {
+        let hash = hash(key.expose());
+        let mut state = self.lock();
+        let mut found = None;
+        for (index, lease) in state.leases.iter().enumerate() {
+            if same(&lease.hash, &hash) {
+                found = Some(index);
+            }
+        }
+        found.map(|index| with(&mut state.leases[index]))
     }
 
     /// All clients, without their keys' hashes, in the order they were added. Empty while
@@ -1952,5 +2076,57 @@ pub(crate) mod tests {
         let reopened = open_in(dir.path());
         let stored = reopened.records().into_iter().find(|record| record.id == agent.id).expect("stored").rights;
         expected(&stored);
+    }
+
+    #[tokio::test]
+    async fn a_lent_key_stands_for_its_client_without_some_areas_until_it_is_dropped() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keychain = MemoryKeychain::default();
+        let clients = Clients::open(&app_key_file(dir.path()), &clients_file(dir.path()), Box::new(keychain.clone()))
+            .expect("opens");
+        let mut rights = Rights::assistant();
+        rights
+            .areas
+            .insert(Area::Mail, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Read, admin: false });
+        let (assistant, _) = clients.add("Assistant", ASSISTANT_CLIENT, rights).await.expect("added");
+        let stored_before = fs::read_to_string(clients_file(dir.path())).expect("stored");
+
+        let lent = clients.lend(&assistant.id, "claude-code", &[Area::Mail, Area::Tasks]).expect("lent");
+        assert_eq!(format!("{lent:?}"), "LentKey(…)", "Debug never shows the key");
+        let key = lent.key().clone();
+        assert!(key.expose().starts_with(&format!("torro_{}_", assistant.id)));
+        assert_eq!(clients.lent_for(&key).as_deref(), Some("claude-code"));
+        assert_eq!(clients.lent_for(&app_key(dir.path())), None);
+        assert_eq!(clients.lent_approvals(&key), Some(Vec::new()));
+        clients.note_lent_approval(&key, "0123456789abcdef");
+        assert_eq!(clients.lent_approvals(&key), Some(vec!["0123456789abcdef".to_string()]));
+        assert_eq!(clients.lent_approvals(&app_key(dir.path())), None, "only lent keys are narrowed");
+
+        // The client with its rights of now, without the areas it was lent without.
+        let Ok(Caller::Client { id, rights }) = clients.admit(Some(&key), &Request::CalendarCollections) else {
+            panic!("a lent key gets its client in");
+        };
+        assert_eq!(id, assistant.id);
+        assert!(rights.areas.contains_key(&Area::Calendar));
+        assert!(!rights.areas.contains_key(&Area::Mail) && !rights.areas.contains_key(&Area::Tasks));
+        let mail = Request::MailFolders { account: None };
+        assert_eq!(code(clients.admit(Some(&key), &mail)), "forbidden", "mail was lent without");
+        assert!(clients.admit(Some(&key), &Request::TaskCollections).is_err(), "tasks too");
+
+        // Never on disk, never in the keychain.
+        assert_eq!(fs::read_to_string(clients_file(dir.path())).expect("stored"), stored_before);
+        assert!(!fs::read_to_string(clients_file(dir.path())).expect("stored").contains(key.expose()));
+        assert!(keychain.0.lock().expect("lock").values().all(|stored| stored != key.expose()));
+
+        // Dropped: taken back.
+        drop(lent);
+        assert_eq!(code(clients.admit(Some(&key), &Request::CalendarCollections)), "unauthorized");
+        assert_eq!(clients.lent_for(&key), None);
+
+        // Removing the client ends a key lent to it as well.
+        let lent = clients.lend(&assistant.id, "claude-code", &[]).expect("lent");
+        clients.remove(&assistant.id).await.expect("removed");
+        assert_eq!(code(clients.admit(Some(lent.key()), &Request::CalendarCollections)), "unauthorized");
+        assert!(matches!(clients.lend(&assistant.id, "claude-code", &[]), Err(ClientsError::NotFound(_))));
     }
 }
