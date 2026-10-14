@@ -892,7 +892,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     let lines = list::MailLines {
         name,
         domain,
-        time: list::ago(message.date, data.now),
+        time: list::stamp(message.date, data.now),
         marks,
         subject: subject(message),
         new: !message.flags.contains(&Flag::Seen),
@@ -930,7 +930,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     let lines = list::MailLines {
         name,
         domain,
-        time: list::ago(message.date, data.now),
+        time: list::stamp(message.date, data.now),
         marks: Vec::new(),
         subject: subject(message),
         new: !message.flags.contains(&Flag::Seen),

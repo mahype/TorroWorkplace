@@ -90,7 +90,7 @@ pub struct Rows<'a> {
     /// Id of the entry under the cursor (and in the panel, when it is open): highlighted, with its
     /// action bar shown.
     pub selected: Option<&'a str>,
-    /// "Now", for the times ("4 min").
+    /// "Now", for the times ("16:40", "Yesterday 16:40").
     pub now: DateTime<Utc>,
     /// Registered by the selected row, for the menus that open beside it.
     pub anchor: Anchor,
@@ -1147,25 +1147,28 @@ pub fn plain(text: &str) -> String {
 }
 
 /// The time at the end of a row: until when a snoozed entry sleeps ("until Wed, 14 Oct",
-/// [`wake_text`]), how long ago it was done in "Done", otherwise how long ago it last changed
-/// ([`ago`]).
+/// [`wake_text`]), when it was done in "Done", otherwise when it last changed ([`stamp`]).
 pub fn time_text(item: &Item, view: &View, now: DateTime<Utc>) -> String {
     match (view, &item.state) {
         (_, State::Snoozed { until }) => trf("until {time}", &[("time", &wake_text(*until, now))]),
-        (View::Done, State::Done { at }) => ago(*at, now),
-        _ => ago(item.updated, now),
+        (View::Done, State::Done { at }) => stamp(*at, now),
+        _ => stamp(item.updated, now),
     }
 }
 
-/// How long ago `then` was, as short as it gets: "4 min" (at least 1), "2 h", "3 d".
-pub fn ago(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
-    let minutes = (now - then).num_minutes().max(1);
-    if minutes < 60 {
-        trf("{n} min", &[("n", &minutes)])
-    } else if minutes < 24 * 60 {
-        trf("{n} h", &[("n", &(minutes / 60))])
+/// When `then` was, in local time, for the end of a row (task E8.14, issue #115): the clock time
+/// today ("16:40"), "Yesterday 16:40" the day before, else the short date ("Sat, 3 Oct"). A clock
+/// time reads at a glance; "17 h" has to be counted back. A moment a little ahead of `now` (a
+/// clock ahead) on the same day is shown as today.
+pub fn stamp(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let (then, today) = (then.with_timezone(&Local), now.with_timezone(&Local).date_naive());
+    let (day, time) = (then.date_naive(), datetime::format_time(then.time()));
+    if day == today {
+        time
+    } else if today.pred_opt() == Some(day) {
+        trf("Yesterday {time}", &[("time", &time)])
     } else {
-        trf("{n} d", &[("n", &(minutes / (24 * 60)))])
+        datetime::format_short_date(day, today)
     }
 }
 
@@ -1223,13 +1226,22 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 10, 13, 10, 30, 0).single().expect("valid time")
     }
 
+    /// Task E8.14 (issue #115): a clock time instead of "17 h" for what came today, "Yesterday"
+    /// with the time the day before, else the short date.
     #[test]
-    fn times_are_short_and_relative() {
-        assert_eq!(ago(now(), now()), trf("{n} min", &[("n", &1)]), "never 0 min");
-        assert_eq!(ago(now() - TimeDelta::minutes(4), now()), trf("{n} min", &[("n", &4)]));
-        assert_eq!(ago(now() - TimeDelta::minutes(150), now()), trf("{n} h", &[("n", &2)]));
-        assert_eq!(ago(now() - TimeDelta::hours(50), now()), trf("{n} d", &[("n", &2)]));
-        assert_eq!(ago(now() + TimeDelta::hours(1), now()), trf("{n} min", &[("n", &1)]), "a clock ahead");
+    fn rows_stamp_the_clock_time_not_how_long_ago() {
+        let local =
+            |d, h, m| Local.with_ymd_and_hms(2026, 10, d, h, m, 0).single().expect("a valid local time").to_utc();
+        let morning = local(13, 10, 30);
+        assert_eq!(stamp(morning - TimeDelta::minutes(5), morning), "10:25", "5 min ago");
+        let late = local(13, 23, 50);
+        assert_eq!(stamp(late - TimeDelta::hours(23), late), "00:50", "23 h ago, the same day");
+        let yesterday = trf("Yesterday {time}", &[("time", &"11:30")]);
+        assert_eq!(stamp(morning - TimeDelta::hours(23), morning), yesterday, "23 h ago, the day before");
+        let today = morning.with_timezone(&Local).date_naive();
+        let last_week = today - TimeDelta::days(7);
+        assert_eq!(stamp(local(6, 9, 0), morning), datetime::format_short_date(last_week, today));
+        assert_eq!(stamp(morning + TimeDelta::minutes(2), morning), "10:32", "a clock ahead");
     }
 
     #[test]
@@ -1257,8 +1269,10 @@ mod tests {
         let until = trf("until {time}", &[("time", &wake_text(until, now()))]);
         assert_eq!(time_text(snoozed, &View::Snoozed, now()), until, "until when, not only a date");
         let done = by_id("demo-11");
-        assert_eq!(time_text(done, &View::Done, now()), trf("{n} h", &[("n", &22)]), "since it was done");
-        assert_eq!(time_text(by_id("demo-1"), &View::ForMe, now()), trf("{n} min", &[("n", &4)]));
+        let State::Done { at } = done.state else { panic!("demo-11 is done") };
+        assert_eq!(time_text(done, &View::Done, now()), stamp(at, now()), "when it was done");
+        let waiting = by_id("demo-1");
+        assert_eq!(time_text(waiting, &View::ForMe, now()), stamp(waiting.updated, now()));
     }
 
     #[test]
