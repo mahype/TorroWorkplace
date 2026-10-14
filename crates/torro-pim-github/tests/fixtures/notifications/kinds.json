@@ -1,0 +1,258 @@
+[
+  {
+    "id": "2000",
+    "repository": {
+      "id": 102000,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Add the settings page",
+      "url": "https://api.github.com/repos/example-org/example-app/pulls/42",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/pulls/42",
+      "type": "PullRequest"
+    },
+    "reason": "review_requested",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/2000",
+    "subscription_url": "https://api.github.com/notifications/threads/2000/subscription"
+  },
+  {
+    "id": "2001",
+    "repository": {
+      "id": 102001,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Crash when the list is empty",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/7",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/7",
+      "type": "Issue"
+    },
+    "reason": "assign",
+    "unread": false,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/2001",
+    "subscription_url": "https://api.github.com/notifications/threads/2001/subscription"
+  },
+  {
+    "id": "2002",
+    "repository": {
+      "id": 102002,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "CI workflow run failed for main branch",
+      "url": null,
+      "latest_comment_url": null,
+      "type": "CheckSuite"
+    },
+    "reason": "ci_activity",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/2002",
+    "subscription_url": "https://api.github.com/notifications/threads/2002/subscription"
+  },
+  {
+    "id": "2003",
+    "repository": {
+      "id": 102003,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "v1.2.0",
+      "url": "https://api.github.com/repos/example-org/example-app/releases/123456",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/releases/123456",
+      "type": "Release"
+    },
+    "reason": "subscribed",
+    "unread": false,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/2003",
+    "subscription_url": "https://api.github.com/notifications/threads/2003/subscription"
+  },
+  {
+    "id": "2004",
+    "repository": {
+      "id": 102004,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "How do I configure the tray?",
+      "url": null,
+      "latest_comment_url": null,
+      "type": "Discussion"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/2004",
+    "subscription_url": "https://api.github.com/notifications/threads/2004/subscription"
+  },
+  {
+    "id": "2005",
+    "repository": {
+      "id": 102005,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Fix the build on Windows",
+      "url": "https://api.github.com/repos/example-org/example-app/commits/0123456789abcdef0123456789abcdef01234567",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/commits/0123456789abcdef0123456789abcdef01234567",
+      "type": "Commit"
+    },
+    "reason": "comment",
+    "unread": false,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/2005",
+    "subscription_url": "https://api.github.com/notifications/threads/2005/subscription"
+  },
+  {
+    "id": "2006",
+    "repository": {
+      "id": 102006,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Critical severity vulnerability found in a dependency",
+      "url": null,
+      "latest_comment_url": null,
+      "type": "RepositoryVulnerabilityAlert"
+    },
+    "reason": "security_alert",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/2006",
+    "subscription_url": "https://api.github.com/notifications/threads/2006/subscription"
+  },
+  {
+    "id": "2007",
+    "repository": {
+      "id": 102007,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Dependabot alerts",
+      "url": null,
+      "latest_comment_url": null,
+      "type": "RepositoryDependabotAlertsThread"
+    },
+    "reason": "security_alert",
+    "unread": false,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/2007",
+    "subscription_url": "https://api.github.com/notifications/threads/2007/subscription"
+  }
+]

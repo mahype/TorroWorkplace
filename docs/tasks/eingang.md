@@ -1511,7 +1511,7 @@ Schnittstellen nach CLAUDE.md. Ohne Freigabe startet nur, was oben „sofort mö
   Merkmalswerte; Datenregel für Nextcloud und Talk; Schema 7 → 8 ohne Verlust. `torro-api-review` ohne hohen Befund.
 
 ### E5.3 GitHub: Benachrichtigungen lesen
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `notifications::Notifications` mit `list`/`done`/`read`, `Listing`, `Thread`, `ThreadId`, `Reason`, `SubjectKind`, `RunResult`, `NotificationsError`; Nummer nur von der REST-Adresse des Tokens, `next`-Seiten nur dort; Fine-grained-Tokens laut Doku nicht unterstützt → 403 = `NeedsScope`)
 - **Modell:** Opus · **Braucht:** – (sofort möglich) · **Dateien:** neu `crates/torro-pim-github/src/notifications.rs`,
   `crates/torro-pim-github/src/lib.rs` (nur `pub mod` und Doc-Kommentar), `crates/torro-pim-github/Cargo.toml`
   (Dev-Abhängigkeit `httpmock`, `tokio`), neu `crates/torro-pim-github/tests/fixtures/notifications/*.json`
