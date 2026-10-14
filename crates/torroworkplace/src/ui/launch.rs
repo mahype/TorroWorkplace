@@ -15,7 +15,9 @@ use torro_core::ai::{AiError, AiProvider};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
-use torro_ipc::api::{Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection};
+use torro_ipc::api::{
+    ASSISTANT_CLIENT, Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection,
+};
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
     IssuedKey, Key, MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
@@ -103,10 +105,21 @@ pub enum Open {
     InboxEmpty,
     /// General › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
     Design,
+    /// The Assistant page with the demo's assistant (task C.6): rights of its own, its engines and
+    /// how long it keeps conversations.
+    Assistant,
+    /// The Assistant page before the assistant has a client: the first start with what it is
+    /// offered (`Rights::assistant`).
+    AssistantFirstStart,
+    /// The Assistant page with the assistant reading only calendars, tasks and the inbox, as its
+    /// first start offers.
+    AssistantReadOnly,
+    /// The "Turn off the assistant?" confirmation.
+    AssistantTurnOff,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 51] = [
+    pub const ALL: [(&'static str, Open); 55] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -158,13 +171,19 @@ impl Open {
         ("inbox", Open::Inbox),
         ("inbox-empty", Open::InboxEmpty),
         ("design", Open::Design),
+        ("assistant", Open::Assistant),
+        ("assistant-first-start", Open::AssistantFirstStart),
+        ("assistant-read-only", Open::AssistantReadOnly),
+        ("assistant-turn-off", Open::AssistantTurnOff),
     ];
 }
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|workspaces|apps|agents|approvals|inbox|general`: the page to start on.
-///   The states of `--open` that belong to a page choose that page themselves.
+/// - `--section overview|accounts|workspaces|apps|assistant|agents|approvals|inbox|general`: the page
+///   to start on. The states of `--open` that belong to a page choose that page themselves. Other
+///   programs open a page this way (`torroworkplace ui --section assistant` from the assistant's
+///   chat when it may not use something, task C.6).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
 ///   of the service. Nothing is sent and nothing is stored; [`demo_answer`] answers the few
 ///   requests whose answer is a state of its own.
@@ -336,7 +355,7 @@ pub fn demo_designs() -> Vec<Pack> {
 /// The sample content of `--demo`: a healthy Nextcloud account with a shared read-only calendar,
 /// a second one that cannot reach its server (so the problem rows show), a GitHub account, three
 /// templates, the suite's apps, settings with one list hidden, approvals: two open, one done,
-/// one failed, one denied, one expired ([`demo_approvals`]), and four clients with the calendars,
+/// one failed, one denied, one expired ([`demo_approvals`]), and five clients with the calendars,
 /// lists (one a GitHub filter list) and inbox sources their selections choose from
 /// ([`demo_clients`]), and inbox rules: two remembered lanes and the muted source of the sources
 /// list ([`demo_rules`]). Times are relative to now.
@@ -629,7 +648,9 @@ fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
 
 /// The demo's clients: Claude Code with the default template, Codex with rights of its own
 /// (fewer areas, an admin switch, chosen calendars, repositories and sources, asking before every
-/// change), the hooks of Claude Code and a script that has never been used.
+/// change), the hooks of Claude Code, a script that has never been used, and the assistant
+/// (task C.6): more than its first start offered – writing calendars and tasks, reading one mail
+/// account – but no sending.
 fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<ClientInfo> {
     let client = |id: &str, name: &str, kind: &str, rights: Rights, last_used: Option<DateTime<Utc>>| ClientInfo {
         id: id.into(),
@@ -666,6 +687,12 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         outbound: Outbound::Never,
         confirm: Confirm::Never,
     };
+    let mut assistant = Rights::assistant();
+    set(&mut assistant, Area::Calendar, Level::Write, false);
+    set(&mut assistant, Area::Tasks, Level::Write, false);
+    set(&mut assistant, Area::Mail, Level::Read, false);
+    set(&mut assistant, Area::Workspaces, Level::Read, false);
+    assistant.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into()]);
     vec![
         client(
             "3fa9c1d2",
@@ -677,6 +704,7 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         client("7b2e4f10", "Codex", "codex", codex, Some(now - Duration::days(2))),
         client("c41d9e06", "Claude Code hooks", HOOK_CLIENT, Rights::hook(), Some(now - Duration::minutes(1))),
         client("e8a07b35", "backup", "script", backup, None),
+        client("a51c3e88", "Assistant", ASSISTANT_CLIENT, assistant, Some(now - Duration::hours(3))),
     ]
 }
 
@@ -1089,8 +1117,9 @@ mod tests {
         }
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
-            err.to_string()
-                .ends_with("valid values: overview, accounts, workspaces, apps, agents, approvals, inbox, general"),
+            err.to_string().ends_with(
+                "valid values: overview, accounts, workspaces, apps, assistant, agents, approvals, inbox, general"
+            ),
             "{err}"
         );
         let err = Launch::parse(&args(&["--appearance", "sepia"])).expect_err("unknown appearance");
