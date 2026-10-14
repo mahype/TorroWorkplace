@@ -86,11 +86,14 @@ pub fn navigation(url: &str) -> Navigation {
 }
 
 /// The part a `torro-cid` request asks for: the path of its address is `/<n>`, `<n>` the index of
-/// the part in `attachments`. `None` (answer 404) for any other path, an index past the end, or a
-/// part whose declared type is not one of [`PICTURE_TYPES`].
+/// the part in `attachments`. `None` (answer 404) for any other path, an index past the end, a
+/// part without a `content_id` (a plain attachment, which a page must not make the core fetch) or
+/// one whose declared type is not one of [`PICTURE_TYPES`].
 pub fn cid_part<'a>(path: &str, attachments: &'a [AttachmentInfo]) -> Option<&'a AttachmentInfo> {
     let index: usize = path.strip_prefix('/')?.parse().ok()?;
-    attachments.get(index).filter(|part| PICTURE_TYPES.contains(&part.content_type.as_str()))
+    attachments
+        .get(index)
+        .filter(|part| part.content_id.is_some() && PICTURE_TYPES.contains(&part.content_type.as_str()))
 }
 
 /// The type a picture is served as, told by its first bytes: one of [`PICTURE_TYPES`], or `None`
@@ -121,6 +124,14 @@ pub fn rewrite_cids(html: &str, attachments: &[AttachmentInfo]) -> String {
     let mut out = String::with_capacity(html.len());
     let mut rest = html;
     while let Some(start) = find_img(rest) {
+        // An `<img` inside a style element is CSS text, not a tag: copy the element through its end
+        // unchanged, so an unbalanced quote there cannot swallow the mail.
+        if let Some(style) = find_style(&rest[..start]) {
+            let end = style_end(&rest[style..]).map_or(rest.len(), |length| style + length);
+            out.push_str(&rest[..end]);
+            rest = &rest[end..];
+            continue;
+        }
         out.push_str(&rest[..start]);
         let tag_and_after = &rest[start..];
         let end = tag_end(tag_and_after);
@@ -129,6 +140,20 @@ pub fn rewrite_cids(html: &str, attachments: &[AttachmentInfo]) -> String {
     }
     out.push_str(rest);
     out
+}
+
+/// Where the first `<style` element in `text` starts, ignoring case.
+fn find_style(text: &str) -> Option<usize> {
+    text.to_ascii_lowercase().find("<style")
+}
+
+/// The length of the style element at the start of `text`, through its `</style>`; `None` when it
+/// never ends.
+fn style_end(text: &str) -> Option<usize> {
+    const CLOSE: &str = "</style";
+    let lower = text.to_ascii_lowercase();
+    let close = lower.find(CLOSE)?;
+    Some(close + tag_end(&text[close..]))
 }
 
 /// Where the next `<img` tag starts (not `<imgx`).
@@ -787,6 +812,27 @@ mod tests {
         for kind in PICTURE_TYPES {
             assert!(cid_part("/0", &[part(kind, Some("x"), true)]).is_some(), "{kind}");
         }
+    }
+
+    /// A picture attached without a `content_id` is a plain attachment, never fetched for the page.
+    #[test]
+    fn attachments_without_a_content_id_stay_out() {
+        assert!(cid_part("/0", &[part("image/png", None, false)]).is_none());
+        assert!(cid_part("/0", &[part("image/png", Some("x"), false)]).is_some(), "a cid part, even if attached");
+    }
+
+    /// An `<img` written inside a style element is CSS text: it is left as it is, and an open quote
+    /// there does not swallow the mail after it.
+    #[test]
+    fn style_elements_are_not_rewritten() {
+        let parts = vec![part("image/png", Some("logo"), true)];
+        let html = "<STYLE>p::after{content:'<img src=\"cid:logo'}</style><p>Kept</p><img src=\"cid:logo\">";
+        assert_eq!(
+            rewrite_cids(html, &parts),
+            format!("<STYLE>p::after{{content:'<img src=\"cid:logo'}}</style><p>Kept</p><img src=\"{CID_BASE}0\">")
+        );
+        let open = "<style>a{}<img src=\"cid:logo\">";
+        assert_eq!(rewrite_cids(open, &parts), open, "an unclosed style element stays as it is");
     }
 
     /// Acceptance: an SVG (or a page) that a part only claims to be a picture is not served.
