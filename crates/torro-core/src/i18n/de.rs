@@ -630,6 +630,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Ein unbekanntes Thema des ntfy-Kontos {account} abbestellen",
     ),
     ("Change a topic of the ntfy account {account}", "Ein Thema des ntfy-Kontos {account} ändern"),
+    // ntfy subscriptions (E5.13)
+    ("More from {topic}", "Mehr aus {topic}"),
     // Icons, columns and traits of the new sources (E5.15)
     ("Direct message", "Direktnachricht"),
     ("Mention", "Erwähnung"),
