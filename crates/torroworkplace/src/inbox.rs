@@ -161,8 +161,8 @@ use torro_core::paths::AppPaths;
 use torro_inbox::item::{Facet, FacetKey, HideScope, ItemTask, MuteEffect, MuteScope, Muted, SourceHealth, TaskDue};
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, MutedEntry, Poster};
 use torro_inbox::{
-    Action, AgentInfo, AgentKind, Hidden, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo,
-    SourceKind, SourceRef, State, StateFilter,
+    Action, AgentInfo, AgentKind, Hidden, Item, ItemFilter, Kind, Lane, LaneReason, Link, Rule, RuleEffect, Sender,
+    SourceInfo, SourceKind, SourceRef, State, StateFilter,
 };
 use torro_ipc::api::{self, Access, Area, HOOK_CLIENT, InboxForbidden, Rights, Selection};
 use torro_ipc::{
@@ -2035,6 +2035,7 @@ fn post(
         facets: Vec::new(),
         task: None,
         invite: None,
+        reason: None,
     };
     // Security rule 6: only what is safe to open is kept (web pages, apps of the suite, the
     // window of a hook's agent); anything else is dropped, not refused.
@@ -2056,6 +2057,7 @@ fn post(
     // "Info" moves it there; no popup is the popups' to heed (`Inbox::no_popup`).
     if let Some((_, MuteEffect::Info)) = muting {
         rules::set_lane(&mut incoming, Lane::Info);
+        incoming.reason = Some(LaneReason::Muted);
     }
     match existing {
         Some(existing) => update_item(&tx, &rules::merge(existing, incoming.clone()))?,
@@ -3080,6 +3082,7 @@ fn finished_task_entry(
         facets: Vec::new(),
         task: Some(task),
         invite: None,
+        reason: None,
     }
 }
 
@@ -3122,6 +3125,7 @@ impl Matter {
             facets: Vec::new(),
             task: None,
             invite: None,
+            reason: None,
         }
     }
 }
@@ -3270,9 +3274,12 @@ pub struct NewMail {
     pub snippet: String,
     /// Who sent it, with the address rules remember senders by; `None` without a `From:`.
     pub from: Option<Sender>,
-    /// Sent by a machine or to a list (`List-Id`, `List-Unsubscribe`, `Precedence: bulk`,
-    /// `Auto-Submitted`): "Info", unless the person keeps the sender elsewhere.
-    pub bulk: bool,
+    /// Sent by a machine or to a list, and the header that says so (`List-Id`, `Precedence: bulk`,
+    /// `Auto-Submitted`; `crate::mail::inbox_feed::bulk_reason`): "Info" with this as the entry's
+    /// [`Item::reason`], unless the person keeps the sender elsewhere. `None` for mail a person
+    /// wrote. Only [`LaneReason::List`], [`LaneReason::Bulk`] and [`LaneReason::Automated`] belong
+    /// here.
+    pub bulk: Option<LaneReason>,
     /// The mailing list it came through (`List-Id`), a trait to mute it by (task E8.6a); `None`
     /// without one.
     pub list: Option<String>,
@@ -3394,8 +3401,14 @@ fn file_mail(
         .filter(|rule| rule.source == source && rule.sender.is_some() && rule.sender == sender)
         .find(|rule| remembered_lane(rule).is_some());
     let remembered = remembering.and_then(remembered_lane);
-    let lane = rules::mail_lane(mail.bulk, remembered);
+    let lane = rules::mail_lane(mail.bulk.is_some(), remembered);
     let (lane, urgent) = rules::placement(Kind::Message, Some(lane));
+    // Why it stands there (issue #128): the person's lane for the sender, else the bulk header.
+    let reason = match remembered {
+        Some(_) => Some(LaneReason::Sender),
+        None if lane == Lane::Info => mail.bulk,
+        None => None,
+    };
     let existing = read_owned(&tx, &mail.account, &mail.thread)?;
     let id = match &existing {
         Some(existing) => existing.id.clone(),
@@ -3427,10 +3440,11 @@ fn file_mail(
         facets: Vec::new(),
         task: None,
         invite: None,
+        reason,
     };
     // This mail's traits decide whether a muted trait holds (task E8.6a): hidden, it is not filed
     // and not kept as filed, like a hidden sender; "Info" files it there.
-    incoming.facets = rules::facets(&incoming, mail.list.as_deref(), mail.bulk);
+    incoming.facets = rules::facets(&incoming, mail.list.as_deref(), mail.bulk.is_some());
     // A muted account, or a sender or domain hidden (task E3.10), or a trait hidden: not filed. The
     // message is not kept as filed either, so lifting the rule lets a catch-up file it while it is
     // still unread.
@@ -3463,6 +3477,7 @@ fn file_mail(
     }
     if let Some((_, MuteEffect::Info)) = muting {
         rules::set_lane(&mut incoming, Lane::Info);
+        incoming.reason = Some(LaneReason::Muted);
     }
     if notify == Notify::ForMeOnly && incoming.lane != Lane::ForMe {
         return Ok(None);
@@ -3625,6 +3640,7 @@ fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Resu
         facets: rules::remote_facets(remote.source.kind, remote.facets.clone()),
         task: None,
         invite: None,
+        reason: None,
     };
     // Security rule 6: only a web page.
     if !rules::may_open(&incoming, is_app_of_the_suite) {
@@ -3650,6 +3666,7 @@ fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Resu
     }
     if let Some((_, MuteEffect::Info)) = muting {
         rules::set_lane(&mut incoming, Lane::Info);
+        incoming.reason = Some(LaneReason::Muted);
     }
     let counted = incoming.clone();
     let stored = match existing {
@@ -4212,6 +4229,7 @@ pub(crate) mod tests {
             facets: Vec::new(),
             task: None,
             invite: None,
+            reason: None,
         }
     }
 
@@ -5589,7 +5607,7 @@ pub(crate) mod tests {
             subject: subject.into(),
             snippet: format!("Text of {subject}"),
             from: Some(Sender { name: "Bernd".into(), address: Some(from.into()) }),
-            bulk,
+            bulk: bulk.then_some(LaneReason::Bulk),
             list: None,
             date,
             github: None,
@@ -5684,17 +5702,26 @@ pub(crate) mod tests {
         let inbox = inbox_in(dir.path());
         let news = |message: &str| mail(message, message, "Weekly news", "News@Shop.example", true, at(8, 0));
         let first = filed(&inbox, &news("m:1"), at(9, 0));
-        assert_eq!(item(get(&inbox, &first, None)).lane, Lane::Info);
+        let filed_first = item(get(&inbox, &first, None));
+        assert_eq!((filed_first.lane, filed_first.reason), (Lane::Info, Some(LaneReason::Bulk)), "says why");
+        let offer = filed(&inbox, &personal("m:8", "t:8", at(8, 0)), at(9, 0));
+        assert_eq!(item(get(&inbox, &offer, None)).reason, None, "a person's mail needs no reason");
 
         // Moving it with "remember" keeps the lane for its sender, not for the whole account.
         let moved = Request::SetItemLane { id: first.clone(), lane: Lane::ForMe, remember: true };
-        assert_eq!(item(inbox.handle(moved, None, at(9, 5))).lane, Lane::ForMe);
+        let moved = item(inbox.handle(moved, None, at(9, 5)));
+        assert_eq!((moved.lane, moved.reason), (Lane::ForMe, None), "moved by hand: the headers no longer say why");
         let rules = rules_of(&inbox);
         assert_eq!(rules.len(), 1);
         assert_eq!((rules[0].source.key().as_str(), rules[0].sender.as_deref()), (ANNA, Some("news@shop.example")));
         assert_eq!(rules[0].effect, RuleEffect::Lane { lane: Lane::ForMe });
         let second = filed(&inbox, &news("m:2"), at(10, 0));
-        assert_eq!(item(get(&inbox, &second, None)).lane, Lane::ForMe, "the sender's lane beats the headers");
+        let kept = item(get(&inbox, &second, None));
+        assert_eq!(
+            (kept.lane, kept.reason),
+            (Lane::ForMe, Some(LaneReason::Sender)),
+            "the sender's lane beats the headers"
+        );
         let invoice = filed(&inbox, &mail("m:9", "t:9", "Invoice", "billing@other.example", true, at(8, 0)), at(10, 0));
         assert_eq!(item(get(&inbox, &invoice, None)).lane, Lane::Info, "other senders keep theirs");
 
@@ -6856,9 +6883,10 @@ pub(crate) mod tests {
         // "Info" for the domain: new mail from it lands in Info, the entry there already moves.
         let info = muted(inbox.handle(mute(&person, by(FacetKey::Domain), None, MuteEffect::Info), None, at(8, 2)));
         assert_eq!(info.moved, std::slice::from_ref(&person));
-        assert_eq!(entry(&inbox, &person).lane, Lane::Info);
+        assert_eq!((entry(&inbox, &person).lane, entry(&inbox, &person).reason), (Lane::Info, Some(LaneReason::Muted)));
         let colleague = mail("m:2", "t:2", "Lunch?", "carla@example.com", false, at(8, 3));
-        assert_eq!(entry(&inbox, &filed(&inbox, &colleague, at(8, 4))).lane, Lane::Info, "same domain");
+        let colleague = entry(&inbox, &filed(&inbox, &colleague, at(8, 4)));
+        assert_eq!((colleague.lane, colleague.reason), (Lane::Info, Some(LaneReason::Muted)), "same domain");
         // "Info" files nothing when the account wants only mail for the person.
         let only_for_me = mail("m:3", "t:3", "Dinner?", "dora@example.com", false, at(8, 5));
         assert_eq!(inbox.file_mail(&only_for_me, Notify::ForMeOnly, at(8, 6)).expect("filed"), None);

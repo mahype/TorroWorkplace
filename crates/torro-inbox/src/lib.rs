@@ -14,8 +14,8 @@ pub mod rules;
 pub mod source;
 
 pub use item::{
-    Action, AgentInfo, AgentKind, Hidden, HideScope, Item, Kind, Lane, Link, ParseSourceError, Rule, RuleEffect,
-    Sender, SourceInfo, SourceKind, SourceRef, State,
+    Action, AgentInfo, AgentKind, Hidden, HideScope, Item, Kind, Lane, LaneReason, Link, ParseSourceError, Rule,
+    RuleEffect, Sender, SourceInfo, SourceKind, SourceRef, State,
 };
 pub use rules::Poster;
 pub use source::{InboxError, InboxSource, ItemFilter, StateFilter};

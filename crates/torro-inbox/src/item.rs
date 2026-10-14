@@ -87,6 +87,49 @@ pub struct Item {
     /// foreign text like `title`. Answer it with `mail.respond_to_invitation` for the linked message.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<torro_mail::Invite>,
+    /// Why the entry stands in its lane when a rule rather than its kind put it there (issue #128):
+    /// for mail the header that made it bulk mail or a lane kept for its sender, for any entry a
+    /// muted trait that sends it to "Info". Set by the core when the report is filed, never taken
+    /// from a poster; `None` for mail sorted "For me" by default, for entries the person moved by
+    /// hand ([`crate::rules::set_lane`]), for entries placed by their kind or their source's rule
+    /// and for entries filed before. The app shows it beside the lane, so a mail missing under
+    /// "For me" says why.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<LaneReason>,
+}
+
+/// Why an entry stands in its lane ([`Item::reason`], issue #128). The first three name the
+/// header that made the mail bulk mail and sent it to [`Lane::Info`]
+/// (`crate::rules::mail_lane`); `List-Unsubscribe` alone is none of them, since services put it on
+/// their personal mail too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LaneReason {
+    /// Sent through a mailing list: it has `List-Id`.
+    List,
+    /// Marked as bulk mail: `Precedence: bulk`, `list` or `junk`.
+    Bulk,
+    /// Sent by a machine: `Auto-Submitted` other than `no`.
+    Automated,
+    /// The person keeps this sender's mail in this lane (moved one with "remember", "Always to
+    /// Info").
+    Sender,
+    /// A muted trait of the entry sends it to "Info" (`inbox.mute_item` with the effect `info`).
+    Muted,
+}
+
+impl LaneReason {
+    /// The reason in a few words for the app, naming the header where there is one
+    /// ("Mailing list (List-Id)"). Header names stay as they are in every language.
+    pub fn label(self) -> &'static str {
+        match self {
+            LaneReason::List => tr("Mailing list (List-Id)"),
+            LaneReason::Bulk => tr("Bulk mail (Precedence)"),
+            LaneReason::Automated => tr("Sent automatically (Auto-Submitted)"),
+            LaneReason::Sender => tr("Kept for this sender"),
+            LaneReason::Muted => tr("Muted to Info"),
+        }
+    }
 }
 
 /// The task an entry turned into ([`Item::task`], task E8.7a), as the core's task cache holds it

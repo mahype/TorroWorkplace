@@ -1361,6 +1361,22 @@ E8.9   unabhängig (torro-wm, core.rs)
   Server, in `inbox.list_items` (SQL) und `ItemFilter::apply`; MCP baut `order` mit; `ui.json` je Fenster; App dreht
   Ordner, „Load more“ und Eintragslisten und verwirft Seiten der alten Reihenfolge.
 
+### E8.16 Mail fehlt unter „For me“: Grund am Eintrag (Issue #128)
+- [x] erledigt (2026-10-14: Ursache war `List-Unsubscribe` allein – die Mail eines Creators an Unterstützer kam ohne
+  `List-Id`, `Precedence` und `Auto-Submitted`, galt als Massenmail und lag in „Info“, bis sie anderswo gelesen und
+  der Eintrag erledigt war. `inbox_feed::bulk_reason` ersetzt `is_bulk`: `List-Unsubscribe` allein zählt nicht mehr;
+  `NewMail.bulk` trägt den Grund. Neu `Item.reason` (`LaneReason`: `list`, `bulk`, `automated`, `sender`, `muted`),
+  vom Kern beim Ablegen gesetzt, bei Verschieben von Hand gelöscht; Paneel und Leser zeigen „Info · Mailing list
+  (List-Id)“. Fixture `tests/fixtures/mail/creator-post.eml`)
+- **Modell:** Opus · **Braucht:** E4.1 · **Dateien:** `crates/torro-inbox/src/{item,rules,demo,lib}.rs`,
+  `crates/torroworkplace/src/{inbox,mail/inbox_feed}.rs` (Literale in weiteren Dateien, die der Compiler erzwingt),
+  `crates/torroinbox/src/{detail,mail}.rs`, `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md`
+- **Oberfläche:** Zeile „Lane“ im Paneel und eine leise Zeile unter dem Absender im Leser des Mail-Fensters.
+  **API:** neues optionales Feld `reason` an `Item` in `inbox.get_item`/`inbox.list_items` (verträglich, kein neuer
+  Befehl). **MCP:** `inbox_get_item`, `inbox_list_items` liefern es mit.
+- **Abnahme:** Fixture mit den Kopfzeilen der Mail landet „for me“ (rein und über den Feed); Grund für Liste,
+  gemerkten Absender, Stummschaltung; von Hand verschoben ohne Grund; beide Sprachen.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,

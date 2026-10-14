@@ -21,8 +21,8 @@ use torro_core::i18n::{tr, trf};
 use torro_mail::Order;
 
 use crate::item::{
-    AgentKind, Facet, FacetKey, HideScope, Item, Kind, Lane, Link, MuteEffect, MuteOption, MuteScope, Rule, RuleEffect,
-    Sender, SourceKind, SourceRef, State,
+    AgentKind, Facet, FacetKey, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect, MuteOption, MuteScope, Rule,
+    RuleEffect, Sender, SourceKind, SourceRef, State,
 };
 
 /// Days a done entry is kept before [`expired`] says it goes.
@@ -58,8 +58,8 @@ pub fn placement(kind: Kind, wanted: Option<Lane>) -> (Lane, bool) {
 /// The lane of a new mail (task E4.1, `docs/eingang.md`, "Sortieren"): a lane the person
 /// remembered for its sender (`remembered`, from moving one of its mails with "remember") first,
 /// since the person decided it; else [`Lane::Info`] for mail sent by machines or to lists
-/// (`bulk`: `List-Id`, `List-Unsubscribe`, `Precedence: bulk`, `Auto-Submitted`), else
-/// [`Lane::ForMe`].
+/// (`bulk`: `List-Id`, `Precedence: bulk`, `Auto-Submitted`; `List-Unsubscribe` alone is no sign,
+/// issue #128), else [`Lane::ForMe`].
 pub fn mail_lane(bulk: bool, remembered: Option<Lane>) -> Lane {
     remembered.unwrap_or(if bulk { Lane::Info } else { Lane::ForMe })
 }
@@ -573,6 +573,7 @@ pub fn mute_entry(item: &mut Item, effect: MuteEffect, now: DateTime<Utc>) -> Op
         }
         MuteEffect::Info if !done && item.lane == Lane::ForMe => {
             set_lane(item, Lane::Info);
+            item.reason = Some(LaneReason::Muted);
             Some(MutedEntry::Moved)
         }
         MuteEffect::Hide | MuteEffect::Info | MuteEffect::NoPopup => None,
@@ -697,10 +698,13 @@ pub fn snooze(item: &mut Item, until: Option<DateTime<Utc>>) {
 }
 
 /// Moves the entry to `lane`. It is urgent only in [`Lane::ForMe`] and only if its kind is
-/// ([`placement`]): an entry the user moved to "Info" does not interrupt any more.
+/// ([`placement`]): an entry the user moved to "Info" does not interrupt any more. The reason it
+/// stood where it was ([`Item::reason`]) no longer holds and is cleared; a caller moving it by a
+/// rule sets the rule's reason after.
 pub fn set_lane(item: &mut Item, lane: Lane) {
     item.lane = lane;
     item.urgent = lane == Lane::ForMe && placement(item.kind, None).1;
+    item.reason = None;
 }
 
 /// Wakes the entry if it is snoozed until `now` or earlier: [`State::New`] with `updated` at the
@@ -781,6 +785,7 @@ mod tests {
             facets: Vec::new(),
             task: None,
             invite: None,
+            reason: None,
         }
     }
 

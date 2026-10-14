@@ -2397,6 +2397,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("New mail that needs you shows up here.", "Neue Mails, die dich brauchen, erscheinen hier."),
     ("No mail for you.", "Keine Mails für dich."),
     ("Task", "Aufgabe"),
+    // Why a mail stands in its lane (issue #128)
+    ("{lane} · {reason}", "{lane} · {reason}"),
+    ("Mailing list (List-Id)", "Mailingliste (List-Id)"),
+    ("Bulk mail (Precedence)", "Massenmail (Precedence)"),
+    ("Sent automatically (Auto-Submitted)", "Automatisch gesendet (Auto-Submitted)"),
+    ("Kept for this sender", "Für diesen Absender gemerkt"),
+    ("Muted to Info", "Stummgeschaltet nach Info"),
     // Hide from the inbox in steps (E3.10)
     ("Always to Info", "Immer nach Info"),
     ("Couldn't hide the sender.", "Der Absender ließ sich nicht ausblenden."),

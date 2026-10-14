@@ -4,7 +4,8 @@
 //! Head: the source and the view as path. Title: the entry's title, wrapping; for a coding agent's
 //! session with a name (task E2.6) the name, with the entry's title below it in `text_2`
 //! ([`heading`]). Body: "Properties"
-//! (status as dot and word – "Urgent" for an ntfy alert –, lane, source, for a service what its
+//! (status as dot and word – "Urgent" for an ntfy alert –, lane with why a rule put the entry there
+//! – [`lane_text`], issue #128 –, source, for a service what its
 //! traits say – repository and reason, app and person, topic and priority, task E5.15 –, time with
 //! how long ago, merged reports), for coding
 //! agents "Agent" (agent, project, branch and – for a hook's entry – "Go to window", E2.4), the
@@ -175,7 +176,7 @@ fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message
     let dot = container(widgets::status_dot(status)).center_x(icon::SIZE);
     let mut rows = vec![
         widgets::prop_row(None, row![dot, one_line_text(word)].spacing(space::s()).align_y(Alignment::Center), None),
-        value_row(app::lane_icon(item.lane), lane_label(item.lane).to_owned()),
+        value_row(app::lane_icon(item.lane), lane_text(item)),
         value_row(list::source_icon(&item.source), item.source.label()),
     ];
     rows.extend(list::facet_words(item).into_iter().map(|(mark, word)| value_row(mark, word)));
@@ -310,6 +311,17 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
         buttons.push(widgets::anchored(&footer.anchors.hide, hide));
     }
     buttons
+}
+
+/// The entry's lane and, when a rule put it there, why (issue #128): "Info · Mailing list
+/// (List-Id)". A mail missing under "For me" says so wherever it shows: the panel's lane row and
+/// the reader of the mail window (`mail::reader`).
+pub(crate) fn lane_text(item: &Item) -> String {
+    let lane = lane_label(item.lane);
+    match item.reason {
+        Some(reason) => trf("{lane} · {reason}", &[("lane", &lane), ("reason", &reason.label())]),
+        None => lane.to_owned(),
+    }
 }
 
 /// "For me" or "Info".
@@ -502,6 +514,17 @@ mod tests {
     fn commands_keep_their_dashes_together() {
         assert_eq!(unbroken("cargo test --workspace"), "cargo test \u{2011}\u{2011}workspace");
         assert_eq!(unbroken("no dashes"), "no dashes");
+    }
+
+    /// Issue #128: an entry a rule put in its lane says why beside the lane; moved by hand, only
+    /// the lane.
+    #[test]
+    fn the_lane_says_why_a_rule_put_the_entry_there() {
+        let plain = sample("demo-6");
+        assert_eq!(lane_text(&plain), lane_label(plain.lane));
+        let listed = Item { lane: Lane::Info, reason: Some(torro_inbox::LaneReason::List), ..plain };
+        let reason = torro_inbox::LaneReason::List.label();
+        assert_eq!(lane_text(&listed), trf("{lane} · {reason}", &[("lane", &tr("Info")), ("reason", &reason)]));
     }
 
     #[test]

@@ -1454,7 +1454,8 @@ pub struct ReaderEntry<'a> {
 
 /// The reader of the wide mail window (task E8.3), beside the list: the mail's actions at the top
 /// ([`reader_actions`]), the subject (`HEADLINE`, in compact `TITLE`), the sender with the large
-/// avatar, to whom and when, then the text – in the reading level ([`Reading::read`]) – with its
+/// avatar, to whom and when – and for an entry a rule put in its lane why (issue #128) –, then the
+/// text – in the reading level ([`Reading::read`]) – with its
 /// notes and the attachments. At most [`size::content_max()`] wide, with the page's padding,
 /// scrolling. `entry` is the mail entry the mail belongs to, `None` for a folder's message;
 /// `anchors` are where the menus of its buttons open (the app's window).
@@ -1495,7 +1496,15 @@ fn reader_content<'a>(
     body = body.push(reader_actions(reading, summary, entry, anchors, comfortable, room));
     let level = if comfortable { typo::headline() } else { typo::title() };
     body = body.push(typo::text(level, subject(summary)).style(theme::text).wrapping(Wrapping::WordOrGlyph));
-    body = body.push(reader_sender(reading, summary, comfortable, room));
+    let sender = reader_sender(reading, summary, comfortable, room);
+    // Why a rule put the mail's entry in its lane (issue #128), quietly right under who sent it.
+    match entry.map(|entry| entry.item).filter(|item| item.reason.is_some()) {
+        Some(item) => {
+            let why = typo::text(typo::meta(), detail::lane_text(item)).style(theme::text_3);
+            body = body.push(column![sender, why.wrapping(Wrapping::WordOrGlyph)].spacing(space::s()));
+        }
+        None => body = body.push(sender),
+    }
     // What the mail invites to, with its answers (task E8.3b): over the task and the text.
     if let Some(invite) = &summary.invite {
         body =

@@ -3424,6 +3424,7 @@ pub(crate) mod tests {
             facets: Vec::new(),
             task: None,
             invite: None,
+            reason: None,
         }
     }
 

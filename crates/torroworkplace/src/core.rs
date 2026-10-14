@@ -7608,6 +7608,7 @@ mod tests {
             facets: Vec::new(),
             task: None,
             invite: None,
+            reason: None,
         };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).map(torro_pim::EventTime::Date);
         let task = task_from_entry(&item, "work".into(), Some("  Fix the deploy ".into()), due, None);
@@ -8039,6 +8040,7 @@ mod tests {
             facets: Vec::new(),
             task: None,
             invite: None,
+            reason: None,
         };
         let (start, end) =
             (torro_pim::EventTime::DateTime(at), torro_pim::EventTime::DateTime(at + chrono::TimeDelta::hours(1)));
@@ -8370,7 +8372,7 @@ mod tests {
             subject: "Weekly news".into(),
             snippet: "Autumn sale".into(),
             from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
-            bulk: true,
+            bulk: Some(torro_inbox::LaneReason::Bulk),
             list: None,
             github: None,
             date: Utc::now(),
@@ -8429,7 +8431,7 @@ mod tests {
             subject: "Lunch?".into(),
             snippet: "Tuesday?".into(),
             from: Some(torro_inbox::Sender { name: "Bernd".into(), address: Some("bernd@example.com".into()) }),
-            bulk: false,
+            bulk: None,
             list: None,
             github: None,
             date: Utc::now(),
@@ -8461,7 +8463,7 @@ mod tests {
             subject: "Weekly news".into(),
             snippet: "Autumn sale".into(),
             from: Some(torro_inbox::Sender { name: "Shop".into(), address: Some("news@shop.example".into()) }),
-            bulk: true,
+            bulk: Some(torro_inbox::LaneReason::Bulk),
             list: None,
             github: None,
             date: Utc::now(),
@@ -10089,7 +10091,7 @@ mod tests {
             subject: "Offer".into(),
             snippet: String::new(),
             from: None,
-            bulk: false,
+            bulk: None,
             list: None,
             github: None,
             date: Utc::now(),
@@ -12857,7 +12859,7 @@ mod tests {
                 subject: "Planning".into(),
                 snippet: "Join us".into(),
                 from: None,
-                bulk: false,
+                bulk: None,
                 list: None,
                 github: None,
                 date: Utc::now(),
