@@ -399,6 +399,8 @@ impl Answering {
                 person: None,
                 areas: &areas,
                 without: &self.job.without,
+                rights: rights.as_ref(),
+                withheld: &[],
                 engine: &self.job.engine,
                 model: &model,
                 place: access.place,
@@ -525,6 +527,18 @@ impl Answering {
                         (tools::for_model(area, value), tools::summary(&response, false), error)
                     }
                 }
+            }
+            // Its own access (issue #134): the core knows the client's rights and how the request
+            // came; the areas switched off here are this loop's, which checks them before the core.
+            Outcome::Answered(response) if matches!(*response, Response::MyAccess { .. }) => {
+                let response = match *response {
+                    Response::MyAccess { access } => {
+                        Response::MyAccess { access: access.switching_off(&self.job.without) }
+                    }
+                    other => other,
+                };
+                let value = serde_json::to_value(&response).unwrap_or(Value::Null);
+                (tools::for_model(area, value), tools::summary(&response, false), None)
             }
             Outcome::Answered(response) => {
                 // What a model elsewhere could not read is mail content: from now on a note a
@@ -1258,10 +1272,16 @@ pub(crate) mod tests {
         assert!(!system.contains("calm butler") && !system.contains("Anna"), "nothing of the assistant's: {system}");
         let offered: Vec<&str> = asked[0].tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(offered.contains(&"calendar_list_calendars"), "{offered:?}");
+        // Of `assistant` only its own access (issue #134).
+        let own = |tool: &&str| *tool == "assistant_my_access";
         assert!(
-            offered.iter().all(|tool| !tool.starts_with("assistant_") && !tool.starts_with("bots_")),
+            offered
+                .iter()
+                .filter(|tool| !own(tool))
+                .all(|tool| !tool.starts_with("assistant_") && !tool.starts_with("bots_")),
             "{offered:?}"
         );
+        assert!(offered.contains(&"assistant_my_access"), "{offered:?}");
         assert_eq!(*host.actors.lock().expect("lock"), [Actor::Bot("9f8e7d6c".into())], "as the bot's client");
     }
 

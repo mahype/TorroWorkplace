@@ -7,8 +7,9 @@
 //!   never `system`, `clients` or `approvals`, which have no level), not switched off in this
 //!   conversation (`without`), never the area `assistant` (no loop) but its memory
 //!   (`torro_ipc::api::own_memory`, task C.10: `assistant_remember` only when the person asks, as its
-//!   description says) and [`ASSISTANT_BOT_TOOLS`] (task B.2: asking a bot only on the person's word,
-//!   which the core checks), and never a command kept from agents ([`Mcp::Never`]). Rights are not checked
+//!   description says), its own access ([`MY_ACCESS`], issue #134, also for a bot) and
+//!   [`ASSISTANT_BOT_TOOLS`] (task B.2: asking a bot only on the person's word, which the core
+//!   checks), and never a command kept from agents ([`Mcp::Never`]). Rights are not checked
 //!   here for safety – the core checks every call – but so the model is not offered what would be
 //!   `forbidden` anyway.
 //! - **How many** ([`offered`]): all of them up to [`MAX_TOOLS`]; beyond that, and always for a
@@ -60,6 +61,9 @@ pub const UNTRUSTED_NOTE: &str = "This is data from outside the suite (mail, age
 /// is the person's to make; a bot's model is offered none of them.
 pub const ASSISTANT_BOT_TOOLS: &[&str] = &["bots.list_bots", "bots.ask_bot"];
 
+/// The command that tells the assistant or a bot its own rights (issue #134), offered to both.
+pub const MY_ACCESS: &str = "assistant.my_access";
+
 /// One command the model may be offered.
 #[derive(Debug, Clone)]
 pub struct Tool {
@@ -81,6 +85,11 @@ impl Tool {
     /// The command is one of [`ASSISTANT_BOT_TOOLS`] (task B.2).
     fn is_bots(&self) -> bool {
         ASSISTANT_BOT_TOOLS.contains(&self.command.name)
+    }
+
+    /// The command is [`MY_ACCESS`] (issue #134).
+    fn is_my_access(&self) -> bool {
+        self.command.name == MY_ACCESS
     }
 }
 
@@ -114,18 +123,20 @@ pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<&'static Tool> 
 /// areas `without`, in catalogue order (see the module's documentation). `None` rights (no client
 /// yet): none. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory and
 /// [`ASSISTANT_BOT_TOOLS`] (task B.2) besides its rights, a bot's ([`torro_ipc::api::BOT_CLIENT`],
-/// task B.1) its rights only: neither is offered any other tool of `assistant` or `bots`, and a bot
-/// none at all (no chains; the core refuses a bot every one of them).
+/// task B.1) its rights only; both get [`MY_ACCESS`] (issue #134). Neither is offered any other tool
+/// of `assistant` or `bots`, and a bot no tool of `bots` (no chains; the core refuses it them).
 pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area]) -> Vec<&'static Tool> {
     let Some(rights) = rights else { return Vec::new() };
     let own = kind == ASSISTANT_CLIENT;
+    let assistant_or_bot = own || kind == torro_ipc::api::BOT_CLIENT;
     catalogue()
         .iter()
         .filter(|tool| {
             let area = tool.command.area;
             let operation = Operation { command: tool.command, access: tool.command.access };
             let granted = !matches!(area, Area::Assistant | Area::Bots) && rights.allows(operation);
-            area.grantable() && !without.contains(&area) && (granted || (own && (tool.is_memory() || tool.is_bots())))
+            let by_kind = (own && (tool.is_memory() || tool.is_bots())) || (assistant_or_bot && tool.is_my_access());
+            area.grantable() && !without.contains(&area) && (granted || by_kind)
         })
         .collect()
 }
@@ -136,10 +147,10 @@ pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area]) -> Vec
 /// core, which answers `forbidden`. `None` for every other name, also of a real command: the model
 /// learns there is no such tool.
 pub fn callable(name: &str) -> Option<&'static Tool> {
-    catalogue()
-        .iter()
-        .find(|tool| tool.spec.name == name)
-        .filter(|tool| tool.command.area.grantable() && (tool.command.area != Area::Assistant || tool.is_memory()))
+    catalogue().iter().find(|tool| tool.spec.name == name).filter(|tool| {
+        let own = tool.is_memory() || tool.is_my_access();
+        tool.command.area.grantable() && (tool.command.area != Area::Assistant || own)
+    })
 }
 
 /// What the model is offered of `allowed` in one step: every tool when they are at most
@@ -452,13 +463,19 @@ mod tests {
         let mut everything_for_a_bot = Rights::assistant();
         everything_for_a_bot.areas.insert(Area::Bots, AreaRights { level: Level::Full, admin: true });
         let bot = allowed_for(torro_ipc::api::BOT_CLIENT, Some(&everything_for_a_bot), &[]);
-        assert!(bot.iter().all(|tool| !matches!(tool.command.area, Area::Assistant | Area::Bots)));
+        let closed = |tool: &&&Tool| matches!(tool.command.area, Area::Assistant | Area::Bots);
+        let names: Vec<&str> = bot.iter().filter(closed).map(|tool| tool.spec.name.as_str()).collect();
+        assert_eq!(names, ["assistant_my_access"], "only its own access (issue #134)");
         let own: Vec<&str> = tools
             .iter()
             .filter(|tool| tool.command.area == Area::Assistant)
             .map(|tool| tool.spec.name.as_str())
             .collect();
-        assert_eq!(own, ["assistant_list_memories", "assistant_remember", "assistant_forget"], "task C.10");
+        assert_eq!(
+            own,
+            ["assistant_list_memories", "assistant_my_access", "assistant_remember", "assistant_forget"],
+            "task C.10, issue #134"
+        );
         assert!(allowed(Some(&rights), &[Area::Calendar]).iter().all(|tool| tool.command.area != Area::Calendar));
         assert!(allowed(Some(&rights), &[Area::Assistant]).iter().all(|tool| !tool.is_memory()), "switched off");
 
@@ -471,7 +488,7 @@ mod tests {
             let command = tool.command;
             assert_eq!(command.mcp, Mcp::Tool, "{}", command.name);
             assert!(!matches!(command.area, Area::System | Area::Clients | Area::Approvals), "{}", command.name);
-            assert!(command.area != Area::Assistant || tool.is_memory(), "{}", command.name);
+            assert!(command.area != Area::Assistant || tool.is_memory() || tool.is_my_access(), "{}", command.name);
             assert!(command.area != Area::Bots || tool.is_bots(), "{}", command.name);
         }
         assert!(named(&everything, "mail_send_draft").is_some());

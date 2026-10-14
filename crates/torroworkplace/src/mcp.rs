@@ -2086,7 +2086,7 @@ mod tests {
             .filter(|command| command.area == Area::Assistant && command.mcp == Mcp::Tool)
             .map(|command| command.tool_name())
             .collect();
-        assert_eq!(catalogue.len(), 14, "nine of task C.1, five of C.10: {catalogue:?}");
+        assert_eq!(catalogue.len(), 15, "nine of task C.1, five of C.10, one of issue #134: {catalogue:?}");
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give.
         let assistant = CATALOGUE.iter().filter(|c| c.area == Area::Assistant && c.name != "assistant.confirm_bot");
@@ -2160,6 +2160,7 @@ mod tests {
             request_for("assistant_forget", args(json!({"id": "1a2b3c4d"})), &Utc),
             Ok(Request::Forget { id: "1a2b3c4d".into() })
         );
+        assert_eq!(request_for("assistant_my_access", args(json!({})), &Utc), Ok(Request::MyAccess), "issue #134");
         assert_eq!(request_for("assistant_list_memories", args(json!({})), &Utc), Ok(Request::ListMemories));
         assert_eq!(
             request_for("assistant_update_profile", args(json!({"personality": "Brief."})), &Utc),
@@ -2537,7 +2538,8 @@ mod tests {
 
         /// "Keine Schleife" (tasks C.1, C.10): the assistant's own client is refused every assistant
         /// tool but its memory, which it reads, adds to and forgets from, whatever its rights in the
-        /// area say; forgetting waits for the person, as deleting does with its rights.
+        /// area say; forgetting waits for the person, as deleting does with its rights. It reads its
+        /// own access (issue #134): the rights the person set, as `clients.list_clients` has them.
         #[tokio::test]
         async fn the_assistants_own_client_gets_its_memory_and_no_other_assistant_tool() {
             let dir = tempfile::tempdir().expect("temp dir");
@@ -2559,7 +2561,7 @@ mod tests {
                 ("assistant_get_profile", json!({})),
                 ("assistant_update_profile", json!({"name": "Jarvis"})),
             ];
-            let own = ["assistant_list_memories", "assistant_remember", "assistant_forget"];
+            let own = ["assistant_list_memories", "assistant_remember", "assistant_forget", "assistant_my_access"];
             let tools: BTreeSet<&str> =
                 tools().iter().map(|tool| tool.name.as_ref()).filter(|name| name.starts_with("assistant_")).collect();
             let called: BTreeSet<&str> = forbidden.iter().map(|(name, _)| *name).chain(own).collect();
@@ -2581,6 +2583,13 @@ mod tests {
             // tool gives up after its wait with `pending`.
             let forget = session.call("assistant_forget", json!({"id": id})).await;
             assert_eq!(forget["structuredContent"]["code"], "pending", "{forget}");
+
+            let access = session.call("assistant_my_access", json!({})).await;
+            assert_eq!(access["isError"], false, "{access}");
+            let rights: Rights = serde_json::from_value(access["structuredContent"]["access"]["rights"].clone())
+                .expect("rights in the answer");
+            assert_eq!(rights, Rights::assistant(), "what the person set: {access}");
+            assert!(access["structuredContent"]["access"].get("withheld").is_none(), "its own key: {access}");
         }
 
         #[tokio::test]

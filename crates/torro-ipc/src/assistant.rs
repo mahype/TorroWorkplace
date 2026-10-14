@@ -23,7 +23,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::api::Area;
+use crate::api::{Area, Rights, Selection};
 use crate::{Request, Response};
 
 /// At most this many characters in a message to the assistant (`assistant.send_message`).
@@ -240,6 +240,88 @@ pub struct Note {
     pub local_only: bool,
 }
 
+/// What a client may do now (`assistant.my_access`, issue #134): its rights as they apply to the
+/// request that asks, so the assistant, a bot or an agent can tell the person what it may do, and
+/// a test can compare it with what the person set (`clients.list_clients`).
+///
+/// For the assistant's engines and the bots the core narrows the stored rights the way it checks
+/// every other command: without the areas the engine never gets ([`MyAccess::withheld`]) and those
+/// switched off in the conversation ([`MyAccess::switched_off`]), and for a bot that runs for the
+/// assistant to what both clients may (`Rights::common`, task B.2). Only the person changes rights,
+/// with the app key; nothing here is a secret.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MyAccess {
+    /// The rights in force now: level and admin switch per area, the calendars, task lists, GitHub
+    /// repositories, inbox sources and mail accounts it sees, sending and approval.
+    pub rights: Rights,
+    /// The assistant's engine the request came through: an AI account's id
+    /// (`ai:ollama@localhost:11434`) or an agent (`claude-code`); `None` for a client's own key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The areas the engine never gets, whatever the rights say: `mail` for a coding agent (the
+    /// data rule keeps it on the person's computers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub withheld: Vec<Area>,
+    /// The areas the person switched off for this conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub switched_off: Vec<Area>,
+}
+
+impl MyAccess {
+    /// `rights` as they are for a client's own key: nothing withheld or switched off.
+    pub fn of(rights: Rights, engine: Option<String>) -> MyAccess {
+        MyAccess { rights, engine, withheld: Vec::new(), switched_off: Vec::new() }
+    }
+
+    /// `self` with the areas `areas` withheld by the engine: closed ([`close`]) and listed in
+    /// [`MyAccess::withheld`] once, in the order of the areas.
+    pub fn withholding(mut self, areas: &[Area]) -> MyAccess {
+        for area in areas {
+            close(&mut self.rights, *area);
+        }
+        self.withheld.extend(areas);
+        self.withheld.sort();
+        self.withheld.dedup();
+        self
+    }
+
+    /// `self` with the areas `areas` switched off as well: closed ([`close`]) and listed in
+    /// [`MyAccess::switched_off`] once, in the order of the areas, unless withheld already. Engine A
+    /// checks the conversation's switches itself before a call reaches the core, so it adds them to
+    /// the core's answer here.
+    pub fn switching_off(mut self, areas: &[Area]) -> MyAccess {
+        for area in areas {
+            close(&mut self.rights, *area);
+        }
+        self.switched_off.extend(areas.iter().filter(|area| !self.withheld.contains(area)));
+        self.switched_off.sort();
+        self.switched_off.dedup();
+        self
+    }
+}
+
+/// Takes `area` out of `rights` with what it selects: an area the client does not get here names
+/// none of its calendars, lists, repositories or mail accounts either (a mail account's id is its
+/// address, which the data rule keeps from an agent), and without mail no mail account's inbox
+/// source.
+fn close(rights: &mut Rights, area: Area) {
+    rights.areas.remove(&area);
+    let nothing = || Selection::Only(Vec::new());
+    match area {
+        Area::Calendar => rights.calendars = nothing(),
+        Area::Tasks => rights.task_lists = nothing(),
+        Area::Github => rights.github_repos = nothing(),
+        Area::Inbox => rights.inbox_sources = nothing(),
+        Area::Mail => {
+            rights.mail_accounts = nothing();
+            if let Selection::Only(keys) = &mut rights.inbox_sources {
+                keys.retain(|key| !key.starts_with("mail:"));
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Which window `assistant.open_window` opens: `{"conversation": "<id>"}`, `"new"` or
 /// `{"bot": "<id>"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -381,6 +463,29 @@ mod tests {
             Response::Error { code, .. } => code,
             other => panic!("expected an error, got {other:?}"),
         })
+    }
+
+    /// Issue #134: an area withheld or switched off is closed with what it selects, and listed once.
+    #[test]
+    fn closed_areas_name_nothing_of_theirs() {
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Mail, crate::api::AreaRights { level: crate::api::Level::Read, admin: false });
+        rights.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into()]);
+        rights.inbox_sources = Selection::Only(vec!["mail:anna@mailbox.org".into(), "agent:claude-code".into()]);
+        let access = MyAccess::of(rights, Some("claude-code".into())).withholding(&[Area::Mail]).switching_off(&[
+            Area::Tasks,
+            Area::Mail,
+            Area::Tasks,
+        ]);
+        assert_eq!(
+            (access.withheld.as_slice(), access.switched_off.as_slice()),
+            (&[Area::Mail][..], &[Area::Tasks][..])
+        );
+        assert!(!access.rights.areas.contains_key(&Area::Mail) && !access.rights.areas.contains_key(&Area::Tasks));
+        assert_eq!(access.rights.mail_accounts, Selection::Only(Vec::new()), "no address");
+        assert_eq!(access.rights.task_lists, Selection::Only(Vec::new()));
+        assert_eq!(access.rights.inbox_sources, Selection::Only(vec!["agent:claude-code".into()]));
+        assert_eq!(access.rights.calendars, Selection::All, "the rest stays");
     }
 
     #[test]

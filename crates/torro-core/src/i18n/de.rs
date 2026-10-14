@@ -3111,6 +3111,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Lets the agent act with a bot's rights.", "Lässt den Agenten mit den Rechten eines Bots handeln."),
     ("Looked up bots", "Bots nachgesehen"),
+    ("Looked up its access", "Eigene Rechte nachgesehen"),
     ("Make one in the assistant app with New bot.", "Leg einen in der Assistenten-App mit „Neuer Bot“ an."),
     ("Name of the bot", "Name des Bots"),
     ("New bot", "Neuer Bot"),

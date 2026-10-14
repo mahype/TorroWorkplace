@@ -549,6 +549,7 @@ fn describe(request: &Request) -> String {
         Request::GetProfile => "assistant profile".into(),
         Request::UpdateProfile { .. } => "change the assistant profile".into(),
         Request::ListMemories => "assistant memory".into(),
+        Request::MyAccess => "own access".into(),
         Request::Remember { replaces: Some(id), .. } => format!("change note {id}"),
         Request::Remember { .. } => "remember a note".into(),
         Request::Forget { id } => format!("forget note {id}"),

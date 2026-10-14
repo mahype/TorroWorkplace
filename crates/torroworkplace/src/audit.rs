@@ -333,7 +333,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         }
         // The assistant's profile and memory (task C.10): a note by the id the core made, never
         // its text, a name or the personality.
-        Request::GetProfile | Request::UpdateProfile { .. } | Request::ListMemories => Vec::new(),
+        Request::GetProfile | Request::UpdateProfile { .. } | Request::ListMemories | Request::MyAccess => Vec::new(),
         Request::Remember { replaces, .. } => replaces.iter().map(|id| random("note", id)).collect(),
         Request::Forget { id: note } => vec![random("note", note)],
         // Bots (task B.1): a bot by the id the core made, never its name or texts; a message to one
