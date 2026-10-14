@@ -1588,6 +1588,7 @@ fn post(
         untrusted: true,
         facets: Vec::new(),
         task: None,
+        invite: None,
     };
     // Security rule 6: only what is safe to open is kept (web pages, apps of the suite, the
     // window of a hook's agent); anything else is dropped, not refused.
@@ -2610,6 +2611,7 @@ fn finished_task_entry(
         // The person's own: no rule may touch it (security rule 1).
         facets: Vec::new(),
         task: Some(task),
+        invite: None,
     }
 }
 
@@ -2651,6 +2653,7 @@ impl Matter {
             // The person's own: no rule may touch them (security rule 1).
             facets: Vec::new(),
             task: None,
+            invite: None,
         }
     }
 }
@@ -2881,6 +2884,7 @@ fn file_mail(
         untrusted: true,
         facets: Vec::new(),
         task: None,
+        invite: None,
     };
     // This mail's traits decide whether a muted trait holds (task E8.6a): hidden, it is not filed
     // and not kept as filed, like a hidden sender; "Info" files it there.
@@ -3460,6 +3464,7 @@ pub(crate) mod tests {
             untrusted: true,
             facets: Vec::new(),
             task: None,
+            invite: None,
         }
     }
 

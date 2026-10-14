@@ -76,6 +76,15 @@ pub struct Item {
     /// task here as the core filed it. Its title is foreign text like `title`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<ItemTask>,
+    /// What the mail of a mail entry invites to (task E8.3c): the [`torro_mail::Invite`] of the
+    /// message the entry links to ([`Link::Mail`]), with the answer given, as the mail store holds
+    /// it when the core answers – the same as `mail.search_messages` gives that message. Filled in
+    /// by the core when it answers, never stored with the entry and never taken from a poster; only
+    /// on entries of a mail source, so only for a caller that may read the account's mail. `None`
+    /// for every other entry and while the core has not read the mail's text yet. Its title is
+    /// foreign text like `title`. Answer it with `mail.respond_to_invitation` for the linked message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invite: Option<torro_mail::Invite>,
 }
 
 /// The task an entry turned into ([`Item::task`], task E8.7a), as the core's task cache holds it

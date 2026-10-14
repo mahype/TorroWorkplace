@@ -48,8 +48,8 @@ use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
 use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
-use torro_inbox::{Item, Lane, State};
-use torro_ipc::inbox::InboxClient;
+use torro_inbox::{Item, Lane, Link, State};
+use torro_ipc::inbox::{CalendarEvent, InboxClient};
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
 use torro_mail::{
     AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message as Mail, MessageSummary, Role,
@@ -128,10 +128,12 @@ pub trait MailSource: Send + Sync {
 
     /// `mail.respond_to_invitation` (task E8.3b, Accept · Maybe · Decline): answers the invitation in
     /// the message `id` of the mail account `account` with `answer`. The core sends the organizer
-    /// the reply from the account and puts the event in a calendar (or, for a decline, removes the
-    /// copy made before); the window sends nothing else. Answers how the reply went
+    /// the reply from the account and puts the event in a calendar – `collection` (task E8.3c, an id
+    /// of [`crate::hub::HubSource::list_calendars`]; `None`: the core's choice) unless a copy made
+    /// before stays in its own – or, for a decline, removes that copy. The entry of the mail is not
+    /// touched: the window marks it done itself (`inbox.set_item_done`). Answers how the reply went
     /// ([`Delivery::Unknown`]: it may not have gone out). Errors as the core maps them:
-    /// [`InboxError::NotFound`] for a message or account the window may not see,
+    /// [`InboxError::NotFound`] for a message, account or calendar the window may not see,
     /// [`InboxError::Forbidden`], [`InboxError::Other`] with the core's words for a mail without an
     /// invitation to answer, an event that is over, or a send that failed.
     fn respond_to_invitation(
@@ -139,7 +141,17 @@ pub trait MailSource: Send + Sync {
         account: String,
         id: String,
         answer: InvitationAnswer,
+        collection: Option<String>,
     ) -> impl Future<Output = Result<Delivery, InboxError>> + Send;
+
+    /// `calendar.list_events` (task E8.3c): the events of the shown calendars that overlap
+    /// `[start, end)`, in instants ([`CalendarEvent`]), for the line on what an invitation overlaps
+    /// ([`overlaps`]). Nothing is written.
+    fn list_events(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> impl Future<Output = Result<Vec<CalendarEvent>, InboxError>> + Send;
 }
 
 /// One page of a folder ([`MailSource::search_mail`]).
@@ -203,21 +215,13 @@ impl MailSource for InboxClient {
         account: String,
         id: String,
         answer: InvitationAnswer,
+        collection: Option<String>,
     ) -> Result<Delivery, InboxError> {
-        let request = torro_ipc::Request::RespondToInvitation { account, id, answer, collection: None };
-        match torro_ipc::client::call(&self.socket, &request).await {
-            Ok(torro_ipc::Response::InvitationAnswered { delivery, .. }) => Ok(delivery),
-            Ok(torro_ipc::Response::Error { code, message }) => Err(match code.as_str() {
-                "not-found" => InboxError::NotFound,
-                "forbidden" => InboxError::Forbidden,
-                "busy" => InboxError::Busy,
-                "unsupported" => InboxError::Unsupported,
-                _ => InboxError::Other(message),
-            }),
-            Ok(other) => Err(InboxError::Other(format!("unexpected answer: {other:?}"))),
-            Err(torro_ipc::IpcError::NotRunning) => Err(InboxError::Offline),
-            Err(err) => Err(InboxError::Other(err.to_string())),
-        }
+        InboxClient::respond_to_invitation(self, account, id, answer, collection).await
+    }
+
+    async fn list_events(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<CalendarEvent>, InboxError> {
+        InboxClient::list_events(self, start, end).await
     }
 }
 
@@ -235,14 +239,14 @@ impl MailSource for DemoSource {
     ) -> Result<MailPage, InboxError> {
         let (mut messages, next) = DemoSource::search_mail(self, &folder, query.as_deref(), limit, cursor.as_deref())?;
         for message in &mut messages {
-            message.invite = demo_invite(message);
+            message.invite = demo_invite(&message.id, message.date);
         }
         Ok(MailPage { messages, next })
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
         let mut mail = DemoSource::get_mail(self, &id)?;
-        mail.summary.invite = demo_invite(&mail.summary);
+        mail.summary.invite = demo_invite(&mail.summary.id, mail.summary.date);
         mail.invitation = mail.summary.invite.is_some();
         Ok(mail)
     }
@@ -292,18 +296,29 @@ impl MailSource for DemoSource {
     }
 
     /// The demo sends nothing and keeps no calendar: an invitation of its own ([`demo_invite`]) is
-    /// answered as sent, any other message is no invitation.
+    /// answered as sent, any other message is no invitation; a calendar it does not have
+    /// ([`crate::hub::DEMO_CALENDARS`]) is not found.
     async fn respond_to_invitation(
         &self,
         _account: String,
         id: String,
         _answer: InvitationAnswer,
+        collection: Option<String>,
     ) -> Result<Delivery, InboxError> {
         let mail = DemoSource::get_mail(self, &id)?;
-        match demo_invite(&mail.summary) {
+        if collection.is_some_and(|wanted| !crate::hub::DEMO_CALENDARS.iter().any(|(id, _)| *id == wanted)) {
+            return Err(InboxError::NotFound);
+        }
+        match demo_invite(&mail.summary.id, mail.summary.date) {
             Some(_) => Ok(Delivery::Accepted),
             None => Err(InboxError::Other(tr("This mail holds no invitation that can be answered.").to_owned())),
         }
+    }
+
+    /// The demo's calendar ([`demo_events`]), as far as it overlaps `[start, end)`.
+    async fn list_events(&self, start: DateTime<Utc>, end: DateTime<Utc>) -> Result<Vec<CalendarEvent>, InboxError> {
+        let lunch = DemoSource::get_mail(self, "m:w4").ok().and_then(|mail| demo_invite("m:w4", mail.summary.date));
+        Ok(demo_events(lunch.as_ref()).into_iter().filter(|event| event.start < end && start < event.end).collect())
     }
 }
 
@@ -360,8 +375,13 @@ impl MailSource for crate::empty::EmptySource {
         _account: String,
         _id: String,
         _answer: InvitationAnswer,
+        _collection: Option<String>,
     ) -> Result<Delivery, InboxError> {
         Err(InboxError::NotFound)
+    }
+
+    async fn list_events(&self, _start: DateTime<Utc>, _end: DateTime<Utc>) -> Result<Vec<CalendarEvent>, InboxError> {
+        Ok(Vec::new())
     }
 }
 
@@ -844,10 +864,7 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
     // An invitation (task E8.3b): its time and the answers stand on its card and in the reader.
-    if let Some(invite) = &message.invite {
-        let tip = trf("Invitation · {when}", &[("when", &invite_when(invite, data.now))]);
-        marks.push((widgets::with_tooltip(small_icon(Icon::Calendar, None), tip), icon::SIZE_SM));
-    }
+    marks.extend(message.invite.as_ref().map(|invite| invite_mark(invite, data.now)));
     if message.has_attachments {
         marks.push((widgets::with_tooltip(small_icon(Icon::Paperclip, None), tr("Has attachments")), icon::SIZE_SM));
     }
@@ -964,17 +981,18 @@ pub fn attachments(pages: Vec<Vec<MessageSummary>>) -> Vec<MessageSummary> {
     found
 }
 
-/// The demo's invitations (task E8.3b): Maria's "Lunch next week?" invites to lunch on the Tuesday
-/// of next week at 12:00 for an hour, Paul's "Weekend plans" to a hike all Saturday. Counted from the
-/// demo's "now" (the mail's date plus how long before "now" the demo dated it), so `--now` gives the
-/// same pictures. `None` for every other message.
-fn demo_invite(message: &MessageSummary) -> Option<Invite> {
-    let (title, before, all_day) = match message.id.as_str() {
+/// The demo's invitations (task E8.3b): Maria's "Lunch next week?" (`m:w4`) invites to lunch on the
+/// Tuesday of next week at 12:00 for an hour, Paul's "Weekend plans" (`m:p1`) to a hike all
+/// Saturday. Counted from the demo's "now" (the mail's `date` plus how long before "now" the demo
+/// dated it), so `--now` gives the same pictures. `None` for every other message `id`. The entries
+/// of these mails carry them too (task E8.3c, [`demo_entry_invite`]).
+fn demo_invite(id: &str, date: DateTime<Utc>) -> Option<Invite> {
+    let (title, before, all_day) = match id {
         "m:w4" => (tr("Lunch with Maria"), chrono::TimeDelta::hours(26), false),
         "m:p1" => (tr("Hike"), chrono::TimeDelta::minutes(50), true),
         _ => return None,
     };
-    let today = (message.date + before).with_timezone(&Local).date_naive();
+    let today = (date + before).with_timezone(&Local).date_naive();
     let (start, end) = if all_day {
         // The coming Saturday, a week on when today is one.
         let ahead = match (12 - chrono::Datelike::weekday(&today).num_days_from_monday()) % 7 {
@@ -992,6 +1010,33 @@ fn demo_invite(message: &MessageSummary) -> Option<Invite> {
         (noon, noon + chrono::TimeDelta::hours(1))
     };
     Some(Invite { title: title.to_owned(), start, end: Some(end), all_day, answered: None })
+}
+
+/// The invitation the core would put on the demo's entry `item` (task E8.3c, [`Item::invite`]): the
+/// one of the message it links to ([`demo_invite`]; the demo's entries are dated as their mail).
+pub fn demo_entry_invite(item: &Item) -> Option<Invite> {
+    match &item.link {
+        Some(Link::Mail { message }) => demo_invite(message, item.updated),
+        _ => None,
+    }
+}
+
+/// The demo's calendar around its invitations (task E8.3c): the busy "Team sync" from half past
+/// twelve on the day of Maria's lunch (`lunch`) for an hour, so lunch overlaps it, and a free "Focus
+/// time" before it, which overlaps nothing. The hike on Saturday has the day to itself.
+fn demo_events(lunch: Option<&Invite>) -> Vec<CalendarEvent> {
+    let Some(lunch) = lunch else { return Vec::new() };
+    let sync = lunch.start + chrono::TimeDelta::minutes(30);
+    let focus = lunch.start - chrono::TimeDelta::hours(2);
+    vec![
+        CalendarEvent { title: tr("Focus time").to_owned(), start: focus, end: lunch.start, busy: false },
+        CalendarEvent {
+            title: tr("Team sync").to_owned(),
+            start: sync,
+            end: sync + chrono::TimeDelta::hours(1),
+            busy: true,
+        },
+    ]
 }
 
 /// The smart view "Invitations" (task E8.3b): of the messages of every account's inbox, those that
@@ -1060,8 +1105,9 @@ fn answer_icon(answer: InvitationAnswer) -> Icon {
 }
 
 /// The buttons that answer an invitation, in their order: Accept, Maybe, Decline – each its icon,
-/// its word and the answer.
-fn answers() -> [(Icon, &'static str, InvitationAnswer); 3] {
+/// its word and the answer. Mail cards, entry cards and rows (task E8.3c) and the invitation's card
+/// use the same three.
+pub(crate) fn answers() -> [(Icon, &'static str, InvitationAnswer); 3] {
     [
         (Icon::Check, tr("Accept"), InvitationAnswer::Accept),
         (Icon::CircleDashed, tr("Maybe"), InvitationAnswer::Tentative),
@@ -1070,8 +1116,8 @@ fn answers() -> [(Icon, &'static str, InvitationAnswer); 3] {
 }
 
 /// The chips of an invitation on a card: when it is ([`invite_when`]) with the calendar's icon, and
-/// the answer given, if any.
-fn invite_chips<'a>(invite: &Invite, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
+/// the answer given, if any. Mail cards and entry cards (task E8.3c) alike.
+pub(crate) fn invite_chips<'a>(invite: &Invite, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
     let mut chips = vec![widgets::state_pill(Icon::Calendar, invite_when(invite, now))];
     if let Some(answer) = invite.answered {
         chips.push(widgets::state_pill(answer_icon(answer), answer_word(answer)));
@@ -1079,16 +1125,102 @@ fn invite_chips<'a>(invite: &Invite, now: DateTime<Utc>) -> Vec<Element<'a, Mess
     chips
 }
 
+/// The mark of an invitation in a row's first line, with its width: the calendar's icon, "Invitation ·
+/// Tue 20 Oct · 12:00–13:00" as tooltip. Rows of folder messages and of entries (task E8.3c) alike.
+pub(crate) fn invite_mark<'a>(invite: &Invite, now: DateTime<Utc>) -> (Element<'a, Message>, f32) {
+    let tip = trf("Invitation · {when}", &[("when", &invite_when(invite, now))]);
+    (widgets::with_tooltip(small_icon(Icon::Calendar, None), tip), icon::SIZE_SM)
+}
+
+/// The time the event of `invite` takes, to ask what it overlaps (task E8.3c,
+/// [`MailSource::list_events`]): a whole day from local midnight of its first day to local midnight
+/// after its last (the invitation names its days, [`Invite::start`] is midnight UTC of the first);
+/// a timed one from its start to its end, at least a minute (an invitation without an end overlaps
+/// what runs at its start).
+pub fn invite_span(invite: &Invite) -> (DateTime<Utc>, DateTime<Utc>) {
+    if invite.all_day {
+        let first = invite.start.date_naive();
+        let after = invite.end.map_or(first, |end| end.date_naive()).max(first + chrono::Days::new(1));
+        let midnight = |day: NaiveDate| datetime::to_utc(day.and_time(chrono::NaiveTime::MIN));
+        return (midnight(first), midnight(after));
+    }
+    let end = invite.end.unwrap_or(invite.start).max(invite.start + chrono::TimeDelta::minutes(1));
+    (invite.start, end)
+}
+
+/// The events of `events` the event of `invite` overlaps (task E8.3c): those that make their time
+/// busy ([`CalendarEvent::busy`]) and share time with [`invite_span`], the earliest first. Left out
+/// is the event the suite made of this invitation when it was answered before – same title, same
+/// start and end –: it is the invitation itself, no conflict.
+pub fn overlaps<'e>(invite: &Invite, events: &'e [CalendarEvent]) -> Vec<&'e CalendarEvent> {
+    let (start, end) = invite_span(invite);
+    let copy =
+        |event: &CalendarEvent| event.title.trim() == invite.title.trim() && (event.start, event.end) == (start, end);
+    let mut found: Vec<&CalendarEvent> =
+        events.iter().filter(|event| event.busy && event.start < end && start < event.end && !copy(event)).collect();
+    found.sort_by_key(|event| event.start);
+    found
+}
+
+/// The line under an invitation on what it overlaps (task E8.3c, [`overlaps`]): "Overlaps with Team
+/// sync at 12:30", with "and 2 more" for more, or "No conflicts". The time alone when the event
+/// starts on the invitation's first day, else with its day ("Sat 17 Oct 09:00"). Titles are text of
+/// the calendars, on one line.
+pub fn overlap_text(invite: &Invite, events: &[CalendarEvent], now: DateTime<Utc>) -> String {
+    let found = overlaps(invite, events);
+    let Some(first) = found.first() else { return tr("No conflicts").to_owned() };
+    let today = now.with_timezone(&Local).date_naive();
+    let day = datetime::to_local(invite_span(invite).0).date();
+    let start = datetime::to_local(first.start);
+    let time = if start.date() == day {
+        datetime::format_time(start.time())
+    } else {
+        format!("{} {}", datetime::format_short_date(start.date(), today), datetime::format_time(start.time()))
+    };
+    let title = match list::one_line(&first.title) {
+        title if title.is_empty() => tr("(no title)").to_owned(),
+        title => title,
+    };
+    match found.len() - 1 {
+        0 => trf("Overlaps with {title} at {time}", &[("title", &title), ("time", &time)]),
+        more => {
+            trf("Overlaps with {title} at {time} and {n} more", &[("title", &title), ("time", &time), ("n", &more)])
+        }
+    }
+}
+
+/// What the card of a mail's invitation shows besides the invitation (task E8.3c), as the window
+/// holds it: the calendars to choose for the event and the events it may overlap. Both only matter
+/// while the invitation waits for its answer; once answered, its event is in a calendar already
+/// (the core keeps it there) and the card shows neither.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InviteSide<'a> {
+    /// The calendars the event can go to ([`crate::hub::HubSource::list_calendars`]); `None` while
+    /// they load or when they could not be read – the core then chooses.
+    pub calendars: Option<&'a [TaskList]>,
+    /// The calendar chosen for the answer, one of `calendars` (`App::invite_calendar`).
+    pub calendar: Option<&'a TaskList>,
+    /// The events of the shown calendars around this invitation ([`MailSource::list_events`]);
+    /// `None` while they load or when they could not be read: then nothing is said about overlaps.
+    pub events: Option<&'a [CalendarEvent]>,
+}
+
 /// The invitation of a mail as a card over its text in the reader and the panel (task E8.3b): the
 /// calendar's tile, the event's title (the organizer's text, as it is) and when it is, then Accept ·
 /// Maybe · Decline as chips to pick – the answer given picked –, which send
 /// `mail.respond_to_invitation` ([`Message::AnswerInvitation`]). While an answer is on its way the
 /// chips take no click; an event that is over says so instead.
+///
+/// Before it is answered (task E8.3c, `side`), a line says what it overlaps ([`overlap_text`]: the
+/// `attention` colour on the icon, the words say it) once the events are in, and – with calendars to
+/// choose – the calendar the event goes to, picked with [`Message::InviteCalendar`].
 pub fn invite_card<'a>(
     invite: &Invite,
     summary: &MessageSummary,
     now: DateTime<Utc>,
     answering: bool,
+    side: InviteSide<'a>,
+    attention: Color,
 ) -> Element<'a, Message> {
     let tile = widgets::source_tile(widgets::TileFace::Icon(Icon::Calendar), widgets::TileSize::Large, None);
     let title = match list::one_line(&invite.title) {
@@ -1104,17 +1236,34 @@ pub fn invite_card<'a>(
     ]
     .width(Fill);
     let head = row![tile, words].spacing(space::m()).align_y(Alignment::Center);
-    let tail: Element<'a, Message> = if invite_over(invite, now) {
-        typo::text(typo::meta(), tr("This event is over.")).style(theme::text_3).into()
-    } else {
-        let chips = answers().into_iter().map(|(icon, word, answer)| {
-            let on = invite.answered == Some(answer);
-            let send = Message::AnswerInvitation(summary.account.clone(), summary.id.clone(), answer);
-            widgets::choice_chip(word, Some(Mark::Icon(icon)), on, (!answering).then_some(send))
-        });
-        widgets::chip_row(chips.collect())
-    };
-    widgets::card(vec![head.into(), tail], false, None)
+    let mut parts: Vec<Element<'a, Message>> = vec![head.into()];
+    if invite_over(invite, now) {
+        parts.push(typo::text(typo::meta(), tr("This event is over.")).style(theme::text_3).into());
+        return widgets::card(parts, false, None);
+    }
+    let open = invite.answered.is_none();
+    if let Some(events) = side.events.filter(|_| open) {
+        let mark = match overlaps(invite, events).is_empty() {
+            true => small_icon(Icon::CircleCheck, None),
+            false => small_icon(Icon::CircleAlert, Some(attention)),
+        };
+        let text = typo::text(typo::meta(), overlap_text(invite, events, now)).style(theme::text_2);
+        let line = row![mark, container(text.wrapping(Wrapping::None)).clip(true)].spacing(space::s());
+        parts.push(line.align_y(Alignment::Center).into());
+    }
+    if let Some(calendars) = side.calendars.filter(|calendars| open && !calendars.is_empty()) {
+        let pick = crate::app::choice(calendars.to_vec(), side.calendar.cloned(), Message::InviteCalendar);
+        // As wide as a property column: a pick list across a wide reader would read as a field.
+        let line = widgets::prop_line(tr("Calendar"), Some(Mark::Icon(Icon::Calendar)), pick, None);
+        parts.push(container(line).max_width(size::props()).into());
+    }
+    let chips = answers().into_iter().map(|(icon, word, answer)| {
+        let on = invite.answered == Some(answer);
+        let send = Message::AnswerInvitation(summary.account.clone(), summary.id.clone(), answer);
+        widgets::choice_chip(word, Some(Mark::Icon(icon)), on, (!answering).then_some(send))
+    });
+    parts.push(widgets::chip_row(chips.collect()));
+    widgets::card(parts, false, None)
 }
 
 /// The sender of a message for its row: the name (else the address, else "Unknown sender") and the
@@ -1185,6 +1334,8 @@ pub struct Reading<'a> {
     pub task: Option<&'a ItemTask>,
     /// An answer to the mail's invitation is on its way (task E8.3b): its card takes no click.
     pub answering: bool,
+    /// The calendars and events beside the mail's invitation (task E8.3c, [`InviteSide`]).
+    pub invite: InviteSide<'a>,
 }
 
 impl<'a> Reading<'a> {
@@ -1222,7 +1373,8 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     if let Some(summary) = reading.summary()
         && let Some(invite) = &summary.invite
     {
-        body = body.push(panel::inset(invite_card(invite, summary, reading.now, reading.answering)));
+        let card = invite_card(invite, summary, reading.now, reading.answering, reading.invite, reading.attention);
+        body = body.push(panel::inset(card));
     }
     if let Some(task) = reading.task {
         body = body.push(panel::inset(task_card(task, reading.now)));
@@ -1306,7 +1458,8 @@ fn reader_content<'a>(
     body = body.push(reader_sender(reading, summary, comfortable, room));
     // What the mail invites to, with its answers (task E8.3b): over the task and the text.
     if let Some(invite) = &summary.invite {
-        body = body.push(invite_card(invite, summary, reading.now, reading.answering));
+        body =
+            body.push(invite_card(invite, summary, reading.now, reading.answering, reading.invite, reading.attention));
     }
     // The mail knows its task (task E8.7b): between who wrote it and what it says, as the design.
     if let Some(task) = reading.task {
@@ -1918,6 +2071,7 @@ mod tests {
                         read,
                         account: Some(0),
                         answering: false,
+                        invite: InviteSide::default(),
                     };
                     let _ = panel(&reading, Some(&folder));
                     for entry in [None, Some(ReaderEntry { item: &entry, hide: true })] {
@@ -2016,6 +2170,7 @@ mod tests {
                 "mail:anna@work.example.org".into(),
                 id.into(),
                 InvitationAnswer::Accept,
+                None,
             ))
         };
         assert_eq!(answer("m:w4"), Ok(Delivery::Accepted));
@@ -2025,6 +2180,64 @@ mod tests {
         assert!(height(Some(lunch.clone())) >= height(None), "the chips' row");
         let full = iced::futures::executor::block_on(MailSource::get_mail(&demo, "m:w4".into())).expect("the mail");
         assert!(full.invitation && full.summary.invite.is_some());
+    }
+
+    /// Task E8.3c: an invitation overlaps the busy events that share its time – not free ones, not
+    /// what only touches it, not its own copy –; the line names the first with its time and counts
+    /// the rest, or says "No conflicts". A whole day asks from local midnight to local midnight.
+    #[test]
+    fn an_invitation_names_what_it_overlaps() {
+        let demo = DemoSource::new(now());
+        let invite = |id: &str| {
+            let mail = iced::futures::executor::block_on(MailSource::get_mail(&demo, id.into())).expect("the mail");
+            mail.summary.invite.expect("an invitation")
+        };
+        let events = |(start, end)| {
+            iced::futures::executor::block_on(MailSource::list_events(&demo, start, end)).expect("the events")
+        };
+        let lunch = invite("m:w4");
+        let span = invite_span(&lunch);
+        assert_eq!(span, (lunch.start, lunch.end.expect("an end")));
+        let around = events(span);
+        let titles: Vec<&str> = overlaps(&lunch, &around).iter().map(|event| event.title.as_str()).collect();
+        assert_eq!(titles, [tr("Team sync")], "the free focus time before it is none");
+        let sync = datetime::format_time(datetime::to_local(lunch.start + chrono::TimeDelta::minutes(30)).time());
+        let one = trf("Overlaps with {title} at {time}", &[("title", &tr("Team sync")), ("time", &sync)]);
+        assert_eq!(overlap_text(&lunch, &around, now()), one);
+
+        let (start, end) = span;
+        let copy = CalendarEvent { title: lunch.title.clone(), start, end, busy: true };
+        let touching = CalendarEvent {
+            title: "Before".into(),
+            start: start - chrono::TimeDelta::hours(1),
+            end: start,
+            busy: true,
+        };
+        let late = CalendarEvent { title: "Call".into(), start: end - chrono::TimeDelta::minutes(10), end, busy: true };
+        let more = [around.clone(), vec![copy, touching, late]].concat();
+        let two = trf(
+            "Overlaps with {title} at {time} and {n} more",
+            &[("title", &tr("Team sync")), ("time", &sync), ("n", &1)],
+        );
+        assert_eq!(overlap_text(&lunch, &more, now()), two, "the copy and what only touches it are none");
+
+        let hike = invite("m:p1");
+        let (first, after) = invite_span(&hike);
+        let day = datetime::to_local(first);
+        assert_eq!(
+            (day.time(), datetime::to_local(after).date()),
+            (chrono::NaiveTime::MIN, day.date() + chrono::Days::new(1))
+        );
+        assert_eq!(overlap_text(&hike, &events((first, after)), now()), tr("No conflicts"));
+        let morning = CalendarEvent {
+            title: "Climbing".into(),
+            start: first + chrono::TimeDelta::hours(9),
+            end: after,
+            busy: true,
+        };
+        let at = datetime::format_time(datetime::to_local(morning.start).time());
+        let named = trf("Overlaps with {title} at {time}", &[("title", &"Climbing".to_owned()), ("time", &at)]);
+        assert_eq!(overlap_text(&hike, &[morning], now()), named, "the hike's day has the time alone");
     }
 
     /// Task E8.3: the smart view keeps the messages with attachments of every inbox, newest first.

@@ -296,6 +296,7 @@ mod tests {
             untrusted: true,
             facets: Vec::new(),
             task: None,
+            invite: None,
         }
     }
 

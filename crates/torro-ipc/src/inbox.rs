@@ -32,18 +32,70 @@
 //! The hub (task E8.5b): [`InboxClient::get_quiet`] asks whether it is quiet now,
 //! [`InboxClient::list_calendars`] and [`InboxClient::create_event_from_item`] make an event of an
 //! entry, its times as instants, so the window needs no calendar model either.
+//!
+//! Invitations (task E8.3c): [`InboxClient::respond_to_invitation`] sends
+//! `mail.respond_to_invitation` with the calendar the window chose, and
+//! [`InboxClient::list_events`] reads the events of the shown calendars around an invitation as
+//! [`CalendarEvent`]s – title, instants and whether they make their time busy –, so the window can
+//! say what the invitation overlaps without a calendar model.
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeDelta, Utc};
 use torro_inbox::item::{Hidden, HideScope, ItemTask, MuteEffect, MuteOption, MuteScope, Muted, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
-use torro_mail::{Flag, Folder, Message, MessageSummary};
+use torro_mail::{Flag, Folder, InvitationAnswer, Message, MessageSummary};
 use torro_pim::EventTime;
 
-use crate::mail::MoveTarget;
+use crate::mail::{Delivery, MoveTarget};
 use crate::{InboxStats, IpcError, Quiet, Request, Response, StatsRange};
+
+/// An event of a shown calendar as the inbox needs it to tell what an invitation overlaps
+/// ([`InboxClient::list_events`], task E8.3c), in instants, so the window needs no calendar model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarEvent {
+    /// The event's title (`SUMMARY`) as the calendar holds it; may be empty. Text of the person or
+    /// of whoever invited them: shown as it is, never interpreted.
+    pub title: String,
+    /// When it starts; an all-day event at local midnight of its first day.
+    pub start: DateTime<Utc>,
+    /// When it ends (exclusive): an all-day event at local midnight after its last day (a day after
+    /// its start without an end), a timed event without an end where it starts.
+    pub end: DateTime<Utc>,
+    /// It makes its time busy (`torro_pim::Event::busy`): opaque and not all-day. Free time,
+    /// holidays and birthdays are `false`.
+    pub busy: bool,
+}
+
+impl CalendarEvent {
+    /// `event` in instants, all-day times at local midnight ([`CalendarEvent`]).
+    fn of(event: torro_pim::Event) -> CalendarEvent {
+        let busy = event.busy();
+        let instant = |time: EventTime| match time {
+            EventTime::Date(day) => local_midnight(day),
+            EventTime::DateTime(at) => at,
+        };
+        let start = instant(event.start);
+        let end = match (event.start, event.end) {
+            (_, Some(end)) => instant(end),
+            (EventTime::Date(_), None) => start + TimeDelta::days(1),
+            (EventTime::DateTime(_), None) => start,
+        };
+        CalendarEvent { title: event.summary, start, end: end.max(start), busy }
+    }
+}
+
+/// Midnight at the start of the local day `day`, as an instant; on a day that starts in a gap of
+/// the clock (a change of summer time at midnight) the first instant after it, else UTC midnight.
+fn local_midnight(day: NaiveDate) -> DateTime<Utc> {
+    let midnight = day.and_time(NaiveTime::MIN);
+    midnight
+        .and_local_timezone(Local)
+        .earliest()
+        .or_else(|| (midnight + TimeDelta::hours(1)).and_local_timezone(Local).earliest())
+        .map_or_else(|| midnight.and_utc(), |at| at.with_timezone(&Utc))
+}
 
 /// Talks to the core at its socket.
 #[derive(Debug, Clone)]
@@ -224,6 +276,47 @@ impl InboxClient {
                 .filter(|calendar| calendar.writable && calendar.kind.has_events() && calendar.source.is_none())
                 .map(|calendar| TaskList { id: calendar.id, name: calendar.name })
                 .collect()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.respond_to_invitation` (task E8.3b; the window's Accept · Maybe · Decline, task E8.3c):
+    /// answers the invitation in the message `id` (`m:…`) of the mail account `account`
+    /// (`mail:<address>`) with `answer`. The core replies to the organizer from the account and puts
+    /// the event in `collection` (an id of [`InboxClient::list_calendars`]; `None`: the core's choice,
+    /// the first writable calendar) – unless it made a copy before, which stays in its calendar –,
+    /// or removes that copy for a decline. Nothing about the inbox entry changes: the window marks
+    /// it done itself (`inbox.set_item_done`).
+    ///
+    /// Answers how the reply went ([`Delivery::Unknown`]: it may not have gone out). Errors as
+    /// mapped above: [`InboxError::NotFound`] for an account, mail or calendar the app may not see,
+    /// [`InboxError::Forbidden`], [`InboxError::Unsupported`] for an invitation to a series,
+    /// [`InboxError::Busy`], [`InboxError::Other`] with the core's words for a mail without an
+    /// invitation to answer, an event that is over or a send that failed.
+    pub async fn respond_to_invitation(
+        &self,
+        account: String,
+        id: String,
+        answer: InvitationAnswer,
+        collection: Option<String>,
+    ) -> Result<Delivery, InboxError> {
+        match self.ask(Request::RespondToInvitation { account, id, answer, collection }).await? {
+            Response::InvitationAnswered { delivery, .. } => Ok(delivery),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `calendar.list_events` (task E8.3c): the events of the calendars the suite shows that overlap
+    /// `[start, end)`, as [`CalendarEvent`]s in the core's order – for the window's line on what an
+    /// invitation overlaps. Hidden calendars are not asked (the core lists only shown ones). Errors
+    /// as for the other calls.
+    pub async fn list_events(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<CalendarEvent>, InboxError> {
+        match self.ask(Request::Events { start, end }).await? {
+            Response::Events { events } => Ok(events.into_iter().map(CalendarEvent::of).collect()),
             other => Err(unexpected(other)),
         }
     }
@@ -442,6 +535,7 @@ mod tests {
             untrusted: true,
             facets: Vec::new(),
             task: None,
+            invite: None,
         }
     }
 
@@ -540,6 +634,33 @@ mod tests {
             Request::CreateEventFromItem { .. } => {
                 Response::Error { code: "forbidden".into(), message: "an approval is the person's".into() }
             }
+            // Task E8.3c: the calendar chosen comes back as the event's, an unknown one is none.
+            Request::RespondToInvitation { id, answer, collection, .. } if id == "m:invite" => {
+                Response::InvitationAnswered {
+                    delivery: match answer {
+                        torro_mail::InvitationAnswer::Tentative => Delivery::Unknown,
+                        _ => Delivery::Accepted,
+                    },
+                    event: collection.map(|collection| event("Lunch", EventTime::DateTime(at(12)), collection)),
+                }
+            }
+            Request::RespondToInvitation { .. } => {
+                Response::Error { code: "error".into(), message: "This mail holds no invitation.".into() }
+            }
+            Request::Events { start, end } if start < end => Response::Events {
+                events: vec![
+                    event("Standup", EventTime::DateTime(start), "work".into()),
+                    torro_pim::Event {
+                        end: Some(EventTime::Date(day(13))),
+                        ..event("Holiday", EventTime::Date(day(12)), "work".into())
+                    },
+                    torro_pim::Event {
+                        transparency: torro_pim::Transparency::Transparent,
+                        end: Some(EventTime::DateTime(end)),
+                        ..event("Home office", EventTime::DateTime(start), "work".into())
+                    },
+                ],
+            },
             Request::OpenItem { id } if id == "window" => Response::Ok,
             Request::TaskCollections => Response::Collections { collections: lists() },
             Request::CreateTaskFromItem { id, collection, title, due } if id == "i1" => Response::Todo {
@@ -726,6 +847,59 @@ mod tests {
         assert_eq!(made.await, Ok(()));
         let approval = client.create_event_from_item("a1".into(), "work".into(), None, at(14), at(15));
         assert_eq!(approval.await, Err(InboxError::Forbidden));
+    }
+
+    fn day(day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date")
+    }
+
+    /// An event of `collection` titled `title` from `start` for an hour (a timed one) or without end.
+    fn event(title: &str, start: EventTime, collection: String) -> torro_pim::Event {
+        torro_pim::Event {
+            uid: format!("{title}@test"),
+            collection,
+            href: None,
+            etag: None,
+            summary: title.into(),
+            start,
+            end: match start {
+                EventTime::DateTime(at) => Some(EventTime::DateTime(at + TimeDelta::hours(1))),
+                EventTime::Date(_) => None,
+            },
+            location: None,
+            description: None,
+            recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
+        }
+    }
+
+    /// Task E8.3c: an answer sends the calendar chosen and comes back as how the reply went; the
+    /// events around an invitation come in instants, all-day ones from local midnight, with busy.
+    #[tokio::test]
+    async fn invitations_send_the_calendar_and_events_come_in_instants() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let account = || "mail:anna@example.org".to_string();
+        let accepted = client
+            .respond_to_invitation(account(), "m:invite".into(), InvitationAnswer::Accept, Some("work".into()))
+            .await;
+        assert_eq!(accepted, Ok(Delivery::Accepted));
+        let maybe = client.respond_to_invitation(account(), "m:invite".into(), InvitationAnswer::Tentative, None);
+        assert_eq!(maybe.await, Ok(Delivery::Unknown));
+        let none = client.respond_to_invitation(account(), "m:1".into(), InvitationAnswer::Decline, None).await;
+        assert_eq!(none, Err(InboxError::Other("This mail holds no invitation.".into())));
+
+        let events = client.list_events(at(9), at(11)).await.expect("events");
+        let standup = &events[0];
+        assert_eq!(
+            (standup.title.as_str(), standup.start, standup.end, standup.busy),
+            ("Standup", at(9), at(10), true)
+        );
+        let holiday = &events[1];
+        assert_eq!((holiday.start, holiday.end), (local_midnight(day(12)), local_midnight(day(13))));
+        assert!(!holiday.busy, "all day leaves the time free");
+        assert!(!events[2].busy && events[2].end == at(11), "transparent is free");
+        assert!(matches!(client.list_events(at(11), at(9)).await, Err(InboxError::Other(_))), "unexpected answer");
     }
 
     #[tokio::test]

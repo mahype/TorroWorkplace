@@ -858,10 +858,25 @@ E8.9   unabhängig (torro-wm, core.rs)
   Sichtprüfung Karte und Leser.
 
 ### E8.3c Nacharbeit: Einladungen im Eingang und mit Kalenderwahl
-- [ ] erledigt
+- [x] erledigt (`Item.invite` füllt der Kern beim Antworten aus dem Mail-Speicher wie `task`
+  (`Core::with_invites`, nur mit Leserecht auf das Konto), nie gespeichert – beim Ablegen kennt der Kern
+  den Text der Mail meist noch nicht. Antwort mit `Delivery::Accepted` erledigt den Eintrag der Mail (aus
+  Liste, „For me“ oder Paneel), „Undo“ öffnet nur den Eintrag; `unknown` lässt ihn offen. Karten in „For
+  me“: Termin-Chip, Accept · Maybe · Decline · Later · Task, Zeilen mit Kalender-Zeichen und den Antworten
+  statt „Done“ (`e` bleibt); Knöpfe einer Karte tragen ihre Wörter, soweit sie passen, die ersten zuerst.
+  Karte des Termins im Leser und Paneel: „Overlaps with … at 12:30“ / „No conflicts“ (nur belegte
+  Termine, `InboxClient::list_events` mit neuem `CalendarEvent`) und die Kalenderwahl (zuletzt gewählt,
+  sonst der erste; ohne geladene Kalender wählt der Kern), beides nur vor der Antwort.
+  `MailSource::respond_to_invitation` nimmt `collection`, `MailSource::list_events` neu. Sichtprüfung am
+  Mac über AeroSpace: „For me“ sechs Größen dunkel, hell 360–1600, compact; Leser Hike/Lunch dunkel,
+  hell schmal, Plex)
 - **Modell:** Opus · **Braucht:** E8.3b · **Dateien:** `crates/torro-ipc/src/inbox.rs`,
   `crates/torroinbox/src/{mail,list,overview,app,detail}.rs`, `crates/torroworkplace/src/{mail/write,inbox}.rs`,
-  `crates/torro-inbox/src/item.rs`, `crates/torro-core/src/i18n/de.rs`
+  `crates/torro-inbox/src/item.rs`, `crates/torro-core/src/i18n/de.rs`; dazu (freigegeben 2026-10-14)
+  `crates/torroworkplace/src/core.rs` (`with_invites`), `crates/torroworkplace/src/assistant/data_rule.rs`
+  (Test) und, nur `invite: None` im neuen Feld, `crates/torro-inbox/src/{demo,rules,source}.rs`,
+  `crates/torro-ipc/src/api.rs`, `crates/torroworkplace/src/{approvals,inbox_notify,mcp}.rs`,
+  `crates/torroworkplace/src/assistant/model.rs`
 - **Reste aus E8.3b:**
   - Wird eine Einladung beantwortet, ist ihr Eintrag erledigt (Szenario 5 in `eingang.md`), mit Undo nur für den
     Eintrag (die Antwort ist verschickt).

@@ -2029,9 +2029,16 @@ impl Core {
                 }
                 // Entries come with the task made of them, for whom may read it (task E8.7a).
                 let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
+                // And mail entries with what their mail invites to (task E8.3c).
                 match (&mut response, reads) {
-                    (Response::Items { items }, true) => self.with_tasks(items, reach).await,
-                    (Response::Item { item }, true) => self.with_tasks(std::slice::from_mut(item), reach).await,
+                    (Response::Items { items }, true) => {
+                        self.with_tasks(items, reach).await;
+                        self.with_invites(items, reach).await;
+                    }
+                    (Response::Item { item }, true) => {
+                        self.with_tasks(std::slice::from_mut(item), reach).await;
+                        self.with_invites(std::slice::from_mut(item), reach).await;
+                    }
                     _ => {}
                 }
                 response
@@ -2577,6 +2584,26 @@ impl Core {
                 }
             }
             item.task = found.map(|at| crate::inbox::item_task(&todos[at], &name_of(&todos[at])));
+        }
+    }
+
+    /// `items` with what the mail of each mail entry invites to ([`torro_inbox::Item::invite`], task
+    /// E8.3c): the invitation of the message the entry links to as the account's mail store holds it
+    /// now, with the answer given – only for a caller that may read the account's mail
+    /// ([`reads_mail`]). Every other entry, and every entry of a caller without that right, has none:
+    /// nothing stored or posted is passed on. A store that cannot be read leaves the entry without.
+    async fn with_invites(&self, items: &mut [torro_inbox::Item], reach: Reach<'_>) {
+        for item in items.iter_mut() {
+            item.invite = None;
+            let Some(torro_inbox::Link::Mail { message }) = &item.link else { continue };
+            let account = item.source.key();
+            if item.source.kind != torro_inbox::SourceKind::Mail || !reads_mail(reach, &account) {
+                continue;
+            }
+            let Ok(store) = self.mail.store(&account).await else { continue };
+            let id = message.clone();
+            let summary = store.run(move |store| store.summary(&id)).await;
+            item.invite = summary.ok().flatten().and_then(|summary| summary.invite);
         }
     }
 
@@ -6804,6 +6831,7 @@ mod tests {
             untrusted: true,
             facets: Vec::new(),
             task: None,
+            invite: None,
         };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).map(torro_pim::EventTime::Date);
         let task = task_from_entry(&item, "work".into(), Some("  Fix the deploy ".into()), due, None);
@@ -7092,6 +7120,7 @@ mod tests {
             untrusted: true,
             facets: Vec::new(),
             task: None,
+            invite: None,
         };
         let (start, end) =
             (torro_pim::EventTime::DateTime(at), torro_pim::EventTime::DateTime(at + chrono::TimeDelta::hours(1)));
@@ -10922,6 +10951,59 @@ mod tests {
             assert_eq!(created_on(&room.fake), 1, "a new event, the board meeting not overwritten");
             assert_ne!(event.href.as_deref(), Some("board.ics"));
             assert_eq!(room.smtp.sent().len(), 2);
+        }
+
+        /// Task E8.3c: the entry of the invitation's mail carries the invitation as the mail store
+        /// holds it, with the answer given, for the suite and for a client that reads the account; a
+        /// client that may not read the account's mail never gets it.
+        #[tokio::test]
+        async fn the_entry_of_an_invitation_carries_it_for_who_may_read_the_mail() {
+            let room = invited().await;
+            let (core, key) = (&room.core, Some(&room.app_key));
+            let mail = crate::inbox::NewMail {
+                account: ANNA.into(),
+                message: room.id.clone(),
+                thread: "t:p1".into(),
+                subject: "Planning".into(),
+                snippet: "Join us".into(),
+                from: None,
+                bulk: false,
+                list: None,
+                date: Utc::now(),
+            };
+            let entry =
+                core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
+            let list = || Request::ListItems { lane: None, source: None, state: None, since: None, limit: None };
+            let invite_in = |response: Response| match response {
+                Response::Items { items } => {
+                    items.into_iter().find(|item| item.id == entry).and_then(|item| item.invite)
+                }
+                Response::Item { item } => item.invite,
+                other => panic!("entries: {other:?}"),
+            };
+            let invite = invite_in(ask(core, key, list()).await).expect("the invitation");
+            assert_eq!((invite.title.as_str(), invite.answered), ("Planning, Q4", None));
+
+            let answered = ask(core, key, respond(&room.id, InvitationAnswer::Accept, None)).await;
+            assert!(matches!(answered, Response::InvitationAnswered { .. }), "{answered:?}");
+            let one = invite_in(ask(core, key, Request::GetItem { id: entry.clone() }).await);
+            assert_eq!(one.and_then(|invite| invite.answered), Some(InvitationAnswer::Accept), "the answer given");
+
+            let (_, reader) = client(core, sender(Outbound::Free, Confirm::Never)).await;
+            assert!(invite_in(ask(core, Some(&reader), list()).await).is_some(), "it reads the account");
+            let mut other_account = sender(Outbound::Free, Confirm::Never);
+            other_account.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+            let mut no_mail = sender(Outbound::Free, Confirm::Never);
+            no_mail.areas.insert(Area::Mail, AreaRights { level: Level::NoAccess, admin: false });
+            for rights in [other_account, no_mail] {
+                let (_, key) = client(core, rights).await;
+                match ask(core, Some(&key), list()).await {
+                    Response::Items { items } => assert!(items.iter().all(|item| item.invite.is_none()), "{items:?}"),
+                    other => assert!(matches!(other, Response::Error { .. }), "{other:?}"),
+                }
+                let one = ask(core, Some(&key), Request::GetItem { id: entry.clone() }).await;
+                assert!(!matches!(&one, Response::Item { item } if item.invite.is_some()), "{one:?}");
+            }
         }
 
         /// A client needs mail, sending and the calendar: without calendar write (or delete, for a

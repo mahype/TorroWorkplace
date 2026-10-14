@@ -50,6 +50,12 @@
 //! close button: mail is not dismissed in the mail window. Their height depends on what they show,
 //! never on the width ([`mail_card_height`]), so the app can scroll the cursor into view.
 //!
+//! **Invitations** (task E8.3c): a mail entry whose mail invites to an event ([`Item::invite`], as
+//! the core fills it in) shows when it is – as a chip with the answer given on its card, as the
+//! calendar's mark in its row – and offers Accept · Maybe · Decline ([`invite_actions`],
+//! `Message::AnswerInvitation` for the message it links to) in place of "Done", as long as the
+//! event is not over: answering is what is done with it, and the window marks the entry done then.
+//!
 //! Titles and bodies of other sources are foreign text (`Item::untrusted`). Iced draws text as it
 //! is, so nothing in it is ever interpreted; [`one_line`] and [`plain`] also drop control and
 //! direction characters, so a title can neither break the row into lines nor turn its text around.
@@ -66,11 +72,11 @@ use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::typo::{self, Level};
 use torro_gui::widgets::{self, Anchor, Mark, RowAction};
 use torro_gui::{datetime, layout, style};
-use torro_inbox::{Item, SourceKind, SourceRef, State, rules};
+use torro_inbox::{Item, Link, SourceKind, SourceRef, State, rules};
 
 use crate::app::{Message, View};
-use crate::detail;
 use crate::keys::Command;
+use crate::{detail, mail};
 
 /// What the rows of entries need besides the entries (task E3.9): the same for the list of a view
 /// and for the columns of the overview.
@@ -302,13 +308,15 @@ pub(crate) fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message
 pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let selected = rows.selected == Some(item.id.as_str());
     let content = if item.source.kind == SourceKind::Mail {
-        mail_content(MailLines::of(item, rows), width)
+        // An invitation (task E8.3c): the calendar's mark before the time, as in a folder's row.
+        let marks = item.invite.as_ref().map(|invite| mail::invite_mark(invite, rows.now)).into_iter().collect();
+        mail_content(MailLines { marks, ..MailLines::of(item, rows) }, width)
     } else {
         notice_content(item, rows, width)
     };
     let height = row_height_of(item);
     let row = sized_row(content, selected, Message::Select(item.id.clone()), height);
-    let actions = actions(item, rows.hidable.contains(&item.id.as_str()));
+    let actions = entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.now);
     let words = widgets::row_actions_words(&actions, width);
     // On the first line, over the time: the preview and the account below stay readable.
     let row = widgets::row_actions_at(row, actions, selected, words, first_line_middle(height, line_count(item)));
@@ -340,6 +348,39 @@ pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
         actions.push(RowAction::new(Icon::Ellipsis, tr("Hide"), "M", act(Command::Hide)));
     }
     actions
+}
+
+/// The action bar of `item`'s row at `now`: [`actions`], or for a mail entry with an invitation to
+/// answer (task E8.3c, [`invite_actions`]) Accept · Maybe · Decline · Task · Later (· Hide) – the
+/// answer is what makes the entry done, so "Done" gives way; `e` still marks it done.
+pub fn entry_actions<'a>(item: &Item, hidable: bool, now: DateTime<Utc>) -> Vec<RowAction<'a, Message>> {
+    let mut actions = actions(item, hidable);
+    let answers = invite_actions(item, now);
+    if !answers.is_empty() {
+        actions.retain(|action| !matches!(action.on_press, Message::Act(_, Command::Done)));
+        actions.splice(0..0, answers);
+    }
+    actions
+}
+
+/// The answers to the invitation of the mail entry `item` (task E8.3c): Accept · Maybe · Decline,
+/// each sending `Message::AnswerInvitation` with the entry's account (its source, `mail:<address>`)
+/// and the message it links to ([`Link::Mail`]) – the one whose invitation [`Item::invite`] is.
+/// Empty for an entry without an invitation, one that is done or no mail entry, and once the event
+/// is over at `now` (the core answers no more).
+pub fn invite_actions<'a>(item: &Item, now: DateTime<Utc>) -> Vec<RowAction<'a, Message>> {
+    let open = item.invite.as_ref().is_some_and(|invite| !mail::invite_over(invite, now));
+    let (true, Some(Link::Mail { message }), false) =
+        (open, &item.link, matches!(item.state, State::Done { .. }) || item.source.kind != SourceKind::Mail)
+    else {
+        return Vec::new();
+    };
+    mail::answers()
+        .into_iter()
+        .map(|(icon, word, answer)| {
+            RowAction::new(icon, word, "", Message::AnswerInvitation(item.source.key(), message.clone(), answer))
+        })
+        .collect()
 }
 
 /// How many lines of its text a mail card shows (task E8.3, "zwei Zeilen Vorschau").
@@ -446,7 +487,12 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
 
     let chips =
         (!chips.is_empty()).then(|| container(widgets::chip_row(chips)).center_y(size::control_sm()).clip(true));
-    let mut tail: Vec<Element<'a, Message>> = buttons.into_iter().map(|button| card_button(button, words)).collect();
+    // Words only as far as the buttons fit the card side by side (an invitation has five, task
+    // E8.3c): the first ones keep theirs, the rest show their icons, still in a row of their own, so
+    // the card keeps its height.
+    let spoken = if words { spoken(&buttons, more.is_some(), inner) } else { 0 };
+    let mut tail: Vec<Element<'a, Message>> =
+        buttons.into_iter().enumerate().map(|(i, button)| card_button(button, i < spoken)).collect();
     if words {
         parts.extend(chips.map(Element::from));
         if more.is_some() {
@@ -466,6 +512,24 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
         parts.push(bottom.into());
     }
     widgets::card(parts, selected, Some(on_press))
+}
+
+/// The width the buttons of a card take when the first `spoken` carry their words and the rest only
+/// their icons, one beside the other with the card's gap, and the "…" at the end when there is
+/// `more` (task E8.3c): an estimate a little on the safe side.
+fn buttons_width(buttons: &[RowAction<'_, Message>], spoken: usize, more: bool) -> f32 {
+    let spoken = spoken.min(buttons.len());
+    let gaps = space::s() * buttons.len() as f32;
+    let icons = size::control_sm() * (buttons.len() - spoken) as f32;
+    let more = if more { size::control_sm() + space::s() } else { 0.0 };
+    widgets::row_actions_width(&buttons[..spoken], true) + icons + gaps + more
+}
+
+/// How many of a card's `buttons`, from the first, carry their words in `room` ([`buttons_width`]):
+/// all when they fit, else as many as leave room for the others' icons – an invitation keeps
+/// Accept · Maybe · Decline in words before Later and Task –, else none.
+fn spoken(buttons: &[RowAction<'_, Message>], more: bool, room: f32) -> usize {
+    (0..=buttons.len()).rev().find(|&spoken| buttons_width(buttons, spoken, more) <= room).unwrap_or(0)
 }
 
 /// A button of a card: with its icon and word (`secondary`), or – without `words` – the icon alone
@@ -522,17 +586,38 @@ pub fn card_buttons<'a>(
     (buttons, more)
 }
 
-/// The chips of a mail entry's card: the number of messages from two on.
-fn entry_chips<'a>(item: &Item) -> Vec<Element<'a, Message>> {
-    (item.count > 1)
-        .then(|| widgets::state_pill(Icon::Mail, trf("{n} messages", &[("n", &item.count)])))
-        .into_iter()
-        .collect()
+/// The buttons of the card of `item` at `now` (task E8.3c): an invitation to answer
+/// ([`invite_actions`]) has Accept · Maybe · Decline · Later · Task – the answer is what makes the
+/// entry done –, every other entry [`card_buttons`]. The second is "…" for "Hide from inbox".
+pub fn entry_card_buttons<'a>(
+    item: &Item,
+    hidable: bool,
+    words: bool,
+    now: DateTime<Utc>,
+) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
+    let (buttons, more) = card_buttons(item, hidable, words);
+    let mut answers = invite_actions(item, now);
+    if answers.is_empty() {
+        return (buttons, more);
+    }
+    let rest = |command: Command| buttons.iter().find(|b| matches!(b.on_press, Message::Act(_, c) if c == command));
+    answers.extend([rest(Command::Snooze), rest(Command::MakeTask)].into_iter().flatten().cloned());
+    (answers, more)
+}
+
+/// The chips of a mail entry's card: when its invitation is, with the answer given (task E8.3c,
+/// `mail::invite_chips`), and the number of messages from two on.
+fn entry_chips<'a>(item: &Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
+    let mut chips = item.invite.as_ref().map(|invite| mail::invite_chips(invite, now)).unwrap_or_default();
+    if item.count > 1 {
+        chips.push(widgets::state_pill(Icon::Mail, trf("{n} messages", &[("n", &item.count)])));
+    }
+    chips
 }
 
 /// The height of the card of the mail entry `item` with its buttons with `words` ([`entry_card`]).
 pub fn entry_card_height(item: &Item, words: bool) -> f32 {
-    mail_card_height(card_preview(item).is_some(), item.count > 1, words)
+    mail_card_height(card_preview(item).is_some(), item.count > 1 || item.invite.is_some(), words)
 }
 
 /// The text a mail entry's card previews: its whole body on one line, which the card cuts after
@@ -551,11 +636,11 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
         return entry_row(item, rows, width);
     }
     let selected = rows.selected == Some(item.id.as_str());
-    let (buttons, more) = card_buttons(item, rows.hidable.contains(&item.id.as_str()), words);
+    let (buttons, more) = entry_card_buttons(item, rows.hidable.contains(&item.id.as_str()), words, rows.now);
     let lines = MailLines { preview: card_preview(item), ..MailLines::of(item, rows) };
     let card = MailCard {
         lines,
-        chips: entry_chips(item),
+        chips: entry_chips(item, rows.now),
         buttons,
         more,
         words,
@@ -1023,6 +1108,7 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
 mod tests {
     use chrono::{TimeDelta, TimeZone};
     use torro_inbox::demo;
+    use torro_mail::InvitationAnswer;
 
     use super::*;
 
@@ -1338,6 +1424,81 @@ mod tests {
             }
             let _ = view_of(&items, rows);
         }
+    }
+
+    /// A mail entry whose mail `m:invite` invites to an event in a day, an hour long.
+    fn invitation() -> Item {
+        let invite = torro_mail::Invite {
+            title: "Planning".into(),
+            start: now() + TimeDelta::days(1),
+            end: Some(now() + TimeDelta::days(1) + TimeDelta::hours(1)),
+            all_day: false,
+            answered: None,
+        };
+        let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        Item { link: Some(Link::Mail { message: "m:invite".into() }), invite: Some(invite), ..item }
+    }
+
+    /// Task E8.3c: an invitation's card in "For me" answers it – Accept · Maybe · Decline · Later ·
+    /// Task, each answer for the mail it links to –, its row offers the answers in place of "Done",
+    /// both show when it is; once the event is over, or the entry is done, it is a mail as any.
+    #[test]
+    fn an_invitation_in_for_me_offers_its_answers() {
+        let item = invitation();
+        let answers = [tr("Accept"), tr("Maybe"), tr("Decline")];
+        let (buttons, more) = entry_card_buttons(&item, true, false, now());
+        assert_eq!(labels(&buttons), [&answers[..], &[tr("Later"), tr("Task")]].concat());
+        assert!(more.is_some(), "\"…\" for hiding stays");
+        let sent: Vec<Message> = buttons.iter().take(3).map(|button| button.on_press.clone()).collect();
+        let account = SourceRef::mail("anna@work.example.org").key();
+        let Message::AnswerInvitation(to, about, InvitationAnswer::Accept) = &sent[0] else { panic!("{:?}", sent[0]) };
+        assert_eq!((to, about.as_str()), (&account, "m:invite"));
+        assert!(matches!(&sent[2], Message::AnswerInvitation(_, _, InvitationAnswer::Decline)));
+        let row = labels(&entry_actions(&item, false, now()));
+        assert_eq!(row, [&answers[..], &[tr("Task"), tr("Later")]].concat());
+        let bare = Item { invite: None, ..item.clone() };
+        assert!(entry_card_height(&item, true) > entry_card_height(&bare, true), "the chips get a row of their own");
+
+        let over = now() + TimeDelta::days(2);
+        assert!(invite_actions(&item, over).is_empty(), "over: no answers");
+        assert_eq!(
+            labels(&entry_card_buttons(&item, false, false, over).0),
+            labels(&card_buttons(&item, false, false).0)
+        );
+        let done = Item { state: State::Done { at: now() }, ..item.clone() };
+        assert!(invite_actions(&done, now()).is_empty(), "done: answered or put aside");
+        let unlinked = Item { link: None, ..item.clone() };
+        assert!(invite_actions(&unlinked, now()).is_empty(), "no mail to answer");
+
+        let view = View::Overview;
+        for look in [Look::Rows, Look::Cards { words: false }, Look::Cards { words: true }] {
+            let rows = Rows {
+                view: &view,
+                selected: Some(item.id.as_str()),
+                now: now(),
+                anchor: Anchor::new(),
+                accounts: vec!["anna@work.example.org"],
+                hidable: Vec::new(),
+                look,
+            };
+            for width in [0.0, 240.0, 360.0, 480.0, 720.0] {
+                let _ = entry_card(&item, &rows, width);
+                let _ = entry_row(&item, &rows, width);
+            }
+        }
+    }
+
+    /// Task E8.3c: a card's buttons carry their words as far as they fit side by side, the first
+    /// ones first; with no room for words, icons alone.
+    #[test]
+    fn card_buttons_speak_only_while_they_fit() {
+        let (buttons, _) = entry_card_buttons(&invitation(), false, true, now());
+        let all = buttons_width(&buttons, buttons.len(), true);
+        assert_eq!(spoken(&buttons, true, all), buttons.len());
+        let answers = buttons_width(&buttons, 3, true);
+        assert!(answers < all && answers > buttons_width(&buttons, 0, true));
+        assert_eq!(spoken(&buttons, true, answers), 3, "Accept · Maybe · Decline in words, Later and Task as icons");
+        assert_eq!(spoken(&buttons, true, 0.0), 0);
     }
 
     fn view_of<'a>(items: &'a [Item], rows: Rows<'a>) -> Element<'a, Message> {

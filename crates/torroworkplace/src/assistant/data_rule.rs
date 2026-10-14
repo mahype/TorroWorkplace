@@ -219,6 +219,7 @@ mod tests {
             untrusted: true,
             facets: Vec::new(),
             task: None,
+            invite: None,
         }
     }
 
@@ -308,6 +309,30 @@ mod tests {
 
         let one = Response::Item { item: item("b2", agent_source(), "Build finished") };
         assert!(!for_model(&Request::GetItem { id: "b2".into() }, &one, Place::Remote).withheld);
+    }
+
+    /// Task E8.3c: the invitation a mail entry carries is the mail's content and goes with the rest
+    /// of the entry – a model elsewhere reads neither its title nor when it is.
+    #[test]
+    fn the_invitation_of_a_mail_entry_is_withheld_with_it() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 20, 12, 0, 0).single().expect("valid time");
+        let invite = torro_mail::Invite {
+            title: "Board meeting".into(),
+            start,
+            end: None,
+            all_day: false,
+            answered: Some(torro_mail::InvitationAnswer::Accept),
+        };
+        let entry = Item { invite: Some(invite), ..item("a1", mail_source(), "Invitation") };
+        let one = Response::Item { item: entry.clone() };
+        let remote = for_model(&Request::GetItem { id: "a1".into() }, &one, Place::Remote);
+        let text = remote.value.to_string();
+        assert!(remote.withheld && !text.contains("Board meeting") && !text.contains("2026-10-20"), "{text}");
+        let list: Request = serde_json::from_value(json!({"method": "inbox.list_items"})).expect("a list");
+        let many = for_model(&list, &Response::Items { items: vec![entry] }, Place::Remote).value.to_string();
+        assert!(!many.contains("Board meeting") && !many.contains("invite"), "{many}");
+        let local = for_model(&Request::GetItem { id: "a1".into() }, &one, Place::Local);
+        assert!(local.value.to_string().contains("Board meeting"), "a local model reads it");
     }
 
     #[test]

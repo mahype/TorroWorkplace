@@ -161,6 +161,7 @@ use torro_inbox::{
     Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, Link, Rule, SourceInfo, SourceKind, SourceRef, State,
     StateFilter, rules,
 };
+use torro_ipc::inbox::CalendarEvent;
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
 use torro_mail::{Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
 
@@ -780,8 +781,11 @@ pub enum Sent {
     DismissAll(Vec<String>),
     /// Its undo: these entries opened again.
     Reopen(Vec<String>),
-    /// `mail.respond_to_invitation` (task E8.3b): account, message and answer.
-    Answer(String, String, InvitationAnswer),
+    /// `mail.respond_to_invitation` (task E8.3b): account, message, answer and the calendar chosen
+    /// (task E8.3c; `None`: the core's choice).
+    Answer(String, String, InvitationAnswer, Option<String>),
+    /// `calendar.list_events` around an invitation (task E8.3c): the message and the span asked.
+    Events(String, DateTime<Utc>, DateTime<Utc>),
     /// `tasks.create_todo_from_mail` (task E8.7b): account, message, list, title (`None`: the
     /// subject) and due day (task E8.1b).
     MailTask {
@@ -1573,6 +1577,15 @@ pub struct App<S> {
     /// The answers this window gave to invitations while it runs, by message id (task E8.3b): kept
     /// over what loads (the demo keeps no answers, and the core's sync may lag behind).
     answers: Vec<(String, InvitationAnswer)>,
+    /// The calendars an invitation's event can go to (task E8.3c), asked once the first invitation
+    /// is read: `None` until they are in, then the answer.
+    invite_calendars: Option<Result<Vec<TaskList>, String>>,
+    /// The calendar picked on an invitation's card (task E8.3c, [`App::invite_calendar`]); `None`
+    /// until one is picked.
+    invite_pick: Option<String>,
+    /// The events of the shown calendars around the invitation of the message read (task E8.3c):
+    /// the message's id and what `calendar.list_events` answered for it.
+    invite_events: Option<(String, Result<Vec<CalendarEvent>, String>)>,
     /// The folders of the mail accounts (task E4.2), as last loaded.
     folders: Vec<Folder>,
     /// The messages of the folder's view, newest first; the cursor and the panel name them by id.
@@ -1863,6 +1876,13 @@ pub enum Message {
     AnswerInvitation(String, String, InvitationAnswer),
     /// The core's answer for the invitation in the message with this id.
     InvitationAnswered(String, InvitationAnswer, Result<Delivery, String>),
+    /// A calendar picked on an invitation's card (task E8.3c): its event goes there.
+    InviteCalendar(TaskList),
+    /// The calendars an invitation's event can go to (task E8.3c, `calendar.list_calendars`).
+    InviteCalendars(Result<Vec<TaskList>, String>),
+    /// The events around the invitation in the message with this id (task E8.3c,
+    /// `calendar.list_events`).
+    InviteEvents(String, Result<Vec<CalendarEvent>, String>),
     /// The answer to `tasks.create_todo_from_mail`: the task made of the message with this id.
     MailTaskCreated(String, Result<torro_inbox::item::ItemTask, String>),
     /// "Open task" (the card of a mail, "Handed off", task E8.7b): the task with this uid in the
@@ -1907,6 +1927,21 @@ pub enum Message {
 ///
 /// `demo` is the demo's "now" with `--demo` (else `None`): the entries get the demo's tasks
 /// ([`demo_task`]) before they are sorted into the window, as the core's would come.
+/// Whether the open entry `item` holds the message `id`: it links to it ([`Link::Mail`]).
+fn holds(item: &Item, id: &str) -> bool {
+    matches!(&item.link, Some(Link::Mail { message }) if message == id) && item.state.is_open()
+}
+
+/// The entry `item` with the answer the window gave to the invitation of its mail (task E8.3c), as
+/// [`keep_answer`] does for messages.
+fn keep_entry_answer(answers: &[(String, InvitationAnswer)], item: &mut Item) {
+    let Some(Link::Mail { message }) = &item.link else { return };
+    let given = answers.iter().find(|(id, _)| id == message).map(|(_, answer)| *answer);
+    if let (Some(answer), Some(invite)) = (given, item.invite.as_mut()) {
+        invite.answered = Some(answer);
+    }
+}
+
 /// `message` with the answer the window gave to its invitation, if `answers` holds one (task E8.3b,
 /// [`App::answers`]).
 fn keep_answer(answers: &[(String, InvitationAnswer)], message: &mut MessageSummary) {
@@ -1945,6 +1980,8 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
             .map(|mut item| {
                 if let Some(now) = demo {
                     demo_task(&mut item, now);
+                    // The invitation of an entry's mail, as the core fills it in (task E8.3c).
+                    item.invite = mail::demo_entry_invite(&item);
                 }
                 item
             })
@@ -2073,6 +2110,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             deciding: None,
             answering: None,
             answers: Vec::new(),
+            invite_calendars: None,
+            invite_pick: None,
+            invite_events: None,
             folders: Vec::new(),
             messages: Vec::new(),
             more: None,
@@ -2346,6 +2386,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 let mut item = *item;
                 if self.launch.demo {
                     demo_task(&mut item, self.now);
+                    item.invite = mail::demo_entry_invite(&item);
                 }
                 if let Some(detail) = self.detail.as_mut().filter(|detail| detail.id == item.id) {
                     *detail = item;
@@ -2480,8 +2521,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 if let Ok(mail) = &mut result {
                     keep_answer(&self.answers, &mut mail.summary);
                 }
+                let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
                     letter.loaded = Some(result);
+                    return self.ask_invite_side(&id, invite.as_ref());
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -2549,6 +2592,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::AskMailTask(id) => return self.ask_mail_task(&id),
             Message::AnswerInvitation(account, id, answer) => return self.answer_invitation(account, id, answer),
             Message::InvitationAnswered(id, answer, result) => return self.invitation_answered(id, answer, result),
+            Message::InviteCalendar(calendar) => self.invite_pick = Some(calendar.id),
+            Message::InviteCalendars(result) => self.invite_calendars = Some(result),
+            Message::InviteEvents(id, result) => {
+                if self.letter.as_ref().is_some_and(|letter| letter.id == id) {
+                    self.invite_events = Some((id, result));
+                }
+            }
             Message::MailTaskCreated(id, Ok(task)) => {
                 self.note(trf("Task created in {list}", &[("list", &task.list)]));
                 self.made.retain(|(message, _)| *message != id);
@@ -3096,6 +3146,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let followed = self.detail.as_ref().is_some_and(|detail| self.cursor.as_deref() == Some(detail.id.as_str()));
         self.done = loaded.done;
         self.items = loaded.items;
+        for item in &mut self.items {
+            keep_entry_answer(&self.answers, item);
+        }
         self.items.sort_by_key(|item| !list::is_waiting(item));
         // The hub's "Done today" (task E8.5): what was done today, local time.
         if self.launch.kind == Kind::Hub && self.view == View::Done {
@@ -3788,20 +3841,63 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return Task::none();
         }
         self.answering = Some(id.clone());
+        let collection = self.invite_calendar().map(|calendar| calendar.id.clone());
         #[cfg(test)]
-        self.sent.push(Sent::Answer(account.clone(), id.clone(), answer));
+        self.sent.push(Sent::Answer(account.clone(), id.clone(), answer, collection.clone()));
         let inbox = self.inbox.clone();
         let asked = id.clone();
         Task::perform(
-            async move { inbox.respond_to_invitation(account, asked, answer).await.map_err(|err| err.to_string()) },
+            async move {
+                inbox.respond_to_invitation(account, asked, answer, collection).await.map_err(|err| err.to_string())
+            },
             move |result| Message::InvitationAnswered(id.clone(), answer, result),
         )
     }
 
+    /// The calendar an answer to an invitation puts its event in (task E8.3c), as the card shows it:
+    /// the one picked on the card, else the one used last for an event, else the first – the core's
+    /// own choice without a copy made before. `None` while the calendars are not in (or could not
+    /// be read): the core chooses then. A copy made before stays in its calendar whatever is sent.
+    pub fn invite_calendar(&self) -> Option<&TaskList> {
+        let Some(Ok(calendars)) = &self.invite_calendars else { return None };
+        let by_id = |id: &Option<String>| calendars.iter().find(|calendar| Some(&calendar.id) == id.as_ref());
+        by_id(&self.invite_pick).or_else(|| by_id(&self.last_calendar)).or(calendars.first())
+    }
+
+    /// What the card of the invitation `invite` in the message `id` needs besides it (task E8.3c),
+    /// once the mail is read: the events of the shown calendars around it, for what it overlaps,
+    /// and – the first time – the calendars to choose. Nothing for a mail without an invitation, one
+    /// answered already or one whose event is over: the card shows neither then.
+    fn ask_invite_side(&mut self, id: &str, invite: Option<&torro_mail::Invite>) -> Task<Message> {
+        let Some(invite) = invite.filter(|invite| invite.answered.is_none() && !mail::invite_over(invite, self.now))
+        else {
+            return Task::none();
+        };
+        let (start, end) = mail::invite_span(invite);
+        #[cfg(test)]
+        self.sent.push(Sent::Events(id.to_owned(), start, end));
+        let inbox = self.inbox.clone();
+        let asked = id.to_owned();
+        let events = Task::perform(
+            async move { inbox.list_events(start, end).await.map_err(|err| err.to_string()) },
+            move |result| Message::InviteEvents(asked.clone(), result),
+        );
+        if self.invite_calendars.is_some() {
+            return events;
+        }
+        let inbox = self.inbox.clone();
+        let calendars = async move { inbox.list_calendars().await.map_err(|err| err.to_string()) };
+        Task::batch([events, Task::perform(calendars, Message::InviteCalendars)])
+    }
+
     /// The core's answer to an invitation answered (task E8.3b): the answer kept on the message (in
     /// the list and the reader, also over later loads, [`keep_answer`]) and a hint that says
-    /// what happened – there is no undo, a sent answer cannot be taken back; the error line when it
-    /// failed. Then the window loads again.
+    /// what happened; the error line when it failed. Then the window loads again.
+    ///
+    /// The mail's open entry, wherever the window holds it, is marked done (task E8.3c,
+    /// `inbox.set_item_done`), and the hint's "Undo" opens it again – only the entry: a sent answer
+    /// cannot be taken back. An answer that may not have gone out ([`Delivery::Unknown`]) leaves
+    /// the entry open, without undo.
     fn invitation_answered(
         &mut self,
         id: String,
@@ -3834,8 +3930,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             (_, InvitationAnswer::Tentative) => tr("Answered maybe. The event is in your calendar."),
             (_, InvitationAnswer::Decline) => tr("Declined. The organizer was told."),
         };
-        self.note(text.to_owned());
-        self.load()
+        // Answered is dealt with (task E8.3c, scenario 5 in `docs/eingang.md`): the mail's entry is
+        // done, and "Undo" opens the entry again – the answer is sent, nothing takes it back. An
+        // answer that may not have gone out leaves the entry open, to check and answer again.
+        // The entry wherever the window holds it: the list, "For me" (also beside a folder), the panel.
+        let entry = self.detail.iter().chain(&self.items).chain(&self.for_me).find(|item| holds(item, &id));
+        match entry.map(|item| item.id.clone()).filter(|_| delivery == Delivery::Accepted) {
+            Some(entry) => {
+                let undo = Some(Edit::Done { id: entry.clone(), done: false });
+                self.send(Edit::Done { id: entry, done: true }, Some(After { text: text.to_owned(), undo }))
+            }
+            None => {
+                self.note(text.to_owned());
+                self.load()
+            }
+        }
     }
 
     /// "Create task" for a folder's message (task E8.7b): sends `tasks.create_todo_from_mail` with
@@ -4062,8 +4171,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.cursor = Some(id.clone());
         self.reading = true;
         self.pinned_mail = Some(id.clone());
+        // Its invitation's calendars and overlaps (task E8.3c), as for a mail read from the list.
+        let invite = self.ask_invite_side(&id, mail.summary.invite.as_ref());
         self.letter = Some(Letter { id, loaded: Some(Ok(mail)) });
-        self.load()
+        Task::batch([self.load(), invite])
     }
 
     /// Whether `source` is muted, as the source list says.
@@ -4680,6 +4791,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             account: account.and_then(|account| accounts.iter().position(|group| group.account == account)),
             task: self.task_of(&letter.id),
             answering: self.answering.as_deref() == Some(letter.id.as_str()),
+            invite: mail::InviteSide {
+                calendars: match &self.invite_calendars {
+                    Some(Ok(calendars)) => Some(calendars),
+                    _ => None,
+                },
+                calendar: self.invite_calendar(),
+                events: match &self.invite_events {
+                    Some((id, Ok(events))) if *id == letter.id => Some(events),
+                    _ => None,
+                },
+            },
         })
     }
 
@@ -5612,10 +5734,11 @@ fn choice_menu_width(choices: &[Choice]) -> f32 {
     needed.fold(widgets::menu_width(), f32::max).ceil().min(size::panel())
 }
 
-/// A pick list in the suite's look for a property of the dialog of "Make task": `options` shown
+/// A pick list in the suite's look for a property of the dialog of "Make task" (and the calendar of
+/// an invitation's card, task E8.3c, `mail::invite_card`): `options` shown
 /// by their names, `selected` in it, `on_pick` with the one picked. As high as a small button,
 /// as wide as its row.
-fn choice<'a, T>(options: Vec<T>, selected: Option<T>, on_pick: fn(T) -> Message) -> Element<'a, Message>
+pub(crate) fn choice<'a, T>(options: Vec<T>, selected: Option<T>, on_pick: fn(T) -> Message) -> Element<'a, Message>
 where
     T: ToString + PartialEq + Clone + 'a,
 {
@@ -8163,16 +8286,18 @@ mod tests {
         let _ = app.update(answer(InvitationAnswer::Decline));
         let asked: Vec<&Sent> = app.sent.iter().filter(|sent| matches!(sent, Sent::Answer(..))).collect();
         assert_eq!(asked.len(), 1, "one answer at a time");
-        assert!(matches!(asked[0], Sent::Answer(_, id, InvitationAnswer::Accept) if *id == first.id));
+        assert!(matches!(asked[0], Sent::Answer(_, id, InvitationAnswer::Accept, _) if *id == first.id));
         let _ = app.view();
 
         let _ =
             app.update(Message::InvitationAnswered(first.id.clone(), InvitationAnswer::Accept, Ok(Delivery::Accepted)));
         assert_eq!(app.answering, None);
-        assert_eq!(
-            app.hint.as_ref().map(|hint| hint.text.as_str()),
-            Some(tr("Accepted. The event is in your calendar."))
-        );
+        // The hike's mail has an entry: the hint comes with marking it done (task E8.3c).
+        let hint = match app.sent.last() {
+            Some(Sent::Edit(Edit::Done { done: true, .. }, Some(after))) => Some(after.text.as_str()),
+            _ => app.hint.as_ref().map(|hint| hint.text.as_str()),
+        };
+        assert_eq!(hint, Some(tr("Accepted. The event is in your calendar.")));
         load(&mut app);
         let shown = app.messages.iter().find(|m| m.id == first.id).and_then(|m| m.invite.clone());
         assert_eq!(shown.and_then(|invite| invite.answered), Some(InvitationAnswer::Accept), "kept over the load");
@@ -8192,6 +8317,91 @@ mod tests {
             let _ = compact.update(Message::Resized(size));
             let _ = compact.view();
         }
+    }
+
+    /// Task E8.3c: an entry of "For me" carries the invitation of its mail; answering it marks the
+    /// entry done, and the hint's undo opens the entry alone again. An answer that may not have gone
+    /// out leaves it open.
+    #[test]
+    fn answering_an_invitation_marks_its_entry_done() {
+        let mut app = mail_window("comfortable", &[]);
+        let hike = app.items.iter().find(|item| item.id == "demo-mail-4").cloned().expect("Paul's mail");
+        assert!(hike.invite.as_ref().is_some_and(|invite| invite.all_day), "the hike, all Saturday");
+        let Some(Link::Mail { message }) = hike.link.clone() else { panic!("a mail entry links its mail") };
+        let accept = list::invite_actions(&hike, app.now).remove(0).on_press;
+        let _ = app.update(accept);
+        assert!(
+            matches!(app.sent.last(), Some(Sent::Answer(account, id, InvitationAnswer::Accept, None))
+                if *account == hike.source.key() && *id == message),
+            "{:?}",
+            app.sent.last()
+        );
+        let _ = app.view();
+        let _ =
+            app.update(Message::InvitationAnswered(message.clone(), InvitationAnswer::Accept, Ok(Delivery::Accepted)));
+        let text = tr("Accepted. The event is in your calendar.").to_owned();
+        let undo = Some(Edit::Done { id: hike.id.clone(), done: false });
+        let done = Sent::Edit(Edit::Done { id: hike.id.clone(), done: true }, Some(After { text, undo }));
+        assert_eq!(app.sent.last(), Some(&done));
+
+        let mut app = mail_window("comfortable", &[]);
+        let _ = app.update(Message::AnswerInvitation(hike.source.key(), message.clone(), InvitationAnswer::Tentative));
+        let before = app.sent.len();
+        let _ = app.update(Message::InvitationAnswered(message, InvitationAnswer::Tentative, Ok(Delivery::Unknown)));
+        assert!(app.sent[before..].iter().all(|sent| !matches!(sent, Sent::Edit(..))), "the entry stays open");
+        let hint = app.hint.as_ref().expect("a hint");
+        assert_eq!(
+            (hint.text.as_str(), hint.undo.is_none()),
+            (tr("The answer may not have gone out. Check your sent mail."), true)
+        );
+    }
+
+    /// Task E8.3c: reading an invitation asks for the events around it and – once – the calendars;
+    /// the card offers the calendar, and the one picked goes with the answer: the first one before a
+    /// pick, none while the calendars are not in (the core chooses then).
+    #[test]
+    fn the_calendar_picked_goes_with_the_answer() {
+        let mut app = mail_window("comfortable", &["--open", "invitation"]);
+        let summary = app.messages.first().cloned().expect("the first invitation");
+        let invite = summary.invite.clone().expect("an invitation");
+        assert_eq!(app.letter.as_ref().map(|letter| letter.id.as_str()), Some(summary.id.as_str()), "read at once");
+        deliver_letter(&mut app, &summary.id);
+        let (start, end) = mail::invite_span(&invite);
+        assert!(app.sent.contains(&Sent::Events(summary.id.clone(), start, end)), "{:?}", app.sent);
+
+        let answer = |app: &mut App<DemoSource>| {
+            let _ = app.update(Message::AnswerInvitation(
+                summary.account.clone(),
+                summary.id.clone(),
+                InvitationAnswer::Accept,
+            ));
+            let sent = app.sent.iter().rev().find_map(|sent| match sent {
+                Sent::Answer(_, _, _, collection) => Some(collection.clone()),
+                _ => None,
+            });
+            let failed = Err("the outgoing mail server cannot be reached".to_owned());
+            let _ = app.update(Message::InvitationAnswered(summary.id.clone(), InvitationAnswer::Accept, failed));
+            sent.expect("an answer")
+        };
+        assert_eq!(answer(&mut app), None, "no calendars yet: the core's choice");
+        let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
+        let _ = app.update(Message::InviteCalendars(calendars));
+        assert_eq!(app.invite_calendar(), Some(&demo_calendar(0)), "the first, as the core would take");
+        assert_eq!(answer(&mut app), Some(demo_calendar(0).id));
+        let _ = app.update(Message::InviteCalendar(demo_calendar(1)));
+        assert_eq!(answer(&mut app), Some(demo_calendar(1).id), "the one picked");
+
+        let events = block_on(MailSource::list_events(app.inbox.as_ref(), start, end)).map_err(|err| err.to_string());
+        let _ = app.update(Message::InviteEvents(summary.id.clone(), events));
+        let reading = app.reading().expect("the invitation is read");
+        assert!(reading.invite.events.is_some() && reading.invite.calendars.is_some());
+        assert_eq!(reading.invite.calendar, Some(&demo_calendar(1)));
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::InviteEvents("m:other".into(), Ok(Vec::new())));
+        assert!(
+            app.invite_events.as_ref().is_some_and(|(id, _)| *id == summary.id),
+            "another mail's events are dropped"
+        );
     }
 
     // ----- Notifications window (E8.4) ------------------------------------------------------
