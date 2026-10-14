@@ -958,6 +958,20 @@ pub enum Menu {
     Mute,
 }
 
+/// Which buttons a menu for an entry hangs at (issue #122): the button clicked, else where the
+/// keys act ([`App::menu_from_panel`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum MenuAt {
+    /// Opened by a key (or a start state): at the panel's or reader's button while it is open, else
+    /// at the cursor row's.
+    #[default]
+    Keys,
+    /// Opened by a button of a row or card in the list (`Message::Act`): at that button.
+    Row,
+    /// Opened by a button of the panel or the reader (the `Ask…` messages): at that button.
+    Panel,
+}
+
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
 /// from a script without clicking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1659,6 +1673,8 @@ pub struct App<S> {
     appearance: Appearance,
     system_mode: Mode,
     menu: Option<Menu>,
+    /// Which buttons the open menu for an entry hangs at (issue #122).
+    menu_at: MenuAt,
     /// Whether the sidebar drawer is open (medium and narrow layouts).
     drawer: bool,
     /// The sidebar the user chose for the wide layout, kept in `ui.json`.
@@ -2187,6 +2203,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 _ => None,
             },
+            menu_at: MenuAt::default(),
             // Without a sidebar the app switcher lives in the drawer.
             drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
             sidebar: SidebarMode::default(),
@@ -2349,14 +2366,32 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
             Message::Key(key) => {
                 if let Some(command) = keys::command(self.focus(), key) {
+                    // Keys inside an open menu (its digits, the bell's arrows) leave it where it is.
+                    if self.menu.is_none() {
+                        self.menu_at = MenuAt::Keys;
+                    }
                     return self.run(command);
                 }
             }
             Message::Scrolled(offset, height) => self.scroll = Some((offset, height)),
-            Message::AskSnooze(id) => self.ask_snooze(&id),
-            Message::AskLane(id) => return self.ask_lane(&id),
+            Message::AskSnooze(id) => {
+                self.menu_at = MenuAt::Panel;
+                self.ask_snooze(&id);
+            }
+            Message::AskLane(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.ask_lane(&id);
+            }
             Message::AskMute(id) => return self.ask_mute(&id),
-            Message::AskHide(id) => self.ask_hide(&id),
+            // The notifications window's panel has the bell where the others have "…" (task E8.6b).
+            Message::AskHide(id) if self.launch.kind == Kind::Notifications => {
+                self.menu_at = MenuAt::Panel;
+                return self.ask_mute_menu(&id);
+            }
+            Message::AskHide(id) => {
+                self.menu_at = MenuAt::Panel;
+                self.ask_hide(&id);
+            }
             Message::MuteOptions(id, options) => {
                 if self.menu == Some(Menu::Mute) && self.subject.as_ref().is_some_and(|item| item.id == id) {
                     self.mute_options = Some(options);
@@ -2443,7 +2478,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 self.error = Some(Failure::new(tr("Couldn't change the entry."), err));
             }
             Message::OpenItem(id) => return self.open_item(&id),
-            Message::AskTask(id) => return self.ask_task(&id),
+            Message::AskTask(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.ask_task(&id);
+            }
             Message::TaskLists(result) => self.take_lists(result),
             Message::TaskTitle(title) => self.task.title = title,
             Message::TaskList(list) => self.task.list = Some(list),
@@ -2456,7 +2494,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::TaskCreated(Err(err), _) => {
                 self.error = Some(Failure::new(tr("Couldn't create the task."), err));
             }
-            Message::AskEvent(id) => return self.ask_event(&id),
+            Message::AskEvent(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.ask_event(&id);
+            }
             Message::Calendars(result) => self.take_calendars(result),
             Message::EventTitle(title) => self.event.title = title,
             Message::EventCalendar(calendar) => self.event.calendar = Some(calendar),
@@ -2645,7 +2686,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::DismissedAll(done, failed) => return self.dismissed_all(done, failed),
             Message::Filter(origin) => self.toggle_filter(origin),
             Message::ShowToSort => return self.show_to_sort(),
-            Message::AskMailTask(id) => return self.ask_mail_task(&id),
+            Message::AskMailTask(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.ask_mail_task(&id);
+            }
             Message::AnswerInvitation(account, id, answer) => return self.answer_invitation(account, id, answer),
             Message::InvitationAnswered(id, answer, result) => return self.invitation_answered(id, answer, result),
             Message::InviteCalendar(calendar) => self.invite_pick = Some(calendar.id),
@@ -2898,6 +2942,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// Whether the panel is open: an entry's, or a folder's message.
     fn panel_open(&self) -> bool {
         self.detail.is_some() || (self.view.is_mail() && self.reading)
+    }
+
+    /// Whether the open menu for an entry hangs at the panel's (or reader's) buttons rather than at
+    /// the cursor row's (issue #122): where it was clicked; opened by a key, at the panel while it is
+    /// open – the row may lie under it.
+    fn menu_from_panel(&self) -> bool {
+        match self.menu_at {
+            MenuAt::Row => false,
+            MenuAt::Panel => true,
+            MenuAt::Keys => self.panel_open(),
+        }
     }
 
     /// Closes the panel, whichever it is.
@@ -3318,6 +3373,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// A button of a row's action bar (task E3.9): the cursor – and an open panel – to the entry
     /// `id`, then `command` as its key would do it, so a menu opens at the row.
     fn act(&mut self, id: &str, command: Command) -> Task<Message> {
+        // Its menu hangs at the button clicked, also while the panel is open (issue #122).
+        self.menu_at = MenuAt::Row;
         if self.view.is_mail() {
             return self.act_for_message(id, command);
         }
@@ -3336,6 +3393,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// whose card the menu then opens at, and the snooze menu or "Hide from inbox" for the entry, as
     /// under "For me". Nothing for an entry the window does not hold, or other commands.
     fn act_for_message(&mut self, id: &str, command: Command) -> Task<Message> {
+        // A message's own button ("Task", task E8.7b): the cursor to it, then what its key does there.
+        if self.messages.iter().any(|message| message.id == id) {
+            self.close_menus();
+            self.cursor = Some(id.to_owned());
+            return self.run(command);
+        }
         let Some(Link::Mail { message }) = self.for_me.iter().find(|item| item.id == id).and_then(|i| i.link.clone())
         else {
             return Task::none();
@@ -4686,16 +4749,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
             .then(|| self.sidebar(SidebarMode::Rail, &switcher));
         let header = self.header(class, &nav);
-        let anchors = detail::Anchors::default();
-        // Menus for an entry open at the panel's buttons while it is open (the row may be under
-        // it), else at the cursor's row.
-        let (snooze_at, lane_at, task_at, event_at, hide_at) = if self.detail.is_some() {
-            (&anchors.snooze, &anchors.lane, &anchors.task, &anchors.event, &anchors.hide)
-        } else {
-            (&anchors.row, &anchors.row, &anchors.row, &anchors.row, &anchors.row)
-        };
+        // Two sets (issue #122): the buttons of the panel or the reader (`anchors`), and the row or
+        // card under the cursor with its buttons (`rows`). A menu hangs at the button that opened it.
+        let (anchors, rows) = (detail::Anchors::default(), detail::Anchors::default());
+        let from_panel = self.menu_from_panel();
+        let at = |pick: fn(&detail::Anchors) -> &Anchor| menu_anchor(from_panel, &anchors, &rows, pick);
+        let (snooze_at, lane_at, task_at, event_at, hide_at) =
+            (at(|a| &a.snooze), at(|a| &a.lane), at(|a| &a.task), at(|a| &a.event), at(|a| &a.hide));
         let below = Placement::Below(Align::End);
-        let dialog = dialog_placement(self.detail.is_some());
+        let dialog = dialog_placement(from_panel);
         let layer = match self.menu {
             None => None,
             Some(Menu::Switcher) => Some(widgets::floating(
@@ -4708,26 +4770,26 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 Some(widgets::floating(&nav, Placement::Below(Align::Start), self.nav_menu(), Message::CloseMenu))
             }
             Some(Menu::Snooze) => {
-                Some(widgets::floating(snooze_at, below, self.choice_menu(tr("Later until")), Message::CloseMenu))
+                Some(widgets::floating(&snooze_at, below, self.choice_menu(tr("Later until")), Message::CloseMenu))
             }
             Some(Menu::Lane) => {
                 let title = self.subject.as_ref().map_or_else(String::new, |item| {
                     trf("Move to {lane}", &[("lane", &lane_name(other_lane(item.lane)))])
                 });
-                Some(widgets::floating(lane_at, below, self.choice_menu(title), Message::CloseMenu))
+                Some(widgets::floating(&lane_at, below, self.choice_menu(title), Message::CloseMenu))
             }
-            Some(Menu::Pick) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
-            Some(Menu::Task) => Some(widgets::floating(task_at, dialog, self.task_dialog(), Message::CloseMenu)),
-            Some(Menu::Event) => Some(widgets::floating(event_at, dialog, self.event_dialog(), Message::CloseMenu)),
+            Some(Menu::Pick) => Some(widgets::floating(&snooze_at, below, self.picker(), Message::CloseMenu)),
+            Some(Menu::Task) => Some(widgets::floating(&task_at, dialog, self.task_dialog(), Message::CloseMenu)),
+            Some(Menu::Event) => Some(widgets::floating(&event_at, dialog, self.event_dialog(), Message::CloseMenu)),
             Some(Menu::Hide) => {
-                Some(widgets::floating(hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
+                Some(widgets::floating(&hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
             }
-            Some(Menu::Mute) => Some(widgets::floating(hide_at, below, self.mute_menu(), Message::CloseMenu)),
+            Some(Menu::Mute) => Some(widgets::floating(&hide_at, below, self.mute_menu(), Message::CloseMenu)),
         };
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
         // open the reader's column says what shows up there (task E8.11).
         if let Some(reader) = self.wide_reader(class, &anchors).or_else(|| self.empty_reader(class)) {
-            let list = container(self.body(class, &anchors.row)).width(size::list()).height(Fill);
+            let list = container(self.body(class, &rows)).width(size::list()).height(Fill);
             let body = row![list, rule::vertical(size::HAIRLINE).style(style::rule), reader];
             let placed = panel::place(class, body, None, layer);
             return shell::shell(class, sidebar, header, placed.body, None)
@@ -4756,7 +4818,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 detail::panel(item, self.view_label(), self.now, footer, letter)
             })
         };
-        let placed = panel::place(class, self.body(class, &anchors.row), detail, layer);
+        let placed = panel::place(class, self.body(class, &rows), detail, layer);
         // "Coming back" beside the hub's "Act now" in the wide layout (task E8.5), in the shell's
         // column at the right.
         let side = self.hub_side().then(|| {
@@ -4978,7 +5040,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// `CONTENT_MAX` wide, also while the panel stands beside it (its column takes its own room,
     /// and a narrower list would only leave a gap). Loading and the error of a first load stand in
     /// for both.
-    fn body(&self, class: SizeClass, row_anchor: &Anchor) -> Element<'_, Message> {
+    fn body(&self, class: SizeClass, rows: &detail::Anchors) -> Element<'_, Message> {
         if let Some(unloaded) = self.unloaded() {
             return unloaded;
         }
@@ -5003,7 +5065,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     no_accounts: self.folders.is_empty(),
                     selected: self.cursor.as_deref(),
                     now: self.now,
-                    anchor: row_anchor.clone(),
+                    anchors: rows.clone(),
                     accounts: mail::by_account(&self.folders)
                         .into_iter()
                         .map(|group| mail::address(group.account))
@@ -5034,7 +5096,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 items: &self.items,
                 board: self.board(),
                 density: self.density(),
-                rows: self.rows_data(row_anchor),
+                rows: self.rows_data(rows),
                 deciding: self.deciding.is_some(),
                 single_source: self.shown.single().is_some(),
                 icon: self.launch.kind.view_icon(&self.view),
@@ -5054,7 +5116,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 items: &self.items,
                 filter: self.filter.as_ref(),
                 layout: self.hub_layout(),
-                rows: self.rows_data(row_anchor),
+                rows: self.rows_data(rows),
                 deciding: self.deciding.is_some(),
                 attention: colours.attention,
                 ok: colours.ok,
@@ -5063,10 +5125,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return container(content.push(hub).width(Fill).height(Fill)).width(Fill).into();
         } else if self.view == View::Overview {
             // Its columns cap their own width; the cap below would squeeze two into one.
-            let columns = self.overview(class, row_anchor, attention);
+            let columns = self.overview(class, rows, attention);
             return container(content.push(columns).width(Fill).height(Fill)).width(Fill).into();
         } else {
-            list::view(list::ListData { items: &self.items, rows: self.rows_data(row_anchor), attention })
+            list::view(list::ListData { items: &self.items, rows: self.rows_data(rows), attention })
         };
         let list = container(content.push(rows).width(Fill).height(Fill)).width(Fill);
         // Only the wide layout caps the width: in the medium one the content is at most a little
@@ -5080,12 +5142,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
 
     /// What the rows of entries need (`list::Rows`): the cursor, the time, the mail accounts in the
     /// sidebar's order (their colours) and which entries have a menu "Hide from inbox".
-    fn rows_data<'a>(&'a self, anchor: &Anchor) -> list::Rows<'a> {
+    fn rows_data<'a>(&'a self, anchors: &detail::Anchors) -> list::Rows<'a> {
         list::Rows {
             view: &self.view,
             selected: self.cursor.as_deref(),
             now: self.now,
-            anchor: anchor.clone(),
+            anchors: anchors.clone(),
             accounts: mail::by_account(&self.folders).into_iter().map(|group| mail::address(group.account)).collect(),
             hidable: self
                 .items
@@ -5101,7 +5163,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// The overview (task E3.9): both columns side by side in the wide layout, each under its head –
     /// with an open panel only the column of its entry, the panel takes the other's place –; one
     /// column, [`App::column`], in the medium and narrow ones.
-    fn overview<'a>(&'a self, class: SizeClass, anchor: &Anchor, attention: iced::Color) -> Element<'a, Message> {
+    fn overview<'a>(
+        &'a self,
+        class: SizeClass,
+        anchors: &detail::Anchors,
+        attention: iced::Color,
+    ) -> Element<'a, Message> {
         let wide = class == SizeClass::Wide;
         let shown = overview::shown(class, self.detail.as_ref(), self.column, self.launch.kind.columns());
         let cap = overview::width(shown.len());
@@ -5114,7 +5181,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 column,
                 sections: Sections::of(&self.items, column, self.now).ordered(self.order),
                 info_open: self.info_open[column.index()],
-                rows: self.rows_data(anchor),
+                rows: self.rows_data(anchors),
                 deciding: self.deciding.is_some(),
                 attention,
                 // The mail window has one column, which its header bar names already ("For me").
@@ -5893,6 +5960,20 @@ enum KeyLook {
 /// while the panel is open (`panel`), at its footer's button – with their left edge at it (task
 /// E8.12, finding 7): the panel ends at the window's edge, so the card stays over the panel, above
 /// the footer where there is no room below (`widgets::Placement::Below`).
+/// Where a menu for an entry hangs (issue #122): at the button `pick` names (Later, Move to …, Task,
+/// Make event, "…") – of the panel or reader (`panel`) when `from_panel`, else of the row or card
+/// under the cursor (`rows`). A button that is not on screen gives way to the row's, then to the
+/// row itself; with none of them the menu stands in the window's middle (`widgets::floating`).
+fn menu_anchor(
+    from_panel: bool,
+    panel: &detail::Anchors,
+    rows: &detail::Anchors,
+    pick: fn(&detail::Anchors) -> &Anchor,
+) -> Anchor {
+    let row = pick(rows).or(&rows.row);
+    if from_panel { pick(panel).or(&row) } else { row }
+}
+
 fn dialog_placement(panel: bool) -> Placement {
     Placement::Below(if panel { Align::Start } else { Align::End })
 }
@@ -8554,6 +8635,66 @@ mod tests {
         assert!(open.empty_reader(SizeClass::Wide).is_none(), "a mail is open");
         let hub = overview_at(&["--view", "hub"]);
         assert!(hub.empty_reader(SizeClass::Wide).is_none(), "the hub has no reader");
+    }
+
+    /// Issue #122: a menu hangs at the button clicked – the row's, also while the reader shows the
+    /// same entry beside it, or the reader's –, and one opened by a key at the reader while it is
+    /// open, else at the row. Keys inside the open menu leave it where it is.
+    #[test]
+    fn a_menu_hangs_at_the_button_clicked() {
+        for density in ["compact", "comfortable"] {
+            let mut app = mail_window(density, &["--open", "mail-entry"]);
+            let _ = app.update(Message::Resized(WIDE));
+            let entry = app.detail.as_ref().expect("the entry in the reader").id.clone();
+            let _ = app.update(Message::Act(entry.clone(), Command::Snooze));
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density}: the row's");
+            let _ = app.view();
+            let _ = app.update(Message::CloseMenu);
+            let _ = app.update(Message::AskSnooze(entry.clone()));
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density}: the reader's");
+            let _ = app.view();
+            let _ = app.update(Message::CloseMenu);
+            let _ = app.update(Message::Act(entry.clone(), Command::Hide));
+            let _ = press(&mut app, Key::Down);
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Hide), false), "{density}: keys in the menu");
+            let _ = app.update(Message::CloseMenu);
+            let _ = press(&mut app, Key::S);
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density}: s, reader open");
+            let _ = app.update(Message::CloseMenu);
+            let _ = app.update(Message::CloseDetail);
+            let _ = app.update(Message::Select(entry.clone()));
+            let _ = app.update(Message::CloseDetail);
+            let _ = press(&mut app, Key::S);
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), false), "{density}: s at the row");
+            for size in SIZES {
+                let _ = app.update(Message::Resized(size));
+                let _ = app.view();
+            }
+        }
+    }
+
+    /// Issue #122: a folder message's "Task" in its row does what `t` does there, so its dialog opens
+    /// at that button; the reader's "Task" opens it at the reader's.
+    #[test]
+    fn a_messages_task_opens_at_the_button_clicked() {
+        let mut app = in_folder("f:work-inbox");
+        let message = app.messages.iter().find(|m| app.entry_of(&m.id).is_none()).expect("a message").id.clone();
+        let _ = app.update(Message::Act(message.clone(), Command::MakeTask));
+        assert_eq!(app.menu, Some(Menu::Task));
+        assert_eq!(app.task_mail.as_ref().map(|m| m.id.as_str()), Some(message.as_str()), "the message's task");
+        assert!(!app.menu_from_panel());
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::AskMailTask(message));
+        assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Task), true));
+    }
+
+    /// Issue #122: the bell in the notifications window's panel opens the bell's menu at itself.
+    #[test]
+    fn the_panels_bell_opens_its_menu_at_the_panel() {
+        let mut app = demo(&["--demo", "--now", "2026-10-13T10:30", "--view", "notifications"]);
+        load(&mut app);
+        let _ = app.update(Message::AskHide("demo-6".into()));
+        assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Mute), true));
     }
 
     /// Task E8.11 (finding 3): in "Invitations" the card's "Later" and "…" act on the mail's entry in

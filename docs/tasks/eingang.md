@@ -1412,6 +1412,23 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: Knöpfe senden Archive/Delete für die richtige Nachricht, kein Reply in Zeilen und Karten, Knopf
   fehlt ohne Ordner der Rolle; Entf/⌫ löschen; Löschen aus der Ordnerzeile mit Undo. Sichtprüfung kompakt/bequem.
 
+### E8.19 Menüs am angeklickten Knopf (Issue #122)
+- [x] erledigt (2026-10-14: Die Fenster führen zwei Sätze `detail::Anchors` – Knöpfe von Paneel/Leser und die Zeile
+  bzw. Karte unter dem Cursor samt ihren Knöpfen (`Anchors::mark`/`wrap`, neu `RowAction::anchor`/`at` und
+  `widgets::anchored_if` in `torro-gui`). `App::menu_at` merkt, woher das Menü kam: `Act` aus Zeile/Karte → deren
+  Knopf, `Ask…` aus Paneel/Leser → dessen Knopf, Taste → Paneel, solange es offen ist, sonst Zeile. Fehlt der Knopf,
+  fällt der Anker auf den Knopf der Zeile, dann die Zeile zurück (`Anchor::or`); ohne jeden Anker steht das Menü
+  mittig im Fenster statt oben links (`widgets::floating`). Entscheidungen: „Task“ der Ordnerzeile sendet jetzt
+  `Act(…, MakeTask)` wie `t`, die Glocke im Paneel des Benachrichtigungsfensters `AskHide` wie „…“ – so ist die Quelle
+  des Klicks eindeutig. Sichtprüfung nur in Breit (macOS ohne Hyprland, Fenstergröße nicht setzbar); die Ansichten aller
+  Größen rendern im Test)
+- **Modell:** Opus · **Braucht:** E3.9, E8.12 · **Dateien:** `crates/torro-gui/src/widgets.rs`,
+  `crates/torroinbox/src/{app,detail,list,mail,overview,hub,notifications}.rs`
+- **Oberfläche:** Later, Hide/„…“, Move to, Task, Event, Glocke (Mute) in Zeilen, Karten, Paneel und Leser.
+  **API/MCP:** keine – Fensterzustand, kein Request.
+- **Abnahme:** Tests: Klick in der Zeile → Zeilenknopf auch bei offenem Leser, Klick im Leser → Leserknopf, Taste → Leser
+  bzw. Zeile; Tasten im offenen Menü verschieben es nicht; Knopf ↔ Anker; Rückfall-Kette und Mitte in `torro-gui`.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,

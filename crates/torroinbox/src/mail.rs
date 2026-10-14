@@ -832,8 +832,8 @@ pub struct MailList<'a> {
     /// Id of the message under the cursor.
     pub selected: Option<&'a str>,
     pub now: DateTime<Utc>,
-    /// Registered by the selected row.
-    pub anchor: Anchor,
+    /// Registered by the selected row (`row`) and its buttons that open a menu (issue #122).
+    pub anchors: detail::Anchors,
     /// The addresses of the mail accounts in the sidebar's order: the avatars take the colour of
     /// the folder's account, as in the overview (`list::account_index`).
     pub accounts: Vec<&'a str>,
@@ -949,10 +949,11 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     let row = list::sized_row(list::mail_content(lines, width), selected, on_press, height);
     let (mut actions, more) = message_buttons(message, data.entries, &data.hidable, data.folders, data.now);
     actions.extend(more);
+    let actions = data.anchors.mark(selected, actions);
     let words = widgets::row_actions_words(&actions, width);
     // On the first line, over the time, as the rows of entries: subject and preview stay readable.
     let row = widgets::row_actions_at(row, actions, selected, words, list::first_line_middle(height, 3));
-    if selected { widgets::anchored(&data.anchor, row) } else { row }
+    if selected { widgets::anchored(&data.anchors.row, row) } else { row }
 }
 
 /// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row, as chips
@@ -988,10 +989,12 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         account_name: several.then(|| account_name(&message.account)),
     };
     let selected = data.selected == Some(message.id.as_str());
+    let buttons = data.anchors.mark(selected, buttons);
+    let more = data.anchors.mark(selected, more.into_iter().collect()).pop();
     let card =
         list::MailCard { lines, chips, buttons, more, selected, on_press: Message::SelectMail(message.id.clone()) };
     let card = list::mail_card(card, width);
-    if selected { widgets::anchored(&data.anchor, card) } else { card }
+    if selected { widgets::anchored(&data.anchors.row, card) } else { card }
 }
 
 /// The buttons of the card (and the action bar of the row) of `message` at `now`, with "…" as the
@@ -1014,7 +1017,8 @@ pub fn message_buttons<'a>(
     now: DateTime<Utc>,
 ) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
     let id = || message.id.clone();
-    let task = RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id()));
+    // `Act`, as `t` at the row: the dialog then opens at this button, not at the reader's (issue #122).
+    let task = RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::Act(id(), Key::MakeTask));
     if message.invite.as_ref().is_none_or(|invite| invite_over(invite, now)) {
         let mut buttons = filing_actions(folders, &message.account, Some(&message.folder), &message.id, "E");
         buttons.push(task);
@@ -2152,7 +2156,7 @@ mod tests {
                         no_accounts: false,
                         selected: Some("m:w1"),
                         now: now(),
-                        anchor: Anchor::new(),
+                        anchors: detail::Anchors::default(),
                         accounts: accounts.clone(),
                         more: true,
                         attention: Color::BLACK,
@@ -2243,7 +2247,7 @@ mod tests {
         let sent: Vec<&Message> = buttons.iter().map(|button| &button.on_press).collect();
         assert!(matches!(sent[0], Message::Mail(MailAction::Archive, id) if *id == message.id), "{sent:?}");
         assert!(matches!(sent[1], Message::Mail(MailAction::Delete, id) if *id == message.id), "{sent:?}");
-        assert!(matches!(sent[2], Message::AskMailTask(id) if *id == message.id), "{sent:?}");
+        assert!(matches!(sent[2], Message::Act(id, Key::MakeTask) if *id == message.id), "{sent:?}");
         assert_eq!(buttons.iter().map(|button| button.key).collect::<Vec<_>>(), ["E", "#", "T"]);
         assert!(more.is_none());
         assert!(!sent.iter().any(|message| matches!(message, Message::Mail(MailAction::Reply, _))));
