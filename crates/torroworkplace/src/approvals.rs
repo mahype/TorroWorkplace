@@ -48,7 +48,7 @@ use torro_core::paths::AppPaths;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
 use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
 use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceRef};
-use torro_ipc::api::Mcp;
+use torro_ipc::api::{Area, Mcp, Rights};
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 use torro_mail::{MailAddress, Role};
 use torro_pim::{Event, EventTime, Todo};
@@ -293,6 +293,11 @@ pub struct Facts {
     /// `assistant.list_engines` lists it (task C.1). `None` when the core does not know it: the
     /// summary then shows the engine's id. The conversation's title is [`Facts::name`].
     pub engine: Option<String>,
+    /// For the `bots.*` commands and `assistant.send_message` with a bot (task B.1): the bot's name
+    /// as it is stored, looked up by its id. `None` when the core does not have it: the summary
+    /// then says "an unknown bot". A new bot (`bots.save_bot` without `id`) has none yet; its name
+    /// is the client's text, and it is what will be written.
+    pub bot: Option<String>,
 }
 
 /// What the core holds about the messages, drafts and folders a `mail.*` command names, for the
@@ -412,12 +417,69 @@ impl EntryPin {
     }
 }
 
+/// Where a client's command came from besides its client (task C.11), kept with its approval and
+/// handed back with the decision ([`Decision`]), so what runs and what the log says after a
+/// person's decision match the request as it came in.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    /// The assistant's engine that asked: the tools of engine A (an AI account id), or an agent
+    /// with a lent key (`claude-code`, [`crate::clients::Clients::lent_for`]). The log lines of the
+    /// decision name it like the request's (`engine:<id>`, [`crate::audit::engine_id`]). `None`
+    /// for every other client.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The areas taken out of the client's rights for the key it asked with
+    /// ([`crate::clients::Clients::lent_without`]: always mail for an agent). An allowed command
+    /// runs with the client's rights of then minus these ([`Origin::narrow`]), whether the lease
+    /// still lives or not. Empty for every other key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub without: Vec<Area>,
+    /// The client a bot ran for (task B.2): the assistant's own client, when the assistant asked
+    /// the bot. An allowed command then runs with what both the asking client and this one may at
+    /// that moment ([`Rights::common`]), each without [`Origin::without`], and not at all once
+    /// this client was removed – so a person's "Allow" never gives the bot more than the assistant
+    /// had. `None` for every other request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behalf: Option<String>,
+}
+
+impl Origin {
+    /// Nothing besides the client: a request with the client's own key.
+    fn is_plain(&self) -> bool {
+        *self == Origin::default()
+    }
+
+    /// `rights` without the areas [`Origin::without`] names, as the lent key had them.
+    pub fn narrow(&self, rights: &Rights) -> Rights {
+        let mut rights = rights.clone();
+        rights.areas.retain(|area, _| !self.without.contains(area));
+        rights
+    }
+
+    /// The rights an allowed command of a client with `rights` runs with: [`Origin::narrow`]ed, and
+    /// for a bot that ran for the assistant (task B.2, [`Origin::behalf`]) in common with the
+    /// assistant's client's rights `behalf` (narrowed the same way). `None` when [`Origin::behalf`]
+    /// names a client and `behalf` is `None` (it was removed): then nothing runs.
+    pub fn effective(&self, rights: &Rights, behalf: Option<&Rights>) -> Option<Rights> {
+        let own = self.narrow(rights);
+        match (&self.behalf, behalf) {
+            (None, _) => Some(own),
+            (Some(_), Some(theirs)) => Some(own.common(&self.narrow(theirs))),
+            (Some(_), None) => None,
+        }
+    }
+}
+
 /// One approval in `approvals.json`: what the API shows, the request that runs when a person
 /// allows it, and for an `inbox.*` command what its entry looked like then ([`EntryPin`]).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Entry {
     info: ApprovalInfo,
     request: Request,
+    /// Missing in approvals stored before task C.11 (they expire within ten minutes), and for a
+    /// client that asked with its own key ([`Origin`]).
+    #[serde(default, skip_serializing_if = "Origin::is_plain")]
+    origin: Origin,
     /// Missing in approvals stored before task E1.2c, and for every other command.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pin: Option<EntryPin>,
@@ -503,15 +565,18 @@ impl std::error::Error for ApprovalsError {}
 /// What a person's decision leaves to do.
 #[derive(Debug)]
 pub enum Decision {
-    /// Denied; nothing runs. `request` is what was asked for, for the audit log's ids.
-    Denied { approval: ApprovalInfo, request: Box<Request> },
+    /// Denied; nothing runs. `request` is what was asked for, for the audit log's ids, and
+    /// `origin` where it came from ([`Origin::engine`] for the log).
+    Denied { approval: ApprovalInfo, request: Box<Request>, origin: Origin },
     /// Allowed: the approval is [`ApprovalState::Running`]. Run `request` for the client `client`
     /// (rights and collections checked again) and store its answer with [`Approvals::finish`].
     /// With a `pin`, the inbox entry the request names must still hold it ([`EntryPin::holds`]),
     /// else the core answers `conflict` and runs nothing. With a `fingerprint`
     /// ([`Approvals::open_with_fingerprint`], `mail.send_draft`), the message built now must have
-    /// the same one, else the core answers `conflict` and sends nothing.
-    Run { client: String, request: Box<Request>, pin: Option<EntryPin>, fingerprint: Option<String> },
+    /// the same one, else the core answers `conflict` and sends nothing. `origin` is where the
+    /// request came from: it runs without [`Origin::without`] and is logged with
+    /// [`Origin::engine`].
+    Run { client: String, request: Box<Request>, pin: Option<EntryPin>, fingerprint: Option<String>, origin: Origin },
 }
 
 /// The open and recent approvals of the core.
@@ -578,6 +643,9 @@ impl Approvals {
     /// stored: such a request may carry a secret. A client with [`OPEN_MAX`] open approvals, or
     /// asking with [`QUESTIONS_OPEN_MAX`] questions open, gets [`ApprovalsError::TooMany`]. When the file cannot be written nothing is opened, and the
     /// caller must refuse the command.
+    ///
+    /// For tests since task C.11: the core opens every approval with [`Approvals::open_from`].
+    #[cfg(test)]
     pub async fn open(
         &self,
         client: &str,
@@ -587,7 +655,7 @@ impl Approvals {
         summary: String,
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
-        self.open_entry(client, client_name, request, (pin, None), (summary, Vec::new()), now).await
+        self.open_entry(client, client_name, request, (pin, None, Origin::default()), (summary, Vec::new()), now).await
     }
 
     /// [`Approvals::open`] for a command that must run on exactly what the person was shown
@@ -598,6 +666,9 @@ impl Approvals {
     ///
     /// `(summary, details)` is what the person is shown: the summary ([`summary`]) and the lines
     /// below it ([`details`], task M3.5), both stored in [`ApprovalInfo`].
+    ///
+    /// For tests since task C.11: the core opens every approval with [`Approvals::open_from`].
+    #[cfg(test)]
     pub async fn open_with_fingerprint(
         &self,
         client: &str,
@@ -607,16 +678,40 @@ impl Approvals {
         (summary, details): (String, Vec<String>),
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
-        self.open_entry(client, client_name, request, (None, Some(fingerprint)), (summary, details), now).await
+        self.open_entry(
+            client,
+            client_name,
+            request,
+            (None, Some(fingerprint), Origin::default()),
+            (summary, details),
+            now,
+        )
+        .await
     }
 
-    /// [`Approvals::open`] with the entry's pin and fingerprint, and the details it shows.
+    /// [`Approvals::open`] and [`Approvals::open_with_fingerprint`] in one, for a request that came
+    /// from `origin` (task C.11): the approval keeps `pin`, `fingerprint` and `origin` and hands them
+    /// back with the decision ([`Decision`]); `(summary, details)` is what the person is shown. The
+    /// core opens every approval of a client this way.
+    pub async fn open_from(
+        &self,
+        client: &str,
+        client_name: &str,
+        request: Request,
+        kept: (Option<EntryPin>, Option<String>, Origin),
+        shown: (String, Vec<String>),
+        now: DateTime<Utc>,
+    ) -> Result<ApprovalInfo, ApprovalsError> {
+        self.open_entry(client, client_name, request, kept, shown, now).await
+    }
+
+    /// [`Approvals::open`] with the entry's pin, fingerprint and origin, and the details it shows.
     async fn open_entry(
         &self,
         client: &str,
         client_name: &str,
         request: Request,
-        (pin, fingerprint): (Option<EntryPin>, Option<String>),
+        (pin, fingerprint, origin): (Option<EntryPin>, Option<String>, Origin),
         (summary, details): (String, Vec<String>),
         now: DateTime<Utc>,
     ) -> Result<ApprovalInfo, ApprovalsError> {
@@ -651,7 +746,7 @@ impl Approvals {
             decided: None,
             state: ApprovalState::Pending,
         };
-        state.entries.push(Entry { info: info.clone(), request, pin, fingerprint });
+        state.entries.push(Entry { info: info.clone(), request, origin, pin, fingerprint });
         if let Err(err) = self.write(&state).await {
             state.entries.pop();
             return Err(err);
@@ -755,8 +850,9 @@ impl Approvals {
                 request,
                 pin: entry.pin,
                 fingerprint: entry.fingerprint.clone(),
+                origin: entry.origin.clone(),
             },
-            false => Decision::Denied { approval: entry.info.clone(), request },
+            false => Decision::Denied { approval: entry.info.clone(), request, origin: entry.origin.clone() },
         };
         if let Err(err) = self.write(&state).await {
             state.entries[index].info = before;
@@ -1146,6 +1242,12 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         | Request::DeleteConversation { .. }
         | Request::PinConversation { .. }
         | Request::OpenChatWindow { .. }) => assistant_summary(request, facts),
+        request @ (Request::UpdateProfile { .. } | Request::Remember { .. } | Request::Forget { .. }) => {
+            profile_summary(request, facts)
+        }
+        request @ (Request::SaveBot { .. } | Request::DeleteBot { .. } | Request::AskBot { .. }) => {
+            bot_summary(request, facts)
+        }
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
@@ -1212,6 +1314,24 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
     use torro_ipc::assistant::ChatWindow;
     let known = facts.name.as_deref().map(quote);
     match (request, known) {
+        (Request::SendMessage { engine, conversation, bot: Some(bot), .. }, title) => {
+            let engine = quote(facts.engine.as_deref().unwrap_or(engine));
+            let bot = quote(facts.bot.as_deref().unwrap_or(bot));
+            match (conversation, title) {
+                (None, _) => trf(
+                    "Start a conversation with the bot \"{bot}\", answered by \"{engine}\"",
+                    &[("bot", &bot), ("engine", &engine)],
+                ),
+                (Some(_), Some(title)) => trf(
+                    "Send the bot \"{bot}\" a message in \"{title}\", answered by \"{engine}\"",
+                    &[("bot", &bot), ("title", &title), ("engine", &engine)],
+                ),
+                (Some(_), None) => trf(
+                    "Send the bot \"{bot}\" a message in an unknown conversation, answered by \"{engine}\"",
+                    &[("bot", &bot), ("engine", &engine)],
+                ),
+            }
+        }
         (Request::SendMessage { engine, conversation, .. }, title) => {
             let engine = quote(facts.engine.as_deref().unwrap_or(engine));
             match (conversation, title) {
@@ -1267,6 +1387,219 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         // Bots do not exist yet and are refused before anyone is asked; say which command it is.
         (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// What a `bots.*` command would do, in words (task B.1): `Delete the bot "Travel planner"`. A bot
+/// by the name the core stores for its id ([`Facts::bot`]), "an unknown bot" when it has none; a
+/// conversation by its title ([`Facts::name`]). The client's own text appears only where it is what
+/// will be written: the name of a new or renamed bot. Never a message, an instruction or a skill
+/// (those stand whole in the details, [`bot_details`]). All of it goes through [`quote`].
+fn bot_summary(request: &Request, facts: &Facts) -> String {
+    let bot = facts.bot.as_deref().map(quote);
+    let title = facts.name.as_deref().map(quote);
+    match (request, bot) {
+        (Request::SaveBot { id: None, name, .. }, _) => {
+            trf("Create the bot \"{name}\", without any access", &[("name", &quote(name))])
+        }
+        (Request::SaveBot { name, .. }, Some(stored)) if quote(name) == stored => {
+            trf("Change the bot \"{name}\"", &[("name", &stored)])
+        }
+        (Request::SaveBot { name, .. }, Some(stored)) => {
+            trf("Change the bot \"{name}\" and rename it to \"{new}\"", &[("name", &stored), ("new", &quote(name))])
+        }
+        (Request::SaveBot { name, .. }, None) => trf("Change an unknown bot to \"{name}\"", &[("name", &quote(name))]),
+        (Request::DeleteBot { .. }, Some(bot)) => trf("Delete the bot \"{name}\"", &[("name", &bot)]),
+        (Request::DeleteBot { .. }, None) => tr("Delete an unknown bot").to_string(),
+        (Request::AskBot { conversation: None, .. }, Some(bot)) => {
+            trf("Start a conversation with the bot \"{name}\"", &[("name", &bot)])
+        }
+        (Request::AskBot { conversation: Some(_), .. }, Some(bot)) => match title {
+            Some(title) => {
+                trf("Send the bot \"{name}\" a message in \"{title}\"", &[("name", &bot), ("title", &title)])
+            }
+            None => trf("Send the bot \"{name}\" a message in an unknown conversation", &[("name", &bot)]),
+        },
+        (Request::AskBot { .. }, None) => tr("Send an unknown bot a message").to_string(),
+        (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// The lines of the approval of `bots.save_bot` (task B.1, [`details`]): every text it would write
+/// **whole**, since all of it goes into the bot's prompt – `Name:`, `Description:`, `Picture:`,
+/// `Engine:`, `Model:`, then `Personality:`, `Instructions:` and `Skill "<name>":` each followed by
+/// its text, or `… none` for an empty one. Made harmless and split as for the profile ([`whole`]).
+/// `None` for every other command.
+fn bot_details(request: &Request) -> Option<Vec<String>> {
+    let Request::SaveBot { name, description, avatar, engine, model, personality, instructions, skills, .. } = request
+    else {
+        return None;
+    };
+    let quoted = |text: &str| format!("\"{}\"", quote_up_to(text, DETAIL_MAX));
+    let mut lines = vec![trf("Name: {text}", &[("text", &quoted(name))])];
+    if !description.trim().is_empty() {
+        lines.push(trf("Description: {text}", &[("text", &quoted(description))]));
+    }
+    lines.push(trf("Picture: {text}", &[("text", &quoted(avatar.as_deref().unwrap_or("letter")))]));
+    lines.push(trf("Engine: {text}", &[("text", &quoted(engine))]));
+    if let Some(model) = model {
+        lines.push(trf("Model: {text}", &[("text", &quoted(model))]));
+    }
+    let mut text = |heading: String, none: &str, text: &str| match text.trim() {
+        "" => lines.push(none.to_string()),
+        text => {
+            lines.push(heading);
+            lines.extend(whole(text));
+        }
+    };
+    text(tr("Personality:").to_string(), tr("Personality: none"), personality);
+    text(tr("Instructions:").to_string(), tr("Instructions: none"), instructions);
+    for skill in skills {
+        let heading = trf("Skill {name}:", &[("name", &quoted(&skill.name))]);
+        let none = trf("Skill {name}: none", &[("name", &quoted(&skill.name))]);
+        text(heading, &none, &skill.text);
+    }
+    Some(lines)
+}
+
+/// What a change of the assistant's profile or memory would do, in words (task C.10).
+///
+/// - `assistant.remember`: `Remember for the assistant: "<note>"` – the note is the client's text,
+///   and it is what will be written; replacing a note `Change the assistant's note "<stored>" to
+///   "<new>"`, the stored one by its id ([`Facts::name`]), "an unknown note" when the memory has none.
+/// - `assistant.forget`: `Forget the assistant's note "<stored>"`, from the memory, never from the
+///   client.
+/// - `assistant.update_profile`: `Change the profile of "<stored name>": ` and what changes – the
+///   new name and description (what will be written), "picture", and the start of the new
+///   personality with its length, since all of it goes into every prompt.
+///
+/// All of it goes through [`quote`].
+fn profile_summary(request: &Request, facts: &Facts) -> String {
+    let known = facts.name.as_deref().map(quote);
+    match (request, known) {
+        (Request::Remember { text, replaces: None, local_only: false }, _) => {
+            trf("Remember for the assistant: \"{note}\"", &[("note", &quote(text))])
+        }
+        // Kept from remote models: written after the assistant read mail (task C.10).
+        (Request::Remember { text, replaces: None, local_only: true }, _) => {
+            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &quote(text))])
+        }
+        (Request::Remember { text, .. }, Some(old)) => {
+            trf("Change the assistant's note \"{old}\" to \"{note}\"", &[("old", &old), ("note", &quote(text))])
+        }
+        (Request::Remember { text, .. }, None) => {
+            trf("Change an unknown note of the assistant to \"{note}\"", &[("note", &quote(text))])
+        }
+        (Request::Forget { .. }, Some(note)) => trf("Forget the assistant's note \"{note}\"", &[("note", &note)]),
+        (Request::Forget { .. }, None) => tr("Forget an unknown note of the assistant").to_string(),
+        (Request::UpdateProfile { name, description, avatar, personality }, current) => {
+            let mut changes = Vec::new();
+            if let Some(name) = name {
+                changes.push(trf("name \"{name}\"", &[("name", &quote(name))]));
+            }
+            if let Some(description) = description {
+                changes.push(trf("description \"{text}\"", &[("text", &quote(description))]));
+            }
+            if let Some(avatar) = avatar {
+                changes.push(trf("picture \"{name}\"", &[("name", &quote(avatar))]));
+            }
+            if let Some(personality) = personality {
+                let count = personality.trim().chars().count();
+                changes.push(match count {
+                    0 => tr("no personality").to_string(),
+                    _ => trf(
+                        "personality \"{start}\" ({count} characters)",
+                        &[("start", &quote(personality)), ("count", &count)],
+                    ),
+                });
+            }
+            let current = current.unwrap_or_else(|| quote(torro_ipc::assistant::DEFAULT_NAME));
+            trf(
+                "Change the profile of the assistant \"{name}\": {changes}",
+                &[("name", &current), ("changes", &changes.join(", "))],
+            )
+        }
+        (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// The lines of the approval of a change of the assistant's profile or memory (task C.10,
+/// [`details`]): every text it would write or remove **whole**, since all of it goes into every
+/// prompt of the assistant – a summary cut at 60 characters could hide the rest.
+///
+/// - `assistant.update_profile`: `Name: "<new>"`, `Description: "<new>"`, `Picture: "<id>"`, then
+///   `Personality:` and the new personality, or `Personality: none`;
+/// - `assistant.remember`: with `replaces` first `Now:` and the stored note, then `Note:` and the new;
+/// - `assistant.forget`: `Note:` and the stored note.
+///
+/// Each text made harmless as in the summary ([`quote_up_to`]), line by line, and split into lines
+/// of at most [`DETAIL_MAX`] characters ([`whole`]); nothing is cut off. `None` for every other
+/// command.
+fn profile_details(request: &Request, facts: &Facts) -> Option<Vec<String>> {
+    let quoted = |text: &str| format!("\"{}\"", quote_up_to(text, DETAIL_MAX));
+    let mut lines = Vec::new();
+    match request {
+        Request::UpdateProfile { name, description, avatar, personality } => {
+            if let Some(name) = name {
+                lines.push(trf("Name: {text}", &[("text", &quoted(name))]));
+            }
+            if let Some(description) = description {
+                lines.push(trf("Description: {text}", &[("text", &quoted(description))]));
+            }
+            if let Some(avatar) = avatar {
+                lines.push(trf("Picture: {text}", &[("text", &quoted(avatar))]));
+            }
+            match personality.as_deref().map(str::trim) {
+                Some("") => lines.push(tr("Personality: none").to_string()),
+                Some(text) => {
+                    lines.push(tr("Personality:").to_string());
+                    lines.extend(whole(text));
+                }
+                None => {}
+            }
+        }
+        Request::Remember { text, replaces, .. } => {
+            if replaces.is_some() {
+                lines.push(tr("Now:").to_string());
+                lines.extend(match facts.name.as_deref() {
+                    Some(stored) => whole(stored),
+                    None => vec![tr("an unknown note").to_string()],
+                });
+            }
+            lines.push(tr("Note:").to_string());
+            lines.extend(whole(text));
+        }
+        Request::Forget { .. } => {
+            lines.push(tr("Note:").to_string());
+            lines.extend(match facts.name.as_deref() {
+                Some(stored) => whole(stored),
+                None => vec![tr("an unknown note").to_string()],
+            });
+        }
+        _ => return None,
+    }
+    Some(lines)
+}
+
+/// `text` whole, for the details: each of its lines made harmless ([`quote_up_to`], never cut) and
+/// split into quoted pieces of at most [`DETAIL_MAX`] characters; blank lines left out.
+fn whole(text: &str) -> Vec<String> {
+    let mut pieces = Vec::new();
+    for line in text.lines() {
+        let cleaned = quote_up_to(line, line.chars().count());
+        let chars: Vec<char> = cleaned.chars().collect();
+        for piece in chars.chunks(DETAIL_MAX) {
+            pieces.push(format!("\"{}\"", piece.iter().collect::<String>()));
+        }
+    }
+    pieces
+}
+
+/// The fingerprint of the stored note a `assistant.forget` or a `remember` with `replaces` was
+/// shown with (task C.10): the hash of its text, so the approved command never changes a note the
+/// person changed meanwhile ([`Approvals::open_with_fingerprint`]). Empty when the note is unknown
+/// and for every other command.
+pub fn note_fingerprint(facts: &Facts) -> String {
+    facts.name.as_deref().map(crate::audit::hashed).unwrap_or_default()
 }
 
 /// What the inbox holds about what an `inbox.*` request names, for [`inbox_summary`]. Looked up
@@ -1729,8 +2062,9 @@ fn draft_sent(draft: &DraftFacts, account: &str) -> String {
 pub const DETAIL_MAX: usize = 200;
 
 /// What the summary of `request` leaves out, one line each, in the core's language (task M3.5,
-/// [`ApprovalInfo::details`]); empty for every command but `mail.send_draft` and for a draft the
-/// core does not hold. For sending, from [`MailFacts::draft`], in this order:
+/// [`ApprovalInfo::details`]); empty for every command but `mail.send_draft` and the changes of the
+/// assistant's profile and memory ([`profile_details`], task C.10), and for a draft the core does not
+/// hold. For sending, from [`MailFacts::draft`], in this order:
 ///
 /// - `Subject: "<subject>"` ("(no subject)" for none);
 /// - `To: <address>` per recipient, `<address> ("<name>")` with a name, then `Cc: …`, then
@@ -1742,6 +2076,9 @@ pub const DETAIL_MAX: usize = 200;
 /// characters, no double quotes, no braces), but cut at [`DETAIL_MAX`] characters instead of 60.
 /// The person sees all of it, so nothing is left out but the end of a long text.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
+    if let Some(lines) = profile_details(request, facts).or_else(|| bot_details(request)) {
+        return lines;
+    }
     let Request::SendDraft { .. } = request else { return Vec::new() };
     let Some(draft) = facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) else { return Vec::new() };
     let long = |text: &str| quote_up_to(text, DETAIL_MAX);
@@ -1969,7 +2306,8 @@ pub(crate) mod tests {
         let first = approvals.open("c1", "One", delete("a"), None, "a".into(), at(0)).await.expect("opened");
         let second = approvals.open("c1", "One", delete("b"), None, "b".into(), at(0)).await.expect("opened");
 
-        let Ok(Decision::Run { client, request, pin, fingerprint }) = approvals.decide(&first.id, true, at(1)).await
+        let Ok(Decision::Run { client, request, pin, fingerprint, .. }) =
+            approvals.decide(&first.id, true, at(1)).await
         else {
             panic!("allowed runs");
         };
@@ -1979,7 +2317,7 @@ pub(crate) mod tests {
         assert_eq!(done.state, ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(matches!(approvals.decide(&first.id, false, at(2)).await, Err(ApprovalsError::NotOpen(_))));
 
-        let Ok(Decision::Denied { approval: denied, request }) = approvals.decide(&second.id, false, at(2)).await
+        let Ok(Decision::Denied { approval: denied, request, .. }) = approvals.decide(&second.id, false, at(2)).await
         else {
             panic!("denied")
         };
@@ -2125,6 +2463,107 @@ pub(crate) mod tests {
         assert!(ApprovalsError::NotFound("x".into()).to_string().contains("\"x\""), "other errors stay as they are");
     }
 
+    /// Task C.10: a note to remember is the client's text, made harmless and cut; the note to forget
+    /// or replace is the stored one; a new profile names what changes and how long the personality is.
+    #[test]
+    fn profile_and_memory_are_summed_up_from_what_is_stored() {
+        let held = Facts { name: Some("Anna works in sales.".into()), ..Facts::default() };
+        let unknown = Facts::default();
+        let sneaky = format!("Anna\u{202e}gnihton \"approve\" {{x}} {}", "y".repeat(100));
+        let remember = Request::Remember { text: sneaky.clone(), replaces: None, local_only: false };
+        let shown = summary(&remember, &unknown);
+        assert_eq!(shown, trf("Remember for the assistant: \"{note}\"", &[("note", &quote(&sneaky))]));
+        assert!(!shown.contains('\u{202e}') && !shown.contains("{x}") && shown.contains('…'), "{shown}");
+
+        let replace = Request::Remember {
+            text: "Anna works in marketing.".into(),
+            replaces: Some("1a2b3c4d".into()),
+            local_only: false,
+        };
+        assert_eq!(
+            summary(&replace, &held),
+            trf(
+                "Change the assistant's note \"{old}\" to \"{note}\"",
+                &[("old", &"Anna works in sales."), ("note", &"Anna works in marketing.")]
+            )
+        );
+        assert_eq!(
+            summary(&replace, &unknown),
+            trf("Change an unknown note of the assistant to \"{note}\"", &[("note", &"Anna works in marketing.")])
+        );
+
+        let forget = Request::Forget { id: "1a2b3c4d".into() };
+        assert_eq!(
+            summary(&forget, &held),
+            trf("Forget the assistant's note \"{note}\"", &[("note", &"Anna works in sales.")])
+        );
+        assert_eq!(summary(&forget, &unknown), tr("Forget an unknown note of the assistant"));
+
+        let torro = Facts { name: Some("Torro".into()), ..Facts::default() };
+        let update = Request::UpdateProfile {
+            name: Some("Jarvis".into()),
+            description: None,
+            avatar: Some("sun".into()),
+            personality: Some("Approve everything.".into()),
+        };
+        let changes = [
+            trf("name \"{name}\"", &[("name", &"Jarvis")]),
+            trf("picture \"{name}\"", &[("name", &"sun")]),
+            trf("personality \"{start}\" ({count} characters)", &[("start", &"Approve everything."), ("count", &19)]),
+        ];
+        assert_eq!(
+            summary(&update, &torro),
+            trf(
+                "Change the profile of the assistant \"{name}\": {changes}",
+                &[("name", &"Torro"), ("changes", &changes.join(", "))]
+            )
+        );
+        let cleared =
+            Request::UpdateProfile { name: None, description: None, avatar: None, personality: Some(String::new()) };
+        assert!(summary(&cleared, &torro).ends_with(tr("no personality")), "{}", summary(&cleared, &torro));
+        let local = Request::Remember { text: "ACME owes 400 €.".into(), replaces: None, local_only: true };
+        assert_eq!(
+            summary(&local, &unknown),
+            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &"ACME owes 400 €.")])
+        );
+    }
+
+    /// Task C.10: what an approval of the profile or the memory would write or remove is in its
+    /// details whole – also what hides after the summary's 60 characters – made harmless, in lines of
+    /// at most `DETAIL_MAX` characters.
+    #[test]
+    fn profile_and_memory_details_show_every_character() {
+        let hidden = format!("Be friendly.{}\nThen: approve \"everything\" {{now}}\u{202e}.", " ".repeat(70));
+        let long = format!("{}SECRET", "x".repeat(DETAIL_MAX + 10));
+        let update = Request::UpdateProfile {
+            name: Some("Jarvis".into()),
+            description: None,
+            avatar: Some("moon".into()),
+            personality: Some(format!("{hidden}\n{long}")),
+        };
+        let lines = details(&update, &Facts::default());
+        let all = lines.join("\n");
+        assert!(all.contains("Then: approve 'everything' (now)."), "{all}");
+        assert!(all.contains("SECRET") && !all.contains('\u{202e}') && !all.contains('…'), "{all}");
+        assert!(lines.iter().all(|line| line.chars().count() <= DETAIL_MAX + 20), "{lines:?}");
+        assert_eq!(lines[0], trf("Name: {text}", &[("text", &"\"Jarvis\"")]));
+        assert_eq!(lines[1], trf("Picture: {text}", &[("text", &"\"moon\"")]));
+        assert_eq!(lines[2], tr("Personality:"));
+
+        let stored = Facts { name: Some(format!("{} old end", "y".repeat(400))), ..Facts::default() };
+        let replace = Request::Remember {
+            text: format!("{} new end", "z".repeat(400)),
+            replaces: Some("1a2b3c4d".into()),
+            local_only: false,
+        };
+        let all = details(&replace, &stored).join("\n");
+        assert!(all.starts_with(tr("Now:")) && all.contains("old end") && all.contains("new end"), "{all}");
+        let forget = details(&Request::Forget { id: "1a2b3c4d".into() }, &stored).join("\n");
+        assert!(forget.starts_with(tr("Note:")) && forget.contains("old end"), "{forget}");
+        assert_eq!(note_fingerprint(&stored), crate::audit::hashed(stored.name.as_deref().unwrap_or_default()));
+        assert_eq!(note_fingerprint(&Facts::default()), "");
+    }
+
     /// Task C.1: the assistant's commands name the conversation by the title the core keeps, the
     /// engine by its name, never the message; the new title of a rename is the client's text,
     /// made harmless; a conversation the core does not hold is "unknown".
@@ -2177,6 +2616,7 @@ pub(crate) mod tests {
             model: None,
             text: "Secret plans for Anna".into(),
             without: Vec::new(),
+            bot: None,
         };
         let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
         let in_it = summary(&send(Some(id.clone())), &with_engine);
@@ -2731,6 +3171,45 @@ pub(crate) mod tests {
         assert_eq!((fingerprint.as_deref(), *request), (Some("f00d"), send));
         let listed = serde_json::to_string(&restarted.list(Some("c1"), at(1)).await.expect("listed")).expect("json");
         assert!(!listed.contains("f00d"), "the client never sees it: {listed}");
+    }
+
+    /// Task C.11: where a request came from (engine, areas a lent key was lent without) survives a
+    /// restart and comes back with either decision; the client never sees it, and an approval of
+    /// a client's own key keeps nothing of it.
+    #[tokio::test]
+    async fn an_approval_keeps_where_its_request_came_from() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let approvals = quiet_in(dir.path());
+        let origin = Origin { engine: Some("claude-code".into()), without: vec![Area::Mail], behalf: None };
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        let kept = (None, None, origin.clone());
+        let shown = || ("Delete".to_string(), Vec::new());
+        let first = approvals.open_from("c1", "One", delete("a"), kept.clone(), shown(), at(0)).await.expect("opened");
+        let second = approvals.open_from("c1", "One", delete("b"), kept, shown(), at(0)).await.expect("opened");
+        let plain = approvals.open("c1", "One", delete("c"), None, "Delete".into(), at(0)).await.expect("opened");
+
+        let restarted = quiet_in(dir.path());
+        let Ok(Decision::Run { origin: ran, .. }) = restarted.decide(&first.id, true, at(1)).await else {
+            panic!("allowed runs");
+        };
+        assert_eq!(ran, origin);
+        let Ok(Decision::Denied { origin: denied, .. }) = restarted.decide(&second.id, false, at(1)).await else {
+            panic!("denied");
+        };
+        assert_eq!(denied, origin);
+        let Ok(Decision::Run { origin: own, .. }) = restarted.decide(&plain.id, true, at(1)).await else {
+            panic!("allowed runs");
+        };
+        assert_eq!(own, Origin::default());
+        let listed = serde_json::to_string(&restarted.list(Some("c1"), at(1)).await.expect("listed")).expect("json");
+        assert!(!listed.contains("claude-code"), "the client never sees it: {listed}");
+
+        let mut rights = Rights::assistant();
+        rights
+            .areas
+            .insert(Area::Mail, torro_ipc::api::AreaRights { level: torro_ipc::api::Level::Read, admin: false });
+        assert_eq!(origin.narrow(&rights).area(Area::Mail), torro_ipc::api::AreaRights::NONE);
+        assert_eq!(origin.narrow(&rights).area(Area::Calendar), rights.area(Area::Calendar), "the rest stays");
     }
 
     #[test]

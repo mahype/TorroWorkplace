@@ -312,9 +312,12 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListEngines | Request::ListConversations => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
         Request::VoiceStatus | Request::TestVoice => Vec::new(),
-        Request::SendMessage { conversation, engine, .. } => {
-            conversation.iter().map(|id| random("conversation", id)).chain([engine_id(engine)]).collect()
-        }
+        Request::SendMessage { conversation, engine, bot, .. } => conversation
+            .iter()
+            .map(|id| random("conversation", id))
+            .chain(bot.iter().map(|id| random("bot", id)))
+            .chain([engine_id(engine)])
+            .collect(),
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => vec![format!("bot:{}", hashed(bot))],
         Request::OpenChatWindow { window: ChatWindow::New } => Vec::new(),
         Request::GetConversation { id: conversation, .. }
@@ -324,6 +327,26 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::PinConversation { id: conversation, .. }
         | Request::OpenChatWindow { window: ChatWindow::Conversation(conversation) } => {
             vec![random("conversation", conversation)]
+        }
+        // The assistant's profile and memory (task C.10): a note by the id the core made, never
+        // its text, a name or the personality.
+        Request::GetProfile | Request::UpdateProfile { .. } | Request::ListMemories => Vec::new(),
+        Request::Remember { replaces, .. } => replaces.iter().map(|id| random("note", id)).collect(),
+        Request::Forget { id: note } => vec![random("note", note)],
+        // Bots (task B.1): a bot by the id the core made, never its name or texts; a message to one
+        // with its conversation, never the text.
+        Request::ListBots | Request::SaveBot { id: None, .. } => Vec::new(),
+        Request::GetBot { id: bot } | Request::DeleteBot { id: bot } | Request::SaveBot { id: Some(bot), .. } => {
+            vec![random("bot", bot)]
+        }
+        // The person's yes to the assistant asking a bot (task B.2): the assistant's conversation
+        // and the bot.
+        Request::ConfirmBot { conversation, bot } => vec![random("conversation", conversation), random("bot", bot)],
+        Request::AskBot { bot, conversation, .. } => {
+            [Some(random("bot", bot)), conversation.as_deref().map(|id| random("conversation", id))]
+                .into_iter()
+                .flatten()
+                .collect()
         }
         mail @ (Request::MailFolders { .. }
         | Request::SearchMail { .. }
@@ -361,6 +384,26 @@ pub fn engine_id(engine: &str) -> String {
     match engine == TEST_ENGINE || AGENT_ENGINES.contains(&engine) || is_account_id(engine) {
         true => format!("engine:{}", cut(engine)),
         false => format!("engine:hash:{}", hashed(engine)),
+    }
+}
+
+/// The ids that say a bot ran for the assistant (task B.2), next to the line of the bot's client:
+/// `bot:<the bot's id>` and `for:<the assistant's client id>`, so the log names both. Ids that do
+/// not have the form the core makes are hashed.
+pub fn delegation_ids(bot: &str, assistant: &str) -> Vec<String> {
+    vec![made_id("bot", bot), behalf_id(assistant)]
+}
+
+/// `for:<client id>`: the client a bot ran for (task B.2), also on the lines of a person's decision.
+pub fn behalf_id(client: &str) -> String {
+    made_id("for", client)
+}
+
+/// `kind:<value>` for an id the core made, hashed when it does not have that form.
+fn made_id(kind: &str, value: &str) -> String {
+    match is_random_id(value) {
+        true => format!("{kind}:{}", cut(value)),
+        false => format!("{kind}:hash:{}", hashed(value)),
     }
 }
 
@@ -571,6 +614,7 @@ pub(crate) mod tests {
             model: Some("secret-model".into()),
             text: "Dinner with Anna".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(
             super::ids(&send),
@@ -582,6 +626,7 @@ pub(crate) mod tests {
             model: None,
             text: "Hi".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(super::ids(&new), vec!["engine:test".to_string()]);
         let odd = Request::SendMessage {
@@ -590,6 +635,7 @@ pub(crate) mod tests {
             model: None,
             text: "Hi".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(super::ids(&odd), vec![format!("engine:hash:{}", hashed("Anna's server"))]);
         assert_eq!(super::engine_id("claude-code"), "engine:claude-code", "an agent the core starts is named");

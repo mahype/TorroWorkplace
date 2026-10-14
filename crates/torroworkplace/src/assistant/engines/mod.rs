@@ -11,7 +11,8 @@
 //!   (`<state>/assistant-runs/<random>`, 0700) with the MCP configuration (0600, the suite's
 //!   server only, no key), starts the agent there with its flags ([`claude::arguments`]: no
 //!   built-in tool, no other MCP server, nothing but `mcp__torroworkplace__*`, the system prompt
-//!   of task C.3 appended), writes the message to its input and closes it, and turns what it
+//!   of task C.3 appended with the personality and the memory of task C.10, without notes marked
+//!   `local_only`), writes the message to its input and closes it, and turns what it
 //!   writes into entries: text as a growing answer, then answer entries, a tool line per call
 //!   (name, input, result in a few words), an error entry when it fails. The folder is removed
 //!   when the run ends, however it ends.
@@ -40,6 +41,9 @@
 //! - **Checked at its start**: the agent's `init` event lists its tools; one that is not the
 //!   suite's stops the run before the model is asked anything, should a version of the agent
 //!   ignore a flag.
+//!
+//! - **Bots** (task B.1): a bot's answer runs the same way with a key of the bot's client, its
+//!   prompt ([`prompt::bot_system`]) and no notes of the assistant's memory.
 //!
 //! While a run lasts, the key is in the agent's environment, which the same user can read (as
 //! with every client key an agent holds); it is worth nothing once the run ends.
@@ -222,6 +226,8 @@ enum Ended {
 enum Failed {
     /// The assistant has no client (any more).
     NoClient,
+    /// The bot that answers has no client (any more): the person removed it (task B.1).
+    NoBotClient,
     /// The folder of the run could not be made.
     Prepare,
     /// The agent could not be started; the system's words.
@@ -239,7 +245,7 @@ enum Failed {
 impl Failed {
     fn code(&self) -> &'static str {
         match self {
-            Failed::NoClient => "forbidden",
+            Failed::NoClient | Failed::NoBotClient => "forbidden",
             _ => "error",
         }
     }
@@ -249,6 +255,9 @@ impl Failed {
         match self {
             Failed::NoClient => {
                 tr("The assistant has no access yet. Choose what it may use in Torro Workplace › Assistant.").into()
+            }
+            Failed::NoBotClient => {
+                tr("This bot has no access any more. Save it again, then choose what it may use.").into()
             }
             Failed::Prepare => trf("The assistant could not prepare {agent}. Try again.", &[("agent", &name)]),
             Failed::Start(why) => trf("{agent} could not be started: {why}", &[("agent", &name), ("why", why)]),
@@ -286,15 +295,27 @@ impl Running {
         };
         let (runs, program, idle, total) = (runs.clone(), env.program.clone(), agents.idle, agents.total);
         let home = env.home.clone();
-        let Some(client) = host.client() else { return Err(Failed::NoClient) };
+        let actor = self.job.actor.clone();
+        let no_client = || if self.job.bot.is_some() { Failed::NoBotClient } else { Failed::NoClient };
+        let Some(client) = host.client_of(&actor) else { return Err(no_client()) };
         let mut without = self.job.without.clone();
         for area in NEVER_TO_AGENTS {
             if !without.contains(area) {
                 without.push(*area);
             }
         }
-        let Some(lent) = host.lend(&self.job.engine, &without) else { return Err(Failed::NoClient) };
-        let areas = allowed_areas(&client.rights, &without);
+        // Lent for this conversation (task B.2): the core then knows where the agent asks a bot from,
+        // and for a bot that runs for the assistant, what both clients may.
+        let lent = host.lend_in(&actor, &self.job.conversation, &self.job.engine, &without);
+        let Some(lent) = lent else { return Err(no_client()) };
+        let areas = allowed_areas(actor.kind(), &client.rights, &without);
+        // The personality and the memory (task C.10); the prompt keeps the notes marked
+        // `local_only` from the agent, which runs elsewhere. A bot has its own personality and no
+        // memory (task B.1).
+        let (persona, memory) = match &self.job.bot {
+            Some(bot) => (bot.personality.clone(), Vec::new()),
+            None => self.assistant.persona_and_notes().await,
+        };
         let context = prompt::Context {
             now: Local::now(),
             lang: i18n::lang(),
@@ -304,9 +325,12 @@ impl Running {
             engine: self.agent.name(),
             model: "",
             place: Place::Remote,
+            memory: &memory,
         };
-        // The personality joins with task C.10.
-        let system = prompt::system(None, &context);
+        let system = match &self.job.bot {
+            Some(bot) => prompt::bot_system(Some(&persona), &prompt::BotParts::of(bot), &context),
+            None => prompt::system(Some(&persona), &context),
+        };
         let folder = RunFolder::make(&runs, &program).map_err(|err| {
             eprintln!("torroworkplace: cannot prepare a run of {} in {}: {err}", self.agent.name(), runs.display());
             Failed::Prepare
@@ -419,9 +443,16 @@ impl Running {
     }
 }
 
-/// The areas the assistant's client has tools in, without `without`: what the prompt names.
-fn allowed_areas(rights: &torro_ipc::api::Rights, without: &[Area]) -> Vec<Area> {
-    let mut areas: Vec<Area> = tools::allowed(Some(rights), without).iter().map(|tool| tool.command.area).collect();
+/// The areas a client of `kind` (the assistant's or a bot's) has tools in, without `without`: what
+/// the prompt names.
+fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area]) -> Vec<Area> {
+    // The memory (task C.10) and the bots (task B.2) are the assistant's own, not areas the person
+    // granted.
+    let mut areas: Vec<Area> = tools::allowed_for(kind, Some(rights), without)
+        .iter()
+        .map(|tool| tool.command.area)
+        .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
+        .collect();
     areas.sort();
     areas.dedup();
     areas

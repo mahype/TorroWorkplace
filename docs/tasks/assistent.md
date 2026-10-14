@@ -161,7 +161,11 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   kein Test braucht ein Mikrofon; Freigaben lassen sich nicht per Sprache erteilen.
 
 ### C.10 Persönlichkeit und Gedächtnis des Hauptbots
-- [ ] erledigt
+- [x] erledigt (Bild: Buchstabe oder ein Symbol der Suite, kein Hochladen; Notizen, die ein lokales Modell nach dem
+  Lesen von Mail anlegt, sind `local_only`: nie an entfernte Modelle oder Agenten, für Clients nur mit Leserecht auf
+  Mail, und sie warten immer auf eine Freigabe; Freigaben zeigen Persönlichkeit und Notizen ganz in den Details;
+  `docs/api-reference.md` gibt es noch nicht, A.9; nachgetragen (Match-Zweige): `crates/torroworkplace/src/{audit,
+  daemon,pim}.rs`)
 - **Modell:** Opus · **Braucht:** C.3 · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
   `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/{mcp,core}.rs`, `crates/torroworkplace/src/ui/**`,
   `crates/torroassistant/src/**`, `docs/api-reference.md`
@@ -173,14 +177,116 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** Test, dass eine Persönlichkeit mit „ignore the rules“ die festen Regeln nicht verdrängt (Reihenfolge
   im Prompt); Profil- und Gedächtnis-Handler-Tests; `torro-design-review`.
 
-## Stufe 2: Bots (Planung folgt)
+### C.11 Nacharbeiten: Lücken aus C.2, C.6, C.7, C.9 und C.10 schließen
+- [x] erledigt (Freigaben merken sich Antrieb und abgezogene Bereiche des geliehenen Schlüssels selbst und laufen auch
+  nach Ende des Laufs oder einem Neustart ohne sie; vor C.11 gespeicherte Freigaben haben das nicht, laufen höchstens
+  zehn Minuten nach. `assistant.remember` mit geliehenem Schlüssel wartet immer; GitHub zählt auch über Filterlisten
+  und verknüpfte Aufgaben als `untrusted`. Eigener Schlüssel eines Clients bleibt bei der Regel aus C.10)
+- **Modell:** Opus · **Braucht:** C.10 · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,clients,approvals,audit}.rs`, `crates/torroworkplace/src/assistant/**`,
+  `crates/torroworkplace/src/ui/assistant.rs`, `crates/torroworkplace/src/tray/**`
+- **Rechte gleich beim Anlegen** (aus C.6): `clients.create_client` bekommt ein optionales Feld `rights` (verträglich);
+  die Seite „Assistant“ legt den Client damit in einem Schritt an. Keine Millisekunden mehr mit *Read only* auf alle
+  Mail-Konten, kein Rest, wenn das Update scheitert.
+- **Freigaben im Lauf eines Agenten** (aus C.7): Ein freigegebener Befehl eines geliehenen Schlüssels läuft mit den
+  eingeschränkten Rechten des Laufs (ohne Mail, ohne abgeschaltete Bereiche), nicht mit den vollen Rechten des Clients.
+- **Antrieb im Protokoll nach Freigaben** (aus C.2): Erlaubt oder lehnt ein Mensch einen Befehl des Assistenten ab,
+  trägt auch diese Protokollzeile `engine:<id>`.
+- **Notizen aus fremden Daten** (aus C.10): Hat die Unterhaltung Daten mit `untrusted` gelesen (Eingang von Agenten
+  und Skripten, GitHub, Mail), braucht `assistant.remember` immer eine Freigabe, nicht nur nach Mail.
+- **Stummschalten immer erreichbar** (aus C.9): „Mute microphone“ steht im Tray, solange `voice_enabled` an ist, auch
+  wenn der Zuhör-Prozess abgestürzt ist.
+- **Oberfläche/API/MCP:** nur das neue optionale Feld `rights` an `clients.create_client` (bleibt **Never**, Punkt 2).
+- **Abnahme:** je Punkt ein Test; `torro-api-review` ohne Muss-Punkt.
 
-Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Grobe Aufteilung, Einzelheiten nach Stufe 1:
+## Stufe 2: Bots (B.1–B.4)
 
-- **B.1 Gerüst:** Bereich `bots`, Client-Art `bot`, `bots.list_bots` / `save_bot` / `delete_bot` / `ask_bot`, Speicher
-  je Bot, Schnittmenge der Rechte beim Abgeben, keine Ketten.
-- **B.2 Hauptbot gibt ab, nur auf Ansage:** `bots.ask_bot` des Hauptbots nur, wenn die Person den Bot nennt oder
-  einen Vorschlag bestätigt (im Kern geprüft); Schritt im Verlauf.
-- **B.3 App:** Seitenleiste „Bots“, Bot-Editor mit Rechten, direkter Chat, Ansprache per Name/Weckwort,
-  eigenes Chatfenster je Bot (`torroassistant --bot <id>`, in Workspace-Vorlagen merkbar).
-- **B.4 MCP-Tools `bots_*`.**
+Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Geplant am 2026-10-14 nach Stufe 1.
+
+```
+B.1 ──┬── B.2
+      ├── B.3
+      └── B.4
+```
+
+**Festlegungen für alle B-Aufgaben** (konservativ, nach dem Konzept):
+- Ein Bot liegt unter `<config>/assistant/bots/<id>/` (Ordner 0700, Dateien 0600): `bot.json` (Name, Beschreibung,
+  Bild, Antrieb, Modell, Kennung seines Clients), `persona.md`, `instructions.md`, `skills/*.md` (nur Text). Grenzen:
+  Name 40, Beschreibung 200, Persönlichkeit 4.000, Anweisungen 8.000 Zeichen, je Skill 8.000, höchstens 8 Skills,
+  höchstens 50 Bots.
+- Jeder Bot hat einen eigenen Client der Art `bot` und startet **ohne Rechte** (`Rights::none()` über das Feld
+  `rights` von `clients.create_client`, C.11). Rechte vergibt nur der Mensch (Punkt 2, **Never**).
+- Ein Bot-Client darf im Bereich `bots` und `assistant` nichts (keine Ketten, keine Schleife), fest im Kern.
+- Unterhaltungen mit einem Bot sind Unterhaltungen im Speicher aus C.1 mit dem neuen optionalen Feld `bot`;
+  `assistant.send_message` bekommt dafür ein optionales Feld `bot` (verträglich).
+- Prompt eines Bots: Persönlichkeit des Bots → feste Regeln (Skill aus C.3) → Anweisungen und Skills des Bots →
+  erzeugter Teil. Die Regeln gewinnen; Datenregel und Kennzeichnung fremder Daten wie beim Hauptbot.
+
+### B.1 Gerüst: Bereich `bots`, Speicher, Client-Art, direkter Chat
+- [x] erledigt (Kennung eines Bots 8 Hex-Zeichen; `bots.save_bot` ersetzt einen Bot ganz, Ändern braucht wie beim
+  Entwurf das Recht zu löschen; `assistant.send_message { bot }` antwortet mit `engine`/`model` der Anfrage (ohne
+  Modell das des Bots), `bots.ask_bot` mit denen des Bots; eine Unterhaltung gehört für immer ihrem Bot; ein Client
+  braucht für `send_message { bot }` zusätzlich Schreiben in `bots`; der Hauptbot schlägt nur neue Bots vor, `ask_bot`
+  bleibt bis B.2 `forbidden` (Haken `bots::assistant_may_ask`); Werkzeuge `bots_*` bekommt das Modell des Hauptbots
+  erst mit B.2; `assistant.open_window { bot }` bleibt `unsupported` bis B.3; Freigaben eines Bots nennen ihn
+  „Bot "…"“; `docs/api-reference.md` gibt es noch nicht, A.9; nachgetragen (zwingend mechanisch): `main.rs`
+  (`mod bots`), `{daemon,pim,mcp}.rs`, `ui/agents.rs`, `crates/torroassistant/src/**` (`match`-Zweige, neue Felder))
+- **Modell:** Opus · **Braucht:** C.11 · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
+  `crates/torro-ipc/src/bots.rs` (neu), `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/bots/**`
+  (neu), `crates/torroworkplace/src/{core,clients,approvals,audit}.rs`
+- `Area::Bots`; Requests und Katalog: `bots.list_bots` (Read), `bots.get_bot` (Read), `bots.save_bot` (Write; ohne
+  Rechte; legt beim ersten Speichern den Client an), `bots.delete_bot` (Delete; entfernt Client und Ordner, die
+  Unterhaltungen bleiben als „deleted bot“), `bots.ask_bot { bot, text, conversation? }` (Write; startet einen Lauf
+  des Bots und wartet nicht).
+- Direkter Chat: `assistant.send_message { bot }` läuft mit dem Client des Bots und seinem Prompt. Antriebe wie beim
+  Hauptbot (KI-Konto oder Claude Code mit geliehenem Schlüssel des Bot-Clients).
+- Der Hauptbot (Client `assistant`) darf `bots.list_bots` und `bots.ask_bot`; `bots.save_bot` vom Hauptbot braucht immer
+  eine Freigabe (Vorschlag eines Bots). Freigabe-Texte mit Namen aus dem Speicher.
+- **Abnahme:** Handler-Tests (anlegen ohne Rechte, ändern, löschen, Grenzen, 0600), Bot-Client bekommt `forbidden`
+  für `bots.*` und `assistant.*`, direkter Chat mit Test-Antrieb, Prompt-Reihenfolge, Rechte-Tabelle.
+
+### B.2 Hauptbot gibt ab, nur auf Ansage; Schnittmenge der Rechte
+- [x] erledigt (Nennung: Wörter des Namens ohne Artikel in Folge, ohne Groß/Klein, mit einfacher Endung
+  „s/n/e/en/es/er/ns“; Bestätigung nur im Speicher des Kerns, gilt für eine Anfrage; die Anfrage des Hauptbots
+  braucht keine Freigabe (die Worte der Person sind das Ja), die Befehle des Bots fragen nach ihren Rechten; der
+  Hauptbot wartet, bis der Bot fertig ist; eine Unterhaltung des Bots je Unterhaltung des Hauptbots (im Speicher);
+  Verweis auf sie in `input.conversation` der Zeile `bots.ask_bot`; nach einem Bot zählt die Unterhaltung als
+  „hat Mail und fremde Daten gelesen“ für spätere Runden; Protokoll `bot:<id>` und `for:<Client des Hauptbots>`;
+  nachgetragen (zwingend mechanisch): `{pim,daemon}.rs` (`match`-Zweige), Test in `mcp.rs` (Never im Bereich
+  `assistant`))
+- **Modell:** Opus · **Braucht:** B.1 · **Dateien:** `crates/torroworkplace/src/assistant/**`,
+  `crates/torroworkplace/src/bots/**`, `crates/torroworkplace/src/{core,approvals}.rs`
+- Werkzeug `bots_ask_bot` für den Hauptbot nur, wenn die **letzte Nachricht der Person** den Bot beim Namen nennt
+  (ohne Groß/Klein, auch „den Reiseplaner“) oder die Person einen Vorschlag des Hauptbots im Chat bestätigt hat
+  (`assistant.confirm_bot { conversation, bot }` · Write, nur App-Schlüssel, **Never**: eine Bestätigung gibt nur
+  der Mensch). Sonst `forbidden` mit Hinweis für das Modell, den Bot vorzuschlagen.
+- Läuft der Bot im Auftrag des Hauptbots, gelten die **Schnittmenge** der Rechte beider Clients und die abgeschalteten
+  Bereiche der Unterhaltung; Freigaben speichern das (wie C.11).
+- Ergebnis als Schritt im Verlauf des Hauptbots („Asked Travel planner · 3 steps“) mit Verweis auf die Unterhaltung
+  des Bots.
+- **Abnahme:** Tests: ohne Nennung `forbidden`; mit Nennung läuft es; Bestätigung nur per App-Schlüssel; Schnittmenge
+  (Hauptbot darf Mail, Bot nicht → keine Mail; umgekehrt ebenso); Bot kann keinen Bot fragen; Protokoll nennt beide.
+
+### B.3 App und Steuerzentrale: Bots anlegen, Rechte, Chat, Fenster
+- [x] erledigt (Bot-Gespräche stehen in der Seitenleiste mit den anderen unter „Recent“, ein Klick auf einen Bot öffnet
+  sein neuestes Gespräch; im Bot-Chat gibt es kein „without …“, der Bot hat eigene Rechte; der Editor ersetzt den
+  Chat, „Save“ steht in der Kopfleiste; die Karte „Ask {bot}?“ schickt `assistant.confirm_bot` und danach die Nachricht
+  „Yes, ask {bot}.“, damit der Assistent weitermacht; Bot-Clients bilden unter Agents & API eine eigene Gruppe, ihre
+  Zeilen öffnen Assistant › Bots; `assistant.open_window { bot }` startet `torroassistant --bot <id>`, `not-found` für
+  einen unbekannten Bot; nachgetragen (zwingend mechanisch): `crates/torroworkplace/src/core.rs` (Test erwartete
+  `unsupported`); Sichtprüfung auf macOS mit AeroSpace statt Hyprland)
+- **Modell:** Opus · **Braucht:** B.1 · **Dateien:** `crates/torroassistant/**`, `crates/torroworkplace/src/ui/**`
+- App: Seitenleiste „Bots“ (Liste, „New bot“), Chat mit einem Bot (Kopf mit Bild und Name), Bot-Editor (Profil,
+  Persönlichkeit, Anweisungen, Skills als Texte, Antrieb/Modell), „Access…“ öffnet die Rechte in der Steuerzentrale.
+  `--bot <id>` öffnet das Chatfenster des Bots (neueste Unterhaltung oder neue), Fensterklasse `torro-assistant-chat`,
+  Titel mit dem Namen des Bots; Workspace-Vorlagen merken das Argument. Karte „Confirm: ask {bot}?“ für Vorschläge des
+  Hauptbots (schickt `assistant.confirm_bot`).
+- Steuerzentrale: Seite „Assistant“ › Bots mit Liste und je Bot den Rechten (dieselbe Ansicht wie bei Agenten,
+  `clients.update_client`), Direktlink `ui --section bot:<id>`.
+- **Abnahme:** UI-Tests, `--demo`-Zustände, `scripts/design-check.sh`, `torro-design-review`.
+
+### B.4 MCP-Tools `bots_*`
+- [x] erledigt
+- **Modell:** Haiku · **Braucht:** B.1 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
+- Je Katalogeintrag ein Tool; `bots_ask_bot` wartet wie `assistant_send_message` bis zur Antwort oder 60 s.
+- **Abnahme:** Vertragstest; ein Bot-Client bekommt `forbidden`; Warten und Stand mit `after`.

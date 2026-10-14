@@ -11,6 +11,14 @@
 //! ([`super::data_rule::for_model`]) and shortened ([`super::tools::for_model`]); the conversation
 //! keeps a tool line with the result in a few words.
 //!
+//! The prompt ([`prompt::system`]) carries the person's personality and the notes of the memory,
+//! read anew for every answer (task C.10). A note the model asks to keep (`assistant_remember`) is
+//! marked `local_only` when the model runs on this computer and the conversation read mail before
+//! ([`Answering::read_mail`]): what a local model writes then may retell a mail, and the data rule
+//! keeps mail from models elsewhere. Once the conversation read anything the tools mark
+//! `untrusted` (mail, GitHub, inbox entries of agents, scripts and mail; [`Answering::untrusted`]),
+//! every note waits for a person's approval (task C.11), wherever the model runs.
+//!
 //! A command that waits for a person (`pending`) puts an approval entry into the conversation; the
 //! loop asks for its state every [`Limits::approval_poll`] and goes on once the person decided (the
 //! command's answer, or "denied"/"expired" for the model). `assistant.cancel` aborts the loop at
@@ -26,7 +34,8 @@ use serde_json::{Value, json};
 use torro_core::ai::{AiError, BoxFuture, ChatMessage, ChatReply, ChatRequest, Provider, ToolCall, open_weights_only};
 use torro_core::i18n::{self, tr, trf};
 use torro_ipc::api::Area;
-use torro_ipc::assistant::{Entry, EntryContent};
+use torro_ipc::assistant::{Entry, EntryContent, Note};
+use torro_ipc::bots::Bot;
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
 
 use super::data_rule::{self, Place};
@@ -48,10 +57,17 @@ pub trait Host: Send + Sync {
 
     /// Runs `request` as the assistant's own client, exactly as a request with its key would run
     /// (`Core::handle_from`): its rights of now (`forbidden` when they do not cover it, and always
-    /// for the area `assistant`), its collections (`not-found`), and an approval where its rights ask
-    /// for one ([`Response::Pending`]). Writes the line of the audit log with the engine `engine`
-    /// among its ids. `forbidden` when there is no assistant client.
-    fn run<'a>(&'a self, request: Request, engine: &'a str) -> BoxFuture<'a, Response>;
+    /// for the area `assistant` but its memory, `torro_ipc::api::own_memory`), its collections
+    /// (`not-found`), and an approval where its rights ask for one ([`Response::Pending`]). Writes
+    /// the line of the audit log with the engine `engine` among its ids. `forbidden` when there is
+    /// no assistant client. An approval it asks for keeps `engine`, so the log lines of the
+    /// person's decision name it too.
+    ///
+    /// `untrusted`: the conversation read data from outside the suite (what the tools mark
+    /// `untrusted`, [`super::tools::untrusted`]). An `assistant.remember` must then wait for a
+    /// person's approval ([`Response::Pending`]) whatever the rights say (task C.11): the note
+    /// could carry what a mail, an agent's entry or an issue said into every later prompt.
+    fn run<'a>(&'a self, request: Request, engine: &'a str, untrusted: bool) -> BoxFuture<'a, Response>;
 
     /// `approvals.approval_status` of the approval `id` as the assistant's own client: its own
     /// approvals only ([`Response::Approval`], else an error answer).
@@ -66,6 +82,157 @@ pub trait Host: Send + Sync {
         let _ = (engine, without);
         None
     }
+
+    // Who an answer runs as (task B.1): the methods above for any [`Actor`]. The assistant is
+    // answered by them; a bot's client only by a host that runs bots (the core). The defaults fail
+    // closed for bots: no client, `forbidden`, no key.
+
+    /// [`Host::client`] for `actor`: the assistant's own client, or the bot's client (kind
+    /// `torro_ipc::api::BOT_CLIENT`) with its rights as stored now; `None` when it is not there.
+    /// For [`Actor::Delegated`] (task B.2) the bot's client with the rights both it and the
+    /// assistant's client have now ([`torro_ipc::api::Rights::common`]), without the areas of
+    /// [`Delegation::without`]; `None` when either client is not there.
+    fn client_of(&self, actor: &Actor) -> Option<ClientInfo> {
+        match actor {
+            Actor::Assistant => self.client(),
+            Actor::Bot(_) | Actor::Delegated(_) => None,
+        }
+    }
+
+    /// [`Host::run`] as `actor`'s client: for a bot exactly as a request with the key of its client
+    /// would run, so a bot's client gets `forbidden` for every `bots` and `assistant` command
+    /// (`torro_ipc::api::loops_back`). `forbidden` when the client is not there.
+    ///
+    /// For [`Actor::Delegated`] (task B.2) with the rights of [`Host::client_of`] (what both
+    /// clients may, without [`Delegation::without`]); an approval it asks for keeps the narrowing
+    /// (the assistant's client and the areas, `crate::approvals::Origin`), so a person's "Allow"
+    /// runs it with what both clients may then and never more. Its audit line names the bot's
+    /// client, the bot, the assistant's client and `engine`.
+    fn run_as<'a>(
+        &'a self,
+        actor: &'a Actor,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+    ) -> BoxFuture<'a, Response> {
+        match actor {
+            Actor::Assistant => self.run(request, engine, untrusted),
+            Actor::Bot(_) | Actor::Delegated(_) => Box::pin(async move { forbidden(request.operation().name()) }),
+        }
+    }
+
+    /// [`Host::approval`] as `actor`'s client: its own approvals only (for [`Actor::Delegated`]
+    /// the bot's client's).
+    fn approval_as<'a>(&'a self, actor: &'a Actor, id: &'a str) -> BoxFuture<'a, Response> {
+        match actor {
+            Actor::Assistant => self.approval(id),
+            Actor::Bot(_) | Actor::Delegated(_) => Box::pin(async { forbidden("approvals.approval_status") }),
+        }
+    }
+
+    /// [`Host::lend`] for `actor`'s client: a key for one run of an agent.
+    fn lend_as(&self, actor: &Actor, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
+        match actor {
+            Actor::Assistant => self.lend(engine, without),
+            Actor::Bot(_) | Actor::Delegated(_) => None,
+        }
+    }
+
+    /// [`Host::lend_as`] for one run in the conversation `conversation` (task B.2), what engine B
+    /// calls. The core remembers for the key's requests what the run is: for the assistant, its
+    /// conversation, so a `bots.ask_bot` with the key is checked against what the person said
+    /// there ([`super::Assistant::delegate`]); for [`Actor::Delegated`], the narrowing, so every
+    /// request with the key runs with what both clients may. Without that the key could do more
+    /// than the run may, so a host that cannot remember it lends none for [`Actor::Delegated`].
+    fn lend_in(
+        &self,
+        actor: &Actor,
+        conversation: &str,
+        engine: &str,
+        without: &[Area],
+    ) -> Option<crate::clients::LentKey> {
+        let _ = conversation;
+        match actor {
+            Actor::Delegated(_) => None,
+            _ => self.lend_as(actor, engine, without),
+        }
+    }
+
+    /// `bots.ask_bot` of the assistant's own client while it answers in its conversation `main`
+    /// with `engine` (task B.2): run as [`Host::run`] would, with the conversation known, so the
+    /// assistant checks that the person named the bot or confirmed it there
+    /// ([`crate::bots::assistant_may_ask`]) and runs the bot for it with what both clients may and
+    /// without the areas `without` (the conversation's switched-off ones); `read_mail`: the
+    /// conversation read mail, so a bot whose model runs elsewhere is not asked (the data rule).
+    /// Answers when the bot's
+    /// run is done: [`Response::Conversation`] of the bot's conversation with the entries of this
+    /// run, or the error answer (`forbidden` with a word for the model when the person did not ask
+    /// for the bot). Never waits for an approval of the ask itself: the person's words are the yes.
+    /// The audit line names the assistant's client, the bot and `engine`. `forbidden` by default.
+    fn ask_bot<'a>(
+        &'a self,
+        main: &'a str,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+        read_mail: bool,
+        without: &'a [Area],
+    ) -> BoxFuture<'a, Response> {
+        let _ = (main, engine, untrusted, read_mail, without);
+        Box::pin(async move { forbidden(request.operation().name()) })
+    }
+}
+
+/// Whose client an answer runs as (task B.1), and so whose rights, collections, approvals and audit
+/// lines its tools have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Actor {
+    /// The assistant's own client (kind `torro_ipc::api::ASSISTANT_CLIENT`).
+    Assistant,
+    /// The client of a bot (kind `torro_ipc::api::BOT_CLIENT`), by the client's id as the bot keeps
+    /// it ([`torro_ipc::bots::Bot::client`]).
+    Bot(String),
+    /// The client of a bot that runs for the assistant (task B.2): the bot's client with what both
+    /// it and the assistant's client may ([`Delegation`]).
+    Delegated(Delegation),
+}
+
+/// A bot's run on behalf of the assistant (task B.2, [`super::Assistant::delegate`]): who runs, for
+/// whom, and what is switched off. Its rights are never more than both clients have now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delegation {
+    /// The bot's id ([`torro_ipc::bots::Bot::id`]), for the audit log.
+    pub bot: String,
+    /// The bot's client id ([`torro_ipc::bots::Bot::client`]): the run runs as this client.
+    pub client: String,
+    /// The assistant's client id: its rights of now bound the run as well.
+    pub assistant: String,
+    /// Areas taken out of both: those switched off in the assistant's conversation, and for an
+    /// agent driving the assistant those its key was lent without (always mail).
+    pub without: Vec<Area>,
+}
+
+impl Actor {
+    /// The actor of a conversation with `bot`, or with the assistant for `None`.
+    pub fn of(bot: Option<&Bot>) -> Actor {
+        match bot {
+            Some(bot) => Actor::Bot(bot.client.clone()),
+            None => Actor::Assistant,
+        }
+    }
+
+    /// The client kind it runs as.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Actor::Assistant => torro_ipc::api::ASSISTANT_CLIENT,
+            Actor::Bot(_) | Actor::Delegated(_) => torro_ipc::api::BOT_CLIENT,
+        }
+    }
+}
+
+/// The `forbidden` answer for `command`, as the core gives it.
+fn forbidden(command: &str) -> Response {
+    Response::Error { code: "forbidden".into(), message: format!("this client may not use {command}") }
 }
 
 /// The model of an AI account and where it runs.
@@ -101,6 +268,11 @@ pub(super) struct Job {
     pub history: Vec<Entry>,
     /// The answer as it grows, shown by `assistant.get_conversation`.
     pub partial: Arc<Mutex<Partial>>,
+    /// Whose client the answer runs as (task B.1).
+    pub actor: Actor,
+    /// The bot that answers, as stored when the message came (task B.1): its personality,
+    /// instructions and skills make its prompt. `None` for the assistant.
+    pub bot: Option<Bot>,
 }
 
 /// How a command the model called ended.
@@ -114,7 +286,30 @@ enum Outcome {
 /// Runs the answer `job` of `assistant` with the model of its engine and the tools of `host`, until
 /// the model answers, fails, takes too many steps, or the run is stopped. Its last entry ends the run.
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job) {
-    let mut run = Answering { limits: assistant.limits, assistant, host, job, loaded: BTreeSet::new() };
+    // A bot has its own personality and no memory of the assistant's (task B.1).
+    let (persona, memory) = match &job.bot {
+        Some(bot) => (bot.personality.clone(), Vec::new()),
+        None => assistant.persona_and_notes().await,
+    };
+    let read_mail = job.history.iter().any(|entry| match &entry.content {
+        EntryContent::Tool { name, .. } => data_rule::reads_mail(name),
+        _ => false,
+    });
+    let untrusted = job.history.iter().any(|entry| match &entry.content {
+        EntryContent::Tool { name, .. } => tools::may_have_read_untrusted(name),
+        _ => false,
+    });
+    let mut run = Answering {
+        limits: assistant.limits,
+        assistant,
+        host,
+        job,
+        loaded: BTreeSet::new(),
+        persona,
+        memory,
+        read_mail,
+        untrusted,
+    };
     if let Err(error) = run.go().await {
         let entry = EntryContent::Error { code: error.code().into(), message: error.to_string() };
         run.add(entry, true).await;
@@ -129,6 +324,19 @@ struct Answering {
     limits: Limits,
     /// The tools [`FIND_TOOLS`] added.
     loaded: BTreeSet<String>,
+    /// The person's personality, read when the answer started (task C.10); empty for none.
+    persona: String,
+    /// The notes of the memory, read when the answer started.
+    memory: Vec<Note>,
+    /// The conversation read mail content: a tool of an earlier turn read mail or the inbox, or a
+    /// tool of this answer gave what the data rule keeps from models elsewhere. A note a local
+    /// model keeps from then on is marked `local_only` ([`Answering::kept_local`]).
+    read_mail: bool,
+    /// The conversation read data from outside the suite: a tool of an earlier turn that may have
+    /// ([`tools::may_have_read_untrusted`]; its answer is not kept, so counted when it might), or an
+    /// answer of this one the tools marked `untrusted`. From then on every note waits for a person
+    /// (task C.11, [`Host::run`]).
+    untrusted: bool,
 }
 
 /// Why an answer ended early, for its error entry.
@@ -175,9 +383,14 @@ impl Answering {
         let mut messages = vec![ChatMessage::system(String::new())];
         messages.extend(history(&self.job.history, &self.job.engine, access.place));
         for _ in 0..self.limits.max_steps {
-            let rights = self.host.client().map(|client| client.rights);
-            let allowed = tools::allowed(rights.as_ref(), &self.job.without);
-            let areas: BTreeSet<Area> = allowed.iter().map(|tool| tool.command.area).collect();
+            let rights = self.host.client_of(&self.job.actor).map(|client| client.rights);
+            let allowed = tools::allowed_for(self.job.actor.kind(), rights.as_ref(), &self.job.without);
+            // The memory and the bots (task B.2) are the assistant's own, not areas the person granted.
+            let areas: BTreeSet<Area> = allowed
+                .iter()
+                .map(|tool| tool.command.area)
+                .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
+                .collect();
             let areas: Vec<Area> = areas.into_iter().collect();
             let context = prompt::Context {
                 now: Local::now(),
@@ -189,9 +402,13 @@ impl Answering {
                 engine: &self.job.engine,
                 model: &model,
                 place: access.place,
+                memory: &self.memory,
             };
-            // The personality joins with task C.10 (`<config>/assistant/persona.md`).
-            messages[0] = ChatMessage::system(prompt::system(None, &context));
+            let system = match &self.job.bot {
+                Some(bot) => prompt::bot_system(Some(&self.persona), &prompt::BotParts::of(bot), &context),
+                None => prompt::system(Some(&self.persona), &context),
+            };
+            messages[0] = ChatMessage::system(system);
             let request = ChatRequest {
                 model: model.clone(),
                 messages: messages.clone(),
@@ -277,20 +494,51 @@ impl Answering {
             return self.refused(name, input, "forbidden", &message).await;
         }
         let request = match tools::request_for(&call.name, &call.arguments) {
-            Ok(request) => request,
+            Ok(request) => self.kept_local(request, place),
             Err(message) => return self.refused(name, input, "error", &message).await,
         };
         let area = request.operation().area();
         let outcome = self.run(request.clone()).await?;
         let (result, summary, error) = match outcome {
+            // A bot that ran for the assistant (task B.2): its answer, as the data rule allows.
+            Outcome::Answered(response) if matches!(request, Request::AskBot { .. }) => {
+                match super::delegate::Asked::of(response.as_ref()) {
+                    Some(asked) => {
+                        let input = super::delegate::with_conversation(input, &asked.conversation);
+                        let bot = self.bot_name_of(&request).await;
+                        self.read_mail |= asked.read_mail;
+                        self.untrusted |= asked.untrusted;
+                        let summary = asked.summary(&bot);
+                        let line = EntryContent::Tool { name, input, summary, error: asked.error.clone() };
+                        return self.add(line, false).await.then(|| asked.for_model(place).to_string());
+                    }
+                    // Refused: the core's message tells the model what to do (propose the bot).
+                    None => {
+                        let error = match response.as_ref() {
+                            Response::Error { code, .. } => Some(code.clone()),
+                            _ => None,
+                        };
+                        let value = serde_json::to_value(response.as_ref()).unwrap_or(Value::Null);
+                        (tools::for_model(area, value), tools::summary(&response, false), error)
+                    }
+                }
+            }
             Outcome::Answered(response) => {
+                // What a model elsewhere could not read is mail content: from now on a note a
+                // local model keeps may retell it.
+                self.read_mail |= data_rule::for_model(&request, &response, Place::Remote).withheld;
                 let screened = data_rule::for_model(&request, &response, place);
+                // Data from outside the suite (task C.11), judged on the whole answer: also what the
+                // data rule kept from this model counts, so no screening can hide it.
+                let whole = serde_json::to_value(response.as_ref()).unwrap_or(Value::Null);
+                self.untrusted |= tools::untrusted(area, &whole);
                 let error = match response.as_ref() {
                     Response::Error { code, .. } => Some(code.clone()),
                     _ => None,
                 };
                 let summary = tools::summary(&response, screened.withheld);
-                (tools::for_model(area, with_hint(screened.value, error.as_deref())), summary, error)
+                let hinted = with_hint(screened.value, error.as_deref(), self.job.bot.is_some());
+                (tools::for_model(area, hinted), summary, error)
             }
             Outcome::Denied => (
                 failure("denied", "A person denied this command; it did not run. Do not try it again unless they ask."),
@@ -307,12 +555,33 @@ impl Answering {
         self.add(line, false).await.then_some(result)
     }
 
+    /// The name of the bot `request` names, as stored now; its id when it is gone.
+    async fn bot_name_of(&self, request: &Request) -> String {
+        let id = request.bot().unwrap_or_default();
+        self.assistant.bots().get(id).await.map_or_else(|| id.to_string(), |bot| bot.name)
+    }
+
+    /// `request` with `assistant.remember` marked `local_only` when the model runs on this computer
+    /// at `place` and the conversation read mail ([`Answering::read_mail`]): the note may retell a
+    /// mail, so it stays with models on this computer (the data rule). Every other request as it is;
+    /// the model cannot take the mark off.
+    fn kept_local(&self, request: Request, place: Place) -> Request {
+        match request {
+            Request::Remember { text, replaces, local_only } => Request::Remember {
+                text,
+                replaces,
+                local_only: local_only || (place == Place::Local && self.read_mail),
+            },
+            other => other,
+        }
+    }
+
     /// [`FIND_TOOLS`]: the matches among what the assistant may use now, loaded for the next steps.
     fn find_tools(&mut self, call: &ToolCall) -> String {
         let input = tools::input_of(&call.arguments);
         let query = input.get("query").and_then(Value::as_str).unwrap_or_default();
-        let rights = self.host.client().map(|client| client.rights);
-        let allowed = tools::allowed(rights.as_ref(), &self.job.without);
+        let rights = self.host.client_of(&self.job.actor).map(|client| client.rights);
+        let allowed = tools::allowed_for(self.job.actor.kind(), rights.as_ref(), &self.job.without);
         let matches = tools::find(&allowed, query);
         self.loaded.extend(matches.iter().map(|tool| tool.spec.name.clone()));
         tools::found(&matches).to_string()
@@ -327,8 +596,19 @@ impl Answering {
     /// Hands `request` to the core as the assistant's client and waits for a person where it must.
     /// The core runs it on a task of its own, so stopping the answer never stops a command half way.
     async fn run(&self, request: Request) -> Option<Outcome> {
-        let (host, engine) = (Arc::clone(&self.host), self.job.engine.clone());
-        let ran = tokio::spawn(async move { host.run(request, &engine).await }).await;
+        let (host, engine, untrusted) = (Arc::clone(&self.host), self.job.engine.clone(), self.untrusted);
+        let actor = self.job.actor.clone();
+        let (main, without, read_mail) = (self.job.conversation.clone(), self.job.without.clone(), self.read_mail);
+        // Asking a bot (task B.2) needs the conversation: the person must have asked for the bot here.
+        let ran = tokio::spawn(async move {
+            match (&actor, &request) {
+                (Actor::Assistant, Request::AskBot { .. }) => {
+                    host.ask_bot(&main, request, &engine, untrusted, read_mail, &without).await
+                }
+                _ => host.run_as(&actor, request, &engine, untrusted).await,
+            }
+        })
+        .await;
         let response = ran.unwrap_or_else(|err| failed(&format!("the command did not finish: {err}")));
         let Response::Pending { approval } = response else { return Some(Outcome::Answered(Box::new(response))) };
         if !self.add(EntryContent::Approval { id: approval.id.clone() }, false).await {
@@ -336,7 +616,7 @@ impl Answering {
         }
         loop {
             tokio::time::sleep(self.limits.approval_poll).await;
-            match self.host.approval(&approval.id).await {
+            match self.host.approval_as(&self.job.actor, &approval.id).await {
                 Response::Approval { approval } => match approval.state {
                     ApprovalState::Pending | ApprovalState::Running => {}
                     ApprovalState::Done { response } => return Some(Outcome::Answered(response)),
@@ -438,18 +718,23 @@ fn failed(message: &str) -> Response {
     Response::Error { code: "error".into(), message: message.into() }
 }
 
-/// For `forbidden`, a word to the model what to tell the person.
-fn with_hint(mut value: Value, code: Option<&str>) -> Value {
+/// For `forbidden`, a word to the model what to tell the person; for a `bot`, where its access is
+/// set (task B.1).
+fn with_hint(mut value: Value, code: Option<&str>, bot: bool) -> Value {
     if code == Some("forbidden")
         && let Some(object) = value.as_object_mut()
     {
-        object.insert(
-            "hint".into(),
-            json!(
+        let hint = match bot {
+            true => {
+                "The person has not allowed this bot this. Tell them; they can change what the bot may use in Torro \
+                 Workplace, Assistant, Bots."
+            }
+            false => {
                 "The person has not allowed the assistant this. Tell them; they can change what the assistant may \
-                   use in Torro Workplace, Assistant."
-            ),
-        );
+                 use in Torro Workplace, Assistant."
+            }
+        };
+        object.insert("hint".into(), json!(hint));
     }
     value
 }
@@ -473,7 +758,7 @@ pub(crate) mod tests {
     /// A model that answers from a script, step by step, and keeps what it was asked.
     #[derive(Default)]
     pub(crate) struct Script {
-        steps: Mutex<VecDeque<Step>>,
+        pub(crate) steps: Mutex<VecDeque<Step>>,
         /// Answered when the steps ran out.
         then: Mutex<Option<Step>>,
         pub(crate) asked: Mutex<Vec<ChatRequest>>,
@@ -575,6 +860,10 @@ pub(crate) mod tests {
         script: Arc<Script>,
         answer: fn(&Request) -> Response,
         ran: Mutex<Vec<(Request, String)>>,
+        /// Whether each request of `ran` came after the conversation read untrusted data.
+        untrusted: Mutex<Vec<bool>>,
+        /// Whom each request of `ran` ran as (task B.1).
+        actors: Mutex<Vec<Actor>>,
     }
 
     impl Host for FakeHost {
@@ -596,9 +885,10 @@ pub(crate) mod tests {
             })
         }
 
-        fn run<'a>(&'a self, request: Request, engine: &'a str) -> BoxFuture<'a, Response> {
+        fn run<'a>(&'a self, request: Request, engine: &'a str, untrusted: bool) -> BoxFuture<'a, Response> {
             Box::pin(async move {
                 let response = (self.answer)(&request);
+                self.untrusted.lock().expect("lock").push(untrusted);
                 self.ran.lock().expect("lock").push((request, engine.to_string()));
                 response
             })
@@ -607,6 +897,28 @@ pub(crate) mod tests {
         /// Every approval expires here; deciding is tested with the real core.
         fn approval<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Response> {
             Box::pin(async { Response::Approval { approval: approval(ApprovalState::Expired) } })
+        }
+
+        /// A bot's client has the same rights here, with its kind; the runs are kept the same way.
+        fn client_of(&self, actor: &Actor) -> Option<ClientInfo> {
+            let mut client = self.client()?;
+            if let Actor::Bot(id) = actor {
+                (client.id, client.kind) = (id.clone(), torro_ipc::api::BOT_CLIENT.into());
+            }
+            Some(client)
+        }
+
+        fn run_as<'a>(
+            &'a self,
+            actor: &'a Actor,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+        ) -> BoxFuture<'a, Response> {
+            Box::pin(async move {
+                self.actors.lock().expect("lock").push(actor.clone());
+                self.run(request, engine, untrusted).await
+            })
         }
     }
 
@@ -679,7 +991,15 @@ pub(crate) mod tests {
     ) -> (Arc<Assistant>, Arc<FakeHost>) {
         let limits = Limits { max_steps: 4, approval_poll: Duration::from_millis(5) };
         let assistant = Arc::new(assistant_in(dir, Duration::ZERO).with_limits(limits));
-        let host = Arc::new(FakeHost { rights, place, script, answer: answers, ran: Mutex::new(Vec::new()) });
+        let host = Arc::new(FakeHost {
+            rights,
+            place,
+            script,
+            answer: answers,
+            ran: Mutex::new(Vec::new()),
+            untrusted: Mutex::new(Vec::new()),
+            actors: Mutex::new(Vec::new()),
+        });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
         assistant.attach(weak);
@@ -693,6 +1013,9 @@ pub(crate) mod tests {
             model: None,
             text: text.into(),
             without,
+            bot: None,
+            on_behalf: None,
+            person: false,
         };
         match assistant.send(message, EngineKind::Ai, Utc::now()).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -733,6 +1056,175 @@ pub(crate) mod tests {
             .find(|message| message.tool_call_id.as_deref() == Some(id.as_str()))
             .map(|message| message.content)
             .unwrap_or_else(|| panic!("the model never got the result of {tool}"))
+    }
+
+    /// The `assistant.remember` requests the model's calls became, as the core got them.
+    fn remembered(host: &FakeHost) -> Vec<Request> {
+        let ran = host.ran.lock().expect("lock");
+        ran.iter()
+            .map(|(request, _)| request.clone())
+            .filter(|request| matches!(request, Request::Remember { .. }))
+            .collect()
+    }
+
+    /// Task C.10: the personality comes first in the system prompt and the notes in its generated
+    /// part; a model elsewhere reads no note a local model kept after reading mail.
+    #[tokio::test]
+    async fn the_personality_and_the_memory_reach_the_model() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![says("Hello Anna.")]);
+        let (assistant, _host) = set_up(dir.path(), Some(reader()), Place::Remote, Arc::clone(&script));
+        let change = super::super::profile::Change {
+            personality: Some("Speak like a calm butler.".into()),
+            ..super::super::profile::Change::default()
+        };
+        assert!(matches!(assistant.update_profile(change).await, Response::Profile { .. }));
+        assert!(matches!(assistant.remember("Anna works in sales.", None, false, true).await, Response::Memory { .. }));
+        assert!(matches!(assistant.remember("ACME owes 400 €.", None, true, true).await, Response::Memory { .. }));
+
+        let id = ask(&assistant, None, "Who am I?", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let system = script.asked()[0].messages[0].content.clone();
+        assert!(system.starts_with(prompt::PERSONALITY_HEADING), "{system}");
+        assert!(system.contains("> Speak like a calm butler."), "{system}");
+        let skill = system.find(prompt::skill()).expect("the skill");
+        assert!(system.find("calm butler").is_some_and(|at| at < skill), "the personality before the rules");
+        let generated = system.split_once("## This conversation").map(|(_, rest)| rest).expect("its part");
+        assert!(generated.contains("] Anna works in sales."), "{generated}");
+        assert!(!system.contains("ACME"), "a remote model reads no local note: {system}");
+        let asked = script.asked();
+        let offered: Vec<&str> = asked[0].tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert!(offered.contains(&"assistant_remember") && !offered.contains(&"assistant_update_profile"));
+    }
+
+    /// Task C.10, the data rule: a note a model on this computer keeps after the conversation read
+    /// mail is marked `local_only`, whatever the model says – also in a later answer of the same
+    /// conversation; before it read mail not.
+    #[tokio::test]
+    async fn a_note_kept_after_reading_mail_stays_on_this_computer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls("assistant_remember", json!({"text": "Anna works in sales."})),
+            calls("inbox_list_items", json!({})),
+            calls("assistant_remember", json!({"text": "ACME sent invoice 42.", "local_only": false})),
+            says("Noted."),
+            calls("assistant_remember", json!({"text": "Call ACME on Monday."})),
+            says("Noted too."),
+        ]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let id =
+            ask(&assistant, None, "Remember Anna, then check my inbox and remember the invoice.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        ask(&assistant, Some(&id), "Remember to call ACME on Monday.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let kept: Vec<bool> = remembered(&host)
+            .into_iter()
+            .map(|request| match request {
+                Request::Remember { local_only, .. } => local_only,
+                _ => false,
+            })
+            .collect();
+        assert_eq!(kept, [false, true, true], "before the mail entry not, after it always");
+    }
+
+    /// Task C.11: once the conversation read an answer the tools mark `untrusted` (here an inbox
+    /// entry), every later request tells the core so – also in a later answer of the conversation,
+    /// and for a model elsewhere – so a note waits for a person. Before, it does not. The C.10 mark
+    /// `local_only` stays a matter of mail and a model on this computer.
+    #[tokio::test]
+    async fn requests_after_untrusted_data_say_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls("assistant_remember", json!({"text": "Anna works in sales."})),
+            calls("inbox_list_items", json!({})),
+            calls("assistant_remember", json!({"text": "ACME sent invoice 42."})),
+            says("Noted."),
+            calls("assistant_remember", json!({"text": "Call ACME on Monday."})),
+            says("Noted too."),
+        ]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Remote, Arc::clone(&script));
+        let id = ask(&assistant, None, "Remember Anna, then check my inbox.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        ask(&assistant, Some(&id), "Remember to call ACME on Monday.", Vec::new()).await;
+        finished(&assistant, &id).await;
+        let untrusted = host.untrusted.lock().expect("lock").clone();
+        assert_eq!(untrusted, [false, false, true, true], "remember, inbox, remember, remember");
+        let local: Vec<bool> = remembered(&host)
+            .into_iter()
+            .map(|request| matches!(request, Request::Remember { local_only: true, .. }))
+            .collect();
+        assert_eq!(local, [false, false, false], "a model elsewhere never read the mail");
+        assert!(tools::may_have_read_untrusted("tasks.describe_github_repo"), "GitHub");
+        assert!(tools::may_have_read_untrusted("tasks.list_todos"), "issues of filter lists");
+        assert!(tools::may_have_read_untrusted("mail.get_message"));
+        assert!(!tools::may_have_read_untrusted("calendar.list_events"));
+        assert!(!tools::may_have_read_untrusted("tasks.list_lists"));
+        let issue = json!({"result": "todos", "todos": [{"collection": "github:mahype/00ff", "summary": "Hi"}]});
+        let linked = json!({"result": "todos", "todos": [{"collection": "a/b", "link": {"id": "github:o/r#1"}}]});
+        let own = json!({"result": "todos", "todos": [{"collection": "nextcloud:anna/tasks", "summary": "Hi"}]});
+        assert!(tools::untrusted(Area::Tasks, &issue) && tools::untrusted(Area::Tasks, &linked));
+        assert!(!tools::untrusted(Area::Tasks, &own));
+    }
+
+    /// Task B.1: a bot answers with its own prompt – its personality first, the rules, then its
+    /// instructions and skills – reads no note of the assistant's memory and is offered none of its
+    /// tools, and its tools run as its own client.
+    #[tokio::test]
+    async fn a_bot_answers_with_its_prompt_and_its_client() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![calls("calendar_list_calendars", json!({})), says("No calendars.")]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let change = super::super::profile::Change {
+            personality: Some("Speak like a calm butler.".into()),
+            ..super::super::profile::Change::default()
+        };
+        assert!(matches!(assistant.update_profile(change).await, Response::Profile { .. }));
+        assert!(matches!(assistant.remember("Anna works in sales.", None, false, true).await, Response::Memory { .. }));
+        let bot = Bot {
+            id: "1a2b3c4d".into(),
+            name: "Travel planner".into(),
+            description: String::new(),
+            avatar: "letter".into(),
+            engine: ENGINE.into(),
+            model: None,
+            personality: "Cheerful and quick.".into(),
+            instructions: "Suggest trains before flights.".into(),
+            skills: vec![torro_ipc::bots::Skill { name: "Packing".into(), text: "Pack light.".into() }],
+            client: "9f8e7d6c".into(),
+        };
+        let message = Message {
+            conversation: None,
+            engine: ENGINE.into(),
+            model: None,
+            text: "Which calendars do I have?".into(),
+            without: Vec::new(),
+            bot: Some(bot),
+            on_behalf: None,
+            person: false,
+        };
+        let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
+        else {
+            panic!("a conversation with the bot")
+        };
+        assert_eq!(conversation.bot.as_deref(), Some("1a2b3c4d"));
+        finished(&assistant, &conversation.id).await;
+
+        let asked = script.asked();
+        let system = asked[0].messages[0].content.clone();
+        let at = |text: &str| system.find(text).unwrap_or_else(|| panic!("{text:?} is missing: {system}"));
+        assert!(system.starts_with(prompt::PERSONALITY_HEADING), "{system}");
+        assert!(at("> Cheerful and quick.") < at(prompt::skill()), "its personality before the rules");
+        assert!(at(prompt::skill()) < at(prompt::BOT_HEADING), "the rules before its instructions");
+        assert!(at("> Suggest trains before flights.") < at("> Pack light."), "the instructions, then the skills");
+        assert!(at("> Pack light.") < at("## This conversation"), "the conversation last");
+        assert!(!system.contains("calm butler") && !system.contains("Anna"), "nothing of the assistant's: {system}");
+        let offered: Vec<&str> = asked[0].tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert!(offered.contains(&"calendar_list_calendars"), "{offered:?}");
+        assert!(
+            offered.iter().all(|tool| !tool.starts_with("assistant_") && !tool.starts_with("bots_")),
+            "{offered:?}"
+        );
+        assert_eq!(*host.actors.lock().expect("lock"), [Actor::Bot("9f8e7d6c".into())], "as the bot's client");
     }
 
     #[tokio::test]
@@ -961,6 +1453,9 @@ pub(crate) mod tests {
             model: Some("qwen/qwen3-14b".into()),
             text: "Summarise".into(),
             without: Vec::new(),
+            bot: None,
+            on_behalf: None,
+            person: false,
         };
         assert!(matches!(other.send(message, EngineKind::Ai, Utc::now()).await, Response::Conversation { .. }));
         finished(&other, &id).await;

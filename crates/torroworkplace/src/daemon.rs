@@ -541,6 +541,21 @@ fn describe(request: &Request) -> String {
             format!("{} conversation {id}", if *pinned { "pin" } else { "unpin" })
         }
         Request::OpenChatWindow { .. } => "open an assistant window".into(),
+        // Ids only, never a note or the personality (task C.10).
+        Request::GetProfile => "assistant profile".into(),
+        Request::UpdateProfile { .. } => "change the assistant profile".into(),
+        Request::ListMemories => "assistant memory".into(),
+        Request::Remember { replaces: Some(id), .. } => format!("change note {id}"),
+        Request::Remember { .. } => "remember a note".into(),
+        Request::Forget { id } => format!("forget note {id}"),
+        // Ids only, never a bot's name or texts (task B.1).
+        Request::ListBots => "bots".into(),
+        Request::GetBot { id } => format!("bot {id}"),
+        Request::SaveBot { id: Some(id), .. } => format!("change bot {id}"),
+        Request::SaveBot { .. } => "make a bot".into(),
+        Request::DeleteBot { id } => format!("delete bot {id}"),
+        Request::AskBot { bot, .. } => format!("message to bot {bot}"),
+        Request::ConfirmBot { bot, .. } => format!("confirm asking bot {bot}"),
         Request::VoiceStatus => "voice status".into(),
         Request::TestVoice => "voice test".into(),
     }

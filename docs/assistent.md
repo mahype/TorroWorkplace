@@ -134,6 +134,9 @@ soweit freigegeben).
 - **Gedächtnis** (entschieden, Stufe 1): Notizen, die der Assistent sich auf Wunsch merkt
   („Anna ist meine Kollegin aus dem Vertrieb“), als lesbare Datei `<config>/assistant/memory.md`,
   in der Steuerzentrale einsehbar, änderbar und löschbar. Nichts wird heimlich gemerkt.
+  Hat die Unterhaltung fremde Daten gelesen (Mail, GitHub, Einträge von Agenten und Skripten), braucht jede
+  neue Notiz eine Freigabe, damit kein Text von außen unbemerkt in den Prompt gelangt; Notizen, die ein lokales
+  Modell nach dem Lesen von Mail anlegt, bleiben „Nur auf diesem Computer“ (C.10, C.11).
 
 ## Bots (Stufe 2)
 
@@ -279,7 +282,7 @@ Clients standardmäßig „Kein Zugriff“, auch in der Vorlage *Full access* (e
 Aufgaben: [tasks/assistent.md](tasks/assistent.md) (C.1–C.9). Antrieb A braucht KI.1 (wird dafür
 vorgezogen, OpenAI-kompatibel zuerst), Antrieb B nur einen verbundenen Agenten.
 Sprache (C.9) kommt zuletzt, wenn der Chat steht. Persönlichkeit und Gedächtnis sind Teil von Stufe 1
-(C.10), Bots sind Stufe 2 (Aufgaben B.1–B.4, werden geplant, wenn Stufe 1 steht).
+(C.10), Bots sind Stufe 2 (Aufgaben B.1–B.4, geplant am 2026-10-14).
 
 ## Offen
 

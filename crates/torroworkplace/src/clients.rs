@@ -198,6 +198,29 @@ fn legacy_rights() -> Rights {
 
 /// A selection of calendars or task lists names a collection by a bare URL, as before several
 /// accounts existed ([`torro_pim::account::is_legacy_id`]).
+/// Refuses `rights` whose selections a client may not be given ([`ClientsError::Invalid`]): a
+/// collection named by a bare URL (task M1.4), a GitHub selection with anything but `owner/name`
+/// and `owner` (task G.2), a mail selection with anything but mail account ids (task M2.1). For
+/// [`Clients::update`] and [`Clients::add_client`] alike (task C.11).
+fn check_selections(rights: &Rights) -> Result<(), ClientsError> {
+    if has_legacy_selection(rights) {
+        return Err(ClientsError::Invalid(
+            "a selection names a collection by its URL; use the collection ids from accounts.list_accounts",
+        ));
+    }
+    if has_bad_repo_selection(rights) {
+        return Err(ClientsError::Invalid(
+            "a GitHub selection names repositories as owner/name and owners as owner, nothing else",
+        ));
+    }
+    if has_bad_mail_selection(rights) {
+        return Err(ClientsError::Invalid(
+            "a mail selection names accounts by their ids from accounts.list_accounts (mail:<address>)",
+        ));
+    }
+    Ok(())
+}
+
 fn has_legacy_selection(rights: &Rights) -> bool {
     [&rights.calendars, &rights.task_lists].into_iter().any(|selection| match selection {
         Selection::All => false,
@@ -549,6 +572,13 @@ impl Clients {
         self.with_lease(key, |lease| lease.engine.clone())
     }
 
+    /// The areas the lent `key` was lent without ([`Clients::lend`]) while it is lent; `None` for
+    /// every other key. An approval asked for with the key keeps them (task C.11), so it runs
+    /// without them too, also after the lease or the core is gone.
+    pub fn lent_without(&self, key: &Key) -> Option<Vec<Area>> {
+        self.with_lease(key, |lease| lease.without.clone())
+    }
+
     /// The approvals asked for with the lent `key` ([`Clients::note_lent_approval`]); `None` for
     /// a key that is not lent. A lent key sees only these, never the other approvals of its
     /// client: they may hold what its areas keep from it (a mail to send, asked for by engine A).
@@ -599,6 +629,9 @@ impl Clients {
     /// in `docs/assistent.md`), and the core tells it apart by its kind. While
     /// `clients.json` is damaged nothing is added ([`ClientsError::Damaged`]). When the file
     /// cannot be written, the client is taken back and its key leaves the keychain again.
+    ///
+    /// `rights` are checked as [`Clients::update`] checks them (task C.11: `clients.create_client`
+    /// may bring its own): a bad selection is [`ClientsError::Invalid`] and nothing is added.
     pub async fn add_client(
         &self,
         name: &str,
@@ -618,6 +651,7 @@ impl Clients {
             (false, true) => return Err(ClientsError::Invalid("only hook clients name an agent")),
             _ => {}
         }
+        check_selections(&rights)?;
         let _changing = self.shared.changing.lock().await;
         if kind == "script" && self.script_name_taken(name) {
             return Err(ClientsError::Conflict("a script client of this name exists, or the name is cli"));
@@ -663,21 +697,7 @@ impl Clients {
     /// selection with anything but mail account ids (task M2.1). A hook client keeps at most
     /// [`Rights::hook`] ([`Rights::for_kind`], task E1.1).
     pub async fn update(&self, id: &str, rights: Rights) -> Result<(), ClientsError> {
-        if has_legacy_selection(&rights) {
-            return Err(ClientsError::Invalid(
-                "a selection names a collection by its URL; use the collection ids from accounts.list_accounts",
-            ));
-        }
-        if has_bad_repo_selection(&rights) {
-            return Err(ClientsError::Invalid(
-                "a GitHub selection names repositories as owner/name and owners as owner, nothing else",
-            ));
-        }
-        if has_bad_mail_selection(&rights) {
-            return Err(ClientsError::Invalid(
-                "a mail selection names accounts by their ids from accounts.list_accounts (mail:<address>)",
-            ));
-        }
+        check_selections(&rights)?;
         let _changing = self.shared.changing.lock().await;
         // Narrowed to what the client's kind may hold (a hook client: `Rights::hook`).
         let (old, new) = self.with_client(id, |record| {
@@ -688,6 +708,24 @@ impl Clients {
             // Fail safe: neither the old nor the new rights may be wider than what the person
             // wants now, so only what both allow stays in force until a write succeeds.
             let _ = self.with_client(id, |record| record.rights = old.common(&new));
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    /// Gives client `id` the name `name` (trimmed, not empty: [`ClientsError::Invalid`]), as a bot's
+    /// client follows its bot's name (task B.1), so the person's approvals name it as they know it.
+    /// Rights and key stay. When the file cannot be written, the old name comes back and the error
+    /// is returned.
+    pub async fn rename(&self, id: &str, name: &str) -> Result<(), ClientsError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ClientsError::Invalid("a client needs a name"));
+        }
+        let _changing = self.shared.changing.lock().await;
+        let old = self.with_client(id, |record| std::mem::replace(&mut record.name, name.to_string()))?;
+        if let Err(err) = self.persist().await {
+            let _ = self.with_client(id, |record| record.name = old);
             return Err(err);
         }
         Ok(())
@@ -1468,6 +1506,7 @@ pub(crate) mod tests {
                 kind: "script".into(),
                 template: RightsTemplate::FullAccess,
                 agent: None,
+                rights: None,
             },
             Request::UpdateClient { id: id.clone(), rights: everywhere(Level::Full, true) },
             Request::NewClientKey { id: id.clone() },
@@ -1707,6 +1746,23 @@ pub(crate) mod tests {
         let file = clients_file(dir);
         fs::remove_file(&file).expect("written before");
         fs::create_dir_all(file.join("in-the-way")).expect("a directory in the way");
+    }
+
+    /// Task B.1: a bot's client follows its bot's name; rights and key stay, a blank name or an
+    /// unknown client changes nothing.
+    #[tokio::test]
+    async fn a_client_is_renamed_and_keeps_its_rights_and_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (info, key) = clients.add("Travel planner", "bot", Rights::none()).await.expect("added");
+        clients.rename(&info.id, "  Trip planner ").await.expect("renamed");
+        let renamed = clients.list().into_iter().find(|client| client.id == info.id).expect("still there");
+        assert_eq!((renamed.name.as_str(), &renamed.rights), ("Trip planner", &Rights::none()));
+        assert!(matches!(clients.admit(Some(&key), &Request::Ping), Ok(Caller::Client { .. })), "the key works");
+        assert!(matches!(clients.rename(&info.id, " ").await, Err(ClientsError::Invalid(_))));
+        assert!(matches!(clients.rename("00000000", "X").await, Err(ClientsError::NotFound(_))));
+        let reopened = open_in(dir.path());
+        assert_eq!(reopened.list()[0].name, "Trip planner", "stored");
     }
 
     #[tokio::test]

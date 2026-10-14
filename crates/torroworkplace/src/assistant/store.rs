@@ -28,8 +28,14 @@ const TITLE_CHARS: usize = 60;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "line", rename_all = "snake_case")]
 pub enum Line {
-    /// The first line: when the conversation started and its first title.
-    Started { created: DateTime<Utc>, title: String },
+    /// The first line: when the conversation started, its first title, and the bot it is with
+    /// (task B.1; left out for the assistant, so files from before bots read the same).
+    Started {
+        created: DateTime<Utc>,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bot: Option<String>,
+    },
     /// One entry, as the API shows it.
     Entry { entry: Entry },
     /// `assistant.rename_conversation`.
@@ -48,24 +54,26 @@ pub struct Conversation {
     pub pinned: bool,
     /// In order of their `seq`.
     pub entries: Vec<Entry>,
+    /// The bot it is with (task B.1), fixed when it starts; `None` for the assistant.
+    pub bot: Option<String>,
 }
 
 impl Conversation {
     /// A new conversation that starts with `text` at `now`: titled with the start of its first line.
     pub fn new(id: String, text: &str, now: DateTime<Utc>) -> Conversation {
-        Conversation { id, title: title_of(text), created: now, pinned: false, entries: Vec::new() }
+        Conversation { id, title: title_of(text), created: now, pinned: false, entries: Vec::new(), bot: None }
     }
 
     /// The first line of its file.
     pub fn started(&self) -> Line {
-        Line::Started { created: self.created, title: self.title.clone() }
+        Line::Started { created: self.created, title: self.title.clone(), bot: self.bot.clone() }
     }
 
     /// The conversation the lines of the file `id` tell, `None` without [`Line::Started`] first.
     fn fold(id: String, lines: impl IntoIterator<Item = Line>) -> Option<Conversation> {
         let mut lines = lines.into_iter();
-        let Some(Line::Started { created, title }) = lines.next() else { return None };
-        let mut conversation = Conversation { id, title, created, pinned: false, entries: Vec::new() };
+        let Some(Line::Started { created, title, bot }) = lines.next() else { return None };
+        let mut conversation = Conversation { id, title, created, pinned: false, entries: Vec::new(), bot };
         for line in lines {
             conversation.apply(line);
         }
@@ -111,7 +119,8 @@ impl Conversation {
             .unwrap_or_default()
     }
 
-    /// The conversation as `assistant.list_conversations` lists it.
+    /// The conversation as `assistant.list_conversations` lists it; `bot_deleted` is the core's to
+    /// set ([`ConversationSummary::bot_deleted`]), it knows which bots there are.
     pub fn summary(&self, running: bool) -> ConversationSummary {
         let (engine, model) = self.engine();
         ConversationSummary {
@@ -124,6 +133,8 @@ impl Conversation {
             pinned: self.pinned,
             running,
             last: self.last(),
+            bot: self.bot.clone(),
+            bot_deleted: false,
         }
     }
 
@@ -298,6 +309,28 @@ mod tests {
         remove(&folder, &conversation.id).expect("removing again is fine");
         assert_eq!(load_all(&folder).expect("read"), Vec::new());
         assert_eq!(load_all(&dir.path().join("missing")).expect("no folder"), Vec::new());
+    }
+
+    /// Task B.1: a conversation with a bot keeps the bot in its first line; one from before bots
+    /// reads as a conversation with the assistant.
+    #[test]
+    fn a_conversation_keeps_its_bot() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut with_bot = Conversation::new("0123456789abcdef".into(), "Plan Lisbon", at(0));
+        with_bot.bot = Some("1a2b3c4d".into());
+        append(dir.path(), &with_bot.id, &[with_bot.started()]).expect("written");
+        fs::write(
+            file(dir.path(), "fedcba9876543210"),
+            "{\"line\":\"started\",\"created\":\"2026-10-13T09:00:00Z\",\"title\":\"Old\"}\n",
+        )
+        .expect("an older file");
+        let mut read = load_all(dir.path()).expect("read");
+        read.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!(read[0], with_bot);
+        assert_eq!(read[0].summary(false).bot.as_deref(), Some("1a2b3c4d"));
+        assert_eq!((read[1].title.as_str(), read[1].bot.as_ref()), ("Old", None));
+        let line = fs::read_to_string(file(dir.path(), &with_bot.id)).expect("the file");
+        assert!(line.contains("\"bot\":\"1a2b3c4d\""), "{line}");
     }
 
     #[test]

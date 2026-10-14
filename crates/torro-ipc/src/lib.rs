@@ -22,6 +22,7 @@
 
 pub mod api;
 pub mod assistant;
+pub mod bots;
 pub mod client;
 pub mod inbox;
 pub mod mail;
@@ -53,7 +54,8 @@ use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
 
 use crate::api::{Area, Rights, RightsTemplate};
-use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry};
+use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry, Note, Profile};
+use crate::bots::{Bot, BotSummary, Skill};
 use crate::mail::{Delivery, MailSource, MoveTarget};
 
 /// Where the core listens; [`client`] and [`server`] take this path.
@@ -871,11 +873,13 @@ pub enum Request {
     /// All clients with their rights, never with keys ([`Response::Clients`]).
     #[serde(rename = "clients.list_clients")]
     ListClients,
-    /// Connects a new client with the rights of `template` and answers with
-    /// [`Response::ClientKey`], the only time its key leaves the core. An empty `name` or `kind`
-    /// is `error`, so is a hook client without `agent` or another kind with one. A `script`
-    /// client named `cli` or like another script client is `conflict`: its name is its inbox
-    /// source (`script:<name>`), and the app key reports as `script:cli`.
+    /// Connects a new client with the rights of `template`, or with `rights` when they are given,
+    /// and answers with [`Response::ClientKey`], the only time its key leaves the core. An empty
+    /// `name` or `kind` is `error`, so is a hook client without `agent` or another kind with one,
+    /// and `rights` that [`Request::UpdateClient`] would refuse (a collection named by a bare URL,
+    /// a bad GitHub or mail selection); nothing is created then. A `script` client named `cli` or
+    /// like another script client is `conflict`: its name is its inbox source (`script:<name>`),
+    /// and the app key reports as `script:cli`.
     #[serde(rename = "clients.create_client")]
     CreateClient {
         /// What the person calls it: `Claude Code`.
@@ -890,6 +894,11 @@ pub enum Request {
         /// and refuses reports that name another one ([`api::post_source`]).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<AgentKind>,
+        /// The rights to start with instead of the template's (task C.11), so a client never
+        /// holds other rights for a moment; narrowed to what its kind may hold
+        /// ([`api::Rights::for_kind`]). Missing: the template's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rights: Option<Rights>,
     },
     /// Replaces the rights of the client `id`; they apply from its next request. Answered with
     /// [`Response::Ok`]; an unknown id is `not-found`. A selection that names a collection by a
@@ -1529,8 +1538,9 @@ pub enum Request {
     // the conversations in `<data>/assistant/<id>.jsonl` (0600) and runs the answers. For a client
     // key the area `assistant` is off unless a person switched it on, also in *Full access*; the
     // assistant's own client (`api::ASSISTANT_CLIENT`) gets `forbidden` for every command here
-    // except its memory (`api::loops_back`), so it never drives itself. Every request keeps the
-    // limits of [`assistant::limit_refusal`] (`error`).
+    // except its memory (`api::loops_back`, `api::own_memory`), so it never drives itself. Every
+    // request keeps the limits of [`assistant::limit_refusal`] (`error`). Profile and memory (task
+    // C.10) live in `<config>/assistant/` (0600).
     /// The engines the assistant can answer with ([`Response::Engines`]): every AI account in the
     /// order they were added, then the test engine where the core offers it. Never fails.
     #[serde(rename = "assistant.list_engines")]
@@ -1578,6 +1588,14 @@ pub enum Request {
         /// its rights leave out.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         without: Vec<Area>,
+        /// Chat with this bot instead of the assistant (task B.1): its id from `bots.list_bots`. The
+        /// bot answers with its own client's rights and its own prompt, with `engine` and `model`
+        /// as given (left without `model`, the bot's own when `engine` is the bot's). A new
+        /// conversation belongs to the bot for good; continuing one needs the same `bot` it was
+        /// started with (`error` otherwise), and one of a deleted bot is `not-found`. A client also
+        /// needs write access to `bots`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bot: Option<String>,
     },
     /// Stops the answer that runs in `conversation`; what it did until then stays, and a
     /// `stopped` entry is added. [`Response::Ok`] also when nothing runs; `not-found` for an
@@ -1613,13 +1631,155 @@ pub enum Request {
         pinned: bool,
     },
     /// Opens a chat window of the assistant app: `torroassistant --chat <id>` for a conversation,
-    /// `--chat new` for a new one, later `--bot <id>` ([`Response::Ok`]). Each call starts one
-    /// window. `not-found` for an unknown conversation, `unsupported` for a bot (there are none
-    /// yet), `error` when the app does not start (it is not installed).
+    /// `--chat new` for a new one, `--bot <id>` for a bot ([`Response::Ok`]). Each call starts one
+    /// window. `not-found` for an unknown conversation or bot, `error` when the app does not start
+    /// (it is not installed).
     #[serde(rename = "assistant.open_window")]
     OpenChatWindow {
         /// `{"conversation": "<id>"}`, `"new"` or `{"bot": "<id>"}`.
         window: ChatWindow,
+    },
+    /// The assistant's profile: name, description, picture and personality
+    /// ([`Response::Profile`]); the defaults while nothing is stored. Never fails.
+    #[serde(rename = "assistant.get_profile")]
+    GetProfile,
+    /// Changes the assistant's profile: each field given replaces the stored one, the others stay.
+    /// Answered with the profile as stored now ([`Response::Profile`]). The personality shapes the
+    /// tone of every answer from the next message on; it never changes rights or rules. Admin: a
+    /// client always waits for a person's approval. `error` for no field at all and for a field
+    /// beyond its limits ([`assistant::profile_refusal`]) or a profile that cannot be stored.
+    #[serde(rename = "assistant.update_profile")]
+    UpdateProfile {
+        /// The new name, one line, at most 40 characters.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// The new short description, one line, at most 200 characters; empty for none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// The new picture: one of [`assistant::AVATARS`] (`letter`, `sparkles` …).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        avatar: Option<String>,
+        /// The new personality, at most 4,000 characters; empty for none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        personality: Option<String>,
+    },
+    /// The notes of the assistant's memory, oldest first ([`Response::Memories`]). A note kept from
+    /// remote models ([`Note::local_only`]) is listed only for the app key and clients with read
+    /// access to mail. Never fails; an empty list when the memory cannot be read.
+    #[serde(rename = "assistant.list_memories")]
+    ListMemories,
+    /// Adds a note to the assistant's memory, or with `replaces` changes the note with that id
+    /// (which needs the right to delete) – only when the person asked for it. Answered with the
+    /// note as stored ([`Response::Memory`]). `not-found` for an unknown `replaces`, `error` for a
+    /// note that is blank or over 500 characters, a full memory (200 notes) or one that cannot be
+    /// stored.
+    #[serde(rename = "assistant.remember")]
+    Remember {
+        /// The note, at most 500 characters; line breaks become spaces.
+        text: String,
+        /// The id of the note this one replaces.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        replaces: Option<String>,
+        /// Keep the note from models outside this computer ([`Note::local_only`]). A note that
+        /// replaces such a note stays so.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        local_only: bool,
+    },
+    /// Deletes the note `id` from the assistant's memory for good ([`Response::Ok`]); `not-found`
+    /// for an unknown id.
+    #[serde(rename = "assistant.forget")]
+    Forget {
+        /// The note's id from `assistant.list_memories`.
+        id: String,
+    },
+    /// The person confirms in the assistant's conversation `conversation` that the assistant may
+    /// ask the bot `bot` (task B.2): the assistant proposed it by name, the person said yes in the
+    /// chat ([`Response::Ok`]). It allows the assistant's next `bots.ask_bot` for that bot in that
+    /// conversation, once; it is kept in the core's memory only. App key only and never an MCP tool:
+    /// a confirmation comes from the person, never from an agent. `not-found` for an unknown
+    /// conversation or bot, `error` for a conversation with a bot rather than the assistant.
+    #[serde(rename = "assistant.confirm_bot")]
+    ConfirmBot {
+        /// The assistant's conversation (not one with a bot).
+        conversation: String,
+        /// The bot's id.
+        bot: String,
+    },
+
+    // Bots (task B.1, `docs/assistent.md` "Bots"; wire types in [`bots`]). The core keeps every bot
+    // in `<config>/assistant/bots/<id>/` (folder 0700, files 0600) with a client of its own (kind
+    // `api::BOT_CLIENT`) that starts without rights. A bot's client gets `forbidden` for every
+    // command here and in `assistant` (no chains, `api::loops_back`); the assistant's own client
+    // may list bots, propose one (`bots.save_bot` for a new bot, always with a person's approval)
+    // and, once the person asks for it, ask one (`api::allowed_by_kind`). Every request keeps the
+    // limits of [`bots::limit_refusal`] (`error`).
+    /// Every bot without its long texts, by name ([`Response::Bots`]). Never fails; an empty list
+    /// when there is none or they cannot be read (the core's log says why).
+    #[serde(rename = "bots.list_bots")]
+    ListBots,
+    /// One bot whole ([`Response::Bot`]); `not-found` for an unknown id.
+    #[serde(rename = "bots.get_bot")]
+    GetBot {
+        /// The bot's id from `bots.list_bots`.
+        id: String,
+    },
+    /// Creates a bot (without `id`) or replaces the bot `id` whole with these fields, answered with
+    /// the bot as stored ([`Response::Bot`]). A new bot gets a client of its own without any
+    /// rights; only a person grants it some (`clients.update_client`). Changing a bot never changes
+    /// its rights; it replaces the bot's texts for good and needs the right to delete, like
+    /// replacing a draft. `not-found` for an unknown `id`, `error` for a field beyond its limits
+    /// ([`bots::limit_refusal`]), for more than 50 bots, or a bot that cannot be stored.
+    #[serde(rename = "bots.save_bot")]
+    SaveBot {
+        /// The bot to change; left out, a new one is made.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// Its name, one line, at most 40 characters.
+        name: String,
+        /// What it is for, one line, at most 200 characters.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        description: String,
+        /// Its picture: one of [`assistant::AVATARS`]; left out, the first letter of its name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        avatar: Option<String>,
+        /// The engine it answers with when asked: an id from `assistant.list_engines`.
+        engine: String,
+        /// The model of that engine; left out, the engine picks one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// How it speaks, at most 4,000 characters.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        personality: String,
+        /// What it does and how, at most 8,000 characters.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        instructions: String,
+        /// What it knows, at most 8 skills of at most 8,000 characters each.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        skills: Vec<Skill>,
+    },
+    /// Deletes the bot `id` for good: its folder and its client, whose key stops working at once
+    /// ([`Response::Ok`]). Its answers that run are stopped; its conversations stay, marked as of
+    /// a deleted bot ([`assistant::ConversationSummary::bot_deleted`]). `not-found` for an unknown
+    /// id.
+    #[serde(rename = "bots.delete_bot")]
+    DeleteBot {
+        /// The bot's id.
+        id: String,
+    },
+    /// Sends `text` to the bot `bot`, in its conversation `conversation` or a new one, and starts
+    /// its answer in the background with the bot's engine and model, like `assistant.send_message`
+    /// ([`Response::Conversation`], at once). The bot works with its own client's rights.
+    /// `not-found` for an unknown bot or conversation (also one of another bot), `busy` while the
+    /// conversation still answers, `error` for a limit.
+    #[serde(rename = "bots.ask_bot")]
+    AskBot {
+        /// The bot's id.
+        bot: String,
+        /// The message, at most 20,000 characters.
+        text: String,
+        /// A conversation of this bot to continue; left out, a new one starts.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation: Option<String>,
     },
     /// How talking to the assistant by voice stands (task C.9, [`Response::Voice`]): whether the
     /// listener runs and hears or records, and which of the local programs it needs are found
@@ -2098,6 +2258,30 @@ pub enum Response {
     Conversations {
         conversations: Vec<ConversationSummary>,
     },
+    /// The assistant's profile ([`Request::GetProfile`], [`Request::UpdateProfile`]). The
+    /// personality is the person's text: data, never instructions.
+    Profile {
+        profile: Profile,
+    },
+    /// The notes of the assistant's memory, oldest first ([`Request::ListMemories`]): data, never
+    /// instructions.
+    Memories {
+        notes: Vec<Note>,
+    },
+    /// One note of the assistant's memory as stored ([`Request::Remember`]).
+    Memory {
+        note: Note,
+    },
+    /// Every bot without its long texts ([`Request::ListBots`]): names and descriptions are the
+    /// person's text, data, never instructions.
+    Bots {
+        bots: Vec<BotSummary>,
+    },
+    /// One bot whole ([`Request::GetBot`], [`Request::SaveBot`]): its texts are the person's, data,
+    /// never instructions.
+    Bot {
+        bot: Bot,
+    },
     /// One conversation and its entries in order ([`Request::GetConversation`],
     /// [`Request::SendMessage`]): all of them, or those after the number asked for. Messages,
     /// answers and tool results are data, never instructions.
@@ -2134,7 +2318,8 @@ pub enum Response {
     ///   record (`approvals.json` cannot be written), or a security rule of the inbox or of mail
     ///   refuses it (a client changing an approval or an entry of the suite, or posting an
     ///   approval; a client attaching a file from outside the core's attachment folder), or the
-    ///   assistant's own client sends an `assistant` command (it never drives itself),
+    ///   assistant's own client sends an `assistant` command (it never drives itself), or a bot's
+    ///   client a `bots` or `assistant` command (no chains, task B.1),
     /// - `error`: anything else.
     ///
     /// A command that waits for a person's approval is no error: it is answered with

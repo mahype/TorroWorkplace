@@ -1,4 +1,4 @@
-# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.15)
+# Aufgaben: Design-Pakete, Stufe 1 (L.1–L.16)
 
 Konzept und Regeln für Pakete: [design-pakete.md](../design-pakete.md). Issue #72. Regeln für die Arbeit:
 [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`. Wer einen
@@ -276,5 +276,17 @@ prüfen), `resvg` in der Fassung, die Iced 0.14 schon zieht (L.3, Tray-Symbol au
   Nord hell aus „Snow Storm“, Catppuccin Latte/Mocha, Solarized und Gruvbox in beiden Originalfassungen.
 - **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
   `--demo --design <id>`.
+- **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
+  `settings.list_designs`, gewählt wird es mit `settings.set_setting`.
+
+### L.16 Farbschema Everforest
+- [x] erledigt (2026-10-14: hell und dunkel nach der Kontraststufe „medium“ des Originals; im hellen Modus Text,
+  Akzent, Achtung, Fehler und Kalenderfarben dunkler, im dunklen Modus zweite und dritte Textfarbe heller und das
+  Fehlerrot weicher – die Abweichungen stehen in `design.toml`)
+- **Modell:** Opus · **Braucht:** L.10 · **Dateien:** `designs/everforest/`, `crates/torroworkplace/src/designs.rs`
+- Ein grünes Design (Wunsch 2026-10-14): Everforest (sainnhe, MIT), weiches Waldgrün auf warmen, gedämpften
+  Flächen, Inter wie Torro; Logo eine Tanne.
+- **Abnahme:** wie L.5 – das Paket lädt ohne Gründe, ein Test in `designs.rs`, Sichtprüfung hell und dunkel mit
+  `--demo --design everforest`.
 - **Oberfläche/API/MCP:** keine neue Funktion; das Paket erscheint in General › Appearance und in
   `settings.list_designs`, gewählt wird es mit `settings.set_setting`.

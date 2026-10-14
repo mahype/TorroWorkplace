@@ -346,7 +346,14 @@ where
     fn ask(&mut self, text: &str) -> Result<Reply, VoiceError> {
         let (conversation, engine, model) = self.target()?;
         let new = conversation.is_none();
-        let send = Request::SendMessage { conversation, engine, model, text: text.to_string(), without: Vec::new() };
+        let send = Request::SendMessage {
+            conversation,
+            engine,
+            model,
+            text: text.to_string(),
+            without: Vec::new(),
+            bot: None,
+        };
         let (id, mut after) = match self.request(send)? {
             Response::Conversation { conversation, .. } => (conversation.id, conversation.last),
             other => return Err(unexpected(&other)),
@@ -487,6 +494,8 @@ mod tests {
             pinned: false,
             running,
             last,
+            bot: None,
+            bot_deleted: false,
         }
     }
 
@@ -629,7 +638,7 @@ mod tests {
         assert_eq!(run.ended, Ok(Ended::VoiceOff));
         let sent = messages(&run.sent);
         assert_eq!(sent.len(), 1);
-        let Request::SendMessage { conversation, engine, model, text, without } = sent[0] else { unreachable!() };
+        let Request::SendMessage { conversation, engine, model, text, without, .. } = sent[0] else { unreachable!() };
         assert_eq!(text, "what is on today?", "without the wake word");
         assert_eq!(
             (conversation, engine.as_str()),

@@ -226,7 +226,13 @@ fn connect(state: &mut State, data: &Data) -> Action {
     };
     state.error = None;
     state.step = Step::Creating;
-    Action::Send(Request::CreateClient { name, kind: kind.to_string(), template: state.template, agent: None })
+    Action::Send(Request::CreateClient {
+        name,
+        kind: kind.to_string(),
+        template: state.template,
+        agent: None,
+        rights: None,
+    })
 }
 
 /// What is wrong with `name` for a new script: empty, `cli` (the app key's source) or the name of
@@ -342,6 +348,7 @@ fn setup(state: &mut State, outcome: Outcome) -> Action {
                     // that leaves exactly that (write in the inbox, never ask first).
                     template: RightsTemplate::FullAccess,
                     agent: Some(agent),
+                    rights: None,
                 });
             }
             Err(message) => {
@@ -734,8 +741,13 @@ mod tests {
         let action = update(&mut state, Message::Connect, &data);
         assert!(matches!(
             action,
-            Action::Send(Request::CreateClient { ref name, ref kind, template: RightsTemplate::ReadOnly, agent: None })
-                if name == "Claude Code" && kind == "claude-code"
+            Action::Send(Request::CreateClient {
+                ref name,
+                ref kind,
+                template: RightsTemplate::ReadOnly,
+                agent: None,
+                rights: None,
+            }) if name == "Claude Code" && kind == "claude-code"
         ));
         assert!(!closable(&state) && !dismissable(&state), "nothing interrupts the creation");
 
@@ -782,6 +794,7 @@ mod tests {
                 ref kind,
                 template: RightsTemplate::FullAccess,
                 agent: Some(AgentKind::ClaudeCode),
+                rights: None,
             }) if *name == expected_name && kind == HOOK_CLIENT
         ));
         assert_eq!(state.step, Step::CreatingHooks);

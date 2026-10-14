@@ -12,8 +12,9 @@
 //!   same rights view as an agent's detail page (`agents::rights_groups`), with the templates and
 //!   that suggestion as starting points. "Turn on assistant" (the header's primary button, so it
 //!   stays in sight while the rights are chosen) sends `clients.create_client` (kind
-//!   `assistant`, template *Read only*, the narrowest) and, once the core answered with the new
-//!   client, `clients.update_client` with the chosen rights. The key in that answer is dropped:
+//!   `assistant`) with the chosen rights, so the client never holds other rights, not even for a
+//!   moment (task C.11; the template *Read only*, the narrowest, only names what an older core
+//!   would fall back to). The key in that answer is dropped:
 //!   the core runs the assistant's tools itself with the client's rights (engine A,
 //!   `Core::handle_as_assistant`), nobody needs it, and the agents page never sees it.
 //! - **On**: the status with "Turn off assistant…" behind a confirmation (`clients.remove_client`;
@@ -31,6 +32,10 @@
 //! There is no setting for a default engine: each chat picks its engine, and a new chat starts with
 //! the one used last (`docs/assistent.md`, "Woher das Modell kommt"). A key for it would be a new
 //! `torro_ipc::SettingKey`.
+//!
+//! Profile and memory (task C.10) are pages below this one, opened from the rows under the status
+//! ([`persona`]): the page here only hands them their messages, header, dialog and view. So are the
+//! bots' pages (task B.3, [`bots`]): the group "Bots" lists them, each opens its rights.
 //!
 //! **Voice** (task C.9, `docs/assistent.md`, "Sprache"), once the assistant is on: talking by voice
 //! on or off (`settings.set_setting voice_enabled`; only here and in the tray, since only the app
@@ -61,7 +66,7 @@ use torro_ipc::{
 use super::accounts::{Tone, status_line};
 use super::general::choice;
 use super::{Action, Data, Header, Section, chevron, confirm, pressable, setting_row};
-use super::{agent_wizard, agents};
+use super::{agent_wizard, agents, bots, persona};
 
 /// The name of the assistant's client, as the agents list and the audit log show it (decision 5:
 /// one client "Assistant").
@@ -89,10 +94,14 @@ pub struct State {
     /// The rights of the assistant's client once it exists, edited and saved like an agent's: an
     /// agents page state with the assistant's client selected.
     editor: agents::State,
-    /// "Turn on assistant" was sent with these rights; they follow once the core created the client.
-    creating: Option<Rights>,
+    /// "Turn on assistant" was sent and the core's list does not show the client yet.
+    creating: bool,
     /// "Turn off assistant…" asks first.
     confirm_off: bool,
+    /// The pages Profile and Memory below this one (task C.10).
+    persona: persona::State,
+    /// The bots' pages below this one (task B.3).
+    pub bots: bots::State,
     /// Talking by voice (task C.9).
     voice: Voice,
 }
@@ -135,8 +144,10 @@ impl Default for State {
             choice: Rights::assistant(),
             repo_input: String::new(),
             editor: agents::State::default(),
-            creating: None,
+            creating: false,
             confirm_off: false,
+            persona: persona::State::default(),
+            bots: bots::State::default(),
             voice: Voice::default(),
         }
     }
@@ -198,6 +209,10 @@ pub enum Message {
     AskTurnOff,
     TurnOff,
     CloseDialog,
+    /// The pages Profile and Memory and their rows here (task C.10).
+    Persona(persona::Message),
+    /// The group "Bots" and a bot's page (task B.3).
+    Bots(bots::Message),
     /// Ask how voice stands (`settings.voice_status`): on the clock, or "Check again".
     CheckVoice,
     /// "Talk to the assistant" on or off.
@@ -225,17 +240,18 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::TurnOn => {
-            if assistant_client(data).is_some() || state.creating.is_some() {
+            if assistant_client(data).is_some() || state.creating {
                 return Action::None;
             }
-            state.creating = Some(state.choice.clone());
-            // The narrowest template; the chosen rights follow as soon as the client exists
-            // ([`answered`]), since `clients.create_client` takes a template only.
+            state.creating = true;
+            // The chosen rights in the same request (task C.11); the template is the narrowest,
+            // in case an older core ignores them.
             Action::Send(Request::CreateClient {
                 name: CLIENT_NAME.into(),
                 kind: ASSISTANT_CLIENT.into(),
                 template: RightsTemplate::ReadOnly,
                 agent: None,
+                rights: Some(state.choice.clone()),
             })
         }
         Message::Retention(retention) => {
@@ -257,6 +273,8 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.confirm_off = false;
             Action::None
         }
+        Message::Persona(message) => persona::update(&mut state.persona, message, data),
+        Message::Bots(message) => bots::update(&mut state.bots, message, data),
         Message::CheckVoice => {
             let voice = &mut state.voice;
             if voice.asking {
@@ -326,22 +344,21 @@ fn rights(state: &mut State, message: agents::Message, data: &Data) -> Action {
 
 /// The answer to a request the shell sent; the shell calls this before the agents page's.
 ///
-/// The new client after "Turn on assistant" ([`Response::ClientKey`] of the kind `assistant`):
-/// its key is dropped and the chosen rights go out at once ([`agents::save_rights`], so the page
-/// shows them, not the template's, until the reload). Returns `Some` with that request; the shell
-/// then hands the answer to nobody else. An error ends "Turn on assistant" (the shell shows it).
-/// Every other answer goes to the rights editor (`ok` of a saved change, an error that drops it).
+/// The new client after "Turn on assistant" ([`Response::ClientKey`] of the kind `assistant`),
+/// created with the chosen rights already: its key is dropped, and the button stays busy until the
+/// reload lists the client ([`loaded`]). Returns `Some` with nothing to do then; the shell hands
+/// the answer to nobody else. An error ends "Turn on assistant" (the shell shows it). Every other
+/// answer goes to the rights editor (`ok` of a saved change, an error that drops it).
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
+    persona::answered(&mut state.persona, result);
+    bots::answered(&mut state.bots, result);
     if let Some(next) = voice_answered(&mut state.voice, result) {
         return next;
     }
-    if state.creating.is_some() {
+    if state.creating {
         match result {
-            Ok(Response::ClientKey { client, .. }) if client.kind == ASSISTANT_CLIENT => {
-                let rights = state.creating.take()?;
-                return Some(agents::save_rights(&mut state.editor, client.id.clone(), rights));
-            }
-            Err(_) => state.creating = None,
+            Ok(Response::ClientKey { client, .. }) if client.kind == ASSISTANT_CLIENT => return Some(Action::None),
+            Err(_) => state.creating = false,
             Ok(_) => {}
         }
     }
@@ -397,30 +414,41 @@ fn voice_answered(voice: &mut Voice, result: &Result<Response, String>) -> Optio
     }
 }
 
-/// The shell loaded [`Data`] anew: saved rights are in it now.
-pub fn loaded(state: &mut State) {
+/// The shell loaded [`Data`] anew: saved rights are in it now, and the stored profile and notes.
+pub fn loaded(state: &mut State, data: &Data) {
+    // "Turn on assistant" is done once the core lists the client.
+    state.creating &= assistant_client(data).is_none();
     agents::loaded(&mut state.editor);
+    bots::loaded(&mut state.bots);
+    persona::loaded(&mut state.persona, data);
 }
 
 /// The clock that saves changed rights, and the one that asks how voice stands: once at the start
 /// and a few times after voice was switched. None while nothing waits.
 pub fn subscription(state: &State) -> Subscription<Message> {
     let rights = agents::subscription(&state.editor).map(Message::Rights);
+    let bots = bots::subscription(&state.bots).map(Message::Bots);
     let voice = &state.voice;
     let unknown = voice.status.is_none() && !voice.failed;
     if voice.asking || !(unknown || voice.polls > 0) {
-        return rights;
+        return Subscription::batch([rights, bots]);
     }
-    Subscription::batch([rights, iced::time::every(VOICE_POLL).map(|_| Message::CheckVoice)])
+    Subscription::batch([rights, bots, iced::time::every(VOICE_POLL).map(|_| Message::CheckVoice)])
 }
 
-/// What Escape means on this page: close the confirmation.
+/// What Escape means on this page: close the confirmation; on Profile and Memory what they say.
 pub fn escape(state: &State) -> Option<Message> {
-    state.confirm_off.then_some(Message::CloseDialog)
+    match persona::escape(&state.persona) {
+        Some(message) => Some(Message::Persona(message)),
+        None => state.confirm_off.then_some(Message::CloseDialog),
+    }
 }
 
 /// "Turn off the assistant?" while it is open.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    if let Some(dialog) = persona::overlay(&state.persona, data) {
+        return Some(dialog.map(Message::Persona));
+    }
     if !state.confirm_off || assistant_client(data).is_none() {
         return None;
     }
@@ -470,6 +498,12 @@ pub fn retention_label(retention: Retention) -> String {
 // ----- Views --------------------------------------------------------------------------------
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    if let Some(sub) = bots::view(&state.bots, data) {
+        return sub.map(Message::Bots);
+    }
+    if let Some(sub) = persona::view(&state.persona, data) {
+        return sub.map(Message::Persona);
+    }
     responsive(move |size| page(state, data, agents::control_column(size.width))).height(Length::Shrink).into()
 }
 
@@ -486,14 +520,22 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
             .map(|group| group.map(Message::Rights));
     let mut page = column![].spacing(layout::section_gap());
     match assistant_client(data) {
+        // The bots do not need the assistant: their group comes after its first start.
         None => {
-            page = page.push(off_group()).push(preset_group(rights)).extend(groups);
+            page = page
+                .push(off_group())
+                .push(preset_group(rights))
+                .extend(groups)
+                .push(bots::bots_group(data).map(Message::Bots));
         }
-        // Status and engines first, then the rights – the reason the chat's hint opens this page –
-        // and the retention, which is set once and rarely again.
+        // Status, who the assistant is (profile and memory) and its engines first, then the rights –
+        // the reason the chat's hint opens this page –, voice, and the retention, which is set once
+        // and rarely again.
         Some(client) => {
             page = page
                 .push(on_group(client, column))
+                .push(persona::profile_rows(data).map(Message::Persona))
+                .push(bots::bots_group(data).map(Message::Bots))
                 .push(engines_group(data))
                 .extend(groups)
                 .push(voice_group(&state.voice, data, column))
@@ -509,11 +551,20 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
 /// button, where it stays in sight while the rights below are chosen; busy while the core creates
 /// the client. Only its icon in narrow windows.
 pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
+    if let Some(sub) = bots::header(&state.bots, data, class) {
+        return sub.map(Message::Bots);
+    }
+    if let Some(sub) = persona::header(&state.persona, class) {
+        return Header {
+            sub_page: sub.sub_page.map(|(name, back)| (name, Message::Persona(back))),
+            actions: sub.actions.into_iter().map(|action| action.map(Message::Persona)).collect(),
+        };
+    }
     if assistant_client(data).is_some() {
         return Header::default();
     }
     let label = tr("Turn on assistant");
-    let button = match (state.creating.is_some(), class) {
+    let button = match (state.creating, class) {
         (true, _) => widgets::busy_button(tr("Turning on…"), style::button::primary),
         (false, SizeClass::Wide | SizeClass::Medium) => {
             widgets::text_button(Some(Icon::Plus), label, style::button::primary, Some(Message::TurnOn))
@@ -825,35 +876,35 @@ mod tests {
         update(state, Message::Rights(agents::Message::Clock(later)), data)
     }
 
+    /// Task C.11: one request creates the client with the chosen rights; nothing follows, and the
+    /// button stays busy until the reload lists the client.
     #[test]
-    fn turning_on_creates_the_client_and_then_sends_the_chosen_rights() {
+    fn turning_on_creates_the_client_with_the_chosen_rights_in_one_step() {
         let off = Data::default();
         let mut state = State::default();
         assert_eq!(shown(&state, &off), &Rights::assistant(), "decision 3: read calendars, tasks, inbox");
 
         let action = update(&mut state, Message::TurnOn, &off);
-        let Action::Send(Request::CreateClient { name, kind, template, agent }) = action else {
+        let Action::Send(Request::CreateClient { name, kind, template, agent, rights }) = action else {
             panic!("expected clients.create_client, got {action:?}");
         };
         assert_eq!(
-            (name.as_str(), kind.as_str(), template, agent),
-            (CLIENT_NAME, ASSISTANT_CLIENT, RightsTemplate::ReadOnly, None)
+            (name.as_str(), kind.as_str(), template, agent, rights),
+            (CLIENT_NAME, ASSISTANT_CLIENT, RightsTemplate::ReadOnly, None, Some(Rights::assistant()))
         );
         assert!(matches!(update(&mut state, Message::TurnOn, &off), Action::None), "sent once");
 
         let key = IssuedKey::new(Key::new("torro_a51c3e88_00ff"));
-        let created = assistant(RightsTemplate::ReadOnly.rights());
+        let created = assistant(Rights::assistant());
         let next = answered(&mut state, &Ok(Response::ClientKey { client: created.clone(), key }));
-        let Some(Action::Send(Request::UpdateClient { id, rights })) = next else {
-            panic!("expected clients.update_client, got {next:?}");
-        };
-        assert_eq!((id.as_str(), &rights), ("a51c3e88", &Rights::assistant()));
-        // Until the reload the page shows the chosen rights, not the template's.
+        assert!(matches!(next, Some(Action::None)), "no update_client after it, and the key goes nowhere: {next:?}");
+        assert!(state.creating, "busy until the reload lists the client");
+        loaded(&mut state, &off);
+        assert!(state.creating, "a reload from before still shows no client");
         let on = Data { clients: vec![created], ..Data::default() };
-        assert_eq!(shown(&state, &on), &Rights::assistant());
-        assert!(answered(&mut state, &Ok(Response::Ok)).is_none());
-        loaded(&mut state);
-        assert_eq!(shown(&state, &on), &RightsTemplate::ReadOnly.rights(), "then what the core holds");
+        loaded(&mut state, &on);
+        assert!(!state.creating);
+        assert_eq!(shown(&state, &on), &Rights::assistant(), "what the core holds");
     }
 
     #[test]
@@ -864,13 +915,10 @@ mod tests {
         let _ = update(&mut state, Message::Rights(agents::Message::Level(Area::Assistant, Level::Full)), &off);
         assert_eq!(shown(&state, &off).area(Area::Mail).level, Level::Read);
         assert_eq!(shown(&state, &off).area(Area::Assistant), AreaRights::NONE, "never its own area");
-        let _ = update(&mut state, Message::TurnOn, &off);
-        let key = IssuedKey::new(Key::new("torro_a51c3e88_00ff"));
-        let client = assistant(RightsTemplate::ReadOnly.rights());
-        let Some(Action::Send(Request::UpdateClient { rights, .. })) =
-            answered(&mut state, &Ok(Response::ClientKey { client, key }))
+        let Action::Send(Request::CreateClient { rights: Some(rights), .. }) =
+            update(&mut state, Message::TurnOn, &off)
         else {
-            panic!("the chosen rights follow");
+            panic!("the chosen rights go with the request");
         };
         assert_eq!(rights.area(Area::Mail).level, Level::Read);
 
@@ -886,7 +934,7 @@ mod tests {
         let mut state = State::default();
         let _ = update(&mut state, Message::TurnOn, &off);
         assert!(answered(&mut state, &Err("conflict".into())).is_none(), "the shell shows the error");
-        assert!(state.creating.is_none());
+        assert!(!state.creating);
         assert!(matches!(update(&mut state, Message::TurnOn, &off), Action::Send(Request::CreateClient { .. })));
         // Another page's new key is not the assistant's.
         let key = IssuedKey::new(Key::new("torro_s1_00ff"));

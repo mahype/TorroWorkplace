@@ -17,7 +17,8 @@ use torro_core::settings::Settings;
 use torro_inbox::item::{Facet, FacetKey};
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{
-    ASSISTANT_CLIENT, Area, AreaRights, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate, Selection,
+    ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate,
+    Selection,
 };
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
@@ -104,7 +105,7 @@ pub enum Open {
     Inbox,
     /// The inbox page without any rules: the group says where they come from.
     InboxEmpty,
-    /// General › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
+    /// Appearance › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
     Design,
     /// The Assistant page with the demo's assistant (task C.6): rights of its own, its engines and
     /// how long it keeps conversations.
@@ -117,10 +118,28 @@ pub enum Open {
     AssistantReadOnly,
     /// The "Turn off the assistant?" confirmation.
     AssistantTurnOff,
+    /// Assistant › Profile with the demo's profile (task C.10).
+    AssistantProfile,
+    /// Assistant › Bots › Travel planner (task B.3): the rights of a bot that may read calendars and
+    /// write tasks.
+    AssistantBot,
+    /// Assistant › Bots › Release helper: a bot that may use nothing yet, as every new bot.
+    AssistantBotNew,
+    /// The detail page of the demo agent Codex with `bots` and `assistant` switched on: both
+    /// warnings show.
+    AgentBots,
+    /// Assistant › Memory with the demo's notes, one of them kept on this computer.
+    AssistantMemory,
+    /// Assistant › Memory without notes: its empty row.
+    AssistantMemoryEmpty,
+    /// Assistant › Memory with a new note being typed.
+    AssistantNote,
+    /// The "Forget this note?" confirmation.
+    AssistantForget,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 55] = [
+    pub const ALL: [(&'static str, Open); 63] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -176,15 +195,25 @@ impl Open {
         ("assistant-first-start", Open::AssistantFirstStart),
         ("assistant-read-only", Open::AssistantReadOnly),
         ("assistant-turn-off", Open::AssistantTurnOff),
+        ("assistant-profile", Open::AssistantProfile),
+        ("assistant-bot", Open::AssistantBot),
+        ("assistant-bot-new", Open::AssistantBotNew),
+        ("agent-bots", Open::AgentBots),
+        ("assistant-memory", Open::AssistantMemory),
+        ("assistant-memory-empty", Open::AssistantMemoryEmpty),
+        ("assistant-note", Open::AssistantNote),
+        ("assistant-forget", Open::AssistantForget),
     ];
 }
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|workspaces|apps|assistant|agents|approvals|inbox|general`: the page
-///   to start on. The states of `--open` that belong to a page choose that page themselves. Other
+/// - `--section overview|accounts|workspaces|apps|assistant|agents|approvals|inbox|appearance|general`:
+///   the page to start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section assistant` from the assistant's
-///   chat when it may not use something, task C.6).
+///   chat when it may not use something, task C.6). `--section bot:<id>` opens the page of the bot
+///   `id` under Assistant › Bots with its rights (task B.3), what the assistant app's "Access…"
+///   sends ([`Launch::bot`]).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
 ///   of the service. Nothing is sent and nothing is stored; [`demo_answer`] answers the few
 ///   requests whose answer is a state of its own.
@@ -196,6 +225,8 @@ impl Open {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
+    /// The bot whose page `--section bot:<id>` opens (then `section` is the Assistant).
+    pub bot: Option<String>,
     pub demo: bool,
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
@@ -204,7 +235,7 @@ pub struct Launch {
 
 impl Default for Launch {
     fn default() -> Self {
-        Launch { section: Section::Overview, demo: false, open: None, appearance: None, design: None }
+        Launch { section: Section::Overview, bot: None, demo: false, open: None, appearance: None, design: None }
     }
 }
 
@@ -256,10 +287,16 @@ impl Launch {
             value: value.to_owned(),
             valid: valid.join(", "),
         };
-        let section = match flag_value(args, "--section")? {
-            None => Section::Overview,
-            Some(word) => Section::from_arg(word)
-                .ok_or_else(|| unknown("--section", word, Section::ALL.iter().map(|s| s.arg()).collect()))?,
+        let (section, bot) = match flag_value(args, "--section")? {
+            None => (Section::Overview, None),
+            Some(word) => match word.strip_prefix("bot:") {
+                Some(id) if is_bot_id(id) => (Section::Assistant, Some(id.to_owned())),
+                _ => {
+                    let mut valid: Vec<&str> = Section::ALL.iter().map(|s| s.arg()).collect();
+                    valid.push("bot:<id>");
+                    (Section::from_arg(word).ok_or_else(|| unknown("--section", word, valid))?, None)
+                }
+            },
         };
         let open = match flag_value(args, "--open")? {
             None => None,
@@ -285,11 +322,17 @@ impl Launch {
                 return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
             }
         };
-        Ok(Launch { section, demo, open, appearance, design })
+        Ok(Launch { section, bot, demo, open, appearance, design })
     }
 }
 
-/// The design packs of `--demo` (General › Design, task L.4), in memory like all its data: the
+/// A word that can be a bot's id in `--section bot:<id>`: not empty, within the core's limit, only
+/// letters and digits (the core makes 8 hex digits), so a mistyped command opens nothing odd.
+fn is_bot_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= torro_ipc::assistant::MAX_ID_BYTES && id.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+/// The design packs of `--demo` (Appearance › Design, task L.4), in memory like all its data: the
 /// standard; "Harbor" (teal accent, cool surfaces) and "Paper" (warm light surfaces, blue accent),
 /// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. The
 /// samples use Inter, the only font the demo has without a folder.
@@ -548,8 +591,70 @@ pub fn demo_data() -> Data {
         settings: Settings { start_at_login: true, hidden_collections, ..Settings::default() },
         apps: Some(apps),
         approvals: demo_approvals(now),
+        profile: Some(demo_profile()),
+        memories: demo_memories(now),
+        bots: demo_bots(),
         error: None,
     }
+}
+
+/// The demo's bot "Travel planner" (task B.3), whose client may read calendars and write tasks.
+pub const DEMO_TRAVEL: &str = "b0000001";
+/// The demo's bot "Release helper", whose client may use nothing yet.
+pub const DEMO_RELEASE: &str = "b0000002";
+
+/// The demo's bots, by name; their clients are among [`demo_clients`].
+fn demo_bots() -> Vec<torro_ipc::bots::BotSummary> {
+    let bot = |id: &str, name: &str, description: &str, avatar: &str, client: &str| torro_ipc::bots::BotSummary {
+        id: id.into(),
+        name: name.into(),
+        description: description.into(),
+        avatar: avatar.into(),
+        engine: "ai:ollama@localhost:11434".into(),
+        model: Some("qwen3:14b".into()),
+        client: client.into(),
+    };
+    vec![
+        bot(
+            DEMO_RELEASE,
+            tr("Release helper"),
+            tr("Writes release notes and checks what is open"),
+            "radar",
+            "c0000002",
+        ),
+        bot(DEMO_TRAVEL, tr("Travel planner"), tr("Plans trips by train"), "letter", "c0000001"),
+    ]
+}
+
+/// The demo's assistant (task C.10): a name of its own, a symbol and a friendly personality.
+pub fn demo_profile() -> torro_ipc::assistant::Profile {
+    torro_ipc::assistant::Profile {
+        name: "Torro".into(),
+        description: tr("Your assistant for this computer").into(),
+        avatar: "sparkles".into(),
+        personality: super::persona::Template::Friendly.text().into(),
+    }
+}
+
+/// The demo's notes: three the person asked for, one of them kept on this computer, one long.
+fn demo_memories(now: DateTime<Utc>) -> Vec<torro_ipc::assistant::Note> {
+    let note = |id: &str, text: &str, days: i64, local_only| torro_ipc::assistant::Note {
+        id: id.into(),
+        text: text.into(),
+        created: now - Duration::days(days),
+        local_only,
+    };
+    vec![
+        note("1a2b3c4d", "Anna Berger is my colleague in sales; she prefers calls to mail.", 20, false),
+        note(
+            "5e6f7a8b",
+            "The invoice from ACME for the October workshop is due on the 31st; remind me a week before and keep \
+             the amount to yourself.",
+            3,
+            true,
+        ),
+        note("9c0d1e2f", "Mornings before ten are for focus work: no meetings then.", 1, false),
+    ]
 }
 
 /// A connected mail account of the demo: no calendars or lists, as long as it is mail only. Its
@@ -730,6 +835,10 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
     set(&mut assistant, Area::Mail, Level::Read, false);
     set(&mut assistant, Area::Workspaces, Level::Read, false);
     assistant.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into()]);
+    // The travel planner (task B.3): reads calendars, writes tasks, nothing else.
+    let mut travel = Rights::none();
+    set(&mut travel, Area::Calendar, Level::Read, false);
+    set(&mut travel, Area::Tasks, Level::Write, false);
     vec![
         client(
             "3fa9c1d2",
@@ -742,6 +851,8 @@ fn demo_clients(now: DateTime<Utc>, first_calendar: Option<String>) -> Vec<Clien
         client("c41d9e06", "Claude Code hooks", HOOK_CLIENT, Rights::hook(), Some(now - Duration::minutes(1))),
         client("e8a07b35", "backup", "script", backup, None),
         client("a51c3e88", "Assistant", ASSISTANT_CLIENT, assistant, Some(now - Duration::hours(3))),
+        client("c0000001", tr("Travel planner"), BOT_CLIENT, travel, Some(now - Duration::hours(4))),
+        client("c0000002", tr("Release helper"), BOT_CLIENT, Rights::none(), None),
     ]
 }
 
@@ -865,7 +976,7 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
             let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "5f2c9a1e7b3d4086".repeat(4))));
             Some(Response::ClientKey { client, key })
         }
-        Request::CreateClient { name, kind, template, agent } => {
+        Request::CreateClient { name, kind, template, agent, rights } => {
             // The hook client "Connect agent" creates after the agent (task E2.3) gets an id of
             // its own, as it would from the core.
             let id = if kind == HOOK_CLIENT { "4c7a19e3" } else { "9d4b7e21" };
@@ -875,7 +986,7 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                 kind: kind.clone(),
                 created: Utc::now(),
                 last_used: None,
-                rights: template.rights().for_kind(kind),
+                rights: rights.clone().unwrap_or_else(|| template.rights()).for_kind(kind),
                 agent: *agent,
             };
             let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "a3e81c0f6d2b9754".repeat(4))));
@@ -1155,6 +1266,20 @@ mod tests {
         assert_eq!(Launch::parse(&[]), Ok(Launch::default()));
     }
 
+    /// Task B.3: `--section bot:<id>` is the Assistant page with the bot's page open; a bot id that
+    /// is no id is refused like any unknown section.
+    #[test]
+    fn a_bots_section_names_the_bot() {
+        let launch = Launch::parse(&args(&["--section", "bot:1a2b3c4d"])).expect("a bot");
+        assert_eq!((launch.section, launch.bot.as_deref()), (Section::Assistant, Some("1a2b3c4d")));
+        assert_eq!(Launch::parse(&args(&["--section=bot:1a2b3c4d"])).map(|l| l.bot), Ok(Some("1a2b3c4d".into())));
+        for bad in ["bot:", "bot:../x", "bot:a b", "bots"] {
+            let err = Launch::parse(&args(&["--section", bad])).expect_err(bad);
+            assert!(err.to_string().contains("bot:<id>"), "{bad}: {err}");
+        }
+        assert_eq!(Launch::parse(&args(&["--section", "assistant"])).map(|l| l.bot), Ok(None));
+    }
+
     #[test]
     fn section_and_appearance_are_parsed() {
         for section in Section::ALL {
@@ -1182,7 +1307,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, workspaces, apps, assistant, agents, approvals, inbox, general"
+                "valid values: overview, accounts, workspaces, apps, assistant, agents, approvals, inbox, appearance, general, bot:<id>"
             ),
             "{err}"
         );

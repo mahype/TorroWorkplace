@@ -28,6 +28,15 @@
 //! tool opens the same page. Without an AI account it says so and opens the accounts page
 //! (`--section accounts`).
 //!
+//! Bots (task B.3, [`crate::bots`]): the sidebar lists them under "Bots" with "New bot"; a click
+//! opens a bot's chat – its newest conversation or a new one – in which messages go to the bot
+//! (`assistant.send_message { bot }`) and the picker starts at the bot's engine and model. The bot
+//! editor (profile, personality, instructions, skills, engine) takes the chat's place and saves with
+//! `bots.save_bot`; deleting asks first (`bots.delete_bot`). "Access…" opens the control centre at
+//! the bot's rights (`--section bot:<id>`). `--bot <id>` is a chat window with one bot
+//! ([`Window::Bot`]), titled "{bot} · {title}"; "Open in new window" of a bot starts it through
+//! `assistant.open_window`. Its methods live in `app/bots.rs`.
+//!
 //! Mini and strip tiles show the newest answer and a one-line composer, nothing else.
 
 use std::collections::{HashMap, HashSet};
@@ -50,10 +59,12 @@ use torro_gui::ui_state::{self, UiState};
 use torro_gui::widgets;
 use torro_gui::zoom::{self, Zoom};
 use torro_ipc::api::{Area, Rights};
-use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent};
+use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
+use torro_ipc::bots::{Bot, BotSummary};
 use torro_ipc::{ApprovalInfo, Request, Response};
 
 use crate::backend::{Backend, Refusal};
+use crate::bots::{BotDraft, DraftEdit, Proposal};
 use crate::chat::{self, Choice, Transcript};
 use crate::demo;
 use crate::launch::{Launch, Open, Window};
@@ -92,6 +103,10 @@ pub const EDITOR: &str = "assistant-composer";
 pub const MINI_INPUT: &str = "assistant-mini";
 /// The id of the sidebar's search field.
 pub const SEARCH: &str = "assistant-search";
+/// The id of the bot editor's name field: "Save" goes there while the name keeps it back.
+pub const BOT_NAME: &str = "assistant-bot-name";
+/// The id of the bot editor's scrolling form: a "Save" that finds a problem goes to its top.
+pub const BOT_FORM: &str = "assistant-bot-form";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
 /// The control centre's page "Assistant" (task C.6): what the assistant may use.
@@ -118,6 +133,11 @@ pub enum Menu {
     /// The menu of a conversation: Rename, Pin, Open in new window, Delete; at the header's "…"
     /// or, for a right click in the sidebar, at its row.
     Conversation { id: String, at: MenuAt },
+    /// The menu of a bot in the sidebar (right click): New chat, Edit, Access, Open in new window,
+    /// Delete.
+    Bot { id: String },
+    /// The engine and model picker of the bot editor.
+    BotPicker,
 }
 
 /// Where a conversation's menu opens.
@@ -134,6 +154,8 @@ pub enum Dialog {
     Rename { id: String, title: String },
     /// Delete the conversation `id` (named `title`) for good, after asking.
     Delete { id: String, title: String },
+    /// Delete the bot `id` (named `name`) for good, after asking.
+    DeleteBot { id: String, name: String },
 }
 
 /// What the window knows of the assistant's own client (kind `assistant`).
@@ -187,6 +209,39 @@ pub enum Message {
     Models(String, Result<Vec<AiModel>, Refusal>),
     /// The rights of the assistant's own client; `Ok(None)` when there is none.
     Client(Result<Option<Rights>, Refusal>),
+    /// The assistant's profile (task C.10): its name and picture for the header and the welcome.
+    Profile(Result<Profile, Refusal>),
+    /// The bots (`bots.list_bots`, task B.3).
+    Bots(Result<Vec<BotSummary>, Refusal>),
+    /// A bot in the sidebar, "Open chat" under a tool line: the bot's chat, its newest conversation
+    /// or a new one.
+    OpenBot(String),
+    /// "New chat" in a bot's menu: a new conversation with this bot.
+    NewBotChat(String),
+    /// "New bot": the editor of a new bot.
+    NewBot,
+    /// "Edit bot": asks the core for the whole bot, then opens the editor.
+    EditBot(String),
+    BotLoaded(Result<Bot, Refusal>),
+    /// A field of the bot editor changed.
+    Draft(DraftEdit),
+    /// "Save" in the bot editor.
+    SaveBot,
+    BotSaved(Result<Bot, Refusal>),
+    /// "Cancel" in the bot editor: back to the chat, nothing saved.
+    CloseEditor,
+    /// "Delete bot…": asks first.
+    AskDeleteBot(String),
+    ConfirmDeleteBot,
+    BotDeleted(String, Result<(), Refusal>),
+    /// "Access…": the control centre at the bot's rights (`--section bot:<id>`).
+    BotAccess(String),
+    /// "Open in new window" of a bot: `assistant.open_window { bot }`.
+    OpenBotWindow(String),
+    /// "Ask {bot}" on the card of the assistant's proposal: a person's click.
+    ConfirmBot(Proposal),
+    /// The core's answer to the confirmation.
+    BotConfirmed(Proposal, Result<(), Refusal>),
     /// The whole conversation with this id.
     Opened(String, Loaded),
     /// What is new in the conversation with this id since the number asked for.
@@ -292,6 +347,24 @@ pub struct App {
     /// The models of each AI account, by engine id, as listed (the picker filters them).
     pub(crate) models: HashMap<String, Result<Vec<AiModel>, String>>,
     pub(crate) access: Access,
+    /// The assistant's profile as last read; `None` until the core answered (or with an old core):
+    /// then the window shows [`torro_ipc::assistant::DEFAULT_NAME`] and its letter.
+    pub(crate) profile: Option<Profile>,
+    /// The bots, as last listed (task B.3).
+    pub(crate) bots: Vec<BotSummary>,
+    /// They have come once.
+    pub(crate) bots_loaded: bool,
+    /// The bot a new chat goes to; `None` for the assistant. An open conversation answers with its
+    /// own bot ([`App::chat_bot`]).
+    pub(crate) bot: Option<String>,
+    /// The bot editor, while it is open: it takes the chat's place.
+    pub(crate) bot_draft: Option<BotDraft>,
+    /// A `--bot` window has looked for the bot's newest conversation.
+    pub(crate) bot_resolved: bool,
+    /// The one-time states of `--open` that need the bots are done.
+    pub(crate) opened_bots: bool,
+    /// The proposal whose confirmation is on its way: its card takes no second click.
+    pub(crate) confirming: Option<Proposal>,
 
     /// The open conversation; `None` is a new chat.
     pub(crate) current: Option<String>,
@@ -340,7 +413,7 @@ pub struct App {
     pub(crate) sent: Sent,
     /// The control centre's pages the window opened, for the tests.
     #[cfg(test)]
-    pub(crate) sections: Vec<&'static str>,
+    pub(crate) sections: Vec<String>,
 }
 
 impl App {
@@ -349,6 +422,13 @@ impl App {
         let (chat_only, current) = match &launch.window {
             Window::Main => (false, start_conversation(open)),
             Window::Chat(id) => (true, id.clone()),
+            // The bot's newest conversation is known once the conversations are listed.
+            Window::Bot(_) => (true, None),
+        };
+        let bot = match (&launch.window, open) {
+            (Window::Bot(id), _) => Some(id.clone()),
+            (Window::Main, Some(Open::BotWelcome)) => Some(demo::TRAVEL.to_owned()),
+            _ => None,
         };
         let mut app = App {
             backend,
@@ -365,6 +445,14 @@ impl App {
             engines_loaded: false,
             models: HashMap::new(),
             access: Access::Unknown,
+            profile: None,
+            bots: Vec::new(),
+            bots_loaded: false,
+            bot,
+            bot_draft: None,
+            bot_resolved: false,
+            opened_bots: false,
+            confirming: None,
             current,
             transcript: Transcript::default(),
             chat_error: None,
@@ -384,13 +472,14 @@ impl App {
                 Some(Open::Picker) => Some(Menu::Picker),
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 Some(Open::Menu) => Some(Menu::Conversation { id: demo::TOOLS.into(), at: MenuAt::Header }),
+                Some(Open::BotMenu) => Some(Menu::Bot { id: demo::TRAVEL.into() }),
                 _ => None,
             },
             dialog: None,
             search: String::new(),
             hover: None,
             // Without a sidebar the app switcher lives in the drawer.
-            drawer: matches!(open, Some(Open::Drawer | Open::Switcher)),
+            drawer: matches!(open, Some(Open::Drawer | Open::Switcher | Open::BotMenu)),
             sidebar: SidebarMode::default(),
             notice: None,
             appearance: Appearance::System,
@@ -425,10 +514,15 @@ impl App {
     }
 
     /// The window's title: the conversation's ("New chat" for a new one); the main window says
-    /// whose window it is first. Tiling rules and window lists tell chat windows apart by it.
+    /// whose window it is first, a bot's chat window the bot's name ("Travel planner · Train to
+    /// Lisbon"). Tiling rules and window lists tell chat windows apart by it.
     pub fn title(&self) -> String {
         let title = self.conversation_title();
-        if self.chat_only { title } else { trf("Assistant · {title}", &[("title", &title)]) }
+        match (self.chat_only, self.chat_bot()) {
+            (true, Some(bot)) => trf("{bot} · {title}", &[("bot", &self.bot_name(bot)), ("title", &title)]),
+            (true, None) => title,
+            (false, _) => trf("Assistant · {title}", &[("title", &title)]),
+        }
     }
 
     /// The open conversation's title, "New chat" for a new one.
@@ -513,6 +607,41 @@ impl App {
                 let usable = self.switchable();
                 self.without.retain(|area| usable.contains(area));
             }
+            // An old core without profiles, or none: the window keeps what it showed.
+            Message::Profile(Ok(profile)) => self.profile = Some(profile),
+            Message::Profile(Err(_)) => {}
+            Message::Bots(result) => return self.bots_listed(result),
+            Message::OpenBot(id) => return self.open_bot(id),
+            Message::NewBotChat(id) => return self.new_bot_chat(id),
+            Message::NewBot => self.new_bot(),
+            Message::EditBot(id) => return self.edit_bot(id),
+            Message::BotLoaded(result) => self.bot_loaded(result),
+            Message::Draft(edit) => {
+                let pick = matches!(edit, DraftEdit::Engine(_));
+                if let Some(draft) = self.bot_draft.as_mut() {
+                    draft.apply(edit);
+                }
+                if pick {
+                    self.menu = None;
+                }
+            }
+            Message::SaveBot => return self.save_bot(),
+            Message::BotSaved(result) => return self.bot_saved(result),
+            Message::CloseEditor => {
+                self.close_menus();
+                self.bot_draft = None;
+            }
+            Message::AskDeleteBot(id) => self.ask_delete_bot(id),
+            Message::ConfirmDeleteBot => return self.delete_bot(),
+            Message::BotDeleted(id, result) => return self.bot_deleted(id, result),
+            Message::BotAccess(id) => self.open_section(&crate::bots::access_section(&id)),
+            Message::OpenBotWindow(id) => {
+                self.close_menus();
+                let request = Request::OpenChatWindow { window: ChatWindow::Bot(id) };
+                return self.ask(request, |result| Message::WindowOpened(result.map(|_| ())));
+            }
+            Message::ConfirmBot(proposal) => return self.confirm_bot(proposal),
+            Message::BotConfirmed(proposal, result) => return self.bot_confirmed(proposal, result),
             Message::Opened(id, loaded) => return self.opened(id, loaded),
             Message::Followed(id, loaded) => return self.followed(id, loaded),
             Message::Approval(id, Ok(approval)) => {
@@ -697,7 +826,23 @@ impl App {
                 }
             }))
         });
-        Task::batch([self.load_list(), engines, client])
+        let profile = self.ask(Request::GetProfile, |result| {
+            Message::Profile(result.and_then(|response| match response {
+                Response::Profile { profile } => Ok(profile),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        });
+        Task::batch([self.load_list(), engines, client, profile, self.load_bots()])
+    }
+
+    /// The assistant's name as the window shows it: the profile's, else the default.
+    pub(crate) fn assistant_name(&self) -> &str {
+        self.profile.as_ref().map_or(torro_ipc::assistant::DEFAULT_NAME, |profile| profile.name.as_str())
+    }
+
+    /// The assistant's picture ([`torro_ipc::assistant::AVATARS`]): the profile's, else the letter.
+    pub(crate) fn assistant_avatar(&self) -> &str {
+        self.profile.as_ref().map_or(torro_ipc::assistant::LETTER_AVATAR, |profile| profile.avatar.as_str())
     }
 
     fn load_list(&mut self) -> Task<Message> {
@@ -768,6 +913,7 @@ impl App {
                 self.list_error = None;
                 self.choose_default();
                 self.open_launched();
+                return self.resolve_bot_window();
             }
             Err(refusal) => self.list_error = Some(refusal.message),
         }
@@ -807,6 +953,11 @@ impl App {
     /// The choice before the person picks: the open conversation's engine and model, else the
     /// last one used or the first engine ([`chat::default_choice`]). The person's own pick stays.
     fn choose_default(&mut self) {
+        // A new bot waits for an engine as long as there is none.
+        let fallback = chat::default_choice(&self.conversations, &self.engines, |_| None);
+        if let Some(draft) = self.bot_draft.as_mut().filter(|draft| draft.choice.is_none()) {
+            draft.choice = fallback;
+        }
         if self.chosen == Chosen::Person {
             return;
         }
@@ -822,6 +973,14 @@ impl App {
             self.chosen = Chosen::Conversation;
             return;
         }
+        // A new chat with a bot starts at the bot's engine and model (task B.3).
+        let bot =
+            self.bot.as_deref().filter(|_| self.current.is_none()).and_then(|id| crate::bots::find(&self.bots, id));
+        if let Some(bot) = bot.filter(|bot| self.engines.iter().any(|engine| engine.id == bot.engine)) {
+            self.choice = Some(Choice { engine: bot.engine.clone(), model: bot.model.clone() });
+            self.chosen = Chosen::Default;
+            return;
+        }
         let models = &self.models;
         let listed = |id: &str| models.get(id).and_then(|models| models.as_ref().ok()).map(Vec::as_slice);
         self.choice = chat::default_choice(&self.conversations, &self.engines, listed);
@@ -835,10 +994,12 @@ impl App {
         self.following = false;
         match loaded {
             Ok((summary, entries)) => {
+                // An open conversation answers with its own bot (or the assistant).
+                self.bot = summary.bot.clone();
                 self.transcript = Transcript::new(summary, entries);
                 self.chat_error = None;
                 self.after_change();
-                if self.launch.open == Some(Open::Tools) && self.expanded.is_empty() {
+                if matches!(self.launch.open, Some(Open::Tools | Open::BotAsked)) && self.expanded.is_empty() {
                     let first = self.transcript.entries.iter().find(|e| matches!(e.content, EntryContent::Tool { .. }));
                     self.expanded.extend(first.map(|entry| entry.seq));
                 }
@@ -930,9 +1091,11 @@ impl App {
 
     fn select(&mut self, id: String) -> Task<Message> {
         self.close_menus();
+        self.bot_draft = None;
         if self.current.as_ref() == Some(&id) {
             return Task::none();
         }
+        self.bot = self.conversations.iter().find(|c| c.id == id).and_then(|c| c.bot.clone());
         self.reset_chat(Some(id));
         if self.chosen != Chosen::Person {
             self.chosen = Chosen::Default;
@@ -941,8 +1104,16 @@ impl App {
         self.open_current()
     }
 
+    /// A new chat: with the assistant in the main window, with its bot in a bot's chat window.
     fn new_chat(&mut self) -> Task<Message> {
         self.close_menus();
+        self.bot_draft = None;
+        match &self.launch.window {
+            Window::Main => self.bot = None,
+            Window::Bot(id) => self.bot = Some(id.clone()),
+            // A conversation's window stays with whoever answered there.
+            Window::Chat(_) => {}
+        }
         self.reset_chat(None);
         self.choose_default();
         operation::focus(EDITOR)
@@ -971,8 +1142,12 @@ impl App {
         if self.sending || self.transcript.running() {
             return Task::none();
         }
+        if self.bot_gone() {
+            return Task::none();
+        }
+        let without = if self.chat_bot().is_some() { Vec::new() } else { self.without.clone() };
         let Some(request) =
-            chat::send_request(self.current.as_deref(), self.choice.as_ref(), &self.draft(), &self.without)
+            chat::send_request(self.current.as_deref(), self.choice.as_ref(), &self.draft(), &without, self.chat_bot())
         else {
             return Task::none();
         };
@@ -1000,6 +1175,7 @@ impl App {
             }
             Err(refusal) => {
                 let what = match refusal.code.as_str() {
+                    "busy" if self.chat_bot().is_some() => tr("The bot is still answering in this conversation."),
                     "busy" => tr("The assistant is still answering in this conversation."),
                     _ => tr("Couldn't send the message."),
                 };
@@ -1143,12 +1319,12 @@ impl App {
         })
     }
 
-    /// Opens the control centre on `section` (`torroworkplace ui --section …`); nothing starts in
-    /// the demo or in tests.
-    fn open_section(&mut self, section: &'static str) {
+    /// Opens the control centre on `section` (`torroworkplace ui --section …`, `bot:<id>` for a
+    /// bot's rights); nothing starts in the demo or in tests.
+    fn open_section(&mut self, section: &str) {
         self.close_menus();
         #[cfg(test)]
-        self.sections.push(section);
+        self.sections.push(section.to_owned());
         #[cfg(not(test))]
         if !self.launch.demo {
             torro_gui::connect::open_section(section);
@@ -1174,6 +1350,10 @@ fn start_conversation(open: Option<Open>) -> Option<String> {
         Some(Open::Approval) => Some(demo::APPROVAL.into()),
         Some(Open::Streaming) => Some(demo::STREAMING.into()),
         Some(Open::Forbidden) => Some(demo::FORBIDDEN.into()),
+        Some(Open::Bot) => Some(demo::BOT_CHAT.into()),
+        Some(Open::BotAsked) => Some(demo::ASKED.into()),
+        Some(Open::BotGone) => Some(demo::GONE.into()),
+        Some(Open::BotProposal) => Some(demo::PROPOSAL.into()),
         _ => None,
     }
 }
@@ -1229,5 +1409,6 @@ pub(crate) fn composer_binding(press: KeyPress) -> Option<Binding<Message>> {
     Binding::from_key_press(press)
 }
 
+mod bots;
 #[cfg(test)]
 mod tests;

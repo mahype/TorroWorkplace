@@ -709,6 +709,9 @@ pub struct Snapshot {
     /// What the voice listener does (task C.9): the tray shows that it listens, and clearly when
     /// it records, and offers to mute the microphone.
     pub voice: torro_ipc::VoiceState,
+    /// The setting `voice_enabled` (task C.11): while it is on, the tray offers to mute the
+    /// microphone even when the listener does not run (it crashed, or could not start).
+    pub voice_enabled: bool,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -785,6 +788,9 @@ pub struct Core {
     /// `voice.enabled` is on ([`Core::follow_voice`]); tests start none unless they bring a fake
     /// ([`Core::with_listener`]).
     voice: Listener,
+    /// What the keys lent for runs of engine B are for (task B.2, [`LentScope`]): the assistant's
+    /// conversation, or a bot's run for the assistant. In memory only, as the leases are.
+    lent_scopes: std::sync::Mutex<Vec<LentScope>>,
 }
 
 impl Core {
@@ -820,6 +826,7 @@ impl Core {
             torromail: if cfg!(test) { TorroMail::none() } else { TorroMail::system() },
             assistant: Arc::new(Assistant::system()),
             voice: if cfg!(test) { Listener::none() } else { Listener::system() },
+            lent_scopes: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -1009,18 +1016,27 @@ impl Core {
             Ok(Caller::App | Caller::Anonymous) => return Ok(self.handle(request).await),
             Ok(Caller::Client { id, rights }) => (Some(id.clone()), Ok((id, rights))),
             Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
-            Err(refused) => (self.client_of(key), Err(refused)),
+            Err(refused) => match self.admit_by_kind(key, &request) {
+                Some((id, rights)) => (Some(id.clone()), Ok((id, rights))),
+                None => (self.client_of(key), Err(refused)),
+            },
         };
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         // A key lent to an agent that drives the assistant (task C.7): the log names the engine,
         // as for the assistant's own tools (decision 5 in `docs/assistent.md`).
-        if let Some(engine) = key.and_then(|key| self.clients.lent_for(key)) {
+        let mut scope = None;
+        if let Some((key, engine)) = key.and_then(|key| self.clients.lent_for(key).map(|engine| (key, engine))) {
             ids.push(crate::audit::engine_id(&engine));
+            // A bot that runs for the assistant (task B.2): the log names the bot and the assistant.
+            scope = self.lent_scope(key);
+            if let Some(LentFor::Delegated(delegation)) = &scope {
+                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
+            }
         }
         let answer = match admitted {
             Ok((id, rights)) => match key.and_then(|key| self.clients.lent_approvals(key).map(|own| (key, own))) {
-                Some((key, own)) => self.handle_lent(key, &own, id, rights, request).await,
-                None => self.handle_client(id, rights, request).await,
+                Some((key, own)) => self.handle_lent(key, &own, id, rights, request, scope).await,
+                None => self.handle_client(id, rights, request, &Via::default()).await,
             },
             Err(refused) => Err(refused),
         };
@@ -1030,6 +1046,81 @@ impl Core {
         };
         self.audit.record(&shown);
         answer
+    }
+
+    /// The assistant's own client with `key` and its rights (lent ones narrowed as lent), when its
+    /// rights refused `request` but its kind admits it ([`torro_ipc::api::allowed_by_kind`]): its
+    /// own memory (task C.10) and the bots it may use (task B.1). The areas `assistant` and `bots`
+    /// never open for that client through its rights. `None` for every other key and request.
+    /// `system.ping` is open to every client key, so admitting it tells whose key it is and with
+    /// which rights.
+    fn admit_by_kind(&self, key: Option<&Key>, request: &Request) -> Option<(String, torro_ipc::api::Rights)> {
+        let operation = request.operation();
+        if !torro_ipc::api::allowed_by_kind(torro_ipc::api::ASSISTANT_CLIENT, operation) {
+            return None;
+        }
+        let Ok(Caller::Client { id, rights }) = self.clients.admit(key, &Request::Ping) else { return None };
+        self.allowed_by_kind(&id, operation).then_some((id, rights))
+    }
+
+    /// Whether the client `id` may send `operation` by its kind, whatever its rights say
+    /// ([`torro_ipc::api::allowed_by_kind`]): the assistant's own memory and the bots it may use.
+    fn allowed_by_kind(&self, id: &str, operation: torro_ipc::api::Operation) -> bool {
+        matches!(operation.area(), Area::Assistant | Area::Bots)
+            && self
+                .clients
+                .list()
+                .iter()
+                .any(|info| info.id == id && torro_ipc::api::allowed_by_kind(&info.kind, operation))
+    }
+
+    /// The kind of the client `id` as stored now; `None` for one removed meanwhile.
+    fn client_kind(&self, id: &str) -> Option<String> {
+        self.clients.list().into_iter().find(|info| info.id == id).map(|info| info.kind)
+    }
+
+    /// The fixed rules of bots for the client `id`, admitted with `rights`, beyond its rights (task
+    /// B.1), `forbidden` when one refuses `request`:
+    ///
+    /// - the assistant's own client asks a bot only from its conversation, where the person asked
+    ///   for it (task B.2, handled before this in [`Core::handle_client`]): here, never,
+    /// - it proposes new bots only, never changes one (`bots.save_bot` with an `id`),
+    /// - any client chats with a bot through `assistant.send_message` only with write access to
+    ///   `bots` as well, as `bots.ask_bot` needs: either way the bot works with its own rights.
+    ///
+    /// A bot's client never gets this far with a `bots` or `assistant` command
+    /// ([`torro_ipc::api::loops_back`]).
+    fn bots_refusal(&self, id: &str, rights: &torro_ipc::api::Rights, request: &Request) -> Option<Refused> {
+        let command = request.operation().name();
+        let assistant = || self.client_kind(id).as_deref() == Some(torro_ipc::api::ASSISTANT_CLIENT);
+        let refused = match request {
+            Request::AskBot { .. } => assistant(),
+            Request::SaveBot { id: Some(_), .. } => assistant(),
+            Request::SendMessage { bot: Some(_), .. } => !rights.area(Area::Bots).allows(Access::Write),
+            _ => false,
+        };
+        refused.then_some(Refused::Forbidden { command })
+    }
+
+    /// Whether `request` of the client `id` is the assistant proposing a bot (task B.1): a
+    /// `bots.save_bot` of the assistant's own client always waits for a person, whatever its rights
+    /// say, since a bot's texts go into a prompt of their own.
+    fn proposes_bot(&self, id: &str, request: &Request) -> bool {
+        matches!(request, Request::SaveBot { .. })
+            && self.client_kind(id).as_deref() == Some(torro_ipc::api::ASSISTANT_CLIENT)
+    }
+
+    /// What the assistant or the bots would refuse `request` with anyway (tasks C.1 and B.1):
+    /// limits, an unknown conversation, engine or bot, a conversation that still answers or is of
+    /// another bot, a bot's window, too many bots. `None` for every other request.
+    async fn assistant_refusal(&self, request: &Request) -> Option<Response> {
+        match (request.operation().area(), request) {
+            (Area::Assistant, _) | (Area::Bots, Request::AskBot { .. }) => {
+                self.assistant.refusal(&self.ai, request).await
+            }
+            (Area::Bots, _) => self.assistant.bots().refusal(request).await,
+            _ => None,
+        }
     }
 
     /// The id of the client whose `key` was refused a command, for its line in the audit log.
@@ -1047,6 +1138,16 @@ impl Core {
     /// (`own`), since the others may hold what its areas keep from it (a mail to send that a local
     /// model prepared); it cannot ask the person questions (`approvals.ask_permission`, no tool of
     /// the assistant with a model either); an approval it asks for becomes one of its own.
+    ///
+    /// An approval it asks for keeps the engine and the areas the key was lent without
+    /// ([`crate::approvals::Origin`], task C.11), so the command runs without them after "Allow"
+    /// too. The core cannot tell what the agent read before, so its `assistant.remember` always
+    /// waits for a person ([`Via::untrusted`]).
+    ///
+    /// What the key was lent for (task B.2, `scope`): for the assistant's conversation, a
+    /// `bots.ask_bot` with it is checked against what the person said there ([`Via::asking`]); for a
+    /// bot's run for the assistant, every request runs with what both clients may, and an approval
+    /// keeps that ([`crate::approvals::Origin::behalf`]).
     async fn handle_lent(
         &self,
         key: &Key,
@@ -1054,6 +1155,7 @@ impl Core {
         id: String,
         rights: torro_ipc::api::Rights,
         request: Request,
+        scope: Option<LentFor>,
     ) -> Result<Response, Refused> {
         match &request {
             Request::ListApprovals => {
@@ -1073,19 +1175,51 @@ impl Core {
             }
             _ => {}
         }
-        let answer = self.handle_client(id, rights, request).await;
+        // Taken back meanwhile: the key is worth nothing now, and nothing may be asked for without
+        // knowing what it was lent without.
+        let (Some(engine), Some(without)) = (self.clients.lent_for(key), self.clients.lent_without(key)) else {
+            return Err(Refused::Unauthorized { command: request.operation().name() });
+        };
+        let origin = crate::approvals::Origin { engine: Some(engine), without: without.clone(), behalf: None };
+        let mut via = Via { origin, untrusted: true, asking: None };
+        let mut rights = rights;
+        match scope {
+            Some(LentFor::Conversation(conversation)) => {
+                via.asking = Some(AskedFrom { conversation, without, read_mail: false });
+            }
+            Some(LentFor::Delegated(delegation)) => {
+                // The lease took its areas out of the bot's rights already; the assistant's, narrowed
+                // the same way, bound them as well. Its client removed meanwhile: nothing runs.
+                let theirs = self.assistant_client().filter(|info| info.id == delegation.assistant);
+                via.origin.behalf = Some(delegation.assistant);
+                match via.origin.effective(&rights, theirs.as_ref().map(|info| &info.rights)) {
+                    Some(bound) => rights = bound,
+                    None => return Err(Refused::Forbidden { command: request.operation().name() }),
+                }
+            }
+            Some(LentFor::Own) => {}
+            // A bot's key whose run the core no longer knows (it forgot it, or it was lent without
+            // `Host::lend_in`): it could be a run for the assistant, so it does nothing.
+            None if self.client_kind(&id).as_deref() == Some(torro_ipc::api::BOT_CLIENT) => {
+                return Err(Refused::Forbidden { command: request.operation().name() });
+            }
+            None => {}
+        }
+        let answer = self.handle_client(id, rights, request, &via).await;
         if let Ok(Response::Pending { approval }) = &answer {
             self.clients.note_lent_approval(key, &approval.id);
         }
         answer
     }
 
-    /// Steps 2 to 4 of [`Core::handle_from`] for the client `id`, admitted with `rights`.
+    /// Steps 2 to 4 of [`Core::handle_from`] for the client `id`, admitted with `rights`, the request
+    /// coming `via` an engine of the assistant or a lent key, if so.
     async fn handle_client(
         &self,
         id: String,
         rights: torro_ipc::api::Rights,
         request: Request,
+        via: &Via,
     ) -> Result<Response, Refused> {
         // Which approvals there are depends on who asks, not on what it may see.
         match &request {
@@ -1119,9 +1253,36 @@ impl Core {
             return Ok(refused);
         }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
-        // Point 6 (task C.9): switching the microphone on is a person's, also with every right.
-        if !rights.allows_request(&request) || self.switches_microphone_on(&request) {
+        // Point 6 (task C.9): switching the microphone on is a person's, also with every right. The
+        // assistant's own memory is its own whatever its rights in `assistant` say (task C.10).
+        let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
+        if !allowed || self.switches_microphone_on(&request) {
             return Err(Refused::Forbidden { command: request.operation().name() });
+        }
+        // The assistant asks a bot (task B.2): only from its conversation, where the person asked for
+        // the bot ([`crate::assistant::Assistant::delegate`]); the bot then runs with what both
+        // clients may. No approval of the ask itself: the person's words are the yes, and the bot's
+        // own commands ask where their rights say so.
+        if matches!(request, Request::AskBot { .. })
+            && self.client_kind(&id).as_deref() == Some(torro_ipc::api::ASSISTANT_CLIENT)
+        {
+            let Some(asking) = &via.asking else {
+                return Err(Refused::Forbidden { command: request.operation().name() });
+            };
+            if asking.without.contains(&Area::Bots) {
+                let message = "the person switched off bots for this conversation".into();
+                return Ok(Response::Error { code: "forbidden".into(), message });
+            }
+            let from = crate::assistant::Asking {
+                conversation: &asking.conversation,
+                assistant: &id,
+                without: &asking.without,
+                read_mail: asking.read_mail,
+            };
+            return Ok(self.assistant.delegate(&self.ai, &from, request).await);
+        }
+        if let Some(refused) = self.bots_refusal(&id, &rights, &request) {
+            return Err(refused);
         }
         // Making a task of an inbox entry writes a task too, and an operation knows one area only:
         // the tasks rights and the list come first (task E3.5).
@@ -1167,10 +1328,13 @@ impl Core {
             return Ok(*refused);
         }
         // What the assistant would refuse anyway is nothing to approve (task C.1): limits, an
-        // unknown conversation or engine, a conversation that still answers, a bot.
-        if request.operation().area() == Area::Assistant
-            && let Some(refused) = self.assistant.refusal(&self.ai, &request).await
-        {
+        // unknown conversation or engine, a conversation that still answers, a bot's window; nor
+        // what the bots would (task B.1): an unknown bot, too many bots.
+        if let Some(refused) = self.assistant_refusal(&request).await {
+            return Ok(refused);
+        }
+        // A note the client does not see, or a full memory (task C.10): nothing to approve either.
+        if let Some(refused) = self.assistant.memory_refusal(&request, sees_local_notes(reach)).await {
             return Ok(refused);
         }
         // Ticking an issue of a filter list closes it on GitHub (task G.5): that needs write access
@@ -1213,13 +1377,21 @@ impl Core {
         }
         // A question of an agent (task E2.5) is nothing but an approval: it always asks.
         let question = matches!(request, Request::AskPermission { .. });
+        // A note kept on this computer was written after the assistant read mail (task C.10), and
+        // any note after the conversation read data from outside the suite (task C.11): what a
+        // mail, an agent's entry or an issue says must never become a lasting part of the
+        // assistant's prompt unseen.
+        let from_mail = matches!(request, Request::Remember { local_only: true, .. })
+            || (via.untrusted && matches!(request, Request::Remember { .. }));
         // `needs_approval_of`: sending mail also waits as `Rights::outbound` says (task M2.1).
         if question
+            || from_mail
             || rights.needs_approval_of(operation)
             || invitation_deletes_waiting(&request, &rights)
             || self.opens_a_web_page(&request, inbox_client.as_ref())
+            || self.proposes_bot(&id, &request)
         {
-            return self.ask_approval(&id, request).await;
+            return self.ask_approval(&id, request, &rights, &via.origin).await;
         }
         // A client sends as itself: its own drafts only, checked again where it runs (task M3.3).
         if let Request::SendDraft { id: draft } = &request {
@@ -1244,11 +1416,13 @@ impl Core {
         Ok(self.handle_within(request, reach).await)
     }
 
-    /// Whether `operation` from the client `id` would let the assistant drive itself
-    /// ([`torro_ipc::api::loops_back`]): an `assistant` command from the assistant's own client.
-    /// A client removed meanwhile is refused by its rights already.
+    /// Whether `operation` from the client `id` would let the assistant drive itself or a bot start a
+    /// chain ([`torro_ipc::api::loops_back`]): an `assistant` command from the assistant's own
+    /// client, a `bots` command beyond those it may use, any `assistant` or `bots` command from a
+    /// bot's client (task B.1) – whatever rights a person stored for them. A client removed
+    /// meanwhile is refused by its rights already.
     fn loops_back(&self, id: &str, operation: torro_ipc::api::Operation) -> bool {
-        operation.area() == Area::Assistant
+        matches!(operation.area(), Area::Assistant | Area::Bots)
             && self.clients.list().iter().any(|info| info.id == id && torro_ipc::api::loops_back(&info.kind, operation))
     }
 
@@ -1272,14 +1446,67 @@ impl Core {
     /// its rights of now instead of a key ([`Clients::admit`] for a client: `forbidden` when they
     /// do not cover the command), then [`Core::handle_client`] (collections, the fixed refusals,
     /// approvals), and a line in the audit log that names the engine besides the ids. Without an
-    /// assistant client every call is `forbidden`.
-    async fn handle_as_assistant(&self, request: Request, engine: &str) -> Response {
+    /// assistant client every call is `forbidden`. An approval it asks for keeps the engine
+    /// (task C.11); `untrusted`: the conversation read data from outside the suite, so
+    /// `assistant.remember` waits for a person ([`Via::untrusted`]).
+    async fn handle_as_assistant(&self, request: Request, engine: &str, untrusted: bool) -> Response {
+        self.handle_as(self.assistant_client(), request, engine, untrusted, Scope::Own).await
+    }
+
+    /// The client of the bot whose client id is `client` (kind `torro_ipc::api::BOT_CLIENT`) as
+    /// stored now; `None` when it is not there (task B.1).
+    fn bot_client(&self, client: &str) -> Option<torro_ipc::ClientInfo> {
+        self.clients.list().into_iter().find(|info| info.id == client && info.kind == torro_ipc::api::BOT_CLIENT)
+    }
+
+    /// The bot's client of `delegation` (task B.2) with the rights it runs with for the assistant:
+    /// what both the bot's and the assistant's client may now, without the areas of
+    /// [`crate::assistant::Delegation::without`]. `None` when either client is not there (also an
+    /// assistant client other than the one that asked).
+    fn delegated_client(&self, delegation: &crate::assistant::Delegation) -> Option<torro_ipc::ClientInfo> {
+        let mut bot = self.bot_client(&delegation.client)?;
+        let assistant = self.assistant_client().filter(|info| info.id == delegation.assistant)?;
+        let origin = delegation_origin(None, delegation);
+        bot.rights = origin.effective(&bot.rights, Some(&assistant.rights))?;
+        Some(bot)
+    }
+
+    /// [`Core::handle_as_assistant`] for the client `client`: the assistant's own or a bot's (task
+    /// B.1). Without one every call is `forbidden`. `scope` (task B.2): the assistant's conversation
+    /// for a `bots.ask_bot`, or a bot's run for the assistant (`client` then holds the narrowed
+    /// rights, [`Core::delegated_client`]): its approvals keep the narrowing and its log line names
+    /// the bot and the assistant's client.
+    async fn handle_as(
+        &self,
+        client: Option<torro_ipc::ClientInfo>,
+        request: Request,
+        engine: &str,
+        untrusted: bool,
+        scope: Scope<'_>,
+    ) -> Response {
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         ids.push(crate::audit::engine_id(engine));
-        let client = self.assistant_client();
+        let mut origin =
+            crate::approvals::Origin { engine: Some(engine.to_string()), without: Vec::new(), behalf: None };
+        let mut asking = None;
+        match scope {
+            Scope::Own => {}
+            Scope::Asking { conversation, without, read_mail } => {
+                let conversation = conversation.to_string();
+                asking = Some(AskedFrom { conversation, without: without.to_vec(), read_mail });
+            }
+            Scope::Delegated(delegation) => {
+                ids.extend(crate::audit::delegation_ids(&delegation.bot, &delegation.assistant));
+                origin = delegation_origin(Some(engine), delegation);
+            }
+        }
         let answer = match &client {
-            Some(info) if info.rights.allows_request(&request) => {
-                self.handle_client(info.id.clone(), info.rights.clone(), request).await
+            Some(info)
+                if info.rights.allows_request(&request)
+                    || torro_ipc::api::allowed_by_kind(&info.kind, request.operation()) =>
+            {
+                let via = Via { origin, untrusted, asking };
+                self.handle_client(info.id.clone(), info.rights.clone(), request, &via).await
             }
             _ => Err(Refused::Forbidden { command }),
         };
@@ -1287,6 +1514,21 @@ impl Core {
         let line = crate::audit::entry(client.map(|info| info.id), command, ids, &response, Utc::now());
         self.audit.record(&line);
         response
+    }
+
+    /// What the key lent for a run of engine B (`key`) is for (task B.2), while the core remembers it.
+    fn lent_scope(&self, key: &Key) -> Option<LentFor> {
+        let hash = key_hash(key);
+        let scopes = self.lent_scopes.lock().unwrap_or_else(PoisonError::into_inner);
+        scopes.iter().find(|scope| scope.hash == hash).map(|scope| scope.lent_for.clone())
+    }
+
+    /// Remembers what `lent` is for (task B.2), and forgets what was lent longer ago than any run
+    /// lasts ([`LENT_SCOPE_KEPT`]): those keys were taken back.
+    fn remember_lent(&self, lent: &crate::clients::LentKey, lent_for: LentFor) {
+        let mut scopes = self.lent_scopes.lock().unwrap_or_else(PoisonError::into_inner);
+        scopes.retain(|scope| scope.made.elapsed() < LENT_SCOPE_KEPT);
+        scopes.push(LentScope { hash: key_hash(lent.key()), made: std::time::Instant::now(), lent_for });
     }
 
     /// Whether `request` of the client `client` is `inbox.open_item` on an entry that opens a web
@@ -1324,11 +1566,27 @@ impl Core {
     /// A question of an agent (`approvals.ask_permission`, task E2.5) is checked first
     /// ([`crate::approvals::question_refusal`]) and summed up from its tool and command, asked by
     /// the client's agent ([`asker`]).
-    async fn ask_approval(&self, client: &str, request: Request) -> Result<Response, Refused> {
+    ///
+    /// The summary is written with `rights`, the ones the request was admitted with (for a lent key
+    /// without the areas it was lent without), and the approval keeps `origin` (task C.11).
+    async fn ask_approval(
+        &self,
+        client: &str,
+        request: Request,
+        rights: &torro_ipc::api::Rights,
+        origin: &crate::approvals::Origin,
+    ) -> Result<Response, Refused> {
         let command = request.operation().name();
         let info = self.clients.list().into_iter().find(|info| info.id == client);
-        let name = info.as_ref().map(|info| info.name.clone());
+        // A bot's name is anyone's with write access to `bots` (task B.1): its approvals say it is a
+        // bot, so it cannot pass itself off as another client.
+        let name = info.as_ref().map(|info| match info.kind == torro_ipc::api::BOT_CLIENT {
+            true => trf("Bot \"{name}\"", &[("name", &info.name)]),
+            false => info.name.clone(),
+        });
         let mut fingerprint = None;
+        // Lines the person sees besides the summary, for commands not pinned by a fingerprint.
+        let mut shown = Vec::new();
         let (request, pin, summary) = match (&request, request.operation().area()) {
             (Request::AskPermission { tool, details, project, title }, _) => {
                 if let Some(refused) = crate::approvals::question_refusal(tool, details) {
@@ -1345,9 +1603,11 @@ impl Core {
             // Sending (task M3.3): the summary from the message built from the stored draft, and
             // the approval pinned to it. A draft that cannot be built is nothing to ask about.
             (Request::SendDraft { id: draft }, _) => {
-                let Some(info) = &info else { return Err(Refused::Forbidden { command }) };
+                if info.is_none() {
+                    return Err(Refused::Forbidden { command });
+                }
                 let author = DraftAuthor::Client(client.to_string());
-                let reach = Reach::Client(&info.rights);
+                let reach = Reach::Client(rights);
                 let (mail, pinned) = match crate::mail::send::approval(&self.mail, reach, &author, draft).await {
                     Ok(prepared) => prepared,
                     Err(refused) => return Ok(*refused),
@@ -1407,6 +1667,22 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // The assistant's profile and memory (task C.10): every text whole in the details, and
+            // a note pinned to the text the person was shown.
+            (Request::UpdateProfile { .. } | Request::Remember { .. } | Request::Forget { .. }, _) => {
+                let facts = self.facts(&request).await;
+                let pinned = crate::approvals::note_fingerprint(&facts);
+                fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
+            // A bot's texts go into its prompt (task B.1): the person sees every one of them whole.
+            (Request::SaveBot { .. }, _) => {
+                let facts = self.facts(&request).await;
+                shown = crate::approvals::details(&request, &facts);
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             (_, Area::Inbox) => {
                 let mut facts = self.inbox.facts(&request);
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
@@ -1424,8 +1700,7 @@ impl Core {
                 let mut facts = self.facts(&request).await;
                 // Ticking a link closes its issue only for a client that may (task G.6); else the
                 // summary must not say it would.
-                let rights = info.as_ref().map(|info| &info.rights);
-                if let (Some(rights), Some(issue)) = (rights, facts.issue.as_deref()) {
+                if let (Some(_), Some(issue)) = (&info, facts.issue.as_deref()) {
                     let repo = issue.rsplit_once('#').map_or(issue, |(repo, _)| repo);
                     if !(rights.area(Area::Github).allows(Access::Write) && rights.reaches_repo(repo)) {
                         facts.issue = None;
@@ -1433,7 +1708,7 @@ impl Core {
                 }
                 // What a target shows (task E8.7a): the subject or title the core holds, looked up
                 // as the client may see it.
-                if let (Request::OpenApp { app, target: Some(target) }, Some(rights)) = (&request, rights) {
+                if let Request::OpenApp { app, target: Some(target) } = &request {
                     let shown = self.open_target(app, target, Reach::Client(rights)).await.ok();
                     facts.item = shown.map(|(_, title)| crate::approvals::Known { title, start: None });
                 }
@@ -1442,13 +1717,9 @@ impl Core {
             }
         };
         let name = name.unwrap_or_default();
-        let opened = match fingerprint {
-            Some((fingerprint, details)) => {
-                let shown = (summary, details);
-                self.approvals.open_with_fingerprint(client, &name, request, fingerprint, shown, Utc::now()).await
-            }
-            None => self.approvals.open(client, &name, request, pin, summary, Utc::now()).await,
-        };
+        let (fingerprint, details) = fingerprint.map_or((None, shown), |(print, details)| (Some(print), details));
+        let kept = (pin, fingerprint, origin.clone());
+        let opened = self.approvals.open_from(client, &name, request, kept, (summary, details), Utc::now()).await;
         match opened {
             Ok(approval) => {
                 crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
@@ -1500,11 +1771,24 @@ impl Core {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
             }
+            // A note by its text as the memory keeps it (task C.10), the profile by its stored name;
+            // looked up after the client's reach was checked, so a note it may not see is unknown.
+            Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => {
+                Facts { name: self.assistant.note(id, true).await.map(|note| note.text), ..Facts::default() }
+            }
+            Request::UpdateProfile { .. } => {
+                Facts { name: Some(self.assistant.profile().await.name), ..Facts::default() }
+            }
             // The conversation by the title the assistant keeps for its id and the engine by its
-            // name (task C.1), never by what the client sends along.
-            request if request.operation().area() == Area::Assistant => {
+            // name (task C.1), the bot by the name it is stored with (task B.1), never by what the
+            // client sends along.
+            request if matches!(request.operation().area(), Area::Assistant | Area::Bots) => {
                 let name = match request.conversation() {
                     Some(id) => self.assistant.title(id).await,
+                    None => None,
+                };
+                let bot = match request.bot() {
+                    Some(id) => self.assistant.bots().get(id).await.map(|bot| bot.name),
                     None => None,
                 };
                 let engine = match request {
@@ -1514,7 +1798,7 @@ impl Core {
                     }
                     _ => None,
                 };
-                Facts { name, engine, ..Facts::default() }
+                Facts { name, engine, bot, ..Facts::default() }
             }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
@@ -1545,15 +1829,18 @@ impl Core {
         if decided.is_ok() {
             crate::inbox::file_approvals(&self.inbox, &self.approvals, Utc::now()).await;
         }
-        let (client, request, pin, fingerprint) = match decided {
-            Ok(Decision::Run { client, request, pin, fingerprint }) => (client, *request, pin, fingerprint),
-            Ok(Decision::Denied { approval, request }) => {
-                // The ids of what was asked for, as the line of the request itself has them.
+        let (client, request, pin, fingerprint, origin) = match decided {
+            Ok(Decision::Run { client, request, pin, fingerprint, origin }) => {
+                (client, *request, pin, fingerprint, origin)
+            }
+            Ok(Decision::Denied { approval, request, origin }) => {
+                // The ids of what was asked for, as the line of the request itself has them: with
+                // the engine that asked (task C.11).
                 let denied = torro_ipc::ActivityEntry {
                     time: Utc::now(),
                     client: Some(approval.client.clone()),
                     command: approval.command.clone(),
-                    ids: crate::audit::ids(&request),
+                    ids: decided_ids(&request, &origin),
                     result: "denied".into(),
                     approval: Some(approval.id.clone()),
                 };
@@ -1562,8 +1849,8 @@ impl Core {
             }
             Err(err) => return err.response(),
         };
-        let (command, ids) = (request.operation().name(), crate::audit::ids(&request));
-        let response = self.run_approved(&client, request, pin, fingerprint.as_deref()).await;
+        let (command, ids) = (request.operation().name(), decided_ids(&request, &origin));
+        let response = self.run_approved(&client, request, pin, fingerprint.as_deref(), &origin).await;
         // The run is the client's request, logged with the approval it ran with; the answer
         // itself stays out of the log (it holds titles).
         let mut ran = crate::audit::entry(Some(client), command, ids, &response, Utc::now());
@@ -1582,22 +1869,38 @@ impl Core {
     /// the person was shown it ([`Core::inbox_request`]), else `conflict`; `mail.send_draft` only
     /// when the message built now has the `fingerprint` of the one the person was shown (task
     /// M3.3), else `conflict` and nothing is sent.
+    ///
+    /// A request that came with a lent key runs without the areas it was lent without
+    /// ([`crate::approvals::Origin::narrow`], task C.11): the approval keeps them, so this holds
+    /// after the agent's run ended and after a restart too (the lease itself is never stored).
     async fn run_approved(
         &self,
         client: &str,
         request: Request,
         pin: Option<EntryPin>,
         fingerprint: Option<&str>,
+        origin: &crate::approvals::Origin,
     ) -> Response {
         let command = request.operation().name();
-        let Some(info) = self.clients.list().into_iter().find(|info| info.id == client) else {
+        let Some(mut info) = self.clients.list().into_iter().find(|info| info.id == client) else {
             let message = format!("the client that asked for {command} was removed meanwhile");
             return Response::Error { code: "forbidden".into(), message };
         };
+        // A bot that ran for the assistant (task B.2): what both may now, never more.
+        let behalf =
+            origin.behalf.as_ref().and_then(|behalf| self.clients.list().into_iter().find(|info| info.id == *behalf));
+        let Some(effective) = origin.effective(&info.rights, behalf.as_ref().map(|info| &info.rights)) else {
+            let message = format!("the assistant that the bot asked {command} for was removed meanwhile");
+            return Response::Error { code: "forbidden".into(), message };
+        };
+        info.rights = effective;
         let rights = &info.rights;
-        if !rights.allows_request(&request)
+        let allowed =
+            rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
+        if !allowed
             || self.switches_microphone_on(&request)
             || torro_ipc::api::loops_back(&info.kind, request.operation())
+            || self.bots_refusal(client, rights, &request).is_some()
         {
             return Refused::Forbidden { command }.response();
         }
@@ -1634,6 +1937,14 @@ impl Core {
             let approved = Some(fingerprint.unwrap_or_default());
             let reply = InvitationReply { account, id, answer, collection };
             return self.respond_to_invitation(reply, reach, approved).await;
+        }
+        // A note is forgotten or changed only as the person was shown it (task C.10).
+        if let Request::Forget { id } | Request::Remember { replaces: Some(id), .. } = &request
+            && let Some(note) = self.assistant.note(id, true).await
+            && crate::audit::hashed(&note.text) != fingerprint.unwrap_or_default()
+        {
+            let message = "the note changed after the approval was asked for; it was left as it is".into();
+            return Response::Error { code: "conflict".into(), message };
         }
         // Sending runs only on what the person was shown: an approval without a fingerprint
         // (none is ever stored without one) matches nothing.
@@ -1843,8 +2154,14 @@ impl Core {
             Request::OpenApp { app, target } => self.open_app_request(&app, target.as_deref(), reach).await,
             Request::ListApps => Response::Apps { apps: crate::apps::list() },
             Request::ListClients => Response::Clients { clients: self.clients.list() },
-            Request::CreateClient { name, kind, template, agent } => {
-                issued(self.clients.add_client(&name, &kind, agent, template.rights()).await)
+            // A bot's client is made with its bot (`bots.save_bot`, task B.1), never on its own.
+            Request::CreateClient { kind, .. } if kind.trim() == torro_ipc::api::BOT_CLIENT => Response::Error {
+                code: "error".into(),
+                message: "a bot's access is made with the bot (bots.save_bot)".into(),
+            },
+            Request::CreateClient { name, kind, template, agent, rights } => {
+                let rights = rights.unwrap_or_else(|| template.rights());
+                issued(self.clients.add_client(&name, &kind, agent, rights).await)
             }
             Request::UpdateClient { id, rights } => done(self.clients.update(&id, rights).await),
             Request::NewClientKey { id } => issued(self.clients.new_key(&id).await),
@@ -1968,7 +2285,28 @@ impl Core {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
-            | Request::OpenChatWindow { .. }) => crate::assistant::answer(&self.assistant, &self.ai, request).await,
+            | Request::OpenChatWindow { .. }
+            | Request::ConfirmBot { .. }
+            | Request::AskBot { .. }) => {
+                // Only the person's own message can name a bot for the assistant (task B.2).
+                let person = matches!(reach, Reach::Suite);
+                crate::assistant::answer_from(&self.assistant, &self.ai, request, person).await
+            }
+            // Bots (task B.1): rights were checked in `handle_from`; a bot's client is made and
+            // removed with it.
+            request @ (Request::ListBots
+            | Request::GetBot { .. }
+            | Request::SaveBot { .. }
+            | Request::DeleteBot { .. }) => crate::bots::answer(&self.assistant, &self.clients, request).await,
+            // Profile and memory (task C.10): a note kept from remote models only for the app key
+            // and clients that may read mail.
+            request @ (Request::GetProfile
+            | Request::UpdateProfile { .. }
+            | Request::ListMemories
+            | Request::Remember { .. }
+            | Request::Forget { .. }) => {
+                crate::assistant::answer_own(&self.assistant, request, sees_local_notes(reach)).await
+            }
         }
     }
 
@@ -3427,8 +3765,10 @@ impl Core {
             Err(err) => snapshot.problem = Some(err.to_string()),
         }
         snapshot.account = Some(self.pim.account_state().await);
-        snapshot.design = self.settings.current().design;
+        let settings = self.settings.current();
+        snapshot.design = settings.design;
         snapshot.voice = self.voice.state();
+        snapshot.voice_enabled = settings.voice.enabled;
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
         let for_me = self.inbox.for_me(Utc::now(), TRAY_NEWEST).unwrap_or_default();
         snapshot.inbox_for_me = for_me.open;
@@ -3633,8 +3973,13 @@ impl crate::assistant::Host for Core {
         })
     }
 
-    fn run<'a>(&'a self, request: Request, engine: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
-        Box::pin(self.handle_as_assistant(request, engine))
+    fn run<'a>(
+        &'a self,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(self.handle_as_assistant(request, engine, untrusted))
     }
 
     fn approval<'a>(&'a self, id: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
@@ -3657,6 +4002,184 @@ impl crate::assistant::Host for Core {
                 None
             }
         }
+    }
+
+    // A bot's answer (task B.1) runs as the bot's client, exactly as the assistant's runs as its own;
+    // for the assistant (task B.2) with what both clients may.
+
+    fn client_of(&self, actor: &crate::assistant::Actor) -> Option<torro_ipc::ClientInfo> {
+        match actor {
+            crate::assistant::Actor::Assistant => self.assistant_client(),
+            crate::assistant::Actor::Bot(client) => self.bot_client(client),
+            crate::assistant::Actor::Delegated(delegation) => self.delegated_client(delegation),
+        }
+    }
+
+    fn run_as<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        let client = crate::assistant::Host::client_of(self, actor);
+        let scope = match actor {
+            crate::assistant::Actor::Delegated(delegation) => Scope::Delegated(delegation),
+            _ => Scope::Own,
+        };
+        Box::pin(self.handle_as(client, request, engine, untrusted, scope))
+    }
+
+    fn approval_as<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        id: &'a str,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            match crate::assistant::Host::client_of(self, actor) {
+                Some(info) => self.approval_status(Some(&info.id), id).await,
+                None => Refused::Forbidden { command: "approvals.approval_status" }.response(),
+            }
+        })
+    }
+
+    /// A key of the bot's client for one run of an agent, as for the assistant's (task B.1). None
+    /// for a bot's run for the assistant: that key needs its narrowing remembered
+    /// (`Host::lend_in`).
+    fn lend_as(
+        &self,
+        actor: &crate::assistant::Actor,
+        engine: &str,
+        without: &[Area],
+    ) -> Option<crate::clients::LentKey> {
+        if matches!(actor, crate::assistant::Actor::Delegated(_)) {
+            return None;
+        }
+        let client = crate::assistant::Host::client_of(self, actor)?;
+        match self.clients.lend(&client.id, engine, without) {
+            Ok(lent) => Some(lent),
+            Err(err) => {
+                eprintln!("torroworkplace: cannot lend a key for {engine}: {err}");
+                None
+            }
+        }
+    }
+
+    /// Lends as `Host::lend_as` and remembers what the key is for (task B.2, [`LentFor`]): the
+    /// assistant's conversation, or a bot's run for the assistant (its key lent without the areas
+    /// of both, every request with it bound by the assistant's rights as well).
+    fn lend_in(
+        &self,
+        actor: &crate::assistant::Actor,
+        conversation: &str,
+        engine: &str,
+        without: &[Area],
+    ) -> Option<crate::clients::LentKey> {
+        match actor {
+            crate::assistant::Actor::Delegated(delegation) => {
+                self.delegated_client(delegation)?;
+                let mut delegation = delegation.clone();
+                for area in without {
+                    if !delegation.without.contains(area) {
+                        delegation.without.push(*area);
+                    }
+                }
+                let lent = match self.clients.lend(&delegation.client, engine, &delegation.without) {
+                    Ok(lent) => lent,
+                    Err(err) => {
+                        eprintln!("torroworkplace: cannot lend a bot a key for {engine}: {err}");
+                        return None;
+                    }
+                };
+                self.remember_lent(&lent, LentFor::Delegated(delegation));
+                Some(lent)
+            }
+            crate::assistant::Actor::Assistant => {
+                let lent = crate::assistant::Host::lend(self, engine, without)?;
+                self.remember_lent(&lent, LentFor::Conversation(conversation.to_string()));
+                Some(lent)
+            }
+            crate::assistant::Actor::Bot(_) => {
+                let lent = crate::assistant::Host::lend_as(self, actor, engine, without)?;
+                self.remember_lent(&lent, LentFor::Own);
+                Some(lent)
+            }
+        }
+    }
+
+    fn ask_bot<'a>(
+        &'a self,
+        main: &'a str,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+        read_mail: bool,
+        without: &'a [Area],
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        let scope = Scope::Asking { conversation: main, without, read_mail };
+        Box::pin(self.handle_as(self.assistant_client(), request, engine, untrusted, scope))
+    }
+}
+
+/// Whom a request of [`Core::handle_as`] runs for besides its client (task B.2).
+enum Scope<'a> {
+    /// The client itself.
+    Own,
+    /// The assistant answering in its conversation `conversation`, without the areas `without`: a
+    /// `bots.ask_bot` is checked against what the person said there.
+    Asking { conversation: &'a str, without: &'a [Area], read_mail: bool },
+    /// A bot's run for the assistant.
+    Delegated(&'a crate::assistant::Delegation),
+}
+
+/// The assistant asking a bot from its conversation (task B.2, [`Via::asking`]).
+#[derive(Debug, Clone)]
+struct AskedFrom {
+    /// The assistant's conversation.
+    conversation: String,
+    /// The areas switched off there (and for a lent key those it was lent without): the bot runs
+    /// without them.
+    without: Vec<Area>,
+    /// The assistant's model read mail there (never with a lent key: lent without mail).
+    read_mail: bool,
+}
+
+/// What a key lent for one run of engine B is for (task B.2), so its requests are checked as the
+/// run's ([`Core::handle_lent`]).
+#[derive(Debug, Clone)]
+enum LentFor {
+    /// The assistant's run in this conversation.
+    Conversation(String),
+    /// A bot's run for the assistant.
+    Delegated(crate::assistant::Delegation),
+    /// A bot's run as its own client (a person's chat with it, task B.1).
+    Own,
+}
+
+/// [`LentFor`] of one lent key, by the key's SHA-256 (never the key itself).
+struct LentScope {
+    hash: [u8; 32],
+    made: std::time::Instant,
+    lent_for: LentFor,
+}
+
+/// How long [`LentScope`]s are kept: longer than any run of engine B lasts (20 minutes), after
+/// which its key was taken back.
+const LENT_SCOPE_KEPT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// The SHA-256 of `key`, to find its [`LentScope`].
+fn key_hash(key: &Key) -> [u8; 32] {
+    use sha2::Digest;
+    sha2::Sha256::digest(key.expose().as_bytes()).into()
+}
+
+/// The origin of a bot's request for the assistant (task B.2): the engine, the areas taken out and
+/// the assistant's client, so an approval never runs with more than both may.
+fn delegation_origin(engine: Option<&str>, delegation: &crate::assistant::Delegation) -> crate::approvals::Origin {
+    crate::approvals::Origin {
+        engine: engine.map(str::to_string),
+        without: delegation.without.clone(),
+        behalf: Some(delegation.assistant.clone()),
     }
 }
 
@@ -3709,6 +4232,47 @@ fn not_reached(request: &Request, outside: &str) -> Response {
             Response::Error { code: "not-found".into(), message: format!("no mail account {outside:?}") }
         }
         _ => no_collection(outside),
+    }
+}
+
+/// How a client's request reached the core besides its key ([`Core::handle_client`], task C.11).
+#[derive(Debug, Default)]
+struct Via {
+    /// The assistant's engine and the areas taken out of the client's rights; an approval the
+    /// request asks for keeps them ([`crate::approvals::Origin`]). Default for a client's own key.
+    origin: crate::approvals::Origin,
+    /// The conversation read data from outside the suite, as the assistant's tools mark it
+    /// `untrusted` (mail, GitHub, inbox entries of agents, scripts and mail), or the core cannot tell
+    /// (a lent key): `assistant.remember` then always waits for a person, whatever the rights say.
+    /// A client's own key keeps the rule of task C.10 (its rights decide).
+    untrusted: bool,
+    /// The assistant answers in a conversation (task B.2): a `bots.ask_bot` of its client runs only
+    /// from there. `None` for every other request, so the assistant's key alone never asks a bot.
+    asking: Option<AskedFrom>,
+}
+
+/// The ids of an approval's request for the log lines of a person's decision: as the request's own
+/// line has them, with the engine that asked ([`crate::approvals::Origin::engine`], task C.11) and
+/// the assistant a bot ran for ([`crate::approvals::Origin::behalf`], task B.2).
+fn decided_ids(request: &Request, origin: &crate::approvals::Origin) -> Vec<String> {
+    let mut ids = crate::audit::ids(request);
+    if let Some(engine) = &origin.engine {
+        ids.push(crate::audit::engine_id(engine));
+    }
+    // A bot that ran for the assistant (task B.2): the assistant's client as well.
+    if let Some(behalf) = &origin.behalf {
+        ids.push(crate::audit::behalf_id(behalf));
+    }
+    ids
+}
+
+/// Whether `reach` may see notes of the assistant's memory kept from remote models
+/// ([`torro_ipc::assistant::Note::local_only`], task C.10): the suite, and a client with read access
+/// to mail – such a note may retell a mail. A key lent to an agent never has mail.
+fn sees_local_notes(reach: Reach<'_>) -> bool {
+    match reach {
+        Reach::Suite => true,
+        Reach::Client(rights) => rights.area(Area::Mail).allows(Access::Read),
     }
 }
 
@@ -4092,6 +4656,7 @@ mod tests {
             kind: "script".into(),
             template: RightsTemplate::FullAccess,
             agent: None,
+            rights: None,
         };
         let Response::ClientKey { client, key } = ask(&core, Some(&app_key), create.clone()).await else {
             panic!("create answers with the key");
@@ -4130,6 +4695,7 @@ mod tests {
             kind: kind.into(),
             template: Default::default(),
             agent,
+            rights: None,
         };
         assert_eq!(code(&ask(&core, Some(&app_key), create(" ", "script", None)).await), "error");
         // A hook belongs to exactly one agent; script names are inbox sources and unique.
@@ -4147,6 +4713,55 @@ mod tests {
             Response::ClientKey { .. }
         ));
         assert_eq!(code(&ask(&core, Some(&app_key), create("Backup", "script", None)).await), "conflict");
+    }
+
+    /// Task C.11: `clients.create_client` with rights of its own creates the client with them in
+    /// one step (narrowed to its kind), refuses what `clients.update_client` refuses without
+    /// creating anything, and without them (as before) takes the template's.
+    #[tokio::test]
+    async fn create_client_takes_its_own_rights_checked_like_update_client() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let create = |rights| Request::CreateClient {
+            name: "Assistant".into(),
+            kind: torro_ipc::api::ASSISTANT_CLIENT.into(),
+            template: RightsTemplate::ReadOnly,
+            agent: None,
+            rights,
+        };
+        let mut bad = Rights::assistant();
+        bad.mail_accounts = Selection::Only(vec!["anna@mailbox.org".into()]);
+        assert_eq!(code(&ask(&core, Some(&app_key), create(Some(bad))).await), "error");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: Vec::new() });
+
+        let mut chosen = Rights::assistant();
+        chosen.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        chosen.areas.insert(Area::Assistant, AreaRights { level: Level::Full, admin: false });
+        let Response::ClientKey { client, .. } = ask(&core, Some(&app_key), create(Some(chosen.clone()))).await else {
+            panic!("created with its rights");
+        };
+        let expected = chosen.for_kind(torro_ipc::api::ASSISTANT_CLIENT);
+        assert_eq!(client.rights, expected, "the chosen rights, as its kind may hold them");
+        assert_eq!(ask(&core, Some(&app_key), Request::ListClients).await, Response::Clients { clients: vec![client] });
+
+        let script = Request::CreateClient {
+            name: "Backup".into(),
+            kind: "script".into(),
+            template: RightsTemplate::ReadAndWrite,
+            agent: None,
+            rights: None,
+        };
+        let Response::ClientKey { client, .. } = ask(&core, Some(&app_key), script).await else {
+            panic!("created with the template");
+        };
+        assert_eq!(client.rights, RightsTemplate::ReadAndWrite.rights());
+        // Older clients send no `rights`; the request still parses, with the template.
+        let json = serde_json::json!({
+            "method": "clients.create_client", "name": "X", "kind": "script", "template": "read_only"
+        });
+        let parsed: Request = serde_json::from_value(json).expect("parses without rights");
+        assert!(matches!(parsed, Request::CreateClient { rights: None, .. }));
     }
 
     /// The approval a `pending` answer names; panics on any other answer.
@@ -10226,13 +10841,166 @@ mod tests {
                 model: None,
                 text: "Hi".into(),
                 without: Vec::new(),
+                bot: None,
             },
             Request::CancelAnswer { conversation: id.into() },
             Request::RenameConversation { id: id.into(), title: "Renamed".into() },
             Request::DeleteConversation { id: id.into() },
             Request::PinConversation { id: id.into(), pinned: true },
             Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::New },
+            Request::GetProfile,
+            Request::UpdateProfile { name: Some("Jarvis".into()), description: None, avatar: None, personality: None },
         ]
+    }
+
+    /// A note for the assistant's memory, as the person or a client asks for it.
+    fn remember(text: &str, local_only: bool) -> Request {
+        Request::Remember { text: text.into(), replaces: None, local_only }
+    }
+
+    /// The note an answer of `assistant.remember` holds.
+    fn kept(response: Response) -> torro_ipc::assistant::Note {
+        match response {
+            Response::Memory { note } => note,
+            other => panic!("expected a note, got {other:?}"),
+        }
+    }
+
+    /// The notes an answer of `assistant.list_memories` holds, by text.
+    fn listed_notes(response: Response) -> Vec<String> {
+        match response {
+            Response::Memories { notes } => notes.into_iter().map(|note| note.text).collect(),
+            other => panic!("expected notes, got {other:?}"),
+        }
+    }
+
+    /// Task C.10: the assistant's own client reads, adds and forgets its notes whatever its rights
+    /// in the area say – forgetting waits for the person, as deleting does – and is refused its
+    /// profile and everything else of its area. A note kept from remote models is not there for it
+    /// without read access to mail. The memory file is private and the log holds no note.
+    #[tokio::test]
+    async fn the_assistant_keeps_its_memory_but_never_its_profile() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let local = kept(ask(&core, Some(&app_key), remember("ACME owes us 400 €.", true)).await);
+        assert!(local.local_only);
+
+        let (info, key) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant())
+            .await
+            .expect("the assistant's client");
+        let note = kept(ask(&core, Some(&key), remember("Anna works in sales.", false)).await);
+        assert!(note.id.len() == 8 && !note.local_only, "{note:?}");
+        assert_eq!(listed_notes(ask(&core, Some(&key), Request::ListMemories).await), ["Anna works in sales."]);
+        assert_eq!(code(&ask(&core, Some(&key), Request::Forget { id: local.id.clone() }).await), "not-found");
+        let replace = Request::Remember { text: "x".into(), replaces: Some(local.id.clone()), local_only: false };
+        assert_eq!(code(&ask(&core, Some(&key), replace).await), "not-found", "nor can it change it");
+        let asked = waits(ask(&core, Some(&key), Request::Forget { id: note.id.clone() }).await);
+        // The person sees the whole note, and it is forgotten only as they were shown it.
+        assert!(asked.details.join("\n").contains("Anna works in sales."), "{:?}", asked.details);
+        let change = Request::Remember {
+            text: "Anna works in marketing.".into(),
+            replaces: Some(note.id.clone()),
+            local_only: false,
+        };
+        assert!(matches!(core.handle(change).await, Response::Memory { .. }));
+        let decided = approval(core.handle(Request::DecideApproval { id: asked.id.clone(), allow: true }).await);
+        assert!(
+            matches!(decided.state, torro_ipc::ApprovalState::Done { ref response } if code(response) == "conflict"),
+            "{decided:?}"
+        );
+        // A note kept on this computer was written after reading mail: it always waits.
+        let local = waits(ask(&core, Some(&key), remember("ACME wants 400 €.", true)).await);
+        assert_eq!(
+            local.summary,
+            trf("Remember for the assistant, on this computer only: \"{note}\"", &[("note", &"ACME wants 400 €.")])
+        );
+        assert_eq!(asked.summary, trf("Forget the assistant's note \"{note}\"", &[("note", &"Anna works in sales.")]));
+        for request in [Request::GetProfile, Request::ListConversations] {
+            let name = request.operation().name();
+            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+        }
+        // The person sees every note.
+        assert_eq!(
+            listed_notes(core.handle(Request::ListMemories).await),
+            ["ACME owes us 400 €.", "Anna works in marketing."]
+        );
+
+        // With read access to mail it sees the local note too.
+        let mut reading_mail = Rights::assistant();
+        reading_mail.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        core.clients.update(&info.id, reading_mail).await.expect("updated");
+        assert_eq!(listed_notes(ask(&core, Some(&key), Request::ListMemories).await).len(), 2);
+
+        let file = dir.path().join("config/assistant/memory.md");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&file).expect("memory.md").permissions().mode() & 0o777, 0o600);
+        }
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Anna") && !log.contains("ACME"), "{log}");
+        assert!(log.contains(&format!("note:{}", note.id)), "{log}");
+    }
+
+    /// Task C.10: an agent changes the profile only with the admin switch of `assistant`, and then
+    /// only with a person's approval, whose summary names the stored profile; it reads the profile
+    /// with read access. The person changes it at once; the new personality is what the next
+    /// answer reads.
+    #[tokio::test]
+    async fn changing_the_profile_waits_for_a_person_and_the_app_key_changes_it_at_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let update = Request::UpdateProfile {
+            name: Some("Jarvis".into()),
+            description: None,
+            avatar: Some("sun".into()),
+            personality: Some("Formal and precise.".into()),
+        };
+
+        let mut reading = RightsTemplate::ReadOnly.rights();
+        reading.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        let (id, key) = client(&core, reading.clone()).await;
+        let Response::Profile { profile } = ask(&core, Some(&key), Request::GetProfile).await else {
+            panic!("an agent with read access reads the profile")
+        };
+        assert_eq!((profile.name.as_str(), profile.avatar.as_str()), ("Torro", "letter"), "the defaults");
+        assert_eq!(code(&ask(&core, Some(&key), update.clone()).await), "forbidden", "no admin switch");
+
+        reading.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: true });
+        reading.confirm = torro_ipc::api::Confirm::Never;
+        core.clients.update(&id, reading).await.expect("admin on");
+        let asked = waits(ask(&core, Some(&key), update.clone()).await);
+        assert!(asked.summary.starts_with(&trf(
+            "Change the profile of the assistant \"{name}\": {changes}",
+            &[("name", &"Torro"), ("changes", &"")]
+        )));
+        assert!(asked.summary.contains("Jarvis") && asked.summary.contains("Formal and precise."), "{}", asked.summary);
+        let unchanged = core.handle(Request::GetProfile).await;
+        assert!(
+            matches!(unchanged, Response::Profile { ref profile } if profile.name == "Torro"),
+            "nothing before the approval"
+        );
+        let blank =
+            Request::UpdateProfile { name: Some(" ".into()), description: None, avatar: None, personality: None };
+        assert_eq!(code(&ask(&core, Some(&key), blank).await), "error", "refused before anyone is asked");
+
+        let Response::Profile { profile } = ask(&core, Some(&app_key), update).await else {
+            panic!("the person changes it at once")
+        };
+        assert_eq!(
+            (profile.name.as_str(), profile.avatar.as_str(), profile.personality.as_str()),
+            ("Jarvis", "sun", "Formal and precise.")
+        );
+        let Response::Profile { profile: read } = core.handle(Request::GetProfile).await else { panic!("a profile") };
+        assert_eq!(read, profile, "stored");
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Jarvis") && !log.contains("Formal"), "{log}");
     }
 
     /// Task C.1, "Keine Schleife": the assistant's own client gets `forbidden` for every command of
@@ -10249,6 +11017,7 @@ mod tests {
             model: None,
             text: "What is on tomorrow?".into(),
             without: Vec::new(),
+            bot: None,
         };
         let Response::Conversation { conversation, .. } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
@@ -10307,6 +11076,7 @@ mod tests {
             model: None,
             text: "Dinner with Anna".into(),
             without: Vec::new(),
+            bot: None,
         };
         let Response::Conversation { conversation, .. } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
@@ -10324,10 +11094,11 @@ mod tests {
             model: None,
             text: "Hi".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
         let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
-        assert_eq!(code(&ask(&core, Some(&key), bot).await), "unsupported");
+        assert_eq!(code(&ask(&core, Some(&key), bot).await), "not-found", "no such bot (task B.3)");
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nothing to approve");
         asking.confirm = torro_ipc::api::Confirm::OnDelete;
         core.clients.update(&id, asking).await.expect("asks before deleting");
@@ -10346,6 +11117,206 @@ mod tests {
             .find(|line| line.command == "assistant.send_message" && line.result == "ok")
             .expect("logged");
         assert_eq!(sent.ids, vec!["engine:test".to_string()]);
+    }
+
+    // ----- Bots (task B.1) -----
+
+    /// `bots.save_bot` of a new bot named `name`, answered by the test engine.
+    fn new_bot(name: &str) -> Request {
+        save_bot(None, name)
+    }
+
+    /// `bots.save_bot` of the bot `id` (a new one for `None`) named `name`.
+    fn save_bot(id: Option<&str>, name: &str) -> Request {
+        Request::SaveBot {
+            id: id.map(str::to_string),
+            name: name.into(),
+            description: "Plans trips by train.".into(),
+            avatar: None,
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            personality: "Calm.".into(),
+            instructions: "Suggest trains before flights. Never book anything yourself.".into(),
+            skills: vec![torro_ipc::bots::Skill { name: "Packing".into(), text: "Pack light.".into() }],
+        }
+    }
+
+    /// The bot an answer holds.
+    fn bot_of(response: Response) -> torro_ipc::bots::Bot {
+        match response {
+            Response::Bot { bot } => bot,
+            other => panic!("expected a bot, got {other:?}"),
+        }
+    }
+
+    /// Every `bots.*` request once, on the bot `id`.
+    fn bots_requests(id: &str) -> Vec<Request> {
+        vec![
+            Request::ListBots,
+            Request::GetBot { id: id.into() },
+            new_bot("Release helper"),
+            save_bot(Some(id), "Travel planner"),
+            Request::DeleteBot { id: id.into() },
+            Request::AskBot { bot: id.into(), text: "Plan Lisbon".into(), conversation: None },
+        ]
+    }
+
+    /// A message to the bot `bot` with the test engine.
+    fn to_bot(bot: &str, conversation: Option<&str>) -> Request {
+        Request::SendMessage {
+            conversation: conversation.map(str::to_string),
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            text: "Plan a weekend in Lisbon".into(),
+            without: Vec::new(),
+            bot: Some(bot.into()),
+        }
+    }
+
+    /// Task B.1, "Keine Ketten": a bot's client gets `forbidden` for every command of `bots` and
+    /// `assistant`, with its key and as the bot's answer runs its tools, whatever rights a person gave
+    /// it; what its rights allow elsewhere works. A bot starts without any rights.
+    #[tokio::test]
+    async fn a_bots_client_never_reaches_bots_or_the_assistant() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let bot = bot_of(core.handle(new_bot("Travel planner")).await);
+        let info = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client");
+        assert_eq!((info.kind.as_str(), &info.rights), (torro_ipc::api::BOT_CLIENT, &Rights::none()));
+        let (_, key) = core.clients.new_key(&bot.client).await.expect("a key to try it with");
+        assert_eq!(code(&ask(&core, Some(&key), Request::CalendarCollections).await), "forbidden", "no rights");
+
+        let mut every = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            every.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        core.clients.update(&bot.client, every).await.expect("a person grants everything");
+        let Response::Conversation { conversation, .. } = core.handle(to_bot(&bot.id, None)).await else {
+            panic!("the person chats with the bot")
+        };
+        let mut requests = bots_requests(&bot.id);
+        requests.extend(assistant_requests(&conversation.id));
+        requests.push(to_bot(&bot.id, Some(&conversation.id)));
+        for request in requests {
+            let name = request.operation().name();
+            assert_eq!(core.handle_from(Some(&key), request.clone()).await, Err(Refused::Forbidden { command: name }));
+            let actor = crate::assistant::Actor::Bot(bot.client.clone());
+            let ran = crate::assistant::Host::run_as(&core, &actor, request, "test", false).await;
+            assert_eq!(code(&ran), "forbidden", "{name} from the bot's answer");
+        }
+        assert!(matches!(ask(&core, Some(&key), Request::CalendarCollections).await, Response::Collections { .. }));
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nothing waits for approval");
+        // Its approvals say it is a bot: its name is anyone's with write access to `bots`.
+        let setting = Request::SetSetting { key: SettingKey::StartAtLogin, value: serde_json::json!(true) };
+        let asked = waits(ask(&core, Some(&key), setting).await);
+        assert_eq!(asked.client_name, trf("Bot \"{name}\"", &[("name", &"Travel planner")]));
+        // Nobody makes a bot's client but its bot.
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let create = Request::CreateClient {
+            name: "Fake bot".into(),
+            kind: torro_ipc::api::BOT_CLIENT.into(),
+            template: RightsTemplate::ReadOnly,
+            agent: None,
+            rights: None,
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), create).await), "error");
+    }
+
+    /// Task B.1: the assistant's own client lists bots and proposes a new one – always with a
+    /// person's approval that names it and shows its texts whole – but reads, changes, deletes and
+    /// (with its key alone, outside a conversation, task B.2) asks none, whatever its rights say.
+    #[tokio::test]
+    async fn the_assistant_lists_and_proposes_bots_but_asks_none_yet() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let travel = bot_of(core.handle(new_bot("Travel planner")).await);
+        // Even with every right in `bots` stored for it: the rule is the core's, not the rights'.
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Bots, AreaRights { level: Level::Full, admin: true });
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        let (_, key) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the assistant");
+
+        let Response::Bots { bots } = ask(&core, Some(&key), Request::ListBots).await else { panic!("the bots") };
+        assert_eq!(bots, vec![travel.summary()], "listed without rights in `bots`");
+        let proposed = waits(ask(&core, Some(&key), new_bot("Release helper")).await);
+        assert_eq!(
+            proposed.summary,
+            trf("Create the bot \"{name}\", without any access", &[("name", &"Release helper")])
+        );
+        let details = proposed.details.join("\n");
+        assert!(details.contains("Suggest trains before flights. Never book anything yourself."), "{details}");
+        assert!(details.contains("Pack light."), "{details}");
+        assert_eq!(core.assistant.bots().list().await.len(), 1, "nothing before the approval");
+        let decided = approval(core.handle(Request::DecideApproval { id: proposed.id, allow: true }).await);
+        assert!(matches!(decided.state, torro_ipc::ApprovalState::Done { .. }), "{decided:?}");
+        let made = core.assistant.bots().list().await;
+        assert_eq!(made.iter().map(|bot| bot.name.as_str()).collect::<Vec<_>>(), ["Release helper", "Travel planner"]);
+        let helper = core.clients.list().into_iter().find(|info| info.id == made[0].client).expect("its client");
+        assert_eq!(helper.rights, Rights::none(), "a proposed bot has no rights either");
+
+        for request in [
+            Request::GetBot { id: travel.id.clone() },
+            save_bot(Some(&travel.id), "Travel planner"),
+            Request::DeleteBot { id: travel.id.clone() },
+            Request::AskBot { bot: travel.id.clone(), text: "Plan Lisbon".into(), conversation: None },
+            to_bot(&travel.id, None),
+        ] {
+            let name = request.operation().name();
+            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+        }
+    }
+
+    /// Decision 7 for bots (task B.1): no template opens `bots`; a person switches it on, then an
+    /// agent asks a bot or chats with it (with `assistant` too), deleting waits for approval named by
+    /// the stored name, and the log names the bot by its id, never by its name or a text.
+    #[tokio::test]
+    async fn other_agents_reach_bots_only_when_a_person_switches_them_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let bot = bot_of(core.handle(new_bot("Travel planner")).await);
+        let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        for request in bots_requests(&bot.id) {
+            let name = request.operation().name();
+            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+        }
+
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.areas.insert(Area::Bots, AreaRights { level: Level::Full, admin: false });
+        core.clients.update(&id, rights.clone()).await.expect("bots switched on");
+        let ask_bot = Request::AskBot { bot: bot.id.clone(), text: "Plan Lisbon".into(), conversation: None };
+        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), ask_bot).await else {
+            panic!("the agent asks the bot")
+        };
+        assert_eq!(conversation.bot.as_deref(), Some(bot.id.as_str()));
+        // Chatting through the assistant's command needs `assistant` and write access to `bots`.
+        assert_eq!(code(&ask(&core, Some(&key), to_bot(&bot.id, None)).await), "forbidden", "no `assistant`");
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Write, admin: false });
+        core.clients.update(&id, rights.clone()).await.expect("assistant switched on");
+        assert!(matches!(ask(&core, Some(&key), to_bot(&bot.id, None)).await, Response::Conversation { .. }));
+        rights.areas.insert(Area::Bots, AreaRights { level: Level::Read, admin: false });
+        core.clients.update(&id, rights).await.expect("bots read only");
+        assert_eq!(code(&ask(&core, Some(&key), to_bot(&bot.id, None)).await), "forbidden", "bots read only");
+        let unknown = Request::GetBot { id: "0a0b0c0d".into() };
+        assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
+
+        let mut deleting = RightsTemplate::ReadAndWrite.rights();
+        deleting.areas.insert(Area::Bots, AreaRights { level: Level::Full, admin: false });
+        core.clients.update(&id, deleting).await.expect("bots full");
+        let asked = waits(ask(&core, Some(&key), Request::DeleteBot { id: bot.id.clone() }).await);
+        assert_eq!(asked.summary, trf("Delete the bot \"{name}\"", &[("name", &"Travel planner")]));
+        assert_eq!(code(&ask(&core, Some(&key), Request::DeleteBot { id: "0a0b0c0d".into() }).await), "not-found");
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Travel") && !log.contains("Lisbon") && !log.contains("trains"), "{log}");
+        let asked_bot = audit_lines(dir.path())
+            .into_iter()
+            .find(|line| line.command == "bots.ask_bot" && line.result == "ok")
+            .expect("logged");
+        assert_eq!(asked_bot.ids, vec![format!("bot:{}", bot.id)]);
     }
 
     use crate::account::ai::tests::{KEY as AI_KEY, NOBODY, fake_ollama, fake_openrouter};
@@ -10491,12 +11462,53 @@ mod tests {
             Box::pin(async move { Ok(ModelAccess { provider, place: Place::Local }) })
         }
 
-        fn run<'a>(&'a self, request: Request, engine: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
-            Host::run(&*self.core, request, engine)
+        fn run<'a>(
+            &'a self,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+        ) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::run(&*self.core, request, engine, untrusted)
         }
 
         fn approval<'a>(&'a self, id: &'a str) -> torro_core::ai::BoxFuture<'a, Response> {
             Host::approval(&*self.core, id)
+        }
+
+        // Bots (tasks B.1 and B.2) as the core runs them.
+
+        fn client_of(&self, actor: &crate::assistant::Actor) -> Option<torro_ipc::ClientInfo> {
+            Host::client_of(&*self.core, actor)
+        }
+
+        fn run_as<'a>(
+            &'a self,
+            actor: &'a crate::assistant::Actor,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+        ) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::run_as(&*self.core, actor, request, engine, untrusted)
+        }
+
+        fn approval_as<'a>(
+            &'a self,
+            actor: &'a crate::assistant::Actor,
+            id: &'a str,
+        ) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::approval_as(&*self.core, actor, id)
+        }
+
+        fn ask_bot<'a>(
+            &'a self,
+            main: &'a str,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+            read_mail: bool,
+            without: &'a [Area],
+        ) -> torro_core::ai::BoxFuture<'a, Response> {
+            Host::ask_bot(&*self.core, main, request, engine, untrusted, read_mail, without)
         }
     }
 
@@ -10535,6 +11547,7 @@ mod tests {
             model: Some("qwen3:8b".into()),
             text: text.into(),
             without: Vec::new(),
+            bot: None,
         };
         match core.handle(send).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -10615,7 +11628,7 @@ mod tests {
         for request in
             [Request::ListConversations, Request::DecideApproval { id: "0123456789abcdef".into(), allow: true }]
         {
-            assert_eq!(code(&Host::run(&*core, request, &engine).await), "forbidden");
+            assert_eq!(code(&Host::run(&*core, request, &engine, false).await), "forbidden");
         }
         let lines: Vec<_> = audit_lines(dir.path())
             .into_iter()
@@ -10713,6 +11726,96 @@ mod tests {
         assert_eq!(approvals.len(), 2);
     }
 
+    /// Task C.11: an approval asked for with a lent key keeps the engine and the areas the key was
+    /// lent without. Allowed, it runs without them – also once the lease is gone – and the log
+    /// lines of the person's decision, allowed or denied, name the engine like the request's.
+    #[tokio::test]
+    async fn an_approval_of_a_lent_key_runs_without_its_areas_and_logs_the_engine() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        for id in ["dev", "old", "kept"] {
+            save_template(&core, id);
+        }
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Workspaces, AreaRights { level: Level::Full, admin: false });
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        rights.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (client, _) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the client");
+        let engine = crate::audit::engine_id("claude-code");
+
+        let lent = Host::lend(&core, "claude-code", &[Area::Mail]).expect("lent");
+        let key = lent.key().clone();
+        let allowed = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "old".into() }).await);
+        let denied = waits(ask(&core, Some(&key), Request::DeleteTemplate { id: "kept".into() }).await);
+        // The run ends before the person decides.
+        drop(lent);
+        let done = approval(core.handle(Request::DecideApproval { id: allowed.id.clone(), allow: true }).await);
+        assert!(matches!(done.state, torro_ipc::ApprovalState::Done { ref response } if **response == Response::Ok));
+        assert!(core.store.load("old").is_err(), "workspaces were not taken out: it ran");
+        let _ = core.handle(Request::DecideApproval { id: denied.id.clone(), allow: false }).await;
+        assert!(core.store.load("kept").is_ok());
+
+        let decided: Vec<_> = audit_lines(dir.path())
+            .into_iter()
+            .filter(|line| line.approval.is_some() && line.result != "pending")
+            .map(|line| (line.approval, line.result, line.ids.contains(&engine)))
+            .collect();
+        assert_eq!(
+            decided,
+            [(Some(allowed.id.clone()), "ok".to_string(), true), (Some(denied.id.clone()), "denied".to_string(), true)]
+        );
+
+        // What a lent key was lent without stays out after "Allow", whatever the client's rights
+        // say then: kept with the approval, not looked up in a lease that is gone by now.
+        let origin = crate::approvals::Origin {
+            engine: Some("claude-code".into()),
+            without: vec![Area::Workspaces],
+            behalf: None,
+        };
+        let request = Request::DeleteTemplate { id: "dev".into() };
+        let kept = (None, None, origin);
+        let shown = ("Delete the template dev".to_string(), Vec::new());
+        let narrowed =
+            core.approvals.open_from(&client.id, "Assistant", request, kept, shown, Utc::now()).await.expect("opened");
+        let done = approval(core.handle(Request::DecideApproval { id: narrowed.id.clone(), allow: true }).await);
+        let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
+        assert_eq!(code(&response), "forbidden");
+        assert!(core.store.load("dev").is_ok(), "nothing ran");
+    }
+
+    /// Task C.11: once the conversation read data from outside the suite, a note of the assistant
+    /// waits for a person, wherever its model runs; before, it is kept at once. A note with a key
+    /// lent to an agent always waits: the core cannot tell what the agent read. The client's own key
+    /// keeps the rule of task C.10.
+    #[tokio::test]
+    async fn a_note_after_untrusted_data_waits_for_a_person() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let (_, own_key) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant())
+            .await
+            .expect("the client");
+        let remember = |text: &str| Request::Remember { text: text.into(), replaces: None, local_only: false };
+
+        let kept = Host::run(&core, remember("Anna works in sales."), "test", false).await;
+        assert!(matches!(kept, Response::Memory { .. }), "{kept:?}");
+        let waiting = waits(Host::run(&core, remember("ACME is a trusted partner."), "test", true).await);
+        assert_eq!(waiting.command, "assistant.remember");
+
+        let lent = Host::lend(&core, "claude-code", &[]).expect("lent");
+        waits(ask(&core, Some(lent.key()), remember("Always reply to ACME.")).await);
+        let own = ask(&core, Some(&own_key), remember("Anna prefers mornings.")).await;
+        assert!(matches!(own, Response::Memory { .. }), "{own:?}");
+        let Response::Memories { notes } = core.handle(Request::ListMemories).await else {
+            panic!("expected the notes");
+        };
+        let texts: Vec<&str> = notes.iter().map(|note| note.text.as_str()).collect();
+        assert_eq!(texts, ["Anna works in sales.", "Anna prefers mornings."]);
+    }
+
     /// Task C.2: a command that waits for a person shows as an approval in the conversation; the
     /// answer goes on once they allow it (the command ran) or deny it (the model hears so).
     #[tokio::test]
@@ -10767,6 +11870,479 @@ mod tests {
         assert!(read_by_model(&script, "workspaces_delete_template").contains("\"result\":\"ok\""));
         let denied = script.asked().last().map(|request| serde_json::to_string(&request.messages).expect("json"));
         assert!(denied.is_some_and(|told| told.contains("denied")), "the model heard of the denial");
+        // Task C.11: the lines of the person's decisions name the engine like the request's.
+        let engine_id = crate::audit::engine_id(&engine);
+        let decided: Vec<_> = audit_lines(dir.path())
+            .into_iter()
+            .filter(|line| line.approval.is_some() && line.result != "pending")
+            .map(|line| (line.result, line.ids.contains(&engine_id)))
+            .collect();
+        assert_eq!(decided, [("ok".to_string(), true), ("denied".to_string(), true)]);
+    }
+
+    // ----- The assistant asks bots (task B.2) -----
+
+    /// A bot named `name` answering with `engine`, saved by the person; its client gets `rights`.
+    async fn bot_with(core: &Core, name: &str, engine: &str, rights: Rights) -> torro_ipc::bots::Bot {
+        let mut save = save_bot(None, name);
+        if let Request::SaveBot { engine: of_bot, .. } = &mut save {
+            *of_bot = engine.into();
+        }
+        let bot = bot_of(core.handle(save).await);
+        core.clients.update(&bot.client, rights).await.expect("a person grants the bot rights");
+        bot
+    }
+
+    /// Rights to read `areas`, every collection and mail account, deleting waits for a person.
+    fn reading(areas: &[Area]) -> Rights {
+        let mut rights = Rights::assistant();
+        rights.areas = areas.iter().map(|area| (*area, AreaRights { level: Level::Read, admin: false })).collect();
+        rights.mail_accounts = torro_ipc::api::Selection::All;
+        rights
+    }
+
+    /// The person writes `text` to the assistant with the test engine; answers the conversation's id
+    /// once its answer is done.
+    async fn said(core: &Core, text: &str) -> String {
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            text: text.into(),
+            without: Vec::new(),
+            bot: None,
+        };
+        let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
+        conversation_until(core, &conversation.id, |running, _| !running).await;
+        conversation.id
+    }
+
+    /// `bots.ask_bot` of `bot`.
+    fn ask_bot(bot: &str) -> Request {
+        Request::AskBot { bot: bot.into(), text: "Plan a weekend in Lisbon".into(), conversation: None }
+    }
+
+    /// The tool lines of `bots.ask_bot` in `entries`: input, summary and error.
+    fn ask_lines(entries: &[torro_ipc::assistant::Entry]) -> Vec<(serde_json::Value, String, Option<String>)> {
+        entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                torro_ipc::assistant::EntryContent::Tool { name, input, summary, error } if name == "bots.ask_bot" => {
+                    Some((input.clone(), summary.clone(), error.clone()))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Every result the model read for its calls of `tool`, each once, in order.
+    fn all_read_by_model(script: &Script, tool: &str) -> Vec<String> {
+        let call = format!("call_{tool}");
+        let mut read: Vec<String> = Vec::new();
+        for message in script.asked().into_iter().flat_map(|request| request.messages) {
+            if message.tool_call_id.as_deref() == Some(call.as_str()) && !read.contains(&message.content) {
+                read.push(message.content);
+            }
+        }
+        read
+    }
+
+    /// Task B.2, with a model: the assistant is offered the bot tools; asking a bot the person did
+    /// not name is `forbidden` with a word to propose it; named ("the travel planner"), the bot runs
+    /// in its own conversation with what both clients may, the assistant's conversation gets
+    /// "Asked … · 1 step" with the bot's conversation, the model reads the bot's answer, and the log
+    /// names the assistant, the bot and both engines.
+    #[tokio::test]
+    async fn the_assistant_asks_a_bot_only_when_the_person_names_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama().await;
+        let script = Script::new(Vec::new());
+        let (core, _host, engine, assistant) =
+            assistant_core(dir.path(), &ollama, reading(&[Area::Calendar, Area::Mail]), Arc::clone(&script)).await;
+        let bot = bot_with(&core, "Travel planner", &engine, reading(&[Area::Calendar, Area::Workspaces])).await;
+        let ask = || calls("bots_ask_bot", serde_json::json!({"bot": bot.id, "text": "Plan Lisbon"}));
+        script.steps.lock().expect("lock").extend([
+            ask(),
+            says("I need you to name it."),
+            ask(),
+            calls("calendar_list_calendars", serde_json::json!({})),
+            says("Take the train on Friday."),
+            says("The travel planner suggests the train."),
+        ]);
+
+        let first = tell(&core, &engine, "Plan a weekend in Lisbon").await;
+        let entries = conversation_until(&core, &first, |running, _| !running).await;
+        assert_eq!(ask_lines(&entries).len(), 1);
+        assert_eq!(ask_lines(&entries)[0].2.as_deref(), Some("forbidden"));
+        assert!(read_by_model(&script, "bots_ask_bot").contains("propose it by name"));
+        let offered: Vec<String> = script.asked()[0].tools.iter().map(|tool| tool.name.clone()).collect();
+        assert!(offered.contains(&"bots_ask_bot".to_string()) && offered.contains(&"bots_list_bots".to_string()));
+        assert!(!offered.contains(&"bots_save_bot".to_string()), "{offered:?}");
+
+        let named = Request::SendMessage {
+            conversation: Some(first.clone()),
+            engine: engine.clone(),
+            model: Some("qwen3:8b".into()),
+            text: "Then ask the travel planner".into(),
+            without: Vec::new(),
+            bot: None,
+        };
+        assert!(matches!(core.handle(named).await, Response::Conversation { .. }));
+        let entries = conversation_until(&core, &first, |running, _| !running).await;
+        let (input, summary, error) = ask_lines(&entries).pop().expect("asked");
+        assert_eq!(error, None);
+        assert_eq!(summary, trf("Asked {bot} · 1 step", &[("bot", &"Travel planner")]));
+        let theirs = input["conversation"].as_str().expect("the bot's conversation").to_string();
+        assert!(
+            matches!(entries.last().map(|entry| &entry.content), Some(torro_ipc::assistant::EntryContent::Answer { text, .. }) if text == "The travel planner suggests the train.")
+        );
+        let asked = script.asked();
+        let result = asked[4].messages.last().map(|message| message.content.clone()).unwrap_or_default();
+        assert!(result.contains("calendar_list_calendars") || result.contains("collections"), "the bot ran: {result}");
+        let results = all_read_by_model(&script, "bots_ask_bot");
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(results[1].contains("Take the train on Friday.") && results[1].contains(&theirs), "{results:?}");
+        // The bot was offered what both may: calendar, neither mail (the assistant's only) nor
+        // workspaces (the bot's only), and no bot or assistant tools.
+        let bot_tools: Vec<&str> = asked[3].tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert!(bot_tools.contains(&"calendar_list_calendars"), "{bot_tools:?}");
+        assert!(
+            bot_tools
+                .iter()
+                .all(|tool| !["mail_", "workspaces_", "bots_", "assistant_"].iter().any(|p| tool.starts_with(p))),
+            "{bot_tools:?}"
+        );
+
+        let Response::Conversation { conversation, entries } =
+            core.handle(Request::GetConversation { id: theirs.clone(), after: None }).await
+        else {
+            panic!("the bot's conversation")
+        };
+        assert_eq!(conversation.bot.as_deref(), Some(bot.id.as_str()));
+        assert_eq!(tool_lines(&entries), [("calendar.list_calendars".to_string(), None)]);
+
+        let lines = audit_lines(dir.path());
+        let engine_id = crate::audit::engine_id(&engine);
+        let for_assistant = crate::audit::delegation_ids(&bot.id, &assistant);
+        let asking = lines
+            .iter()
+            .filter(|line| line.command == "bots.ask_bot")
+            .map(|line| (line.client.clone(), line.ids.clone(), line.result.clone()))
+            .collect::<Vec<_>>();
+        let bot_id = format!("bot:{}", bot.id);
+        assert_eq!(
+            asking,
+            [
+                (Some(assistant.clone()), vec![bot_id.clone(), engine_id.clone()], "forbidden".to_string()),
+                (Some(assistant.clone()), vec![bot_id, engine_id.clone()], "ok".to_string()),
+            ]
+        );
+        let ran = lines.iter().find(|line| line.command == "calendar.list_calendars").expect("the bot's tool");
+        assert_eq!(ran.client.as_deref(), Some(bot.client.as_str()));
+        assert!(ran.ids.contains(&engine_id) && for_assistant.iter().all(|id| ran.ids.contains(id)), "{:?}", ran.ids);
+    }
+
+    /// Task B.2: what the bot runs with is what both clients may – the assistant may read mail and
+    /// the bot not, so no mail; the bot may and the assistant not, so none either – without the
+    /// conversation's switched-off areas; the bot asks no bot and drives no assistant.
+    #[tokio::test]
+    async fn a_bot_for_the_assistant_has_what_both_may_and_no_chains() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let (client, _) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
+            .await
+            .expect("the assistant");
+        let bot = bot_with(
+            &core,
+            "Travel planner",
+            torro_ipc::assistant::TEST_ENGINE,
+            reading(&[Area::Calendar, Area::Workspaces]),
+        )
+        .await;
+        let delegation = |without: Vec<Area>| {
+            crate::assistant::Actor::Delegated(crate::assistant::Delegation {
+                bot: bot.id.clone(),
+                client: bot.client.clone(),
+                assistant: client.id.clone(),
+                without,
+            })
+        };
+        let actor = delegation(Vec::new());
+        let rights = Host::client_of(&core, &actor).expect("both clients").rights;
+        assert!(rights.area(Area::Calendar).allows(Access::Read));
+        assert!(!rights.area(Area::Mail).allows(Access::Read), "the assistant may, the bot not");
+        assert!(!rights.area(Area::Workspaces).allows(Access::Read), "the bot may, the assistant not");
+        let core = &core;
+        let run = |actor: crate::assistant::Actor, request: Request| async move {
+            Host::run_as(core, &actor, request, "test", false).await
+        };
+        assert!(matches!(run(actor.clone(), Request::CalendarCollections).await, Response::Collections { .. }));
+        assert_eq!(code(&run(actor.clone(), Request::MailFolders { account: None }).await), "forbidden");
+        assert_eq!(code(&run(actor.clone(), Request::ListTemplates).await), "forbidden");
+        assert_eq!(code(&run(delegation(vec![Area::Calendar]), Request::CalendarCollections).await), "forbidden");
+        // As its own client the bot reads its templates: only for the assistant it may not.
+        let own = crate::assistant::Actor::Bot(bot.client.clone());
+        assert!(matches!(run(own, Request::ListTemplates).await, Response::Templates { .. }));
+
+        // No chains: neither asking a bot nor the assistant's commands, nor from a bot's conversation.
+        let main = said(core, "Ask the travel planner").await;
+        for request in [
+            ask_bot(&bot.id),
+            Request::ListConversations,
+            Request::ConfirmBot { conversation: main.clone(), bot: bot.id.clone() },
+        ] {
+            assert_eq!(code(&run(actor.clone(), request).await), "forbidden");
+        }
+        let Response::Conversation { conversation, .. } = core.handle(to_bot(&bot.id, None)).await else {
+            panic!("the person chats with the bot")
+        };
+        let from_bot = Host::ask_bot(core, &conversation.id, ask_bot(&bot.id), "test", false, false, &[]).await;
+        assert_eq!(code(&from_bot), "forbidden", "a bot's conversation never asks one");
+        // Switched off in the conversation: no bots at all.
+        let off = Host::ask_bot(core, &main, ask_bot(&bot.id), "test", false, false, &[Area::Bots]).await;
+        assert_eq!(code(&off), "forbidden");
+        // Without the assistant's client, or another one, the bot runs with nothing.
+        core.clients.remove(&client.id).await.expect("removed");
+        assert!(Host::client_of(core, &actor).is_none());
+        assert_eq!(code(&run(actor, Request::CalendarCollections).await), "forbidden");
+    }
+
+    /// Task B.2: only the person confirms a proposal – the app key, never a client, not even with
+    /// every right – and a confirmation lets the assistant ask that bot once, in that conversation.
+    #[tokio::test]
+    async fn a_confirmation_is_the_persons_and_counts_once() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let (_, own_key) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, Rights::assistant())
+            .await
+            .expect("the assistant");
+        let mut every = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            every.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, agent_key) = core.clients.add("Agent", "claude-code", every).await.expect("an agent");
+        let bot =
+            bot_with(&core, "Travel planner", torro_ipc::assistant::TEST_ENGINE, reading(&[Area::Calendar])).await;
+        let main = said(&core, "Plan a weekend in Lisbon").await;
+        let confirm = Request::ConfirmBot { conversation: main.clone(), bot: bot.id.clone() };
+        assert_eq!(confirm.operation().command.mcp, torro_ipc::api::Mcp::Never);
+
+        let asking = || Host::ask_bot(&core, &main, ask_bot(&bot.id), "test", false, false, &[]);
+        assert_eq!(code(&asking().await), "forbidden", "not named, not confirmed");
+        for key in [&own_key, &agent_key] {
+            assert_eq!(code(&ask(&core, Some(key), confirm.clone()).await), "forbidden");
+        }
+        assert_eq!(code(&asking().await), "forbidden", "a client's confirmation counts for nothing");
+        assert_eq!(core.handle(confirm.clone()).await, Response::Ok, "the app key");
+        let Response::Conversation { conversation, entries } = asking().await else { panic!("it ran") };
+        assert_eq!(conversation.bot.as_deref(), Some(bot.id.as_str()));
+        assert!(!conversation.running, "answered when the bot is done");
+        assert!(entries.iter().any(|entry| matches!(entry.content, torro_ipc::assistant::EntryContent::Answer { .. })));
+        assert_eq!(code(&asking().await), "forbidden", "once");
+
+        // Confirmed again, the bot goes on in the same conversation; another one is refused.
+        assert_eq!(core.handle(confirm.clone()).await, Response::Ok);
+        let other = Request::AskBot { bot: bot.id.clone(), text: "Hi".into(), conversation: Some(main.clone()) };
+        assert_eq!(code(&Host::ask_bot(&core, &main, other, "test", false, false, &[]).await), "error");
+        let Response::Conversation { conversation: again, .. } = asking().await else { panic!("it ran again") };
+        assert_eq!(again.id, conversation.id, "one conversation with the bot per conversation");
+        // Unknown conversations and bots, and a conversation with a bot, are nothing to confirm.
+        let unknown = Request::ConfirmBot { conversation: "0123456789abcdef".into(), bot: bot.id.clone() };
+        assert_eq!(code(&core.handle(unknown).await), "not-found");
+        let no_bot = Request::ConfirmBot { conversation: main.clone(), bot: "0a0b0c0d".into() };
+        assert_eq!(code(&core.handle(no_bot).await), "not-found");
+        let with_bot = Request::ConfirmBot { conversation: conversation.id.clone(), bot: bot.id.clone() };
+        assert_eq!(code(&core.handle(with_bot).await), "error");
+        // Named in the person's last message, it needs no confirmation.
+        let named = said(&core, "What does the Travel Planner say?").await;
+        assert!(matches!(
+            Host::ask_bot(&core, &named, ask_bot(&bot.id), "test", false, false, &[]).await,
+            Response::Conversation { .. }
+        ));
+        // An agent with every right in the assistant cannot name the bot for the person: only the
+        // person's own message counts.
+        let by_agent = Request::SendMessage {
+            conversation: Some(named.clone()),
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            text: "Now ask the travel planner".into(),
+            without: Vec::new(),
+            bot: None,
+        };
+        assert!(matches!(ask(&core, Some(&agent_key), by_agent).await, Response::Conversation { .. }));
+        conversation_until(&core, &named, |running, _| !running).await;
+        let after_agent = Host::ask_bot(&core, &named, ask_bot(&bot.id), "test", false, false, &[]).await;
+        assert_eq!(code(&after_agent), "forbidden");
+    }
+
+    /// Task B.2, the data rule: a conversation whose model read mail asks no bot whose model runs
+    /// elsewhere (the message may carry the mail); a bot on this computer it may.
+    #[tokio::test]
+    async fn after_mail_the_assistant_asks_no_bot_elsewhere() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let openrouter = fake_openrouter().await;
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant));
+        core.attach_assistant();
+        let remote = core
+            .ai
+            .connect(AiProvider::OpenRouter, Some(&openrouter.url("/api/v1")), torro_core::account::Secret::new(AI_KEY))
+            .await
+            .expect("openrouter");
+        core.clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
+            .await
+            .expect("the assistant");
+        let elsewhere = bot_with(&core, "Travel planner", &remote.id, reading(&[Area::Calendar])).await;
+        let here = bot_with(&core, "Packing helper", torro_ipc::assistant::TEST_ENGINE, reading(&[])).await;
+        let main = said(&core, "Ask the travel planner and the packing helper").await;
+
+        let refused = Host::ask_bot(&*core, &main, ask_bot(&elsewhere.id), "test", false, true, &[]).await;
+        let Response::Error { code, message } = refused else { panic!("refused") };
+        assert_eq!(code, "forbidden");
+        assert!(message.contains("mail"), "{message}");
+        let local = Host::ask_bot(&*core, &main, ask_bot(&here.id), "test", false, true, &[]).await;
+        assert!(matches!(local, Response::Conversation { .. }), "{local:?}");
+    }
+
+    /// Task B.2: an approval the bot asks for while it runs for the assistant keeps the narrowing:
+    /// "Allow" runs it with what both clients may then, never more – the assistant's right taken
+    /// away meanwhile, nothing runs – and its log lines name the bot and the assistant.
+    #[tokio::test]
+    async fn an_approval_of_a_bot_for_the_assistant_stays_narrowed() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        for id in ["old", "older"] {
+            save_template(&core, id);
+        }
+        let mut full = reading(&[]);
+        full.areas.insert(Area::Workspaces, AreaRights { level: Level::Full, admin: false });
+        let (client, _) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, full.clone()).await.expect("assistant");
+        let bot = bot_with(&core, "Release helper", torro_ipc::assistant::TEST_ENGINE, full.clone()).await;
+        let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
+            bot: bot.id.clone(),
+            client: bot.client.clone(),
+            assistant: client.id.clone(),
+            without: Vec::new(),
+        });
+        let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
+        let first = waits(Host::run_as(&core, &actor, delete("old"), "test", false).await);
+        let second = waits(Host::run_as(&core, &actor, delete("older"), "test", false).await);
+        assert_eq!(first.client, bot.client);
+
+        // Allowed while both may: it runs.
+        let done = approval(core.handle(Request::DecideApproval { id: first.id.clone(), allow: true }).await);
+        assert!(matches!(done.state, torro_ipc::ApprovalState::Done { ref response } if **response == Response::Ok));
+        assert!(core.store.load("old").is_err());
+        // The person takes the assistant's right to delete away; the bot keeps its own.
+        core.clients.update(&client.id, reading(&[Area::Workspaces])).await.expect("narrowed");
+        let done = approval(core.handle(Request::DecideApproval { id: second.id.clone(), allow: true }).await);
+        let torro_ipc::ApprovalState::Done { response } = done.state else { panic!("expected done, got {done:?}") };
+        assert_eq!(code(&response), "forbidden", "never more than the assistant may");
+        assert!(core.store.load("older").is_ok(), "nothing ran");
+
+        // Every line names the bot's client and the assistant's; the requests the bot as well.
+        let behalf = crate::audit::behalf_id(&client.id);
+        let bot_id = format!("bot:{}", bot.id);
+        let decided: Vec<_> = audit_lines(dir.path())
+            .into_iter()
+            .filter(|line| line.approval.is_some())
+            .map(|line| (line.client, line.result, line.ids.contains(&behalf), line.ids.contains(&bot_id)))
+            .collect();
+        let bot_client = Some(bot.client.clone());
+        assert_eq!(
+            decided,
+            [
+                (bot_client.clone(), "pending".to_string(), true, true),
+                (bot_client.clone(), "pending".to_string(), true, true),
+                (bot_client.clone(), "ok".to_string(), true, false),
+                (bot_client, "forbidden".to_string(), true, false),
+            ]
+        );
+    }
+
+    /// Task B.2 for engine B: a key lent for the assistant's run asks a bot only as the person said
+    /// in that conversation; a key lent for the bot's run for the assistant does what both may (and
+    /// never mail), and its log lines name the bot and the assistant.
+    #[tokio::test]
+    async fn lent_keys_ask_bots_and_run_them_with_what_both_may() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let (client, _) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
+            .await
+            .expect("the assistant");
+        let bot = bot_with(
+            &core,
+            "Travel planner",
+            torro_ipc::assistant::TEST_ENGINE,
+            reading(&[Area::Calendar, Area::Mail, Area::Workspaces]),
+        )
+        .await;
+
+        let unnamed = said(&core, "Plan a weekend in Lisbon").await;
+        let lent = Host::lend_in(&core, &crate::assistant::Actor::Assistant, &unnamed, "claude-code", &[Area::Mail]);
+        let lent = lent.expect("lent");
+        assert_eq!(code(&ask(&core, Some(lent.key()), ask_bot(&bot.id)).await), "forbidden");
+        let named = said(&core, "Ask the travel planner").await;
+        let lent = Host::lend_in(&core, &crate::assistant::Actor::Assistant, &named, "claude-code", &[Area::Mail]);
+        let lent = lent.expect("lent");
+        let Response::Conversation { conversation, .. } = ask(&core, Some(lent.key()), ask_bot(&bot.id)).await else {
+            panic!("the bot ran")
+        };
+        let Response::Conversation { entries, .. } =
+            core.handle(Request::GetConversation { id: conversation.id.clone(), after: None }).await
+        else {
+            panic!("its conversation")
+        };
+        assert!(
+            matches!(&entries[0].content, torro_ipc::assistant::EntryContent::Message { without, .. } if without.contains(&Area::Mail)),
+            "the bot runs without what the key was lent without: {entries:?}"
+        );
+
+        let actor = crate::assistant::Actor::Delegated(crate::assistant::Delegation {
+            bot: bot.id.clone(),
+            client: bot.client.clone(),
+            assistant: client.id.clone(),
+            without: Vec::new(),
+        });
+        assert!(Host::lend_as(&core, &actor, "claude-code", &[]).is_none(), "only with the narrowing remembered");
+        // A bot's key the core lent without knowing its run does nothing; lent for the bot's own run
+        // it does what the bot may.
+        let own = crate::assistant::Actor::Bot(bot.client.clone());
+        let unknown = Host::lend_as(&core, &own, "claude-code", &[]).expect("lent");
+        assert_eq!(code(&ask(&core, Some(unknown.key()), Request::ListTemplates).await), "forbidden");
+        let known = Host::lend_in(&core, &own, &conversation.id, "claude-code", &[]).expect("lent");
+        assert!(matches!(ask(&core, Some(known.key()), Request::ListTemplates).await, Response::Templates { .. }));
+        let lent = Host::lend_in(&core, &actor, &conversation.id, "claude-code", &[Area::Mail]).expect("lent");
+        assert!(matches!(
+            ask(&core, Some(lent.key()), Request::CalendarCollections).await,
+            Response::Collections { .. }
+        ));
+        assert_eq!(code(&ask(&core, Some(lent.key()), Request::MailFolders { account: None }).await), "forbidden");
+        assert_eq!(
+            code(&ask(&core, Some(lent.key()), Request::ListTemplates).await),
+            "forbidden",
+            "not the assistant's"
+        );
+        assert_eq!(code(&ask(&core, Some(lent.key()), ask_bot(&bot.id)).await), "forbidden", "no chains");
+        let line = audit_lines(dir.path()).into_iter().rfind(|line| line.command == "workspaces.list_templates");
+        let line = line.expect("logged");
+        assert_eq!(line.client.as_deref(), Some(bot.client.as_str()));
+        let named = crate::audit::delegation_ids(&bot.id, &client.id);
+        assert!(named.iter().all(|id| line.ids.contains(id)), "{:?}", line.ids);
+        assert!(line.ids.contains(&crate::audit::engine_id("claude-code")));
     }
 
     /// Task C.2: the core reports Ollama as local and OpenRouter as elsewhere, for the data rule.
@@ -10793,7 +12369,7 @@ mod tests {
         assert_eq!(place(local.id).await, Place::Local);
         assert_eq!(place(remote.id).await, Place::Remote, "its address is on this computer, but it is OpenRouter");
         assert!(Host::client(&core).is_none(), "no assistant client yet");
-        let forbidden = Host::run(&core, Request::CalendarCollections, "test").await;
+        let forbidden = Host::run(&core, Request::CalendarCollections, "test", false).await;
         assert_eq!(code(&forbidden), "forbidden", "without its client the assistant may do nothing");
     }
 

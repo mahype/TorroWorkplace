@@ -44,11 +44,13 @@ mod agents;
 mod approvals;
 mod apps;
 mod assistant;
+mod bots;
 mod general;
 mod glance;
 mod inbox;
 mod launch;
 mod overview;
+mod persona;
 mod server_fields;
 mod wizard;
 mod workspaces;
@@ -95,11 +97,14 @@ pub enum Section {
     Approvals,
     /// How loud the inbox is and its lasting rules (task E3.7).
     Inbox,
+    /// Light or dark, the design pack and the zoom of all apps (task S.14). Opened directly with
+    /// `torroworkplace ui --section appearance`.
+    Appearance,
     General,
 }
 
 impl Section {
-    pub const ALL: [Section; 9] = [
+    pub const ALL: [Section; 10] = [
         Section::Overview,
         Section::Accounts,
         Section::Workspaces,
@@ -108,6 +113,7 @@ impl Section {
         Section::Agents,
         Section::Approvals,
         Section::Inbox,
+        Section::Appearance,
         Section::General,
     ];
 
@@ -127,6 +133,7 @@ impl Section {
             Section::Agents => tr("Agents & API"),
             Section::Approvals => tr("Approvals"),
             Section::Inbox => tr("Inbox"),
+            Section::Appearance => tr("Appearance"),
             Section::General => tr("General"),
         }
     }
@@ -147,6 +154,8 @@ impl Section {
             Section::Approvals => Icon::UserCheck,
             // The same tray as the Inbox app's "For me".
             Section::Inbox => Icon::Inbox,
+            // Light and dark: the suite has no palette icon; the sun stands for how it looks.
+            Section::Appearance => Icon::Sun,
             Section::General => Icon::Settings,
         }
     }
@@ -162,6 +171,7 @@ impl Section {
             Section::Agents => "agents",
             Section::Approvals => "approvals",
             Section::Inbox => "inbox",
+            Section::Appearance => "appearance",
             Section::General => "general",
         }
     }
@@ -198,6 +208,12 @@ pub struct Data {
     /// How much each rule caught and since when (`inbox.list_rules`, task E8.8a), by the rule's id;
     /// empty from a core before E8.8a.
     pub rule_hits: Vec<RuleHits>,
+    /// The assistant's profile (`assistant.get_profile`, task C.10); `None` until the first answer.
+    pub profile: Option<torro_ipc::assistant::Profile>,
+    /// The notes of the assistant's memory, oldest first (`assistant.list_memories`).
+    pub memories: Vec<torro_ipc::assistant::Note>,
+    /// The bots, by name (`bots.list_bots`, task B.3); none from a core without bots.
+    pub bots: Vec<torro_ipc::bots::BotSummary>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -216,7 +232,7 @@ pub enum Action {
     OpenUrl(String),
     /// Jump to another section.
     Select(Section),
-    /// Zoom every window of the suite one step (General › Zoom). Goes through the window's own
+    /// Zoom every window of the suite one step (Appearance › Zoom). Goes through the window's own
     /// zoom, so it applies at once and, with `--demo`, stays in the process.
     Zoom(zoom::Step),
     /// Put this text on the clipboard (a new key, task A.6).
@@ -224,16 +240,21 @@ pub enum Action {
     /// Find, connect or disconnect a coding agent's MCP entry (task A.7) on a blocking thread;
     /// the outcome goes to the agents page. The demo answers it itself and touches nothing.
     Setup(crate::client_setup::Job),
-    /// List the design packs (`settings.list_designs`) for General › Design, with the look of each
+    /// List the design packs (`settings.list_designs`) for Appearance › Design, with the look of each
     /// read from its folder ([`general::Pack::new`]). The demo lists its sample packs.
     ListDesigns,
-    /// Draw with the design pack of this id (General › Design): this window at once, then saved
+    /// Draw with the design pack of this id (Appearance › Design): this window at once, then saved
     /// (`settings.set_setting design`), which the other windows follow within two seconds. The
     /// demo only draws, with its sample pack.
     Design(String),
     /// Open the designs folder in the system's file manager, created first if it is missing. The
     /// demo opens nothing.
     OpenDesignsFolder,
+    /// Put the keyboard focus into the text field with this id (a note's field, task C.10).
+    Focus(&'static str),
+    /// Show the page of the bot with this id under Assistant › Bots (task B.3): from a bot's row on
+    /// the agents page.
+    OpenBot(String),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -297,14 +318,14 @@ pub struct Ui {
     /// The stored appearance. Kept apart from `data` so a core that does not answer for a moment
     /// (an empty `Data`) does not flip the colours.
     appearance: Appearance,
-    /// The suite-wide zoom (Ctrl + Plus / Minus / 0 and General › Zoom), the factor of the whole
-    /// window. `data.settings.zoom` follows it, so the General page shows the level the window
+    /// The suite-wide zoom (Ctrl + Plus / Minus / 0 and Appearance › Zoom), the factor of the whole
+    /// window. `data.settings.zoom` follows it, so the Appearance page shows the level the window
     /// uses, also while a change is being saved.
     zoom: Zoom,
     /// Follows the design pack of `data.settings` (task L.3): the page reloads the settings, so
     /// the design comes with them instead of a request of its own.
     design: Follow,
-    /// The design pack chosen on the General page while its saving is on its way (task L.4). A
+    /// The design pack chosen on the Appearance page while its saving is on its way (task L.4). A
     /// reload that left before the save still carries the old one; it must not switch back.
     pending_design: Option<String>,
     data: Data,
@@ -355,7 +376,7 @@ pub enum Message {
     Zoom(zoom::Message),
     /// The fonts of a new design pack are loaded.
     Design(design::Message),
-    /// The design packs for General › Design ([`Action::ListDesigns`]); `Err` when the core did
+    /// The design packs for Appearance › Design ([`Action::ListDesigns`]); `Err` when the core did
     /// not list them.
     Designs(Result<Vec<general::Pack>, String>),
     /// Escape: close the open menu, or else whatever dialog the current page has open.
@@ -424,7 +445,7 @@ impl Ui {
             // No service to ask: the sample data is there from the first frame.
             ui.data = launch::demo_data();
             ui.appearance = ui.data.settings.appearance;
-            // The check mark of General › Design at the pack `--design` draws with.
+            // The check mark of Appearance › Design at the pack `--design` draws with.
             if let Some(id) = ui.launch.design.clone() {
                 ui.data.settings.design = id;
             }
@@ -433,8 +454,12 @@ impl Ui {
         if let Some(open) = open {
             ui.open(open);
         }
-        // A start on the General page lists the design packs, as opening it does.
-        let designs = match ui.section == Section::General && general::unlisted(&ui.general) {
+        // `--section bot:<id>`: the bot's rights (task B.3), what the assistant app's "Access…" opens.
+        if let Some(id) = ui.launch.bot.clone() {
+            let _ = ui.perform(Action::OpenBot(id));
+        }
+        // A start on the Appearance page lists the design packs, as opening it does.
+        let designs = match ui.section == Section::Appearance && general::unlisted(&ui.general) {
             true => ui.perform(Action::ListDesigns),
             false => Task::none(),
         };
@@ -594,8 +619,51 @@ impl Ui {
             Open::AssistantTurnOff => {
                 vec![Message::Select(Section::Assistant), Message::Assistant(assistant::Message::AskTurnOff)]
             }
+            // Profile and memory (task C.10): the demo's profile and notes, none, a new note, and
+            // asking before one is forgotten.
+            Open::AssistantProfile => {
+                let open = assistant::Message::Persona(persona::Message::OpenProfile);
+                vec![Message::Select(Section::Assistant), Message::Assistant(open)]
+            }
+            Open::AssistantMemory | Open::AssistantMemoryEmpty | Open::AssistantNote | Open::AssistantForget => {
+                if open == Open::AssistantMemoryEmpty {
+                    self.data.memories.clear();
+                }
+                let persona = |message| Message::Assistant(assistant::Message::Persona(message));
+                let mut messages = vec![Message::Select(Section::Assistant), persona(persona::Message::OpenMemory)];
+                match open {
+                    Open::AssistantNote => messages.push(persona(persona::Message::AddNote)),
+                    Open::AssistantForget => {
+                        let first = self.data.memories.first().map(|note| note.id.clone());
+                        messages.extend(first.map(|id| persona(persona::Message::AskForget(id))));
+                    }
+                    _ => {}
+                }
+                messages
+            }
+            // A bot's rights (task B.3): one with some, one that may use nothing yet.
+            Open::AssistantBot | Open::AssistantBotNew => {
+                let id = if open == Open::AssistantBot { launch::DEMO_TRAVEL } else { launch::DEMO_RELEASE };
+                vec![
+                    Message::Select(Section::Assistant),
+                    Message::Assistant(assistant::Message::Bots(bots::Message::Open(id.into()))),
+                ]
+            }
+            // An agent that may use bots and read the assistant's conversations: both warnings.
+            Open::AgentBots => {
+                let codex = self.data.clients.iter_mut().find(|client| client.kind == "codex");
+                let id = codex.map(|client| {
+                    let on = |level| torro_ipc::api::AreaRights { level, admin: false };
+                    client.rights.areas.insert(torro_ipc::api::Area::Bots, on(torro_ipc::api::Level::Write));
+                    client.rights.areas.insert(torro_ipc::api::Area::Assistant, on(torro_ipc::api::Level::Read));
+                    client.id.clone()
+                });
+                let mut messages = vec![Message::Select(Section::Agents)];
+                messages.extend(id.map(|id| Message::Agents(agents::Message::Open(id))));
+                messages
+            }
             // The design packs: the demo's sample packs, one of them broken.
-            Open::Design => vec![Message::Select(Section::General)],
+            Open::Design => vec![Message::Select(Section::Appearance)],
             // No rules, so the rules group says where they come from.
             Open::InboxEmpty => {
                 self.data.rules.clear();
@@ -671,7 +739,7 @@ impl Ui {
                 self.select(section);
                 self.notice = None;
                 // The packs may have changed in the folder since the page was last open.
-                if section == Section::General { Action::ListDesigns } else { Action::None }
+                if section == Section::Appearance { Action::ListDesigns } else { Action::None }
             }
             Message::ToggleMenu(menu) => {
                 self.menu = if self.menu == Some(menu) { None } else { Some(menu) };
@@ -728,7 +796,7 @@ impl Ui {
                     false => None,
                 };
                 agents::loaded(&mut self.agents);
-                assistant::loaded(&mut self.assistant);
+                assistant::loaded(&mut self.assistant, &self.data);
                 // A mail account's page follows changes from outside while nothing is typed.
                 accounts::loaded(&mut self.accounts, &self.data);
                 // The add-account dialog follows the sign-in through the reloaded accounts.
@@ -874,7 +942,7 @@ impl Ui {
             }
             Action::Select(section) => {
                 self.select(section);
-                if section == Section::General {
+                if section == Section::Appearance {
                     return self.perform(Action::ListDesigns);
                 }
                 Task::none()
@@ -888,6 +956,13 @@ impl Ui {
                     self.notice = Some(problem);
                 }
                 Task::none()
+            }
+            Action::Focus(id) => iced::widget::operation::focus(id),
+            Action::OpenBot(id) => {
+                self.select(Section::Assistant);
+                let open = assistant::Message::Bots(bots::Message::Open(id));
+                let next = assistant::update(&mut self.assistant, open, &self.data);
+                self.perform(next)
             }
             Action::Zoom(step) => self.zoom(zoom::Message::Step(step)),
             Action::Copy(text) => iced::clipboard::write(text),
@@ -915,7 +990,7 @@ impl Ui {
     }
 
     /// Hands `message` to the window's zoom. The window keeps its pixels, so the size kept for
-    /// `update` changes with the zoom; the General page shows the new level.
+    /// `update` changes with the zoom; the Appearance page shows the new level.
     fn zoom(&mut self, message: zoom::Message) -> Task<Message> {
         let before = self.zoom.factor();
         let task = self.zoom.update(message).map(Message::Zoom);
@@ -1128,6 +1203,7 @@ impl Ui {
             Section::Agents => agents::view(&self.agents, &self.data).map(Message::Agents),
             Section::Approvals => approvals::view(&self.approvals, &self.data).map(Message::Approvals),
             Section::Inbox => inbox::view(&self.inbox, &self.data).map(Message::Inbox),
+            Section::Appearance => general::appearance(&self.general, &self.data).map(Message::General),
             Section::General => general::view(&self.general, &self.data).map(Message::General),
         };
         let notices = [&self.notice, &self.data.error].into_iter().flatten().map(|problem| notice(problem.clone()));
@@ -1324,6 +1400,15 @@ fn load() -> Task<Message> {
             if let Ok(Response::Rules { rules, hits }) = client::call(&socket, &Request::ListRules).await {
                 data.rules = rules;
                 data.rule_hits = hits;
+            }
+            if let Ok(Response::Profile { profile }) = client::call(&socket, &Request::GetProfile).await {
+                data.profile = Some(profile);
+            }
+            if let Ok(Response::Memories { notes }) = client::call(&socket, &Request::ListMemories).await {
+                data.memories = notes;
+            }
+            if let Ok(Response::Bots { bots }) = client::call(&socket, &Request::ListBots).await {
+                data.bots = bots;
             }
             data
         },
@@ -1526,12 +1611,12 @@ mod tests {
         assert!(design::active().is_standard(), "the parameter beats the stored design");
     }
 
-    /// General › Design (task L.4): opening the page lists the packs; the demo has its samples,
+    /// Appearance › Design (task L.4): opening the page lists the packs; the demo has its samples,
     /// one of them broken.
     #[test]
     fn the_design_state_lists_the_demo_packs() {
         let demo = started(&["--demo", "--open", "design"]);
-        assert_eq!(demo.section, Section::General);
+        assert_eq!(demo.section, Section::Appearance);
         let ids: Vec<&str> = ["torro", "harbor", "paper", "neon"]
             .into_iter()
             .filter(|id| general::design_of(&demo.general, id).is_some())
@@ -1540,11 +1625,12 @@ mod tests {
 
         let mut real = ui(Section::Overview);
         assert!(general::unlisted(&real.general));
-        assert!(real.update(Message::Select(Section::General)).units() > 0, "opening the page asks the core");
+        assert!(real.update(Message::Select(Section::Appearance)).units() > 0, "opening the page asks the core");
+        assert!(real.update(Message::Select(Section::General)).units() == 0, "General no longer shows them");
         assert!(real.update(Message::Select(Section::Accounts)).units() == 0, "other pages do not");
     }
 
-    /// A design chosen on the General page is drawn in this window at once and saved; a reload that
+    /// A design chosen on the Appearance page is drawn in this window at once and saved; a reload that
     /// left before the save does not switch back, a refusal does.
     #[test]
     fn a_chosen_design_is_drawn_at_once_and_saved() {
@@ -1663,6 +1749,8 @@ mod tests {
             }
         }
         assert!(Section::nav().all(|section| section != Section::General), "General sits at the foot");
+        assert!(Section::nav().any(|section| section == Section::Appearance), "Appearance is in plain sight");
+        assert_eq!(Section::from_arg("appearance"), Some(Section::Appearance));
     }
 
     #[test]
@@ -1827,10 +1915,36 @@ mod tests {
         };
         let key = torro_ipc::IssuedKey::new(torro_ipc::Key::new("torro_a51c3e88_00ff"));
         let next = real.update(Message::Sent(Ok(Response::ClientKey { client, key })));
-        assert_eq!(next.units(), 2, "clients.update_client with the chosen rights, and the reload");
+        assert_eq!(next.units(), 1, "only the reload: the rights came with clients.create_client (task C.11)");
         assert_eq!(real.notice, None);
         let _ = real.update(Message::Select(Section::Agents));
         assert!(real.page_overlay().is_none(), "the agents page never shows the assistant's key");
+    }
+
+    /// Task C.10: Profile and Memory open below the Assistant page in every demo state, build in
+    /// every size, and go back with the header's button; "Forget this note?" closes with Escape.
+    #[test]
+    fn profile_and_memory_open_below_the_assistant_page() {
+        for state in
+            ["assistant-profile", "assistant-memory", "assistant-memory-empty", "assistant-note", "assistant-forget"]
+        {
+            let ui = started(&["--demo", "--open", state]);
+            assert_eq!(ui.section, Section::Assistant, "{state}");
+            let header = ui.page_header(SizeClass::Wide);
+            assert!(header.sub_page.is_some(), "{state}: a page below Assistant");
+            for class in [SizeClass::Narrow, SizeClass::Medium, SizeClass::Wide] {
+                let _ = ui.window(class);
+            }
+        }
+        assert!(started(&["--demo", "--open", "assistant-memory-empty"]).data.memories.is_empty());
+        let mut forget = started(&["--demo", "--open", "assistant-forget"]);
+        assert!(forget.page_overlay().is_some(), "Forget this note?");
+        let _ = forget.update(Message::Escape);
+        assert!(forget.page_overlay().is_none());
+        let mut profile = started(&["--demo", "--open", "assistant-profile"]);
+        let back = assistant::Message::Persona(persona::Message::Back);
+        let _ = profile.update(Message::Assistant(back));
+        assert!(profile.page_header(SizeClass::Wide).sub_page.is_none(), "back on the Assistant page");
     }
 
     #[test]
@@ -1839,7 +1953,7 @@ mod tests {
             let mut ui = started(&["--demo", "--open", state]);
             assert_eq!(ui.section, Section::Agents, "{state}");
             assert!(ui.agents.wizard.is_some() && ui.page_overlay().is_some(), "{state}: the dialog is open");
-            assert_eq!(ui.data.clients.len(), 5, "{state}: the demo changes nothing");
+            assert_eq!(ui.data.clients.len(), launch::demo_data().clients.len(), "{state}: the demo changes nothing");
             let _ = ui.update(Message::Escape);
             assert!(ui.agents.wizard.is_none(), "{state}: Escape closes it");
         }
@@ -1858,7 +1972,7 @@ mod tests {
         assert_eq!(demo.perform(Action::Copy("torro_x".into())).units(), 0, "the demo leaves the clipboard alone");
         let removed = demo.update(Message::Agents(agents::Message::Open(id)));
         assert_eq!(removed.units(), 0);
-        assert_eq!(demo.data.clients.len(), 5, "the demo changes nothing");
+        assert_eq!(demo.data.clients.len(), launch::demo_data().clients.len(), "the demo changes nothing");
     }
 
     #[test]
@@ -2022,5 +2136,23 @@ mod tests {
         assert_eq!(demo.data.settings.zoom.percent(), 150);
         let _ = demo.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
         assert_eq!((demo.zoom.factor(), layout::of(demo.size)), (1.0, SizeClass::Wide));
+    }
+
+    /// Task B.3: `--section bot:<id>` opens the bot's page under Assistant › Bots, the way the
+    /// assistant app's "Access…" does; a bot's row on the agents page goes there too.
+    #[test]
+    fn a_bots_rights_open_by_deep_link_and_from_the_agents_page() {
+        let ui = started(&["--demo", "--section", "bot:b0000001"]);
+        assert_eq!(ui.section, Section::Assistant);
+        assert_eq!(ui.assistant.bots.open.as_deref(), Some(launch::DEMO_TRAVEL));
+        for class in [SizeClass::Narrow, SizeClass::Wide] {
+            let _ = ui.window(class);
+        }
+
+        let mut agents = started(&["--demo", "--section", "agents"]);
+        let client = agents.data.bots.iter().find(|bot| bot.id == launch::DEMO_RELEASE).map(|bot| bot.client.clone());
+        let _ = agents.update(Message::Agents(agents::Message::ShowBot(client.expect("a bot client"))));
+        assert_eq!(agents.section, Section::Assistant);
+        assert_eq!(agents.assistant.bots.open.as_deref(), Some(launch::DEMO_RELEASE));
     }
 }

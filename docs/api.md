@@ -548,6 +548,11 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_switch_the_microphone_on_and_agents_may_switch_it_off` im Kern). `voice_enabled:
    false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest der Steuerzentrale
    (`settings.test_voice`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`).
+7. **Einen Bot für den Assistenten bestätigen** (`assistant.confirm_bot`, B.2): nur mit dem
+   App-Schlüssel. Der Assistent fragt einen Bot nur, wenn die Person ihn in ihrer letzten Nachricht
+   nennt oder seinen Vorschlag bestätigt; diese Bestätigung gibt nie ein Agent oder Modell. Das
+   Fragen selbst braucht danach keine weitere Freigabe, die Befehle des Bots aber wie gewohnt, und
+   der Bot arbeitet nur mit dem, was beide dürfen.
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.
@@ -624,6 +629,9 @@ freigeben. Das machen wir anders:
    eigene Antwort (`result: "pending"`).
 5. Bei „Allow“ prüft der Dienst Rechte und Reichweite des Clients **zum Zeitpunkt der
    Entscheidung** erneut und führt den Befehl dann aus; die Antwort steht danach in der Freigabe.
+   Kam der Befehl über einen geliehenen Schlüssel (Assistent mit Claude Code, C.7), gilt dabei weiter, was dem
+   Lauf entzogen war (Mail und abgeschaltete Bereiche); die Freigabe speichert das und den Antrieb, der auch in
+   der Protokollzeile der Entscheidung steht (C.11).
    Entschiedene und abgelaufene Freigaben bleiben einen Tag lesbar. Ein Client kann höchstens zehn
    Freigaben gleichzeitig offen haben (sonst `busy`), damit er den Menschen nicht mit
    Benachrichtigungen überschüttet. Befehle aus „Was nie nach außen geht“ werden nie zu einer
