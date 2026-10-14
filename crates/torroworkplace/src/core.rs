@@ -896,6 +896,12 @@ pub struct Core {
     /// What the keys lent for runs of engine B are for (task B.2, [`LentScope`]): the assistant's
     /// conversation, or a bot's run for the assistant. In memory only, as the leases are.
     lent_scopes: std::sync::Mutex<Vec<LentScope>>,
+    /// Whether the calendar, GitHub and mail services have read their stored accounts. False from
+    /// [`Core::start`] until they have (or [`ACCOUNTS_WAIT`] passed): meanwhile
+    /// `accounts.list_accounts` waits, because an app takes an empty list for "no account yet" and
+    /// shows its setup screen although accounts exist. True from the start for a core that is
+    /// never started, as in tests.
+    accounts_read: tokio::sync::watch::Sender<bool>,
 }
 
 impl Core {
@@ -934,6 +940,7 @@ impl Core {
             assistant: Arc::new(Assistant::system()),
             voice: if cfg!(test) { Listener::none() } else { Listener::system() },
             lent_scopes: std::sync::Mutex::new(Vec::new()),
+            accounts_read: tokio::sync::watch::Sender::new(true),
         }
     }
 
@@ -1028,6 +1035,7 @@ impl Core {
     /// with (task C.2, [`Core::attach_assistant`]). The daemon calls it once, next to
     /// `PimService::start`.
     pub fn start(self: &Arc<Self>) {
+        self.await_stored_accounts();
         self.attach_assistant();
         // Voice switched on before the core stopped listens again (task C.9).
         self.follow_voice();
@@ -1083,6 +1091,24 @@ impl Core {
                 refresh_filter_lists(&pim, &github).await;
                 tokio::time::sleep(FILTER_LISTS_EVERY).await;
             }
+        });
+    }
+
+    /// Holds `accounts.list_accounts` back until the calendar, GitHub and mail services have read
+    /// their stored accounts from the keychain ([`Core::accounts_read`]), [`ACCOUNTS_WAIT`] at
+    /// most, so a keychain that never answers does not keep the apps waiting forever. Part of
+    /// [`Core::start`], before the services start loading.
+    fn await_stored_accounts(self: &Arc<Self>) {
+        self.accounts_read.send_replace(false);
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let started = tokio::time::Instant::now();
+            while started.elapsed() < ACCOUNTS_WAIT
+                && !(core.pim.accounts_loaded().await && core.github.loaded() && core.mail.loaded())
+            {
+                tokio::time::sleep(ACCOUNTS_STEP).await;
+            }
+            core.accounts_read.send_replace(true);
         });
     }
 
@@ -3414,6 +3440,9 @@ impl Core {
     /// does not reach the mail account sees its calendar part only while its rights show it some
     /// of that part's calendars or task lists, and then without the mail view (task M2.8).
     async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
+        // While the core starts, the lists are still empty ([`Core::await_stored_accounts`]).
+        // An error means the sender is gone, which it never is while `self` lives.
+        let _ = self.accounts_read.subscribe().wait_for(|read| *read).await;
         let mut accounts = self.pim.accounts_within(reach).await;
         let mut github = self.github.infos().await;
         for account in &mut github {
@@ -4356,6 +4385,11 @@ impl Core {
 
 /// How often the filter lists are fetched anew (`docs/github.md`, "Technik").
 const FILTER_LISTS_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// At start, how long `accounts.list_accounts` waits at most for the stored accounts
+/// ([`Core::await_stored_accounts`]): long enough for the person to allow the keychain access.
+const ACCOUNTS_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How often the core looks whether the stored accounts are read meanwhile.
+const ACCOUNTS_STEP: std::time::Duration = std::time::Duration::from_millis(50);
 /// At start, how long to wait for the tokens of the accounts with filter lists: 30 × 1 s.
 const TOKEN_WAIT_ROUNDS: u32 = 30;
 const TOKEN_WAIT_STEP: std::time::Duration = std::time::Duration::from_secs(1);
@@ -5028,6 +5062,25 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), Request::SaveTemplate { name: None }).await), "forbidden");
         core.clients.remove(&id).await.expect("removed");
         assert_eq!(code(&ask(&core, Some(&key), Request::Accounts).await), "unauthorized");
+    }
+
+    /// While the core starts, `accounts.list_accounts` waits for the stored accounts instead of
+    /// answering with an empty list, which an app would take for "no account yet" and show its
+    /// setup screen.
+    #[tokio::test]
+    async fn the_account_list_waits_until_the_stored_accounts_are_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Arc::new(core(dir.path()));
+        core.accounts_read.send_replace(false);
+        let asking = tokio::spawn({
+            let core = Arc::clone(&core);
+            async move { core.handle(Request::Accounts).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!asking.is_finished(), "answered before the stored accounts were read");
+
+        core.accounts_read.send_replace(true);
+        assert_eq!(asking.await.expect("answered"), Response::Accounts { accounts: vec![] });
     }
 
     /// `settings.list_designs` (task L.3): the standard first, then the packs of the designs
