@@ -684,3 +684,141 @@ fn every_bot_state_builds_in_every_size() {
         let _ = app.view();
     }
 }
+
+/// Plays `count` frames of the window at 60 a second after `now`; the time of the last one.
+fn play(app: &mut App, mut now: Instant, count: u32) -> Instant {
+    for _ in 0..count {
+        now += FRAME;
+        let _ = app.update(Message::Frame(now));
+    }
+    now
+}
+
+/// What shows of the answer `seq`.
+fn shown(app: &App, seq: u64) -> String {
+    app.answers.get(&seq).map(|(text, _)| text.clone()).unwrap_or_default()
+}
+
+fn id_of(app: &App) -> String {
+    app.current.clone().expect("a conversation is open")
+}
+
+/// A demo window with the answer to "Hello" just begun (numbered 2), followed once.
+fn answering() -> App {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let _ = app.update(Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Hello".into())))));
+    let _ = app.update(Message::Send);
+    settle(&mut app);
+    follow_once(&mut app);
+    app
+}
+
+/// The open conversation's head with `last` and `running` changed, as the core would answer.
+fn head(app: &App, last: u64, running: bool) -> ConversationSummary {
+    let mut summary = app.transcript.summary.clone().expect("a conversation is open");
+    summary.last = last;
+    summary.running = running;
+    summary
+}
+
+fn answer_entry(seq: u64, text: &str) -> Entry {
+    Entry {
+        seq,
+        time: chrono::Utc::now(),
+        content: EntryContent::Answer { text: text.into(), engine: OLLAMA.into(), model: None },
+    }
+}
+
+#[test]
+fn an_answer_that_comes_while_watching_appears_letter_by_letter() {
+    let mut app = answering();
+    let stream = app.stream.as_ref().expect("the new answer appears letter by letter");
+    assert_eq!(stream.seq, 2);
+    assert!(stream.smoother.revealing(), "the window asks for frames");
+    assert!(!app.answer_shows(2), "nothing shows before the first frame, and takes no room");
+
+    let mut now = play(&mut app, Instant::now(), 4);
+    let first = shown(&app, 2);
+    assert!(!first.is_empty() && tr(demo::REPLY).starts_with(first.as_str()), "the first letters: {first:?}");
+    let growing = app.transcript.last_answer_text().map(str::len).unwrap_or_default();
+    assert!(first.len() < growing, "fewer than came: they come one after the other");
+
+    for _ in 0..60 {
+        if !app.transcript.running() {
+            break;
+        }
+        follow_once(&mut app);
+        now = play(&mut app, now, 3);
+    }
+    assert!(!app.transcript.running());
+    for _ in 0..120 {
+        if app.stream.is_none() {
+            break;
+        }
+        now = play(&mut app, now, 1);
+    }
+    assert!(app.stream.is_none(), "the stream ends once the answer shows whole");
+    assert_eq!(shown(&app, 2), tr(demo::REPLY), "exactly the whole answer, as if it never streamed");
+}
+
+#[test]
+fn an_answer_that_was_there_on_opening_shows_whole() {
+    let app = started(&["--open", "streaming"]);
+    assert_eq!(app.stream, None, "nothing to catch up");
+    let growing = app.transcript.growing().expect("the model still writes");
+    let EntryContent::Answer { text, .. } = &growing.content else { panic!("an answer grows") };
+    assert_eq!(&shown(&app, growing.seq), text);
+}
+
+#[test]
+fn the_entries_after_an_appearing_answer_wait_for_it() {
+    let mut app = answering();
+    let now = play(&mut app, Instant::now(), 2);
+    // The answer is stored and a tool runs: the tool line waits for the answer's last letter.
+    let tool = Entry {
+        seq: 3,
+        time: chrono::Utc::now(),
+        content: EntryContent::Tool {
+            name: "calendar.list_events".into(),
+            input: serde_json::json!({}),
+            summary: "2 events".into(),
+            error: None,
+        },
+    };
+    let entries = vec![answer_entry(2, "Let me look."), tool];
+    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 3, true), entries))));
+    assert_eq!(app.appearing(), Some(2), "the tool line waits");
+    let _ = app.view();
+    play(&mut app, now, 60);
+    assert_eq!(app.appearing(), None, "shown whole, the tool line follows");
+    assert_eq!(shown(&app, 2), "Let me look.");
+
+    // A new answer while one still appears: the first shows whole at once, the new one appears.
+    let mut app = answering();
+    let entries = vec![answer_entry(2, "Let me look."), answer_entry(3, "Found it")];
+    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 2, true), entries))));
+    assert_eq!(shown(&app, 2), "Let me look.");
+    assert_eq!(app.appearing(), Some(3));
+}
+
+#[test]
+fn an_answer_stored_under_another_number_goes_on_where_it_was() {
+    let mut app = answering();
+    play(&mut app, Instant::now(), 10);
+    let before = shown(&app, 2);
+    assert!(!before.is_empty());
+    let text = app.transcript.last_answer_text().unwrap_or_default().to_owned();
+    // The core stored something else under 2; the text grows on under 3.
+    let other = Entry { seq: 2, time: chrono::Utc::now(), content: EntryContent::Stopped };
+    let entries = vec![other, answer_entry(3, &format!("{text} more"))];
+    let _ = app.update(Message::Followed(id_of(&app), Ok((head(&app, 2, true), entries))));
+    assert_eq!(app.appearing(), Some(3));
+    assert_eq!(shown(&app, 3), before, "no letter is written twice");
+}
+
+#[test]
+fn an_answer_waiting_for_approval_is_followed_slowly() {
+    assert!(started(&["--open", "approval"]).waits_for_approval());
+    assert!(!started(&["--open", "streaming"]).waits_for_approval());
+}

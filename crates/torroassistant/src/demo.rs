@@ -59,7 +59,7 @@ pub const OLLAMA: &str = "ai:ollama@localhost:11434";
 pub const OPENROUTER: &str = "ai:openrouter@openrouter.ai";
 
 /// How many characters a growing answer gains each time the window asks.
-const STEP: usize = 28;
+const STEP: usize = 12;
 
 /// What the demo starts with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

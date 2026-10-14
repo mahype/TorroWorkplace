@@ -467,11 +467,12 @@ impl App {
             let entries = container(widgets::content(size::content_max(), self.entries()))
                 .width(Fill)
                 .padding(Padding { top: space::xl(), right: side, bottom: space::l(), left: side });
-            // The anchor after the direction, which replaces the scrollbar and its anchor.
+            // Anchored at the top: an answer that grows below moves nothing the person scrolled up
+            // to read. At the bottom the history keeps to the newest entry (`App::scroll_to_newest`).
             scrollable(entries)
                 .id(HISTORY)
                 .direction(scrollable::Direction::Vertical(style::scrollbar()))
-                .anchor_bottom()
+                .on_scroll(Message::HistoryScrolled)
                 .style(style::scrollable)
                 .width(Fill)
                 .height(Fill)
@@ -542,12 +543,20 @@ impl App {
     }
 
     /// The entries in order, the growing answer last; tool lines close together, everything else
-    /// with room between.
+    /// with room between. While an answer appears letter by letter, what came after it waits, and
+    /// before its first letter it takes no room.
     fn entries(&self) -> Element<'_, Message> {
         let colours = answer_colours(palette(&self.theme()));
         let mut list = column![].width(Fill);
         let mut previous_tool: Option<bool> = None;
+        let appearing = self.appearing();
         for entry in &self.transcript.entries {
+            if appearing.is_some_and(|seq| entry.seq > seq) {
+                break;
+            }
+            if !self.answer_shows(entry.seq) {
+                continue;
+            }
             let tool = matches!(entry.content, EntryContent::Tool { .. });
             if let Some(was_tool) = previous_tool {
                 let gap = if was_tool && tool { space::xs() } else { space::l() };
@@ -561,12 +570,9 @@ impl App {
             list = list.push(Space::new().height(space::l())).push(card);
         }
         // An answer runs, and nothing shows it yet: a quiet word, no spinner.
-        let waiting = self
-            .transcript
-            .approvals()
-            .iter()
-            .any(|id| self.approvals.get(*id).is_some_and(|approval| approval.state.is_pending()));
-        if self.transcript.running() && self.transcript.growing().is_none() && !waiting {
+        let writing = self.transcript.growing().is_some_and(|entry| self.answer_shows(entry.seq))
+            || appearing.is_some_and(|seq| self.answer_shows(seq));
+        if self.transcript.running() && !writing && !self.waits_for_approval() {
             list = list.push(Space::new().height(space::l()));
             list = list.push(typo::text(typo::meta(), tr("Working …")).style(theme::text_3));
         }
@@ -1010,7 +1016,7 @@ impl App {
             ]
             .spacing(space::xs())
             .into()
-        } else if let Some(entry) = self.transcript.last_answer() {
+        } else if let Some(entry) = self.transcript.last_answer().filter(|entry| self.answer_shows(entry.seq)) {
             self.entry(entry, answer_colours(palette(&self.theme())))
         } else if self.transcript.running() {
             typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()

@@ -5371,6 +5371,7 @@ dependencies = [
  "torro-core",
  "torro-gui",
  "torro-ipc",
+ "unicode-segmentation",
  "webbrowser",
 ]
 

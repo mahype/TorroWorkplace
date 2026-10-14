@@ -199,6 +199,28 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Oberfläche/API/MCP:** nur das neue optionale Feld `rights` an `clients.create_client` (bleibt **Never**, Punkt 2).
 - **Abnahme:** je Punkt ein Test; `torro-api-review` ohne Muss-Punkt.
 
+### C.12 Antwort flüssig streamen (Issue #135)
+- [x] erledigt (Push aus dem Dienst bewusst nicht: der IPC kennt nur eine Antwort je Verbindung; schnelles
+  Nachfragen nur während eines Laufs reicht, der Glätter verteilt die Stücke. „Bewegung reduzieren“ gibt es in der
+  Suite noch nicht, siehe unten)
+- **Modell:** Opus · **Braucht:** C.4 · **Dateien:** `crates/torroassistant/src/{app,view,demo,main,stream}.rs`,
+  `crates/torroassistant/src/app/tests.rs`, `crates/torroassistant/Cargo.toml`, `Cargo.toml` (`unicode-segmentation`)
+- **Nachfragen:** alle 50 ms nur, solange eine Antwort läuft (`get_conversation` mit `after`); wartet sie auf eine
+  Freigabe, alle 500 ms.
+- **Glätter** (`stream.rs`): angekommener Text erscheint auf den Frames des Fensters (`iced::window::frames`, nur
+  solange etwas aussteht), Graphem für Graphem; das Tempo folgt dem Rückstand (Rückstand / 0,25 s, fertig / 0,12 s,
+  mindestens 60 je Sekunde), ein langer Aussetzer zählt höchstens 50 ms. Das letzte Graphem eines wachsenden Textes
+  wartet auf das nächste Stück. Was beim Öffnen schon da war, steht sofort ganz da.
+- **Ruhig:** Markdown wird nur so gezeichnet, dass es beim Wachsen nicht springt (Blockmarken warten auf ihr erstes
+  Wort, offenes Fett und Code werden für die Zeichnung geschlossen); fertig gestreamt ist die Zeichnung dieselbe wie
+  ohne Streamen. Einträge nach einer Antwort, die noch erscheint, warten auf sie. Der Verlauf folgt dem neuesten
+  Eintrag nur, wenn er unten steht; hochgescrollt bewegt sich nichts. Kein Cursor am Textende (nichts blinkt).
+- **Oberfläche/API/MCP:** nur Oberfläche; kein neuer Befehl. MCP bleibt bei `assistant_get_conversation` mit `after`.
+- **Offen:** eine Einstellung „Reduce motion“ der Suite (Steuerzentrale, API) und ein Abo-Weg im IPC; dann zeigt
+  `Smoother::finish` alles sofort.
+- **Abnahme:** Tests des Glätters (gleichmäßig, holt Rückstand auf, endet exakt mit dem ganzen Text, Grapheme) und
+  des Fensters (erscheint Buchstabe für Buchstabe, beim Öffnen ganz, Einträge danach warten).
+
 ## Stufe 2: Bots (B.1–B.4)
 
 Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Geplant am 2026-10-14 nach Stufe 1.

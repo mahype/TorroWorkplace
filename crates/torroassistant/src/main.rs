@@ -22,6 +22,7 @@ mod bots;
 mod chat;
 mod demo;
 mod launch;
+mod stream;
 mod view;
 mod voice;
 
