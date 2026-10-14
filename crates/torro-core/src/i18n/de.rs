@@ -2667,8 +2667,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Reads calendars, tasks and the inbox", "Liest Kalender, Aufgaben und den Eingang"),
     ("Suggested", "Empfohlen"),
     (
-        "The assistant answers with the models of these accounts. Each chat picks one; a new chat starts with the one you used last.",
-        "Der Assistent antwortet mit den Modellen dieser Konten. Jeder Chat wählt eines; ein neuer Chat beginnt mit dem zuletzt benutzten.",
+        "The assistant answers with the models of these accounts. Each chat picks one; a new chat starts with the one set below.",
+        "Der Assistent antwortet mit den Modellen dieser Konten. Jeder Chat wählt eines; ein neuer Chat beginnt mit dem unten eingestellten.",
+    ),
+    // Assistant: new chats, model and effort (issue #131)
+    ("Effort", "Aufwand"),
+    (
+        "How hard the model thinks before it answers. More is slower and uses more tokens.",
+        "Wie gründlich das Modell nachdenkt, bevor es antwortet. Mehr dauert länger und verbraucht mehr Tokens.",
+    ),
+    ("Model", "Modell"),
+    ("New chats", "Neue Chats"),
+    ("The one used last", "Zuletzt verwendet"),
+    (
+        "What a new chat starts with. Each chat can pick another.",
+        "Womit ein neuer Chat beginnt. Jeder Chat kann etwas anderes wählen.",
     ),
     ("The assistant is off", "Der Assistent ist aus"),
     ("The assistant is on", "Der Assistent ist an"),
@@ -2703,6 +2716,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Ask the assistant…", "Frag den Assistenten …"),
     ("Assistant · {title}", "Assistent · {title}"),
     ("Automatic", "Automatisch"),
+    ("Effort: {level}", "Aufwand: {level}"),
+    ("How hard the model thinks", "Wie gründlich das Modell nachdenkt"),
+    ("Show all models", "Alle Modelle zeigen"),
     ("Block the afternoon", "Nachmittag blocken"),
     ("Change access", "Zugriff ändern"),
     ("Choose what the assistant may use", "Wähle, was der Assistent nutzen darf"),

@@ -5,7 +5,8 @@
 //!   (numbered `last + 1`, see `torro_ipc::assistant`) replaced each time it comes again.
 //! - The engine and model picker: engines in the order of Open First ([`ordered`]), only models
 //!   that can call tools ([`tool_models`]), and what is chosen before the person picks
-//!   ([`default_choice`]).
+//!   ([`default_choice`], first the default of the control centre: [`preferred_choice`]). Beside
+//!   it the effort, offered only for a model that thinks ([`can_reason`], issue #131).
 //! - The areas the person can switch off for one conversation ([`switchable_areas`], the
 //!   `without` of `assistant.send_message`).
 //! - The requests the window sends for a click ([`send_request`], [`decide_request`]) and the words
@@ -16,8 +17,9 @@
 use std::collections::HashSet;
 
 use torro_core::AppId;
-use torro_core::ai::{AiModel, is_this_computer};
+use torro_core::ai::{AiModel, Effort, is_this_computer};
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::AssistantDefault;
 use torro_ipc::Request;
 use torro_ipc::api::{Access, Area, CATALOGUE, Lack, Level, Rights};
 use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent};
@@ -173,6 +175,64 @@ pub fn default_choice<'a>(
     Some(Choice { engine: engine.id, model })
 }
 
+/// What answers before the person picks, with its effort (issue #131): the default set in the
+/// control centre (`default`, `settings.assistant_default`) while its engine is offered, else
+/// [`default_choice`] with the effort of the newest conversation that engine answered in.
+pub fn preferred_choice<'a>(
+    default: Option<&AssistantDefault>,
+    conversations: &[ConversationSummary],
+    engines: &[Engine],
+    models: impl Fn(&str) -> Option<&'a [AiModel]>,
+) -> Option<(Choice, Option<Effort>)> {
+    if let Some(default) = default.filter(|default| engines.iter().any(|engine| engine.id == default.engine)) {
+        return Some((Choice { engine: default.engine.clone(), model: default.model.clone() }, default.effort));
+    }
+    let choice = default_choice(conversations, engines, models)?;
+    let effort = conversations
+        .iter()
+        .filter(|conversation| conversation.engine == choice.engine && conversation.model == choice.model)
+        .max_by_key(|conversation| conversation.updated)
+        .and_then(|conversation| conversation.effort);
+    Some((choice, effort))
+}
+
+/// The models the picker offers for `engine`: an agent's fixed ones ([`Engine::models`]), an AI
+/// account's `listed` ones that can call tools ([`tool_models`]); `None` while an AI account's are
+/// not listed, and for the test engine.
+pub fn engine_models(engine: &Engine, listed: Option<&[AiModel]>) -> Option<Vec<AiModel>> {
+    match engine.kind {
+        EngineKind::Agent => Some(engine.models.clone()),
+        EngineKind::Ai => listed.map(tool_models),
+        EngineKind::Test => None,
+    }
+}
+
+/// Whether the composer offers an effort for `choice` (issue #131): a model is picked and is not
+/// known to lack thinking ([`AiModel::reasoning`], from `models`, the engine's offered models). An
+/// agent left to pick its own model takes an effort too; an AI account left to pick does not, as
+/// nobody knows which model it takes.
+pub fn can_reason(engine: Option<&Engine>, choice: &Choice, models: Option<&[AiModel]>) -> bool {
+    let Some(engine) = engine else { return false };
+    match (&choice.model, engine.kind) {
+        (_, EngineKind::Test) | (None, EngineKind::Ai) => false,
+        (None, EngineKind::Agent) => true,
+        (Some(id), _) => models
+            .and_then(|models| models.iter().find(|model| &model.id == id))
+            .is_some_and(|model| model.reasoning != Some(false)),
+    }
+}
+
+/// The word for `effort` in the composer and its menu: "Automatic" for `None`, else "Low",
+/// "Medium", "High".
+pub fn effort_name(effort: Option<Effort>) -> &'static str {
+    match effort {
+        None => tr("Automatic"),
+        Some(Effort::Low) => tr("Low"),
+        Some(Effort::Medium) => tr("Medium"),
+        Some(Effort::High) => tr("High"),
+    }
+}
+
 /// The areas the composer offers to switch off, in this order: those of the assistant's own
 /// client that it may use at all (`rights`, from `clients.list_clients`). Without a client, none:
 /// the assistant can use no tool then.
@@ -183,11 +243,13 @@ pub fn switchable_areas(rights: Option<&Rights>) -> Vec<Area> {
 }
 
 /// The request of "Send": `assistant.send_message` with the text as typed (trailing blank lines
-/// dropped), to `conversation` or a new one, to the bot `bot` (task B.3) or the assistant; `None`
-/// for a text that is only blank or without an engine, which the core would refuse anyway.
+/// dropped), to `conversation` or a new one, with `effort` (issue #131; `None` where the model takes
+/// none, [`can_reason`]), to the bot `bot` (task B.3) or the assistant; `None` for a text that is
+/// only blank or without an engine, which the core would refuse anyway.
 pub fn send_request(
     conversation: Option<&str>,
     choice: Option<&Choice>,
+    effort: Option<Effort>,
     text: &str,
     without: &[Area],
     bot: Option<&str>,
@@ -201,6 +263,7 @@ pub fn send_request(
         conversation: conversation.map(str::to_owned),
         engine: choice.engine.clone(),
         model: choice.model.clone(),
+        effort,
         text: text.to_owned(),
         without: without.to_vec(),
         bot: bot.map(str::to_owned),
@@ -382,6 +445,7 @@ mod tests {
             title: "Plan for tomorrow".into(),
             engine: "ai:ollama@localhost:11434".into(),
             model: Some("qwen3:8b".into()),
+            effort: None,
             created: at(0),
             updated: at(1),
             pinned: false,
@@ -400,7 +464,13 @@ mod tests {
         Entry {
             seq,
             time: at(2),
-            content: EntryContent::Message { text: text.into(), engine: "e".into(), model: None, without: Vec::new() },
+            content: EntryContent::Message {
+                text: text.into(),
+                engine: "e".into(),
+                model: None,
+                effort: None,
+                without: Vec::new(),
+            },
         }
     }
 
@@ -474,11 +544,11 @@ mod tests {
     }
 
     fn engine(id: &str, kind: EngineKind) -> Engine {
-        Engine { id: id.into(), kind, name: id.into(), problem: None }
+        Engine { id: id.into(), kind, name: id.into(), problem: None, models: Vec::new() }
     }
 
     fn model(id: &str, tools: Option<bool>) -> AiModel {
-        AiModel { id: id.into(), name: id.into(), tools, open_weights: None, context: None }
+        AiModel { id: id.into(), name: id.into(), tools, open_weights: None, context: None, reasoning: None }
     }
 
     #[test]
@@ -533,21 +603,82 @@ mod tests {
     fn send_builds_the_message_request() {
         let choice = Choice { engine: "ai:ollama@localhost:11434".into(), model: Some("qwen3:8b".into()) };
         assert_eq!(
-            send_request(Some("c1"), Some(&choice), "What is on tomorrow?\n\n", &[Area::Mail], None),
+            send_request(
+                Some("c1"),
+                Some(&choice),
+                Some(Effort::High),
+                "What is on tomorrow?\n\n",
+                &[Area::Mail],
+                None
+            ),
             Some(Request::SendMessage {
                 conversation: Some("c1".into()),
                 engine: "ai:ollama@localhost:11434".into(),
                 model: Some("qwen3:8b".into()),
+                effort: Some(Effort::High),
                 text: "What is on tomorrow?".into(),
                 without: vec![Area::Mail],
                 bot: None,
             })
         );
-        assert_eq!(send_request(None, Some(&choice), " \n ", &[], None), None, "blank");
-        assert_eq!(send_request(None, None, "Hi", &[], None), None, "no engine");
+        assert_eq!(send_request(None, Some(&choice), None, " \n ", &[], None), None, "blank");
+        assert_eq!(send_request(None, None, None, "Hi", &[], None), None, "no engine");
         // Task B.3: a message to a bot names it; the core runs it with the bot's client.
-        let to_bot = send_request(None, Some(&choice), "Plan Lisbon", &[], Some("b0000001"));
+        let to_bot = send_request(None, Some(&choice), None, "Plan Lisbon", &[], Some("b0000001"));
         assert!(matches!(to_bot, Some(Request::SendMessage { bot: Some(ref bot), .. }) if bot == "b0000001"));
+    }
+
+    /// Issue #131: the control centre's default wins while its engine is there; else the last one
+    /// used, with the effort it had.
+    #[test]
+    fn the_default_of_the_control_centre_comes_first() {
+        let engines =
+            vec![engine("ai:ollama@localhost:11434", EngineKind::Ai), engine("claude-code", EngineKind::Agent)];
+        let default =
+            AssistantDefault { engine: "claude-code".into(), model: Some("opus".into()), effort: Some(Effort::High) };
+        let (choice, effort) = preferred_choice(Some(&default), &[], &engines, |_| None).expect("a choice");
+        assert_eq!(
+            (choice.engine.as_str(), choice.model.as_deref(), effort),
+            ("claude-code", Some("opus"), Some(Effort::High))
+        );
+
+        let mut last = summary("c1", 1, false);
+        last.effort = Some(Effort::Low);
+        let gone = AssistantDefault { engine: "ai:removed@example.com".into(), ..default };
+        let (choice, effort) = preferred_choice(Some(&gone), &[last], &engines, |_| None).expect("a choice");
+        assert_eq!((choice.model.as_deref(), effort), (Some("qwen3:8b"), Some(Effort::Low)), "the one used last");
+        assert_eq!(preferred_choice(None, &[], &[], |_| None), None);
+    }
+
+    /// Issue #131: an effort only for a model that thinks; an agent's models are its own.
+    #[test]
+    fn an_effort_is_offered_only_where_the_model_takes_one() {
+        let mut claude = engine("claude-code", EngineKind::Agent);
+        claude.models = vec![
+            AiModel { reasoning: Some(true), ..model("opus", Some(true)) },
+            AiModel { reasoning: Some(false), ..model("haiku", Some(true)) },
+        ];
+        let ollama = engine("ai:ollama@localhost:11434", EngineKind::Ai);
+        let listed = [
+            AiModel { reasoning: Some(true), ..model("qwen3:8b", Some(true)) },
+            model("local", None),
+            model("gemma3:4b", Some(false)),
+        ];
+        let offered = engine_models(&claude, None).expect("fixed");
+        assert_eq!(offered.len(), 2);
+        assert_eq!(engine_models(&ollama, Some(&listed)).map(|models| models.len()), Some(2), "tool models only");
+        assert_eq!(engine_models(&ollama, None), None);
+        let pick =
+            |engine: &str, model: Option<&str>| Choice { engine: engine.into(), model: model.map(str::to_owned) };
+        assert!(can_reason(Some(&claude), &pick("claude-code", Some("opus")), Some(&offered)));
+        assert!(!can_reason(Some(&claude), &pick("claude-code", Some("haiku")), Some(&offered)));
+        assert!(can_reason(Some(&claude), &pick("claude-code", None), Some(&offered)), "the agent picks");
+        assert!(can_reason(Some(&ollama), &pick("x", Some("qwen3:8b")), Some(&listed)));
+        assert!(can_reason(Some(&ollama), &pick("x", Some("local")), Some(&listed)), "not known to lack it");
+        assert!(!can_reason(Some(&ollama), &pick("x", None), Some(&listed)), "the account picks: unknown");
+        assert!(!can_reason(None, &pick("x", Some("qwen3:8b")), Some(&listed)));
+        assert_eq!(effort_name(None), tr("Automatic"));
+        assert_eq!(effort_name(Some(Effort::High)), tr("High"));
     }
 
     #[test]

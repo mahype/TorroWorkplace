@@ -29,9 +29,11 @@
 //! never happens. Rights apply from the assistant's next tool call, also in a conversation that is
 //! running: the core reads the client's rights anew for every call.
 //!
-//! There is no setting for a default engine: each chat picks its engine, and a new chat starts with
-//! the one used last (`docs/assistent.md`, "Woher das Modell kommt"). A key for it would be a new
-//! `torro_ipc::SettingKey`.
+//! **New chats** (issue #131): the engine, model and effort a new chat starts with
+//! (`settings.set_setting assistant_default`), or "The one used last" (`null`). The engines come
+//! from `assistant.list_engines` – an agent with its own models –, an AI account's models from
+//! `ai.list_models` ([`Data::default_models`]); the effort only where the model takes one. Each chat
+//! can still pick another.
 //!
 //! Profile and memory (task C.10) are pages below this one, opened from the rows under the status
 //! ([`persona`]): the page here only hands them their messages, header, dialog and view. So are the
@@ -51,14 +53,16 @@ use std::time::Duration;
 use chrono::Utc;
 use iced::widget::{Space, column, responsive, svg, toggler};
 use iced::{Element, Length, Subscription, Theme};
+use torro_core::ai::{AiModel, Effort};
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::Retention;
+use torro_core::settings::{AssistantDefault, Retention};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::style;
 use torro_gui::theme::palette;
 use torro_gui::widgets::{self, Status};
 use torro_ipc::api::{ASSISTANT_CLIENT, Rights, RightsTemplate};
+use torro_ipc::assistant::EngineKind;
 use torro_ipc::{
     ClientInfo, Request, Response, SettingKey, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
 };
@@ -203,6 +207,9 @@ pub enum Message {
     TurnOn,
     /// A row of "Keep conversations".
     Retention(Retention),
+    /// A row of "New chats", "Model" or "Effort" (issue #131): the whole default as it is to be
+    /// stored; `None` for the one used last.
+    Default(Option<AssistantDefault>),
     /// An engine's row, or "No AI account yet": the Accounts page.
     OpenAccounts,
     /// "Turn off assistant…", then its confirmation or "Cancel".
@@ -257,6 +264,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::Retention(retention) => {
             Action::Send(Request::SetSetting { key: SettingKey::AssistantRetention, value: retention.to_value() })
         }
+        Message::Default(default) => Action::Send(Request::SetSetting {
+            key: SettingKey::AssistantDefault,
+            value: AssistantDefault::to_value(default.as_ref()),
+        }),
         Message::OpenAccounts => Action::Select(Section::Accounts),
         Message::AskTurnOff => {
             state.confirm_off = assistant_client(data).is_some();
@@ -537,6 +548,7 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
                 .push(persona::profile_rows(data).map(Message::Persona))
                 .push(bots::bots_group(data).map(Message::Bots))
                 .push(engines_group(data))
+                .extend(default_groups(data))
                 .extend(groups)
                 .push(voice_group(&state.voice, data, column))
                 .extend(microphone_group(&state.voice, data))
@@ -636,9 +648,96 @@ fn engines_group<'a>(data: &'a Data) -> Element<'a, Message> {
         rows.push(pressable(row, Some(Message::OpenAccounts)));
     }
     let footer = tr(
-        "The assistant answers with the models of these accounts. Each chat picks one; a new chat starts with the one you used last.",
+        "The assistant answers with the models of these accounts. Each chat picks one; a new chat starts with the one set below.",
     );
     widgets::group(tr("Engines"), rows, Some(footer.to_string()))
+}
+
+/// "New chats", and for a default engine its "Model" and, where the model takes one, its "Effort"
+/// (issue #131): each row a check, a press stores the whole default.
+fn default_groups<'a>(data: &'a Data) -> Vec<Element<'a, Message>> {
+    let current = data.settings.assistant_default.as_ref();
+    let last = choice(tr("The one used last"), current.is_none(), Message::Default(None));
+    let engines = data.engines.iter().map(|engine| {
+        let chosen = current.is_some_and(|default| default.engine == engine.id);
+        let effort = current.and_then(|default| default.effort);
+        let default = AssistantDefault { engine: engine.id.clone(), model: None, effort };
+        choice(engine.name.as_str(), chosen, Message::Default(Some(default)))
+    });
+    let footer = tr("What a new chat starts with. Each chat can pick another.");
+    let mut groups =
+        vec![widgets::group(tr("New chats"), std::iter::once(last).chain(engines).collect(), Some(footer.into()))];
+    let Some(default) = current else { return groups };
+    let pick = |model: Option<String>| AssistantDefault { model, ..default.clone() };
+    let models = default_models(default, data);
+    let automatic = choice(tr("Automatic"), default.model.is_none(), Message::Default(Some(pick(None))));
+    let rows = models.into_iter().map(|model| {
+        let chosen = default.model.as_ref() == Some(&model.id);
+        choice(model.name, chosen, Message::Default(Some(pick(Some(model.id)))))
+    });
+    groups.push(widgets::group(tr("Model"), std::iter::once(automatic).chain(rows).collect(), None));
+    if takes_effort(default, data) {
+        let rows = std::iter::once(None)
+            .chain(Effort::ALL.into_iter().map(Some))
+            .map(|effort| {
+                let stored = AssistantDefault { effort, ..default.clone() };
+                choice(effort_label(effort), default.effort == effort, Message::Default(Some(stored)))
+            })
+            .collect();
+        let footer = tr("How hard the model thinks before it answers. More is slower and uses more tokens.");
+        groups.push(widgets::group(tr("Effort"), rows, Some(footer.into())));
+    }
+    groups
+}
+
+/// The models offered for the default's engine (issue #131): an agent's own, an AI account's that
+/// can call tools ([`Data::default_models`]); the stored model first when it is none of them (set
+/// in a chat, or closed weights), so its check shows.
+pub fn default_models(default: &AssistantDefault, data: &Data) -> Vec<AiModel> {
+    let engine = data.engines.iter().find(|engine| engine.id == default.engine);
+    let mut models: Vec<AiModel> = match engine.map(|engine| engine.kind) {
+        Some(EngineKind::Agent) => engine.map(|engine| engine.models.clone()).unwrap_or_default(),
+        Some(EngineKind::Ai) => {
+            data.default_models.iter().filter(|model| model.tools != Some(false)).cloned().collect()
+        }
+        Some(EngineKind::Test) | None => Vec::new(),
+    };
+    if let Some(stored) = default.model.as_ref().filter(|id| !models.iter().any(|model| &model.id == *id)) {
+        let named = AiModel {
+            id: stored.clone(),
+            name: stored.clone(),
+            tools: None,
+            open_weights: None,
+            context: None,
+            reasoning: None,
+        };
+        models.insert(0, named);
+    }
+    models
+}
+
+/// Whether the default's model takes an effort (issue #131), as the chat decides it: an agent left
+/// to pick takes one, an AI account left to pick does not, a model not known to lack thinking does.
+pub fn takes_effort(default: &AssistantDefault, data: &Data) -> bool {
+    let Some(engine) = data.engines.iter().find(|engine| engine.id == default.engine) else { return false };
+    match (&default.model, engine.kind) {
+        (_, EngineKind::Test) | (None, EngineKind::Ai) => false,
+        (None, EngineKind::Agent) => true,
+        (Some(id), _) => default_models(default, data)
+            .iter()
+            .find(|model| &model.id == id)
+            .is_some_and(|m| m.reasoning != Some(false)),
+    }
+}
+
+/// The word for an effort: "Automatic" for `None`, else "Low", "Medium", "High".
+pub fn effort_label(effort: Option<Effort>) -> &'static str {
+    match effort {
+        None => tr("Automatic"),
+        Some(Effort::Low) => tr("Low"),
+        Some(Effort::Medium) => tr("Medium"),
+        Some(Effort::High) => tr("High"),
+    }
 }
 
 /// "Keep conversations": a row per retention time, a check at the stored one.
@@ -988,6 +1087,40 @@ mod tests {
             };
             assert_eq!((key, sent), (SettingKey::AssistantRetention, value));
         }
+    }
+
+    /// Issue #131: the default of new chats is stored whole, its models are the engine's, and the
+    /// effort is offered only where the model takes one.
+    #[test]
+    fn the_default_of_new_chats_is_stored_whole() {
+        let mut data = super::super::launch::demo_data();
+        let mut state = State::default();
+        let opus = data.settings.assistant_default.clone().expect("the demo sets one");
+        let haiku = AssistantDefault { model: Some("haiku".into()), ..opus.clone() };
+        let Action::Send(Request::SetSetting { key, value }) =
+            update(&mut state, Message::Default(Some(haiku.clone())), &data)
+        else {
+            panic!("expected set_setting");
+        };
+        assert_eq!((key, value), (SettingKey::AssistantDefault, AssistantDefault::to_value(Some(&haiku))));
+        let Action::Send(Request::SetSetting { value, .. }) = update(&mut state, Message::Default(None), &data) else {
+            panic!("expected set_setting");
+        };
+        assert_eq!(value, serde_json::Value::Null, "the one used last");
+
+        let ids: Vec<String> = default_models(&opus, &data).into_iter().map(|model| model.id).collect();
+        assert_eq!(ids, ["opus", "sonnet", "haiku"]);
+        assert!(takes_effort(&opus, &data) && !takes_effort(&haiku, &data), "Haiku takes no effort");
+        let automatic = AssistantDefault { model: None, ..opus.clone() };
+        assert!(takes_effort(&automatic, &data), "Claude Code picks a model that thinks");
+
+        let router = AssistantDefault { engine: "ai:openrouter@openrouter.ai".into(), model: None, effort: None };
+        assert!(!takes_effort(&router, &data), "the account picks: unknown");
+        let closed = AssistantDefault { model: Some("openai/gpt-5".into()), ..router.clone() };
+        assert_eq!(default_models(&closed, &data)[0].id, "openai/gpt-5", "a stored model shows");
+        data.settings.assistant_default = Some(closed);
+        let _page: Element<'_, Message> = view(&state, &data);
+        assert_eq!(effort_label(Some(Effort::Medium)), tr("Medium"));
     }
 
     #[test]

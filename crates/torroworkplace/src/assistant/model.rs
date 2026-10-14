@@ -263,6 +263,9 @@ pub(super) struct Job {
     pub run: u64,
     pub engine: String,
     pub model: Option<String>,
+    /// How hard the model thinks (issue #131): into every [`ChatRequest`] of the answer, and Claude
+    /// Code's `--effort`.
+    pub effort: Option<torro_core::ai::Effort>,
     pub without: Vec<Area>,
     /// The conversation's entries up to the message, which is the last.
     pub history: Vec<Entry>,
@@ -416,6 +419,7 @@ impl Answering {
                 messages: messages.clone(),
                 tools: tools::offered(&allowed, small, &self.loaded),
                 max_tokens: None,
+                effort: self.job.effort,
             };
             let reply = self.ask(access.provider.as_ref(), &request).await.map_err(Ended::Model)?;
             let done = reply.tool_calls.is_empty();
@@ -853,6 +857,7 @@ pub(crate) mod tests {
                         tools: Some(false),
                         open_weights: None,
                         context: None,
+                        reasoning: None,
                     },
                     AiModel {
                         id: "qwen3:8b".into(),
@@ -860,6 +865,7 @@ pub(crate) mod tests {
                         tools: Some(true),
                         open_weights: None,
                         context: None,
+                        reasoning: None,
                     },
                 ])
             })
@@ -1063,6 +1069,7 @@ pub(crate) mod tests {
             conversation: conversation.map(str::to_string),
             engine: ENGINE.into(),
             model: None,
+            effort: None,
             text: text.into(),
             without,
             bot: None,
@@ -1117,6 +1124,32 @@ pub(crate) mod tests {
             .map(|(request, _)| request.clone())
             .filter(|request| matches!(request, Request::Remember { .. }))
             .collect()
+    }
+
+    /// Issue #131: the effort of the message goes into every request of its answer.
+    #[tokio::test]
+    async fn the_effort_reaches_every_step_of_the_answer() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![calls("calendar_list_calendars", json!({})), says("No calendars.")]);
+        let (assistant, _host) = set_up(dir.path(), Some(reader()), Place::Remote, Arc::clone(&script));
+        let message = Message {
+            conversation: None,
+            engine: ENGINE.into(),
+            model: None,
+            effort: Some(torro_core::ai::Effort::Low),
+            text: "Which calendars?".into(),
+            without: Vec::new(),
+            bot: None,
+            on_behalf: None,
+            person: false,
+        };
+        let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
+        else {
+            panic!("expected a conversation");
+        };
+        finished(&assistant, &conversation.id).await;
+        let efforts: Vec<_> = script.asked().iter().map(|request| request.effort).collect();
+        assert_eq!(efforts, [Some(torro_core::ai::Effort::Low); 2]);
     }
 
     /// Task C.10: the personality comes first in the system prompt and the notes in its generated
@@ -1248,6 +1281,7 @@ pub(crate) mod tests {
             conversation: None,
             engine: ENGINE.into(),
             model: None,
+            effort: None,
             text: "Which calendars do I have?".into(),
             without: Vec::new(),
             bot: Some(bot),
@@ -1558,6 +1592,7 @@ pub(crate) mod tests {
             conversation: Some(id.clone()),
             engine: "ai:openrouter@openrouter.ai".into(),
             model: Some("qwen/qwen3-14b".into()),
+            effort: None,
             text: "Summarise".into(),
             without: Vec::new(),
             bot: None,

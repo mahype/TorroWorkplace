@@ -621,6 +621,7 @@ mod tests {
                 design: "plex".into(),
                 assistant_retention: Default::default(),
                 voice: Default::default(),
+                assistant_default: None,
             },
             ..Data::default()
         };

@@ -2146,11 +2146,20 @@ mod tests {
                 conversation: Some("0123456789abcdef".into()),
                 engine: "test".into(),
                 model: None,
+                effort: None,
                 text: "What is on tomorrow?".into(),
                 without: vec![Area::Mail],
                 bot: None,
             })
         );
+        // Issue #131: the model and the effort come through as given.
+        let thinking =
+            args(json!({"engine": "claude-code", "model": "opus", "effort": "high", "text": "Plan my week"}));
+        assert!(matches!(
+            request_for("assistant_send_message", thinking, &Utc),
+            Ok(Request::SendMessage { effort: Some(torro_core::ai::Effort::High), model: Some(ref model), .. })
+                if model == "opus"
+        ));
         let read = request_for("assistant_get_conversation", args(json!({"id": "0123456789abcdef", "after": 4})), &Utc);
         assert_eq!(read, Ok(Request::GetConversation { id: "0123456789abcdef".into(), after: Some(4) }));
     }

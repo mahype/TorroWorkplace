@@ -214,6 +214,12 @@ pub struct Data {
     pub memories: Vec<torro_ipc::assistant::Note>,
     /// The bots, by name (`bots.list_bots`, task B.3); none from a core without bots.
     pub bots: Vec<torro_ipc::bots::BotSummary>,
+    /// The engines the assistant answers with (`assistant.list_engines`), for its default (issue
+    /// #131); an agent's with its fixed models.
+    pub engines: Vec<torro_ipc::assistant::Engine>,
+    /// The models of the AI account set as the assistant's default engine (`ai.list_models`, open
+    /// weights only, issue #131); empty for any other default and while none is set.
+    pub default_models: Vec<torro_core::ai::AiModel>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -1422,6 +1428,22 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Bots { bots }) = client::call(&socket, &Request::ListBots).await {
                 data.bots = bots;
+            }
+            if let Ok(Response::Engines { engines }) = client::call(&socket, &Request::ListEngines).await {
+                data.engines = engines;
+            }
+            // Only the default engine's models, and only for an AI account: an agent's come with it.
+            let default = data.settings.assistant_default.as_ref().map(|default| default.engine.clone());
+            let account = default.filter(|id| {
+                data.engines
+                    .iter()
+                    .any(|engine| &engine.id == id && engine.kind == torro_ipc::assistant::EngineKind::Ai)
+            });
+            if let Some(account) = account
+                && let Ok(Response::AiModels { models }) =
+                    client::call(&socket, &Request::AiModels { account, all: false }).await
+            {
+                data.default_models = models;
             }
             data
         },

@@ -136,6 +136,13 @@ impl Agent {
         Agent::ALL.into_iter().find(|agent| agent.id() == id)
     }
 
+    /// The models it offers (issue #131), as `assistant.list_engines` lists them.
+    pub fn models(self) -> Vec<torro_core::ai::AiModel> {
+        match self {
+            Agent::ClaudeCode => claude::models(),
+        }
+    }
+
     fn target(self) -> Target {
         match self {
             Agent::ClaudeCode => Target::ClaudeCode,
@@ -197,6 +204,7 @@ impl Agents {
                 kind: EngineKind::Agent,
                 name: agent.name().into(),
                 problem: None,
+                models: agent.models(),
             })
             .collect()
     }
@@ -354,7 +362,8 @@ impl Running {
         })?;
         // The tools of the areas it does not get are not offered at all (issue #133): the model then
         // never tries them, and the prompt says why.
-        let arguments = claude::arguments(&folder.config(), &system, self.job.model.as_deref(), &without);
+        let arguments =
+            claude::arguments(&folder.config(), &system, self.job.model.as_deref(), self.job.effort, &without);
         let mut child = start(&command, &arguments, folder.path(), lent.key())
             .await
             .map_err(|err| Failed::Start(detail(&err.to_string(), lent.key(), &[folder.path(), &home])))?;

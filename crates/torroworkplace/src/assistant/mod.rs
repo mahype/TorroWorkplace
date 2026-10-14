@@ -69,6 +69,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use tokio::sync::{Mutex, MutexGuard};
 use torro_core::AppId;
+use torro_core::ai::Effort;
 use torro_core::i18n::tr;
 use torro_core::paths::AppPaths;
 use torro_core::settings::Retention;
@@ -329,13 +330,19 @@ impl Assistant {
                     AccountState::Connected { problem, .. } => problem,
                     _ => None,
                 };
-                Engine { id: account.id, kind: EngineKind::Ai, name: account.label, problem }
+                Engine { id: account.id, kind: EngineKind::Ai, name: account.label, problem, models: Vec::new() }
             })
             .collect();
         engines.extend(self.agents.engines(self.has_client()));
         if self.test_engine.is_some() {
             let name = tr("Test engine").to_string();
-            engines.push(Engine { id: TEST_ENGINE.into(), kind: EngineKind::Test, name, problem: None });
+            engines.push(Engine {
+                id: TEST_ENGINE.into(),
+                kind: EngineKind::Test,
+                name,
+                problem: None,
+                models: Vec::new(),
+            });
         }
         engines
     }
@@ -483,6 +490,7 @@ impl Assistant {
                 text: message.text,
                 engine: message.engine.clone(),
                 model: message.model.clone(),
+                effort: message.effort,
                 without: message.without.clone(),
             },
             now,
@@ -500,7 +508,7 @@ impl Assistant {
         }
         let history = conversation.entries.clone();
         state.conversations.insert(id.clone(), conversation);
-        let (engine, model, without) = (message.engine, message.model, message.without);
+        let (engine, model, effort, without) = (message.engine, message.model, message.effort, message.without);
         let actor = match message.on_behalf {
             Some(delegation) => Actor::Delegated(delegation),
             None => Actor::of(message.bot.as_ref()),
@@ -510,6 +518,7 @@ impl Assistant {
             run: 0,
             engine,
             model,
+            effort,
             without,
             history,
             partial: Arc::default(),
@@ -981,6 +990,8 @@ struct Message {
     conversation: Option<String>,
     engine: String,
     model: Option<String>,
+    /// How hard the model thinks (issue #131); `None`: as it decides.
+    effort: Option<Effort>,
     text: String,
     without: Vec<Area>,
     /// The bot that answers, as stored now (task B.1); `None` for the assistant.
@@ -1032,7 +1043,7 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
         Request::ListEngines => Response::Engines { engines: assistant.engines(ai).await },
         Request::ListConversations => assistant.list().await,
         Request::GetConversation { id, after } => assistant.get(&id, after).await,
-        Request::SendMessage { conversation, engine, model, text, without, bot } => {
+        Request::SendMessage { conversation, engine, model, effort, text, without, bot } => {
             let bot = match bot {
                 Some(id) => match assistant.bots.get(&id).await {
                     Some(bot) => Some(bot),
@@ -1047,7 +1058,7 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
                 Ok(kind) => kind,
                 Err(refused) => return refused,
             };
-            let message = Message { conversation, engine, model, text, without, bot, on_behalf: None, person };
+            let message = Message { conversation, engine, model, effort, text, without, bot, on_behalf: None, person };
             assistant.send(message, kind, Utc::now()).await
         }
         Request::AskBot { bot, text, conversation } => {
@@ -1061,6 +1072,7 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
                 conversation,
                 engine,
                 model,
+                effort: None,
                 text,
                 without: Vec::new(),
                 bot: Some(bot),
@@ -1140,6 +1152,7 @@ pub(crate) mod tests {
             conversation: conversation.map(str::to_string),
             engine: TEST_ENGINE.into(),
             model: None,
+            effort: None,
             text: text.into(),
             without: vec![Area::Mail],
             bot: None,
@@ -1251,6 +1264,7 @@ pub(crate) mod tests {
             conversation: None,
             engine: "ai:ollama@localhost:11434".into(),
             model: None,
+            effort: None,
             text: "Hi".into(),
             without: Vec::new(),
             bot: None,
@@ -1288,12 +1302,19 @@ pub(crate) mod tests {
         assert_eq!(
             engines,
             vec![
-                Engine { id: account.id.clone(), kind: EngineKind::Ai, name: account.label.clone(), problem: None },
+                Engine {
+                    id: account.id.clone(),
+                    kind: EngineKind::Ai,
+                    name: account.label.clone(),
+                    problem: None,
+                    models: Vec::new()
+                },
                 Engine {
                     id: TEST_ENGINE.into(),
                     kind: EngineKind::Test,
                     name: tr("Test engine").into(),
-                    problem: None
+                    problem: None,
+                    models: Vec::new()
                 },
             ]
         );
@@ -1303,6 +1324,7 @@ pub(crate) mod tests {
             conversation: None,
             engine: account.id,
             model: Some("qwen3:8b".into()),
+            effort: None,
             text: "Hi".into(),
             without: Vec::new(),
             bot: None,

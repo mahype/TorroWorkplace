@@ -22,8 +22,13 @@ fn answer(text: &str) -> EntryContent {
 
 /// The run of the bot's conversation `b0`: a message, then `contents`.
 fn run(contents: Vec<EntryContent>) -> Response {
-    let message =
-        EntryContent::Message { text: "Plan Lisbon".into(), engine: "test".into(), model: None, without: Vec::new() };
+    let message = EntryContent::Message {
+        text: "Plan Lisbon".into(),
+        engine: "test".into(),
+        model: None,
+        effort: None,
+        without: Vec::new(),
+    };
     let entries: Vec<Entry> = std::iter::once(message)
         .chain(contents)
         .enumerate()
@@ -34,6 +39,7 @@ fn run(contents: Vec<EntryContent>) -> Response {
         title: "Plan Lisbon".into(),
         engine: "test".into(),
         model: None,
+        effort: None,
         created: Utc::now(),
         updated: Utc::now(),
         pinned: false,

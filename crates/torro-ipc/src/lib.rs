@@ -1726,10 +1726,17 @@ pub enum Request {
         conversation: Option<String>,
         /// Who answers: an engine's id from `assistant.list_engines`.
         engine: String,
-        /// The model of an AI account (an id from `ai.list_models`); left out, the engine picks
-        /// an open-weights one that can call tools.
+        /// The model of an AI account (an id from `ai.list_models`) or of an agent (one of its
+        /// engine's `models` from `assistant.list_engines`, `opus`); left out, the engine picks
+        /// one (an AI account an open-weights one that can call tools).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// How hard the model thinks before it answers (issue #131): `low`, `medium` or `high`;
+        /// left out, the model decides. Send it only for a model whose `reasoning` is not `false`
+        /// (`ai.list_models`, an agent's `models`): some servers refuse it for one that does not
+        /// think.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<torro_core::ai::Effort>,
         /// The message, at most 20,000 characters.
         text: String,
         /// Areas the assistant may not use for this answer (`mail`, `calendar` …), on top of what
@@ -2107,6 +2114,12 @@ pub enum SettingKey {
     /// The Piper voice, an absolute path to an `.onnx` file; `""` (or `null`) for the first one in the voice
     /// folder.
     Voice,
+    /// What a new chat of the assistant starts with (issue #131): `{"engine": "<id from
+    /// assistant.list_engines>", "model": "<model id>", "effort": "low" | "medium" | "high"}`, model
+    /// and effort optional; `null` for the engine and model used last
+    /// (`torro_core::settings::AssistantDefault`). The engine is not checked here: an engine that is
+    /// not offered when a chat starts is passed over.
+    AssistantDefault,
 }
 
 /// The core's answer to one [`Request`].

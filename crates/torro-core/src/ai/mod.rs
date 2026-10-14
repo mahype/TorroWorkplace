@@ -117,6 +117,41 @@ pub struct AiModel {
     /// How many tokens fit into one conversation, when the server tells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
+    /// The model thinks before it answers and takes an [`Effort`] (issue #131): `true` or `false`
+    /// where the server says so (OpenRouter's `supported_parameters` holds `reasoning`, Ollama's
+    /// capabilities hold `thinking`), `null` where it does not tell. Apps offer an effort only for
+    /// a model that is not known to lack it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<bool>,
+}
+
+/// How hard a model thinks before it answers (issue #131): sent with a message
+/// (`assistant.send_message`), kept as a default (`settings`), and put into a [`ChatRequest`]. Each
+/// protocol writes it its own way ([`openai::chat_body_for`]; Claude Code's `--effort`). A model
+/// that does not think ignores it or, on some servers, refuses it: apps offer it only where
+/// [`AiModel::reasoning`] is not `false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+}
+
+impl Effort {
+    /// Every effort, least first, as menus list them.
+    pub const ALL: [Effort; 3] = [Effort::Low, Effort::Medium, Effort::High];
+
+    /// How the effort is written on the wire and on command lines: `low`, `medium`, `high` (the
+    /// serde name, and the value OpenAI's `reasoning_effort`, OpenRouter's `reasoning.effort`,
+    /// Ollama and Claude Code's `--effort` take).
+    pub fn id(self) -> &'static str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+        }
+    }
 }
 
 /// `models` without those known to have closed weights (Open First, decision 4 in
@@ -215,6 +250,10 @@ pub struct ChatRequest {
     /// The most tokens the answer may have; `None` leaves it to the server.
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// How hard the model thinks (issue #131); `None` leaves it to the model. Written per
+    /// provider by [`openai::chat_body_for`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
 }
 
 /// Why the model stopped.
@@ -404,7 +443,7 @@ mod tests {
     use super::*;
 
     fn model(id: &str, open_weights: Option<bool>) -> AiModel {
-        AiModel { id: id.into(), name: id.into(), tools: None, open_weights, context: None }
+        AiModel { id: id.into(), name: id.into(), tools: None, open_weights, context: None, reasoning: None }
     }
 
     #[test]
@@ -438,6 +477,14 @@ mod tests {
         assert!(!key_may_travel("http://gpu.local:8000/v1"));
         assert!(!key_may_travel("http://192.168.1.20:8000/v1"));
         assert!(!key_may_travel("http://localhost.example.org/v1"));
+    }
+
+    #[test]
+    fn efforts_are_written_as_their_ids() {
+        for effort in Effort::ALL {
+            assert_eq!(serde_json::to_value(effort).expect("json"), effort.id());
+        }
+        assert!(Effort::Low < Effort::High);
     }
 
     #[test]

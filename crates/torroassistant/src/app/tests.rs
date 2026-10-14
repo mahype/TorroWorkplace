@@ -88,6 +88,10 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
             Response::Profile { profile } => Ok(profile),
             other => Err(Refusal::unexpected(&other)),
         })),
+        Request::Settings => Message::Settings(result.and_then(|response| match response {
+            Response::Settings { settings } => Ok(settings),
+            other => Err(Refusal::unexpected(&other)),
+        })),
         Request::ListBots => Message::Bots(result.and_then(|response| match response {
             Response::Bots { bots } => Ok(bots),
             other => Err(Refusal::unexpected(&other)),
@@ -195,6 +199,59 @@ fn the_picker_offers_only_models_that_can_call_tools() {
     assert_eq!(app.choice, Some(pick));
 }
 
+/// Issue #131: Claude Code's own models, an effort only where the model takes one, and "Show all
+/// models" lists the AI accounts anew with closed models.
+#[test]
+fn the_effort_goes_with_the_message_where_the_model_thinks() {
+    let mut app = started(&["--open", "effort"]);
+    assert_eq!(app.menu, Some(Menu::Effort));
+    assert!(app.effort_offered(), "qwen3:14b thinks");
+    let _ = app.update(Message::PickEffort(Some(torro_core::ai::Effort::High)));
+    assert_eq!((app.effort, app.menu.as_ref()), (Some(torro_core::ai::Effort::High), None));
+
+    let claude: Vec<String> = match app.offered_models(demo::CLAUDE_CODE) {
+        Some(Ok(models)) => models.into_iter().map(|model| model.id).collect(),
+        other => panic!("Claude Code's models are fixed: {other:?}"),
+    };
+    assert_eq!(claude, ["opus", "sonnet", "haiku"]);
+    let _ = app.update(Message::Pick(Choice { engine: demo::CLAUDE_CODE.into(), model: Some("haiku".into()) }));
+    assert!(!app.effort_offered(), "Haiku takes no effort");
+    assert_eq!(app.offered_effort(), None, "nothing is sent for it");
+    let _ = app.update(Message::Pick(Choice { engine: demo::CLAUDE_CODE.into(), model: Some("opus".into()) }));
+    sent(&mut app);
+    let _ = app.update(Message::Edit(text_editor::Action::Edit(text_editor::Edit::Paste(Arc::new("Plan".into())))));
+    let _ = app.update(Message::Send);
+    assert!(matches!(
+        sent(&mut app).as_slice(),
+        [Request::SendMessage { effort: Some(torro_core::ai::Effort::High), model: Some(model), .. }] if model == "opus"
+    ));
+
+    let _ = app.update(Message::ToggleAllModels);
+    let asked: Vec<bool> = sent(&mut app)
+        .into_iter()
+        .filter_map(|request| match request {
+            Request::AiModels { all, .. } => Some(all),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(asked, [true, true], "each AI account again, closed models too");
+}
+
+/// Issue #131: a default set in the control centre is what a new chat starts with.
+#[test]
+fn a_new_chat_starts_with_the_default_of_the_control_centre() {
+    let mut app = started(&[]);
+    let default = AssistantDefault {
+        engine: demo::CLAUDE_CODE.into(),
+        model: Some("sonnet".into()),
+        effort: Some(torro_core::ai::Effort::Low),
+    };
+    let settings = Settings { assistant_default: Some(default), ..Settings::default() };
+    let _ = app.update(Message::Settings(Ok(settings)));
+    assert_eq!(app.choice, Some(Choice { engine: demo::CLAUDE_CODE.into(), model: Some("sonnet".into()) }));
+    assert_eq!(app.effort, Some(torro_core::ai::Effort::Low));
+}
+
 #[test]
 fn sending_starts_a_conversation_and_the_growing_answer_replaces_itself() {
     let mut app = started(&[]);
@@ -212,6 +269,7 @@ fn sending_starts_a_conversation_and_the_growing_answer_replaces_itself() {
             conversation: None,
             engine: OLLAMA.into(),
             model: Some("qwen3:14b".into()),
+            effort: None,
             text: "What is on tomorrow?".into(),
             without: vec![Area::Mail],
             bot: None,
@@ -430,7 +488,13 @@ fn enter_sends_and_shift_enter_breaks_the_line() {
 #[test]
 fn the_test_engine_is_offered_by_its_name() {
     let mut app = started(&["--open", "picker"]);
-    let engine = Engine { id: TEST_ENGINE.into(), kind: EngineKind::Test, name: "Test".into(), problem: None };
+    let engine = Engine {
+        id: TEST_ENGINE.into(),
+        kind: EngineKind::Test,
+        name: "Test".into(),
+        problem: None,
+        models: Vec::new(),
+    };
     let mut engines = app.engines.clone();
     engines.push(engine);
     let _ = app.update(Message::Engines(Ok(engines)));

@@ -77,6 +77,61 @@ pub struct Settings {
     /// person switches it on in the control centre ([`Voice`]).
     #[serde(default)]
     pub voice: Voice,
+    /// What a new chat of the assistant starts with (issue #131): engine, model and effort, set in
+    /// the control centre › Assistant. `None` (the default): the engine and model used last. Read
+    /// leniently: a value that does not read is `None`, never a settings file that fails.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_default")]
+    pub assistant_default: Option<AssistantDefault>,
+}
+
+/// What a new chat of the assistant starts with (issue #131, `settings.set_setting
+/// assistant_default`): `{"engine": "ai:ollama@localhost:11434", "model": "qwen3:8b", "effort":
+/// "high"}`. The chat window takes it while the engine is offered (`assistant.list_engines`) and
+/// otherwise falls back to the one used last; the person can still pick another per message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AssistantDefault {
+    /// The engine's id from `assistant.list_engines`.
+    pub engine: String,
+    /// The model of that engine; `None` lets the engine pick one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How hard the model thinks; `None` leaves it to the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<crate::ai::Effort>,
+}
+
+impl AssistantDefault {
+    /// The longest engine or model id it takes, as `assistant.send_message` does.
+    pub const MAX_ID_BYTES: usize = 300;
+
+    /// The default in `value`, `None` for `null`, or why it does not fit: an object with a
+    /// non-blank `engine`, ids of at most [`AssistantDefault::MAX_ID_BYTES`] on one line, an effort
+    /// of [`crate::ai::Effort`]. For `settings.set_setting`.
+    pub fn from_value(value: &serde_json::Value) -> Result<Option<AssistantDefault>, String> {
+        if value.is_null() {
+            return Ok(None);
+        }
+        let default: AssistantDefault = serde_json::from_value(value.clone()).map_err(|err| {
+            format!("{value} is not a default for the assistant: send engine, model and effort, or null ({err})")
+        })?;
+        let fits = |id: &str| !id.trim().is_empty() && id.len() <= Self::MAX_ID_BYTES && !id.contains(['\n', '\r']);
+        if !fits(&default.engine) || default.model.as_deref().is_some_and(|model| !fits(model)) {
+            return Err(format!("an engine or model id is one line of 1 to {} bytes", Self::MAX_ID_BYTES));
+        }
+        Ok(Some(default))
+    }
+
+    /// The default as `settings.set_setting` takes it; `null` for none.
+    pub fn to_value(default: Option<&AssistantDefault>) -> serde_json::Value {
+        default.and_then(|default| serde_json::to_value(default).ok()).unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// `assistantDefault` as written, or `None` when it does not read: a damaged default must not
+/// cost the other settings.
+fn lenient_default<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<AssistantDefault>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(AssistantDefault::from_value(&value).ok().flatten())
 }
 
 /// The id of the standard design, for settings from before design packs.
@@ -103,6 +158,7 @@ impl Default for Settings {
             design: standard_design(),
             assistant_retention: Retention::default(),
             voice: Voice::default(),
+            assistant_default: None,
         }
     }
 }
@@ -724,6 +780,41 @@ mod tests {
         assert_eq!(edited.assistant_retention, Retention::Forever);
     }
 
+    /// Issue #131: the assistant's default is none unless set, checked from outside and read
+    /// leniently from a file.
+    #[test]
+    fn the_assistants_default_is_checked_and_read_leniently() {
+        use serde_json::json;
+        assert_eq!(Settings::default().assistant_default, None);
+        let set = AssistantDefault::from_value(&json!({"engine": "claude-code", "model": "opus", "effort": "high"}));
+        let expected = AssistantDefault {
+            engine: "claude-code".into(),
+            model: Some("opus".into()),
+            effort: Some(crate::ai::Effort::High),
+        };
+        assert_eq!(set, Ok(Some(expected.clone())));
+        assert_eq!(AssistantDefault::to_value(Some(&expected))["model"], "opus");
+        assert_eq!(AssistantDefault::to_value(None), json!(null));
+        assert_eq!(AssistantDefault::from_value(&json!(null)), Ok(None));
+        for refused in [
+            json!({"engine": ""}),
+            json!({"engine": "a\nb"}),
+            json!({"engine": "x", "model": "a".repeat(301)}),
+            json!({"engine": "x", "effort": "max"}),
+            json!("claude-code"),
+        ] {
+            assert!(AssistantDefault::from_value(&refused).is_err(), "{refused}");
+        }
+        let settings = Settings { assistant_default: Some(expected.clone()), ..Settings::default() };
+        let written = serde_json::to_value(&settings).expect("json");
+        assert_eq!(written["assistantDefault"]["effort"], "high");
+        let read: Settings = serde_json::from_value(written).expect("reads");
+        assert_eq!(read.assistant_default, Some(expected));
+        let damaged: Settings = serde_json::from_str(r#"{"assistantDefault": 7, "zoom": 1.1}"#).expect("lenient");
+        assert_eq!(damaged.assistant_default, None);
+        assert!(serde_json::to_value(Settings::default()).expect("json").get("assistantDefault").is_none());
+    }
+
     /// Task C.9: voice is off unless switched on, answers are spoken unless turned off, and the
     /// values from outside are checked.
     #[test]
@@ -790,6 +881,7 @@ mod tests {
             design: "torro".into(),
             assistant_retention: Retention::DEFAULT,
             voice: Voice::default(),
+            assistant_default: None,
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -869,6 +961,7 @@ mod tests {
                 voice: Some("/voices/de_DE-thorsten-medium.onnx".into()),
                 ..Voice::default()
             },
+            assistant_default: None,
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

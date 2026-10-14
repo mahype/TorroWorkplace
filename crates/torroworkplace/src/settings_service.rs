@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use torro_core::design;
-use torro_core::settings::{self, Language, ListOrderEntry, Night, Retention, Settings, Voice, Zoom};
+use torro_core::settings::{self, AssistantDefault, Language, ListOrderEntry, Night, Retention, Settings, Voice, Zoom};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
@@ -262,6 +262,8 @@ enum Change {
     SpeakAnswers(bool),
     SttModel(Option<String>),
     Voice(Option<String>),
+    /// What a new chat of the assistant starts with (issue #131); `None` for the one used last.
+    AssistantDefault(Option<AssistantDefault>),
 }
 
 impl Change {
@@ -293,6 +295,7 @@ impl Change {
             SettingKey::SpeakAnswers => Change::SpeakAnswers(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::SttModel => Change::SttModel(Voice::file_from(value, "bin")?),
             SettingKey::Voice => Change::Voice(Voice::file_from(value, "onnx")?),
+            SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
         })
     }
 
@@ -314,6 +317,7 @@ impl Change {
             Change::SpeakAnswers(speak) => settings.voice.speak_answers = speak,
             Change::SttModel(path) => settings.voice.stt_model = path,
             Change::Voice(path) => settings.voice.voice = path,
+            Change::AssistantDefault(default) => settings.assistant_default = default,
         }
     }
 }
@@ -919,6 +923,8 @@ mod tests {
         Change::parse(SettingKey::QuietWhenBusy, &json!(false)).expect("valid flag").apply(&mut settings);
         Change::parse(SettingKey::Design, &json!("plex")).expect("an id").apply(&mut settings);
         Change::parse(SettingKey::AssistantRetention, &json!("forever")).expect("forever").apply(&mut settings);
+        let default = json!({"engine": "claude-code", "model": "opus", "effort": "medium"});
+        Change::parse(SettingKey::AssistantDefault, &default).expect("a default").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -933,8 +939,12 @@ mod tests {
                 design: "plex".into(),
                 assistant_retention: Retention::Forever,
                 voice: Voice::default(),
+                assistant_default: AssistantDefault::from_value(&default).expect("a default"),
             }
         );
+        Change::parse(SettingKey::AssistantDefault, &json!(null)).expect("none").apply(&mut settings);
+        assert_eq!(settings.assistant_default, None, "null goes back to the one used last");
+        assert!(Change::parse(SettingKey::AssistantDefault, &json!({"engine": " "})).is_err(), "an engine");
         assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
         assert!(Change::parse(SettingKey::AssistantRetention, &json!(0)).is_err(), "at least a day");
     }

@@ -84,6 +84,11 @@ pub struct Engine {
     /// last time); `None` when nothing is known against it. A local server may still be off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub problem: Option<String>,
+    /// The models of an engine whose models are fixed (issue #131): an agent's (`opus`, `sonnet`
+    /// … for Claude Code), each with whether it takes an effort. Empty for an AI account, whose
+    /// models `ai.list_models` lists, and for the test engine.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub models: Vec<torro_core::ai::AiModel>,
 }
 
 /// What drives an [`Engine`]. Clients must accept kinds they do not know.
@@ -95,9 +100,9 @@ pub enum EngineKind {
     Ai,
     /// A coding agent installed on this computer (engine B, task C.7): Claude Code. The core runs
     /// it without a terminal, with the suite's MCP server as its only tools and the key of the
-    /// assistant's own client; no shell, no files. It picks its model itself (`model` in
-    /// `assistant.send_message` may name one of its own, `sonnet`); it is offered only while the
-    /// assistant has its client.
+    /// assistant's own client; no shell, no files. It picks its model itself unless `model`
+    /// in `assistant.send_message` names one of its [`Engine::models`] (`sonnet`); it is offered only
+    /// while the assistant has its client.
     Agent,
     /// The test engine ([`TEST_ENGINE`]): fixed answers, no model, no tools.
     Test,
@@ -117,6 +122,9 @@ pub struct ConversationSummary {
     /// The model of the latest message, when it named one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// The effort of the latest message, when it named one (issue #131).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<torro_core::ai::Effort>,
     pub created: DateTime<Utc>,
     /// When the latest entry was added; the retention time counts from here.
     pub updated: DateTime<Utc>,
@@ -159,6 +167,9 @@ pub enum EntryContent {
         engine: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// How hard the model was asked to think (issue #131); `None`: as the model decides.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<torro_core::ai::Effort>,
         /// The areas switched off for its answer: the assistant's rights, narrowed, never widened.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         without: Vec<Area>,
@@ -452,6 +463,7 @@ mod tests {
             conversation: None,
             engine: TEST_ENGINE.into(),
             model: None,
+            effort: None,
             text: text.into(),
             without: Vec::new(),
             bot: None,
@@ -512,6 +524,7 @@ mod tests {
             conversation: None,
             engine: TEST_ENGINE.into(),
             model: Some(long.clone()),
+            effort: None,
             text: "Hi".into(),
             without: Vec::new(),
             bot: None,
@@ -521,6 +534,7 @@ mod tests {
             conversation: None,
             engine: TEST_ENGINE.into(),
             model: None,
+            effort: None,
             text: "Hi".into(),
             without: Vec::new(),
             bot: Some(long),
@@ -623,11 +637,23 @@ mod tests {
             text: "Hi".into(),
             engine: TEST_ENGINE.into(),
             model: None,
+            effort: None,
             without: vec![Area::Mail],
         };
         assert_eq!(
             serde_json::to_value(&message).expect("serializes"),
             serde_json::json!({"kind": "message", "text": "Hi", "engine": "test", "without": ["mail"]})
+        );
+        let thought = EntryContent::Message {
+            text: "Hi".into(),
+            engine: "claude-code".into(),
+            model: Some("opus".into()),
+            effort: Some(torro_core::ai::Effort::High),
+            without: Vec::new(),
+        };
+        assert_eq!(
+            serde_json::to_value(&thought).expect("serializes"),
+            serde_json::json!({"kind": "message", "text": "Hi", "engine": "claude-code", "model": "opus", "effort": "high"})
         );
 
         assert_eq!(serde_json::to_value(ChatWindow::New).expect("serializes"), serde_json::json!("new"));

@@ -263,6 +263,31 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   Bot für den Assistenten = `Rights::common`; MCP-End-to-End mit dem Schlüssel des Assistenten.
 - **Offen:** manuell mit echtem Ollama/OpenRouter und Claude Code fragen „Welche Rechte hast du?“.
 
+### C.15 Genaues Modell und Aufwand (Issue #131)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** C.7 · **Dateien:** `crates/torro-core/src/{ai/mod,ai/openai,settings}.rs`,
+  `crates/torro-ipc/src/{lib,api,assistant}.rs`, `crates/torroworkplace/src/{account/ai,settings_service,mcp}.rs`,
+  `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/ui/{mod,assistant,launch,general}.rs`,
+  `crates/torroassistant/src/**`, `crates/torro-core/src/i18n/de.rs`; mechanisch nachgezogen (neue Felder in
+  Literalen): `core.rs`, `audit.rs`, `approvals.rs`, `bots/tests.rs`
+- **Aufwand:** `torro_core::ai::Effort { Low, Medium, High }` in `ChatRequest`, `assistant.send_message`,
+  `EntryContent::Message` und `ConversationSummary` (alle optional). Je Anbieter: OpenRouter `reasoning.effort`,
+  Ollama, LM Studio und andere OpenAI-kompatible `reasoning_effort` (Ollamas `/v1` bildet es auf `think` ab),
+  Claude Code `--effort`. `AiModel::reasoning` sagt, ob ein Modell nachdenkt (OpenRouter `supported_parameters`,
+  Ollama-Fähigkeit `thinking`); die Oberfläche bietet den Aufwand nur, wo das nicht `false` ist.
+- **Claude Code:** feste Modelle (`fable`, `opus`, `sonnet`, `haiku`) in `Engine::models` von
+  `assistant.list_engines`; Haiku ohne Aufwand. Das Modell geht wie bisher als `--model`.
+- **Alle Modelle:** „Show all models“ im Picker fragt `ai.list_models { all: true }` (auch geschlossene Modelle);
+  Modelle ohne Tools bleiben ausgeblendet.
+- **Standard:** `SettingKey::AssistantDefault` (`{engine, model, effort}` oder `null` = zuletzt benutzt) in
+  Steuerzentrale › Assistant („New chats“, „Model“, „Effort“). Der Chat nimmt ihn, solange die Engine angeboten wird.
+- **Oberfläche:** Composer (Picker mit Claude-Code-Modellen und „Show all models“, Knopf „Effort: …“), Steuerzentrale
+  › Assistant. **API:** `assistant.send_message` + `effort`; `settings.set_setting assistant_default` (Admin).
+  **MCP:** `assistant_send_message` und `settings_set_setting` erben die Felder.
+- **Nicht gemacht:** ein gespeicherter Aufwand je Bot (ein Bot-Chat sendet den Aufwand des Composers).
+- **Abnahme:** Tests: Request-Body je Anbieter enthält den Aufwand; Claude-Code-Argumente enthalten Modell und
+  `--effort`; Aufwand in jeder Anfrage einer Antwort; Standard der Steuerzentrale im Chat; Einstellung geprüft.
+
 ## Stufe 2: Bots (B.1–B.4)
 
 Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Geplant am 2026-10-14 nach Stufe 1.

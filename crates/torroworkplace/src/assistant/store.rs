@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use torro_core::ai::Effort;
 use torro_ipc::assistant::{ConversationSummary, Entry, EntryContent};
 
 /// The extension of a conversation's file.
@@ -107,13 +108,13 @@ impl Conversation {
         self.entries.last().map_or(self.created, |entry| entry.time)
     }
 
-    /// The engine and model of the newest message; empty without one.
-    fn engine(&self) -> (String, Option<String>) {
+    /// The engine, model and effort of the newest message; empty without one.
+    fn engine(&self) -> (String, Option<String>, Option<Effort>) {
         self.entries
             .iter()
             .rev()
             .find_map(|entry| match &entry.content {
-                EntryContent::Message { engine, model, .. } => Some((engine.clone(), model.clone())),
+                EntryContent::Message { engine, model, effort, .. } => Some((engine.clone(), model.clone(), *effort)),
                 _ => None,
             })
             .unwrap_or_default()
@@ -122,12 +123,13 @@ impl Conversation {
     /// The conversation as `assistant.list_conversations` lists it; `bot_deleted` is the core's to
     /// set ([`ConversationSummary::bot_deleted`]), it knows which bots there are.
     pub fn summary(&self, running: bool) -> ConversationSummary {
-        let (engine, model) = self.engine();
+        let (engine, model, effort) = self.engine();
         ConversationSummary {
             id: self.id.clone(),
             title: self.title.clone(),
             engine,
             model,
+            effort,
             created: self.created,
             updated: self.updated(),
             pinned: self.pinned,

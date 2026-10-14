@@ -519,6 +519,7 @@ mod tests {
             title: id.into(),
             engine: "test".into(),
             model: None,
+            effort: None,
             created: at,
             updated: at,
             pinned: false,
@@ -587,6 +588,7 @@ mod tests {
                 text: "No".into(),
                 engine: "test".into(),
                 model: None,
+                effort: None,
                 without: Vec::new(),
             },
         };

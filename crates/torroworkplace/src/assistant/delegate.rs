@@ -142,6 +142,7 @@ impl Assistant {
             conversation: kept,
             engine: bot.engine.clone(),
             model: bot.model.clone(),
+            effort: None,
             text,
             without: without.to_vec(),
             bot: Some(bot.clone()),

@@ -98,16 +98,19 @@ impl OpenAiCompatible {
         openai::parse_models(&body).map_err(|err| self.scrubbed(err))
     }
 
-    /// Ollama's word on whether `model` calls tools (`POST <root>/api/show`); `None` when it does
-    /// not answer within [`SHOW_TIMEOUT`] or does not say.
-    async fn ollama_tools(&self, model: &str) -> Option<bool> {
+    /// Ollama's word on whether `model` calls tools and thinks (`POST <root>/api/show`, issue
+    /// #131); `None` for each when it does not answer within [`SHOW_TIMEOUT`] or does not say.
+    async fn ollama_capabilities(&self, model: &str) -> (Option<bool>, Option<bool>) {
         let url = format!("{}/api/show", openai::ollama_root(&self.base));
         let builder = self.authorized(self.http.post(url)).json(&openai::ollama_show_body(model));
         let asked = async {
             let response = self.send(builder).await.ok()?;
-            openai::ollama_tools(&response.bytes().await.ok()?)
+            response.bytes().await.ok()
         };
-        tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten()
+        match tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten() {
+            Some(body) => (openai::ollama_tools(&body), openai::ollama_thinking(&body)),
+            None => (None, None),
+        }
     }
 
     /// A request to `<base>/<path>` with the key, if there is one.
@@ -182,23 +185,24 @@ impl Provider for OpenAiCompatible {
             let mut models = self.list().await?;
             if self.provider == AiProvider::Ollama {
                 for model in &mut models {
-                    model.tools = self.ollama_tools(&model.id).await;
+                    (model.tools, model.reasoning) = self.ollama_capabilities(&model.id).await;
                 }
             }
             Ok(models)
         })
     }
 
-    /// `POST <base>/chat/completions` with `stream: true`; read as server-sent events, or whole
-    /// when the server answers with plain JSON.
+    /// `POST <base>/chat/completions` with `stream: true` and the effort as this provider reads it
+    /// ([`openai::chat_body_for`]); read as server-sent events, or whole when the server answers
+    /// with plain JSON.
     fn chat<'a>(
         &'a self,
         request: &'a ChatRequest,
         on_text: &'a mut (dyn FnMut(&str) + Send),
     ) -> BoxFuture<'a, Result<ChatReply, AiError>> {
         Box::pin(async move {
-            let builder =
-                self.request(reqwest::Method::POST, "chat/completions").json(&openai::chat_body(request, true));
+            let body = openai::chat_body_for(self.provider, request, true);
+            let builder = self.request(reqwest::Method::POST, "chat/completions").json(&body);
             let response = self.send(builder).await?;
             self.stream(response, on_text).await
         })
@@ -528,7 +532,7 @@ fn no_account(id: &str) -> AiError {
 pub(crate) mod tests {
     use httpmock::MockServer;
     use serde_json::json;
-    use torro_core::ai::{ChatMessage, Finish, ToolCall, ToolSpec, Usage};
+    use torro_core::ai::{ChatMessage, Effort, Finish, ToolCall, ToolSpec, Usage};
 
     use super::*;
     use crate::account::github::tests::{MemoryTokens, accounts_file};
@@ -563,7 +567,7 @@ pub(crate) mod tests {
             })
             .await;
         for (model, capabilities) in
-            [("qwen3:8b", json!(["completion", "tools"])), ("gemma3:4b", json!(["completion"]))]
+            [("qwen3:8b", json!(["completion", "tools", "thinking"])), ("gemma3:4b", json!(["completion"]))]
         {
             server
                 .mock_async(|when, then| {
@@ -639,6 +643,8 @@ pub(crate) mod tests {
             [("qwen3:8b", Some(true), None), ("gemma3:4b", Some(false), None), ("broken:1b", None, None)],
             "the filter keeps every local model"
         );
+        let reasoning: Vec<Option<bool>> = models.iter().map(|model| model.reasoning).collect();
+        assert_eq!(reasoning, [Some(true), Some(false), None], "issue #131: from the same answer");
         let listed: Vec<String> = ai.infos().await.into_iter().map(|listed| listed.id).collect();
         assert_eq!(listed, [info.id]);
     }
@@ -719,7 +725,36 @@ pub(crate) mod tests {
                 parameters: json!({"type": "object", "properties": {"start": {"type": "string"}}}),
             }],
             max_tokens: None,
+            effort: None,
         }
+    }
+
+    /// Issue #131: the effort reaches each server where it reads it.
+    #[tokio::test]
+    async fn the_effort_is_sent_as_each_provider_reads_it() {
+        let server = MockServer::start_async().await;
+        let ollama = server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/chat/completions").json_body_includes(r#"{"reasoning_effort":"low"}"#);
+                then.status(200).header("content-type", "text/event-stream").body(OLLAMA_TOOL_CALL);
+            })
+            .await;
+        let openrouter = server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/api/v1/chat/completions")
+                    .json_body_includes(r#"{"reasoning":{"effort":"high"}}"#);
+                then.status(200).header("content-type", "text/event-stream").body(OLLAMA_TOOL_CALL);
+            })
+            .await;
+        let low = ChatRequest { effort: Some(Effort::Low), ..ask_calendar() };
+        let local = OpenAiCompatible::new(http(), AiProvider::Ollama, &server.url("/v1"), None);
+        local.chat(&low, &mut |_| {}).await.expect("ollama answers");
+        let high = ChatRequest { effort: Some(Effort::High), ..ask_calendar() };
+        let remote =
+            OpenAiCompatible::new(http(), AiProvider::OpenRouter, &server.url("/api/v1"), Some(Secret::new(KEY)));
+        remote.chat(&high, &mut |_| {}).await.expect("openrouter answers");
+        assert_eq!((ollama.calls_async().await, openrouter.calls_async().await), (1, 1));
     }
 
     #[tokio::test]

@@ -227,9 +227,15 @@ impl App {
             return Task::none();
         }
         let text = bots::confirm_text(&self.bot_name(&proposal.bot));
-        let Some(request) =
-            crate::chat::send_request(self.current.as_deref(), self.choice.as_ref(), &text, &self.without, None)
-        else {
+        let effort = self.offered_effort();
+        let Some(request) = crate::chat::send_request(
+            self.current.as_deref(),
+            self.choice.as_ref(),
+            effort,
+            &text,
+            &self.without,
+            None,
+        ) else {
             return Task::none();
         };
         self.sending = true;
