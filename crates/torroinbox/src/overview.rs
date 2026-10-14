@@ -71,7 +71,7 @@ impl Column {
     pub fn name(self) -> &'static str {
         match self {
             Column::Mail => tr("Mail"),
-            Column::Notices => tr("Notifications"),
+            Column::Notices => tr("App Feed"),
         }
     }
 
@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn the_columns_are_named_and_change() {
         assert_eq!(Column::Mail.name(), tr("Mail"));
-        assert_eq!(Column::Notices.name(), tr("Notifications"));
+        assert_eq!(Column::Notices.name(), tr("App Feed"));
         assert_eq!((Column::Mail.index(), Column::Notices.index()), (0, 1));
         assert_eq!(Column::default(), Column::Mail, "mail first");
         assert_ne!(Column::Mail.scroll_id(), Column::Notices.scroll_id());

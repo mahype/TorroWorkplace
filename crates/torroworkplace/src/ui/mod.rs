@@ -132,7 +132,7 @@ impl Section {
             Section::Assistant => tr("Assistant"),
             Section::Agents => tr("Agents & API"),
             Section::Approvals => tr("Approvals"),
-            Section::Inbox => tr("Inbox"),
+            Section::Inbox => tr("Notification Hub"),
             Section::Appearance => tr("Appearance"),
             Section::General => tr("General"),
         }

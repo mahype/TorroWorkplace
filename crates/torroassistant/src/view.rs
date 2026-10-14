@@ -517,7 +517,7 @@ impl App {
             return prompt_state(
                 tr("Choose what the assistant may use"),
                 tr(
-                    "Until then it answers without your calendar, tasks, inbox or mail. You decide area by area, and you can change it any time.",
+                    "Until then it answers without your calendar, tasks, Notification Hub or mail. You decide area by area, and you can change it any time.",
                 ),
                 Some((tr("Set up access"), Message::SetUp)),
             );
@@ -549,7 +549,7 @@ impl App {
             typo::text(typo::body_strong(), tr("What can I do for you?")).align_x(Alignment::Center),
             typo::text(
                 typo::body(),
-                tr("Ask about your calendar, tasks, inbox or mail. The assistant uses only what you allowed."),
+                tr("Ask about your calendar, tasks, Notification Hub or mail. The assistant uses only what you allowed."),
             )
             .style(theme::text_2)
             .align_x(Alignment::Center)
@@ -1118,7 +1118,7 @@ fn app_short_name(app: torro_core::AppId) -> &'static str {
     match app.binary {
         "torrocalendar" => tr("Calendar"),
         "torrotasks" => tr("Tasks"),
-        "torroinbox" => tr("Inbox"),
+        "torroinbox" => tr("Notification Hub"),
         _ => app.display_name,
     }
 }

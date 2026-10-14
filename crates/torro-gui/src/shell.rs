@@ -765,12 +765,13 @@ pub enum Switcher {
 }
 
 /// The short name of an app in the switcher ("Tasks", "Calendar", "Workplace"); the inbox's three
-/// windows by their kind ("Mail", "Notifications", "Inbox"), since they share one binary.
+/// windows by their kind ("Notification Hub", "Mail", "App Feed"), since they share one binary. The
+/// three names share no word (issue #127), so nobody takes one window for another.
 fn app_name(app: AppId) -> &'static str {
     match app.window_class {
-        "torro-inbox" => tr("Inbox"),
+        "torro-inbox" => tr("Notification Hub"),
         "torro-inbox-mail" => tr("Mail"),
-        "torro-inbox-notifications" => tr("Notifications"),
+        "torro-inbox-notifications" => tr("App Feed"),
         "torro-tasks" => tr("Tasks"),
         "torro-calendar" => tr("Calendar"),
         "torro-assistant" => tr("Assistant"),
@@ -778,6 +779,8 @@ fn app_name(app: AppId) -> &'static str {
     }
 }
 
+/// The icon of an app in the switcher menu and on its mark ([`app_mark`]). Each of the inbox's
+/// windows has its own: the hub the tray, mail the envelope, the app feed the bell.
 fn app_icon(app: AppId) -> Icon {
     match app.window_class {
         "torro-inbox" => Icon::Inbox,
@@ -788,6 +791,44 @@ fn app_icon(app: AppId) -> Icon {
         "torro-assistant" => Icon::Sparkles,
         _ => Icon::LayoutGrid,
     }
+}
+
+/// The hue of a window that shares its program with others (issue #127): a slot of
+/// [`theme::Palette::calendar`] (the hub orange, mail blue, the app feed pink), `None` for an app
+/// with one window, which the suite's logo names well enough. Only ever as a tinted tile with the
+/// icon in the full hue ([`app_mark`]), never as a large surface or as text.
+fn app_hue(app: AppId) -> Option<usize> {
+    match app.window_class {
+        "torro-inbox" => Some(2),
+        "torro-inbox-mail" => Some(0),
+        "torro-inbox-notifications" => Some(3),
+        _ => None,
+    }
+}
+
+/// The mark of `app`, 20 × 20, where the switcher shows the logo (issue #127): for a window that
+/// shares its program with others ([`app_hue`]: the inbox's hub, mail window and app feed) its icon
+/// ([`app_icon`], 14) in its own hue on a tile tinted with it ([`theme::Palette::tinted`], radius
+/// [`radius::xs()`]), so the windows differ at a glance; for every other app the suite's logo.
+///
+/// The switcher and the rail show it by themselves. A window without sidebar or rail (narrow) puts
+/// it first in its header ([`header_bar`]'s `leading`), so the window still says which one it is.
+pub fn app_mark<'a, M: 'a>(app: AppId) -> Element<'a, M> {
+    let Some(hue) = app_hue(app) else { return logo() };
+    let glyph: Element<'a, M> = icon::icon(app_icon(app), icon::SIZE_SM)
+        .style(move |t: &iced::Theme, _| iced::widget::svg::Style { color: palette(t).calendar.get(hue).copied() })
+        .into();
+    container(glyph)
+        .center(LOGO)
+        .style(move |t: &iced::Theme| {
+            let p = palette(t);
+            container::Style {
+                background: p.calendar.get(hue).map(|&colour| Background::Color(p.tinted(colour))),
+                border: iced::border::rounded(radius::xs()),
+                ..container::Style::default()
+            }
+        })
+        .into()
 }
 
 /// What a click on `app` in the menu of a window of `current` sends: [`Switcher::Toggle`] (closes)
@@ -829,7 +870,7 @@ pub fn sidebar_head<'a, M: Clone + 'a>(
         SidebarMode::Expanded => switcher_row(current, anchor, on, (!has_band()).then_some(on_toggle)),
         SidebarMode::Rail => {
             // The logo on a full-width row, as the other rows of the rail.
-            let logo = button(center_x(logo()))
+            let logo = button(center_x(app_mark(current)))
                 .width(Fill)
                 .height(switcher_height())
                 .padding(0)
@@ -879,7 +920,7 @@ fn switcher_row<'a, M: Clone + 'a>(
     on_toggle: Option<M>,
 ) -> Element<'a, M> {
     let name = row![
-        logo(),
+        app_mark(current),
         typo::text(typo::body_strong(), app_name(current)).style(theme::text).wrapping(Wrapping::None),
         widgets::toned(Icon::ChevronDown, icon::SIZE_SM, Tone::Text3),
     ]
@@ -1218,11 +1259,36 @@ mod tests {
         assert_eq!(app_name(AppId::CALENDAR), tr("Calendar"));
         assert_eq!(app_name(AppId::WORKPLACE), tr("Workplace"));
         assert_ne!(app_icon(AppId::TASKS), app_icon(AppId::CALENDAR));
-        assert_eq!(app_name(AppId::INBOX), tr("Inbox"));
+        assert_eq!(app_name(AppId::INBOX), tr("Notification Hub"));
         assert_eq!(app_name(AppId::INBOX_MAIL), tr("Mail"));
-        assert_eq!(app_name(AppId::INBOX_NOTIFICATIONS), tr("Notifications"));
+        assert_eq!(app_name(AppId::INBOX_NOTIFICATIONS), tr("App Feed"));
         let [hub, mail, notices] = [AppId::INBOX, AppId::INBOX_MAIL, AppId::INBOX_NOTIFICATIONS].map(app_icon);
         assert!(hub != mail && mail != notices && hub != notices, "each window kind its own icon");
+    }
+
+    /// Issue #127: the inbox's three windows are told apart at a glance. Their names share no word
+    /// (in either language), mail has the envelope, and each has a hue of its own; apps with one
+    /// window keep the suite's logo.
+    #[test]
+    fn the_inbox_windows_have_names_icons_and_hues_of_their_own() {
+        let windows = [AppId::INBOX, AppId::INBOX_MAIL, AppId::INBOX_NOTIFICATIONS];
+        let words: Vec<Vec<String>> = windows
+            .iter()
+            .map(|&app| app_name(app).split([' ', '-']).map(|word| word.to_lowercase().replace('s', "")).collect())
+            .collect();
+        for (i, these) in words.iter().enumerate() {
+            for those in &words[i + 1..] {
+                assert!(these.iter().all(|word| !those.contains(word)), "{these:?} and {those:?} share a word");
+            }
+        }
+        assert_eq!(app_icon(AppId::INBOX_MAIL), Icon::Mail, "mail is mail, not the hub's tray");
+        let hues: Vec<Option<usize>> = windows.iter().map(|&app| app_hue(app)).collect();
+        assert!(hues.iter().all(Option::is_some), "{hues:?}");
+        assert!(hues[0] != hues[1] && hues[1] != hues[2] && hues[0] != hues[2], "{hues:?}");
+        for app in [AppId::TASKS, AppId::CALENDAR, AppId::WORKPLACE, AppId::ASSISTANT] {
+            assert_eq!(app_hue(app), None, "{}: the suite's logo", app.window_class);
+        }
+        let _: Element<'_, ()> = app_mark(AppId::INBOX_MAIL);
     }
 
     #[test]

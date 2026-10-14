@@ -8640,12 +8640,12 @@ mod tests {
         let codex = || torro_inbox::SourceRef::agent("codex");
 
         let post = waits(ask(&core, Some(&key), notice("Tests \"pass\"")).await);
-        assert_eq!(post.summary, trf("Report \"{title}\" to the inbox", &[("title", &"Tests 'pass'")]));
+        assert_eq!(post.summary, trf("Report \"{title}\" to the Notification Hub", &[("title", &"Tests 'pass'")]));
         let mute = waits(ask(&core, Some(&key), Request::MuteSource { source: codex(), muted: true }).await);
         let named = "\"Codex\" (agent:codex)";
-        assert_eq!(mute.summary, trf("Mute {source} in the inbox", &[("source", &named)]));
+        assert_eq!(mute.summary, trf("Mute {source} in the Notification Hub", &[("source", &named)]));
         let unmute = waits(ask(&core, Some(&key), Request::MuteSource { source: codex(), muted: false }).await);
-        assert_eq!(unmute.summary, trf("Unmute {source} in the inbox", &[("source", &named)]));
+        assert_eq!(unmute.summary, trf("Unmute {source} in the Notification Hub", &[("source", &named)]));
 
         let lane = Request::SetItemLane { id, lane: torro_inbox::Lane::ForMe, remember: true };
         let moved = waits(ask(&core, Some(&key), lane).await);
@@ -8663,7 +8663,7 @@ mod tests {
             panic!("rules answer with Rules");
         };
         let remove = waits(ask(&core, Some(&key), Request::RemoveRule { id: rules[0].id.clone() }).await);
-        assert_eq!(remove.summary, trf("Unmute {source} in the inbox", &[("source", &named)]));
+        assert_eq!(remove.summary, trf("Unmute {source} in the Notification Hub", &[("source", &named)]));
     }
 
     #[tokio::test]

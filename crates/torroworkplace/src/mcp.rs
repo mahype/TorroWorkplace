@@ -107,7 +107,7 @@ const NO_DESKTOP: &str = "cannot reach the Torro Workplace core: start Torro Wor
 const INBOX_LIMIT: u32 = 50;
 
 /// What agents read when they connect.
-const INSTRUCTIONS: &str = "Torro Workplace: workspace templates, calendar, tasks, the inbox, accounts, the models of \
+const INSTRUCTIONS: &str = "Torro Workplace: workspace templates, calendar, tasks, the inbox (the person's Notification Hub), accounts, the models of \
                             its AI accounts, settings and apps of this desktop. Every tool is checked against the rights a person granted this agent's \
                             key: `forbidden` means the rights do not cover it, and its message says what is missing (ask the person to change them in \
                             Torro Workplace, Agents & API), `not-found` also stands for calendars and task lists \
