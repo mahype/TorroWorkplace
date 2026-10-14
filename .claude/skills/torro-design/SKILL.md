@@ -291,7 +291,12 @@ aus einem Guss wirkt:
   (vorige/nächste Aufgabe). Lucide 0.469.0 liefert `Github` noch mit.
   Im Eingang (E8.10): `Bell` nur für Benachrichtigungen (Fensterart, Spalte „Notifications“), die Glocke
   zum Stummschalten („Mute…“ an Karte, Zeile und Paneel, „Unmute“ im Menü, Vorschläge in Insights) `BellOff`; Spur „Info“ `Info`
-  (nicht `Eye`, das ist „Review angefordert“); „Insights“ `ChartColumn`; „Table view“ `Table`. Ein neues
+  (nicht `Eye`, das ist „Review angefordert“); „Insights“ `ChartColumn`; „Table view“ `Table`.
+  Quellen im Eingang (E5.15, `list::source_icon`, nur nach der Art der Quelle, nie nach dem Namen eines
+  Skripts): GitHub `Github`, Nextcloud `Cloud`, Talk `MessageCircle`, ntfy `RadioTower`, Skripte `AppWindow`.
+  Das Konto steht nur bei zwei Konten derselben Art im Namen („GitHub · anna-berg“, `list::source_name`);
+  die Metazeile nennt die Merkmale („torro/workplace · Review requested“, `list::facet_line`). Ein ntfy-Alarm
+  (dringend) bekommt die Kachel in `attention` getönt und das Wort „Urgent“, nie Torro-Rot. Ein neues
   Icon: SVG aus Lucide 0.469.0 mit `stroke-width="1.75"` nach `assets/icons/`, Variante in `Icon` samt
   Eintrag in `Icon::ALL` – die Tests in `icon.rs` prüfen Datei, Strich und Namen.
 - **Diagramme und Kennzahlen** (E8.8b, zuerst die Insights der Zentrale; Methode: Skill `dataviz`): Farben nur als

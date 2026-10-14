@@ -74,7 +74,8 @@ use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::typo::{self, Level};
 use torro_gui::widgets::{self, Anchor, BarWords, Mark, RowAction};
 use torro_gui::{datetime, layout, style};
-use torro_inbox::{Item, Link, SourceKind, SourceRef, State, rules};
+use torro_inbox::item::FacetKey;
+use torro_inbox::{Item, Kind, Link, SourceKind, SourceRef, State, rules};
 
 use crate::app::{Message, View};
 use crate::keys::Command;
@@ -958,29 +959,140 @@ pub(crate) fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Ele
 }
 
 /// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts, the
-/// envelope for a mail account. A script that reports for an app the icon set has (task E8.13:
-/// `github`) shows that app's icon, so the columns "By app" tell the apps apart. The name is the
-/// client's, given with its key – never a text of an entry.
+/// envelope for a mail account, and the services' own (task E5.15): GitHub's mark, a cloud for
+/// Nextcloud, a speech bubble for Talk and a radio tower for ntfy. Only the kind of the source
+/// decides – a script that calls itself `github` is a script and shows the window, so no client can
+/// borrow a service's face.
 pub fn source_icon(source: &SourceRef) -> Icon {
     match source.kind {
         SourceKind::Suite => Icon::LayoutGrid,
         SourceKind::Agent => Icon::Sparkles,
-        SourceKind::Script if source.name.eq_ignore_ascii_case("github") => Icon::Github,
-        // The remote sources of task E5.1 for now like a script; E5.15 gives them their icons.
-        SourceKind::Script | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
-            Icon::AppWindow
-        }
+        SourceKind::Script => Icon::AppWindow,
         SourceKind::Mail => Icon::Mail,
+        SourceKind::Github => Icon::Github,
+        SourceKind::Nextcloud => Icon::Cloud,
+        SourceKind::Talk => Icon::MessageCircle,
+        SourceKind::Ntfy => Icon::RadioTower,
     }
+}
+
+/// The name of `source` where it stands among `known` (every source the inbox lists, task E5.15):
+/// its label ([`SourceRef::label`]: "GitHub", "Nextcloud", "Talk", "ntfy"), and – only while
+/// `known` holds another account of the same service – the account after " · " ("GitHub ·
+/// anna-berg", "Nextcloud · anna@cloud.example.org"), so two columns or chips of one service can be
+/// told apart. Mail names its address, scripts and agents their own names anyway, so they keep their
+/// label. The account is the source's name as the core keeps it, shown as plain text.
+pub fn source_name<'s>(source: &SourceRef, known: impl IntoIterator<Item = &'s SourceRef>) -> String {
+    let label = source.label();
+    let service =
+        matches!(source.kind, SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy);
+    let twin = service && known.into_iter().any(|other| other.kind == source.kind && other.name != source.name);
+    if twin { format!("{label} · {}", one_line(&source.name)) } else { label }
+}
+
+/// The value of the first trait `key` of `item` that has text.
+fn facet_value(item: &Item, key: FacetKey) -> Option<&str> {
+    item.facets.iter().find(|facet| facet.key == key).map(|facet| facet.value.as_str()).filter(|v| !v.is_empty())
+}
+
+/// What a service's traits say about `item` (task E5.15), in the order to read them, each with the
+/// icon of its row in the panel – the words of the meta line ([`facet_line`]):
+///
+/// - GitHub: the repository (`owner/repo`) and why it came, in the suite's words ("Review
+///   requested", "Check failed" …, [`reason_word`]; a reason without a word is left out);
+/// - Nextcloud: the app ("Files", "Talk", else its id, `rules::app_label`) and the person;
+/// - Talk: the kind of conversation ("Direct message", "Mention", "Group conversation") – the person
+///   is the entry's title already;
+/// - ntfy: the topic's label and the priority, unless it is ntfy's default 3.
+///
+/// Nothing for every other source. Repository, app id and person are foreign text, shown as plain
+/// text (Iced interprets nothing, [`one_line`] drops control characters).
+pub fn facet_words(item: &Item) -> Vec<(Icon, String)> {
+    let value = |key| facet_value(item, key);
+    let mut words = Vec::new();
+    match item.source.kind {
+        SourceKind::Github => {
+            if let Some(repo) = value(FacetKey::Repo) {
+                words.push((Icon::FolderGit2, one_line(repo)));
+            }
+            words.extend(value(FacetKey::Reason).and_then(|reason| reason_word(reason, value(FacetKey::Result))));
+        }
+        SourceKind::Nextcloud => {
+            if let Some(app) = value(FacetKey::App) {
+                let mark = if app == "spreed" { Icon::MessageCircle } else { Icon::Cloud };
+                words.push((mark, one_line(&rules::app_label(app))));
+            }
+            if let Some(person) = value(FacetKey::Person) {
+                words.push((Icon::User, one_line(person)));
+            }
+        }
+        SourceKind::Talk => {
+            let room = match value(FacetKey::Kind) {
+                Some("direct") => Some((Icon::User, tr("Direct message"))),
+                Some("mention") => Some((Icon::Users, tr("Mention"))),
+                Some("group") => Some((Icon::Users, tr("Group conversation"))),
+                _ => None,
+            };
+            words.extend(room.map(|(mark, word)| (mark, word.to_owned())));
+        }
+        SourceKind::Ntfy => {
+            if let Some(topic) = value(FacetKey::Topic) {
+                words.push((Icon::RadioTower, one_line(topic)));
+            }
+            if let Some(priority) = value(FacetKey::Priority).filter(|priority| *priority != "3") {
+                words.push((Icon::SignalHigh, trf("Priority {n}", &[("n", &priority)])));
+            }
+        }
+        SourceKind::Suite | SourceKind::Agent | SourceKind::Script | SourceKind::Mail => {}
+    }
+    words
+}
+
+/// Why GitHub notified, in the suite's words with an icon ("Review requested" with the eye, as the
+/// tasks app has it); a workflow run by how it ended. `None` for a reason the suite has no word for
+/// (`other`, anything new GitHub brings).
+fn reason_word(reason: &str, result: Option<&str>) -> Option<(Icon, String)> {
+    let (mark, word) = match (reason, result) {
+        ("ci_activity", Some("failed")) => (Icon::CircleX, tr("Check failed")),
+        ("ci_activity", Some("succeeded")) => (Icon::CircleCheck, tr("Check passed")),
+        ("ci_activity", Some("cancelled")) => (Icon::CircleDashed, tr("Check cancelled")),
+        ("ci_activity", _) => (Icon::CircleDotDashed, tr("Checks")),
+        ("review_requested", _) => (Icon::Eye, tr("Review requested")),
+        ("mention" | "team_mention", _) => (Icon::User, tr("Mentioned")),
+        ("assign", _) => (Icon::UserCheck, tr("Assigned")),
+        ("author", _) => (Icon::SquarePen, tr("Author")),
+        ("approval_requested", _) => (Icon::Eye, tr("Approval requested")),
+        ("security_alert", _) => (Icon::ShieldAlert, tr("Security alert")),
+        ("invitation", _) => (Icon::Users, tr("Invitation")),
+        ("comment", _) => (Icon::Reply, tr("Comment")),
+        ("state_change", _) => (Icon::CircleDot, tr("State changed")),
+        ("subscribed" | "manual", _) => (Icon::Bell, tr("Subscribed")),
+        _ => return None,
+    };
+    Some((mark, word.to_owned()))
+}
+
+/// The words of [`facet_words`] on one line, " · " between them ("torro/workplace · Review
+/// requested", "Files · Jonas Weber", "Server · Priority 5"); `None` without any.
+pub fn facet_line(item: &Item) -> Option<String> {
+    let words: Vec<String> = facet_words(item).into_iter().map(|(_, word)| word).collect();
+    (!words.is_empty()).then(|| words.join(" · "))
+}
+
+/// The word for an entry that waits ([`is_waiting`]): "Urgent" for an alert (an ntfy message of
+/// priority 5, task E5.15) – nobody waits there, something is wrong –, else "Waiting for you".
+pub fn waiting_word(item: &Item) -> &'static str {
+    if item.kind == Kind::Alert { tr("Urgent") } else { tr("Waiting for you") }
 }
 
 /// The title and the preview of `item`'s row, on one line each ([`one_line`]): for a coding agent's
 /// session with a name ([`session_name`]) the name, and below or beside it [`agent_line`]; for
-/// every other entry its title and the first line of its body ([`preview`]).
+/// every other entry its title and the first line of its body ([`preview`]) – or, for a service's
+/// entry without one (GitHub sends no text), what its traits say ([`facet_line`], task E5.15).
 pub fn words(item: &Item) -> (String, Option<String>) {
     match session_name(item) {
         Some(name) => (name, Some(agent_line(item))),
-        None => (one_line(&item.title), preview(item)),
+        None => (one_line(&item.title), preview(item).or_else(|| facet_line(item))),
     }
 }
 
@@ -1335,10 +1447,63 @@ mod tests {
         assert_eq!(source_icon(&SourceRef::suite()), Icon::LayoutGrid);
         assert_eq!(source_icon(&SourceRef::agent("codex")), Icon::Sparkles);
         assert_eq!(source_icon(&SourceRef::script("backup")), Icon::AppWindow);
-        assert_eq!(source_icon(&SourceRef::script("github")), Icon::Github, "an app with its own icon");
-        let sample = demo::sample(now());
-        assert!(sample.iter().any(|item| source_icon(&item.source) == Icon::Github), "the demo shows it (E8.13)");
+        // Task E5.15: only the kind decides – a script may not borrow GitHub's face.
+        assert_eq!(source_icon(&SourceRef::script("github")), Icon::AppWindow, "a script named github");
         assert_eq!(source_icon(&SourceRef::mail("anna@example.org")), Icon::Mail);
+        assert_eq!(source_icon(&SourceRef::github("anna-berg")), Icon::Github);
+        assert_eq!(source_icon(&SourceRef::nextcloud("anna@cloud.example.org")), Icon::Cloud);
+        assert_eq!(source_icon(&SourceRef::talk("anna@cloud.example.org")), Icon::MessageCircle);
+        assert_eq!(source_icon(&SourceRef::ntfy("ntfy.sh")), Icon::RadioTower);
+        let sample = demo::sample(now());
+        let of = |id: &str| sample.iter().find(|item| item.id == id).map(|item| source_icon(&item.source));
+        assert_eq!(of("demo-13"), Some(Icon::Github), "from a real GitHub source now");
+        assert_eq!(
+            [of("demo-16"), of("demo-17"), of("demo-18")],
+            [Icon::Cloud, Icon::MessageCircle, Icon::RadioTower].map(Some)
+        );
+    }
+
+    /// Task E5.15: the account joins the name only where two accounts of one service are listed.
+    #[test]
+    fn two_accounts_of_a_service_are_named_by_their_account() {
+        let (anna, work) = (SourceRef::github("anna-berg"), SourceRef::github("anna-work"));
+        let cloud = SourceRef::nextcloud("anna@cloud.example.org");
+        let talk = SourceRef::talk("anna@cloud.example.org");
+        let one = [anna.clone(), cloud.clone(), talk.clone()];
+        assert_eq!(source_name(&anna, &one), "GitHub");
+        assert_eq!(source_name(&talk, &one), "Talk", "Talk and Nextcloud are two services");
+        let two = [anna.clone(), work.clone(), cloud.clone()];
+        assert_eq!(source_name(&anna, &two), "GitHub · anna-berg");
+        assert_eq!(source_name(&work, &two), "GitHub · anna-work");
+        assert_eq!(source_name(&cloud, &two), "Nextcloud");
+        let scripts = [SourceRef::script("ci"), SourceRef::script("deploy")];
+        assert_eq!(source_name(&scripts[0], &scripts), "ci", "scripts say their names anyway");
+    }
+
+    /// Task E5.15: the meta words come from the traits, in the suite's words; foreign values as they are.
+    #[test]
+    fn the_meta_line_says_what_the_traits_say() {
+        let sample = demo::sample(now());
+        let of = |id: &str| sample.iter().find(|item| item.id == id).expect("in the demo");
+        let review = format!("torro/workplace · {}", tr("Review requested"));
+        assert_eq!(facet_line(of("demo-14")).as_deref(), Some(review.as_str()));
+        let run = format!("torro/workplace · {}", tr("Check failed"));
+        assert_eq!(facet_line(of("demo-15")).as_deref(), Some(run.as_str()));
+        let shared = format!("{} · Jonas Weber", tr("Files"));
+        assert_eq!(facet_line(of("demo-16")).as_deref(), Some(shared.as_str()));
+        assert_eq!(facet_line(of("demo-17")).as_deref(), Some(tr("Direct message")));
+        let alert = format!("Server · {}", trf("Priority {n}", &[("n", &5)]));
+        assert_eq!(facet_line(of("demo-18")).as_deref(), Some(alert.as_str()));
+        assert_eq!(facet_line(of("demo-6")), None, "a script has no such traits");
+        // GitHub sends no text: its row says what the traits say instead.
+        assert_eq!(words(of("demo-14")).1, Some(review));
+        assert_eq!(words(of("demo-17")).1.as_deref(), Some("Lena: Can we go through the sidebar drafts before 3?"));
+        let mut quiet = of("demo-18").clone();
+        quiet.facets.retain(|facet| facet.key != FacetKey::Topic);
+        quiet.facets.iter_mut().filter(|f| f.key == FacetKey::Priority).for_each(|f| f.value = "3".into());
+        assert_eq!(facet_line(&quiet), None, "ntfy's default priority says nothing");
+        assert_eq!(waiting_word(of("demo-18")), tr("Urgent"));
+        assert_eq!(waiting_word(of("demo-1")), tr("Waiting for you"));
     }
 
     #[test]

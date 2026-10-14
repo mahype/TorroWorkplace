@@ -152,6 +152,11 @@ pub enum Icon {
     ChartColumn,
     /// "Table view": a chart shown as its table.
     Table,
+    // Added for the new inbox sources (E5.15).
+    /// Nextcloud Talk: a chat conversation.
+    MessageCircle,
+    /// ntfy: messages pushed to a subscribed topic.
+    RadioTower,
 }
 
 impl Icon {
@@ -243,6 +248,8 @@ impl Icon {
         Icon::Info,
         Icon::ChartColumn,
         Icon::Table,
+        Icon::MessageCircle,
+        Icon::RadioTower,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -344,6 +351,8 @@ impl Icon {
             Icon::Info => include_bytes!("../assets/icons/info.svg"),
             Icon::ChartColumn => include_bytes!("../assets/icons/chart-column.svg"),
             Icon::Table => include_bytes!("../assets/icons/table.svg"),
+            Icon::MessageCircle => include_bytes!("../assets/icons/message-circle.svg"),
+            Icon::RadioTower => include_bytes!("../assets/icons/radio-tower.svg"),
         }
     }
 }

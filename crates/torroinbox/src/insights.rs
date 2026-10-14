@@ -7,7 +7,8 @@
 //! - **Four figures** ([`figures`]): what came in, the popups, the share opened and the median time
 //!   until done.
 //! - **Per day by source** ([`day_columns`]): stacked columns of what came in, one series per
-//!   origin ([`series`]: all mail, all agents, the two busiest scripts, the rest as "Other"), each
+//!   origin ([`series`]: all mail, all agents, the two busiest other sources – a script, or a service
+//!   such as GitHub with all its accounts, task E5.15 –, the rest as "Other"), each
 //!   in its chart colour (`torro_gui::theme::ChartColor`), with a legend and a tooltip per column.
 //!   A quarter has a column per week ([`buckets`]), so its columns stay readable.
 //! - **By hour of day** ([`hour_columns`]): the busy hours, all sources together.
@@ -125,9 +126,10 @@ pub enum Group {
     Mail,
     /// Every coding agent together.
     Agents,
-    /// One script or service, by its client's name: the two busiest of the span.
-    Script(String),
-    /// The suite and every other script.
+    /// One of the two busiest other sources of the span (task E5.15): a script by its client's name
+    /// ([`hub::Origin::Script`]) or a service with all its accounts ([`hub::Origin::Service`]).
+    Source(hub::Origin),
+    /// The suite and every other source.
     Other,
 }
 
@@ -139,31 +141,41 @@ pub struct Series {
     pub color: ChartColor,
 }
 
+/// The origin `source` counts under besides mail, agents and the suite: a script by its name, a
+/// service with all its accounts ([`hub::Origin`], the hub's tiles count the same way).
+fn origin_of(source: &SourceRef) -> Option<hub::Origin> {
+    match source.kind {
+        SourceKind::Mail | SourceKind::Agent | SourceKind::Suite => None,
+        SourceKind::Script => Some(hub::Origin::Script(source.name.clone())),
+        kind @ (SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy) => {
+            Some(hub::Origin::Service(kind))
+        }
+    }
+}
+
 /// The series of `stats`, by what came in over the span: Mail (slot 1), Agents (slot 2), the two
-/// busiest scripts (slots 3 and 4, the busier first, then by name) and "Other" (the suite and the
-/// remaining scripts), each only when something of it came in. Mail and agents keep their colour
-/// whatever else there is; only the scripts' slots follow the span.
+/// busiest other sources (slots 3 and 4, the busier first, then by name; a script, or a service such
+/// as GitHub with all its accounts, task E5.15) and "Other" (the suite and the remaining sources),
+/// each only when something of it came in. Mail and agents keep their colour whatever else there
+/// is; only the slots of the other sources follow the span.
 pub fn series(stats: &InboxStats) -> Vec<Series> {
     let (mut mail, mut agents, mut other) = (0u32, 0u32, 0u32);
-    let mut scripts: Vec<(String, u32)> = Vec::new();
+    let mut origins: Vec<(hub::Origin, u32)> = Vec::new();
     for counts in stats.days.iter().flat_map(|day| &day.sources) {
         let new = counts.counts.new;
-        match counts.source.kind {
-            SourceKind::Mail => mail = mail.saturating_add(new),
-            SourceKind::Agent => agents = agents.saturating_add(new),
-            // The remote sources of task E5.1 count as "Other" until E5.15 gives them their rows.
-            SourceKind::Suite | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
-                other = other.saturating_add(new)
-            }
-            SourceKind::Script => match scripts.iter_mut().find(|(name, _)| *name == counts.source.name) {
+        match (counts.source.kind, origin_of(&counts.source)) {
+            (SourceKind::Mail, _) => mail = mail.saturating_add(new),
+            (SourceKind::Agent, _) => agents = agents.saturating_add(new),
+            (_, None) => other = other.saturating_add(new),
+            (_, Some(origin)) => match origins.iter_mut().find(|(known, _)| *known == origin) {
                 Some((_, sum)) => *sum = sum.saturating_add(new),
-                None => scripts.push((counts.source.name.clone(), new)),
+                None => origins.push((origin, new)),
             },
         }
     }
-    scripts.retain(|(_, sum)| *sum > 0);
-    scripts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
-    let rest: u32 = scripts.iter().skip(2).map(|(_, sum)| *sum).sum();
+    origins.retain(|(_, sum)| *sum > 0);
+    origins.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.name().cmp(&b.0.name())));
+    let rest: u32 = origins.iter().skip(2).map(|(_, sum)| *sum).sum();
     other = other.saturating_add(rest);
     let mut series = Vec::new();
     if mail > 0 {
@@ -172,9 +184,9 @@ pub fn series(stats: &InboxStats) -> Vec<Series> {
     if agents > 0 {
         series.push(Series { group: Group::Agents, name: tr("Agents").into(), color: ChartColor::Series(1) });
     }
-    for (slot, (name, _)) in scripts.into_iter().take(2).enumerate() {
-        let label = SourceRef::script(name.clone()).label();
-        series.push(Series { group: Group::Script(name), name: label, color: ChartColor::Series(2 + slot) });
+    for (slot, (origin, _)) in origins.into_iter().take(2).enumerate() {
+        let name = origin.name();
+        series.push(Series { group: Group::Source(origin), name, color: ChartColor::Series(2 + slot) });
     }
     if other > 0 {
         series.push(Series { group: Group::Other, name: tr("Other").into(), color: ChartColor::Other });
@@ -186,13 +198,11 @@ pub fn series(stats: &InboxStats) -> Vec<Series> {
 /// it came in).
 fn series_of(series: &[Series], source: &SourceRef) -> Option<usize> {
     let find = |group: &Group| series.iter().position(|series| series.group == *group);
-    match source.kind {
-        SourceKind::Mail => find(&Group::Mail),
-        SourceKind::Agent => find(&Group::Agents),
-        SourceKind::Suite | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
-            find(&Group::Other)
-        }
-        SourceKind::Script => find(&Group::Script(source.name.clone())).or_else(|| find(&Group::Other)),
+    match (source.kind, origin_of(source)) {
+        (SourceKind::Mail, _) => find(&Group::Mail),
+        (SourceKind::Agent, _) => find(&Group::Agents),
+        (_, None) => find(&Group::Other),
+        (_, Some(origin)) => find(&Group::Source(origin)).or_else(|| find(&Group::Other)),
     }
 }
 
@@ -852,13 +862,44 @@ mod tests {
         let groups: Vec<&Group> = series.iter().map(|series| &series.group).collect();
         assert_eq!(groups.len(), 5, "{groups:?}");
         assert_eq!((groups[0], groups[1], groups[4]), (&Group::Mail, &Group::Agents, &Group::Other));
-        assert!(matches!(groups[2], Group::Script(_)) && matches!(groups[3], Group::Script(_)));
+        assert!(matches!(groups[2], Group::Source(_)) && matches!(groups[3], Group::Source(_)));
         let colours: Vec<ChartColor> = series.iter().map(|series| series.color).collect();
         assert_eq!(
             colours,
             [0, 1, 2, 3].map(ChartColor::Series).into_iter().chain([ChartColor::Other]).collect::<Vec<_>>()
         );
         assert_eq!(series[4].name, tr("Other"));
+    }
+
+    /// Task E5.15: Mail, Agents, then the two busiest other sources – a service with all its
+    /// accounts counts as one –, then "Other" with the suite and the rest.
+    #[test]
+    fn a_service_is_one_series_with_all_its_accounts() {
+        let sources = [
+            SourceRef::mail("anna@example.org"),
+            SourceRef::agent("claude-code"),
+            SourceRef::github("anna-berg"),
+            SourceRef::script("ci"),
+            SourceRef::github("anna-work"),
+            SourceRef::ntfy("ntfy.sh"),
+            SourceRef::talk("anna@cloud.example.org"),
+            SourceRef::suite(),
+        ];
+        let stats = demo_stats(StatsRange::Week, day("2026-10-13"), &sources);
+        let series = series(&stats);
+        let groups: Vec<&Group> = series.iter().map(|series| &series.group).collect();
+        assert_eq!(groups.len(), 5, "{groups:?}");
+        assert_eq!((groups[0], groups[1], groups[4]), (&Group::Mail, &Group::Agents, &Group::Other));
+        assert_eq!(groups[2], &Group::Source(hub::Origin::Service(SourceKind::Github)), "both accounts the most");
+        assert_eq!(series[2].name, "GitHub");
+        assert!(matches!(groups[3], Group::Source(_)));
+        // Both accounts land in GitHub's series, Talk in "Other" or its own.
+        let github = series_of(&series, &SourceRef::github("anna-work"));
+        assert_eq!(github, series_of(&series, &SourceRef::github("anna-berg")));
+        assert_eq!(github, Some(2));
+        assert_eq!(series_of(&series, &SourceRef::suite()), Some(4));
+        let (_, rows, _) = day_table(&stats, &series, day("2026-10-13"));
+        assert_eq!(rows.len(), 7, "the table holds the same series");
     }
 
     #[test]
