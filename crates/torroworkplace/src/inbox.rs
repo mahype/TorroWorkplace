@@ -153,7 +153,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -342,6 +342,18 @@ CREATE TABLE muted_mail (
 );
 ALTER TABLE rules ADD COLUMN counted_since TEXT;
 UPDATE rules SET counted_since = strftime('%Y-%m-%dT%H:%M:%fZ', 'now');
+";
+
+/// From schema version 6 to 7 (task E8.8b): `opened_items` holds which entries counted as opened on
+/// which local day, so an entry counts once per day however often it is opened – by
+/// `inbox.open_item` or by reading its mail in the mail window ([`Inbox::mail_read`]). Only today's
+/// rows matter; older ones go with the statistics' clean-up ([`remove_old_stats`]).
+const SCHEMA_V7: &str = "
+CREATE TABLE opened_items (
+    item TEXT NOT NULL,
+    day TEXT NOT NULL,
+    PRIMARY KEY (item, day)
+);
 ";
 
 /// How many months the statistics keep the day sums of a source (task E8.8a).
@@ -598,12 +610,38 @@ impl Inbox {
                 let mut item = stored.item;
                 item.state = State::Seen;
                 update_item(db, &item)?;
-                count(db, &item, Count::Opened, now)?;
+                // Once a day (task E8.8b): reading its mail may have counted it already.
+                if first_opened_today(db, &item.id, now)? {
+                    count(db, &item, Count::Opened, now)?;
+                }
             }
             Ok(())
         });
         if let Err(failure) = seen {
             eprintln!("torroworkplace: inbox: cannot mark an opened entry seen: {failure}");
+        }
+    }
+
+    /// The person read the mail `message` (`m:…`) of the mail account `account` (`mail:<address>`)
+    /// at `now`, in the mail window (`mail.get_message` with the app key, task E8.8b): when the mail
+    /// is filed into an open entry (new or seen, not snoozed or done), the entry counts as opened,
+    /// once per entry and local day – also when `inbox.open_item` opened it that day already. Nothing
+    /// else changes: the entry keeps its state, as reading a mail does not mark it read either. A
+    /// failure is only logged: the mail was read anyway.
+    pub fn mail_read(&self, account: &str, message: &str, now: DateTime<Utc>) {
+        let counted = self.with(|db| {
+            let condition = "state IN ('new', 'seen') AND id IN
+                 (SELECT item FROM mail_messages WHERE account = ? AND message = ?)";
+            let found = read_items(db, &Scope::All, condition, vec![text(account), text(message)], "")?;
+            for Stored { item, .. } in found {
+                if first_opened_today(db, &item.id, now)? {
+                    count(db, &item, Count::Opened, now)?;
+                }
+            }
+            Ok(())
+        });
+        if let Err(failure) = counted {
+            eprintln!("torroworkplace: inbox: cannot count a read mail: {failure}");
         }
     }
 
@@ -2315,6 +2353,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     if version < 6 {
         tx.execute_batch(SCHEMA_V6)?;
     }
+    if version < 7 {
+        tx.execute_batch(SCHEMA_V7)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -3000,6 +3041,14 @@ fn count_closed(db: &Connection, item: &Item, was_done: bool, what: Count, now: 
     if was_done { Ok(()) } else { count(db, item, what, now) }
 }
 
+/// Notes that the entry `id` was opened on the local day of `now` (task E8.8b, `opened_items`);
+/// `true` the first time that day, so the caller counts it then only.
+fn first_opened_today(db: &Connection, id: &str, now: DateTime<Utc>) -> Result<bool, Failure> {
+    let day = local_day(now).to_string();
+    let added = db.execute("INSERT OR IGNORE INTO opened_items (item, day) VALUES (?1, ?2)", params![id, day])?;
+    Ok(added > 0)
+}
+
 /// One more in the row `day`, `source`, `facet`, `metric` of `stats`.
 fn add(db: &Connection, day: &str, source: &str, facet: &str, metric: &str) -> Result<(), Failure> {
     db.execute(
@@ -3048,6 +3097,8 @@ fn remove_old_stats(db: &Connection, now: DateTime<Utc>) -> Result<(), Failure> 
     let traits = today.checked_sub_days(Days::new(KEEP_TRAIT_DAYS - 1)).unwrap_or(today);
     db.execute("DELETE FROM stats WHERE day <> '' AND day < ?1", params![sums.to_string()])?;
     db.execute("DELETE FROM stats WHERE day <> '' AND facet <> '' AND day < ?1", params![traits.to_string()])?;
+    // Only today's notes keep an entry from counting twice (task E8.8b).
+    db.execute("DELETE FROM opened_items WHERE day < ?1", params![today.to_string()])?;
     let mail = now - TimeDelta::days(i64::try_from(KEEP_TRAIT_DAYS).unwrap_or(i64::MAX));
     db.execute("DELETE FROM muted_mail WHERE at < ?1", params![stamp(mail)])?;
     db.execute(
@@ -5689,6 +5740,39 @@ pub(crate) mod tests {
         assert!(!kept.contains("Build") && !kept.contains("red"), "{kept}");
     }
 
+    /// Task E8.8b: reading the mail of an open entry in the mail window counts as opened, once per
+    /// entry and local day, also against `inbox.open_item`; mail of no open entry counts nothing.
+    #[test]
+    fn reading_a_mail_counts_its_entry_opened_once_a_day() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let other = filed(&inbox, &personal("m:2", "t:2", at(8, 0)), at(8, 1));
+        let opened = |now| of(&stats(&inbox, None, now), &SourceRef::mail("anna@example.org")).opened;
+
+        inbox.mail_read(ANNA, "m:1", at(9, 0));
+        inbox.mail_read(ANNA, "m:1", at(9, 5));
+        inbox.opened(&id, None, at(9, 10));
+        assert_eq!(opened(at(9, 10)), 1, "once that day, however it was opened");
+        assert_eq!(item(get(&inbox, &id, None)).state, State::Seen, "open_item still marks it seen");
+        inbox.mail_read(ANNA, "m:1", at(9, 0) + TimeDelta::days(1));
+        assert_eq!(opened(at(9, 0) + TimeDelta::days(1)), 2, "again the next day");
+
+        inbox.mail_read(ANNA, "m:9", at(9, 20));
+        inbox.mail_read("mail:other@example.org", "m:2", at(9, 20));
+        inbox.handle(done(&other, false), None, at(9, 30));
+        inbox.mail_read(ANNA, "m:2", at(9, 40));
+        assert_eq!(opened(at(9, 40)), 1, "no entry, another account's id, a done entry: nothing");
+        assert!(matches!(item(get(&inbox, &other, None)).state, State::Done { .. }));
+        let notes: i64 =
+            inbox.with(|db| Ok(db.query_row("SELECT COUNT(*) FROM opened_items", [], |row| row.get(0))?)).expect("n");
+        assert_eq!(notes, 2);
+        inbox.tend(at(9, 0) + TimeDelta::days(2), true).expect("tended");
+        let notes: i64 =
+            inbox.with(|db| Ok(db.query_row("SELECT COUNT(*) FROM opened_items", [], |row| row.get(0))?)).expect("n");
+        assert_eq!(notes, 0, "only today's notes are kept");
+    }
+
     #[test]
     fn dismissing_counts_apart_from_done_and_opening_again_lets_done_count() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -5907,7 +5991,7 @@ pub(crate) mod tests {
         inbox
             .with(|db| {
                 db.execute_batch(
-                    "DROP TABLE stats; DROP TABLE muted_mail; ALTER TABLE rules DROP COLUMN counted_since;
+                    "DROP TABLE stats; DROP TABLE muted_mail; DROP TABLE opened_items; ALTER TABLE rules DROP COLUMN counted_since;
                      PRAGMA user_version = 5;",
                 )?;
                 Ok(())

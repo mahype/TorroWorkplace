@@ -481,6 +481,13 @@ pub struct Palette {
     pub calendar: [Rgba; 5],
     /// Opacity of a calendar colour used as a surface, 0–1.
     pub tint: f32,
+    /// The colours of chart series (task E8.8b, "Insights"), in their fixed order: blue, orange,
+    /// green, magenta. Picked and checked as a set for colour blindness in this order (adjacent
+    /// pairs, the dataviz validator), so a chart gives them to its series in this order and never
+    /// cycles; a fifth series goes to [`Palette::chart_other`]. Never the accent or a status colour.
+    pub chart: [Rgba; 4],
+    /// The grey of the series "Other" in a chart: what is not one of the [`Palette::chart`] series.
+    pub chart_other: Rgba,
     /// The colour of the shadow under menus, cards and dialogs; offset (0, 12) and blur 32 stay
     /// fixed in `torro_gui` (geometry, not colour).
     pub shadow: Rgba,
@@ -576,7 +583,7 @@ impl Palette {
         }
     }
 
-    /// The colour field named `key` (not `calendar`, `tint`), for reading packs.
+    /// The colour field named `key` (not `calendar`, `chart`, `tint`), for reading packs.
     pub(crate) fn slot_mut(&mut self, key: &str) -> Option<&mut Rgba> {
         Some(match key {
             "bg" => &mut self.bg,
@@ -599,6 +606,7 @@ impl Palette {
             "error" => &mut self.error,
             "inactive" => &mut self.inactive,
             "merged" => &mut self.merged,
+            "chart_other" => &mut self.chart_other,
             "shadow" => &mut self.shadow,
             "scrim" => &mut self.scrim,
             "night" => &mut self.night,
@@ -811,6 +819,10 @@ const STANDARD_DARK: Palette = Palette {
     merged: Rgba::hex(0xA78BFA),
     calendar: [Rgba::hex(0x5B8CFF), Rgba::hex(0x3FB984), Rgba::hex(0xE8A33D), Rgba::hex(0xD96CA8), Rgba::hex(0xA78BFA)],
     tint: 0.18,
+    // Checked with the dataviz validator against `panel` (task E8.8b): lightness band, chroma, CVD
+    // ΔE ≥ 8 for every adjacent pair, ≥ 3:1. "Other" is ΔE ≥ 8 from each of the four.
+    chart: [Rgba::hex(0x3B78D8), Rgba::hex(0xC9701E), Rgba::hex(0x2E9E6B), Rgba::hex(0xB5509A)],
+    chart_other: Rgba::hex(0x5C6068),
     shadow: Rgba::black(0.5),
     scrim: Rgba::black(0.62),
     night: Rgba::hex(0x121626),
@@ -846,6 +858,9 @@ const STANDARD_LIGHT: Palette = Palette {
     merged: Rgba::hex(0x7C5CE6),
     calendar: [Rgba::hex(0x3B6EF0), Rgba::hex(0x1F9D68), Rgba::hex(0xB06F12), Rgba::hex(0xC2508F), Rgba::hex(0x7C5CE6)],
     tint: 0.14,
+    // The same hues stepped for the light panel, checked the same way (task E8.8b).
+    chart: [Rgba::hex(0x2F6BC9), Rgba::hex(0xB8621A), Rgba::hex(0x2A9466), Rgba::hex(0xA8448C)],
+    chart_other: Rgba::hex(0x50545B),
     shadow: Rgba::black(0.12),
     scrim: Rgba::black(0.3),
     night: Rgba::hex(0xE3E7F1),
@@ -932,6 +947,28 @@ mod tests {
         assert_eq!([d.size.card_gap, d.size.avatar, d.size.avatar_lg], [12.0, 36.0, 40.0]);
         assert_eq!([d.size.tile_sm, d.size.tile, d.size.tile_lg], [20.0, 28.0, 36.0]);
         assert_eq!(d.logo, Logo::default());
+        // The chart colours as the dataviz validator checked them (task E8.8b).
+        assert_eq!(d.colors.dark.chart.map(hex), [0x3B78D8, 0xC9701E, 0x2E9E6B, 0xB5509A]);
+        assert_eq!(d.colors.light.chart.map(hex), [0x2F6BC9, 0xB8621A, 0x2A9466, 0xA8448C]);
+        assert_eq!((hex(d.colors.dark.chart_other), hex(d.colors.light.chart_other)), (0x5C6068, 0x50545B));
+    }
+
+    /// `colour` as `0xRRGGBB`.
+    fn hex(colour: Rgba) -> u32 {
+        let byte = |channel: f32| (channel * 255.0).round() as u32;
+        byte(colour.r) << 16 | byte(colour.g) << 8 | byte(colour.b)
+    }
+
+    /// Task E8.8b: chart colours are never the accent or a status colour, in either mode.
+    #[test]
+    fn chart_colours_are_neither_accent_nor_status() {
+        let d = Design::standard();
+        for p in [d.colors.dark, d.colors.light] {
+            let reserved = [p.accent, p.ok, p.attention, p.error, p.inactive, p.merged];
+            for colour in p.chart.iter().chain([&p.chart_other]) {
+                assert!(!reserved.contains(colour), "{colour:?}");
+            }
+        }
     }
 
     #[test]

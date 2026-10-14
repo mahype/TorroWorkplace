@@ -138,6 +138,8 @@ tile = 28                      # Quellen-Kachel; tile_sm 20 neben Wörtern, tile
 accent = "#0EA5A4"
 on_accent = "#04201F"
 bg = "#0B0D10"
+chart = ["#3B78D8", "#C9701E", "#2E9E6B", "#B5509A"]  # optional: Diagrammfarben in fester Reihenfolge (E8.8b)
+chart_other = "#5C6068"        # optional: Grau für „Other“ im Diagramm
 
 [colors.light]
 accent = "#0B7A79"
@@ -196,6 +198,28 @@ hat jeder Modus optional einen eigenen Satz für die **Rahmenfläche**:
 - Zustände, die auf dem Fenster selbst liegen (Anmelden, Laden, Fehler vor dem Layout), bleiben auf `bg`
   (`shell::Surface::Window`); Seitenleiste und Rail laufen als `shell::Surface::Sidebar` bis ins Titelband.
 
+### Diagrammfarben
+
+Für Diagramme (zuerst die Insights der Inbox-Zentrale, E8.8b) hat jeder Modus vier **Reihenfarben** in fester
+Reihenfolge und ein **Grau für „Other“**. Sie gehören nur Diagrammen: Säulen, Balken, Farbfelder in Legende und
+Tooltip. Werte, Beschriftungen und Legendentexte bleiben in den Textfarben; Akzent und Statusfarben sind nie
+Reihenfarben.
+
+| Schlüssel | Wofür | Standard dunkel | Standard hell | fehlt → |
+|---|---|---|---|---|
+| `chart` | vier Reihen: Blau, Orange, Grün, Magenta | `#3B78D8` `#C9701E` `#2E9E6B` `#B5509A` | `#2F6BC9` `#B8621A` `#2A9466` `#A8448C` | eigene `calendar`-Farben in der Reihenfolge 1, 3, 2, 4; ohne eigene `calendar` die des Standards |
+| `chart_other` | alles, was keine der vier Reihen ist | `#5C6068` | `#50545B` | eigenes `text_3`, wenn das Paket `panel` ändert; sonst das des Standards |
+
+- **Reihenfolge ist Teil der Prüfung.** Die vier Farben wurden als Satz mit dem Dataviz-Validator geprüft
+  (Helligkeitsband, Sättigung, Unterscheidbarkeit benachbarter Paare bei Rot-Grün-Schwäche ΔE ≥ 8 und bei normalem
+  Sehen ΔE ≥ 15, ≥ 3:1 auf `panel`), das Grau gegen jede der vier. Eine Reihe bekommt ihre Farbe nach dem, was sie ist, nie nach
+  ihrem Rang; eine fünfte Reihe wird „Other“, nie eine neue Farbe.
+- **Eigene Diagrammfarben** prüft die Suite nur auf 3:1 auf `panel`. Ob sie für Farbenblinde unterscheidbar bleiben,
+  misst kein Kontrast: Wer sie setzt, prüft sie in dieser Reihenfolge mit dem Validator, hell und dunkel.
+- Warum das Zurückfallen auf eigene Farben: Die Standardfarben sind nur gegen das `panel` des Standards geprüft. Ein
+  Paket mit eigenen Kalenderfarben hat sie schon auf seiner Fläche bestehen lassen; ein Paket mit eigener Fläche hat
+  ein `text_3`, das dort trägt.
+
 ## Regeln, die jedes Paket einhalten muss
 
 Die Suite prüft ein Paket beim Laden. Verstößt es gegen eine Regel, wird es **ganz abgelehnt** (nie halb
@@ -206,7 +230,7 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Format | `format = 1`; `name` und `version` vorhanden; unbekannte Schlüssel sind ein Fehler (Tippfehler sollen auffallen) |
 | Nur Daten | Ein Paket enthält nie Code. Gelesen werden nur `design.toml`, SVG, PNG, TTF/OTF |
 | Kontrast Text | `text`, `text_2`, `text_3` ≥ 4,5:1 auf `bg`, `panel`, `raised`, `hover`, `selected`, `menu` (hell und dunkel) |
-| Kontrast Bedienelemente | `focus_ring`, `merged`, Kalenderfarben ≥ 3:1 auf `panel`; Statusfarben ≥ 3:1 auf `panel` im dunklen Modus, `attention_text` und `error_text` ≥ 4,5:1 auf allen Flächen in beiden Modi; `line_selected` mindestens dreimal so deutlich wie `line_strong` und schwächer als `focus_ring` |
+| Kontrast Bedienelemente | `focus_ring`, `merged`, Kalenderfarben, Diagrammfarben (`chart`, `chart_other`) ≥ 3:1 auf `panel`; Statusfarben ≥ 3:1 auf `panel` im dunklen Modus, `attention_text` und `error_text` ≥ 4,5:1 auf allen Flächen in beiden Modi; `line_selected` mindestens dreimal so deutlich wie `line_strong` und schwächer als `focus_ring` |
 | Akzent | `on_accent` auf `accent` ≥ 4,5:1 (Text auf dem Primärknopf) |
 | Seitenleiste | `sidebar_text`, `sidebar_text_2`, `sidebar_text_3` ≥ 4,5:1 auf `sidebar`, `sidebar_hover`, `sidebar_selected` (auch mit zurückgefallenen Werten). Hat die Leiste eine eigene Fläche (`sidebar` ≠ `bg`): `focus_ring`, `accent`, `merged` und Kalenderfarben ≥ 3:1 auf `sidebar`, Statusfarben im dunklen Modus ebenso. Ohne eigene Fläche gilt für Grafik nichts Neues, ältere Pakete bleiben gültig |
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; `read` von `body` bis 20; jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |

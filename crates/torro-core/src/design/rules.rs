@@ -12,6 +12,11 @@
 //!   `ok` (2.1) and `attention` (2.2) are lower; there the derived text colours carry the
 //!   meaning: `attention_text` and `error_text` must reach 4.5:1 on every surface.
 //!
+//! The chart colours (task E8.8b) are graphics: the four series colours and the grey of "Other"
+//! must reach 3:1 on `panel`, as the calendar colours. That they stay apart for colour-blind eyes
+//! cannot be checked by a contrast; the standard's were checked with the dataviz validator, and
+//! `docs/design-pakete.md` asks pack authors to do the same.
+//!
 //! The tokens of the inbox's comfortable density (task E8.2) have rules of their own: `read` is
 //! never smaller than `body` (it is the text read longest), and the avatars and source tiles grow
 //! from small to large, so "large" always means larger.
@@ -55,6 +60,10 @@ fn colours(mode: Mode, p: &Palette, problems: &mut Vec<DesignError>) {
     }
     let calendar = ["calendar[1]", "calendar[2]", "calendar[3]", "calendar[4]", "calendar[5]"];
     controls.extend(calendar.into_iter().zip(p.calendar));
+    // Chart marks are graphics on the panel too (task E8.8b).
+    let chart = ["chart[1]", "chart[2]", "chart[3]", "chart[4]"];
+    controls.extend(chart.into_iter().zip(p.chart));
+    controls.push(("chart_other", p.chart_other));
     for (name, fg) in controls {
         let ratio = fg.contrast(p.panel);
         if ratio < CONTROL_MIN {
@@ -311,6 +320,22 @@ mod tests {
         let mut d = Design::standard();
         d.colors.light.on_accent = Rgba::hex(0x000000);
         assert!(matches!(check(&d)[..], [DesignError::AccentContrast { mode: Mode::Light, .. }]));
+    }
+
+    /// Task E8.8b: a chart colour or the grey of "Other" below 3:1 on `panel` is refused.
+    #[test]
+    fn a_faint_chart_colour_is_refused() {
+        let mut d = Design::standard();
+        d.colors.dark.chart[1] = Rgba::hex(0x202020);
+        d.colors.light.chart_other = Rgba::hex(0xEEEEEE);
+        let keys: Vec<String> = check(&d)
+            .into_iter()
+            .map(|p| match p {
+                DesignError::ControlContrast { fg, .. } => fg,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(keys, ["colors.dark.chart[2]", "colors.light.chart_other"]);
     }
 
     #[test]

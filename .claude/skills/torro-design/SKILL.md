@@ -114,6 +114,8 @@ aus einem Guss wirkt:
 | `ACCENT` | Torro-Rot `#D50C0C` | dto. | **nur** Primärknopf, Heute, Jetzt-Linie, App-Logo |
 | `merged` | `#A78BFA` | `#7C5CE6` | GitHub „gemergt/erledigt geschlossen“ (Violett): **nur** Icon oder Punkt neben einem Wort (≥ 3:1 auf allen Flächen, `Palette::merged`), nie als Text |
 | Kalender/Listen | `#5B8CFF` `#3FB984` `#E8A33D` `#D96CA8` `#A78BFA` | `#3B6EF0` `#1F9D68` `#B06F12` `#C2508F` `#7C5CE6` | Standardfarben, Tönung 18 % (hell 14 %) |
+| `chart` | `#3B78D8` `#C9701E` `#2E9E6B` `#B5509A` | `#2F6BC9` `#B8621A` `#2A9466` `#A8448C` | Diagrammreihen in fester Reihenfolge (E8.8b), mit dem Dataviz-Validator geprüft; nur Marken, nie Text, nie Status oder Rot |
+| `chart_other` | `#5C6068` | `#50545B` | Grau der Reihe „Other“ (`ChartColor::Other`) |
 
 ### Akzent und Status
 
@@ -280,6 +282,16 @@ aus einem Guss wirkt:
   (`attention`). Hinweise in Zeilen: `ListChecks` (Unteraufgaben), `AlignLeft` (Notiz), `Repeat`,
   `Bell`; `GripVertical` (Ziehgriff), `SignalHigh` (Priorität im Menü), `ChevronUp`/`ChevronDown`
   (vorige/nächste Aufgabe). Lucide 0.469.0 liefert `Github` noch mit.
+- **Diagramme und Kennzahlen** (E8.8b, zuerst die Insights der Zentrale; Methode: Skill `dataviz`): Farben nur als
+  `theme::ChartColor` (`Series(0..4)` in fester Reihenfolge, `Other`), in der Stilfunktion mit
+  `palette(t).chart_color(…)` – eine Reihe bekommt ihre Farbe nach dem, was sie ist, nie nach dem Rang, eine fünfte wird
+  „Other“. Bausteine: `widgets::stat_tile(label, wert, notiz)` (Kennzahl in `typo::display()` tabellarisch, `RAISED`,
+  Rahmen `LINE_STRONG`, Radius `lg`), `widgets::chart_card(titel, notiz, inhalt)` (auf `PANEL`, der Fläche, gegen die die
+  Farben geprüft sind), `widgets::column_chart(reihen, säulen)` (gestapelt, 2 px Fläche zwischen Segmenten, obere Ecken
+  `radius::xs()`, Gitter `LINE`, Grundlinie `LINE_STRONG`, Achsen `typo::micro()` in `TEXT_3`, Tooltip über die ganze
+  Säulenhöhe mit Titel, Summe und jedem Wert), `widgets::chart_legend` (ab zwei Reihen), `widgets::share_bar` (Anteil
+  neutral in `TEXT_3`, kein Status) und `widgets::data_table(kopf, zeilen, summe)` für die Tabellenansicht – jedes
+  Diagramm bietet dieselben Zahlen als Tabelle. Nie zwei y-Achsen, keine Zahl an jeder Säule.
 - **Kleine Bausteine der Aufgaben-App** (`widgets`, R.1; Beispiele im Doc-Kommentar, Anschauen mit
   `cargo run -p torro-gui --example gallery -- --parts`): `prop_line(label, mark, value, on_press)` –
   Eigenschaftszeile, Bezeichnung 88 in `typo::meta()`/`TEXT_3`, Wert daneben (`prop_value`, `prop_placeholder`

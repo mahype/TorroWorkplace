@@ -3,7 +3,9 @@
 //! front), label chips, state pills, progress bars, settings groups and the empty, loading and
 //! error states. For the comfortable density of the inbox (task E8.2): cards ([`card`],
 //! [`card_head`]), source tiles ([`source_tile`]) and the switch between the densities
-//! ([`density_switch`]).
+//! ([`density_switch`]). For figures and charts (task E8.8b, the hub's "Insights"): a figure tile
+//! ([`stat_tile`]), a stacked column chart with its legend ([`column_chart`], [`chart_legend`]), a
+//! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -62,7 +64,7 @@ use crate::icon::{self, Icon, icon};
 use crate::layout;
 use crate::shell::{SidebarMode, is_sidebar_key};
 use crate::style;
-use crate::theme::{self, Palette, palette, radius, size, space};
+use crate::theme::{self, ChartColor, Palette, palette, radius, size, space};
 use crate::typo;
 use crate::ui_state::Density;
 
@@ -1571,6 +1573,17 @@ pub fn source_tile<'a, M: 'a>(face: TileFace, size: TileSize, tint: Option<Color
 
 /// `text` in `level` and the colour `colour` picks, on one line cut with "…" to the room it gets
 /// ([`typo::ellipsize`]); a cut text shows the whole of it as tooltip.
+/// `text` on one line in `level` and `colour` (`theme::text`, `theme::text_2` …), cut with "…" to
+/// the room it gets and then shown whole as tooltip ([`typo::ellipsize`]) – never cut silently. For
+/// a name in a row whose width the layout decides (a suggestion of the hub's Insights, task E8.8b).
+pub fn ellipsized<'a, M: 'a>(
+    level: typo::Level,
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    one_line(level, text, colour)
+}
+
 fn one_line<'a, M: 'a>(
     level: typo::Level,
     text: impl IntoFragment<'a>,
@@ -2330,6 +2343,390 @@ pub fn modal<'a, M: Clone + 'a>(
     stack![base.into(), opaque(scrim), center(opaque(card)).padding(space::l())].into()
 }
 
+// ---------------------------------------------------------------------------------------------
+// Charts and figures (task E8.8b, the hub's "Insights")
+// ---------------------------------------------------------------------------------------------
+
+/// The gap between stacked segments and the least gap between columns: the surface shows between
+/// fills, so neighbours never touch (dataviz: 2-px spacer).
+const MARK_GAP: f32 = 2.0;
+/// Edge of the colour swatch in a legend and a chart's tooltip.
+const SWATCH: f32 = 8.0;
+/// Width of a chart's tooltip card, so its numbers stand in one column.
+const CHART_TIP_WIDTH: f32 = 176.0;
+/// Size of a [`share_bar`]: as wide as a [`progress_bar`].
+const SHARE_HEIGHT: f32 = 4.0;
+
+/// The height of the plot of a [`column_chart`]: five list rows (200 in the standard design).
+fn chart_height() -> f32 {
+    size::row() * 5.0
+}
+
+/// The widest a column's bar gets in a [`column_chart`] with few columns, so a week does not draw
+/// slabs (44 in the standard design).
+fn bar_max() -> f32 {
+    size::control_lg() + space::s()
+}
+
+/// One series of a [`column_chart`]: its `name` (legend, tooltip) and the colour it wears. Give
+/// colours by what the series is, never by its rank ([`ChartColor`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChartSeries {
+    pub name: String,
+    pub color: ChartColor,
+}
+
+/// One column of a [`column_chart`]: a day, a week, an hour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChartColumn {
+    /// Under the column on the axis, short ("Mon", "13", "7 Oct", "9"). The chart leaves out as many
+    /// labels as it must so that none touch, always keeping the last column's.
+    pub label: String,
+    /// The head of the column's tooltip, whole ("Monday, 13 Oct", "09:00–10:00").
+    pub title: String,
+    /// One value per series of the chart, in the order of its series; drawn as a stack from the
+    /// bottom up. Missing values count as 0.
+    pub values: Vec<u32>,
+}
+
+impl ChartColumn {
+    /// All values together: the height of the stack.
+    pub fn total(&self) -> u32 {
+        self.values.iter().fold(0u32, |sum, value| sum.saturating_add(*value))
+    }
+}
+
+/// The values on the y-axis of a chart whose largest column is `max`: from 0 in steps of 1, 2 or 5
+/// times a power of ten, at most four steps, the last one at or above `max`. `[0, 1]` for an empty
+/// chart, so the axis still has a top.
+pub fn axis_ticks(max: u32) -> Vec<u32> {
+    if max == 0 {
+        return vec![0, 1];
+    }
+    let mut power: u32 = 1;
+    loop {
+        for factor in [1, 2, 5] {
+            let step = factor * power;
+            if max.div_ceil(step) <= 4 {
+                return (0..=max.div_ceil(step)).map(|i| i * step).collect();
+            }
+        }
+        power = power.saturating_mul(10);
+    }
+}
+
+/// Which column labels a chart of `count` columns, `cell` wide each, shows when the widest label is
+/// `label` wide: every one that fits with a gap, counted back from the last, so the newest column
+/// is always named.
+pub fn shown_labels(count: usize, cell: f32, label: f32) -> Vec<bool> {
+    let need = label + space::s();
+    let every = if cell <= 0.0 { count.max(1) } else { ((need / cell).ceil() as usize).max(1) };
+    (0..count).map(|i| (count - 1 - i).is_multiple_of(every)).collect()
+}
+
+/// A column chart (task E8.8b; the dataviz method): one column per entry of `columns`, each a stack
+/// of its `series` values from the bottom up, in their colours ([`ChartColor`]), with a 2-px gap of
+/// surface between segments and the top corners of a stack rounded ([`radius::xs`]). One series
+/// makes a plain column chart.
+///
+/// - **Axes:** gridlines in `line` at [`axis_ticks`] with their values at the left (`MICRO`,
+///   tabular, `text_3`), the baseline in `line_strong`; the column labels below, as many as fit
+///   ([`shown_labels`]).
+/// - **Hover:** the whole height of a column is its hit area; it shows a tooltip at once with the
+///   column's `title`, its total and each series with its swatch and value (the top of the stack
+///   first). Text stays in the text colours, only the swatches wear the series' colour.
+/// - **Size:** as wide as it is given, [`chart_height`] plus the axis labels high; bars at most
+///   [`bar_max`] wide. Put a [`chart_legend`] over it for two series or more, and offer the same
+///   numbers as a [`data_table`] (identity must never hang on colour alone).
+///
+/// ```ignore
+/// let series = vec![ChartSeries { name: tr("Mail").into(), color: ChartColor::Series(0) }];
+/// let columns = days.iter().map(|day| ChartColumn { label: day.short.clone(), title: day.long.clone(), values: vec![day.mail] });
+/// column![widgets::chart_legend(&series), widgets::column_chart(series, columns.collect())]
+/// ```
+pub fn column_chart<'a, M: 'a>(series: Vec<ChartSeries>, columns: Vec<ChartColumn>) -> Element<'a, M> {
+    let axis = typo::micro().tabular();
+    let ticks = axis_ticks(columns.iter().map(ChartColumn::total).max().unwrap_or(0));
+    let top = ticks.last().copied().unwrap_or(1).max(1);
+    let half = typo::line_height(axis) / 2.0;
+    let labels_width = ticks.iter().map(|tick| typo::text_width(&tick.to_string(), axis)).fold(0.0, f32::max);
+    let height = chart_height() + 2.0 * half + space::xs() + typo::line_height(axis);
+    responsive(move |room| {
+        let plot_width = (room.width - labels_width - space::s()).max(0.0);
+        let count = columns.len().max(1);
+        let gap = column_gap(count, plot_width);
+        let cell = (plot_width - gap * (count - 1) as f32) / count as f32;
+        let y_axis = y_labels(&ticks, top, labels_width, half);
+        let plot = stack![gridlines(&ticks), bars(&series, &columns, top, gap)].width(Fill).height(chart_height());
+        let chart = row![y_axis, container(plot).padding([half, 0.0]).width(Fill)].spacing(space::s());
+        let longest = columns.iter().map(|c| typo::text_width(&c.label, axis)).fold(0.0, f32::max);
+        let shown = shown_labels(columns.len(), cell, longest);
+        let x_axis = x_labels(&columns, &shown, cell, gap, plot_width);
+        let x_axis = row![blank().width(labels_width), x_axis].spacing(space::s());
+        column![chart, x_axis].spacing(space::xs()).into()
+    })
+    .height(height)
+    .into()
+}
+
+/// The gap between columns: wider where there is room (a week), down to the 2-px spacer for many
+/// columns in a narrow chart.
+fn column_gap(count: usize, width: f32) -> f32 {
+    if width / count as f32 >= bar_max() { space::s() } else { MARK_GAP }
+}
+
+/// The values of the y-axis, right-aligned, each centred on its gridline.
+fn y_labels<'a, M: 'a>(ticks: &[u32], top: u32, width: f32, half: f32) -> Element<'a, M> {
+    let axis = typo::micro().tabular();
+    let layers = ticks.iter().map(|&tick| {
+        let y = chart_height() * (1.0 - tick as f32 / top as f32);
+        let label = typo::text(axis, tick.to_string()).style(theme::text_3).wrapping(Wrapping::None);
+        pin(container(label).width(width).align_right(width)).y(y).into()
+    });
+    let base = blank().width(width).height(chart_height() + 2.0 * half);
+    stack(std::iter::once(base.into()).chain(layers)).into()
+}
+
+/// The gridlines at `ticks`, the lowest (the baseline) stronger.
+fn gridlines<'a, M: 'a>(ticks: &[u32]) -> Element<'a, M> {
+    let steps = ticks.len().saturating_sub(1).max(1);
+    let between = (chart_height() - LINE * (steps + 1) as f32) / steps as f32;
+    let mut lines = column![];
+    for i in 0..=steps {
+        if i > 0 {
+            lines = lines.push(blank().height(between));
+        }
+        let strong = i == steps;
+        lines = lines.push(container(blank().width(Fill).height(LINE)).style(move |t| {
+            let p = palette(t);
+            container::background(if strong { p.line_strong } else { p.line })
+        }));
+    }
+    lines.width(Fill).into()
+}
+
+/// The columns side by side, each with its tooltip over its whole height.
+fn bars<'a, M: 'a>(series: &[ChartSeries], columns: &[ChartColumn], top: u32, gap: f32) -> Element<'a, M> {
+    let cells = columns.iter().map(|column| {
+        let stack = bar_stack(series, column, top);
+        let cell = container(stack).center_x(Fill).align_bottom(chart_height());
+        let tip = chart_tip(series, column);
+        tooltip(cell, tip, tooltip::Position::Top).gap(space::xs()).into()
+    });
+    row(cells).spacing(gap).width(Fill).height(chart_height()).into()
+}
+
+/// One column's stack: its non-zero values from the bottom up, each as high as its share of `top`,
+/// the gaps taken from the upper segments so the stack keeps its height.
+fn bar_stack<'a, M: 'a>(series: &[ChartSeries], column: &ChartColumn, top: u32) -> Element<'a, M> {
+    let filled: Vec<(ChartColor, u32)> = series
+        .iter()
+        .zip(column.values.iter().copied().chain(std::iter::repeat(0)))
+        .filter(|(_, value)| *value > 0)
+        .map(|(series, value)| (series.color, value))
+        .collect();
+    let last = filled.len().saturating_sub(1);
+    let mut stack = column![].spacing(MARK_GAP).width(Fill).max_width(bar_max());
+    // Top first: a column lays its children out from the top.
+    for (i, (colour, value)) in filled.iter().copied().enumerate().rev() {
+        let full = chart_height() * value as f32 / top as f32;
+        let height = if i == 0 { full } else { full - MARK_GAP }.max(LINE);
+        let rounded = i == last;
+        stack = stack.push(container(blank().width(Fill).height(height)).style(move |t| {
+            let radius = if rounded { radius::xs() } else { 0.0 };
+            container::Style {
+                background: Some(Background::Color(palette(t).chart_color(colour))),
+                border: border::rounded(border::top(radius)),
+                ..container::Style::default()
+            }
+        }));
+    }
+    stack.into()
+}
+
+/// The tooltip of a column: its title and total, then each series with swatch and value, the top
+/// of the stack first (one series: the title and its value only).
+fn chart_tip<'a, M: 'a>(series: &[ChartSeries], column: &ChartColumn) -> Element<'a, M> {
+    let head = row![
+        typo::text(typo::body_strong(), column.title.clone()).width(Fill),
+        typo::text(typo::body_strong().tabular(), column.total().to_string()),
+    ]
+    .spacing(space::s());
+    let mut lines = column![head].spacing(space::xs());
+    if series.len() > 1 {
+        for (i, series) in series.iter().enumerate().rev() {
+            let value = column.values.get(i).copied().unwrap_or(0);
+            lines = lines.push(
+                row![
+                    swatch(series.color),
+                    typo::text(typo::meta(), series.name.clone()).style(theme::text_2).width(Fill),
+                    typo::text(typo::meta().tabular(), value.to_string()),
+                ]
+                .spacing(ICON_GAP)
+                .align_y(Alignment::Center),
+            );
+        }
+    }
+    container(lines).width(CHART_TIP_WIDTH).padding([space::s(), space::m()]).style(style::container::menu).into()
+}
+
+/// The labels under the columns: `shown` ones centred under their column, `cell` wide with `gap`
+/// between, in a strip `width` wide.
+fn x_labels<'a, M: 'a>(columns: &[ChartColumn], shown: &[bool], cell: f32, gap: f32, width: f32) -> Element<'a, M> {
+    let axis = typo::micro().tabular();
+    let layers = columns.iter().zip(shown).enumerate().filter(|(_, (_, shown))| **shown).map(|(i, (column, _))| {
+        let label_width = typo::text_width(&column.label, axis) + space::xs();
+        let centre = i as f32 * (cell + gap) + cell / 2.0;
+        let x = (centre - label_width / 2.0).clamp(0.0, (width - label_width).max(0.0));
+        let label = typo::text(axis, column.label.clone()).style(theme::text_3).wrapping(Wrapping::None);
+        pin(container(label).width(label_width).center_x(label_width)).x(x).into()
+    });
+    let base = blank().width(Fill).height(typo::line_height(axis));
+    stack(std::iter::once(base.into()).chain(layers)).width(Fill).into()
+}
+
+/// The square of a series' colour in a legend or tooltip.
+fn swatch<'a, M: 'a>(colour: ChartColor) -> Element<'a, M> {
+    container(blank().width(SWATCH).height(SWATCH))
+        .style(move |t| container::Style {
+            background: Some(Background::Color(palette(t).chart_color(colour))),
+            border: border::rounded(MARK_GAP),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The legend of a chart: each series' swatch and name (`META`, `text_2`), in the series' order,
+/// wrapping onto more lines where it must. For two series or more; one series needs none (the
+/// chart's title names it).
+pub fn chart_legend<'a, M: 'a>(series: &[ChartSeries]) -> Element<'a, M> {
+    let entries = series.iter().map(|series| {
+        row![swatch(series.color), typo::text(typo::meta(), series.name.clone()).style(theme::text_2)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center)
+            .into()
+    });
+    row(entries).spacing(space::m()).wrap().vertical_spacing(space::xs()).into()
+}
+
+/// The frame of a chart or a table of figures (task E8.8b): `title` (`BODY_STRONG`) with a quiet
+/// `note` at its right (`META`, `text_3`: "average, Mon–Fri", "by day"), the `body` below. On
+/// `panel` – the surface the chart colours were checked on – with a `line_strong` frame, the card
+/// radius and a panel's padding, as wide as it is given.
+pub fn chart_card<'a, M: 'a>(
+    title: impl IntoFragment<'a>,
+    note: impl IntoFragment<'a>,
+    body: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    let head = row![
+        typo::text(typo::body_strong(), title).width(Fill).wrapping(Wrapping::None),
+        typo::text(typo::meta(), note).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    container(column![head, body.into()].spacing(space::l()))
+        .width(Fill)
+        .padding(layout::panel_padding())
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.panel)),
+                text_color: Some(p.text),
+                border: border::rounded(radius::lg()).color(p.line_strong).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// A figure on its own (task E8.8b, "Insights"): `label` (`META`, `text_3`) over the `value` in
+/// `DISPLAY` with tabular figures, and a `note` (`META`, `text_2`) that says what it means ("12 a
+/// day"). On `raised` with a `line_strong` frame and the card radius, as wide as it is given.
+///
+/// ```ignore
+/// row![widgets::stat_tile(tr("Notifications"), "372", tr("53 a day"))].spacing(space::m())
+/// ```
+pub fn stat_tile<'a, M: 'a>(
+    label: impl IntoFragment<'a>,
+    value: impl IntoFragment<'a>,
+    note: impl IntoFragment<'a>,
+) -> Element<'a, M> {
+    let content = column![
+        typo::text(typo::meta(), label).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::display().tabular(), value).wrapping(Wrapping::None),
+        typo::text(typo::meta(), note).style(theme::text_2),
+    ]
+    .spacing(space::xs());
+    container(content)
+        .width(Fill)
+        .padding([space::m(), space::l()])
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.raised)),
+                text_color: Some(p.text),
+                border: border::rounded(radius::lg()).color(p.line_strong).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// A share as a quiet bar: `part` of `whole` filled in `text_3` on a `line_strong` track, as wide
+/// as a [`progress_bar`]. Neutral – it is a measure, not a status; put the number next to it
+/// ("3 %").
+pub fn share_bar<'a, M: 'a>(part: u32, whole: u32) -> Element<'a, M> {
+    let fraction = if whole == 0 { 0.0 } else { (part as f32 / whole as f32).clamp(0.0, 1.0) };
+    let fill = container(blank().width(PROGRESS_WIDTH * fraction).height(SHARE_HEIGHT)).style(|t| container::Style {
+        background: Some(Background::Color(palette(t).text_3)),
+        border: border::rounded(SHARE_HEIGHT / 2.0),
+        ..container::Style::default()
+    });
+    container(fill)
+        .width(PROGRESS_WIDTH)
+        .height(SHARE_HEIGHT)
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).line_strong)),
+            border: border::rounded(SHARE_HEIGHT / 2.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A table of figures (task E8.8b, the "Table view" of a chart): `head` as captions (`CAPTION`,
+/// `text_3`), then one row per entry of `rows`, and – with `total` – a last row in `BODY_STRONG`.
+/// The first column is the name (`BODY`, wider), the others are numbers, right-aligned with
+/// tabular figures. Rows are [`size::control`] high with a `line` between them; every row should
+/// have as many cells as `head`.
+pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: Option<Vec<String>>) -> Element<'a, M> {
+    let line = |cells: Vec<String>, level: typo::Level, colour: fn(&Theme) -> iced::widget::text::Style| {
+        let cells = cells.into_iter().enumerate().map(move |(i, cell)| {
+            if i == 0 {
+                container(typo::text(level, cell).style(colour).wrapping(Wrapping::None))
+                    .width(Length::FillPortion(2))
+                    .clip(true)
+                    .into()
+            } else {
+                let number = typo::text(level.tabular(), cell).style(colour).wrapping(Wrapping::None);
+                container(number).width(Fill).align_right(Fill).into()
+            }
+        });
+        container(row(cells).spacing(space::s()).align_y(Alignment::Center))
+            .center_y(size::control())
+            .padding([0.0, space::s()])
+    };
+    let mut table = column![line(head, typo::caption(), theme::text_3)];
+    let mut lines: Vec<(Vec<String>, typo::Level)> = rows.into_iter().map(|row| (row, typo::body())).collect();
+    if let Some(total) = total {
+        lines.push((total, typo::body_strong()));
+    }
+    for (cells, level) in lines {
+        table = table.push(rule::horizontal(LINE).style(style::rule));
+        table = table.push(line(cells, level, theme::text));
+    }
+    table.width(Fill).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2342,6 +2739,33 @@ mod tests {
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
         Rectangle { x, y, width, height }
+    }
+
+    /// Task E8.8b: the y-axis ends at or above the largest column in at most four round steps.
+    #[test]
+    fn axis_ticks_are_round_and_cover_the_largest_column() {
+        assert_eq!(axis_ticks(0), [0, 1], "an empty chart still has a top");
+        assert_eq!(axis_ticks(3), [0, 1, 2, 3]);
+        assert_eq!(axis_ticks(7), [0, 2, 4, 6, 8]);
+        assert_eq!(axis_ticks(74), [0, 20, 40, 60, 80]);
+        assert_eq!(axis_ticks(90), [0, 50, 100]);
+        assert_eq!(axis_ticks(1200), [0, 500, 1000, 1500]);
+        for max in [1, 9, 11, 49, 101, 999, 12_345] {
+            let ticks = axis_ticks(max);
+            assert!(ticks.len() <= 5 && ticks.last().is_some_and(|&top| top >= max), "{max}: {ticks:?}");
+        }
+    }
+
+    /// Task E8.8b: labels that would touch are left out, counted back from the newest column.
+    #[test]
+    fn column_labels_thin_out_from_the_end() {
+        assert_eq!(shown_labels(3, 60.0, 20.0), [true, true, true], "room for all");
+        assert_eq!(shown_labels(5, 10.0, 12.0), [true, false, true, false, true], "every second");
+        let month = shown_labels(30, 14.0, 12.0);
+        assert!(month[29] && !month[28], "the last one always, its neighbour not");
+        assert_eq!(month.iter().filter(|&&shown| shown).count(), 15);
+        let column = ChartColumn { label: "Mon".into(), title: "Monday".into(), values: vec![3, 0, 4] };
+        assert_eq!(column.total(), 7);
     }
 
     const WINDOW: Rectangle = Rectangle { x: 0.0, y: 0.0, width: 900.0, height: 700.0 };
