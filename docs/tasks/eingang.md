@@ -1305,6 +1305,20 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **API/MCP:** keine neue Funktion; Punkt 14 ggf. Logik im Kern (`inbox.get_stats`), ohne Schnittstellenänderung.
 - **Abnahme:** Tests je Befund, wo prüfbar; `scripts/ci-local.sh`; Sichtprüfung der genannten Bilder neu.
 
+### E8.13 Letzte Kleinigkeiten aus E8.12
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E8.12 · **Dateien:** `crates/torro-inbox/src/demo.rs`, `crates/torroinbox/src/{detail,list}.rs`,
+  `crates/torro-core/src/i18n/de.rs`
+- Demo: einheitliche Anführungszeichen („typografisch“ im Englischen: “…”) in Titeln und Texten; ein bis zwei
+  Demo-Einträge mit eigenem App-Icon (z. B. GitHub, Kalender), damit die Spalten je App das Icon zeigen.
+- Paneel: Die Zeile „This text comes from outside the suite …“ lässt in Breit kein einzelnes Wort in der zweiten Zeile
+  (kürzer formulieren oder anders umbrechen).
+- Mail-Fenster: Auch die Einladungskarte folgt der Regel aus E8.12 (`widgets::bar_words`): alle Wörter oder keins je
+  Leiste, höchstens die Hauptaktion behält ihr Wort (Skill `torro-design`).
+- **API/MCP:** keine.
+- **Abnahme:** Tests (Wortregel an der Einladungskarte, Demo-Icons); `scripts/ci-local.sh`; kurze Sichtprüfung, wenn
+  der Bildschirm offen ist.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur
