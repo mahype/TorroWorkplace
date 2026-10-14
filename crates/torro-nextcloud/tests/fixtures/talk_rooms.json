@@ -1,0 +1,163 @@
+{
+  "ocs": {
+    "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+    "data": [
+      {
+        "id": 11,
+        "token": "a1b2c3d4",
+        "type": 1,
+        "name": "bert",
+        "displayName": "Bert Example",
+        "description": "",
+        "unreadMessages": 2,
+        "unreadMention": false,
+        "unreadMentionDirect": false,
+        "notificationLevel": 0,
+        "notificationCalls": 1,
+        "lastActivity": 1791880500,
+        "lastReadMessage": 5120,
+        "lastCommonReadMessage": 5120,
+        "readOnly": 0,
+        "isArchived": false,
+        "hasCall": false,
+        "lastMessage": {
+          "id": 5122,
+          "token": "a1b2c3d4",
+          "actorType": "users",
+          "actorId": "bert",
+          "actorDisplayName": "Bert Example",
+          "timestamp": 1791880500,
+          "message": "Could you look at {file}?",
+          "messageParameters": {
+            "file": { "type": "file", "id": "4711", "name": "Plan.pdf", "path": "Talk/Plan.pdf", "link": "https://cloud.example.org/f/4711" }
+          },
+          "systemMessage": "",
+          "messageType": "comment",
+          "isReplyable": true,
+          "referenceId": "",
+          "reactions": [],
+          "expirationTimestamp": 0,
+          "markdown": true
+        }
+      },
+      {
+        "id": 12,
+        "token": "x7k2m9qa",
+        "type": 2,
+        "name": "Team Alpha",
+        "displayName": "Team Alpha",
+        "unreadMessages": 5,
+        "unreadMention": true,
+        "unreadMentionDirect": true,
+        "notificationLevel": 2,
+        "lastActivity": 1791878292,
+        "lastReadMessage": 5100,
+        "readOnly": 0,
+        "isArchived": false,
+        "lastMessage": {
+          "id": 5131,
+          "token": "x7k2m9qa",
+          "actorType": "users",
+          "actorId": "carla",
+          "actorDisplayName": "Carla Example",
+          "timestamp": 1791878292,
+          "message": "Hi {mention-user1}, can you check the plan?",
+          "messageParameters": {
+            "mention-user1": { "type": "user", "id": "anna", "name": "Anna Example" }
+          },
+          "systemMessage": "",
+          "messageType": "comment",
+          "expirationTimestamp": 0
+        }
+      },
+      {
+        "id": 13,
+        "token": "pub1ic00",
+        "type": 3,
+        "name": "Open meeting",
+        "displayName": "Open meeting",
+        "unreadMessages": 1,
+        "unreadMention": false,
+        "unreadMentionDirect": false,
+        "notificationLevel": 3,
+        "lastActivity": 1791800000,
+        "lastReadMessage": 0,
+        "lastMessage": {
+          "id": 4900,
+          "actorType": "guests",
+          "actorId": "4a6f8b2c",
+          "actorDisplayName": "Guest Dora",
+          "timestamp": 1791800000,
+          "message": "{actor} started a call",
+          "messageParameters": {
+            "actor": { "type": "guest", "id": "guest/4a6f8b2c", "name": "Guest Dora" }
+          },
+          "systemMessage": "call_started",
+          "messageType": "system",
+          "expirationTimestamp": 0
+        }
+      },
+      {
+        "id": 14,
+        "token": "n0tes2me",
+        "type": 6,
+        "name": "Note to self",
+        "displayName": "",
+        "unreadMessages": 0,
+        "unreadMention": false,
+        "unreadMentionDirect": false,
+        "notificationLevel": 0,
+        "lastActivity": 1791700000,
+        "lastReadMessage": 0,
+        "lastMessage": []
+      },
+      {
+        "id": 15,
+        "token": "fed3rat3d",
+        "type": 2,
+        "name": "Partners",
+        "displayName": "Partners",
+        "unreadMessages": 3,
+        "unreadMention": false,
+        "notificationLevel": 1,
+        "lastActivity": 1791600000,
+        "lastMessage": {
+          "actorType": "federated_users",
+          "actorId": "erik@partner.example.net",
+          "actorDisplayName": "Erik Example",
+          "message": "See you tomorrow",
+          "messageParameters": [],
+          "systemMessage": "",
+          "messageType": "comment",
+          "expirationTimestamp": 0
+        }
+      },
+      {
+        "id": 16,
+        "token": "BAD/../TOKEN",
+        "type": 2,
+        "displayName": "Bad token",
+        "lastActivity": 1791600000
+      },
+      {
+        "id": 17,
+        "token": "notype00",
+        "displayName": "No type",
+        "lastActivity": 1791600000
+      },
+      {
+        "id": 18,
+        "token": "notime00",
+        "type": 2,
+        "displayName": "No activity"
+      },
+      {
+        "id": 11,
+        "token": "a1b2c3d4",
+        "type": 1,
+        "displayName": "Duplicate",
+        "lastActivity": 1791880500
+      }
+    ]
+  }
+}

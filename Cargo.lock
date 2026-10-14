@@ -5259,6 +5259,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-nextcloud"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "httpmock",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "torro-core",
+]
+
+[[package]]
 name = "torro-ntfy"
 version = "0.1.0"
 dependencies = [
