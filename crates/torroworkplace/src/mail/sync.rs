@@ -447,6 +447,7 @@ fn unreadable() -> ReadMessage {
         date: None,
         text: String::new(),
         from_html: false,
+        html: None,
         attachments: Vec::new(),
         traits: torro_mail::MessageTraits::default(),
         invitation: false,

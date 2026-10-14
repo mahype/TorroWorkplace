@@ -838,6 +838,7 @@ pub(crate) mod tests {
             bcc: Vec::new(),
             subject: "Secret plans".into(),
             body: "…".into(),
+            html: None,
             in_reply_to: Some("m:7".into()),
             attachments: vec![torro_mail::DraftAttachment::File { path: "/home/anna/contract.pdf".into() }],
         };
@@ -853,6 +854,7 @@ pub(crate) mod tests {
         assert_eq!(moved[..2], expected, "{moved:?}");
         assert_eq!(moved.len(), 3);
         let update = Request::UpdateMailAccount {
+            format: None,
             id: "mail:anna@mailbox.org".into(),
             sender_name: Some("Anna Example".into()),
             signature: None,

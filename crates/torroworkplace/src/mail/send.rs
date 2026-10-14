@@ -57,7 +57,7 @@ use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
 use torro_ipc::Response;
 use torro_ipc::mail::Delivery;
-use torro_mail::{Flag, MailAddress, Role};
+use torro_mail::{Flag, MailAddress, Role, html};
 use torro_mail_imap::folders::keeps_sent_copies;
 use torro_mail_imap::imap::ImapError;
 use torro_mail_imap::mime::{self, Built, MimeError, Outgoing, OutgoingAttachment, Reply};
@@ -473,6 +473,9 @@ pub(crate) async fn prepare(
         bcc: bcc.clone(),
         subject: read.subject.clone(),
         body: read.text.clone(),
+        // A formatted draft goes out formatted, cleaned once more: it may come from another mail
+        // program (issue #125).
+        html: read.html.as_deref().map(html::sanitize).filter(|markup| !markup.trim().is_empty()),
         signature: settings.signature.clone(),
         reply,
         attachments,
@@ -488,7 +491,11 @@ pub(crate) async fn prepare(
         first_recipient: first.map(|address| address.address.trim().to_string()),
         recipients: built.envelope.recipients.len(),
         attachments: outgoing.attachments.len(),
-        text_start: read.snippet(),
+        // What the recipients read: of formatted mail the plain text made from its HTML.
+        text_start: match &outgoing.html {
+            Some(markup) => snippet(&html::to_text(markup)),
+            None => read.snippet(),
+        },
         bcc: outgoing.bcc.iter().map(|address| address.address.trim().to_string()).collect(),
         to: outgoing.to.clone(),
         cc: outgoing.cc.clone(),
@@ -507,6 +514,12 @@ pub(crate) async fn prepare(
         bcc: bcc.into_iter().map(|address| address.address.trim().to_string()).collect(),
         facts,
     })
+}
+
+/// The start of `text` on one line, as `ReadMessage::snippet` makes it: white space collapsed, at
+/// most 200 characters.
+fn snippet(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect()
 }
 
 /// The draft `id` and its date as the store holds it: in an account `reach` sees, in that
@@ -1254,6 +1267,39 @@ pub(crate) mod tests {
         let now = prepare(&room.mail, Reach::Suite, &DraftAuthor::App, &id).await.expect("prepared");
         let sent = send_draft(&room.mail, Reach::Suite, &DraftAuthor::App, &id, Some(&now.fingerprint())).await;
         assert_eq!(sent, Response::MailSent { delivery: Delivery::Accepted });
+    }
+
+    /// Issue #125: formatted mail goes out as plain text and HTML, the signature above the quoted
+    /// history in both, and the approval shows the plain text the recipients get.
+    #[tokio::test]
+    async fn formatted_mail_goes_out_in_both_forms_with_the_signature_above_the_quote() {
+        let room = room().await;
+        let signed = room.mail.update(ANNA, |account| {
+            account.mail_settings.get_or_insert_with(torro_mail::MailSettings::default).signature = Some("Anna".into());
+        });
+        signed.await.expect("written").expect("found");
+        let html = concat!(
+            "<p>See you <strong>at noon</strong>.</p><div class=\"torro-quote\"><p>On Monday, Bernd wrote:</p>",
+            "<blockquote type=\"cite\">Lunch?</blockquote></div>",
+        );
+        let formatted = torro_mail::Draft { html: Some(html.into()), ..draft("Lunch") };
+        let id = saved(save_draft(&room.mail, Reach::Suite, formatted, DraftAuthor::App).await).id.expect("an id");
+        let (facts, _) = approval(&room.mail, Reach::Suite, &DraftAuthor::App, &id).await.expect("an approval");
+        assert_eq!(
+            facts.draft.expect("the draft").text_start,
+            "See you at noon. On Monday, Bernd wrote: > Lunch?",
+            "as for plain mail, without the signature"
+        );
+
+        let sent = send_draft(&room.mail, Reach::Suite, &DraftAuthor::App, &id, None).await;
+        assert_eq!(sent, Response::MailSent { delivery: Delivery::Accepted });
+        let handed = room.smtp.sent();
+        let read = mime::read(&handed[0].1).expect("read");
+        assert_eq!(read.text.trim_end(), "See you at noon.\n\n-- \nAnna\n\nOn Monday, Bernd wrote:\n\n> Lunch?");
+        let sent_html = read.html.expect("an HTML part");
+        let signature = sent_html.find("torro-signature").expect("signed");
+        assert!(signature < sent_html.find("torro-quote").expect("the history"), "{sent_html}");
+        assert!(sent_html.contains("<strong>at noon</strong>"), "{sent_html}");
     }
 
     #[tokio::test]

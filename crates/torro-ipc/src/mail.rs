@@ -345,6 +345,7 @@ mod tests {
         };
         let draft = |recipients: usize, attachments: usize, body: usize| Request::SaveDraft {
             draft: Draft {
+                html: None,
                 id: None,
                 account: "mail:anna@example.org".into(),
                 to: to(recipients),
@@ -365,6 +366,7 @@ mod tests {
     #[test]
     fn requests_name_their_account_and_messages() {
         let draft = Draft {
+            html: None,
             id: Some("m:draft".into()),
             account: "mail:anna@example.org".into(),
             to: Vec::new(),

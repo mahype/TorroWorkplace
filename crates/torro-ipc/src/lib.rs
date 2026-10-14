@@ -422,6 +422,10 @@ pub enum Request {
         /// role with its path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         folder_roles: Option<BTreeMap<Role, String>>,
+        /// How the compose window writes new mail, replies and forwards (issue #125): `html`
+        /// (formatted, sent with a plain text copy) or `plain`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        format: Option<torro_mail::MailFormat>,
     },
     /// Lists the accounts of the separate TorroMail app (task M7.4), read from its `state.json`
     /// (macOS `~/Library/Application Support/TorroMail`, Windows `AppData/Local/TorroMail`, else
@@ -1622,7 +1626,9 @@ pub enum Request {
     /// any other (also one the person wrote) is `not-found` (security rule 2). Files
     /// (`DraftAttachment::File`) are taken from the app key anywhere, from a client key only out of
     /// the core's attachment folder, never through a symbolic link and at most 25 MiB each; any
-    /// other path is `forbidden` (security rule 1).
+    /// other path is `forbidden` (security rule 1). A draft with `html` (issue #125) is stored
+    /// cleaned (`torro_mail::html::sanitize`) with the plain text made from it; the answer carries
+    /// both as stored.
     #[serde(rename = "mail.save_draft")]
     SaveDraft { draft: Draft },
     /// Sends a saved draft, keeps a copy in the sent folder and removes the draft

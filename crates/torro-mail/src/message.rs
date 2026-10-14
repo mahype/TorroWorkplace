@@ -276,9 +276,19 @@ pub struct Draft {
     pub bcc: Vec<MailAddress>,
     #[serde(default)]
     pub subject: String,
-    /// The text, plain. The account's signature is added when the message is built.
+    /// The text, plain. The account's signature is added when the message is built. With `html`
+    /// the core makes it from the HTML when the draft is saved (`html::to_text`); what is given
+    /// here is then not used.
     #[serde(default)]
     pub body: String,
+    /// The text as HTML, for formatted mail (issue #125): sent as `multipart/alternative` with the
+    /// plain text beside it. The core cleans it when the draft is saved (`html::sanitize`: no
+    /// scripts, styles, images or other attributes than links to `http`, `https` and `mailto`), so
+    /// the saved draft may differ from what was sent. The signature goes in front of the element
+    /// with the class `torro-quote` (the quoted history of an answer), else at the end. `None`
+    /// for plain text only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
     /// The id of the message this answers (`m:…`); the core sets `In-Reply-To` and `References`
     /// from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -316,6 +326,8 @@ mod tests {
     fn drafts_need_only_their_account_and_attachments_say_their_kind() {
         let draft: Draft = serde_json::from_str(r#"{"account":"mail:anna@example.org"}"#).expect("a draft");
         assert_eq!((draft.id.as_deref(), draft.to.len(), draft.subject.as_str()), (None, 0, ""));
+        assert_eq!(draft.html, None, "plain text unless HTML is given");
+        assert!(serde_json::to_value(&draft).expect("json").get("html").is_none(), "left out when none");
         let attachments = vec![
             DraftAttachment::MailPart { message: "m:1".into(), part: "2".into() },
             DraftAttachment::File { path: "/tmp/x.pdf".into() },

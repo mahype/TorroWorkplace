@@ -2363,8 +2363,8 @@ impl Core {
             Request::TorroMailAccounts => self.torromail_accounts().await,
             // A client never reaches the import either (`Rights::allows`, rule 5).
             Request::ImportTorroMailAccount { id } => self.import_torromail_account(&id).await,
-            Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles } => {
-                let change = MailSettingsChange { sender_name, signature, notify, services, folder_roles };
+            Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles, format } => {
+                let change = MailSettingsChange { sender_name, signature, notify, services, folder_roles, format };
                 self.update_mail_account(&id, change).await
             }
             // Reading mail (task M3.1): message and folder ids are looked up in the stores `reach`
@@ -3587,7 +3587,7 @@ impl Core {
     ///
     /// Answered with [`Response::Ok`]; `not-found` for an id that is no mail account.
     async fn update_mail_account(&self, id: &str, change: MailSettingsChange) -> Response {
-        let MailSettingsChange { sender_name, signature, notify, services, folder_roles } = change;
+        let MailSettingsChange { sender_name, signature, notify, services, folder_roles, format } = change;
         if let Some(refused) = mail_text_refusal(sender_name.as_deref(), signature.as_deref()) {
             return refused;
         }
@@ -3643,6 +3643,9 @@ impl Core {
                 }
                 if let Some(services) = services {
                     settings.services = services;
+                }
+                if let Some(format) = format {
+                    settings.format = format;
                 }
                 settings.folder_roles.extend(folder_roles.unwrap_or_default());
             })
@@ -4627,6 +4630,7 @@ struct MailSettingsChange {
     notify: Option<torro_mail::Notify>,
     services: Option<torro_mail::Services>,
     folder_roles: Option<std::collections::BTreeMap<torro_mail::Role, String>>,
+    format: Option<torro_mail::MailFormat>,
 }
 
 /// The longest sender name, in characters, a mail account takes.
@@ -9875,6 +9879,7 @@ mod tests {
         assert!(matches!(first, Response::MailConnected { .. }), "{first:?}");
 
         let update = Request::UpdateMailAccount {
+            format: Some(torro_mail::MailFormat::Plain),
             id: ANNA_MAIL.into(),
             sender_name: Some("Anna Example".into()),
             signature: Some("-- \nAnna".into()),
@@ -9901,11 +9906,13 @@ mod tests {
         let settings = stored[0].mail_settings.clone().expect("settings");
         assert_eq!(settings.signature.as_deref(), Some("-- \nAnna"));
         assert_eq!(settings.notify, torro_mail::Notify::ForMeOnly);
+        assert_eq!(settings.format, torro_mail::MailFormat::Plain, "issue #125: how mail is written");
         assert!(!settings.services.calendars, "nothing switched on without an address");
 
         // No setting reaches the servers: calendars need a CalDAV address, a role the server gave
         // a folder itself cannot be moved, and nothing changed meanwhile.
         let with = |services, folder_roles| Request::UpdateMailAccount {
+            format: None,
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
@@ -9983,6 +9990,7 @@ mod tests {
         // Off, then connected again without calendars (a new password): the address stays and is
         // not asked; the switch alone turns calendars on again.
         let switch = |calendars| Request::UpdateMailAccount {
+            format: None,
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
@@ -10148,6 +10156,7 @@ mod tests {
         // Calendars switched off and a CalDAV account of the same sign-in beside it: switching them
         // on again would sync the same collections twice.
         let switch = |calendars| Request::UpdateMailAccount {
+            format: None,
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
@@ -10327,6 +10336,7 @@ mod tests {
         .await;
 
         let pick = |path: &str| Request::UpdateMailAccount {
+            format: None,
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,
@@ -10371,6 +10381,7 @@ mod tests {
         .with_inbox(crate::inbox::tests::inbox_in(dir.path()))
         .with_mail(mail);
         let switch = |calendars| Request::UpdateMailAccount {
+            format: None,
             id: ANNA_MAIL.into(),
             sender_name: None,
             signature: None,

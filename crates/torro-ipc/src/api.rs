@@ -1831,9 +1831,10 @@ static UPDATE_MAIL_ACCOUNT: Command = Command {
     mcp: Mcp::Tool,
     description: "Changes the settings of a mail account (`mail:<address>` from list_accounts): sender name, \
                   signature, which new mail becomes an inbox entry (`notify`), which services the suite uses \
-                  (`services`; switching mail, calendars or tasks on widens what agents with rights to them see) \
-                  and the folder for a role the server left open. Only the fields given change; servers and \
-                  password never. Always waits for the person's approval.",
+                  (`services`; switching mail, calendars or tasks on widens what agents with rights to them see), \
+                  the folder for a role the server left open and how the person writes mail (`format`: `html` or \
+                  `plain`). Only the fields given change; servers and password never. Always waits for the \
+                  person's approval.",
 };
 
 // Read access: it shows what the separate TorroMail app stored (addresses, servers, user names),
@@ -2594,7 +2595,10 @@ static SAVE_DRAFT: Command = Command {
     access: Access::Write,
     mcp: Mcp::Tool,
     description: "Saves a draft (account, to, cc, bcc, subject, plain text body, the message it answers in \
-                  `in_reply_to`, attachments) in the account's drafts folder and returns it with its id. Passing \
+                  `in_reply_to`, attachments) in the account's drafts folder and returns it with its id. For \
+                  formatted mail give `html` too: it is cleaned (no scripts, styles, images or attributes but \
+                  http, https and mailto links), the plain text is made from it, and the signature goes above a \
+                  `<div class=\"torro-quote\">` holding the quoted history. Passing \
                   the id of your own saved draft replaces it, which needs delete access; drafts of others are \
                   `not-found`. Attach parts of messages with `{\"kind\": \"mail_part\"}`; files only from Torro \
                   Workplace's attachment folder (else `forbidden`). Nothing is sent: use send_draft.",
@@ -3188,6 +3192,7 @@ mod tests {
             Request::TorroMailAccounts,
             Request::ImportTorroMailAccount { id: "4c1d".into() },
             Request::UpdateMailAccount {
+                format: None,
                 id: "mail:anna@mailbox.org".into(),
                 sender_name: None,
                 signature: Some("Anna".into()),
@@ -3292,6 +3297,7 @@ mod tests {
 
     fn draft(id: Option<&str>) -> torro_mail::Draft {
         torro_mail::Draft {
+            html: None,
             id: id.map(str::to_string),
             account: "mail:anna@mailbox.org".into(),
             to: vec![torro_mail::MailAddress { name: None, address: "bob@example.org".into() }],
@@ -4755,12 +4761,14 @@ mod tests {
         assert_eq!(password.get("writeOnly"), Some(&serde_json::json!(true)));
         let required = |command: &Command| command.input_schema().expect("schema").get("required").cloned();
         assert_eq!(required(&UPDATE_MAIL_ACCOUNT), Some(serde_json::json!(["id"])));
+        let update = UPDATE_MAIL_ACCOUNT.input_schema().expect("schema");
+        assert!(update.as_value().pointer("/properties/format").is_some(), "the writing format is a setting");
         assert_eq!(required(&SEARCH_MESSAGES), Some(serde_json::json!(["limit"])));
         assert_eq!(required(&MOVE_MESSAGES), Some(serde_json::json!(["ids", "to"])));
         assert_eq!(required(&LIST_FOLDERS), None);
         let draft = SAVE_DRAFT.input_schema().expect("schema");
         let fields = draft.as_value().pointer("/properties/draft/properties").expect("a draft object");
-        for field in ["id", "account", "to", "cc", "bcc", "subject", "body", "in_reply_to", "attachments"] {
+        for field in ["id", "account", "to", "cc", "bcc", "subject", "body", "html", "in_reply_to", "attachments"] {
             assert!(fields.get(field).is_some(), "save_draft lacks {field}");
         }
     }

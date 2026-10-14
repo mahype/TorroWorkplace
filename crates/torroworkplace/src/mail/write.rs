@@ -26,7 +26,9 @@
 //! with `mime::build` (the core's `Message-ID`, no signature: that is added when it is sent) and
 //! its Bcc recipients are kept in a `Bcc:` header of the stored draft, as mail programs do, since
 //! the built message carries them in the envelope only. Replacing appends the new draft first and
-//! removes the old one after, so a failure never loses the draft; the id stays.
+//! removes the old one after, so a failure never loses the draft; the id stays. The HTML of a
+//! formatted draft (issue #125) is cleaned before anything else (`torro_mail::html::sanitize`), and
+//! its plain text is made from that HTML, so both forms of the stored draft say the same.
 //!
 //! **Connections.** A command connection is released only when every call on it worked, and never
 //! held while another account's connection is taken: attachments of other messages and the headers
@@ -48,7 +50,7 @@ use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
 use torro_ipc::Response;
 use torro_ipc::mail::{Delivery, MAX_FILE_BYTES, MoveTarget};
-use torro_mail::{Draft, DraftAttachment, Flag, InvitationAnswer, MailAddress, Role};
+use torro_mail::{Draft, DraftAttachment, Flag, InvitationAnswer, MailAddress, Role, html};
 use torro_mail_imap::imap::{FetchedHeader, ImapError, Search, Session};
 use torro_mail_imap::mime::{self, CalendarPart, Outgoing, OutgoingAttachment, ReadMessage, Reply};
 
@@ -642,6 +644,7 @@ pub(crate) async fn save_draft(mail: &MailService, reach: Reach<'_>, draft: Draf
 }
 
 async fn save(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftAuthor) -> Result<Draft, WriteError> {
+    let draft = cleaned(draft);
     let config = mail.config(&draft.account).await?;
     let store = mail.store(&draft.account).await?;
     let drafts = folder_with_role(&store, Role::Drafts).await?.ok_or(WriteError::NotFound(NO_ROLE_FOLDER))?;
@@ -666,6 +669,7 @@ async fn save(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftA
         bcc: draft.bcc.clone(),
         subject: draft.subject.clone(),
         body: draft.body.clone(),
+        html: draft.html.clone(),
         signature: None,
         reply,
         attachments,
@@ -721,6 +725,15 @@ async fn save(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftA
         store.run(move |store| store.forget_draft(&id).map(drop)).await?;
     }
     Ok(Draft { id: Some(id), ..draft })
+}
+
+/// `draft` with its HTML cleaned (`html::sanitize`) and its plain text made from it; HTML that
+/// holds nothing after cleaning is none. A plain draft stays as it is.
+fn cleaned(draft: Draft) -> Draft {
+    match draft.html.as_deref().map(html::sanitize).filter(|markup| !markup.trim().is_empty()) {
+        Some(markup) => Draft { body: html::to_text(&markup), html: Some(markup), ..draft },
+        None => Draft { html: None, ..draft },
+    }
 }
 
 /// The draft's MIME bytes: `mime::build` (which checks every address), with the Bcc recipients in
@@ -1048,6 +1061,7 @@ pub(crate) async fn send_invitation_reply(
         bcc: Vec::new(),
         subject: reply_subject(answer, title),
         body: reply_text(answer, &shown_name),
+        html: None,
         signature: None,
         reply: read.reply(),
         attachments: Vec::new(),
@@ -1278,6 +1292,7 @@ pub(crate) mod tests {
             bcc: Vec::new(),
             subject: subject.into(),
             body: "Dear Bernd,\nsee you.".into(),
+            html: None,
             in_reply_to: None,
             attachments: Vec::new(),
         }
@@ -1441,6 +1456,28 @@ pub(crate) mod tests {
         assert_eq!(on_server(&room.server, "Drafts"), ["Dinner"], "the old draft is gone");
         let subject = store.run(move |store| Ok(store.summary(&id)?.map(|s| s.subject))).await.expect("read");
         assert_eq!(subject.as_deref(), Some("Dinner"));
+    }
+
+    /// Issue #125: a formatted draft is stored cleaned, as HTML and the plain text made from it.
+    #[tokio::test]
+    async fn a_formatted_draft_is_cleaned_and_its_plain_text_made_from_it() {
+        let room = mailroom().await;
+        let dirty = "<p>Dear <b>Bernd</b>,<script>steal()</script></p><p onclick=\"x()\">see <a href=\"javascript:x()\">you</a>.</p>";
+        let formatted = Draft { html: Some(dirty.into()), body: "not used".into(), ..draft("Lunch") };
+        let filed = saved(save_draft(&room.mail, Reach::Suite, formatted, DraftAuthor::App).await);
+        assert_eq!(filed.html.as_deref(), Some("<p>Dear <b>Bernd</b>,</p><p>see you.</p>"));
+        assert_eq!(filed.body, "Dear Bernd,\n\nsee you.", "the plain text is the HTML's");
+        let stored = &drafts_on_server(&room.server)[0].1;
+        assert!(stored.contains("multipart/alternative") && stored.contains("text/html"), "{stored}");
+        assert!(!stored.contains("steal") && !stored.contains("javascript"), "{stored}");
+        let read = mime::read(stored.as_bytes()).expect("read");
+        assert_eq!(read.text.trim_end(), "Dear Bernd,\n\nsee you.");
+        assert_eq!(read.html.as_deref().map(|html| html.contains("<b>Bernd</b>")), Some(true));
+
+        // HTML that holds nothing after cleaning is a plain draft.
+        let nothing = Draft { html: Some("<script>x()</script>".into()), ..draft("Plain") };
+        let plain = saved(save_draft(&room.mail, Reach::Suite, nothing, DraftAuthor::App).await);
+        assert_eq!((plain.html, plain.body.as_str()), (None, "Dear Bernd,\nsee you."));
     }
 
     #[tokio::test]
