@@ -45,10 +45,12 @@ pub const TEST_ENGINE: &str = "test";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Engine {
     /// What `assistant.send_message` takes as `engine`: an AI account's id
-    /// (`ai:ollama@localhost:11434`), or [`TEST_ENGINE`].
+    /// (`ai:ollama@localhost:11434`), an agent's id (`claude-code`, [`EngineKind::Agent`]), or
+    /// [`TEST_ENGINE`].
     pub id: String,
     pub kind: EngineKind,
-    /// What to call it: the AI account's label (`Ollama`, `OpenRouter`).
+    /// What to call it: the AI account's label (`Ollama`, `OpenRouter`), the agent's name
+    /// (`Claude Code`).
     pub name: String,
     /// Why it cannot answer now, for people (no key on this device, the server did not answer
     /// last time); `None` when nothing is known against it. A local server may still be off.
@@ -56,14 +58,19 @@ pub struct Engine {
     pub problem: Option<String>,
 }
 
-/// What drives an [`Engine`]. Clients must accept kinds they do not know: agents as engines
-/// (Claude Code, Codex; task C.7) come later.
+/// What drives an [`Engine`]. Clients must accept kinds they do not know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EngineKind {
     /// An AI account (engine A, `docs/ki.md`): the core asks its model and runs the tools itself.
     /// Its models are listed with `ai.list_models`.
     Ai,
+    /// A coding agent installed on this computer (engine B, task C.7): Claude Code. The core runs
+    /// it without a terminal, with the suite's MCP server as its only tools and the key of the
+    /// assistant's own client; no shell, no files. It picks its model itself (`model` in
+    /// `assistant.send_message` may name one of its own, `sonnet`); it is offered only while the
+    /// assistant has its client.
+    Agent,
     /// The test engine ([`TEST_ENGINE`]): fixed answers, no model, no tools.
     Test,
 }
