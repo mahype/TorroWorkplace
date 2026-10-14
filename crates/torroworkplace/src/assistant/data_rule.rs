@@ -18,7 +18,9 @@
 //! every entry). Since the three inbox windows (step E8): the values of rules by trait (`facet`),
 //! the ways to mute an entry and what muting answers, the statistics with their suggestions, a task
 //! made of a mail in a folder, and the mail's subject and sender in a task's link (`link.mail`). The approvals, whose summaries and answers can quote mail, are no tool of the
-//! assistant at all (`tools::callable`).
+//! assistant at all (`tools::callable`). The event made from an inbox entry (task E8.5b) is
+//! withheld like its task: its title and description can be a mail's subject and sender. Quiet
+//! (`inbox.get_quiet`) names a calendar event at most, no mail.
 //!
 //! Known limit, for KI.1: a task made from a mail entry keeps the subject as its title, and
 //! `tasks.list_todos` shows it to every model; tasks are the person's own data from then on.
@@ -82,9 +84,11 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
     let whole = match request {
         request if request.operation().area() == Area::Mail => !MAIL_ANSWERS_ALLOWED.contains(&result),
         // Muting by trait and the statistics name senders, domains and lists of mail (tasks E8.6a,
-        // E8.8a); a task made of a mail takes its subject as title (task E8.7a).
+        // E8.8a); a task made of a mail takes its subject as title (task E8.7a), and so does an
+        // event made of an entry, with the line naming the mail in its description (task E8.5b).
         Request::HideSender { .. }
         | Request::CreateTaskFromItem { .. }
+        | Request::CreateEventFromItem { .. }
         | Request::ListMuteOptions { .. }
         | Request::MuteItem { .. }
         | Request::GetStats { .. }
@@ -332,6 +336,38 @@ mod tests {
         let options: Request =
             serde_json::from_value(json!({"method": "inbox.list_mute_options", "id": "a"})).expect("options");
         assert!(for_model(&options, &Response::Ok, Place::Remote).withheld);
+    }
+
+    /// Task E8.5b: an event made of an entry is withheld as a whole for a model elsewhere, as its
+    /// task is (a mail's subject as title, the mail named in the description); quiet is no mail.
+    #[test]
+    fn the_event_of_an_entry_is_withheld_and_quiet_is_not() {
+        let made: Request = serde_json::from_value(json!({
+            "method": "inbox.create_event_from_item", "id": "a1", "collection": "work",
+            "start": {"datetime": "2026-10-14T13:00:00Z"}, "end": {"datetime": "2026-10-14T13:30:00Z"}
+        }))
+        .expect("an event of an entry");
+        let event: torro_pim::Event = serde_json::from_value(json!({
+            "uid": "e1", "collection": "work", "href": null, "etag": null, "summary": "Secret offer",
+            "start": {"datetime": "2026-10-14T13:00:00Z"}, "end": {"datetime": "2026-10-14T13:30:00Z"},
+            "location": null, "description": "From mail: Anna", "recurring": false
+        }))
+        .expect("an event");
+        let answer = Response::Event { event };
+        let remote = for_model(&made, &answer, Place::Remote);
+        assert!(remote.withheld && !remote.value.to_string().contains("Secret"), "{}", remote.value);
+        assert!(for_model(&made, &answer, Place::Local).value.to_string().contains("Secret offer"));
+        let error = Response::Error { code: "not-found".into(), message: "no such calendar".into() };
+        assert_eq!(for_model(&made, &error, Place::Remote).value["result"], "error");
+        let quiet = Response::Quiet {
+            quiet: Some(torro_ipc::Quiet {
+                reason: torro_ipc::QuietReason::Busy,
+                until: Utc.with_ymd_and_hms(2026, 10, 14, 15, 0, 0).single().expect("valid time"),
+                title: Some("Customer call".into()),
+            }),
+        };
+        let asked = for_model(&Request::GetQuiet, &quiet, Place::Remote);
+        assert!(!asked.withheld && asked.value.to_string().contains("Customer call"), "{}", asked.value);
     }
 
     #[test]

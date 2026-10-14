@@ -43,7 +43,9 @@
 //! **Making a task of an entry** (task E3.5, `inbox.create_task_from_item`) is split the same way:
 //! the inbox hands over the entry the caller may change ([`Inbox::entry_for_task`]), the core
 //! checks the task list, writes the task through the calendar service and then marks the entry
-//! done like `inbox.set_item_done`.
+//! done like `inbox.set_item_done`. **An event of an entry** (task E8.5b,
+//! `inbox.create_event_from_item`) goes the same way with a calendar, and counts as done.
+//! **Quiet** (`inbox.get_quiet`) is the core's as well: it reads the settings and the calendars.
 //!
 //! **The source `suite`** (task E2.1) is filed by the core itself, not through a request: every
 //! open approval ([`file_approvals`]) and every account that needs the user
@@ -487,8 +489,11 @@ impl Inbox {
                 .and_then(|_| api::post_source(Some(client), agent.as_ref()))
                 .map(drop)
                 .map_err(Failure::Forbidden),
-            // Done marks a mail entry's mail read on the server (task E4.1); a task marks it done.
-            Request::SetItemDone { id, done: true, .. } | Request::CreateTaskFromItem { id, .. } => {
+            // Done marks a mail entry's mail read on the server (task E4.1); a task or an event
+            // (task E8.5b) marks it done.
+            Request::SetItemDone { id, done: true, .. }
+            | Request::CreateTaskFromItem { id, .. }
+            | Request::CreateEventFromItem { id, .. } => {
                 check_mail_done(&changeable(db, id, Some(client))?.item, Some(client))
             }
             // Nobody is asked to approve remembering a mail's lane when there is no sender to keep it for.
@@ -526,7 +531,8 @@ impl Inbox {
                 | Request::SetItemLane { id, .. }
                 | Request::HideSender { id, .. }
                 | Request::MuteItem { id, .. }
-                | Request::CreateTaskFromItem { id, .. } => {
+                | Request::CreateTaskFromItem { id, .. }
+                | Request::CreateEventFromItem { id, .. } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
                     InboxFacts { item, ..InboxFacts::default() }
                 }
@@ -574,9 +580,9 @@ impl Inbox {
         .map_err(|failure| Box::new(failure.response()))
     }
 
-    /// The entry `id` as stored, for `inbox.create_task_from_item` (task E3.5): the task is made
-    /// from its title, text and link. Snoozed entries that are due are woken first; changes
-    /// nothing else.
+    /// The entry `id` as stored, for `inbox.create_task_from_item` (task E3.5) and
+    /// `inbox.create_event_from_item` (task E8.5b): the task or event is made from its title, text
+    /// and link. Snoozed entries that are due are woken first; changes nothing else.
     ///
     /// `Err` holds the answer: `not-found` for an unknown entry or one of a source `client` may
     /// not see (a hook client sees none, no client the suite's), `forbidden` when `client` may not
@@ -1168,6 +1174,11 @@ fn answer(
         Request::CreateTaskFromItem { .. } => {
             Err(Failure::Invalid("inbox.create_task_from_item is answered by the core".into()))
         }
+        // An event alike, and quiet reads the settings and the calendars (task E8.5b).
+        Request::CreateEventFromItem { .. } => {
+            Err(Failure::Invalid("inbox.create_event_from_item is answered by the core".into()))
+        }
+        Request::GetQuiet => Err(Failure::Invalid("inbox.get_quiet is answered by the core".into())),
         Request::ListRules => {
             let rules = list_rules(db, client, now)?;
             let hits = rule_hits(db, &Scope::of(client), &rules)?;

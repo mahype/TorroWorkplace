@@ -1073,8 +1073,9 @@ impl PimService {
             | Request::DecideApproval { .. }
             | Request::AskPermission { .. } => return None,
             // The core checks the task list itself, before the entry and before anything else
-            // (`Core::task_target_refusal`, task E3.5).
-            Request::CreateTaskFromItem { .. } => return None,
+            // (`Core::task_target_refusal`, task E3.5), and the calendar of an event alike
+            // (`Core::event_refusal`, task E8.5b).
+            Request::CreateTaskFromItem { .. } | Request::CreateEventFromItem { .. } => return None,
             // No collection: the inbox filters by the client's sources itself (task E1.2).
             Request::ListItems { .. }
             | Request::GetItem { .. }
@@ -1091,7 +1092,8 @@ impl PimService {
             | Request::MuteItem { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }
-            | Request::GetStats { .. } => return None,
+            | Request::GetStats { .. }
+            | Request::GetQuiet => return None,
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
             // task M2.1).
             Request::ConnectMail { .. }
@@ -1155,6 +1157,12 @@ impl PimService {
         self.seen(reach, Role::TaskList).await.iter().any(|list| list.id == id)
     }
 
+    /// `id` is a calendar that `reach` sees: shown, in the selection and holding events (task
+    /// E8.5b). What a client may not see behaves as if it did not exist.
+    pub async fn sees_calendar(&self, reach: Reach<'_>, id: &str) -> bool {
+        self.seen(reach, Role::Calendar).await.iter().any(|calendar| calendar.id == id)
+    }
+
     /// `id` is a calendar or a task list that `reach` sees ([`PimService::sees_task_list`], and
     /// the same for calendars): shown, in the selection of its kind and, for a filter list, inside
     /// the client's repositories. For `settings.set_collection_shown` from a client.
@@ -1183,6 +1191,19 @@ impl PimService {
     #[cfg(test)]
     pub async fn cache_events(&self, events: Vec<Event>) {
         if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.events = events;
+        }
+    }
+
+    /// [`PimService::cache_events`] with a cache that covers the days around now (with the margin
+    /// of [`covers`]), so that `calendar.list_events` answers from it, for the core's tests of quiet
+    /// (task E8.5b). The account needs a CalDAV client ([`tests::fake_caldav`]), as every account
+    /// that is read.
+    #[cfg(test)]
+    pub async fn cache_events_of_today(&self, events: Vec<Event>) {
+        let now = Utc::now();
+        if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.window = Some((now - Span::days(2), now + Span::days(2)));
             slot.events = events;
         }
     }

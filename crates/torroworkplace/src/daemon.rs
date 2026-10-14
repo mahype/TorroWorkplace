@@ -486,6 +486,10 @@ fn describe(request: &Request) -> String {
         Request::GetItem { id } => format!("inbox item {id}"),
         Request::OpenItem { id } => format!("open inbox item {id}"),
         Request::CreateTaskFromItem { id, collection, .. } => format!("make a task in {collection} of inbox item {id}"),
+        // Never the title or the times (task E8.5b).
+        Request::CreateEventFromItem { id, collection, .. } => {
+            format!("make an event in {collection} of inbox item {id}")
+        }
         Request::ListSources => "inbox sources".into(),
         Request::PostItem { .. } => "post to inbox".into(),
         Request::ResolveItems { .. } => "resolve inbox items".into(),
@@ -501,6 +505,7 @@ fn describe(request: &Request) -> String {
         Request::MuteItem { id, .. } => format!("mute by inbox item {id}"),
         Request::ListRules => "inbox rules".into(),
         Request::GetStats { .. } => "inbox statistics".into(),
+        Request::GetQuiet => "inbox quiet".into(),
         Request::RemoveRule { id } => format!("remove inbox rule {id}"),
         // Never an address, a password, a search, a subject or a folder name (security rule 3 of
         // task M2.1); message and folder ids would let lines be matched with a mailbox.
@@ -579,5 +584,15 @@ mod tests {
             target: Some("mail:anna@mailbox.org:<offer@keller.example>".into()),
         };
         assert_eq!(describe(&open), "open torro-inbox-mail");
+        // Task E8.5b: an event of an entry names the calendar and the entry, never the title.
+        let at = torro_pim::EventTime::DateTime(chrono::Utc::now());
+        let event = Request::CreateEventFromItem {
+            id: "e1".into(),
+            collection: "work".into(),
+            title: Some("Secret".into()),
+            start: at,
+            end: at,
+        };
+        assert_eq!(describe(&event), "make an event in work of inbox item e1");
     }
 }

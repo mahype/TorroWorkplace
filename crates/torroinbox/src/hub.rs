@@ -26,11 +26,21 @@
 //!   The compact density draws Agents and To sort as rows with the action bar; approvals stay
 //!   cards, so Allow and Deny are always there. Mini and strip show the glance, as every window.
 //!
-//! Only the window: no request of its own. The app lists the entries (`inbox.list_items`, the
-//! snoozed ones for "Coming back") and sends the changes; the hub lays out, and its heights are
-//! plain functions ([`span`]) so the app can scroll the cursor into view.
+//! - **Quiet** and **Event** (task E8.5b): while a busy event keeps the inbox quiet
+//!   (`inbox.get_quiet`), the column at the right starts with "Quiet" – until when and the event
+//!   (or "A busy event" where the core keeps its title) –, and where there is no such column one
+//!   line says the same under the tiles or the numbers ([`quiet_line`]). To sort has "Event" after
+//!   "Task" ([`Act::Event`], `c`): a small dialog in the app makes an event of the entry
+//!   (`inbox.create_event_from_item`).
+//!
+//! The app lists the entries (`inbox.list_items`, the snoozed ones for "Coming back") and sends the
+//! changes; the hub lays out, and its heights are plain functions ([`span`]) so the app can scroll the
+//! cursor into view. Its own requests – quiet, the calendars and the event – go through
+//! [`HubSource`], so the demo can answer them too.
 
-use chrono::{DateTime, Utc};
+use std::future::Future;
+
+use chrono::{DateTime, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, responsive, row, rule, scrollable};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
@@ -41,8 +51,12 @@ use torro_gui::theme::{self, palette, size, space};
 use torro_gui::ui_state::Density;
 use torro_gui::widgets::{self, ButtonStyle, Mark, RowAction, TileFace, TileSize};
 use torro_gui::{style, typo};
+use torro_inbox::demo::DemoSource;
 use torro_inbox::item::ItemTask;
-use torro_inbox::{Action, Item, Kind, Lane, Link, SourceKind, State};
+use torro_inbox::source::TaskList;
+use torro_inbox::{Action, InboxError, InboxSource, Item, Kind, Lane, Link, SourceKind, State};
+use torro_ipc::Quiet;
+use torro_ipc::inbox::InboxClient;
 
 use crate::app::Message;
 use crate::keys::Command;
@@ -51,6 +65,135 @@ use crate::{detail, glance, notifications};
 
 /// How many lines of its text a card of Decide or Agents shows, as the notifications window's cards.
 const TEXT_LINES: usize = 2;
+
+/// What the hub asks the core for besides the entries (task E8.5b): whether it is quiet, the
+/// calendars an event can go to, and the event of an entry. The core's client sends the requests;
+/// the demo answers them from its own data.
+pub trait HubSource: Send + Sync {
+    /// `inbox.get_quiet`: `Some` while only urgent entries pop up, with until when and – for the app
+    /// key always – the busy event's title; `None` when it is not quiet.
+    fn get_quiet(&self) -> impl Future<Output = Result<Option<Quiet>, InboxError>> + Send;
+
+    /// The calendars an event can be made in (`calendar.list_calendars`, the writable ones with
+    /// events), each as id and name, in the core's order.
+    fn list_calendars(&self) -> impl Future<Output = Result<Vec<TaskList>, InboxError>> + Send;
+
+    /// `inbox.create_event_from_item`: an event of the entry `id` in the calendar `calendar` from
+    /// `start` to `end`, titled `title` (`None`: the entry's title); the entry is done then.
+    fn create_event_from_item(
+        &self,
+        id: String,
+        calendar: String,
+        title: Option<String>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> impl Future<Output = Result<(), InboxError>> + Send;
+}
+
+impl HubSource for InboxClient {
+    async fn get_quiet(&self) -> Result<Option<Quiet>, InboxError> {
+        InboxClient::get_quiet(self).await
+    }
+
+    async fn list_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
+        InboxClient::list_calendars(self).await
+    }
+
+    async fn create_event_from_item(
+        &self,
+        id: String,
+        calendar: String,
+        title: Option<String>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<(), InboxError> {
+        InboxClient::create_event_from_item(self, id, calendar, title, start, end).await
+    }
+}
+
+/// The demo's calendars ([`HubSource::list_calendars`]): ids and names.
+pub const DEMO_CALENDARS: [(&str, &str); 2] = [("demo/calendar/work", "Work"), ("demo/calendar/personal", "Personal")];
+
+/// The demo's busy event: it keeps the demo quiet from its "now" for this many minutes.
+const DEMO_QUIET_MINUTES: i64 = 90;
+
+/// The demo is always quiet in a customer call that ends [`DEMO_QUIET_MINUTES`] after the newest
+/// entry's time (its "now", as `--now` sets it); an event of an entry marks the entry done, as the
+/// core does, and is kept nowhere.
+impl HubSource for DemoSource {
+    async fn get_quiet(&self) -> Result<Option<Quiet>, InboxError> {
+        let all = self.list_items(torro_inbox::ItemFilter::default()).await?;
+        let now = all.iter().map(|item| item.updated).max().unwrap_or_else(Utc::now);
+        let until = now + chrono::TimeDelta::minutes(DEMO_QUIET_MINUTES);
+        Ok(Some(Quiet { reason: torro_ipc::QuietReason::Busy, until, title: Some("Customer call".into()) }))
+    }
+
+    async fn list_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
+        Ok(DEMO_CALENDARS.iter().map(|(id, name)| TaskList { id: (*id).into(), name: (*name).into() }).collect())
+    }
+
+    async fn create_event_from_item(
+        &self,
+        id: String,
+        _calendar: String,
+        _title: Option<String>,
+        _start: DateTime<Utc>,
+        _end: DateTime<Utc>,
+    ) -> Result<(), InboxError> {
+        self.set_item_done(id, true).await.map(drop)
+    }
+}
+
+#[cfg(test)]
+impl HubSource for crate::empty::EmptySource {
+    async fn get_quiet(&self) -> Result<Option<Quiet>, InboxError> {
+        Ok(None)
+    }
+
+    async fn list_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
+        Ok(Vec::new())
+    }
+
+    async fn create_event_from_item(
+        &self,
+        _id: String,
+        _calendar: String,
+        _title: Option<String>,
+        _start: DateTime<Utc>,
+        _end: DateTime<Utc>,
+    ) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+}
+
+/// When quiet ends, in local time: "15:00", or "Wed, 14 Oct, 09:00" on another day than `now`'s.
+fn quiet_end(quiet: &Quiet, now: DateTime<Utc>) -> String {
+    let local = quiet.until.with_timezone(&chrono::Local);
+    let today: NaiveDate = now.with_timezone(&chrono::Local).date_naive();
+    let time = torro_gui::datetime::format_time(local.time());
+    if local.date_naive() == today {
+        return time;
+    }
+    format!("{}, {time}", torro_gui::datetime::format_short_date(local.date_naive(), today))
+}
+
+/// The busy event's title on one line, "A busy event" where the core keeps it from the app.
+fn quiet_event(quiet: &Quiet) -> String {
+    let title = quiet.title.as_deref().map(list::one_line).filter(|title| !title.is_empty());
+    title.unwrap_or_else(|| tr("A busy event").to_owned())
+}
+
+/// What "Quiet" in the column at the right says: "Until 15:00" ([`quiet_end`]) over the busy event
+/// ([`quiet_event`]).
+pub fn quiet_words(quiet: &Quiet, now: DateTime<Utc>) -> (String, String) {
+    (trf("Until {time}", &[("time", &quiet_end(quiet, now))]), quiet_event(quiet))
+}
+
+/// The line about quiet over the sections where no column at the right says it (task E8.5b): "Quiet
+/// until 15:00 · Customer call", drawn with the moon in `text_2`.
+pub fn quiet_line(quiet: &Quiet, now: DateTime<Utc>) -> String {
+    format!("{} · {}", trf("Quiet until {time}", &[("time", &quiet_end(quiet, now))]), quiet_event(quiet))
+}
 
 /// The sections of "Act now", top to bottom.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -331,6 +474,8 @@ pub enum Act {
     Open,
     /// Make a task of the entry (`t`, `inbox.create_task_from_item`).
     Task,
+    /// Make an event of the entry (`c`, `inbox.create_event_from_item`, task E8.5b).
+    Event,
     /// Put it off (`s`, `inbox.snooze_item`).
     Later,
     /// Mark it done (`e`, `inbox.set_item_done`).
@@ -360,11 +505,11 @@ fn is_agent(item: &Item) -> bool {
 ///   Later, no Done**: it waits for yes or no;
 /// - a done entry: Reopen;
 /// - a coding agent: Go to window (when it can be opened) · Later · Done;
-/// - mail: Task · Later · Done – mail is done or hidden, never dismissed;
+/// - mail: Task · Event · Later · Done – mail is done or hidden, never dismissed;
 /// - the suite's "You finished a task from a mail" ([`is_follow_up`], task E8.7b): Reply · Mark mail
 ///   done · Not now;
-/// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · Later ·
-///   ✕ ([`notifications::dismissable`], else Done).
+/// - everything else: Open (a page or an app, when [`detail::openable`] offers it) · Task · Event ·
+///   Later · ✕ ([`notifications::dismissable`], else Done).
 pub fn acts(item: &Item) -> Vec<Act> {
     if is_follow_up(item) && item.state.is_open() {
         return vec![Act::Reply, Act::MarkMailDone, Act::NotNow];
@@ -392,7 +537,7 @@ pub fn acts(item: &Item) -> Vec<Act> {
         return lead.into_iter().chain([Act::Later, Act::Done]).collect();
     }
     if item.source.kind == SourceKind::Mail {
-        return vec![Act::Task, Act::Later, Act::Done];
+        return vec![Act::Task, Act::Event, Act::Later, Act::Done];
     }
     let mut acts = Vec::new();
     match detail::openable(item) {
@@ -400,7 +545,7 @@ pub fn acts(item: &Item) -> Vec<Act> {
         Some(Link::Window) => acts.push(Act::GoToWindow),
         Some(Link::Mail { .. }) | None => {}
     }
-    acts.extend([Act::Task, Act::Later]);
+    acts.extend([Act::Task, Act::Event, Act::Later]);
     acts.push(if notifications::dismissable(item) { Act::Dismiss } else { Act::Done });
     acts
 }
@@ -414,6 +559,7 @@ impl Act {
             Act::GoToWindow => Icon::AppWindow,
             Act::Open => Icon::ArrowUpRight,
             Act::Task => Icon::ListTodo,
+            Act::Event => Icon::CalendarPlus,
             Act::Later => Icon::Clock,
             Act::Reopen => Icon::Inbox,
             Act::Reply => Icon::Reply,
@@ -428,6 +574,7 @@ impl Act {
             Act::GoToWindow => tr("Go to window"),
             Act::Open => tr("Open"),
             Act::Task => tr("Task"),
+            Act::Event => tr("Event"),
             Act::Later => tr("Later"),
             Act::Done => tr("Done"),
             Act::Dismiss => tr("Dismiss"),
@@ -445,6 +592,7 @@ impl Act {
             Act::Allow(_) | Act::Deny(_) | Act::MarkMailDone => "",
             Act::GoToWindow | Act::Open => "Enter",
             Act::Task => "T",
+            Act::Event => "C",
             Act::Later => "S",
             Act::Done | Act::Reopen | Act::NotNow => "E",
             Act::Dismiss => "X",
@@ -464,6 +612,7 @@ impl Act {
             Act::Deny(approval) => decide(approval, false),
             Act::GoToWindow | Act::Open => Some(Message::OpenRow(item.id.clone())),
             Act::Task => act(Command::MakeTask),
+            Act::Event => act(Command::MakeEvent),
             Act::Later => act(Command::Snooze),
             Act::Done | Act::Reopen | Act::NotNow => act(Command::Done),
             Act::Dismiss => act(Command::Dismiss),
@@ -480,7 +629,7 @@ impl Act {
             Act::Done | Act::Dismiss | Act::Reopen | Act::NotNow => true,
             Act::Later => section == Section::Agents,
             Act::GoToWindow => section == Section::Decide,
-            Act::Allow(_) | Act::Deny(_) | Act::Open | Act::Task | Act::Reply | Act::MarkMailDone => false,
+            Act::Allow(_) | Act::Deny(_) | Act::Open | Act::Task | Act::Event | Act::Reply | Act::MarkMailDone => false,
         };
         if quiet { style::button::ghost } else { style::button::secondary }
     }
@@ -501,6 +650,9 @@ pub struct Layout {
     pub tiles: usize,
     /// The window shows To sort alone (its sidebar entry): no tiles, no numbers, no other section.
     pub only_to_sort: bool,
+    /// A line about quiet under the tiles or the numbers ([`quiet_line`], task E8.5b): the app sets
+    /// it while it is quiet and no column at the right says so. Never with [`Layout::only_to_sort`].
+    pub quiet: bool,
 }
 
 /// The layout of "Act now" in a window of `class` whose content is `width` wide (beside sidebar,
@@ -515,6 +667,7 @@ pub fn layout(width: f32, class: SizeClass, density: Density, only_to_sort: bool
         columns: if narrow { 1 } else { notifications::fit(width) },
         tiles: if narrow { 0 } else { tile_columns(width) },
         only_to_sort,
+        quiet: false,
     }
 }
 
@@ -626,6 +779,9 @@ pub fn span(sections: &Sections<'_>, tiles: usize, layout: Layout, id: &str) -> 
         } else if !layout.narrow && tiles > 0 {
             y += tile_height() + gap;
         }
+        if layout.quiet {
+            y += quiet_height() + gap;
+        }
     }
     for (section, items) in sections.shown(layout.only_to_sort) {
         let start = y;
@@ -657,6 +813,11 @@ pub fn span(sections: &Sections<'_>, tiles: usize, layout: Layout, id: &str) -> 
     None
 }
 
+/// The height of the line about quiet ([`quiet_line`]): one line of `BODY`, its icon no taller.
+fn quiet_height() -> f32 {
+    typo::line_height(typo::body()).max(icon::SIZE)
+}
+
 /// The entries of `snoozed` that come back, the soonest first ("Coming back").
 pub fn coming_back(snoozed: &[Item]) -> Vec<&Item> {
     let mut back: Vec<&Item> = snoozed.iter().filter(|item| matches!(item.state, State::Snoozed { .. })).collect();
@@ -681,6 +842,8 @@ pub struct HubData<'a> {
     /// The theme's attention colour and its colour for "OK", for the states' pills.
     pub attention: Color,
     pub ok: Color,
+    /// Whether it is quiet now (task E8.5b), for the line of [`Layout::quiet`].
+    pub quiet: Option<&'a Quiet>,
 }
 
 /// "Act now": the empty state, or the tiles (the numbers in narrow windows) and the sections –
@@ -729,6 +892,9 @@ fn blocks<'a>(data: &HubData<'a>, width: f32) -> Element<'a, Message> {
                 blocks.push(tile_row(tiles, layout.tiles, data.filter, width));
             }
         }
+        if let Some(quiet) = data.quiet.filter(|_| layout.quiet) {
+            blocks.push(quiet_view(quiet_line(quiet, data.rows.now), width));
+        }
     }
     for (section, items) in sections.shown(layout.only_to_sort) {
         let body = if as_rows(section, layout) {
@@ -743,6 +909,15 @@ fn blocks<'a>(data: &HubData<'a>, width: f32) -> Element<'a, Message> {
         blocks.push(column![caption(section.title(), items.len()), body].spacing(caption_gap()).into());
     }
     column(blocks).spacing(block_gap(layout.narrow)).width(Fill).into()
+}
+
+/// The line about quiet `width` wide: the moon and the words in `text_2`, cut with "…".
+fn quiet_view<'a>(line: String, width: f32) -> Element<'a, Message> {
+    let mark = icon::icon(Icon::Moon, icon::SIZE)
+        .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_2) });
+    let words = typo::ellipsize(&line, typo::body(), (width - icon::SIZE - space::s()).max(0.0));
+    let words = typo::text(typo::body(), words).style(theme::text_2).wrapping(Wrapping::None);
+    container(row![mark, words].spacing(space::s()).align_y(Alignment::Center)).height(quiet_height()).into()
 }
 
 /// The caption over a section: "Decide · 2" in `CAPTION` and `text_3`, sentence case.
@@ -1059,13 +1234,35 @@ fn side_row<'a>(mark: Icon, title: &str, meta: &str, chosen: bool, on_press: Mes
         .into()
 }
 
+/// The line between the blocks of the column at the right.
+fn side_rule<'a>() -> Element<'a, Message> {
+    container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::m(), 0.0]).into()
+}
+
+/// A row of the column at the right that is no button (quiet ends by itself): laid out as
+/// [`side_row`], its padding included, so the blocks line up.
+fn side_line<'a>(mark: Icon, title: &str, meta: &str) -> Element<'a, Message> {
+    let title = typo::ellipsize(title, typo::body(), side_room());
+    let meta = typo::ellipsize(meta, typo::meta(), side_room());
+    let mark =
+        icon::icon(mark, icon::SIZE).style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text_2) });
+    let words = column![
+        typo::text(typo::body(), title).style(theme::text).wrapping(Wrapping::None),
+        typo::text(typo::meta(), meta).style(theme::text_3).wrapping(Wrapping::None),
+    ];
+    let line = row![mark, words].spacing(space::m()).align_y(Alignment::Center);
+    container(line).width(Fill).padding(Padding::new(space::xs()).left(space::s()).right(space::s())).into()
+}
+
 /// A quiet line under an empty block of the column at the right: what comes here.
 fn side_hint<'a>(text: &'a str) -> Element<'a, Message> {
     let hint = typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
     container(hint).padding(Padding::new(0.0).left(space::s()).right(space::s())).into()
 }
 
-/// The column at the right of "Act now" (the wide layout): **Handed off** (task E8.7b) – the open
+/// The column at the right of "Act now" (the wide layout): **Quiet** (task E8.5b) while it is quiet –
+/// the moon, until when and the busy event ([`quiet_words`]), no button: it ends by itself –, then
+/// **Handed off** (task E8.7b) – the open
 /// tasks made of entries ([`handed_off`]), each with its title, list and due day, a click opens it in
 /// the tasks app (`apps.open_app` with `task:<uid>`) – then, under a line, **Coming back**: the
 /// snoozed entries, the soonest first, each with its title and its origin and when it wakes; a click
@@ -1073,12 +1270,19 @@ fn side_hint<'a>(text: &'a str) -> Element<'a, Message> {
 pub fn side<'a>(
     snoozed: &'a [Item],
     handed: Vec<&'a ItemTask>,
+    quiet: Option<&Quiet>,
     now: DateTime<Utc>,
     selected: Option<&'a str>,
 ) -> Element<'a, Message> {
     let inset = Padding::new(0.0).left(space::s());
-    let mut content =
-        column![container(caption(tr("Handed off"), handed.len())).padding(inset)].spacing(space::xs()).width(Fill);
+    let mut content = column![].spacing(space::xs()).width(Fill);
+    if let Some(quiet) = quiet {
+        let (until, what) = quiet_words(quiet, now);
+        content = content.push(container(caption(tr("Quiet"), 0)).padding(inset));
+        content = content.push(side_line(Icon::Moon, &until, &what));
+        content = content.push(side_rule());
+    }
+    content = content.push(container(caption(tr("Handed off"), handed.len())).padding(inset));
     if handed.is_empty() {
         content = content.push(side_hint(tr("Tasks you make of entries show up here until they are done.")));
     }
@@ -1088,7 +1292,7 @@ pub fn side<'a>(
             content.push(side_row(Icon::ListTodo, &list::one_line(&task.title), &handed_meta(task, now), false, open));
     }
     let back = coming_back(snoozed);
-    content = content.push(container(rule::horizontal(size::HAIRLINE).style(style::rule)).padding([space::m(), 0.0]));
+    content = content.push(side_rule());
     content = content.push(container(caption(tr("Coming back"), back.len())).padding(inset));
     if back.is_empty() {
         content = content.push(side_hint(tr("What you put off comes back here.")));
@@ -1109,8 +1313,7 @@ pub fn side<'a>(
 #[cfg(test)]
 mod tests {
     use chrono::{Local, TimeDelta, TimeZone};
-    use torro_inbox::demo::DemoSource;
-    use torro_inbox::{InboxSource, ItemFilter, StateFilter};
+    use torro_inbox::{ItemFilter, StateFilter};
 
     use super::*;
 
@@ -1165,9 +1368,14 @@ mod tests {
         }
         assert_eq!(acts(&find(&items, "demo-1")), [Act::GoToWindow, Act::Later, Act::Done], "an agent");
         let mail = items.iter().find(|item| item.source.kind == SourceKind::Mail).expect("a mail entry");
-        assert_eq!(acts(mail), [Act::Task, Act::Later, Act::Done], "mail is never dismissed");
-        assert_eq!(acts(&find(&items, "demo-6")), [Act::Open, Act::Task, Act::Later, Act::Dismiss], "a notice");
-        assert_eq!(acts(&find(&items, "demo-12")), [Act::Task, Act::Later, Act::Dismiss], "without a link");
+        assert_eq!(acts(mail), [Act::Task, Act::Event, Act::Later, Act::Done], "mail is never dismissed");
+        assert_eq!(
+            acts(&find(&items, "demo-6")),
+            [Act::Open, Act::Task, Act::Event, Act::Later, Act::Dismiss],
+            "a notice"
+        );
+        assert_eq!(acts(&find(&items, "demo-12")), [Act::Task, Act::Event, Act::Later, Act::Dismiss], "no link");
+        assert!(!acts_of.contains(&Act::Event), "an approval becomes no event either");
         let done = entries(StateFilter::Done);
         assert_eq!(acts(&find(&done, "demo-11")), [Act::Reopen]);
     }
@@ -1190,6 +1398,48 @@ mod tests {
         assert!(matches!(Act::Dismiss.message(&notice, false), Some(Message::Act(_, Command::Dismiss))));
         assert!(matches!(Act::Later.message(&notice, false), Some(Message::Act(_, Command::Snooze))));
         assert!(matches!(Act::Open.message(&notice, false), Some(Message::OpenRow(_))));
+        assert!(matches!(Act::Event.message(&notice, false), Some(Message::Act(_, Command::MakeEvent))));
+    }
+
+    /// Task E8.5b: quiet says until when and which event – "A busy event" where the core keeps its
+    /// title –, and its line counts in the spans.
+    #[test]
+    fn quiet_names_its_end_and_its_event() {
+        let until = now() + TimeDelta::minutes(90);
+        let named = Quiet { reason: torro_ipc::QuietReason::Busy, until, title: Some(" Customer\ncall ".into()) };
+        let time = torro_gui::datetime::format_time(until.with_timezone(&Local).time());
+        assert_eq!(quiet_words(&named, now()), (trf("Until {time}", &[("time", &time)]), "Customer call".to_owned()));
+        let hidden = Quiet { title: None, ..named.clone() };
+        assert_eq!(quiet_words(&hidden, now()).1, tr("A busy event"));
+        assert_eq!(
+            quiet_line(&named, now()),
+            format!("{} · Customer call", trf("Quiet until {time}", &[("time", &time)]))
+        );
+        let tomorrow = Quiet { until: until + TimeDelta::days(1), ..named };
+        assert!(quiet_words(&tomorrow, now()).0.len() > trf("Until {time}", &[("time", &time)]).len(), "with its day");
+
+        let items = entries(StateFilter::Open);
+        let sections = Sections::of(&items, None);
+        let narrow = layout(440.0, SizeClass::Narrow, Density::Compact, false);
+        let quiet = Layout { quiet: true, ..narrow };
+        let (top, _) = span(&sections, 0, narrow, "demo-3").expect("the approval");
+        let (later, _) = span(&sections, 0, quiet, "demo-3").expect("the approval");
+        assert_eq!(later - top, quiet_height() + block_gap(true), "the line under the numbers");
+    }
+
+    /// Task E8.5b: the demo is quiet, offers its calendars, and an event of an entry marks it done.
+    #[test]
+    fn the_demo_answers_quiet_calendars_and_events() {
+        let demo = DemoSource::new(now());
+        use iced::futures::executor::block_on as block;
+        let quiet = block(demo.get_quiet()).expect("the demo answers").expect("quiet");
+        assert_eq!(quiet.title.as_deref(), Some("Customer call"));
+        let calendars = block(demo.list_calendars()).expect("calendars");
+        assert_eq!(calendars.len(), DEMO_CALENDARS.len());
+        let id = "demo-6".to_owned();
+        block(demo.create_event_from_item(id.clone(), calendars[0].id.clone(), None, now(), now())).expect("made");
+        let done = block(demo.list_items(ItemFilter { state: Some(StateFilter::Done), ..ItemFilter::default() }));
+        assert!(done.expect("the demo answers").iter().any(|item| item.id == id), "the entry is done");
     }
 
     #[test]

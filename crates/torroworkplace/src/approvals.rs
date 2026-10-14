@@ -1224,8 +1224,9 @@ pub struct InboxFacts {
     pub item: Option<Item>,
     /// The rule `inbox.remove_rule` would remove, as stored; `None` when unknown.
     pub rule: Option<Rule>,
-    /// The display name of the task list `inbox.create_task_from_item` writes to, as the core
-    /// caches it (task E3.5); `None` when unknown: the summary then shows the list's id.
+    /// The display name of the task list `inbox.create_task_from_item` writes to (task E3.5), or
+    /// of the calendar of `inbox.create_event_from_item` (task E8.5b), as the core caches it;
+    /// `None` when unknown: the summary then shows the id.
     pub list: Option<String>,
 }
 
@@ -1285,6 +1286,17 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                     &[("title", &title), ("list", &list), ("entry", &entry())],
                 ),
             }
+        }
+        // The title that will be written, as for a task, the calendar by its cached name and the
+        // start (task E8.5b).
+        Request::CreateEventFromItem { collection, title, start, .. } => {
+            let title = title.as_deref().filter(|title| !title.trim().is_empty());
+            let title = quote(title.or(facts.item.as_ref().map(|item| item.title.as_str())).unwrap_or_default());
+            let calendar = quote(facts.list.as_deref().unwrap_or(collection));
+            trf(
+                "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
+                &[("title", &title), ("when", &when(start, today)), ("calendar", &calendar), ("entry", &entry())],
+            )
         }
         // Done marks the mail of a mail entry read on its server (task E4.1).
         Request::SetItemDone { done: true, .. } if is_mail(facts.item.as_ref()) => {
@@ -3004,6 +3016,38 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&make(None), &InboxFacts::default()),
             wanted("", "nextcloud:anna/work", unknown),
+            "without facts the id the command runs with"
+        );
+    }
+
+    /// Task E8.5b: an event of an entry names the title that will be written (the entry's when it
+    /// is left out), its start, the calendar by its cached name and the entry, all quoted.
+    #[test]
+    fn an_event_from_an_entry_names_title_start_calendar_and_entry() {
+        let start = EventTime::DateTime(chrono::Utc::now());
+        let end = EventTime::DateTime(chrono::Utc::now() + chrono::TimeDelta::minutes(30));
+        let make = |title: Option<&str>| Request::CreateEventFromItem {
+            id: "e1".into(),
+            collection: "nextcloud:anna/cal".into(),
+            title: title.map(str::to_string),
+            start,
+            end,
+        };
+        let known =
+            InboxFacts { item: Some(inbox_entry("Call {Kim}")), list: Some("Work".into()), ..InboxFacts::default() };
+        let today = Local::now().date_naive();
+        let wanted = |title: &str, calendar: &str, entry: &str| {
+            trf(
+                "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
+                &[("title", &title), ("when", &when(&start, today)), ("calendar", &calendar), ("entry", &entry)],
+            )
+        };
+        assert_eq!(inbox_summary(&make(Some("Call back")), &known), wanted("Call back", "Work", "\"Call (Kim)\""));
+        assert_eq!(inbox_summary(&make(None), &known), wanted("Call (Kim)", "Work", "\"Call (Kim)\""), "the entry's");
+        let unknown = tr("an unknown inbox entry");
+        assert_eq!(
+            inbox_summary(&make(None), &InboxFacts::default()),
+            wanted("", "nextcloud:anna/cal", unknown),
             "without facts the id the command runs with"
         );
     }

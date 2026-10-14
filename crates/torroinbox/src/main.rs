@@ -58,6 +58,7 @@ use torro_ipc::inbox::InboxClient;
 
 use crate::app::{App, INBOX, Launch};
 use crate::compose::{ComposeSource, Window};
+use crate::hub::HubSource;
 use crate::insights::StatsSource;
 use crate::mail::MailSource;
 
@@ -106,7 +107,7 @@ fn main() -> ExitCode {
 
 /// The window on `inbox`: the core's client or the demo source. Its window class is the one of its
 /// kind (`--view`, task E8.1), so tiling rules and templates tell the three windows apart.
-fn run<S: InboxSource + MailSource + StatsSource + 'static>(
+fn run<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(
     inbox: Arc<S>,
     suite: Source,
     launch: Launch,
