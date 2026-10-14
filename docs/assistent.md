@@ -259,9 +259,16 @@ Auf zwei Wegen:
 
 | Karte | Zeigt | Knöpfe | Neu nötig |
 |---|---|---|---|
-| **Termin** | Kalenderblatt (Monat, Tag, Wochentag), Titel, Zeit, Ort, Teilnehmer, Kalender als Farbe; Hinweis bei Überschneidung | Open in calendar · Send by mail · Edit · Delete; bei Einladungen Accept/Decline; Join bei Videolink | Termin als Anhang eines Entwurfs: `DraftAttachment::Event`, der Kern erzeugt die `.ics` |
+| **Termin** | Kalenderblatt (Monat, Tag, Wochentag), Titel, Zeit, Ort, Teilnehmer, Kalender als Farbe; Überschneidungen immer benannt (siehe unten) | Open in calendar · Send by mail · Edit · Delete; bei Einladungen Accept/Decline; Join bei Videolink | Termin als Anhang eines Entwurfs: `DraftAttachment::Event`, der Kern erzeugt die `.ics` |
 | **Aufgabe** | Haken, Titel, Fälligkeit (überfällig in Attention-Orange), Liste, Priorität, Links zu Mail oder Issue | Done · Later (morgen, nächste Woche) · Open in tasks · Block time | — |
 | **Mail-Entwurf** | Von, An, Cc, Betreff, Text, Anhänge (z. B. die `.ics`) | Send · Edit in mail window · Discard | — |
+
+**Überschneidungen werden immer benannt.** Kollidiert ein Termin mit einem anderen, zeigt die Karte
+den anderen Termin mit Namen und Zeit („Overlaps with Team sync 14:30–15:00“, Warnsymbol in
+Attention-Orange), bei mehreren alle bzw. die ersten zwei und „+ 2 more“. Der Kern berechnet das aus
+den Kalendern, die der Assistent sehen darf; das Modell muss nicht daran denken. Legt der Assistent
+einen Termin an, verschiebt ihn oder nimmt eine Einladung an, die kollidiert, nennt er die
+Überschneidung zusätzlich in seiner Antwort (fester Teil des Skills).
 
 „Send by mail“ am Termin legt einen Entwurf mit dem Termin als Anhang an und zeigt ihn als
 Entwurfs-Karte darunter: Man sieht immer, was rausgeht, bevor es rausgeht.
