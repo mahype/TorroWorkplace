@@ -1272,6 +1272,15 @@ mod tests {
         assert_eq!(call("mail_list_folders", json!({})), Ok(Request::MailFolders { account: None }));
         let oldest = call("mail_search_messages", json!({"limit": 5, "order": "oldest_first"}));
         assert!(matches!(oldest, Ok(Request::SearchMail { order: Some(Order::OldestFirst), .. })), "{oldest:?}");
+        // Issue #136: best match first, and how far the index is.
+        let ranked =
+            call("mail_search_messages", json!({"query": "rechnung -mahnung", "limit": 5, "sort": "relevance"}));
+        assert!(
+            matches!(ranked, Ok(Request::SearchMail { sort: Some(torro_ipc::mail::MailSort::Relevance), .. })),
+            "{ranked:?}"
+        );
+        let status = call("mail_index_status", json!({"account": "mail:anna@example.org"}));
+        assert_eq!(status, Ok(Request::MailIndexStatus { account: Some("mail:anna@example.org".into()) }));
         let paged = call("mail_search_messages", json!({"query": "invoice", "limit": 5, "cursor": "c:5"}));
         assert!(matches!(&paged, Ok(Request::SearchMail { query: Some(q), limit: 5, cursor: Some(c), .. })
             if q == "invoice" && c == "c:5"));
@@ -1282,6 +1291,8 @@ mod tests {
         assert_eq!(attachment, Ok(Request::GetMailAttachment { id: "m:1".into(), attachment: "2".into() }));
         let reading =
             ["mail_list_folders", "mail_search_messages", "mail_get_message", "mail_get_thread", "mail_get_attachment"];
+        let status = tools().iter().find(|tool| tool.name == "mail_index_status").cloned().expect("a tool");
+        assert_eq!(status.annotations.and_then(|hints| hints.read_only_hint), Some(true));
         for name in reading {
             let tool = tools().iter().find(|tool| tool.name == name).cloned().expect("a tool");
             let says_untrusted = tool.description.as_deref().is_some_and(|text| text.contains("`untrusted`"));

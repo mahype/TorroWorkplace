@@ -5,7 +5,10 @@
 //! - [`service`]: the mail accounts of the core, each with its IDLE connection, its command
 //!   connection and its store (task M2.6); the commands (M3.1 to M3.3) start there.
 //! - [`read`]: the reading commands (`mail.list_folders`, `mail.search_messages`,
-//!   `mail.get_message`, `mail.get_thread`, `mail.get_attachment`, task M3.1).
+//!   `mail.index_status`, `mail.get_message`, `mail.get_thread`, `mail.get_attachment`, task M3.1,
+//!   issue #136).
+//! - [`query`], [`fold`]: the query language of the search, and text as the search compares it
+//!   (folding, highlights; issue #136).
 //! - [`sync`]: how one account's folders are brought in line with its server (task M2.6).
 //! - [`inbox_feed`]: new mail as entries of the inbox, and done entries back as read mail (task
 //!   E4.1).
@@ -15,8 +18,9 @@
 //!   attachments that were fetched on demand.
 //!
 //! **What is kept (the core decides, not the person):** the headers of every message of every
-//! folder, the texts of the last [`store::BODY_RETENTION_DAYS`] days, attachments only when someone
-//! asks for them and only for [`ATTACHMENT_MAX_AGE`].
+//! folder, the texts to read of the last [`store::BODY_RETENTION_DAYS`] days, the words of every
+//! text in the search index (older texts are fetched for it in the background, issue #136),
+//! attachments only when someone asks for them and only for [`ATTACHMENT_MAX_AGE`].
 //!
 //! **Threads.** The store is synchronous. A [`store::MailStore`] is `Send` but not `Sync`: keep it
 //! in an `Arc<Mutex<…>>` and call it from async code through `tokio::task::spawn_blocking`, so a
@@ -35,7 +39,9 @@ use std::time::{Duration, SystemTime};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
+pub mod fold;
 pub mod inbox_feed;
+pub mod query;
 pub mod read;
 pub mod send;
 pub mod service;

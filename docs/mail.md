@@ -219,6 +219,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Mail-Konto einrichten | Steuerzentrale › Accounts › Add | `accounts.connect_mail` · Admin | `accounts_connect_mail`: nimmt nur die Adresse, öffnet die Einrichtung in der Steuerzentrale; das Passwort tippt der Mensch dort (wie bei `connect_nextcloud`, Geheimnisse nie über den Agenten) |
 | Ordner auflisten | Mail-Seitenleiste | `mail.list_folders` · Read | `mail_list_folders` |
 | Suchen / Liste | Mail-Liste, Suche | `mail.search_messages` · Read | `mail_search_messages` |
+| Stand des Suchindex (#136) | Suchfeld: Hinweis „12 400 von 18 000 indiziert“ (Schritt 5 von #136) | `mail.index_status` · Read | `mail_index_status` |
 | Nachricht lesen | Lesebereich | `mail.get_message` · Read | `mail_get_message` |
 | Unterhaltung | Lesebereich | `mail.get_thread` · Read | `mail_get_thread` |
 | Anhang holen | Lesebereich | `mail.get_attachment` · Read | `mail_get_attachment` |

@@ -523,6 +523,7 @@ fn describe(request: &Request) -> String {
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
         Request::SearchMail { .. } => "search mail".into(),
+        Request::MailIndexStatus { .. } => "mail index status".into(),
         Request::GetMail { .. } => "get mail".into(),
         Request::GetMailThread { .. } => "get mail thread".into(),
         Request::GetMailAttachment { .. } => "get mail attachment".into(),

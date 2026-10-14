@@ -9,7 +9,10 @@
 //! - a second session, the **command connection** ([`MailService::command`]): the sync of all
 //!   folders runs on it every five minutes ([`sync`](super::sync)), and so do the mail commands;
 //!   the sync takes it in small steps, so a command never waits for a whole folder;
-//! - its store ([`SharedStore`]): one SQLite file, see [`super::store`].
+//! - its store ([`SharedStore`]): one SQLite file, see [`super::store`];
+//! - an indexer task (issue #136) that, after the first sync, fetches the texts of older messages
+//!   into the search index, newest first, on the command connection between commands
+//!   ([`sync::backfill`]); `mail.index_status` reads how far it is ([`MailService::index_progress`]).
 //!
 //! **Failures** stay with their account: a server that cannot be reached is tried again after
 //! one minute, then two, four, eight and every 15 minutes; a refused password is shown at the
@@ -57,6 +60,7 @@ use tokio::time::Instant;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::i18n::{tr, trf};
+use torro_ipc::mail::{IndexState, MailIndexProgress};
 use torro_ipc::{AccountInfo, FolderChoice, MailView, OpenRoleView, Response, ServiceState};
 use torro_mail::{Endpoint, MailAccountConfig, MailSettings, Role};
 use torro_mail_imap::folders::{self, FolderList, OpenRole};
@@ -89,6 +93,9 @@ struct Timing {
     /// The first wait after a failure; it doubles up to `retry_max`.
     retry_first: Duration,
     retry_max: Duration,
+    /// Run the indexer task, which fetches older texts into the search index (issue #136). Tests
+    /// run it by hand ([`MailService::backfill_now`]), so it never fetches behind their backs.
+    index: bool,
 }
 
 /// The core's timing (task M2.6): all folders every 5 minutes, back off up to 15 minutes.
@@ -97,6 +104,7 @@ const SYSTEM_TIMING: Timing = Timing {
     idle_max: Duration::from_secs(25 * 60),
     retry_first: Duration::from_secs(60),
     retry_max: Duration::from_secs(15 * 60),
+    index: true,
 };
 
 /// Why a mail account could not be synced or a command could not run. The texts for people
@@ -600,6 +608,9 @@ pub(crate) struct Mailbox {
     /// here so `accounts.list_accounts` answers without asking the server; empty until the first
     /// folder sync of this mailbox.
     open_roles: StdMutex<Vec<OpenRoleView>>,
+    /// The last step of the indexer reached the server and found texts to fetch (issue #136):
+    /// `indexing` in `mail.index_status`; `waiting` while it is not.
+    indexing: AtomicBool,
     events: broadcast::Sender<MailChange>,
     connector: Connector,
     timing: Timing,
@@ -668,6 +679,23 @@ impl Mailbox {
             })
             .collect();
         *self.open_roles.lock().unwrap_or_else(PoisonError::into_inner) = open;
+    }
+
+    /// Notes whether the indexer is fetching texts now ([`Mailbox::indexing`]).
+    pub(crate) fn note_indexing(&self, indexing: bool) {
+        self.indexing.store(indexing, Ordering::Release);
+    }
+
+    /// How far the account's search index is (`mail.index_status`); `None` without a store.
+    async fn index_progress(&self) -> Result<Option<MailIndexProgress>, MailError> {
+        let Ok(store) = self.store() else { return Ok(None) };
+        let (messages, indexed) = store.run(|store| store.index_counts()).await?;
+        let state = match (indexed >= messages, self.indexing.load(Ordering::Acquire)) {
+            (true, _) => IndexState::Complete,
+            (false, true) => IndexState::Indexing,
+            (false, false) => IndexState::Waiting,
+        };
+        Ok(Some(MailIndexProgress { account: self.id().to_string(), messages, indexed, state }))
     }
 
     /// One folder sync at a time ([`Mailbox::sync_lock`]).
@@ -817,6 +845,31 @@ async fn run(mailbox: Arc<Mailbox>) {
     }
 }
 
+/// The indexer of one account (issue #136): once the first sync is done, puts the texts of older
+/// messages into the search index, [`sync::BACKFILL_BATCH`] at a time, newest first, one after the
+/// other; with nothing left it looks again after [`Timing::poll`] (a sync may have stored more),
+/// after a failure (offline, refused) it waits as the worker does. Each text takes the command
+/// connection for one message, so commands and the sync never wait long for it.
+async fn index(mailbox: Arc<Mailbox>) {
+    let mut wait = mailbox.timing.retry_first;
+    loop {
+        if mailbox.status().last_sync.is_none() {
+            tokio::time::sleep(mailbox.timing.retry_first).await;
+            continue;
+        }
+        match sync::backfill(&mailbox, sync::BACKFILL_BATCH, Utc::now()).await {
+            Ok(0) => tokio::time::sleep(mailbox.timing.poll).await,
+            Ok(_) => wait = mailbox.timing.retry_first,
+            Err(err) => {
+                // The id and the code, never a server text: the log is not for contents.
+                eprintln!("torroworkplace: mail indexing of {} paused: {}", mailbox.id(), err.code());
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(mailbox.timing.retry_max);
+            }
+        }
+    }
+}
+
 /// Connects, syncs everything once, then waits in `IDLE` on the inbox until the connection fails.
 async fn watch(mailbox: &Mailbox, wait: &mut Duration) -> Result<Infallible, MailError> {
     // The first sync of a large mailbox takes a while; the IDLE connection is made afterwards, so
@@ -847,16 +900,17 @@ async fn watch(mailbox: &Mailbox, wait: &mut Duration) -> Result<Infallible, Mai
     }
 }
 
-/// An account with its worker; dropping it stops the worker.
+/// An account with its worker and indexer; dropping it stops both.
 struct Entry {
     mailbox: Arc<Mailbox>,
     worker: Option<JoinHandle<()>>,
+    indexer: Option<JoinHandle<()>>,
 }
 
 impl Drop for Entry {
     fn drop(&mut self) {
-        if let Some(worker) = &self.worker {
-            worker.abort();
+        for task in [&self.worker, &self.indexer].into_iter().flatten() {
+            task.abort();
         }
     }
 }
@@ -1030,7 +1084,8 @@ impl MailService {
     async fn open(&self, account: Account, config: MailAccountConfig, password: Option<Secret>) -> Entry {
         let mailbox = Arc::new(self.mailbox(account, config, password).await);
         let worker = mailbox.syncs().then(|| tokio::spawn(run(Arc::clone(&mailbox))));
-        Entry { mailbox, worker }
+        let indexer = (mailbox.syncs() && self.timing.index).then(|| tokio::spawn(index(Arc::clone(&mailbox))));
+        Entry { mailbox, worker, indexer }
     }
 
     async fn mailbox(&self, account: Account, config: MailAccountConfig, password: Option<Secret>) -> Mailbox {
@@ -1075,6 +1130,7 @@ impl MailService {
             resume: Notify::new(),
             inbox: StdMutex::new("INBOX".to_string()),
             open_roles: StdMutex::new(Vec::new()),
+            indexing: AtomicBool::new(false),
             events: self.events.clone(),
             connector: self.connector.clone(),
             timing: self.timing,
@@ -1398,6 +1454,33 @@ impl MailService {
             .collect()
     }
 
+    /// How far the search index of each mail account `reach` sees is (`mail.index_status`, issue
+    /// #136), in the order of `accounts.json`; accounts without a store (mail off, not opened)
+    /// are left out.
+    pub async fn index_progress(&self, reach: Reach<'_>) -> Result<Vec<MailIndexProgress>, MailError> {
+        let mailboxes: Vec<Arc<Mailbox>> = self
+            .entries
+            .read()
+            .await
+            .iter()
+            .filter(|entry| entry.mailbox.settings.services.mail && entry.mailbox.within(reach))
+            .map(|entry| Arc::clone(&entry.mailbox))
+            .collect();
+        let mut progress = Vec::with_capacity(mailboxes.len());
+        for mailbox in mailboxes {
+            progress.extend(mailbox.index_progress().await?);
+        }
+        Ok(progress)
+    }
+
+    /// One step of the indexer of `account` by hand ([`sync::backfill`] of up to `limit` texts),
+    /// for tests, whose services run no indexer task.
+    #[cfg(test)]
+    pub(crate) async fn backfill_now(&self, account: &str, limit: u32) -> Result<usize, MailError> {
+        let mailbox = self.mailbox_of(account).await?;
+        sync::backfill(&mailbox, limit, Utc::now()).await
+    }
+
     /// The ids (`mail:<address>`) of the mail accounts whose mail is on and that `reach` sees, in
     /// the order of `accounts.json` (task M3.2): where the opaque ids of a request (`m:…`, `f:…`)
     /// are looked up, one store after the other. A client never learns of the others.
@@ -1540,6 +1623,7 @@ pub(crate) mod tests {
         idle_max: Duration::from_secs(3600),
         retry_first: Duration::from_millis(50),
         retry_max: Duration::from_millis(200),
+        index: false,
     };
 
     /// The fake server's connections: its test CA, and loopback allowed besides the public

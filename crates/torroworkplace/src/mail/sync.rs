@@ -22,6 +22,11 @@
 //!
 //! Every step that found something sends a [`MailChange`].
 //!
+//! **Older texts for the search** ([`backfill`], issue #136): the texts the sync does not fetch
+//! ahead (older than [`BODY_RETENTION_DAYS`], or bigger than [`BODY_PREFETCH_MAX`]) are fetched
+//! afterwards by the account's indexer task, newest first, a message at a time, and put into the
+//! search index: older ones only into the index, recent ones kept to read as well.
+//!
 //! Everything read from the server is data from outside: it is parsed (`mime::read`), stored and
 //! never acted on.
 
@@ -42,6 +47,9 @@ pub const HEADER_BATCH: usize = 100;
 
 /// Texts of messages bigger than this (5 MiB, attachments included) are not fetched ahead.
 pub const BODY_PREFETCH_MAX: u32 = 5 << 20;
+
+/// How many texts one step of [`backfill`] fetches before the indexer looks again.
+pub const BACKFILL_BATCH: u32 = 25;
 
 /// A folder to sync: its id in the store, its path on the server and its role.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -148,6 +156,54 @@ pub(crate) async fn sync_inbox(session: &mut Session, mailbox: &Mailbox) -> Resu
     };
     let target = Target { id: folder.id, path, role: Some(Role::Inbox) };
     sync_folder(&mut Conn::Own(session), mailbox, &store, &target, Utc::now()).await
+}
+
+/// Puts the texts of up to `limit` messages that are not in the search index yet into it (issue
+/// #136), newest first, and answers how many it handled; 0 when every message is indexed. Each
+/// text is fetched with `BODY.PEEK[]` (never marked read) on the command connection, taken for
+/// one message at a time, so commands and the sync run in between. A message sent at or after
+/// `now` minus [`BODY_RETENTION_DAYS`] keeps its text to read (`MailStore::set_body`), an older one
+/// only its words in the index (`MailStore::index_text`). One gone from the server, or one that
+/// cannot be read, is marked as having no text and not asked for again; its headers stay
+/// searchable. Notes at the mailbox whether it is indexing (`mail.index_status`): after a failure
+/// (server offline, password refused) it is waiting.
+pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) -> Result<usize, MailError> {
+    let store = mailbox.store()?;
+    let todo = store.run(move |store| store.unindexed(limit)).await?;
+    mailbox.note_indexing(!todo.is_empty());
+    let recent_since = now - Duration::days(BODY_RETENTION_DAYS);
+    for (place, date) in &todo {
+        let fetched = fetch_text(mailbox, place).await;
+        if fetched.is_err() {
+            mailbox.note_indexing(false);
+        }
+        let raw = fetched?;
+        let id = place.id.clone();
+        let keep = *date >= recent_since;
+        store
+            .run(move |store| {
+                let Some(raw) = raw else { return store.mark_unindexable(&id).map(drop) };
+                let Ok(read) = mime::read(&raw) else { return store.mark_unindexable(&id).map(drop) };
+                if keep {
+                    let invite = super::read::invite_of(&raw, &read);
+                    let body =
+                        Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite };
+                    return store.set_body(&id, &body).map(drop);
+                }
+                let names: Vec<&str> = read.attachments.iter().filter_map(|part| part.filename.as_deref()).collect();
+                store.index_text(&id, &read.text, &names).map(drop)
+            })
+            .await?;
+    }
+    Ok(todo.len())
+}
+
+/// The whole message at `place` from the account's command connection; `None` when it is gone.
+async fn fetch_text(mailbox: &Mailbox, place: &super::store::MessageRef) -> Result<Option<Vec<u8>>, MailError> {
+    let mut command = mailbox.command().await?;
+    let raw = super::read::peek(command.session(), place).await?;
+    command.release();
+    Ok(raw)
 }
 
 /// What the store knew of a folder before this sync.

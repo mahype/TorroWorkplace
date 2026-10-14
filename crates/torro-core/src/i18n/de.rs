@@ -2028,6 +2028,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The message could not be read.", "Die Nachricht konnte nicht gelesen werden."),
     ("The message has no such attachment.", "Die Nachricht hat keinen solchen Anhang."),
     ("This cursor is not valid. Search again without it.", "Dieser Cursor ist ungültig. Suche ohne ihn erneut."),
+    // Mail search: the query language (issue #136)
+    ("“has:{value}” is not known. Use has:attachment.", "„has:{value}“ ist unbekannt. Verwende has:attachment."),
+    (
+        "“is:{value}” is not known. Use is:unread, is:read, is:flagged or is:unflagged.",
+        "„is:{value}“ ist unbekannt. Verwende is:unread, is:read, is:flagged oder is:unflagged.",
+    ),
+    (
+        "“{operator}:{value}” is no date. Write a day, month or year, like {operator}:2026-03-01.",
+        "„{operator}:{value}“ ist kein Datum. Schreib einen Tag, Monat oder ein Jahr, etwa {operator}:2026-03-01.",
+    ),
     // Changing mail (M3.2)
     (
         "A file behind a symbolic link cannot be attached.",

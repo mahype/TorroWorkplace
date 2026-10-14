@@ -15,18 +15,26 @@
 //! [`MailStore::note_uidvalidity`], which drops every message of the folder (rows, texts and index
 //! entries) and keeps the folder and its id.
 //!
-//! **What is kept** is decided here, not by the person: headers of everything, texts for
-//! [`BODY_RETENTION_DAYS`] (see [`MailStore::prune_bodies`]). Attachments are not in the database;
-//! see `AttachmentCache`.
+//! **What is kept** is decided here, not by the person: headers of everything, texts to read for
+//! [`BODY_RETENTION_DAYS`] (see [`MailStore::prune_bodies`]), and the words of every text in the
+//! search index for as long as the message is kept (issue #136). Attachments are not in the
+//! database; see `AttachmentCache`.
 //!
 //! **Invitations** (task E8.3b): what an invitation invites to is read from its `text/calendar` part
 //! wherever a whole message is read (the sync's texts, `mail.get_message`), kept with the text
 //! ([`Body::invite`]) in the message's row, and outlives the text; the answer given from the suite
 //! is kept beside it ([`MailStore::set_invite_answer`]), so lists show both.
 //!
-//! **Full text.** `mail_fts` (FTS5, `unicode61 remove_diacritics 2`) holds subject, sender,
-//! recipients, text and attachment names, so `Muller` finds `Müller` and the other way round.
-//! The words of a search are all required and each matches as a prefix.
+//! **Full text** (issue #136). Two FTS5 indexes hold subject, sender, recipients, text and
+//! attachment names of every message, all folded (`super::fold`: case, accents, `ß` = `ss`,
+//! `ä` = `ae` = `a`): `mail_fts` (`unicode61`) for words and phrases and their BM25 rank, and
+//! `mail_tri` (`trigram`) for words inside longer words (`rechnung` in `Stromrechnung`), its text
+//! cut at [`TRIGRAM_TEXT_MAX`]. The headers go in when a message is stored, its text when it is
+//! read ([`MailStore::set_body`], or [`MailStore::index_text`] for an older message whose text is
+//! not kept to read); `messages.indexed` says which messages still lack theirs
+//! ([`MailStore::unindexed`]), so the sync can fetch them in the background. Pruning a text to read
+//! keeps its words in the index. A search ([`SearchQuery::query`], the language of `super::query`)
+//! becomes SQL here ([`compile`]).
 //!
 //! Every message is data from outside: the summaries and messages this store builds are always
 //! `untrusted`, see `torro_mail::MessageSummary`.
@@ -42,13 +50,39 @@ use torro_mail::{
     Role,
 };
 
+use super::fold::{Needle, fold, head};
+use super::query::{Field, Query, Test};
 use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 
 /// Message texts older than this many days are dropped by [`MailStore::prune_bodies`]; headers stay.
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
+
+/// At most this many bytes of a message's text go into the word index: a log of megabytes is
+/// found by its first half megabyte, and the index stays small.
+pub const INDEX_TEXT_MAX: usize = 512 * 1024;
+
+/// At most this many bytes of a message's text go into the trigram index, which is about three
+/// times the size of its text: words inside longer words are found in the first 16 KiB of a
+/// text (and in all of subject, sender, recipients and attachment names).
+pub const TRIGRAM_TEXT_MAX: usize = 16 * 1024;
+
+/// How much a field counts for the rank of a match (BM25 weights of subject, sender, recipients,
+/// text, attachment names): a word in the subject says more than one deep in the text.
+const RANK_WEIGHTS: &str = "8.0, 4.0, 2.0, 1.0, 2.0";
+
+/// How many of the best matches of each index a ranking by relevance weighs by their words; the
+/// others rank by recency alone. Keeps a search for a word in nearly every mail quick.
+const RANK_CANDIDATES: u32 = 1000;
+
+/// How much a match inside a word (trigram index) counts against a whole word's.
+const INSIDE_WEIGHT: f64 = 0.5;
+
+/// How recent mail is raised in a ranking by relevance: by up to half again, half of that at this
+/// age in seconds (30 days), little after a year.
+const RECENT_SECONDS: f64 = 30.0 * 24.0 * 3600.0;
 
 /// Version 2 (task E8.7a): messages found by their `Message-ID`, which a task's link names
 /// ([`MailStore::messages_by_rfc_id`]), without reading the whole table.
@@ -64,6 +98,34 @@ ALTER TABLE messages ADD COLUMN invite_answer TEXT;";
 /// `Message-ID` of every GitHub mail names its issue or pull request already. Rows from before
 /// read as none.
 const SCHEMA_V4: &str = "ALTER TABLE messages ADD COLUMN github_reason TEXT;";
+
+/// Version 5 (issue #136): both indexes of folded text, the trigram index beside the word index,
+/// and which messages have their text in them (`indexed`: 0 not yet, 1 indexed, 2 none to read,
+/// so it is not fetched again). Rebuilt by [`migrate_v5`] from what the store holds.
+const SCHEMA_V5: &str = "
+DROP TRIGGER IF EXISTS messages_gone;
+DROP TABLE IF EXISTS mail_fts;
+DROP TABLE IF EXISTS mail_tri;
+CREATE VIRTUAL TABLE mail_fts USING fts5(
+    subject, sender, recipients, body, filenames,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+CREATE VIRTUAL TABLE mail_tri USING fts5(
+    subject, sender, recipients, body, filenames,
+    tokenize = 'trigram'
+);
+CREATE TRIGGER messages_gone AFTER DELETE ON messages BEGIN
+    DELETE FROM mail_fts WHERE rowid = old.seq;
+    DELETE FROM mail_tri WHERE rowid = old.seq;
+END;
+CREATE INDEX IF NOT EXISTS messages_unindexed ON messages (indexed, date);";
+
+/// `indexed` of a message whose text is not in the index yet.
+const NOT_INDEXED: i64 = 0;
+/// `indexed` of a message whose text is in the index.
+const INDEXED: i64 = 1;
+/// `indexed` of a message with no text to index: gone from the server or unreadable.
+const NO_TEXT: i64 = 2;
 
 const FLAG_SEEN: i64 = 1;
 const FLAG_FLAGGED: i64 = 2;
@@ -241,15 +303,16 @@ pub struct Body {
     pub invite: Option<Invite>,
 }
 
-/// A search over the cache; every field but `order` narrows the result (`mail.search_messages`).
-/// All `None` lists everything, newest first.
+/// A search over the cache; every field but `order` and `relevance` narrows the result
+/// (`mail.search_messages`). All `None` lists everything, newest first.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchQuery {
     /// Only this folder (an id from [`MailStore::folders`]).
     pub folder: Option<String>,
-    /// Words that must all appear in subject, sender, recipients, text or attachment names; each
-    /// matches as a prefix, accents do not matter. Whitespace only counts as no text.
-    pub text: Option<String>,
+    /// What the person typed, read by `super::query::parse` (issue #136): words, phrases, `OR`,
+    /// `-`, operators. Empty: no condition. A word or phrase without letters or digits matches
+    /// nothing.
+    pub query: Query,
     /// `Some(true)`: not yet read; `Some(false)`: read.
     pub unread: Option<bool>,
     /// `Some(true)`: flagged; `Some(false)`: not flagged.
@@ -261,6 +324,11 @@ pub struct SearchQuery {
     /// Newest or oldest first by date (task E8.15); the same date by the order the store took the
     /// messages in, turned along.
     pub order: Order,
+    /// `Some(now)`: best match first instead (issue #136): the BM25 rank of the query's words over
+    /// the folded fields (weighted by [`RANK_WEIGHTS`]), raised for mail recent at `now` (by up to
+    /// half again); equal ranks newest first. `order` is ignored then. Without words in `query`
+    /// every rank is the same, so it is by date.
+    pub relevance: Option<DateTime<Utc>>,
 }
 
 /// The store of one account. `Send`, not `Sync`: share it as `Arc<Mutex<MailStore>>` and call it
@@ -401,6 +469,14 @@ impl MailStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    /// Id, name, path and role of every folder, without counting their messages: what `in:` of a
+    /// search looks for ([`Folder::unread`] and [`Folder::total`] are 0).
+    fn folder_names(&self) -> Result<Vec<Folder>, MailStoreError> {
+        let mut statement = self.db.prepare("SELECT f.id, f.name, f.path, f.role, 0, 0 FROM folders f")?;
+        let rows = statement.query_map([], |row| folder_from_row(&self.account, row))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// One folder by id.
     #[allow(dead_code, reason = "used from mail.list_folders, task M3.1")]
     pub fn folder(&self, id: &str) -> Result<Option<Folder>, MailStoreError> {
@@ -508,7 +584,7 @@ impl MailStore {
                 (tx.last_insert_rowid(), id)
             }
         };
-        refresh_index(&tx, seq)?;
+        refresh_index(&tx, seq, None)?;
         tx.commit()?;
         Ok(id)
     }
@@ -526,8 +602,8 @@ impl MailStore {
         Ok(self.db.execute(sql, params![folder, uid, flag_bits(flags)])? > 0)
     }
 
-    /// Stores (or replaces) the text of a message and puts it into the search index. `false`: no
-    /// such message.
+    /// Stores (or replaces) the text of a message and puts it into the search index (the message
+    /// counts as indexed from now on). `false`: no such message.
     pub fn set_body(&self, id: &str, body: &Body) -> Result<bool, MailStoreError> {
         let tx = self.db.unchecked_transaction()?;
         let seq: Option<i64> =
@@ -542,10 +618,73 @@ impl MailStore {
         // The answer has its own column: reading the text again keeps it.
         let invite = body.invite.as_ref().map(|invite| Invite { answered: None, ..invite.clone() });
         let invite = invite.map(|invite| serde_json::to_string(&invite)).transpose()?;
-        tx.execute("UPDATE messages SET invite_json = ?2 WHERE seq = ?1", params![seq, invite])?;
-        refresh_index(&tx, seq)?;
+        tx.execute("UPDATE messages SET invite_json = ?2, indexed = ?3 WHERE seq = ?1", params![seq, invite, INDEXED])?;
+        refresh_index(&tx, seq, Some(IndexText { body: &body.text, filenames: &names.join(" ") }))?;
         tx.commit()?;
         Ok(true)
+    }
+
+    /// Puts the text `text` and the attachment names `filenames` of the message `id` into the
+    /// search index without keeping the text to read (issue #136): the background fetch of older
+    /// texts, whose text would only be pruned again ([`prune_bodies`](Self::prune_bodies)). The
+    /// message counts as indexed. `false`: no such message.
+    pub fn index_text(&self, id: &str, text: &str, filenames: &[&str]) -> Result<bool, MailStoreError> {
+        let tx = self.db.unchecked_transaction()?;
+        let seq: Option<i64> =
+            tx.query_row("SELECT seq FROM messages WHERE id = ?1", [id], |row| row.get(0)).optional()?;
+        let Some(seq) = seq else { return Ok(false) };
+        tx.execute("UPDATE messages SET indexed = ?2 WHERE seq = ?1", params![seq, INDEXED])?;
+        refresh_index(&tx, seq, Some(IndexText { body: text, filenames: &filenames.join(" ") }))?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Notes that the message `id` has no text to index (gone from the server, or unreadable), so
+    /// [`unindexed`](Self::unindexed) does not hand it out again; its headers stay searchable.
+    /// `false`: no such message.
+    pub fn mark_unindexable(&self, id: &str) -> Result<bool, MailStoreError> {
+        Ok(self.db.execute("UPDATE messages SET indexed = ?2 WHERE id = ?1", params![id, NO_TEXT])? > 0)
+    }
+
+    /// Up to `limit` messages whose text is not in the index yet, newest first, with their dates:
+    /// what the background fetch takes next (issue #136). Only messages of folders a sync has
+    /// opened (they have a UIDVALIDITY).
+    pub fn unindexed(&self, limit: u32) -> Result<Vec<(MessageRef, DateTime<Utc>)>, MailStoreError> {
+        let sql = "SELECT m.id, m.folder_id, f.path, f.uidvalidity, m.uid, m.rfc_message_id, m.date
+                   FROM messages m JOIN folders f ON f.id = m.folder_id
+                   WHERE m.indexed = ?1 AND f.uidvalidity IS NOT NULL ORDER BY m.date DESC, m.seq DESC LIMIT ?2";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map(params![NOT_INDEXED, limit], |row| {
+            let seconds: i64 = row.get(6)?;
+            Ok((
+                MessageRef {
+                    id: row.get(0)?,
+                    account: self.account.clone(),
+                    folder: row.get(1)?,
+                    folder_path: row.get(2)?,
+                    uidvalidity: row.get(3)?,
+                    uid: row.get(4)?,
+                    rfc_message_id: row.get(5)?,
+                },
+                DateTime::from_timestamp(seconds, 0).ok_or_else(|| conversion_failure(6, "date out of range"))?,
+            ))
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// How many messages the store holds, and how many of them are done for the index (their text
+    /// is in it, or they have none): `mail.index_status`.
+    pub fn index_counts(&self) -> Result<(u64, u64), MailStoreError> {
+        let sql = "SELECT count(*), coalesce(sum(indexed <> 0), 0) FROM messages";
+        let (all, done): (i64, i64) = self.db.query_row(sql, [], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok((u64::try_from(all).unwrap_or(0), u64::try_from(done).unwrap_or(0)))
+    }
+
+    /// Every message is done for the index ([`index_counts`](Self::index_counts) equal), asked
+    /// cheaply for every search.
+    pub fn fully_indexed(&self) -> Result<bool, MailStoreError> {
+        let sql = "SELECT NOT EXISTS (SELECT 1 FROM messages WHERE indexed = ?1)";
+        Ok(self.db.query_row(sql, [NOT_INDEXED], |row| row.get(0))?)
     }
 
     /// Keeps `answer` as the answer given to the invitation of the message `id`
@@ -555,9 +694,10 @@ impl MailStore {
         Ok(self.db.execute("UPDATE messages SET invite_answer = ?2 WHERE id = ?1", params![id, answer])? > 0)
     }
 
-    /// Drops the texts of messages sent more than [`BODY_RETENTION_DAYS`] before `now`; their
-    /// headers stay and `Message::text` is `None` again until someone fetches it. Returns how many
-    /// texts went. Run it after a sync and now and then.
+    /// Drops the texts to read of messages sent more than [`BODY_RETENTION_DAYS`] before `now`;
+    /// their headers stay, and so do their words in the search index (issue #136).
+    /// `Message::text` is `None` again until someone fetches it. Returns how many texts went. Run
+    /// it after a sync and now and then.
     pub fn prune_bodies(&self, now: DateTime<Utc>) -> Result<usize, MailStoreError> {
         let limit = (now - Duration::days(BODY_RETENTION_DAYS)).timestamp();
         let tx = self.db.unchecked_transaction()?;
@@ -568,7 +708,6 @@ impl MailStore {
         };
         for seq in &old {
             tx.execute("DELETE FROM bodies WHERE seq = ?1", [seq])?;
-            refresh_index(&tx, *seq)?;
         }
         tx.commit()?;
         Ok(old.len())
@@ -696,49 +835,133 @@ impl MailStore {
         self.search(&query, limit, offset)
     }
 
-    /// Searches the cache in `query.order`; `limit` and `offset` page through the result. A
-    /// search whose words hold nothing searchable (only punctuation) finds nothing.
+    /// Searches the cache in `query.order` (or by relevance, [`SearchQuery::relevance`]); `limit`
+    /// and `offset` page through the result.
     pub fn search(&self, query: &SearchQuery, limit: u32, offset: u32) -> Result<Vec<MessageSummary>, MailStoreError> {
-        let mut from = "messages m".to_string();
-        let mut conditions: Vec<&str> = Vec::new();
-        let mut values: Vec<Value> = Vec::new();
-        if let Some(text) = query.text.as_deref().filter(|text| !text.trim().is_empty()) {
-            let Some(expression) = match_expression(text) else { return Ok(Vec::new()) };
-            from.push_str(" JOIN mail_fts ON mail_fts.rowid = m.seq");
-            conditions.push("mail_fts MATCH ?");
-            values.push(Value::Text(expression));
-        }
-        if let Some(folder) = &query.folder {
-            conditions.push("m.folder_id = ?");
-            values.push(Value::Text(folder.clone()));
-        }
-        if let Some(unread) = query.unread {
-            conditions.push(if unread { "m.flags & 1 = 0" } else { "m.flags & 1 = 1" });
-        }
-        if let Some(flagged) = query.flagged {
-            conditions.push(if flagged { "m.flags & 2 = 2" } else { "m.flags & 2 = 0" });
-        }
-        if let Some(since) = query.since {
-            conditions.push("m.date >= ?");
-            values.push(Value::Integer(since.timestamp()));
-        }
-        if let Some(before) = query.before {
-            conditions.push("m.date < ?");
-            values.push(Value::Integer(before.timestamp()));
-        }
-        let filter = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
+        Ok(self.search_ranked(query, limit, offset)?.into_iter().map(|(summary, _)| summary).collect())
+    }
+
+    /// [`search`](Self::search), each message with its rank: higher is better, 0 for every message
+    /// of a search by date. Ranks of several stores can be merged (`mail.search_messages` over
+    /// all accounts).
+    pub fn search_ranked(
+        &self,
+        query: &SearchQuery,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<(MessageSummary, f64)>, MailStoreError> {
+        let (filter, mut values) = self.filter(query)?;
+        let ranked = query.relevance.filter(|_| query.query.has_words());
+        let (with, join, rank) = match ranked {
+            Some(now) => {
+                // BM25 is negative, better more so: a word's rank from the word index, a part of a
+                // word's (`rechnung` in `Stromrechnung`) from the trigram index, counting less.
+                // Each index is asked once (`MATERIALIZED`); joined row by row, SQLite would run
+                // the full-text query again for every message. Only the best [`RANK_CANDIDATES`]
+                // of each index count: a word in nearly every mail ranks nothing anyway, and the
+                // rest follows by recency.
+                let (mut ctes, mut join) = (Vec::new(), String::new());
+                let mut score = vec!["1.0".to_string()];
+                let mut asked = Vec::new();
+                for (table, alias, weight, inside) in
+                    [("mail_fts", "r", 1.0, false), ("mail_tri", "t", INSIDE_WEIGHT, true)]
+                {
+                    let Some(matching) = rank_expression(&query.query, inside) else { continue };
+                    if inside && self.words_saturate(&query.query)? {
+                        continue;
+                    }
+                    ctes.push(format!(
+                        "{alias} AS MATERIALIZED (SELECT rowid AS hit, bm25({table}, {RANK_WEIGHTS}) AS bm \
+                         FROM {table} WHERE {table} MATCH ? ORDER BY bm LIMIT {RANK_CANDIDATES})"
+                    ));
+                    join.push_str(&format!(" LEFT JOIN {alias} ON {alias}.hit = m.seq"));
+                    asked.push(Value::Text(matching));
+                    score.push(format!("{weight:.2} * coalesce(-{alias}.bm, 0.0)"));
+                }
+                values.splice(0..0, asked);
+                let rank = format!(
+                    "({}) * (1.0 + 0.5 / (1.0 + max({} - m.date, 0) / {RECENT_SECONDS:.1}))",
+                    score.join(" + "),
+                    now.timestamp()
+                );
+                // Only excluded words: nothing to rank by but recency.
+                let with = if ctes.is_empty() { String::new() } else { format!("WITH {} ", ctes.join(", ")) };
+                (with, join, rank)
+            }
+            None => (String::new(), String::new(), "0.0".to_string()),
+        };
         let direction = match query.order {
             Order::NewestFirst => "DESC",
             Order::OldestFirst => "ASC",
         };
+        let order = match ranked {
+            Some(_) => "rank DESC, m.date DESC, m.seq DESC".to_string(),
+            None => format!("m.date {direction}, m.seq {direction}"),
+        };
         let sql = format!(
-            "SELECT {SUMMARY_COLUMNS} FROM {from} {filter} ORDER BY m.date {direction}, m.seq {direction} LIMIT ? OFFSET ?"
+            "{with}SELECT {SUMMARY_COLUMNS}, {rank} AS rank FROM messages m{join} {filter} ORDER BY {order} LIMIT ? OFFSET ?"
         );
         values.push(Value::Integer(i64::from(limit)));
         values.push(Value::Integer(i64::from(offset)));
         let mut statement = self.db.prepare(&sql)?;
-        let rows = statement.query_map(params_from_iter(values), |row| summary_from_row(&self.account, row))?;
+        let rows = statement.query_map(params_from_iter(values), |row| {
+            Ok((summary_from_row(&self.account, row)?, row.get::<_, f64>(12)?))
+        })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The words of `query` match at least [`RANK_CANDIDATES`] messages whole: then they decide
+    /// the ranking alone, and the costly rank of parts of words (trigram index) is left out.
+    fn words_saturate(&self, query: &Query) -> Result<bool, MailStoreError> {
+        let Some(matching) = rank_expression(query, false) else { return Ok(false) };
+        let sql =
+            format!("SELECT count(*) FROM (SELECT 1 FROM mail_fts WHERE mail_fts MATCH ?1 LIMIT {RANK_CANDIDATES})");
+        let found: i64 = self.db.query_row(&sql, [matching], |row| row.get(0))?;
+        Ok(found >= i64::from(RANK_CANDIDATES))
+    }
+
+    /// How many messages match `query` in all (`total_estimate` of `mail.search_messages`).
+    pub fn count(&self, query: &SearchQuery) -> Result<u64, MailStoreError> {
+        let (filter, values) = self.filter(query)?;
+        let sql = format!("SELECT count(*) FROM messages m {filter}");
+        let count: i64 = self.db.query_row(&sql, params_from_iter(values), |row| row.get(0))?;
+        Ok(u64::try_from(count).unwrap_or(0))
+    }
+
+    /// The `WHERE` clause of `query` over `messages m`, with its values.
+    fn filter(&self, query: &SearchQuery) -> Result<(String, Vec<Value>), MailStoreError> {
+        let mut conditions: Vec<String> = Vec::new();
+        let mut values: Vec<Value> = Vec::new();
+        if !query.query.is_empty() {
+            let folders = if query.query.terms().any(|term| matches!(term.test, Test::In(_))) {
+                self.folder_names()?
+            } else {
+                Vec::new()
+            };
+            let (sql, more) = compile(&query.query, &folders);
+            conditions.push(sql);
+            values.extend(more);
+        }
+        if let Some(folder) = &query.folder {
+            conditions.push("m.folder_id = ?".into());
+            values.push(Value::Text(folder.clone()));
+        }
+        if let Some(unread) = query.unread {
+            conditions.push(if unread { "m.flags & 1 = 0" } else { "m.flags & 1 = 1" }.into());
+        }
+        if let Some(flagged) = query.flagged {
+            conditions.push(if flagged { "m.flags & 2 = 2" } else { "m.flags & 2 = 0" }.into());
+        }
+        if let Some(since) = query.since {
+            conditions.push("m.date >= ?".into());
+            values.push(Value::Integer(since.timestamp()));
+        }
+        if let Some(before) = query.before {
+            conditions.push("m.date < ?".into());
+            values.push(Value::Integer(before.timestamp()));
+        }
+        let filter = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
+        Ok((filter, values))
     }
 
     /// All messages of a conversation (any folder), oldest first. The thread of a message is
@@ -919,8 +1142,37 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 4 {
         tx.execute_batch(SCHEMA_V4)?;
     }
+    if version < 5 {
+        migrate_v5(&tx)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Version 5 (issue #136): the indexes of folded text, rebuilt from the headers and the texts the
+/// store holds. Texts pruned before are not there: their messages count as not indexed, so the
+/// sync fetches them again in the background. Runs once per store, on the first open after the
+/// update; a large store takes a few seconds.
+fn migrate_v5(db: &Connection) -> Result<(), MailStoreError> {
+    let has_indexed = {
+        let mut statement = db.prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name = 'indexed'")?;
+        statement.exists([])?
+    };
+    if !has_indexed {
+        db.execute_batch("ALTER TABLE messages ADD COLUMN indexed INTEGER NOT NULL DEFAULT 0;")?;
+    }
+    db.execute_batch(SCHEMA_V5)?;
+    db.execute("UPDATE messages SET indexed = ?1 WHERE seq IN (SELECT seq FROM bodies)", [INDEXED])?;
+    let rows: Vec<(i64, Option<String>, Option<String>)> = {
+        let mut statement =
+            db.prepare("SELECT m.seq, b.text, b.filenames FROM messages m LEFT JOIN bodies b ON b.seq = m.seq")?;
+        statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<_, _>>()?
+    };
+    for (seq, text, filenames) in rows {
+        let body = text.as_deref().map(|body| IndexText { body, filenames: filenames.as_deref().unwrap_or("") });
+        refresh_index(db, seq, body)?;
+    }
     Ok(())
 }
 
@@ -989,27 +1241,167 @@ fn address_words(address: &MailAddress) -> String {
     }
 }
 
-/// Rewrites the index entry of one message from its row and its text (if any).
-fn refresh_index(db: &Connection, seq: i64) -> Result<(), MailStoreError> {
-    db.execute("DELETE FROM mail_fts WHERE rowid = ?1", [seq])?;
-    db.execute(
-        "INSERT INTO mail_fts (rowid, subject, sender, recipients, body, filenames)
-         SELECT m.seq, m.subject, m.sender, m.recipients, coalesce(b.text, ''), coalesce(b.filenames, '')
-         FROM messages m LEFT JOIN bodies b ON b.seq = m.seq WHERE m.seq = ?1",
-        [seq],
-    )?;
+/// A message's text and attachment names as they go into the index, before folding.
+struct IndexText<'a> {
+    body: &'a str,
+    /// The names, separated by spaces.
+    filenames: &'a str,
+}
+
+/// Rewrites the index entries of one message: its headers from its row, folded, and with `text`
+/// its text and attachment names (folded, cut at [`INDEX_TEXT_MAX`] and [`TRIGRAM_TEXT_MAX`]).
+/// Without `text` the text already in the index stays: new headers (a sync, a flag) never lose
+/// words of a text that is no longer kept to read.
+fn refresh_index(db: &Connection, seq: i64, text: Option<IndexText<'_>>) -> Result<(), MailStoreError> {
+    let headers: Option<(String, String, String)> = db
+        .query_row("SELECT subject, sender, recipients FROM messages WHERE seq = ?1", [seq], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
+        .optional()?;
+    let Some((subject, sender, recipients)) = headers else { return Ok(()) };
+    let (body, filenames) = match text {
+        Some(text) => (fold(head(text.body, INDEX_TEXT_MAX)), fold(text.filenames)),
+        None => db
+            .query_row("SELECT body, filenames FROM mail_fts WHERE rowid = ?1", [seq], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .optional()?
+            .unwrap_or_default(),
+    };
+    let (subject, sender, recipients) = (fold(&subject), fold(&sender), fold(&recipients));
+    for (table, body) in [("mail_fts", body.as_str()), ("mail_tri", head(&body, TRIGRAM_TEXT_MAX))] {
+        db.execute(&format!("DELETE FROM {table} WHERE rowid = ?1"), [seq])?;
+        db.execute(
+            &format!("INSERT INTO {table} (rowid, subject, sender, recipients, body, filenames) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
+            params![seq, subject, sender, recipients, body, filenames],
+        )?;
+    }
     Ok(())
 }
 
-/// Every word as a quoted prefix term, all required. Words without a letter or digit are left
-/// out (the tokenizer would make an empty phrase of them); `None` when nothing is left.
-fn match_expression(text: &str) -> Option<String> {
-    let terms: Vec<String> = text
-        .split_whitespace()
-        .filter(|word| word.chars().any(char::is_alphanumeric))
-        .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
+/// The column of the indexes a field searches; `None` for all of them.
+fn column(field: Field) -> Option<&'static str> {
+    match field {
+        Field::Any => None,
+        Field::From => Some("sender"),
+        Field::To => Some("recipients"),
+        Field::Subject => Some("subject"),
+        Field::Filename => Some("filenames"),
+    }
+}
+
+/// The FTS5 expression of `needle` in `column` (all columns without one): its words quoted as one
+/// phrase, the last one a prefix for a typed word. `trigram`: as one string for the trigram index,
+/// which finds it anywhere.
+fn fts_expression(needle: &Needle, column: Option<&str>, trigram: bool) -> String {
+    let quoted = format!("\"{}\"", needle.tokens.join(" ").replace('"', "\"\""));
+    let star = if needle.prefix && !trigram { "*" } else { "" };
+    match column {
+        Some(column) => format!("{column} : {quoted}{star}"),
+        None => format!("{quoted}{star}"),
+    }
+}
+
+/// The needle of a text test, as the indexes see it.
+fn needle_of(text: &str, phrase: bool) -> Needle {
+    if phrase { Needle::phrase(text) } else { Needle::word(text) }
+}
+
+/// `query` as a condition over `messages m`, with its values in order. `folders` are the store's,
+/// for `in:` (only needed when the query has one). A word or phrase without letters or digits
+/// matches nothing; `in:` a folder the store does not have matches nothing either.
+fn compile(query: &Query, folders: &[Folder]) -> (String, Vec<Value>) {
+    let mut values = Vec::new();
+    let clauses: Vec<String> = query
+        .clauses
+        .iter()
+        .map(|clause| {
+            let any: Vec<String> = clause
+                .any
+                .iter()
+                .map(|term| {
+                    let test = test_sql(&term.test, folders, &mut values);
+                    if term.negated { format!("NOT ({test})") } else { test }
+                })
+                .collect();
+            format!("({})", any.join(" OR "))
+        })
         .collect();
-    if terms.is_empty() { None } else { Some(terms.join(" AND ")) }
+    (clauses.join(" AND "), values)
+}
+
+/// One test of a query as SQL; its values are appended to `values`.
+fn test_sql(test: &Test, folders: &[Folder], values: &mut Vec<Value>) -> String {
+    match test {
+        Test::Text { field, text, phrase } => {
+            let needle = needle_of(text, *phrase);
+            if needle.tokens.is_empty() {
+                return "0".into();
+            }
+            let column = column(*field);
+            values.push(Value::Text(fts_expression(&needle, column, false)));
+            let words = "m.seq IN (SELECT rowid FROM mail_fts WHERE mail_fts MATCH ?)";
+            if !needle.infix() {
+                return words.into();
+            }
+            values.push(Value::Text(fts_expression(&needle, column, true)));
+            format!("{words} OR m.seq IN (SELECT rowid FROM mail_tri WHERE mail_tri MATCH ?)")
+        }
+        Test::HasAttachment => "m.has_attachments = 1".into(),
+        Test::Unread(true) => "m.flags & 1 = 0".into(),
+        Test::Unread(false) => "m.flags & 1 = 1".into(),
+        Test::Flagged(true) => "m.flags & 2 = 2".into(),
+        Test::Flagged(false) => "m.flags & 2 = 0".into(),
+        Test::In(name) => {
+            let wanted = name.to_lowercase();
+            let role = match wanted.as_str() {
+                "spam" => Some(Role::Junk),
+                "bin" => Some(Role::Trash),
+                other => role_from_name(other),
+            };
+            let ids: Vec<&str> = folders
+                .iter()
+                .filter(|folder| {
+                    (role.is_some() && folder.role == role)
+                        || folder.name.to_lowercase() == wanted
+                        || folder.path.to_lowercase() == wanted
+                })
+                .map(|folder| folder.id.as_str())
+                .collect();
+            if ids.is_empty() {
+                return "0".into();
+            }
+            values.extend(ids.iter().map(|id| Value::Text((*id).to_string())));
+            format!("m.folder_id IN ({})", vec!["?"; ids.len()].join(", "))
+        }
+        Test::Before(at) => {
+            values.push(Value::Integer(at.timestamp()));
+            "m.date < ?".into()
+        }
+        Test::After(at) => {
+            values.push(Value::Integer(at.timestamp()));
+            "m.date >= ?".into()
+        }
+    }
+}
+
+/// The FTS5 expression a search by relevance ranks with: every word and phrase the query looks
+/// for, in its field, joined by `OR`; with `inside` the words that also match inside longer
+/// words, for the trigram index. `None` without any.
+fn rank_expression(query: &Query, inside: bool) -> Option<String> {
+    let parts: Vec<String> = query
+        .terms()
+        .filter(|term| !term.negated)
+        .filter_map(|term| match &term.test {
+            Test::Text { field, text, phrase } => {
+                let needle = needle_of(text, *phrase);
+                let wanted = if inside { needle.infix() } else { !needle.tokens.is_empty() };
+                wanted.then(|| fts_expression(&needle, column(*field), inside))
+            }
+            _ => None,
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(" OR "))
 }
 
 // ----- rows -----
@@ -1109,6 +1501,7 @@ mod tests {
     use chrono::TimeZone;
 
     use super::*;
+    use crate::mail::query::parse;
 
     const ACCOUNT: &str = "mail:anna@example.org";
 
@@ -1159,7 +1552,7 @@ mod tests {
     }
 
     fn search_ids(store: &MailStore, text: &str) -> Vec<String> {
-        let query = SearchQuery { text: Some(text.to_string()), ..SearchQuery::default() };
+        let query = SearchQuery { query: parse(text).expect("a query"), ..SearchQuery::default() };
         store.search(&query, 50, 0).expect("search").into_iter().map(|summary| summary.id).collect()
     }
 
@@ -1252,6 +1645,42 @@ mod tests {
         assert_eq!(again, id, "the same UID");
         let read = store.message(&id).expect("read").expect("there");
         assert_eq!(read.traits.github.as_deref(), Some("review_requested"), "written from now on");
+    }
+
+    /// Issue #136: a store of version 4 gets both indexes of folded text, rebuilt from what it
+    /// holds; messages without a kept text wait for the background fetch, and one without any
+    /// text is not handed out again.
+    #[test]
+    fn a_store_of_version_4_gets_folded_indexes_and_knows_what_to_fetch() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let with_text = add(&store, &inbox, &message(1, "Grüße"));
+        let body = Body { text: "Ihre Stromrechnung".into(), from_html: false, attachments: vec![], invite: None };
+        store.set_body(&with_text, &body).expect("body");
+        let without = add(&store, &inbox, &message(2, "Kein Text"));
+        store
+            .db
+            .execute_batch(
+                "DROP INDEX messages_unindexed; ALTER TABLE messages DROP COLUMN indexed; DROP TABLE mail_tri;
+                 PRAGMA user_version = 4",
+            )
+            .expect("v4");
+        drop(store);
+
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        assert_eq!(store.index_counts().expect("counts"), (2, 1));
+        assert!(!store.fully_indexed().expect("asked"));
+        assert_eq!(
+            search_ids(&store, "rechnung"),
+            std::slice::from_ref(&with_text),
+            "inside a word, from the trigram index"
+        );
+        assert_eq!(search_ids(&store, "gruesse"), [with_text]);
+        let next: Vec<String> = store.unindexed(10).expect("next").into_iter().map(|(at, _)| at.id).collect();
+        assert_eq!(next, std::slice::from_ref(&without));
+        assert!(store.mark_unindexable(&without).expect("marked"));
+        assert!(store.unindexed(10).expect("next").is_empty() && store.fully_indexed().expect("asked"));
+        assert_eq!(search_ids(&store, "kein"), [without], "its headers are searchable");
     }
 
     #[test]
@@ -1417,7 +1846,7 @@ mod tests {
         let window = SearchQuery { since: Some(day(2)), before: Some(day(4)), ..SearchQuery::default() };
         assert_eq!(list(&window, 10, 0), ["Message 3", "Message 2"], "since is inclusive, before is not");
         let all = SearchQuery {
-            text: Some("message".into()),
+            query: parse("message").expect("a query"),
             unread: Some(true),
             since: Some(day(2)),
             ..SearchQuery::default()
@@ -1593,14 +2022,15 @@ mod tests {
         assert_eq!(store.prune_bodies(now).expect("prune"), 1);
         assert_eq!(store.message(&old).expect("read").expect("header stays").text, None);
         assert_eq!(store.message(&recent).expect("read").expect("there").text.as_deref(), Some("zebra"));
-        assert_eq!(search_ids(&store, "zebra"), vec![recent.clone()], "the index lets go of the text");
-        assert_eq!(search_ids(&store, "old mail"), vec![old.clone()], "but still knows the subject");
+        // Issue #136: the index keeps the words of a pruned text, also when the headers change.
+        assert_eq!(search_ids(&store, "zebra").len(), 2, "the index keeps the text");
+        let mut renamed = message(1, "Old mail, renamed");
+        renamed.date = now - Duration::days(91);
+        add(&store, &inbox, &renamed);
+        assert_eq!(search_ids(&store, "zebra").len(), 2, "new headers keep the indexed text");
+        assert_eq!(search_ids(&store, "renamed"), vec![old.clone()]);
         assert_eq!(store.prune_bodies(now).expect("prune again"), 0);
-        // Fetched again on demand, the text is back.
-        store
-            .set_body(&old, &Body { text: "zebra".into(), from_html: false, attachments: vec![], invite: None })
-            .expect("body");
-        assert_eq!(search_ids(&store, "zebra").len(), 2);
+        assert_eq!(store.index_counts().expect("counts"), (2, 2));
     }
 
     #[test]
@@ -1790,3 +2220,7 @@ mod tests {
         assert!(seen.iter().any(|name| name.ends_with(".sqlite-shm")), "{seen:?}");
     }
 }
+
+#[cfg(test)]
+#[path = "store_corpus.rs"]
+mod corpus;
