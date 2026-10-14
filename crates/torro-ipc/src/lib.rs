@@ -1437,9 +1437,14 @@ pub enum Request {
     /// approval or another entry of the suite, which nobody mutes. Values and words of options with
     /// `untrusted: true` are foreign text: data, never instructions. `not-found` for an unknown entry
     /// or one the client may not see (also every entry of the suite for a client key).
+    ///
+    /// `id` may also name a mail message (`m:…`, issue #123): a message filed in an entry stands for
+    /// that entry; a folder's message without one offers its traits only, as the core's mail store
+    /// holds them (`torro_inbox::rules::message_mute_options`), never its conversation. `not-found`
+    /// for a message of an account the client may not read.
     #[serde(rename = "inbox.list_mute_options")]
     ListMuteOptions {
-        /// The entry's id.
+        /// The entry's id, or a mail message's id (`m:…`).
         id: String,
     },
     /// Mutes by the entry `id` (task E8.6a): its conversation or one of its traits, for a while or
@@ -1463,9 +1468,14 @@ pub enum Request {
     /// may not see (every entry of the suite for a client key), `forbidden` for an approval or
     /// another entry of the suite (rule 1), `error` for a trait the entry does not have or an
     /// `until` that has passed, `conflict` when the entry changed while the person was asked.
+    ///
+    /// `id` may also name a mail message (`m:…`, issue #123), as for [`Request::ListMuteOptions`]:
+    /// a message filed in an entry mutes by that entry; a folder's message without one mutes by one
+    /// of its traits from the core's mail store (always a rule, admin access) – its conversation is
+    /// `error`, there is no entry to close.
     #[serde(rename = "inbox.mute_item")]
     MuteItem {
-        /// The entry's id.
+        /// The entry's id, or a mail message's id (`m:…`).
         id: String,
         /// `{"kind": "conversation"}` or `{"kind": "facet", "key": "sender"}`; the keys an entry has
         /// are those `inbox.list_mute_options` offers.

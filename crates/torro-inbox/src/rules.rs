@@ -544,6 +544,64 @@ pub fn mute_options(item: &Item) -> Vec<MuteOption> {
     std::iter::once(conversation).chain(traits).collect()
 }
 
+/// The start of every mail message's id in the core's mail store (`m:…`). No inbox entry's id
+/// starts so, which is how `inbox.list_mute_options` and `inbox.mute_item` tell a message from an
+/// entry (issue #123, [`is_message_id`]).
+pub const MESSAGE_ID_PREFIX: &str = "m:";
+
+/// `id` names a mail message (`m:…`) rather than an inbox entry (issue #123): muting may name a
+/// folder's message that never became an entry.
+pub fn is_message_id(id: &str) -> bool {
+    id.starts_with(MESSAGE_ID_PREFIX)
+}
+
+/// The entry a mail message would be, never stored (issue #123): what muting by a message that has
+/// no entry mutes by. Built as the core files mail (task E4.1): the message's id as the entry's id,
+/// its account as the source, its conversation as the thread, the sender by name (else address),
+/// the subject as title, done – it waits for nobody – and the traits of [`facets`] with the
+/// mailing list `list` (`List-Id`) and `bulk` (sent by a machine or to a list, as the core's mail
+/// feed decides it). `None` when `summary.account` names no mail account.
+pub fn message_stand_in(summary: &torro_mail::MessageSummary, list: Option<&str>, bulk: bool) -> Option<Item> {
+    let source = summary.account.parse::<SourceRef>().ok().filter(|source| source.kind == SourceKind::Mail)?;
+    let from = summary.from.as_ref().map(|from| {
+        let name = from.name.as_deref().map(str::trim).filter(|name| !name.is_empty());
+        Sender { name: name.unwrap_or(&from.address).to_string(), address: Some(from.address.clone()) }
+    });
+    let mut item = Item {
+        id: summary.id.clone(),
+        source,
+        thread_key: summary.thread_id.clone(),
+        kind: Kind::Message,
+        lane: Lane::ForMe,
+        urgent: false,
+        title: summary.subject.clone(),
+        body: None,
+        from,
+        agent: None,
+        received: summary.date,
+        updated: summary.date,
+        count: 1,
+        state: State::Done { at: summary.date },
+        link: Some(Link::Mail { message: summary.id.clone() }),
+        actions: Vec::new(),
+        // Mail is data from outside, never instructions.
+        untrusted: true,
+        facets: Vec::new(),
+        task: None,
+        invite: None,
+        reason: None,
+    };
+    item.facets = facets(&item, list, bulk);
+    Some(item)
+}
+
+/// The ways to mute a mail message without an entry (issue #123, [`message_stand_in`]): its traits
+/// only, as [`mute_options`] lists them. Its conversation is left out: muting a conversation for
+/// good only closes its entry, and there is none – a reply would come in all the same.
+pub fn message_mute_options(stand_in: &Item) -> Vec<MuteOption> {
+    mute_options(stand_in).into_iter().filter(|option| option.scope != MuteScope::Conversation).collect()
+}
+
 /// `rule` still holds at `now`: it has no end, or its end ([`Rule::until`]) lies after `now`.
 /// Rules that ended hold no more and are not listed.
 pub fn is_active(rule: &Rule, now: DateTime<Utc>) -> bool {
@@ -950,6 +1008,45 @@ mod tests {
         assert_eq!(agent[3].label, tr("Agents waiting for you"));
         let approval = Item { source: SourceRef::suite(), ..item("p", Kind::Approval) };
         assert!(mute_options(&approval).is_empty(), "approvals are never muted");
+    }
+
+    /// A message of anna@example.org from the shop's newsletter, as the mail store lists it.
+    fn shop_message(id: &str, account: &str) -> torro_mail::MessageSummary {
+        torro_mail::MessageSummary {
+            id: id.into(),
+            account: account.into(),
+            folder: "f:archive".into(),
+            thread_id: "t:sale".into(),
+            from: Some(torro_mail::MailAddress { name: Some(" ".into()), address: "News@Shop.Example".into() }),
+            to: Vec::new(),
+            subject: "Winter sale".into(),
+            date: at(7),
+            snippet: String::new(),
+            flags: Vec::new(),
+            has_attachments: false,
+            invite: None,
+            untrusted: true,
+        }
+    }
+
+    #[test]
+    fn a_message_without_an_entry_is_muted_by_its_own_traits() {
+        assert!(is_message_id("m:1") && !is_message_id("0a1b2c3d4e5f6a7b") && !is_message_id("demo-1"));
+        let message = shop_message("m:7", "mail:anna@example.org");
+        let stand_in = message_stand_in(&message, Some(" <News.Shop.Example> "), true).expect("a mail account");
+        assert_eq!((stand_in.id.as_str(), stand_in.thread_key.as_str()), ("m:7", "t:sale"));
+        assert_eq!(stand_in.from.as_ref().map(|from| from.name.as_str()), Some("News@Shop.Example"), "no blank name");
+        assert!(!stand_in.state.is_open(), "it waits for nobody");
+        assert_eq!(stand_in.facets, newsletter("anna@example.org").facets, "the traits an entry would have");
+        let options = message_mute_options(&stand_in);
+        assert!(options.iter().all(|option| option.scope != MuteScope::Conversation), "no entry to close");
+        assert_eq!(options.len(), mute_options(&stand_in).len() - 1);
+        assert_eq!(
+            mute_target(&stand_in, MuteScope::Facet { key: FacetKey::Domain, nth: 0 }),
+            Some(facet(FacetKey::Domain, "shop.example"))
+        );
+        assert_eq!(message_stand_in(&shop_message("m:8", "script:backup"), None, false), None, "no mail account");
+        assert_eq!(message_stand_in(&shop_message("m:9", "nonsense"), None, false), None);
     }
 
     #[test]

@@ -351,6 +351,10 @@ Vergangenheit; `conflict`, wenn sich der Eintrag während der Freigabe geändert
 nennt Merkmal und Wert aus dem Eintrag, die Reichweite, Dauer und Wirkung in Worten („Mute “Mail from
 news@shop.example” in every mail account for good (hidden)“). Ins Protokoll kommt nur die Kennung des
 Eintrags. Den Wert einer Regel für die Unterhaltung (den `thread_key`) sieht nur der App-Schlüssel.
+Statt der Kennung eines Eintrags darf `id` die einer Mail sein (`m:…`, Issue #123): Ist die Mail in einem
+Eintrag abgelegt, gilt dessen Kennung; eine Ordnernachricht ohne Eintrag bietet nur ihre Merkmale an,
+wie der Mail-Speicher des Dienstes sie hält (keine Unterhaltung: es gibt keinen Eintrag zu schließen,
+`error`), und nur für Schlüssel, die Konto und Mail lesen dürfen (sonst `not-found`).
 `set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
 Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
 

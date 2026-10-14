@@ -21,10 +21,10 @@
 //! "Done", no more "Snooze" and "Mark as done") –, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
 //! text button – only its icon in narrow windows, where the words do not fit ([`Footer::compact`]),
 //! and beside "…", which leaves no room for them in the panel's 400 either – and "…" (`m`, task
-//! E3.10), which opens the menu "Hide from inbox": the entry, its sender or
-//! domain, "Always to Info" and "Move to junk" for mail, muting the source for the others
+//! E3.10), which opens the menu "Hide from inbox": the entry, muting the source
 //! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". In the
-//! notifications window the bell stands there instead ([`Footer::bell`], task E8.6b): it opens the
+//! notifications window and for mail (issue #123: mail's "Hide from inbox" went into the bell's
+//! menu) the bell stands there instead ([`Footer::bell`], task E8.6b): it opens the
 //! bell's menu, as `m` and the bell of the card do; it is the crossed-out bell (`BellOff`, task
 //! E8.10). "Move to Info" has the circled "i" (`app::lane_icon`), never a bell. "Make task"
 //! (`t`, task E3.5) is an
@@ -86,7 +86,7 @@ pub struct Anchors {
     /// "Make event": its dialog opens here (task E8.5b).
     pub event: Anchor,
     /// "…" / "Hide": the menu "Hide from inbox" opens here (task E3.10); in the notifications window
-    /// the bell, where the bell's menu opens (task E8.6b).
+    /// and for mail the bell, where the bell's menu opens (task E8.6b, issue #123).
     pub hide: Anchor,
 }
 
@@ -100,7 +100,7 @@ impl Anchors {
             Message::Act(_, Command::Lane) | Message::AskLane(_) => Some(&self.lane),
             Message::Act(_, Command::MakeTask) | Message::AskTask(_) | Message::AskMailTask(_) => Some(&self.task),
             Message::Act(_, Command::MakeEvent) | Message::AskEvent(_) => Some(&self.event),
-            Message::Act(_, Command::Hide) | Message::AskHide(_) => Some(&self.hide),
+            Message::Act(_, Command::Hide) | Message::AskHide(_) | Message::AskMuteMail(_) => Some(&self.hide),
             _ => None,
         }
     }
@@ -136,11 +136,12 @@ impl Anchors {
 #[derive(Debug, Clone)]
 pub struct Footer {
     pub anchors: Anchors,
-    /// The menu "Hide from inbox" has entries for this entry (`App::hide_choices`): the footer
-    /// shows its "…" – or its bell with [`Footer::bell`].
+    /// The entry has a menu for `m` (`App::hidable`): the footer shows its "…" – or its bell with
+    /// [`Footer::bell`].
     pub hide: bool,
-    /// The notifications window (task E8.6b): the footer's last button is the bell ("Mute…", `m`),
-    /// which opens the bell's menu, instead of "…". Only shown with [`Footer::hide`].
+    /// The notifications window (task E8.6b) and mail (issue #123): the footer's last button is the
+    /// bell ("Mute…", `m`), which opens the bell's menu, instead of "…". Only shown with
+    /// [`Footer::hide`].
     pub bell: bool,
     /// A decision of an approval is on its way: Allow and Deny are disabled until it is answered.
     pub deciding: bool,
@@ -373,7 +374,7 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     if footer.hide {
         let hide = if footer.bell {
             // `AskHide` like "…", not `Act`: the bell's menu hangs at this bell (issue #122), not at
-            // the row; in the notifications window it opens the bell's menu.
+            // the row; in the notifications window and for mail it opens the bell's menu.
             widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::AskHide(item.id.clone())))
         } else {
             widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())))

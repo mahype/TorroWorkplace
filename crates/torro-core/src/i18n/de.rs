@@ -903,6 +903,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("What happens", "Was passiert"),
     ("1 hour", "1 Stunde"),
     ("Until tomorrow", "Bis morgen"),
+    ("1 week", "1 Woche"),
     ("No popup", "Kein Popup"),
     ("Only Info", "Nur Info"),
     ("All rules", "Alle Regeln"),
@@ -2456,12 +2457,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Kept for this sender", "Für diesen Absender gemerkt"),
     ("Muted to Info", "Stummgeschaltet nach Info"),
     // Hide from the inbox in steps (E3.10)
-    ("Always to Info", "Immer nach Info"),
-    ("Couldn't hide the sender.", "Der Absender ließ sich nicht ausblenden."),
     ("Everything from {domain}", "Alles von {domain}"),
-    ("Everything from {sender}", "Alles von {sender}"),
-    ("Hidden: everything from {domain}", "Ausgeblendet: alles von {domain}"),
-    ("Hidden: {sender}", "Ausgeblendet: {sender}"),
     ("Hide from inbox", "Im Eingang ausblenden"),
     (
         "Hide mail from everyone at {domain} in every mail account; the mail stays unread",

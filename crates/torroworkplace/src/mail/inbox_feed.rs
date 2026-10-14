@@ -262,6 +262,26 @@ pub async fn mail_for_task(mail: &MailService, account: &str, id: &str) -> Resul
     found.ok_or(MailError::NotFound)
 }
 
+/// The mail message `id` (`m:…`) as an entry made of it would be (issue #123,
+/// [`torro_inbox::rules::message_stand_in`]): its account, conversation, sender and the traits the
+/// feed would give it ([`bulk_reason`], `List-Id`), never stored. For muting a folder's message
+/// that has no entry. Looked up only in the stores `reach` sees ([`MailService::stores`]); `None`
+/// when none of them holds it, or a store fails (logged with the account, never the id).
+pub async fn message_stand_in(mail: &MailService, reach: Reach<'_>, id: &str) -> Option<Item> {
+    for (account, store) in mail.stores(reach).await {
+        let lookup = id.to_string();
+        match store.run(move |store| store.message(&lookup)).await {
+            Ok(Some(message)) => {
+                let (list, bulk) = (message.traits.list_id.as_deref(), bulk_reason(&message.traits).is_some());
+                return torro_inbox::rules::message_stand_in(&message.summary, list, bulk);
+            }
+            Ok(None) => {}
+            Err(err) => eprintln!("torroworkplace: inbox: cannot look up a mail to mute in {account}: {err}"),
+        }
+    }
+    None
+}
+
 /// The newest mail of `account` with the `Message-ID` `message_id` (any folder), `None` when its
 /// store holds none, the account has no mail on or the store fails (that goes to the log, without
 /// the id).
@@ -603,6 +623,7 @@ fn sender(from: &MailAddress) -> Sender {
 pub(crate) mod tests {
     use std::path::Path;
 
+    use torro_inbox::item::FacetKey;
     use torro_inbox::{Kind, Lane, Link};
     use torro_ipc::{Request, Response};
     use torro_mail::MailSettings;
@@ -858,6 +879,47 @@ pub(crate) mod tests {
         })
         .await;
         assert_eq!(entries(&inbox).len(), 2, "one entry per conversation");
+    }
+
+    /// Issue #123: a folder's message that never became an entry stands in for one to mute by, with
+    /// the traits the feed would give it – only for whom reaches its account.
+    #[tokio::test]
+    async fn a_message_of_a_folder_stands_in_for_an_entry_to_mute_by() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let news = letter("Weekly news", "Shop <news@shop.example>", 0, "List-Id: <news.shop.example>\r\n", None);
+        server.add("Archive", &news, &[]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let (inbox, mail) = fed(dir.path(), &secrets).await;
+        eventually("synced", || synced(&mail)).await;
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+        };
+        let Response::MailMessages { messages, .. } = crate::mail::read::answer(&mail, Reach::Suite, search).await
+        else {
+            panic!("a page of messages")
+        };
+        let id = messages.into_iter().find(|message| message.subject == "Weekly news").expect("synced").id;
+
+        let stand_in = message_stand_in(&mail, Reach::Suite, &id).await.expect("the message");
+        assert_eq!((stand_in.id.as_str(), stand_in.source.key()), (id.as_str(), ANNA.to_string()));
+        let keys: Vec<FacetKey> = stand_in.facets.iter().map(|facet| facet.key).collect();
+        assert_eq!(keys, [FacetKey::Account, FacetKey::Sender, FacetKey::Domain, FacetKey::List, FacetKey::Bulk]);
+        assert_eq!(inbox.entry_of_message(ANNA, &id), None, "an archived mail is never filed");
+        let mut rights = torro_ipc::api::RightsTemplate::FullAccess.rights();
+        rights.mail_accounts = torro_ipc::api::Selection::Only(vec!["mail:bernd@example.com".into()]);
+        assert_eq!(message_stand_in(&mail, Reach::Client(&rights), &id).await, None, "another account only");
+        assert_eq!(message_stand_in(&mail, Reach::Suite, "m:nope").await, None);
     }
 
     #[tokio::test]

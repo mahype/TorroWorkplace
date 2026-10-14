@@ -438,6 +438,14 @@ Art (ein Absender in allen Mail-Konten, ein Projekt für alle Agenten), eine fü
 Quelle. „Hide“ und „Only Info“ für die Unterhaltung ohne Ablauf legen keine Regel an, sondern erledigen bzw.
 verschieben nur diesen Eintrag. Befehle: [api.md](api.md), Fußnote 11.
 
+**Mail-Fenster (Issue #123, E8.25):** Mail hat **ein** Menü, die Glocke „Mute…“ – „Hide from inbox“ ist darin
+aufgegangen. Die Glocke steht in Zeilen und Karten (statt „…“), im Leser und im Paneel, `m` öffnet sie; für Mail-Einträge
+in jedem Fenster. Dauer: 1 Stunde, bis morgen, 1 Woche, immer. Was „Hide from inbox“ bot, steht so darin: „This
+conversation“ mit „Hide“ und „Always“ erledigt den Eintrag (die Mail bleibt ungelesen), Absender und Domain sind
+Merkmale, „Always to Info“ ist Absender mit „Only Info“; „Move to junk“ bleibt als letzter Punkt. Auch Nachrichten
+eines Ordners ohne Eintrag haben die Glocke: `inbox.mute_item` mit der Kennung der Mail (`m:…`), angeboten werden
+nur ihre Merkmale (Absender, Domain, Liste, Konto, Massenmail), nicht die Unterhaltung.
+
 ### Aufgabe mit Rückbezug
 
 Eine Aufgabe aus einer Nachricht behält ihre Herkunft, auch in Nextcloud. Gespeichert wird in der Eigenschaft

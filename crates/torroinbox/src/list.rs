@@ -47,7 +47,8 @@
 //! flag) and its buttons, always shown in a row of their own – Reply · Task · Done · Later in every
 //! size (task E8.11), with all their words where the card's width has room for them, else only the
 //! first's (Reply; Accept for an invitation), else none ([`spoken`], `widgets::bar_words`, task
-//! E8.13), and "…" for "Hide from inbox". Every button does what its key does on the entry ([`Message::Act`]).
+//! E8.13), and the bell "Mute…" (issue #123; "…" for "Hide from inbox" of other sources). Every
+//! button does what its key does on the entry ([`Message::Act`]).
 //! Cards have no close button: mail is not dismissed in the mail window. A card is as high as what
 //! it shows at its width – a preview of one line takes one line ([`mail_card_height`],
 //! [`preview_lines`]) –, so the app can scroll the cursor into view.
@@ -99,8 +100,8 @@ pub struct Rows<'a> {
     /// The addresses of the mail accounts in the order the sidebar lists them: an account's place
     /// gives its colour ([`account_index`]), and from two accounts on the mail rows name theirs.
     pub accounts: Vec<&'a str>,
-    /// Ids of the entries whose menu "Hide from inbox" has entries (`App::hide_choices`): their
-    /// action bar offers "Hide".
+    /// Ids of the entries `m` opens a menu for (`App::hidable`): their
+    /// action bar offers "Hide" – the bell "Mute…" for mail (issue #123).
     pub hidable: Vec<&'a str>,
     /// Rows or cards (task E8.3): cards in the comfortable density of the mail window.
     pub look: Look,
@@ -340,8 +341,8 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
 ///   once it is decided and becomes no task;
 /// - "Later" (`s`) for every entry that is not done – not for an approval either (task E8.1b, as
 ///   the hub's cards): it waits for yes or no and must not vanish by accident;
-/// - "Hide" (`m`) when the menu "Hide from inbox" has entries for it (`hidable`, from
-///   `App::hide_choices`: never for an approval, and the suite is never muted);
+/// - "Hide" (`m`) when `m` opens a menu for it (`hidable`, from `App::hidable`: never for an
+///   approval, and the suite is never muted) – for mail the bell "Mute…" ([`hide_action`]);
 /// - the ✕ "Dismiss" (`x`, issue #117) last, for every entry that may simply go
 ///   ([`notifications::dismissable`]: no mail, no approval, nothing done) – as in the hub's "Act now"
 ///   and the notifications window; the toast takes it back.
@@ -359,7 +360,7 @@ pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
         actions.push(RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
     }
     if hidable {
-        actions.push(RowAction::new(Icon::Ellipsis, tr("Hide"), "M", act(Command::Hide)));
+        actions.push(hide_action(item, tr("Hide")));
     }
     if notifications::dismissable(item) {
         actions.push(RowAction::new(Icon::X, tr("Dismiss"), "X", act(Command::Dismiss)));
@@ -596,7 +597,7 @@ pub(crate) fn mail_card_height(preview: usize, chips: bool) -> f32 {
 /// ([`Message::Act`]): Task · Done · Later in every size (task E8.11, `docs/eingang.md` "Knöpfe je
 /// Eintrag"); "Reopen" for a done entry, which has no "Later". No Reply (issue #118): from a list the
 /// mail is not read yet – Reply stands in the reader. The second is "…" for "Hide from inbox", when
-/// its menu has entries (`hidable`).
+/// its menu has entries (`hidable`) – for mail the bell "Mute…" ([`hide_action`], issue #123).
 pub fn card_buttons<'a>(item: &Item, hidable: bool) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
     let act = |command| Message::Act(item.id.clone(), command);
     let done = matches!(item.state, State::Done { .. });
@@ -608,8 +609,20 @@ pub fn card_buttons<'a>(item: &Item, hidable: bool) -> (Vec<RowAction<'a, Messag
     };
     let later = (!done).then(|| RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
     let buttons = [Some(task), Some(finish), later].into_iter().flatten().collect();
-    let more = hidable.then(|| RowAction::new(Icon::Ellipsis, tr("Hide from inbox"), "M", act(Command::Hide)));
+    let more = hidable.then(|| hide_action(item, tr("Hide from inbox")));
     (buttons, more)
+}
+
+/// The button of `m` for `item` ([`Command::Hide`]): for mail the bell "Mute…" – mail's "Hide from
+/// inbox" went into the bell's menu (issue #123) –, else "…" with `word` ("Hide" in the action
+/// bar, "Hide from inbox" on a card).
+pub fn hide_action<'a>(item: &Item, word: &'static str) -> RowAction<'a, Message> {
+    let act = Message::Act(item.id.clone(), Command::Hide);
+    if item.source.kind == SourceKind::Mail {
+        RowAction::new(Icon::BellOff, tr("Mute…"), "M", act)
+    } else {
+        RowAction::new(Icon::Ellipsis, word, "M", act)
+    }
 }
 
 /// The buttons of the card of `item` at `now` (task E8.3c): an invitation to answer
