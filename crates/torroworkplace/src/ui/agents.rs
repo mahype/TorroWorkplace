@@ -1195,11 +1195,13 @@ fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
         .into_iter()
         .map(|source| {
             let detail = match source.kind {
-                SourceKind::Agent => tr("Agent"),
-                SourceKind::Script | SourceKind::Suite => tr("Script"),
-                SourceKind::Mail => tr("Mail"),
+                SourceKind::Agent => tr("Agent").to_string(),
+                SourceKind::Script | SourceKind::Suite => tr("Script").to_string(),
+                SourceKind::Mail => tr("Mail").to_string(),
+                // The remote sources of task E5.1 by their account; E5.14 words them.
+                SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => source.name.clone(),
             };
-            Candidate::plain(source.key(), source.label(), Some(detail.to_string()))
+            Candidate::plain(source.key(), source.label(), Some(detail))
         })
         .collect()
 }
@@ -1667,7 +1669,7 @@ mod tests {
                     &["is:open repo:anna/torro label:bug -repo:anna/old", "org:acme is:pr"],
                 ),
             ],
-            sources: vec![SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false }],
+            sources: vec![SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None }],
             accounts: vec![
                 account("nextcloud:anna@cloud.example.org", "nextcloud", "anna@cloud.example.org"),
                 account("mail:anna@mailbox.org", "mail", "anna@mailbox.org"),
@@ -2070,7 +2072,7 @@ mod tests {
     #[test]
     fn sources_include_every_client_and_the_selection_but_never_the_suite() {
         let mut data = data();
-        data.sources.push(SourceInfo { source: SourceRef::suite(), open: 2, muted: false });
+        data.sources.push(SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None });
         let selection = Selection::Only(vec!["script:gone".into()]);
         let keys: Vec<String> = candidates(Pick::InboxSources, &data, &selection).into_iter().map(|c| c.id).collect();
         // Mail accounts are sources too (task E4.1), by their account id.

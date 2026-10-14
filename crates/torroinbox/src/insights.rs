@@ -151,7 +151,10 @@ pub fn series(stats: &InboxStats) -> Vec<Series> {
         match counts.source.kind {
             SourceKind::Mail => mail = mail.saturating_add(new),
             SourceKind::Agent => agents = agents.saturating_add(new),
-            SourceKind::Suite => other = other.saturating_add(new),
+            // The remote sources of task E5.1 count as "Other" until E5.15 gives them their rows.
+            SourceKind::Suite | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
+                other = other.saturating_add(new)
+            }
             SourceKind::Script => match scripts.iter_mut().find(|(name, _)| *name == counts.source.name) {
                 Some((_, sum)) => *sum = sum.saturating_add(new),
                 None => scripts.push((counts.source.name.clone(), new)),
@@ -186,7 +189,9 @@ fn series_of(series: &[Series], source: &SourceRef) -> Option<usize> {
     match source.kind {
         SourceKind::Mail => find(&Group::Mail),
         SourceKind::Agent => find(&Group::Agents),
-        SourceKind::Suite => find(&Group::Other),
+        SourceKind::Suite | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
+            find(&Group::Other)
+        }
         SourceKind::Script => find(&Group::Script(source.name.clone())).or_else(|| find(&Group::Other)),
     }
 }
@@ -413,7 +418,7 @@ pub struct Cut {
 /// its sender, domain, list, newsletters are hidden (the mail stays in its mailbox) –, everything
 /// else keeps coming without a popup ("Mute …"), so no report is lost.
 pub fn suggestion(scope: MuteScope) -> (MuteEffect, &'static str) {
-    let MuteScope::Facet { key } = scope else { return (MuteEffect::NoPopup, tr("Mute conversation")) };
+    let MuteScope::Facet { key, .. } = scope else { return (MuteEffect::NoPopup, tr("Mute conversation")) };
     match key {
         FacetKey::Sender => (MuteEffect::Hide, tr("Hide sender")),
         FacetKey::Domain => (MuteEffect::Hide, tr("Hide domain")),
@@ -425,6 +430,14 @@ pub fn suggestion(scope: MuteScope) -> (MuteEffect, &'static str) {
         FacetKey::Kind => (MuteEffect::NoPopup, tr("Mute these")),
         FacetKey::Client => (MuteEffect::NoPopup, tr("Mute app")),
         FacetKey::Conversation => (MuteEffect::NoPopup, tr("Mute conversation")),
+        FacetKey::Repo
+        | FacetKey::Reason
+        | FacetKey::Result
+        | FacetKey::App
+        | FacetKey::Person
+        | FacetKey::Topic
+        | FacetKey::Priority
+        | FacetKey::Tag => (MuteEffect::NoPopup, tr("Mute these")),
     }
 }
 
@@ -736,8 +749,12 @@ fn demo_counts(source: &SourceRef, day: NaiveDate, index: usize, weekend: bool) 
     let base: u32 = match source.kind {
         SourceKind::Mail => 14,
         SourceKind::Agent => 6,
-        SourceKind::Script if index.is_multiple_of(2) => 9,
-        SourceKind::Script => 4,
+        SourceKind::Script | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy
+            if index.is_multiple_of(2) =>
+        {
+            9
+        }
+        SourceKind::Script | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => 4,
         SourceKind::Suite => 2,
     };
     let wobble = (chrono::Datelike::ordinal(&day) * 7 + index as u32 * 13) % 6;
@@ -745,7 +762,9 @@ fn demo_counts(source: &SourceRef, day: NaiveDate, index: usize, weekend: bool) 
     let (opened, dismissed) = match source.kind {
         SourceKind::Mail => (new / 2, 0),
         SourceKind::Agent => (new * 4 / 5, 0),
-        SourceKind::Script => (new / 8, new / 2),
+        SourceKind::Script | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
+            (new / 8, new / 2)
+        }
         SourceKind::Suite => (new, 0),
     };
     let popups = new / 3;
@@ -784,7 +803,7 @@ async fn demo_suggestions(demo: &DemoSource, range: StatsRange) -> Vec<StatsSugg
     for (key, per_week) in wanted {
         for item in &items {
             let Ok(options) = demo.list_mute_options(item.id.clone()).await else { continue };
-            let found = options.into_iter().find(|option| option.scope == MuteScope::Facet { key });
+            let found = options.into_iter().find(|option| option.scope == MuteScope::Facet { key, nth: 0 });
             if let Some(option) = found {
                 let new = per_week * weeks;
                 let opened = new / 20;
@@ -946,7 +965,7 @@ mod tests {
     /// popups – the word says which.
     #[test]
     fn every_trait_has_its_ready_suggestion() {
-        let facet = |key| MuteScope::Facet { key };
+        let facet = |key| MuteScope::Facet { key, nth: 0 };
         assert_eq!(suggestion(facet(FacetKey::Sender)), (MuteEffect::Hide, tr("Hide sender")));
         assert_eq!(suggestion(facet(FacetKey::Domain)), (MuteEffect::Hide, tr("Hide domain")));
         assert_eq!(suggestion(facet(FacetKey::Bulk)), (MuteEffect::Hide, tr("Hide newsletters")));

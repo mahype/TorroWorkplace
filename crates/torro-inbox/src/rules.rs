@@ -8,6 +8,11 @@
 //! Muting by traits (task E8.6a) lives here too: which traits an entry has ([`facets`]), what the
 //! bell's menu offers ([`mute_options`]), the value a call mutes ([`mute_target`], always from the
 //! stored entry) and which rules hold for an entry ([`muting`]).
+//!
+//! The remote sources of task E5 (GitHub, Nextcloud, Talk, ntfy) bring their traits through
+//! [`remote_facets`] and get their lanes from [`github_place`], [`nextcloud_place`], [`talk_place`]
+//! and [`ntfy_place`]; the core's source modules call them, so the rules can be tested without a
+//! server.
 
 use std::cmp::Ordering;
 
@@ -36,13 +41,13 @@ pub enum Poster {
 /// Lane and urgency of an entry of `kind`; `wanted` is the lane the poster asked for.
 ///
 /// Fixed for every kind but [`Kind::Notice`] and [`Kind::Message`], so nobody can make their
-/// entries urgent: waiting agents and approvals are for me and urgent, finished agents and account
-/// problems for me; a notice goes where it was wanted ([`Lane::Info`] when nothing was asked), a
-/// message too ([`Lane::ForMe`] when nothing was asked, the core asks [`mail_lane`]); neither is
-/// ever urgent.
+/// entries urgent: waiting agents, approvals and alerts are for me and urgent, finished agents and
+/// account problems for me; a notice goes where it was wanted ([`Lane::Info`] when nothing was
+/// asked), a message too ([`Lane::ForMe`] when nothing was asked, the core asks [`mail_lane`] or
+/// [`talk_place`]); neither is ever urgent.
 pub fn placement(kind: Kind, wanted: Option<Lane>) -> (Lane, bool) {
     match kind {
-        Kind::AgentWaiting | Kind::Approval => (Lane::ForMe, true),
+        Kind::AgentWaiting | Kind::Approval | Kind::Alert => (Lane::ForMe, true),
         Kind::AgentDone | Kind::AccountProblem => (Lane::ForMe, false),
         Kind::Notice => (wanted.unwrap_or(Lane::Info), false),
         Kind::Message => (wanted.unwrap_or(Lane::ForMe), false),
@@ -171,6 +176,8 @@ pub const FACET_MAX: usize = 200;
 /// - Agents: the agent, the project a hook reported, and whether it waits or finished.
 /// - Scripts: the client. (A topic would need a field in `inbox.post_item` first.)
 /// - The person's own entries ([`human_only`]) have none: no rule may touch them.
+/// - The remote sources of task E5 have none here: the core files them with the traits it read
+///   from the server, through [`remote_facets`].
 ///
 /// Values are trimmed and cut to [`FACET_MAX`] bytes; empty ones are left out.
 pub fn facets(item: &Item, list: Option<&str>, bulk: bool) -> Vec<Facet> {
@@ -185,7 +192,7 @@ pub fn facets(item: &Item, list: Option<&str>, bulk: bool) -> Vec<Facet> {
         }
     };
     match item.source.kind {
-        SourceKind::Suite => {}
+        SourceKind::Suite | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {}
         SourceKind::Mail => {
             add(FacetKey::Account, &item.source.name);
             if let Some(sender) = mail_sender(item).filter(|sender| !sender.starts_with('@')) {
@@ -209,12 +216,202 @@ pub fn facets(item: &Item, list: Option<&str>, bulk: bool) -> Vec<Facet> {
             match item.kind {
                 Kind::AgentWaiting => add(FacetKey::Kind, "agent_waiting"),
                 Kind::AgentDone => add(FacetKey::Kind, "agent_done"),
-                Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message => {}
+                Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message | Kind::Alert => {}
             }
         }
         SourceKind::Script => add(FacetKey::Client, &item.source.name),
     }
     facets
+}
+
+/// The most tags ([`FacetKey::Tag`]) one entry keeps; ntfy sends at most this many, too.
+const TAGS_MAX: usize = 10;
+
+/// The traits a remote source of `kind` may bring (task E5.1, table in `docs/tasks/eingang.md`), in
+/// the order of [`FacetKey`]:
+///
+/// | Source | Traits | foreign |
+/// |---|---|---|
+/// | GitHub | `kind` (what the thread is about), `repo`, `reason`, `result` (workflow runs only) | `repo` |
+/// | Nextcloud | `app`, `person` | both |
+/// | Talk | `kind` (`direct`, `mention`, `group`), `person` | `person` |
+/// | ntfy | `topic` (its label in the account), `priority` (`1`–`5`), `tag` (several) | `tag` |
+///
+/// Empty for the suite, agents, scripts and mail, which take theirs from [`facets`].
+pub fn allowed_facets(kind: SourceKind) -> &'static [FacetKey] {
+    match kind {
+        SourceKind::Github => &[FacetKey::Kind, FacetKey::Repo, FacetKey::Reason, FacetKey::Result],
+        SourceKind::Nextcloud => &[FacetKey::App, FacetKey::Person],
+        SourceKind::Talk => &[FacetKey::Kind, FacetKey::Person],
+        SourceKind::Ntfy => &[FacetKey::Topic, FacetKey::Priority, FacetKey::Tag],
+        SourceKind::Suite | SourceKind::Agent | SourceKind::Script | SourceKind::Mail => &[],
+    }
+}
+
+/// The traits the core files with an entry of a remote source of `kind` (task E5.1), from those
+/// its source module read from the server – so traits keep coming from the core alone, whatever the
+/// server sends:
+///
+/// - only the keys of [`allowed_facets`] for `kind`; any other is dropped;
+/// - values trimmed and cut to [`FACET_MAX`] bytes; empty ones dropped;
+/// - keys that are the suite's own words ([`FacetKey::is_foreign`] `false`) only with such words:
+///   `priority` `1`–`5`, `result` `failed`, `succeeded` or `cancelled`, Talk's `kind` `direct`,
+///   `mention` or `group`, GitHub's `kind` and `reason` in small letters, digits and `_`; the
+///   topic's label is the person's own and taken as it is;
+/// - at most one per key, the first; only [`FacetKey::Tag`] several, each value once and at most
+///   ten, in the order given;
+/// - sorted by key in the order of [`FacetKey`] ([`Item::facets`]).
+pub fn remote_facets(kind: SourceKind, facets: Vec<Facet>) -> Vec<Facet> {
+    let allowed = allowed_facets(kind);
+    let mut kept: Vec<Facet> = Vec::new();
+    for facet in facets {
+        let value = cut(facet.value.trim(), FACET_MAX);
+        if !allowed.contains(&facet.key) || value.is_empty() || !admits(kind, facet.key, &value) {
+            continue;
+        }
+        let mut same = kept.iter().filter(|known| known.key == facet.key);
+        let room = if facet.key == FacetKey::Tag {
+            same.clone().count() < TAGS_MAX && !same.any(|known| known.value == value)
+        } else {
+            same.next().is_none()
+        };
+        if room {
+            kept.push(Facet { key: facet.key, value });
+        }
+    }
+    // Stable, so several tags keep the order they were sent in.
+    kept.sort_by_key(|facet| facet.key);
+    kept
+}
+
+/// Whether `value` may be the trait `key` of a remote source of `kind` ([`remote_facets`]): the
+/// suite's own words only from the few words the core writes for them.
+fn admits(kind: SourceKind, key: FacetKey, value: &str) -> bool {
+    let word = || value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+    match key {
+        FacetKey::Priority => matches!(value, "1" | "2" | "3" | "4" | "5"),
+        FacetKey::Result => matches!(value, "failed" | "succeeded" | "cancelled"),
+        FacetKey::Kind if kind == SourceKind::Talk => matches!(value, "direct" | "mention" | "group"),
+        FacetKey::Kind | FacetKey::Reason => word(),
+        _ => true,
+    }
+}
+
+/// The lane of a GitHub notification (task E5.1) from its trait values: GitHub's `reason`
+/// (`review_requested`, …), what it is about (`kind`, `check_suite` for a workflow run) and how a
+/// workflow run ended (`result`, `failed` …, `None` when the title does not say).
+///
+/// For me when the person is asked or named – `review_requested`, `mention`, `team_mention`,
+/// `assign`, `approval_requested`, `security_alert`, `invitation` – or it is their own thread
+/// (`author`: a reply to what they opened is meant for them), and a workflow run of theirs that
+/// failed (`ci_activity`, `check_suite`, `failed`). "Info" for the rest: `comment` (their own
+/// comment only subscribed them), `state_change`, `subscribed` (watching a repository), `manual`,
+/// runs that passed or were cancelled and every reason the suite does not know. Never urgent
+/// (question 3 of E5: a run does not reliably point to its pull request); the entry is a
+/// [`Kind::Notice`] in this lane.
+pub fn github_place(reason: &str, kind: &str, result: Option<&str>) -> Lane {
+    match reason {
+        "review_requested" | "mention" | "team_mention" | "assign" | "approval_requested" | "security_alert"
+        | "invitation" | "author" => Lane::ForMe,
+        "ci_activity" if kind == "check_suite" && result == Some("failed") => Lane::ForMe,
+        _ => Lane::Info,
+    }
+}
+
+/// The lane of a Nextcloud notification (task E5.1) from the app that sent it (`app`, its id) and
+/// what it is about (`object_type`).
+///
+/// For me when someone turns to the person: `files_sharing` (a file or folder shared with them),
+/// `comments` on a file (`object_type` `files`: the comments app notifies only about mentions),
+/// `spreed` (a call or a chat, while Talk is no source of its own), `deck` (a card assigned or
+/// due), `dav` (a reminder of an event) and every `twofactor_*` app (a sign-in to confirm). "Info"
+/// for `updatenotification`, `announcementcenter`, `firstrunwizard`, `activity` and every app the
+/// suite does not know. The entry is a [`Kind::Notice`] in this lane.
+pub fn nextcloud_place(app: &str, object_type: &str) -> Lane {
+    match app {
+        "files_sharing" | "spreed" | "deck" | "dav" => Lane::ForMe,
+        "comments" if object_type == "files" => Lane::ForMe,
+        _ if app.starts_with("twofactor_") => Lane::ForMe,
+        _ => Lane::Info,
+    }
+}
+
+/// The kind of a Talk conversation, for [`talk_place`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TalkRoom {
+    /// One to one (Talk's type 1).
+    Direct,
+    /// Any conversation of more people: group, public, and a former one-to-one.
+    Group,
+}
+
+impl TalkRoom {
+    /// The value of the trait [`FacetKey::Kind`] of a Talk entry: `direct`, `mention` for a group
+    /// conversation that mentions the person (`mention`), else `group`.
+    pub fn facet(self, mention: bool) -> &'static str {
+        match self {
+            TalkRoom::Direct => "direct",
+            TalkRoom::Group if mention => "mention",
+            TalkRoom::Group => "group",
+        }
+    }
+}
+
+/// When Talk notifies the person about a conversation: its notification level, which they set per
+/// conversation in Talk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TalkLevel {
+    /// The server's default: one-to-one always, other conversations on mentions only.
+    Default,
+    /// Every message.
+    Always,
+    /// Only messages that mention the person.
+    Mentions,
+    /// Never.
+    Never,
+}
+
+impl TalkLevel {
+    /// The level Talk's `notificationLevel` names: 1 always, 2 mentions, 3 never, 0 and any other
+    /// number the default.
+    pub fn from_talk(level: i64) -> TalkLevel {
+        match level {
+            1 => TalkLevel::Always,
+            2 => TalkLevel::Mentions,
+            3 => TalkLevel::Never,
+            _ => TalkLevel::Default,
+        }
+    }
+}
+
+/// The lane of the entry for an unread Talk conversation of `room` (task E5.1), as far as the
+/// person's notification `level` for it asks for one; `mention` says that an unread message
+/// mentions them. `None`: no entry. The entry is a [`Kind::Message`] in this lane.
+///
+/// The person decided in Talk how much a conversation may disturb them, so the inbox follows it
+/// (question 7 of E5): never – no entry; mentions only – only with a mention, for me; always – for
+/// me in a one-to-one or with a mention, else in "Info"; the default – a one-to-one always, any
+/// other conversation only with a mention, for me.
+pub fn talk_place(room: TalkRoom, mention: bool, level: TalkLevel) -> Option<Lane> {
+    match (level, room) {
+        (TalkLevel::Never, _) => None,
+        (TalkLevel::Mentions, _) => mention.then_some(Lane::ForMe),
+        (TalkLevel::Always | TalkLevel::Default, TalkRoom::Direct) => Some(Lane::ForMe),
+        (TalkLevel::Always, TalkRoom::Group) => Some(if mention { Lane::ForMe } else { Lane::Info }),
+        (TalkLevel::Default, TalkRoom::Group) => mention.then_some(Lane::ForMe),
+    }
+}
+
+/// Kind and lane of the entry for an ntfy message of `priority` (task E5.1, ntfy's 1 to 5, 3 when
+/// the sender gave none): 5 is an [`Kind::Alert`] (for me and urgent, even during quiet times –
+/// question 9 of E5, only in topics the person subscribed to), 4 a [`Kind::Notice`] for me, 1 to 3
+/// and any number ntfy does not have a notice in "Info".
+pub fn ntfy_place(priority: u8) -> (Kind, Lane) {
+    match priority {
+        5 => (Kind::Alert, Lane::ForMe),
+        4 => (Kind::Notice, Lane::ForMe),
+        _ => (Kind::Notice, Lane::Info),
+    }
 }
 
 /// `text` cut to at most `max` bytes at a character boundary.
@@ -228,22 +425,39 @@ fn cut(text: &str, max: usize) -> String {
 
 /// The trait `inbox.mute_item` with `scope` mutes of `item`: for the conversation its thread key,
 /// for a trait the value **the stored entry** has – never one from the request, so nobody can mute
-/// what the entry does not say. `None` when the entry has no such trait (also for `facet` with
-/// [`FacetKey::Conversation`], which is never among [`Item::facets`]) and for the person's own
-/// entries ([`human_only`]).
+/// what the entry does not say –, the `nth` of its traits with that key (counted from 0; several
+/// only for [`FacetKey::Tag`]). `None` when the entry has no such trait (also for `facet` with
+/// [`FacetKey::Conversation`], which is never among [`Item::facets`], and for an `nth` beyond its
+/// traits) and for the person's own entries ([`human_only`]).
 pub fn mute_target(item: &Item, scope: MuteScope) -> Option<Facet> {
     if human_only(item) {
         return None;
     }
     match scope {
         MuteScope::Conversation => Some(Facet { key: FacetKey::Conversation, value: item.thread_key.clone() }),
-        MuteScope::Facet { key } => item.facets.iter().find(|facet| facet.key == key).cloned(),
+        MuteScope::Facet { key, nth } => {
+            let nth = usize::try_from(nth).ok()?;
+            item.facets.iter().filter(|facet| facet.key == key).nth(nth).cloned()
+        }
+    }
+}
+
+/// The name to show for the Nextcloud app `app` (its id, [`FacetKey::App`]): "Files" for
+/// `files` and `files_sharing`, "Talk" (a product name) for `spreed`, else the id itself, which
+/// is foreign text.
+pub fn app_label(app: &str) -> String {
+    match app {
+        "files" | "files_sharing" => tr("Files").into(),
+        "spreed" => "Talk".into(),
+        _ => app.into(),
     }
 }
 
 /// The words for muting `facet`, in the user's language: "Mail from news@shop.example", "This
-/// conversation". For the bell's menu, the rules page and the summary of an approval. The value is
-/// shown as it is: foreign text for [`FacetKey::is_foreign`] keys, which the caller marks as such.
+/// conversation", "Review requests", "The tag backup". For the bell's menu, the rules page and the
+/// summary of an approval. The value is shown as it is: foreign text for [`FacetKey::is_foreign`]
+/// keys, which the caller marks as such. A word of the suite's own the suite has no words for
+/// (a GitHub reason such as `subscribed`) is shown as it is, too.
 pub fn facet_label(facet: &Facet) -> String {
     let value = facet.value.as_str();
     match facet.key {
@@ -260,18 +474,50 @@ pub fn facet_label(facet: &Facet) -> String {
             trf("Everything from {source}", &[("source", &name)])
         }
         FacetKey::Project => trf("The project {project}", &[("project", &value)]),
-        FacetKey::Kind if value == "agent_waiting" => tr("Agents waiting for you").into(),
-        FacetKey::Kind if value == "agent_done" => tr("Agents that finished").into(),
-        FacetKey::Kind => value.to_string(),
+        FacetKey::Kind => kind_label(value),
         FacetKey::Client => trf("Everything from {source}", &[("source", &value)]),
         FacetKey::Conversation => tr("This conversation").into(),
+        FacetKey::Repo => trf("Everything from {repo}", &[("repo", &value)]),
+        FacetKey::Reason => match value {
+            "review_requested" => tr("Review requests").into(),
+            "mention" | "team_mention" => tr("Mentions").into(),
+            _ => value.to_string(),
+        },
+        FacetKey::Result => match value {
+            "failed" => tr("Failed checks").into(),
+            "succeeded" => tr("Successful checks").into(),
+            "cancelled" => tr("Cancelled checks").into(),
+            _ => value.to_string(),
+        },
+        FacetKey::App => trf("Everything from {source}", &[("source", &app_label(value))]),
+        FacetKey::Person => trf("Messages from {person}", &[("person", &value)]),
+        FacetKey::Topic => trf("The topic {topic}", &[("topic", &value)]),
+        FacetKey::Priority => trf("Priority {n}", &[("n", &value)]),
+        FacetKey::Tag => trf("The tag {tag}", &[("tag", &value)]),
+    }
+}
+
+/// The words for muting by [`FacetKey::Kind`]: the agents' states, Talk's kinds of conversation
+/// and what GitHub threads are about; any other value as it is.
+fn kind_label(value: &str) -> String {
+    match value {
+        "agent_waiting" => tr("Agents waiting for you").into(),
+        "agent_done" => tr("Agents that finished").into(),
+        "direct" => tr("Direct messages").into(),
+        "mention" => tr("Mentions").into(),
+        "group" => tr("Group conversations").into(),
+        "pull_request" => tr("Pull requests").into(),
+        "issue" => tr("Issues").into(),
+        "check_suite" => tr("Checks").into(),
+        _ => value.to_string(),
     }
 }
 
 /// The ways to mute `item` for the bell's menu (`inbox.list_mute_options`, task E8.6a): its
-/// conversation first, then each of its traits in the order of [`FacetKey`], each with its words
-/// ([`facet_label`]), whether they hold foreign text and whether every choice needs admin access.
-/// Empty for the person's own entries ([`human_only`], security rule 1).
+/// conversation first, then each of its traits in the order of [`FacetKey`] – every tag on its own,
+/// with its place among them as `nth` (task E5.1) –, each with its words ([`facet_label`]), whether
+/// they hold foreign text and whether every choice needs admin access. Empty for the person's own
+/// entries ([`human_only`], security rule 1).
 pub fn mute_options(item: &Item) -> Vec<MuteOption> {
     if human_only(item) {
         return Vec::new();
@@ -283,13 +529,17 @@ pub fn mute_options(item: &Item) -> Vec<MuteOption> {
         untrusted: false,
         admin: false,
     };
-    let traits = item.facets.iter().filter(|facet| facet.key != FacetKey::Conversation).map(|facet| MuteOption {
-        scope: MuteScope::Facet { key: facet.key },
-        value: Some(facet.value.clone()),
-        label: facet_label(facet),
-        untrusted: facet.key.is_foreign(),
-        admin: true,
-    });
+    let traits =
+        item.facets.iter().enumerate().filter(|(_, facet)| facet.key != FacetKey::Conversation).map(|(at, facet)| {
+            let before = item.facets[..at].iter().filter(|other| other.key == facet.key).count();
+            MuteOption {
+                scope: MuteScope::Facet { key: facet.key, nth: u32::try_from(before).unwrap_or(u32::MAX) },
+                value: Some(facet.value.clone()),
+                label: facet_label(facet),
+                untrusted: facet.key.is_foreign(),
+                admin: true,
+            }
+        });
     std::iter::once(conversation).chain(traits).collect()
 }
 
@@ -359,15 +609,16 @@ pub fn muting(rules: &[Rule], item: &Item, now: DateTime<Utc>) -> Option<MuteEff
 /// The kind an entry posted as `kind` by `poster` gets; `None` when the post is refused
 /// (`forbidden`). Security rule 3: approvals and account problems come only from the core,
 /// agent states only from hooks (or the core) and turn into a [`Kind::Notice`] from anyone else;
-/// messages (mail) only from the core, a [`Kind::Notice`] from anyone else.
+/// messages (mail, chat) and alerts (ntfy, task E5.1) only from the core, a [`Kind::Notice`] from
+/// anyone else, so no client or hook makes its entries urgent.
 pub fn admitted_kind(kind: Kind, poster: Poster) -> Option<Kind> {
     match (kind, poster) {
         (Kind::Approval | Kind::AccountProblem, Poster::Core) => Some(kind),
         (Kind::Approval | Kind::AccountProblem, _) => None,
         (Kind::AgentWaiting | Kind::AgentDone, Poster::Core | Poster::Hook) => Some(kind),
         (Kind::AgentWaiting | Kind::AgentDone, Poster::Client) => Some(Kind::Notice),
-        (Kind::Message, Poster::Core) => Some(Kind::Message),
-        (Kind::Message | Kind::Notice, _) => Some(Kind::Notice),
+        (Kind::Message | Kind::Alert, Poster::Core) => Some(kind),
+        (Kind::Message | Kind::Alert | Kind::Notice, _) => Some(Kind::Notice),
     }
 }
 
@@ -654,11 +905,11 @@ mod tests {
     fn the_value_to_mute_comes_from_the_stored_entry() {
         let mail = newsletter("anna@example.org");
         assert_eq!(
-            mute_target(&mail, MuteScope::Facet { key: FacetKey::Sender }),
+            mute_target(&mail, MuteScope::Facet { key: FacetKey::Sender, nth: 0 }),
             Some(facet(FacetKey::Sender, "news@shop.example"))
         );
-        assert_eq!(mute_target(&mail, MuteScope::Facet { key: FacetKey::Project }), None, "a trait it lacks");
-        assert_eq!(mute_target(&mail, MuteScope::Facet { key: FacetKey::Conversation }), None);
+        assert_eq!(mute_target(&mail, MuteScope::Facet { key: FacetKey::Project, nth: 0 }), None, "a trait it lacks");
+        assert_eq!(mute_target(&mail, MuteScope::Facet { key: FacetKey::Conversation, nth: 0 }), None);
         assert_eq!(mute_target(&mail, MuteScope::Conversation), Some(facet(FacetKey::Conversation, "thread-m")));
         let approval = Item { source: SourceRef::suite(), ..item("p", Kind::Approval) };
         assert_eq!(mute_target(&approval, MuteScope::Conversation), None, "never the person's own");
@@ -846,6 +1097,214 @@ mod tests {
         for poster in [Poster::Hook, Poster::Client] {
             assert_eq!(admitted_kind(Kind::Message, poster), Some(Kind::Notice), "only the core files mail");
         }
+    }
+
+    /// Task E5.1: an alert is for me and urgent, and only the core files one.
+    #[test]
+    fn only_the_core_raises_an_alert() {
+        for wanted in [None, Some(Lane::Info)] {
+            assert_eq!(placement(Kind::Alert, wanted), (Lane::ForMe, true));
+        }
+        assert_eq!(admitted_kind(Kind::Alert, Poster::Core), Some(Kind::Alert));
+        assert_eq!(admitted_kind(Kind::Alert, Poster::Hook), Some(Kind::Notice));
+        assert_eq!(admitted_kind(Kind::Alert, Poster::Client), Some(Kind::Notice));
+        let mut alert = item("a", Kind::Alert);
+        assert!(!human_only(&alert), "an alert can be muted");
+        set_lane(&mut alert, Lane::Info);
+        assert!(!alert.urgent, "moved to Info it stops interrupting");
+    }
+
+    #[test]
+    fn github_places_what_asks_for_the_person_for_me() {
+        let for_me = [
+            "review_requested",
+            "mention",
+            "team_mention",
+            "assign",
+            "approval_requested",
+            "security_alert",
+            "invitation",
+            "author",
+        ];
+        for reason in for_me {
+            assert_eq!(github_place(reason, "pull_request", None), Lane::ForMe, "{reason}");
+        }
+        assert_eq!(github_place("ci_activity", "check_suite", Some("failed")), Lane::ForMe, "a failed run");
+        for reason in ["comment", "state_change", "subscribed", "manual", "agent_session_finished", "other", ""] {
+            assert_eq!(github_place(reason, "issue", None), Lane::Info, "{reason}");
+        }
+        for result in [Some("succeeded"), Some("cancelled"), None] {
+            assert_eq!(github_place("ci_activity", "check_suite", result), Lane::Info, "{result:?}");
+        }
+        assert_eq!(github_place("ci_activity", "pull_request", Some("failed")), Lane::Info, "only workflow runs");
+    }
+
+    #[test]
+    fn nextcloud_places_what_turns_to_the_person_for_me() {
+        for app in ["files_sharing", "spreed", "deck", "dav", "twofactor_totp", "twofactor_nextcloud_notification"] {
+            assert_eq!(nextcloud_place(app, "any"), Lane::ForMe, "{app}");
+        }
+        assert_eq!(nextcloud_place("comments", "files"), Lane::ForMe, "a mention in a file's comments");
+        assert_eq!(nextcloud_place("comments", "other"), Lane::Info);
+        for app in ["updatenotification", "announcementcenter", "firstrunwizard", "activity", "unknown_app", ""] {
+            assert_eq!(nextcloud_place(app, "any"), Lane::Info, "{app}");
+        }
+    }
+
+    #[test]
+    fn talk_follows_the_notification_level_of_each_conversation() {
+        use TalkLevel::{Always, Default, Mentions, Never};
+        use TalkRoom::{Direct, Group};
+        let cases = [
+            (Never, Direct, true, None),
+            (Never, Group, true, None),
+            (Mentions, Direct, false, None),
+            (Mentions, Direct, true, Some(Lane::ForMe)),
+            (Mentions, Group, false, None),
+            (Mentions, Group, true, Some(Lane::ForMe)),
+            (Always, Direct, false, Some(Lane::ForMe)),
+            (Always, Group, false, Some(Lane::Info)),
+            (Always, Group, true, Some(Lane::ForMe)),
+            (Default, Direct, false, Some(Lane::ForMe)),
+            (Default, Group, false, None),
+            (Default, Group, true, Some(Lane::ForMe)),
+        ];
+        for (level, room, mention, lane) in cases {
+            assert_eq!(talk_place(room, mention, level), lane, "{level:?} {room:?} mention {mention}");
+        }
+        assert_eq!([0, 1, 2, 3, 9].map(TalkLevel::from_talk), [Default, Always, Mentions, Never, Default]);
+        assert_eq!((Direct.facet(true), Group.facet(true), Group.facet(false)), ("direct", "mention", "group"));
+    }
+
+    #[test]
+    fn ntfy_priority_five_is_an_alert() {
+        assert_eq!(ntfy_place(5), (Kind::Alert, Lane::ForMe));
+        assert_eq!(ntfy_place(4), (Kind::Notice, Lane::ForMe));
+        for priority in [0, 1, 2, 3, 6, u8::MAX] {
+            assert_eq!(ntfy_place(priority), (Kind::Notice, Lane::Info), "{priority}");
+        }
+    }
+
+    #[test]
+    fn remote_traits_keep_only_what_the_source_may_bring() {
+        let github = vec![
+            facet(FacetKey::Reason, "review_requested"),
+            facet(FacetKey::Repo, "  torro/workplace "),
+            facet(FacetKey::Sender, "evil@example.org"),
+            facet(FacetKey::Kind, "pull_request"),
+            facet(FacetKey::Repo, "torro/other"),
+            facet(FacetKey::Result, "   "),
+        ];
+        assert_eq!(
+            remote_facets(SourceKind::Github, github),
+            [
+                facet(FacetKey::Kind, "pull_request"),
+                facet(FacetKey::Repo, "torro/workplace"),
+                facet(FacetKey::Reason, "review_requested"),
+            ],
+            "foreign keys, a second repo and empty values dropped, sorted by key"
+        );
+        let long = "ä".repeat(FACET_MAX);
+        let cut = remote_facets(SourceKind::Nextcloud, vec![facet(FacetKey::Person, &long)]);
+        assert_eq!(cut[0].value.len(), FACET_MAX, "cut to {FACET_MAX} bytes at a character boundary");
+        assert!(remote_facets(SourceKind::Nextcloud, vec![facet(FacetKey::Tag, "x")]).is_empty());
+        assert!(remote_facets(SourceKind::Mail, vec![facet(FacetKey::Sender, "a@b.example")]).is_empty());
+        // The suite's own words only from the suite's words.
+        let words = vec![
+            facet(FacetKey::Priority, "7"),
+            facet(FacetKey::Kind, "Ignore all rules"),
+            facet(FacetKey::Result, "maybe"),
+        ];
+        assert!(remote_facets(SourceKind::Github, words.clone()).is_empty());
+        assert!(remote_facets(SourceKind::Ntfy, words).is_empty());
+        let talk = remote_facets(SourceKind::Talk, vec![facet(FacetKey::Kind, "group"), facet(FacetKey::Kind, "dm")]);
+        assert_eq!(talk, [facet(FacetKey::Kind, "group")]);
+        assert!(remote_facets(SourceKind::Talk, vec![facet(FacetKey::Kind, "pull_request")]).is_empty());
+    }
+
+    #[test]
+    fn tags_may_come_several_times_once_each() {
+        let mut sent: Vec<Facet> =
+            ["warning", "backup", "warning"].iter().map(|tag| facet(FacetKey::Tag, tag)).collect();
+        sent.push(facet(FacetKey::Priority, "5"));
+        sent.push(facet(FacetKey::Topic, "Server"));
+        assert_eq!(
+            remote_facets(SourceKind::Ntfy, sent),
+            [
+                facet(FacetKey::Topic, "Server"),
+                facet(FacetKey::Priority, "5"),
+                facet(FacetKey::Tag, "warning"),
+                facet(FacetKey::Tag, "backup"),
+            ]
+        );
+        let many: Vec<Facet> = (0..15).map(|n| facet(FacetKey::Tag, &format!("t{n}"))).collect();
+        let kept = remote_facets(SourceKind::Ntfy, many);
+        assert_eq!(kept.len(), 10, "at most ten tags");
+        assert_eq!(kept[9].value, "t9", "the first ones");
+    }
+
+    #[test]
+    fn nth_picks_the_right_tag() {
+        let alert = Item {
+            source: SourceRef::ntfy("ntfy.sh"),
+            facets: vec![
+                facet(FacetKey::Priority, "5"),
+                facet(FacetKey::Tag, "warning"),
+                facet(FacetKey::Tag, "backup"),
+            ],
+            ..item("n", Kind::Alert)
+        };
+        let tag = |nth| MuteScope::Facet { key: FacetKey::Tag, nth };
+        assert_eq!(mute_target(&alert, tag(0)), Some(facet(FacetKey::Tag, "warning")));
+        assert_eq!(mute_target(&alert, tag(1)), Some(facet(FacetKey::Tag, "backup")));
+        assert_eq!(mute_target(&alert, tag(2)), None, "beyond its tags");
+        assert_eq!(mute_target(&alert, MuteScope::Facet { key: FacetKey::Priority, nth: 1 }), None, "only one");
+        let options = mute_options(&alert);
+        let scopes: Vec<MuteScope> = options.iter().map(|option| option.scope).collect();
+        let priority = MuteScope::Facet { key: FacetKey::Priority, nth: 0 };
+        assert_eq!(scopes, [MuteScope::Conversation, priority, tag(0), tag(1)]);
+        assert_eq!(options[3].label, trf("The tag {tag}", &[("tag", &"backup")]));
+        assert!(options[3].untrusted && !options[1].untrusted, "a tag is foreign text, the priority is not");
+        // A rule for one tag holds for every entry with that tag.
+        let rule =
+            muting_rule(SourceRef::ntfy("ntfy.example.org"), facet(FacetKey::Tag, "backup"), MuteEffect::Hide, None);
+        assert!(mutes(&rule, &alert, at(9)), "every ntfy server");
+    }
+
+    #[test]
+    fn remote_traits_have_their_words() {
+        let label = |key, value: &str| facet_label(&facet(key, value));
+        assert_eq!(
+            label(FacetKey::Repo, "torro/workplace"),
+            trf("Everything from {repo}", &[("repo", &"torro/workplace")])
+        );
+        assert_eq!(label(FacetKey::Reason, "review_requested"), tr("Review requests"));
+        assert_eq!(label(FacetKey::Reason, "mention"), tr("Mentions"));
+        assert_eq!(label(FacetKey::Reason, "subscribed"), "subscribed", "no words: as it is");
+        assert_eq!(label(FacetKey::Result, "failed"), tr("Failed checks"));
+        assert_eq!(label(FacetKey::Result, "succeeded"), tr("Successful checks"));
+        assert_eq!(label(FacetKey::Result, "cancelled"), tr("Cancelled checks"));
+        assert_eq!(label(FacetKey::App, "files_sharing"), trf("Everything from {source}", &[("source", &tr("Files"))]));
+        assert_eq!(label(FacetKey::App, "spreed"), trf("Everything from {source}", &[("source", &"Talk")]));
+        assert_eq!(label(FacetKey::App, "deck"), trf("Everything from {source}", &[("source", &"deck")]));
+        assert_eq!(label(FacetKey::Person, "Anna"), trf("Messages from {person}", &[("person", &"Anna")]));
+        assert_eq!(label(FacetKey::Topic, "Server"), trf("The topic {topic}", &[("topic", &"Server")]));
+        assert_eq!(label(FacetKey::Priority, "5"), trf("Priority {n}", &[("n", &"5")]));
+        assert_eq!(label(FacetKey::Tag, "backup"), trf("The tag {tag}", &[("tag", &"backup")]));
+        assert_eq!(label(FacetKey::Kind, "direct"), tr("Direct messages"));
+        assert_eq!(label(FacetKey::Kind, "mention"), tr("Mentions"));
+        assert_eq!(label(FacetKey::Kind, "group"), tr("Group conversations"));
+        assert_eq!(label(FacetKey::Kind, "pull_request"), tr("Pull requests"));
+        assert_eq!(label(FacetKey::Kind, "issue"), tr("Issues"));
+        assert_eq!(label(FacetKey::Kind, "check_suite"), tr("Checks"));
+        assert_eq!(label(FacetKey::Kind, "agent_waiting"), tr("Agents waiting for you"), "the agents' kept theirs");
+        assert_eq!(app_label("files"), tr("Files"));
+    }
+
+    #[test]
+    fn remote_sources_get_no_traits_from_their_report() {
+        let entry = Item { source: SourceRef::github("mahype"), ..item("g", Kind::Notice) };
+        assert!(facets(&entry, Some("<list>"), true).is_empty(), "the core brings them through remote_facets");
     }
 
     #[test]

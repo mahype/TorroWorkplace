@@ -966,7 +966,10 @@ pub fn source_icon(source: &SourceRef) -> Icon {
         SourceKind::Suite => Icon::LayoutGrid,
         SourceKind::Agent => Icon::Sparkles,
         SourceKind::Script if source.name.eq_ignore_ascii_case("github") => Icon::Github,
-        SourceKind::Script => Icon::AppWindow,
+        // The remote sources of task E5.1 for now like a script; E5.15 gives them their icons.
+        SourceKind::Script | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
+            Icon::AppWindow
+        }
         SourceKind::Mail => Icon::Mail,
     }
 }

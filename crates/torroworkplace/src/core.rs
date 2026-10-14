@@ -8168,7 +8168,7 @@ mod tests {
             rights.mail_accounts = Selection::All;
             rights
         };
-        let sender = MuteScope::Facet { key: FacetKey::Sender };
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
         let by_sender = || Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Hide };
         let (_, writer) = client(&core, reading_mail(false)).await;
         assert_eq!(code(&ask(&core, Some(&writer), by_sender()).await), "forbidden", "write rights are not enough");

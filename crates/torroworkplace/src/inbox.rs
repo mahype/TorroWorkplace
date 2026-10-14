@@ -1257,6 +1257,8 @@ impl Scope {
                 SourceKind::Suite => false,
                 SourceKind::Mail => mail.contains(&source.key()),
                 SourceKind::Agent | SourceKind::Script => true,
+                // Unseen by clients until task E5.2 gives them their rules, as `Rights::reaches_source`.
+                SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => false,
             },
             Scope::Only(keys) => keys.contains(&source.key()),
         }
@@ -1265,18 +1267,26 @@ impl Scope {
     /// The SQL condition on `source` and its parameters; `None` when nothing is visible, so the
     /// query need not run at all.
     fn condition(&self) -> Option<(String, Vec<Value>)> {
-        let suite = || text(SourceRef::suite().key());
         match self {
             Scope::All => Some(("1".into(), Vec::new())),
-            Scope::AllButSuite { mail: Selection::All } => Some(("source <> ?".into(), vec![suite()])),
-            Scope::AllButSuite { mail: Selection::Only(accounts) } => {
-                let mut values = vec![suite(), text(ACCOUNT_PREFIX)];
-                let mut condition = "source <> ? AND (instr(source, ?) <> 1".to_string();
-                if !accounts.is_empty() {
-                    condition.push_str(&format!(" OR source IN ({})", vec!["?"; accounts.len()].join(", ")));
-                    values.extend(accounts.iter().cloned().map(Value::Text));
+            Scope::AllButSuite { mail } => {
+                let mut condition = "source <> ?".to_string();
+                let mut values = vec![text(SourceRef::suite().key())];
+                // The remote sources of task E5 stay unseen until E5.2 gives them their rules, as
+                // `sees` has it.
+                for prefix in REMOTE_PREFIXES {
+                    condition.push_str(" AND instr(source, ?) <> 1");
+                    values.push(text(prefix));
                 }
-                condition.push(')');
+                if let Selection::Only(accounts) = mail {
+                    condition.push_str(" AND (instr(source, ?) <> 1");
+                    values.push(text(ACCOUNT_PREFIX));
+                    if !accounts.is_empty() {
+                        condition.push_str(&format!(" OR source IN ({})", vec!["?"; accounts.len()].join(", ")));
+                        values.extend(accounts.iter().cloned().map(Value::Text));
+                    }
+                    condition.push(')');
+                }
                 Some((condition, values))
             }
             Scope::Only(keys) if keys.is_empty() => None,
@@ -1287,6 +1297,10 @@ impl Scope {
         }
     }
 }
+
+/// The starts of the keys of the remote sources of task E5 (GitHub, Nextcloud, Talk, ntfy), which
+/// no client sees until task E5.2 ([`Scope::condition`]).
+const REMOTE_PREFIXES: [&str; 4] = ["github:", "nextcloud:", "talk:", "ntfy:"];
 
 /// The mail accounts whose entries a client with `rights` sees (task E4.1): its `mail_accounts`
 /// when it may read mail, else none, as `Rights::reaches_source` has it. Mail sources are keyed by
@@ -1470,14 +1484,15 @@ fn list_sources(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<Sour
         let (key, open): (String, u32) = row?;
         // A key no version of the core writes is skipped, not shown half.
         if let Ok(source) = key.parse::<SourceRef>() {
-            sources.insert(source.clone(), SourceInfo { source, open, muted: false });
+            sources.insert(source.clone(), SourceInfo { source, open, muted: false, health: None });
         }
     }
     // A hidden sender or domain (task E3.10) or a muted trait (task E8.6a) mutes only some of its
     // reports, not the source.
     for rule in read_rules(db, &scope, "effect = 'muted' AND sender = '' AND facet = ''", Vec::new())? {
         let source = rule.source.clone();
-        sources.entry(source.clone()).or_insert(SourceInfo { source, open: 0, muted: false }).muted = true;
+        sources.entry(source.clone()).or_insert(SourceInfo { source, open: 0, muted: false, health: None }).muted =
+            true;
     }
     Ok(sources.into_values().collect())
 }
@@ -1741,7 +1756,7 @@ fn agent_title(kind: Kind, agent: Option<AgentKind>) -> Option<String> {
     match kind {
         Kind::AgentWaiting => Some(trf("{agent} is waiting for you", &[("agent", &name)])),
         Kind::AgentDone => Some(trf("{agent} finished", &[("agent", &name)])),
-        Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message => None,
+        Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message | Kind::Alert => None,
     }
 }
 
@@ -2022,6 +2037,10 @@ fn kind_prefix(source: &SourceRef) -> String {
         SourceKind::Agent => "agent:".into(),
         SourceKind::Script => "script:".into(),
         SourceKind::Mail => ACCOUNT_PREFIX.into(),
+        SourceKind::Github => "github:".into(),
+        SourceKind::Nextcloud => "nextcloud:".into(),
+        SourceKind::Talk => "talk:".into(),
+        SourceKind::Ntfy => "ntfy:".into(),
     }
 }
 
@@ -3295,7 +3314,7 @@ fn suggestions(
             continue;
         }
         let Some(item) = newest_with(db, scope, &prefix, &facet)? else { continue };
-        let wanted = MuteScope::Facet { key: facet.key };
+        let wanted = MuteScope::Facet { key: facet.key, nth: 0 };
         let Some(option) = rules::mute_options(&item).into_iter().find(|option| option.scope == wanted) else {
             continue;
         };
@@ -3692,7 +3711,7 @@ pub(crate) mod tests {
         let Response::Sources { sources } = inbox.handle(Request::ListSources, Some(&reader), at(8, 3)) else {
             panic!("sources answer with Sources");
         };
-        assert_eq!(sources, [SourceInfo { source, open: 1, muted: false }]);
+        assert_eq!(sources, [SourceInfo { source, open: 1, muted: false, health: None }]);
     }
 
     #[test]
@@ -3988,7 +4007,7 @@ pub(crate) mod tests {
         let Response::Sources { sources } = inbox.handle(Request::ListSources, None, at(8, 4)) else {
             panic!("sources answer with Sources");
         };
-        assert_eq!(sources, [SourceInfo { source: source.clone(), open: 1, muted: true }]);
+        assert_eq!(sources, [SourceInfo { source: source.clone(), open: 1, muted: true, health: None }]);
 
         assert_eq!(inbox.handle(Request::MuteSource { source, muted: false }, Some(&script), at(8, 5)), Response::Ok);
         assert_eq!(posted(inbox.handle(notice("After", Some("t")), Some(&script), at(8, 6))), id);
@@ -4932,6 +4951,36 @@ pub(crate) mod tests {
         assert!(inbox.file_mail(&not_mail, Notify::All, at(9, 4)).is_err());
     }
 
+    /// Task E5.1: entries of GitHub, Nextcloud, Talk and ntfy stay unseen by clients until E5.2
+    /// gives them their rules, even for a client that sees every source; the app key sees them.
+    #[test]
+    fn a_client_sees_no_entry_of_a_remote_source_yet() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        posted(inbox.handle(notice("Backup done", None), Some(&script()), at(9, 0)));
+        let remote = torro_inbox::demo::remote_sample(at(9, 0));
+        {
+            let db = Connection::open(file_in(dir.path())).expect("opens");
+            for item in &remote {
+                insert_item(&db, &item.source.key(), item).expect("stored");
+            }
+        }
+        for client in [script(), with_mail(Some(Level::Read), Selection::All)] {
+            let titles: Vec<String> =
+                items(inbox.handle(all(), Some(&client), at(9, 1))).into_iter().map(|item| item.title).collect();
+            assert_eq!(titles, ["Backup done"], "{:?}", client.rights);
+            for item in &remote {
+                assert_eq!(code(&get(&inbox, &item.id, Some(&client))), "not-found", "{}", item.id);
+            }
+            let sources = match inbox.handle(Request::ListSources, Some(&client), at(9, 2)) {
+                Response::Sources { sources } => sources,
+                other => panic!("expected sources, got {other:?}"),
+            };
+            assert!(sources.iter().all(|info| info.source.kind == SourceKind::Script), "{sources:?}");
+        }
+        assert_eq!(items(inbox.handle(all(), None, at(9, 1))).len(), remote.len() + 1, "the app key sees them");
+    }
+
     #[test]
     fn a_client_sees_mail_entries_only_with_read_access_to_mail_and_the_account() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -5349,7 +5398,7 @@ pub(crate) mod tests {
     }
 
     fn by(key: FacetKey) -> MuteScope {
-        MuteScope::Facet { key }
+        MuteScope::Facet { key, nth: 0 }
     }
 
     fn muted(response: Response) -> Muted {
@@ -5892,7 +5941,7 @@ pub(crate) mod tests {
     }
 
     fn sender_suggestion(stats: &InboxStats) -> Option<&StatsSuggestion> {
-        stats.suggestions.iter().find(|s| s.option.scope == MuteScope::Facet { key: FacetKey::Sender })
+        stats.suggestions.iter().find(|s| s.option.scope == MuteScope::Facet { key: FacetKey::Sender, nth: 0 })
     }
 
     #[test]

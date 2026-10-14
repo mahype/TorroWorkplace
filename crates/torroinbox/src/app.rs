@@ -623,8 +623,8 @@ fn step_in<T: Copy + PartialEq>(all: &[T], current: T, forward: bool) -> T {
 /// account, the list, newsletters, the agent, its project, what it reports, the client.
 pub fn mute_icon(scope: MuteScope) -> Icon {
     match scope {
-        MuteScope::Conversation | MuteScope::Facet { key: FacetKey::Conversation } => Icon::ListTree,
-        MuteScope::Facet { key } => match key {
+        MuteScope::Conversation | MuteScope::Facet { key: FacetKey::Conversation, .. } => Icon::ListTree,
+        MuteScope::Facet { key, .. } => match key {
             FacetKey::Sender => Icon::User,
             FacetKey::Domain => Icon::Users,
             FacetKey::Account => Icon::Inbox,
@@ -635,6 +635,12 @@ pub fn mute_icon(scope: MuteScope) -> Icon {
             FacetKey::Kind => Icon::CircleDot,
             FacetKey::Client => Icon::AppWindow,
             FacetKey::Conversation => Icon::ListTree,
+            FacetKey::Repo => Icon::FolderGit2,
+            FacetKey::Reason | FacetKey::Result => Icon::CircleDot,
+            FacetKey::App | FacetKey::Topic => Icon::AppWindow,
+            FacetKey::Person => Icon::User,
+            FacetKey::Priority => Icon::SignalHigh,
+            FacetKey::Tag => Icon::Tag,
         },
     }
 }
@@ -6049,16 +6055,22 @@ mod tests {
         app
     }
 
-    /// The open entries of "For me" in the demo, waiting first: the three waiting ones, then by time,
-    /// the mail entries among them.
-    const FOR_ME: [&str; 13] = [
+    /// The open entries of "For me" in the demo, waiting first: the four urgent ones (the ntfy
+    /// alert of task E5.1 and the three waiting ones), then by time, the mail entries and those of
+    /// GitHub, Nextcloud and Talk among them.
+    const FOR_ME: [&str; 18] = [
+        "demo-18",
         "demo-1",
         "demo-3",
         "demo-2",
+        "demo-17",
+        "demo-14",
         "demo-mail-1",
         "demo-4",
+        "demo-15",
         "demo-6",
         "demo-mail-4",
+        "demo-16",
         "demo-5",
         "demo-mail-2",
         "demo-mail-6",
@@ -6307,11 +6319,15 @@ mod tests {
     fn for_me_shows_urgent_entries_first_and_counts_them() {
         let app = loaded(&[]);
         assert_eq!(ids(&app), FOR_ME);
-        assert_eq!(app.for_me.len(), 13);
-        assert_eq!(app.count_note(), "13", "only the number: the title already says For me");
+        assert_eq!(app.for_me.len(), 18);
+        assert_eq!(app.count_note(), "18", "only the number: the title already says For me");
         let groups = list::groups(&app.items);
-        assert_eq!(groups, [(list::Group::Waiting, 0..3), (list::Group::Other, 3..13)], "waiting entries get a head");
-        assert_eq!(app.sources.len(), 11, "suite, two agents, six scripts, two mail accounts");
+        assert_eq!(groups, [(list::Group::Waiting, 0..4), (list::Group::Other, 4..18)], "waiting entries get a head");
+        assert_eq!(
+            app.sources.len(),
+            15,
+            "suite, two agents, six scripts, two mail accounts, GitHub, Nextcloud, Talk, ntfy"
+        );
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("For me"))]));
     }
 
@@ -6321,7 +6337,7 @@ mod tests {
         let _ = app.update(Message::Show(View::Info));
         load(&mut app);
         assert_eq!(ids(&app), ["demo-8", "demo-9", "demo-mail-3", "demo-mail-5", "demo-7", "demo-mail-7"]);
-        assert_eq!(app.for_me.len(), 13, "the sidebar still counts For me");
+        assert_eq!(app.for_me.len(), 18, "the sidebar still counts For me");
         assert_eq!(app.count_note(), "6");
         let _ = app.update(Message::Show(View::Source(SourceRef::suite())));
         load(&mut app);
@@ -6335,7 +6351,7 @@ mod tests {
         load(&mut app);
         let for_me: Vec<&str> = app.for_me.iter().map(|item| item.id.as_str()).collect();
         assert_eq!(for_me, FOR_ME, "not Info's entries");
-        assert_eq!(glance::waiting(&app.for_me), 3);
+        assert_eq!(glance::waiting(&app.for_me), 4, "the alert and three waiting");
     }
 
     #[test]
@@ -6488,7 +6504,7 @@ mod tests {
     #[test]
     fn launch_states_open_their_view_or_panel() {
         let app = loaded(&["--open", "detail"]);
-        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-1"));
+        assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-18"));
         let app = loaded(&["--open", "approval"]);
         assert_eq!(app.detail.as_ref().map(|item| item.id.as_str()), Some("demo-3"));
         let app = loaded(&["--open", "snoozed"]);
@@ -6505,18 +6521,19 @@ mod tests {
         assert!(demo(&["--demo", "--open", "drawer"]).drawer);
         // The triage states of E3.2.
         let app = loaded(&["--open", "snooze"]);
-        assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::Snooze), Some("demo-1")));
+        assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::Snooze), Some("demo-18")));
         assert_eq!(loaded(&["--open", "pick"]).menu, Some(Menu::Pick));
         let app = loaded(&["--open", "lane"]);
-        assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::Lane), Some("demo-1")));
-        let claude = SourceRef::agent("claude-code");
+        assert_eq!((app.menu, app.cursor.as_deref()), (Some(Menu::Lane), Some("demo-18")));
+        // The first entry's source: the ntfy alert (task E5.1).
+        let first = SourceRef::ntfy("ntfy.sh");
         let failed = loaded(&["--open", "failed"]);
         assert!(failed.loaded && !failed.items.is_empty(), "the list is there");
         assert_eq!(failed.error, Some(Failure { what: tr("Couldn't change the entry."), why: DEMO_ERROR.into() }));
         let app = loaded(&["--open", "mute"]);
         let hint = app.hint.as_ref().expect("the hint after muting");
-        assert_eq!(hint.text, trf("New entries from {source} muted", &[("source", &claude.label())]));
-        assert_eq!(hint.undo, Some(Undo::Mute(claude, false)));
+        assert_eq!(hint.text, trf("New entries from {source} muted", &[("source", &first.label())]));
+        assert_eq!(hint.undo, Some(Undo::Mute(first, false)));
         for state in ["undo", "mute"] {
             let mut app = loaded(&["--open", state]);
             let shown = app.hint.as_ref().map(|hint| hint.shown).expect("the hint");
@@ -6548,11 +6565,11 @@ mod tests {
         );
         assert_eq!(
             views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..2],
-            [Trail::Count(13), Trail::Count(9)],
+            [Trail::Count(18), Trail::Count(14)],
             "Act now counts what is for the user, To sort what of it is to sort"
         );
         let by_source: usize = sources.iter().filter_map(|e| e.count).sum();
-        assert_eq!(by_source, 13 + 6, "the sources add up to For me plus Info");
+        assert_eq!(by_source, 18 + 6, "the sources add up to For me plus Info");
         assert_eq!(sources.first().map(|e| e.label.clone()), Some(tr("Suite").to_owned()));
         assert_eq!(sources.first().map(NavEntry::trail), Some(Trail::Count(2)));
         block_on(app.inbox.mute_source(SourceRef::script("backup"), true)).expect("mute");
@@ -6772,12 +6789,12 @@ mod tests {
         let mut app = loaded(&[]);
         assert_eq!(cursor(&app), None);
         let _ = press(&mut app, Key::Down);
-        assert_eq!(cursor(&app), Some("demo-1"), "down starts at the top");
+        assert_eq!(cursor(&app), Some("demo-18"), "down starts at the top");
         let _ = press(&mut app, Key::Down);
-        assert_eq!(cursor(&app), Some("demo-3"));
+        assert_eq!(cursor(&app), Some("demo-1"));
         let _ = press(&mut app, Key::Up);
         let _ = press(&mut app, Key::Up);
-        assert_eq!(cursor(&app), Some("demo-1"), "stops at the first row");
+        assert_eq!(cursor(&app), Some("demo-18"), "stops at the first row");
         let mut app = loaded(&[]);
         let _ = press(&mut app, Key::Up);
         assert_eq!(cursor(&app), Some("demo-mail-8"), "up starts at the bottom");
@@ -6815,7 +6832,7 @@ mod tests {
         let _ = app.update(Message::CloseDetail);
         let _ = press(&mut app, Key::Down);
         assert!(app.detail.is_none(), "a closed panel stays closed");
-        assert_eq!(cursor(&app), Some("demo-mail-1"));
+        assert_eq!(cursor(&app), Some("demo-17"), "the Talk chat after the waiting ones");
     }
 
     #[test]
@@ -6881,7 +6898,7 @@ mod tests {
         assert_eq!(app.sent.last(), Some(&Sent::Edit(reopen, None)));
         assert!(app.hint.is_none(), "the hint goes with the undo");
         deliver(&mut app);
-        assert_eq!(ids(&app)[0], "demo-1", "back in its place");
+        assert_eq!(ids(&app)[..2], ["demo-18", "demo-1"], "back in its place, after the alert");
         assert_eq!(cursor(&app), Some("demo-1"), "and the cursor with it");
         assert!(press(&mut app, Key::U).units() == 0 && app.sent.is_empty(), "nothing left to undo");
     }
@@ -8024,7 +8041,7 @@ mod tests {
         assert_eq!(app.view, View::Overview);
         assert!(app.is_hub(), "the hub's overview is Act now (task E8.5)");
         assert_eq!(app.items.len(), FOR_ME.len() + 6, "both lanes in one answer");
-        assert_eq!((app.for_me.len(), app.info), (13, 6), "the sidebar's numbers from the same answer");
+        assert_eq!((app.for_me.len(), app.info), (18, 6), "the sidebar's numbers from the same answer");
         assert_eq!(app.count_note(), hub::summary(&hub::Sections::of(&app.items, None)));
         assert!(app.nav_entries().0[0].active, "the first entry of the sidebar");
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Act now"))]));
@@ -8039,11 +8056,11 @@ mod tests {
     /// the mail column; `h`/`l` and "Mail | Notifications" cannot leave it. The hub keeps both.
     #[test]
     fn each_window_kind_shows_its_columns_of_the_overview() {
-        // The notifications window shows what the apps report (task E8.4): the scripts of the demo,
-        // its "New" starting with the deploy notice.
+        // The notifications window shows what the apps report (task E8.4): the scripts of the demo and,
+        // for now like scripts, its GitHub, Nextcloud, Talk and ntfy entries (task E5.1), GitHub first.
         let mut notices = overview_at(&["--view", "notifications"]);
         assert_eq!((notices.view.clone(), notices.column), (View::Overview, Column::Notices));
-        assert_eq!(rows_of(&notices).first(), Some(&"demo-6"), "the keys start on its first card");
+        assert_eq!(rows_of(&notices).first(), Some(&"demo-14"), "the keys start on its first card");
         assert!(rows_of(&notices).iter().all(|id| !id.starts_with("demo-mail")), "no mail");
         let _ = press(&mut notices, Key::H);
         let _ = notices.update(Message::ShowColumn(Column::Mail));
@@ -8091,10 +8108,10 @@ mod tests {
         let mut app = overview_at(&[]);
         let _ = app.update(Message::ShowToSort);
         assert!(app.sorting && app.view == View::Overview);
-        assert_eq!(rows_of(&app).len(), 9);
+        assert_eq!(rows_of(&app).len(), 14);
         assert!(rows_of(&app).iter().all(|id| *id != "demo-3"), "no approval to sort");
         assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("To sort"))]));
-        assert_eq!(app.count_note(), "9");
+        assert_eq!(app.count_note(), "14");
         assert!(app.nav_entries().0[1].active && !app.nav_entries().0[0].active);
         let _ = app.update(Message::Show(View::Overview));
         assert!(!app.sorting);
@@ -8236,7 +8253,7 @@ mod tests {
         assert_eq!(app.view, View::Overview, "a demo state wins over the lane");
         assert_eq!(cursor(&app), Some("demo-3"), "the hub: the first entry of Act now");
         let app = overview_at(&["--view", "notifications", "--open", "overview-notices"]);
-        assert_eq!((app.column, cursor(&app)), (Column::Notices, Some("demo-6")), "the first card");
+        assert_eq!((app.column, cursor(&app)), (Column::Notices, Some("demo-14")), "the first card");
     }
 
     #[test]
@@ -8655,7 +8672,9 @@ mod tests {
         // Without `--source`: what the apps report – no agents, no approvals, no mail.
         let apps = notifications_window(&[]);
         assert!(!apps.items.is_empty());
-        assert!(apps.items.iter().all(|item| item.source.kind == SourceKind::Script), "{:?}", ids(&apps));
+        let no_agents_suite_or_mail =
+            |item: &Item| !matches!(item.source.kind, SourceKind::Agent | SourceKind::Suite | SourceKind::Mail);
+        assert!(apps.items.iter().all(no_agents_suite_or_mail), "{:?}", ids(&apps));
         assert_eq!(apps.count_note(), apps.items.len().to_string(), "New counts both lanes");
         assert_eq!(apps.nav_entries().0.len(), 3, "New, Later, Done");
     }
@@ -8778,7 +8797,7 @@ mod tests {
             let _ = press(&mut app, key);
         }
         assert_eq!((app.mute_for, app.mute_effect), (MuteFor::OneHour, MuteEffect::Hide), "stops at the ends");
-        let client = MuteScope::Facet { key: FacetKey::Client };
+        let client = MuteScope::Facet { key: FacetKey::Client, nth: 0 };
         let place =
             app.choices().iter().position(|c| matches!(c.message, Message::MuteBy(_, scope) if scope == client));
         let digit = place.map(|at| u8::try_from(at + 1).expect("a digit")).expect("the client is offered");

@@ -567,10 +567,10 @@ pub fn demo_data() -> Data {
     });
     let first_calendar = calendars.first().map(|calendar| calendar.id.clone());
     let sources = vec![
-        SourceInfo { source: SourceRef::suite(), open: 2, muted: false },
-        SourceInfo { source: SourceRef::agent("claude-code"), open: 3, muted: false },
-        SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false },
-        SourceInfo { source: SourceRef::script("nightly-build"), open: 0, muted: true },
+        SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None },
+        SourceInfo { source: SourceRef::agent("claude-code"), open: 3, muted: false, health: None },
+        SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false, health: None },
+        SourceInfo { source: SourceRef::script("nightly-build"), open: 0, muted: true, health: None },
     ];
     Data {
         clients: demo_clients(now, first_calendar),

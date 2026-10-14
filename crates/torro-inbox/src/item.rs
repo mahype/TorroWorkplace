@@ -63,9 +63,11 @@ pub struct Item {
     pub untrusted: bool,
     /// What the entry can be muted by besides its conversation (task E8.6a, `inbox.mute_item`): the
     /// traits its source reports reliably, filled in by the core when the report arrives
-    /// ([`crate::rules::facets`]), never by the poster. At most one per [`FacetKey`], in the order of
-    /// [`FacetKey`]. Empty for entries stored before E8.6a and for the suite's own entries. Values of
-    /// [`FacetKey::is_foreign`] keys are foreign text like `title`.
+    /// ([`crate::rules::facets`], for the remote sources of E5 [`crate::rules::remote_facets`]), never
+    /// by the poster. In the order of [`FacetKey`], at most one per key but [`FacetKey::Tag`], which
+    /// may come several times (ntfy's tags, in the order they were sent; [`MuteScope::Facet`] picks
+    /// one by `nth`). Empty for entries stored before E8.6a and for the suite's own entries. Values
+    /// of [`FacetKey::is_foreign`] keys are foreign text like `title`.
     #[serde(default)]
     pub facets: Vec<Facet>,
     /// The task made of this entry or of its mail (task E8.7a): a task whose link
@@ -136,7 +138,8 @@ pub struct Facet {
 }
 
 /// The kinds of traits an entry can be muted by (task E8.6a, table in `docs/eingang.md`,
-/// "Stummschalten nach Merkmalen"). New sources (Slack, GitHub, ntfy) add theirs with E5/E7.
+/// "Stummschalten nach Merkmalen"). GitHub, Nextcloud, Talk and ntfy (task E5.1) bring theirs, each
+/// source only those of [`crate::rules::allowed_facets`]; Slack follows with E7.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FacetKey {
@@ -155,7 +158,10 @@ pub enum FacetKey {
     Agent,
     /// Agents: the project, the last part of the working directory a hook reported.
     Project,
-    /// Agents: whether the agent waits (`agent_waiting`) or finished (`agent_done`).
+    /// Agents: whether the agent waits (`agent_waiting`) or finished (`agent_done`). GitHub: what
+    /// the thread is about (`pull_request`, `issue`, `check_suite`, … in snake case). Talk: the kind
+    /// of conversation (`direct`, `mention` for a group conversation that mentions the person,
+    /// `group`; [`crate::rules::TalkRoom::facet`]).
     Kind,
     /// Scripts: the client that reported, as in the source key.
     Client,
@@ -163,14 +169,45 @@ pub enum FacetKey {
     /// own thread); only a rule made with [`MuteScope::Conversation`] holds it, and only the app key
     /// is shown its value, as only the poster sees an entry's thread key.
     Conversation,
+    /// GitHub: the repository, `owner/repo`.
+    Repo,
+    /// GitHub: why the person got the notification, GitHub's name for it (`review_requested`,
+    /// `mention`, `ci_activity`, …; `other` for one the suite does not know).
+    Reason,
+    /// GitHub: how a workflow run ended, `failed`, `succeeded` or `cancelled`; only on workflow runs
+    /// whose title says it.
+    Result,
+    /// Nextcloud: the app that notified, by its id (`files_sharing`, `spreed`, `deck`, …).
+    App,
+    /// Nextcloud and Talk: the person behind the notification or message, as the server names them.
+    Person,
+    /// ntfy: the topic, by the label the person gave it in the account – never the topic's name,
+    /// which works like a password on public servers.
+    Topic,
+    /// ntfy: the message's priority, `1` to `5`.
+    Priority,
+    /// ntfy: one of the message's tags; an entry may have several.
+    Tag,
 }
 
 impl FacetKey {
     /// The value of a trait of this kind is foreign text (sender, domain, list, project, client,
-    /// the agent's name a client gave, a thread key): data, never instructions, wherever it is shown
-    /// or handed to an agent. Only the account, bulk and the kind are the suite's own words.
+    /// the agent's name a client gave, a thread key, a repository, a Nextcloud app or person, an
+    /// ntfy tag): data, never instructions, wherever it is shown or handed to an agent. Only the
+    /// account, bulk, the kind, GitHub's reason and result, ntfy's priority and the topic's label
+    /// (the person's own words) are the suite's own words; [`crate::rules::remote_facets`] lets
+    /// only such words through for them.
     pub fn is_foreign(self) -> bool {
-        !matches!(self, FacetKey::Account | FacetKey::Bulk | FacetKey::Kind)
+        !matches!(
+            self,
+            FacetKey::Account
+                | FacetKey::Bulk
+                | FacetKey::Kind
+                | FacetKey::Reason
+                | FacetKey::Result
+                | FacetKey::Topic
+                | FacetKey::Priority
+        )
     }
 }
 
@@ -187,7 +224,19 @@ pub enum MuteScope {
     Conversation,
     /// Every entry with the entry's trait `key`, e.g. every mail from its sender, with the value
     /// the stored entry has – never a value from the request. Always a rule (admin access).
-    Facet { key: FacetKey },
+    ///
+    /// `nth` picks among several traits of the same key, counted from 0 in the order of
+    /// [`Item::facets`] (task E5.1: ntfy's tags); left out it is 0, the only one of every other key.
+    Facet {
+        key: FacetKey,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        nth: u32,
+    },
+}
+
+/// `nth` is left out on the wire when it is 0, so a scope reads as it did before task E5.1.
+fn is_zero(nth: &u32) -> bool {
+    *nth == 0
 }
 
 impl MuteScope {
@@ -286,17 +335,23 @@ pub struct Muted {
 /// Where an entry comes from: what the user mutes and what an agent may be allowed to see.
 ///
 /// Written as text with [`SourceRef::key`] (`suite`, `agent:claude-code`, `script:backup`,
-/// `mail:anna@example.org`), the form used in rights and on the command line.
+/// `mail:anna@example.org`, `github:mahype`, `nextcloud:anna@cloud.example.org`,
+/// `talk:anna@cloud.example.org`, `ntfy:ntfy.sh`), the form used in rights and on the command line.
+/// For a mail, GitHub, Nextcloud or ntfy source the key is the account's id; Talk's is the Nextcloud
+/// account's with `talk` in front, so it can be granted on its own.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 pub struct SourceRef {
     pub kind: SourceKind,
     /// Which one of the kind: the agent (`claude-code`, see [`AgentKind::id`]), the name of the
-    /// script's client or the address of the mail account. Empty for [`SourceKind::Suite`].
+    /// script's client, the address of the mail account, the GitHub login, `<login>@<host>` of the
+    /// Nextcloud account (for Nextcloud and Talk) or the host of the ntfy server. Empty for
+    /// [`SourceKind::Suite`].
     #[serde(default)]
     pub name: String,
 }
 
-/// The kinds of sources for now; GitHub, Nextcloud and more follow with E5.
+/// The kinds of sources. Their order is the order of the sidebar ([`SourceRef`]'s `Ord`), so new
+/// ones go at the end. Every kind but agent and script is filed by the core alone (security rule 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceKind {
@@ -311,6 +366,20 @@ pub enum SourceKind {
     /// these entries; a client sees them only with read access to mail and the account besides
     /// the source.
     Mail,
+    /// The notifications of a GitHub account (task E5.4); the name is the login, so the key
+    /// `github:<login>` is the account's id. A client sees these entries only with read access to
+    /// GitHub and the entry's repository besides the source (task E5.2).
+    Github,
+    /// The notifications of a Nextcloud account (task E5.8); the name is `<login>@<host>`, so the
+    /// key `nextcloud:<login>@<host>` is the account's id.
+    Nextcloud,
+    /// Unread conversations and mentions in Nextcloud Talk (task E5.9), a source of its own so it
+    /// can be granted, muted and shown apart from the account's notifications; the name is the
+    /// Nextcloud account's, `<login>@<host>`.
+    Talk,
+    /// The topics of an ntfy account (task E5.13); the name is the server's host, so the key
+    /// `ntfy:<host>` is the account's id.
+    Ntfy,
 }
 
 impl SourceRef {
@@ -332,7 +401,30 @@ impl SourceRef {
         SourceRef { kind: SourceKind::Mail, name: address.into() }
     }
 
-    /// The source as text: `suite`, `agent:<name>`, `script:<name>` or `mail:<address>`. Parsed
+    /// The notifications of the GitHub account `login`; the key `github:<login>` is the account's id.
+    pub fn github(login: impl Into<String>) -> SourceRef {
+        SourceRef { kind: SourceKind::Github, name: login.into() }
+    }
+
+    /// The notifications of the Nextcloud account `account` (`<login>@<host>`, the account's id
+    /// without `nextcloud:`); the key `nextcloud:<login>@<host>` is the account's id.
+    pub fn nextcloud(account: impl Into<String>) -> SourceRef {
+        SourceRef { kind: SourceKind::Nextcloud, name: account.into() }
+    }
+
+    /// Talk of the Nextcloud account `account` (`<login>@<host>`, as for [`SourceRef::nextcloud`]);
+    /// the key is `talk:<login>@<host>`.
+    pub fn talk(account: impl Into<String>) -> SourceRef {
+        SourceRef { kind: SourceKind::Talk, name: account.into() }
+    }
+
+    /// The topics of the ntfy account on the server `host`; the key `ntfy:<host>` is the account's id.
+    pub fn ntfy(host: impl Into<String>) -> SourceRef {
+        SourceRef { kind: SourceKind::Ntfy, name: host.into() }
+    }
+
+    /// The source as text: `suite`, `agent:<name>`, `script:<name>`, `mail:<address>`,
+    /// `github:<login>`, `nextcloud:<login>@<host>`, `talk:<login>@<host>` or `ntfy:<host>`. Parsed
     /// back by [`SourceRef::from_str`].
     pub fn key(&self) -> String {
         match self.kind {
@@ -340,16 +432,25 @@ impl SourceRef {
             SourceKind::Agent => format!("agent:{}", self.name),
             SourceKind::Script => format!("script:{}", self.name),
             SourceKind::Mail => format!("mail:{}", self.name),
+            SourceKind::Github => format!("github:{}", self.name),
+            SourceKind::Nextcloud => format!("nextcloud:{}", self.name),
+            SourceKind::Talk => format!("talk:{}", self.name),
+            SourceKind::Ntfy => format!("ntfy:{}", self.name),
         }
     }
 
     /// The name to show: "Suite", the product name of a known agent, the address of a mail
-    /// account, else the name itself.
+    /// account, the product name for GitHub, Nextcloud, Talk and ntfy (not translated; the app adds
+    /// the account when there are several, task E5.15), else the name itself.
     pub fn label(&self) -> String {
         match self.kind {
             SourceKind::Suite => tr("Suite").into(),
             SourceKind::Agent => AgentKind::from_id(&self.name).map_or_else(|| self.name.clone(), |a| a.label().into()),
             SourceKind::Script | SourceKind::Mail => self.name.clone(),
+            SourceKind::Github => "GitHub".into(),
+            SourceKind::Nextcloud => "Nextcloud".into(),
+            SourceKind::Talk => "Talk".into(),
+            SourceKind::Ntfy => "ntfy".into(),
         }
     }
 }
@@ -366,7 +467,12 @@ pub struct ParseSourceError(pub String);
 
 impl fmt::Display for ParseSourceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "not a source: {:?} (expected suite, agent:<name>, script:<name> or mail:<address>)", self.0)
+        write!(
+            f,
+            "not a source: {:?} (expected suite, agent:<name>, script:<name>, mail:<address>, github:<login>, \
+             nextcloud:<login>@<host>, talk:<login>@<host> or ntfy:<host>)",
+            self.0
+        )
     }
 }
 
@@ -375,7 +481,8 @@ impl std::error::Error for ParseSourceError {}
 impl FromStr for SourceRef {
     type Err = ParseSourceError;
 
-    /// `suite`, `agent:<name>`, `script:<name>` or `mail:<address>` with a name that is not empty.
+    /// `suite`, or one of `agent:`, `script:`, `mail:`, `github:`, `nextcloud:`, `talk:` and `ntfy:`
+    /// with a name that is not empty ([`SourceRef::key`]).
     fn from_str(text: &str) -> Result<SourceRef, ParseSourceError> {
         let invalid = || ParseSourceError(text.into());
         if text == "suite" {
@@ -389,6 +496,10 @@ impl FromStr for SourceRef {
             "agent" => Ok(SourceRef::agent(name)),
             "script" => Ok(SourceRef::script(name)),
             "mail" => Ok(SourceRef::mail(name)),
+            "github" => Ok(SourceRef::github(name)),
+            "nextcloud" => Ok(SourceRef::nextcloud(name)),
+            "talk" => Ok(SourceRef::talk(name)),
+            "ntfy" => Ok(SourceRef::ntfy(name)),
             _ => Err(invalid()),
         }
     }
@@ -409,10 +520,16 @@ pub enum Kind {
     Approval,
     /// An account needs the user: sign-in refused, sync failing. Only the core creates it.
     AccountProblem,
-    /// A message from someone: new mail of a mail account (task E4.1), one entry per conversation.
-    /// Only the core creates it, in the lane the mail rules give ([`crate::rules::mail_lane`]);
-    /// never urgent.
+    /// A message from someone: new mail of a mail account (task E4.1) or a chat (Talk, task E5.9),
+    /// one entry per conversation. Only the core creates it, in the lane the rules of its source
+    /// give ([`crate::rules::mail_lane`], [`crate::rules::talk_place`]); never urgent.
     Message,
+    /// Something is wrong that cannot wait: an ntfy message with priority 5 (task E5.1,
+    /// [`crate::rules::ntfy_place`]). Only the core creates it, always for me and urgent, so it
+    /// pops up even during quiet times. Security rule 3 allows it: the sender of the topic sets the
+    /// urgency here, but only in topics the person subscribed to themselves. From a client or a
+    /// hook it becomes a [`Kind::Notice`] ([`crate::rules::admitted_kind`]).
+    Alert,
 }
 
 /// The two lanes of the inbox. Only "for me" counts and may show pop-ups.
@@ -566,6 +683,26 @@ pub struct SourceInfo {
     pub open: u32,
     /// The user muted the source: its new reports are dropped.
     pub muted: bool,
+    /// Why a remote source (GitHub, Nextcloud, Talk, ntfy) brings nothing at the moment, so the
+    /// control centre and the app can say it ("Notifications need a classic token"); `None` while
+    /// it works and for every other source. Kept by the core in memory (task E5.2), never stored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<SourceHealth>,
+}
+
+/// Why a remote source is quiet ([`SourceInfo::health`], task E5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceHealth {
+    /// The server lacks the app the source reads (Nextcloud without `notifications` or `spreed`).
+    MissingApp,
+    /// The sign-in may not read what the source needs (a fine-grained GitHub token, which cannot
+    /// read notifications).
+    MissingScope,
+    /// The server refused the sign-in; the account needs the person.
+    SignedOut,
+    /// The server cannot be reached.
+    Offline,
 }
 
 /// A lasting rule of the inbox, as `inbox.list_rules` lists it: a lane remembered for a source or,
@@ -744,7 +881,7 @@ mod tests {
     fn mute_scopes_and_effects_on_the_wire() {
         assert_eq!(json(MuteScope::Conversation), serde_json::json!({ "kind": "conversation" }));
         assert_eq!(
-            json(MuteScope::Facet { key: FacetKey::Sender }),
+            json(MuteScope::Facet { key: FacetKey::Sender, nth: 0 }),
             serde_json::json!({ "kind": "facet", "key": "sender" })
         );
         assert_eq!(json(MuteEffect::NoPopup), "no_popup");
@@ -763,7 +900,7 @@ mod tests {
         assert!(conversation.keeps_rule(MuteEffect::NoPopup, false));
         assert!(conversation.keeps_rule(MuteEffect::Hide, true));
         assert!(conversation.keeps_rule(MuteEffect::Info, true));
-        let sender = MuteScope::Facet { key: FacetKey::Sender };
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
         for (effect, until) in [(MuteEffect::Hide, false), (MuteEffect::Info, false), (MuteEffect::NoPopup, true)] {
             assert!(sender.keeps_rule(effect, until), "a trait always keeps a rule");
         }
@@ -815,6 +952,95 @@ mod tests {
         for bad in ["", "agent", "agent:", "mail:", "slack:me", "suite:x", "Suite"] {
             assert!(bad.parse::<SourceRef>().is_err(), "{bad:?}");
         }
+    }
+
+    /// Task E5.1: the keys of the remote sources are the accounts' ids, Talk's the Nextcloud
+    /// account's with `talk` in front.
+    #[test]
+    fn remote_source_keys_are_the_account_ids() {
+        let cases = [
+            (SourceRef::github("mahype"), "github:mahype", SourceKind::Github),
+            (SourceRef::nextcloud("anna@cloud.example.org"), "nextcloud:anna@cloud.example.org", SourceKind::Nextcloud),
+            (SourceRef::talk("anna@cloud.example.org"), "talk:anna@cloud.example.org", SourceKind::Talk),
+            (SourceRef::ntfy("ntfy.sh"), "ntfy:ntfy.sh", SourceKind::Ntfy),
+        ];
+        for (source, key, kind) in cases {
+            assert_eq!(source.key(), key);
+            assert_eq!(source.to_string(), key, "Display is the key");
+            assert_eq!(key.parse::<SourceRef>(), Ok(source.clone()));
+            assert_eq!(source.kind, kind);
+        }
+        // The ids `torro_core::account` gives GitHub and Nextcloud accounts name their sources.
+        assert_eq!("github:mahype".parse::<SourceRef>().map(|s| s.name), Ok("mahype".into()));
+        for bad in ["github:", "nextcloud:", "talk:", "ntfy:", "GitHub:mahype", "gitlab:me"] {
+            let error = bad.parse::<SourceRef>().expect_err(bad);
+            assert!(error.to_string().contains("ntfy:<host>"), "the error names the new forms: {error}");
+        }
+        assert_eq!(json(SourceKind::Github), "github");
+        assert_eq!(json(SourceKind::Nextcloud), "nextcloud");
+        assert_eq!(json(SourceKind::Talk), "talk");
+        assert_eq!(json(SourceKind::Ntfy), "ntfy");
+        let wire: SourceRef =
+            serde_json::from_value(serde_json::json!({ "kind": "talk", "name": "a@b" })).expect("read");
+        assert_eq!(wire, SourceRef::talk("a@b"));
+    }
+
+    #[test]
+    fn remote_sources_show_their_product() {
+        assert_eq!(SourceRef::github("mahype").label(), "GitHub");
+        assert_eq!(SourceRef::nextcloud("anna@cloud").label(), "Nextcloud");
+        assert_eq!(SourceRef::talk("anna@cloud").label(), "Talk");
+        assert_eq!(SourceRef::ntfy("ntfy.sh").label(), "ntfy");
+    }
+
+    /// Task E5.1: the new kind, traits and the health of a source on the wire.
+    #[test]
+    fn alerts_traits_and_health_on_the_wire() {
+        assert_eq!(json(Kind::Alert), "alert");
+        assert_eq!(serde_json::from_value::<Kind>(serde_json::json!("alert")).expect("read"), Kind::Alert);
+        let keys = [
+            (FacetKey::Repo, "repo"),
+            (FacetKey::Reason, "reason"),
+            (FacetKey::Result, "result"),
+            (FacetKey::App, "app"),
+            (FacetKey::Person, "person"),
+            (FacetKey::Topic, "topic"),
+            (FacetKey::Priority, "priority"),
+            (FacetKey::Tag, "tag"),
+        ];
+        for (key, name) in keys {
+            assert_eq!(json(key), name);
+            assert_eq!(serde_json::from_value::<FacetKey>(serde_json::json!(name)).expect("read"), key);
+        }
+        let foreign: Vec<FacetKey> = keys.iter().map(|(key, _)| *key).filter(|key| key.is_foreign()).collect();
+        assert_eq!(foreign, [FacetKey::Repo, FacetKey::App, FacetKey::Person, FacetKey::Tag]);
+        let info = SourceInfo { source: SourceRef::github("mahype"), open: 0, muted: false, health: None };
+        assert!(json(&info).get("health").is_none(), "left out while it works");
+        let quiet = SourceInfo { health: Some(SourceHealth::MissingScope), ..info.clone() };
+        assert_eq!(json(&quiet)["health"], "missing_scope");
+        assert_eq!(serde_json::from_value::<SourceInfo>(json(&quiet)).expect("read"), quiet);
+        let older = serde_json::json!({ "source": { "kind": "script", "name": "ci" }, "open": 2, "muted": false });
+        assert_eq!(serde_json::from_value::<SourceInfo>(older).expect("read").health, None);
+        for (health, name) in [
+            (SourceHealth::MissingApp, "missing_app"),
+            (SourceHealth::SignedOut, "signed_out"),
+            (SourceHealth::Offline, "offline"),
+        ] {
+            assert_eq!(json(health), name);
+        }
+    }
+
+    /// Task E5.1: `nth` is 0 when left out and written only when it is not.
+    #[test]
+    fn a_trait_scope_names_its_place_among_several() {
+        let read = |value: serde_json::Value| serde_json::from_value::<MuteScope>(value).expect("read");
+        assert_eq!(
+            read(serde_json::json!({ "kind": "facet", "key": "tag" })),
+            MuteScope::Facet { key: FacetKey::Tag, nth: 0 }
+        );
+        let second = MuteScope::Facet { key: FacetKey::Tag, nth: 1 };
+        assert_eq!(json(second), serde_json::json!({ "kind": "facet", "key": "tag", "nth": 1 }));
+        assert_eq!(read(json(second)), second);
     }
 
     #[test]

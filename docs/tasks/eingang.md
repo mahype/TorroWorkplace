@@ -1424,7 +1424,7 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
     `assistant/model.rs`: `accounts.set_ntfy_topic` berührt `[accounts, inbox]`, `accounts.connect_ntfy` `[accounts]`.
 
 ### E5.1 Modell der neuen Quellen
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `SourceKind::{Github, Nextcloud, Talk, Ntfy}`, `Kind::Alert`, acht neue `FacetKey`s, `rules::{allowed_facets, remote_facets, github_place, nextcloud_place, talk_place, ntfy_place, app_label}` mit `TalkRoom`/`TalkLevel`, `MuteScope::Facet { key, nth }`, `SourceInfo.health` (`SourceHealth`); Demo `demo-14` bis `demo-18`; Clients sehen die neuen Quellen bis E5.2 nicht, auch nicht im SQL-Filter; Tests in `torroinbox` an die Demo angepasst)
 - **Modell:** Opus · **Braucht:** Freigabe 1–6 · **Dateien:** `crates/torro-inbox/src/{item,rules,source,demo}.rs`;
   nur so weit der Compiler es erzwingt (neue Fälle in `match`, kein neues Verhalten, im Bericht nennen):
   `crates/torro-ipc/src/api.rs` (`reaches_source` liefert für die neuen Arten `false` bis E5.2),

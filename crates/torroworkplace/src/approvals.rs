@@ -1823,6 +1823,15 @@ fn reach_of(key: FacetKey, what: String) -> String {
         }
         FacetKey::Project | FacetKey::Kind => trf("{what} for every agent", &[("what", &what)]),
         FacetKey::Account | FacetKey::Agent | FacetKey::Client | FacetKey::Conversation => what,
+        // The traits of the remote sources (task E5.1); their reach comes with E5.2.
+        FacetKey::Repo
+        | FacetKey::Reason
+        | FacetKey::Result
+        | FacetKey::App
+        | FacetKey::Person
+        | FacetKey::Topic
+        | FacetKey::Priority
+        | FacetKey::Tag => what,
     }
 }
 
@@ -3519,7 +3528,7 @@ pub(crate) mod tests {
         let mute = |scope, until, effect| Request::MuteItem { id: "e1".into(), scope, until, effect };
         let sender = format!("\"{}\"", trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
         let sender = trf("{what} in every mail account", &[("what", &sender)]);
-        let by_sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender };
+        let by_sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender, nth: 0 };
         assert_eq!(
             inbox_summary(&mute(by_sender, None, MuteEffect::NoPopup), &muted_mail),
             trf("Mute {what} for good ({effect})", &[("what", &sender), ("effect", &tr("no popup"))])
@@ -3537,7 +3546,7 @@ pub(crate) mod tests {
                 ]
             )
         );
-        let by_project = MuteScope::Facet { key: torro_inbox::item::FacetKey::Project };
+        let by_project = MuteScope::Facet { key: torro_inbox::item::FacetKey::Project, nth: 0 };
         assert_eq!(
             inbox_summary(&mute(by_project, None, MuteEffect::Hide), &muted_mail),
             trf(

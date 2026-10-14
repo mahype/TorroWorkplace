@@ -695,7 +695,11 @@ mod tests {
         let notices = Sections::of(&items, Column::Notices, now());
         let groups: Vec<Group> = notices.groups.iter().map(|(group, _)| *group).collect();
         assert_eq!(groups, [Group::Waiting, Group::Today, Group::Yesterday, Group::Earlier], "the demo has every day");
-        assert_eq!(ids(&notices.groups[0].1), ["demo-1", "demo-3", "demo-2"], "waiting first, as the app sorts");
+        assert_eq!(
+            ids(&notices.groups[0].1),
+            ["demo-18", "demo-1", "demo-3", "demo-2"],
+            "the alert and the waiting ones first, as the app sorts"
+        );
         assert_eq!((ids(&notices.groups[2].1), ids(&notices.groups[3].1)), (vec!["demo-12"], vec!["demo-13"]));
         let mail = Sections::of(&items, Column::Mail, now());
         let groups: Vec<Group> = mail.groups.iter().map(|(group, _)| *group).collect();
@@ -734,7 +738,7 @@ mod tests {
         let head = list::group_head() - list::head_trim();
         let card = card_height(notices.groups[0].1[0]);
         assert_eq!(
-            row_span(&notices, false, "demo-1", Look::Rows, false, 480.0),
+            row_span(&notices, false, "demo-18", Look::Rows, false, 480.0),
             Some((0.0, head + space::s() + card + space::s()))
         );
         let block = cards_height(&notices.groups[0].1);
