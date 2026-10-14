@@ -558,7 +558,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
     // Remote sources in the core (E5.2)
-    ("{what} and mark its GitHub notification done", "{what}, dazu die GitHub-Benachrichtigung als erledigt markieren"),
+    (
+        "{what}, mark its GitHub notification done and any mail about it read",
+        "{what}, dazu die GitHub-Benachrichtigung als erledigt und Mails dazu als gelesen markieren",
+    ),
     ("{what} and delete its Nextcloud notification", "{what}, dazu die Nextcloud-Benachrichtigung löschen"),
     ("{what} and mark the Talk conversation read", "{what}, dazu die Talk-Unterhaltung als gelesen markieren"),
     ("{what} in every GitHub account", "{what} in allen GitHub-Konten"),

@@ -468,7 +468,7 @@ und `create_event_from_item` wirken im Hintergrund auf die Quelle zurück: GitHu
 (`DELETE /notifications/threads/{id}`), Nextcloud löscht die Benachrichtigungen, Talk markiert die Unterhaltung als
 gelesen, ntfy erfährt nichts. Bei GitHub braucht ein Client dafür Schreiben in `github` (sonst `forbidden`, geprüft
 vor der Freigabe und bei der Ausführung); ein Repo außerhalb seiner Reichweite ist `not-found`. Undo, Später, Spur,
-Ausblenden und Stummschalten wirken nie zurück. Die Freigabe nennt es („… and mark its GitHub notification done“,
+Ausblenden und Stummschalten wirken nie zurück. Die Freigabe nennt es („…, mark its GitHub notification done and any mail about it read“,
 „… and delete its Nextcloud notification“, „… and mark the Talk conversation read“). **Zustand:** `list_sources`
 nennt in `health`, warum eine fremde Quelle gerade nichts bringt (`missing_app`, `missing_scope`, `signed_out`,
 `offline`), auch ohne Einträge; nur im Speicher. **Konto entfernt:** Die offenen Einträge der Quelle (bei Nextcloud

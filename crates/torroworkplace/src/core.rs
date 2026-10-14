@@ -7741,7 +7741,10 @@ mod tests {
         let asked = waits(ask(&core, Some(&writer_key), done()).await);
         let entry = format!("\"{}\"", report.title);
         let marked = trf("Mark {entry} as done", &[("entry", &entry)]);
-        assert_eq!(asked.summary, trf("{what} and mark its GitHub notification done", &[("what", &marked)]));
+        assert_eq!(
+            asked.summary,
+            trf("{what}, mark its GitHub notification done and any mail about it read", &[("what", &marked)])
+        );
         assert_eq!(settled(&id), 0, "not before the person allowed it");
     }
 

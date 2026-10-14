@@ -1885,13 +1885,14 @@ fn reach_of(kind: SourceKind, key: FacetKey, what: String) -> String {
 }
 
 /// `summary` of a command that marks `item` done, with what that does on the server of its remote
-/// source (task E5.2): "… and mark its GitHub notification done", "… and delete its Nextcloud
-/// notification", "… and mark the Talk conversation read". Unchanged for every other entry, ntfy
+/// source (task E5.2): "…, mark its GitHub notification done and any mail about it read" (mail
+/// that E5.6 attached to the entry is marked read too), "… and delete its Nextcloud notification",
+/// "… and mark the Talk conversation read". Unchanged for every other entry, ntfy
 /// too, which is not told.
 fn with_settling(summary: String, item: Option<&Item>) -> String {
     let what = [("what", &summary as &dyn std::fmt::Display)];
     match item.map(|item| item.source.kind) {
-        Some(SourceKind::Github) => trf("{what} and mark its GitHub notification done", &what),
+        Some(SourceKind::Github) => trf("{what}, mark its GitHub notification done and any mail about it read", &what),
         Some(SourceKind::Nextcloud) => trf("{what} and delete its Nextcloud notification", &what),
         Some(SourceKind::Talk) => trf("{what} and mark the Talk conversation read", &what),
         _ => summary,
@@ -3663,7 +3664,7 @@ pub(crate) mod tests {
         let marked = trf("Mark {entry} as done", &[("entry", &named)]);
         let cloud = "anna@cloud.example.org";
         for (source, words) in [
-            (SourceRef::github("anna-berg"), "{what} and mark its GitHub notification done"),
+            (SourceRef::github("anna-berg"), "{what}, mark its GitHub notification done and any mail about it read"),
             (SourceRef::nextcloud(cloud), "{what} and delete its Nextcloud notification"),
             (SourceRef::talk(cloud), "{what} and mark the Talk conversation read"),
         ] {
