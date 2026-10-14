@@ -1400,9 +1400,9 @@ pub enum Request {
         pinned: bool,
     },
     /// Opens a chat window of the assistant app: `torroassistant --chat <id>` for a conversation,
-    /// `--chat new` for a new one, later `--bot <id>` ([`Response::Ok`]). Each call starts one
-    /// window. `not-found` for an unknown conversation, `unsupported` for a bot (there are none
-    /// yet), `error` when the app does not start (it is not installed).
+    /// `--chat new` for a new one, `--bot <id>` for a bot ([`Response::Ok`]). Each call starts one
+    /// window. `not-found` for an unknown conversation or bot, `error` when the app does not start
+    /// (it is not installed).
     #[serde(rename = "assistant.open_window")]
     OpenChatWindow {
         /// `{"conversation": "<id>"}`, `"new"` or `{"bot": "<id>"}`.
