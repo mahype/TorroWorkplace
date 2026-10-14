@@ -71,8 +71,10 @@
 //! keeps which column has the
 //! cursor ([`App::column`]) and which "Info" is unfolded (in `ui.json`, task E3.11); the keys walk the
 //! column
-//! ([`App::rows`]). Every row has an action bar (Task, Done, Later, Hide), whose buttons do what the
-//! keys do on the row ([`Message::Act`]).
+//! ([`App::rows`]). Every row has an action bar (Task, Done, Later, Hide; for mail first Archive and
+//! Delete, issue #118, a folder's message too), whose buttons do what the keys do on the row
+//! ([`Message::Act`], [`Message::Mail`]). Reply is no button of rows and cards: it stands in the
+//! reader, where the mail has been read.
 //!
 //! The panel is `torro_gui::panel`: beside the list in the wide layout, over it in the medium and
 //! narrow ones (full width in narrow). Mini and strip show the glance instead (`glance.rs`, E3.3a):
@@ -5017,6 +5019,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                         .filter(|item| !self.hide_choices(item).is_empty())
                         .map(|item| item.id.as_str())
                         .collect(),
+                    folders: &self.folders,
                 })
             }
         } else if self.is_board() {
@@ -5091,6 +5094,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 .map(|item| item.id.as_str())
                 .collect(),
             look: self.look(),
+            folders: &self.folders,
         }
     }
 
@@ -8026,6 +8030,30 @@ mod tests {
         let _ = press(&mut app, Key::U);
         deliver_mail(&mut app);
         assert!(message_ids(&app).contains(&"m:w1"), "back in the inbox, with the same id");
+    }
+
+    /// Issue #118: Delete (the key, or the row's button, which sends the same) moves a folder's
+    /// message to the trash with its toast, and undo moves it back.
+    #[test]
+    fn delete_from_a_folders_row_moves_to_the_trash_and_undo_moves_back() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::Delete);
+        let ids = vec!["m:w1".to_owned()];
+        let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("a delete with a hint") };
+        assert_eq!(edit, MailEdit::Delete { ids: ids.clone() });
+        assert_eq!(hint.text, tr("Moved to Trash"));
+        let back = MailEdit::Move { ids, to: MoveTarget::Folder("f:work-inbox".into()) };
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: None }));
+        deliver_mail(&mut app);
+        assert!(!message_ids(&app).contains(&"m:w1"));
+        let _ = press(&mut app, Key::U);
+        deliver_mail(&mut app);
+        assert!(message_ids(&app).contains(&"m:w1"), "back in the inbox");
+
+        // The row's button: the same message as the key.
+        let _ = app.update(Message::Mail(MailAction::Delete, "m:w2".into()));
+        assert!(matches!(app.sent.last(), Some(Sent::Mail(MailEdit::Delete { ids }, Some(_))) if ids == &["m:w2"]));
     }
 
     #[test]

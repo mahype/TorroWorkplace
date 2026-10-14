@@ -10,7 +10,7 @@
 //!    ↓/↑) move, `Enter` opens, `e` done, `u` undo (as Ctrl + Z, ⌘ + Z on macOS, does in the whole
 //!    window while the toast offers it – `widgets::undo_key`, task E3.11, not a key of this map:
 //!    `ctrl_guard` takes ⌘ + Z before any widget, only a subscription still hears it), `s` snooze, `l` lane, `m` hide from the inbox
-//!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` delete and `/` search
+//!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` or Delete (⌫ on a Mac keyboard, issue #118) delete and `/` search
 //!    the folder (in a folder `e` archives: the app decides); in a menu of choices the digits pick
 //!    its entries; in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
@@ -80,6 +80,9 @@ pub enum Key {
     F,
     /// The hash sign (Shift + 3 on many keyboards: Shift does not stop it).
     Hash,
+    /// Delete or Backspace (the key Mac keyboards call "delete", issue #118). A text field that has
+    /// the focus takes it before the list hears it.
+    Delete,
     /// `/`.
     Slash,
     /// `1` … `9`.
@@ -206,6 +209,7 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Character("a") => Key::A,
         Name::Character("f") => Key::F,
         Name::Character("#") => Key::Hash,
+        Name::Named(Named::Delete | Named::Backspace) => Key::Delete,
         Name::Character("/") => Key::Slash,
         Name::Character(digit) => match digit.parse::<u8>() {
             Ok(n @ 1..=9) => Key::Digit(n),
@@ -236,7 +240,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::R) => Some(Command::Reply),
         (Focus::List, Key::A) => Some(Command::ReplyAll),
         (Focus::List, Key::F) => Some(Command::Forward),
-        (Focus::List, Key::Hash) => Some(Command::Delete),
+        (Focus::List, Key::Hash | Key::Delete) => Some(Command::Delete),
         (Focus::List, Key::Slash) => Some(Command::Search),
         (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
         (Focus::Mute, Key::Left) => Some(Command::MuteFor { longer: false }),
@@ -309,6 +313,8 @@ mod tests {
             (char("a"), Command::ReplyAll),
             (char("f"), Command::Forward),
             (char("#"), Command::Delete),
+            (Name::Named(Named::Delete), Command::Delete),
+            (Name::Named(Named::Backspace), Command::Delete),
             (char("/"), Command::Search),
             (char("["), Command::Sidebar),
         ] {

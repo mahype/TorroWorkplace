@@ -632,6 +632,38 @@ pub fn edit_of(action: MailAction, id: &str) -> Option<MailEdit> {
     }
 }
 
+/// Where a message of a row or card can be filed (issue #118): the buttons Archive and Delete for
+/// the message `id` of `account` (`mail:<address>`) lying in the folder `folder` (`None`: its
+/// account's inbox, where an entry's mail lies), in this order. Each sends
+/// [`Message::Mail`] – what `e` in a folder and `#` do – so the move, its toast and its undo are
+/// those of the keys (`App::mail_action`).
+///
+/// A button shows only where it can work, as every action bar does (skill `torro-design`, "Nur
+/// Aktionen, die für den Eintrag gehen"): Archive needs a folder of the role Archive in the account
+/// and a message outside it, Delete a Trash and a message outside the trash – otherwise the core
+/// answers `NO_ROLE_FOLDER` or there is nothing to do. `archive_key` is the key shown in Archive's
+/// tooltip: `"E"` in a folder, where `e` archives, `""` at an entry, where `e` is Done.
+pub fn filing_actions<'a>(
+    folders: &[Folder],
+    account: &str,
+    folder: Option<&str>,
+    id: &str,
+    archive_key: &'static str,
+) -> Vec<RowAction<'a, Message>> {
+    let role_of = |folder: &str| folders.iter().find(|f| f.id == folder).and_then(|f| f.role);
+    let lies_in = folder.map_or(Some(Role::Inbox), role_of);
+    let has = |role: Role| folders.iter().any(|f| f.account == account && f.role == Some(role));
+    let mut actions = Vec::new();
+    if has(Role::Archive) && lies_in != Some(Role::Archive) {
+        let archive = Message::Mail(MailAction::Archive, id.to_owned());
+        actions.push(RowAction::new(Icon::Archive, tr("Archive"), archive_key, archive));
+    }
+    if has(Role::Trash) && lies_in != Some(Role::Trash) {
+        actions.push(RowAction::new(Icon::Trash2, tr("Delete"), "#", Message::Mail(MailAction::Delete, id.to_owned())));
+    }
+    actions
+}
+
 /// The hint after archiving (`delete: false`) or deleting.
 pub fn moved_text(delete: bool) -> &'static str {
     if delete { tr("Moved to Trash") } else { tr("Archived") }
@@ -816,6 +848,9 @@ pub struct MailList<'a> {
     pub entries: &'a [Item],
     /// Ids of those entries whose menu "Hide from inbox" has entries (`App::hide_choices`).
     pub hidable: Vec<&'a str>,
+    /// Every folder of every account: Archive and Delete show only where the message's account has
+    /// such a folder ([`filing_actions`], issue #118).
+    pub folders: &'a [Folder],
 }
 
 /// The open entry of `entries` that holds the message `id` (it links to it, [`Link::Mail`]).
@@ -879,7 +914,9 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
 /// One message in a row `width` wide: the mail row of the overview (task E3.11,
 /// `list::mail_content`) – avatar with the sender's initials in the account's colour, sender ·
 /// domain · paperclip · flag · time, the subject (medium weight while unread, with the dot at the
-/// avatar), the start of the text –, [`list::message_height`] high.
+/// avatar), the start of the text –, [`list::message_height`] high. Its action bar (issue #118,
+/// `widgets::row_actions_at` on the first line, as an entry's row) holds what its card offers
+/// ([`message_buttons`]), "…" last.
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
     // An invitation (task E8.3b): its time and the answers stand on its card and in the reader.
@@ -908,7 +945,13 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     };
     let selected = data.selected == Some(message.id.as_str());
     let on_press = Message::SelectMail(message.id.clone());
-    let row = list::sized_row(list::mail_content(lines, width), selected, on_press, list::message_height());
+    let height = list::message_height();
+    let row = list::sized_row(list::mail_content(lines, width), selected, on_press, height);
+    let (mut actions, more) = message_buttons(message, data.entries, &data.hidable, data.folders, data.now);
+    actions.extend(more);
+    let words = widgets::row_actions_words(&actions, width);
+    // On the first line, over the time, as the rows of entries: subject and preview stay readable.
+    let row = widgets::row_actions_at(row, actions, selected, words, list::first_line_middle(height, 3));
     if selected { widgets::anchored(&data.anchor, row) } else { row }
 }
 
@@ -927,7 +970,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if message.flags.contains(&Flag::Flagged) {
         chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
     }
-    let (buttons, more) = message_buttons(message, data.entries, &data.hidable, data.now);
+    let (buttons, more) = message_buttons(message, data.entries, &data.hidable, data.folders, data.now);
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
     let smart = matches!(data.view, View::Attachments | View::Invitations);
@@ -951,10 +994,13 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if selected { widgets::anchored(&data.anchor, card) } else { card }
 }
 
-/// The buttons of the card of `message` at `now`, with "…" as the second part:
+/// The buttons of the card (and the action bar of the row) of `message` at `now`, with "…" as the
+/// second part:
 ///
-/// - a message: Reply (`r`), Task (`t`, `tasks.create_todo_from_mail`, task E8.7b) and Archive (`e`,
-///   what "done" is in a folder); a message has no "Later" of its own, and no "…";
+/// - a message: Archive (`e`, what "done" is in a folder) and Delete (`#`, into the trash) as far as
+///   its account has those folders ([`filing_actions`], issue #118), then Task (`t`,
+///   `tasks.create_todo_from_mail`, task E8.7b); a message has no "Later" of its own, and no "…".
+///   No Reply: from a list the mail is not read yet – Reply stands in the reader;
 /// - an invitation whose event is not over (task E8.3b): Accept · Maybe · Decline
 ///   ([`Message::AnswerInvitation`]) · Later · Task, as the same mail under "For me" (task E8.11):
 ///   "Later" and "…" ("Hide from inbox", while `hidable` lists the entry) act on its entry in
@@ -964,16 +1010,14 @@ pub fn message_buttons<'a>(
     message: &MessageSummary,
     entries: &[Item],
     hidable: &[&str],
+    folders: &[Folder],
     now: DateTime<Utc>,
 ) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
     let id = || message.id.clone();
     let task = RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id()));
     if message.invite.as_ref().is_none_or(|invite| invite_over(invite, now)) {
-        let buttons = vec![
-            RowAction::new(Icon::Reply, tr("Reply"), "R", Message::Mail(MailAction::Reply, id())),
-            task,
-            RowAction::new(Icon::Archive, tr("Archive"), "E", Message::Mail(MailAction::Archive, id())),
-        ];
+        let mut buttons = filing_actions(folders, &message.account, Some(&message.folder), &message.id, "E");
+        buttons.push(task);
         return (buttons, None);
     }
     let answer = |(icon, word, answer): (Icon, &'static str, InvitationAnswer)| {
@@ -2115,6 +2159,7 @@ mod tests {
                         look,
                         entries: &all,
                         hidable: all.iter().map(|item| item.id.as_str()).collect(),
+                        folders: &folders,
                     };
                     let _ = list(data);
                 }
@@ -2154,7 +2199,7 @@ mod tests {
 
     /// Task E8.11 (finding 3): an invitation's card in "Invitations" offers Later and "…" for its
     /// entry, as the same mail does under "For me"; without an open entry only the answers and Task;
-    /// a message as any keeps Reply · Task · Archive.
+    /// a message as any has Archive · Delete · Task (issue #118).
     #[test]
     fn an_invitation_card_offers_later_and_more_for_its_entry() {
         let mut message = demo::mail_sample(now()).remove(0).summary;
@@ -2170,19 +2215,52 @@ mod tests {
         let entries = [entry.clone()];
         let words =
             |buttons: &[RowAction<'_, Message>]| buttons.iter().map(|b| b.label.to_string()).collect::<Vec<_>>();
-        let (buttons, more) = message_buttons(&message, &entries, &[entry.id.as_str()], now());
+        let folders = folders();
+        let (buttons, more) = message_buttons(&message, &entries, &[entry.id.as_str()], &folders, now());
         assert_eq!(words(&buttons), [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Later"), tr("Task")]);
         assert!(matches!(&buttons[3].on_press, Message::Act(id, Key::Snooze) if *id == entry.id));
         assert!(matches!(more.map(|more| more.on_press), Some(Message::Act(id, Key::Hide)) if id == entry.id));
-        let (_, more) = message_buttons(&message, &entries, &[], now());
+        let (_, more) = message_buttons(&message, &entries, &[], &folders, now());
         assert!(more.is_none(), "nothing to hide: no \"…\"");
-        let (alone, more) = message_buttons(&message, &[], &[], now());
+        let (alone, more) = message_buttons(&message, &[], &[], &folders, now());
         assert_eq!(words(&alone), [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Task")], "no entry: no Later");
         assert!(more.is_none());
         let done = Item { state: State::Done { at: now() }, ..entry.clone() };
-        assert_eq!(message_buttons(&message, &[done], &[], now()).0.len(), 4, "a done entry is put away");
+        assert_eq!(message_buttons(&message, &[done], &[], &folders, now()).0.len(), 4, "a done entry is put away");
         let plain = MessageSummary { invite: None, ..message.clone() };
-        assert_eq!(words(&message_buttons(&plain, &entries, &[], now()).0), [tr("Reply"), tr("Task"), tr("Archive")]);
+        let words_of = words(&message_buttons(&plain, &entries, &[], &folders, now()).0);
+        assert_eq!(words_of, [tr("Archive"), tr("Delete"), tr("Task")]);
+    }
+
+    /// Issue #118: a message's row and card file it – Archive (`e`) and Delete (`#`) send what the
+    /// keys send – and never offer Reply, which stands in the reader only. A button the account
+    /// cannot carry out is not there: no archive folder, no Archive; in the trash, no Delete.
+    #[test]
+    fn a_message_is_archived_and_deleted_from_its_row_never_replied_to() {
+        let message = MessageSummary { invite: None, ..demo::mail_sample(now()).remove(0).summary };
+        let folders = folders();
+        let (buttons, more) = message_buttons(&message, &[], &[], &folders, now());
+        let sent: Vec<&Message> = buttons.iter().map(|button| &button.on_press).collect();
+        assert!(matches!(sent[0], Message::Mail(MailAction::Archive, id) if *id == message.id), "{sent:?}");
+        assert!(matches!(sent[1], Message::Mail(MailAction::Delete, id) if *id == message.id), "{sent:?}");
+        assert!(matches!(sent[2], Message::AskMailTask(id) if *id == message.id), "{sent:?}");
+        assert_eq!(buttons.iter().map(|button| button.key).collect::<Vec<_>>(), ["E", "#", "T"]);
+        assert!(more.is_none());
+        assert!(!sent.iter().any(|message| matches!(message, Message::Mail(MailAction::Reply, _))));
+
+        let words =
+            |actions: Vec<RowAction<'_, Message>>| actions.iter().map(|a| a.label.to_string()).collect::<Vec<_>>();
+        let without = |role| folders.iter().filter(|f| f.role != Some(role)).cloned().collect::<Vec<_>>();
+        let filed = |folders: &[Folder], folder: Option<&str>| {
+            words(filing_actions(folders, &message.account, folder, &message.id, "E"))
+        };
+        assert_eq!(filed(&without(Role::Archive), None), [tr("Delete")], "no archive folder");
+        assert_eq!(filed(&without(Role::Trash), None), [tr("Archive")], "no trash");
+        let of =
+            |role| folders.iter().find(|f| f.account == message.account && f.role == Some(role)).map(|f| f.id.as_str());
+        assert_eq!(filed(&folders, of(Role::Trash)), [tr("Archive")], "in the trash already");
+        assert_eq!(filed(&folders, of(Role::Archive)), [tr("Delete")], "archived already");
+        assert!(filed(&[], None).is_empty(), "folders not known yet");
     }
 
     /// Task E8.11 (finding 5): a message's card is as high as the lines its preview takes.

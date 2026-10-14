@@ -1265,6 +1265,7 @@ mod tests {
             accounts: Vec::new(),
             hidable: Vec::new(),
             look: list::Look::Rows,
+            folders: &[],
         };
         let time = list::time_text(backup, &view, now());
         let reports = trf("{n} reports", &[("n", &3)]);
