@@ -622,6 +622,8 @@ mod tests {
                 assistant_retention: Default::default(),
                 voice: Default::default(),
                 assistant_default: None,
+                setup: Default::default(),
+                components_off: Default::default(),
             },
             ..Data::default()
         };

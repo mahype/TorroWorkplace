@@ -4,7 +4,7 @@ Konzept: [einrichtung.md](../einrichtung.md), Entwurf: [prototypes/setup/wizard.
 Regeln: [CLAUDE.md](../../CLAUDE.md), Ablauf je Aufgabe: Skill `torro-task`, Oberfläche: Skill `torro-design`. Wer
 einen Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review`.
 
-> **Stand 2026-10-14: Entwurf.** Erst nach Klärung der offenen Fragen im Konzept freigeben.
+> **Stand 2026-10-14: freigegeben.** Entscheidungen im Konzept, Abschnitt „Entscheidungen“.
 
 ```
 W.1 ──┬── W.2 (Komponenten wirken)
@@ -16,20 +16,25 @@ W.10 Sichtprüfung und API-Prüfung am Ende
 ```
 
 ### W.1 Gerüst: Stand, Komponenten, Nextcloud-Dienste
-- [ ] erledigt
+- [x] erledigt (Contacts erkennt W.1 noch nicht: CardDAV wird nicht abgefragt; kommt, wenn die Suite Kontakte nutzt)
 - **Modell:** Opus · **Dateien:** `crates/torro-core/src/settings.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
-  `crates/torroworkplace/src/{core,settings_service,pim}.rs`, `crates/torroworkplace/src/sources/nextcloud.rs`,
-  `crates/torro-nextcloud/src/capabilities.rs`, `docs/api-reference.md`
-- `Settings::setup` (`state: pending|skipped|done`, `version`) und `Settings::components` (je Komponente
-  `bool`, Standard an); `SettingKey::Setup` und `SettingKey::Component` (Wert wie `ListOrder`).
-- `AccountInfo::services` (optional): für Nextcloud die erkannten Dienste mit Zustand, aus CalDAV,
-  CardDAV und Capabilities, gelesen nach der Anmeldung und bei jedem Sync.
+  `crates/torroworkplace/src/{settings_service,pim}.rs`, `crates/torro-nextcloud/src/capabilities.rs`; mechanisch
+  `services: None` in jedem `AccountInfo { … }` (`torro-ipc/src/pim.rs`, `torroworkplace/src/{account,core}.rs`,
+  `account/{ai,ntfy}.rs`, `mail/service.rs`, `ui/{accounts,agents,glance,launch,overview,wizard}.rs`) und die zwei
+  neuen Felder im Test von `ui/general.rs`
+- `Settings::setup` (`state: pending|skipped|done`, `version`, `Setup::VERSION` = 1) und `Settings::components_off`
+  (nur die abgeschalteten, JSON `componentsOff`; Standard: alle an); `SettingKey::Setup` (`"pending"`, `"skipped"`,
+  `"done"`) und `SettingKey::Component` (`{"component": "mail", "enabled": false}`, Form wie `ListOrder`). Unbekannte
+  Komponenten und ein kaputter Stand kosten die Datei nicht.
+- `AccountInfo::services` (optional, `ServerService`, unbekannte Werte lesen als `other`): für Nextcloud und CalDAV
+  `calendars`/`tasks` nach den Sammlungen, für Nextcloud dazu `notifications`, `talk`, `push`, `deck`, `notes` aus den
+  Capabilities. Gelesen nach einem Sync, der geklappt hat, höchstens stündlich; `None` vor dem ersten Sync.
 - **Oberfläche:** keine (W.4 ff.)
 - **API:** `SetSetting { key: Setup | Component }` · `settings.set_setting` · Admin; `AccountInfo::services` in
   `accounts.list_accounts` · Read
 - **MCP:** `settings_set_setting`, `accounts_list_accounts` (gibt es)
-- **Abnahme:** alte `settings.json` ohne die Felder lädt mit Standard; Tests für Dienste-Erkennung mit `httpmock`
-  (Server mit und ohne Talk, ohne `VTODO`).
+- **Abnahme:** alte `settings.json` ohne die Felder lädt mit Standard; Tests für die Dienste mit einem Fake-Server
+  (mit Talk und Deck, ohne Capabilities, CalDAV-Konto wird nie nach Capabilities gefragt).
 
 ### W.2 Komponenten wirken
 - [ ] erledigt
@@ -37,12 +42,12 @@ W.10 Sichtprüfung und API-Prüfung am Ende
   `crates/torroworkplace/src/tray/menu.rs`, `crates/torroworkplace/src/ui/{apps,overview}.rs`,
   `crates/torroworkplace/src/{inbox,mail/service}.rs`
 - Abgeschaltete Komponenten fehlen in Umschalter, Tray und Overview; Seite Apps mit Schalter je Komponente;
-  keine Hintergrundarbeit, die nur ihr dient. Verhalten der Requests nach Entscheidung zu Frage 1.
+  keine Hintergrundarbeit, die nur ihr dient. Die Requests antworten weiter (Entscheidung 1).
 - **Oberfläche:** Apps (Schalter) · **API/MCP:** wie W.1
 
 ### W.3 KI-Anbieter-Katalog
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** Entscheidung zu Frage 2 · **Dateien:** `crates/torro-core/src/ai/**`,
+- **Modell:** Opus · **Braucht:** – (Entscheidung 2: Varianten je Anbieter) · **Dateien:** `crates/torro-core/src/ai/**`,
   `crates/torroworkplace/src/account/ai*.rs`, `crates/torroworkplace/src/ui/wizard.rs`
 - Katalog mit Name, Adresse, Protokoll, Schlüsselseite, Sitz, offenen Gewichten: OpenAI, Google Gemini, Mistral,
   DeepSeek, Qwen, Kimi, GLM, MiniMax (alle OpenAI-kompatibel). Anthropic kommt mit **KI.1** (eigenes Protokoll).

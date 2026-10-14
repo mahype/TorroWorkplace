@@ -1973,7 +1973,9 @@ static GET_SETTINGS: Command = Command {
                   calendar, the hidden calendars and task lists, the task lists ordered by hand \
                   (`listOrders`), whether inbox popups stay quiet during busy events (`quietWhenBusy`), the \
                   chosen design pack (`design`), how long the assistant keeps conversations \
-                  (`assistantRetention`) and talking to the assistant by voice (`voice`).",
+                  (`assistantRetention`), talking to the assistant by voice (`voice`), where the first-run \
+                  setup stands (`setup`: state pending, skipped or done, and its version) and the components \
+                  a person turned off (`componentsOff`; all others are on).",
 };
 
 static SET_SETTING: Command = Command {
@@ -2000,7 +2002,11 @@ static SET_SETTING: Command = Command {
                   the first in the voice folder) or `voice` (absolute path of a Piper .onnx voice, or \"\") or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
-                  model and effort optional, or null for the one used last).",
+                  model and effort optional, or null for the one used last) or `setup` (\"pending\" to run the \
+                  first-run setup again, \"skipped\" to put it off, \"done\" when finished) or `component` \
+                  ({\"component\": \"calendar\"|\"tasks\"|\"mail\"|\"inbox\"|\"assistant\"|\"workspaces\", \
+                  \"enabled\": false} turns a part of the suite off: it leaves the app switcher, the tray and the \
+                  overview and nothing runs in the background for it; accounts and data stay).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -4217,7 +4223,9 @@ mod tests {
                 "speak_answers",
                 "stt_model",
                 "voice",
-                "assistant_default"
+                "assistant_default",
+                "setup",
+                "component"
             ]
         );
 

@@ -456,6 +456,7 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         },
         AccountInfo {
             id: "nextcloud:anna@work.example.net".into(),
@@ -474,6 +475,7 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         },
         // A GitHub account whose token reads private repositories but has no projects scope, so
         // the detail page shows what is allowed and what is missing.
@@ -491,6 +493,7 @@ pub fn demo_data() -> Data {
             scopes: Some(vec!["repo".into(), "read:org".into(), "workflow".into()]),
             mail: None,
             ntfy: None,
+            services: None,
         },
         // A mail provider's calendars and tasks (task M7.2). Another sign-in than the mail accounts
         // below: the core never lists a CalDAV account beside the mail account of the same
@@ -512,6 +515,7 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         },
         // Two mail accounts (tasks M3.4, M5.2), so the agents' "Mail accounts" have something to
         // choose from and the account page shows both kinds: one with calendars and tasks, a
@@ -537,6 +541,7 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         },
     ];
     let template = |id: &str, name: &str, windows, age: Duration| TemplateSummary {
@@ -698,6 +703,7 @@ fn ntfy_account(topics: &[(&str, &str)], now: DateTime<Utc>) -> AccountInfo {
         scopes: None,
         mail: None,
         ntfy: Some(NtfyView { server: server.into(), topics, user: Some("anna".into()), login: true }),
+        services: None,
     }
 }
 
@@ -789,6 +795,7 @@ fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> Accoun
         scopes: None,
         mail: Some(view),
         ntfy: None,
+        services: None,
     }
 }
 
@@ -1026,6 +1033,7 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                     scopes: None,
                     mail: None,
                     ntfy: None,
+                    services: None,
                 },
             })
         }

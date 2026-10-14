@@ -10,6 +10,10 @@
 //!   <https://nextcloud-talk.readthedocs.io/en/latest/capabilities/>).
 //! - Push: `capabilities.notify_push.endpoints.websocket`
 //!   (<https://github.com/nextcloud/notify_push#capabilities>).
+//! - Deck and Notes (task W.1, only whether they are there, for the first-run setup): an object
+//!   under `capabilities.deck` and `capabilities.notes`
+//!   (<https://deck.readthedocs.io/en/latest/API/#capabilities>,
+//!   <https://github.com/nextcloud/notes/blob/main/docs/api/README.md#capabilities>).
 
 use serde_json::Value;
 
@@ -27,6 +31,10 @@ pub struct Capabilities {
     /// Read only: it is checked by nobody here, so it must never be connected to (or sent the app
     /// password) unless it lies on the account's own origin (rule 15, task E5.10).
     pub push: Option<String>,
+    /// The Deck app (boards and cards) is enabled.
+    pub deck: bool,
+    /// The Notes app is enabled.
+    pub notes: bool,
 }
 
 /// The notifications app of a server.
@@ -71,7 +79,8 @@ pub(crate) fn read_capabilities(data: &Value) -> Result<Capabilities, OcsError> 
         .map(str::trim)
         .filter(|address| !address.is_empty())
         .map(str::to_string);
-    Ok(Capabilities { notifications, talk, push })
+    let app = |name: &str| capabilities.get(name).is_some_and(Value::is_object);
+    Ok(Capabilities { notifications, talk, push, deck: app("deck"), notes: app("notes") })
 }
 
 /// The strings of a JSON list; nothing for anything else.
@@ -110,6 +119,19 @@ mod tests {
         let empty = read_capabilities(&json!({"capabilities": []})).expect("PHP's empty map");
         assert_eq!(empty, Capabilities::default());
         assert!(read_capabilities(&json!({"version": {}})).is_err());
+    }
+
+    #[test]
+    fn deck_and_notes_are_there_when_they_name_themselves() {
+        let data = json!({"capabilities": {
+            "deck": {"version": "1.14.0", "canCreateBoards": true, "apiVersions": ["1.0", "1.1"]},
+            "notes": {"api_version": ["1.3"], "version": "4.11.0"},
+        }});
+        let capabilities = read_capabilities(&data).expect("capabilities");
+        assert!(capabilities.deck && capabilities.notes);
+        assert!(!read_capabilities(&fixture()).expect("capabilities").deck, "the fixture's server has no Deck");
+        let odd = read_capabilities(&json!({"capabilities": {"deck": true, "notes": []}})).expect("capabilities");
+        assert!(!odd.deck && !odd.notes, "only an object counts");
     }
 
     #[test]

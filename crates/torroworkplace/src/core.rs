@@ -10730,6 +10730,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         };
         let work = torro_pim::Collection {
             id: format!("{ANNA_MAIL}/https://dav.example.org/work/"),

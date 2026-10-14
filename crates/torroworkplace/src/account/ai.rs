@@ -253,6 +253,7 @@ impl Slot {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         }
     }
 }

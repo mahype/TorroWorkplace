@@ -305,6 +305,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         }
     }
 
@@ -318,6 +319,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         }
     }
 

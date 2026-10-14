@@ -1,6 +1,6 @@
 # Einrichtung beim ersten Start
 
-Stand: 2026-10-14. **Entwurf zur Besprechung.** Klickbarer Entwurf:
+Stand: 2026-10-14. **Freigegeben** (Entscheidungen am Ende). Klickbarer Entwurf:
 [prototypes/setup/wizard.html](prototypes/setup/wizard.html). Aufgaben: [tasks/einrichtung.md](tasks/einrichtung.md).
 
 Wer Torro Workplace zum ersten Mal startet, sieht bisher die Steuerzentrale mit leeren Seiten und muss
@@ -34,7 +34,8 @@ selbst wissen, wo er anfängt. Die Einrichtung führt einmal durch alles, was di
 | General › „Run setup again“ | Startet bei Schritt 1; Verbundenes steht schon als erledigt da |
 | Neue Version bringt einen neuen Schritt (z. B. KI) | Overview: „New in setup: AI“, nicht ungefragt öffnen |
 
-Gespeichert wird nur der Stand in `settings.json`: `setup: { state: pending | skipped | done, version }`.
+Gespeichert wird nur der Stand in `settings.json`: `setup: { state: pending | skipped | done, version }`, dazu
+`componentsOff` mit den abgeschalteten Komponenten.
 Mit `version` erkennt die Suite, dass es seit dem letzten Durchlauf neue Schritte gibt. Welcher Schritt
 erledigt ist, leitet die Oberfläche aus den Daten ab (Konto da, Komponente gewählt …), nicht aus einem
 eigenen Merker.
@@ -95,7 +96,7 @@ Prüfen zeigt der Schritt, **was der Server hat**, als Liste mit Zustand:
 |---|---|---|
 | Calendars | CalDAV antwortet, mindestens ein Kalender mit `VEVENT` | Kalender |
 | Tasks | Kalender mit `VTODO` (die Tasks-App ist nur die Weboberfläche) | Aufgaben |
-| Contacts | CardDAV antwortet | später |
+| Contacts | CardDAV antwortet (noch nicht abgefragt) | später |
 | Notifications | Capabilities `notifications` | Eingang |
 | Talk | Capabilities `spreed` | Eingang |
 | Push | Capabilities `notify_push` | Eingang ohne Abfragen |
@@ -216,7 +217,7 @@ Eine abgeschaltete Komponente
 - behält ihre Konten und Daten. Kalender und Aufgaben teilen sich Konten; ein Konto wird erst entfernt,
   wenn der Nutzer es unter Accounts entfernt.
 
-Ob die Requests einer abgeschalteten Komponente weiter antworten, ist offen (Frage 1).
+Die Requests einer abgeschalteten Komponente antworten weiter (Entscheidung 1).
 
 ## API und MCP
 
@@ -238,17 +239,16 @@ Befehle. Neu sind nur zwei Einstellungen und ein Feld.
 | Modell des Assistenten | Schritt 8 | `SetSetting { key: AssistantDefault }` · Admin | `settings_set_setting` |
 | KI-Anbieter-Katalog | Schritt 8, Accounts › Add › AI | statisch in `torro_core::ai` (keine Daten, nur Beschreibung); Agenten brauchen ihn nicht, weil sie keine KI-Konten verbinden | – |
 
-## Offene Fragen
+## Entscheidungen
 
-1. **Komponente aus, und die API?** Vorschlag: Abschalten betrifft Sichtbarkeit und Hintergrundarbeit;
-   die Requests antworten weiter, weil die Daten noch da sind. Alternative: `unsupported` mit Satz
-   „Mail is turned off“.
-2. **`AiProvider` erweitern** (eine Variante je Anbieter) oder ein Katalog mit `preset`-Kennung neben
-   `openai_compatible`? Vorschlag: Varianten, weil Schlüsselseite, Modell-Liste und Fähigkeiten je
-   Anbieter verschieden sind. Das ändert eine festgelegte Schnittstelle (neue Enum-Werte) und braucht
-   deine Freigabe.
-3. **Chinesische Anbieter:** internationale Endpunkte als Standard, China-Endpunkte unter „Advanced“?
-4. **Workspaces:** nur „Hyprland found“ zeigen, oder hier zwischen Tiling- und Fenster-Modus
-   ([modes.md](modes.md)) wählen lassen?
-5. **Kalender-Abos (ICS) und Google/Microsoft:** in die erste Version der Einrichtung oder später als
-   weitere Zeilen?
+Entschieden am 2026-10-14 (Vorschläge übernommen):
+
+1. **Komponente aus** betrifft Sichtbarkeit und Hintergrundarbeit. Die Requests der Komponente
+   antworten weiter, weil die Daten noch da sind.
+2. **`AiProvider` bekommt je Anbieter eine Variante** (OpenAI, Gemini, Mistral, DeepSeek, Qwen, Kimi,
+   GLM, MiniMax; Anthropic mit KI.1). Neue Enum-Werte sind freigegeben (W.3).
+3. **Chinesische Anbieter:** internationale Endpunkte als Standard, China-Endpunkte unter „Advanced“.
+4. **Workspaces:** die Einrichtung zeigt nur, ob ein Tiling-Manager gefunden wurde. Die Wahl zwischen
+   Tiling- und Fenster-Modus kommt mit [modes.md](modes.md).
+5. **Kalender-Abos (ICS), Google und Microsoft** kommen später als weitere Zeilen, nicht in die erste
+   Version.

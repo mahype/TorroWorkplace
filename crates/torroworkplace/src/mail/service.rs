@@ -808,6 +808,7 @@ impl Mailbox {
             scopes: None,
             mail: Some(view),
             ntfy: None,
+            services: None,
         }
     }
 

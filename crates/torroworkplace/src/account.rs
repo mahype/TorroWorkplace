@@ -748,6 +748,7 @@ pub mod github {
                 scopes: self.scopes.clone(),
                 mail: None,
                 ntfy: None,
+                services: None,
             }
         }
 

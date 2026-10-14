@@ -2187,6 +2187,16 @@ pub enum SettingKey {
     /// (`torro_core::settings::AssistantDefault`). The engine is not checked here: an engine that is
     /// not offered when a chat starts is passed over.
     AssistantDefault,
+    /// Where the first-run setup stands (task W.1, `docs/einrichtung.md`): `"pending"` (start it
+    /// again), `"skipped"` (put off: the overview offers to continue) or `"done"` (finished).
+    /// Finishing or putting it off records the setup's version (`torro_core::settings::Setup`).
+    Setup,
+    /// Turns one component of the suite on or off (task W.1): `{"component": "mail", "enabled":
+    /// false}`, components `calendar`, `tasks`, `mail`, `inbox`, `assistant`, `workspaces`
+    /// (`torro_core::settings::ComponentSwitch`). Off: not in the app switcher, the tray and the
+    /// overview, and nothing runs in the background only for it. Accounts and data stay, and its
+    /// requests keep answering.
+    Component,
 }
 
 /// The core's answer to one [`Request`].
@@ -2636,6 +2646,37 @@ pub struct AccountInfo {
     /// secret. `None` for every other kind, and left out of the JSON then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ntfy: Option<NtfyView>,
+    /// What the account's server offers (task W.1, for the first-run setup and the account's
+    /// page): for a CalDAV or Nextcloud account `calendars` and `tasks` when it has collections
+    /// for them, for a Nextcloud also what its capabilities name (`notifications`, `talk`, `push`,
+    /// `deck`, `notes`). A service that is not listed is not on the server. `None` until the
+    /// account's first sync that worked, and for every other kind; left out of the JSON then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<ServerService>>,
+}
+
+/// A service a server offers, in [`AccountInfo::services`] (task W.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerService {
+    /// Calendars with events (CalDAV `VEVENT`).
+    Calendars,
+    /// Task lists (CalDAV `VTODO`). On Nextcloud this does not need the Tasks app, which is only
+    /// the web page: CalDAV belongs to every Nextcloud.
+    Tasks,
+    /// Nextcloud's notifications app, for the inbox.
+    Notifications,
+    /// Nextcloud Talk, for the inbox.
+    Talk,
+    /// Nextcloud's push service (`notify_push`): news arrive without asking.
+    Push,
+    /// Nextcloud Deck (boards and cards).
+    Deck,
+    /// Nextcloud Notes.
+    Notes,
+    /// A service a newer core names that this version does not know; shown as nothing.
+    #[serde(other)]
+    Other,
 }
 
 /// An ntfy account as `accounts.list_accounts` lists it in [`AccountInfo::ntfy`] (task E5.12).
@@ -3512,6 +3553,19 @@ mod tests {
         let github = AccountInfo { scopes: Some(vec!["repo".into()]), kind: "github".into(), ..account };
         assert_eq!(serde_json::to_value(&github).expect("json")["scopes"], serde_json::json!(["repo"]));
         assert!(!serde_json::to_string(&github).expect("json").contains("\"mail\""), "no mail field for others");
+    }
+
+    #[test]
+    fn services_are_left_out_until_known_and_unknown_ones_read_as_other() {
+        let json = r#"{"id":"nextcloud:anna@cloud","kind":"nextcloud","label":"anna@cloud",
+            "state":{"state":"not-connected"},"collections":[]}"#;
+        let account: AccountInfo = serde_json::from_str(json).expect("an answer of an older core");
+        assert_eq!(account.services, None);
+        assert!(!serde_json::to_string(&account).expect("json").contains("services"));
+        let synced = AccountInfo { services: Some(vec![ServerService::Calendars, ServerService::Talk]), ..account };
+        assert_eq!(serde_json::to_value(&synced).expect("json")["services"], serde_json::json!(["calendars", "talk"]));
+        let newer: Vec<ServerService> = serde_json::from_str(r#"["tasks","whiteboard"]"#).expect("a newer core's");
+        assert_eq!(newer, [ServerService::Tasks, ServerService::Other]);
     }
 
     #[test]
