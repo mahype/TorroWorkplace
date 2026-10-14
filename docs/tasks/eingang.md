@@ -820,9 +820,24 @@ E8.9   unabhängig (torro-wm, core.rs)
   `plex`; Tastatur wie bisher (`e`, `s`, `t`, `r`, `m`).
 
 ### E8.3b Einladungen im Mail-Fenster beantworten
-- [ ] erledigt
+- [x] erledigt (`MessageSummary.invite` aus dem `text/calendar`-Teil, gelesen beim Sync der Texte und bei
+  `get_message`, Schema 3 mit gemerkter Antwort; `mail.respond_to_invitation` schreibt erst den Kalender, dann das
+  iTIP-`REPLY` als `multipart/alternative` mit `text/calendar; method=REPLY` über `send::send_message`, Schalter
+  „Nach außen“ wie `send_draft`, Ablehnen mit `confirm: on_delete` wartet. Frühere Kopie nur ein Termin der Suite
+  aus einer Mail (letzte Zeile „From mail: …“) mit der UID, ±12 h um den Termin; sie bleibt in ihrem Kalender,
+  sonst `collection` bzw. der erste beschreibbare. Serien `unsupported`, TZID-Zeiten als Ortszeit (Parser von
+  `torro-pim-caldav`). Mail-Fenster: Smart view „Invitations“ (vor „With attachments“, ohne Zahl), Karte mit
+  Termin-Chip und Accept · Maybe · Decline · Task (Ordner-Mails haben kein „Later“), Zeile mit Kalender-Zeichen,
+  Leser und Paneel mit Termin-Karte (Auswahl-Chips, gegebene Antwort gewählt), Hinweis ohne Undo; `--open
+  invitations|invitation`, Demo-Einladungen in `mail.rs`. **Offen:** kein „Hinweis auf Überschneidung“ (die
+  Oberfläche kann keine Termine lesen, `InboxClient` kennt `calendar.list_events` nicht), Karten der Einträge in
+  „For me“ zeigen die Einladung nicht (`list.rs`, Einträge tragen kein `invite`; Leser und Paneel schon), der
+  Eintrag wird beim Antworten nicht erledigt, kein Kalender wählbar in der Oberfläche. Sichtprüfung am Mac über
+  AeroSpace: sechs Größen dunkel, hell, compact, Plex)
 - **Modell:** Opus · **Braucht:** E8.3, E8.7a · **Dateien:** `crates/torro-mail/src/` (Zusammenfassung einer
-  Nachricht), `crates/torroworkplace/src/mail/{read,store,write}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  Nachricht), `crates/torroworkplace/src/mail/{read,store,write,send,sync}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torro-mail-imap/src/mime.rs` (Teil `text/calendar; method=…`), `crates/torro-pim-caldav/src/lib.rs`
+  (`pub use ical::parse_events`), `crates/torroworkplace/src/assistant/{data_rule,model}.rs` (freigegeben 2026-10-14),
   `crates/torroworkplace/src/{core,mcp,approvals,audit,daemon}.rs`, `crates/torroinbox/src/{app,mail,overview}.rs`,
   `crates/torro-core/src/i18n/de.rs`; Doku: `docs/{api,mail,eingang}.md`. Fehlt eine Datei, die der Compiler wegen
   neuer Felder erzwingt: nur `None`/`..` ergänzen und im Bericht nennen.

@@ -42,7 +42,9 @@ use torro_core::paths::AppPaths;
 use torro_core::settings::Settings;
 use torro_inbox::item::{Hidden, HideScope, MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::{AgentInfo, AgentKind, Item, Kind, Lane, Link, Rule, SourceInfo, SourceRef, StateFilter};
-use torro_mail::{Draft, Endpoint, Flag, Folder, MailSettings, Message, MessageSummary, Notify, Role, Services};
+use torro_mail::{
+    Draft, Endpoint, Flag, Folder, InvitationAnswer, MailSettings, Message, MessageSummary, Notify, Role, Services,
+};
 use torro_pim::model::GitHubLabel;
 use torro_pim::source::GitHubRepo;
 use torro_pim::{AccountState, Collection, Event, EventTime, Todo};
@@ -1478,6 +1480,50 @@ pub enum Request {
         /// The draft's id from `mail.save_draft`.
         id: String,
     },
+    /// Answers the invitation in the mail `id` of the mail account `account` (task E8.3b): sends the
+    /// organizer an iMIP `REPLY` from the account (`text/calendar; method=REPLY` beside a short text,
+    /// with the event's UID and sequence and the account as attendee with the answer as `PARTSTAT`),
+    /// and puts the event in a calendar. The answer is kept with the mail (`MessageSummary::invite`).
+    /// Answered with [`Response::InvitationAnswered`]: how the reply went and the event as stored.
+    ///
+    /// - `accept` and `tentative` create the event (busy) or update the copy made before: an event
+    ///   the suite made of a mail (its text ends with the line naming the mail) with the
+    ///   invitation's UID, in a calendar the caller sees, around the event's time. Other events with
+    ///   that UID are never touched. A copy stays in its calendar; without one the event goes into
+    ///   `collection` when given, else into the first writable calendar the caller sees. It is
+    ///   written without organizer and attendees, so no server sends a second answer.
+    /// - `decline` creates nothing and deletes such a copy.
+    ///
+    /// Everything comes from the mail as the core reads it from the server, never from the client.
+    /// The calendar is written first, then the reply sent; a failed send leaves the calendar as
+    /// written, and answering again is safe. Granted in `mail` (Write) and sending, like
+    /// `mail.send_draft`: for a client key `api::Rights::outbound` decides (`never` is
+    /// `forbidden`, `with_approval` waits for a person, [`Response::Pending`]; the summary names
+    /// the answer, the event's title and start as the mail store holds them, the account and the
+    /// calendar). The core also checks the calendar itself, before anyone is asked: write access in
+    /// `calendar` (named as `calendar.save_event`), for `decline` delete access (named as
+    /// `calendar.delete_event`, and asked for like any delete when `confirm` says so), and the
+    /// calendar in the client's selection.
+    ///
+    /// Codes: `not-found` for an account, a mail or a calendar the caller may not see (or when it
+    /// sees no writable calendar); `forbidden` as above; `error` for a mail without an invitation
+    /// that can be answered (only `REQUEST`s), an event that is over, ids over 300 bytes;
+    /// `unsupported` for an invitation to a series; `conflict` when the mail changed between asking
+    /// for approval and running or the calendar copy changed meanwhile; the send's codes as for
+    /// `mail.send_draft` (`auth`, `offline`, `busy`, `error`).
+    #[serde(rename = "mail.respond_to_invitation")]
+    RespondToInvitation {
+        /// The mail account: `mail:<address>` from `accounts.list_accounts`.
+        account: String,
+        /// The mail's id (`m:…`) from `mail.search_messages`.
+        id: String,
+        /// `accept`, `tentative` (maybe) or `decline`.
+        answer: InvitationAnswer,
+        /// The calendar's id from `calendar.list_calendars` for a new event; left out: the first
+        /// writable calendar. A copy made before stays where it is. Ignored for `decline`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        collection: Option<String>,
+    },
 
     // The assistant (task C.1, `docs/assistent.md`; wire types in [`assistant`]). The core keeps
     // the conversations in `<data>/assistant/<id>.jsonl` (0600) and runs the answers. For a client
@@ -2025,6 +2071,16 @@ pub enum Response {
         /// `accepted`, or `unknown` when the connection broke after the message was handed over;
         /// it is never sent again by itself.
         delivery: Delivery,
+    },
+    /// An invitation was answered ([`Request::RespondToInvitation`]).
+    InvitationAnswered {
+        /// How the reply to the organizer went: `accepted`, or `unknown` when the connection broke
+        /// after it was handed over (it is never sent again by itself).
+        delivery: Delivery,
+        /// The event as stored, with its `href` and `etag`, after `accept` or `tentative`; `None`
+        /// after `decline`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event: Option<Event>,
     },
     /// The models of an AI account ([`Request::AiModels`]), in the server's order.
     AiModels {

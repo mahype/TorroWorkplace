@@ -269,6 +269,7 @@ weder Mail noch Slack).
 | Statistik (E8.8a) | Zentrale › Insights | `inbox.get_stats` · Read | `inbox_get_stats` |
 | Ruhe-Status (E8.5b) | Zentrale rechts „Quiet“, in Schmal und Mittel eine Zeile unter den Zahlen bzw. Kacheln | `inbox.get_quiet` · Read (Termintitel nur mit Kalender-Leserecht) | `inbox_get_quiet` |
 | Termin aus einem Eintrag (E8.5b) | „Event“ bei „To sort“, Paneel, Taste `c` | `inbox.create_event_from_item` · Write (braucht auch Kalender-Schreibrecht) | `inbox_create_event_from_item` |
+| Einladung beantworten (E8.3b) | Mail-Fenster: Karte (Accept · Maybe · Decline · Task), Leser und Paneel (Karte des Termins), Smart view „Invitations“ | `mail.respond_to_invitation` · Write + „Nach außen“ (prüft auch Kalender-Schreibrecht, beim Ablehnen Löschrecht) | `mail_respond_to_invitation` |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 

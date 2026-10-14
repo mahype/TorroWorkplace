@@ -80,7 +80,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `create_event_from_item` ¹⁵, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
-| `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
+| `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
 | `apps` | `list_apps` | `open_app` ¹³ | | |
@@ -177,6 +177,8 @@ Die Stufe hängt teils vom Request ab (`Request::operation()`):
   `forbidden`, `with_approval` (Voreinstellung, auch in allen Vorlagen und für alte `clients.json`) →
   `pending`, `free` → sendet. Mit `confirm` gilt die strengere Regel: `free` mit `on_every_change` wartet
   trotzdem (`Rights::needs_approval_of`). Hook-Clients haben `never`.
+- `respond_to_invitation` (E8.3b, ¹⁶) verschickt eine Antwort an den Organisator und gilt darum wie
+  `send_draft`: `Write` und „Nach außen“ (`Command::is_outbound`).
 
 Grenzen: höchstens 100 `ids`, `limit` 1 bis 100, `query` höchstens 500 Zeichen, ein Entwurf mit höchstens
 100 Empfängern (mit Bcc), 20 Anhängen und 1 MiB Text, Kennungen und `cursor` höchstens 300 Bytes; sonst
@@ -416,6 +418,36 @@ in `calendar` (sonst `forbidden`, genannt als `calendar.save_event`), der Kalend
 für Freigaben und Einträge der Suite, bei Mail Schreibrecht in `mail`). Das Protokoll nennt nur Eintrag
 und Kalender, nie Titel oder Zeiten. Für entfernte Modelle des Assistenten ist die Antwort zurückgehalten wie
 bei `create_task_from_item` (der Titel kann der Betreff einer Mail sein).
+
+¹⁶ Einladungen beantworten (E8.3b). `MessageSummary` trägt optional `invite` (`#[serde(default)]`): Titel,
+Beginn, Ende, ganztägig und die aus der Suite gegebene Antwort (`answered`), gelesen aus dem `text/calendar`-Teil
+(iMIP `REQUEST`, kein `CANCEL`, keine Serie), wo der Kern eine ganze Nachricht liest (Sync der Texte,
+`get_message`), gespeichert in der Zeile der Nachricht (Schema 3). `respond_to_invitation { account, id, answer,
+collection? }` mit `answer` `accept | tentative | decline` liest die Einladung beim Server neu und schreibt erst
+den Kalender, dann die Antwort: Annehmen und Vielleicht legen den Termin (busy, UID der Einladung, ohne
+Organisator und Teilnehmer, damit kein CalDAV-Server selbst eine zweite Antwort schickt) an bzw. aktualisieren
+die frühere Kopie – nur ein Termin, den die Suite aus einer Mail gemacht hat (letzte Zeile „From mail: …“),
+mit der UID der Einladung in einem sichtbaren Kalender, einen halben Tag um den Termin gesucht; andere Termine
+mit dieser UID (selbst angelegte, vom Server-Scheduling eingetragene) fasst der Dienst nie an, denn die UID kommt
+von außen. Die Kopie bleibt in ihrem Kalender, ein neuer Termin kommt nach `collection`, sonst in den ersten
+beschreibbaren Kalender; Ablehnen legt nichts an und löscht die Kopie.
+Dann geht ein iTIP-`REPLY` an den Organisator: über das Konto, als Antwort auf die Mail,
+`multipart/alternative` mit kurzem Text und `text/calendar; method=REPLY` (UID, `SEQUENCE`, Zeiten, Titel,
+`ATTENDEE` mit der Adresse des Kontos, wie die Einladung sie schreibt, und `PARTSTAT`), versandt wie ein Entwurf
+(Journal, Kopie in „Gesendet“, `send::send_message`), aber ohne Entwurf. Antwort `invitation_answered` mit
+`delivery` und dem Termin. Rechte: `Write` in `mail` und „Nach außen“ wie `send_draft`, dazu prüft der Dienst
+vor der Freigabe und bei der Ausführung Leserecht und Konto in `mail` (sonst `not-found`), Schreibrecht in
+`calendar` (sonst `forbidden`, genannt als `calendar.save_event`), für Ablehnen Löschrecht (genannt als
+`calendar.delete_event`; mit `confirm: on_delete` wartet Ablehnen wie jedes Löschen auf eine Freigabe) und den
+Kalender in `calendars` (sonst `not-found`). Fehler: `error` ohne beantwortbare Einladung oder für einen
+vergangenen Termin, `unsupported` für Serien, `conflict` wenn Mail oder Termin sich bis zur Freigabe geändert
+haben (Fingerabdruck über Mail, UID, Sequenz, Beginn, Antwort und `href`/`etag` der Kopie), sonst die Codes des
+Versands. Grenze wie bei E8.5b: Der Termin trägt danach Text von außen, `calendar.list_events` kennzeichnet ihn
+nicht als `untrusted`. Die Freigabe
+nennt Antwort, Titel und Beginn aus dem Mail-Speicher, Konto, Organisator und Kalender (Name aus dem Cache).
+Das Protokoll nennt Konto, die Nachricht als Prüfsumme und einen genannten Kalender, nie Antwort, Titel oder
+Organisator. Für entfernte Modelle des Assistenten ist die Antwort zurückgehalten (sie trägt den Termin), und
+der Assistent ordnet das Tool `mail` und `calendar` zu, so greift ein im Gespräch abgeschalteter Kalender.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

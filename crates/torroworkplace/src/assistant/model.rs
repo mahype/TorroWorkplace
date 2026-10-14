@@ -264,11 +264,12 @@ impl Answering {
         };
         // Making a task of an inbox entry writes a task too (as the core checks its rights); making
         // an event of one writes to a calendar (task E8.5b); making a task of a mail in a folder
-        // reads the mail (task E8.7a).
+        // reads the mail (task E8.7a); answering an invitation writes to a calendar (task E8.3b).
         let touched = match tool.command.name {
             "inbox.create_task_from_item" => vec![tool.command.area, Area::Tasks],
             "inbox.create_event_from_item" => vec![tool.command.area, Area::Calendar],
             "tasks.create_todo_from_mail" => vec![tool.command.area, Area::Mail],
+            "mail.respond_to_invitation" => vec![Area::Mail, Area::Calendar],
             _ => vec![tool.command.area],
         };
         if let Some(area) = touched.into_iter().find(|area| self.job.without.contains(area)) {
@@ -822,6 +823,28 @@ pub(crate) mod tests {
         finished(&assistant, &id).await;
         assert!(host.ran.lock().expect("lock").is_empty(), "nothing reached the core");
         assert!(tool_result(&script, "tasks_create_todo_from_mail").contains("switched off mail"));
+    }
+
+    #[tokio::test]
+    async fn answering_an_invitation_needs_the_calendar_switched_on() {
+        // Answering an invitation puts the event in a calendar (task E8.3b): with the calendar
+        // switched off it is refused, though mail is on, and nothing reaches the core.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let call = ToolCall {
+            id: "call_mail_respond_to_invitation".into(),
+            name: "mail_respond_to_invitation".into(),
+            arguments: json!({"account": "mail:anna@example.org", "id": "m1", "answer": "accept"}).to_string(),
+        };
+        let step = ChatReply { tool_calls: vec![call], finish: Finish::ToolCalls, ..ChatReply::default() };
+        let script = Script::new(vec![Step::Reply(Vec::new(), step), says("Sorry.")]);
+        let mut rights = reader();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Write, admin: false });
+        rights.areas.insert(Area::Calendar, AreaRights { level: Level::Write, admin: false });
+        let (assistant, host) = set_up(dir.path(), Some(rights), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "Accept Jonas's invitation", vec![Area::Calendar]).await;
+        finished(&assistant, &id).await;
+        assert!(host.ran.lock().expect("lock").is_empty(), "nothing reached the core");
+        assert!(tool_result(&script, "mail_respond_to_invitation").contains("switched off calendar"));
     }
 
     #[tokio::test]

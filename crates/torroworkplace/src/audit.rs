@@ -286,6 +286,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::CreateEventFromItem { id: entry, collection: calendar, .. } => {
             vec![random("inbox", entry), collection(calendar)]
         }
+        // Answering an invitation (task E8.3b): the account and the mail hashed as for sending, the
+        // calendar when one is named; never the answer, the title, the times or the organizer.
+        Request::RespondToInvitation { account: name, id: message, collection: calendar, .. } => {
+            [Some(account(name)), Some(format!("message:{}", hashed(message))), calendar.as_deref().map(collection)]
+                .into_iter()
+                .flatten()
+                .collect()
+        }
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
         Request::RemoveRule { id: rule } => vec![random("rule", rule)],
         // Mail (security rule 3 of task M2.1): never the address signed in with, nor a search, a
@@ -691,6 +699,19 @@ pub(crate) mod tests {
         };
         assert_eq!(super::ids(&event), vec!["inbox:e1".to_string(), logged[0].clone()]);
         assert!(super::ids(&Request::GetQuiet).is_empty());
+        // Task E8.3b: an answered invitation logs the account, the mail hashed and the calendar.
+        let answer = Request::RespondToInvitation {
+            account: "mail:anna@example.org".into(),
+            id: "m:0a1b2c3d".into(),
+            answer: torro_mail::InvitationAnswer::Accept,
+            collection: Some(url.into()),
+        };
+        let expected = vec![
+            "account:mail:anna@example.org".to_string(),
+            format!("message:{}", hashed("m:0a1b2c3d")),
+            logged[0].clone(),
+        ];
+        assert_eq!(super::ids(&answer), expected);
     }
 
     /// Task E8.7a: a task made of a mail logs its list only, opening an app with a target the app

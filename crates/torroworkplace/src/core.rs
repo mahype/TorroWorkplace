@@ -466,6 +466,125 @@ fn mail_fingerprint(found: &crate::mail::inbox_feed::MailForTask) -> String {
 /// The longest account or mail id `tasks.create_todo_from_mail` takes, as the mail commands do.
 const MAIL_ID_MAX: usize = 300;
 
+/// The fields of `mail.respond_to_invitation` ([`Request::RespondToInvitation`], task E8.3b).
+struct InvitationReply {
+    account: String,
+    id: String,
+    answer: torro_mail::InvitationAnswer,
+    collection: Option<String>,
+}
+
+impl InvitationReply {
+    /// The request these fields make, with `collection` as the calendar it runs on.
+    fn request(&self, collection: Option<String>) -> Request {
+        Request::RespondToInvitation {
+            account: self.account.clone(),
+            id: self.id.clone(),
+            answer: self.answer,
+            collection,
+        }
+    }
+}
+
+/// What answering an invitation would do (task E8.3b, [`Core::plan_invitation_answer`]): the mail
+/// as the store holds it, the invitation as read from the server, the copy of the event made
+/// before (in a calendar the caller sees, found by the invitation's UID) and the calendar the event
+/// goes into (`None` for a decline without a copy).
+struct InvitationPlan {
+    found: crate::mail::inbox_feed::MailForTask,
+    invited: crate::mail::read::Invited,
+    invitation: crate::mail::read::Invitation,
+    copy: Option<torro_pim::Event>,
+    target: Option<String>,
+}
+
+impl InvitationPlan {
+    /// What a person allows when they allow the answer (task E8.3b): the mail as the store holds it
+    /// ([`mail_fingerprint`]), the event's UID, sequence and start, the answer and the copy made
+    /// before (its `href` and `etag`), hashed. An organizer's update of the event, another mail or a
+    /// copy changed meanwhile makes the approval `conflict`.
+    fn fingerprint(&self, answer: torro_mail::InvitationAnswer) -> String {
+        use sha2::{Digest, Sha256};
+        let event = &self.invitation.event;
+        let start = serde_json::to_string(&event.start).unwrap_or_default();
+        let sequence = self.invitation.sequence.to_string();
+        let mail = mail_fingerprint(&self.found);
+        // The copy as it is now: one changed meanwhile is not overwritten or deleted unseen.
+        let copy = self.copy.as_ref().map(|copy| {
+            format!("{}\u{0}{}", copy.href.as_deref().unwrap_or_default(), copy.etag.as_deref().unwrap_or_default())
+        });
+        let parts =
+            [mail.as_str(), &event.uid, &sequence, &start, answer.as_str(), copy.as_deref().unwrap_or_default()];
+        let digest = Sha256::digest(parts.join("\u{0}").as_bytes());
+        digest.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+}
+
+/// The event an accepted (or tentatively accepted) invitation puts into `collection` (task E8.3b):
+/// its UID, title, times, place and text as the invitation has them, the line naming the mail after
+/// the text as the way back, busy time. Without organizer and attendees (the model has neither), so
+/// no CalDAV server sends an answer of its own. Over `copy` (the one made before, its `href` and
+/// `etag`), else new.
+fn event_from_invitation(
+    invitation: &crate::mail::read::Invitation,
+    found: &crate::mail::inbox_feed::MailForTask,
+    collection: String,
+    copy: Option<&torro_pim::Event>,
+) -> torro_pim::Event {
+    let event = &invitation.event;
+    let line = crate::mail::inbox_feed::from_mail_line(&found.summary);
+    torro_pim::Event {
+        uid: event.uid.trim().to_string(),
+        collection,
+        href: copy.and_then(|copy| copy.href.clone()),
+        etag: copy.and_then(|copy| copy.etag.clone()),
+        summary: event.summary.trim().to_string(),
+        start: event.start,
+        end: event.end,
+        location: event.location.clone(),
+        description: with_line(event.description.clone(), Some(line)),
+        recurring: false,
+        transparency: torro_pim::Transparency::Opaque,
+    }
+}
+
+/// `forbidden` unless the client with `rights` may write events, and for a decline delete them
+/// (task E8.3b): named as `calendar.save_event` and `calendar.delete_event`, which it may not use
+/// either. `None` when it may.
+fn invitation_calendar_refusal(
+    answer: torro_mail::InvitationAnswer,
+    rights: &torro_ipc::api::Rights,
+) -> Option<Response> {
+    if !rights.area(Area::Calendar).allows(Access::Write) {
+        return Some(Refused::Forbidden { command: "calendar.save_event" }.response());
+    }
+    let declines = answer == torro_mail::InvitationAnswer::Decline;
+    (declines && !rights.area(Area::Calendar).allows(Access::Delete))
+        .then(|| Refused::Forbidden { command: "calendar.delete_event" }.response())
+}
+
+/// A decline removes the copy of the event made before: for a client whose `confirm` asks before
+/// deleting, it waits for a person like any delete does (task E8.3b), whatever `outbound` says.
+fn invitation_deletes_waiting(request: &Request, rights: &torro_ipc::api::Rights) -> bool {
+    matches!(request, Request::RespondToInvitation { answer: torro_mail::InvitationAnswer::Decline, .. })
+        && rights.needs_approval(Access::Delete)
+}
+
+/// The `error` for a mail that carries no invitation to answer.
+fn no_invitation() -> Response {
+    refusal("error", "the mail holds no invitation that can be answered (only requests are)".into())
+}
+
+/// `event` was made by the suite of a mail (task E8.3b): the last line of its text is the line that
+/// names the mail ([`crate::mail::inbox_feed::from_mail_line`]), in English or in the core's
+/// language. Only such an event is taken as the copy of an invitation answered before.
+fn made_from_mail(event: &torro_pim::Event) -> bool {
+    const TEMPLATE: &str = "From mail: {sender}, “{subject}”, {day}";
+    let prefix = |template: &'static str| template.split("{sender}").next().unwrap_or_default();
+    let last = event.description.as_deref().and_then(|text| text.lines().last()).unwrap_or_default();
+    [prefix(TEMPLATE), prefix(tr(TEMPLATE))].into_iter().any(|prefix| !prefix.is_empty() && last.starts_with(prefix))
+}
+
 /// The longest target `apps.open_app` takes.
 const TARGET_MAX: usize = 1000;
 
@@ -1029,6 +1148,19 @@ impl Core {
         {
             return Ok(no_mail());
         }
+        // Answering an invitation reads the mail and writes the calendar too (task E8.3b): the
+        // account, the calendar rights, the invitation and the calendar before anyone is asked.
+        if let Request::RespondToInvitation { account, id, answer, collection } = &request {
+            let reply = InvitationReply {
+                account: account.clone(),
+                id: id.clone(),
+                answer: *answer,
+                collection: collection.clone(),
+            };
+            if let Err(refused) = self.plan_invitation_answer(&reply, reach).await {
+                return Ok(*refused);
+            }
+        }
         if let Request::OpenApp { app, target: Some(target) } = &request
             && let Err(refused) = self.open_target(app, target, reach).await
         {
@@ -1082,7 +1214,11 @@ impl Core {
         // A question of an agent (task E2.5) is nothing but an approval: it always asks.
         let question = matches!(request, Request::AskPermission { .. });
         // `needs_approval_of`: sending mail also waits as `Rights::outbound` says (task M2.1).
-        if question || rights.needs_approval_of(operation) || self.opens_a_web_page(&request, inbox_client.as_ref()) {
+        if question
+            || rights.needs_approval_of(operation)
+            || invitation_deletes_waiting(&request, &rights)
+            || self.opens_a_web_page(&request, inbox_client.as_ref())
+        {
             return self.ask_approval(&id, request).await;
         }
         // A client sends as itself: its own drafts only, checked again where it runs (task M3.3).
@@ -1220,6 +1356,28 @@ impl Core {
                 // same draft.
                 let facts = Facts { mail: Some(mail), ..Facts::default() };
                 fingerprint = Some((pinned, crate::approvals::details(&request, &facts)));
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
+            // An answer to an invitation (task E8.3b): planned now as it will run, the calendar the
+            // event goes into written into the request, the summary from the mail store, the
+            // approval pinned to the mail and the event.
+            (Request::RespondToInvitation { account, id, answer, collection }, _) => {
+                let Some(info) = &info else { return Err(Refused::Forbidden { command }) };
+                let reply = InvitationReply {
+                    account: account.clone(),
+                    id: id.clone(),
+                    answer: *answer,
+                    collection: collection.clone(),
+                };
+                let plan = match self.plan_invitation_answer(&reply, Reach::Client(&info.rights)).await {
+                    Ok(plan) => plan,
+                    Err(refused) => return Ok(*refused),
+                };
+                // For a decline the calendar the copy is removed from (the handler finds it again).
+                let request = reply.request(plan.target.clone());
+                let facts = self.invitation_facts(&plan, account).await;
+                fingerprint = Some((plan.fingerprint(*answer), Vec::new()));
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
@@ -1469,6 +1627,13 @@ impl Core {
         if let Request::CreateTodoFromMail { account, id, collection, title, due } = request {
             let approved = Some(fingerprint.unwrap_or_default());
             return self.create_todo_from_mail(MailTask { account, id, collection, title, due }, reach, approved).await;
+        }
+        // An answer to an invitation runs only on the mail and the event the person was shown
+        // (task E8.3b); an approval without a fingerprint matches nothing.
+        if let Request::RespondToInvitation { account, id, answer, collection } = request {
+            let approved = Some(fingerprint.unwrap_or_default());
+            let reply = InvitationReply { account, id, answer, collection };
+            return self.respond_to_invitation(reply, reach, approved).await;
         }
         // Sending runs only on what the person was shown: an approval without a fingerprint
         // (none is ever stored without one) matches nothing.
@@ -1787,6 +1952,12 @@ impl Core {
             | Request::MoveMail { .. }
             | Request::DeleteMail { .. }
             | Request::SaveDraft { .. }) => self.change_mail(request, reach).await,
+            // Answering an invitation (task E8.3b): for a client after `Core::handle_client` checked
+            // its sending; the handler checks mail and calendar itself.
+            Request::RespondToInvitation { account, id, answer, collection } => {
+                let reply = InvitationReply { account, id, answer, collection };
+                self.respond_to_invitation(reply, reach, None).await
+            }
             // The assistant (task C.1): rights were checked in `handle_from`; the assistant runs
             // with its own client, not with the caller's reach.
             request @ (Request::ListEngines
@@ -2115,6 +2286,218 @@ impl Core {
             Err(crate::mail::service::MailError::NotFound) => Err(Box::new(no_mail())),
             Err(err) => Err(Box::new(err.response())),
         }
+    }
+
+    /// What answering an invitation (`mail.respond_to_invitation`, task E8.3b) would do for
+    /// `reach`, or the answer when it cannot be done – checked before anyone is asked to approve it
+    /// and again when it runs ([`Core::respond_to_invitation`]). In this order:
+    ///
+    /// 1. the lengths (`error`); the mail account for a client (read access to `mail` and the
+    ///    account, else `not-found` as for none); for a client the calendar rights
+    ///    ([`invitation_calendar_refusal`]: `forbidden`);
+    /// 2. the mail in the account's store (`not-found`), then the invitation read from the server
+    ///    ([`crate::mail::read::fetch_invitation`]): none, or none that asks for an answer, is
+    ///    `error`, a series `unsupported`, an event that is over `error`;
+    /// 3. the copy made before: the event with the invitation's UID among the events of the days
+    ///    around it in the calendars `reach` sees ([`Core::invitation_copy`]);
+    /// 4. the calendar: for a decline the copy's (none without a copy); else `collection`, the
+    ///    copy's, or the first writable calendar `reach` sees (`not-found` without one). A calendar
+    ///    the client does not see is `not-found` ([`PimService::sees_calendar`]).
+    async fn plan_invitation_answer(
+        &self,
+        reply: &InvitationReply,
+        reach: Reach<'_>,
+    ) -> Result<InvitationPlan, Box<Response>> {
+        use torro_mail::InvitationAnswer;
+        let InvitationReply { account, id, answer, collection } = reply;
+        if account.len() > MAIL_ID_MAX || id.len() > MAIL_ID_MAX {
+            return Err(Box::new(refusal("error", format!("account and id may hold at most {MAIL_ID_MAX} bytes"))));
+        }
+        if !reads_mail(reach, account) {
+            return Err(Box::new(no_mail()));
+        }
+        if let Reach::Client(rights) = reach
+            && let Some(refused) = invitation_calendar_refusal(*answer, rights)
+        {
+            return Err(Box::new(refused));
+        }
+        let found = match crate::mail::inbox_feed::mail_for_task(&self.mail, account, id).await {
+            Ok(found) => found,
+            Err(crate::mail::service::MailError::NotFound) => return Err(Box::new(no_mail())),
+            Err(err) => return Err(Box::new(err.response())),
+        };
+        let invited = crate::mail::read::fetch_invitation(&self.mail, account, id).await?;
+        let Some(invitation) = invited.invitation.clone() else { return Err(Box::new(no_invitation())) };
+        if invitation.method == "REQUEST" && invitation.event.recurring {
+            let message = "invitations to a series cannot be answered here yet; answer it in a calendar app";
+            return Err(Box::new(refusal("unsupported", message.into())));
+        }
+        if !invitation.answerable() {
+            return Err(Box::new(no_invitation()));
+        }
+        if invitation.ended(Utc::now()) {
+            return Err(Box::new(refusal("error", "the event of this invitation is over".into())));
+        }
+        let copy = self.invitation_copy(&invitation.event, reach).await?;
+        let target = match answer {
+            InvitationAnswer::Decline => copy.as_ref().map(|copy| copy.collection.clone()),
+            InvitationAnswer::Accept | InvitationAnswer::Tentative => {
+                // The copy stays where it is: moving it would delete it in its calendar unasked.
+                let chosen = copy.as_ref().map(|copy| copy.collection.clone()).or_else(|| collection.clone());
+                match chosen {
+                    Some(chosen) => Some(chosen),
+                    None => Some(self.first_writable_calendar(reach).await.ok_or_else(|| {
+                        Box::new(refusal("not-found", "there is no calendar to put the event in".into()))
+                    })?),
+                }
+            }
+        };
+        if let (Reach::Client(_), Some(target)) = (reach, &target)
+            && !self.pim.sees_calendar(reach, target).await
+        {
+            return Err(Box::new(no_collection(target)));
+        }
+        Ok(InvitationPlan { found, invited, invitation, copy, target })
+    }
+
+    /// The event with the UID of `event` (the invitation's) that a calendar `reach` sees holds, made
+    /// when the invitation was answered before: among the events from half a day before it to half a
+    /// day after it (mostly the calendar service's cache), so an organizer's move by some hours still
+    /// finds it. Only a copy the suite made of a mail counts ([`made_from_mail`]): the UID comes from
+    /// outside, and an invitation must not overwrite or delete any other event that happens to have
+    /// it (one the person made, one a server's scheduling put there). Occurrences of a series do not
+    /// count. A calendar that cannot be read is the answer.
+    async fn invitation_copy(
+        &self,
+        event: &torro_pim::Event,
+        reach: Reach<'_>,
+    ) -> Result<Option<torro_pim::Event>, Box<Response>> {
+        let instant = |time: torro_pim::EventTime| match time {
+            torro_pim::EventTime::Date(day) => day.and_time(chrono::NaiveTime::MIN).and_utc(),
+            torro_pim::EventTime::DateTime(at) => at,
+        };
+        let margin = chrono::TimeDelta::hours(12);
+        let (start, end) = (instant(event.start) - margin, instant(event.end.unwrap_or(event.start)) + margin);
+        match self.pim.handle_within(Request::Events { start, end }, reach).await {
+            Response::Events { events } => {
+                let copy = |known: &torro_pim::Event| {
+                    known.uid == event.uid.trim() && !known.recurring && made_from_mail(known)
+                };
+                Ok(events.into_iter().find(copy))
+            }
+            failed => Err(Box::new(failed)),
+        }
+    }
+
+    /// The first calendar `reach` sees that can be written to, in the order `calendar.list_calendars`
+    /// lists them; `None` without one.
+    async fn first_writable_calendar(&self, reach: Reach<'_>) -> Option<String> {
+        match self.pim.handle_within(Request::CalendarCollections, reach).await {
+            Response::Collections { collections } => {
+                collections.into_iter().find(|calendar| calendar.writable).map(|calendar| calendar.id)
+            }
+            _ => None,
+        }
+    }
+
+    /// `mail.respond_to_invitation` (task E8.3b): answers the invitation in the mail of `reply` for
+    /// `reach`. With `fingerprint` (an approved run) the mail and the event must still be the ones the
+    /// person was shown ([`InvitationPlan::fingerprint`]), else `conflict` and nothing happens.
+    ///
+    /// What it does is planned first ([`Core::plan_invitation_answer`], every check there). Then the
+    /// calendar, as `calendar.save_event` and `calendar.delete_event` write it: the event saved
+    /// ([`event_from_invitation`]) for accept and maybe, the copy deleted for a decline; a write that
+    /// fails is the answer, and nothing is sent. Then the reply to the organizer
+    /// ([`crate::mail::write::send_invitation_reply`]); a failed send is the answer, the calendar
+    /// stays as written. Last, the answer is kept with the mail. Answered with
+    /// [`Response::InvitationAnswered`]. A client's rights to send (`Rights::outbound`) were checked
+    /// before ([`Core::handle_client`], [`Core::run_approved`]).
+    async fn respond_to_invitation(
+        &self,
+        reply: InvitationReply,
+        reach: Reach<'_>,
+        fingerprint: Option<&str>,
+    ) -> Response {
+        use torro_mail::InvitationAnswer;
+        let plan = match self.plan_invitation_answer(&reply, reach).await {
+            Ok(plan) => plan,
+            Err(refused) => return *refused,
+        };
+        if fingerprint.is_some_and(|pinned| pinned != plan.fingerprint(reply.answer)) {
+            return Response::Error {
+                code: "conflict".into(),
+                message: "the invitation changed after the approval was asked for; nothing ran, ask again".into(),
+            };
+        }
+        let event = match (reply.answer, plan.target.clone()) {
+            (InvitationAnswer::Decline, _) => {
+                if let Some(copy) = plan.copy.clone() {
+                    match self.pim.handle_within(Request::DeleteEvent { event: copy }, reach).await {
+                        Response::Ok => {}
+                        failed => return failed,
+                    }
+                }
+                None
+            }
+            (_, Some(target)) => {
+                let event = event_from_invitation(&plan.invitation, &plan.found, target, plan.copy.as_ref());
+                match self.pim.handle_within(Request::SaveEvent { event }, reach).await {
+                    Response::Event { event } => Some(event),
+                    failed => return failed,
+                }
+            }
+            // `plan_invitation_answer` always names a calendar for these.
+            (_, None) => return refusal("not-found", "there is no calendar to put the event in".into()),
+        };
+        let sent = crate::mail::write::send_invitation_reply(
+            &self.mail,
+            &reply.account,
+            &plan.invited.read,
+            &plan.invitation,
+            reply.answer,
+            Utc::now(),
+        )
+        .await;
+        let delivery = match sent {
+            Ok(delivery) => delivery,
+            Err(failed) => return failed,
+        };
+        if let Ok(store) = self.mail.store(&reply.account).await {
+            let (id, answer) = (plan.invited.place.id.clone(), reply.answer);
+            if let Err(err) = store.run(move |store| store.set_invite_answer(&id, Some(answer))).await {
+                eprintln!("torroworkplace: an invitation was answered, but the answer is not kept: {err}");
+            }
+        }
+        Response::InvitationAnswered { delivery, event }
+    }
+
+    /// What the approval of answering an invitation shows (task E8.3b): the answer, the event's title
+    /// and start as the mail store holds them after reading the invitation from the server, the
+    /// account's address, the organizer and the calendar by the name the core caches (for a decline
+    /// the one the copy is removed from). Never what the client says of it.
+    async fn invitation_facts(&self, plan: &InvitationPlan, account: &str) -> Facts {
+        let invite = plan.found.summary.invite.clone();
+        let stored = crate::mail::inbox_feed::mail_for_task(&self.mail, account, &plan.found.summary.id).await.ok();
+        let invite = stored.and_then(|found| found.summary.invite).or(invite);
+        let item = invite.map(|invite| crate::approvals::Known {
+            title: invite.title,
+            start: Some(match invite.all_day {
+                true => torro_pim::EventTime::Date(invite.start.date_naive()),
+                false => torro_pim::EventTime::DateTime(invite.start),
+            }),
+        });
+        let mail = crate::approvals::MailFacts {
+            account: account.strip_prefix(torro_mail::ACCOUNT_PREFIX).map(str::to_string),
+            count: 1,
+            subjects: vec![plan.found.summary.subject.clone()],
+            organizer: plan.invitation.organizer.as_ref().map(|organizer| organizer.address.clone()),
+            ..crate::approvals::MailFacts::default()
+        };
+        let name = match &plan.target {
+            Some(target) => self.calendar_name(target).await,
+            None => None,
+        };
+        Facts { item, name, mail: Some(mail), ..Facts::default() }
     }
 
     /// `tasks.list_todos` with what the mail store holds about each mail link ([`Link::mail`],
@@ -3325,6 +3708,8 @@ fn mail_out_of_reach(rights: &torro_ipc::api::Rights, request: &Request) -> Opti
         Request::UpdateMailAccount { id, .. } => Some(id.as_str()),
         // A task made of a mail reads the mail (task E8.7a).
         Request::CreateTodoFromMail { account, .. } => Some(account.as_str()),
+        // Answering an invitation reads the mail and sends from its account (task E8.3b).
+        Request::RespondToInvitation { account, .. } => Some(account.as_str()),
         Request::RemoveAccount { id } if id.starts_with(torro_mail::ACCOUNT_PREFIX) => Some(id.as_str()),
         request => request.mail_account(),
     };
@@ -10381,5 +10766,245 @@ mod tests {
         assert!(Host::client(&core).is_none(), "no assistant client yet");
         let forbidden = Host::run(&core, Request::CalendarCollections, "test").await;
         assert_eq!(code(&forbidden), "forbidden", "without its client the assistant may do nothing");
+    }
+
+    // ----- Answering an invitation (task E8.3b) ----------------------------------------------------
+
+    mod invitations {
+        use crate::account::github::tests::MemoryTokens;
+        use crate::mail::read::tests::invitation_mail;
+        use crate::mail::send::tests::FakeSmtp;
+        use crate::mail::service::tests::{PASSWORD, mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake::FakeImap;
+        use torro_ipc::api::{Confirm, Outbound};
+        use torro_mail::InvitationAnswer;
+
+        use super::*;
+
+        const ANNA: &str = "mail:anna@example.org";
+
+        /// Anna's mail on a fake IMAP server with Jonas's invitation in the inbox (synced), a fake
+        /// SMTP server that accepts, and calendars on a fake CalDAV server whose cache covers the
+        /// days around now; the event starts in two hours.
+        struct Invited {
+            _dir: tempfile::TempDir,
+            core: Core,
+            fake: crate::pim::tests::FakeCalDav,
+            server: FakeImap,
+            smtp: Arc<FakeSmtp>,
+            id: String,
+            app_key: Key,
+        }
+
+        async fn invited() -> Invited {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let server = FakeImap::start(PASSWORD).await;
+            let start =
+                chrono::Timelike::with_nanosecond(&Utc::now(), 0).expect("whole seconds") + chrono::TimeDelta::hours(2);
+            server.add("INBOX", &invitation_mail("p1", start, start + chrono::TimeDelta::hours(1)), &[]);
+            let secrets = MemoryTokens::default();
+            store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), PASSWORD)]);
+            let service = service_in(dir.path(), &secrets);
+            service.reload().await;
+            service.sync_all(Reach::Suite).await.expect("synced");
+            let fake = crate::pim::tests::fake_caldav(SettingsStore::at(settings_file(dir.path()))).await;
+            fake.service.cache_events_of_today(Vec::new()).await;
+            let core = core_on(dir.path(), &fake).with_mail(service);
+            let smtp = FakeSmtp::answering(torro_mail_imap::smtp::Submitted::Accepted);
+            core.mail.outbox().await.expect("an outbox").use_fake(Arc::clone(&smtp));
+            let found = crate::mail::inbox_feed::linked_mail(&core.mail, ANNA, "p1@example.com").await;
+            let id = found.expect("the invitation synced").id;
+            let app_key = crate::clients::tests::app_key(dir.path());
+            Invited { _dir: dir, core, fake, server, smtp, id, app_key }
+        }
+
+        fn respond(id: &str, answer: InvitationAnswer, collection: Option<&str>) -> Request {
+            Request::RespondToInvitation {
+                account: ANNA.into(),
+                id: id.into(),
+                answer,
+                collection: collection.map(str::to_string),
+            }
+        }
+
+        /// Full rights on Anna's account, sending and the calendars as `outbound` and `confirm` say.
+        fn sender(outbound: Outbound, confirm: Confirm) -> Rights {
+            let mut rights = RightsTemplate::FullAccess.rights();
+            rights.mail_accounts = Selection::Only(vec![ANNA.into()]);
+            Rights { outbound, confirm, ..rights }
+        }
+
+        fn deleted_on(fake: &crate::pim::tests::FakeCalDav) -> usize {
+            fake.lines().iter().filter(|line| line.starts_with("DELETE ")).count()
+        }
+
+        /// The answer kept with the mail, as lists show it.
+        async fn kept_answer(core: &Core, id: &str) -> Option<InvitationAnswer> {
+            let found = crate::mail::inbox_feed::mail_for_task(&core.mail, ANNA, id).await.expect("the mail");
+            found.summary.invite.and_then(|invite| invite.answered)
+        }
+
+        /// The person accepts: the organizer gets an iMIP REPLY from Anna's account, the event lands in
+        /// the first writable calendar without organizer or attendees, and the answer is kept. Maybe
+        /// then updates the same event; a decline removes it and adds nothing.
+        #[tokio::test]
+        async fn an_answer_replies_to_the_organizer_and_keeps_the_calendar_in_step() {
+            let room = invited().await;
+            let (core, key) = (&room.core, Some(&room.app_key));
+            let Response::InvitationAnswered { delivery, event } =
+                ask(core, key, respond(&room.id, InvitationAnswer::Accept, None)).await
+            else {
+                panic!("an answer")
+            };
+            assert_eq!(delivery, torro_ipc::mail::Delivery::Accepted);
+            let event = event.expect("the event");
+            assert_eq!((event.uid.as_str(), event.summary.as_str()), ("planning-p1@example.com", "Planning, Q4"));
+            assert_eq!(event.collection, room.fake.work, "the first writable calendar");
+            assert!(event.description.as_deref().is_some_and(|text| text.contains("Jonas Weber")), "{event:?}");
+            assert_eq!(created_on(&room.fake), 1);
+
+            let sent = room.smtp.sent();
+            assert_eq!(sent.len(), 1);
+            let (envelope, bytes) = &sent[0];
+            assert_eq!(envelope.recipients, ["jonas@example.com"]);
+            let text = String::from_utf8_lossy(bytes).replace("\r\n ", "");
+            assert!(text.contains("method=REPLY") || text.contains("method=\"REPLY\""), "{text}");
+            assert!(text.contains("PARTSTAT=ACCEPTED") && text.contains("mailto:Anna@Example.org"), "{text}");
+            assert!(text.contains("UID:planning-p1@example.com") && text.contains("SEQUENCE:2"), "{text}");
+            assert!(text.contains("In-Reply-To: <p1@example.com>"), "an answer to the mail: {text}");
+            assert_eq!(kept_answer(core, &room.id).await, Some(InvitationAnswer::Accept));
+
+            // Maybe: the same event is updated, not made again.
+            let maybe = ask(core, key, respond(&room.id, InvitationAnswer::Tentative, None)).await;
+            let Response::InvitationAnswered { event: Some(again), .. } = maybe else { panic!("an answer: {maybe:?}") };
+            assert_eq!(
+                (again.uid.as_str(), again.collection.as_str()),
+                ("planning-p1@example.com", room.fake.work.as_str())
+            );
+            assert_eq!(created_on(&room.fake), 1, "updated: {:?}", room.fake.lines());
+            assert!(String::from_utf8_lossy(&room.smtp.sent()[1].1).contains("PARTSTAT=TENTATIVE"));
+
+            // Decline: the copy goes, nothing new is made.
+            let declined = ask(core, key, respond(&room.id, InvitationAnswer::Decline, Some(&room.fake.home))).await;
+            assert!(matches!(declined, Response::InvitationAnswered { event: None, .. }), "{declined:?}");
+            assert_eq!((created_on(&room.fake), deleted_on(&room.fake)), (1, 1));
+            assert!(String::from_utf8_lossy(&room.smtp.sent()[2].1).contains("PARTSTAT=DECLINED"));
+            assert_eq!(kept_answer(core, &room.id).await, Some(InvitationAnswer::Decline));
+            assert!(room.server.flags("INBOX", 1).is_empty(), "the invitation stays unread");
+        }
+
+        /// The UID comes from outside: an event with it that the suite did not make of a mail is never
+        /// taken for the copy – a decline leaves it, an accept makes an event of its own.
+        #[tokio::test]
+        async fn events_the_suite_did_not_make_are_not_taken_for_the_copy() {
+            let room = invited().await;
+            let (core, key) = (&room.core, Some(&room.app_key));
+            let start = Utc::now() + chrono::TimeDelta::hours(2);
+            let foreign = torro_pim::Event {
+                uid: "planning-p1@example.com".into(),
+                collection: room.fake.work.clone(),
+                href: Some(format!("{}board.ics", room.fake.work.rsplit_once('/').map_or("", |(base, _)| base))),
+                etag: Some("\"1\"".into()),
+                summary: "Board meeting".into(),
+                start: torro_pim::EventTime::DateTime(start),
+                end: Some(torro_pim::EventTime::DateTime(start + chrono::TimeDelta::hours(1))),
+                location: None,
+                description: Some("Prepared by Anna.".into()),
+                recurring: false,
+                transparency: torro_pim::Transparency::Opaque,
+            };
+            room.fake.service.cache_events_of_today(vec![foreign]).await;
+            let declined = ask(core, key, respond(&room.id, InvitationAnswer::Decline, None)).await;
+            assert!(matches!(declined, Response::InvitationAnswered { event: None, .. }), "{declined:?}");
+            assert_eq!(deleted_on(&room.fake), 0, "the board meeting stays: {:?}", room.fake.lines());
+            let accepted = ask(core, key, respond(&room.id, InvitationAnswer::Accept, None)).await;
+            let Response::InvitationAnswered { event: Some(event), .. } = accepted else { panic!("{accepted:?}") };
+            assert_eq!(created_on(&room.fake), 1, "a new event, the board meeting not overwritten");
+            assert_ne!(event.href.as_deref(), Some("board.ics"));
+            assert_eq!(room.smtp.sent().len(), 2);
+        }
+
+        /// A client needs mail, sending and the calendar: without calendar write (or delete, for a
+        /// decline) it is `forbidden`, `outbound: never` too, a hidden account `not-found` – and in
+        /// none of these does anything go out or into a calendar. A mail without an invitation is
+        /// `error`.
+        #[tokio::test]
+        async fn a_client_answers_only_with_the_rights_for_mail_sending_and_the_calendar() {
+            let room = invited().await;
+            let core = &room.core;
+            let mut no_calendar = sender(Outbound::Free, Confirm::Never);
+            no_calendar.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
+            let mut no_delete = sender(Outbound::Free, Confirm::Never);
+            no_delete.areas.insert(Area::Calendar, AreaRights { level: Level::Write, admin: false });
+            let mut other_account = sender(Outbound::Free, Confirm::Never);
+            other_account.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+            let mut other_calendar = sender(Outbound::Free, Confirm::Never);
+            other_calendar.calendars = Selection::Only(vec![room.fake.home.clone()]);
+            for (rights, answer, collection, wanted) in [
+                (no_calendar, InvitationAnswer::Accept, None, "forbidden"),
+                (no_delete, InvitationAnswer::Decline, None, "forbidden"),
+                (sender(Outbound::Never, Confirm::Never), InvitationAnswer::Accept, None, "forbidden"),
+                (other_account, InvitationAnswer::Accept, None, "not-found"),
+                (other_calendar, InvitationAnswer::Accept, Some(room.fake.work.as_str()), "not-found"),
+            ] {
+                let (_, key) = client(core, rights).await;
+                let answered = ask(core, Some(&key), respond(&room.id, answer, collection)).await;
+                assert_eq!(code(&answered), wanted, "{answer:?}");
+            }
+            assert!(room.smtp.sent().is_empty(), "nothing went out");
+            assert_eq!(created_on(&room.fake), 0);
+
+            let (_, key) = client(core, sender(Outbound::Free, Confirm::Never)).await;
+            let none = ask(core, Some(&key), respond("m:nothing", InvitationAnswer::Accept, None)).await;
+            assert_eq!(code(&none), "not-found");
+            room.server.add(
+                "INBOX",
+                &invitation_mail("p1", Utc::now(), Utc::now())
+                    .replace("METHOD:REQUEST", "METHOD:CANCEL")
+                    .replace("p1@", "p2@"),
+                &[],
+            );
+            core.mail.sync_all(Reach::Suite).await.expect("synced");
+            let cancelled =
+                crate::mail::inbox_feed::linked_mail(&core.mail, ANNA, "p2@example.com").await.expect("synced");
+            let refused = ask(core, Some(&key), respond(&cancelled.id, InvitationAnswer::Accept, None)).await;
+            assert_eq!(code(&refused), "error", "a cancellation is no invitation to answer");
+            assert!(room.smtp.sent().is_empty());
+
+            // Free to send: it runs at once, as the client.
+            let ran = ask(core, Some(&key), respond(&room.id, InvitationAnswer::Accept, None)).await;
+            assert!(matches!(ran, Response::InvitationAnswered { event: Some(_), .. }), "{ran:?}");
+            assert_eq!(room.smtp.sent().len(), 1);
+        }
+
+        /// `with_approval` waits; the summary names the answer, the title, the organizer and the
+        /// calendar as the core holds them, nothing goes out before the person allows it, and the
+        /// person's yes sends it.
+        #[tokio::test]
+        async fn an_answer_waits_for_the_person_as_sending_does() {
+            let room = invited().await;
+            let core = &room.core;
+            let (_, key) = client(core, sender(Outbound::WithApproval, Confirm::Never)).await;
+            let asked = waits(ask(core, Some(&key), respond(&room.id, InvitationAnswer::Accept, None)).await);
+            assert_eq!(asked.command, "mail.respond_to_invitation");
+            for part in ["Planning, Q4", "jonas@example.com", "anna@example.org"] {
+                assert!(asked.summary.contains(part), "{part}: {}", asked.summary);
+            }
+            assert!(room.smtp.sent().is_empty() && created_on(&room.fake) == 0, "nothing before the yes");
+            let ran = approval(ask(core, Some(&room.app_key), decide(&asked.id, true)).await);
+            assert!(matches!(ran_with(&ran), Response::InvitationAnswered { event: Some(_), .. }), "{ran:?}");
+            assert_eq!((room.smtp.sent().len(), created_on(&room.fake)), (1, 1));
+
+            // An approval pinned to another mail or event runs nothing.
+            let reply = InvitationReply {
+                account: ANNA.into(),
+                id: room.id.clone(),
+                answer: InvitationAnswer::Decline,
+                collection: None,
+            };
+            let stale = core.respond_to_invitation(reply, Reach::Suite, Some("another invitation")).await;
+            assert_eq!(code(&stale), "conflict");
+            assert_eq!((room.smtp.sent().len(), deleted_on(&room.fake)), (1, 0));
+        }
     }
 }

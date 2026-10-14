@@ -527,6 +527,8 @@ fn describe(request: &Request) -> String {
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),
         Request::SaveDraft { .. } => "save draft".into(),
         Request::SendDraft { .. } => "send draft".into(),
+        // Never the answer, the account or the mail (task E8.3b).
+        Request::RespondToInvitation { .. } => "answer an invitation".into(),
         // Ids only, never a message or a title (task C.1).
         Request::ListEngines => "assistant engines".into(),
         Request::ListConversations => "assistant conversations".into(),
@@ -594,5 +596,13 @@ mod tests {
             end: at,
         };
         assert_eq!(describe(&event), "make an event in work of inbox item e1");
+        // Task E8.3b: an answer to an invitation names nothing of the mail.
+        let answer = Request::RespondToInvitation {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:0a1b2c3d".into(),
+            answer: torro_mail::InvitationAnswer::Decline,
+            collection: Some("work".into()),
+        };
+        assert_eq!(describe(&answer), "answer an invitation");
     }
 }

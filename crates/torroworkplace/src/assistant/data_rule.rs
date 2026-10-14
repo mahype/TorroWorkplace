@@ -19,7 +19,9 @@
 //! the ways to mute an entry and what muting answers, the statistics with their suggestions, a task
 //! made of a mail in a folder, and the mail's subject and sender in a task's link (`link.mail`). The approvals, whose summaries and answers can quote mail, are no tool of the
 //! assistant at all (`tools::callable`). The event made from an inbox entry (task E8.5b) is
-//! withheld like its task: its title and description can be a mail's subject and sender. Quiet
+//! withheld like its task: its title and description can be a mail's subject and sender. The answer
+//! to an invitation (`mail.respond_to_invitation`, task E8.3b) is a `mail.*` answer with the event
+//! made of the invitation in it, so it is withheld as well; only its errors go through. Quiet
 //! (`inbox.get_quiet`) names a calendar event at most, no mail.
 //!
 //! Known limit, for KI.1: a task made from a mail entry keeps the subject as its title, and
@@ -255,6 +257,37 @@ mod tests {
         // Errors, and what the assistant wrote itself, still reach it.
         let error = Response::Error { code: "not-found".into(), message: "no such message".into() };
         assert_eq!(for_model(&search, &error, Place::Remote).value["result"], "error");
+    }
+
+    #[test]
+    fn an_answered_invitation_goes_to_local_models_only() {
+        // Task E8.3b: the answer carries the event made of the invitation (its title, text and the
+        // line naming the mail); a model elsewhere reads that something was withheld, or the error.
+        let answer: Request = serde_json::from_value(json!({
+            "method": "mail.respond_to_invitation", "account": "mail:anna@example.org", "id": "m:1", "answer": "accept"
+        }))
+        .expect("an answer");
+        let start = torro_pim::EventTime::DateTime(chrono::Utc::now());
+        let event = torro_pim::Event {
+            uid: "planning-1".into(),
+            collection: "work".into(),
+            href: None,
+            etag: None,
+            summary: "Salary talk with Jonas".into(),
+            start,
+            end: None,
+            location: None,
+            description: None,
+            recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
+        };
+        let answered =
+            Response::InvitationAnswered { delivery: torro_ipc::mail::Delivery::Accepted, event: Some(event) };
+        assert!(!for_model(&answer, &answered, Place::Local).withheld);
+        let remote = for_model(&answer, &answered, Place::Remote);
+        assert_eq!((remote.withheld, remote.value.clone()), (true, json!({ "withheld": WITHHELD })));
+        let refused = Response::Error { code: "forbidden".into(), message: "no sending".into() };
+        assert_eq!(for_model(&answer, &refused, Place::Remote).value["result"], "error");
     }
 
     #[test]

@@ -872,6 +872,7 @@ mod tests {
             snippet: String::new(),
             flags: Vec::new(),
             has_attachments: false,
+            invite: None,
             untrusted: true,
         }
     }

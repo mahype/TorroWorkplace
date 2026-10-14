@@ -50,8 +50,10 @@ use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, State};
 use torro_ipc::inbox::InboxClient;
-use torro_ipc::mail::{MoveRole, MoveTarget};
-use torro_mail::{AttachmentInfo, Flag, Folder, MailAddress, Message as Mail, MessageSummary, Role};
+use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
+use torro_mail::{
+    AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message as Mail, MessageSummary, Role,
+};
 
 use crate::app::{INBOX, Message, View};
 use crate::detail;
@@ -123,6 +125,21 @@ pub trait MailSource: Send + Sync {
         title: Option<String>,
         due: Option<NaiveDate>,
     ) -> impl Future<Output = Result<ItemTask, InboxError>> + Send;
+
+    /// `mail.respond_to_invitation` (task E8.3b, Accept · Maybe · Decline): answers the invitation in
+    /// the message `id` of the mail account `account` with `answer`. The core sends the organizer
+    /// the reply from the account and puts the event in a calendar (or, for a decline, removes the
+    /// copy made before); the window sends nothing else. Answers how the reply went
+    /// ([`Delivery::Unknown`]: it may not have gone out). Errors as the core maps them:
+    /// [`InboxError::NotFound`] for a message or account the window may not see,
+    /// [`InboxError::Forbidden`], [`InboxError::Other`] with the core's words for a mail without an
+    /// invitation to answer, an event that is over, or a send that failed.
+    fn respond_to_invitation(
+        &self,
+        account: String,
+        id: String,
+        answer: InvitationAnswer,
+    ) -> impl Future<Output = Result<Delivery, InboxError>> + Send;
 }
 
 /// One page of a folder ([`MailSource::search_mail`]).
@@ -180,6 +197,28 @@ impl MailSource for InboxClient {
     ) -> Result<ItemTask, InboxError> {
         InboxClient::create_todo_from_mail(self, account, id, list, title, due).await
     }
+
+    async fn respond_to_invitation(
+        &self,
+        account: String,
+        id: String,
+        answer: InvitationAnswer,
+    ) -> Result<Delivery, InboxError> {
+        let request = torro_ipc::Request::RespondToInvitation { account, id, answer, collection: None };
+        match torro_ipc::client::call(&self.socket, &request).await {
+            Ok(torro_ipc::Response::InvitationAnswered { delivery, .. }) => Ok(delivery),
+            Ok(torro_ipc::Response::Error { code, message }) => Err(match code.as_str() {
+                "not-found" => InboxError::NotFound,
+                "forbidden" => InboxError::Forbidden,
+                "busy" => InboxError::Busy,
+                "unsupported" => InboxError::Unsupported,
+                _ => InboxError::Other(message),
+            }),
+            Ok(other) => Err(InboxError::Other(format!("unexpected answer: {other:?}"))),
+            Err(torro_ipc::IpcError::NotRunning) => Err(InboxError::Offline),
+            Err(err) => Err(InboxError::Other(err.to_string())),
+        }
+    }
 }
 
 impl MailSource for DemoSource {
@@ -194,12 +233,18 @@ impl MailSource for DemoSource {
         limit: u32,
         cursor: Option<String>,
     ) -> Result<MailPage, InboxError> {
-        let (messages, next) = DemoSource::search_mail(self, &folder, query.as_deref(), limit, cursor.as_deref())?;
+        let (mut messages, next) = DemoSource::search_mail(self, &folder, query.as_deref(), limit, cursor.as_deref())?;
+        for message in &mut messages {
+            message.invite = demo_invite(message);
+        }
         Ok(MailPage { messages, next })
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
-        DemoSource::get_mail(self, &id)
+        let mut mail = DemoSource::get_mail(self, &id)?;
+        mail.summary.invite = demo_invite(&mail.summary);
+        mail.invitation = mail.summary.invite.is_some();
+        Ok(mail)
     }
 
     async fn mail_attachment(&self, id: String, part: String) -> Result<PathBuf, InboxError> {
@@ -244,6 +289,21 @@ impl MailSource for DemoSource {
             link: format!("{account}:{}@demo", id.trim_start_matches("m:")),
             mail_entry: None,
         })
+    }
+
+    /// The demo sends nothing and keeps no calendar: an invitation of its own ([`demo_invite`]) is
+    /// answered as sent, any other message is no invitation.
+    async fn respond_to_invitation(
+        &self,
+        _account: String,
+        id: String,
+        _answer: InvitationAnswer,
+    ) -> Result<Delivery, InboxError> {
+        let mail = DemoSource::get_mail(self, &id)?;
+        match demo_invite(&mail.summary) {
+            Some(_) => Ok(Delivery::Accepted),
+            None => Err(InboxError::Other(tr("This mail holds no invitation that can be answered.").to_owned())),
+        }
     }
 }
 
@@ -292,6 +352,15 @@ impl MailSource for crate::empty::EmptySource {
         _title: Option<String>,
         _due: Option<NaiveDate>,
     ) -> Result<ItemTask, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn respond_to_invitation(
+        &self,
+        _account: String,
+        _id: String,
+        _answer: InvitationAnswer,
+    ) -> Result<Delivery, InboxError> {
         Err(InboxError::NotFound)
     }
 }
@@ -734,6 +803,9 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             View::Attachments => {
                 (Icon::Paperclip, tr("No attachments."), tr("New mail with attachments shows up here."))
             }
+            View::Invitations => {
+                (Icon::Calendar, tr("No invitations."), tr("Invitations to events you can answer show up here."))
+            }
             _ => return widgets::loading(),
         };
         return list::empty_state(which, title, hint);
@@ -771,6 +843,11 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
 /// avatar), the start of the text –, [`list::message_height`] high.
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
+    // An invitation (task E8.3b): its time and the answers stand on its card and in the reader.
+    if let Some(invite) = &message.invite {
+        let tip = trf("Invitation · {when}", &[("when", &invite_when(invite, data.now))]);
+        marks.push((widgets::with_tooltip(small_icon(Icon::Calendar, None), tip), icon::SIZE_SM));
+    }
     if message.has_attachments {
         marks.push((widgets::with_tooltip(small_icon(Icon::Paperclip, None), tr("Has attachments")), icon::SIZE_SM));
     }
@@ -802,9 +879,14 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
 /// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row, as chips
 /// "Attachments" and "Flagged", and its buttons Reply (`r`), Task (`t`, `tasks.create_todo_from_mail`,
 /// task E8.7b) and Archive (`e`, what "done" is in a folder); a message has no "Later" of its own.
-/// In the smart view of attachments, which holds every account's mail, the head names the account.
+/// An invitation (task E8.3b) shows when it is and the answer given as chips, and Accept · Maybe ·
+/// Decline · Task instead ([`Message::AnswerInvitation`]; none once its event is over). In the smart
+/// views, which hold every account's mail, the head names the account.
 fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32, words: bool) -> Element<'a, Message> {
     let mut chips = Vec::new();
+    if let Some(invite) = &message.invite {
+        chips.extend(invite_chips(invite, data.now));
+    }
     if message.has_attachments {
         chips.push(widgets::state_pill(Icon::Paperclip, tr("Attachments")));
     }
@@ -812,14 +894,27 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
     }
     let id = || message.id.clone();
-    let buttons = vec![
-        RowAction::new(Icon::Reply, tr("Reply"), "R", Message::Mail(MailAction::Reply, id())),
-        RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id())),
-        RowAction::new(Icon::Archive, tr("Archive"), "E", Message::Mail(MailAction::Archive, id())),
-    ];
+    let open_invite = message.invite.as_ref().filter(|invite| !invite_over(invite, data.now));
+    let buttons = match open_invite {
+        Some(_) => {
+            let answer = |(icon, word, answer): (Icon, &'static str, InvitationAnswer)| {
+                let send = Message::AnswerInvitation(message.account.clone(), id(), answer);
+                RowAction::new(icon, word, "", send)
+            };
+            let mut buttons: Vec<_> = answers().into_iter().map(answer).collect();
+            buttons.push(RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id())));
+            buttons
+        }
+        None => vec![
+            RowAction::new(Icon::Reply, tr("Reply"), "R", Message::Mail(MailAction::Reply, id())),
+            RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id())),
+            RowAction::new(Icon::Archive, tr("Archive"), "E", Message::Mail(MailAction::Archive, id())),
+        ],
+    };
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let several = *data.view == View::Attachments && data.accounts.len() > 1;
+    let smart = matches!(data.view, View::Attachments | View::Invitations);
+    let several = smart && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
         domain,
@@ -848,7 +943,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
 
 /// The height of the card of `message` with its buttons with `words` ([`message_card`]).
 pub fn message_card_height(message: &MessageSummary, words: bool) -> f32 {
-    let chips = message.has_attachments || message.flags.contains(&Flag::Flagged);
+    let chips = message.has_attachments || message.flags.contains(&Flag::Flagged) || message.invite.is_some();
     list::mail_card_height(!list::one_line(&message.snippet).is_empty(), chips, words)
 }
 
@@ -867,6 +962,159 @@ pub fn attachments(pages: Vec<Vec<MessageSummary>>) -> Vec<MessageSummary> {
         pages.into_iter().flatten().filter(|message| message.has_attachments).collect();
     found.sort_by_key(|message| std::cmp::Reverse(message.date));
     found
+}
+
+/// The demo's invitations (task E8.3b): Maria's "Lunch next week?" invites to lunch on the Tuesday
+/// of next week at 12:00 for an hour, Paul's "Weekend plans" to a hike all Saturday. Counted from the
+/// demo's "now" (the mail's date plus how long before "now" the demo dated it), so `--now` gives the
+/// same pictures. `None` for every other message.
+fn demo_invite(message: &MessageSummary) -> Option<Invite> {
+    let (title, before, all_day) = match message.id.as_str() {
+        "m:w4" => (tr("Lunch with Maria"), chrono::TimeDelta::hours(26), false),
+        "m:p1" => (tr("Hike"), chrono::TimeDelta::minutes(50), true),
+        _ => return None,
+    };
+    let today = (message.date + before).with_timezone(&Local).date_naive();
+    let (start, end) = if all_day {
+        // The coming Saturday, a week on when today is one.
+        let ahead = match (12 - chrono::Datelike::weekday(&today).num_days_from_monday()) % 7 {
+            0 => 7,
+            days => days,
+        };
+        let saturday = today + chrono::Days::new(u64::from(ahead));
+        let midnight = |day: NaiveDate| day.and_time(chrono::NaiveTime::MIN).and_utc();
+        (midnight(saturday), midnight(saturday + chrono::Days::new(1)))
+    } else {
+        // The Tuesday of next week.
+        let ahead = 8 - chrono::Datelike::weekday(&today).num_days_from_monday();
+        let tuesday = today + chrono::Days::new(u64::from(ahead));
+        let noon = datetime::to_utc(tuesday.and_hms_opt(12, 0, 0).unwrap_or_default());
+        (noon, noon + chrono::TimeDelta::hours(1))
+    };
+    Some(Invite { title: title.to_owned(), start, end: Some(end), all_day, answered: None })
+}
+
+/// The smart view "Invitations" (task E8.3b): of the messages of every account's inbox, those that
+/// invite to an event that is not over at `now`, the soonest first. `pages` are the first pages of
+/// the inboxes as `mail.search_messages` answered them; nothing new is asked of the core.
+pub fn invitations(pages: Vec<Vec<MessageSummary>>, now: DateTime<Utc>) -> Vec<MessageSummary> {
+    let mut found: Vec<MessageSummary> = pages
+        .into_iter()
+        .flatten()
+        .filter(|message| message.invite.as_ref().is_some_and(|invite| !invite_over(invite, now)))
+        .collect();
+    found.sort_by_key(|message| message.invite.as_ref().map(|invite| invite.start));
+    found
+}
+
+/// The event of `invite` is over at `now`: its end (its start without one) has passed. Such an
+/// invitation is not answered any more (the core says `error`).
+pub fn invite_over(invite: &Invite, now: DateTime<Utc>) -> bool {
+    invite.end.unwrap_or(invite.start) <= now
+}
+
+/// When the event of `invite` is, in local time: "Tue 20 Oct · 12:00–13:00", for a whole day "Sat
+/// 17 Oct", for several days "Sat 17 Oct – Sun 18 Oct" (the end of an all-day event is the day after
+/// its last).
+pub fn invite_when(invite: &Invite, now: DateTime<Utc>) -> String {
+    let today = now.with_timezone(&Local).date_naive();
+    if invite.all_day {
+        let first = invite.start.date_naive();
+        let last = invite.end.map_or(first, |end| (end - chrono::TimeDelta::days(1)).date_naive()).max(first);
+        let day = |day: NaiveDate| datetime::format_short_date(day, today);
+        return if last == first { day(first) } else { format!("{} – {}", day(first), day(last)) };
+    }
+    let start = datetime::to_local(invite.start);
+    let day = datetime::format_short_date(start.date(), today);
+    match invite.end.map(datetime::to_local) {
+        Some(end) if end.date() == start.date() => {
+            format!("{day} · {}–{}", datetime::format_time(start.time()), datetime::format_time(end.time()))
+        }
+        Some(end) => format!(
+            "{day} · {} – {} {}",
+            datetime::format_time(start.time()),
+            datetime::format_short_date(end.date(), today),
+            datetime::format_time(end.time())
+        ),
+        None => format!("{day} · {}", datetime::format_time(start.time())),
+    }
+}
+
+/// The words of an answer given: "Accepted", "Maybe", "Declined".
+pub fn answer_word(answer: InvitationAnswer) -> &'static str {
+    match answer {
+        InvitationAnswer::Accept => tr("Accepted"),
+        InvitationAnswer::Tentative => tr("Maybe"),
+        InvitationAnswer::Decline => tr("Declined"),
+    }
+}
+
+/// The mark of an answer given: a check, a question, a cross – in `text_3` like every state pill;
+/// the word says which.
+fn answer_icon(answer: InvitationAnswer) -> Icon {
+    match answer {
+        InvitationAnswer::Accept => Icon::CircleCheck,
+        InvitationAnswer::Tentative => Icon::CircleDashed,
+        InvitationAnswer::Decline => Icon::CircleX,
+    }
+}
+
+/// The buttons that answer an invitation, in their order: Accept, Maybe, Decline – each its icon,
+/// its word and the answer.
+fn answers() -> [(Icon, &'static str, InvitationAnswer); 3] {
+    [
+        (Icon::Check, tr("Accept"), InvitationAnswer::Accept),
+        (Icon::CircleDashed, tr("Maybe"), InvitationAnswer::Tentative),
+        (Icon::X, tr("Decline"), InvitationAnswer::Decline),
+    ]
+}
+
+/// The chips of an invitation on a card: when it is ([`invite_when`]) with the calendar's icon, and
+/// the answer given, if any.
+fn invite_chips<'a>(invite: &Invite, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
+    let mut chips = vec![widgets::state_pill(Icon::Calendar, invite_when(invite, now))];
+    if let Some(answer) = invite.answered {
+        chips.push(widgets::state_pill(answer_icon(answer), answer_word(answer)));
+    }
+    chips
+}
+
+/// The invitation of a mail as a card over its text in the reader and the panel (task E8.3b): the
+/// calendar's tile, the event's title (the organizer's text, as it is) and when it is, then Accept ·
+/// Maybe · Decline as chips to pick – the answer given picked –, which send
+/// `mail.respond_to_invitation` ([`Message::AnswerInvitation`]). While an answer is on its way the
+/// chips take no click; an event that is over says so instead.
+pub fn invite_card<'a>(
+    invite: &Invite,
+    summary: &MessageSummary,
+    now: DateTime<Utc>,
+    answering: bool,
+) -> Element<'a, Message> {
+    let tile = widgets::source_tile(widgets::TileFace::Icon(Icon::Calendar), widgets::TileSize::Large, None);
+    let title = match list::one_line(&invite.title) {
+        title if title.is_empty() => tr("(no title)").to_owned(),
+        title => title,
+    };
+    let words = column![
+        container(typo::text(typo::body_strong(), title).style(theme::text).wrapping(Wrapping::None)).clip(true),
+        container(
+            typo::text(typo::meta().tabular(), invite_when(invite, now)).style(theme::text_2).wrapping(Wrapping::None)
+        )
+        .clip(true),
+    ]
+    .width(Fill);
+    let head = row![tile, words].spacing(space::m()).align_y(Alignment::Center);
+    let tail: Element<'a, Message> = if invite_over(invite, now) {
+        typo::text(typo::meta(), tr("This event is over.")).style(theme::text_3).into()
+    } else {
+        let chips = answers().into_iter().map(|(icon, word, answer)| {
+            let on = invite.answered == Some(answer);
+            let send = Message::AnswerInvitation(summary.account.clone(), summary.id.clone(), answer);
+            widgets::choice_chip(word, Some(Mark::Icon(icon)), on, (!answering).then_some(send))
+        });
+        widgets::chip_row(chips.collect())
+    };
+    widgets::card(vec![head.into(), tail], false, None)
 }
 
 /// The sender of a message for its row: the name (else the address, else "Unknown sender") and the
@@ -935,6 +1183,8 @@ pub struct Reading<'a> {
     /// The task made of this mail (task E8.7b): the one its entry carries ([`Item::task`]), or the
     /// one "Task" just made of a folder's message. Shown as a card over the text ([`task_card`]).
     pub task: Option<&'a ItemTask>,
+    /// An answer to the mail's invitation is on its way (task E8.3b): its card takes no click.
+    pub answering: bool,
 }
 
 impl<'a> Reading<'a> {
@@ -968,6 +1218,11 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     if let Some(summary) = reading.summary() {
         body = body.push(panel::inset(header(reading, summary)));
         body = body.push(panel::inset(actions(reading, summary)));
+    }
+    if let Some(summary) = reading.summary()
+        && let Some(invite) = &summary.invite
+    {
+        body = body.push(panel::inset(invite_card(invite, summary, reading.now, reading.answering)));
     }
     if let Some(task) = reading.task {
         body = body.push(panel::inset(task_card(task, reading.now)));
@@ -1049,6 +1304,10 @@ fn reader_content<'a>(
     let level = if comfortable { typo::headline() } else { typo::title() };
     body = body.push(typo::text(level, subject(summary)).style(theme::text).wrapping(Wrapping::WordOrGlyph));
     body = body.push(reader_sender(reading, summary, comfortable, room));
+    // What the mail invites to, with its answers (task E8.3b): over the task and the text.
+    if let Some(invite) = &summary.invite {
+        body = body.push(invite_card(invite, summary, reading.now, reading.answering));
+    }
     // The mail knows its task (task E8.7b): between who wrote it and what it says, as the design.
     if let Some(task) = reading.task {
         body = body.push(task_card(task, reading.now));
@@ -1658,6 +1917,7 @@ mod tests {
                         dated: true,
                         read,
                         account: Some(0),
+                        answering: false,
                     };
                     let _ = panel(&reading, Some(&folder));
                     for entry in [None, Some(ReaderEntry { item: &entry, hide: true })] {
@@ -1725,6 +1985,46 @@ mod tests {
             None,
         ));
         assert!(unknown.is_err());
+    }
+
+    /// Task E8.3b: the smart view keeps the invitations not over yet, the soonest first; the demo's
+    /// two are answered as sent, any other mail is none.
+    #[test]
+    fn invitations_are_the_ones_not_over_yet_soonest_first() {
+        let demo = DemoSource::new(now());
+        let page = |folder: &str| {
+            iced::futures::executor::block_on(MailSource::search_mail(&demo, folder.into(), None, 50, None))
+                .expect("a page")
+                .messages
+        };
+        let folders = iced::futures::executor::block_on(MailSource::mail_folders(&demo)).expect("folders");
+        let inboxes: Vec<_> =
+            folders.iter().filter(|folder| folder.role == Some(Role::Inbox)).map(|f| page(&f.id)).collect();
+        let found = invitations(inboxes.clone(), now());
+        let ids: Vec<&str> = found.iter().map(|message| message.id.as_str()).collect();
+        assert_eq!(ids, ["m:p1", "m:w4"], "the hike this Saturday before lunch next week");
+        let hike = found[0].invite.clone().expect("an invite");
+        assert!(hike.all_day && !invite_when(&hike, now()).contains(':'), "a whole day has no time");
+        let lunch = found[1].invite.clone().expect("an invite");
+        assert!(invite_when(&lunch, now()).contains("12:00"), "{}", invite_when(&lunch, now()));
+        assert!(invite_over(&lunch, lunch.end.expect("an end")) && !invite_over(&lunch, now()));
+        assert!(invitations(inboxes, lunch.end.expect("an end")).is_empty(), "both over by then");
+
+        let answer = |id: &str| {
+            iced::futures::executor::block_on(MailSource::respond_to_invitation(
+                &demo,
+                "mail:anna@work.example.org".into(),
+                id.into(),
+                InvitationAnswer::Accept,
+            ))
+        };
+        assert_eq!(answer("m:w4"), Ok(Delivery::Accepted));
+        assert!(matches!(answer("m:w1"), Err(InboxError::Other(_))), "no invitation");
+        assert_eq!(answer("m:nope"), Err(InboxError::NotFound));
+        let height = |invite| message_card_height(&MessageSummary { invite, ..found[1].clone() }, true);
+        assert!(height(Some(lunch.clone())) >= height(None), "the chips' row");
+        let full = iced::futures::executor::block_on(MailSource::get_mail(&demo, "m:w4".into())).expect("the mail");
+        assert!(full.invitation && full.summary.invite.is_some());
     }
 
     /// Task E8.3: the smart view keeps the messages with attachments of every inbox, newest first.

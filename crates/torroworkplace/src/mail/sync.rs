@@ -277,7 +277,10 @@ async fn sync_folder(
         }
         let raw = lease.session().fetch_message(header.uid).await?;
         lease.done();
-        let Some(read) = raw.and_then(|raw| mime::read(&raw).ok()) else { continue };
+        let Some(raw) = raw else { continue };
+        let Ok(read) = mime::read(&raw) else { continue };
+        // What an invitation invites to, from its calendar part (task E8.3b).
+        let invite = super::read::invite_of(&raw, &read);
         let folder = target.id.clone();
         store
             .run(move |store| {
@@ -286,7 +289,7 @@ async fn sync_folder(
                 let mut message = new_message(&folder, uidvalidity, &header, &read, now);
                 message.flags = flags;
                 store.upsert_message(&folder, uidvalidity, &message)?;
-                let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments };
+                let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite };
                 store.set_body(&id, &body)?;
                 Ok(())
             })

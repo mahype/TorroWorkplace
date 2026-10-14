@@ -333,6 +333,9 @@ pub struct MailFacts {
     pub folder: Option<String>,
     /// For `mail.send_draft` and for `mail.save_draft` with an id: the draft as the core stores it.
     pub draft: Option<DraftFacts>,
+    /// For `mail.respond_to_invitation` (task E8.3b): the organizer's address the answer goes to,
+    /// as the invitation read from the server names it.
+    pub organizer: Option<String>,
 }
 
 /// A draft as the core stores it, for [`MailFacts::draft`]: what the person must see before it
@@ -1127,6 +1130,9 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 )
             }
         },
+        Request::RespondToInvitation { account, answer, collection, .. } => {
+            invitation_answered(*answer, account, collection.as_deref(), facts, today)
+        }
         Request::SendDraft { .. } => match facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) {
             Some(draft) => {
                 let account = facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or_default();
@@ -1144,6 +1150,57 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// What answering an invitation would do, in words (task E8.3b): `Accept the invitation "Planning"
+/// on Thu 15 Oct 10:00: reply from anna@example.org to jonas@example.com, add the event to "Work"`;
+/// "Answer maybe to …" and "Decline …" alike, a decline with `, remove the event from "<calendar>"`
+/// when it removes the copy made before. Title and start as the mail store holds them
+/// ([`Facts::item`]), the account's address and the organizer from [`MailFacts`], the calendar by
+/// the name the core caches ([`Facts::name`]), else its id. All of it through [`quote`]. Without what
+/// the store holds: "Answer an unknown invitation".
+fn invitation_answered(
+    answer: torro_mail::InvitationAnswer,
+    account: &str,
+    collection: Option<&str>,
+    facts: &Facts,
+    today: chrono::NaiveDate,
+) -> String {
+    use torro_mail::InvitationAnswer;
+    let (Some(item), Some(mail)) = (&facts.item, &facts.mail) else {
+        return tr("Answer an unknown invitation").to_string();
+    };
+    let title = match quote(&item.title) {
+        empty if empty.is_empty() => tr("(no title)").to_string(),
+        title => title,
+    };
+    let when = item.start.map(|start| when(&start, today)).unwrap_or_default();
+    let account = quote(mail.account.as_deref().unwrap_or(account));
+    let organizer = quote(mail.organizer.as_deref().unwrap_or_default());
+    let calendar = facts.name.as_deref().or(collection).map(quote);
+    let mut args: Vec<(&str, &dyn std::fmt::Display)> =
+        vec![("title", &title), ("when", &when), ("account", &account), ("organizer", &organizer)];
+    let calendar = calendar.unwrap_or_default();
+    args.push(("calendar", &calendar));
+    let removes = !calendar.is_empty();
+    let text = match (answer, removes) {
+        (InvitationAnswer::Accept, _) => {
+            "Accept the invitation \"{title}\" on {when}: reply from {account} to \
+                                          {organizer}, add the event to \"{calendar}\""
+        }
+        (InvitationAnswer::Tentative, _) => {
+            "Answer maybe to the invitation \"{title}\" on {when}: reply from \
+                                             {account} to {organizer}, add the event to \"{calendar}\""
+        }
+        (InvitationAnswer::Decline, true) => {
+            "Decline the invitation \"{title}\" on {when}: reply from {account} \
+                                              to {organizer}, remove the event from \"{calendar}\""
+        }
+        (InvitationAnswer::Decline, false) => {
+            "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}"
+        }
+    };
+    trf(text, &args)
 }
 
 /// What an `assistant.*` command would do, in words (task C.1): `Delete the assistant
@@ -2254,6 +2311,61 @@ pub(crate) mod tests {
         assert_eq!(summary(&reorder, &Facts::default()), tr("Reorder an unknown task"));
     }
 
+    /// Task E8.3b: an answer to an invitation names the answer, title and start as the store holds
+    /// them, the account, the organizer and the calendar; never what the client claims.
+    #[test]
+    fn an_answered_invitation_names_what_the_store_holds() {
+        use torro_mail::InvitationAnswer;
+        let today = Local::now().date_naive();
+        let answer = |answer, collection: Option<&str>| Request::RespondToInvitation {
+            account: "mail:anna@example.org".into(),
+            id: "m:1".into(),
+            answer,
+            collection: collection.map(str::to_string),
+        };
+        let mail = MailFacts {
+            account: Some("anna@example.org".into()),
+            count: 1,
+            organizer: Some("jonas@example.com".into()),
+            ..MailFacts::default()
+        };
+        let known = |name: Option<&str>| Facts {
+            item: cached("Planning", Some(day(15))),
+            name: name.map(str::to_string),
+            mail: Some(mail.clone()),
+            ..Facts::default()
+        };
+        let args = |calendar: &str| {
+            [
+                ("title", "Planning".to_string()),
+                ("when", when(&day(15), today)),
+                ("account", "anna@example.org".to_string()),
+                ("organizer", "jonas@example.com".to_string()),
+                ("calendar", calendar.to_string()),
+            ]
+        };
+        let filled = |text: &'static str, calendar: &str| {
+            let args = args(calendar);
+            let args: Vec<(&str, &dyn std::fmt::Display)> =
+                args.iter().map(|(key, value)| (*key, value as &dyn std::fmt::Display)).collect();
+            trf(text, &args)
+        };
+        let accepted = summary(&answer(InvitationAnswer::Accept, Some("c/work")), &known(Some("Work")));
+        let text = "Accept the invitation \"{title}\" on {when}: reply from {account} to {organizer}, add the event \
+                    to \"{calendar}\"";
+        assert_eq!(accepted, filled(text, "Work"));
+        assert!(accepted.contains("jonas@example.com") && accepted.contains("Planning"), "{accepted}");
+        let declined = summary(&answer(InvitationAnswer::Decline, None), &known(None));
+        let text = "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}";
+        assert_eq!(declined, filled(text, ""));
+        let removed = summary(&answer(InvitationAnswer::Decline, None), &known(Some("Work")));
+        let text = "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}, remove the \
+                    event from \"{calendar}\"";
+        assert_eq!(removed, filled(text, "Work"));
+        let unknown = summary(&answer(InvitationAnswer::Tentative, Some("c/work")), &Facts::default());
+        assert_eq!(unknown, tr("Answer an unknown invitation"));
+    }
+
     /// `apps.open_app` by window class (task E8.1): the summary names the window as the suite does.
     #[test]
     fn opening_an_app_names_it_as_the_suite_does() {
@@ -2431,6 +2543,7 @@ pub(crate) mod tests {
                 subjects: subjects.iter().map(|s| s.to_string()).collect(),
                 folder: folder.map(str::to_string),
                 draft: None,
+                organizer: None,
             }),
             ..Facts::default()
         };

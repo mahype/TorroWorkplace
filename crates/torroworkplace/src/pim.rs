@@ -1074,8 +1074,10 @@ impl PimService {
             | Request::AskPermission { .. } => return None,
             // The core checks the task list itself, before the entry and before anything else
             // (`Core::task_target_refusal`, task E3.5), and the calendar of an event alike
-            // (`Core::event_refusal`, task E8.5b).
-            Request::CreateTaskFromItem { .. } | Request::CreateEventFromItem { .. } => return None,
+            // (`Core::event_refusal`, task E8.5b), and the calendar of an answered invitation (E8.3b).
+            Request::CreateTaskFromItem { .. }
+            | Request::CreateEventFromItem { .. }
+            | Request::RespondToInvitation { .. } => return None,
             // No collection: the inbox filters by the client's sources itself (task E1.2).
             Request::ListItems { .. }
             | Request::GetItem { .. }
