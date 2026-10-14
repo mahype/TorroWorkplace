@@ -880,6 +880,7 @@ mod tests {
             accounts: vec!["anna@work.example.org"],
             hidable: Vec::new(),
             look: Look::Rows,
+            folders: &[],
         };
         for look in [Look::Rows, Look::Cards] {
             let data = ColumnData {

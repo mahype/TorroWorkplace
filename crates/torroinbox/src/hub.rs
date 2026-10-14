@@ -1708,6 +1708,7 @@ mod tests {
             accounts: Vec::new(),
             hidable: Vec::new(),
             look: list::Look::Rows,
+            folders: &[],
         };
         let review = find(&items, "demo-14");
         let time = list::time_text(&review, &view, now());

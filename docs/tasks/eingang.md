@@ -1395,6 +1395,23 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: verworfener Eintrag fehlt in offenen Einträgen und in „Done“ (Kern-SQL, Demo, App), kommt mit
   neuer Meldung offen zurück; ✕ in der Zeilenleiste sendet `Dismiss`, Mail hat keins; MCP baut `dismissed` mit.
 
+### E8.18 Archivieren und Löschen aus der Liste, Antworten nur im Leser (Issue #118)
+- [x] erledigt (2026-10-14: `mail::filing_actions` baut Archive (`e` im Ordner) und Delete (`#`, neu auch Entf und
+  ⌫) als `Message::Mail` – dieselben Wege wie Tasten und Leser, mit Hinweis und Undo. Ordner: Karten Archive · Delete ·
+  Task, kompakte Zeilen bekommen dieselbe Aktionsleiste auf der ersten Zeile. Mail-Einträge (For me, Info, Later):
+  Archive · Delete vor Task · Done · Later · „…“ in Zeile und Karte; Archive ohne eigene Taste, `e` bleibt dort Done.
+  Reply fehlt in Zeilen und Karten und steht nur im Leser; Mail-Karten haben damit keine Hauptaktion mehr (alle Wörter
+  oder keins). Entscheidung: Ohne Archiv- bzw. Papierkorbordner im Konto fehlt der Knopf, statt gesperrt zu sein – so
+  will es die Regel der Aktionsleiste („nur Aktionen, die gehen“), und `RowAction` kennt keinen gesperrten Knopf;
+  ebenso kein Archive im Archiv, kein Delete im Papierkorb. Einladungen behalten ihre Antworten · Later · Task)
+- **Modell:** Opus · **Braucht:** E4.2, E8.3, E8.11 · **Dateien:** `crates/torroinbox/src/{mail,list,keys,app}.rs`
+  (Feld `folders` in `list::Rows` und `mail::MailList`, auch in Tests von `hub`, `notifications`, `overview`)
+- **Oberfläche:** Zeilen und Karten im Mail-Fenster (Ordner, smarte Ansichten, Einträge), Zeilen der Mail-Einträge in
+  der Zentrale. **API:** vorhanden, `mail.move_messages` (Rolle Archive) · Write und `mail.delete_messages` · Delete;
+  kein neuer Request. **MCP:** `mail_move_messages`, `mail_delete_messages`.
+- **Abnahme:** Tests: Knöpfe senden Archive/Delete für die richtige Nachricht, kein Reply in Zeilen und Karten, Knopf
+  fehlt ohne Ordner der Rolle; Entf/⌫ löschen; Löschen aus der Ordnerzeile mit Undo. Sichtprüfung kompakt/bequem.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
