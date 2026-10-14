@@ -23,7 +23,6 @@
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{Request, SettingKey, VoiceState};
-use torro_pim::AccountState;
 use torro_setups::{LoadMode, TemplateSummary};
 
 use crate::core::Snapshot;
@@ -92,46 +91,52 @@ pub fn waiting_line(waiting: Waiting) -> String {
     }
 }
 
-/// The menu from docs/core.md for one snapshot.
+/// The menu from docs/core.md for one snapshot: the apps first, then the workspace templates,
+/// then "Settings…" and "Quit". Which workspace is active and which Nextcloud is signed in are
+/// left out: they say nothing the person needs here. Only work in progress or a problem with the
+/// templates gets a line ([`status_line`]).
 ///
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
     let mut menu = voice_section(snapshot.voice, snapshot.voice_enabled);
-    if let Some(name) = &snapshot.unsupported {
-        menu.push(info(trf("{name} not supported yet", &[("name", name)])));
-        menu.push(Item::Separator);
-    } else {
-        let load = per_template(snapshot, |t| {
-            let id = &t.id;
-            vec![
-                entry_if(
-                    tr("Load here"),
-                    snapshot.workspace_windows == 0,
-                    Request::LoadTemplate { id: id.clone(), mode: LoadMode::Empty },
-                ),
-                entry(tr("Add"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Add }),
-                entry(tr("Replace"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Replace }),
-            ]
-        });
-        menu.push(submenu(tr("Load template"), load));
-        menu.push(entry(tr("Save workspace"), Request::SaveTemplate { name: None }));
-        let update = per_template_entry(snapshot, |id| Request::UpdateTemplate { id });
-        menu.push(submenu(tr("Update"), update));
-        let delete = per_template_entry(snapshot, |id| Request::DeleteTemplate { id });
-        menu.push(submenu(tr("Delete"), delete));
-        menu.push(Item::Separator);
-    }
     menu.extend(apps_section(Waiting::of(snapshot)));
     menu.push(Item::Separator);
-    menu.push(info(info_line(snapshot)));
-    if let Some(line) = account_line(snapshot) {
+    menu.extend(templates_section(snapshot));
+    if let Some(line) = status_line(snapshot) {
         menu.push(info(line));
     }
     menu.push(Item::Separator);
     menu.push(entry(tr("Settings…"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None }));
     menu.push(entry(tr("Quit"), Request::Quit));
     menu
+}
+
+/// Load, save, update and delete workspace templates, or why the window manager is not supported.
+fn templates_section(snapshot: &Snapshot) -> Vec<Item> {
+    if let Some(name) = &snapshot.unsupported {
+        return vec![info(trf("{name} not supported yet", &[("name", name)]))];
+    }
+    let load = per_template(snapshot, |t| {
+        let id = &t.id;
+        vec![
+            entry_if(
+                tr("Load here"),
+                snapshot.workspace_windows == 0,
+                Request::LoadTemplate { id: id.clone(), mode: LoadMode::Empty },
+            ),
+            entry(tr("Add"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Add }),
+            entry(tr("Replace"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Replace }),
+        ]
+    });
+    let update = per_template_entry(snapshot, |id| Request::UpdateTemplate { id });
+    let delete = per_template_entry(snapshot, |id| Request::DeleteTemplate { id });
+    vec![
+        submenu(tr("Load template"), load),
+        entry(tr("Save workspace"), Request::SaveTemplate { name: None }),
+        submenu(tr("Update"), update),
+        submenu(tr("Delete"), delete),
+    ]
 }
 
 /// What the voice listener does, for the tooltip and the menu; empty while voice is off.
@@ -177,33 +182,13 @@ fn apps_section(waiting: Waiting) -> Vec<Item> {
     ]
 }
 
-/// `Workspace 3 · hyprland`, or what is going on instead.
-fn info_line(snapshot: &Snapshot) -> String {
+/// "Busy …" while a template is loaded or saved, or the problem the core ran into (the window
+/// manager not reachable, templates not readable); nothing while all is well.
+fn status_line(snapshot: &Snapshot) -> Option<String> {
     if snapshot.busy {
-        return tr("Busy …").into();
+        return Some(tr("Busy …").into());
     }
-    if let Some(problem) = &snapshot.problem {
-        return problem.clone();
-    }
-    match &snapshot.workspace {
-        Some(workspace) => {
-            trf("Workspace {workspace} · {backend}", &[("workspace", workspace), ("backend", &snapshot.backend)])
-        }
-        None => snapshot.backend.clone(),
-    }
-}
-
-/// The Nextcloud status: who is connected, a sign-in in progress, or a sync problem.
-fn account_line(snapshot: &Snapshot) -> Option<String> {
-    Some(match snapshot.account.as_ref()? {
-        AccountState::NotConnected => tr("Not connected to Nextcloud").to_string(),
-        AccountState::SigningIn { .. } => tr("Signing in to Nextcloud …").to_string(),
-        AccountState::Connected { problem: Some(problem), .. } => trf("Nextcloud: {problem}", &[("problem", problem)]),
-        AccountState::Connected { login_name, server, .. } => {
-            let host = server.split("://").nth(1).unwrap_or(server);
-            trf("Nextcloud: {account}", &[("account", &format!("{login_name}@{host}"))])
-        }
-    })
+    snapshot.problem.clone()
 }
 
 /// An entry that opens or focuses one of the suite's apps.
@@ -249,6 +234,10 @@ fn info(label: String) -> Item {
 mod tests {
     use super::*;
     use crate::core::InboxLine;
+    use torro_pim::AccountState;
+
+    /// Where the template entries start: after the six apps and a separator.
+    const TEMPLATES: usize = 7;
 
     /// The menu as text: `▸` marks a submenu, parentheses a greyed-out entry, `-` a separator.
     fn labels(menu: &[Item]) -> Vec<String> {
@@ -291,11 +280,6 @@ mod tests {
         assert_eq!(
             labels(&build(&snapshot())),
             [
-                sub(tr("Load template")),
-                tr("Save workspace").to_string(),
-                sub(tr("Update")),
-                sub(tr("Delete")),
-                "-".to_string(),
                 tr("Inbox").to_string(),
                 tr("Mail").to_string(),
                 tr("Notifications").to_string(),
@@ -303,10 +287,10 @@ mod tests {
                 tr("Tasks").to_string(),
                 tr("Assistant").to_string(),
                 "-".to_string(),
-                format!(
-                    "({})",
-                    trf("Workspace {workspace} · {backend}", &[("workspace", &"3"), ("backend", &"hyprland")])
-                ),
+                sub(tr("Load template")),
+                tr("Save workspace").to_string(),
+                sub(tr("Update")),
+                sub(tr("Delete")),
                 "-".to_string(),
                 tr("Settings…").to_string(),
                 tr("Quit").to_string(),
@@ -337,7 +321,7 @@ mod tests {
     #[test]
     fn template_submenus_name_the_template() {
         let menu = build(&snapshot());
-        let Item::Submenu { items: update, .. } = &menu[2] else { panic!("update submenu") };
+        let Item::Submenu { items: update, .. } = &menu[TEMPLATES + 2] else { panic!("update submenu") };
         assert_eq!(
             update,
             &[Item::Entry {
@@ -345,7 +329,7 @@ mod tests {
                 action: Some(Action::Run(Box::new(Request::UpdateTemplate { id: "dev".into() })))
             }]
         );
-        let Item::Submenu { items: delete, .. } = &menu[3] else { panic!("delete submenu") };
+        let Item::Submenu { items: delete, .. } = &menu[TEMPLATES + 3] else { panic!("delete submenu") };
         assert_eq!(labels(delete), ["Entwicklung"]);
     }
 
@@ -353,7 +337,7 @@ mod tests {
     fn load_here_only_on_an_empty_workspace() {
         let load_items = |snapshot: &Snapshot| {
             let menu = build(snapshot);
-            let Item::Submenu { items: load, .. } = &menu[0] else { panic!("load submenu") };
+            let Item::Submenu { items: load, .. } = &menu[TEMPLATES] else { panic!("load submenu") };
             let Item::Submenu { items: template, .. } = &load[0] else { panic!("template submenu") };
             labels(template)
         };
@@ -367,7 +351,7 @@ mod tests {
     fn no_templates_shows_a_hint() {
         let menu = build(&Snapshot { templates: Vec::new(), ..snapshot() });
         let hint = format!("({})", tr("No templates yet"));
-        for index in [0, 2, 3] {
+        for index in [TEMPLATES, TEMPLATES + 2, TEMPLATES + 3] {
             let Item::Submenu { items, .. } = &menu[index] else { panic!("submenu {index}") };
             assert_eq!(labels(items), std::slice::from_ref(&hint));
         }
@@ -377,17 +361,24 @@ mod tests {
     fn unsupported_system_shows_why() {
         let snapshot = Snapshot { unsupported: Some("AeroSpace (macOS)".into()), ..Snapshot::default() };
         let menu = labels(&build(&snapshot));
-        assert_eq!(menu[0], format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")])));
-        assert_eq!(menu[1], "-");
+        assert_eq!(
+            menu[TEMPLATES],
+            format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")]))
+        );
+        assert_eq!(menu[TEMPLATES + 1], "-");
         assert_eq!(menu.last().map(String::as_str), Some(tr("Quit")));
     }
 
     #[test]
-    fn status_lines_show_busy_and_the_account() {
-        let busy = Snapshot { busy: true, account: Some(AccountState::NotConnected), ..snapshot() };
-        let menu = labels(&build(&busy));
-        assert!(menu.contains(&format!("({})", tr("Busy …"))));
-        assert!(menu.contains(&format!("({})", tr("Not connected to Nextcloud"))));
+    fn only_work_in_progress_or_a_problem_gets_a_line() {
+        let quiet = labels(&build(&Snapshot { account: Some(AccountState::NotConnected), ..snapshot() }));
+        assert_eq!(quiet[TEMPLATES + 4], "-", "no workspace, no Nextcloud line");
+        assert!(!quiet.contains(&format!("({})", tr("Not connected to Nextcloud"))));
+
+        let busy = labels(&build(&Snapshot { busy: true, ..snapshot() }));
+        assert_eq!(busy[TEMPLATES + 4], format!("({})", tr("Busy …")), "below the templates");
+        let broken = labels(&build(&Snapshot { problem: Some("Hyprland not reachable".into()), ..snapshot() }));
+        assert_eq!(broken[TEMPLATES + 4], "(Hyprland not reachable)");
     }
 
     /// Task E3.3b: one number for everything "for me", approvals included, next to "Inbox" only;
@@ -424,7 +415,7 @@ mod tests {
     /// voice off, there is nothing about it.
     #[test]
     fn the_menu_shows_listening_and_mutes_the_microphone() {
-        assert_eq!(labels(&build(&snapshot()))[0], format!("{} ▸", tr("Load template")), "off: nothing");
+        assert_eq!(labels(&build(&snapshot()))[0], tr("Inbox"), "off: nothing");
         for state in [VoiceState::Listening, VoiceState::Recording, VoiceState::Answering] {
             let menu = build(&Snapshot { voice: state, ..snapshot() });
             assert_eq!(
