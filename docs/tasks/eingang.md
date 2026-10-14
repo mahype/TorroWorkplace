@@ -1439,6 +1439,23 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Oberfläche:** Liste des Mail-Fensters (kompakt und bequem). **API/MCP:** keine – Darstellung.
 - **Abnahme:** Test: keine Begrenzung im Mail-Fenster, Karten so breit wie die Fläche, andere Fenster begrenzt.
 
+### E8.21 Ziehbare Trennlinie zwischen Liste und Leser (Issue #130)
+- [x] erledigt (2026-10-14: neuer Baustein `torro_gui::split` – Griff `space::s()` breit mit der Linie in der Mitte,
+  Zeiger „resize“; Drücken startet, während des Ziehens meldet die ganze Teilung die Zeigerposition, Loslassen irgendwo
+  im Fenster beendet (`split::release`), Doppelklick = Standardbreite `size::list()`. Beide Seiten behalten mindestens
+  `split::min_pane()` = `size::props()` (300). Zustand `split::Split` mit `update`, das nur bei echter Änderung
+  „speichern“ meldet; `ui.json` unter `split.<Fensterschlüssel>` (`ui_state::save_split_task`, Zurücksetzen löscht den
+  Eintrag). Das Mail-Fenster nutzt ihn in Breit; die Karten rechnen mit der gezogenen Breite. Sichtprüfung: gemerkte
+  Breite 640 im Bild; Ziehen selbst nicht automatisiert geprüft (keine Eingabe ans Fenster möglich). Befund nebenbei:
+  Die Knopfleiste des Lesers läuft unter etwa 450 Breite rechts über (Close, Move to, „…“ abgeschnitten) – schon vorher
+  bei 1100 breitem Fenster, eigenes Issue)
+- **Modell:** Opus · **Braucht:** E8.3, E8.20 · **Dateien:** `crates/torro-gui/src/{split,ui_state,lib}.rs`,
+  `crates/torroinbox/src/app.rs`
+- **Oberfläche:** Mail-Fenster, Breit: Trennlinie zwischen Liste und Leser. **API/MCP:** keine – Fensterzustand in
+  `ui.json`, kein Request.
+- **Abnahme:** Tests: Breite begrenzt (beide Mindestbreiten), gespeichert nur bei Änderung, Zurücksetzen, `ui.json`
+  je Fenster neben den anderen Schlüsseln; App: Ziehen, Karten folgen, gemerkte Breite verliert gegen Ziehen.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
