@@ -1260,6 +1260,40 @@ E8.9   unabhängig (torro-wm, core.rs)
   Leser, Kartenhöhe bei einer Zeile, Gruppenkopf gleich, Kopfzahl in Mini/Leiste); `scripts/ci-local.sh`;
   Sichtprüfung, sobald der Bildschirm offen ist.
 
+### E8.12 Feinschliff Benachrichtigungen, Zentrale, Aufgaben und Regeln nach der Sichtprüfung
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E8.11 · **Dateien:** `crates/torroinbox/src/{app,notifications,hub,insights,mail,glance,overview,list}.rs`,
+  `crates/torrotasks/src/detail.rs`, `crates/torroworkplace/src/ui/inbox.rs`, `crates/torro-gui/src/widgets.rs`,
+  `crates/torro-core/src/i18n/de.rs`
+- **Befunde der Sichtprüfung vom 2026-10-14** (Bilder im Scratchpad unter `review-e8/`), Fehler:
+  1. Aufgaben „From“: Texte stumm abgeschnitten („Tue, 13“, „anna@work.examp“) – `torrotasks/src/detail.rs`
+     (`card_words`: nur `Wrapping::None` + `clip`). `typo::ellipsize` mit Tooltip; in Schmal/Mittel erst das Konto,
+     dann den Absender weglassen.
+  2. Dasselbe in der Aufgaben-Karte im Mail-Paneel („… · ope“) – `torroinbox/src/mail.rs` (`task_card`).
+  3. Mittel, Aufgaben-Detail: „Hide completed“ läuft über den Rand; „Open mail“ verdrängt den Titel (in Mittel unter
+     die Zeile oder nur Icon mit Tooltip).
+  4. Knopfleisten mischen Wort und Icon (`notifications.rs`, `worded`): alles oder nichts je Leiste; höchstens die
+     Primäraktion behält ihr Wort. Die Schätzung mit Plex ist zu vorsichtig.
+- **Sollte:**
+  5. Zentrale Mittel: „Decide“ und „Follow up“ über die volle Breite; Breit: nebeneinander statt halb breit untereinander.
+  6. Mute-Menü: nie über dem Auslöser; oberhalb öffnen, wenn unten kein Platz ist (Mittel, und mit Paneel in Breit).
+  7. „Make event“-Karte am Knopf im Paneel ausrichten und im Paneel halten; Kanten im Dialog angleichen.
+  8. Breit: „To sort“ und „Where you could cut back“ auf `size::content_max()`; Knopfspalten in fester Reihenfolge.
+  9. Leiste: Zellen nutzen den Platz (letzte Zelle wächst oder eine vierte), `glance.rs` `cell_max()`.
+  10. Schmal/Mittel: eine linke Achse für Chips, Gruppentitel und Karten.
+  11. Gruppenköpfe in beiden Dichten derselbe Baustein (wie E8.11 im Mail-Fenster).
+  12. Knopfstile in der Zentrale nach einer Regel (sichtbare Kartenknöpfe secondary, „weg damit“ ghost); große
+      Allow/Deny in Schmal bewusst nur für Entscheidungen, im Skill festhalten.
+  13. Insights Mittel: Kennzahlen 2×2 wie in Schmal.
+  14. „Where you could cut back“: je Zeile der passende Vorschlag (Hide sender, Mute channel …) statt immer „Only
+      Info“; prüfen, ob Kern (`get_stats`) oder Oberfläche das festlegt, und es dort richten.
+  15. Steuerzentrale › Rules: Titel = Gegenstand, Untertitel = Wirkung · Umfang · Treffer, einzeilig mit „…“.
+- **Kleinigkeiten:** doppeltes „To sort 9“; einheitliche Anführungszeichen; „33%“ ohne Leerzeichen und ohne
+  Schlusspunkt im Englischen; Zahlen im Mute-Menü als `meta` statt `kbd`; „New“ in Schmal mit Zahl; einzelnes Wort in
+  der Zeile „This text comes from outside …“; Demo-Einträge mit eigenem App-Icon (GitHub, Kalender).
+- **API/MCP:** keine neue Funktion; Punkt 14 ggf. Logik im Kern (`inbox.get_stats`), ohne Schnittstellenänderung.
+- **Abnahme:** Tests je Befund, wo prüfbar; `scripts/ci-local.sh`; Sichtprüfung der genannten Bilder neu.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur
