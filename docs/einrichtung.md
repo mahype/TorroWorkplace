@@ -83,7 +83,7 @@ acht Schritte mit Listen brauchen den Platz, und die Schrittliste zeigt jederzei
 
 ### 1 Welcome
 
-Logo, „Set up Torro Workplace“, ein Satz, was gleich passiert („Connect your Nextcloud, choose what you
+„Set up Torro Workplace“, ein Satz, was gleich passiert („Connect your Nextcloud, choose what you
 need, and add more calendars, mail and AI. Every step can be skipped.“). Darunter **Language** und
 **Appearance** als Segmente, weil sie alles Folgende betreffen. Primär „Get started“.
 
@@ -110,7 +110,8 @@ Zweiter Weg: „I don't use Nextcloud“ (ghost) überspringt.
 
 ### 3 Components
 
-Karten mit Schalter, eine je Komponente. Untertitel sagt, woher die Daten kommen:
+Eine Gruppe mit einer Zeile je Komponente: Symbol, Name, darunter woher die Daten kommen, rechts der
+Schalter (keine Karten: Einstellungsseiten bestehen aus Gruppen, Design-Skill Abschnitt 5):
 
 | Komponente | Vorbelegung | Untertitel (Beispiel) |
 |---|---|---|

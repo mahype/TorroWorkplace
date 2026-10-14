@@ -52,6 +52,7 @@ mod launch;
 mod overview;
 mod persona;
 mod server_fields;
+mod setup;
 mod wizard;
 mod workspaces;
 
@@ -346,6 +347,9 @@ pub struct Ui {
     approvals: approvals::State,
     inbox: inbox::State,
     general: general::State,
+    /// The first-run setup while it is open (task W.4): it takes the window instead of the
+    /// sections.
+    setup: Option<setup::State>,
 }
 
 #[derive(Debug, Clone)]
@@ -387,6 +391,10 @@ pub enum Message {
     Designs(Result<Vec<general::Pack>, String>),
     /// Escape: close the open menu, or else whatever dialog the current page has open.
     Escape,
+    /// Enter outside a text field: the setup's primary button.
+    Enter,
+    /// The first-run setup.
+    Setup(setup::Message),
     Overview(overview::Message),
     Accounts(accounts::Message),
     Workspaces(workspaces::Message),
@@ -409,7 +417,10 @@ pub fn run(launch: Launch) -> iced::Result {
     design::start(socket.as_deref(), launch.design.as_deref());
     iced::application(move || Ui::new(launch.clone()), Ui::update, Ui::view)
         .settings(torro_gui::settings())
-        .title(|ui: &Ui| format!("Torro Workplace · {}", ui.section.label()))
+        .title(|ui: &Ui| {
+            let page = if ui.setup.is_some() { tr("Setup") } else { ui.section.label() };
+            format!("Torro Workplace · {page}")
+        })
         .theme(Ui::theme)
         .scale_factor(|ui: &Ui| ui.zoom.factor())
         .subscription(Ui::subscription)
@@ -446,6 +457,7 @@ impl Ui {
             approvals: approvals::State::default(),
             inbox: inbox::State::default(),
             general: general::State::default(),
+            setup: None,
         };
         if demo {
             // No service to ask: the sample data is there from the first frame.
@@ -456,6 +468,9 @@ impl Ui {
                 ui.data.settings.design = id;
             }
             ui.loaded = true;
+        }
+        if let Some(step) = ui.launch.setup {
+            ui.setup = Some(setup::State::new(step, &ui.data.settings));
         }
         if let Some(open) = open {
             ui.open(open);
@@ -619,6 +634,10 @@ impl Ui {
                 messages
             }
             Open::Inbox => vec![Message::Select(Section::Inbox)],
+            Open::Setup(step) => {
+                self.setup = Some(setup::State::new(step, &self.data.settings));
+                vec![]
+            }
             // The assistant with rights of its own (the demo's), before it has a client (the
             // first start), with the rights offered on that first start (read only), and asking
             // whether to turn it off.
@@ -816,6 +835,11 @@ impl Ui {
                 };
                 agents::loaded(&mut self.agents);
                 assistant::loaded(&mut self.assistant, &self.data);
+                if let Some(setup) = self.setup.as_mut()
+                    && self.data.error.is_none()
+                {
+                    setup.loaded(&self.data.settings);
+                }
                 // A mail account's page follows changes from outside while nothing is typed.
                 accounts::loaded(&mut self.accounts, &self.data);
                 // The add-account dialog follows the sign-in through the reloaded accounts.
@@ -877,6 +901,12 @@ impl Ui {
                     self.close_menus();
                     return Task::none();
                 }
+                if let Some(setup) = &self.setup {
+                    return match setup::escape(setup) {
+                        Some(message) => self.update(Message::Setup(message)),
+                        None => Task::none(),
+                    };
+                }
                 let page = match self.section {
                     Section::Accounts => accounts::escape(&self.accounts).map(Message::Accounts),
                     Section::Workspaces => workspaces::escape(&self.workspaces).map(Message::Workspaces),
@@ -888,6 +918,22 @@ impl Ui {
                     Some(message) => self.update(message),
                     None => Task::none(),
                 };
+            }
+            Message::Enter => match self.setup.is_some() && self.menu.is_none() {
+                true => return self.update(Message::Setup(setup::Message::Next)),
+                false => Action::None,
+            },
+            Message::Setup(m) => {
+                let Some(state) = self.setup.as_mut() else { return Task::none() };
+                match setup::update(state, m) {
+                    setup::Outcome::Stay(action) => action,
+                    // Finished or put off: the window goes on as the control centre.
+                    setup::Outcome::Close(action) => {
+                        self.setup = None;
+                        self.select(Section::Overview);
+                        action
+                    }
+                }
             }
             Message::Overview(m) => overview::update(&mut self.overview, m, &self.data),
             Message::Accounts(m) => accounts::update(&mut self.accounts, m, &self.data),
@@ -1043,7 +1089,8 @@ impl Ui {
     /// The panel button and "General" in the band above the window (U.10); a glance has neither.
     fn title_buttons(&self) -> TitleButtons<Message> {
         let class = layout::of(self.size);
-        if matches!(class, SizeClass::Mini | SizeClass::Strip) {
+        // The setup keeps its list of steps and has no settings to go to.
+        if matches!(class, SizeClass::Mini | SizeClass::Strip) || self.setup.is_some() {
             return TitleButtons::none();
         }
         let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
@@ -1061,6 +1108,9 @@ impl Ui {
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
+        if let Some(setup) = &self.setup {
+            return self.setup_window(setup, class);
+        }
         let (switcher, nav) = (Anchor::new(), Anchor::new());
         let layer = self.menu.map(|menu| match menu {
             Menu::Switcher => widgets::floating(
@@ -1088,6 +1138,26 @@ impl Ui {
         .rail(rail)
         .drawer(self.drawer, Message::CloseMenu)
         .overlay(layer)
+        .into()
+    }
+
+    /// The first-run setup in the window's frame: the steps where the sections are (wide: the
+    /// sidebar, medium: the rail, narrow: none), its header, and its page over the footer.
+    fn setup_window<'a>(&'a self, setup: &'a setup::State, class: SizeClass) -> Element<'a, Message> {
+        let wrap = |element: Element<'a, setup::Message>| element.map(Message::Setup);
+        let body = match self.loaded {
+            true => wrap(setup::body(setup, &self.data, class)),
+            false => widgets::loading(),
+        };
+        let rail = (class == SizeClass::Medium).then(|| wrap(setup::sidebar(setup, SidebarMode::Rail)));
+        shell::shell(
+            class,
+            wrap(setup::sidebar(setup, SidebarMode::Expanded)),
+            wrap(setup::header(setup, class)),
+            body,
+            None,
+        )
+        .rail(rail)
         .into()
     }
 
@@ -1364,6 +1434,9 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
     let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, modifiers, .. }) = event else { return None };
     match key {
         iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape) => Some(Message::Escape),
+        iced::keyboard::Key::Named(iced::keyboard::key::Named::Enter) if status == iced::event::Status::Ignored => {
+            Some(Message::Enter)
+        }
         key if status == iced::event::Status::Ignored && shell::is_sidebar_key(&key, modifiers) => {
             Some(Message::ToggleSidebar)
         }

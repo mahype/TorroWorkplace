@@ -57,11 +57,14 @@ W.10 Sichtprüfung und API-Prüfung am Ende
 - **Abnahme:** `httpmock`-Test je Protokoll; Schlüssel in keiner Antwort und keinem Protokoll.
 
 ### W.4 Hülle der Einrichtung
-- [ ] erledigt
+- [x] erledigt (Komponenten als Gruppe mit Schaltern statt Karten, wie die Design-Regel für Einstellungsseiten
+  es will; Mini und Leiste zeigen weiter die Statusübersicht, „Setup isn't finished“ kommt mit W.9)
 - **Modell:** Opus · **Braucht:** W.1 · **Dateien:** `crates/torroworkplace/src/ui/setup/**` (neu),
   `crates/torroworkplace/src/ui/{mod,launch}.rs`
 - `torroworkplace ui --setup [--step <name>]`; Schrittliste, Kopf, Fuß, drei Größenklassen; Schritte
-  Welcome, Components und Done; Demo-Zustände `--demo --open setup-<schritt>`.
+  Welcome, Components und Done; Demo-Zustände `--demo --open setup`, `setup-components`, `setup-done`.
+  Schritte späterer Aufgaben stehen schon im Typ `Step`, werden aber erst gelistet, wenn `Step::built` sie
+  nennt (W.5–W.8 schalten sie dort frei).
 - **Oberfläche:** Einrichtung · **API:** `SetSetting { Setup, Component, Language, Appearance }` · **MCP:** gibt es
 
 ### W.5 Schritt Nextcloud und Bausteine aus „Add account“

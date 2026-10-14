@@ -145,10 +145,12 @@ pub enum Open {
     AssistantNote,
     /// The "Forget this note?" confirmation.
     AssistantForget,
+    /// The first-run setup at this step (task W.4), with the demo's sample data.
+    Setup(super::setup::Step),
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 71] = [
+    pub const ALL: [(&'static str, Open); 74] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -220,6 +222,9 @@ impl Open {
         ("assistant-memory-empty", Open::AssistantMemoryEmpty),
         ("assistant-note", Open::AssistantNote),
         ("assistant-forget", Open::AssistantForget),
+        ("setup", Open::Setup(super::setup::Step::Welcome)),
+        ("setup-components", Open::Setup(super::setup::Step::Components)),
+        ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
 
@@ -239,6 +244,9 @@ impl Open {
 ///   one. Nothing is stored.
 /// - `--design <id>`: draw with this design pack instead of the stored one (task L.3); needs
 ///   `--demo`. An id that is not a valid pack is refused with the valid ones.
+/// - `--setup`: open the first-run setup (task W.4, `docs/einrichtung.md`) instead of a section;
+///   `--step <step>` starts it at that step (needs `--setup`). The core opens it so on a first
+///   start without accounts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
@@ -248,11 +256,21 @@ pub struct Launch {
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub design: Option<String>,
+    /// `--setup`: the step the setup starts at; `None` without the setup.
+    pub setup: Option<super::setup::Step>,
 }
 
 impl Default for Launch {
     fn default() -> Self {
-        Launch { section: Section::Overview, bot: None, demo: false, open: None, appearance: None, design: None }
+        Launch {
+            section: Section::Overview,
+            bot: None,
+            demo: false,
+            open: None,
+            appearance: None,
+            design: None,
+            setup: None,
+        }
     }
 }
 
@@ -265,6 +283,8 @@ pub enum LaunchError {
     UnknownValue { flag: &'static str, value: String, valid: String },
     /// `--open` without `--demo`: the states need sample data.
     NeedsDemo(&'static str),
+    /// `--step` without `--setup`.
+    NeedsSetup(&'static str),
 }
 
 impl fmt::Display for LaunchError {
@@ -275,6 +295,7 @@ impl fmt::Display for LaunchError {
                 write!(f, "unknown value {value:?} for {flag}; valid values: {valid}")
             }
             LaunchError::NeedsDemo(flag) => write!(f, "{flag} only works together with --demo"),
+            LaunchError::NeedsSetup(flag) => write!(f, "{flag} only works together with --setup"),
         }
     }
 }
@@ -339,7 +360,16 @@ impl Launch {
                 return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
             }
         };
-        Ok(Launch { section, bot, demo, open, appearance, design })
+        let setup = match (args.iter().any(|arg| arg == "--setup"), flag_value(args, "--step")?) {
+            (false, None) => None,
+            (false, Some(_)) => return Err(LaunchError::NeedsSetup("--step")),
+            (true, None) => Some(super::setup::Step::Welcome),
+            (true, Some(word)) => Some(
+                super::setup::Step::from_arg(word)
+                    .ok_or_else(|| unknown("--step", word, super::setup::Step::args()))?,
+            ),
+        };
+        Ok(Launch { section, bot, demo, open, appearance, design, setup })
     }
 }
 
@@ -1421,6 +1451,18 @@ mod tests {
             let launch = Launch::parse(&args(&["--appearance", word])).expect("works without --demo");
             assert_eq!(launch.appearance, Some(appearance));
         }
+    }
+
+    #[test]
+    fn the_setup_starts_at_its_first_step_or_the_one_named() {
+        use super::super::setup::Step;
+        assert_eq!(Launch::parse(&args(&[])).map(|l| l.setup), Ok(None));
+        assert_eq!(Launch::parse(&args(&["--setup"])).map(|l| l.setup), Ok(Some(Step::Welcome)), "no demo needed");
+        let launch = Launch::parse(&args(&["--setup", "--step=components"])).expect("a built step");
+        assert_eq!(launch.setup, Some(Step::Components));
+        assert_eq!(Launch::parse(&args(&["--step", "done"])), Err(LaunchError::NeedsSetup("--step")));
+        let err = Launch::parse(&args(&["--setup", "--step", "nextcloud"])).expect_err("not built yet");
+        assert!(err.to_string().ends_with("valid values: welcome, components, done"), "{err}");
     }
 
     #[test]
