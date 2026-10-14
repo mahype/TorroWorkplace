@@ -350,6 +350,7 @@ where
             conversation,
             engine,
             model,
+            effort: None,
             text: text.to_string(),
             without: Vec::new(),
             bot: None,
@@ -489,6 +490,7 @@ mod tests {
             title: title.into(),
             engine: engine.into(),
             model: Some(format!("{engine}-model")),
+            effort: None,
             created: time,
             updated: time,
             pinned: false,
@@ -535,12 +537,14 @@ mod tests {
                         kind: EngineKind::Test,
                         name: "Test".into(),
                         problem: None,
+                        models: Vec::new(),
                     }],
                 }),
                 Request::SendMessage { conversation, engine, text, model, .. } => {
                     let id = conversation.unwrap_or_else(|| "c9".into());
                     let conversation = ConversationSummary { model, ..summary(&id, &text, &engine, 14, 1, true) };
-                    let message = EntryContent::Message { text, engine, model: None, without: Vec::new() };
+                    let message =
+                        EntryContent::Message { text, engine, model: None, effort: None, without: Vec::new() };
                     Ok(Response::Conversation { conversation, entries: vec![entry(1, message)] })
                 }
                 Request::RenameConversation { .. } => Ok(Response::Ok),
@@ -757,8 +761,14 @@ mod tests {
     fn engines_come_from_the_last_conversation_or_the_first_that_works() {
         assert_eq!(last_engine(&[]), None);
         let engines = vec![
-            Engine { id: "ai:a".into(), kind: EngineKind::Ai, name: "A".into(), problem: Some("no key".into()) },
-            Engine { id: "ai:b".into(), kind: EngineKind::Ai, name: "B".into(), problem: None },
+            Engine {
+                id: "ai:a".into(),
+                kind: EngineKind::Ai,
+                name: "A".into(),
+                problem: Some("no key".into()),
+                models: Vec::new(),
+            },
+            Engine { id: "ai:b".into(), kind: EngineKind::Ai, name: "B".into(), problem: None, models: Vec::new() },
         ];
         assert_eq!(first_engine(&engines).as_deref(), Some("ai:b"));
         assert_eq!(first_engine(&engines[..1]).as_deref(), Some("ai:a"));

@@ -139,6 +139,7 @@ async fn ask(setup: &Setup, conversation: Option<&str>, text: &str, without: Vec
         conversation: conversation.map(str::to_string),
         engine: "claude-code".into(),
         model: None,
+        effort: None,
         text: text.into(),
         without,
         bot: None,
@@ -214,8 +215,13 @@ fn gone(pid: &str) -> bool {
 
 #[tokio::test]
 async fn claude_code_is_an_engine_only_when_installed_and_the_assistant_has_its_client() {
-    let claude =
-        Engine { id: "claude-code".into(), kind: EngineKind::Agent, name: "Claude Code".into(), problem: None };
+    let claude = Engine {
+        id: "claude-code".into(),
+        kind: EngineKind::Agent,
+        name: "Claude Code".into(),
+        problem: None,
+        models: claude::models(),
+    };
     let ai = crate::account::ai::AiAccounts::new(
         None,
         Arc::new(crate::account::github::tests::MemoryTokens::default()),
@@ -243,6 +249,7 @@ fn send_to_claude() -> Request {
         conversation: None,
         engine: "claude-code".into(),
         model: None,
+        effort: None,
         text: "Hi".into(),
         without: Vec::new(),
         bot: None,
@@ -508,4 +515,34 @@ async fn the_agent_reads_the_personality_and_no_local_note() {
     assert!(prompt.contains("> Answer like a ship's captain."), "{prompt}");
     assert!(prompt.contains("] Anna works in sales."), "{prompt}");
     assert!(!arguments.contains("ACME"), "{arguments}");
+}
+
+/// Issue #131: the model and the effort of the message reach Claude Code's command line, and the
+/// conversation keeps them for the next message.
+#[tokio::test]
+async fn the_model_and_the_effort_go_to_claude_code() {
+    let transcript = [init(), says("Hello."), done("Hello.")];
+    let setup = set_up(&transcript, "", Duration::from_secs(10), true).await;
+    let message = Message {
+        conversation: None,
+        engine: "claude-code".into(),
+        model: Some("opus".into()),
+        effort: Some(torro_core::ai::Effort::High),
+        text: "Hi".into(),
+        without: Vec::new(),
+        bot: None,
+        on_behalf: None,
+        person: false,
+    };
+    let Response::Conversation { conversation, .. } =
+        setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await
+    else {
+        panic!("expected a conversation");
+    };
+    finished(&setup.assistant, &conversation.id).await;
+    let arguments = setup.arguments();
+    assert!(arguments.contains(&"--model=opus".to_string()), "{arguments:?}");
+    assert!(arguments.contains(&"--effort=high".to_string()), "{arguments:?}");
+    let (summary, _) = read(&setup.assistant, &conversation.id, None).await;
+    assert_eq!((summary.model.as_deref(), summary.effort), (Some("opus"), Some(torro_core::ai::Effort::High)));
 }

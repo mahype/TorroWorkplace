@@ -624,14 +624,56 @@ pub fn demo_data() -> Data {
         }),
         accounts,
         templates,
-        settings: Settings { start_at_login: true, hidden_collections, ..Settings::default() },
+        settings: Settings {
+            start_at_login: true,
+            hidden_collections,
+            // Issue #131: new chats start with Claude Code's Opus, thinking hard.
+            assistant_default: Some(torro_core::settings::AssistantDefault {
+                engine: "claude-code".into(),
+                model: Some("opus".into()),
+                effort: Some(torro_core::ai::Effort::High),
+            }),
+            ..Settings::default()
+        },
         apps: Some(apps),
         approvals: demo_approvals(now),
         profile: Some(demo_profile()),
         memories: demo_memories(now),
         bots: demo_bots(),
+        engines: demo_engines(),
+        default_models: Vec::new(),
         error: None,
     }
+}
+
+/// The engines of the demo's assistant (issue #131): the OpenRouter account and Claude Code with
+/// its fixed models, as the core lists them.
+fn demo_engines() -> Vec<torro_ipc::assistant::Engine> {
+    use torro_ipc::assistant::{Engine, EngineKind};
+    let model = |id: &str, name: &str, reasoning: bool| torro_core::ai::AiModel {
+        id: id.into(),
+        name: name.into(),
+        tools: Some(true),
+        open_weights: Some(false),
+        context: None,
+        reasoning: Some(reasoning),
+    };
+    vec![
+        Engine {
+            id: "ai:openrouter@openrouter.ai".into(),
+            kind: EngineKind::Ai,
+            name: "OpenRouter".into(),
+            problem: None,
+            models: Vec::new(),
+        },
+        Engine {
+            id: "claude-code".into(),
+            kind: EngineKind::Agent,
+            name: "Claude Code".into(),
+            problem: None,
+            models: vec![model("opus", "Opus", true), model("sonnet", "Sonnet", true), model("haiku", "Haiku", false)],
+        },
+    ]
 }
 
 /// The demo's ntfy account at `push.example.org` (task E5.14), signed in as `anna` with a password,

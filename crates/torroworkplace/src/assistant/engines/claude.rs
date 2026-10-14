@@ -13,6 +13,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use serde_json::{Value, json};
+use torro_core::ai::{AiModel, Effort};
 use torro_ipc::api::{Area, CATALOGUE, Mcp};
 
 use crate::client_setup::SERVER_NAME;
@@ -58,6 +59,28 @@ const FLAGS: &[&str] = &[
     r#"--settings={"disableAllHooks":true}"#,
 ];
 
+/// The models offered for Claude Code (issue #131), as `--model` takes them: the aliases Claude
+/// Code 2.1 names in its help, each for the newest model of its family, with their names and
+/// whether they take `--effort` (Haiku does not). Another name Claude Code knows can still be sent
+/// as `model` ([`is_model_name`]).
+const MODELS: &[(&str, &str, bool)] =
+    &[("fable", "Fable", true), ("opus", "Opus", true), ("sonnet", "Sonnet", true), ("haiku", "Haiku", false)];
+
+/// The models `assistant.list_engines` lists for Claude Code ([`MODELS`]): each can call tools.
+pub fn models() -> Vec<AiModel> {
+    MODELS
+        .iter()
+        .map(|(id, name, effort)| AiModel {
+            id: (*id).into(),
+            name: (*name).into(),
+            tools: Some(true),
+            open_weights: Some(false),
+            context: None,
+            reasoning: Some(*effort),
+        })
+        .collect()
+}
+
 /// The MCP configuration of a run (`--mcp-config`): the suite's server only, `program mcp`. It
 /// holds no key: the server reads `TORRO_TOKEN` from the environment it inherits from Claude Code.
 pub fn mcp_config(program: &Path) -> Value {
@@ -74,10 +97,16 @@ pub fn mcp_config(program: &Path) -> Value {
 
 /// The arguments of a run: [`FLAGS`], the denied tools ([`DENIED_TOOLS`] and every tool of the
 /// suite in the areas `without`, [`denied`]), the MCP configuration in the file `config`, the
-/// system prompt to add to Claude Code's own, and the model when the message named one that looks
-/// like a model's name (`sonnet`, `claude-sonnet-4-5`); another is left out, so nothing from a
-/// client can become a flag of its own. Never the key.
-pub fn arguments(config: &Path, prompt: &str, model: Option<&str>, without: &[Area]) -> Vec<OsString> {
+/// system prompt to add to Claude Code's own, the model when the message named one that looks
+/// like a model's name (`sonnet`, `claude-sonnet-4-5`; another is left out, so nothing from a
+/// client can become a flag of its own), and the effort (`--effort=high`, issue #131). Never the key.
+pub fn arguments(
+    config: &Path,
+    prompt: &str,
+    model: Option<&str>,
+    effort: Option<Effort>,
+    without: &[Area],
+) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = FLAGS.iter().map(OsString::from).collect();
     arguments.push("--disallowedTools".into());
     arguments.push(denied(without).into());
@@ -85,6 +114,9 @@ pub fn arguments(config: &Path, prompt: &str, model: Option<&str>, without: &[Ar
     arguments.push(config.as_os_str().to_owned());
     if let Some(model) = model.filter(|model| is_model_name(model)) {
         arguments.push(format!("--model={model}").into());
+    }
+    if let Some(effort) = effort {
+        arguments.push(format!("--effort={}", effort.id()).into());
     }
     // `=`: the prompt is one value whatever it starts with.
     arguments.push(format!("--append-system-prompt={prompt}").into());
@@ -209,7 +241,8 @@ pub(crate) mod tests {
 
     #[test]
     fn the_command_line_leaves_only_the_suites_tools_and_never_a_key() {
-        let arguments = arguments(Path::new("/run/mcp.json"), "## Prompt", Some("sonnet"), &[Area::Mail]);
+        let arguments =
+            arguments(Path::new("/run/mcp.json"), "## Prompt", Some("sonnet"), Some(Effort::High), &[Area::Mail]);
         let arguments: Vec<String> = arguments.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         let after = |flag: &str| {
             let at = arguments.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag} is missing"));
@@ -231,10 +264,24 @@ pub(crate) mod tests {
         assert!(arguments.contains(&"--strict-mcp-config".to_string()));
         assert!(arguments.contains(&r#"--settings={"disableAllHooks":true}"#.to_string()), "no hooks");
         assert!(arguments.contains(&"--model=sonnet".to_string()));
+        assert!(arguments.contains(&"--effort=high".to_string()), "issue #131");
         assert_eq!(arguments.last().map(String::as_str), Some("--append-system-prompt=## Prompt"));
 
-        let odd = super::arguments(Path::new("c"), "p", Some("--dangerously-skip-permissions"), &[]);
+        let odd = super::arguments(Path::new("c"), "p", Some("--dangerously-skip-permissions"), None, &[]);
         assert!(odd.iter().all(|a| !a.to_string_lossy().contains("dangerously")), "no flag from a client");
+        assert!(odd.iter().all(|a| !a.to_string_lossy().starts_with("--effort")), "no effort unless asked");
+    }
+
+    /// Issue #131: every offered model is one `--model` takes, and only Haiku takes no effort.
+    #[test]
+    fn the_offered_models_are_model_names() {
+        let models = models();
+        assert!(models.iter().all(|model| is_model_name(&model.id) && model.tools == Some(true)));
+        let ids: Vec<&str> = models.iter().map(|model| model.id.as_str()).collect();
+        assert!(ids.contains(&"opus") && ids.contains(&"sonnet"));
+        let without: Vec<&str> =
+            models.iter().filter(|model| model.reasoning == Some(false)).map(|model| model.id.as_str()).collect();
+        assert_eq!(without, ["haiku"]);
     }
 
     #[test]

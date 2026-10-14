@@ -16,7 +16,7 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Duration, Utc};
-use torro_core::ai::AiModel;
+use torro_core::ai::{AiModel, Effort};
 use torro_core::i18n::{tr, trf};
 use torro_ipc::api::{Access, Area, AreaRights, Lack, Level, Rights};
 use torro_ipc::assistant::{
@@ -55,6 +55,8 @@ pub const APPROVAL_ID: &str = "a000000000000001";
 
 /// The demo's local AI account.
 pub const OLLAMA: &str = "ai:ollama@localhost:11434";
+/// Claude Code, offered with its fixed models (issue #131).
+pub const CLAUDE_CODE: &str = "claude-code";
 /// The demo's AI account on OpenRouter.
 pub const OPENROUTER: &str = "ai:openrouter@openrouter.ai";
 
@@ -137,9 +139,11 @@ impl Demo {
             Request::ListClients => Response::Clients { clients: state.client().into_iter().collect() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
-            Request::SendMessage { conversation, engine, model, text, without, bot } => {
-                state.send(conversation, engine, model, text, without, bot)
+            Request::SendMessage { conversation, engine, model, effort, text, without, bot } => {
+                state.send(conversation, (engine, model, effort), text, without, bot)
             }
+            // No default for new chats in the demo: the one used last (issue #131).
+            Request::Settings => Response::Settings { settings: torro_core::settings::Settings::default() },
             Request::CancelAnswer { conversation } => state.cancel(&conversation),
             Request::RenameConversation { id, title } => state.change(&id, |c| c.summary.title = title),
             Request::PinConversation { id, pinned } => state.change(&id, |c| c.summary.pinned = pinned),
@@ -192,9 +196,34 @@ impl State {
         if !self.setup.engines {
             return Vec::new();
         }
-        let engine =
-            |id: &str, name: &str| Engine { id: id.into(), kind: EngineKind::Ai, name: name.into(), problem: None };
-        vec![engine(OPENROUTER, "OpenRouter"), engine(OLLAMA, "Ollama")]
+        let engine = |id: &str, name: &str| Engine {
+            id: id.into(),
+            kind: EngineKind::Ai,
+            name: name.into(),
+            problem: None,
+            models: Vec::new(),
+        };
+        // Claude Code with its fixed models (issue #131), as the core lists it.
+        let claude_model = |id: &str, name: &str, reasoning: bool| AiModel {
+            id: id.into(),
+            name: name.into(),
+            tools: Some(true),
+            open_weights: Some(false),
+            context: None,
+            reasoning: Some(reasoning),
+        };
+        let claude = Engine {
+            id: CLAUDE_CODE.into(),
+            kind: EngineKind::Agent,
+            name: "Claude Code".into(),
+            problem: None,
+            models: vec![
+                claude_model("opus", "Opus", true),
+                claude_model("sonnet", "Sonnet", true),
+                claude_model("haiku", "Haiku", false),
+            ],
+        };
+        vec![engine(OPENROUTER, "OpenRouter"), engine(OLLAMA, "Ollama"), claude]
     }
 
     fn client(&self) -> Option<ClientInfo> {
@@ -248,8 +277,7 @@ impl State {
     fn send(
         &mut self,
         conversation: Option<String>,
-        engine: String,
-        model: Option<String>,
+        (engine, model, effort): (String, Option<String>, Option<Effort>),
         text: String,
         without: Vec<Area>,
         bot: Option<String>,
@@ -270,6 +298,7 @@ impl State {
                     title,
                     engine: engine.clone(),
                     model: model.clone(),
+                    effort,
                     created: now,
                     updated: now,
                     pinned: false,
@@ -289,7 +318,9 @@ impl State {
         if conversation.summary.running {
             return refused("busy", "the assistant still answers in this conversation; stop it or wait");
         }
-        let message = conversation.push(now, EntryContent::Message { text, engine, model, without });
+        (conversation.summary.engine, conversation.summary.model, conversation.summary.effort) =
+            (engine.clone(), model.clone(), effort);
+        let message = conversation.push(now, EntryContent::Message { text, engine, model, effort, without });
         conversation.summary.running = true;
         conversation.growing = Some(Growing { text: tr(reply).to_owned(), shown: 0, frozen: false });
         Response::Conversation { conversation: conversation.summary.clone(), entries: vec![message] }
@@ -433,6 +464,7 @@ fn message(text: &str) -> EntryContent {
         text: text.to_owned(),
         engine: OLLAMA.into(),
         model: Some("qwen3:14b".into()),
+        effort: None,
         without: Vec::new(),
     }
 }
@@ -462,6 +494,7 @@ fn sample(id: &str, title: &str, now: DateTime<Utc>, ago: Duration, entries: Vec
         title: title.into(),
         engine: OLLAMA.into(),
         model: Some("qwen3:14b".into()),
+        effort: None,
         created: updated - Duration::minutes(3),
         updated,
         pinned: false,
@@ -702,6 +735,7 @@ fn models(account: &str) -> Option<Vec<AiModel>> {
         tools,
         open_weights: Some(true),
         context: None,
+        reasoning: Some(id.starts_with("qwen3")),
     };
     match account {
         OLLAMA => Some(vec![
@@ -799,6 +833,7 @@ mod tests {
             conversation: None,
             engine: OLLAMA.into(),
             model: None,
+            effort: None,
             text: "Hello".into(),
             without: Vec::new(),
             bot: None,

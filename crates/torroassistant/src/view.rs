@@ -42,6 +42,8 @@ struct Anchors {
     switcher: Anchor,
     header: Anchor,
     picker: Anchor,
+    /// The effort of the composer (issue #131).
+    effort: Anchor,
     areas: Anchor,
     row: Anchor,
     /// A bot's row in the sidebar, for its menu.
@@ -231,6 +233,12 @@ impl App {
                 &anchors.bot_row,
                 Placement::Below(Align::Start),
                 self.bot_menu(id),
+                Message::CloseMenu,
+            ),
+            Menu::Effort => widgets::floating(
+                &anchors.effort,
+                Placement::Below(Align::Start),
+                self.effort_menu(),
                 Message::CloseMenu,
             ),
             Menu::Areas => {
@@ -428,9 +436,14 @@ impl App {
         let engine_name = engine.map_or(choice.engine.as_str(), |engine| engine.name.as_str());
         let model_name = choice.model.as_ref().map(|id| {
             let listed = self.models.get(&choice.engine).and_then(|models| models.as_ref().ok());
-            listed
-                .and_then(|models| models.iter().find(|model| &model.id == id))
-                .map_or(id.as_str(), |m| m.name.as_str())
+            // An agent's models are its own (issue #131), an AI account's as listed.
+            let fixed = engine.map(|engine| engine.models.as_slice());
+            fixed
+                .into_iter()
+                .chain(listed.map(Vec::as_slice))
+                .flatten()
+                .find(|model| &model.id == id)
+                .map_or(id.clone(), |model| model.name.clone())
         });
         match model_name {
             Some(model) => format!("{engine_name} · {model}"),
@@ -796,6 +809,15 @@ impl App {
             None if self.engines_loaded => typo::text(typo::meta(), tr("No AI account")).style(theme::text_3).into(),
             None => typo::text(typo::meta(), tr("Loading …")).style(theme::text_3).into(),
         });
+        // The effort, only for a model that thinks (issue #131); the word alone where room is short.
+        if self.effort_offered() {
+            let level = chat::effort_name(self.effort);
+            let label = match class {
+                SizeClass::Wide | SizeClass::Medium => trf("Effort: {level}", &[("level", &level)]),
+                SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => level.to_owned(),
+            };
+            controls = controls.push(widgets::select_button(&anchors.effort, label, Message::ToggleMenu(Menu::Effort)));
+        }
         // A bot answers with its own client's rights: nothing of the assistant's to switch off.
         let areas = if self.chat_bot().is_some() { Vec::new() } else { self.switchable() };
         if !areas.is_empty() {
@@ -825,7 +847,7 @@ impl App {
     /// pick sends `pick` (the composer's choice, or the bot editor's engine).
     fn picker_menu(&self, chosen: Option<&Choice>, pick_message: fn(Choice) -> Message) -> Element<'_, Message> {
         let check = palette(&self.theme()).text_2;
-        let sections = self
+        let mut sections: Vec<MenuSection<Message>> = self
             .engines
             .iter()
             .map(|engine| {
@@ -843,12 +865,15 @@ impl App {
                     }
                     (EngineKind::Ai, Some(Err(_))) => vec![item(tr("Automatic").to_owned(), pick(None))],
                     (EngineKind::Ai, None) => vec![item(tr("Automatic").to_owned(), pick(None))],
-                    // An agent picks its model itself, and never gets mail (issue #133): said where it
-                    // is picked, not only when a tool is refused.
-                    (EngineKind::Agent, _) => vec![
-                        item(engine.name.clone(), pick(None)),
-                        MenuItem::new(Icon::Info, tr("Never gets your mail"), Message::CloseMenu),
-                    ],
+                    // An agent picks its model itself or takes one of its own (issue #131), and never
+                    // gets mail (issue #133): said where it is picked, not only when a tool is refused.
+                    (EngineKind::Agent, offered) => {
+                        let models = offered.and_then(Result::ok).unwrap_or_default();
+                        std::iter::once(item(tr("Automatic").to_owned(), pick(None)))
+                            .chain(models.into_iter().map(|model| item(model.name.clone(), pick(Some(model.id)))))
+                            .chain([MenuItem::new(Icon::Info, tr("Never gets your mail"), Message::CloseMenu)])
+                            .collect()
+                    }
                     (EngineKind::Test, _) => vec![item(engine.name.clone(), pick(None))],
                 };
                 let title = match &engine.problem {
@@ -858,7 +883,26 @@ impl App {
                 MenuSection::titled(title, items)
             })
             .collect();
+        // Closed models too (issue #131): AI accounts list open-weights models unless asked.
+        if self.engines.iter().any(|engine| engine.kind == EngineKind::Ai) {
+            let all =
+                MenuItem::new(Mark::Check(check, self.all_models), tr("Show all models"), Message::ToggleAllModels);
+            sections.push(MenuSection::new(vec![all]));
+        }
         widgets::menu(sections)
+    }
+
+    /// The effort's menu (issue #131): "Automatic" and each level, with a check at the chosen one.
+    fn effort_menu(&self) -> Element<'_, Message> {
+        let check = palette(&self.theme()).text_2;
+        let items = std::iter::once(None)
+            .chain(torro_core::ai::Effort::ALL.into_iter().map(Some))
+            .map(|effort| {
+                let on = self.effort == effort;
+                MenuItem::new(Mark::Check(check, on), chat::effort_name(effort), Message::PickEffort(effort))
+            })
+            .collect();
+        widgets::menu(vec![MenuSection::titled(tr("How hard the model thinks"), items)])
     }
 
     /// The areas of the composer: each with a check while the assistant may use it here.

@@ -1965,7 +1965,10 @@ static SET_SETTING: Command = Command {
                   switching the microphone on is for a person, true is forbidden), `wake_word` (\"hey torro\" for \
                   now), `microphone` (a name from settings_voice_status, or \"\" for the default), \
                   `speak_answers` (true, false), `stt_model` (absolute path of a whisper.cpp .bin model, or \"\" for \
-                  the first in the voice folder) or `voice` (absolute path of a Piper .onnx voice, or \"\").",
+                  the first in the voice folder) or `voice` (absolute path of a Piper .onnx voice, or \"\") or \
+                  `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
+                  assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
+                  model and effort optional, or null for the one used last).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -2644,10 +2647,11 @@ static SEND_MESSAGE: Command = Command {
     mcp: Mcp::Tool,
     description: "Sends a message to the assistant of Torro Workplace and starts its answer, in `conversation` or \
                   in a new one when it is left out. The assistant acts with its own rights, not the caller's; \
-                  `without` switches areas off for this answer. The MCP tool waits up to 60 seconds for the answer \
-                  and returns the new entries; the API answers at once. While `running` is true, follow the answer \
-                  with get_conversation and `after` set to the conversation's `last`. `busy` while the conversation \
-                  still answers.",
+                  `without` switches areas off for this answer. `model` picks a model of the engine and `effort` \
+                  how hard it thinks (only for a model whose `reasoning` is not false). The MCP tool waits up to \
+                  60 seconds for the answer and returns the new entries; the API answers at once. While `running` \
+                  is true, follow the answer with get_conversation and `after` set to the conversation's `last`. \
+                  `busy` while the conversation still answers.",
 };
 
 static CANCEL: Command = Command {
@@ -3198,6 +3202,7 @@ mod tests {
                 conversation: Some("0123456789abcdef".into()),
                 engine: "ai:ollama@localhost:11434".into(),
                 model: Some("qwen3:8b".into()),
+                effort: None,
                 text: "What is on tomorrow?".into(),
                 without: vec![Area::Mail],
                 bot: None,
@@ -3470,6 +3475,7 @@ mod tests {
             conversation: None,
             engine: "test".into(),
             model: None,
+            effort: None,
             text: "Hi".into(),
             without: Vec::new(),
             bot: None,
@@ -4134,7 +4140,8 @@ mod tests {
                 "microphone",
                 "speak_answers",
                 "stt_model",
-                "voice"
+                "voice",
+                "assistant_default"
             ]
         );
 

@@ -13,7 +13,7 @@
 
 use serde_json::{Value, json};
 
-use super::{AiError, AiModel, ChatMessage, ChatReply, ChatRequest, Finish, Role, ToolCall, Usage};
+use super::{AiError, AiModel, AiProvider, ChatMessage, ChatReply, ChatRequest, Finish, Role, ToolCall, Usage};
 use crate::i18n::{tr, trf};
 
 /// The longest server text an error keeps: enough for "model 'x' not found", never a whole page.
@@ -39,6 +39,23 @@ pub fn chat_body(request: &ChatRequest, stream: bool) -> Value {
     }
     if let Some(max) = request.max_tokens {
         body["max_tokens"] = json!(max);
+    }
+    body
+}
+
+/// [`chat_body`] as the server of `provider` takes it: with the request's [`ChatRequest::effort`]
+/// where each one reads it (issue #131) – OpenRouter as `"reasoning": {"effort": "high"}`, every
+/// other server (Ollama, LM Studio, vLLM …) as OpenAI's `"reasoning_effort": "high"`, which Ollama's
+/// `/v1` maps onto its thinking. Without an effort the body is [`chat_body`]'s.
+pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) -> Value {
+    let mut body = chat_body(request, stream);
+    if let Some(effort) = request.effort {
+        match provider {
+            AiProvider::OpenRouter => body["reasoning"] = json!({ "effort": effort.id() }),
+            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::OpenAiCompatible => {
+                body["reasoning_effort"] = json!(effort.id());
+            }
+        }
     }
     body
 }
@@ -240,7 +257,8 @@ impl StreamDecoder {
 ///
 /// - `name`, else the id;
 /// - `context_length` as [`AiModel::context`];
-/// - `supported_parameters` (OpenRouter): [`AiModel::tools`] is whether it holds `tools`;
+/// - `supported_parameters` (OpenRouter): [`AiModel::tools`] is whether it holds `tools`,
+///   [`AiModel::reasoning`] whether it holds `reasoning`;
 /// - `hugging_face_id` (OpenRouter): [`AiModel::open_weights`] is whether it is a non-empty
 ///   text; a model without the field (any other server) leaves it unknown.
 pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
@@ -253,10 +271,9 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
         .iter()
         .filter_map(|model| {
             let id = text_of(model.get("id")).filter(|id| !id.is_empty())?;
-            let tools = model
-                .get("supported_parameters")
-                .and_then(Value::as_array)
-                .map(|params| params.iter().any(|param| param.as_str() == Some("tools")));
+            let params = model.get("supported_parameters").and_then(Value::as_array);
+            let supports = |name: &str| params.map(|params| params.iter().any(|param| param.as_str() == Some(name)));
+            let (tools, reasoning) = (supports("tools"), supports("reasoning"));
             let open_weights = model
                 .as_object()
                 .filter(|m| m.contains_key("hugging_face_id"))
@@ -267,6 +284,7 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 tools,
                 open_weights,
                 context: model.get("context_length").and_then(Value::as_u64),
+                reasoning,
             })
         })
         .collect())
@@ -287,9 +305,19 @@ pub fn ollama_show_body(model: &str) -> Value {
 /// Whether Ollama's `/api/show` answer lists the capability `tools`; `None` for an answer without
 /// `capabilities` (an Ollama older than 0.6).
 pub fn ollama_tools(body: &[u8]) -> Option<bool> {
+    ollama_capability(body, "tools")
+}
+
+/// Whether Ollama's `/api/show` answer lists the capability `thinking` (issue #131): the model takes
+/// an effort. `None` for an answer without `capabilities`.
+pub fn ollama_thinking(body: &[u8]) -> Option<bool> {
+    ollama_capability(body, "thinking")
+}
+
+fn ollama_capability(body: &[u8], name: &str) -> Option<bool> {
     let answer: Value = serde_json::from_slice(body).ok()?;
     let capabilities = answer.get("capabilities")?.as_array()?;
-    Some(capabilities.iter().any(|capability| capability.as_str() == Some("tools")))
+    Some(capabilities.iter().any(|capability| capability.as_str() == Some(name)))
 }
 
 /// The error of an answer with HTTP `status` and `body`: 401 and 403 are [`AiError::Auth`] (never
@@ -434,6 +462,24 @@ mod tests {
                 parameters: json!({"type": "object", "properties": {}}),
             }],
             max_tokens: Some(512),
+            effort: None,
+        }
+    }
+
+    /// Issue #131: each provider gets the effort where it reads it, and nothing without one.
+    #[test]
+    fn the_effort_goes_where_each_provider_reads_it() {
+        let asked = ChatRequest { effort: Some(crate::ai::Effort::High), ..request() };
+        let openrouter = chat_body_for(AiProvider::OpenRouter, &asked, true);
+        assert_eq!(openrouter["reasoning"], json!({"effort": "high"}));
+        assert!(openrouter.get("reasoning_effort").is_none());
+        for provider in [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::OpenAiCompatible] {
+            let body = chat_body_for(provider, &asked, true);
+            assert_eq!(body["reasoning_effort"], "high", "{provider:?}");
+            assert!(body.get("reasoning").is_none(), "{provider:?}");
+        }
+        for provider in AiProvider::ALL {
+            assert_eq!(chat_body_for(provider, &request(), true), chat_body(&request(), true), "{provider:?}");
         }
     }
 
@@ -550,7 +596,7 @@ mod tests {
     #[test]
     fn model_lists_tell_tools_open_weights_and_context_where_the_server_does() {
         let openrouter = br#"{"data":[
-            {"id":"qwen/qwen3-14b","name":"Qwen: Qwen3 14B","context_length":40960,"hugging_face_id":"Qwen/Qwen3-14B","supported_parameters":["tools","temperature"]},
+            {"id":"qwen/qwen3-14b","name":"Qwen: Qwen3 14B","context_length":40960,"hugging_face_id":"Qwen/Qwen3-14B","supported_parameters":["tools","temperature","reasoning"]},
             {"id":"openai/gpt-4o","name":"OpenAI: GPT-4o","context_length":128000,"hugging_face_id":null,"supported_parameters":["tools"]},
             {"id":"google/gemini-2.5-flash","name":"Gemini","hugging_face_id":"","supported_parameters":["temperature"]}]}"#;
         let models = parse_models(openrouter).expect("models");
@@ -566,6 +612,8 @@ mod tests {
             ]
         );
         assert_eq!(models[0].name, "Qwen: Qwen3 14B");
+        let reasoning: Vec<Option<bool>> = models.iter().map(|m| m.reasoning).collect();
+        assert_eq!(reasoning, [Some(true), Some(false), Some(false)], "issue #131");
 
         let ollama = br#"{"object":"list","data":[{"id":"qwen3:8b","object":"model","owned_by":"library"},{"id":""}]}"#;
         let models = parse_models(ollama).expect("models");
@@ -576,7 +624,8 @@ mod tests {
                 name: "qwen3:8b".into(),
                 tools: None,
                 open_weights: None,
-                context: None
+                context: None,
+                reasoning: None
             }]
         );
         assert!(matches!(parse_models(br#"{"models":[]}"#), Err(AiError::Format(_))));
@@ -587,6 +636,9 @@ mod tests {
         assert_eq!(ollama_tools(br#"{"capabilities":["completion","tools","thinking"]}"#), Some(true));
         assert_eq!(ollama_tools(br#"{"capabilities":["completion","vision"]}"#), Some(false));
         assert_eq!(ollama_tools(br#"{"modelfile":"FROM qwen3"}"#), None);
+        assert_eq!(ollama_thinking(br#"{"capabilities":["completion","tools","thinking"]}"#), Some(true));
+        assert_eq!(ollama_thinking(br#"{"capabilities":["completion","tools"]}"#), Some(false));
+        assert_eq!(ollama_thinking(br#"{"modelfile":"FROM qwen3"}"#), None);
         assert_eq!(ollama_root("http://localhost:11434/v1/"), "http://localhost:11434");
         assert_eq!(ollama_root("http://localhost:11434"), "http://localhost:11434");
         assert_eq!(ollama_show_body("qwen3:8b"), json!({"model": "qwen3:8b"}));

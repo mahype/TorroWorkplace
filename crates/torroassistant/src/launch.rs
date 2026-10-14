@@ -51,6 +51,8 @@ pub enum Open {
     Forbidden,
     /// The model picker of the composer.
     Picker,
+    /// The effort menu of the composer (issue #131).
+    Effort,
     /// The "…" menu of the open conversation (Rename, Pin, Open in new window, Delete).
     Menu,
     /// The dialog that renames the open conversation.
@@ -93,13 +95,14 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 25] = [
+    pub const ALL: [(&'static str, Open); 26] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
         ("streaming", Open::Streaming),
         ("forbidden", Open::Forbidden),
         ("picker", Open::Picker),
+        ("effort", Open::Effort),
         ("menu", Open::Menu),
         ("rename", Open::Rename),
         ("delete", Open::Delete),

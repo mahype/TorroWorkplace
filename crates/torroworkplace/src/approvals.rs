@@ -2687,6 +2687,7 @@ pub(crate) mod tests {
             conversation,
             engine: "ai:ollama@localhost:11434".into(),
             model: None,
+            effort: None,
             text: "Secret plans for Anna".into(),
             without: Vec::new(),
             bot: None,

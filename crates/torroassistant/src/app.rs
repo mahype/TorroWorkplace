@@ -56,8 +56,9 @@ use iced::widget::scrollable;
 use iced::widget::text_editor::{self, Binding, Content, KeyPress};
 use iced::{Size, Subscription, Task, Theme, keyboard};
 use torro_core::AppId;
-use torro_core::ai::AiModel;
+use torro_core::ai::{AiModel, Effort};
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::{AssistantDefault, Settings};
 use torro_gui::design::{self, Follow};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, SidebarMode, Switcher};
@@ -147,6 +148,8 @@ pub enum Menu {
     Switcher,
     /// The engine and model picker of the composer.
     Picker,
+    /// The effort of the composer (issue #131).
+    Effort,
     /// The areas of the composer ("Without Mail").
     Areas,
     /// The menu of a conversation: Rename, Pin, Open in new window, Delete; at the header's "…"
@@ -241,6 +244,8 @@ pub enum Message {
     Engines(Result<Vec<Engine>, Refusal>),
     /// The models of an AI account (by engine id).
     Models(String, Result<Vec<AiModel>, Refusal>),
+    /// The suite's settings: the default for new chats (issue #131).
+    Settings(Result<Settings, Refusal>),
     /// The rights of the assistant's own client; `Ok(None)` when there is none.
     Client(Result<Option<Rights>, Refusal>),
     /// The assistant's profile (task C.10): its name and picture for the header and the welcome.
@@ -303,6 +308,10 @@ pub enum Message {
     Stopped(Result<(), Refusal>),
     /// From the picker.
     Pick(Choice),
+    /// From the effort's menu (issue #131); `None` for "Automatic".
+    PickEffort(Option<Effort>),
+    /// "Show all models" in the picker: AI accounts list closed models too (issue #131).
+    ToggleAllModels,
     /// Switch an area off for this conversation, or on again.
     ToggleArea(Area),
     /// Unfold the tool line with this number, or fold it.
@@ -380,6 +389,11 @@ pub struct App {
     pub(crate) engines_loaded: bool,
     /// The models of each AI account, by engine id, as listed (the picker filters them).
     pub(crate) models: HashMap<String, Result<Vec<AiModel>, String>>,
+    /// AI accounts list every model, closed ones too (`ai.list_models { all }`, issue #131).
+    pub(crate) all_models: bool,
+    /// What a new chat starts with, as set in the control centre (`settings.assistant_default`);
+    /// `None`: the one used last.
+    pub(crate) default: Option<AssistantDefault>,
     pub(crate) access: Access,
     /// The assistant's profile as last read; `None` until the core answered (or with an old core):
     /// then the window shows [`torro_ipc::assistant::DEFAULT_NAME`] and its letter.
@@ -426,6 +440,9 @@ pub struct App {
     /// The one-line composer of mini and strip.
     pub(crate) mini: String,
     pub(crate) choice: Option<Choice>,
+    /// How hard the model of the next message thinks (issue #131); sent only where it takes one
+    /// ([`chat::can_reason`]).
+    pub(crate) effort: Option<Effort>,
     pub(crate) chosen: Chosen,
     /// The areas switched off for the next message.
     pub(crate) without: Vec<Area>,
@@ -483,6 +500,8 @@ impl App {
             engines: Vec::new(),
             engines_loaded: false,
             models: HashMap::new(),
+            all_models: false,
+            default: None,
             access: Access::Unknown,
             profile: None,
             bots: Vec::new(),
@@ -505,12 +524,14 @@ impl App {
             editor: Content::new(),
             mini: String::new(),
             choice: None,
+            effort: None,
             chosen: Chosen::Default,
             without: Vec::new(),
             take_without: true,
             sending: false,
             menu: match open {
                 Some(Open::Picker) => Some(Menu::Picker),
+                Some(Open::Effort) => Some(Menu::Effort),
                 Some(Open::Switcher) => Some(Menu::Switcher),
                 Some(Open::Menu) => Some(Menu::Conversation { id: demo::TOOLS.into(), at: MenuAt::Header }),
                 Some(Open::BotMenu) => Some(Menu::Bot { id: demo::TRAVEL.into() }),
@@ -645,6 +666,12 @@ impl App {
                 self.models.insert(engine, result.map_err(|refusal| refusal.message));
                 self.choose_default();
             }
+            Message::Settings(Ok(settings)) => {
+                self.default = settings.assistant_default;
+                self.choose_default();
+            }
+            // An old core or none: new chats start with the one used last.
+            Message::Settings(Err(_)) => {}
             Message::Client(result) => {
                 self.access = match result {
                     Ok(Some(rights)) => Access::Granted(rights),
@@ -711,6 +738,17 @@ impl App {
                 self.choice = Some(choice);
                 self.chosen = Chosen::Person;
                 self.menu = None;
+            }
+            Message::PickEffort(effort) => {
+                self.effort = effort;
+                self.chosen = Chosen::Person;
+                self.menu = None;
+            }
+            Message::ToggleAllModels => {
+                self.all_models = !self.all_models;
+                // Listed anew with the other filter; the picker shows "Loading" meanwhile.
+                self.models.clear();
+                return self.fetch_all_models();
             }
             Message::ToggleArea(area) => {
                 if let Some(at) = self.without.iter().position(|off| *off == area) {
@@ -880,7 +918,13 @@ impl App {
                 other => Err(Refusal::unexpected(&other)),
             }))
         });
-        Task::batch([self.load_list(), engines, client, profile, self.load_bots()])
+        let settings = self.ask(Request::Settings, |result| {
+            Message::Settings(result.and_then(|response| match response {
+                Response::Settings { settings } => Ok(settings),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        });
+        Task::batch([self.load_list(), engines, client, profile, settings, self.load_bots()])
     }
 
     /// The assistant's name as the window shows it: the profile's, else the default.
@@ -974,7 +1018,11 @@ impl App {
         self.engines_loaded = true;
         self.models.retain(|id, _| self.engines.iter().any(|engine| &engine.id == id));
         self.choose_default();
-        // Each AI account's models once; the picker asks again when it opens.
+        self.fetch_all_models()
+    }
+
+    /// The models of each AI account not listed yet; the picker asks again when it opens.
+    fn fetch_all_models(&mut self) -> Task<Message> {
         let missing: Vec<String> = self
             .engines
             .iter()
@@ -986,7 +1034,7 @@ impl App {
     }
 
     fn fetch_models(&mut self, engine: String) -> Task<Message> {
-        let request = Request::AiModels { account: engine.clone(), all: false };
+        let request = Request::AiModels { account: engine.clone(), all: self.all_models };
         self.ask(request, move |result| {
             Message::Models(
                 engine.clone(),
@@ -998,8 +1046,9 @@ impl App {
         })
     }
 
-    /// The choice before the person picks: the open conversation's engine and model, else the
-    /// last one used or the first engine ([`chat::default_choice`]). The person's own pick stays.
+    /// The choice before the person picks: the open conversation's engine, model and effort, else
+    /// the default of the control centre, the last one used or the first engine
+    /// ([`chat::preferred_choice`]). The person's own pick stays.
     fn choose_default(&mut self) {
         // A new bot waits for an engine as long as there is none.
         let fallback = chat::default_choice(&self.conversations, &self.engines, |_| None);
@@ -1018,6 +1067,7 @@ impl App {
         });
         if let Some(summary) = summary.filter(|s| self.engines.iter().any(|engine| engine.id == s.engine)) {
             self.choice = Some(Choice { engine: summary.engine.clone(), model: summary.model.clone() });
+            self.effort = summary.effort;
             self.chosen = Chosen::Conversation;
             return;
         }
@@ -1026,12 +1076,14 @@ impl App {
             self.bot.as_deref().filter(|_| self.current.is_none()).and_then(|id| crate::bots::find(&self.bots, id));
         if let Some(bot) = bot.filter(|bot| self.engines.iter().any(|engine| engine.id == bot.engine)) {
             self.choice = Some(Choice { engine: bot.engine.clone(), model: bot.model.clone() });
+            self.effort = None;
             self.chosen = Chosen::Default;
             return;
         }
         let models = &self.models;
         let listed = |id: &str| models.get(id).and_then(|models| models.as_ref().ok()).map(Vec::as_slice);
-        self.choice = chat::default_choice(&self.conversations, &self.engines, listed);
+        let preferred = chat::preferred_choice(self.default.as_ref(), &self.conversations, &self.engines, listed);
+        (self.choice, self.effort) = preferred.map_or((None, None), |(choice, effort)| (Some(choice), effort));
         self.chosen = Chosen::Default;
     }
 
@@ -1299,9 +1351,15 @@ impl App {
             return Task::none();
         }
         let without = if self.chat_bot().is_some() { Vec::new() } else { self.without.clone() };
-        let Some(request) =
-            chat::send_request(self.current.as_deref(), self.choice.as_ref(), &self.draft(), &without, self.chat_bot())
-        else {
+        let effort = self.offered_effort();
+        let Some(request) = chat::send_request(
+            self.current.as_deref(),
+            self.choice.as_ref(),
+            effort,
+            &self.draft(),
+            &without,
+            self.chat_bot(),
+        ) else {
             return Task::none();
         };
         self.sending = true;
@@ -1467,10 +1525,26 @@ impl App {
 
     /// The listed models of `engine` the picker offers; `None` while not listed or failed.
     pub(crate) fn offered_models(&self, engine: &str) -> Option<Result<Vec<AiModel>, &str>> {
+        if let Some(agent) = self.engines.iter().find(|e| e.id == engine && e.kind == EngineKind::Agent) {
+            return chat::engine_models(agent, None).map(Ok);
+        }
         self.models.get(engine).map(|listed| match listed {
             Ok(models) => Ok(chat::tool_models(models)),
             Err(err) => Err(err.as_str()),
         })
+    }
+
+    /// The composer offers an effort for the chosen engine and model (issue #131).
+    pub(crate) fn effort_offered(&self) -> bool {
+        let Some(choice) = &self.choice else { return false };
+        let engine = self.engines.iter().find(|engine| engine.id == choice.engine);
+        let models = self.offered_models(&choice.engine).and_then(Result::ok);
+        chat::can_reason(engine, choice, models.as_deref())
+    }
+
+    /// The effort the next message carries: the chosen one where the model takes it, else none.
+    pub(crate) fn offered_effort(&self) -> Option<Effort> {
+        self.effort.filter(|_| self.effort_offered())
     }
 
     /// Opens the control centre on `section` (`torroworkplace ui --section …`, `bot:<id>` for a
