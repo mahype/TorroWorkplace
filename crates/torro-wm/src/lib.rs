@@ -261,9 +261,16 @@ pub async fn focus_process_window(wm: &impl WindowManager, pids: &[u32], hints: 
 }
 
 /// The window of Terminal or iTerm2 that holds the tty of `pids` (macOS only).
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 async fn terminal_window(pids: &[u32]) -> Option<WindowId> {
     aerospace::apps::terminal_window(pids).await
+}
+
+/// Tests never ask the real system (it may wait seconds for a consent dialog): no terminal holds
+/// the tty of the test's processes, which run nowhere.
+#[cfg(all(target_os = "macos", test))]
+async fn terminal_window(_pids: &[u32]) -> Option<WindowId> {
+    None
 }
 
 /// Only macOS can tell a terminal's window by a tty.
@@ -273,9 +280,15 @@ async fn terminal_window(_pids: &[u32]) -> Option<WindowId> {
 }
 
 /// Raises what shows `pids` without a window manager: `Ok(false)` when there is nothing to raise.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 async fn raise_by_system(pids: &[u32]) -> Result<bool, WmError> {
     aerospace::apps::raise(pids).await
+}
+
+/// Tests never drive the real system: the test's processes run nowhere, so nothing comes forward.
+#[cfg(all(target_os = "macos", test))]
+async fn raise_by_system(_pids: &[u32]) -> Result<bool, WmError> {
+    Ok(false)
 }
 
 /// Linux and Windows raise windows only through their window manager (`Unsupported`).
