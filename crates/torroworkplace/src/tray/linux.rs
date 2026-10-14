@@ -168,6 +168,9 @@ mod tests {
             .collect()
     }
 
+    /// Where the template entries start: after the six apps and a separator.
+    const TEMPLATES: usize = 7;
+
     fn snapshot() -> Snapshot {
         Snapshot {
             backend: "hyprland".into(),
@@ -189,11 +192,6 @@ mod tests {
         assert_eq!(
             labels(&build_menu(&snapshot())),
             [
-                sub(tr("Load template")),
-                tr("Save workspace").to_string(),
-                sub(tr("Update")),
-                sub(tr("Delete")),
-                "-".to_string(),
                 tr("Inbox").to_string(),
                 tr("Mail").to_string(),
                 tr("Notifications").to_string(),
@@ -201,10 +199,10 @@ mod tests {
                 tr("Tasks").to_string(),
                 tr("Assistant").to_string(),
                 "-".to_string(),
-                format!(
-                    "({})",
-                    trf("Workspace {workspace} · {backend}", &[("workspace", &"3"), ("backend", &"hyprland")])
-                ),
+                sub(tr("Load template")),
+                tr("Save workspace").to_string(),
+                sub(tr("Update")),
+                sub(tr("Delete")),
                 "-".to_string(),
                 tr("Settings…").to_string(),
                 tr("Quit").to_string(),
@@ -216,7 +214,7 @@ mod tests {
     fn load_here_only_on_an_empty_workspace() {
         let load_items = |snapshot: &Snapshot| {
             let menu = build_menu(snapshot);
-            let MenuItem::SubMenu(load) = &menu[0] else { panic!("load submenu") };
+            let MenuItem::SubMenu(load) = &menu[TEMPLATES] else { panic!("load submenu") };
             let MenuItem::SubMenu(template) = &load.submenu[0] else { panic!("template submenu") };
             labels(&template.submenu)
         };
@@ -230,7 +228,10 @@ mod tests {
     fn unsupported_system_shows_why() {
         let snapshot = Snapshot { unsupported: Some("AeroSpace (macOS)".into()), ..Snapshot::default() };
         let menu = labels(&build_menu(&snapshot));
-        assert_eq!(menu[0], format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")])));
+        assert_eq!(
+            menu[TEMPLATES],
+            format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")]))
+        );
         assert_eq!(menu.last().map(String::as_str), Some(tr("Quit")));
     }
 
