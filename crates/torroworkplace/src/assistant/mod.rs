@@ -84,7 +84,7 @@ use torro_setups::launch::{Launcher, SystemLauncher};
 
 use crate::account::ai::AiAccounts;
 use crate::bots::Bots;
-pub use data_rule::{Place, place_of};
+pub use data_rule::{Place, held_back, place_of};
 pub use delegate::Asking;
 pub use engines::never_given;
 pub use model::{Actor, AskedIn, Delegation, Host, Limits, ModelAccess};

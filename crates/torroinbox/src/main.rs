@@ -48,6 +48,7 @@ mod mail;
 mod notifications;
 mod overview;
 mod search;
+mod suggest;
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -62,6 +63,7 @@ use crate::compose::{ComposeSource, Window};
 use crate::hub::HubSource;
 use crate::insights::StatsSource;
 use crate::mail::MailSource;
+use crate::suggest::SuggestSource;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -108,7 +110,7 @@ fn main() -> ExitCode {
 
 /// The window on `inbox`: the core's client or the demo source. Its window class is the one of its
 /// kind (`--view`, task E8.1), so tiling rules and templates tell the three windows apart.
-fn run<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(
+fn run<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
     inbox: Arc<S>,
     suite: Source,
     launch: Launch,

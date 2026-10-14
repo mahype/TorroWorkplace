@@ -620,7 +620,10 @@ impl Inbox {
                 check_mute(&changeable(db, id, Some(client))?.item, *scope, *until, Utc::now()).map(drop)
             }
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
-            Request::OpenItem { id } => visible_item(db, id, Some(client)).map(drop),
+            // Nobody is asked to let the AI read an entry the client may not see (issue #120).
+            Request::OpenItem { id } | Request::SuggestTaskFromItem { id } | Request::SuggestEventFromItem { id } => {
+                visible_item(db, id, Some(client)).map(drop)
+            }
             _ => Ok(()),
         });
         checked.err().map(Failure::response)
@@ -641,7 +644,9 @@ impl Inbox {
                 | Request::HideSender { id, .. }
                 | Request::MuteItem { id, .. }
                 | Request::CreateTaskFromItem { id, .. }
-                | Request::CreateEventFromItem { id, .. } => {
+                | Request::CreateEventFromItem { id, .. }
+                | Request::SuggestTaskFromItem { id }
+                | Request::SuggestEventFromItem { id } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
                     InboxFacts { item, ..InboxFacts::default() }
                 }
@@ -4767,7 +4772,13 @@ pub(crate) mod tests {
             }
             for request in [
                 Request::OpenItem { id: id.clone() },
-                Request::CreateTaskFromItem { id: id.clone(), collection: "l".into(), title: None, due: None },
+                Request::CreateTaskFromItem {
+                    id: id.clone(),
+                    collection: "l".into(),
+                    title: None,
+                    due: None,
+                    notes: None,
+                },
             ] {
                 assert_eq!(inbox.refusal(&request, Some(&client)).as_ref().map(code), Some("not-found"));
             }
@@ -6160,7 +6171,13 @@ pub(crate) mod tests {
         for request in [
             done(&id, false),
             done(&id, true),
-            Request::CreateTaskFromItem { id: id.clone(), collection: "a/list".into(), title: None, due: None },
+            Request::CreateTaskFromItem {
+                id: id.clone(),
+                collection: "a/list".into(),
+                title: None,
+                due: None,
+                notes: None,
+            },
         ] {
             assert_eq!(inbox.refusal(&request, Some(&reader)).as_ref().map(code), Some("forbidden"), "{request:?}");
         }
@@ -6282,8 +6299,13 @@ pub(crate) mod tests {
         let other_account = with_rights(|rights| {
             rights.mail_accounts = Selection::Only(vec!["mail:bernd@example.com".into()]);
         });
-        let task =
-            Request::CreateTaskFromItem { id: entry_id.clone(), collection: "a/list".into(), title: None, due: None };
+        let task = Request::CreateTaskFromItem {
+            id: entry_id.clone(),
+            collection: "a/list".into(),
+            title: None,
+            due: None,
+            notes: None,
+        };
         for client in [&reading_mail, &other_account] {
             for request in [done(&entry_id, false), done(&entry_id, true), task.clone()] {
                 assert_eq!(inbox.refusal(&request, Some(client)).as_ref().map(code), Some("forbidden"), "{request:?}");
@@ -6466,7 +6488,13 @@ pub(crate) mod tests {
         let done = || Request::SetItemDone { id: id.clone(), done: true, dismissed: false };
         assert_eq!(inbox.refusal(&done(), Some(&reader)).as_ref().map(code), Some("forbidden"), "before an approval");
         assert_eq!(code(&inbox.handle(done(), Some(&reader), at(9, 1))), "forbidden", "when it runs");
-        let task = Request::CreateTaskFromItem { id: id.clone(), collection: "a/list".into(), title: None, due: None };
+        let task = Request::CreateTaskFromItem {
+            id: id.clone(),
+            collection: "a/list".into(),
+            title: None,
+            due: None,
+            notes: None,
+        };
         assert_eq!(inbox.refusal(&task, Some(&reader)).as_ref().map(code), Some("forbidden"));
         let refused = inbox.entry_for_task(&id, Some(&reader), at(9, 1)).expect_err("refused");
         assert_eq!(code(&refused), "forbidden");

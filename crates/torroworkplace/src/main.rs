@@ -43,6 +43,7 @@ mod notify;
 mod pim;
 mod settings_service;
 mod sources;
+mod suggest;
 mod tray;
 mod ui;
 

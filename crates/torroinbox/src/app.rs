@@ -108,6 +108,13 @@
 //! marks the entry done; the hint says in which list. There is no undo: taking the task back
 //! would delete it, and deleting is for the tasks app.
 //!
+//! AI task and AI event (issue #120, `suggest.rs`): beside "Make task" and "Make event" in the panel
+//! and after "Task" in the reader, off with a tooltip until an AI is set up ([`App::ai_ready`], asked
+//! with every tick). They open the same dialogs at once, with a quiet line while the AI is asked
+//! ([`Suggesting`]); its suggestion fills in title, due day and a note, or day, start, length, place
+//! and who takes part. Nothing is saved before "Create"; the note and place go along
+//! (`inbox.create_task_from_item` / `inbox.create_event_from_item`).
+//!
 //! Make event (task E8.5b): `c`, "Event" in the hub's To sort and the panel's "Make event" open the
 //! same kind of dialog ([`App::ask_event`]) – the title, the calendar (from
 //! [`HubSource::list_calendars`]), the day, the start (every half hour, the next one first) and the
@@ -165,9 +172,10 @@ use torro_inbox::{
     Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, Link, Order, Rule, SourceInfo, SourceKind, SourceRef,
     State, StateFilter, rules,
 };
-use torro_ipc::inbox::CalendarEvent;
+use torro_ipc::inbox::{CalendarEvent, EventFields};
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
 use torro_ipc::mail::{MailHighlight, MailSort};
+use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
 
 use crate::compose;
@@ -180,6 +188,7 @@ use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, Mai
 use crate::notifications::{self, Arrange, Board, Shown};
 use crate::overview::{self, Column, Sections};
 use crate::search::{self, Found, Scope, ScopeChoice, SearchView, Sort, Suggestion};
+use crate::suggest::{self as ai, SuggestSource};
 use crate::{detail, list};
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
@@ -245,6 +254,19 @@ impl StartTime {
     }
 }
 
+impl StartTime {
+    /// What the dialog offers: [`StartTime::all`], with `self` in its place when it is between two
+    /// of them (an AI's 10:15, issue #120).
+    pub fn offered(self) -> Vec<StartTime> {
+        let mut all = StartTime::all();
+        if !all.contains(&self) {
+            all.push(self);
+            all.sort();
+        }
+        all
+    }
+}
+
 impl fmt::Display for StartTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&datetime::format_time(self.0))
@@ -259,6 +281,9 @@ pub enum Length {
     Half,
     Hour,
     TwoHours,
+    /// Any other length in minutes, as an AI suggested it (issue #120): offered beside the others
+    /// while the dialog holds it.
+    Minutes(i64),
 }
 
 impl Length {
@@ -272,7 +297,22 @@ impl Length {
             Length::Half => 30,
             Length::Hour => 60,
             Length::TwoHours => 120,
+            Length::Minutes(minutes) => minutes,
         }
+    }
+
+    /// The length of `minutes`: one of [`Length::ALL`] when it is one, else [`Length::Minutes`].
+    pub fn of_minutes(minutes: i64) -> Length {
+        Length::ALL.into_iter().find(|length| length.minutes() == minutes).unwrap_or(Length::Minutes(minutes))
+    }
+
+    /// What the dialog offers: [`Length::ALL`], and `self` after them when it is none of them.
+    pub fn offered(self) -> Vec<Length> {
+        let mut all = Length::ALL.to_vec();
+        if !all.contains(&self) {
+            all.push(self);
+        }
+        all
     }
 }
 
@@ -283,6 +323,7 @@ impl fmt::Display for Length {
             Length::Half => tr("30 minutes"),
             Length::Hour => tr("1 hour"),
             Length::TwoHours => tr("2 hours"),
+            Length::Minutes(minutes) => return f.write_str(&trf("{n} minutes", &[("n", &minutes)])),
         })
     }
 }
@@ -301,6 +342,10 @@ pub struct EventDraft {
     /// The local time it starts at.
     pub start: StartTime,
     pub length: Length,
+    /// Where it takes place (issue #120): what an AI suggested, to change; empty for nowhere.
+    pub location: String,
+    /// A note put before the entry's text (issue #120): who takes part, as an AI found them.
+    pub notes: String,
 }
 
 impl EventDraft {
@@ -311,7 +356,15 @@ impl EventDraft {
         let step = i64::from(EVENT_STEP_MINUTES) * 60;
         let seconds = i64::from(chrono::Timelike::num_seconds_from_midnight(&local.time()));
         let next = local.date().and_time(NaiveTime::MIN) + TimeDelta::seconds((seconds / step + 1) * step);
-        EventDraft { title, calendar: None, day: next.date(), start: StartTime(next.time()), length: Length::Half }
+        EventDraft {
+            title,
+            calendar: None,
+            day: next.date(),
+            start: StartTime(next.time()),
+            length: Length::Half,
+            location: String::new(),
+            notes: String::new(),
+        }
     }
 
     /// When the event starts and ends, as instants.
@@ -331,6 +384,9 @@ pub enum Due {
     Tomorrow,
     /// Monday of next week.
     NextWeek,
+    /// Another day, as an AI suggested it (issue #120): offered beside the others while the dialog
+    /// holds it.
+    On(NaiveDate),
 }
 
 impl Due {
@@ -345,7 +401,23 @@ impl Due {
             Due::Today => Some(today),
             Due::Tomorrow => Some(today + Days::new(1)),
             Due::NextWeek => Some(datetime::week_start(today) + Days::new(7)),
+            Due::On(day) => Some(day),
         }
+    }
+
+    /// The due date of `day`, seen from `now`: one of [`Due::ALL`] when it names that day, else
+    /// [`Due::On`].
+    pub fn of_day(day: NaiveDate, now: DateTime<Utc>) -> Due {
+        Due::ALL.into_iter().find(|due| due.day(now) == Some(day)).unwrap_or(Due::On(day))
+    }
+
+    /// What the dialog offers: [`Due::ALL`], and `self` after them when it is none of them.
+    pub fn offered(self) -> Vec<Due> {
+        let mut all = Due::ALL.to_vec();
+        if !all.contains(&self) {
+            all.push(self);
+        }
+        all
     }
 }
 
@@ -356,6 +428,9 @@ impl fmt::Display for Due {
             Due::Today => tr("Today"),
             Due::Tomorrow => tr("Tomorrow"),
             Due::NextWeek => tr("Next week"),
+            Due::On(day) => {
+                return f.write_str(&datetime::format_short_date(*day, datetime::to_local(Utc::now()).date()));
+            }
         })
     }
 }
@@ -368,6 +443,21 @@ pub struct TaskDraft {
     /// The list chosen; `None` until the lists are in (then the last one used, else the first).
     pub list: Option<TaskList>,
     pub due: Due,
+    /// A note put before the entry's text (issue #120): what an AI suggested, to change; empty for
+    /// none.
+    pub notes: String,
+}
+
+/// What the AI does for the open dialog of "Make task" or "Make event" (issue #120, "AI task" and
+/// "AI event"): the dialog shows it in a quiet line under the title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Suggesting {
+    /// Asked for the entry with this id; the dialog fills in once the answer is in.
+    Asking(String),
+    /// The dialog holds the AI's suggestion: to check before creating.
+    Done,
+    /// No suggestion, and why; the dialog stays as it opened.
+    Failed(String),
 }
 
 /// A change of one entry, one [`InboxSource`] call each (`inbox.set_item_done`,
@@ -785,13 +875,19 @@ pub enum Sent {
     Decide(String, bool),
     /// The task lists were asked for (the dialog of "Make task" opened).
     Lists,
-    /// `inbox.create_task_from_item`: entry, list, title (`None`: the entry's), due day.
+    /// `inbox.create_task_from_item`: entry, list, title (`None`: the entry's), due day and the note
+    /// (issue #120; `None` for none).
     Task {
         id: String,
         list: TaskList,
         title: Option<String>,
         due: Option<NaiveDate>,
+        notes: Option<String>,
     },
+    /// `inbox.suggest_task_from_item` (issue #120) for the entry with this id.
+    SuggestTask(String),
+    /// `inbox.suggest_event_from_item` (issue #120) for the entry with this id.
+    SuggestEvent(String),
     /// A change of mail (`mail.set_flags`, `mail.move_messages`, `mail.delete_messages`).
     Mail(MailEdit, Option<Hint>),
     /// `mail.get_message` for the message with this id.
@@ -827,13 +923,16 @@ pub enum Sent {
     MailDone(Vec<String>),
     /// The calendars were asked for (the dialog of "Make event" opened, task E8.5b).
     Calendars,
-    /// `inbox.create_event_from_item`: entry, calendar, title (`None`: the entry's), start and end.
+    /// `inbox.create_event_from_item`: entry, calendar, title (`None`: the entry's), start and end,
+    /// place and note (issue #120; `None` for none).
     Event {
         id: String,
         calendar: TaskList,
         title: Option<String>,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
+        location: Option<String>,
+        notes: Option<String>,
     },
     /// `inbox.list_mute_options` for the entry with this id (the bell's menu opened, task E8.6b).
     MuteOptions(String),
@@ -1093,10 +1192,17 @@ pub enum Open {
     Insights,
     /// Insights with "Table view" on.
     InsightsTable,
+    /// The panel of the first entry that is no approval, with the dialog of "Make task" that "AI
+    /// task" opens, filled in by the demo's AI (issue #120).
+    AiTask,
+    /// That entry with the dialog of "Make event" that "AI event" opens (issue #120).
+    AiEvent,
+    /// That entry in the panel without an AI: the AI buttons are off (issue #120).
+    NoAi,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 38] = [
+    const ALL: [(&'static str, Open); 41] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1135,6 +1241,9 @@ impl Open {
         ("mute-panel", Open::MutePanel),
         ("insights", Open::Insights),
         ("insights-table", Open::InsightsTable),
+        ("ai-task", Open::AiTask),
+        ("ai-event", Open::AiEvent),
+        ("no-ai", Open::NoAi),
     ];
 }
 
@@ -1630,6 +1739,11 @@ pub struct App<S> {
     calendars: Option<Result<Vec<TaskList>, String>>,
     /// The id of the calendar the last event went into; the dialog chooses it first next time.
     last_calendar: Option<String>,
+    /// An AI is set up for "AI task" and "AI event" (issue #120): asked at start and on every tick
+    /// ([`SuggestSource::ai_ready`]); off until the answer is in.
+    ai_ready: bool,
+    /// What the AI does for the open dialog (issue #120); `None` for a dialog opened without it.
+    ai_suggesting: Option<Suggesting>,
     /// Whether it is quiet now (task E8.5b), as the last load of the hub's "Act now" said.
     quiet: Option<torro_ipc::Quiet>,
     /// The ways to mute `subject` for the bell's menu (task E8.6b): `None` while they load, then
@@ -1894,6 +2008,23 @@ pub enum Message {
     EventConfirm,
     /// The source's answer to `inbox.create_event_from_item`, with the calendar's name for the hint.
     EventCreated(Result<(), String>, String),
+    /// "AI task" (issue #120): the dialog of "Make task" for the entry with this id, filled in by the
+    /// AI's suggestion once it is in.
+    SuggestTask(String),
+    /// "AI event" (issue #120): the dialog of "Make event", filled in alike.
+    SuggestEvent(String),
+    /// Whether an AI is set up ([`SuggestSource::ai_ready`]).
+    AiReady(bool),
+    /// The AI's task for the entry with this id, or why there is none.
+    TaskSuggested(String, Result<TaskSuggestion, String>),
+    /// The AI's event for the entry with this id, or why there is none.
+    EventSuggested(String, Result<EventSuggestion, String>),
+    /// The note field of the dialog of "Make task" (issue #120).
+    TaskNotes(String),
+    /// The place field of the dialog of "Make event" (issue #120).
+    EventLocation(String),
+    /// The note field of the dialog of "Make event" (issue #120).
+    EventNotes(String),
     /// The browser could not be started (or was); only logged, as in the other apps.
     LinkOpened(Result<(), String>),
     Refresh,
@@ -2201,7 +2332,7 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     Ok(Loaded { order, items, for_me, info, sources, folders, mail, snoozed, done, quiet, found })
 }
 
-impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
+impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static> App<S> {
     pub fn new(inbox: Arc<S>, suite: Source, launch: Launch) -> (App<S>, Task<Message>) {
         let open = launch.open;
         let offset = launch.now.map_or(TimeDelta::zero(), |now| datetime::to_utc(now) - Utc::now());
@@ -2260,6 +2391,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             event: EventDraft::new(String::new(), Utc::now() + offset),
             calendars: None,
             last_calendar: None,
+            ai_ready: false,
+            ai_suggesting: None,
             quiet: None,
             mute_options: None,
             mute_for: MuteFor::default(),
@@ -2347,6 +2480,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             split,
             app.load(),
             app.fetch_appearance(),
+            app.fetch_ai_ready(),
             app.zoom.fetch().map(Message::Zoom),
             app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
@@ -2670,6 +2804,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::EventCreated(Err(err), _) => {
                 self.error = Some(Failure::new(tr("Couldn't create the event."), err));
             }
+            Message::SuggestTask(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.suggest_task(&id);
+            }
+            Message::SuggestEvent(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.suggest_event(&id);
+            }
+            // `--open no-ai` keeps the buttons off, to see them so in the demo.
+            Message::AiReady(ready) => self.ai_ready = ready && self.launch.open != Some(Open::NoAi),
+            Message::TaskSuggested(id, result) => self.take_task_suggestion(&id, result),
+            Message::EventSuggested(id, result) => self.take_event_suggestion(&id, result),
+            Message::TaskNotes(notes) => self.task.notes = notes,
+            Message::EventLocation(location) => self.event.location = location,
+            Message::EventNotes(notes) => self.event.notes = notes,
             // The entry is seen now; the list shows it.
             Message::ItemOpened(Ok(())) => return self.load(),
             Message::ItemOpened(Err(err)) => {
@@ -2680,7 +2829,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::Refresh => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
-                return Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom), self.load()]);
+                return Task::batch([
+                    self.fetch_appearance(),
+                    self.fetch_ai_ready(),
+                    self.zoom.fetch().map(Message::Zoom),
+                    self.load(),
+                ]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
@@ -4303,7 +4457,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return Task::none();
         }
         self.drawer = false;
-        self.task = TaskDraft { title: list::one_line(&item.title), list: None, due: Due::None };
+        self.ai_suggesting = None;
+        self.task = TaskDraft { title: list::one_line(&item.title), ..TaskDraft::default() };
         self.subject = Some(item);
         self.task_mail = None;
         self.open_task_dialog()
@@ -4326,7 +4481,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.close_menus();
         // The dialog opens at the cursor's row, as for entries.
         self.cursor = Some(summary.id.clone());
-        self.task = TaskDraft { title: mail::subject(&summary), list: None, due: Due::None };
+        self.task = TaskDraft { title: mail::subject(&summary), ..TaskDraft::default() };
         self.subject = None;
         self.task_mail = Some(summary);
         self.open_task_dialog()
@@ -4365,14 +4520,25 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let (Some(item), Some(list)) = (self.subject.clone(), self.task.list.clone()) else { return Task::none() };
         let title = Some(self.task.title.trim().to_owned()).filter(|title| !title.is_empty());
         let due = self.task.due.day(self.now);
+        let notes = filled(&self.task.notes);
         self.last_list = Some(list.id.clone());
         self.close_menus();
         #[cfg(test)]
-        self.sent.push(Sent::Task { id: item.id.clone(), list: list.clone(), title: title.clone(), due });
+        self.sent.push(Sent::Task {
+            id: item.id.clone(),
+            list: list.clone(),
+            title: title.clone(),
+            due,
+            notes: notes.clone(),
+        });
         let inbox = self.inbox.clone();
         let TaskList { id: list_id, name } = list;
         Task::perform(
-            async move { inbox.create_task_from_item(item.id, list_id, title, due).await.map_err(|err| err.to_string()) },
+            async move {
+                SuggestSource::create_task(&*inbox, item.id, list_id, title, due, notes)
+                    .await
+                    .map_err(|err| err.to_string())
+            },
             move |result| Message::TaskCreated(result, name.clone()),
         )
     }
@@ -4532,6 +4698,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return Task::none();
         }
         self.drawer = false;
+        self.ai_suggesting = None;
         self.event = EventDraft::new(list::one_line(&item.title), self.now);
         self.subject = Some(item);
         self.menu = Some(Menu::Event);
@@ -4564,6 +4731,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         };
         let title = Some(self.event.title.trim().to_owned()).filter(|title| !title.is_empty());
         let (start, end) = self.event.span();
+        let (location, notes) = (filled(&self.event.location), filled(&self.event.notes));
         self.last_calendar = Some(calendar.id.clone());
         self.close_menus();
         #[cfg(test)]
@@ -4573,18 +4741,132 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             title: title.clone(),
             start,
             end,
+            location: location.clone(),
+            notes: notes.clone(),
         });
         let inbox = self.inbox.clone();
         let TaskList { id: calendar_id, name } = calendar;
+        let fields = EventFields { title, start, end, location, notes };
         Task::perform(
             async move {
-                inbox
-                    .create_event_from_item(item.id, calendar_id, title, start, end)
-                    .await
-                    .map_err(|err| err.to_string())
+                SuggestSource::create_event(&*inbox, item.id, calendar_id, fields).await.map_err(|err| err.to_string())
             },
             move |result| Message::EventCreated(result, name.clone()),
         )
+    }
+
+    /// Asks whether an AI is set up (issue #120, [`SuggestSource::ai_ready`]), for the AI buttons.
+    fn fetch_ai_ready(&self) -> Task<Message> {
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.ai_ready().await }, Message::AiReady)
+    }
+
+    /// "AI task" (issue #120): the dialog of "Make task" for the entry `id`, as `t` opens it, and the
+    /// AI asked for its suggestion, which fills it in once it is in ([`App::take_task_suggestion`]).
+    /// Without an AI only a hint says to set one up (the buttons are off then anyway).
+    fn suggest_task(&mut self, id: &str) -> Task<Message> {
+        if !self.ai_ready {
+            self.note(tr("Set up an AI first").to_owned());
+            return Task::none();
+        }
+        let dialog = self.ask_task(id);
+        if self.menu != Some(Menu::Task) {
+            return dialog;
+        }
+        self.ai_suggesting = Some(Suggesting::Asking(id.to_owned()));
+        #[cfg(test)]
+        self.sent.push(Sent::SuggestTask(id.to_owned()));
+        let (inbox, asked, id) = (self.inbox.clone(), id.to_owned(), id.to_owned());
+        let suggested = Task::perform(
+            async move { inbox.suggest_task(asked).await.map_err(|err| err.to_string()) },
+            move |result| Message::TaskSuggested(id.clone(), result),
+        );
+        Task::batch([dialog, suggested])
+    }
+
+    /// "AI event" (issue #120): the dialog of "Make event" for the entry `id` and the AI asked, as
+    /// [`App::suggest_task`] does.
+    fn suggest_event(&mut self, id: &str) -> Task<Message> {
+        if !self.ai_ready {
+            self.note(tr("Set up an AI first").to_owned());
+            return Task::none();
+        }
+        let dialog = self.ask_event(id);
+        if self.menu != Some(Menu::Event) {
+            return dialog;
+        }
+        self.ai_suggesting = Some(Suggesting::Asking(id.to_owned()));
+        #[cfg(test)]
+        self.sent.push(Sent::SuggestEvent(id.to_owned()));
+        let (inbox, asked, id) = (self.inbox.clone(), id.to_owned(), id.to_owned());
+        let suggested = Task::perform(
+            async move { inbox.suggest_event(asked).await.map_err(|err| err.to_string()) },
+            move |result| Message::EventSuggested(id.clone(), result),
+        );
+        Task::batch([dialog, suggested])
+    }
+
+    /// Whether the AI's answer for the entry `id` still has its dialog: the one asked for is open.
+    fn awaits(&self, id: &str, menu: Menu) -> bool {
+        self.menu == Some(menu) && self.ai_suggesting == Some(Suggesting::Asking(id.to_owned()))
+    }
+
+    /// The AI's task for the entry `id` into the open dialog (issue #120): title, due day and note;
+    /// the line under the title says to check it. An answer for a dialog closed or opened anew
+    /// meanwhile is dropped. Without one, the line says why and the dialog stays as it is.
+    fn take_task_suggestion(&mut self, id: &str, result: Result<TaskSuggestion, String>) {
+        if !self.awaits(id, Menu::Task) {
+            return;
+        }
+        match result {
+            Ok(suggestion) => {
+                self.task.title = suggestion.title;
+                self.task.due = ai::due_of(suggestion.due).map_or(Due::None, |day| Due::of_day(day, self.now));
+                self.task.notes = suggestion.notes.unwrap_or_default();
+                self.ai_suggesting = Some(Suggesting::Done);
+            }
+            Err(err) => self.ai_suggesting = Some(Suggesting::Failed(err)),
+        }
+    }
+
+    /// The AI's event for the entry `id` into the open dialog (issue #120): title, day, start and
+    /// length ([`ai::event_times`]; a suggestion without a day keeps the dialog's), place, and who
+    /// takes part as its note. As [`App::take_task_suggestion`] otherwise.
+    fn take_event_suggestion(&mut self, id: &str, result: Result<EventSuggestion, String>) {
+        if !self.awaits(id, Menu::Event) {
+            return;
+        }
+        match result {
+            Ok(suggestion) => {
+                if let Some((day, start, minutes)) = ai::event_times(&suggestion, self.event.length.minutes()) {
+                    self.event.day = day;
+                    self.event.start = StartTime(start);
+                    self.event.length = Length::of_minutes(minutes);
+                }
+                self.event.notes = ai::attendees_note(&suggestion).unwrap_or_default();
+                self.event.title = suggestion.title;
+                self.event.location = suggestion.location.unwrap_or_default();
+                self.ai_suggesting = Some(Suggesting::Done);
+            }
+            Err(err) => self.ai_suggesting = Some(Suggesting::Failed(err)),
+        }
+    }
+
+    /// The quiet line under the title of a dialog the AI fills in (issue #120): asking, done – to
+    /// check –, or why it gave nothing. `None` for a dialog opened without it.
+    fn suggesting_line(&self) -> Option<Element<'_, Message>> {
+        let (text, error) = match self.ai_suggesting.as_ref()? {
+            Suggesting::Asking(_) => (tr("Asking your AI…").to_owned(), false),
+            Suggesting::Done => (tr("Suggested by your AI. Check it before you create it.").to_owned(), false),
+            Suggesting::Failed(why) => (trf("No suggestion: {why}", &[("why", why)]), true),
+        };
+        let mark = icon::icon(if error { Icon::CircleAlert } else { Icon::Sparkles }, icon::SIZE_SM).style(
+            move |t: &Theme, _| iced::widget::svg::Style {
+                color: Some(if error { palette(t).error_text } else { palette(t).text_3 }),
+            },
+        );
+        let words = typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+        Some(row![mark, words].spacing(space::s()).align_y(Alignment::Center).into())
     }
 
     /// The task made of the message `id` (task E8.7b), for the card over its text: the one the entry
@@ -5040,7 +5322,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             true => None,
             false => {
                 let item = self.detail.as_ref()?;
-                Some(mail::ReaderEntry { item, hide: !self.hide_choices(item).is_empty() })
+                Some(mail::ReaderEntry { item, hide: !self.hide_choices(item).is_empty(), ai: self.ai_ready })
             }
         };
         Some(mail::reader(reading, entry, anchors.clone(), self.density() == Density::Comfortable))
@@ -5222,6 +5504,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     deciding: self.deciding.is_some(),
                     // The panel fills narrow windows: no room for the words of "Move to …".
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
+                    ai: self.ai_ready,
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
                 let letter = self.reading().map(|reading| mail::body(&reading));
@@ -6007,11 +6290,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Some(Ok(lists)) => choice(lists.clone(), self.task.list.clone(), Message::TaskList),
         };
         // A folder's message asks for its due day as an entry does (task E8.1b).
-        let due = choice(Due::ALL.to_vec(), Some(self.task.due), Message::TaskDue);
-        let rows = column![
+        let due = choice(self.task.due.offered(), Some(self.task.due), Message::TaskDue);
+        let mut rows = column![
             widgets::prop_line(tr("List"), Some(Mark::Icon(Icon::ListTodo)), list, None),
             widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), due, None),
         ];
+        // The AI's note (issue #120), only where it filled in the dialog or one is kept.
+        if self.ai_suggesting.is_some() || !self.task.notes.is_empty() {
+            let notes = dialog_field(tr("Notes"), &self.task.notes, Message::TaskNotes);
+            rows = rows.push(widgets::prop_line(tr("Notes"), Some(Mark::Icon(Icon::AlignLeft)), notes, None));
+        }
         let create = self.task.list.is_some().then_some(Message::TaskConfirm);
         let actions = row![
             iced::widget::space::horizontal(),
@@ -6025,6 +6313,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let card = column![
             container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::xs())),
             container(title).padding(inset.bottom(space::s())),
+            self.suggesting_line().map(|line| container(line).padding(inset.bottom(space::s()))),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
                 .spacing(space::m())
@@ -6070,14 +6359,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         ]
         .spacing(space::xs())
         .align_y(Alignment::Center);
-        let start = choice(StartTime::all(), Some(self.event.start), Message::EventStart);
-        let length = choice(Length::ALL.to_vec(), Some(self.event.length), Message::EventLength);
-        let rows = column![
+        let start = choice(self.event.start.offered(), Some(self.event.start), Message::EventStart);
+        let length = choice(self.event.length.offered(), Some(self.event.length), Message::EventLength);
+        let mut rows = column![
             widgets::prop_line(tr("Calendar"), Some(Mark::Icon(Icon::Calendar)), calendar, None),
             widgets::prop_line(tr("Day"), Some(Mark::Icon(Icon::CalendarDays)), day_row, None),
             widgets::prop_line(tr("Starts"), Some(Mark::Icon(Icon::CalendarClock)), start, None),
             widgets::prop_line(tr("Duration"), Some(Mark::Icon(Icon::Clock)), length, None),
         ];
+        // The AI's place and who takes part (issue #120), only where it filled in the dialog or one
+        // is kept.
+        if self.ai_suggesting.is_some() || !self.event.location.is_empty() || !self.event.notes.is_empty() {
+            let place = dialog_field(tr("Location"), &self.event.location, Message::EventLocation);
+            let notes = dialog_field(tr("Notes"), &self.event.notes, Message::EventNotes);
+            rows = rows
+                .push(widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), place, None))
+                .push(widgets::prop_line(tr("Notes"), Some(Mark::Icon(Icon::AlignLeft)), notes, None));
+        }
         let create = self.event.calendar.is_some().then_some(Message::EventConfirm);
         let actions = row![
             iced::widget::space::horizontal(),
@@ -6090,6 +6388,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let card = column![
             container(widgets::section_title(tr("Make event"))).padding(inset.bottom(space::xs())),
             container(title).padding(inset.bottom(space::s())),
+            self.suggesting_line().map(|line| container(line).padding(inset.bottom(space::s()))),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
                 .spacing(space::m())
@@ -6110,6 +6409,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.menu = None;
         self.drawer = false;
         self.subject = None;
+        self.ai_suggesting = None;
     }
 
     /// Asks the core for the stored appearance, on every tick, so a change in the control centre
@@ -6163,6 +6463,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     self.cursor = Some(item.id.clone());
                     self.detail = Some(item.clone());
                     return self.ask_task(&item.id);
+                }
+            }
+            Some(Open::AiTask | Open::AiEvent | Open::NoAi) => {
+                if let Some(item) = self.items.iter().find(|item| !detail::is_approval(item)).cloned() {
+                    self.cursor = Some(item.id.clone());
+                    self.detail = Some(item.clone());
+                    // The demo has an AI; its answer to "is one set up?" may come after this.
+                    self.ai_ready = self.launch.open != Some(Open::NoAi);
+                    match self.launch.open {
+                        Some(Open::AiTask) => return self.suggest_task(&item.id),
+                        Some(Open::AiEvent) => return self.suggest_event(&item.id),
+                        _ => {}
+                    }
                 }
             }
             Some(Open::Event) => {
@@ -6489,6 +6802,25 @@ where
         .into()
 }
 
+/// `text` without the spaces around it, `None` when nothing is left: a note or place of a dialog
+/// as the core takes it (issue #120).
+fn filled(text: &str) -> Option<String> {
+    Some(text.trim().to_owned()).filter(|text| !text.is_empty())
+}
+
+/// A one-line field of a dialog in the suite's look: placeholder `hint`, `value`, `on_input`.
+fn dialog_field<'a>(hint: &'a str, value: &'a str, on_input: fn(String) -> Message) -> Element<'a, Message> {
+    text_input(hint, value)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input)
+        .on_input(on_input)
+        .into()
+}
+
 /// The failure when the entries could not be loaded; the error state's "Retry" is what the user
 /// can do about it.
 /// Asks the core to open `app` on `target` (task E8.7b, `apps.open_app` with `target`): `task:<uid>`
@@ -6633,7 +6965,7 @@ mod tests {
     }
 
     /// What the source answers for the app's view, handed to `update` as the task would.
-    fn load<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &mut App<S>) {
+    fn load<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(app: &mut App<S>) {
         let empty = app.launch.open == Some(Open::Empty);
         let window = (app.launch.kind, app.shown.clone());
         let demo = app.launch.demo.then_some(app.now);
@@ -7339,7 +7671,7 @@ mod tests {
 
     // ----- Triage (E3.2) ---------------------------------------------------------------------
 
-    fn press<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(
+    fn press<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
         app: &mut App<S>,
         key: Key,
     ) -> Task<Message> {
@@ -8078,7 +8410,7 @@ mod tests {
 
     /// Runs the task the dialog sent against the demo source and hands its answer to `update`.
     fn deliver_task(app: &mut App<DemoSource>) {
-        let Some(Sent::Task { id, list, title, due }) = app.sent.pop() else { panic!("no task sent") };
+        let Some(Sent::Task { id, list, title, due, .. }) = app.sent.pop() else { panic!("no task sent") };
         let result = block_on(app.inbox.create_task_from_item(id, list.id, title, due)).map_err(|err| err.to_string());
         let _ = app.update(Message::TaskCreated(result, list.name));
         load(app);
@@ -8115,6 +8447,7 @@ mod tests {
                 list: demo_list(1),
                 title: Some("Fix the deploy".into()),
                 due: Some(tomorrow),
+                notes: None,
             })
         );
         assert!(app.menu.is_none(), "the dialog closes");
@@ -8215,6 +8548,125 @@ mod tests {
     // ----- Make event and quiet (task E8.5b) --------------------------------------------------
 
     /// The demo's calendars, handed to `update` as the task of the dialog would.
+    /// Issue #120: "AI task" opens the dialog of "Make task" while the AI is asked, fills it in with
+    /// the suggestion, and "Create task" sends its note too; nothing is saved before.
+    #[test]
+    fn ai_task_fills_the_dialog_and_creates_the_task_with_its_note() {
+        let mut app = at("demo-6");
+        let _ = app.update(Message::AiReady(true));
+        let _ = app.update(Message::SuggestTask("demo-6".into()));
+        assert_eq!(
+            (app.menu, app.ai_suggesting.clone()),
+            (Some(Menu::Task), Some(Suggesting::Asking("demo-6".into())))
+        );
+        assert_eq!(app.sent.last(), Some(&Sent::SuggestTask("demo-6".into())));
+        assert!(app.sent.contains(&Sent::Lists), "the lists are asked for as for Make task");
+        let lists = block_on(app.inbox.list_task_lists()).map_err(|err| err.to_string());
+        let _ = app.update(Message::TaskLists(lists));
+        let suggestion = block_on(app.inbox.suggest_task("demo-6".into())).expect("the demo's AI");
+        let due = ai::due_of(suggestion.due).expect("a day");
+        let _ = app.update(Message::TaskSuggested("demo-6".into(), Ok(suggestion.clone())));
+        assert_eq!(app.ai_suggesting, Some(Suggesting::Done));
+        assert_eq!(app.task.title, suggestion.title);
+        assert_eq!(app.task.due.day(app.now), Some(due), "the date the AI read");
+        assert!(!app.task.notes.is_empty(), "the demo's note");
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Task { .. })), "nothing saved yet");
+        let _ = app.update(Message::TaskNotes("Bring the logs".into()));
+        let _ = press(&mut app, Key::Enter);
+        let Some(Sent::Task { id, title, due: sent_due, notes, .. }) = app.sent.last().cloned() else {
+            panic!("a task: {:?}", app.sent.last())
+        };
+        assert_eq!((id.as_str(), title, sent_due), ("demo-6", Some(suggestion.title), Some(due)));
+        assert_eq!(notes.as_deref(), Some("Bring the logs"));
+        assert_eq!(app.ai_suggesting, None, "the dialog closed");
+    }
+
+    /// Issue #120: without an AI the buttons are off; their message only says to set one up, and an
+    /// answer that comes after its dialog closed changes nothing.
+    #[test]
+    fn without_an_ai_nothing_is_asked_and_late_answers_are_dropped() {
+        let mut app = at("demo-6");
+        let _ = app.update(Message::AiReady(false));
+        let _ = app.update(Message::SuggestEvent("demo-6".into()));
+        assert_eq!(app.menu, None);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Set up an AI first")));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::SuggestEvent(_))));
+
+        let _ = app.update(Message::AiReady(true));
+        let _ = app.update(Message::SuggestEvent("demo-6".into()));
+        let _ = app.update(Message::CloseMenu);
+        let late = block_on(app.inbox.suggest_event("demo-6".into())).map_err(|err| err.to_string());
+        let _ = app.update(Message::EventSuggested("demo-6".into(), late));
+        assert_eq!((app.menu, app.ai_suggesting.clone()), (None, None));
+        // "Make event" by hand: no AI line, no answer taken.
+        let _ = press(&mut app, Key::C);
+        let title = app.event.title.clone();
+        let late = block_on(app.inbox.suggest_event("demo-6".into())).map_err(|err| err.to_string());
+        let _ = app.update(Message::EventSuggested("demo-6".into(), late));
+        assert_eq!((app.ai_suggesting.clone(), app.event.title.clone()), (None, title));
+        // An AI that fails says why in the dialog, which stays.
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::SuggestTask("demo-6".into()));
+        let _ = app.update(Message::TaskSuggested("demo-6".into(), Err("The AI server could not be reached.".into())));
+        assert_eq!(app.ai_suggesting, Some(Suggesting::Failed("The AI server could not be reached.".into())));
+        assert_eq!(app.menu, Some(Menu::Task));
+    }
+
+    /// Issue #120: "AI event" fills in the day, start and length the AI read, the place and who
+    /// takes part, and "Create event" sends place and note.
+    #[test]
+    fn ai_event_fills_the_dialog_with_its_time_and_place() {
+        let mut app = at("demo-6");
+        let _ = app.update(Message::AiReady(true));
+        let _ = app.update(Message::SuggestEvent("demo-6".into()));
+        assert_eq!(app.menu, Some(Menu::Event));
+        let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
+        let _ = app.update(Message::Calendars(calendars));
+        let suggestion = block_on(app.inbox.suggest_event("demo-6".into())).expect("the demo's AI");
+        let _ = app.update(Message::EventSuggested("demo-6".into(), Ok(suggestion.clone())));
+        let (day, start, minutes) = ai::event_times(&suggestion, 30).expect("a time");
+        assert_eq!((app.event.day, app.event.start, app.event.length), (day, StartTime(start), Length::Minutes(45)));
+        assert_eq!(minutes, 45);
+        assert_eq!(app.event.location, "Room 2");
+        assert_eq!(app.event.notes, ai::attendees_note(&suggestion).unwrap_or_default());
+        assert!(Length::Minutes(45).offered().contains(&Length::Minutes(45)));
+        assert_eq!(Length::of_minutes(60), Length::Hour);
+        let _ = press(&mut app, Key::Enter);
+        let Some(Sent::Event { location, end, start: from, .. }) = app.sent.last().cloned() else {
+            panic!("an event: {:?}", app.sent.last())
+        };
+        assert_eq!((location.as_deref(), end - from), (Some("Room 2"), TimeDelta::minutes(45)));
+    }
+
+    /// Issue #120: `--open ai-task` opens the dialog the AI fills in, `--open no-ai` keeps the AI
+    /// buttons off whatever the demo answers.
+    #[test]
+    fn the_ai_states_open_with_the_demo() {
+        let mut app = demo(&["--demo", "--open", "ai-task", "--now", "2026-10-13T10:30"]);
+        load(&mut app);
+        assert!(app.ai_ready);
+        assert_eq!(app.menu, Some(Menu::Task));
+        assert!(matches!(app.ai_suggesting, Some(Suggesting::Asking(_))));
+        let mut off = demo(&["--demo", "--open", "no-ai", "--now", "2026-10-13T10:30"]);
+        load(&mut off);
+        let _ = off.update(Message::AiReady(true));
+        assert!(!off.ai_ready && off.detail.is_some());
+    }
+
+    #[test]
+    fn a_suggested_day_is_offered_with_its_date() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 14, 8, 0, 0).single().expect("valid time");
+        let today = local_today(now);
+        assert_eq!(Due::of_day(today + Days::new(1), now), Due::Tomorrow);
+        let later = today + Days::new(9);
+        assert_eq!(Due::of_day(later, now), Due::On(later));
+        assert_eq!(Due::On(later).offered().last(), Some(&Due::On(later)));
+        assert_eq!(Due::Today.offered(), Due::ALL.to_vec());
+        let quarter = StartTime(NaiveTime::from_hms_opt(10, 15, 0).expect("time"));
+        let offered = quarter.offered();
+        assert!(offered.windows(2).all(|pair| pair[0] < pair[1]) && offered.contains(&quarter));
+    }
+
     fn deliver_calendars(app: &mut App<DemoSource>) {
         assert_eq!(app.sent.last(), Some(&Sent::Calendars), "the dialog asked for the calendars");
         let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
@@ -8257,10 +8709,12 @@ mod tests {
                 title: Some("Call the CI team".into()),
                 start,
                 end: start + TimeDelta::hours(1),
+                location: None,
+                notes: None,
             })
         );
         assert!(app.menu.is_none(), "the dialog closes");
-        let Some(Sent::Event { id, calendar, title, start, end }) = app.sent.pop() else { panic!("no event sent") };
+        let Some(Sent::Event { id, calendar, title, start, end, .. }) = app.sent.pop() else { panic!("no event sent") };
         let made = block_on(app.inbox.create_event_from_item(id, calendar.id, title, start, end));
         let _ = app.update(Message::EventCreated(made.map_err(|err| err.to_string()), calendar.name.clone()));
         load(&mut app);
@@ -8383,7 +8837,9 @@ mod tests {
         let _ = app.update(Message::LetterLoaded(id.into(), mail));
     }
 
-    fn draw_everywhere<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &mut App<S>) {
+    fn draw_everywhere<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+        app: &mut App<S>,
+    ) {
         for size in SIZES {
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
@@ -8868,7 +9324,9 @@ mod tests {
         app
     }
 
-    fn rows_of<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &App<S>) -> Vec<&str> {
+    fn rows_of<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+        app: &App<S>,
+    ) -> Vec<&str> {
         app.rows().iter().map(|item| item.id.as_str()).collect()
     }
 
