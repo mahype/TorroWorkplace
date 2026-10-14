@@ -627,7 +627,8 @@ impl Palette {
 pub struct Logo {
     /// The mark in the app switcher and the rail (SVG). `None`: the "T" on `accent`.
     pub mark: Option<PathBuf>,
-    /// The tray symbol (SVG). `None`: the grid of four squares in `accent`.
+    /// A tray symbol (SVG), still checked so older packs stay valid, but no longer shown: the tray
+    /// always draws the four red squares, whatever the design (issue #114).
     pub tray: Option<PathBuf>,
 }
 

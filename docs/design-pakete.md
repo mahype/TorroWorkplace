@@ -34,7 +34,7 @@ klein, `a-z`, `0-9`, `-`, höchstens 32 Zeichen.
 designs/plex/
   design.toml        Pflicht: Beschreibung und Werte
   logo.svg           optional: Logo in der Seitenleiste
-  tray.svg           optional: Symbol im Tray
+  tray.svg           veraltet: wird geprüft, aber nicht mehr gezeigt (das Tray-Symbol ist fest)
   preview.png        optional: Vorschau in der Steuerzentrale (höchstens 1200×800)
   fonts/             optional: Schriftdateien
   fonts/LICENSE.txt  Pflicht, sobald Schriften dabei sind
@@ -148,12 +148,13 @@ sidebar_text = "#F6F8FA"
 
 [logo]
 mark = "logo.svg"              # fehlt: das „T“ des Standardpakets auf der Akzentfarbe
-tray = "tray.svg"              # fehlt: das Raster aus vier Quadraten in der Akzentfarbe
+tray = "tray.svg"              # veraltet (Issue #114): das Tray zeigt immer die vier roten Quadrate
 ```
 
 **Fehlt etwas, gilt der Wert des Standardpakets.** Ein Paket, das nur `colors.dark.accent` setzt, ist gültig. Fehlt
-ein eigenes Logo, zeichnet die Suite ihr Logo in der Akzentfarbe des Pakets: Ein neuer Akzent färbt also auch Logo
-und Tray mit, nichts bleibt rot hängen.
+ein eigenes Logo, zeichnet die Suite ihr Logo in der Akzentfarbe des Pakets: Ein neuer Akzent färbt also das Logo
+mit. Nur das Tray-Symbol ist fest (Issue #114): immer vier rote Quadrate, damit man es in der Menüleiste unter jedem
+Design wiederfindet.
 
 Abgeleitet und nie im Paket: `attention_text` und `error_text` (aus Status- und Textfarbe, wie heute), die
 Iced-Palette, Hover-Stufen der Knöpfe.
@@ -275,9 +276,9 @@ Beispiel bleibt gelöscht oder geändert; überschrieben wird nie etwas. Die Dat
    `bg #0C1013`, `panel #12171B`, `selected #1B2226`, Text `#E3E8EB` / `#A9B4BB` / `#86929A`, Akzent `#3AA6A0` mit
    dunkler Schrift `#03201E` (5,8:1). Hell: `bg #ECF0F1`, `panel #FFFFFF`, `selected #DEE5E8`, Text `#141B1F` /
    `#475359` / `#59656C`, Akzent `#0C6B66` mit Weiß (6,3:1). Status- und Kalenderfarben bleiben die des Standards.
-6. **Logo und Tray:** `logo.svg` quadratisch mit `viewBox`, nur Formen, keine Verweise; es steht auf hellem und
-   dunklem Grund, also eine eigene Fläche mitbringen (Plex: Petrol-Quadrat mit drei weißen Balken). `tray.svg` ist
-   eine Form in einer Farbe, die auf hellen und dunklen Leisten trägt; macOS färbt sie ohnehin selbst.
+6. **Logo:** `logo.svg` quadratisch mit `viewBox`, nur Formen, keine Verweise; es steht auf hellem und dunklem
+   Grund, also eine eigene Fläche mitbringen (Plex: Petrol-Quadrat mit drei weißen Balken). Ein `tray.svg` braucht es
+   nicht mehr: Das Tray-Symbol ist für alle Pakete gleich (Issue #114).
 7. **Vorschau:** `preview.png` höchstens 1200 × 800, am besten ein Ausschnitt des eigenen Demo-Fensters im
    Seitenverhältnis 3 : 2 (Plex: 600 × 400, 60 KB).
 8. **Prüfen:** Steuerzentrale › Appearance › Design › „Reload“: Das Paket steht in der Liste, ungültig mit jedem Grund

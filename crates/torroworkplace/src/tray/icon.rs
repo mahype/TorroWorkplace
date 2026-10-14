@@ -1,7 +1,7 @@
-//! The Torro tray icon. It follows the chosen design pack (task L.3, [`Look`]): the pack's own
-//! symbol (`logo.tray`, an SVG rastered with resvg for each size), or else the suite's symbol – a
-//! 2×2 grid of four rounded squares – in the pack's accent colour (`theme::TORRO_RED` in the
-//! standard), on a transparent background.
+//! The Torro tray icon: a 2×2 grid of four small filled squares with slightly rounded corners in
+//! Torro red, on a transparent background ([`Look`]). It is the same under every design pack
+//! (issue #114): an icon that changed with the design was hard to find again in the menu bar. On
+//! macOS it is a template image, so the menu bar tints it for light and dark anyway.
 //!
 //! The grid is drawn in code, so no image file is needed. Its geometry is in fractions of the icon
 //! size, so one description serves every pixmap size, and each pixel is anti-aliased by
@@ -12,10 +12,7 @@
 //! cut free from the symbol: a ring while it waits for the wake word, a solid dot while it records.
 //! Shape, not colour, tells them apart, since macOS tints the whole image.
 
-use std::path::Path;
-
-use resvg::{tiny_skia, usvg};
-use torro_core::design::{self, Design, Rgba, STANDARD_ID};
+use torro_core::theme::TORRO_RED;
 use torro_ipc::VoiceState;
 
 /// Pixmap sizes handed to the tray. The desktop picks the one that fits its panel.
@@ -34,6 +31,8 @@ const TILE: f32 = (1.0 - 2.0 * MARGIN - GAP) / 2.0;
 const SECOND: f32 = MARGIN + TILE + GAP;
 /// Top-left corners of the four tiles.
 const TILES: [(f32, f32); 4] = [(MARGIN, MARGIN), (SECOND, MARGIN), (MARGIN, SECOND), (SECOND, SECOND)];
+/// Colour of the grid and the mark: Torro red, the suite's mark, whatever design is chosen.
+const COLOR: [u8; 3] = [TORRO_RED.0, TORRO_RED.1, TORRO_RED.2];
 /// Samples per pixel side. 4×4 gives 16 coverage levels for the edges.
 const SAMPLES: u32 = 4;
 /// Centre of the voice mark, as a fraction of the icon size (both axes).
@@ -83,53 +82,24 @@ impl Mark {
     }
 }
 
-/// What the tray icon looks like under one design: the pack's symbol, or the grid in its accent.
-#[derive(Debug, Clone, PartialEq)]
+/// What the tray icon looks like: always the grid of four rounded squares in Torro red (issue
+/// #114), whatever design pack is chosen, so the icon stays easy to find in the menu bar. Only the
+/// voice mark changes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Look {
-    /// The source of the pack's `logo.tray`, already checked when the pack was loaded (size, no
-    /// outside references, no scripts); `None` draws the grid.
-    svg: Option<Vec<u8>>,
-    /// The colour of the grid: the design's dark accent. The tray has no light or dark of its
-    /// own to follow (macOS tints the image anyway, it is a template there).
-    color: [u8; 3],
     /// The voice mark on top ([`Look::marked`]).
     mark: Mark,
 }
 
 impl Look {
-    /// The icon of the standard design: the grid in Torro red.
+    /// The icon without a mark: the grid in Torro red.
     pub fn standard() -> Look {
-        Look::of(&Design::standard())
-    }
-
-    /// The icon of `design`. A symbol file that cannot be read any more (the folder changed since
-    /// the pack was checked) gives the grid.
-    pub fn of(design: &Design) -> Look {
-        let svg = design.logo.tray.as_deref().and_then(|path| std::fs::read(path).ok());
-        Look { svg, color: rgb8(design.colors.dark.accent), mark: Mark::None }
-    }
-
-    /// The icon for the design the settings name (`Settings::design`, as `Snapshot::design`
-    /// carries it), read from the user's designs folder. Empty, gone or broken: the standard's,
-    /// like the apps draw then.
-    pub fn for_design(id: &str) -> Look {
-        match design::dir() {
-            Some(dir) => Look::for_design_in(&dir, id),
-            None => Look::standard(),
-        }
-    }
-
-    /// [`Look::for_design`] with the packs in `dir`.
-    pub fn for_design_in(dir: &Path, id: &str) -> Look {
-        if id.is_empty() || id == STANDARD_ID {
-            return Look::standard();
-        }
-        design::load(dir, id).map(|design| Look::of(&design)).unwrap_or_else(|_| Look::standard())
+        Look::default()
     }
 
     /// The icon with `mark` in its corner.
     pub fn marked(self, mark: Mark) -> Look {
-        Look { mark, ..self }
+        Look { mark }
     }
 
     /// The ARGB32 pixmap of the icon, `size` × `size` pixels, as ksni expects it: four bytes per
@@ -161,16 +131,10 @@ impl Look {
         data
     }
 
-    /// The icon as `size` × `size` straight (not premultiplied) RGBA pixels, row by row. An SVG
-    /// that does not render falls back to the grid, so the tray never shows an empty slot.
+    /// The icon as `size` × `size` straight (not premultiplied) RGBA pixels, row by row.
     fn pixels(&self, size: u32) -> Vec<[u8; 4]> {
-        let symbol = match self.svg.as_deref().and_then(|svg| svg_pixels(svg, size)) {
-            Some(pixels) => pixels,
-            None => {
-                let [r, g, b] = self.color;
-                (0..size * size).map(|i| [r, g, b, coverage(i % size, i / size, size)]).collect()
-            }
-        };
+        let [r, g, b] = COLOR;
+        let symbol: Vec<[u8; 4]> = (0..size * size).map(|i| [r, g, b, coverage(i % size, i / size, size)]).collect();
         if self.mark == Mark::None {
             return symbol;
         }
@@ -195,40 +159,9 @@ impl Look {
         let blend = |top: u8, under: u8| {
             ((f32::from(top) * dot + f32::from(under) * below * (1.0 - dot)) / alpha).round().clamp(0.0, 255.0) as u8
         };
-        let [r, g, b] = self.color;
+        let [r, g, b] = COLOR;
         [blend(r, pixel[0]), blend(g, pixel[1]), blend(b, pixel[2]), (alpha * 255.0).round() as u8]
     }
-}
-
-/// `color` as 8-bit RGB, rounded the way Iced turns its colours into bytes.
-fn rgb8(color: Rgba) -> [u8; 3] {
-    let byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
-    [byte(color.r), byte(color.g), byte(color.b)]
-}
-
-/// `svg` rastered to `size` × `size`, scaled to fit and centred; `None` when it cannot be parsed or
-/// has no area. resvg draws premultiplied pixels; the trays want them straight.
-fn svg_pixels(svg: &[u8], size: u32) -> Option<Vec<[u8; 4]>> {
-    let tree = usvg::Tree::from_data(svg, &usvg::Options::default()).ok()?;
-    let (width, height) = (tree.size().width(), tree.size().height());
-    let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
-    let scale = size as f32 / width.max(height);
-    if !scale.is_finite() || scale <= 0.0 {
-        return None;
-    }
-    let (dx, dy) = ((size as f32 - width * scale) / 2.0, (size as f32 - height * scale) / 2.0);
-    let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(dx, dy);
-    resvg::render(&tree, transform, &mut pixmap.as_mut());
-    Some(
-        pixmap
-            .pixels()
-            .iter()
-            .map(|pixel| {
-                let color = pixel.demultiply();
-                [color.red(), color.green(), color.blue(), color.alpha()]
-            })
-            .collect(),
-    )
 }
 
 /// The share (0 to 1) of the samples of pixel `(x, y)` for which `inside` holds, the point given in
@@ -286,8 +219,6 @@ fn in_rounded_square(px: f32, py: f32, x0: f32, y0: f32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use torro_core::theme::TORRO_RED;
-
     use super::*;
 
     /// The pixel at `(x, y)` as `[A, R, G, B]`.
@@ -298,27 +229,6 @@ mod tests {
 
     fn argb32(size: u32) -> Vec<u8> {
         Look::standard().argb32(size)
-    }
-
-    /// A designs folder with the packs `teal` (only an accent: the grid in teal), `round` (its own
-    /// tray symbol: a blue circle) and `pale` (refused).
-    fn designs() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let packs = [
-            (
-                "teal",
-                "format = 1\n[about]\nname = \"Teal\"\nversion = \"1.0.0\"\n[colors.dark]\naccent = \"#0E7C7B\"\n",
-            ),
-            ("round", "format = 1\n[about]\nname = \"Round\"\nversion = \"1.0.0\"\n[logo]\ntray = \"tray.svg\"\n"),
-            ("pale", "format = 1\n[about]\nname = \"Pale\"\nversion = \"1.0.0\"\n[colors.dark]\ntext = \"#202020\"\n"),
-        ];
-        for (id, toml) in packs {
-            std::fs::create_dir_all(dir.path().join(id)).expect("pack folder");
-            std::fs::write(dir.path().join(id).join("design.toml"), toml).expect("design.toml");
-        }
-        let circle = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><circle cx="5" cy="5" r="5" fill="#2050F0"/></svg>"##;
-        std::fs::write(dir.path().join("round").join("tray.svg"), circle).expect("tray.svg");
-        dir
     }
 
     #[test]
@@ -377,48 +287,20 @@ mod tests {
         }
     }
 
+    /// Issue #114: the icon has no input but the voice mark, so every design pack gets the same
+    /// pixels – the grid in Torro red, not the pack's accent or symbol.
     #[test]
-    fn a_pack_without_a_symbol_gets_the_grid_in_its_accent() {
-        let dir = designs();
-        let look = Look::for_design_in(dir.path(), "teal");
+    fn the_icon_is_the_red_grid_whatever_the_design() {
+        assert_eq!(Look::standard(), Look::default());
         for size in SIZES {
-            let data = look.argb32(size);
-            let p = size / 4;
-            assert_eq!(pixel(&data, size, p, p), [255, 0x0E, 0x7C, 0x7B], "size {size}");
-            assert_eq!(pixel(&data, size, size / 2, size / 2)[0], 0, "the grid's gap, size {size}");
+            let data = argb32(size);
+            let (near, far) = (size / 4, size - 1 - size / 4);
+            for (x, y) in [(near, near), (far, near), (near, far), (far, far)] {
+                assert_eq!(pixel(&data, size, x, y), [255, TORRO_RED.0, TORRO_RED.1, TORRO_RED.2], "tile, size {size}");
+            }
+            assert!(pixel(&data, size, size / 2, near)[0] < 128, "gap between the columns, size {size}");
+            assert!(pixel(&data, size, near, size / 2)[0] < 128, "gap between the rows, size {size}");
         }
-    }
-
-    #[test]
-    fn a_pack_symbol_is_rastered_for_every_size() {
-        let dir = designs();
-        let look = Look::for_design_in(dir.path(), "round");
-        assert_ne!(look, Look::standard());
-        for size in SIZES {
-            let data = look.argb32(size);
-            assert_eq!(data.len(), (size * size * 4) as usize, "size {size}");
-            let [alpha, r, g, b] = pixel(&data, size, size / 2, size / 2);
-            assert_eq!(alpha, 255, "the middle of the circle is drawn (where the grid has its gap), size {size}");
-            assert_eq!([r, g, b], [0x20, 0x50, 0xF0], "in the symbol's own colour, size {size}");
-            assert_eq!(pixel(&data, size, 0, 0)[0], 0, "a circle leaves the corner empty, size {size}");
-        }
-        let padded = look.rgba(36, 4);
-        assert_eq!(padded[(4 * 44 + 4) * 4 + 3], 0, "the corner of the symbol's square stays clear");
-    }
-
-    #[test]
-    fn a_broken_missing_or_unset_design_gets_the_standard_icon() {
-        let dir = designs();
-        for id in ["pale", "gone", "", "torro"] {
-            assert_eq!(Look::for_design_in(dir.path(), id), Look::standard(), "{id:?}");
-        }
-    }
-
-    #[test]
-    fn an_svg_that_does_not_render_falls_back_to_the_grid() {
-        let broken =
-            Look { svg: Some(b"<svg".to_vec()), color: [TORRO_RED.0, TORRO_RED.1, TORRO_RED.2], mark: Mark::None };
-        assert_eq!(broken.argb32(22), argb32(22));
     }
 
     /// Task C.9: a ring while listening, a dot while recording, cut free from the grid; off, the

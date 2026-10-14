@@ -13,9 +13,8 @@
 //! - muda reports clicks to a handler that forwards them into the loop, which maps the entry to
 //!   its [`Action`] and runs it on the [`Daemon`].
 //!
-//! Every native object (icon, menu) is created and changed on the main thread only. The icon
-//! follows the chosen design pack (task L.3): every snapshot names it, and the image is drawn
-//! again when it changes.
+//! Every native object (icon, menu) is created and changed on the main thread only. The icon is
+//! always the red grid (issue #114); it is drawn again only when the voice mark changes.
 //!
 //! What waits in the inbox ([`Waiting`], task E3.3b) shows as the inbox section at the top of the
 //! shared menu and as the count in the tooltip ("Torro Workplace · 3 for you"). Neither system
@@ -46,8 +45,8 @@ use crate::daemon::Daemon;
 const ICON_SIDE: u32 = 44;
 #[cfg(windows)]
 const ICON_SIDE: u32 = 32;
-/// Side of the symbol (the grid, or a design pack's own) in the middle of the image. On macOS the rest is a transparent border, so
-/// the grid stands about 16 pt high like the system's own symbols; Windows uses the whole image.
+/// Side of the grid in the middle of the image. On macOS the rest is a transparent border, so the
+/// grid stands about 16 pt high like the system's own symbols; Windows uses the whole image.
 #[cfg(target_os = "macos")]
 const ICON_GRID: u32 = 36;
 #[cfg(windows)]
@@ -167,7 +166,7 @@ impl Shell {
     pub fn run(self) -> Result<(), TrayError> {
         self.event_loop.set_control_flow(ControlFlow::Wait);
         let mut app =
-            App { handle: self.handle, daemon: None, tray: None, design: None, actions: Vec::new(), generation: 0 };
+            App { handle: self.handle, daemon: None, tray: None, mark: None, actions: Vec::new(), generation: 0 };
         self.event_loop.run_app(&mut app).map_err(TrayError::EventLoop)
     }
 }
@@ -177,9 +176,8 @@ struct App {
     handle: Handle,
     daemon: Option<Arc<Daemon>>,
     tray: Option<TrayIcon>,
-    /// The design pack and voice mark the icon shows (`Snapshot::design`, `Snapshot::voice`);
-    /// `None` until the icon exists.
-    design: Option<(String, icon::Mark)>,
+    /// The voice mark the icon shows (`Snapshot::voice`); `None` until the icon exists.
+    mark: Option<icon::Mark>,
     /// The actions of the current menu; an entry's id holds its index here.
     actions: Vec<Action>,
     /// Counts the menus built so far. Ids carry it, so a click that arrives from a menu already
@@ -200,19 +198,19 @@ impl App {
         };
         self.actions = actions;
         let tooltip = tooltip(snapshot);
-        let look = (snapshot.design.clone(), icon::Mark::of(snapshot.voice));
+        let mark = icon::Mark::of(snapshot.voice);
         match &self.tray {
             Some(tray) => {
                 tray.set_menu(Some(Box::new(native)));
                 if let Err(err) = tray.set_tooltip(Some(&tooltip)) {
                     eprintln!("torroworkplace: cannot update the tray tooltip: {err}");
                 }
-                self.follow_design(look);
+                self.follow_mark(mark);
             }
-            None => match new_tray(native, &tooltip, &icon::Look::for_design(&look.0).marked(look.1)) {
+            None => match new_tray(native, &tooltip, &icon::Look::standard().marked(mark)) {
                 Ok(tray) => {
                     self.tray = Some(tray);
-                    self.design = Some(look);
+                    self.mark = Some(mark);
                     // macOS draws a new status item only on the next pass of the run loop; a
                     // second event makes sure that pass comes now and not with the next click.
                     self.handle.send(Event::Wake);
@@ -223,25 +221,24 @@ impl App {
         }
     }
 
-    /// Draws the icon again when the snapshot names another design pack or voice mark than the
-    /// icon shows. A failure keeps the old image and is tried again with the next snapshot.
-    fn follow_design(&mut self, look: (String, icon::Mark)) {
+    /// Draws the icon again when the snapshot names another voice mark than the icon shows. A
+    /// failure keeps the old image and is tried again with the next snapshot.
+    fn follow_mark(&mut self, mark: icon::Mark) {
         let Some(tray) = &self.tray else { return };
-        if self.design.as_ref() == Some(&look) {
+        if self.mark == Some(mark) {
             return;
         }
-        let image =
-            match Icon::from_rgba(icon_image(&icon::Look::for_design(&look.0).marked(look.1)), ICON_SIDE, ICON_SIDE) {
-                Ok(image) => image,
-                Err(err) => return eprintln!("torroworkplace: {}", TrayError::Icon(err)),
-            };
+        let image = match Icon::from_rgba(icon_image(&icon::Look::standard().marked(mark)), ICON_SIDE, ICON_SIDE) {
+            Ok(image) => image,
+            Err(err) => return eprintln!("torroworkplace: {}", TrayError::Icon(err)),
+        };
         // macOS keeps it a template, so the menu bar tints it for light and dark.
         #[cfg(target_os = "macos")]
         let set = tray.set_icon_templated(Some(image));
         #[cfg(windows)]
         let set = tray.set_icon(Some(image));
         match set {
-            Ok(()) => self.design = Some(look),
+            Ok(()) => self.mark = Some(mark),
             Err(err) => eprintln!("torroworkplace: cannot change the tray icon: {err}"),
         }
     }

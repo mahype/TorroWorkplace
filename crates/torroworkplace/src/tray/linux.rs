@@ -1,7 +1,7 @@
 //! Tray icon for Linux, built on ksni (StatusNotifierItem over D-Bus; Omarchy's bar,
 //! Waybar and KDE show it). It only draws the shared menu from `menu.rs`, built from a
 //! [`Snapshot`] of the core; clicks run the entries' actions on the [`Daemon`]. The icon comes
-//! from `icon.rs` and follows the chosen design pack (task L.3).
+//! from `icon.rs`: always the red grid, whatever design pack is chosen (issue #114).
 //!
 //! What waits for the person ([`Waiting`], task E3.3b) shows in two ksni-only places: the
 //! tooltip says how many ("3 for you", [`menu::waiting_line`]), never a title, since bars may
@@ -47,10 +47,9 @@ pub type TrayHandle = ksni::Handle<Tray>;
 pub struct Tray {
     pub snapshot: Snapshot,
     daemon: Arc<Daemon>,
-    /// The pixmaps for the design and voice mark they were drawn for (`Snapshot::design`,
-    /// `Snapshot::voice`). ksni asks for them on every update to see whether the icon changed;
-    /// they are drawn again only when one of the two did.
-    icon: Mutex<Option<((String, icon::Mark), Vec<ksni::Icon>)>>,
+    /// The pixmaps for the voice mark they were drawn for (`Snapshot::voice`). ksni asks for them
+    /// on every update to see whether the icon changed; they are drawn again only when it did.
+    icon: Mutex<Option<(icon::Mark, Vec<ksni::Icon>)>>,
 }
 
 /// Shows the icon. Clicks go to `daemon`; [`TrayHandle::update`] replaces the snapshot, and with
@@ -85,15 +84,14 @@ impl ksni::Tray for Tray {
         ksni::ToolTip { title: "Torro Workplace".into(), description, ..Default::default() }
     }
 
-    /// The symbol of the chosen design pack, or the grid in its accent (task L.3), with the mark
-    /// of the voice listener (task C.9).
+    /// The red grid (issue #114) with the mark of the voice listener (task C.9).
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        let wanted = (self.snapshot.design.clone(), icon::Mark::of(self.snapshot.voice));
+        let wanted = icon::Mark::of(self.snapshot.voice);
         let mut cached = self.icon.lock().unwrap_or_else(PoisonError::into_inner);
         match cached.as_ref() {
             Some((drawn_for, drawn)) if *drawn_for == wanted => drawn.clone(),
             _ => {
-                let drawn = pixmaps(&icon::Look::for_design(&wanted.0).marked(wanted.1));
+                let drawn = pixmaps(&icon::Look::standard().marked(wanted));
                 *cached = Some((wanted, drawn.clone()));
                 drawn
             }
