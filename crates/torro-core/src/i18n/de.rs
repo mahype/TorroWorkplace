@@ -35,6 +35,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Calendars and lists", "Kalender und Listen"),
     ("Calendars and tasks", "Kalender und Aufgaben"),
     ("Choose a service to connect.", "Wähle einen Dienst zum Verbinden."),
+    ("Color mode", "Farbmodus"),
     ("Coming soon", "Bald verfügbar"),
     ("Connected", "Verbunden"),
     ("Connection", "Verbindung"),

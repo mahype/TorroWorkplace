@@ -103,7 +103,7 @@ pub enum Open {
     Inbox,
     /// The inbox page without any rules: the group says where they come from.
     InboxEmpty,
-    /// General › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
+    /// Appearance › Design with the demo's sample packs ([`demo_designs`]), one of them broken.
     Design,
     /// The Assistant page with the demo's assistant (task C.6): rights of its own, its engines and
     /// how long it keeps conversations.
@@ -180,8 +180,8 @@ impl Open {
 
 /// The start parameters of `torroworkplace ui`:
 ///
-/// - `--section overview|accounts|workspaces|apps|assistant|agents|approvals|inbox|general`: the page
-///   to start on. The states of `--open` that belong to a page choose that page themselves. Other
+/// - `--section overview|accounts|workspaces|apps|assistant|agents|approvals|inbox|appearance|general`:
+///   the page to start on. The states of `--open` that belong to a page choose that page themselves. Other
 ///   programs open a page this way (`torroworkplace ui --section assistant` from the assistant's
 ///   chat when it may not use something, task C.6).
 /// - `--demo`: sample accounts, templates, settings, apps, agents, approvals and inbox rules in memory instead
@@ -288,7 +288,7 @@ impl Launch {
     }
 }
 
-/// The design packs of `--demo` (General › Design, task L.4), in memory like all its data: the
+/// The design packs of `--demo` (Appearance › Design, task L.4), in memory like all its data: the
 /// standard; "Harbor" (teal accent, cool surfaces) and "Paper" (warm light surfaces, blue accent),
 /// which can be chosen and are drawn at once; and "Neon", which breaks two rules and says so. The
 /// samples use Inter, the only font the demo has without a folder.
@@ -1145,7 +1145,7 @@ mod tests {
         let err = Launch::parse(&args(&["--section", "mail"])).expect_err("unknown section");
         assert!(
             err.to_string().ends_with(
-                "valid values: overview, accounts, workspaces, apps, assistant, agents, approvals, inbox, general"
+                "valid values: overview, accounts, workspaces, apps, assistant, agents, approvals, inbox, appearance, general"
             ),
             "{err}"
         );

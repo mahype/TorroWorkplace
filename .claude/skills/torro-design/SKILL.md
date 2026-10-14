@@ -174,7 +174,7 @@ aus einem Guss wirkt:
   `torro_gui::settings()`), **Grundgröße 13** wie Linear. Nie `Font::DEFAULT`.
   Größer oder kleiner nur über den **Zoom** der Suite (Z.1, `torro_gui::zoom`): Strg + Plus /
   Minus / 0 in jeder App, Stufen wie im Browser (67–200 %), eine Einstellung für alle (`Settings::zoom`,
-  Steuerzentrale › General › Interface). Umgesetzt mit Iceds `scale_factor`, nie über andere
+  Steuerzentrale › Appearance › Interface). Umgesetzt mit Iceds `scale_factor`, nie über andere
   Schriftgrößen. Die Größenklassen rechnen in logischen Pixeln *nach* dem Zoom (1440 breit bei
   150 % = 960 = Mittel), wie Breakpoints im Browser. Jede App: `.scale_factor(…)` im Builder,
   `zoom.subscription()`, `zoom.view(…)` um die ganze Ansicht (kurze Anzeige „110%“ unten mittig).
@@ -384,8 +384,8 @@ mit der Karte „Night“); Aufgaben: `detail pr more menu display drawer
 switcher due error empty loading` (`pr`: Detail des ersten offenen Pull Requests, `more`: Detail mit
 offenem „…“-Menü); Steuerzentrale (`torroworkplace ui --demo`, Beispieldaten im
 Speicher, kein Dienst, nichts wird gespeichert): `wizard account-detail menu drawer switcher
-remove delete-template rename-template design` (`design`: General › Design mit Beispielpaketen, eines
-davon ungültig mit seinen Gründen) und `--section overview|accounts|workspaces|apps|general`.
+remove delete-template rename-template design` (`design`: Appearance › Design mit Beispielpaketen, eines
+davon ungültig mit seinen Gründen) und `--section overview|accounts|workspaces|apps|appearance|general`.
 `menu` ist das Menü der mittleren/schmalen Kopfleiste, `switcher` der App-Umschalter (dort im
 Drawer) – in der Größe ohne dieses Menü zeigt der Zustand es nicht. `--appearance
 light|dark|system` überschreibt nur für diesen Prozess die gespeicherte Einstellung (damit
