@@ -1456,6 +1456,21 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: Breite begrenzt (beide Mindestbreiten), gespeichert nur bei Änderung, Zurücksetzen, `ui.json`
   je Fenster neben den anderen Schlüsseln; App: Ziehen, Karten folgen, gemerkte Breite verliert gegen Ziehen.
 
+### E8.22 Quellen und Konten in der Seitenleiste eingeklappt (Issue #121)
+- [x] erledigt (2026-10-14: „Sources“ hat einen Umschalter (`Message::ToggleSources`), die Kontogruppen des
+  Mail-Fensters starten zu – offen ist ohne Wahl nur das Konto des gezeigten Ordners. Aufgeklappt merkt `ui.json`
+  (`unfolded`) `sidebar.sources` und `sidebar.mail.<Konto>`; zugeklappt fällt der Name heraus. Beim Speichern bleiben
+  Namen, die das Fenster nicht entscheidet (andere Fenster des Eingangs, spätere Versionen), erhalten. Dazu die
+  Übersetzung des Knopfs „Archive“: neu `i18n::trc(context, english)` mit Tabelleneintrag `"action|Archive"` →
+  „Archivieren“ für Knöpfe (Zeile, Karte, Leser, Benachrichtigung), der Ordner bleibt `tr("Archive")` → „Archiv“.
+  Entscheidung: Kontext statt anderem englischem Wort, weil Ordner und Knopf englisch gleich heißen)
+- **Modell:** Opus · **Braucht:** E3.11, E4.2 · **Dateien:** `crates/torroinbox/src/{app,mail,list}.rs`,
+  `crates/torro-core/src/i18n/{mod,de}.rs`, `crates/torroworkplace/src/inbox_notify.rs`
+- **Oberfläche:** Seitenleiste (Eingang: „Sources“, Mail-Fenster: Konten), Knöpfe „Archivieren“. **API/MCP:** keine –
+  Fensterzustand in `ui.json`, kein Request.
+- **Abnahme:** Tests: neuer Start → zu; Aufklappen → gespeichert → nächster Start offen; Zuklappen vergisst; fremde
+  Namen bleiben; `trc` mit und ohne Eintrag, beide Sprachen.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,

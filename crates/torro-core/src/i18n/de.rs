@@ -1895,6 +1895,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // Mail scaffold: rights and approvals (M2.1)
     ("Archive", "Archiv"),
+    // "Archive" as a button (issue #121, `trc("action", …)`); the folder above.
+    ("action|Archive", "Archivieren"),
     ("Change the mail account {account}: {changes}", "Mail-Konto {account} ändern: {changes}"),
     ("Drafts", "Entwürfe"),
     ("Folders, messages and drafts", "Ordner, Nachrichten und Entwürfe"),

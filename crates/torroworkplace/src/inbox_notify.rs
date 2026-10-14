@@ -733,7 +733,7 @@ async fn show_popup(popup: Popup, answer: Box<dyn FnOnce(Answer) + Send>) -> not
         .body(&crate::notify::plain(&body))
         .action("default", tr("Open inbox"));
     if popup.messages().is_some() {
-        notification.action("archive", tr("Archive")).action("read", tr("Mark read"));
+        notification.action("archive", torro_core::i18n::trc("action", "Archive")).action("read", tr("Mark read"));
     } else if popup.entry().is_some() {
         notification.action("done", tr("Done")).action("snooze", tr("Snooze 1 h"));
     }

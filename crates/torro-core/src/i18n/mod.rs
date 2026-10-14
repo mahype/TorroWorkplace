@@ -3,6 +3,7 @@
 //! Write every user-facing text in English and wrap it: `tr("Save workspace")`. With a
 //! German system language the German text from [`de`] is shown; a text missing there stays
 //! English. Texts with values use named placeholders: `trf("{n} windows", &[("n", &3)])`.
+//! One English word said two ways in German takes a context: `trc("action", "Archive")`.
 //!
 //! The language comes from `TORRO_LANG` (`en`, `de`), else from the language chosen in the
 //! control centre (`settings.json`), else from `LC_ALL`, `LC_MESSAGES`, `LANG` (anything
@@ -67,6 +68,26 @@ pub fn tr_in(lang: Lang, english: &'static str) -> &'static str {
     }
 }
 
+/// `english` in the language of this process where one English word is said two ways in another
+/// language, told apart by `context`: "Archive" the folder is [`tr`] ("Archiv"), "Archive" the
+/// button is `trc("action", "Archive")` ("Archivieren", issue #121). The table keeps such a text
+/// as `"{context}|{english}"`; without that entry it is [`tr`] of `english`. English shows
+/// `english` as it is.
+pub fn trc(context: &'static str, english: &'static str) -> &'static str {
+    trc_in(lang(), context, english)
+}
+
+/// [`trc`] in `lang`.
+pub fn trc_in(lang: Lang, context: &'static str, english: &'static str) -> &'static str {
+    match lang {
+        Lang::En => english,
+        Lang::De => {
+            let key = format!("{context}|{english}");
+            german().get(key.as_str()).copied().unwrap_or_else(|| tr_in(lang, english))
+        }
+    }
+}
+
 /// [`tr`] with `{name}` placeholders replaced by `args`.
 pub fn trf(english: &'static str, args: &[(&str, &dyn Display)]) -> String {
     fill(tr(english), args)
@@ -108,6 +129,16 @@ mod tests {
         assert_eq!(tr_in(Lang::En, "Save workspace"), "Save workspace");
         assert_eq!(tr_in(Lang::De, "No such text"), "No such text");
         assert_eq!(fill("{n} windows", &[("n", &3)]), "3 windows");
+    }
+
+    /// Issue #121: the same English word, said two ways in German.
+    #[test]
+    fn a_context_tells_one_english_word_apart() {
+        assert_eq!(tr_in(Lang::De, "Archive"), "Archiv", "the folder");
+        assert_eq!(trc_in(Lang::De, "action", "Archive"), "Archivieren", "the button");
+        assert_eq!(trc_in(Lang::En, "action", "Archive"), "Archive");
+        assert_eq!(trc_in(Lang::De, "action", "Drafts"), "Entwürfe", "no entry with the context: tr");
+        assert_eq!(trc_in(Lang::De, "action", "No such text"), "No such text");
     }
 
     #[test]

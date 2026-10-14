@@ -1265,6 +1265,8 @@ mod tests {
     use torro_inbox::demo;
     use torro_mail::{InvitationAnswer, Role};
 
+    use torro_core::i18n::trc;
+
     use crate::mail::MailAction;
 
     use super::*;
@@ -1609,7 +1611,7 @@ mod tests {
         let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
         let folders = demo_folders();
         let (buttons, more) = entry_card_buttons(&item, true, &folders, now());
-        assert_eq!(labels(&buttons), [tr("Archive"), tr("Delete"), tr("Task"), tr("Done"), tr("Later")]);
+        assert_eq!(labels(&buttons), [trc("action", "Archive"), tr("Delete"), tr("Task"), tr("Done"), tr("Later")]);
         assert_eq!(buttons.iter().map(|action| action.key).collect::<Vec<_>>(), ["", "#", "T", "E", "S"]);
         assert_eq!(more.map(|more| more.key), Some("M"));
         let done = Item { state: State::Done { at: now() }, ..item.clone() };
@@ -1628,7 +1630,7 @@ mod tests {
         let Some(Link::Mail { message }) = item.link.clone() else { panic!("a mail entry links its mail") };
         let folders = demo_folders();
         let row = entry_actions(&item, true, &folders, now());
-        assert_eq!(labels(&row[..2]), [tr("Archive"), tr("Delete")]);
+        assert_eq!(labels(&row[..2]), [trc("action", "Archive"), tr("Delete")]);
         assert!(matches!(&row[0].on_press, Message::Mail(MailAction::Archive, id) if *id == message));
         assert!(matches!(&row[1].on_press, Message::Mail(MailAction::Delete, id) if *id == message));
         let card = entry_card_buttons(&item, true, &folders, now()).0;
