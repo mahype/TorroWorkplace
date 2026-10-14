@@ -519,7 +519,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Backup finished", "Sicherung fertig"),
     ("Build passed on main", "Build auf main erfolgreich"),
     (
-        "Claude Desktop wants to delete the event \"Team meeting\"",
+        "Claude Desktop wants to delete the event “Team meeting”",
         "Claude Desktop möchte den Termin „Team meeting“ löschen",
     ),
     (
@@ -545,7 +545,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Angefragt von Claude Desktop über MCP. Löschen lässt sich nicht rückgängig machen.",
     ),
     ("Sign-in to {server} was refused", "Anmeldung bei {server} wurde abgelehnt"),
-    ("Step \"migrate\" exited with code 1.", "Schritt „migrate“ endete mit Code 1."),
+    ("Step “migrate” exited with code 1.", "Schritt „migrate“ endete mit Code 1."),
     ("Suite", "Suite"),
     ("This entry no longer exists.", "Diesen Eintrag gibt es nicht mehr."),
     ("Too many entries at once. Try again later.", "Zu viele Einträge auf einmal. Versuche es später noch einmal."),
@@ -879,10 +879,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Done entries stay here for 30 days.", "Erledigte Einträge bleiben 30 Tage hier."),
     ("Nothing open from this source.", "Nichts offen von dieser Quelle."),
     ("New entries from it show up here.", "Neue Einträge von ihr erscheinen hier."),
-    (
-        "This text comes from outside the suite and is shown as plain text.",
-        "Dieser Text kommt von außerhalb der Suite und wird als reiner Text gezeigt.",
-    ),
+    ("Text from outside the suite, shown as plain text.", "Text von außerhalb der Suite, als reiner Text gezeigt."),
     // Inbox app: triage (torroinbox, E3.2)
     ("Marked as done", "Als erledigt markiert"),
     ("Reopened", "Wieder geöffnet"),
@@ -2236,12 +2233,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't undo the change.", "Die Änderung ließ sich nicht rückgängig machen."),
     ("Hide {entry} from the inbox; the mail stays unread", "{entry} im Eingang ausblenden; die Mail bleibt ungelesen"),
     ("2 invoices could not be matched to a customer.", "2 Rechnungen ließen sich keinem Kunden zuordnen."),
-    ("Certificate for the intranet expires in 14 days", "Zertifikat für das Intranet läuft in 14 Tagen ab"),
+    ("2 security alerts in website", "2 Sicherheitswarnungen in website"),
     ("Invoice run needs a check", "Rechnungslauf muss geprüft werden"),
-    (
-        "Renew it before 27 October to keep the intranet reachable.",
-        "Vor dem 27. Oktober erneuern, damit das Intranet erreichbar bleibt.",
-    ),
+    ("Dependabot found 2 vulnerable packages in website.", "Dependabot hat 2 verwundbare Pakete in website gefunden."),
     // AI accounts (KI.1a)
     ("AI", "KI"),
     ("Address", "Adresse"),
