@@ -282,7 +282,7 @@ Clients standardmäßig „Kein Zugriff“, auch in der Vorlage *Full access* (e
 Aufgaben: [tasks/assistent.md](tasks/assistent.md) (C.1–C.9). Antrieb A braucht KI.1 (wird dafür
 vorgezogen, OpenAI-kompatibel zuerst), Antrieb B nur einen verbundenen Agenten.
 Sprache (C.9) kommt zuletzt, wenn der Chat steht. Persönlichkeit und Gedächtnis sind Teil von Stufe 1
-(C.10), Bots sind Stufe 2 (Aufgaben B.1–B.4, werden geplant, wenn Stufe 1 steht).
+(C.10), Bots sind Stufe 2 (Aufgaben B.1–B.4, geplant am 2026-10-14).
 
 ## Offen
 
