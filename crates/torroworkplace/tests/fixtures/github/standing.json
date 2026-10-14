@@ -1,0 +1,75 @@
+{
+  "data": {
+    "i0": null,
+    "i1": {
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 5,
+        "title": "Merged meanwhile",
+        "url": "https://github.com/torro/site/pull/5",
+        "state": "MERGED",
+        "updatedAt": "2026-10-13T09:50:00Z",
+        "repository": { "nameWithOwner": "torro/site" },
+        "closedAt": "2026-10-13T09:50:00Z",
+        "reviewRequests": { "nodes": [ { "requestedReviewer": { "__typename": "User", "isViewer": true } } ] }
+      }
+    },
+    "i2": {
+      "issueOrPullRequest": {
+        "__typename": "Issue",
+        "number": 7,
+        "title": "Closed meanwhile",
+        "url": "https://github.com/torro/workplace/issues/7",
+        "state": "CLOSED",
+        "updatedAt": "2026-10-13T09:50:00Z",
+        "repository": { "nameWithOwner": "torro/workplace" },
+        "closedAt": "2026-10-13T09:50:00Z"
+      }
+    },
+    "i3": {
+      "issueOrPullRequest": {
+        "__typename": "Issue",
+        "number": 8,
+        "title": "Still open",
+        "url": "https://github.com/torro/workplace/issues/8",
+        "state": "OPEN",
+        "updatedAt": "2026-10-13T09:20:00Z",
+        "repository": { "nameWithOwner": "torro/workplace" },
+        "closedAt": null
+      }
+    },
+    "i4": {
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 42,
+        "title": "Reviewed meanwhile",
+        "url": "https://github.com/torro/workplace/pull/42",
+        "state": "OPEN",
+        "updatedAt": "2026-10-13T09:55:00Z",
+        "repository": { "nameWithOwner": "torro/workplace" },
+        "closedAt": null,
+        "reviewRequests": { "nodes": [ { "requestedReviewer": { "__typename": "User", "isViewer": false } } ] }
+      }
+    },
+    "i5": {
+      "issueOrPullRequest": {
+        "__typename": "PullRequest",
+        "number": 44,
+        "title": "Still asked",
+        "url": "https://github.com/torro/workplace/pull/44",
+        "state": "OPEN",
+        "updatedAt": "2026-10-13T09:30:00Z",
+        "repository": { "nameWithOwner": "torro/workplace" },
+        "closedAt": null,
+        "reviewRequests": { "nodes": [ { "requestedReviewer": { "__typename": "User", "isViewer": true } } ] }
+      }
+    }
+  },
+  "errors": [
+    {
+      "type": "NOT_FOUND",
+      "path": ["i0"],
+      "message": "Could not resolve to a Repository with the name 'torro/secret'."
+    }
+  ]
+}

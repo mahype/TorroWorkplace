@@ -8,9 +8,12 @@
 //! (`closeIssue` with `stateReason: COMPLETED`, or `reopenIssue`), which answers with the issue
 //! as it is afterwards. The dialog of a filter list (task G.9) reads the repositories the account
 //! reaches ([`repos_body`], page by page) and, in one call, a repository's labels, open milestones
-//! and assignable people ([`repo_body`]). Values travel as GraphQL variables, never inside the
-//! document. Answers are read by [`read_search`], [`read_items`], [`read_issue_id`],
-//! [`read_set_done`], [`read_repos`] and [`read_repo`]; GitHub's GraphQL documentation describes
+//! and assignable people ([`repo_body`]). The inbox checks the issues and pull requests of its
+//! GitHub entries (task E5.5) with [`standing_body`]: the pinned items' document, plus when each
+//! was closed and whether a pull request still asks the signed-in account for a review. Values
+//! travel as GraphQL variables, never inside the document. Answers are read by [`read_search`],
+//! [`read_items`], [`read_standing`], [`read_issue_id`], [`read_set_done`], [`read_repos`] and
+//! [`read_repo`]; GitHub's GraphQL documentation describes
 //! their shape, and `tests/fixtures/` holds answers of that shape.
 
 use chrono::{DateTime, Utc};
@@ -52,6 +55,25 @@ pub fn search_body(query: &str, first: usize, after: Option<&str>) -> Value {
 
 /// The items `refs` in one call: alias `i<k>` asks repository `o<k>`/`r<k>` for number `n<k>`.
 pub fn items_body(refs: &[IssueRef]) -> Value {
+    lookup_body(refs, "", "")
+}
+
+/// What [`standing_body`] asks of an item besides [`ISSUE_FIELDS`] and [`PULL_FIELDS`] (task
+/// E5.5): when it was closed (a merged pull request too), and whom a pull request still asks for
+/// a review. GitHub drops a person's request once they review, and a team's once one of it does.
+const STANDING_FIELDS: &str = " fragment IssueStanding on Issue { closedAt } \
+     fragment PullStanding on PullRequest { closedAt reviewRequests(first: 100) { nodes { \
+     requestedReviewer { __typename ... on User { isViewer } } } } }";
+
+/// The items `refs` in one call as the inbox checks them (task E5.5): what [`items_body`] asks,
+/// and [`STANDING_FIELDS`]. Read by [`read_standing`].
+pub fn standing_body(refs: &[IssueRef]) -> Value {
+    lookup_body(refs, " ...IssueStanding ...PullStanding", STANDING_FIELDS)
+}
+
+/// The items `refs` in one call, alias `i<k>` for `refs[k]`, each with [`ISSUE_FIELDS`],
+/// [`PULL_FIELDS`] and the fragments `spread`, whose definitions are `fragments`.
+fn lookup_body(refs: &[IssueRef], spread: &str, fragments: &str) -> Value {
     let mut parameters = Vec::new();
     let mut fields = Vec::new();
     let mut variables = serde_json::Map::new();
@@ -60,13 +82,14 @@ pub fn items_body(refs: &[IssueRef]) -> Value {
         parameters.push(format!("$o{k}: String!, $r{k}: String!, $n{k}: Int!"));
         fields.push(format!(
             "i{k}: repository(owner: $o{k}, name: $r{k}) {{ issueOrPullRequest(number: $n{k}) {{ __typename \
-             ...IssueFields ...PullFields }} }}"
+             ...IssueFields ...PullFields{spread} }} }}"
         ));
         variables.insert(format!("o{k}"), json!(owner));
         variables.insert(format!("r{k}"), json!(name));
         variables.insert(format!("n{k}"), json!(item.number));
     }
-    let document = format!("query({}) {{ {} }} {ISSUE_FIELDS} {PULL_FIELDS}", parameters.join(", "), fields.join(" "));
+    let document =
+        format!("query({}) {{ {} }} {ISSUE_FIELDS} {PULL_FIELDS}{fragments}", parameters.join(", "), fields.join(" "));
     json!({ "query": document, "variables": variables })
 }
 
@@ -108,6 +131,55 @@ pub fn read_items(answer: &Value, count: usize) -> Result<Vec<Item>, Error> {
         .filter_map(|k| data.pointer(&format!("/i{k}/issueOrPullRequest")).cloned())
         .filter_map(|node| serde_json::from_value::<Node>(node).ok())
         .filter_map(Node::into_item)
+        .collect())
+}
+
+/// An issue or pull request as the inbox checks it (task E5.5, [`read_standing`]): is its
+/// matter gone?
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Standing {
+    /// The item as it was asked for (`refs[k]` of [`standing_body`]), whatever GitHub calls its
+    /// repository now: the caller finds its entry by it.
+    pub asked: IssueRef,
+    /// The item as GitHub reports it: [`Item::state`] says open, closed or merged.
+    pub item: Item,
+    /// When it was closed or merged; `None` while it is open.
+    pub closed_at: Option<DateTime<Utc>>,
+    /// A pull request still asks the signed-in account for a review: the account itself, or a
+    /// team (GitHub does not say whether the account is in it, so any team asked counts: an
+    /// entry rather stays than goes by mistake). Always `false` for an issue.
+    pub asks_viewer: bool,
+}
+
+/// GitHub's answer to [`standing_body`] for `refs`: the items that exist and the token reaches,
+/// in the order of `refs`. An item that is gone, or whose repository the token does not reach
+/// (`NOT_FOUND`; `FORBIDDEN`: an organisation that wants single sign-on, a fine-grained token
+/// without it), is left out, so its entry stays as it is; every other error fails the call.
+pub fn read_standing(answer: &Value, refs: &[IssueRef]) -> Result<Vec<Standing>, Error> {
+    let out_of_reach = |kind: Option<&str>| matches!(kind, Some("NOT_FOUND" | "FORBIDDEN"));
+    if let Some(message) = first_error(answer, |kind| !out_of_reach(kind)) {
+        return Err(Error::Github(format!("GitHub could not read the issues and pull requests: {message}")));
+    }
+    let Some(data) = answer.get("data").filter(|data| !data.is_null()) else {
+        // Nothing the token reaches: `errors` says so. An answer with neither is no answer.
+        return match answer.get("errors") {
+            Some(_) => Ok(Vec::new()),
+            None => Err(Error::Github("GitHub sent an answer without data.".into())),
+        };
+    };
+    Ok(refs
+        .iter()
+        .enumerate()
+        .filter_map(|(k, asked)| {
+            let node = data.pointer(&format!("/i{k}/issueOrPullRequest")).filter(|node| !node.is_null())?;
+            let extra: StandingNode = serde_json::from_value(node.clone()).ok()?;
+            let item = serde_json::from_value::<Node>(node.clone()).ok()?.into_item()?;
+            let asks_viewer =
+                extra.review_requests.into_iter().flat_map(Connection::into_nodes).any(|request| {
+                    request.requested_reviewer.is_some_and(|who| who.typename == "Team" || who.is_viewer)
+                });
+            Some(Standing { asked: asked.clone(), item, closed_at: extra.closed_at, asks_viewer })
+        })
         .collect())
 }
 
@@ -391,6 +463,30 @@ struct Rollup {
     state: String,
 }
 
+/// What [`STANDING_FIELDS`] adds to an issue or pull request.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StandingNode {
+    closed_at: Option<DateTime<Utc>>,
+    review_requests: Option<Connection<ReviewRequest>>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReviewRequest {
+    requested_reviewer: Option<Reviewer>,
+}
+
+/// Who is asked for a review: a `User` (with `isViewer`), a `Team`, a `Bot` or a `Mannequin`.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Reviewer {
+    #[serde(rename = "__typename")]
+    typename: String,
+    #[serde(default)]
+    is_viewer: bool,
+}
+
 /// An issue or pull request as GitHub sends it; every field optional, so an answer missing one
 /// costs that item, not the page.
 #[derive(Deserialize)]
@@ -499,6 +595,7 @@ pub(crate) mod tests {
             "repos_page2" => include_str!("../tests/fixtures/repos_page2.json"),
             "repo" => include_str!("../tests/fixtures/repo.json"),
             "repo_not_found" => include_str!("../tests/fixtures/repo_not_found.json"),
+            "standing" => include_str!("../tests/fixtures/standing.json"),
             other => panic!("no fixture {other}"),
         };
         serde_json::from_str(text).expect("valid fixture")
@@ -571,6 +668,63 @@ pub(crate) mod tests {
         assert_eq!(body["variables"]["n1"], 9);
         let document = body["query"].as_str().expect("document");
         assert!(document.contains("i1: repository(owner: $o1, name: $r1)") && !document.contains("mahype"));
+    }
+
+    /// The eight items `tests/fixtures/standing.json` answers for, in its order.
+    fn standing_refs() -> Vec<IssueRef> {
+        let mine = |number| IssueRef { repo: "mahype/TorroWorkplace".into(), number };
+        let mut refs: Vec<IssueRef> = [42, 43, 44, 45, 7, 8].into_iter().map(mine).collect();
+        refs.push(IssueRef { repo: "mahype/secret".into(), number: 1 });
+        refs.push(IssueRef { repo: "sso-org/app".into(), number: 2 });
+        refs
+    }
+
+    #[test]
+    fn the_inbox_asks_what_the_pinned_items_ask_and_when_closed_and_whom_a_review_asks() {
+        let refs = standing_refs();
+        let body = standing_body(&refs[..2]);
+        assert_eq!(body["variables"], items_body(&refs[..2])["variables"], "the same variables");
+        let document = body["query"].as_str().expect("document");
+        for part in [
+            "i1: repository(owner: $o1, name: $r1) { issueOrPullRequest(number: $n1) { __typename ...IssueFields \
+             ...PullFields ...IssueStanding ...PullStanding } }",
+            "fragment IssueStanding on Issue { closedAt }",
+            "reviewRequests(first: 100) { nodes { requestedReviewer { __typename ... on User { isViewer } } } }",
+        ] {
+            assert!(document.contains(part), "{part} in {document}");
+        }
+        let pinned = items_body(&refs[..2]);
+        assert!(!pinned["query"].as_str().expect("document").contains("Standing"), "the pinned items ask less");
+    }
+
+    #[test]
+    fn standing_reads_merged_closed_reviewed_and_open_items_and_leaves_out_what_is_out_of_reach() {
+        let refs = standing_refs();
+        let standing = read_standing(&fixture("standing"), &refs).expect("standing");
+        let at = |text: &str| text.parse::<DateTime<Utc>>().ok();
+        let seen: Vec<(u64, GitHubState, Option<DateTime<Utc>>, bool)> =
+            standing.iter().map(|s| (s.asked.number, s.item.state, s.closed_at, s.asks_viewer)).collect();
+        assert_eq!(
+            seen,
+            [
+                (42, GitHubState::Merged, at("2026-10-13T09:50:00Z"), false),
+                (43, GitHubState::Open, None, false),
+                (44, GitHubState::Open, None, true),
+                (45, GitHubState::Open, None, true),
+                (7, GitHubState::Closed, at("2026-10-13T09:45:00Z"), false),
+                (8, GitHubState::Open, None, false),
+            ],
+            "merged, review given, still asked, a team asked, closed, open; no secret, no single sign-on"
+        );
+        assert_eq!(standing[0].asked, refs[0], "as asked for");
+        assert_eq!(standing[0].item.kind, GitHubKind::PullRequest);
+        assert_eq!(standing[4].item.kind, GitHubKind::Issue);
+
+        let shut = json!({"data": null, "errors": [{"type": "FORBIDDEN", "message": "SAML"}]});
+        assert_eq!(read_standing(&shut, &refs[..1]), Ok(Vec::new()), "nothing reached, nothing failed");
+        let limited = json!({"data": null, "errors": [{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}]});
+        assert_eq!(read_standing(&limited, &refs).map_err(|err| err.code()), Err("error"));
+        assert!(read_standing(&json!({}), &refs).is_err());
     }
 
     #[test]

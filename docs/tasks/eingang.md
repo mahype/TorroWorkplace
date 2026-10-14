@@ -1563,7 +1563,15 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   `torro-api-review`.
 
 ### E5.5 GitHub: Einträge erledigen sich selbst
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `sources/github.rs` prüft nach einer Abfrage, die GitHub beantwortet hat, höchstens alle
+  5 Minuten die offenen und zurückgestellten Einträge mit Merkmal `kind` `issue`/`pull_request` (Nummer aus dem Link);
+  neu `Api::standing` mit `graphql::{standing_body, read_standing, Standing}`: dasselbe Dokument wie `Api::items` (50
+  je Aufruf) plus `closedAt` und `reviewRequests` (`User.isViewer`; ein angefragtes Team zählt als „noch angefragt“),
+  `NOT_FOUND`/`FORBIDDEN` = außer Reichweite, bleibt. Geschlossen/gemergt → erledigt, aber erst 2 Minuten nach dem
+  Schließen (GitHubs eigene Meldung dazu kommt vorher an und öffnet den Eintrag nicht wieder) und nur, wenn die letzte
+  Aktivität höchstens 5 Minuten nach dem Schließen liegt (spätere Kommentare sind Neues); `review_requested` und nicht
+  mehr angefragt → erledigt. Erledigt wie in der App (`inbox.set_item_done`), die Kennungen bleiben, also bringt die
+  unveränderte Liste nichts zurück; kein `settle_done`, kein DELETE)
 - **Modell:** Opus · **Braucht:** E5.4 · **Dateien:** `crates/torroworkplace/src/sources/github.rs`,
   `crates/torro-pim-github/src/{graphql,api}.rs` (nur wenn `Api::items` ein Feld fehlt, z. B. ob der Angemeldete noch
   als Reviewer angefragt ist; nennen), Fixtures
