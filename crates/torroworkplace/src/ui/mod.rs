@@ -543,6 +543,19 @@ impl Ui {
                 messages.extend(github.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
                 messages
             }
+            Open::NtfyDetail | Open::NtfyTopic | Open::NtfyLogin => {
+                let ntfy = accounts::listed(&self.data.accounts).find(|account| account.kind == "ntfy");
+                let mut messages = vec![Message::Select(Section::Accounts)];
+                if let Some(account) = ntfy {
+                    messages.push(Message::Accounts(accounts::Message::Open(account.id.clone())));
+                    match open {
+                        Open::NtfyTopic => messages.push(Message::Accounts(accounts::Message::EditTopic(0))),
+                        Open::NtfyLogin => messages.push(Message::Accounts(accounts::Message::ChangeLogin)),
+                        _ => {}
+                    }
+                }
+                messages
+            }
             Open::MailDetail | Open::MailDetailProblem | Open::MailPassword | Open::MailServers => {
                 // The first demo mail account is the healthy one with calendars, the second the
                 // one with a problem.
@@ -2034,6 +2047,12 @@ mod tests {
         assert_eq!(ai.accounts.selected.as_deref(), Some("ai:openrouter@openrouter.ai"));
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
+        for state in ["ntfy-detail", "ntfy-topic", "ntfy-login"] {
+            let ntfy = started(&["--demo", "--open", state]);
+            assert_eq!(ntfy.accounts.selected.as_deref(), Some("ntfy:push.example.org"), "{state}");
+            assert_eq!(ntfy.accounts.topic.is_some(), state == "ntfy-topic", "{state}: the topic dialog");
+            assert_eq!(ntfy.accounts.login.is_some(), state == "ntfy-login", "{state}: the login dialog");
+        }
 
         let remove = started(&["--demo", "--open", "remove"]);
         assert_eq!(remove.accounts.selected.as_ref(), Some(&first));

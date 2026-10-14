@@ -61,6 +61,12 @@ pub enum Open {
     GithubDetail,
     /// The detail page of the demo's AI account (OpenRouter, task KI.1a).
     AiDetail,
+    /// The detail page of the demo's ntfy account (task E5.14): its topics and its login.
+    NtfyDetail,
+    /// The ntfy account's page with the dialog of its first topic (rename, unsubscribe).
+    NtfyTopic,
+    /// The ntfy account's page with "Change login…" open.
+    NtfyLogin,
     /// The detail page of the first demo mail account (task M5.2): synced mail and calendars, a
     /// signature, and the question for the folder of sent mail.
     MailDetail,
@@ -142,7 +148,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 68] = [
+    pub const ALL: [(&'static str, Open); 71] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -175,6 +181,9 @@ impl Open {
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
         ("ai-detail", Open::AiDetail),
+        ("ntfy-detail", Open::NtfyDetail),
+        ("ntfy-topic", Open::NtfyTopic),
+        ("ntfy-login", Open::NtfyLogin),
         ("mail-detail", Open::MailDetail),
         ("mail-detail-problem", Open::MailDetailProblem),
         ("mail-password", Open::MailPassword),
