@@ -14,7 +14,7 @@ use torro_core::AppId;
 use torro_core::ai::{AiError, AiProvider};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
-use torro_inbox::item::{Facet, FacetKey};
+use torro_inbox::item::{Facet, FacetKey, SourceHealth};
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{
     ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate,
@@ -22,7 +22,8 @@ use torro_ipc::api::{
 };
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
-    IssuedKey, Key, MailView, OpenRoleView, Request, Response, RuleHits, ServiceState, Status, TorroMailAccount,
+    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, RuleHits, ServiceState, Status,
+    TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -33,6 +34,8 @@ use torro_setups::TemplateSummary;
 use super::general::Pack;
 use super::wizard;
 use super::{Appearance, Data, Section};
+use crate::account::ntfy::NtfyAccountError;
+use torro_ntfy::NtfyError;
 
 /// A state the control centre can start in (`--demo --open <state>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,9 +46,9 @@ pub enum Open {
     WizardGithub,
     /// The add-account dialog at the field for a GitHub token.
     WizardToken,
-    /// The add-account dialog on the mail account path (tasks M7.2, M5.1), at the state the script
-    /// of [`wizard::demo_messages`] leads to; the demo's search answers for a few domains
-    /// ([`demo_answer`]).
+    /// The add-account dialog on the mail account path (tasks M7.2, M5.1) or the ntfy path (task
+    /// E5.14), at the state the script of [`wizard::demo_messages`] leads to; the demo's search
+    /// answers for a few domains, its ntfy server wants a login ([`demo_answer`]).
     WizardMail(wizard::Demo),
     /// The add-account dialog on the AI provider path (task KI.1a), at the state the script of
     /// [`wizard::demo_messages`] leads to; the demo finds Ollama on this computer, not LM Studio.
@@ -139,7 +142,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 63] = [
+    pub const ALL: [(&'static str, Open); 68] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -163,6 +166,11 @@ impl Open {
         ("wizard-ai-refused", Open::WizardAi(wizard::Demo::AiRefused)),
         ("wizard-ai-server", Open::WizardAi(wizard::Demo::AiServer)),
         ("wizard-ai-done", Open::WizardAi(wizard::Demo::AiDone)),
+        ("wizard-ntfy", Open::WizardMail(wizard::Demo::NtfyServer)),
+        ("wizard-ntfy-topics", Open::WizardMail(wizard::Demo::NtfyTopics)),
+        ("wizard-ntfy-invalid", Open::WizardMail(wizard::Demo::NtfyInvalid)),
+        ("wizard-ntfy-login", Open::WizardMail(wizard::Demo::NtfyLogin)),
+        ("wizard-ntfy-done", Open::WizardMail(wizard::Demo::NtfyDone)),
         ("change-password", Open::ChangePassword),
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
@@ -502,6 +510,8 @@ pub fn demo_data() -> Data {
         // reach its server. Their ids are `mail:<address>`, as the core makes them.
         mailbox_account(now),
         work_mail_account(now),
+        // An ntfy server with a login and three topics (task E5.14).
+        ntfy_account(&[("backups-7f3a", "Backups"), ("ci-anna-91c2", "CI builds"), ("home-4d1e", "Home server")], now),
         // An AI account in the cloud (task KI.1a); the demo finds Ollama on this computer
         // unconnected, so the add-account dialog shows both kinds of local rows.
         AccountInfo {
@@ -576,6 +586,18 @@ pub fn demo_data() -> Data {
         SourceInfo { source: SourceRef::agent("claude-code"), open: 3, muted: false, health: None },
         SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false, health: None },
         SourceInfo { source: SourceRef::script("nightly-build"), open: 0, muted: true, health: None },
+        // The remote sources (task E5.14): Talk of the first Nextcloud muted, the second Nextcloud
+        // offline like its account.
+        SourceInfo { source: SourceRef::github("anna-dev"), open: 4, muted: false, health: None },
+        SourceInfo { source: SourceRef::nextcloud("anna@cloud.example.org"), open: 2, muted: false, health: None },
+        SourceInfo { source: SourceRef::talk("anna@cloud.example.org"), open: 0, muted: true, health: None },
+        SourceInfo {
+            source: SourceRef::nextcloud("anna@work.example.net"),
+            open: 0,
+            muted: false,
+            health: Some(SourceHealth::Offline),
+        },
+        SourceInfo { source: SourceRef::ntfy("push.example.org"), open: 1, muted: false, health: None },
     ];
     Data {
         clients: demo_clients(now, first_calendar),
@@ -600,6 +622,31 @@ pub fn demo_data() -> Data {
         memories: demo_memories(now),
         bots: demo_bots(),
         error: None,
+    }
+}
+
+/// The demo's ntfy account at `push.example.org` (task E5.14), signed in as `anna` with a password,
+/// subscribed to `topics` (name, label); the control centre has the app key, so it sees the names.
+fn ntfy_account(topics: &[(&str, &str)], now: DateTime<Utc>) -> AccountInfo {
+    let server = "https://push.example.org";
+    let topics = topics
+        .iter()
+        .map(|(topic, label)| NtfyTopicView { label: label.to_string(), topic: Some(topic.to_string()) })
+        .collect();
+    AccountInfo {
+        id: "ntfy:push.example.org".into(),
+        kind: "ntfy".into(),
+        label: "anna@push.example.org".into(),
+        state: AccountState::Connected {
+            server: server.into(),
+            login_name: "anna".into(),
+            last_sync: Some(now - Duration::minutes(1)),
+            problem: None,
+        },
+        collections: Vec::new(),
+        scopes: None,
+        mail: None,
+        ntfy: Some(NtfyView { server: server.into(), topics, user: Some("anna".into()), login: true }),
     }
 }
 
@@ -936,6 +983,20 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         Request::ConnectCalDav { password, .. } if password.expose() == "wrong" => {
             Some(Response::Error { code: "auth".into(), message: tr("Password was refused").into() })
         }
+        // ntfy (task E5.14): the topics of `push.example.org` need a login, the password "wrong" is
+        // refused, a topic is changed at once; nothing is stored.
+        Request::ConnectNtfy { server, .. } if server.contains("push.example.org") => {
+            Some(NtfyAccountError::Ntfy(NtfyError::Auth).response())
+        }
+        Request::SetNtfyLogin { secret, .. } if secret.expose() == "wrong" => {
+            Some(NtfyAccountError::Ntfy(NtfyError::Auth).response())
+        }
+        Request::ConnectNtfy { topics, .. } | Request::SetNtfyLogin { topics, .. } => {
+            let topics: Vec<(&str, &str)> =
+                topics.iter().map(|topic| (topic.topic.as_str(), topic.label.as_str())).collect();
+            Some(Response::Account { account: ntfy_account(&topics, Utc::now()) })
+        }
+        Request::SetNtfyTopic { .. } => Some(Response::Ok),
         Request::ConnectMail { password, .. } if password.expose() == "wrong" => Some(refused("IMAP")),
         Request::ConnectMail { password, .. } if password.expose() == "wrong-smtp" => Some(refused("SMTP")),
         // What the CalDAV address offers is what was asked for, as long as an address was given.

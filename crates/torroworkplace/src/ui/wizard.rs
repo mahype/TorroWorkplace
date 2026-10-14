@@ -36,8 +36,17 @@
 //!    OpenRouter's key page) and "Other OpenAI-compatible server" opens **Server** (address and an
 //!    optional key). "Connect" sends `Request::ConnectAi` and waits in **Checking**; an error comes
 //!    back to the step it was sent from, in the footer.
-//! 6. **Done:** "Your calendars and task lists are ready." (Nextcloud), "Signed in to GitHub as
-//!    …" (GitHub), "… is ready to use." (AI) or what the mail account's servers have, and "Done".
+//! 6. ntfy (task E5.14): **Server** – the address, empty for `ntfy.sh`; **Topics** – a row per
+//!    topic with its name and the label the inbox shows ("Add topic", at most
+//!    [`crate::account::ntfy::TOPICS_MAX`]); "Connect" sends `Request::ConnectNtfy` and waits in
+//!    **Checking**. When the server wants a login (the core's `auth` sentence) the dialog goes on to
+//!    **Login** – a user name and password, or an access token, the secret a [`Secret`] taken when
+//!    sent – and sends `Request::SetNtfyLogin`. Topic names work like passwords on public servers,
+//!    so they live in [`NtfyTopic`] and travel in messages as [`TopicName`]: `Debug` shows neither.
+//!    What is wrong with a row shows only after the first "Connect" (the design's rule for forms).
+//! 7. **Done:** "Your calendars and task lists are ready." (Nextcloud), "Signed in to GitHub as
+//!    …" (GitHub), "… is ready to use." (AI), "Your topics are subscribed." (ntfy) or what the mail
+//!    account's servers have, and "Done".
 //!
 //! **TorroMail** (task M7.4): the dialog opens with `Request::TorroMailAccounts` ([`State::open`]).
 //! When the separate TorroMail app has accounts, the catalog starts with "Use accounts from
@@ -72,16 +81,20 @@ use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Theme};
-use torro_core::account::Secret;
+use torro_core::account::{NtfyTopic, Secret};
 use torro_core::ai::AiProvider;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, space};
 use torro_gui::{dialog, layout, style, typo, widgets};
-use torro_ipc::{AccountInfo, AiServer, Request, Response, TorroMailAccount};
+use torro_ipc::{AccountInfo, AiServer, Request, Response, TopicName, TorroMailAccount};
 use torro_mail::{Endpoint, Security};
+use torro_ntfy::{NtfyError, Topic};
 use torro_pim::AccountState;
 
+use crate::account::ntfy::{LABEL_MAX, NtfyAccountError, TOPICS_MAX};
+
+use super::accounts::on_axis;
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
 
@@ -128,6 +141,14 @@ enum Step {
     AiServer,
     /// AI providers: waiting for the core to check the server (`ConnectAi`).
     AiConnecting,
+    /// ntfy: the server's address (task E5.14).
+    NtfyServer,
+    /// ntfy: the topics and their labels.
+    NtfyTopics,
+    /// ntfy: the login the server asked for.
+    NtfyLogin,
+    /// ntfy: waiting for the core to check the topics (`ConnectNtfy`, `SetNtfyLogin`).
+    NtfyChecking,
     Done,
 }
 
@@ -208,15 +229,17 @@ pub enum Provider {
     /// A mail account: its mail, and the calendars and tasks of the same sign-in (tasks M7.2, M5.1).
     Mail,
     GitHub,
+    /// An ntfy server's topics for the inbox (task E5.14).
+    Ntfy,
     Slack,
     Ai,
 }
 
 impl Provider {
-    /// Nextcloud, a mail provider, GitHub and AI providers can be set up; Slack is listed so the
-    /// catalog shows where the suite is heading.
+    /// Nextcloud, a mail provider, GitHub, ntfy and AI providers can be set up; Slack is listed so
+    /// the catalog shows where the suite is heading.
     fn is_enabled(self) -> bool {
-        matches!(self, Provider::Nextcloud | Provider::Mail | Provider::GitHub | Provider::Ai)
+        matches!(self, Provider::Nextcloud | Provider::Mail | Provider::GitHub | Provider::Ntfy | Provider::Ai)
     }
 
     /// The step after picking the provider.
@@ -225,11 +248,13 @@ impl Provider {
             Provider::GitHub => Step::Github,
             Provider::Mail => MAIL_STEPS[0],
             Provider::Ai => Step::AiChoose,
+            Provider::Ntfy => Step::NtfyServer,
             _ => Step::Server,
         }
     }
 
-    const ALL: [Provider; 5] = [Provider::Nextcloud, Provider::Mail, Provider::GitHub, Provider::Slack, Provider::Ai];
+    const ALL: [Provider; 6] =
+        [Provider::Nextcloud, Provider::Mail, Provider::GitHub, Provider::Ntfy, Provider::Slack, Provider::Ai];
 }
 
 /// Where a new dialog starts: at the provider catalog, unless there is only one provider to pick.
@@ -264,6 +289,91 @@ pub struct State {
     torromail: Offer,
     /// What the AI provider path has asked for and learned so far (task KI.1a).
     ai: AiSetup,
+    /// What the ntfy path has asked for so far (task E5.14).
+    ntfy: NtfySetup,
+}
+
+/// The ntfy path (task E5.14): the server, the topics as typed and the login once the server asks
+/// for one. Topic names are [`NtfyTopic`]s and the secret a [`Secret`], so a `Debug` of the dialog
+/// shows neither.
+#[derive(Debug, Default)]
+struct NtfySetup {
+    /// The address as typed; empty means `ntfy.sh`.
+    server: String,
+    /// One per row of the topics step, empty rows included.
+    topics: Vec<NtfyTopic>,
+    /// "Connect" was pressed on the topics: from then on the step says what is wrong.
+    tried: bool,
+    login: NtfyLogin,
+}
+
+impl NtfySetup {
+    /// The rows that hold something, trimmed; a row left empty is no topic.
+    fn filled(&self) -> Vec<NtfyTopic> {
+        self.topics
+            .iter()
+            .map(|row| NtfyTopic { topic: row.topic.trim().to_string(), label: row.label.trim().to_string() })
+            .filter(|row| !row.topic.is_empty() || !row.label.is_empty())
+            .collect()
+    }
+
+    /// What keeps the topics from being sent, in the core's words; `None` when they can go.
+    fn problem(&self) -> Option<String> {
+        let topics = self.filled();
+        if topics.is_empty() {
+            return Some(tr("Add at least one topic.").to_string());
+        }
+        topics.iter().find_map(|row| topic_problem(&row.topic).or_else(|| label_problem(&row.label)))
+    }
+}
+
+/// A login for an ntfy server as it is being typed (task E5.14), in the add-account dialog and in
+/// "Change login" on the account's page: a user name and password, or an access token (`tk_…`)
+/// without a user name. The secret is a [`Secret`], so `Debug` never shows it, and
+/// [`NtfyLogin::take`] takes it when it is sent, so no copy stays behind.
+#[derive(Debug, Default)]
+pub struct NtfyLogin {
+    /// An access token instead of a user name and password.
+    pub(super) token: bool,
+    pub(super) user: String,
+    pub(super) secret: Secret,
+}
+
+impl NtfyLogin {
+    /// Something to send: a secret and, for a password, a user name.
+    pub(super) fn is_ready(&self) -> bool {
+        !self.secret.is_blank() && (self.token || !self.user.trim().is_empty())
+    }
+
+    /// The user name and the secret for `Request::SetNtfyLogin`: no user name with a token. The
+    /// secret is taken out of the form.
+    pub(super) fn take(&mut self) -> (Option<String>, Secret) {
+        let user = Some(self.user.trim().to_string()).filter(|user| !self.token && !user.is_empty());
+        (user, std::mem::take(&mut self.secret))
+    }
+}
+
+/// What is wrong with a topic name as typed (trimmed), in the core's sentence so both say the
+/// same; `None` for a name `torro_ntfy` takes.
+pub(super) fn topic_problem(name: &str) -> Option<String> {
+    Topic::parse(name.trim()).err().map(|err| NtfyAccountError::Ntfy(err).message())
+}
+
+/// What is wrong with a label as typed: blank, longer than [`LABEL_MAX`] characters or more than
+/// one line, as the core checks it; `None` for a label it takes.
+pub(super) fn label_problem(label: &str) -> Option<String> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Some(tr("Give the topic a label.").to_string());
+    }
+    let fits = label.chars().count() <= LABEL_MAX && !label.chars().any(char::is_control);
+    (!fits).then(|| trf("Give every topic a label of up to {n} characters.", &[("n", &LABEL_MAX)]))
+}
+
+/// The core's answer when the topics need a login (`auth` of `accounts.connect_ntfy`). Compared
+/// with the message because the shell passes on messages, not codes; both run in the same language.
+fn login_needed(message: &str) -> bool {
+    message == NtfyAccountError::Ntfy(NtfyError::Auth).message()
 }
 
 /// The AI provider path (task KI.1a): the servers found on this computer, what was typed, and the
@@ -563,7 +673,7 @@ impl State {
 
     /// A sign-in or a check runs; the shell reloads more often.
     pub fn busy(&self) -> bool {
-        self.step == Step::Checking || self.sign_in.is_some()
+        matches!(self.step, Step::Checking | Step::NtfyChecking) || self.sign_in.is_some()
     }
 }
 
@@ -627,6 +737,21 @@ pub enum Message {
     AiKeyChanged(Secret),
     /// "Create a key on OpenRouter".
     OpenAiKeyPage,
+    /// The ntfy server's address changed (task E5.14).
+    NtfyServerChanged(String),
+    /// The name of the topic in row `.0` changed. A [`TopicName`], so `Debug` shows no name.
+    NtfyTopicChanged(usize, TopicName),
+    /// The label of the topic in row `.0` changed.
+    NtfyLabelChanged(usize, String),
+    /// "Add topic": one more empty row.
+    AddNtfyTopic,
+    /// The ✕ of a topic's row.
+    RemoveNtfyTopic(usize),
+    /// "User and password" (`false`) or "Access token" (`true`) on the login step.
+    NtfyLoginKind(bool),
+    NtfyUserChanged(String),
+    /// The password or token changed. A [`Secret`] like the GitHub token.
+    NtfySecretChanged(Secret),
 }
 
 /// Follows a Nextcloud sign-in through a reload of `data` and ends it as the module doc says.
@@ -829,6 +954,25 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
             });
             true
         }
+        (Step::NtfyChecking, Ok(Response::Account { .. })) => {
+            state.step = Step::Done;
+            state.error = None;
+            true
+        }
+        // Topics that need a login lead on to it; the step says why, so the footer stays empty.
+        (Step::NtfyChecking, Err(message)) if state.back == Step::NtfyTopics && login_needed(message) => {
+            state.step = Step::NtfyLogin;
+            state.error = None;
+            true
+        }
+        (Step::NtfyChecking, result) => {
+            state.step = state.back;
+            state.error = Some(match result {
+                Err(message) => message.clone(),
+                Ok(_) => tr("Torro Workplace did not answer as expected. Try again.").to_string(),
+            });
+            true
+        }
         _ => false,
     }
 }
@@ -931,6 +1075,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 Step::AiKey | Step::AiServer => {
                     state.step = Step::AiChoose;
                     state.ai.key = Secret::default();
+                }
+                Step::NtfyServer => state.step = Step::Provider,
+                Step::NtfyTopics => state.step = Step::NtfyServer,
+                Step::NtfyLogin => {
+                    state.step = Step::NtfyTopics;
+                    state.ntfy.login.secret = Secret::default();
                 }
                 _ => {}
             }
@@ -1047,6 +1197,16 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 let server = state.ai.server.trim().to_string();
                 connect_ai(state, AiProvider::OpenAiCompatible, Some(server))
             }
+            Step::NtfyServer => {
+                if state.ntfy.topics.is_empty() {
+                    state.ntfy.topics.push(empty_topic());
+                }
+                state.step = Step::NtfyTopics;
+                state.error = None;
+                Action::None
+            }
+            Step::NtfyTopics => connect_ntfy(state),
+            Step::NtfyLogin if state.ntfy.login.is_ready() => sign_in_ntfy(state),
             _ => Action::None,
         },
         Message::OpenLoginPage => match (state.step, login_url(data)) {
@@ -1082,6 +1242,44 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::UseTorroMail(_) | Message::EnterTorroMailPassword(_) => Action::None,
+        Message::NtfyServerChanged(server) => {
+            state.ntfy.server = server;
+            Action::None
+        }
+        Message::NtfyTopicChanged(row, name) => {
+            if let Some(topic) = state.ntfy.topics.get_mut(row) {
+                topic.topic = name.as_str().to_string();
+            }
+            Action::None
+        }
+        Message::NtfyLabelChanged(row, label) => {
+            if let Some(topic) = state.ntfy.topics.get_mut(row) {
+                topic.label = label;
+            }
+            Action::None
+        }
+        Message::AddNtfyTopic if state.ntfy.topics.len() < TOPICS_MAX => {
+            state.ntfy.topics.push(empty_topic());
+            Action::None
+        }
+        // The last row stays: the step always has a place to type a topic.
+        Message::RemoveNtfyTopic(row) if row < state.ntfy.topics.len() && state.ntfy.topics.len() > 1 => {
+            state.ntfy.topics.remove(row);
+            Action::None
+        }
+        Message::AddNtfyTopic | Message::RemoveNtfyTopic(_) => Action::None,
+        Message::NtfyLoginKind(token) => {
+            state.ntfy.login.token = token;
+            Action::None
+        }
+        Message::NtfyUserChanged(user) => {
+            state.ntfy.login.user = user;
+            Action::None
+        }
+        Message::NtfySecretChanged(secret) => {
+            state.ntfy.login.secret = secret;
+            Action::None
+        }
         Message::UseGithubCli | Message::PasteToken | Message::AddressChanged(_) => Action::None,
     }
 }
@@ -1092,6 +1290,39 @@ fn go(state: &mut State, step: Step) {
     state.step = step;
     state.error = None;
     state.mail.advanced = step == Step::MailAddress && state.mail.needs_input();
+}
+
+/// A row of the topics step with nothing typed yet.
+fn empty_topic() -> NtfyTopic {
+    NtfyTopic { topic: String::new(), label: String::new() }
+}
+
+/// "Connect" on the topics: from now on the step shows what is wrong; once nothing is, sends
+/// `ConnectNtfy` with the rows that hold something and waits.
+fn connect_ntfy(state: &mut State) -> Action {
+    state.ntfy.tried = true;
+    if state.ntfy.problem().is_some() {
+        return Action::None;
+    }
+    state.back = Step::NtfyTopics;
+    state.step = Step::NtfyChecking;
+    state.error = None;
+    Action::Send(Request::ConnectNtfy { server: state.ntfy.server.trim().to_string(), topics: state.ntfy.filled() })
+}
+
+/// "Connect" on the login: sends `SetNtfyLogin` with the topics and the login and waits. The
+/// dialog keeps no copy of the secret; a refusal asks for it again.
+fn sign_in_ntfy(state: &mut State) -> Action {
+    let (user, secret) = state.ntfy.login.take();
+    state.back = Step::NtfyLogin;
+    state.step = Step::NtfyChecking;
+    state.error = None;
+    Action::Send(Request::SetNtfyLogin {
+        server: state.ntfy.server.trim().to_string(),
+        topics: state.ntfy.filled(),
+        user,
+        secret,
+    })
 }
 
 /// Whether Continue does something on `step` of the mail path.
@@ -1214,7 +1445,12 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::AiChoose => ai_step(state),
         Step::AiKey => ai_key_step(state),
         Step::AiServer => ai_server_step(state),
-        Step::AiConnecting => typo::text(typo::body(), tr("Checking the connection…")).style(theme::text_2).into(),
+        Step::AiConnecting | Step::NtfyChecking => {
+            typo::text(typo::body(), tr("Checking the connection…")).style(theme::text_2).into()
+        }
+        Step::NtfyServer => ntfy_server_step(state),
+        Step::NtfyTopics => ntfy_topics_step(state),
+        Step::NtfyLogin => ntfy_login_step(state),
         Step::Done if state.provider == Provider::Mail => mail_done_step(state),
         Step::Done => typo::text(typo::body(), done_text(state)).into(),
     };
@@ -1240,6 +1476,11 @@ fn subtitle(state: &State) -> &'static str {
         (Step::AiKey, _) => tr("Paste an API key from OpenRouter."),
         (Step::AiServer, _) => tr("Enter the address of your AI server."),
         (Step::AiConnecting, _) => tr("Checking the connection with the AI server."),
+        (Step::NtfyServer, _) => tr("Enter the address of your ntfy server."),
+        (Step::NtfyTopics, _) => tr("Choose the topics to show in the Inbox."),
+        (Step::NtfyLogin, _) => tr("This server needs a login for these topics."),
+        (Step::NtfyChecking, _) => tr("Checking the topics with the ntfy server."),
+        (Step::Done, Provider::Ntfy) => tr("ntfy is connected."),
         (Step::Done, Provider::Ai) => tr("Your AI account is connected."),
         (Step::Done, Provider::GitHub) => tr("GitHub is connected."),
         (Step::Done, Provider::Mail) => tr("Your account is connected."),
@@ -1254,6 +1495,7 @@ fn done_text(state: &State) -> String {
             Some(name) => trf("{name} is ready to use.", &[("name", name)]),
             None => tr("Your AI account is ready to use.").to_string(),
         },
+        (Provider::Ntfy, _) => tr("Your topics are subscribed.").to_string(),
         _ => tr("Your calendars and task lists are ready.").to_string(),
     }
 }
@@ -1267,6 +1509,7 @@ fn provider_step(state: &State) -> Element<'_, Message> {
         provider_row(Provider::Nextcloud, "Nextcloud", tr("Calendars and tasks"), open),
         provider_row(Provider::Mail, tr("Mail account"), tr("Mail, calendars and tasks"), open),
         provider_row(Provider::GitHub, "GitHub", tr("Issues and projects"), open),
+        provider_row(Provider::Ntfy, "ntfy", tr("Notifications from your servers and scripts"), open),
         provider_row(Provider::Slack, "Slack", tr("Mentions and messages"), open),
         provider_row(Provider::Ai, tr("AI providers"), tr("Summaries and agents"), open),
     ];
@@ -1586,6 +1829,98 @@ fn ai_server_step(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+// ----- ntfy (task E5.14) -----------------------------------------------------------------------------
+
+/// The server's address; empty is the public server, as the hint under the field says.
+fn ntfy_server_step(state: &State) -> Element<'_, Message> {
+    let input = field("ntfy.sh", &state.ntfy.server).on_input(Message::NtfyServerChanged).on_submit(Message::Continue);
+    field_group(tr("Server"), input, Some(tr("Leave empty for the public server ntfy.sh.")))
+}
+
+/// A row per topic – its name and the label the inbox shows, and ✕ while there is more than one –,
+/// "Add topic" under them and, after the first "Connect", what keeps them from being sent.
+fn ntfy_topics_step(state: &State) -> Element<'_, Message> {
+    let ntfy = &state.ntfy;
+    let many = ntfy.topics.len() > 1;
+    let rows = ntfy
+        .topics
+        .iter()
+        .enumerate()
+        .map(|(at, topic)| {
+            let name = field(tr("Topic name"), &topic.topic)
+                .on_input(move |name| Message::NtfyTopicChanged(at, TopicName::new(name)))
+                .on_submit(Message::Continue);
+            let label = field(tr("Label"), &topic.label)
+                .on_input(move |label| Message::NtfyLabelChanged(at, label))
+                .on_submit(Message::Continue);
+            let remove =
+                widgets::icon_button(Icon::X, tr("Remove topic"), many.then_some(Message::RemoveNtfyTopic(at)));
+            row_frame(row![name, label, remove].spacing(space::s()).align_y(Alignment::Center), false)
+        })
+        .collect();
+    let footer = tr("The Inbox shows the label. On a public server a topic name works like a password.");
+    let add = widgets::text_button(
+        Some(Icon::Plus),
+        tr("Add topic"),
+        style::button::ghost,
+        (ntfy.topics.len() < TOPICS_MAX).then_some(Message::AddNtfyTopic),
+    );
+    let mut page =
+        column![widgets::group(tr("Topics"), rows, Some(footer.to_string())), on_axis(add)].spacing(space::s());
+    if let Some(problem) = ntfy.problem().filter(|_| ntfy.tried) {
+        page = page.push(error_line(problem));
+    }
+    page.into()
+}
+
+/// Why the login is asked for, then the login itself ([`ntfy_login_fields`]).
+fn ntfy_login_step(state: &State) -> Element<'_, Message> {
+    let submit = state.ntfy.login.is_ready().then_some(Message::Continue);
+    let fields = ntfy_login_fields(
+        &state.ntfy.login,
+        Message::NtfyLoginKind,
+        Message::NtfyUserChanged,
+        Message::NtfySecretChanged,
+        submit,
+    );
+    let why = tr("Sign in with a user name and password, or with an access token from the server's account page.");
+    column![typo::text(typo::body(), why).style(theme::text_2), fields].spacing(layout::section_gap()).into()
+}
+
+/// The login of an ntfy server, for the add-account dialog and "Change login" on the account's
+/// page: "User and password" or "Access token" as a segmented control, the user name for a
+/// password, and the masked secret with where it stays. `kind`, `user` and `secret` make the
+/// messages of the three controls; `submit` is what Enter in a field sends (`None`: nothing yet).
+pub(super) fn ntfy_login_fields<'a, M: Clone + 'a>(
+    login: &'a NtfyLogin,
+    kind: fn(bool) -> M,
+    user: fn(String) -> M,
+    secret: fn(Secret) -> M,
+    submit: Option<M>,
+) -> Element<'a, M> {
+    let ways = widgets::segmented(
+        [(tr("User and password"), kind(false)), (tr("Access token"), kind(true))],
+        usize::from(login.token),
+    );
+    let mut page = column![row![ways]].spacing(layout::section_gap());
+    if !login.token {
+        let name = field("anna", &login.user).on_input(user).on_submit_maybe(submit.clone());
+        page = page.push(widgets::group(tr("User name"), vec![row_frame(name, false)], None));
+    }
+    let (title, placeholder) = if login.token { (tr("Access token"), "tk_…") } else { (tr("Password"), "") };
+    let masked = field(placeholder, login.secret.expose())
+        .secure(true)
+        .on_input(move |text| secret(Secret::new(text)))
+        .on_submit_maybe(submit);
+    let footer = tr("It stays in the system keychain. Agents never see it.");
+    page.push(widgets::group(title, vec![row_frame(masked, false)], Some(footer.to_string()))).into()
+}
+
+/// A sentence in the error colour under a form, as wide as there is room.
+fn error_line<'a, M: 'a>(text: String) -> Element<'a, M> {
+    typo::text(typo::body(), text).style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }).into()
+}
+
 // ----- The mail account path (tasks M7.2, M5.1) ------------------------------------------------------
 
 /// A group with one row of `content`, for a field.
@@ -1869,6 +2204,9 @@ fn footer(state: &State) -> Element<'_, Message> {
             | Step::AiChoose
             | Step::AiKey
             | Step::AiServer
+            | Step::NtfyServer
+            | Step::NtfyTopics
+            | Step::NtfyLogin
     )
     .then(|| widgets::text_button(None, tr("Back"), style::button::secondary, Some(Message::Back)));
     // A TorroMail account taken over on the catalog is done, not cancelled.
@@ -1885,7 +2223,12 @@ fn footer(state: &State) -> Element<'_, Message> {
         | Step::MailSearching
         | Step::MailConnecting
         | Step::AiChoose
-        | Step::AiConnecting => None,
+        | Step::AiConnecting
+        | Step::NtfyChecking => None,
+        Step::NtfyServer => primary(tr("Continue"), Some(Message::Continue)),
+        // Stays on, so a press shows what is wrong (the design's rule for forms).
+        Step::NtfyTopics => primary(tr("Connect"), Some(Message::Continue)),
+        Step::NtfyLogin => primary(tr("Connect"), state.ntfy.login.is_ready().then_some(Message::Continue)),
         Step::AiKey | Step::AiServer => primary(tr("Connect"), ai_can_connect(state).then_some(Message::Continue)),
         Step::Server => primary(tr("Continue"), can_continue(state).then_some(Message::Continue)),
         Step::MailAddress => {
@@ -1949,6 +2292,16 @@ pub enum Demo {
     AiServer,
     /// The Ollama found on this computer connected.
     AiDone,
+    /// ntfy (task E5.14): the server step, nothing typed.
+    NtfyServer,
+    /// The topics step with two topics of `push.example.org` typed.
+    NtfyTopics,
+    /// The same after "Connect" with a wrong name and a missing label: what is wrong shows.
+    NtfyInvalid,
+    /// The demo's server wants a login for the topics: the login step, a user name typed.
+    NtfyLogin,
+    /// Signed in: "Your topics are subscribed."
+    NtfyDone,
 }
 
 /// The messages that lead to `demo` the way a person would get there. The demo's answers to the
@@ -1964,6 +2317,9 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         }
         Demo::TorroMailDone => return vec![Message::UseTorroMail("tm-posteo".into())],
         _ => {}
+    }
+    if let Some(steps) = ntfy_demo(demo) {
+        return steps;
     }
     // The AI providers search this computer when they open (`launch::demo_answer` finds Ollama).
     let ai = |more: Vec<Message>| [vec![Message::ChooseProvider(Provider::Ai)], more].concat();
@@ -1986,6 +2342,7 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
     let address = match demo {
         Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => None,
         Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => None,
+        Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => None,
         Demo::Address => None,
         Demo::Unsupported => Some("anna@outlook.com"),
         Demo::Gmail => Some("anna@gmail.com"),
@@ -2019,8 +2376,41 @@ pub fn demo_messages(demo: Demo) -> Vec<Message> {
         // Returned above.
         Demo::TorroMailFailed | Demo::TorroMailPassword | Demo::TorroMailDone => {}
         Demo::AiProviders | Demo::AiOpenRouter | Demo::AiRefused | Demo::AiServer | Demo::AiDone => {}
+        Demo::NtfyServer | Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone => {}
     }
     steps
+}
+
+/// The script of an ntfy demo state; `None` for the other paths. `launch::demo_answer` refuses the
+/// topics of `push.example.org` without a login and takes any login but the password "wrong".
+fn ntfy_demo(demo: Demo) -> Option<Vec<Message>> {
+    let topic = |at, name: &str, label: &str| {
+        [Message::NtfyTopicChanged(at, TopicName::new(name)), Message::NtfyLabelChanged(at, label.to_string())]
+    };
+    let mut steps = vec![Message::ChooseProvider(Provider::Ntfy)];
+    if demo == Demo::NtfyServer {
+        return Some(steps);
+    }
+    if !matches!(demo, Demo::NtfyTopics | Demo::NtfyInvalid | Demo::NtfyLogin | Demo::NtfyDone) {
+        return None;
+    }
+    steps.extend([Message::NtfyServerChanged("push.example.org".into()), Message::Continue]);
+    steps.extend(topic(0, "backups-7f3a", "Backups"));
+    steps.push(Message::AddNtfyTopic);
+    match demo {
+        Demo::NtfyInvalid => {
+            steps.extend(topic(1, "ci builds", ""));
+            steps.push(Message::Continue);
+        }
+        _ => steps.extend(topic(1, "ci-anna-91c2", "CI builds")),
+    }
+    if matches!(demo, Demo::NtfyLogin | Demo::NtfyDone) {
+        steps.extend([Message::Continue, Message::NtfyUserChanged("anna".into())]);
+    }
+    if demo == Demo::NtfyDone {
+        steps.extend([Message::NtfySecretChanged(Secret::new("demo-password")), Message::Continue]);
+    }
+    Some(steps)
 }
 
 #[cfg(test)]
@@ -2092,8 +2482,8 @@ mod tests {
     }
 
     #[test]
-    fn four_providers_open_the_catalog() {
-        assert_eq!(Provider::ALL.iter().filter(|provider| provider.is_enabled()).count(), 4);
+    fn five_providers_open_the_catalog() {
+        assert_eq!(Provider::ALL.iter().filter(|provider| provider.is_enabled()).count(), 5);
         assert_eq!(State::new().step, Step::Provider);
     }
 
@@ -3196,6 +3586,165 @@ mod tests {
             }
             assert_eq!(state.step, step, "{demo:?}");
             assert_eq!(state.error.is_some(), demo == Demo::AiRefused, "{demo:?}");
+            drop(view(&state, &data));
+        }
+    }
+
+    // ----- ntfy (task E5.14) ---------------------------------------------------------------------
+
+    /// The topics step of ntfy at `server`, with `topics` (name, label) typed into its rows.
+    fn at_ntfy_topics(server: &str, topics: &[(&str, &str)]) -> State {
+        let mut state = at_catalog();
+        send(&mut state, Message::ChooseProvider(Provider::Ntfy));
+        assert_eq!(state.step, Step::NtfyServer);
+        send(&mut state, Message::NtfyServerChanged(server.into()));
+        send(&mut state, Message::Continue);
+        assert_eq!(state.step, Step::NtfyTopics);
+        for (at, (name, label)) in topics.iter().enumerate() {
+            if at > 0 {
+                send(&mut state, Message::AddNtfyTopic);
+            }
+            send(&mut state, Message::NtfyTopicChanged(at, TopicName::new(*name)));
+            send(&mut state, Message::NtfyLabelChanged(at, label.to_string()));
+        }
+        state
+    }
+
+    /// The core's answer when the topics need a login.
+    fn needs_login() -> Result<Response, String> {
+        Err(NtfyAccountError::Ntfy(NtfyError::Auth).message())
+    }
+
+    fn ntfy_account() -> AccountInfo {
+        AccountInfo { kind: "ntfy".into(), ..account("ntfy:ntfy.sh", connected()) }
+    }
+
+    #[test]
+    fn ntfy_sends_the_filled_rows_trimmed_and_ends_with_the_topics_subscribed() {
+        let mut state = at_ntfy_topics("", &[(" backups-7f3a ", " Backups "), ("", ""), ("ci-91c2", "CI")]);
+        let Action::Send(Request::ConnectNtfy { server, topics }) = send(&mut state, Message::Continue) else {
+            panic!("Connect sends the topics")
+        };
+        // Empty is the public server; the core fills it in.
+        assert_eq!(server, "");
+        let sent: Vec<(&str, &str)> = topics.iter().map(|t| (t.topic.as_str(), t.label.as_str())).collect();
+        assert_eq!(sent, [("backups-7f3a", "Backups"), ("ci-91c2", "CI")], "the empty row is no topic");
+        assert_eq!(state.step, Step::NtfyChecking);
+        assert!(state.busy());
+        assert!(answered(&mut state, &Ok(Response::Account { account: ntfy_account() })));
+        assert_eq!(state.step, Step::Done);
+        assert_eq!(done_text(&state), tr("Your topics are subscribed."));
+        drop(view(&state, &Data::default()));
+    }
+
+    #[test]
+    fn what_is_wrong_with_a_topic_shows_only_after_the_first_connect() {
+        let mut state = at_ntfy_topics("ntfy.sh", &[("ci builds", "")]);
+        assert!(!state.ntfy.tried, "nothing is wrong before the first try");
+        assert!(matches!(send(&mut state, Message::Continue), Action::None), "a wrong name is not sent");
+        assert!(state.ntfy.tried);
+        assert_eq!(state.ntfy.problem(), topic_problem("ci builds"));
+        assert_eq!(state.step, Step::NtfyTopics);
+        send(&mut state, Message::NtfyTopicChanged(0, TopicName::new("ci-builds")));
+        assert_eq!(state.ntfy.problem().as_deref(), Some(tr("Give the topic a label.")));
+        send(&mut state, Message::NtfyLabelChanged(0, "x".repeat(LABEL_MAX + 1)));
+        assert!(state.ntfy.problem().is_some(), "a label longer than the core takes");
+        send(&mut state, Message::NtfyLabelChanged(0, "CI".into()));
+        assert_eq!(state.ntfy.problem(), None);
+
+        // Rows without anything are no topics; none at all is a problem of its own.
+        let empty = at_ntfy_topics("ntfy.sh", &[("", "")]);
+        assert_eq!(empty.ntfy.problem().as_deref(), Some(tr("Add at least one topic.")));
+    }
+
+    #[test]
+    fn rows_can_be_added_up_to_the_limit_and_the_last_one_stays() {
+        let mut state = at_ntfy_topics("ntfy.sh", &[("a", "A")]);
+        send(&mut state, Message::RemoveNtfyTopic(0));
+        assert_eq!(state.ntfy.topics.len(), 1, "the last row stays");
+        for _ in 0..TOPICS_MAX + 3 {
+            send(&mut state, Message::AddNtfyTopic);
+        }
+        assert_eq!(state.ntfy.topics.len(), TOPICS_MAX);
+        send(&mut state, Message::RemoveNtfyTopic(0));
+        assert_eq!(state.ntfy.topics.len(), TOPICS_MAX - 1);
+        assert_eq!(state.ntfy.topics[0].topic, "", "the first row went");
+    }
+
+    #[test]
+    fn topics_that_need_a_login_lead_to_it_and_the_secret_is_sent_once() {
+        let mut state = at_ntfy_topics("push.example.org", &[("backups-7f3a", "Backups")]);
+        send(&mut state, Message::Continue);
+        assert!(answered(&mut state, &needs_login()));
+        assert_eq!((state.step, state.error.as_deref()), (Step::NtfyLogin, None), "the step says why");
+        send(&mut state, Message::NtfyUserChanged(" anna ".into()));
+        assert!(matches!(send(&mut state, Message::Continue), Action::None), "no secret yet");
+        send(&mut state, Message::NtfySecretChanged(Secret::new("s3cret-pass")));
+        // Neither the secret nor a topic's name is in the dialog's `Debug`.
+        let debug = format!("{state:?}");
+        assert!(!debug.contains("s3cret-pass") && !debug.contains("backups-7f3a"), "{debug}");
+        let Action::Send(Request::SetNtfyLogin { server, topics, user, secret }) = send(&mut state, Message::Continue)
+        else {
+            panic!("Connect sends the login")
+        };
+        assert_eq!(
+            (server.as_str(), user.as_deref(), secret.expose()),
+            ("push.example.org", Some("anna"), "s3cret-pass")
+        );
+        assert_eq!(topics.len(), 1);
+        assert!(state.ntfy.login.secret.is_blank(), "the dialog keeps no copy");
+        // Refused again: back at the login with the core's sentence, to type the secret anew.
+        assert!(answered(&mut state, &needs_login()));
+        assert_eq!(state.step, Step::NtfyLogin);
+        assert!(state.error.is_some());
+    }
+
+    #[test]
+    fn an_access_token_goes_without_a_user_name() {
+        let mut state = at_ntfy_topics("push.example.org", &[("backups-7f3a", "Backups")]);
+        send(&mut state, Message::Continue);
+        answered(&mut state, &needs_login());
+        send(&mut state, Message::NtfyUserChanged("anna".into()));
+        send(&mut state, Message::NtfyLoginKind(true));
+        send(&mut state, Message::NtfySecretChanged(Secret::new("tk_abc")));
+        let Action::Send(Request::SetNtfyLogin { user, .. }) = send(&mut state, Message::Continue) else {
+            panic!("Connect sends the token")
+        };
+        assert_eq!(user, None);
+    }
+
+    #[test]
+    fn another_refusal_goes_back_to_the_topics_with_the_core_message() {
+        let mut state = at_ntfy_topics("example.org", &[("backups-7f3a", "Backups")]);
+        send(&mut state, Message::Continue);
+        let wrong = NtfyAccountError::Ntfy(NtfyError::InvalidServer).message();
+        assert!(answered(&mut state, &Err(wrong.clone())));
+        assert_eq!((state.step, state.error.clone()), (Step::NtfyTopics, Some(wrong)));
+        send(&mut state, Message::Back);
+        assert_eq!(state.step, Step::NtfyServer, "back to the address");
+        send(&mut state, Message::Back);
+        assert_eq!(state.step, Step::Provider);
+    }
+
+    #[test]
+    fn the_ntfy_demos_lead_where_they_say() {
+        let data = super::super::launch::demo_data();
+        for (demo, step) in [
+            (Demo::NtfyServer, Step::NtfyServer),
+            (Demo::NtfyTopics, Step::NtfyTopics),
+            (Demo::NtfyInvalid, Step::NtfyTopics),
+            (Demo::NtfyLogin, Step::NtfyLogin),
+            (Demo::NtfyDone, Step::Done),
+        ] {
+            let mut state = at_catalog();
+            for message in demo_messages(demo) {
+                if let Action::Send(request) = update(&mut state, message, &data) {
+                    let answer = super::super::launch::demo_answer(&request, &data).expect("the demo answers");
+                    answered(&mut state, &Ok(answer));
+                }
+            }
+            assert_eq!(state.step, step, "{demo:?}");
+            assert_eq!(state.ntfy.tried && state.ntfy.problem().is_some(), demo == Demo::NtfyInvalid, "{demo:?}");
             drop(view(&state, &data));
         }
     }
