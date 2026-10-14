@@ -89,16 +89,25 @@ pub trait Host: Send + Sync {
 
     /// [`Host::client`] for `actor`: the assistant's own client, or the bot's client (kind
     /// `torro_ipc::api::BOT_CLIENT`) with its rights as stored now; `None` when it is not there.
+    /// For [`Actor::Delegated`] (task B.2) the bot's client with the rights both it and the
+    /// assistant's client have now ([`torro_ipc::api::Rights::common`]), without the areas of
+    /// [`Delegation::without`]; `None` when either client is not there.
     fn client_of(&self, actor: &Actor) -> Option<ClientInfo> {
         match actor {
             Actor::Assistant => self.client(),
-            Actor::Bot(_) => None,
+            Actor::Bot(_) | Actor::Delegated(_) => None,
         }
     }
 
     /// [`Host::run`] as `actor`'s client: for a bot exactly as a request with the key of its client
     /// would run, so a bot's client gets `forbidden` for every `bots` and `assistant` command
     /// (`torro_ipc::api::loops_back`). `forbidden` when the client is not there.
+    ///
+    /// For [`Actor::Delegated`] (task B.2) with the rights of [`Host::client_of`] (what both
+    /// clients may, without [`Delegation::without`]); an approval it asks for keeps the narrowing
+    /// (the assistant's client and the areas, `crate::approvals::Origin`), so a person's "Allow"
+    /// runs it with what both clients may then and never more. Its audit line names the bot's
+    /// client, the bot, the assistant's client and `engine`.
     fn run_as<'a>(
         &'a self,
         actor: &'a Actor,
@@ -108,15 +117,16 @@ pub trait Host: Send + Sync {
     ) -> BoxFuture<'a, Response> {
         match actor {
             Actor::Assistant => self.run(request, engine, untrusted),
-            Actor::Bot(_) => Box::pin(async move { forbidden(request.operation().name()) }),
+            Actor::Bot(_) | Actor::Delegated(_) => Box::pin(async move { forbidden(request.operation().name()) }),
         }
     }
 
-    /// [`Host::approval`] as `actor`'s client: its own approvals only.
+    /// [`Host::approval`] as `actor`'s client: its own approvals only (for [`Actor::Delegated`]
+    /// the bot's client's).
     fn approval_as<'a>(&'a self, actor: &'a Actor, id: &'a str) -> BoxFuture<'a, Response> {
         match actor {
             Actor::Assistant => self.approval(id),
-            Actor::Bot(_) => Box::pin(async { forbidden("approvals.approval_status") }),
+            Actor::Bot(_) | Actor::Delegated(_) => Box::pin(async { forbidden("approvals.approval_status") }),
         }
     }
 
@@ -124,8 +134,52 @@ pub trait Host: Send + Sync {
     fn lend_as(&self, actor: &Actor, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
         match actor {
             Actor::Assistant => self.lend(engine, without),
-            Actor::Bot(_) => None,
+            Actor::Bot(_) | Actor::Delegated(_) => None,
         }
+    }
+
+    /// [`Host::lend_as`] for one run in the conversation `conversation` (task B.2), what engine B
+    /// calls. The core remembers for the key's requests what the run is: for the assistant, its
+    /// conversation, so a `bots.ask_bot` with the key is checked against what the person said
+    /// there ([`super::Assistant::delegate`]); for [`Actor::Delegated`], the narrowing, so every
+    /// request with the key runs with what both clients may. Without that the key could do more
+    /// than the run may, so a host that cannot remember it lends none for [`Actor::Delegated`].
+    fn lend_in(
+        &self,
+        actor: &Actor,
+        conversation: &str,
+        engine: &str,
+        without: &[Area],
+    ) -> Option<crate::clients::LentKey> {
+        let _ = conversation;
+        match actor {
+            Actor::Delegated(_) => None,
+            _ => self.lend_as(actor, engine, without),
+        }
+    }
+
+    /// `bots.ask_bot` of the assistant's own client while it answers in its conversation `main`
+    /// with `engine` (task B.2): run as [`Host::run`] would, with the conversation known, so the
+    /// assistant checks that the person named the bot or confirmed it there
+    /// ([`crate::bots::assistant_may_ask`]) and runs the bot for it with what both clients may and
+    /// without the areas `without` (the conversation's switched-off ones); `read_mail`: the
+    /// conversation read mail, so a bot whose model runs elsewhere is not asked (the data rule).
+    /// Answers when the bot's
+    /// run is done: [`Response::Conversation`] of the bot's conversation with the entries of this
+    /// run, or the error answer (`forbidden` with a word for the model when the person did not ask
+    /// for the bot). Never waits for an approval of the ask itself: the person's words are the yes.
+    /// The audit line names the assistant's client, the bot and `engine`. `forbidden` by default.
+    fn ask_bot<'a>(
+        &'a self,
+        main: &'a str,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+        read_mail: bool,
+        without: &'a [Area],
+    ) -> BoxFuture<'a, Response> {
+        let _ = (main, engine, untrusted, read_mail, without);
+        Box::pin(async move { forbidden(request.operation().name()) })
     }
 }
 
@@ -138,6 +192,24 @@ pub enum Actor {
     /// The client of a bot (kind `torro_ipc::api::BOT_CLIENT`), by the client's id as the bot keeps
     /// it ([`torro_ipc::bots::Bot::client`]).
     Bot(String),
+    /// The client of a bot that runs for the assistant (task B.2): the bot's client with what both
+    /// it and the assistant's client may ([`Delegation`]).
+    Delegated(Delegation),
+}
+
+/// A bot's run on behalf of the assistant (task B.2, [`super::Assistant::delegate`]): who runs, for
+/// whom, and what is switched off. Its rights are never more than both clients have now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delegation {
+    /// The bot's id ([`torro_ipc::bots::Bot::id`]), for the audit log.
+    pub bot: String,
+    /// The bot's client id ([`torro_ipc::bots::Bot::client`]): the run runs as this client.
+    pub client: String,
+    /// The assistant's client id: its rights of now bound the run as well.
+    pub assistant: String,
+    /// Areas taken out of both: those switched off in the assistant's conversation, and for an
+    /// agent driving the assistant those its key was lent without (always mail).
+    pub without: Vec<Area>,
 }
 
 impl Actor {
@@ -153,7 +225,7 @@ impl Actor {
     pub fn kind(&self) -> &'static str {
         match self {
             Actor::Assistant => torro_ipc::api::ASSISTANT_CLIENT,
-            Actor::Bot(_) => torro_ipc::api::BOT_CLIENT,
+            Actor::Bot(_) | Actor::Delegated(_) => torro_ipc::api::BOT_CLIENT,
         }
     }
 }
@@ -313,9 +385,12 @@ impl Answering {
         for _ in 0..self.limits.max_steps {
             let rights = self.host.client_of(&self.job.actor).map(|client| client.rights);
             let allowed = tools::allowed_for(self.job.actor.kind(), rights.as_ref(), &self.job.without);
-            // The memory is the assistant's own, not an area the person granted.
-            let areas: BTreeSet<Area> =
-                allowed.iter().map(|tool| tool.command.area).filter(|area| *area != Area::Assistant).collect();
+            // The memory and the bots (task B.2) are the assistant's own, not areas the person granted.
+            let areas: BTreeSet<Area> = allowed
+                .iter()
+                .map(|tool| tool.command.area)
+                .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
+                .collect();
             let areas: Vec<Area> = areas.into_iter().collect();
             let context = prompt::Context {
                 now: Local::now(),
@@ -420,6 +495,29 @@ impl Answering {
         let area = request.operation().area();
         let outcome = self.run(request.clone()).await?;
         let (result, summary, error) = match outcome {
+            // A bot that ran for the assistant (task B.2): its answer, as the data rule allows.
+            Outcome::Answered(response) if matches!(request, Request::AskBot { .. }) => {
+                match super::delegate::Asked::of(response.as_ref()) {
+                    Some(asked) => {
+                        let input = super::delegate::with_conversation(input, &asked.conversation);
+                        let bot = self.bot_name_of(&request).await;
+                        self.read_mail |= asked.read_mail;
+                        self.untrusted |= asked.untrusted;
+                        let summary = asked.summary(&bot);
+                        let line = EntryContent::Tool { name, input, summary, error: asked.error.clone() };
+                        return self.add(line, false).await.then(|| asked.for_model(place).to_string());
+                    }
+                    // Refused: the core's message tells the model what to do (propose the bot).
+                    None => {
+                        let error = match response.as_ref() {
+                            Response::Error { code, .. } => Some(code.clone()),
+                            _ => None,
+                        };
+                        let value = serde_json::to_value(response.as_ref()).unwrap_or(Value::Null);
+                        (tools::for_model(area, value), tools::summary(&response, false), error)
+                    }
+                }
+            }
             Outcome::Answered(response) => {
                 // What a model elsewhere could not read is mail content: from now on a note a
                 // local model keeps may retell it.
@@ -450,6 +548,12 @@ impl Answering {
         };
         let line = EntryContent::Tool { name, input, summary, error };
         self.add(line, false).await.then_some(result)
+    }
+
+    /// The name of the bot `request` names, as stored now; its id when it is gone.
+    async fn bot_name_of(&self, request: &Request) -> String {
+        let id = request.bot().unwrap_or_default();
+        self.assistant.bots().get(id).await.map_or_else(|| id.to_string(), |bot| bot.name)
     }
 
     /// `request` with `assistant.remember` marked `local_only` when the model runs on this computer
@@ -489,7 +593,17 @@ impl Answering {
     async fn run(&self, request: Request) -> Option<Outcome> {
         let (host, engine, untrusted) = (Arc::clone(&self.host), self.job.engine.clone(), self.untrusted);
         let actor = self.job.actor.clone();
-        let ran = tokio::spawn(async move { host.run_as(&actor, request, &engine, untrusted).await }).await;
+        let (main, without, read_mail) = (self.job.conversation.clone(), self.job.without.clone(), self.read_mail);
+        // Asking a bot (task B.2) needs the conversation: the person must have asked for the bot here.
+        let ran = tokio::spawn(async move {
+            match (&actor, &request) {
+                (Actor::Assistant, Request::AskBot { .. }) => {
+                    host.ask_bot(&main, request, &engine, untrusted, read_mail, &without).await
+                }
+                _ => host.run_as(&actor, request, &engine, untrusted).await,
+            }
+        })
+        .await;
         let response = ran.unwrap_or_else(|err| failed(&format!("the command did not finish: {err}")));
         let Response::Pending { approval } = response else { return Some(Outcome::Answered(Box::new(response))) };
         if !self.add(EntryContent::Approval { id: approval.id.clone() }, false).await {
@@ -639,7 +753,7 @@ pub(crate) mod tests {
     /// A model that answers from a script, step by step, and keeps what it was asked.
     #[derive(Default)]
     pub(crate) struct Script {
-        steps: Mutex<VecDeque<Step>>,
+        pub(crate) steps: Mutex<VecDeque<Step>>,
         /// Answered when the steps ran out.
         then: Mutex<Option<Step>>,
         pub(crate) asked: Mutex<Vec<ChatRequest>>,
@@ -892,6 +1006,8 @@ pub(crate) mod tests {
             text: text.into(),
             without,
             bot: None,
+            on_behalf: None,
+            person: false,
         };
         match assistant.send(message, EngineKind::Ai, Utc::now()).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -1075,6 +1191,8 @@ pub(crate) mod tests {
             text: "Which calendars do I have?".into(),
             without: Vec::new(),
             bot: Some(bot),
+            on_behalf: None,
+            person: false,
         };
         let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
         else {
@@ -1272,6 +1390,8 @@ pub(crate) mod tests {
             text: "Summarise".into(),
             without: Vec::new(),
             bot: None,
+            on_behalf: None,
+            person: false,
         };
         assert!(matches!(other.send(message, EngineKind::Ai, Utc::now()).await, Response::Conversation { .. }));
         finished(&other, &id).await;

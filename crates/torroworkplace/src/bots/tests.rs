@@ -206,11 +206,36 @@ async fn without_a_folder_nothing_is_stored() {
     assert_eq!(answer(&assistant, &clients, Request::ListBots).await, Response::Bots { bots: Vec::new() });
 }
 
-/// Task B.1, the hook of task B.2: until then the assistant asks no bot.
+/// Task B.2: the assistant asks a bot only when the person's last message names it (any case, with
+/// an article, with a simple ending) or the person confirmed it.
 #[test]
-fn the_assistant_asks_no_bot_until_b2() {
-    let ask = Request::AskBot { bot: "1a2b3c4d".into(), text: "Plan Lisbon".into(), conversation: None };
-    assert!(!assistant_may_ask(&ask));
+fn the_assistant_asks_a_bot_only_when_the_person_names_it() {
+    for (text, name) in [
+        ("Ask the Travel Planner about Lisbon", "Travel planner"),
+        ("ask the travel planner", "Travel planner"),
+        ("Frag den Reiseplaner nach Lissabon.", "Reiseplaner"),
+        ("Was meint der Reiseplaner?", "Der Reiseplaner"),
+        ("Die Idee des Reiseplaners", "Reiseplaner"),
+        ("What do the travel planners say?", "Travel planner"),
+        ("@reiseplaner: Lissabon?", "Reiseplaner"),
+    ] {
+        assert!(names_bot(text, name), "{text:?} names {name:?}");
+        assert!(assistant_may_ask(Some(text), name, false), "{text:?}");
+    }
+    for (text, name) in [
+        ("Plan a trip to Lisbon", "Travel planner"),
+        ("I need a travel plan", "Travel planner"),
+        ("the planner travel", "Travel planner"),
+        ("Die Reiseplanerin", "Reiseplaner"),
+        ("the", "The"),
+        ("Lisbon", "  "),
+    ] {
+        assert!(!names_bot(text, name), "{text:?} does not name {name:?}");
+        assert!(!assistant_may_ask(Some(text), name, false), "{text:?}");
+    }
+    assert!(!assistant_may_ask(None, "Travel planner", false), "no message, no ask");
+    assert!(assistant_may_ask(None, "Travel planner", true), "a confirmation is enough");
+    assert!(assistant_may_ask(Some("Plan Lisbon"), "Travel planner", true));
 }
 
 /// The answer the test engine gives to a bot comes as to the assistant; the conversation keeps the

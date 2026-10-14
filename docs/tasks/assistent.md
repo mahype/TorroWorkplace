@@ -246,7 +246,14 @@ B.1 ──┬── B.2
   für `bots.*` und `assistant.*`, direkter Chat mit Test-Antrieb, Prompt-Reihenfolge, Rechte-Tabelle.
 
 ### B.2 Hauptbot gibt ab, nur auf Ansage; Schnittmenge der Rechte
-- [ ] erledigt
+- [x] erledigt (Nennung: Wörter des Namens ohne Artikel in Folge, ohne Groß/Klein, mit einfacher Endung
+  „s/n/e/en/es/er/ns“; Bestätigung nur im Speicher des Kerns, gilt für eine Anfrage; die Anfrage des Hauptbots
+  braucht keine Freigabe (die Worte der Person sind das Ja), die Befehle des Bots fragen nach ihren Rechten; der
+  Hauptbot wartet, bis der Bot fertig ist; eine Unterhaltung des Bots je Unterhaltung des Hauptbots (im Speicher);
+  Verweis auf sie in `input.conversation` der Zeile `bots.ask_bot`; nach einem Bot zählt die Unterhaltung als
+  „hat Mail und fremde Daten gelesen“ für spätere Runden; Protokoll `bot:<id>` und `for:<Client des Hauptbots>`;
+  nachgetragen (zwingend mechanisch): `{pim,daemon}.rs` (`match`-Zweige), Test in `mcp.rs` (Never im Bereich
+  `assistant`))
 - **Modell:** Opus · **Braucht:** B.1 · **Dateien:** `crates/torroworkplace/src/assistant/**`,
   `crates/torroworkplace/src/bots/**`, `crates/torroworkplace/src/{core,approvals}.rs`
 - Werkzeug `bots_ask_bot` für den Hauptbot nur, wenn die **letzte Nachricht der Person** den Bot beim Namen nennt

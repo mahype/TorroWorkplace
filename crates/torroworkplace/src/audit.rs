@@ -315,6 +315,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::GetBot { id: bot } | Request::DeleteBot { id: bot } | Request::SaveBot { id: Some(bot), .. } => {
             vec![random("bot", bot)]
         }
+        // The person's yes to the assistant asking a bot (task B.2): the assistant's conversation
+        // and the bot.
+        Request::ConfirmBot { conversation, bot } => vec![random("conversation", conversation), random("bot", bot)],
         Request::AskBot { bot, conversation, .. } => {
             [Some(random("bot", bot)), conversation.as_deref().map(|id| random("conversation", id))]
                 .into_iter()
@@ -357,6 +360,26 @@ pub fn engine_id(engine: &str) -> String {
     match engine == TEST_ENGINE || AGENT_ENGINES.contains(&engine) || is_account_id(engine) {
         true => format!("engine:{}", cut(engine)),
         false => format!("engine:hash:{}", hashed(engine)),
+    }
+}
+
+/// The ids that say a bot ran for the assistant (task B.2), next to the line of the bot's client:
+/// `bot:<the bot's id>` and `for:<the assistant's client id>`, so the log names both. Ids that do
+/// not have the form the core makes are hashed.
+pub fn delegation_ids(bot: &str, assistant: &str) -> Vec<String> {
+    vec![made_id("bot", bot), behalf_id(assistant)]
+}
+
+/// `for:<client id>`: the client a bot ran for (task B.2), also on the lines of a person's decision.
+pub fn behalf_id(client: &str) -> String {
+    made_id("for", client)
+}
+
+/// `kind:<value>` for an id the core made, hashed when it does not have that form.
+fn made_id(kind: &str, value: &str) -> String {
+    match is_random_id(value) {
+        true => format!("{kind}:{}", cut(value)),
+        false => format!("{kind}:hash:{}", hashed(value)),
     }
 }
 

@@ -1,5 +1,5 @@
 //! The assistant of the core (tasks C.1 and C.2, `docs/assistent.md`): its conversations, the
-//! engines that answer, and the handlers of the `assistant.*` requests ([`answer`]).
+//! engines that answer, and the handlers of the `assistant.*` requests ([`answer_from`]).
 //!
 //! The logic lives here only ("Wo die Logik liegt"): the app `torroassistant`, the control centre,
 //! scripts and agents send requests; the core keeps the conversations and runs the answers in the
@@ -43,10 +43,14 @@
 //!   as the bot's client ([`Actor::Bot`]) with the bot's prompt ([`prompt::bot_system`]) and no notes
 //!   of the memory, and can be continued only with that bot, and not once it was deleted. The bots
 //!   themselves live in `<config>/assistant/bots` ([`Assistant::bots`]).
+//! - **Asking a bot** (task B.2, [`delegate`]): the assistant asks a bot only when the person named
+//!   it or confirmed it (`assistant.confirm_bot`); the bot then runs in its own conversation with
+//!   what both clients may ([`Actor::Delegated`]), and the assistant reads its answer.
 //!
 //! What goes to a client never names a path; the core's log does.
 
 mod data_rule;
+mod delegate;
 mod engines;
 mod model;
 pub(crate) mod profile;
@@ -56,7 +60,7 @@ mod tools;
 
 pub use prompt::skill;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex as StdMutex, OnceLock, PoisonError, Weak};
@@ -80,7 +84,8 @@ use torro_setups::launch::{Launcher, SystemLauncher};
 use crate::account::ai::AiAccounts;
 use crate::bots::Bots;
 pub use data_rule::{Place, place_of};
-pub use model::{Actor, Host, Limits, ModelAccess};
+pub use delegate::Asking;
+pub use model::{Actor, Delegation, Host, Limits, ModelAccess};
 use store::{Conversation, Line};
 
 /// The environment variable that makes a running core offer the test engine: `1`.
@@ -139,6 +144,16 @@ struct State {
     running: HashMap<String, Run>,
     /// The number of the next run, so a stopped run never writes into a newer one.
     next_run: u64,
+    /// The bots the person confirmed per assistant conversation (task B.2, `assistant.confirm_bot`):
+    /// each allows one ask. In memory only: a restart forgets them, which only ever refuses.
+    confirmed: HashMap<String, BTreeSet<String>>,
+    /// The bot's conversation per assistant conversation and bot (task B.2): asked again, the bot
+    /// goes on there. In memory only: after a restart a new one starts.
+    asked: HashMap<(String, String), String>,
+    /// The number of the person's last message per conversation (task B.2): sent with the app key,
+    /// not by an agent with access to the assistant. Only that message can name a bot. In memory
+    /// only: after a restart the person names the bot again.
+    said: HashMap<String, u64>,
 }
 
 /// An answer that runs.
@@ -370,7 +385,7 @@ impl Assistant {
     }
 
     /// What a request would be refused with anyway, checked before anyone is asked to approve it
-    /// and again by [`answer`]: its limits, a conversation the core does not have (`not-found`),
+    /// and again by [`answer_from`]: its limits, a conversation the core does not have (`not-found`),
     /// for a message (also `bots.ask_bot`) an engine that does not answer ([`Assistant::engine`]),
     /// a conversation that still answers (`busy`), a bot that is not there (`not-found`) or a
     /// conversation of another bot or of none ([`Assistant::bot_refusal`]), a bot's window
@@ -381,14 +396,15 @@ impl Assistant {
         {
             return Some(refused);
         }
-        let bot =
-            match request.bot().filter(|_| matches!(request, Request::SendMessage { .. } | Request::AskBot { .. })) {
-                Some(id) => match self.bots.get(id).await {
-                    Some(bot) => Some(bot),
-                    None => return Some(crate::bots::no_bot(id)),
-                },
-                None => None,
-            };
+        let named =
+            matches!(request, Request::SendMessage { .. } | Request::AskBot { .. } | Request::ConfirmBot { .. });
+        let bot = match request.bot().filter(|_| named) {
+            Some(id) => match self.bots.get(id).await {
+                Some(bot) => Some(bot),
+                None => return Some(crate::bots::no_bot(id)),
+            },
+            None => None,
+        };
         if let Some(id) = request.conversation() {
             let state = self.state().await;
             let Some(conversation) = state.conversations.get(id) else { return Some(unknown(id)) };
@@ -399,6 +415,12 @@ impl Assistant {
                 if state.running.contains_key(id) {
                     return Some(busy());
                 }
+            }
+            // A confirmation is for the assistant's conversations only (task B.2).
+            if matches!(request, Request::ConfirmBot { .. })
+                && let Some(refused) = bot_refusal(conversation, None)
+            {
+                return Some(refused);
             }
         }
         let actor = Actor::of(bot.as_ref());
@@ -467,12 +489,19 @@ impl Assistant {
         if let Err(message) = self.write(&conversation.id, lines).await {
             return failure(message);
         }
+        let said = entry.seq;
         conversation.apply(Line::Entry { entry });
         let id = conversation.id.clone();
+        if message.person {
+            state.said.insert(id.clone(), said);
+        }
         let history = conversation.entries.clone();
         state.conversations.insert(id.clone(), conversation);
         let (engine, model, without) = (message.engine, message.model, message.without);
-        let actor = Actor::of(message.bot.as_ref());
+        let actor = match message.on_behalf {
+            Some(delegation) => Actor::Delegated(delegation),
+            None => Actor::of(message.bot.as_ref()),
+        };
         let job = |engine: String| model::Job {
             conversation: id.clone(),
             run: 0,
@@ -641,7 +670,8 @@ impl Assistant {
     }
 
     /// `assistant.cancel`: stops the running answer of `id`, keeps what the model wrote so far as
-    /// an answer and adds a `stopped` entry. Nothing changes when none runs.
+    /// an answer and adds a `stopped` entry, and stops the answers of the bots it asked (task B.2).
+    /// Nothing changes when none runs.
     pub async fn cancel(&self, id: &str, now: DateTime<Utc>) -> Response {
         let mut state = self.state().await;
         let Some(conversation) = state.conversations.get(id).cloned() else { return unknown(id) };
@@ -657,6 +687,19 @@ impl Assistant {
         }
         if let Some(conversation) = state.conversations.get_mut(id) {
             lines.into_iter().for_each(|line| conversation.apply(line));
+        }
+        // The bots it asked stop with it (task B.2); a bot's conversation asks none itself.
+        let asked: Vec<String> = state
+            .asked
+            .iter()
+            .filter(|((main, _), theirs)| main == id && state.running.contains_key(*theirs))
+            .map(|(_, theirs)| theirs.clone())
+            .collect();
+        drop(state);
+        for theirs in asked {
+            if let Response::Error { message, .. } = Box::pin(self.cancel(&theirs, now)).await {
+                eprintln!("torroworkplace: cannot stop the bot's answer in conversation {theirs}: {message}");
+            }
         }
         Response::Ok
     }
@@ -930,6 +973,12 @@ struct Message {
     without: Vec<Area>,
     /// The bot that answers, as stored now (task B.1); `None` for the assistant.
     bot: Option<Bot>,
+    /// The bot runs for the assistant (task B.2): as [`Actor::Delegated`], with what both clients
+    /// may. `None`: as its own client (or the assistant as its own).
+    on_behalf: Option<Delegation>,
+    /// The person wrote it (task B.2): sent with the app key, not by a client. Only the person's
+    /// message can name a bot for the assistant to ask ([`State::said`]).
+    person: bool,
 }
 
 /// Why a message for `bot` (`None`: the assistant) cannot go into `conversation` (task B.1): a
@@ -952,11 +1001,18 @@ fn with_bots(mut summary: ConversationSummary, bots: &[String]) -> ConversationS
     summary
 }
 
-/// Answers an `assistant.*` request and `bots.ask_bot` (task B.1), for the app key and for a client the core admitted
-/// ([`crate::core::Core::handle_from`]). What would be refused anyway comes first
-/// ([`Assistant::refusal`]); the handlers check again under their lock (a conversation may have
-/// been deleted or started answering meanwhile).
+/// [`answer_from`] as for a client, for tests: a message counts as no person's.
+#[cfg(test)]
 pub async fn answer(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Request) -> Response {
+    answer_from(assistant, ai, request, false).await
+}
+
+/// Answers an `assistant.*` request and `bots.ask_bot` (task B.1), for the app key and for a client
+/// the core admitted ([`crate::core::Core::handle_from`]). `person`: the app key sent it (task B.2),
+/// so a message is the person's own, and only such a message can name a bot for the assistant to
+/// ask. What would be refused anyway comes first ([`Assistant::refusal`]); the handlers check again
+/// under their lock (a conversation may have been deleted or started answering meanwhile).
+pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Request, person: bool) -> Response {
     if let Some(refused) = assistant.refusal(ai, &request).await {
         return refused;
     }
@@ -979,7 +1035,8 @@ pub async fn answer(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Reques
                 Ok(kind) => kind,
                 Err(refused) => return refused,
             };
-            assistant.send(Message { conversation, engine, model, text, without, bot }, kind, Utc::now()).await
+            let message = Message { conversation, engine, model, text, without, bot, on_behalf: None, person };
+            assistant.send(message, kind, Utc::now()).await
         }
         Request::AskBot { bot, text, conversation } => {
             let Some(bot) = assistant.bots.get(&bot).await else { return crate::bots::no_bot(&bot) };
@@ -988,7 +1045,16 @@ pub async fn answer(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Reques
                 Err(refused) => return refused,
             };
             let (engine, model) = (bot.engine.clone(), bot.model.clone());
-            let message = Message { conversation, engine, model, text, without: Vec::new(), bot: Some(bot) };
+            let message = Message {
+                conversation,
+                engine,
+                model,
+                text,
+                without: Vec::new(),
+                bot: Some(bot),
+                on_behalf: None,
+                person: false,
+            };
             assistant.send(message, kind, Utc::now()).await
         }
         Request::CancelAnswer { conversation } => assistant.cancel(&conversation, Utc::now()).await,
@@ -996,6 +1062,7 @@ pub async fn answer(assistant: &Arc<Assistant>, ai: &AiAccounts, request: Reques
         Request::DeleteConversation { id } => assistant.delete(&id).await,
         Request::PinConversation { id, pinned } => assistant.pin(&id, pinned).await,
         Request::OpenChatWindow { window } => assistant.open_window(window).await,
+        Request::ConfirmBot { conversation, bot } => assistant.confirm_bot(&conversation, &bot).await,
         other => failure(&format!("{} is no command of the assistant", other.operation().name())),
     }
 }

@@ -322,7 +322,7 @@ pub fn profile_refusal(
 
 impl Request {
     /// The conversation an `assistant.*` request or `bots.ask_bot` names, for the core's checks and
-    /// its audit log: `id`, `conversation`, or the conversation of `open_window`. `None` for every
+    /// its audit log: `id`, `conversation` (also of `confirm_bot`), or the conversation of `open_window`. `None` for every
     /// other request and for `send_message` and `ask_bot` that start a new one.
     pub fn conversation(&self) -> Option<&str> {
         match self {
@@ -331,7 +331,8 @@ impl Request {
             | Request::DeleteConversation { id }
             | Request::PinConversation { id, .. }
             | Request::CancelAnswer { conversation: id }
-            | Request::OpenChatWindow { window: ChatWindow::Conversation(id) } => Some(id),
+            | Request::OpenChatWindow { window: ChatWindow::Conversation(id) }
+            | Request::ConfirmBot { conversation: id, .. } => Some(id),
             Request::SendMessage { conversation, .. } | Request::AskBot { conversation, .. } => conversation.as_deref(),
             _ => None,
         }
@@ -347,7 +348,7 @@ fn assistant_ids(request: &Request) -> Vec<&str> {
             ids.extend(model.as_deref());
             ids.extend(bot.as_deref());
         }
-        Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => ids.push(bot),
+        Request::OpenChatWindow { window: ChatWindow::Bot(bot) } | Request::ConfirmBot { bot, .. } => ids.push(bot),
         Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => ids.push(id),
         _ => {}
     }

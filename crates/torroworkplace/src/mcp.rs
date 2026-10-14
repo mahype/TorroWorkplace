@@ -1863,7 +1863,9 @@ mod tests {
             .collect();
         assert_eq!(catalogue.len(), 14, "nine of task C.1, five of C.10: {catalogue:?}");
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
-        assert!(CATALOGUE.iter().filter(|c| c.area == Area::Assistant).all(|c| c.mcp == Mcp::Tool));
+        // But the person's yes to asking a bot (task B.2), which no agent may give.
+        let assistant = CATALOGUE.iter().filter(|c| c.area == Area::Assistant && c.name != "assistant.confirm_bot");
+        assert!(assistant.clone().all(|c| c.mcp == Mcp::Tool));
     }
 
     #[test]

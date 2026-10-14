@@ -541,6 +541,7 @@ fn describe(request: &Request) -> String {
         Request::SaveBot { .. } => "make a bot".into(),
         Request::DeleteBot { id } => format!("delete bot {id}"),
         Request::AskBot { bot, .. } => format!("message to bot {bot}"),
+        Request::ConfirmBot { bot, .. } => format!("confirm asking bot {bot}"),
         Request::VoiceStatus => "voice status".into(),
         Request::TestVoice => "voice test".into(),
     }

@@ -430,6 +430,13 @@ pub struct Origin {
     /// still lives or not. Empty for every other key.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub without: Vec<Area>,
+    /// The client a bot ran for (task B.2): the assistant's own client, when the assistant asked
+    /// the bot. An allowed command then runs with what both the asking client and this one may at
+    /// that moment ([`Rights::common`]), each without [`Origin::without`], and not at all once
+    /// this client was removed – so a person's "Allow" never gives the bot more than the assistant
+    /// had. `None` for every other request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub behalf: Option<String>,
 }
 
 impl Origin {
@@ -443,6 +450,19 @@ impl Origin {
         let mut rights = rights.clone();
         rights.areas.retain(|area, _| !self.without.contains(area));
         rights
+    }
+
+    /// The rights an allowed command of a client with `rights` runs with: [`Origin::narrow`]ed, and
+    /// for a bot that ran for the assistant (task B.2, [`Origin::behalf`]) in common with the
+    /// assistant's client's rights `behalf` (narrowed the same way). `None` when [`Origin::behalf`]
+    /// names a client and `behalf` is `None` (it was removed): then nothing runs.
+    pub fn effective(&self, rights: &Rights, behalf: Option<&Rights>) -> Option<Rights> {
+        let own = self.narrow(rights);
+        match (&self.behalf, behalf) {
+            (None, _) => Some(own),
+            (Some(_), Some(theirs)) => Some(own.common(&self.narrow(theirs))),
+            (Some(_), None) => None,
+        }
     }
 }
 
@@ -2909,7 +2929,7 @@ pub(crate) mod tests {
     async fn an_approval_keeps_where_its_request_came_from() {
         let dir = tempfile::tempdir().expect("temp dir");
         let approvals = quiet_in(dir.path());
-        let origin = Origin { engine: Some("claude-code".into()), without: vec![Area::Mail] };
+        let origin = Origin { engine: Some("claude-code".into()), without: vec![Area::Mail], behalf: None };
         let delete = |id: &str| Request::DeleteTemplate { id: id.into() };
         let kept = (None, None, origin.clone());
         let shown = || ("Delete".to_string(), Vec::new());
