@@ -766,3 +766,52 @@ R.1 ─┬─ R.2 ─┐
   im Fenster, die Mitte nimmt den Rest; wenige Einträge – Fuß unten wie bisher. Sichtprüfung auf
   macOS mit `--design plex`: Kalender `--open week` bei Höhe ~760, Steuerzentrale und Aufgaben in
   einem niedrigen Fenster – „Settings“ bleibt sichtbar, die Mitte rollt.
+
+## Rückmeldungen 2026-10-14
+
+### U.13 Rechte-Zeilen mit Stufen-Segmenten als ein Baustein
+- [x] erledigt (Sichtprüfung offscreen über Iceds `window::screenshot`, da der Bildschirm gesperrt war, hell:
+  `torroassistant --demo --open bot-access` bei 480 × 900 und 1100 × 900, `torroworkplace ui --demo --open
+  assistant-bot` und `--open agent-detail` bei 480 × 900 und 1400 × 1000 – alle sechs Bilder vorher und nachher
+  byte-gleich; mit `--design plex` stehen die Zeilen im Assistenten jetzt wie in der Steuerzentrale bei 16.
+  Gestapelt bricht die Zeile unter dem Namen in der Steuerzentrale jetzt auch mitten im Wort um
+  (`WordOrGlyph`, wie im Assistenten), wenn ein Wort nicht passt. Offen: Höhe 44/56 hängt weiter an
+  `size::header()` wie bei `group_row`; `one_line` in `torroworkplace/src/ui/mod.rs` gleicht dem privaten
+  `single_line` in `widgets.rs`; `segmented_width` steht noch einmal in `torroinbox/src/app.rs`)
+- **Modell:** Opus · **Braucht:** B.5 (`docs/tasks/assistent.md`), A.6 · **Dateien:**
+  `crates/torro-gui/src/widgets.rs`, `crates/torroassistant/src/view/editor.rs`,
+  `crates/torroworkplace/src/ui/agents.rs`, `docs/tasks/design.md`
+- Befund (Design-Review von B.5, Sollte-Punkt): Der Abschnitt „Access“ im Bot-Editor des Assistenten
+  baut die Rechte-Zeilen der Steuerzentrale (Agents & API) nach. Die Logik (`api::levels`,
+  `shows_area`, `active_level`, `has_command`) liegt schon gemeinsam in `torro_ipc::api`, der
+  Iced-Layout-Code steht aber zweimal: Breitenschätzung des Segment-Schalters (`segmented_width`),
+  Wörter der Stufen (`level_label`) und von „Ask first“ (`confirm_options`), die Entscheidung
+  „Spalte rechts oder gestapelt“ (`control_column`) und die Zeile selbst (`segment_row`/`stacked_row`
+  bzw. `AccessRow::view`).
+- Neu in `torro_gui::widgets` (Abschnitt „Rows with a segmented control“), einmal umgesetzt und von
+  beiden genutzt:
+  - `segmented_width(labels)` – geschätzte Breite eines `widgets::segmented` mit diesen Wörtern;
+  - `segment_column(slot, texts, width)` – `Some(slot)`, solange der längste Name und die längste
+    Zeile (`texts`) neben einer Spalte `slot` breit in eine Gruppe `width` breit passen
+    (16 + Text + 16 + Spalte + 16), sonst `None`;
+  - `segment_row(label, detail, control, column)` – mit Spalte eine Gruppenzeile (44, mit Zeile 56,
+    16 an den Seiten, Name und Zeile einzeilig), das Steuerelement links in der Spalte; ohne Spalte
+    Name, umbrechende Zeile und darunter das Steuerelement, Innenrand 12 × 16;
+  - `level_label(level)` und `confirm_options()` – die Wörter der Stufen und von „Ask first“.
+- Was nur eine Seite braucht, bleibt dort: die feste Spalte der Steuerzentrale (`segment_slot`, auch
+  „Send on my behalf“ und „All · Selected“), ihre Texte für die Passprüfung (auch die Admin-Schalter)
+  und `in_column` für Schalter; im Assistenten die Daten einer Zeile (`AccessRow`) und die Spalte
+  aus seinen eigenen Zeilen.
+- Aussehen und Verhalten bleiben gleich: gleiche Zeilenhöhe, Spalte rechts, gestapelt bei zu wenig
+  Platz, Innenränder 12 × 16. Einziger Unterschied: Mit einem Design-Paket, das `row_padding` ändert
+  (`designs/plex`: 20), hatten die Zeilen „Access“ des Assistenten neben der Spalte die Ränder des
+  Pakets, gestapelt aber 16; jetzt haben sie wie in der Steuerzentrale überall 16, passend zur
+  Passprüfung.
+- **Oberfläche:** ja (Bot-Editor, Agents & API), nur umgebaut. **API/MCP:** nicht betroffen – keine
+  neue Funktion und kein neuer Zustand; die Rechte laufen weiter über die bestehenden Requests
+  (`ListClients`, `UpdateClient`), also kein neuer Request und kein Katalogeintrag.
+- Neue Texte: keine (die Wörter ziehen nur um, `tr` bleibt gleich).
+- Abnahme: nur noch eine Umsetzung der Zeilen; Tests in `torro-gui` für `segment_column` (passt /
+  passt nicht) und `segmented_width`; die Tests der Steuerzentrale bleiben grün. Sichtprüfung
+  `torroassistant --demo --open bot-access` und `torroworkplace ui --demo --open assistant-bot`,
+  schmal und breit; danach `torro-design-review`.

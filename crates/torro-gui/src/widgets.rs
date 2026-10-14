@@ -5,7 +5,8 @@
 //! [`card_head`]), source tiles ([`source_tile`]) and the switch between the densities
 //! ([`density_switch`]). For figures and charts (task E8.8b, the hub's "Insights"): a figure tile
 //! ([`stat_tile`]), a stacked column chart with its legend ([`column_chart`], [`chart_legend`]), a
-//! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]).
+//! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
+//! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -59,6 +60,7 @@ use iced::{
 use iced::{border, keyboard, mouse};
 
 use torro_core::i18n::tr;
+use torro_ipc::api::{Confirm, Level};
 
 use crate::icon::{self, Icon, icon};
 use crate::layout;
@@ -2403,6 +2405,106 @@ pub fn group_row<'a, M: 'a>(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Rows with a segmented control (rights)
+// ---------------------------------------------------------------------------------------------
+//
+// The rights of an agent or a bot (task U.13): the control centre's "Agents & API" and the bot
+// editor of the assistant show them alike – a row per area with a [`segmented`] control of the
+// levels, all controls starting in one column at the right ([`segment_column`]), or, where a name
+// would not fit beside that column, each control on a line of its own under its name.
+
+/// The estimated width of a [`segmented`] control with `labels`: each label in `CAPTION` with the
+/// button padding, plus the frame's inset and border. `typo::text_width` estimates generously, so
+/// the control fits.
+pub fn segmented_width(labels: &[&str]) -> f32 {
+    let padding = style::button_padding().left + style::button_padding().right;
+    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding).sum();
+    segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
+}
+
+/// Where the rows put their segmented controls in a group `width` wide: `Some(slot)`, a column `slot`
+/// wide at the right of every row, while the longest name (`BODY`) and line (`META`) of `texts`
+/// fit beside it; `None` when they would not (a narrow window), then each control stands under its
+/// name ([`segment_row`]). Decided by what fits rather than by the size class, so longer
+/// translations hold too.
+pub fn segment_column<'t>(
+    slot: f32,
+    texts: impl IntoIterator<Item = (&'t str, Option<&'t str>)>,
+    width: f32,
+) -> Option<f32> {
+    let text = texts
+        .into_iter()
+        .flat_map(|(label, detail)| {
+            let detail = detail.map_or(0.0, |detail| typo::text_width(detail, typo::meta()));
+            [typo::text_width(label, typo::body()), detail]
+        })
+        .fold(0.0, f32::max);
+    // A row of a group: 16 at both sides and 16 between the text and the control.
+    (width >= 3.0 * space::l() + text + slot).then_some(slot)
+}
+
+/// A row of a settings [`group`] with a segmented `control`. With a `column` ([`segment_column`])
+/// the row is 44 high (56 with a `detail`), 16 at the sides, name and line on one line each, the
+/// control at the left of the column at the right. Without one the name, the line below it
+/// (wrapping) and the control on a line of its own under both; 12 above and below, 16 at the sides.
+/// The sides stay 16 in every design, the width [`segment_column`] reckons with.
+pub fn segment_row<'a, M: 'a>(
+    label: impl IntoFragment<'a>,
+    detail: Option<String>,
+    control: impl Into<Element<'a, M>>,
+    column: Option<f32>,
+) -> Element<'a, M> {
+    match column {
+        Some(slot) => {
+            let height = if detail.is_some() { size::header() + space::m() } else { size::header() };
+            let mut text = column![single_line(typo::text(typo::body(), label))];
+            if let Some(detail) = detail {
+                text = text.push(single_line(typo::text(typo::meta(), detail).style(theme::text_2)));
+            }
+            let row = row![text.width(Fill), container(control).width(slot)].spacing(space::l());
+            container(row.align_y(Alignment::Center)).width(Fill).center_y(height).padding([0.0, space::l()]).into()
+        }
+        None => {
+            let mut lines = column![typo::text(typo::body(), label)];
+            if let Some(detail) = detail {
+                lines =
+                    lines.push(typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+            }
+            container(column![lines, control.into()].spacing(space::s()))
+                .width(Fill)
+                .padding([space::m(), space::l()])
+                .into()
+        }
+    }
+}
+
+/// `text` on one line, as wide as there is room, clipped rather than wrapped: a name or line of a
+/// [`segment_row`] beside the column, where [`segment_column`] made sure it fits – so an estimate
+/// a little short never makes the row taller.
+fn single_line<'a, M: 'a>(text: iced::widget::Text<'a>) -> Element<'a, M> {
+    container(text.wrapping(Wrapping::None)).width(Fill).clip(true).into()
+}
+
+/// The word of a rights level on its segment.
+pub fn level_label(level: Level) -> &'static str {
+    match level {
+        Level::NoAccess => tr("None"),
+        Level::Read => tr("Read"),
+        Level::Write => tr("Write"),
+        Level::Full => tr("Full"),
+    }
+}
+
+/// The options of "Ask first", in the order the control shows them.
+pub fn confirm_options() -> [(&'static str, Confirm); 3] {
+    [
+        (tr("Never"), Confirm::Never),
+        (tr("On delete"), Confirm::OnDelete),
+        (tr("On every change"), Confirm::OnEveryChange),
+    ]
+}
+
+// ---------------------------------------------------------------------------------------------
 // Page width and view states
 // ---------------------------------------------------------------------------------------------
 
@@ -2958,6 +3060,36 @@ mod tests {
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
         Rectangle { x, y, width, height }
+    }
+
+    /// Task U.13: a segmented control is as wide as its words with their padding and the frame.
+    #[test]
+    fn a_segmented_control_grows_with_its_words() {
+        let one = segmented_width(&[tr("Read")]);
+        let two = segmented_width(&[tr("Read"), tr("Write")]);
+        assert!(one > typo::text_width(tr("Read"), typo::caption()));
+        assert!(two > one);
+        let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(level_label);
+        let confirm = confirm_options().map(|(label, _)| label);
+        assert!(segmented_width(&levels) < size::content_max() / 2.0, "leaves room for a name");
+        assert!(segmented_width(&confirm) < size::content_max() / 2.0, "leaves room for a name");
+    }
+
+    /// Task U.13: the controls stand in a column while the longest name and line fit beside it, and
+    /// on lines of their own once they would not – a long line alone decides it too.
+    #[test]
+    fn the_column_holds_while_the_texts_fit_beside_it() {
+        let slot = segmented_width(&[tr("None"), tr("Read"), tr("Write"), tr("Full")]);
+        let texts = [(tr("Calendar"), Some(tr("Events and calendars"))), (tr("Ask first"), None)];
+        let text = typo::text_width(tr("Events and calendars"), typo::meta())
+            .max(typo::text_width(tr("Calendar"), typo::body()))
+            .max(typo::text_width(tr("Ask first"), typo::body()));
+        let room = 3.0 * space::l() + text + slot;
+        assert_eq!(segment_column(slot, texts, room), Some(slot));
+        assert_eq!(segment_column(slot, texts, room - 1.0), None);
+        assert_eq!(segment_column(slot, texts, size::content_max()), Some(slot));
+        let long = "A line much longer than any name, as a translation might make it, so that it cannot fit";
+        assert_eq!(segment_column(slot, [(tr("Calendar"), Some(long))], size::form_max()), None);
     }
 
     /// Task E8.8b: the y-axis ends at or above the largest column in at most four round steps.
