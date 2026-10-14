@@ -13,7 +13,7 @@ NAME="Torro Development"
 
 if [ $# -eq 0 ]; then
     root="$(cd "$(dirname "$0")/.." && pwd)"
-    for name in torroworkplace torrocalendar torrotasks torroinbox; do
+    for name in torroworkplace torrocalendar torrotasks torroinbox torroassistant; do
         [ -x "$root/target/debug/$name" ] && set -- "$@" "$root/target/debug/$name"
     done
 fi

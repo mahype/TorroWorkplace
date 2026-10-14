@@ -5335,6 +5335,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "torroassistant"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "iced",
+ "serde_json",
+ "torro-core",
+ "torro-gui",
+ "torro-ipc",
+ "webbrowser",
+]
+
+[[package]]
 name = "torrocalendar"
 version = "0.1.0"
 dependencies = [
