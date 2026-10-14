@@ -351,13 +351,27 @@ fn the_first_start_asks_to_set_up_the_assistant() {
     let mut app = started(&["--open", "setup"]);
     assert_eq!(app.access, Access::Missing);
     assert!(app.switchable().is_empty(), "without a client there is nothing to switch off");
+    sent(&mut app);
     let _ = app.update(Message::SetUp);
-    // "Set up access" opens the control centre (`apps.open_app`), through the suite.
-    assert_eq!(app.menu, None);
+    // "Set up access" opens the control centre's page "Assistant" itself, no request.
+    assert_eq!(app.sections, [ASSISTANT_PAGE]);
+    assert!(sent(&mut app).is_empty());
 
-    let none = started(&["--open", "no-engines"]);
+    let mut none = started(&["--open", "no-engines"]);
     assert!(none.engines_loaded && none.engines.is_empty());
     assert_eq!(none.choice, None, "nothing can answer");
+    let _ = none.update(Message::OpenSettings);
+    assert_eq!(none.sections, [ACCOUNTS_PAGE], "\"Add an AI account\" opens the accounts");
+}
+
+#[test]
+fn change_access_under_a_refused_tool_opens_the_assistant_page() {
+    let mut app = started(&["--open", "forbidden"]);
+    let _ = app.view();
+    let _ = app.update(Message::SetUp);
+    assert_eq!(app.sections, ["assistant"]);
+    assert_eq!(ASSISTANT_PAGE, "assistant", "the section `torroworkplace ui` takes");
+    assert_eq!(ACCOUNTS_PAGE, "accounts");
 }
 
 #[test]

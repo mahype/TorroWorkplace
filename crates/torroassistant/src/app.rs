@@ -23,9 +23,10 @@
 //! still writing comes again and again under the same number and replaces itself.
 //!
 //! First start: without the client "Assistant" (`clients.list_clients`) a new chat asks the person
-//! to choose what the assistant may use, with a button that opens the control centre
-//! (`apps.open_app` torroworkplace; its page "Assistant" is task C.6). Without an AI account it says
-//! so and opens the accounts page.
+//! to choose what the assistant may use, with a button that opens the control centre on its page
+//! "Assistant" (`torroworkplace ui --section assistant`, task C.6); "Change access" under a refused
+//! tool opens the same page. Without an AI account it says so and opens the accounts page
+//! (`--section accounts`).
 //!
 //! Mini and strip tiles show the newest answer and a one-line composer, nothing else.
 
@@ -40,7 +41,6 @@ use iced::{Size, Subscription, Task, Theme, keyboard};
 use torro_core::AppId;
 use torro_core::ai::AiModel;
 use torro_core::i18n::{tr, trf};
-use torro_gui::connect;
 use torro_gui::design::{self, Follow};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::{self, SidebarMode, Switcher};
@@ -92,6 +92,11 @@ pub const MINI_INPUT: &str = "assistant-mini";
 pub const SEARCH: &str = "assistant-search";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
+/// The control centre's page "Assistant" (task C.6): what the assistant may use.
+pub const ASSISTANT_PAGE: &str = "assistant";
+/// The control centre's page of the accounts, where AI accounts are added.
+pub const ACCOUNTS_PAGE: &str = "accounts";
+
 /// The id of the scrolling entries of the open conversation.
 pub const HISTORY: &str = "assistant-history";
 
@@ -242,9 +247,10 @@ pub enum Message {
     /// Start or raise another app of the suite.
     OpenApp(String),
     AppOpened(Result<(), String>),
-    /// "Set up access": the control centre, where the person chooses the assistant's rights.
+    /// "Set up access", "Change access": the control centre's page "Assistant" (task C.6), where
+    /// the person chooses what the assistant may use.
     SetUp,
-    /// "Add an AI account", "Settings": the control centre.
+    /// "Add an AI account", "Settings": the control centre's accounts.
     OpenSettings,
     /// A link in an answer.
     OpenLink(String),
@@ -330,6 +336,9 @@ pub struct App {
     pub(crate) design: Follow,
     #[cfg(test)]
     pub(crate) sent: Sent,
+    /// The control centre's pages the window opened, for the tests.
+    #[cfg(test)]
+    pub(crate) sections: Vec<&'static str>,
 }
 
 impl App {
@@ -387,6 +396,8 @@ impl App {
             launch,
             #[cfg(test)]
             sent: Vec::new(),
+            #[cfg(test)]
+            sections: Vec::new(),
         };
         let size = Task::batch([
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
@@ -601,13 +612,8 @@ impl App {
             }
             Message::AppOpened(Ok(())) => {}
             Message::AppOpened(Err(err)) => self.note(format!("{} {err}", tr("Couldn't open the app."))),
-            Message::SetUp => return self.update(Message::OpenApp(AppId::WORKPLACE.binary.to_owned())),
-            Message::OpenSettings => {
-                self.close_menus();
-                if !self.launch.demo {
-                    connect::open_settings();
-                }
-            }
+            Message::SetUp => self.open_section(ASSISTANT_PAGE),
+            Message::OpenSettings => self.open_section(ACCOUNTS_PAGE),
             Message::OpenLink(url) => return open_link(url),
             Message::Retry => {
                 self.list_error = None;
@@ -1133,6 +1139,18 @@ impl App {
             Ok(models) => Ok(chat::tool_models(models)),
             Err(err) => Err(err.as_str()),
         })
+    }
+
+    /// Opens the control centre on `section` (`torroworkplace ui --section …`); nothing starts in
+    /// the demo or in tests.
+    fn open_section(&mut self, section: &'static str) {
+        self.close_menus();
+        #[cfg(test)]
+        self.sections.push(section);
+        #[cfg(not(test))]
+        if !self.launch.demo {
+            torro_gui::connect::open_section(section);
+        }
     }
 
     /// A notice at the bottom of the window.
