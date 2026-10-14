@@ -703,6 +703,32 @@ impl TokenStore for NoKeychain {
     }
 }
 
+/// How the inbox's Nextcloud sources reach one account's server ([`PimService::nextcloud_access`],
+/// tasks E5.8, E5.9).
+#[derive(Clone)]
+pub struct NextcloudAccess {
+    /// The OCS client: the account's server, login name and app password (never shown by `Debug`).
+    pub client: torro_nextcloud::Nextcloud,
+    /// Which sign-in `client` speaks with: the SHA-256 of the app password, so it changes with
+    /// every new sign-in. A source that the server refused (401) waits until this differs instead
+    /// of asking again with the same password (Nextcloud's brute-force protection would hit the
+    /// person). Kept in memory, never logged.
+    pub sign_in: [u8; 32],
+}
+
+impl fmt::Debug for NextcloudAccess {
+    /// Without [`NextcloudAccess::sign_in`]: it is derived from the app password.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NextcloudAccess").field("client", &self.client).finish_non_exhaustive()
+    }
+}
+
+/// [`NextcloudAccess::sign_in`] of `app_password`.
+fn sign_in_of(app_password: &Secret) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(app_password.expose().as_bytes()).into()
+}
+
 /// See the module docs.
 #[derive(Debug)]
 pub struct PimService {
@@ -1256,6 +1282,32 @@ impl PimService {
             }
         }
         accounts
+    }
+
+    /// The ids of the Nextcloud accounts (kind `nextcloud`; neither CalDAV nor mail accounts), in
+    /// the order of `accounts.json`, also those without their app password. For the inbox's
+    /// Nextcloud sources (tasks E5.8, E5.9, `crate::sources`): one source per id. Empty until the
+    /// stored accounts are loaded ([`PimService::start`]).
+    pub async fn nextcloud_accounts(&self) -> Vec<String> {
+        let state = self.state.read().await;
+        state.accounts.iter().filter(|slot| slot.is_nextcloud()).map(|slot| slot.id().to_string()).collect()
+    }
+
+    /// What the inbox's Nextcloud sources need to ask the server of account `id` over OCS (tasks
+    /// E5.8, E5.9), like [`crate::account::github::GithubAccounts::api`] for GitHub: a client with
+    /// the account's server, login name and app password, which stays inside it and the core.
+    /// `None` for an unknown id, an account of another kind, one without its app password (it
+    /// needs a new sign-in) or a server address the client refuses.
+    pub async fn nextcloud_access(&self, id: &str) -> Option<NextcloudAccess> {
+        let state = self.state.read().await;
+        let slot = state.slot(id).filter(|slot| slot.is_nextcloud())?;
+        let Connected { account, app_password } = &slot.connected;
+        if app_password.is_blank() {
+            return None;
+        }
+        let client =
+            torro_nextcloud::Nextcloud::new(&account.server, &account.login_name, app_password.clone()).ok()?;
+        Some(NextcloudAccess { client, sign_in: sign_in_of(app_password) })
     }
 
     /// Removes the account `id` and nothing else: revokes its app password on the server (best

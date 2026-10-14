@@ -473,7 +473,14 @@ Ausblenden und Stummschalten wirken nie zurück. Die Freigabe nennt es („… a
 nennt in `health`, warum eine fremde Quelle gerade nichts bringt (`missing_app`, `missing_scope`, `signed_out`,
 `offline`), auch ohne Einträge; nur im Speicher. **Konto entfernt:** Die offenen Einträge der Quelle (bei Nextcloud
 auch die von Talk) sind erledigt, Statistik, Lesestand (`cursors`) und Kennungen gehen mit, und die Quelle
-verschwindet aus den Rechten aller Clients. **Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
+verschwindet aus den Rechten aller Clients. **Nextcloud (E5.8):** je Nextcloud-Konto (nicht CalDAV, nicht Mail) alle 60
+s die Benachrichtigungen mit ETag (`304` = nichts Neues), die Capabilities beim Start und stündlich; die erste Abfrage
+legt nur die letzten 3 Tage ab, was während des Stummschaltens kam, nie. Ein Eintrag je Gegenstand
+(`<app>:<object_type>:<object_id>`, zu lang: Prüfsumme), Kennungen = Ids der Benachrichtigungen, Merkmale `app` und
+`person`, Spur aus `rules::nextcloud_place`, Link nur auf dem Origin des Kontos. Fehlt eine Id in der Liste, ist sie
+gestrichen; weil Nextcloud höchstens die 25 neuesten liefert, streicht eine volle Liste nur Ids, die neuer sind als ihre
+älteste. 401/403 → `signed_out`, keine Abfrage bis zur neuen Anmeldung; 503 wartet, 429 so lange wie verlangt; ohne App
+`missing_app`. **Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
 wie Mail nur als Kennung; GitHub und ntfy gehen durch (bis KI.1). Das Protokoll nennt wie immer nur die Kennung des
 Eintrags, nie Titel, Text oder Merkmalswerte.
 

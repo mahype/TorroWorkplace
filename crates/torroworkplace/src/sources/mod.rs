@@ -54,7 +54,6 @@ pub struct Sources {
     pub github: Arc<GithubAccounts>,
     /// The calendar service, which holds the Nextcloud accounts and their app passwords (tasks E5.8,
     /// E5.9: `PimService::nextcloud_access`).
-    #[allow(dead_code, reason = "read by the sources of tasks E5.8 and E5.9")]
     pub pim: Arc<PimService>,
 }
 

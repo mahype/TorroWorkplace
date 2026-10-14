@@ -169,7 +169,7 @@ einrichten, ohne Freigabe einer Firma oder eine bei Torro registrierte App.
 | **Codex CLI** | Hooks (`Stop`, `PermissionRequest` …) oder `notify` | indirekt | wie Claude Code |
 | **Gemini CLI, Cursor** | Hooks (`Notification` bzw. `stop`) | nein | Cursor hat keinen Hook für „wartet“ |
 | **Mail** | IMAP IDLE aus dem Mail-Kern ([mail.md](mail.md)) | gelesen, archivieren | größte Quelle |
-| **Nextcloud** | Benachrichtigungen (OCS) und Talk (ungelesen, Erwähnungen); Push über `notify_push`, sonst Abfrage | ja (löschen, gelesen) | Konto gibt es schon, steht in [api.md](api.md) als vorgemerkt |
+| **Nextcloud** | Benachrichtigungen (OCS) und Talk (ungelesen, Erwähnungen); Push über `notify_push`, sonst Abfrage | ja (löschen, gelesen) | Konto gibt es schon. Benachrichtigungen seit E5.8: je Konto alle 60 s mit ETag, ein Eintrag je Gegenstand (`<app>:<object_type>:<object_id>`), Erledigt löscht sie auf dem Server ([api.md](api.md), Fußnote 17) |
 | **GitHub** | `GET /notifications`, Grund je Eintrag (`review_requested`, `mention`, `ci_activity`, `agent_session_finished` …), Abfrage im Takt von `X-Poll-Interval` | ja („done“ = Thread löschen) | Konto ist in [settings.md](settings.md) geplant; braucht klassisches Token mit `notifications` |
 | **ntfy / Gotify** | Themen abonnieren (JSON-Strom/WebSocket) | nein | **Universeller Eingang** für alles, was selbst melden kann: CI, Home Assistant, Uptime Kuma, cron, eigene Skripte. Löst auch „Webhook braucht öffentliche URL“: Webhooks gehen an ntfy, der Kern abonniert |
 | **Eigene Skripte** | `torroworkplace notify --title … --source backup` bzw. `inbox.post_item` mit Skript-Schlüssel | – | eine Zeile Shell |

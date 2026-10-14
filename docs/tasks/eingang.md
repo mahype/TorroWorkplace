@@ -1620,7 +1620,7 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   fehlt), 503, DELETE, `read`; Link mit fremdem Origin verworfen; Platzhalter ersetzt; App-Passwort nie in `Debug`.
 
 ### E5.8 Nextcloud-Benachrichtigungen als Quelle
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `PimService::{nextcloud_accounts, nextcloud_access}` mit `NextcloudAccess` (Client und `sign_in` = SHA-256 des App-Passworts, damit 401 bis zur neuen Anmeldung pausiert); je Konto eine Schleife, Lesestand `etag` und `since` (erste Abfrage 3 Tage, beim Stummschalten auf jetzt); Nextcloud liefert höchstens die 25 neuesten, darum streicht eine volle Liste nur Ids über ihrer ältesten; `wanted` als Stelle für E5.9; `#[allow(dead_code)]` der Ablage in `inbox.rs` entfernt)
 - **Modell:** Opus · **Braucht:** E5.2, E5.7 · **Dateien:** `crates/torroworkplace/src/sources/nextcloud.rs`,
   `crates/torroworkplace/src/pim.rs` (nur `PimService::nextcloud_access(id)` und die Liste der Nextcloud-Konten, wie
   `GithubAccounts::api`), `crates/torroworkplace/Cargo.toml`; Doku: `docs/{api,eingang}.md`
