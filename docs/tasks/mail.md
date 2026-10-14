@@ -491,6 +491,14 @@ ihre Texte im Bericht.
 - **API/MCP:** nutzt vorhandene Befehle.
 - **Abnahme:** Sichtprüfung Mini/Leiste, Tests der Nachrichten.
 
+### E4.5 Schreibfenster über die ganze Breite (Issue #124)
+- [x] erledigt (2026-10-14: `compose.rs` nimmt dem Formular die Lesebreite `size::content_max()`; Felder, Text und
+  Signatur füllen die Breite der Kachel, Beschriftungen bleiben links in ihrer Spalte. Sichtprüfung auf macOS nur in
+  der Startgröße möglich – Fenstergröße lässt sich ohne Bedienungshilfen-Recht nicht setzen)
+- **Modell:** Sonnet · **Braucht:** E4.3 · **Dateien:** `crates/torroinbox/src/compose.rs`
+- **Oberfläche:** Schreibfenster (Neu, Antworten, Weiterleiten). **API/MCP:** keine – Darstellung.
+- **Abnahme:** Sichtprüfung Schmal/Mittel/Breit.
+
 ### M5.1 Steuerzentrale: Mail-Konto im Assistenten
 - [x] erledigt
 - **Modell:** Sonnet · **Braucht:** M2.7, M7.2 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,accounts}.rs`
