@@ -546,6 +546,8 @@ const IDEMPOTENT: &[&str] = &[
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
     "accounts.update_mail_account",
+    // Subscribing the same topic with the same label again changes nothing (task E5.12).
+    "accounts.set_ntfy_topic",
     "mail.set_flags",
     "mail.move_messages",
 ];
@@ -1146,6 +1148,28 @@ mod tests {
             assert_eq!(hints(name).and_then(|h| h.destructive_hint), Some(true), "{name}");
         }
         assert_eq!(hints("workspaces_save_template").and_then(|h| h.destructive_hint), Some(false));
+    }
+
+    /// Task E5.12: an agent may ask for ntfy and change topics, but never hands in a login.
+    #[test]
+    fn agents_may_ask_for_ntfy_and_change_topics_but_never_hand_in_a_login() {
+        let topics = json!([{"topic": "backups", "label": "Backups"}]);
+        let connect = request_for("accounts_connect_ntfy", args(json!({"server": "ntfy.sh", "topics": topics})), &Utc);
+        let backups = torro_ipc::NtfyTopic { topic: "backups".into(), label: "Backups".into() };
+        assert_eq!(connect, Ok(Request::ConnectNtfy { server: "ntfy.sh".into(), topics: vec![backups] }));
+        let leave = args(json!({"account": "ntfy:ntfy.sh", "topic": "backups", "subscribed": false}));
+        assert_eq!(
+            request_for("accounts_set_ntfy_topic", leave, &Utc),
+            Ok(Request::SetNtfyTopic {
+                account: "ntfy:ntfy.sh".into(),
+                topic: "backups".into(),
+                label: None,
+                subscribed: false
+            })
+        );
+        let login = args(json!({"server": "ntfy.sh", "secret": "tk_x"}));
+        assert_eq!(request_for("accounts_set_ntfy_login", login, &Utc), Err(ToolError::UnknownTool));
+        assert!(tools().iter().all(|tool| tool.name != "accounts_set_ntfy_login"));
     }
 
     #[test]

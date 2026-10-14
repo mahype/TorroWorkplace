@@ -1635,6 +1635,7 @@ mod tests {
             collections: Vec::new(),
             scopes: None,
             mail: None,
+            ntfy: None,
         }
     }
 

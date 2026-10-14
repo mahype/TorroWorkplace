@@ -320,6 +320,7 @@ mod tests {
             collections: vec![collection(), calendar(), list()],
             scopes: None,
             mail: None,
+            ntfy: None,
         }
     }
 

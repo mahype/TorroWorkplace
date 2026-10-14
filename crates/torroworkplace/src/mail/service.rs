@@ -779,6 +779,7 @@ impl Mailbox {
             collections: Vec::new(),
             scopes: None,
             mail: Some(view),
+            ntfy: None,
         }
     }
 

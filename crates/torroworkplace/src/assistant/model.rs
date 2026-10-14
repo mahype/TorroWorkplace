@@ -487,6 +487,8 @@ impl Answering {
             "inbox.create_event_from_item" => vec![tool.command.area, Area::Calendar],
             "tasks.create_todo_from_mail" => vec![tool.command.area, Area::Mail],
             "mail.respond_to_invitation" => vec![Area::Mail, Area::Calendar],
+            // A topic decides what reaches the inbox (task E5.12, approval 16).
+            "accounts.set_ntfy_topic" => vec![Area::Accounts, Area::Inbox],
             _ => vec![tool.command.area],
         };
         if let Some(area) = touched.into_iter().find(|area| self.job.without.contains(area)) {

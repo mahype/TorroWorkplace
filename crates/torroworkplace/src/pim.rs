@@ -298,6 +298,7 @@ impl Slot {
             collections: self.collections.clone(),
             scopes: None,
             mail: None,
+            ntfy: None,
         }
     }
 }
@@ -1140,6 +1141,8 @@ impl PimService {
             | Request::SendDraft { .. } => return None,
             // No collection: AI accounts have none (task KI.1a).
             Request::ConnectAi { .. } | Request::AiModels { .. } | Request::FindAiServers => return None,
+            // No collection: ntfy accounts have topics only (task E5.12).
+            Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. } => return None,
             // No collection: the assistant's conversations are its own (task C.1).
             Request::ListEngines
             | Request::ListConversations
@@ -3396,6 +3399,7 @@ fn account_infos(state: &State) -> Vec<AccountInfo> {
             collections: Vec::new(),
             scopes: None,
             mail: None,
+            ntfy: None,
         });
     }
     infos
@@ -3935,6 +3939,7 @@ pub(crate) mod tests {
                 collections: vec![],
                 scopes: None,
                 mail: None,
+                ntfy: None,
             }
         );
     }
@@ -3963,6 +3968,7 @@ pub(crate) mod tests {
                 collections: vec![collection(&cal("work")), collection(&cal("home"))],
                 scopes: None,
                 mail: None,
+                ntfy: None,
             }]
         );
     }

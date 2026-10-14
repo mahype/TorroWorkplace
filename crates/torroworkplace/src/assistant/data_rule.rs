@@ -368,6 +368,22 @@ mod tests {
         assert!(for_model(&Request::GetItem { id: "t1".into() }, &one, Place::Remote).withheld);
     }
 
+    /// Task E5.12: a topic's name is a password on a public server. The assistant lists accounts
+    /// with its own client key, which gets the labels only, so a model elsewhere never reads a name.
+    #[tokio::test]
+    async fn a_remote_model_reads_ntfy_topics_by_their_labels_only() {
+        use crate::account::ntfy::tests::{fake_ntfy, service, topic};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = fake_ntfy().await;
+        let ntfy = service(dir.path(), &crate::account::github::tests::MemoryTokens::default());
+        let base = format!("http://127.0.0.1:{}", server.port());
+        ntfy.connect(&base, &[topic("open_backups", "Backups")]).await.expect("connected");
+
+        let accounts = Response::Accounts { accounts: ntfy.infos(false).await };
+        let screened = for_model(&Request::Accounts, &accounts, Place::Remote).value.to_string();
+        assert!(!screened.contains("open_backups") && screened.contains("Backups"), "{screened}");
+    }
+
     /// Task E8.3c: the invitation a mail entry carries is the mail's content and goes with the rest
     /// of the entry – a model elsewhere reads neither its title nor when it is.
     #[test]

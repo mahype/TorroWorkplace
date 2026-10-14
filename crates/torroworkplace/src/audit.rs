@@ -304,6 +304,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.
         Request::ConnectAi { .. } | Request::FindAiServers => Vec::new(),
+        // ntfy (task E5.12): never the address, a topic or the login; a topic's account only.
+        Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } => Vec::new(),
+        Request::SetNtfyTopic { account: name, .. } => vec![account(name)],
         Request::AiModels { account: name, .. } => vec![account(name)],
         Request::UpdateMailAccount { id: name, .. } => vec![account(name)],
         // The assistant (task C.1): the conversation as the core made it, and for a message the

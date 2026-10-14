@@ -31,6 +31,7 @@ use torro_wm::{Backend, Events, NoWindow, WindowManager, WmError};
 
 use crate::account::ai::AiAccounts;
 use crate::account::github::{GithubAccounts, GithubError};
+use crate::account::ntfy::NtfyAccounts;
 use crate::account::torromail::TorroMail;
 use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
 use crate::apps::Listener;
@@ -784,6 +785,10 @@ pub struct Core {
     /// The AI accounts (task KI.1a), kept apart like the GitHub accounts: the user's
     /// ([`AiAccounts::system`]), loaded only by [`Core::start`]; tests bring their own.
     ai: Arc<AiAccounts>,
+    /// The ntfy accounts (task E5.12), kept apart like the AI accounts: the user's
+    /// ([`NtfyAccounts::system`]), loaded only by [`Core::start`]; tests bring their own. The
+    /// inbox's ntfy source subscribes to their topics (task E5.13).
+    ntfy: Arc<NtfyAccounts>,
     /// The mail accounts (task M2.6): their sync, command connections and stores. The user's
     /// ([`MailService::system`]), loaded only by [`Core::start`]; tests use their own, and one
     /// without a home directory unless they bring it ([`MailService::without_home`]).
@@ -849,6 +854,7 @@ impl Core {
             audit: Arc::new(Audit::system()),
             github: Arc::new(GithubAccounts::system()),
             ai: Arc::new(AiAccounts::system()),
+            ntfy: Arc::new(NtfyAccounts::system()),
             mail,
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
@@ -974,6 +980,7 @@ impl Core {
         });
         self.github.start();
         self.ai.start();
+        self.ntfy.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
         self.mail.start();
         // GitHub, Nextcloud, Talk and ntfy in the inbox (task E5.2).
@@ -1464,7 +1471,10 @@ impl Core {
         if let Request::SaveDraft { draft } = request {
             return Ok(self.save_draft(draft, reach, DraftAuthor::Client(id)).await);
         }
-        Ok(self.handle_within(request, reach).await)
+        // Boxed: `handle_within` is a large future, and a client's request can run it again inside
+        // (the inbox's quiet asks the core for settings and events); on the stack both no longer
+        // fit a test thread's in debug builds.
+        Ok(Box::pin(self.handle_within(request, reach)).await)
     }
 
     /// Whether `operation` from the client `id` would let the assistant drive itself or a bot start a
@@ -1821,6 +1831,12 @@ impl Core {
             | Request::CreateTaskList { account, .. } => {
                 let accounts = self.accounts_within(Reach::Suite).await;
                 Facts { name: accounts.into_iter().find(|a| a.id == *account).map(|a| a.label), ..Facts::default() }
+            }
+            // The account by its label (its server), the topic by the label the account keeps for it,
+            // never by its name (task E5.12).
+            Request::SetNtfyTopic { account, topic, .. } => {
+                let name = self.ntfy.infos(false).await.into_iter().find(|a| a.id == *account).map(|a| a.label);
+                Facts { name, topic: self.ntfy.label_of(account, topic.as_str()).await, ..Facts::default() }
             }
             // A note by its text as the memory keeps it (task C.10), the profile by its stored name;
             // looked up after the client's reach was checked, so a note it may not see is unknown.
@@ -2285,6 +2301,11 @@ impl Core {
                     Ok(account) => Response::Account { account },
                     Err(err) => ai_error(&err),
                 }
+            }
+            // Boxed and apart, so this match grows by one arm only: its poll frame is deep in the
+            // stack already when an approved command or the inbox's quiet runs it again.
+            request @ (Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. }) => {
+                Box::pin(self.ntfy_request(request, client)).await
             }
             Request::AiModels { account, all } => match self.ai.models(&account, all).await {
                 Ok(models) => Response::AiModels { models },
@@ -3168,6 +3189,8 @@ impl Core {
         }
         others.extend(github);
         others.extend(self.ai.infos().await);
+        // The topics' names are passwords on a public server: only the app key sees them (task E5.12).
+        others.extend(self.ntfy.infos(matches!(reach, Reach::Suite)).await);
         let at = accounts.iter().position(|account| account.id.is_empty()).unwrap_or(accounts.len());
         accounts.splice(at..at, others);
         accounts
@@ -3608,8 +3631,8 @@ impl Core {
         Response::Ok
     }
 
-    /// `accounts.remove_account` (tasks M1.4, G.1, M7.1, M2.7): a GitHub account with its filter
-    /// lists, a mail account ([`Core::remove_mail_account`]), else a Nextcloud or CalDAV account
+    /// `accounts.remove_account` (tasks M1.4, G.1, M7.1, M2.7, E5.12): a GitHub account with its
+    /// filter lists, an AI or ntfy account, a mail account ([`Core::remove_mail_account`]), else a Nextcloud or CalDAV account
     /// (`PimService::remove_account`).
     ///
     /// An id the core does not know is `not-found`, and nothing changes. Otherwise the account
@@ -3646,6 +3669,16 @@ impl Core {
         if self.ai.knows(id).await {
             return match self.ai.remove(id).await {
                 Ok(()) => Response::Ok,
+                Err(message) => refusal("error", message),
+            };
+        }
+        // Its secret and its inbox entries go with it; its subscription ends (task E5.12).
+        if self.ntfy.knows(id).await {
+            return match self.ntfy.remove(id).await {
+                Ok(()) => {
+                    self.retire_sources(id, &known);
+                    Response::Ok
+                }
                 Err(message) => refusal("error", message),
             };
         }
@@ -3765,6 +3798,45 @@ impl Core {
         match show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await {
             Ok(()) => Response::Opened,
             Err(message) => Response::Error { code: "error".into(), message },
+        }
+    }
+
+    /// The ntfy commands (task E5.12), `client` for a client key's:
+    ///
+    /// - `accounts.connect_ntfy`: the control centre (app key) checks the server and the topics and
+    ///   adds the account ([`NtfyAccounts::connect`]). A client never does: the core shows the
+    ///   person the accounts page ([`show_control_centre`]), answers `opened` and stores nothing, as
+    ///   for `accounts.connect_github`.
+    /// - `accounts.set_ntfy_login` ([`NtfyAccounts::set_login`]): a client never gets here
+    ///   (`Rights::allows`, rule 5), it would hand in a secret.
+    /// - `accounts.set_ntfy_topic` ([`NtfyAccounts::set_topic`]), answered `ok`.
+    ///
+    /// Every change runs under the lock of the other sign-ins, so no two write `accounts.json` at
+    /// once. Any other request is not this function's and gets `error`.
+    async fn ntfy_request(&self, request: Request, client: bool) -> Response {
+        if client && matches!(request, Request::ConnectNtfy { .. }) {
+            return match show_control_centre(&self.backend, Section::Accounts, self.start_control_centre).await {
+                Ok(()) => Response::Opened,
+                Err(message) => Response::Error { code: "error".into(), message },
+            };
+        }
+        let _writing = self.calendar_sign_ins.lock().await;
+        let answer = match request {
+            Request::ConnectNtfy { server, topics } => self.ntfy.connect(&server, &topics).await,
+            Request::SetNtfyLogin { server, topics, user, secret } => {
+                self.ntfy.set_login(&server, &topics, user.as_deref(), &secret).await
+            }
+            Request::SetNtfyTopic { account, topic, label, subscribed } => {
+                return match self.ntfy.set_topic(&account, topic.as_str(), label.as_deref(), subscribed).await {
+                    Ok(()) => Response::Ok,
+                    Err(err) => err.response(),
+                };
+            }
+            other => return refusal("error", format!("{} is no ntfy command", other.operation().name())),
+        };
+        match answer {
+            Ok(account) => Response::Account { account },
+            Err(err) => err.response(),
         }
     }
 
@@ -10215,6 +10287,7 @@ mod tests {
             collections,
             scopes: None,
             mail: None,
+            ntfy: None,
         };
         let work = torro_pim::Collection {
             id: format!("{ANNA_MAIL}/https://dav.example.org/work/"),
@@ -12888,5 +12961,201 @@ mod tests {
             assert_eq!(code(&stale), "conflict");
             assert_eq!((room.smtp.sent().len(), deleted_on(&room.fake)), (1, 0));
         }
+    }
+
+    // ----- ntfy accounts (task E5.12) ---------------------------------------------------------
+
+    use crate::account::ntfy::tests::{PASSWORD as NTFY_PASSWORD, fake_ntfy, topic as ntfy_topic};
+
+    /// How often a test core with ntfy accounts started the control centre's accounts page; apart
+    /// from [`ACCOUNT_PAGES`], since tests run side by side.
+    static NTFY_PAGES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn count_ntfy_page(_: Section) -> Result<(), String> {
+        NTFY_PAGES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// [`audited`] with ntfy accounts in `dir` on the keychain `secrets`, and a counter instead of
+    /// starting the control centre.
+    fn core_with_ntfy(dir: &std::path::Path, secrets: &MemoryTokens) -> Core {
+        Core {
+            ntfy: Arc::new(crate::account::ntfy::tests::service(dir, secrets)),
+            start_control_centre: count_ntfy_page,
+            ..audited(dir)
+        }
+    }
+
+    fn ntfy_base(server: &httpmock::MockServer) -> String {
+        format!("http://127.0.0.1:{}", server.port())
+    }
+
+    /// The app key connects an ntfy account, signs in, sees the topics' names and removes it; a
+    /// client sees only the labels, and its entries are done once the account is gone.
+    #[tokio::test]
+    async fn the_control_centre_connects_ntfy_and_only_the_app_key_sees_the_topic_names() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secrets = MemoryTokens::default();
+        let server = fake_ntfy().await;
+        let core = core_with_ntfy(dir.path(), &secrets);
+        let app_key = crate::clients::tests::app_key(dir.path());
+
+        let connect =
+            Request::ConnectNtfy { server: ntfy_base(&server), topics: vec![ntfy_topic("open_backups", "Backups")] };
+        let Response::Account { account } = ask(&core, Some(&app_key), connect.clone()).await else {
+            panic!("connecting answers with the account")
+        };
+        assert_eq!((account.kind.as_str(), account.id.clone()), ("ntfy", format!("ntfy:127.0.0.1:{}", server.port())));
+        assert_eq!(code(&ask(&core, Some(&app_key), connect).await), "conflict", "the same server twice");
+        let needs_login = Request::ConnectNtfy {
+            server: format!("http://localhost:{}", server.port()),
+            topics: vec![ntfy_topic("secret_alerts", "Alerts")],
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), needs_login).await), "auth");
+        let login = Request::SetNtfyLogin {
+            server: ntfy_base(&server),
+            topics: vec![ntfy_topic("secret_alerts", "Alerts")],
+            user: Some("anna".into()),
+            secret: torro_ipc::Secret::new(NTFY_PASSWORD),
+        };
+        let Response::Account { account } = ask(&core, Some(&app_key), login).await else { panic!("signed in") };
+        assert_eq!(secrets.get_plain(&account.id).as_deref(), Some(NTFY_PASSWORD));
+
+        let listed = ask(&core, Some(&app_key), Request::Accounts).await;
+        let for_app = serde_json::to_string(&listed).expect("json");
+        assert!(for_app.contains("open_backups") && for_app.contains("secret_alerts"), "{for_app}");
+        let (_, key) = client(&core, RightsTemplate::ReadOnly.rights()).await;
+        let for_client = serde_json::to_string(&ask(&core, Some(&key), Request::Accounts).await).expect("json");
+        assert!(for_client.contains("Backups") && for_client.contains("Alerts"), "{for_client}");
+        for shown in [&for_app, &for_client, &format!("{listed:?}")] {
+            assert!(!shown.contains("SECRET"), "{shown}");
+        }
+        for name in ["open_backups", "secret_alerts"] {
+            assert!(!for_client.contains(name), "{name} shown to a client: {for_client}");
+        }
+
+        let source = torro_inbox::SourceRef::ntfy(account.id.trim_start_matches("ntfy:"));
+        let report = crate::inbox::tests::remote(source.clone(), "secret_alerts:Disk full", &["m1"], Utc::now());
+        crate::inbox::tests::filed_remote(&core.inbox, &report, Utc::now());
+        let remove = Request::RemoveAccount { id: account.id.clone() };
+        assert_eq!(ask(&core, Some(&app_key), remove).await, Response::Ok);
+        assert_eq!(secrets.get_plain(&account.id), None, "the secret goes with it");
+        assert!(core.inbox.open_remote(&source).expect("open entries").is_empty(), "its entries are done");
+        assert!(!core.ntfy.knows(&account.id).await);
+    }
+
+    /// A client never hands in an ntfy login, not even with every right; asking to connect only
+    /// opens the accounts page and stores nothing. Neither the secret nor a topic reaches an
+    /// answer, the audit log or `approvals.json`.
+    #[tokio::test]
+    async fn a_client_never_hands_in_an_ntfy_login_and_connecting_only_opens_the_accounts_page() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secrets = MemoryTokens::default();
+        let server = fake_ntfy().await;
+        let core = core_with_ntfy(dir.path(), &secrets);
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights.clone()).await;
+        let login = Request::SetNtfyLogin {
+            server: ntfy_base(&server),
+            topics: vec![ntfy_topic("secret_alerts", "Alerts")],
+            user: None,
+            secret: torro_ipc::Secret::new("tk_clientSECRET"),
+        };
+        let Err(refused) = core.handle_from(Some(&key), login).await else { panic!("refused") };
+        assert_eq!(refused, Refused::Forbidden { command: "accounts.set_ntfy_login" });
+        assert!(!format!("{refused:?} {:?}", refused.response()).contains("SECRET"));
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
+
+        let before = NTFY_PAGES.load(std::sync::atomic::Ordering::SeqCst);
+        let connect =
+            Request::ConnectNtfy { server: ntfy_base(&server), topics: vec![ntfy_topic("open_backups", "Backups")] };
+        assert_eq!(core.handle_within(connect.clone(), Reach::Client(&rights)).await, Response::Opened);
+        assert_eq!(NTFY_PAGES.load(std::sync::atomic::Ordering::SeqCst), before + 1);
+        assert!(
+            core.ntfy.infos(true).await.is_empty() && secrets.get_plain("ntfy:ntfy.sh").is_none(),
+            "nothing stored"
+        );
+        // From the socket it is an admin command: it waits for a person like any other.
+        let asked = waits(ask(&core, Some(&key), connect).await);
+        assert_eq!(asked.summary, trf("Connect the ntfy server {server}", &[("server", &ntfy_base(&server))]));
+
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        for content in ["SECRET", "secret_alerts", "open_backups", "Backups", "127.0.0.1"] {
+            assert!(!text.contains(content), "{content:?} in the audit log:\n{text}");
+        }
+        // The waiting `connect_ntfy` is stored as sent, server and topics included (the file is the
+        // owner's alone, 0600); the refused login never got there.
+        let approvals = std::fs::read_to_string(crate::approvals::tests::file_in(dir.path())).expect("stored");
+        assert!(!approvals.contains("SECRET"), "{approvals}");
+    }
+
+    /// A client changes topics only after a person allowed it; the question names the server and
+    /// the labels, never a topic's name, and the audit log only the account.
+    #[tokio::test]
+    async fn a_clients_ntfy_topic_change_waits_for_a_person_and_names_labels_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let secrets = MemoryTokens::default();
+        let server = fake_ntfy().await;
+        let core = core_with_ntfy(dir.path(), &secrets);
+        let topics = vec![ntfy_topic("open_backups", "Backups")];
+        let Response::Account { account } =
+            core.handle(Request::ConnectNtfy { server: ntfy_base(&server), topics }).await
+        else {
+            panic!("connected")
+        };
+        let mut rights = RightsTemplate::FullAccess.rights();
+        rights.areas.insert(Area::Accounts, AreaRights { level: Level::Full, admin: true });
+        let (_, key) = client(&core, rights).await;
+
+        let rename = Request::SetNtfyTopic {
+            account: account.id.clone(),
+            topic: "open_backups".into(),
+            label: Some("Nightly".into()),
+            subscribed: true,
+        };
+        let asked = waits(ask(&core, Some(&key), rename).await);
+        let host = account.label.clone();
+        assert_eq!(
+            asked.summary,
+            trf(
+                "Rename the topic \"{label}\" of the ntfy account {account} to \"{new}\"",
+                &[("label", &"Backups"), ("account", &host), ("new", &"Nightly")]
+            )
+        );
+        assert!(!asked.summary.contains("open_backups"), "{}", asked.summary);
+        assert_eq!(core.ntfy.label_of(&account.id, "open_backups").await.as_deref(), Some("Backups"), "not yet");
+        let decided = approval(core.handle(Request::DecideApproval { id: asked.id.clone(), allow: true }).await);
+        assert!(matches!(&decided.state, torro_ipc::ApprovalState::Done { response } if **response == Response::Ok));
+        assert_eq!(core.ntfy.label_of(&account.id, "open_backups").await.as_deref(), Some("Nightly"));
+
+        let leave = Request::SetNtfyTopic {
+            account: account.id.clone(),
+            topic: "open_backups".into(),
+            label: None,
+            subscribed: false,
+        };
+        let asked = waits(ask(&core, Some(&key), leave).await);
+        assert_eq!(
+            asked.summary,
+            trf(
+                "Unsubscribe the ntfy account {account} from the topic \"{label}\"",
+                &[("account", &host), ("label", &"Nightly")]
+            )
+        );
+        let unknown = Request::SetNtfyTopic {
+            account: "ntfy:nowhere.example".into(),
+            topic: "open_backups".into(),
+            label: None,
+            subscribed: false,
+        };
+        assert_eq!(code(&core.handle(unknown).await), "not-found");
+
+        let lines = audit_lines(dir.path());
+        assert!(lines.iter().all(|line| line.ids == [format!("account:{}", account.id)]), "{lines:?}");
+        let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!text.contains("open_backups") && !text.contains("Nightly"), "{text}");
     }
 }

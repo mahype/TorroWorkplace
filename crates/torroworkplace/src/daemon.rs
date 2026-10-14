@@ -515,6 +515,10 @@ fn describe(request: &Request) -> String {
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),
         // Never the address or the key (task KI.1a).
         Request::ConnectAi { .. } => "connect ai".into(),
+        // Never a topic: on a public server its name is a password (task E5.12).
+        Request::ConnectNtfy { .. } => "connect ntfy".into(),
+        Request::SetNtfyLogin { .. } => "set ntfy login".into(),
+        Request::SetNtfyTopic { account, .. } => format!("set a topic of {account}"),
         Request::AiModels { .. } => "ai models".into(),
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),

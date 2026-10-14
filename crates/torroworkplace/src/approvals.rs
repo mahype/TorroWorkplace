@@ -298,6 +298,11 @@ pub struct Facts {
     /// then says "an unknown bot". A new bot (`bots.save_bot` without `id`) has none yet; its name
     /// is the client's text, and it is what will be written.
     pub bot: Option<String>,
+    /// For `accounts.set_ntfy_topic` (task E5.12): the label the account keeps for the topic,
+    /// looked up by the topic's name in the account. `None` for a topic it does not have yet. The
+    /// account's label (its server) is [`Facts::name`]. The summary never names the topic itself:
+    /// on a public server its name is a password.
+    pub topic: Option<String>,
 }
 
 /// What the core holds about the messages, drafts and folders a `mail.*` command names, for the
@@ -1110,6 +1115,19 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         }
         Request::ConnectNextcloud { server } => trf("Connect the Nextcloud at {server}", &[("server", &quote(server))]),
         Request::ConnectGithub => tr("Connect a GitHub account").to_string(),
+        // The server only, never the topics: their names are passwords on a public server. Written
+        // as the core would read it (`ntfy.sh` is `https://ntfy.sh`); one that is no address stays
+        // as typed, the core refuses it anyway.
+        Request::ConnectNtfy { server, .. } => {
+            let server = torro_ntfy::Server::parse(server).map_or_else(|_| server.clone(), |s| s.as_str().to_string());
+            trf("Connect the ntfy server {server}", &[("server", &quote(&server))])
+        }
+        Request::SetNtfyTopic { account, label, subscribed, .. } => ntfy_topic_summary(
+            &named(account),
+            facts.topic.as_deref().map(quote).as_deref(),
+            label.as_deref().map(quote).as_deref(),
+            *subscribed,
+        ),
         Request::RemoveAccount { id } => trf("Remove the account {account}", &[("account", &named(id))]),
         Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles } => trf(
             "Change the mail account {account}: {changes}",
@@ -1386,6 +1404,30 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         }
         // Bots do not exist yet and are refused before anyone is asked; say which command it is.
         (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// What `accounts.set_ntfy_topic` would do, in words (task E5.12): the account by its label
+/// (`account`, its server), the topic by the label the account keeps for it (`held`), a new label by
+/// what will be written (`label`). Never the topic's name. All of it went through [`quote`].
+fn ntfy_topic_summary(account: &str, held: Option<&str>, label: Option<&str>, subscribed: bool) -> String {
+    match (subscribed, held, label) {
+        (true, None, Some(label)) => trf(
+            "Subscribe the ntfy account {account} to a topic \"{label}\"",
+            &[("account", &account), ("label", &label)],
+        ),
+        (true, Some(held), Some(label)) => trf(
+            "Rename the topic \"{label}\" of the ntfy account {account} to \"{new}\"",
+            &[("label", &held), ("account", &account), ("new", &label)],
+        ),
+        (false, Some(held), _) => trf(
+            "Unsubscribe the ntfy account {account} from the topic \"{label}\"",
+            &[("account", &account), ("label", &held)],
+        ),
+        (false, None, _) => {
+            trf("Unsubscribe the ntfy account {account} from an unknown topic", &[("account", &account)])
+        }
+        (true, _, None) => trf("Change a topic of the ntfy account {account}", &[("account", &account)]),
     }
 }
 
