@@ -1471,6 +1471,27 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: neuer Start → zu; Aufklappen → gespeichert → nächster Start offen; Zuklappen vergisst; fremde
   Namen bleiben; `trc` mit und ohne Eintrag, beide Sprachen.
 
+### E8.23 Text markieren und kopieren, Knopfleiste des Lesers bricht um (Issue #119)
+- [x] erledigt (2026-10-14: neuer Baustein `torro_gui::selectable` – `Selectable` ist ein nur lesbarer `text_editor`
+  (Änderungen werden verworfen), der nur die Tasten des Lesens nimmt: ⌘C/Strg+C, ⌘A/Strg+A, Umschalt+Pfeile, Escape;
+  alle anderen Tasten (`e`, `j`, Enter …) bleiben beim Fenster. Links sind darin nicht klickbar, darum stehen die
+  Web-Adressen des Textes darunter als „Links“ (`selectable::links_section`, Zeilen wie im Kalender, Schnitt aus
+  `torro_gui::links`; `mailto:` und alles andere öffnet nicht). Der Eingang hält einen `Selectable` für den Text in
+  Leser bzw. Paneel (`App::follow_text`, neu nur, wenn sich der Text ändert). „Copy text“ (`Icon::Copy`): im Leser
+  bei den Werkzeugen, im Paneel rechts neben den Hinweisen unter der Mail bzw. neben dem Titel „Message“ eines
+  Eintrags; Hinweis „Copied“. Die Eigenbau-Erkennung `mail::pieces` entfällt. Entscheidungen: der Text steht so, wie
+  er geschrieben ist (keine geschützten Bindestriche mehr, `detail::unbroken` entfällt), damit Kopiertes stimmt;
+  die Knopfleiste des Lesers geht, wenn die Icons nicht in eine Zeile passen, in zwei Zeilen (Werkzeuge rechts in
+  der zweiten, beide brechen in sehr schmalen Fenstern um) statt Aktionen in „…“ zu verstecken. Der Kalender nutzt
+  den Baustein noch nicht (eigene Kopie in `editor.rs`), eigene Aufgabe)
+- **Modell:** Opus · **Braucht:** E8.3, E8.21 · **Dateien:** `crates/torro-gui/src/{selectable,lib}.rs`,
+  `crates/torroinbox/src/{app,mail,detail}.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Leser des Mail-Fensters, Paneel eines Eintrags bzw. einer Mail. **API/MCP:** keine – der Text kommt
+  schon über `inbox.get_item` / `mail.get_message`, Markieren und Kopieren sind reine Oberfläche.
+- **Abnahme:** Tests: Änderungen ändern den Text nie, nur Lesetasten werden genommen, „Copy text“ schreibt einmal in
+  die Zwischenablage mit dem Klartext und zeigt „Copied“, Links ohne `mailto:`/`file:`, Knopfleiste in zwei Zeilen
+  unter der Breite einer Icon-Zeile. Sichtprüfung: Markieren mit Maus und ⌘C.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
