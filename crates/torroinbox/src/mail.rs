@@ -1846,10 +1846,18 @@ pub fn due_day(due: TaskDue) -> NaiveDate {
     }
 }
 
-/// The line under a task's title on its card (task E8.7b): "Task · Work · due Fri, 17 Oct · open" –
-/// the list when the core knows its name, the due day when there is one, and whether it is open or
-/// done (in words, never by colour alone).
-pub fn task_meta(task: &ItemTask, now: DateTime<Utc>) -> String {
+/// The line under a task's title on its card as a whole, as [`task_card`] shows it where there is
+/// room.
+#[cfg(test)]
+fn task_meta(task: &ItemTask, now: DateTime<Utc>) -> String {
+    task_meta_parts(task, now).join(" · ")
+}
+
+/// The parts of the line under a task's title on its card (task E8.7b): "Task · Work · due Fri, 17
+/// Oct · open" – the list when the core knows its name, the due day when there is one, and whether
+/// it is open or done (in words, never by colour alone). A narrow card leaves some out
+/// ([`task_meta_drop`]).
+fn task_meta_parts(task: &ItemTask, now: DateTime<Utc>) -> Vec<String> {
     let today = now.with_timezone(&Local).date_naive();
     let mut parts = vec![tr("Task").to_owned()];
     let list = list::one_line(&task.list);
@@ -1861,31 +1869,41 @@ pub fn task_meta(task: &ItemTask, now: DateTime<Utc>) -> String {
         parts.push(trf("due {day}", &[("day", &day)]));
     }
     parts.push(if task.completed { tr("done") } else { tr("open") }.to_owned());
-    parts.join(" · ")
+    parts
+}
+
+/// Which parts of [`task_meta_parts`] (`count` of them) a narrow task card leaves out, in this order
+/// (task E8.12, finding 2): first "Task" – the ring and "Open task" say it –, then "open" or "done",
+/// which the ring or the check shows by its form; the list and the due day stay longest.
+fn task_meta_drop(count: usize) -> Vec<usize> {
+    if count < 2 { Vec::new() } else { vec![0, count - 1] }
 }
 
 /// The task made of a mail, as a card over the mail's text (task E8.7b, `docs/eingang.md`, "Aufgabe
 /// mit Rückbezug"): a ring for an open task, a check in the colour for "OK" for a done one, its title
-/// and [`task_meta`] on one line each, and "Open task", which opens it in the tasks app through the
-/// core (`apps.open_app` with `task:<uid>`). The title is foreign text like the mail's and shows as
-/// it is.
+/// and its meta line ([`task_meta_parts`]) on one line each, and "Open task", which opens it in the
+/// tasks app through the core (`apps.open_app` with `task:<uid>`). The title is foreign text like
+/// the mail's and shows as it is.
+///
+/// Laid out at its width (task E8.12, finding 2, `widgets::card_line`): where the meta line does
+/// not fit it leaves out "Task", then the state ([`task_meta_drop`]), and cuts the rest with "…"
+/// and a tooltip; "Open task" becomes its icon before it pushes the title away.
 pub fn task_card<'a>(task: &ItemTask, now: DateTime<Utc>) -> Element<'a, Message> {
-    let mark: Element<'a, Message> = if task.completed {
-        icon::icon(Icon::CircleCheck, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).ok) }).into()
-    } else {
-        task_ring()
+    let completed = task.completed;
+    let mark = move || -> Element<'a, Message> {
+        if completed {
+            icon::icon(Icon::CircleCheck, icon::SIZE)
+                .style(|t: &Theme, _| svg::Style { color: Some(palette(t).ok) })
+                .into()
+        } else {
+            task_ring()
+        }
     };
-    let title = list::one_line(&task.title);
-    let words = column![
-        container(typo::text(typo::body_strong(), title).style(theme::text).wrapping(Wrapping::None)).clip(true),
-        container(typo::text(typo::meta(), task_meta(task, now)).style(theme::text_3).wrapping(Wrapping::None))
-            .clip(true),
-    ]
-    .width(Fill);
-    let open = Message::OpenTask(task.uid.clone());
-    let open = widgets::text_button(Some(Icon::ArrowUpRight), tr("Open task"), style::button::secondary, Some(open));
-    let line = row![mark, words, open].spacing(space::m()).align_y(Alignment::Center);
-    widgets::card(vec![line.into()], false, None)
+    let meta = task_meta_parts(task, now);
+    let drop = task_meta_drop(meta.len());
+    let open = widgets::RowAction::new(Icon::ArrowUpRight, tr("Open task"), "", Message::OpenTask(task.uid.clone()));
+    let line = widgets::card_line(mark, icon::SIZE, list::one_line(&task.title), meta, drop, open);
+    widgets::card(vec![line], false, None)
 }
 
 /// The open task's ring: the tasks app's check before it is ticked, as large as an icon.
@@ -2190,6 +2208,22 @@ mod tests {
             format!("{} · {} · {}", tr("Task"), trf("due {day}", &[("day", &day)]), tr("done"))
         );
         let _ = task_card(&task(false), now());
+    }
+
+    /// Task E8.12 (finding 2): a narrow task card leaves out "Task", then the state, before it cuts
+    /// the line – never "… · ope".
+    #[test]
+    fn a_narrow_task_card_leaves_out_task_then_the_state() {
+        let parts = task_meta_parts(&task(false), now());
+        assert_eq!(parts, [tr("Task"), "Work", tr("open")]);
+        let drop = task_meta_drop(parts.len());
+        let level = typo::meta();
+        let fit = |room| widgets::meta_fit(&parts, &drop, level, room);
+        assert_eq!(fit(1000.0), task_meta(&task(false), now()));
+        let shorter = format!("Work · {}", tr("open"));
+        assert_eq!(fit(typo::text_width(&shorter, level)), shorter, "\"Task\" goes first");
+        assert_eq!(fit(typo::text_width(&shorter, level) - 1.0), "Work", "then the state");
+        assert!(task_meta_drop(1).is_empty());
     }
 
     /// Task E8.7b: "Task" on a folder's message makes a task of it in the demo, titled by its subject;

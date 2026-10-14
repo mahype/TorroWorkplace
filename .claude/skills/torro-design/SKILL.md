@@ -228,6 +228,13 @@ aus einem Guss wirkt:
   kräftig (5,4:1). Ansichten wechseln: `segmented` (Grund
   `BG`, aktives Segment `SELECTED` mit `LINE_SELECTED`-Kante). Speichert ein Knopf, zeigt er
   `widgets::busy_button(tr("Creating…"), style)`: volle Farbe, Icon, nimmt keinen zweiten Klick.
+- **Knopfleisten auf Karten** (E8.12): alle Knöpfe mit Wort oder keiner (`widgets::bar_words`, Schätzung
+  mit `widgets::text_button_width`); nur die Hauptaktion vorn (Open, Go to window, Reply) darf ihr Wort
+  allein behalten (`BarWords::Lead`). Sichtbare Kartenknöpfe sind `secondary`, was den Eintrag nur
+  loslässt (Done, Dismiss, Not now) `ghost`; ✕ im Kartenkopf und die Glocke bleiben Icon-Knöpfe. Große
+  Allow/Deny (`size::control_lg()`, halbe Kartenbreite) nur für Entscheidungen in Schmal, sonst nirgends.
+  Menüs eines Kartenknopfs hängen an der Knopfzeile und öffnen über ihr, wenn unten kein Platz ist – nie
+  über dem Auslöser (`Placement::Below`).
 - **Wählbare Chips** (G.10): `widgets::choice_chip(label, mark, on, on_press)` – 28 hoch, Radius 6,
   `RAISED` + `LINE_STRONG`; Hover `HOVER` + `TEXT`; gewählt `SELECTED`, Kante `LINE_SELECTED`, Häkchen 14
   vor dem Text. GitHub-Labels zum Wählen: `widgets::label_choice(hex, name, on, on_press)` (Farbe nur als

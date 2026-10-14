@@ -9,7 +9,8 @@
 //! - **Strip** ([`strip`]): the same numbers at the left – the figure in `DISPLAY` as in the mini
 //!   tile (task E8.11) –, the same entries beside them as cells in one row – icon and title, below it
 //!   the source and how long ago – sharing the width, each at most [`cell_max()`] wide (a wide strip
-//!   is not stretched).
+//!   keeps them together at the left), the last one taking what is left ([`cell_widths`], task
+//!   E8.12), so the strip's end is not empty.
 //!
 //! **Waiting entries** (urgent and open, `list::is_waiting`) lead, as in the list. They are marked
 //! as in its group "Waiting for you": the source's icon in the attention colour – never Torro red –
@@ -237,6 +238,20 @@ pub fn cell_width(avail: f32, count: usize) -> f32 {
         return 0.0;
     }
     ((avail - cell_gap() * (count - 1) as f32) / count as f32).clamp(0.0, cell_max())
+}
+
+/// The widths of `count` cells in `avail`, from the left (task E8.12, finding 9): each
+/// [`cell_width`], the last one also taking what is left at the right, so its title is cut later
+/// instead of leaving the strip's end empty. The first cells keep their place, so a wide strip
+/// still keeps its entries together at the left.
+pub fn cell_widths(avail: f32, count: usize) -> Vec<f32> {
+    let width = cell_width(avail, count);
+    let mut widths = vec![width; count];
+    if let Some(last) = widths.last_mut() {
+        let others = (count - 1) as f32 * (width + cell_gap());
+        *last = (avail - others).max(width);
+    }
+    widths
 }
 
 /// The first level of `levels` in which `text` fits `width`, else the last one.
@@ -615,12 +630,13 @@ pub fn strip(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     let avail = (inner - left - space::l() + side()).max(0.0);
     let unread = mail_unread(data.folders);
     let (places, with_mail, shown) = cell_plan(avail, !unread.is_empty());
-    let width = cell_width(avail, places);
+    // The last cell takes the rest of the row (task E8.12).
+    let mut widths = cell_widths(avail, places).into_iter();
     let mut cells = row![].spacing(cell_gap()).align_y(Alignment::Center);
     if with_mail {
-        cells = cells.push(mail_cell(&unread, width));
+        cells = cells.push(mail_cell(&unread, widths.next().unwrap_or_default()));
     }
-    for item in data.items.iter().take(shown) {
+    for (item, width) in data.items.iter().take(shown).zip(widths) {
         cells = cells.push(cell(item, data, width));
     }
     let content = row![
@@ -698,6 +714,13 @@ mod tests {
         assert_eq!(cells_that_fit(cell_min() * 2.0 + cell_gap()), 2);
         assert_eq!(cells_that_fit(cell_min() - 1.0), 0);
         assert_eq!(cell_width(2000.0, 3), cell_max(), "a wide strip keeps its cells together");
+        // Task E8.12 (finding 9): the last cell takes the rest, the others keep their place.
+        let widths = cell_widths(1000.0, 3);
+        assert_eq!(widths[..2], [cell_max(), cell_max()]);
+        assert_eq!(widths[2], 1000.0 - 2.0 * (cell_max() + cell_gap()));
+        assert_eq!(widths.iter().sum::<f32>() + 2.0 * cell_gap(), 1000.0, "the row is filled");
+        assert_eq!(cell_widths(300.0, 2), vec![cell_width(300.0, 2); 2], "shared evenly: nothing left");
+        assert!(cell_widths(500.0, 0).is_empty());
         assert_eq!(cell_width(cell_min() * 2.0 + cell_gap(), 2), cell_min());
         assert_eq!(cell_width(500.0, 0), 0.0);
     }

@@ -20,11 +20,17 @@
 //! - **Handed off** and **Coming back** ([`side`]): in the wide layout a column at the right with the
 //!   open tasks made of entries (task E8.7b, [`handed_off`]; a click opens the task in the tasks app),
 //!   then the snoozed entries and when they wake, the soonest first.
-//! - **Sizes** ([`layout`]): wide and medium lay Decide and Agents out as a grid of cards, To sort
-//!   as one card per line with its buttons at the right; narrow shows the numbers instead of the
-//!   tiles, one card per line, big Allow and Deny, and To sort as cards with their buttons below.
-//!   The compact density draws Agents and To sort as rows with the action bar; approvals stay
-//!   cards, so Allow and Deny are always there. Mini and strip show the glance, as every window.
+//! - **Sizes** ([`layout`]): wide and medium lay Agents out as a grid of cards; Decide and Follow
+//!   up take the full width where only two cards fit a line and stand side by side where three do
+//!   ([`section_blocks`], task E8.12); To sort is one card per line, at most a reading width, its
+//!   buttons at the right in fixed columns ([`SortSlots`]) and without a caption of its own while
+//!   the window shows it alone; narrow shows the numbers instead of the tiles, one card per line,
+//!   big Allow and Deny (for decisions only), and To sort as cards with their buttons below. The
+//!   compact density draws Agents and To sort as rows with the action bar; approvals stay cards, so
+//!   Allow and Deny are always there. Mini and strip show the glance, as every window.
+//! - **Words on buttons** (task E8.12): a card's buttons carry all their words or none; only the
+//!   lead (Open, Go to window, Reply) may keep its word alone (`widgets::BarWords`). What lets the
+//!   entry go (Done, Dismiss, Not now) is `ghost`, every other visible button `secondary`.
 //!
 //! - **Quiet** and **Event** (task E8.5b): while a busy event keeps the inbox quiet
 //!   (`inbox.get_quiet`), the column at the right starts with "Quiet" – until when and the event
@@ -49,7 +55,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::ui_state::Density;
-use torro_gui::widgets::{self, ButtonStyle, Mark, RowAction, TileFace, TileSize};
+use torro_gui::widgets::{self, BarWords, ButtonStyle, Mark, RowAction, TileFace, TileSize};
 use torro_gui::{style, typo};
 use torro_inbox::demo::DemoSource;
 use torro_inbox::item::ItemTask;
@@ -621,17 +627,48 @@ impl Act {
         }
     }
 
-    /// The button's look: quiet (`ghost`) for what ends the entry or steps aside – Done, ✕, Reopen,
-    /// Later beside an agent's window, the window beside Allow and Deny –, framed (`secondary`) for
-    /// the rest, as the design's cards.
-    fn style(&self, section: Section) -> ButtonStyle {
-        let quiet = match self {
-            Act::Done | Act::Dismiss | Act::Reopen | Act::NotNow => true,
-            Act::Later => section == Section::Agents,
-            Act::GoToWindow => section == Section::Decide,
-            Act::Allow(_) | Act::Deny(_) | Act::Open | Act::Task | Act::Event | Act::Reply | Act::MarkMailDone => false,
-        };
-        if quiet { style::button::ghost } else { style::button::secondary }
+    /// The button's look, one rule for every card of the hub and the notifications window (task
+    /// E8.12, finding 12, `notifications::button_look`): quiet (`ghost`) for what only lets the
+    /// entry go – Done, Dismiss, Not now –, framed (`secondary`) for every other visible button.
+    /// The narrow layout's big Allow and Deny ([`big_decide`]) are for decisions only.
+    fn style(&self) -> ButtonStyle {
+        notifications::button_look(self.lets_go())
+    }
+
+    /// Whether the button only lets the entry go – Done, Dismiss, Not now –, which is drawn quietly
+    /// ([`Act::style`]).
+    fn lets_go(&self) -> bool {
+        match self {
+            Act::Done | Act::Dismiss | Act::NotNow => true,
+            Act::Allow(_)
+            | Act::Deny(_)
+            | Act::GoToWindow
+            | Act::Open
+            | Act::Task
+            | Act::Event
+            | Act::Later
+            | Act::Reopen
+            | Act::Reply
+            | Act::MarkMailDone => false,
+        }
+    }
+
+    /// Whether the button is the action the entry is about – Open, Go to window, Reply –, which as
+    /// the first of its bar may keep its word while the others show icons (`widgets::BarWords`).
+    fn leads(&self) -> bool {
+        matches!(self, Act::Open | Act::GoToWindow | Act::Reply)
+    }
+}
+
+/// The card button of `act` for `item` (its icon, word, message, look and whether it leads), as the
+/// hub's cards and the notifications window's draw it.
+pub fn card_button(act: &Act, item: &Item, deciding: bool) -> notifications::CardButton {
+    notifications::CardButton {
+        icon: act.icon(),
+        label: act.label().to_owned(),
+        on_press: act.message(item, deciding),
+        lead: act.leads(),
+        look: act.style(),
     }
 }
 
@@ -689,12 +726,57 @@ pub fn sides(narrow: bool) -> f32 {
     inset.left + inset.right
 }
 
-/// The cards of `section` per line: the layout's columns, at most two for Decide and Follow up – a
+/// The cards of `section` per line: the layout's columns for Agents; for Decide and Follow up – a
 /// question's title and what it is about need the room, and a decision should not look like one of
-/// many.
+/// many – the full width where only two cards fit side by side (medium, task E8.12, finding 5), two
+/// where three would.
 fn per_line(section: Section, layout: Layout) -> usize {
     let columns = layout.columns.max(1);
-    if matches!(section, Section::Decide | Section::FollowUp) { columns.min(2) } else { columns }
+    if !matches!(section, Section::Decide | Section::FollowUp) {
+        return columns;
+    }
+    if pairs(layout) { 2 } else { 1 }
+}
+
+/// Whether Decide and Follow up stand side by side, each a column of its cards (task E8.12, finding
+/// 5: wide windows put them next to each other instead of half wide one under the other): where
+/// three cards fit in a line.
+fn pairs(layout: Layout) -> bool {
+    !layout.narrow && layout.columns >= 3
+}
+
+/// The sections drawn, as blocks one under the other: each a section of its own, but Decide and
+/// Follow up side by side in one block where both have entries and [`pairs`] says so.
+fn section_blocks<'s, 'a>(sections: &'s Sections<'a>, layout: Layout) -> Vec<Vec<(Section, &'s [&'a Item])>> {
+    let shown = sections.shown(layout.only_to_sort);
+    let both = shown.iter().any(|(section, _)| *section == Section::Decide)
+        && shown.iter().any(|(section, _)| *section == Section::FollowUp);
+    let mut blocks: Vec<Vec<(Section, &'s [&'a Item])>> = Vec::new();
+    for (section, items) in shown {
+        let joins = both && pairs(layout) && section == Section::FollowUp;
+        match blocks.last_mut() {
+            Some(block) if joins => block.push((section, items)),
+            _ => blocks.push(vec![(section, items)]),
+        }
+    }
+    blocks
+}
+
+/// The cards of `section` per line in a block of `width` sections side by side: one when it shares
+/// its line ([`section_blocks`]), else [`per_line`].
+fn per_line_in(section: Section, layout: Layout, width: usize) -> usize {
+    if width > 1 { 1 } else { per_line(section, layout) }
+}
+
+/// Whether `section` has its caption over it: always, but To sort while the window shows it alone –
+/// the header's "To sort 9" says it already (task E8.12).
+fn has_caption(section: Section, layout: Layout) -> bool {
+    !(layout.only_to_sort && section == Section::ToSort)
+}
+
+/// The height of `section`'s caption with the gap under it, nothing without one ([`has_caption`]).
+fn caption_height(section: Section, layout: Layout) -> f32 {
+    if has_caption(section, layout) { typo::line_height(typo::caption()) + caption_gap() } else { 0.0 }
 }
 
 /// Whether `section` shows its entries as rows with the action bar: in the compact density, all but
@@ -783,34 +865,52 @@ pub fn span(sections: &Sections<'_>, tiles: usize, layout: Layout, id: &str) -> 
             y += quiet_height() + gap;
         }
     }
-    for (section, items) in sections.shown(layout.only_to_sort) {
-        let start = y;
-        y += typo::line_height(typo::caption()) + caption_gap();
-        if section == Section::ToSort || as_rows(section, layout) {
-            if as_rows(section, layout) {
-                y += size::HAIRLINE;
+    for block in section_blocks(sections, layout) {
+        // Sections side by side start at the same height; the block ends under the longer one.
+        let mut bottom = y;
+        for &(section, items) in &block {
+            match section_span(section, items, layout, per_line_in(section, layout, block.len()), y, id) {
+                Ok(found) => return Some(found),
+                Err(end) => bottom = bottom.max(end),
             }
-            for (i, item) in items.iter().enumerate() {
-                let height = sort_height(item, layout);
-                if item.id == id {
-                    return Some((if i == 0 { start } else { y }, y + height));
-                }
-                y += height + sort_gap(layout);
-            }
-            y -= sort_gap(layout);
-        } else {
-            for (i, line) in items.chunks(per_line(section, layout)).enumerate() {
-                let tallest = line.iter().map(|item| card_height(item, layout.narrow)).fold(0.0, f32::max);
-                if line.iter().any(|item| item.id == id) {
-                    return Some((if i == 0 { start } else { y }, y + tallest));
-                }
-                y += tallest + size::card_gap();
-            }
-            y -= size::card_gap();
         }
-        y += gap;
+        y = bottom + gap;
     }
     None
+}
+
+/// [`span`] within one section starting at `top` with `per_line` cards a line: `Ok` with the span of
+/// `id` when it is there (the first entry from the caption on), else `Err` with where it ends.
+fn section_span(
+    section: Section,
+    items: &[&Item],
+    layout: Layout,
+    per_line: usize,
+    top: f32,
+    id: &str,
+) -> Result<(f32, f32), f32> {
+    let mut y = top + caption_height(section, layout);
+    if section == Section::ToSort || as_rows(section, layout) {
+        if as_rows(section, layout) {
+            y += size::HAIRLINE;
+        }
+        for (i, item) in items.iter().enumerate() {
+            let height = sort_height(item, layout);
+            if item.id == id {
+                return Ok((if i == 0 { top } else { y }, y + height));
+            }
+            y += height + sort_gap(layout);
+        }
+        return Err(y - sort_gap(layout));
+    }
+    for (i, line) in items.chunks(per_line.max(1)).enumerate() {
+        let tallest = line.iter().map(|item| card_height(item, layout.narrow)).fold(0.0, f32::max);
+        if line.iter().any(|item| item.id == id) {
+            return Ok((if i == 0 { top } else { y }, y + tallest));
+        }
+        y += tallest + size::card_gap();
+    }
+    Err(y - size::card_gap())
 }
 
 /// The height of the line about quiet ([`quiet_line`]): one line of `BODY`, its icon no taller.
@@ -896,19 +996,52 @@ fn blocks<'a>(data: &HubData<'a>, width: f32) -> Element<'a, Message> {
             blocks.push(quiet_view(quiet_line(quiet, data.rows.now), width));
         }
     }
-    for (section, items) in sections.shown(layout.only_to_sort) {
-        let body = if as_rows(section, layout) {
-            let rows = items.iter().map(|item| entry_row(item, data, width));
-            column![rule::horizontal(size::HAIRLINE).style(style::rule), column(rows)].width(Fill).into()
-        } else if section == Section::ToSort {
-            let cards = items.iter().map(|item| sort_card(item, data, width));
-            column(cards).spacing(sort_gap(layout)).width(Fill).into()
-        } else {
-            grid(items.iter().map(|item| card(item, section, data)).collect(), per_line(section, layout))
-        };
-        blocks.push(column![caption(section.title(), items.len()), body].spacing(caption_gap()).into());
+    for block in section_blocks(&sections, layout) {
+        let side_by_side = block.len();
+        let gap = size::card_gap();
+        let room = (width - (side_by_side as f32 - 1.0) * gap) / side_by_side as f32;
+        let parts: Vec<Element<'a, Message>> = block
+            .into_iter()
+            .map(|(section, items)| {
+                let per_line = per_line_in(section, layout, side_by_side);
+                container(section_view(data, section, items, per_line, room)).width(Fill).into()
+            })
+            .collect();
+        blocks.push(if side_by_side > 1 { row(parts).spacing(gap).into() } else { column(parts).into() });
     }
     column(blocks).spacing(block_gap(layout.narrow)).width(Fill).into()
+}
+
+/// One section `width` wide with `per_line` cards a line: its caption ([`has_caption`]), then its
+/// rows, its To sort cards (at most [`size::content_max()`] wide outside the narrow layout, task
+/// E8.12, finding 8) or its grid of cards.
+fn section_view<'a>(
+    data: &HubData<'a>,
+    section: Section,
+    items: &[&'a Item],
+    per_line: usize,
+    width: f32,
+) -> Element<'a, Message> {
+    let layout = data.layout;
+    let sorting = section == Section::ToSort;
+    // A wide window does not stretch To sort: one card per line reads best at the reading width.
+    let width = if sorting && !layout.narrow { width.min(size::content_max()) } else { width };
+    let body: Element<'a, Message> = if as_rows(section, layout) {
+        let rows = items.iter().map(|item| entry_row(item, data, width));
+        column![rule::horizontal(size::HAIRLINE).style(style::rule), column(rows)].width(Fill).into()
+    } else if sorting {
+        let slots = SortSlots::of(items, layout.narrow, width);
+        let cards = items.iter().map(|item| sort_card(item, data, width, &slots));
+        column(cards).spacing(sort_gap(layout)).width(Fill).into()
+    } else {
+        grid(items.iter().map(|item| card(item, data)).collect(), per_line)
+    };
+    let mut parts = column![].spacing(caption_gap());
+    if has_caption(section, layout) {
+        parts = parts.push(caption(section.title(), items.len()));
+    }
+    let parts = parts.push(body);
+    if sorting && !layout.narrow { container(parts).max_width(size::content_max()).into() } else { parts.into() }
 }
 
 /// The line about quiet `width` wide: the moon and the words in `text_2`, cut with "…".
@@ -1020,7 +1153,7 @@ fn state<'a>(item: &Item, data: &HubData<'_>) -> Option<Element<'a, Message>> {
 /// the title, the meta line, the state), the text on [`TEXT_LINES`] lines, the buttons ([`acts`]) –
 /// in the narrow layout an approval's big Allow and Deny. A click opens it in the panel; under the
 /// cursor it is selected and registers the anchor.
-fn card<'a>(item: &'a Item, section: Section, data: &HubData<'a>) -> Element<'a, Message> {
+fn card<'a>(item: &'a Item, data: &HubData<'a>) -> Element<'a, Message> {
     let selected = data.rows.selected == Some(item.id.as_str());
     let (title, _) = list::words(item);
     let mut head = row![widgets::card_head(Some(list::source_tile(item)), title, card_meta(item, &data.rows), None)]
@@ -1043,43 +1176,24 @@ fn card<'a>(item: &'a Item, section: Section, data: &HubData<'a>) -> Element<'a,
     if data.layout.narrow && detail::is_approval(item) {
         parts.push(big_decide(item, &acts, data.deciding));
     } else {
-        parts.push(buttons(item, acts, section, data.deciding));
+        parts.push(buttons(item, acts, data.deciding));
     }
     let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
     if selected { widgets::anchored(&data.rows.anchor, card) } else { card }
 }
 
-/// The buttons of `item` in one row, from the left: as many with their words as fit (the first –
-/// what the entry is about – keeps its word longest, `notifications::worded`), the rest as icons
-/// with the word as tooltip.
-fn buttons<'a>(item: &Item, acts: Vec<Act>, section: Section, deciding: bool) -> Element<'a, Message> {
-    let pressed: Vec<notifications::CardButton> = acts
-        .iter()
-        .map(|act| notifications::CardButton {
-            icon: act.icon(),
-            label: act.label().to_owned(),
-            on_press: act.message(item, deciding),
-        })
-        .collect();
+/// The buttons of `item` in one row, from the left: all with their words where they fit, else
+/// icons with the word as tooltip – only the lead (what the entry is about) may keep its word alone
+/// (`notifications::worded`, task E8.12).
+fn buttons<'a>(item: &Item, acts: Vec<Act>, deciding: bool) -> Element<'a, Message> {
+    let pressed: Vec<notifications::CardButton> = acts.iter().map(|act| card_button(act, item, deciding)).collect();
     let line = responsive(move |bounds| {
         let words = notifications::worded(&pressed, false, bounds.width);
-        let line = acts
-            .iter()
-            .zip(&pressed)
-            .enumerate()
-            .map(|(i, (act, button))| act_button(button.clone(), act.style(section), i < words));
+        let line =
+            pressed.iter().enumerate().map(|(i, button)| notifications::card_button(button.clone(), words.worded(i)));
         row(line).spacing(space::s()).align_y(Alignment::Center).into()
     });
     container(line).width(Fill).height(size::control_sm()).into()
-}
-
-/// A button with its icon and word in `look`, or its icon alone with the word as tooltip.
-fn act_button<'a>(button: notifications::CardButton, look: ButtonStyle, words: bool) -> Element<'a, Message> {
-    if words {
-        widgets::text_button(Some(button.icon), button.label, look, button.on_press)
-    } else {
-        widgets::icon_button(button.icon, button.label, button.on_press)
-    }
 }
 
 /// The narrow layout's buttons of an approval: Allow and Deny side by side, each half the card wide
@@ -1134,35 +1248,103 @@ fn lead<'a>(item: &Item, rows: &Rows<'_>) -> Element<'a, Message> {
     widgets::source_tile(TileFace::Icon(list::source_icon(&item.source)), TileSize::Large, None)
 }
 
+/// Where an act of To sort stands in the fixed columns of its buttons ([`SortSlots`]): what the
+/// entry is about (Open, Go to window), Task, Event, Later, and what lets it go (Done, Dismiss).
+fn sort_slot(act: &Act) -> usize {
+    match act {
+        Act::Open | Act::GoToWindow => 0,
+        Act::Task => 1,
+        Act::Event => 2,
+        Act::Later => 3,
+        Act::Allow(_)
+        | Act::Deny(_)
+        | Act::Done
+        | Act::Dismiss
+        | Act::Reopen
+        | Act::Reply
+        | Act::MarkMailDone
+        | Act::NotNow => 4,
+    }
+}
+
+/// How many fixed columns the buttons of To sort have ([`sort_slot`]).
+const SORT_SLOTS: usize = 5;
+
+/// The fixed columns of the buttons of To sort in the one-line cards (task E8.12, finding 8): every
+/// card puts Task under Task and Later under Later, whatever else it offers. A column is there when
+/// an entry of the section has an act in it, as wide as its widest button; one choice of words or
+/// icons holds for the whole section, so the columns line up.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SortSlots {
+    /// Per column ([`SORT_SLOTS`]) its width, `None` where no entry has a button there.
+    pub widths: [Option<f32>; SORT_SLOTS],
+    /// The buttons show their words (all of them, `widgets::BarWords::All`), else icons only.
+    pub words: bool,
+}
+
+impl SortSlots {
+    /// The columns of `items` in cards `width` wide: with words when the widest buttons of every
+    /// column fit beside the lead and at least half the properties column for title and meta, else
+    /// icons ([`sort_buttons_room`]). The `narrow` layout has no columns: its buttons stand under
+    /// the card's head.
+    pub fn of(items: &[&Item], narrow: bool, width: f32) -> SortSlots {
+        let mut widest: [Option<&'static str>; SORT_SLOTS] = [None; SORT_SLOTS];
+        for act in items.iter().flat_map(|item| acts(item)) {
+            let slot = &mut widest[sort_slot(&act)];
+            let label = act.label();
+            let wider = slot
+                .is_none_or(|known| widgets::text_button_width(true, label) > widgets::text_button_width(true, known));
+            if wider {
+                *slot = Some(label);
+            }
+        }
+        let labels: Vec<&str> = widest.iter().flatten().copied().collect();
+        let words = !narrow && widgets::bar_words(&labels, false, 0, sort_buttons_room(width)) == BarWords::All;
+        let widths = widest.map(|label| {
+            label.map(|label| if words { widgets::text_button_width(true, label) } else { size::control_sm() })
+        });
+        SortSlots { widths, words }
+    }
+}
+
+/// The room the buttons of a one-line To sort card `width` wide get: the card's inner width less
+/// the lead (avatar or tile), the gaps beside it and half the properties column, which title and
+/// meta keep at least (cut with "…" and a tooltip beyond that).
+pub fn sort_buttons_room(width: f32) -> f32 {
+    let pad = layout::panel_padding();
+    let lead = size::avatar().max(size::tile_lg());
+    (width - pad.left - pad.right - lead - 2.0 * space::m() - size::props() / 2.0).max(0.0)
+}
+
 /// The card of `item` in To sort `width` wide: one line – the lead, title and meta, the buttons at
-/// the right taking at most half the card, with words while they fit – or, in the narrow layout, the
-/// head with the buttons below it. A click opens it in the panel.
-fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32) -> Element<'a, Message> {
+/// the right in the section's fixed columns (`slots`, task E8.12) – or, in the narrow layout, the
+/// head with the buttons below it, all with their words or none but the lead. A click opens it in
+/// the panel.
+fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlots) -> Element<'a, Message> {
     let selected = data.rows.selected == Some(item.id.as_str());
     let (title, _) = list::words(item);
     let meta = sort_meta(item, &data.rows);
     let pad = layout::panel_padding();
     let inner = (width - pad.left - pad.right).max(0.0);
-    let acts = acts(item);
-    let pressed: Vec<notifications::CardButton> = acts
-        .iter()
-        .map(|act| notifications::CardButton {
-            icon: act.icon(),
-            label: act.label().to_owned(),
-            on_press: act.message(item, data.deciding),
-        })
-        .collect();
-    let room = if data.layout.narrow { inner } else { inner / 2.0 };
-    let words = notifications::worded(&pressed, false, room);
-    let line = acts
-        .iter()
-        .zip(pressed)
-        .enumerate()
-        .map(|(i, (act, button))| act_button(button, act.style(Section::ToSort), i < words));
-    let line = row(line).spacing(space::s()).align_y(Alignment::Center);
+    let pressed: Vec<(usize, notifications::CardButton)> =
+        acts(item).iter().map(|act| (sort_slot(act), card_button(act, item, data.deciding))).collect();
     let parts: Vec<Element<'a, Message>> = if data.layout.narrow {
+        let buttons: Vec<notifications::CardButton> = pressed.into_iter().map(|(_, button)| button).collect();
+        let words = notifications::worded(&buttons, false, inner);
+        let line =
+            buttons.into_iter().enumerate().map(|(i, button)| notifications::card_button(button, words.worded(i)));
+        let line = row(line).spacing(space::s()).align_y(Alignment::Center);
         vec![widgets::card_head(Some(lead(item, &data.rows)), title, meta, None), line.into()]
     } else {
+        let mut line = row![].spacing(space::s()).align_y(Alignment::Center);
+        for (slot, width) in slots.widths.iter().enumerate() {
+            let Some(width) = *width else { continue };
+            let cell: Element<'a, Message> = match pressed.iter().find(|(at, _)| *at == slot) {
+                Some((_, button)) => notifications::card_button(button.clone(), slots.words),
+                None => Space::new().into(),
+            };
+            line = line.push(container(cell).width(width));
+        }
         let words = container(widgets::card_head(None, title, meta, None)).width(Fill);
         vec![row![lead(item, &data.rows), words, line].spacing(space::m()).align_y(Alignment::Center).into()]
     };
@@ -1509,14 +1691,90 @@ mod tests {
         let (top_agent, bottom_agent) = span(&sections, 0, narrow, "demo-1").expect("the first agent");
         assert_eq!(top_agent, agents);
         assert_eq!(bottom_agent, agents + caption + size::HAIRLINE + list::row_height_of(sections.agents[0]));
-        // To sort alone starts with its caption.
+        // To sort alone has no caption (task E8.12): the header says "To sort 9" already.
         let alone = layout(1000.0, SizeClass::Wide, Density::Comfortable, true);
         let first = &sections.to_sort[0].id;
-        assert_eq!(
-            span(&sections, tiles, alone, first),
-            Some((top, top + caption + sort_height(sections.to_sort[0], alone)))
-        );
+        assert_eq!(span(&sections, tiles, alone, first), Some((top, top + sort_height(sections.to_sort[0], alone))));
         assert_eq!(span(&sections, tiles, alone, "demo-3"), None);
+        assert!(!has_caption(Section::ToSort, alone) && has_caption(Section::ToSort, wide));
+    }
+
+    /// Task E8.12 (finding 5): a medium window gives Decide and Follow up the full width; a wide one
+    /// puts them side by side, each a column of its cards starting at the same height.
+    #[test]
+    fn decide_and_follow_up_stand_side_by_side_where_it_is_wide() {
+        let items = entries(StateFilter::Open);
+        let approval = find(&items, "demo-3");
+        let question = find(&items, "demo-6");
+        let sections = Sections { decide: vec![&approval], follow_up: vec![&question], ..Sections::default() };
+        let wide = layout(1000.0, SizeClass::Wide, Density::Comfortable, false);
+        let blocks = section_blocks(&sections, wide);
+        assert_eq!(blocks.len(), 1, "one block");
+        assert_eq!(
+            blocks[0].iter().map(|(section, _)| *section).collect::<Vec<_>>(),
+            [Section::Decide, Section::FollowUp]
+        );
+        let (decide, _) = span(&sections, 0, wide, "demo-3").expect("the approval");
+        let (follow, _) = span(&sections, 0, wide, "demo-6").expect("the question");
+        assert_eq!(decide, follow, "side by side");
+        assert_eq!(per_line_in(Section::Decide, wide, 2), 1, "a column of cards each");
+        assert_eq!(per_line(Section::Decide, wide), 2, "alone: two a line");
+
+        let medium = layout(684.0, SizeClass::Medium, Density::Comfortable, false);
+        assert_eq!(medium.columns, 2);
+        assert_eq!(per_line(Section::Decide, medium), 1, "the full width");
+        assert_eq!(per_line(Section::Agents, medium), 2, "agents keep their grid");
+        assert_eq!(section_blocks(&sections, medium).len(), 2, "one under the other");
+        let (below, _) = span(&sections, 0, medium, "demo-6").expect("the question");
+        assert!(below > decide, "under Decide");
+    }
+
+    /// Task E8.12 (finding 12): one rule for the looks – what lets the entry go is quiet, every
+    /// other visible button framed; the lead keeps its word longest.
+    #[test]
+    fn what_lets_an_entry_go_is_quiet_and_the_rest_is_framed() {
+        for quiet in [Act::Done, Act::Dismiss, Act::NotNow] {
+            assert!(quiet.lets_go(), "{quiet:?}");
+        }
+        for framed in [Act::Later, Act::GoToWindow, Act::Task, Act::Event, Act::Open, Act::Reply, Act::Reopen] {
+            assert!(!framed.lets_go(), "{framed:?}");
+        }
+        assert!(Act::Open.leads() && Act::GoToWindow.leads() && Act::Reply.leads());
+        assert!(!Act::Task.leads() && !Act::Allow("a".into()).leads());
+        let items = entries(StateFilter::Open);
+        let agent = find(&items, "demo-1");
+        let buttons: Vec<notifications::CardButton> =
+            acts(&agent).iter().map(|act| card_button(act, &agent, false)).collect();
+        assert_eq!(buttons.iter().map(|button| button.lead).collect::<Vec<_>>(), [true, false, false]);
+        let labels: Vec<&str> = buttons.iter().map(|button| button.label.as_str()).collect();
+        let lead = widgets::bar_width(&labels, BarWords::Lead, 0);
+        assert_eq!(notifications::worded(&buttons, false, lead), BarWords::Lead, "Go to window keeps its word");
+        assert_eq!(notifications::worded(&buttons, false, lead - 1.0), BarWords::None, "else none – never mixed");
+    }
+
+    /// Task E8.12 (finding 8): To sort's buttons stand in fixed columns – Task under Task, whatever
+    /// else an entry offers –, with words for all or for none.
+    #[test]
+    fn to_sort_buttons_stand_in_fixed_columns() {
+        let items = entries(StateFilter::Open);
+        let sections = Sections::of(&items, None);
+        let slots = SortSlots::of(&sections.to_sort, false, size::content_max());
+        assert!(slots.words, "a reading width has room for the words");
+        assert!(slots.widths.iter().all(Option::is_some), "mail and notices: every column");
+        let task = slots.widths[sort_slot(&Act::Task)].expect("Task");
+        assert_eq!(task, widgets::text_button_width(true, tr("Task")));
+        let end = slots.widths[sort_slot(&Act::Done)].expect("Done or Dismiss");
+        assert_eq!(
+            end,
+            widgets::text_button_width(true, tr("Done")).max(widgets::text_button_width(true, tr("Dismiss")))
+        );
+        let tight = SortSlots::of(&sections.to_sort, false, 500.0);
+        assert!(!tight.words && tight.widths.iter().flatten().all(|width| *width == size::control_sm()), "icons");
+        let mail: Vec<&Item> =
+            sections.to_sort.iter().copied().filter(|item| item.source.kind == SourceKind::Mail).collect();
+        let only_mail = SortSlots::of(&mail, false, size::content_max());
+        assert_eq!(only_mail.widths[sort_slot(&Act::Open)], None, "no Open: no column for it");
+        assert!(!SortSlots::of(&sections.to_sort, true, size::content_max()).words, "narrow: no columns");
     }
 
     #[test]

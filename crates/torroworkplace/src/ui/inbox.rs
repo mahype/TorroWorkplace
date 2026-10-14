@@ -8,14 +8,14 @@
 //!   flip sends `settings.set_setting { key: "quiet_when_busy", value }` at once, like the
 //!   switches of the General page; there is no Save button.
 //! - **Rules**: one row per rule of `inbox.list_rules` ([`Data::rules`]), remembered lanes first,
-//!   then muted sources, then hidden senders and domains (task E3.10: "Hidden:
-//!   news@shop.example", "Hidden: everything from shop.example", with "All mail accounts" below –
-//!   such a rule holds for every account, task E3.11), then the traits muted with the bell's menu
-//!   (task E8.6b, [`muted_sentence`]): effect, end and what – "No popups until tomorrow 09:00: The
-//!   project torro-workplace", "Only Info: Newsletters and automatic mail" –, each with "Remove",
-//!   which sends `inbox.remove_rule { id }`. Below the sentence, quietly, where the rule holds and
-//!   what it caught since when ([`Data::rule_hits`], task E8.8a: "Hid 12 since Tuesday"). Without
-//!   rules the group says where they come from.
+//!   then muted sources, then hidden senders and domains (task E3.10; such a rule holds for every
+//!   account, task E3.11), then the traits muted with the bell's menu (task E8.6b), each with
+//!   "Remove", which sends `inbox.remove_rule { id }`. Task E8.12 (finding 15): the title is what
+//!   the rule is about ([`subject`]: "Mail from news@shop.example", "The project torro-workplace"),
+//!   the quiet line below what it does, where it holds and what it caught since when
+//!   ([`rule_line`]: "Hidden · All mail accounts · Hid 12 since Tuesday", "No popups until tomorrow
+//!   09:00 · All agents · Kept 3 quiet since today", [`Data::rule_hits`] of task E8.8a), each on
+//!   one line cut with "…". Without rules the group says where they come from.
 //! - **App**: "Open" starts or raises Torro Inbox through `apps.open_app`, where the entries
 //!   themselves are handled.
 //!
@@ -41,7 +41,7 @@ use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_gui::theme::{self, space};
 use torro_gui::{datetime, layout, style, typo, widgets};
-use torro_inbox::item::{Facet, FacetKey, MuteEffect};
+use torro_inbox::item::{FacetKey, MuteEffect};
 use torro_inbox::{Lane, Rule, RuleEffect, rules as inbox_rules};
 use torro_ipc::{Request, RuleHits, SettingKey};
 
@@ -155,57 +155,68 @@ fn is_hidden(rule: &Rule) -> bool {
     rule.effect == RuleEffect::Muted && (rule.sender.is_some() || rule.domain.is_some())
 }
 
-/// What a rule does, as a sentence: "Notices of Claude Code go to “Info”", "Mail from
-/// news@shop.example goes to “For me”", "backup is muted", "Hidden: news@shop.example", "Hidden:
-/// everything from shop.example", and for a muted trait [`muted_sentence`]. Addresses and domains
-/// are shown as they are, like source names.
-fn sentence(rule: &Rule, now: DateTime<Utc>) -> String {
+/// What a rule is about – the title of its row (task E8.12, finding 15): "Everything from Claude
+/// Code" for a whole source, "Mail from news@shop.example" for a sender, "Everything from
+/// shop.example" for a domain, and for a trait muted with the bell's menu its words ("The project
+/// torro-workplace", "Newsletters and automatic mail", the Inbox's own). A conversation is named by
+/// its source ("A conversation in Claude Code"): its thread key means nothing to a person.
+/// Addresses and domains are shown as they are, like source names.
+fn subject(rule: &Rule) -> String {
     if let Some(facet) = &rule.facet {
-        return muted_sentence(rule, facet, now);
+        return match facet.key {
+            FacetKey::Conversation => trf("A conversation in {source}", &[("source", &rule.source.label())]),
+            _ => inbox_rules::facet_label(facet),
+        };
     }
-    let source = rule.source.label();
-    match (rule.effect, &rule.sender, &rule.domain) {
-        (RuleEffect::Lane { lane }, Some(sender), _) => {
-            trf("Mail from {sender} goes to “{lane}”", &[("sender", sender), ("lane", &lane_name(lane))])
-        }
-        (RuleEffect::Lane { lane }, None, _) => {
-            trf("Notices of {source} go to “{lane}”", &[("source", &source), ("lane", &lane_name(lane))])
-        }
-        (RuleEffect::Muted, Some(sender), _) => trf("Hidden: {sender}", &[("sender", sender)]),
-        (RuleEffect::Muted, None, Some(domain)) => trf("Hidden: everything from {domain}", &[("domain", domain)]),
-        (RuleEffect::Muted, None, None) => trf("{source} is muted", &[("source", &source)]),
-        // The core keeps no popups only with a trait; without one it would hold for the source.
-        (RuleEffect::NoPopup, _, _) => trf("No popups: {what}", &[("what", &source)]),
+    match (&rule.sender, &rule.domain) {
+        (Some(sender), _) => trf("Mail from {sender}", &[("sender", sender)]),
+        (None, Some(domain)) => trf("Everything from {domain}", &[("domain", domain)]),
+        (None, None) => trf("Everything from {source}", &[("source", &rule.source.label())]),
     }
 }
 
-/// What a trait muted with the bell's menu does (task E8.6b), with its effect, its end and what it
-/// mutes: "Hidden: Mail from news@shop.example", "No popups until tomorrow 09:00: The project
-/// torro-workplace", "Only Info: Newsletters and automatic mail". The Inbox's toast says the same
-/// after muting. A conversation is named by its source ("A conversation in Claude Code"): its
-/// thread key means nothing to a person.
-fn muted_sentence(rule: &Rule, facet: &Facet, now: DateTime<Utc>) -> String {
-    let what = match facet.key {
-        FacetKey::Conversation => trf("A conversation in {source}", &[("source", &rule.source.label())]),
-        _ => inbox_rules::facet_label(facet),
-    };
+/// What a rule does, with its end – the first part of its row's quiet line (task E8.12, finding
+/// 15): "Goes to “Info”" for a remembered lane, "Muted" for a whole source, "Hidden" for a sender
+/// or domain, and for a trait "Hidden", "Only Info" or "No popups", with "until tomorrow 09:00"
+/// while it ends ([`until_text`]). The Inbox's toast says the same after muting.
+fn effect_words(rule: &Rule, now: DateTime<Utc>) -> String {
+    if rule.facet.is_none() {
+        return match rule.effect {
+            RuleEffect::Lane { lane } => trf("Goes to “{lane}”", &[("lane", &lane_name(lane))]),
+            RuleEffect::Muted if is_hidden(rule) => tr("Hidden").to_owned(),
+            RuleEffect::Muted => tr("Muted").to_owned(),
+            // The core keeps no popups only with a trait; without one it would hold for the source.
+            RuleEffect::NoPopup => tr("No popups").to_owned(),
+        };
+    }
     // A lane "for me" mutes nothing; `inbox.mute_item` never keeps one, so it only names the lane.
     let Some(effect) = MuteEffect::of(rule.effect) else {
-        return trf("Notices of {source} go to “{lane}”", &[("source", &what), ("lane", &lane_name(Lane::ForMe))]);
+        return trf("Goes to “{lane}”", &[("lane", &lane_name(Lane::ForMe))]);
     };
     let Some(until) = rule.until else {
         return match effect {
-            MuteEffect::Hide => trf("Hidden: {what}", &[("what", &what)]),
-            MuteEffect::Info => trf("Only Info: {what}", &[("what", &what)]),
-            MuteEffect::NoPopup => trf("No popups: {what}", &[("what", &what)]),
-        };
+            MuteEffect::Hide => tr("Hidden"),
+            MuteEffect::Info => tr("Only Info"),
+            MuteEffect::NoPopup => tr("No popups"),
+        }
+        .to_owned();
     };
-    let pairs: [(&str, &dyn std::fmt::Display); 2] = [("what", &what), ("when", &until_text(until, now))];
+    let when = until_text(until, now);
     match effect {
-        MuteEffect::Hide => trf("Hidden until {when}: {what}", &pairs),
-        MuteEffect::Info => trf("Only Info until {when}: {what}", &pairs),
-        MuteEffect::NoPopup => trf("No popups until {when}: {what}", &pairs),
+        MuteEffect::Hide => trf("Hidden until {when}", &[("when", &when)]),
+        MuteEffect::Info => trf("Only Info until {when}", &[("when", &when)]),
+        MuteEffect::NoPopup => trf("No popups until {when}", &[("when", &when)]),
     }
+}
+
+/// The quiet line under a rule's title (task E8.12, finding 15): what it does ([`effect_words`]),
+/// where it holds ([`place`]) and what it caught since when ([`caught`]), joined by " · ".
+fn rule_line(rule: &Rule, hits: Option<&RuleHits>, now: DateTime<Utc>) -> String {
+    [Some(effect_words(rule, now)), place(rule), caught(rule, hits, now)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// When a rule ends, seen from `now` in local time, as the Inbox's toast says it: "15:30" today,
@@ -222,9 +233,9 @@ fn until_text(until: DateTime<Utc>, now: DateTime<Utc>) -> String {
     }
 }
 
-/// What a rule caught since when (task E8.8a), for the quiet line below its sentence: "Hid 12 since
-/// Tuesday", "Kept 3 quiet since today", "Sent 9 to “Info” since yesterday", "Nothing caught since
-/// 3 Oct". `None` when the core told nothing (before E8.8a).
+/// What a rule caught since when (task E8.8a), for the quiet line below its title: "Hid 12 since
+/// Tuesday", "Kept 3 quiet since today", "Sent 9 since yesterday" (the lane stands just before it,
+/// [`effect_words`]), "Nothing caught since 3 Oct". `None` when the core told nothing (before E8.8a).
 fn caught(rule: &Rule, hits: Option<&RuleHits>, now: DateTime<Utc>) -> Option<String> {
     let hits = hits?;
     let (n, day) = (hits.hits, since_text(hits.since, now));
@@ -234,9 +245,7 @@ fn caught(rule: &Rule, hits: Option<&RuleHits>, now: DateTime<Utc>) -> Option<St
     Some(match rule.effect {
         RuleEffect::Muted => trf("Hid {n} since {day}", &[("n", &n), ("day", &day)]),
         RuleEffect::NoPopup => trf("Kept {n} quiet since {day}", &[("n", &n), ("day", &day)]),
-        RuleEffect::Lane { lane } => {
-            trf("Sent {n} to “{lane}” since {day}", &[("n", &n), ("lane", &lane_name(lane)), ("day", &day)])
-        }
+        RuleEffect::Lane { .. } => trf("Sent {n} since {day}", &[("n", &n), ("day", &day)]),
     })
 }
 
@@ -263,24 +272,24 @@ fn lane_name(lane: Lane) -> &'static str {
     }
 }
 
-/// One rule: its sentence, wrapped rather than cut off (a source name can be long), and "Remove".
-/// Below it, quietly, where it holds ([`place`]) and what it caught ([`caught`]), joined by "·".
+/// One rule (task E8.12, finding 15): what it is about as its title ([`subject`]), below it quietly
+/// what it does, where it holds and what it caught ([`rule_line`]), each on one line cut with "…"
+/// (the whole as tooltip), and "Remove" – rows of one height, as a settings group has them.
 fn rule_row<'a>(state: &State, rule: &'a Rule, hits: Option<&RuleHits>, now: DateTime<Utc>) -> Element<'a, Message> {
     let remove = (!state.removing.contains(&rule.id)).then(|| Message::Remove(rule.id.clone()));
     let button = widgets::text_button(None, tr("Remove"), style::button::secondary, remove);
-    let mut lines = column![typo::text(typo::body(), sentence(rule, now))];
-    let quiet: Vec<String> = [place(rule), caught(rule, hits, now)].into_iter().flatten().collect();
-    if !quiet.is_empty() {
-        lines = lines.push(typo::text(typo::meta(), quiet.join(" · ")).style(theme::text_2));
-    }
+    let lines = column![
+        widgets::ellipsized(typo::body(), subject(rule), theme::text),
+        widgets::ellipsized(typo::meta(), rule_line(rule, hits, now), theme::text_2),
+    ];
     wrapping_row(lines, button)
 }
 
-/// Where a rule for less than a whole source holds, for the quiet line below its sentence: "All
+/// Where a rule for less than a whole source holds, for the quiet line below its title: "All
 /// mail accounts" for a hidden sender or domain ([`is_hidden`], task E3.11) and for a muted sender,
 /// domain, list or newsletters (task E8.6b: a trait holds for every source of the kind), "All
 /// agents" for a muted project or kind of report, the account for a remembered lane; `None` for
-/// rules about a whole source or one conversation, whose sentence names it.
+/// rules about a whole source or one conversation, whose title names it.
 fn place(rule: &Rule) -> Option<String> {
     if let Some(facet) = &rule.facet {
         return match facet.key {
@@ -334,6 +343,7 @@ mod tests {
     use chrono::{DateTime, Utc};
     use torro_core::settings::Settings;
     use torro_inbox::SourceRef;
+    use torro_inbox::item::Facet;
     use torro_ipc::AppInfo;
 
     use super::*;
@@ -411,37 +421,42 @@ mod tests {
         assert_eq!(ids, ["l1", "l2", "m1", "m2", "h1", "h2"]);
     }
 
+    /// Task E8.12 (finding 15): a hidden sender or domain is the title, "Hidden · All mail
+    /// accounts" the line below.
     #[test]
     fn hidden_senders_and_domains_read_with_their_word() {
         let sender = hidden("h", Some("news@shop.example"), None);
-        assert_eq!(sentence(&sender, now()), trf("Hidden: {sender}", &[("sender", &"news@shop.example")]));
+        assert_eq!(subject(&sender), trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        assert_eq!(effect_words(&sender, now()), tr("Hidden"));
         let domain = hidden("h", None, Some("shop.example"));
-        assert_eq!(sentence(&domain, now()), trf("Hidden: everything from {domain}", &[("domain", &"shop.example")]));
+        assert_eq!(subject(&domain), trf("Everything from {domain}", &[("domain", &"shop.example")]));
         let lane = Rule {
             sender: Some("news@shop.example".into()),
             ..rule("l", SourceRef::mail("anna@example.org"), RuleEffect::Lane { lane: Lane::ForMe })
         };
-        assert_eq!(
-            sentence(&lane, now()),
-            trf("Mail from {sender} goes to “{lane}”", &[("sender", &"news@shop.example"), ("lane", &tr("For me"))])
-        );
+        assert_eq!(subject(&lane), trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        assert_eq!(effect_words(&lane, now()), trf("Goes to “{lane}”", &[("lane", &tr("For me"))]));
         assert_eq!(place(&sender).as_deref(), Some(tr("All mail accounts")), "hidden in every account");
         assert_eq!(place(&lane).as_deref(), Some("anna@example.org"), "a lane holds for its account");
-        assert_eq!(place(&rule("m", SourceRef::script("cron"), RuleEffect::Muted)), None, "the sentence names it");
+        assert_eq!(place(&rule("m", SourceRef::script("cron"), RuleEffect::Muted)), None, "the title names it");
+        let line = rule_line(&sender, None, now());
+        assert_eq!(line, [tr("Hidden"), tr("All mail accounts")].join(" · "), "effect · scope");
         let remove = update(&mut State::default(), Message::Remove("h".into()), &Data::default());
         assert!(matches!(remove, Action::Send(Request::RemoveRule { ref id }) if id == "h"), "removed like any rule");
     }
 
+    /// Task E8.12 (finding 15): the title is what the rule is about, the line below what it does.
     #[test]
-    fn rules_read_as_sentences_with_the_source_label() {
+    fn rules_read_as_subject_and_effect_with_the_source_label() {
         let lane = rule("l", SourceRef::agent("claude-code"), RuleEffect::Lane { lane: Lane::Info });
-        let source = "Claude Code".to_string();
-        assert_eq!(
-            sentence(&lane, now()),
-            trf("Notices of {source} go to “{lane}”", &[("source", &source), ("lane", &tr("Info"))])
-        );
+        assert_eq!(subject(&lane), trf("Everything from {source}", &[("source", &"Claude Code")]));
+        assert_eq!(effect_words(&lane, now()), trf("Goes to “{lane}”", &[("lane", &tr("Info"))]));
         let muted = rule("m", SourceRef::script("backup"), RuleEffect::Muted);
-        assert_eq!(sentence(&muted, now()), trf("{source} is muted", &[("source", &"backup")]));
+        assert_eq!(subject(&muted), trf("Everything from {source}", &[("source", &"backup")]));
+        assert_eq!(effect_words(&muted, now()), tr("Muted"));
+        let hits = RuleHits { rule: "m".into(), hits: 31, since: now() };
+        let caught = trf("Hid {n} since {day}", &[("n", &31), ("day", &tr("today"))]);
+        assert_eq!(rule_line(&muted, Some(&hits), now()), [tr("Muted").to_owned(), caught].join(" · "));
     }
 
     fn now() -> DateTime<Utc> {
@@ -452,14 +467,14 @@ mod tests {
         Rule { facet: Some(Facet { key, value: value.into() }), ..rule(id, source, effect) }
     }
 
-    /// Task E8.6b: a muted trait reads with its effect, its end and what it mutes, holds where its
-    /// kind reaches and comes after the other rules.
+    /// Task E8.6b, E8.12: a muted trait reads with what it mutes as title, its effect and end below,
+    /// holds where its kind reaches and comes after the other rules.
     #[test]
     fn muted_traits_read_with_effect_end_and_what() {
         let mail = SourceRef::mail("anna@example.org");
         let sender = muted("s", mail.clone(), FacetKey::Sender, "news@shop.example", RuleEffect::Muted);
-        let what = trf("Mail from {sender}", &[("sender", &"news@shop.example")]);
-        assert_eq!(sentence(&sender, now()), trf("Hidden: {what}", &[("what", &what)]));
+        assert_eq!(subject(&sender), trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        assert_eq!(effect_words(&sender, now()), tr("Hidden"));
         assert_eq!(place(&sender).as_deref(), Some(tr("All mail accounts")), "a sender in every account");
 
         let tomorrow = now() + chrono::Duration::days(1);
@@ -467,24 +482,21 @@ mod tests {
             until: Some(tomorrow),
             ..muted("p", SourceRef::agent("claude-code"), FacetKey::Project, "torro", RuleEffect::NoPopup)
         };
-        let what = trf("The project {project}", &[("project", &"torro")]);
+        assert_eq!(subject(&project), trf("The project {project}", &[("project", &"torro")]));
         let when = until_text(tomorrow, now());
         assert!(when.starts_with(&trf("tomorrow {time}", &[("time", &"")])), "{when}");
-        assert_eq!(
-            sentence(&project, now()),
-            trf("No popups until {when}: {what}", &[("what", &what), ("when", &when)])
-        );
+        assert_eq!(effect_words(&project, now()), trf("No popups until {when}", &[("when", &when)]));
         assert_eq!(place(&project).as_deref(), Some(tr("All agents")));
 
         let info = RuleEffect::Lane { lane: Lane::Info };
         let bulk = muted("b", mail.clone(), FacetKey::Bulk, "bulk", info);
-        let what = tr("Newsletters and automatic mail");
-        assert_eq!(sentence(&bulk, now()), trf("Only Info: {what}", &[("what", &what)]));
+        assert_eq!(subject(&bulk), tr("Newsletters and automatic mail"));
+        assert_eq!(effect_words(&bulk, now()), tr("Only Info"));
 
         let thread = muted("c", SourceRef::script("backup"), FacetKey::Conversation, "t-1", RuleEffect::NoPopup);
-        let what = trf("A conversation in {source}", &[("source", &"backup")]);
-        assert_eq!(sentence(&thread, now()), trf("No popups: {what}", &[("what", &what)]));
-        assert_eq!(place(&thread), None, "the sentence names it");
+        assert_eq!(subject(&thread), trf("A conversation in {source}", &[("source", &"backup")]));
+        assert_eq!(effect_words(&thread, now()), tr("No popups"));
+        assert_eq!(place(&thread), None, "the title names it");
 
         let rules =
             vec![thread.clone(), rule("l", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }), sender];
@@ -492,7 +504,7 @@ mod tests {
         assert_eq!(ids, ["l", "c", "s"], "traits last, in the core's order");
     }
 
-    /// Task E8.8a/E8.6b: below the sentence, what the rule caught since when.
+    /// Task E8.8a/E8.6b: below the title, what the rule caught since when.
     #[test]
     fn rules_say_what_they_caught_since_when() {
         let hits = |n, days| RuleHits { rule: "r".into(), hits: n, since: now() - chrono::Duration::days(days) };
@@ -514,7 +526,8 @@ mod tests {
         let lane = rule("r", SourceRef::script("backup"), RuleEffect::Lane { lane: Lane::Info });
         assert_eq!(
             caught(&lane, Some(&hits(9, 3)), now()),
-            Some(trf("Sent {n} to “{lane}” since {day}", &[("n", &9), ("lane", &tr("Info")), ("day", &three)]))
+            Some(trf("Sent {n} since {day}", &[("n", &9), ("day", &three)])),
+            "the lane stands before it, in what the rule does"
         );
         let old = since_text(now() - chrono::Duration::days(30), now());
         assert_eq!(

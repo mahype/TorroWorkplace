@@ -1721,6 +1721,10 @@ pub enum Message {
     /// A way to mute in the bell's menu: `inbox.mute_item` for the entry with this id, with "For"
     /// and "What happens" as chosen.
     MuteBy(String, MuteScope),
+    /// A suggestion of Insights' "Where you could cut back" (task E8.12, finding 14): `inbox.mute_item`
+    /// for the entry with this id and scope with the suggestion's own effect ("Hide sender" hides,
+    /// "Mute app" keeps popups away), for as long as "For" says.
+    MuteSuggested(String, MuteScope, MuteEffect),
     /// The core's answer to `inbox.mute_item`, with the effect asked for (for the toast).
     MutedBy(Result<Muted, String>, MuteEffect),
     /// From the hide menu: hide the sender (or its domain) of the mail entry with this id.
@@ -2319,7 +2323,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
             Message::MuteFor(span) => self.mute_for = span,
             Message::MuteHow(effect) => self.mute_effect = effect,
-            Message::MuteBy(id, scope) => return self.mute_by(id, scope),
+            Message::MuteBy(id, scope) => return self.mute_by(id, scope, self.mute_effect),
+            Message::MuteSuggested(id, scope, effect) => return self.mute_by(id, scope, effect),
             Message::MutedBy(Ok(muted), effect) => {
                 let text = muted_note(&muted, effect, self.now);
                 self.hint = Some(Hint { text, undo: Undo::of_muted(&muted), shown: Instant::now() });
@@ -3639,10 +3644,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     }
 
     /// Mutes by the entry `id` with `scope` (`inbox.mute_item`), for as long as "For" says and with
-    /// what "What happens" says, and closes the menu; the answer comes as [`Message::MutedBy`].
-    fn mute_by(&mut self, id: String, scope: MuteScope) -> Task<Message> {
+    /// `effect` (the bell's menu passes its "What happens", a suggestion of Insights its own), and
+    /// closes the menu; the answer comes as [`Message::MutedBy`].
+    fn mute_by(&mut self, id: String, scope: MuteScope, effect: MuteEffect) -> Task<Message> {
         self.close_menus();
-        let (until, effect) = (self.mute_for.until(self.now), self.mute_effect);
+        let until = self.mute_for.until(self.now);
         #[cfg(test)]
         self.sent.push(Sent::MuteItem(id.clone(), scope, until, effect));
         let inbox = self.inbox.clone();
@@ -4614,6 +4620,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             (&anchors.row, &anchors.row, &anchors.row, &anchors.row, &anchors.row)
         };
         let below = Placement::Below(Align::End);
+        let dialog = dialog_placement(self.detail.is_some());
         let layer = match self.menu {
             None => None,
             Some(Menu::Switcher) => Some(widgets::floating(
@@ -4635,8 +4642,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 Some(widgets::floating(lane_at, below, self.choice_menu(title), Message::CloseMenu))
             }
             Some(Menu::Pick) => Some(widgets::floating(snooze_at, below, self.picker(), Message::CloseMenu)),
-            Some(Menu::Task) => Some(widgets::floating(task_at, below, self.task_dialog(), Message::CloseMenu)),
-            Some(Menu::Event) => Some(widgets::floating(event_at, below, self.event_dialog(), Message::CloseMenu)),
+            Some(Menu::Task) => Some(widgets::floating(task_at, dialog, self.task_dialog(), Message::CloseMenu)),
+            Some(Menu::Event) => Some(widgets::floating(event_at, dialog, self.event_dialog(), Message::CloseMenu)),
             Some(Menu::Hide) => {
                 Some(widgets::floating(hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
             }
@@ -4759,11 +4766,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 shell::header_bar([], title, trailing)
             }
             // Where the band has the panel button (macOS), the header leaves it out.
-            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
-                (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
-                widgets::menu_button(nav, Some(icon), name, Message::ToggleNav),
-                trailing,
-            ),
+            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+                let mut title =
+                    row![widgets::menu_button(nav, Some(icon), name, Message::ToggleNav)].align_y(Alignment::Center);
+                // The notifications window counts its view in every size ("New 5", task E8.12); the
+                // mail window's narrow "For me" says it big on the page, the hub has no room.
+                if let Some(note) = note.filter(|_| narrow_count(self.launch.kind)) {
+                    title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
+                }
+                shell::header_bar(
+                    (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
+                    title,
+                    trailing,
+                )
+            }
         }
     }
 
@@ -4929,7 +4945,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             // The notifications window (task E8.4): the sources as chips where the sidebar is folded
             // away, then the board, which caps its own width.
             if shell::sidebar_mode(class, self.sidebar) != Some(SidebarMode::Expanded) {
-                content = content.push(notifications::source_chips(&self.listed_sources(), &self.shown));
+                // On the board's left axis: the rows' text, or the cards' edge (task E8.12).
+                let flush = self.board().flush(self.density());
+                content = content.push(notifications::source_chips(&self.listed_sources(), &self.shown, flush));
             }
             let board = notifications::view(notifications::BoardData {
                 items: &self.items,
@@ -4943,12 +4961,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return container(content.push(board).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_insights() {
             // The hub's Insights (task E8.8b), which caps its own width.
-            let page = insights::view(InsightsData {
-                insights: &self.insights,
-                class,
-                effect: self.mute_effect,
-                today: local_today(self.now),
-            });
+            let page = insights::view(InsightsData { insights: &self.insights, class, today: local_today(self.now) });
             return container(content.push(page).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_hub() {
             // The hub's "Act now" (task E8.5), which caps its own width.
@@ -5302,14 +5315,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
         let choices = self.choices();
         let width = choice_menu_width(&choices);
-        let entries =
-            choices.into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), width));
+        let entries = choices
+            .into_iter()
+            .enumerate()
+            .map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), KeyLook::Kbd, width));
         let list = column![menu_caption(&title.into())].extend(entries);
         container(list).width(width).padding(style::MENU_INSET).style(style::container::menu).into()
     }
 
     /// The bell's menu (task E8.6b, the design's "Stummschalten · Menü an der Karte"): the section
-    /// "Mute" with the ways to mute ([`App::mute_choices`], digits as in every menu of choices; a
+    /// "Mute" with the ways to mute ([`App::mute_choices`], digits as in every menu of choices, shown
+    /// quietly in `META` ([`KeyLook::Meta`], task E8.12); a
     /// quiet line while they load or when they could not be read), a line, "For" and "What happens"
     /// as segments (`widgets::segmented`, ←/→ and ↑/↓), a line and "All rules ↗", which opens the
     /// control centre, where every rule is listed with "Remove".
@@ -5331,8 +5347,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             list =
                 list.push(container(line).height(style::MENU_ITEM_HEIGHT).center_y(Fill).padding(style::ITEM_PADDING));
         }
-        list = list
-            .extend(choices.into_iter().enumerate().map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), width)));
+        // The digits quietly in `META` (task E8.12): boxed they read like counts here.
+        let entries = choices
+            .into_iter()
+            .enumerate()
+            .map(|(i, choice)| choice_entry(choice, keys::digit(i + 1), KeyLook::Meta, width));
+        list = list.extend(entries);
         let span = MuteFor::ALL.iter().position(|span| *span == self.mute_for).unwrap_or_default();
         let how = MUTE_EFFECTS.iter().position(|effect| *effect == self.mute_effect).unwrap_or_default();
         let spans = widgets::segmented(MuteFor::ALL.map(|span| (span.name(), Message::MuteFor(span))), span);
@@ -5430,9 +5450,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
+        // The field inside the same inset as the rows and the line (task E8.12, finding 7): its
+        // edges in line with theirs.
         let card = column![
             container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::xs())),
-            container(title).padding(Padding::new(0.0).bottom(space::s())),
+            container(title).padding(inset.bottom(space::s())),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
                 .spacing(space::m())
@@ -5494,9 +5516,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         ]
         .spacing(space::s())
         .align_y(Alignment::Center);
+        // The field inside the same inset as the rows and the line (task E8.12, finding 7).
         let card = column![
             container(widgets::section_title(tr("Make event"))).padding(inset.bottom(space::xs())),
-            container(title).padding(Padding::new(0.0).bottom(space::s())),
+            container(title).padding(inset.bottom(space::s())),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
                 .spacing(space::m())
@@ -5749,12 +5772,37 @@ fn mute_menu_width(choices: &[Choice]) -> f32 {
     choice_menu_width(choices).max(segments.ceil()).min(size::panel())
 }
 
+/// Whether a narrow window of `kind` counts its view beside the title, as wider ones do: the
+/// notifications window ("New 5", task E8.12); the mail window's narrow "For me" leads with its
+/// number on the page and the hub with its numbers, so their narrow headers leave it out.
+fn narrow_count(kind: Kind) -> bool {
+    kind == Kind::Notifications
+}
+
+/// How the digit that picks a choice shows at its end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyLook {
+    /// As a key hint (`widgets::kbd`), as in "Later until" and "Hide from inbox".
+    Kbd,
+    /// Quietly in `META`, tabular, `text_3` – the bell's menu (task E8.12), where boxed digits beside
+    /// "This conversation" and "Everything from deploy" read like counts.
+    Meta,
+}
+
+/// The dialogs of "Make task" and "Make event" open below their trigger with its right edge, or –
+/// while the panel is open (`panel`), at its footer's button – with their left edge at it (task
+/// E8.12, finding 7): the panel ends at the window's edge, so the card stays over the panel, above
+/// the footer where there is no room below (`widgets::Placement::Below`).
+fn dialog_placement(panel: bool) -> Placement {
+    Placement::Below(if panel { Align::Start } else { Align::End })
+}
+
 /// One entry of [`App::choice_menu`], as `widgets::menu` draws one: icon, label, then – quietly,
-/// tabular – when it snoozes until, and the digit that picks it; with [`Choice::line`] the line
-/// `widgets::menu` draws between its sections above it.
-fn choice_entry<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'a, Message> {
+/// tabular – when it snoozes until, and the digit that picks it (in `look`); with [`Choice::line`]
+/// the line `widgets::menu` draws between its sections above it.
+fn choice_entry<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f32) -> Element<'a, Message> {
     let line = choice.line;
-    let entry = choice_button(choice, key, width);
+    let entry = choice_button(choice, key, look, width);
     if !line {
         return entry;
     }
@@ -5765,7 +5813,7 @@ fn choice_entry<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'a
 ///
 /// A label longer than its room – only beyond [`choice_menu_width`]'s widest menu – ends in "…"
 /// ([`choice_label`]) and shows whole as tooltip.
-fn choice_button<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'a, Message> {
+fn choice_button<'a>(choice: Choice, key: &'static str, look: KeyLook, width: f32) -> Element<'a, Message> {
     let mark = icon::icon(choice.icon, icon::SIZE)
         .style(|t: &Theme, _| iced::widget::svg::Style { color: Some(palette(t).text) });
     let shown = choice_label(&choice.label, choice.when.as_deref(), key, width);
@@ -5775,7 +5823,10 @@ fn choice_button<'a>(choice: Choice, key: &'static str, width: f32) -> Element<'
     if let Some(when) = choice.when {
         content = content.push(typo::text(typo::meta().tabular(), when).style(theme::text_3).wrapping(Wrapping::None));
     }
-    content = content.push(widgets::kbd(key));
+    content = content.push(match look {
+        KeyLook::Kbd => widgets::kbd(key),
+        KeyLook::Meta => typo::text(typo::meta().tabular(), key).style(theme::text_3).wrapping(Wrapping::None).into(),
+    });
     let button = iced::widget::button(container(content).center_y(Fill))
         .width(Fill)
         .height(style::MENU_ITEM_HEIGHT)
@@ -9140,20 +9191,41 @@ mod tests {
     }
 
     /// Task E8.8b: a suggestion's button mutes its entry by the suggestion's way with the window's
-    /// "For" and "What happens", and the toast offers the undo.
+    /// "For", and the toast offers the undo; task E8.12 (finding 14): with the effect of its ready
+    /// suggestion – a newsletter's list is hidden ("Hide list"), not the window's "Only Info".
     #[test]
     fn a_suggestion_mutes_with_an_undo() {
         let mut hub = overview_at(&["--view", "hub", "--open", "insights"]);
         deliver_stats(&mut hub);
         let Some(Ok(stats)) = hub.insights.stats.clone() else { panic!("numbers") };
         let cut = insights::cuts(&stats).into_iter().next().expect("a suggestion");
+        assert_eq!(cut.word, tr("Hide list"));
         let suggestion = &stats.suggestions[0];
         let _ = hub.update(cut.mute);
-        let expected = Sent::MuteItem(suggestion.item.clone(), suggestion.option.scope, None, MuteEffect::Info);
-        assert_eq!(hub.sent.last(), Some(&expected), "always, only Info: the bell's defaults");
+        let expected = Sent::MuteItem(suggestion.item.clone(), suggestion.option.scope, None, MuteEffect::Hide);
+        assert_eq!(hub.sent.last(), Some(&expected), "always (the window's For), hidden (the suggestion's)");
+        assert_eq!(hub.mute_effect, MuteEffect::Info, "the bell's own choice stays");
         deliver(&mut hub);
         let hint = hub.hint.clone().expect("a toast");
         assert!(hint.undo.is_some(), "{hint:?}");
         assert!(hub.is_insights(), "the page stays");
+    }
+
+    /// Task E8.12 (finding 7, small things): the dialogs open at the panel's button with their left
+    /// edge, so they stay over the panel; the narrow notifications window counts its view ("New 5");
+    /// the bell's menu shows its digits quietly, the other menus as keys; every size still draws.
+    #[test]
+    fn dialogs_keep_to_the_panel_and_narrow_notifications_count() {
+        assert_eq!(dialog_placement(true), Placement::Below(Align::Start));
+        assert_eq!(dialog_placement(false), Placement::Below(Align::End));
+        assert!(narrow_count(Kind::Notifications));
+        assert!(!narrow_count(Kind::Mail) && !narrow_count(Kind::Hub), "the page says it big there");
+        let mut app = notifications_window(&["--open", "mute-menu"]);
+        assert_eq!(app.count_note(), app.items.len().to_string(), "the number beside “New”");
+        draw_everywhere(&mut app);
+        let mut panel = notifications_window(&["--open", "mute-panel"]);
+        draw_everywhere(&mut panel);
+        let mut event = overview_at(&["--view", "hub", "--open", "event"]);
+        draw_everywhere(&mut event);
     }
 }

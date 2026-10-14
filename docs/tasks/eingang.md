@@ -1261,7 +1261,18 @@ E8.9   unabhängig (torro-wm, core.rs)
   Sichtprüfung, sobald der Bildschirm offen ist.
 
 ### E8.12 Feinschliff Benachrichtigungen, Zentrale, Aufgaben und Regeln nach der Sichtprüfung
-- [ ] erledigt
+- [x] erledigt („From“ und Aufgaben-Karte mit `widgets::card_line`: erst Konto/„Task“, dann Absender/Zustand weg,
+  Rest mit „…“ und Tooltip, Knopf wird Icon vor dem Titel; „Hide completed“ verdrängt den Fortschrittsbalken;
+  Knopfleisten alles oder nichts, nur die Hauptaktion allein mit Wort (`widgets::bar_words`, echte Abstände, Plex
+  passt); Regel ghost = loslassen, sonst secondary; Menüs öffnen über dem Auslöser, wenn unten kein Platz ist, an der
+  Knopfzeile der Karte; „Make event/task“ im Paneel linksbündig am Knopf, Feld bündig; Zentrale: Decide/Follow up
+  Mittel volle Breite, Breit nebeneinander; To sort und „Cut back“ höchstens `content_max`, To-sort-Knöpfe in festen
+  Spalten, ohne doppelten Titel; Leiste: letzte Zelle wächst; eine linke Achse für Chips, Köpfe, Karten;
+  Gruppenköpfe mit Icon in beiden Dichten; Insights Mittel 2×2, Vorschlag je Zeile in der Oberfläche (Kern nennt nur
+  das Merkmal), „33%“, „Busiest: …“ ohne Punkt; Rules: Titel = Gegenstand, Zeile = Wirkung · Umfang · Treffer; Ziffern
+  im Mute-Menü als `meta`; „New 5“ auch in Schmal. Offen: Anführungszeichen und App-Icons der Demo (`torro-inbox`
+  `demo.rs`), Einzelwort im Hinweis „This text comes from outside …“ (`torroinbox/src/detail.rs`); Sichtprüfung am Mac
+  hell/dunkel, Mittel/Breit/Schmal, Plex)
 - **Modell:** Opus · **Braucht:** E8.11 · **Dateien:** `crates/torroinbox/src/{app,notifications,hub,insights,mail,glance,overview,list}.rs`,
   `crates/torrotasks/src/detail.rs`, `crates/torroworkplace/src/ui/inbox.rs`, `crates/torro-gui/src/widgets.rs`,
   `crates/torro-core/src/i18n/de.rs`

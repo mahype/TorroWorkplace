@@ -485,7 +485,7 @@ fn content_rows<'a>(data: &ColumnData<'a>, width: f32) -> Element<'a, Message> {
 }
 
 /// The scrolling content of a column of cards `width` wide (task E8.3): the [`lead`], every group
-/// under its [`caption`] as a column of cards, the calm line, "Info" with its cards – laid out as
+/// under its [`group_caption`] as a column of cards, the calm line, "Info" with its cards – laid out as
 /// [`cards_span`] counts it.
 fn content_cards<'a>(data: &ColumnData<'a>, width: f32) -> Element<'a, Message> {
     let inner = width - list::cards_side();
@@ -510,13 +510,6 @@ fn content_cards<'a>(data: &ColumnData<'a>, width: f32) -> Element<'a, Message> 
     container(content).padding(list::cards_inset()).into()
 }
 
-/// The caption over a group of cards: "Today · 4" in `CAPTION` and `text_3` (sentence case, as the
-/// design's groups), [`space::m()`] above and [`space::s()`] below it.
-pub(crate) fn caption<'a>(label: &str, count: usize) -> Element<'a, Message> {
-    let words = typo::text(typo::caption(), format!("{label} · {count}")).style(theme::text_3).wrapping(Wrapping::None);
-    container(words).padding(Padding::new(0.0).top(space::m()).bottom(space::s()).left(space::xs())).into()
-}
-
 /// The head over a group of cards (task E8.11): what the rows' head (`widgets::group_head`) shows –
 /// the group's icon (14, in `text_2`, "Waiting for you" in the attention colour), its name in
 /// `CAPTION` and `text_2`, the number tabular in `META` and `text_3`, "Today 3" – without the band
@@ -524,12 +517,20 @@ pub(crate) fn caption<'a>(label: &str, count: usize) -> Element<'a, Message> {
 /// below).
 pub(crate) fn group_caption<'a>(group: Group, count: usize, attention: Color) -> Element<'a, Message> {
     let tint = (group == Group::Waiting).then_some(attention);
-    let mark = torro_gui::icon::icon(group.icon(), torro_gui::icon::SIZE_SM)
+    icon_caption(group.icon(), tint, group.label(), count)
+}
+
+/// The head over a group of cards with `icon` (in `tint`, else `text_2`), `label` and `count` – the
+/// one building block of [`group_caption`] and the notifications window's "For me 3" over cards
+/// (task E8.12, finding 11: the same head as over rows in the other density). It starts at the
+/// cards' edge, the one left axis of chips, heads and cards (finding 10).
+pub(crate) fn icon_caption<'a>(icon: Icon, tint: Option<Color>, label: &str, count: usize) -> Element<'a, Message> {
+    let mark = torro_gui::icon::icon(icon, torro_gui::icon::SIZE_SM)
         .style(move |t: &Theme, _| iced::widget::svg::Style { color: Some(tint.unwrap_or(palette(t).text_2)) });
-    let label = typo::text(typo::caption(), group.label()).style(theme::text_2).wrapping(Wrapping::None);
+    let label = typo::text(typo::caption(), label.to_owned()).style(theme::text_2).wrapping(Wrapping::None);
     let number = typo::text(typo::meta().tabular(), count.to_string()).style(theme::text_3).wrapping(Wrapping::None);
     let line = row![mark, label, number].spacing(space::s()).align_y(Alignment::Center);
-    container(line).padding(Padding::new(0.0).top(space::m()).bottom(space::s()).left(space::xs())).into()
+    container(line).padding(Padding::new(0.0).top(space::m()).bottom(space::s())).into()
 }
 
 /// The lead of a narrow mail column (task E8.3, "N new for you"; task E8.11 in both densities): the
@@ -541,7 +542,8 @@ fn lead<'a>(count: usize, senders: String) -> Element<'a, Message> {
         container(typo::text(typo::meta(), senders).style(theme::text_3).wrapping(Wrapping::None)).clip(true),
     ];
     let line = row![figure, words].spacing(space::m()).align_y(Alignment::Center);
-    container(line).padding(Padding::new(0.0).top(space::xs()).left(space::xs())).into()
+    // At the cards' edge, the column's one left axis (task E8.12).
+    container(line).padding(Padding::new(0.0).top(space::xs())).into()
 }
 
 /// The quiet line of a column whose "For me" is empty while "Info" has entries: what would show up

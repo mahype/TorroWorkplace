@@ -19,7 +19,13 @@
 //!   Later and the bell ([`bell`], "Mute…"), which opens the bell's menu (task E8.6b, `App::mute_menu`:
 //!   the ways to mute from `inbox.list_mute_options`, "For", "What happens"). An approval has Allow ·
 //!   Deny and neither ✕ nor Later nor bell; a coding agent Go to window ·
-//!   Later · Done. Buttons carry their words while they fit, else icons with the word as tooltip.
+//!   Later · Done. Buttons carry all their words where they fit, else icons with the word as
+//!   tooltip – only the lead (Open, Go to window) may keep its word alone ([`worded`], task E8.12);
+//!   Done is quiet, the rest framed ([`button_look`]). The menus of a card's buttons open at its row
+//!   of buttons, above it where the window has no room below – never over the bell.
+//! - **Heads and axis** (task E8.12): over cards the groups have the same head as over rows (icon,
+//!   name, number, `overview::icon_caption`); chips, heads and cards share one left edge
+//!   ([`source_chips`]).
 //! - **Row** (compact density, `list::notice_content`): the row of every view with its action bar
 //!   ([`row_actions`]): Open, Task, Later, Mute, ✕.
 //! - **The question after a finished task** (task E8.1b): the suite's "You finished a task from a
@@ -38,12 +44,12 @@ use iced::widget::text::Wrapping;
 use iced::widget::{Space, column, container, responsive, row, scrollable};
 use iced::{Alignment, Color, Element, Fill, Padding};
 use torro_core::i18n::{tr, trf};
-use torro_gui::icon::{self, Icon};
+use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::shell::SidebarMode;
 use torro_gui::theme::{self, size, space};
 use torro_gui::ui_state::Density;
-use torro_gui::widgets::{self, Mark, RowAction, TileFace, TileSize, Trail};
+use torro_gui::widgets::{self, BarWords, ButtonStyle, Mark, RowAction, TileFace, TileSize, Trail};
 use torro_gui::{style, typo};
 use torro_inbox::{Action, Item, Kind, Lane, Link, SourceInfo, SourceKind, SourceRef, State};
 
@@ -498,12 +504,36 @@ pub struct CardButton {
     pub icon: Icon,
     pub label: String,
     pub on_press: Option<Message>,
+    /// The action the entry is about ("Open", "Go to window", "Reply"): as the first button of its
+    /// bar it may keep its word while the others are icons (`widgets::BarWords::Lead`, task E8.12).
+    pub lead: bool,
+    /// Its look with its word ([`button_look`]): `ghost` for what lets the entry go, `secondary`
+    /// for the rest.
+    pub look: ButtonStyle,
 }
 
 impl CardButton {
     fn new(icon: Icon, label: impl Into<String>, on_press: Option<Message>) -> CardButton {
-        CardButton { icon, label: label.into(), on_press }
+        CardButton { icon, label: label.into(), on_press, lead: false, look: button_look(false) }
     }
+
+    /// The same button as the lead of its bar ([`CardButton::lead`]).
+    fn leading(self) -> CardButton {
+        CardButton { lead: true, ..self }
+    }
+
+    /// The same button drawn quietly ([`button_look`]): it lets the entry go.
+    fn quiet(self) -> CardButton {
+        CardButton { look: button_look(true), ..self }
+    }
+}
+
+/// The look of a card's button with its word (task E8.12, finding 12, one rule for the hub and the
+/// notifications window): `ghost` for what only lets the entry go – Done, Dismiss, Not now –,
+/// `secondary` for every other visible button (Open, Go to window, Task, Event, Later, Reply,
+/// Allow, Deny …). The ✕ of a card's head and the bell stay icon buttons.
+pub fn button_look(lets_go: bool) -> ButtonStyle {
+    if lets_go { style::button::ghost } else { style::button::secondary }
 }
 
 /// Whether `item` is a coding agent's: waiting, or done with its turn.
@@ -528,8 +558,7 @@ pub fn card_buttons(item: &Item, deciding: bool) -> Vec<CardButton> {
     let open = || Some(Message::OpenRow(item.id.clone()));
     let window = || CardButton::new(Icon::AppWindow, tr("Go to window"), open());
     if asks_to_follow_up(item) {
-        let button = |act: Act| CardButton::new(act.icon(), act.label(), act.message(item, deciding));
-        return hub::acts(item).into_iter().map(button).collect();
+        return hub::acts(item).iter().map(|act| hub::card_button(act, item, deciding)).collect();
     }
     if detail::is_approval(item) {
         let decidable = item.state.is_open() && !deciding;
@@ -555,15 +584,15 @@ pub fn card_buttons(item: &Item, deciding: bool) -> Vec<CardButton> {
     }
     let mut buttons = Vec::new();
     match detail::openable(item) {
-        Some(Link::Window) => buttons.push(window()),
+        Some(Link::Window) => buttons.push(window().leading()),
         Some(Link::Url { .. } | Link::App { .. }) => {
-            buttons.push(CardButton::new(Icon::ArrowUpRight, tr("Open"), open()))
+            buttons.push(CardButton::new(Icon::ArrowUpRight, tr("Open"), open()).leading())
         }
         Some(Link::Mail { .. }) | None => {}
     }
     let later = CardButton::new(Icon::Clock, tr("Later"), act(Command::Snooze));
     if is_agent(item) {
-        buttons.extend([later, CardButton::new(Icon::Check, tr("Done"), act(Command::Done))]);
+        buttons.extend([later, CardButton::new(Icon::Check, tr("Done"), act(Command::Done)).quiet()]);
     } else {
         buttons.extend([CardButton::new(Icon::ListTodo, tr("Task"), act(Command::MakeTask)), later]);
     }
@@ -722,8 +751,9 @@ fn single<'a>(data: &BoardData<'a>, width: f32) -> Element<'a, Message> {
     for (lane, entries) in groups(data.items, data.rows.view) {
         if let Some(lane) = lane {
             let name = lane_name(lane);
+            // The same head in both densities (task E8.12, finding 11): icon, name and number.
             content = content.push(if cards {
-                overview::caption(name, entries.len())
+                overview::icon_caption(app::lane_icon(lane), None, name, entries.len())
             } else {
                 let head = widgets::group_head(Mark::Icon(app::lane_icon(lane)), name, Some(entries.len()), None);
                 list::without_top(head)
@@ -828,21 +858,24 @@ fn card<'a>(item: &'a Item, data: &BoardData<'a>, names: Names) -> Element<'a, M
         });
         parts.push(container(lines).width(Fill).height(text_height()).clip(true).into());
     }
-    parts.push(buttons(card_buttons(item, data.deciding), bell(item)));
-    let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
-    if selected { widgets::anchored(&data.rows.anchor, card) } else { card }
+    let bar = buttons(card_buttons(item, data.deciding), bell(item));
+    // The menus of a card's buttons (the bell's, "Later until", task E8.12, finding 6) open at its
+    // row of buttons: below it, or above it where the window has no room below – never over the
+    // bell that opened them, as they did at the whole card.
+    parts.push(if selected { widgets::anchored(&data.rows.anchor, bar) } else { bar });
+    widgets::card(parts, selected, Some(Message::Select(item.id.clone())))
 }
 
-/// The row of buttons of a card: `main` from the left, the `bell` at the right; from the left as
-/// many with their words as fit the card's width ([`worded`]), the rest as icons with the word as
-/// tooltip – so the first, the one the entry is about ("Go to window", "Open"), keeps its word
-/// longest.
+/// The row of buttons of a card: `main` from the left, the `bell` at the right; all with their
+/// words where they fit the card's width, else icons with the word as tooltip – only the lead, the
+/// one the entry is about ("Go to window", "Open"), may keep its word alone ([`worded`], task E8.12:
+/// a bar never mixes words and icons otherwise).
 fn buttons<'a>(main: Vec<CardButton>, bell: Option<CardButton>) -> Element<'a, Message> {
     let line = responsive(move |bounds| {
         let words = worded(&main, bell.is_some(), bounds.width);
         let mut line = row![].spacing(space::s()).align_y(Alignment::Center);
         for (i, button) in main.iter().enumerate() {
-            line = line.push(card_button(button.clone(), i < words));
+            line = line.push(card_button(button.clone(), words.worded(i)));
         }
         if let Some(bell) = &bell {
             line = line.push(iced::widget::space::horizontal()).push(widgets::icon_button(
@@ -856,36 +889,25 @@ fn buttons<'a>(main: Vec<CardButton>, bell: Option<CardButton>) -> Element<'a, M
     container(line).width(Fill).height(size::control_sm()).into()
 }
 
-/// A button of a card: icon and word (`secondary`, as the design's cards have them), or the icon
-/// alone with the word as tooltip.
-fn card_button<'a>(button: CardButton, words: bool) -> Element<'a, Message> {
+/// A button of a card: icon and word in its look ([`CardButton::look`]), or the icon alone with the
+/// word as tooltip.
+pub fn card_button<'a>(button: CardButton, words: bool) -> Element<'a, Message> {
     if words {
-        widgets::text_button(Some(button.icon), button.label, style::button::secondary, button.on_press)
+        widgets::text_button(Some(button.icon), button.label, button.look, button.on_press)
     } else {
         widgets::icon_button(button.icon, button.label, button.on_press)
     }
 }
 
-/// How many of the buttons `main`, from the left, show their words in a row `width` wide with the
-/// bell after them (`bell`): all start as icons ([`size::control_sm()`] each, [`space::s()`] between
-/// them), then one after the other gets its word while the row still fits. A button with its word
-/// takes its padding, icon, gap and word – estimated on the wide side, so no word runs over the
-/// card's edge.
-pub fn worded(main: &[CardButton], bell: bool, width: f32) -> usize {
-    let pad = style::button_padding();
-    let gap = space::s();
-    let icons = main.len() as f32 * size::control_sm() + gap * main.len().saturating_sub(1) as f32;
-    let mut used = icons + if bell { gap + size::control_sm() } else { 0.0 };
-    let mut words = 0;
-    for button in main {
-        let word = pad.left + pad.right + icon::SIZE_SM + gap + typo::text_width(&button.label, typo::caption());
-        if used + word - size::control_sm() > width {
-            break;
-        }
-        used += word - size::control_sm();
-        words += 1;
-    }
-    words
+/// How the buttons `main` show their words in a row `width` wide with the bell after them (`bell`)
+/// (`widgets::bar_words`, task E8.12): all of them where they fit, else only the first when it is
+/// the entry's lead ([`CardButton::lead`]), else none. The estimate takes the buttons' real gaps
+/// (the icon's 6, [`space::s()`] between buttons), so a design with roomier buttons (Plex) keeps its
+/// words where they fit.
+pub fn worded(main: &[CardButton], bell: bool, width: f32) -> BarWords {
+    let labels: Vec<&str> = main.iter().map(|button| button.label.as_str()).collect();
+    let lead = main.first().is_some_and(|button| button.lead);
+    widgets::bar_words(&labels, lead, usize::from(bell), width)
 }
 
 /// The row of `item` `width` wide in the compact density: the notice row of every view
@@ -925,7 +947,11 @@ pub fn source_rows<'a>(
 
 /// The sources of `listed` as chips over the board (narrow and medium windows, where the sidebar is
 /// folded away): chosen while shown; the last shown one cannot be switched off and is disabled.
-pub fn source_chips<'a>(listed: &[SourceRef], shown: &Shown) -> Element<'a, Message> {
+///
+/// They start on the board's left axis (task E8.12, finding 10): over a `flush` list of rows where
+/// the rows' text starts ([`layout::row_padding`]), over cards and columns at the cards' edge
+/// ([`list::cards_inset`]), where the groups' heads start too.
+pub fn source_chips<'a>(listed: &[SourceRef], shown: &Shown, flush: bool) -> Element<'a, Message> {
     let chips = listed
         .iter()
         .map(|source| {
@@ -934,9 +960,15 @@ pub fn source_chips<'a>(listed: &[SourceRef], shown: &Shown) -> Element<'a, Mess
             widgets::choice_chip(source.label(), Some(Mark::Icon(list::source_icon(source))), on, press)
         })
         .collect();
-    let pad = layout::row_padding();
+    let (left, right) = if flush {
+        let pad = layout::row_padding();
+        (pad.left, pad.right)
+    } else {
+        let inset = list::cards_inset();
+        (inset.left, inset.right)
+    };
     container(widgets::chip_row(chips))
-        .padding(Padding::new(0.0).top(space::m()).bottom(space::xs()).left(pad.left).right(pad.right))
+        .padding(Padding::new(0.0).top(space::m()).bottom(space::xs()).left(left).right(right))
         .into()
 }
 
@@ -1215,16 +1247,41 @@ mod tests {
         assert!(meta_line(waiting, &rows, in_column).starts_with(tr("Waiting for you")));
     }
 
+    /// Task E8.12 (finding 4): a card's bar shows all its words or none – only its lead ("Go to
+    /// window", "Open") may keep its word alone; a bar without a lead never mixes.
     #[test]
-    fn buttons_keep_their_words_from_the_left() {
+    fn a_bar_shows_all_words_or_only_its_lead() {
         let items = open();
         let agent = items.iter().find(|item| item.id == "demo-1").expect("a waiting agent");
         let buttons = card_buttons(agent, false);
-        assert_eq!(worded(&buttons, true, size::content_max()), buttons.len(), "room for all words");
-        assert_eq!(worded(&buttons, true, 0.0), 0, "no room: icons only");
-        let counts: Vec<usize> = (0..=72).map(|step| worded(&buttons, true, step as f32 * space::s())).collect();
-        assert!(counts.windows(2).all(|pair| pair[0] <= pair[1]), "more room, more words: {counts:?}");
-        assert!(counts.contains(&1), "a width where only the first has its word: {counts:?}");
+        assert_eq!(worded(&buttons, true, size::content_max()), BarWords::All, "room for all words");
+        assert_eq!(worded(&buttons, true, 0.0), BarWords::None, "no room: icons only");
+        let steps: Vec<BarWords> = (0..=72).map(|step| worded(&buttons, true, step as f32 * space::s())).collect();
+        assert!(steps.contains(&BarWords::Lead), "a width where only the lead has its word: {steps:?}");
+        let rank = |words: &BarWords| match words {
+            BarWords::None => 0,
+            BarWords::Lead => 1,
+            BarWords::All => 2,
+        };
+        assert!(steps.windows(2).all(|pair| rank(&pair[0]) <= rank(&pair[1])), "more room, more words");
+        // Task and Later have no lead: all or none.
+        let notice = items.iter().find(|item| item.id == "demo-12").expect("a notice without a link");
+        let plain = card_buttons(notice, false);
+        assert!(!plain[0].lead);
+        let mixed = (0..=72).map(|step| worded(&plain, true, step as f32 * space::s()));
+        assert!(mixed.into_iter().all(|words| words != BarWords::Lead), "never one word among icons");
+    }
+
+    /// Task E8.12 (finding 4): the estimate takes the buttons' real gaps, so a card as wide as the
+    /// buttons with their words keeps all of them (Plex was cut too early).
+    #[test]
+    fn a_card_exactly_as_wide_as_its_words_keeps_them() {
+        let items = open();
+        let notice = items.iter().find(|item| item.id == "demo-6").expect("a notice with a link");
+        let buttons = card_buttons(notice, false);
+        let labels: Vec<&str> = buttons.iter().map(|button| button.label.as_str()).collect();
+        let room = widgets::bar_width(&labels, BarWords::All, 1);
+        assert_eq!(worded(&buttons, true, room), BarWords::All);
     }
 
     #[test]

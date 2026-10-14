@@ -117,8 +117,9 @@ const PROP_LABEL_WIDTH: f32 = 88.0;
 const PROP_PADDING_Y: f32 = 6.0;
 /// Height of the pill with a state word ([`state_pill`]) and of its round ends.
 const STATE_PILL_HEIGHT: f32 = 22.0;
-/// Size of the progress bar ([`progress_bar`]).
-const PROGRESS_WIDTH: f32 = 64.0;
+/// Size of the progress bar ([`progress_bar`]); its width is public so a head can tell whether the
+/// bar fits beside its words.
+pub const PROGRESS_WIDTH: f32 = 64.0;
 const PROGRESS_HEIGHT: f32 = 4.0;
 
 // ---------------------------------------------------------------------------------------------
@@ -699,8 +700,174 @@ const BAR_INSET: f32 = style::SEGMENT_INSET;
 /// The width of one button of the bar with its word: the button padding, the icon (14), the gap and
 /// the word in `CAPTION` (estimated like [`typo::ellipsize`]).
 fn row_action_width(label: &str) -> f32 {
+    text_button_width(true, label)
+}
+
+/// The width a [`text_button`] with `label` takes, with its icon (`icon`) or without: the button
+/// padding, the icon (14) and its gap, the word in `CAPTION` – estimated like [`typo::ellipsize`],
+/// on the wide side. For choosing between words and icons before laying out.
+pub fn text_button_width(icon: bool, label: &str) -> f32 {
     let pad = style::button_padding();
-    pad.left + pad.right + icon::SIZE_SM + ICON_GAP + typo::text_width(label, typo::caption())
+    let mark = if icon { icon::SIZE_SM + ICON_GAP } else { 0.0 };
+    pad.left + pad.right + mark + typo::text_width(label, typo::caption())
+}
+
+/// How a row of buttons on a card shows its words (task E8.12, finding 4): all or none – a bar never
+/// mixes words and icons, except that its lead (the action the entry is about: "Open", "Go to
+/// window", "Reply") may keep its word while the others are icons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarWords {
+    /// Every button with its icon and word.
+    All,
+    /// The first with its word, the rest as icons with their word as tooltip.
+    Lead,
+    /// Icons alone, each with its word as tooltip.
+    None,
+}
+
+impl BarWords {
+    /// Whether the button at `index` (from the left) shows its word.
+    pub fn worded(self, index: usize) -> bool {
+        match self {
+            BarWords::All => true,
+            BarWords::Lead => index == 0,
+            BarWords::None => false,
+        }
+    }
+}
+
+/// The width a bar of buttons with `labels` (icon and word each, from the left) takes as `words`
+/// says, followed by `icons` more icon-only buttons (a bell, "…"), [`space::s()`] between all of
+/// them: each worded button [`text_button_width`], each icon [`size::control_sm()`].
+pub fn bar_width(labels: &[&str], words: BarWords, icons: usize) -> f32 {
+    let buttons: f32 = labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| if words.worded(i) { text_button_width(true, label) } else { size::control_sm() })
+        .sum();
+    let count = labels.len() + icons;
+    buttons + icons as f32 * size::control_sm() + space::s() * count.saturating_sub(1) as f32
+}
+
+/// How the bar of `labels` (plus `icons` icon-only buttons, see [`bar_width`]) shows its words in
+/// `room`: [`BarWords::All`] when they fit; else [`BarWords::Lead`] when the first is the bar's
+/// `lead` action and fits with its word; else [`BarWords::None`].
+///
+/// ```ignore
+/// let words = widgets::bar_words(&["Open", "Task", "Later"], true, 1, inner);
+/// for (i, button) in buttons.iter().enumerate() { /* text_button if words.worded(i), else icon_button */ }
+/// ```
+pub fn bar_words(labels: &[&str], lead: bool, icons: usize, room: f32) -> BarWords {
+    if bar_width(labels, BarWords::All, icons) <= room {
+        BarWords::All
+    } else if lead && labels.len() > 1 && bar_width(labels, BarWords::Lead, icons) <= room {
+        BarWords::Lead
+    } else {
+        BarWords::None
+    }
+}
+
+/// The parts of a meta line ("Mail · Jonas Weber · anna@work.example.org · Tue, 13 Oct") that fit
+/// `room` in `level`, joined by " · " (task E8.12, finding 1): all of them when they fit, else
+/// without the parts at the indices of `drop`, left out one after the other in that order (the
+/// account first, then the sender) until the line fits. What still does not fit is for the caller
+/// to cut with "…" ([`typo::ellipsize`]). Empty parts are skipped.
+pub fn meta_fit(parts: &[String], drop: &[usize], level: typo::Level, room: f32) -> String {
+    let join = |left_out: &[usize]| {
+        let kept: Vec<&str> = parts
+            .iter()
+            .enumerate()
+            .filter(|(i, part)| !part.is_empty() && !left_out.contains(i))
+            .map(|(_, part)| part.as_str())
+            .collect();
+        kept.join(" · ")
+    };
+    let mut line = join(&[]);
+    for n in 1..=drop.len() {
+        if typo::text_width(&line, level) <= room {
+            break;
+        }
+        line = join(&drop[..n]);
+    }
+    line
+}
+
+/// The narrowest the words of a [`card_line`] get before its action gives up its word: half the
+/// properties column, room for a short title.
+fn card_line_words_min() -> f32 {
+    size::props() / 2.0
+}
+
+/// The one line of a small card that points somewhere else (task E8.12, findings 1–3: "From" in a
+/// task, the task in a mail): `lead` (an avatar or a mark, `lead_width` wide), the `title` in
+/// `BODY_STRONG` over the `meta` line in `META`/`text_3`, and the `action` at the right. Laid out
+/// at the width it gets:
+///
+/// - the action keeps its word ([`text_button`], `secondary`) while the words keep at least half
+///   the properties column, else it is its icon with the word as tooltip – it never pushes the
+///   title away;
+/// - the meta line leaves out the parts at `drop` in that order where it does not fit
+///   ([`meta_fit`]), and title and meta are cut with "…", showing the whole as tooltip – never cut
+///   silently.
+///
+/// Put it into a [`card`] (`widgets::card(vec![card_line(…)], false, None)`).
+pub fn card_line<'a, M: Clone + 'a>(
+    lead: impl Fn() -> Element<'a, M> + 'a,
+    lead_width: f32,
+    title: String,
+    meta: Vec<String>,
+    drop: Vec<usize>,
+    action: RowAction<'a, M>,
+) -> Element<'a, M> {
+    responsive(move |room| {
+        let gap = space::m();
+        let (spoken, words_room) = card_line_split(room.width, lead_width, action.label.as_ref());
+        let button = if spoken {
+            text_button(
+                Some(action.icon),
+                action.label.clone(),
+                style::button::secondary,
+                Some(action.on_press.clone()),
+            )
+        } else {
+            icon_button(action.icon, action.label.clone(), Some(action.on_press.clone()))
+        };
+        let whole = meta.iter().filter(|part| !part.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
+        let fitted = meta_fit(&meta, &drop, typo::meta(), words_room);
+        let words = column![
+            cut_line(typo::body_strong(), &title, title.clone(), theme::text, words_room),
+            cut_line(typo::meta(), &fitted, whole, theme::text_3, words_room),
+        ]
+        .width(Fill);
+        row![lead(), words, button].spacing(gap).align_y(Alignment::Center).into()
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// How a [`card_line`] `width` wide with a lead `lead_width` wide splits its room: whether its
+/// action keeps its word `label` (the words keep at least [`card_line_words_min`] beside it), and
+/// the room left for title and meta – beside the button with its word, or beside its icon.
+pub fn card_line_split(width: f32, lead_width: f32, label: &str) -> (bool, f32) {
+    let words = width - lead_width - 2.0 * space::m();
+    let worded = text_button_width(true, label);
+    let spoken = words - worded >= card_line_words_min();
+    (spoken, (words - if spoken { worded } else { size::control_sm() }).max(0.0))
+}
+
+/// `text` in `level` on one line cut to `room` with "…"; when it is cut or is not all of `whole`,
+/// `whole` shows as tooltip.
+fn cut_line<'a, M: 'a>(
+    level: typo::Level,
+    text: &str,
+    whole: String,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+    room: f32,
+) -> Element<'a, M> {
+    let shown = typo::ellipsize(text, level, room);
+    let cut = shown != whole;
+    let line = container(typo::text(level, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+    if cut { with_tooltip(line, whole) } else { line.into() }
 }
 
 /// The width the action bar of `actions` takes with `words` (icon and word on every button) or
@@ -930,7 +1097,8 @@ pub enum Align {
 /// Where a floating card goes relative to its anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
-    /// 4 below the anchor (menus).
+    /// 4 below the anchor (menus); 4 above it when the window has no room below but room above
+    /// (task E8.12: a menu never covers its trigger where it can help it, [`below_or_above`]).
     Below(Align),
     /// 8 right of the anchor, top edges in line; left of it when there is no room (event cards).
     Beside,
@@ -940,8 +1108,8 @@ pub enum Placement {
 /// keeps 8 from the viewport edges when it fits.
 fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placement) -> Point {
     let (x, y) = match placement {
-        Placement::Below(Align::Start) => (target.x, target.y + target.height + below_gap()),
-        Placement::Below(Align::End) => (target.x + target.width - card.width, target.y + target.height + below_gap()),
+        Placement::Below(Align::Start) => (target.x, below_or_above(target, card, viewport)),
+        Placement::Below(Align::End) => (target.x + target.width - card.width, below_or_above(target, card, viewport)),
         Placement::Beside => {
             let right = target.x + target.width + beside_gap();
             let x = if right + card.width <= viewport.x + viewport.width - beside_gap() {
@@ -957,6 +1125,18 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
         if high < low { low } else { value.clamp(low, high) }
     };
     Point::new(clamp(x, viewport.x, viewport.width, card.width), clamp(y, viewport.y, viewport.height, card.height))
+}
+
+/// The top of a card of `card` size that opens under `target` (task E8.12): [`below_gap()`] under
+/// it while the card fits above the viewport's bottom margin, else as far above it when it fits
+/// there; with room on neither side, on the side with more room – the clamp in [`place`] then keeps
+/// it on screen.
+fn below_or_above(target: Rectangle, card: Size, viewport: Rectangle) -> f32 {
+    let below = target.y + target.height + below_gap();
+    let above = target.y - below_gap() - card.height;
+    let room_below = viewport.y + viewport.height - beside_gap() - below;
+    let room_above = target.y - below_gap() - (viewport.y + beside_gap());
+    if card.height <= room_below || (card.height > room_above && room_below >= room_above) { below } else { above }
 }
 
 /// The layer for an open menu or floating card: `card` ([`menu`], [`popover`]) next to `anchor`
@@ -2894,12 +3074,85 @@ mod tests {
 
     #[test]
     fn cards_stay_inside_the_window() {
-        // A trigger at the right edge with a start-aligned menu, and one near the bottom.
+        // A trigger at the right edge near the bottom with a start-aligned menu: moved in from the
+        // edge, and above the trigger, which has no room below (task E8.12).
         let at = place(rect(850.0, 680.0, 40.0, 16.0), menu_size(), WINDOW, Placement::Below(Align::Start));
-        assert_eq!(at, Point::new(900.0 - menu_size().width - beside_gap(), 700.0 - menu_size().height - beside_gap()));
+        assert_eq!(at, Point::new(900.0 - menu_size().width - beside_gap(), 680.0 - below_gap() - menu_size().height));
         // A card larger than the window keeps its top-left corner on screen.
         let huge = place(rect(10.0, 10.0, 10.0, 10.0), Size::new(2000.0, 2000.0), WINDOW, Placement::Beside);
         assert_eq!(huge, Point::new(beside_gap(), beside_gap()));
+    }
+
+    /// Task E8.12 (finding 4): a bar of buttons shows all words or none – only its lead may keep its
+    /// word alone –, and the estimate takes the gap the buttons really have.
+    #[test]
+    fn a_bar_shows_all_its_words_or_none_but_its_lead() {
+        let labels = ["Open", "Task", "Later"];
+        let all = bar_width(&labels, BarWords::All, 1);
+        let expected: f32 = labels.iter().map(|label| text_button_width(true, label)).sum::<f32>()
+            + size::control_sm()
+            + 3.0 * space::s();
+        assert_eq!(all, expected);
+        assert_eq!(text_button_width(true, "Open") - text_button_width(false, "Open"), icon::SIZE_SM + ICON_GAP);
+        assert_eq!(bar_words(&labels, true, 1, all), BarWords::All, "exactly the room");
+        let lead = bar_width(&labels, BarWords::Lead, 1);
+        assert_eq!(bar_words(&labels, true, 1, all - 1.0), BarWords::Lead);
+        assert_eq!(bar_words(&labels, false, 1, all - 1.0), BarWords::None, "no lead: no word at all");
+        assert_eq!(bar_words(&labels, true, 1, lead - 1.0), BarWords::None);
+        let words: Vec<bool> = (0..3).map(|i| BarWords::Lead.worded(i)).collect();
+        assert_eq!(words, [true, false, false]);
+        assert!((0..3).all(|i| BarWords::All.worded(i) && !BarWords::None.worded(i)));
+    }
+
+    /// Task E8.12 (finding 1): a meta line leaves out the account, then the sender, before it is cut.
+    #[test]
+    fn a_meta_line_leaves_out_parts_before_it_is_cut() {
+        let parts: Vec<String> =
+            ["Mail", "Jonas Weber", "anna@work.example.org", "Tue, 13 Oct"].map(String::from).to_vec();
+        let level = typo::meta();
+        let whole = "Mail · Jonas Weber · anna@work.example.org · Tue, 13 Oct";
+        assert_eq!(meta_fit(&parts, &[2, 1], level, 1000.0), whole);
+        let without_account = "Mail · Jonas Weber · Tue, 13 Oct";
+        let room = typo::text_width(without_account, level);
+        assert_eq!(meta_fit(&parts, &[2, 1], level, room), without_account);
+        assert_eq!(meta_fit(&parts, &[2, 1], level, room - 1.0), "Mail · Tue, 13 Oct");
+        assert_eq!(meta_fit(&parts, &[2, 1], level, 10.0), "Mail · Tue, 13 Oct", "the rest is cut by the line");
+        let gaps = vec!["Mail".to_string(), String::new(), "Tue".to_string()];
+        assert_eq!(meta_fit(&gaps, &[], level, 1000.0), "Mail · Tue", "no empty part");
+    }
+
+    /// Task E8.12 (finding 3): a card's action gives up its word before it pushes the title away.
+    #[test]
+    fn a_card_line_keeps_room_for_its_title() {
+        let lead = size::avatar();
+        let worded = text_button_width(true, "Open mail");
+        let enough = lead + 2.0 * space::m() + worded + card_line_words_min() + 0.5;
+        let (spoken, room) = card_line_split(enough, lead, "Open mail");
+        assert!(spoken && (room - card_line_words_min() - 0.5).abs() < 0.01, "{room}");
+        let (spoken, room) = card_line_split(enough - 1.0, lead, "Open mail");
+        assert!(!spoken, "a medium window: the icon alone");
+        assert!(room > card_line_words_min(), "the title gets the button's room: {room}");
+        assert_eq!(card_line_split(10.0, lead, "Open mail"), (false, 0.0), "never below nothing");
+    }
+
+    /// Task E8.12 (finding 6): a menu opens above its trigger when only there is room, never over
+    /// it; with room on neither side it takes the side with more and stays on screen.
+    #[test]
+    fn a_menu_without_room_below_opens_above_its_trigger() {
+        let menu = Size::new(240.0, 260.0);
+        let trigger = rect(600.0, 560.0, 28.0, 28.0);
+        let at = place(trigger, menu, WINDOW, Placement::Below(Align::End));
+        assert_eq!(at, Point::new(628.0 - 240.0, 560.0 - below_gap() - 260.0), "above, right edges in line");
+        assert!(at.y + menu.height <= trigger.y, "the trigger stays free");
+        let roomy = place(rect(600.0, 100.0, 28.0, 28.0), menu, WINDOW, Placement::Below(Align::End));
+        assert_eq!(roomy.y, 128.0 + below_gap(), "below while it fits there");
+        // A window 400 high: neither side has room for 300, the larger side wins, kept on screen.
+        let small = Rectangle { height: 400.0, ..WINDOW };
+        let tall = Size::new(240.0, 300.0);
+        let low = place(rect(600.0, 300.0, 28.0, 28.0), tall, small, Placement::Below(Align::End));
+        assert_eq!(low.y, beside_gap(), "more room above: from the top margin");
+        let high = place(rect(600.0, 60.0, 28.0, 28.0), tall, small, Placement::Below(Align::End));
+        assert_eq!(high.y, 400.0 - 300.0 - beside_gap(), "more room below: up from the bottom margin");
     }
 
     #[test]

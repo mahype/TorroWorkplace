@@ -12,13 +12,15 @@
 //!   A quarter has a column per week ([`buckets`]), so its columns stay readable.
 //! - **By hour of day** ([`hour_columns`]): the busy hours, all sources together.
 //! - **Where you could cut back** ([`cuts`]): the core's suggestions – much came in, little was
-//!   opened –, each with a button that mutes it (`inbox.mute_item` with the suggestion's scope, the
-//!   "For" and "What happens" of the window as in the bell's menu; the toast offers the undo).
+//!   opened –, each with its ready suggestion as button ([`suggestion`], task E8.12: "Hide sender",
+//!   "Mute app" …), which mutes it (`inbox.mute_item` with the suggestion's scope and effect, the
+//!   "For" of the window as in the bell's menu; the toast offers the undo). At most a reading width.
 //! - **Table view** ([`day_table`], [`hour_table`]): the same numbers as the charts, as tables, for
 //!   reading them exactly and where colour does not reach.
 //! - **Sizes:** wide puts the two charts side by side and the figures in a row; medium stacks the
-//!   charts; narrow puts the span and the table switch at the top of the page, the figures two by
-//!   two and every suggestion's numbers under its name. Mini and strip show the glance, as always.
+//!   charts and puts the figures two by two (task E8.12); narrow puts the span and the table switch
+//!   at the top of the page, the figures two by two and every suggestion's numbers under its name.
+//!   Mini and strip show the glance, as always.
 //!
 //! The page only lays out: the app asks for the numbers and sends the muting. Values of traits are
 //! foreign text (`untrusted`) and are shown as plain text.
@@ -40,7 +42,7 @@ use torro_inbox::{InboxError, InboxSource, ItemFilter, SourceKind, SourceRef};
 use torro_ipc::inbox::InboxClient;
 use torro_ipc::{InboxStats, SourceStats, StatsCounts, StatsDay, StatsRange, StatsSuggestion};
 
-use crate::app::{Message, effect_name};
+use crate::app::Message;
 use crate::{hub, list};
 
 /// What the window asks for Insights. One method, one request of the app key; the core counts, keeps
@@ -362,13 +364,14 @@ pub fn figures(stats: &InboxStats) -> [Figure; 4] {
     ]
 }
 
-/// `part` of `whole` as a whole percentage ("3 %"), at most 100; "–" when nothing came.
+/// `part` of `whole` as a whole percentage, at most 100; "–" when nothing came. English writes
+/// "33%" (task E8.12), German "33 %" – the translation of "{n}%" decides.
 pub fn percent(part: u32, whole: u32) -> String {
     if whole == 0 {
         return DASH.to_owned();
     }
     let share = (f64::from(part.min(whole)) * 100.0 / f64::from(whole)).round() as u32;
-    trf("{n} %", &[("n", &share)])
+    trf("{n}%", &[("n", &share)])
 }
 
 /// A time until done in minutes as short as it gets: "15 min", "2 h", "7 d".
@@ -390,29 +393,59 @@ pub fn busiest_hour(stats: &InboxStats) -> Option<u32> {
     (*most > 0).then(|| u32::try_from(hour).unwrap_or(0))
 }
 
-/// A suggestion as the page shows it: what it mutes, how much came and was opened, and what its
-/// button sends.
+/// A suggestion as the page shows it: what it mutes, how much came and was opened, the word of its
+/// button and what the button sends.
 #[derive(Debug, Clone)]
 pub struct Cut {
     pub label: String,
     pub source: SourceRef,
     pub new: u32,
     pub opened: u32,
+    /// The ready suggestion ([`suggestion`]): "Hide sender", "Mute app" …
+    pub word: &'static str,
     pub mute: Message,
 }
 
+/// The ready suggestion of a row of "Where you could cut back" for muting with `scope` (task E8.12,
+/// finding 14; `docs/eingang.md`, "Insights": "Mute channel", "Hide sender"): what muting does and
+/// the word of the button that does it. The core suggests what to mute (`inbox.get_stats` names the
+/// trait and its scope); what fits it is the page's: mail that is seldom read leaves the inbox –
+/// its sender, domain, list, newsletters are hidden (the mail stays in its mailbox) –, everything
+/// else keeps coming without a popup ("Mute …"), so no report is lost.
+pub fn suggestion(scope: MuteScope) -> (MuteEffect, &'static str) {
+    let MuteScope::Facet { key } = scope else { return (MuteEffect::NoPopup, tr("Mute conversation")) };
+    match key {
+        FacetKey::Sender => (MuteEffect::Hide, tr("Hide sender")),
+        FacetKey::Domain => (MuteEffect::Hide, tr("Hide domain")),
+        FacetKey::List => (MuteEffect::Hide, tr("Hide list")),
+        FacetKey::Bulk => (MuteEffect::Hide, tr("Hide newsletters")),
+        FacetKey::Account => (MuteEffect::NoPopup, tr("Mute account")),
+        FacetKey::Agent => (MuteEffect::NoPopup, tr("Mute agent")),
+        FacetKey::Project => (MuteEffect::NoPopup, tr("Mute project")),
+        FacetKey::Kind => (MuteEffect::NoPopup, tr("Mute these")),
+        FacetKey::Client => (MuteEffect::NoPopup, tr("Mute app")),
+        FacetKey::Conversation => (MuteEffect::NoPopup, tr("Mute conversation")),
+    }
+}
+
 /// The core's suggestions as rows, in its order (the most first): each button sends
-/// `inbox.mute_item` for the suggestion's entry and scope ([`Message::MuteBy`]).
+/// `inbox.mute_item` for the suggestion's entry and scope with the effect of its ready suggestion
+/// ([`suggestion`], [`Message::MuteSuggested`]), for as long as the window's "For" says.
 pub fn cuts(stats: &InboxStats) -> Vec<Cut> {
     stats
         .suggestions
         .iter()
-        .map(|suggestion: &StatsSuggestion| Cut {
-            label: list::one_line(&suggestion.option.label),
-            source: suggestion.source.clone(),
-            new: suggestion.new,
-            opened: suggestion.opened,
-            mute: Message::MuteBy(suggestion.item.clone(), suggestion.option.scope),
+        .map(|suggestion: &StatsSuggestion| {
+            let scope = suggestion.option.scope;
+            let (effect, word) = self::suggestion(scope);
+            Cut {
+                label: list::one_line(&suggestion.option.label),
+                source: suggestion.source.clone(),
+                new: suggestion.new,
+                opened: suggestion.opened,
+                word,
+                mute: Message::MuteSuggested(suggestion.item.clone(), scope, effect),
+            }
         })
         .collect()
 }
@@ -421,9 +454,6 @@ pub fn cuts(stats: &InboxStats) -> Vec<Cut> {
 pub struct InsightsData<'a> {
     pub insights: &'a Insights,
     pub class: SizeClass,
-    /// What muting does ("What happens" of the window, as the bell's menu keeps it): the word of the
-    /// suggestions' buttons.
-    pub effect: MuteEffect,
     /// The local day, for the dates.
     pub today: NaiveDate,
 }
@@ -466,7 +496,7 @@ pub fn view(data: InsightsData<'_>) -> Element<'_, Message> {
         ));
         return page(blocks, narrow);
     }
-    blocks.push(figure_tiles(stats, narrow));
+    blocks.push(figure_tiles(stats, figures_two_by_two(data.class)));
     let series = series(stats);
     let (days, hours) = if data.insights.table {
         (day_table_card(stats, &series, data.today), hour_table_card(stats))
@@ -480,7 +510,9 @@ pub fn view(data: InsightsData<'_>) -> Element<'_, Message> {
     } else {
         column![days, hours].spacing(size::card_gap()).into()
     });
-    blocks.push(cut_back(stats, data.effect, narrow));
+    // At most a reading width, as the hub's To sort (task E8.12, finding 8): its button would stand
+    // far from what it mutes.
+    blocks.push(container(cut_back(stats, narrow)).width(Fill).max_width(size::content_max()).into());
     page(blocks, narrow)
 }
 
@@ -497,12 +529,18 @@ fn page(blocks: Vec<Element<'_, Message>>, narrow: bool) -> Element<'_, Message>
     container(scrolled).width(Fill).max_width(hub::max_width()).height(Fill).into()
 }
 
-/// The four figures: in one row, two by two where it is narrow.
-fn figure_tiles<'a>(stats: &InboxStats, narrow: bool) -> Element<'a, Message> {
+/// Whether the four figures stand two by two in a window of `class`: below the wide layout (task
+/// E8.12, finding 13) – four in a row of a medium window squeeze their notes onto two lines.
+fn figures_two_by_two(class: SizeClass) -> bool {
+    class != SizeClass::Wide
+}
+
+/// The four figures: in one row, or two by two (`two_by_two`, [`figures_two_by_two`]).
+fn figure_tiles<'a>(stats: &InboxStats, two_by_two: bool) -> Element<'a, Message> {
     let tiles: Vec<Element<'a, Message>> =
         figures(stats).into_iter().map(|figure| widgets::stat_tile(figure.label, figure.value, figure.note)).collect();
     let gap = size::card_gap();
-    if !narrow {
+    if !two_by_two {
         return row(tiles).spacing(gap).into();
     }
     let mut tiles = tiles.into_iter();
@@ -540,7 +578,8 @@ fn hour_chart_card<'a>(stats: &InboxStats) -> Element<'a, Message> {
     let one = vec![ChartSeries { name: tr("Came in").into(), color: ChartColor::Series(0) }];
     let mut body = column![widgets::column_chart(one, hour_columns(stats))].spacing(space::m());
     if let Some(hour) = busiest_hour(stats) {
-        let words = trf("Busiest: {time}.", &[("time", &hour_span(hour))]);
+        // A label, not a sentence: no full stop (task E8.12).
+        let words = trf("Busiest: {time}", &[("time", &hour_span(hour))]);
         body = body.push(typo::text(typo::meta(), words).style(theme::text_2));
     }
     widgets::chart_card(tr("By hour of day"), tr("All sources"), body)
@@ -558,7 +597,7 @@ fn hour_table_card<'a>(stats: &InboxStats) -> Element<'a, Message> {
 
 /// "Where you could cut back": the suggestions with their numbers and buttons, or a line that
 /// there are none.
-fn cut_back<'a>(stats: &InboxStats, effect: MuteEffect, narrow: bool) -> Element<'a, Message> {
+fn cut_back<'a>(stats: &InboxStats, narrow: bool) -> Element<'a, Message> {
     let head = row![
         typo::text(typo::body_strong(), tr("Where you could cut back")).width(Fill),
         typo::text(typo::meta(), tr("Much came in, little was opened")).style(theme::text_3),
@@ -576,7 +615,7 @@ fn cut_back<'a>(stats: &InboxStats, effect: MuteEffect, narrow: bool) -> Element
     }
     for cut in cuts {
         block = block.push(rule::horizontal(size::HAIRLINE).style(style::rule));
-        block = block.push(if narrow { cut_card(cut, effect) } else { cut_row(cut, effect) });
+        block = block.push(if narrow { cut_card(cut) } else { cut_row(cut) });
     }
     block.into()
 }
@@ -606,7 +645,7 @@ fn source_mark<'a>(source: &SourceRef) -> Element<'a, Message> {
 
 /// A suggestion in one line (wide, medium): icon and what it mutes, what came in, the share opened
 /// with its bar, and the button.
-fn cut_row<'a>(cut: Cut, effect: MuteEffect) -> Element<'a, Message> {
+fn cut_row<'a>(cut: Cut) -> Element<'a, Message> {
     let what = row![
         source_mark(&cut.source),
         container(widgets::ellipsized(typo::body(), cut.label, theme::text)).width(Fill)
@@ -624,7 +663,7 @@ fn cut_row<'a>(cut: Cut, effect: MuteEffect) -> Element<'a, Message> {
         container(what).width(Length::FillPortion(5)),
         container(new).width(Length::FillPortion(1)).align_right(Length::FillPortion(1)),
         container(opened).width(Length::FillPortion(2)),
-        container(mute_button(cut.mute, effect)).width(Length::FillPortion(2)).align_right(Length::FillPortion(2)),
+        container(mute_button(cut.mute, cut.word)).width(Length::FillPortion(2)).align_right(Length::FillPortion(2)),
     ]
     .spacing(space::l())
     .align_y(Alignment::Center);
@@ -632,22 +671,22 @@ fn cut_row<'a>(cut: Cut, effect: MuteEffect) -> Element<'a, Message> {
 }
 
 /// A suggestion where it is narrow: what it mutes, its numbers below, the button at the right.
-fn cut_card<'a>(cut: Cut, effect: MuteEffect) -> Element<'a, Message> {
+fn cut_card<'a>(cut: Cut) -> Element<'a, Message> {
     let numbers =
         trf("{new} came in · {opened} opened", &[("new", &cut.new), ("opened", &percent(cut.opened, cut.new))]);
     let words = column![
         container(widgets::ellipsized(typo::body(), cut.label, theme::text)).width(Fill),
         typo::text(typo::meta(), numbers).style(theme::text_3),
     ];
-    let line = row![source_mark(&cut.source), container(words).width(Fill), mute_button(cut.mute, effect)]
+    let line = row![source_mark(&cut.source), container(words).width(Fill), mute_button(cut.mute, cut.word)]
         .spacing(space::m())
         .align_y(Alignment::Center);
     container(line).padding([space::s(), 0.0]).into()
 }
 
-/// The button of a suggestion: the bell and what muting does ("Only Info").
-fn mute_button<'a>(mute: Message, effect: MuteEffect) -> Element<'a, Message> {
-    widgets::text_button(Some(Icon::BellOff), effect_name(effect), style::button::secondary, Some(mute))
+/// The button of a suggestion: the bell and its ready suggestion ("Hide sender", [`suggestion`]).
+fn mute_button<'a>(mute: Message, word: &'static str) -> Element<'a, Message> {
+    widgets::text_button(Some(Icon::BellOff), word, style::button::secondary, Some(mute))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -852,8 +891,11 @@ mod tests {
 
     #[test]
     fn figures_say_shares_and_times_shortly() {
-        assert_eq!(percent(3, 64), trf("{n} %", &[("n", &5)]));
-        assert_eq!(percent(9, 4), trf("{n} %", &[("n", &100)]), "never more than all");
+        assert_eq!(percent(3, 64), trf("{n}%", &[("n", &5)]));
+        assert_eq!(percent(9, 4), trf("{n}%", &[("n", &100)]), "never more than all");
+        if torro_core::i18n::tr("{n}%") == "{n}%" {
+            assert_eq!(percent(1, 3), "33%", "English: no space (task E8.12)");
+        }
         assert_eq!(percent(0, 0), DASH);
         assert_eq!(waited(15), trf("{n} min", &[("n", &15)]));
         assert_eq!(waited(120), trf("{n} h", &[("n", &2)]));
@@ -885,7 +927,38 @@ mod tests {
         }
         let cuts = cuts(&stats);
         assert!(
-            matches!(&cuts[0].mute, Message::MuteBy(id, scope) if *id == stats.suggestions[0].item && *scope == stats.suggestions[0].option.scope)
+            matches!(&cuts[0].mute, Message::MuteSuggested(id, scope, _) if *id == stats.suggestions[0].item && *scope == stats.suggestions[0].option.scope)
         );
+        // Task E8.12 (finding 14): each row its own ready suggestion, not the window's "Only Info".
+        let words: Vec<&str> = cuts.iter().map(|cut| cut.word).collect();
+        assert_eq!(words, [tr("Hide list"), tr("Mute app"), tr("Mute these")]);
+        let effects: Vec<MuteEffect> = cuts
+            .iter()
+            .filter_map(|cut| match cut.mute {
+                Message::MuteSuggested(_, _, effect) => Some(effect),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(effects, [MuteEffect::Hide, MuteEffect::NoPopup, MuteEffect::NoPopup]);
+    }
+
+    /// Task E8.12 (finding 14): mail seldom read leaves the inbox, everything else only loses its
+    /// popups – the word says which.
+    #[test]
+    fn every_trait_has_its_ready_suggestion() {
+        let facet = |key| MuteScope::Facet { key };
+        assert_eq!(suggestion(facet(FacetKey::Sender)), (MuteEffect::Hide, tr("Hide sender")));
+        assert_eq!(suggestion(facet(FacetKey::Domain)), (MuteEffect::Hide, tr("Hide domain")));
+        assert_eq!(suggestion(facet(FacetKey::Bulk)), (MuteEffect::Hide, tr("Hide newsletters")));
+        assert_eq!(suggestion(facet(FacetKey::Client)), (MuteEffect::NoPopup, tr("Mute app")));
+        assert_eq!(suggestion(facet(FacetKey::Project)), (MuteEffect::NoPopup, tr("Mute project")));
+        assert_eq!(suggestion(MuteScope::Conversation), (MuteEffect::NoPopup, tr("Mute conversation")));
+    }
+
+    /// Task E8.12 (finding 13): the figures stand two by two below the wide layout.
+    #[test]
+    fn the_figures_stand_two_by_two_below_the_wide_layout() {
+        assert!(!figures_two_by_two(SizeClass::Wide));
+        assert!(figures_two_by_two(SizeClass::Medium) && figures_two_by_two(SizeClass::Narrow));
     }
 }

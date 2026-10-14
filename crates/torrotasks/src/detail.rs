@@ -55,7 +55,9 @@ use std::collections::HashSet;
 use chrono::{Days, Local, NaiveDate};
 use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
-use iced::widget::{button, checkbox, column, container, row, rule, scrollable, stack, svg, text_editor, text_input};
+use iced::widget::{
+    button, checkbox, column, container, responsive, row, rule, scrollable, stack, svg, text_editor, text_input,
+};
 use iced::{Alignment, Background, Color, Element, Fill, Padding, Theme, border, keyboard};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
@@ -1102,12 +1104,9 @@ impl Detail {
         let link = self.mail_link()?;
         let (account, _) = link.mail_ref()?;
         let address = account.strip_prefix(torro_pim::model::MAIL_PREFIX).unwrap_or(account).to_string();
-        let open = widgets::text_button(
-            Some(Icon::ArrowUpRight),
-            tr("Open mail"),
-            style::button::secondary,
-            Some(Message::OpenMail),
-        );
+        // Task E8.12: "Open mail" gives up its word before it pushes the subject away, and the meta
+        // line leaves out the account, then the sender, before it is cut ([`ORIGIN_DROP`]).
+        let open = || widgets::RowAction::new(Icon::ArrowUpRight, tr("Open mail"), "", Message::OpenMail);
         let card: Element<'_, Message> = match link.mail.as_deref() {
             Some(mail) => {
                 let sender = mail.sender.as_deref().map(one_line).unwrap_or_else(|| tr("Unknown sender").to_string());
@@ -1119,11 +1118,17 @@ impl Detail {
                     datetime::format_short_date(local.date_naive(), self.today),
                     datetime::format_time(local.time())
                 );
-                let meta = [tr("Mail").to_string(), sender.clone(), address, when].join(" · ");
-                let head = row![avatar(&sender), card_words(subject, meta), open]
-                    .spacing(space::m())
-                    .align_y(Alignment::Center);
-                let mut parts: Vec<Element<'_, Message>> = vec![head.into()];
+                let meta = origin_meta(&sender, address, when);
+                let name = sender.clone();
+                let head = widgets::card_line(
+                    move || avatar(&name),
+                    size::avatar(),
+                    subject,
+                    meta,
+                    ORIGIN_DROP.to_vec(),
+                    open(),
+                );
+                let mut parts: Vec<Element<'_, Message>> = vec![head];
                 if mail.new_replies > 0 {
                     let replies = if mail.new_replies == 1 {
                         tr("1 new reply since the task was made").to_string()
@@ -1139,10 +1144,11 @@ impl Detail {
                 widgets::card(parts, false, None)
             }
             None => {
-                let mark = container(tinted_icon(Icon::Mail, icon::SIZE, |p| p.text_2)).center(size::avatar());
-                let words = card_words(tr("A mail").to_string(), [tr("Mail").to_string(), address].join(" · "));
-                let head = row![mark, words, open].spacing(space::m()).align_y(Alignment::Center);
-                widgets::card(vec![head.into()], false, None)
+                let mark =
+                    || container(tinted_icon(Icon::Mail, icon::SIZE, |p| p.text_2)).center(size::avatar()).into();
+                let meta = vec![tr("Mail").to_string(), address];
+                let head = widgets::card_line(mark, size::avatar(), tr("A mail").to_string(), meta, vec![1], open());
+                widgets::card(vec![head], false, None)
             }
         };
         let caption = typo::text(typo::caption(), tr("From")).style(theme::text_3);
@@ -1462,19 +1468,27 @@ impl Detail {
             return None;
         }
         let done = subtasks.iter().filter(|t| t.completed).count();
-        let mut extra: Vec<Element<'_, Message>> = Vec::new();
-        if !subtasks.is_empty() {
-            extra.push(widgets::progress_bar(done, subtasks.len()));
-            extra.push(
-                typo::text(typo::meta().tabular(), format!("{done}/{}", subtasks.len())).style(theme::text_3).into(),
-            );
-        }
-        extra.push(blank::horizontal().into());
-        if done > 0 {
-            let label = if self.hide_done { tr("Show completed") } else { tr("Hide completed") };
-            extra.push(widgets::text_button(None, label, style::button::ghost, Some(Message::ToggleHideDone)));
-        }
-        let mut section = column![self.section_head(Section::Subtasks, tr("Sub-tasks"), extra)];
+        let total = subtasks.len();
+        let toggle = (done > 0).then(|| if self.hide_done { tr("Show completed") } else { tr("Hide completed") });
+        // Laid out at the room beside the title (task E8.12, finding 3): the bar gives way before
+        // "Hide completed" runs over the edge; "1/3" stays.
+        let extra = responsive(move |room| {
+            let bar = subtask_bar_fits(total, toggle, room.width);
+            let mut line = row![].spacing(space::m()).align_y(Alignment::Center);
+            if total > 0 {
+                if bar {
+                    line = line.push(widgets::progress_bar(done, total));
+                }
+                line = line.push(typo::text(typo::meta().tabular(), format!("{done}/{total}")).style(theme::text_3));
+            }
+            line = line.push(blank::horizontal());
+            if let Some(label) = toggle {
+                line =
+                    line.push(widgets::text_button(None, label, style::button::ghost, Some(Message::ToggleHideDone)));
+            }
+            container(line).center_y(Fill).into()
+        });
+        let mut section = column![self.section_head(Section::Subtasks, tr("Sub-tasks"), vec![extra.into()])];
         if self.folded.contains(&Section::Subtasks) {
             return Some(section.into());
         }
@@ -1795,14 +1809,26 @@ fn avatar<'a>(name: &str) -> Element<'a, Message> {
         .into()
 }
 
-/// The title over the meta line of a card, each on one line and cut to the card.
-fn card_words<'a>(title: String, meta: String) -> Element<'a, Message> {
-    column![
-        container(typo::text(typo::body_strong(), title).style(theme::text).wrapping(Wrapping::None)).clip(true),
-        container(typo::text(typo::meta(), meta).style(theme::text_3).wrapping(Wrapping::None)).clip(true),
-    ]
-    .width(Fill)
-    .into()
+/// Whether the progress bar of "Sub-tasks" fits beside "2/4" and the toggle (`toggle`, "Hide
+/// completed") in `room`, the width beside the section's title (task E8.12, finding 3): the bar,
+/// the count and the toggle with [`space::m()`] between them. Without sub-tasks there is no bar.
+fn subtask_bar_fits(total: usize, toggle: Option<&str>, room: f32) -> bool {
+    if total == 0 {
+        return false;
+    }
+    let count = typo::text_width(&format!("{total}/{total}"), typo::meta());
+    let toggle = toggle.map_or(0.0, |label| space::m() + widgets::text_button_width(false, label));
+    widgets::PROGRESS_WIDTH + space::m() + count + toggle <= room
+}
+
+/// The parts of the meta line of "From" ([`origin_meta`]) left out where it does not fit, in this
+/// order (task E8.12, finding 1): first the account, then the sender – "Mail" and the date stay.
+const ORIGIN_DROP: [usize; 2] = [2, 1];
+
+/// The meta line of "From" as parts: "Mail", the sender, the account's address, the date and time
+/// ("Tue, 13 Oct, 09:40"); `widgets::card_line` joins them with " · " as far as they fit.
+fn origin_meta(sender: &str, address: String, when: String) -> Vec<String> {
+    vec![tr("Mail").to_string(), sender.to_string(), address, when]
 }
 
 /// The small dot in the attention colour before "new replies": something came that waits.
@@ -2870,5 +2896,34 @@ mod tests {
         assert_eq!(initials("lena@work.example.org"), "L");
         assert_eq!(initials("  "), "?");
         assert_eq!(one_line("Budget review\nfor  Q4"), "Budget review for Q4");
+    }
+
+    /// Task E8.12 (finding 1): where "From" has little room, its meta line leaves out the account
+    /// first, then the sender; "Mail" and the date stay, and what still does not fit is cut with "…".
+    #[test]
+    fn from_leaves_out_the_account_then_the_sender() {
+        let meta = origin_meta("Jonas Weber", "anna@work.example.org".into(), "Tue, 13 Oct, 09:40".into());
+        let level = typo::meta();
+        let fit = |room| widgets::meta_fit(&meta, &ORIGIN_DROP, level, room);
+        assert_eq!(fit(1000.0), meta.join(" · "), "wide: everything");
+        let without_account = [meta[0].as_str(), &meta[1], &meta[3]].join(" · ");
+        assert_eq!(fit(typo::text_width(&without_account, level)), without_account, "the account goes first");
+        assert_eq!(fit(typo::text_width(&without_account, level) - 1.0), [meta[0].as_str(), &meta[3]].join(" · "));
+    }
+
+    /// Task E8.12 (finding 3): in a medium window the bar of "Sub-tasks" gives way, so "Hide
+    /// completed" never runs over the edge.
+    #[test]
+    fn the_progress_bar_gives_way_to_hide_completed() {
+        let hide = Some(tr("Hide completed"));
+        let room = widgets::PROGRESS_WIDTH
+            + space::m()
+            + typo::text_width("3/3", typo::meta())
+            + space::m()
+            + widgets::text_button_width(false, tr("Hide completed"));
+        assert!(subtask_bar_fits(3, hide, room), "room for all");
+        assert!(!subtask_bar_fits(3, hide, room - 1.0), "a medium window: the bar goes");
+        assert!(subtask_bar_fits(3, None, room - 1.0), "nothing done, nothing to hide: the bar stays");
+        assert!(!subtask_bar_fits(0, None, 1000.0), "no sub-tasks, no bar");
     }
 }
