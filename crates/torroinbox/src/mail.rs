@@ -37,7 +37,7 @@ use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, responsive, rich_text, row, rule, scrollable, span, svg, text_input};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
-use torro_core::i18n::{tr, trf};
+use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::panel;
@@ -656,7 +656,7 @@ pub fn filing_actions<'a>(
     let mut actions = Vec::new();
     if has(Role::Archive) && lies_in != Some(Role::Archive) {
         let archive = Message::Mail(MailAction::Archive, id.to_owned());
-        actions.push(RowAction::new(Icon::Archive, tr("Archive"), archive_key, archive));
+        actions.push(RowAction::new(Icon::Archive, trc("action", "Archive"), archive_key, archive));
     }
     if has(Role::Trash) && lies_in != Some(Role::Trash) {
         actions.push(RowAction::new(Icon::Trash2, tr("Delete"), "#", Message::Mail(MailAction::Delete, id.to_owned())));
@@ -1706,7 +1706,7 @@ fn reader_actions<'a>(
             }
             let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskTask(item_id())));
             triage.push(task.at(&anchors.task));
-            tools.insert(0, ReaderButton::new(Icon::Archive, tr("Archive"), mail(MailAction::Archive)));
+            tools.insert(0, ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)));
             let lane = crate::app::other_lane(item.lane);
             let move_to =
                 ReaderButton::new(crate::app::lane_icon(lane), lane_word(lane), Some(Message::AskLane(item_id())));
@@ -1717,7 +1717,7 @@ fn reader_actions<'a>(
             }
         }
         None => {
-            triage.push(ReaderButton::new(Icon::Archive, tr("Archive"), mail(MailAction::Archive)));
+            triage.push(ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)));
             // A folder's message becomes a task of its own (task E8.7b, `tasks.create_todo_from_mail`).
             let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskMailTask(id.to_owned())));
             triage.push(task.at(&anchors.task));
@@ -1836,7 +1836,7 @@ fn actions<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, M
         widgets::icon_button(Icon::Forward, tr("Forward"), act(MailAction::Forward)),
         iced::widget::space::horizontal(),
         tools,
-        widgets::icon_button(Icon::Archive, tr("Archive"), act(MailAction::Archive)),
+        widgets::icon_button(Icon::Archive, trc("action", "Archive"), act(MailAction::Archive)),
         widgets::icon_button(Icon::Trash2, tr("Delete"), delete),
         widgets::icon_button(
             Icon::Flag,
@@ -2233,7 +2233,7 @@ mod tests {
         assert_eq!(message_buttons(&message, &[done], &[], &folders, now()).0.len(), 4, "a done entry is put away");
         let plain = MessageSummary { invite: None, ..message.clone() };
         let words_of = words(&message_buttons(&plain, &entries, &[], &folders, now()).0);
-        assert_eq!(words_of, [tr("Archive"), tr("Delete"), tr("Task")]);
+        assert_eq!(words_of, [trc("action", "Archive"), tr("Delete"), tr("Task")]);
     }
 
     /// Issue #118: a message's row and card file it – Archive (`e`) and Delete (`#`) send what the
@@ -2259,10 +2259,10 @@ mod tests {
             words(filing_actions(folders, &message.account, folder, &message.id, "E"))
         };
         assert_eq!(filed(&without(Role::Archive), None), [tr("Delete")], "no archive folder");
-        assert_eq!(filed(&without(Role::Trash), None), [tr("Archive")], "no trash");
+        assert_eq!(filed(&without(Role::Trash), None), [trc("action", "Archive")], "no trash");
         let of =
             |role| folders.iter().find(|f| f.account == message.account && f.role == Some(role)).map(|f| f.id.as_str());
-        assert_eq!(filed(&folders, of(Role::Trash)), [tr("Archive")], "in the trash already");
+        assert_eq!(filed(&folders, of(Role::Trash)), [trc("action", "Archive")], "in the trash already");
         assert_eq!(filed(&folders, of(Role::Archive)), [tr("Delete")], "archived already");
         assert!(filed(&[], None).is_empty(), "folders not known yet");
     }

@@ -182,6 +182,18 @@ use crate::{detail, list};
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
 pub const INBOX: AppId = AppId::INBOX;
 
+/// The name `ui.json` keeps for the sidebar's "Sources" while it is unfolded (issue #121).
+const SOURCES_KEY: &str = "sidebar.sources";
+
+/// The start of the names `ui.json` keeps for the mail accounts unfolded in the sidebar
+/// ([`account_key`], issue #121).
+const ACCOUNT_KEY: &str = "sidebar.mail.";
+
+/// The name `ui.json` keeps while the folders of `account` are unfolded: `sidebar.mail.<account>`.
+fn account_key(account: &str) -> String {
+    format!("{ACCOUNT_KEY}{account}")
+}
+
 /// How often the window asks the source again. Short, because a waiting agent should show up
 /// within seconds; the source is local and cheap to ask, and nothing moves on screen unless an
 /// entry or a time in the list changed.
@@ -1569,6 +1581,12 @@ pub struct App<S> {
     /// "Info" unfolded at the end of the overview's columns, by [`Column::index`]. Kept while the
     /// window runs.
     info_open: [bool; 2],
+    /// The sidebar's "Sources" unfolded (issue #121): folded until the person opens it, then as
+    /// `ui.json` keeps it ([`SOURCES_KEY`]).
+    sources_open: bool,
+    /// The names `ui.json` keeps as unfolded, as last loaded or saved: a save keeps those this window
+    /// does not decide (another window's parts), [`App::unfolded`].
+    unfolded_names: Vec<String>,
     /// The scroll offset and visible height of the overview's columns, by [`Column::index`].
     column_scroll: [Option<(f32, f32)>; 2],
     /// The entry the open snooze menu, picker or lane question is for, as it was when opened.
@@ -1633,8 +1651,8 @@ pub struct App<S> {
     listed: Option<String>,
     /// What is typed into the folder's search field.
     search: String,
-    /// The accounts folded away or unfolded by the person (`true`: unfolded); the others follow
-    /// [`App::account_open`].
+    /// The accounts folded away or unfolded by the person (`true`: unfolded), also as `ui.json`
+    /// kept them (issue #121, [`account_key`]); the others follow [`App::account_open`].
     folds: Vec<(String, bool)>,
     /// A window of mail only (`--source mail`): the sidebar lists the folders alone.
     mail_only: bool,
@@ -1904,8 +1922,10 @@ pub enum Message {
     AttachmentOpened(Result<Opened, String>),
     /// A web address in a mail's text was clicked.
     OpenMailLink(String),
-    /// The title of an account's group: fold its folders away or show them.
+    /// The title of an account's group: fold its folders away or show them, and remember it.
     ToggleAccount(String),
+    /// The title of the sidebar's "Sources": fold them away or show them, and remember it (issue #121).
+    ToggleSources,
     /// The compose window could not be started.
     ComposeStarted(Result<(), String>),
     /// "This window shows" in the sidebar, or a chip (task E8.4): switch this source on or off.
@@ -2157,6 +2177,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             scroll: None,
             column: launch.kind.column_or_first(Column::default()),
             info_open: [open == Some(Open::OverviewInfo); 2],
+            sources_open: false,
+            unfolded_names: Vec::new(),
             column_scroll: [None; 2],
             subject: None,
             pick: Pick::start(Utc::now() + offset),
@@ -2450,6 +2472,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 if self.launch.open != Some(Open::OverviewInfo) {
                     self.info_open = Column::ALL.map(|column| names.iter().any(|name| name == column.info_key()));
                 }
+                self.sources_open = names.iter().any(|name| name == SOURCES_KEY);
+                // An account the person folded or unfolded before the file answered keeps that.
+                for account in names.iter().filter_map(|name| name.strip_prefix(ACCOUNT_KEY)) {
+                    if !self.folds.iter().any(|(folded, _)| folded == account) {
+                        self.folds.push((account.to_owned(), true));
+                    }
+                }
+                self.unfolded_names = names;
             }
             Message::Hidden(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't hide the sender."), err));
@@ -2701,10 +2731,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
             Message::OpenMailLink(_) => {}
             Message::ToggleAccount(account) => {
-                let first = mail::by_account(&self.folders).first().is_some_and(|group| group.account == account);
-                let open = !self.account_open(&account, first);
+                let open = !self.account_open(&account);
                 self.folds.retain(|(folded, _)| *folded != account);
                 self.folds.push((account, open));
+                return self.save_unfolded();
+            }
+            Message::ToggleSources => {
+                self.sources_open = !self.sources_open;
+                return self.save_unfolded();
             }
             Message::ComposeStarted(Ok(())) => {}
             Message::ComposeStarted(Err(err)) => {
@@ -3457,16 +3491,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         if !*open && self.cursor_item().is_some_and(|item| Column::of(item) == column && item.lane == Lane::Info) {
             self.cursor = None;
         }
-        ui_state::save_unfolded_task(INBOX, self.unfolded())
+        self.save_unfolded()
     }
 
-    /// The names of the parts unfolded, as `ui.json` keeps them ([`Column::info_key`]).
+    /// Remembers what is unfolded in `ui.json` ([`App::unfolded`]).
+    fn save_unfolded(&mut self) -> Task<Message> {
+        self.unfolded_names = self.unfolded();
+        ui_state::save_unfolded_task(INBOX, self.unfolded_names.clone())
+    }
+
+    /// The names of the parts unfolded, as `ui.json` keeps them: "Info" of the overview's columns
+    /// ([`Column::info_key`]), "Sources" ([`SOURCES_KEY`]) and the accounts unfolded by the person
+    /// ([`account_key`], issue #121). Names this window does not decide – an account it has no
+    /// choice for, a part of a later version – stay as they were loaded.
     pub fn unfolded(&self) -> Vec<String> {
-        Column::ALL
-            .into_iter()
-            .filter(|column| self.info_open[column.index()])
-            .map(|c| c.info_key().to_owned())
-            .collect()
+        let info = Column::ALL.into_iter().map(Column::info_key);
+        let decided = |name: &str| {
+            info.clone().any(|key| key == name)
+                || name == SOURCES_KEY
+                || self.folds.iter().any(|(account, _)| account_key(account) == name)
+        };
+        let kept = self.unfolded_names.iter().filter(|name| !decided(name)).cloned();
+        let open_info = Column::ALL.into_iter().filter(|column| self.info_open[column.index()]);
+        let sources = self.sources_open.then(|| SOURCES_KEY.to_owned());
+        let accounts = self.folds.iter().filter(|(_, open)| *open).map(|(account, _)| account_key(account));
+        kept.chain(open_info.map(|c| c.info_key().to_owned())).chain(sources).chain(accounts).collect()
     }
 
     /// The overview: the cursor to the column `to`, on the row at the same place (or the column's
@@ -5368,11 +5417,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let single = groups.len() == 1;
         groups
             .into_iter()
-            .enumerate()
-            .map(|(i, group)| MailGroup {
+            .map(|group| MailGroup {
                 title: if single { tr("Mail").to_owned() } else { mail::address(group.account).to_owned() },
                 account: group.account.to_owned(),
-                open: single || self.account_open(group.account, i == 0),
+                open: single || self.account_open(group.account),
                 rows: group
                     .folders
                     .into_iter()
@@ -5394,18 +5442,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             .collect()
     }
 
-    /// Whether the folders of `account` (the `first` one listed or not) show: as the person folded
-    /// or unfolded it, else only the account of the folder shown – or the first account while no
-    /// folder is shown. Two accounts with all their folders would push the rest of the sidebar out
-    /// of a window of ordinary height.
-    fn account_open(&self, account: &str, first: bool) -> bool {
+    /// Whether the folders of `account` show: as the person folded or unfolded it (now or at an
+    /// earlier start, `ui.json`), else only the account of the folder shown. Folded by default
+    /// (issue #121): two accounts with all their folders would push the rest of the sidebar out of a
+    /// window of ordinary height, and a first start stays calm.
+    fn account_open(&self, account: &str) -> bool {
         if let Some(&(_, open)) = self.folds.iter().find(|(folded, _)| folded == account) {
             return open;
         }
-        match self.view.folder() {
-            Some(folder) => folder.account == account,
-            None => first,
-        }
+        self.view.folder().is_some_and(|folder| folder.account == account)
     }
 
     /// The sidebar in `mode`: expanded (wide, drawer) or as the rail of icons. The rail leaves the
@@ -5455,8 +5500,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
         }
         if !sources.is_empty() && mode == SidebarMode::Expanded && !self.mail_only {
-            items.push(widgets::sidebar_group_in(mode, tr("Sources"), None));
-            items.extend(sources.into_iter().map(row));
+            // Folded until the person opens it (issue #121).
+            let toggle = Some((self.sources_open, Message::ToggleSources));
+            items.push(widgets::sidebar_group_in(mode, tr("Sources"), toggle));
+            if self.sources_open {
+                items.extend(sources.into_iter().map(row));
+            }
         }
         // Where the band has it (macOS, U.10), "Settings" sits in its top right corner.
         let footer = (!shell::has_band())
@@ -8097,13 +8146,39 @@ mod tests {
         assert!(!none.sent.iter().any(|sent| matches!(sent, Sent::Compose(_))), "no account, no window");
     }
 
+    /// Issue #121: "Sources" and the mail accounts start folded; unfolded, `ui.json` keeps them and
+    /// the next start shows them unfolded; folded again, they are forgotten.
+    #[test]
+    fn sources_and_accounts_start_folded_and_come_back_as_left() {
+        let account = "mail:anna@example.org";
+        let mut app = loaded(&[]);
+        let _ = app.update(Message::Resized(WIDE));
+        assert!(!app.sources_open, "a new start: Sources folded");
+        assert!(app.mail_groups().iter().all(|group| !group.open), "a new start: accounts folded");
+        assert!(app.unfolded().is_empty());
+        let _ = app.update(Message::ToggleSources);
+        let _ = app.update(Message::ToggleAccount(account.into()));
+        let _ = app.view();
+        let names = app.unfolded();
+        assert_eq!(names, [SOURCES_KEY.to_owned(), account_key(account)], "what ui.json keeps");
+        assert_eq!(app.unfolded_names, names, "saved as it is");
+
+        let mut next = loaded(&[]);
+        let _ = next.update(Message::Unfolded(names));
+        assert!(next.sources_open, "the next start: Sources unfolded");
+        assert_eq!(next.mail_groups().iter().map(|group| group.open).collect::<Vec<_>>(), [false, true]);
+        let _ = next.update(Message::ToggleAccount(account.into()));
+        let _ = next.update(Message::ToggleSources);
+        assert!(next.unfolded().is_empty(), "folded again: forgotten");
+    }
+
     #[test]
     fn the_sidebar_groups_the_folders_by_account() {
         let mut app = loaded(&[]);
         let groups = app.mail_groups();
         let titles: Vec<&str> = groups.iter().map(|group| group.title.as_str()).collect();
         assert_eq!(titles, ["anna@work.example.org", "anna@example.org"], "two accounts: one group each");
-        assert_eq!(groups.iter().map(|group| group.open).collect::<Vec<_>>(), [true, false], "the first unfolded");
+        assert_eq!(groups.iter().map(|group| group.open).collect::<Vec<_>>(), [false, false], "folded (issue #121)");
         let work: Vec<(&str, Option<usize>)> =
             groups[0].rows.iter().map(|row| (row.label.as_str(), row.count)).collect();
         assert_eq!(
@@ -8120,11 +8195,11 @@ mod tests {
             "unread counted where it is news, no 0"
         );
         let _ = app.update(Message::ToggleAccount("mail:anna@work.example.org".into()));
-        assert!(!app.mail_groups()[0].open, "folded by hand");
+        assert!(app.mail_groups()[0].open, "unfolded by hand");
         let _ = app.update(Message::Resized(WIDE));
         let _ = app.view();
         let _ = app.update(Message::ToggleAccount("mail:anna@work.example.org".into()));
-        assert!(app.mail_groups()[0].open);
+        assert!(!app.mail_groups()[0].open, "folded again");
         let view = folder_view(&app, "f:private-inbox");
         let _ = app.update(Message::Show(view));
         let groups = app.mail_groups();
@@ -8505,7 +8580,7 @@ mod tests {
         let mut app = overview_at(&[]);
         let _ = app.update(Message::Unfolded(vec!["overview.notices.info".into(), "something.else".into()]));
         assert_eq!(app.info_open, [false, true]);
-        assert_eq!(app.unfolded(), ["overview.notices.info"]);
+        assert_eq!(app.unfolded(), ["something.else", "overview.notices.info"], "another window's parts stay");
         let _ = app.update(Message::Unfolded(Vec::new()));
         assert_eq!(app.info_open, [false, false]);
         let mut forced = overview_at(&["--open", "overview-info"]);
