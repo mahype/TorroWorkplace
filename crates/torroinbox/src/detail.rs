@@ -128,8 +128,7 @@ pub fn panel<'a>(
     }
     // The note on foreign text belongs to the text: right under the message, or – without one –
     // at the end of the body, where it still speaks of the title. A whole mail has its own.
-    let mut untrusted = (item.untrusted && letter.is_none())
-        .then(|| note(tr("This text comes from outside the suite and is shown as plain text.")));
+    let mut untrusted = (item.untrusted && letter.is_none()).then(|| note(foreign_note()));
     // The task made of the entry (task E8.7b); a whole mail shows it over its text itself.
     if let Some(task) = item.task.as_ref().filter(|_| letter.is_none()) {
         body = body.push(column![section(tr("Task")), panel::inset(mail::task_card(task, now))].spacing(space::xs()));
@@ -370,6 +369,20 @@ pub fn unbroken(text: &str) -> String {
     text.replace('-', "\u{2011}")
 }
 
+/// The note under foreign text, in this panel and under a whole mail (`mail::body`, task E8.13):
+/// short enough for one line in the wide panel (`note_room`), so no word stands alone on a second
+/// line.
+pub(crate) fn foreign_note() -> &'static str {
+    tr("Text from outside the suite, shown as plain text.")
+}
+
+/// The width a [`note`] has in the panel beside the list (`size::panel()`): less the padding of
+/// the panel's body and of `panel::inset`, and the scroller beside them.
+#[cfg(test)]
+fn note_room() -> f32 {
+    theme::size::panel() - 6.0 * space::s()
+}
+
 /// A quiet sentence under the content (`META`, `text_3`).
 fn note<'a>(text: &'a str) -> Element<'a, Message> {
     typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph).into()
@@ -491,6 +504,13 @@ mod tests {
             "a window class names its window"
         );
         assert_eq!(link_label(&Link::Url { url: "https://x.example".into() }), "https://x.example");
+    }
+
+    /// Task E8.13: the note on foreign text takes one line in the wide panel, in either language –
+    /// no word of its own on a second line.
+    #[test]
+    fn the_note_on_foreign_text_fits_one_line_in_the_wide_panel() {
+        assert!(typo::text_width(foreign_note(), typo::meta()) <= note_room(), "{}", foreign_note());
     }
 
     #[test]

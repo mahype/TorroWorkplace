@@ -1306,7 +1306,12 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests je Befund, wo prüfbar; `scripts/ci-local.sh`; Sichtprüfung der genannten Bilder neu.
 
 ### E8.13 Letzte Kleinigkeiten aus E8.12
-- [ ] erledigt
+- [x] erledigt (Demo: “Team meeting”, “migrate”, „Mum’s“ typografisch, Test ohne gerade Anführungszeichen in
+  Einträgen und Mail; Eintrag `demo-13` kommt jetzt vom Skript `github` („2 security alerts in website“) und zeigt
+  das GitHub-Icon – dafür kennt `list::source_icon` Skripte namens `github`, Signatur unverändert; Paneel: Hinweis
+  kürzer, „Text from outside the suite, shown as plain text.“, eine Zeile in 400 auch auf Deutsch, Test; derselbe
+  Satz unter einer ganzen Mail (`mail.rs`, eine Zeile, über `detail::foreign_note`); Mail-Karten
+  (Mail und Einladung) mit `widgets::bar_words`: alle Wörter, sonst nur Reply bzw. Accept, sonst Icons)
 - **Modell:** Opus · **Braucht:** E8.12 · **Dateien:** `crates/torro-inbox/src/demo.rs`, `crates/torroinbox/src/{detail,list}.rs`,
   `crates/torro-core/src/i18n/de.rs`
 - Demo: einheitliche Anführungszeichen („typografisch“ im Englischen: “…”) in Titeln und Texten; ein bis zwei

@@ -1824,7 +1824,7 @@ fn text_block<'a>(mail: &'a Mail, link: Color, level: typo::Level) -> Element<'a
             .on_link_click(Message::OpenMailLink);
         block = block.push(message);
     }
-    block = block.push(note(tr("This text comes from outside the suite and is shown as plain text.")));
+    block = block.push(note(detail::foreign_note()));
     if mail.from_html {
         block = block.push(note(tr("Made from HTML. Pictures and other content from the web are not loaded.")));
     }

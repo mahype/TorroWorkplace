@@ -45,8 +45,9 @@
 //! ([`size::avatar()`]) with sender and "domain · account · time" ([`widgets::card_head`]), the
 //! subject, up to two lines of preview ([`clamp_lines`]), chips (several messages, an attachment, a
 //! flag) and its buttons, always shown in a row of their own – Reply · Task · Done · Later in every
-//! size (task E8.11), with their words as far as the card's width has room for them ([`spoken`]),
-//! "…" for "Hide from inbox". Every button does what its key does on the entry ([`Message::Act`]).
+//! size (task E8.11), with all their words where the card's width has room for them, else only the
+//! first's (Reply; Accept for an invitation), else none ([`spoken`], `widgets::bar_words`, task
+//! E8.13), and "…" for "Hide from inbox". Every button does what its key does on the entry ([`Message::Act`]).
 //! Cards have no close button: mail is not dismissed in the mail window. A card is as high as what
 //! it shows at its width – a preview of one line takes one line ([`mail_card_height`],
 //! [`preview_lines`]) –, so the app can scroll the cursor into view.
@@ -71,7 +72,7 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::typo::{self, Level};
-use torro_gui::widgets::{self, Anchor, Mark, RowAction};
+use torro_gui::widgets::{self, Anchor, BarWords, Mark, RowAction};
 use torro_gui::{datetime, layout, style};
 use torro_inbox::{Item, Link, SourceKind, SourceRef, State, rules};
 
@@ -468,8 +469,8 @@ pub(crate) struct MailCard<'a> {
 /// ([`size::avatar()`], new with its dot), the sender and "domain · account · time"
 /// ([`widgets::card_head`]); the subject (medium weight while new); the preview on up to
 /// [`PREVIEW_LINES`] lines in `text_2`, as many as it takes ([`preview_lines`]); then the chips in a
-/// row and the buttons in a row of their own, with their words as far as they fit ([`spoken`]) and
-/// "…" at the far right. As high as [`mail_card_height`] says for these parts.
+/// row and the buttons in a row of their own, with their words as [`spoken`] says and "…" at the
+/// far right. As high as [`mail_card_height`] says for these parts.
 pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Message> {
     let inner = card_inner(width);
     let MailCard { lines, chips, buttons, more, selected, on_press } = card;
@@ -499,12 +500,11 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     if !chips.is_empty() {
         parts.push(container(widgets::chip_row(chips)).center_y(size::control_sm()).clip(true).into());
     }
-    // Words as far as the buttons fit the card side by side (task E8.11: by the room, in every
-    // layout; an invitation has five, task E8.3c): the first ones keep theirs, the rest show their
-    // icons, still in their row, so the card keeps its height.
-    let spoken = spoken(&buttons, more.is_some(), inner);
+    // Words by the room (task E8.11, in every layout): all or none, only the lead may keep its word
+    // alone (task E8.13). Without words the buttons stay in their row, so the card keeps its height.
+    let words = spoken(&buttons, more.is_some(), inner);
     let mut tail: Vec<Element<'a, Message>> =
-        buttons.into_iter().enumerate().map(|(i, button)| card_button(button, i < spoken)).collect();
+        buttons.into_iter().enumerate().map(|(i, button)| card_button(button, words.worded(i))).collect();
     if more.is_some() {
         tail.push(iced::widget::space::horizontal().into());
     }
@@ -513,22 +513,13 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     widgets::card(parts, selected, Some(on_press))
 }
 
-/// The width the buttons of a card take when the first `spoken` carry their words and the rest only
-/// their icons, one beside the other with the card's gap, and the "…" at the end when there is
-/// `more` (task E8.3c): an estimate a little on the safe side.
-fn buttons_width(buttons: &[RowAction<'_, Message>], spoken: usize, more: bool) -> f32 {
-    let spoken = spoken.min(buttons.len());
-    let gaps = space::s() * buttons.len() as f32;
-    let icons = size::control_sm() * (buttons.len() - spoken) as f32;
-    let more = if more { size::control_sm() + space::s() } else { 0.0 };
-    widgets::row_actions_width(&buttons[..spoken], true) + icons + gaps + more
-}
-
-/// How many of a card's `buttons`, from the first, carry their words in `room` ([`buttons_width`]):
-/// all when they fit, else as many as leave room for the others' icons – an invitation keeps
-/// Accept · Maybe · Decline in words before Later and Task –, else none.
-fn spoken(buttons: &[RowAction<'_, Message>], more: bool, room: f32) -> usize {
-    (0..=buttons.len()).rev().find(|&spoken| buttons_width(buttons, spoken, more) <= room).unwrap_or(0)
+/// How a card's `buttons` show their words in `room`, with the "…" after them when there is `more`
+/// (`widgets::bar_words`; the rule of task E8.12, in the mail window since task E8.13): all of them
+/// where they fit, else only the first – the card's lead, Reply or, for an invitation, Accept –,
+/// else none. A card never shows some words among icons otherwise.
+fn spoken(buttons: &[RowAction<'_, Message>], more: bool, room: f32) -> BarWords {
+    let labels: Vec<&str> = buttons.iter().map(|button| button.label.as_ref()).collect();
+    widgets::bar_words(&labels, true, usize::from(more), room)
 }
 
 /// A button of a card: with its icon and word (`secondary`), or – without `words` – the icon alone
@@ -967,11 +958,14 @@ pub(crate) fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Ele
 }
 
 /// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts, the
-/// envelope for a mail account.
+/// envelope for a mail account. A script that reports for an app the icon set has (task E8.13:
+/// `github`) shows that app's icon, so the columns "By app" tell the apps apart. The name is the
+/// client's, given with its key – never a text of an entry.
 pub fn source_icon(source: &SourceRef) -> Icon {
     match source.kind {
         SourceKind::Suite => Icon::LayoutGrid,
         SourceKind::Agent => Icon::Sparkles,
+        SourceKind::Script if source.name.eq_ignore_ascii_case("github") => Icon::Github,
         SourceKind::Script => Icon::AppWindow,
         SourceKind::Mail => Icon::Mail,
     }
@@ -1338,6 +1332,9 @@ mod tests {
         assert_eq!(source_icon(&SourceRef::suite()), Icon::LayoutGrid);
         assert_eq!(source_icon(&SourceRef::agent("codex")), Icon::Sparkles);
         assert_eq!(source_icon(&SourceRef::script("backup")), Icon::AppWindow);
+        assert_eq!(source_icon(&SourceRef::script("github")), Icon::Github, "an app with its own icon");
+        let sample = demo::sample(now());
+        assert!(sample.iter().any(|item| source_icon(&item.source) == Icon::Github), "the demo shows it (E8.13)");
         assert_eq!(source_icon(&SourceRef::mail("anna@example.org")), Icon::Mail);
     }
 
@@ -1382,19 +1379,18 @@ mod tests {
     }
 
     /// Task E8.11 (finding 1): the words of a card's buttons follow the card's room, not the layout:
-    /// the medium window's column (720) has room for every word, the wide window's list (460) for all
-    /// but the last at most (German words are longer: "Später" may stand as its icon).
+    /// the medium window's column (720) has room for every word, the wide window's list (460) at
+    /// least for the lead's (task E8.13: never some words among icons).
     #[test]
     fn card_buttons_carry_their_words_where_there_is_room() {
         let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
         let (buttons, more) = card_buttons(&item, true);
         let wide = card_inner(size::list() - cards_side());
-        assert!(spoken(&buttons, more.is_some(), wide) + 1 >= buttons.len(), "Reply · Task · Done in words");
+        assert_ne!(spoken(&buttons, more.is_some(), wide), BarWords::None, "Reply in words at least");
         let medium = card_inner(size::content_max() - cards_side());
-        assert_eq!(spoken(&buttons, more.is_some(), medium), buttons.len(), "Reply · Task · Done · Later in words");
+        assert_eq!(spoken(&buttons, more.is_some(), medium), BarWords::All, "Reply · Task · Done · Later in words");
         let (answers, more) = entry_card_buttons(&invitation(), true, now());
-        let medium = card_inner(size::content_max() - cards_side());
-        assert_eq!(spoken(&answers, more.is_some(), medium), answers.len(), "Accept · Maybe · Decline · Later · Task");
+        assert_eq!(spoken(&answers, more.is_some(), medium), BarWords::All, "Accept · Maybe · Decline · Later · Task");
     }
 
     /// Task E8.3, E8.11 (finding 5): a card is as high as what it shows at its width – a preview of one
@@ -1516,17 +1512,35 @@ mod tests {
         }
     }
 
-    /// Task E8.3c: a card's buttons carry their words as far as they fit side by side, the first
-    /// ones first; with no room for words, icons alone.
+    /// Task E8.13 (the rule of E8.12, `widgets::bar_words`): the invitation's card shows every word
+    /// where they fit, else only Accept's – its lead –, else icons alone; never Accept · Maybe ·
+    /// Decline in words beside Later and Task as icons. A mail's Reply leads the same way.
     #[test]
-    fn card_buttons_speak_only_while_they_fit() {
+    fn card_buttons_show_all_words_or_only_the_leads() {
         let (buttons, _) = entry_card_buttons(&invitation(), false, now());
-        let all = buttons_width(&buttons, buttons.len(), true);
-        assert_eq!(spoken(&buttons, true, all), buttons.len());
-        let answers = buttons_width(&buttons, 3, true);
-        assert!(answers < all && answers > buttons_width(&buttons, 0, true));
-        assert_eq!(spoken(&buttons, true, answers), 3, "Accept · Maybe · Decline in words, Later and Task as icons");
-        assert_eq!(spoken(&buttons, true, 0.0), 0);
+        let words = labels(&buttons);
+        assert_eq!(words[0], tr("Accept"), "the answer leads");
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let all = widgets::bar_width(&words, BarWords::All, 1);
+        let lead = widgets::bar_width(&words, BarWords::Lead, 1);
+        assert_eq!(spoken(&buttons, true, all), BarWords::All);
+        assert_eq!(spoken(&buttons, true, all - 1.0), BarWords::Lead, "a little short: only Accept keeps its word");
+        assert_eq!(spoken(&buttons, true, lead), BarWords::Lead);
+        assert_eq!(spoken(&buttons, true, lead - 1.0), BarWords::None, "else icons alone");
+        let rank = |words: BarWords| match words {
+            BarWords::None => 0,
+            BarWords::Lead => 1,
+            BarWords::All => 2,
+        };
+        let steps: Vec<u8> = (0..=96).map(|step| rank(spoken(&buttons, true, step as f32 * space::s()))).collect();
+        assert!(steps.windows(2).all(|pair| pair[0] <= pair[1]), "more room, never fewer words: {steps:?}");
+
+        let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let (buttons, more) = card_buttons(&item, true);
+        let words = labels(&buttons);
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let lead = widgets::bar_width(&words, BarWords::Lead, 1);
+        assert_eq!(spoken(&buttons, more.is_some(), lead), BarWords::Lead, "Reply alone in words");
     }
 
     fn view_of<'a>(items: &'a [Item], rows: Rows<'a>) -> Element<'a, Message> {

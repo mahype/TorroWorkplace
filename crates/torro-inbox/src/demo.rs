@@ -5,7 +5,9 @@
 //! list always read "4 min", "2 h" and so on. It has every kind of entry the first steps bring:
 //! two waiting agents, a finished one, an approval, an account problem, script notices in both
 //! lanes, a snoozed and a done entry. The agents' sessions have names (task E2.6), except the done
-//! one of Codex, which shows how an entry without a name looks.
+//! one of Codex, which shows how an entry without a name looks. One script reports for an app the
+//! inbox has an icon for (`github`, task E8.13), so the columns "By app" show one app's own icon.
+//! Quotes in titles and texts are typographic (“…”, ’), as in the rest of the suite's texts.
 //!
 //! Mail (task E4.2): two mail accounts ([`MAIL_ACCOUNTS`], private and work) with their folders
 //! and messages, and the entries the core would file for their new mail (task E4.1). The methods
@@ -275,7 +277,7 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
                 3,
                 SourceRef::suite(),
                 Kind::Approval,
-                tr("Claude Desktop wants to delete the event \"Team meeting\"").into(),
+                tr("Claude Desktop wants to delete the event “Team meeting”").into(),
                 8,
             )
         },
@@ -304,7 +306,7 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
             )
         },
         Item {
-            body: Some(tr("Step \"migrate\" exited with code 1.").into()),
+            body: Some(tr("Step “migrate” exited with code 1.").into()),
             link: Some(Link::Url { url: "https://ci.example.org/runs/1842".into() }),
             ..notice(now, 6, "deploy", Lane::ForMe, tr("Deploy to staging failed"), 50)
         },
@@ -338,10 +340,11 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
             body: Some(tr("2 invoices could not be matched to a customer.").into()),
             ..notice(now, 12, "invoices", Lane::ForMe, tr("Invoice run needs a check"), 22 * 60)
         },
+        // An app with its own icon (task E8.13): GitHub's, in its column and on its card.
         Item {
-            body: Some(tr("Renew it before 27 October to keep the intranet reachable.").into()),
+            body: Some(tr("Dependabot found 2 vulnerable packages in website.").into()),
             state: State::Seen,
-            ..notice(now, 13, "certs", Lane::ForMe, tr("Certificate for the intranet expires in 14 days"), 3 * 24 * 60)
+            ..notice(now, 13, "github", Lane::ForMe, tr("2 security alerts in website"), 3 * 24 * 60)
         },
     ]
     .into_iter()
@@ -667,7 +670,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
         Letter {
             from: ("Clara Berg", "clara@example.org"),
             minutes: 3 * 24 * 60,
-            text: "Dinner for Mum's birthday on the 24th? I would book the Italian place for seven.",
+            text: "Dinner for Mum’s birthday on the 24th? I would book the Italian place for seven.",
             ..Letter::new("m:p7", PRIVATE, "inbox", "Birthday dinner on the 24th")
         },
     ];
@@ -1229,6 +1232,23 @@ mod tests {
         assert_eq!(count(&|i| matches!(i.state, State::Done { .. })), 1);
     }
 
+    /// Task E8.13: titles and texts quote typographically – no straight quote or apostrophe in the
+    /// entries or the mail, in either language – and one app reports with its own icon (`github`).
+    #[test]
+    fn the_sample_quotes_typographically_and_has_an_app_of_its_own() {
+        let items = sample(now());
+        let mail = mail_sample(now());
+        let texts = items
+            .iter()
+            .flat_map(|i| [Some(i.title.as_str()), i.body.as_deref()])
+            .chain(mail.iter().flat_map(|m| [Some(m.summary.subject.as_str()), m.text.as_deref()]))
+            .flatten();
+        for text in texts {
+            assert!(!text.contains(['"', '\'']), "straight quote in {text:?}");
+        }
+        assert!(items.iter().any(|i| i.source == SourceRef::script("github")), "GitHub's column");
+    }
+
     #[test]
     fn the_sample_follows_the_rules() {
         let items = sample(now());
@@ -1333,9 +1353,9 @@ mod tests {
                 "agent:claude-code",
                 "agent:codex",
                 "script:backup",
-                "script:certs",
                 "script:ci",
                 "script:deploy",
+                "script:github",
                 "script:invoices",
                 "script:uptime",
                 "mail:anna@example.org",
