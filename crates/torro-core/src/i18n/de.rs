@@ -565,6 +565,20 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{what} in every Nextcloud account", "{what} in allen Nextcloud-Konten"),
     ("{what} in Talk of every Nextcloud account", "{what} in Talk aller Nextcloud-Konten"),
     ("{what} on every ntfy server", "{what} auf allen ntfy-Servern"),
+    // Icons, columns and traits of the new sources (E5.15)
+    ("Direct message", "Direktnachricht"),
+    ("Mention", "Erwähnung"),
+    ("Group conversation", "Gruppenunterhaltung"),
+    ("Check failed", "Prüfung fehlgeschlagen"),
+    ("Check passed", "Prüfung bestanden"),
+    ("Check cancelled", "Prüfung abgebrochen"),
+    ("Assigned", "Zugewiesen"),
+    ("Approval requested", "Freigabe angefragt"),
+    ("Security alert", "Sicherheitswarnung"),
+    ("Invitation", "Einladung"),
+    ("Comment", "Kommentar"),
+    ("State changed", "Status geändert"),
+    ("Subscribed", "Abonniert"),
     // Talk as an inbox source (E5.9)
     ("{name}: {text}", "{name}: {text}"),
     // New inbox sources (E5.1)
@@ -2259,9 +2273,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't undo the change.", "Die Änderung ließ sich nicht rückgängig machen."),
     ("Hide {entry} from the inbox; the mail stays unread", "{entry} im Eingang ausblenden; die Mail bleibt ungelesen"),
     ("2 invoices could not be matched to a customer.", "2 Rechnungen ließen sich keinem Kunden zuordnen."),
-    ("2 security alerts in website", "2 Sicherheitswarnungen in website"),
     ("Invoice run needs a check", "Rechnungslauf muss geprüft werden"),
-    ("Dependabot found 2 vulnerable packages in website.", "Dependabot hat 2 verwundbare Pakete in website gefunden."),
     // AI accounts (KI.1a)
     ("AI", "KI"),
     ("Address", "Adresse"),
