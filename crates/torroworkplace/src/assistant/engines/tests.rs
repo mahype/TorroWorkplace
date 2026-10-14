@@ -141,6 +141,7 @@ async fn ask(setup: &Setup, conversation: Option<&str>, text: &str, without: Vec
         model: None,
         text: text.into(),
         without,
+        bot: None,
     };
     match setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await {
         Response::Conversation { conversation, .. } => conversation.id,
@@ -242,6 +243,7 @@ fn send_to_claude() -> Request {
         model: None,
         text: "Hi".into(),
         without: Vec::new(),
+        bot: None,
     }
 }
 

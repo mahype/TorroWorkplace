@@ -292,6 +292,11 @@ pub struct Facts {
     /// `assistant.list_engines` lists it (task C.1). `None` when the core does not know it: the
     /// summary then shows the engine's id. The conversation's title is [`Facts::name`].
     pub engine: Option<String>,
+    /// For the `bots.*` commands and `assistant.send_message` with a bot (task B.1): the bot's name
+    /// as it is stored, looked up by its id. `None` when the core does not have it: the summary
+    /// then says "an unknown bot". A new bot (`bots.save_bot` without `id`) has none yet; its name
+    /// is the client's text, and it is what will be written.
+    pub bot: Option<String>,
 }
 
 /// What the core holds about the messages, drafts and folders a `mail.*` command names, for the
@@ -1178,6 +1183,9 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         request @ (Request::UpdateProfile { .. } | Request::Remember { .. } | Request::Forget { .. }) => {
             profile_summary(request, facts)
         }
+        request @ (Request::SaveBot { .. } | Request::DeleteBot { .. } | Request::AskBot { .. }) => {
+            bot_summary(request, facts)
+        }
         // Reads and the commands only the app key may send never wait for approval; say at least
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
@@ -1193,6 +1201,24 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
     use torro_ipc::assistant::ChatWindow;
     let known = facts.name.as_deref().map(quote);
     match (request, known) {
+        (Request::SendMessage { engine, conversation, bot: Some(bot), .. }, title) => {
+            let engine = quote(facts.engine.as_deref().unwrap_or(engine));
+            let bot = quote(facts.bot.as_deref().unwrap_or(bot));
+            match (conversation, title) {
+                (None, _) => trf(
+                    "Start a conversation with the bot \"{bot}\", answered by \"{engine}\"",
+                    &[("bot", &bot), ("engine", &engine)],
+                ),
+                (Some(_), Some(title)) => trf(
+                    "Send the bot \"{bot}\" a message in \"{title}\", answered by \"{engine}\"",
+                    &[("bot", &bot), ("title", &title), ("engine", &engine)],
+                ),
+                (Some(_), None) => trf(
+                    "Send the bot \"{bot}\" a message in an unknown conversation, answered by \"{engine}\"",
+                    &[("bot", &bot), ("engine", &engine)],
+                ),
+            }
+        }
         (Request::SendMessage { engine, conversation, .. }, title) => {
             let engine = quote(facts.engine.as_deref().unwrap_or(engine));
             match (conversation, title) {
@@ -1248,6 +1274,78 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         // Bots do not exist yet and are refused before anyone is asked; say which command it is.
         (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// What a `bots.*` command would do, in words (task B.1): `Delete the bot "Travel planner"`. A bot
+/// by the name the core stores for its id ([`Facts::bot`]), "an unknown bot" when it has none; a
+/// conversation by its title ([`Facts::name`]). The client's own text appears only where it is what
+/// will be written: the name of a new or renamed bot. Never a message, an instruction or a skill
+/// (those stand whole in the details, [`bot_details`]). All of it goes through [`quote`].
+fn bot_summary(request: &Request, facts: &Facts) -> String {
+    let bot = facts.bot.as_deref().map(quote);
+    let title = facts.name.as_deref().map(quote);
+    match (request, bot) {
+        (Request::SaveBot { id: None, name, .. }, _) => {
+            trf("Create the bot \"{name}\", without any access", &[("name", &quote(name))])
+        }
+        (Request::SaveBot { name, .. }, Some(stored)) if quote(name) == stored => {
+            trf("Change the bot \"{name}\"", &[("name", &stored)])
+        }
+        (Request::SaveBot { name, .. }, Some(stored)) => {
+            trf("Change the bot \"{name}\" and rename it to \"{new}\"", &[("name", &stored), ("new", &quote(name))])
+        }
+        (Request::SaveBot { name, .. }, None) => trf("Change an unknown bot to \"{name}\"", &[("name", &quote(name))]),
+        (Request::DeleteBot { .. }, Some(bot)) => trf("Delete the bot \"{name}\"", &[("name", &bot)]),
+        (Request::DeleteBot { .. }, None) => tr("Delete an unknown bot").to_string(),
+        (Request::AskBot { conversation: None, .. }, Some(bot)) => {
+            trf("Start a conversation with the bot \"{name}\"", &[("name", &bot)])
+        }
+        (Request::AskBot { conversation: Some(_), .. }, Some(bot)) => match title {
+            Some(title) => {
+                trf("Send the bot \"{name}\" a message in \"{title}\"", &[("name", &bot), ("title", &title)])
+            }
+            None => trf("Send the bot \"{name}\" a message in an unknown conversation", &[("name", &bot)]),
+        },
+        (Request::AskBot { .. }, None) => tr("Send an unknown bot a message").to_string(),
+        (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// The lines of the approval of `bots.save_bot` (task B.1, [`details`]): every text it would write
+/// **whole**, since all of it goes into the bot's prompt – `Name:`, `Description:`, `Picture:`,
+/// `Engine:`, `Model:`, then `Personality:`, `Instructions:` and `Skill "<name>":` each followed by
+/// its text, or `… none` for an empty one. Made harmless and split as for the profile ([`whole`]).
+/// `None` for every other command.
+fn bot_details(request: &Request) -> Option<Vec<String>> {
+    let Request::SaveBot { name, description, avatar, engine, model, personality, instructions, skills, .. } = request
+    else {
+        return None;
+    };
+    let quoted = |text: &str| format!("\"{}\"", quote_up_to(text, DETAIL_MAX));
+    let mut lines = vec![trf("Name: {text}", &[("text", &quoted(name))])];
+    if !description.trim().is_empty() {
+        lines.push(trf("Description: {text}", &[("text", &quoted(description))]));
+    }
+    lines.push(trf("Picture: {text}", &[("text", &quoted(avatar.as_deref().unwrap_or("letter")))]));
+    lines.push(trf("Engine: {text}", &[("text", &quoted(engine))]));
+    if let Some(model) = model {
+        lines.push(trf("Model: {text}", &[("text", &quoted(model))]));
+    }
+    let mut text = |heading: String, none: &str, text: &str| match text.trim() {
+        "" => lines.push(none.to_string()),
+        text => {
+            lines.push(heading);
+            lines.extend(whole(text));
+        }
+    };
+    text(tr("Personality:").to_string(), tr("Personality: none"), personality);
+    text(tr("Instructions:").to_string(), tr("Instructions: none"), instructions);
+    for skill in skills {
+        let heading = trf("Skill {name}:", &[("name", &quoted(&skill.name))]);
+        let none = trf("Skill {name}: none", &[("name", &quoted(&skill.name))]);
+        text(heading, &none, &skill.text);
+    }
+    Some(lines)
 }
 
 /// What a change of the assistant's profile or memory would do, in words (task C.10).
@@ -1804,7 +1902,7 @@ pub const DETAIL_MAX: usize = 200;
 /// characters, no double quotes, no braces), but cut at [`DETAIL_MAX`] characters instead of 60.
 /// The person sees all of it, so nothing is left out but the end of a long text.
 pub fn details(request: &Request, facts: &Facts) -> Vec<String> {
-    if let Some(lines) = profile_details(request, facts) {
+    if let Some(lines) = profile_details(request, facts).or_else(|| bot_details(request)) {
         return lines;
     }
     let Request::SendDraft { .. } = request else { return Vec::new() };
@@ -2344,6 +2442,7 @@ pub(crate) mod tests {
             model: None,
             text: "Secret plans for Anna".into(),
             without: Vec::new(),
+            bot: None,
         };
         let with_engine = Facts { engine: Some("Ollama".into()), ..held.clone() };
         let in_it = summary(&send(Some(id.clone())), &with_engine);

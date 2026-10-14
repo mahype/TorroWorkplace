@@ -92,18 +92,29 @@ fn catalogue() -> &'static [Tool] {
     })
 }
 
-/// The tools of the commands a client with `rights` may use in a conversation without the areas
-/// `without`, in catalogue order (see the module's documentation). `None` rights (no assistant
-/// client yet): none.
+/// The tools of the commands the assistant's own client with `rights` may use in a conversation
+/// without the areas `without` ([`allowed_for`]).
+#[cfg(test)]
 pub fn allowed(rights: Option<&Rights>, without: &[Area]) -> Vec<&'static Tool> {
+    allowed_for(ASSISTANT_CLIENT, rights, without)
+}
+
+/// The tools of the commands a client of `kind` with `rights` may use in a conversation without the
+/// areas `without`, in catalogue order (see the module's documentation). `None` rights (no client
+/// yet): none. The assistant's own client ([`ASSISTANT_CLIENT`]) gets its memory besides its rights,
+/// a bot's ([`torro_ipc::api::BOT_CLIENT`], task B.1) its rights only. Neither is offered a tool of
+/// `assistant` beyond the memory or of `bots`: the core refuses a bot every one of them, and when
+/// the assistant may ask a bot is task B.2's.
+pub fn allowed_for(kind: &str, rights: Option<&Rights>, without: &[Area]) -> Vec<&'static Tool> {
     let Some(rights) = rights else { return Vec::new() };
+    let memory = kind == ASSISTANT_CLIENT;
     catalogue()
         .iter()
         .filter(|tool| {
             let area = tool.command.area;
             let operation = Operation { command: tool.command, access: tool.command.access };
-            let granted = area != Area::Assistant && rights.allows(operation);
-            area.grantable() && !without.contains(&area) && (granted || tool.is_memory())
+            let granted = !matches!(area, Area::Assistant | Area::Bots) && rights.allows(operation);
+            area.grantable() && !without.contains(&area) && (granted || (memory && tool.is_memory()))
         })
         .collect()
 }

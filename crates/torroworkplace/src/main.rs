@@ -27,6 +27,7 @@ mod approvals;
 mod apps;
 mod assistant;
 mod audit;
+mod bots;
 mod cli;
 mod client_setup;
 mod clients;

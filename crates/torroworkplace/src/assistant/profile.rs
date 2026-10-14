@@ -227,9 +227,16 @@ pub fn clean_line(text: &str, max: usize) -> String {
 /// characters but line breaks and tabs (an escape sequence or a NUL has no business in a prompt),
 /// no white space at the ends, at most [`MAX_PERSONALITY_CHARS`] characters.
 pub fn clean_personality(text: &str) -> String {
+    clean_text(text, MAX_PERSONALITY_CHARS)
+}
+
+/// A text of several lines as it is kept and put into a prompt (the personality, a bot's
+/// instructions and skills, task B.1): line breaks as `\n`, no control characters but line breaks
+/// and tabs, no white space at the ends, at most `max` characters.
+pub fn clean_text(text: &str, max: usize) -> String {
     let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let kept: String = text.chars().filter(|c| !c.is_control() || *c == '\n' || *c == '\t').collect();
-    kept.trim().chars().take(MAX_PERSONALITY_CHARS).collect::<String>().trim_end().to_string()
+    kept.trim().chars().take(max).collect::<String>().trim_end().to_string()
 }
 
 /// The bytes of `path`, `None` when it is not there.

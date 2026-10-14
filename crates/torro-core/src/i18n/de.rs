@@ -2523,4 +2523,46 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{count} of {max} characters", "{count} von {max} Zeichen"),
     // Hardening (C.11)
     ("Not listening", "Hört nicht zu"),
+    // Bots (B.1)
+    ("Bot \"{name}\"", "Bot „{name}“"),
+    ("Bots", "Bots"),
+    (
+        "Bots and asking them, which act with their own rights",
+        "Bots und Fragen an sie; sie handeln mit eigenen Rechten",
+    ),
+    ("Change an unknown bot to \"{name}\"", "Unbekannten Bot zu „{name}“ ändern"),
+    ("Change the bot \"{name}\"", "Bot „{name}“ ändern"),
+    ("Change the bot \"{name}\" and rename it to \"{new}\"", "Bot „{name}“ ändern und in „{new}“ umbenennen"),
+    ("Create the bot \"{name}\", without any access", "Bot „{name}“ anlegen, ohne Zugriff"),
+    ("Delete an unknown bot", "Unbekannten Bot löschen"),
+    ("Delete the bot \"{name}\"", "Bot „{name}“ löschen"),
+    ("Engine: {text}", "Antrieb: {text}"),
+    ("Instructions:", "Anweisungen:"),
+    ("Instructions: none", "Anweisungen: keine"),
+    ("Model: {text}", "Modell: {text}"),
+    ("Send an unknown bot a message", "Einem unbekannten Bot schreiben"),
+    (
+        "Send the bot \"{bot}\" a message in \"{title}\", answered by \"{engine}\"",
+        "Dem Bot „{bot}“ in „{title}“ schreiben, Antwort von „{engine}“",
+    ),
+    (
+        "Send the bot \"{bot}\" a message in an unknown conversation, answered by \"{engine}\"",
+        "Dem Bot „{bot}“ in einer unbekannten Unterhaltung schreiben, Antwort von „{engine}“",
+    ),
+    ("Send the bot \"{name}\" a message in \"{title}\"", "Dem Bot „{name}“ in „{title}“ schreiben"),
+    (
+        "Send the bot \"{name}\" a message in an unknown conversation",
+        "Dem Bot „{name}“ in einer unbekannten Unterhaltung schreiben",
+    ),
+    ("Skill {name}:", "Skill {name}:"),
+    ("Skill {name}: none", "Skill {name}: keiner"),
+    (
+        "Start a conversation with the bot \"{bot}\", answered by \"{engine}\"",
+        "Unterhaltung mit dem Bot „{bot}“ beginnen, Antwort von „{engine}“",
+    ),
+    ("Start a conversation with the bot \"{name}\"", "Unterhaltung mit dem Bot „{name}“ beginnen"),
+    (
+        "This bot has no access any more. Save it again, then choose what it may use.",
+        "Dieser Bot hat keinen Zugriff mehr. Speichere ihn erneut und wähle dann, was er nutzen darf.",
+    ),
 ];

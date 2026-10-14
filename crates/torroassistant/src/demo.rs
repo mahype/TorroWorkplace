@@ -110,7 +110,7 @@ impl Demo {
             Request::ListClients => Response::Clients { clients: state.client().into_iter().collect() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
-            Request::SendMessage { conversation, engine, model, text, without } => {
+            Request::SendMessage { conversation, engine, model, text, without, .. } => {
                 state.send(conversation, engine, model, text, without)
             }
             Request::CancelAnswer { conversation } => state.cancel(&conversation),
@@ -210,6 +210,8 @@ impl State {
                     pinned: false,
                     running: false,
                     last: 0,
+                    bot: None,
+                    bot_deleted: false,
                 };
                 self.conversations.push(Conversation { summary, entries: Vec::new(), growing: None });
                 id
@@ -346,6 +348,8 @@ fn sample(id: &str, title: &str, now: DateTime<Utc>, ago: Duration, entries: Vec
         pinned: false,
         running: false,
         last: entries.len() as u64,
+        bot: None,
+        bot_deleted: false,
     };
     Conversation { summary, entries, growing: None }
 }
@@ -580,6 +584,7 @@ mod tests {
             model: None,
             text: "Hello".into(),
             without: Vec::new(),
+            bot: None,
         };
         let (summary, entries) = conversation(demo.answer(send));
         assert_eq!((summary.last, summary.running, entries.len()), (1, true, 1));
