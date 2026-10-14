@@ -557,6 +557,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Remote sources in the core (E5.2)
+    ("{what} and mark its GitHub notification done", "{what}, dazu die GitHub-Benachrichtigung als erledigt markieren"),
+    ("{what} and delete its Nextcloud notification", "{what}, dazu die Nextcloud-Benachrichtigung löschen"),
+    ("{what} and mark the Talk conversation read", "{what}, dazu die Talk-Unterhaltung als gelesen markieren"),
+    ("{what} in every GitHub account", "{what} in allen GitHub-Konten"),
+    ("{what} in every Nextcloud account", "{what} in allen Nextcloud-Konten"),
+    ("{what} in Talk of every Nextcloud account", "{what} in Talk aller Nextcloud-Konten"),
+    ("{what} on every ntfy server", "{what} auf allen ntfy-Servern"),
     // New inbox sources (E5.1)
     ("Everything from {repo}", "Alles aus {repo}"),
     ("Review requests", "Review-Anfragen"),
