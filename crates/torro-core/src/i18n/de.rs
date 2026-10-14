@@ -556,6 +556,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Mail window polish (E8.11)
+    ("Select a mail to read it", "Wähle eine Mail, um sie zu lesen"),
+    ("Its text and attachments show up here.", "Ihr Text und ihre Anhänge erscheinen hier."),
     // Invitations in the inbox, overlaps (E8.3c)
     ("No conflicts", "Keine Überschneidungen"),
     ("Overlaps with {title} at {time}", "Überschneidet sich mit {title} um {time}"),
@@ -2016,7 +2019,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     // Mail in mini, strip and notifications (E4.4)
     ("From {senders}", "Von {senders}"),
-    ("{n} unread", "{n} ungelesen"),
     ("{n} new messages from {senders}", "{n} neue Nachrichten von {senders}"),
     ("{names} and {n} more", "{names} und {n} weitere"),
     // Approval details and adding calendars later (M3.5)
