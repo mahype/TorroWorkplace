@@ -410,6 +410,11 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_switch_the_microphone_on_and_agents_may_switch_it_off` im Kern). `voice_enabled:
    false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest der Steuerzentrale
    (`settings.test_voice`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`).
+7. **Einen Bot für den Assistenten bestätigen** (`assistant.confirm_bot`, B.2): nur mit dem
+   App-Schlüssel. Der Assistent fragt einen Bot nur, wenn die Person ihn in ihrer letzten Nachricht
+   nennt oder seinen Vorschlag bestätigt; diese Bestätigung gibt nie ein Agent oder Modell. Das
+   Fragen selbst braucht danach keine weitere Freigabe, die Befehle des Bots aber wie gewohnt, und
+   der Bot arbeitet nur mit dem, was beide dürfen.
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

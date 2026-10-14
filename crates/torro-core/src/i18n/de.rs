@@ -2565,4 +2565,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "This bot has no access any more. Save it again, then choose what it may use.",
         "Dieser Bot hat keinen Zugriff mehr. Speichere ihn erneut und wähle dann, was er nutzen darf.",
     ),
+    // Bots for the assistant (B.2)
+    ("Asked {bot} · 1 step", "{bot} gefragt · 1 Schritt"),
+    ("Asked {bot} · {steps} steps", "{bot} gefragt · {steps} Schritte"),
 ];
