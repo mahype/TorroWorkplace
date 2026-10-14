@@ -5,6 +5,7 @@ Konzept: [github.md](../github.md); mehrere Konten aus [mail.md](../mail.md) (do
 `torro-api`; nach jeder Funktion prüft `torro-api-review`.
 
 Reihenfolge: **M1** (Grundlage) → **P** (Aufgaben-Modell, gilt auch für Nextcloud) → **G** (GitHub).
+**Issues anlegen** (G.13–G.19) baut auf G.9 auf, eigener Plan unten.
 **K.21** (Aufgaben im Kalender) ist unabhängig und kann jederzeit laufen.
 
 ```
@@ -552,6 +553,145 @@ Entwurf (klickbar, Ablauf und Zustände): https://claude.ai/artifact/DTcLrfy15MY
 - Übersetzungen im Bericht nennen.
 - Abnahme: Tests (Repo vorausgewählt und gemerkt, Chips ↔ Anfrage, Repo-Wechsel, Vorschlag des Namens,
   Bearbeiten mit mehreren Repos), Sichtprüfung in allen Größen hell und dunkel.
+
+## Issues anlegen (G.13–G.19)
+
+Konzept: „Issues anlegen“ in [github.md](../github.md), Entscheidungen vom 2026-10-14. Ein Befehl
+`tasks.create_issue`, viele Einstiege. G.13 legt alle Requests und Katalogeinträge an (Gerüst), danach
+laufen Kern, Oberfläche und Karte nebeneinander.
+
+```
+G.9 ── G.13 ─┬─ G.14 ─┬─ G.16 ── G.17
+             │        └─ G.18 (braucht die Karten im Chat)
+             ├─ G.15 ─┘
+             └─ G.19 (nach Klärung von Punkt 9 in github.md)
+```
+
+### G.13 Issue anlegen: Gerüst und Kern
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.9, Punkt 9 in [github.md](../github.md) entschieden · **Dateien:**
+  `crates/torro-ipc/src/{lib,api,pim}.rs`, `crates/torro-pim-github/src/{api,lib}.rs`, `crates/torro-pim/src/source.rs`,
+  `crates/torroworkplace/src/{pim,core,mcp,approvals,audit}.rs`, `docs/api-reference.md`, `docs/api.md` („Nach
+  außen“, ggf. Punkt 8 in „Was nie nach außen geht“)
+- **Alle Requests der Funktion mit Katalogeintrag** (Handler, die erst später kommen, antworten bis dahin
+  `unsupported`): `CreateIssue`, `FindSimilarIssues`, `SuggestIssueRepo`, `CommentOnIssue` (Bereich `github`) und
+  `CollectDiagnostics` (Bereich `system`). Felder wie unten in den Aufgaben, Beschreibungen englisch.
+- **Nach außen:** `tasks.create_issue` **und** `tasks.comment_on_issue` kommen in `OUTBOUND`
+  (`crates/torro-ipc/src/api.rs`, `Command::is_outbound`); `docs/api.md` „Nach außen“ nennt beide.
+- **Hier umgesetzt:** `Request::CreateIssue { account, repo, title, body, labels, assignees, milestone, from,
+  add_to_collection }` · `tasks.create_issue` · Write · Bereich `github` · nach außen. Legt das Issue per REST an
+  (`POST /repos/{owner}/{repo}/issues`: Labels und Zuständige als Namen; `milestone` als Titel wie in
+  `describe_github_repo`, die Nummer löst der Kern auf, unbekannt → `error`) und antwortet mit `Response::Issue`
+  (`owner/repo#n`, Link, `public: bool`). `add_to_collection` (Aufgabenliste): danach ein Verweis wie
+  `tasks.add_link`. `from` nimmt der Request hier
+  schon an, ausgewertet wird es in G.14 (bis dahin `unsupported`, wenn gesetzt).
+- **Offen gebaut:** Der Kern wählt die Umsetzung nach der Art des Kontos (`PimSource`), nicht nach dem Request;
+  andere Arten antworten `unsupported`.
+- **Rechte:** `Write` in `github`, Repo in `github_repos` (sonst `not-found`), „Nach außen“ (`never` → `forbidden`,
+  `with_approval` → `pending`); mit `add_to_collection` Schreibrecht auf die Liste. **Öffentliches Repo:** jeder
+  Client wartet auf Freigabe, auch mit „Nach außen: frei“; öffentlich oder nicht liest der Kern aus seinem
+  Zwischenspeicher der Repos, nie aus dem Request. Token ohne Issue-Schreibrecht → `auth`
+  mit Hinweis wie beim Schließen (G.5).
+- **Freigabe:** „Create issue in {repo}: "{title}"“, bei öffentlichem Repo „Create public issue …“; in
+  `ApprovalInfo.details` die ersten 200 Zeichen des Textes, Labels, Zuständige, Meilenstein (Name aus dem
+  Zwischenspeicher), wie bei `send_draft`. Titel, Text, Labels werden mit der Freigabe festgehalten
+  (`approvals::Facts`).
+- **Grenzen:** Titel ≤ 256 Zeichen, Text ≤ 65 536, ≤ 20 Labels, ≤ 10 Zuständige; sonst `error` vor jeder Freigabe.
+- **Protokoll:** Konto, `owner/repo#n`, Art der Quelle; nie Titel oder Text.
+- **Oberfläche:** G.16–G.19. **MCP:** `tasks_create_issue`, `tasks_find_similar_issues`, `tasks_suggest_issue_repo`,
+  `tasks_comment_on_issue`, `system_collect_diagnostics` (Tool ↔ Katalog).
+- Abnahme: Tests mit aufgezeichneten Antworten (anlegen, Label unbekannt, Token ohne Recht, Repo außerhalb der
+  Auswahl, „Nach außen“ in allen drei Stufen, öffentliches Repo mit „frei“ wartet trotzdem, Grenzen,
+  `add_to_collection`), Freigabetext privat/öffentlich,
+  `TORRO_BLESS=1 cargo test -p torro-ipc` mit neuer `docs/api-reference.md`. Danach `torro-api-review`.
+
+### G.14 Issue aus einer Quelle: Weg zurück, Aufgabe wird Verweis
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.13 · **Dateien:** `crates/torroworkplace/src/{pim,core,inbox,mail,approvals}.rs`,
+  `crates/torro-ipc/src/pim.rs`
+- `from` in `tasks.create_issue`: `mail { account, id }`, `inbox { id }`, `todo { href }`, `event { href }`,
+  `conversation { id }` (nur der Assistent für eigene Unterhaltungen und der App-Schlüssel, sonst `not-found`; im
+  Protokoll nur als Prüfsumme). Der Kern prüft Leserecht auf die Quelle (sonst `not-found`) und hängt die Zeile mit dem
+  Weg zurück an (wie `inbox.create_task_from_item`); Text aus Mail und Eingang bleibt Zitat.
+- **Danach an der Quelle:** Eingang → Eintrag erledigt (braucht `inbox` Write, Regeln wie `create_task_from_item`);
+  Aufgabe → wird **immer** zum Verweis auf das neue Issue (`X-TORRO-LINK`, `URL`; braucht Schreibrecht auf ihre
+  Liste); Mail und Termin → Vermerk „Issue owner/repo#n created“ (Mail: Notiz im Cache, Termin: Zeile in der
+  Beschreibung).
+- **Antwort** trägt `private_source: bool`, wenn die Quelle Mail, Talk oder Eingang ist; zusammen mit `public` zeigt
+  die Oberfläche daraus den Hinweis „This repository is public. Everyone can read the issue.“
+- Freigabetext nennt die Quelle („… from mail "Betreff"“, Betreff aus dem Cache).
+- Abnahme: Tests je Quelle (Rechte, Weg zurück, Folge an der Quelle, Eintrag geändert → `conflict`), Aufgabe ist
+  danach ein Verweis und wird im Abgleich mit dem Issue geführt.
+
+### G.15 Ähnliche Issues, Repo-Vorschlag, Kommentar
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** G.13 · **Dateien:** `crates/torro-pim-github/src/{api,graphql}.rs`,
+  `crates/torroworkplace/src/{pim,core}.rs`
+- `Request::FindSimilarIssues { account, repo, title }` · `tasks.find_similar_issues` · Read · `github`: höchstens 5
+  offene Issues mit ähnlichem Titel (GitHub-Suche `repo:… is:issue is:open in:title` mit den tragenden Wörtern).
+  Repo außerhalb `github_repos` → `not-found`, ohne GitHub zu fragen; `title` ≤ 256 Zeichen; kein Suchbegriff im
+  Protokoll.
+- `Request::SuggestIssueRepo { from }` · `tasks.suggest_issue_repo` · Read · `github`: das gemerkte Repo für den
+  Schlüssel der Quelle (Absenderadresse, Quelle im Eingang, Liste, Kalender), sonst das zuletzt benutzte; braucht
+  Leserecht auf die Quelle (sonst `not-found`) und nennt auch beim Rückgriff nur Repos in der Auswahl des Clients.
+  Gemerkt von `create_issue` in `<state>/github/issue-repos.json` (0600, Schlüssel als SHA-256 → `owner/repo`).
+- `Request::CommentOnIssue { account, repo, number, body, from }` · `tasks.comment_on_issue` · Write · `github` · nach
+  außen; Freigabe „Comment on {repo}#{n}: "{Titel aus dem Cache}"“ mit den ersten 200 Zeichen in den Details.
+  Grenzen: Text ≤ 65 536 Zeichen, Kennungen ≤ 300 Bytes; öffentliches Repo wie bei `create_issue` immer mit Freigabe.
+- Abnahme: Tests mit aufgezeichneten Antworten, Rechte (Repo außerhalb, „Nach außen“), Vorschlag je Quellart.
+
+### G.16 Dialog „New issue“; Einstiege in Aufgaben und Kalender
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.14, G.15 · **Dateien:** `crates/torro-gui/src/{issue,widgets}.rs` (neu: `issue.rs`),
+  `crates/torrotasks/src/app.rs`, `crates/torrocalendar/src/app.rs`, `crates/torro-gui/examples/gallery.rs`
+- Gemeinsamer Dialog in `torro-gui`: Repo (Auswahl aus `tasks.list_github_repos`, vorausgewählt aus
+  `tasks.suggest_issue_repo`), Titel, Text mit Markdown-Vorschau, Labels/Zuständige/Meilenstein als Chips aus
+  `tasks.describe_github_repo`, darunter „Possibly the same as …“ (`tasks.find_similar_issues`, beim Verlassen des
+  Titels) mit „Add comment there instead“, Hinweis bei öffentlichem Repo und privater Quelle, Schalter „Also add to
+  tasks“ (Standard aus, Liste wählbar), Primärknopf „Create issue“ (busy „Creating…“).
+- **Aufgaben:** Detail › „…“ › „Move to GitHub…“ (nicht bei Verweisen und GitHub-Einträgen). **Kalender:**
+  Termin › „…“ › „Create issue…“.
+- Nach dem Anlegen Hinweis „Issue #142 created“ mit „Open“.
+- Design nach `torro-design`; Übersetzungen im Bericht nennen.
+- Abnahme: Tests (Vorschlag, Chips ↔ Request, ähnliche Issues, Hinweis öffentlich), Galerie, Sichtprüfung in allen
+  Größen hell und dunkel.
+
+### G.17 Einstiege in Mail und Eingang, „Reply with link“
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** G.16 · **Dateien:** `crates/torroinbox/src/{app,reader,list}.rs`
+- „Create issue…“ neben „Create task…“ an Mail (Leser, Kontextmenü, Aktionsleiste) und an jedem Eintrag im Eingang;
+  öffnet den Dialog aus G.16 mit `from`.
+- Nach einem Issue aus einer Mail: „Reply with link“ legt über `mail.save_draft` eine Antwort an den Absender mit
+  dem Link an und öffnet sie im Mail-Fenster. Kein neuer Request.
+- Abnahme: Tests (Vorausfüllung je Quellart, Antwort-Entwurf), Sichtprüfung.
+
+### G.18 Issue-Entwurfs-Karte im Assistenten
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.14, G.15 und die Karten im Chat (Aufgaben dafür noch nicht geplant, siehe
+  „Karten im Chat“ in [assistent.md](../assistent.md)) · **Dateien:** `crates/torroassistant/src/{chat,view}.rs`,
+  `crates/torroworkplace/src/assistant/*.rs`
+- Wartet `tasks.create_issue` des Assistenten auf Freigabe, zeigt der Chat die Issue-Entwurfs-Karte statt der
+  allgemeinen Freigabe: Create issue (= Allow), Edit, Discard (= Deny), ähnliche Issues, Hinweis öffentlich, „Also
+  add to tasks“. Edit schickt einen neuen Request mit dem App-Schlüssel; das Protokoll verknüpft beide Freigaben. Danach Issue-Karte mit „Open on GitHub“, „Add to tasks“ und bei Mail als Quelle „Reply with link“.
+- Skill des Assistenten: „Mach daraus ein Issue“ → `tasks.suggest_issue_repo`, dann `tasks.create_issue` mit `from`.
+- Abnahme: Tests (Karte aus der Freigabe, Edit lehnt die alte Freigabe ab und schickt einen neuen Request),
+  Sichtprüfung.
+
+### G.19 „Report a problem“
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** G.16, Klärung von Punkt 9 in [github.md](../github.md) · **Dateien:**
+  `crates/torroworkplace/src/{core,diagnostics}.rs` (neu: `diagnostics.rs`), `crates/torro-ipc/src/lib.rs`,
+  `crates/torro-gui/src/{shell,issue}.rs`
+- `Request::CollectDiagnostics { logs: bool }` · `system.collect_diagnostics` · Read · Bereich `system`: Version der
+  Suite und der Apps, Betriebssystem, Fenstermanager, Zahl und Art der Konten (ohne Adressen); mit `logs` die letzten
+  200 Zeilen des Logs, `logs: true` nur mit dem App-Schlüssel (`Request::kept_for_people`). Der Kern entfernt
+  Tokens, Passwörter, Adressen mit Zugangsdaten und ersetzt den Home-Pfad durch `~`. Zahl und Art der Konten nur
+  mit Leserecht in `accounts` (`system` steht jedem Client offen).
+- Menü des App-Umschalters in jeder App: „Report a problem…“ öffnet den Dialog aus G.16 mit Ziel
+  `mahype/TorroWorkplace`, Vorschau der Angaben, Haken „Include log excerpt“ (aus). Ohne GitHub-Konto: „Open on
+  GitHub“ öffnet die Seite „New issue“ mit vorausgefülltem Titel und Text im Browser, nie mit Log-Auszug (die
+  Adresse landet im Verlauf).
+- Abnahme: Tests (Schwärzen mit Fixtures, `logs` für Clients abgelehnt, ohne Konto Browser-Adresse), Sichtprüfung.
 
 ## K Kalender
 

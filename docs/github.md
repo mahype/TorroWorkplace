@@ -1,6 +1,6 @@
 # GitHub in der Suite: Filterlisten, Verweise, Planungslisten
 
-Stand: 2026-10-11. **Konzept, Grundzüge am 2026-10-11 besprochen.** Was noch offen ist, steht am
+Stand: 2026-10-14. **Konzept, Grundzüge am 2026-10-11 besprochen, „Issues anlegen“ am 2026-10-14.** Was noch offen ist, steht am
 Ende. Aufgaben: [tasks/github.md](tasks/github.md).
 
 ## Ziel
@@ -179,6 +179,12 @@ Meilensteine als ganztägige Termine je Filterliste.
 | Abhaken (Issue schließen) | Haken | `tasks.save_todo` (gibt es) | `tasks_save_todo` |
 | Reihenfolge ändern | Ziehen, Alt+↑/↓ | `tasks.move_todo` (Write) | `tasks_move_todo` |
 | Sortierart je Liste | Liste › „Sort“ | `settings.set_setting` (gibt es, Admin) | `settings_set_setting` |
+| Issue anlegen | Dialog „New issue“ (aus Mail, Eingang, Aufgaben, Kalender, „Report a problem“); im Chat die Issue-Entwurfs-Karte | `tasks.create_issue` (Write, Bereich `github`, nach außen) | `tasks_create_issue` |
+| Ähnliche offene Issues finden | Dialog und Karte: „Possibly the same as …“ | `tasks.find_similar_issues` (Read, Bereich `github`) | `tasks_find_similar_issues` |
+| Repository vorschlagen | Dialog und Karte: Repo vorausgewählt | `tasks.suggest_issue_repo` (Read, Bereich `github`) | `tasks_suggest_issue_repo` |
+| Kommentar statt neuem Issue | „Add comment there instead“ | `tasks.comment_on_issue` (Write, Bereich `github`, nach außen) | `tasks_comment_on_issue` |
+| Angaben für „Report a problem“ sammeln | Dialog „Report a problem“ | `system.collect_diagnostics` (Read; mit Log-Auszug nur App-Schlüssel) | `system_collect_diagnostics` (ohne Log-Auszug) |
+| Absender mit Link antworten | „Reply with link“ | `mail.save_draft` (gibt es) | `mail_save_draft` |
 
 ## Rechte für Agenten
 
@@ -222,6 +228,109 @@ einer **Auswahl der Repos und Organisationen** (`github_repos: Selection`, neben
 - Das Token geht über keinen Weg hinaus: Der Typ, der es im Request trägt, schwärzt sich in `Debug`;
   es steht nie in Freigaben, Protokoll oder Fehlermeldungen.
 
+## Issues anlegen
+
+Stand: 2026-10-14, Entscheidungen am selben Tag (unten). Bisher holt die Suite Issues nur herein
+(Filterlisten, Verweise). Neu: **Issues anlegen**, aus allen Bereichen, in denen etwas passiert, das
+eigentlich ein Issue ist: eine Fehlermeldung per Mail, ein Alarm im Eingang, eine Aufgabe, die
+eigentlich ins Repo gehört, Aktionspunkte aus einer Besprechung, ein Fehler in Torro selbst.
+
+### Ein Befehl, viele Einstiege
+
+Alles läuft über **einen** Befehl `tasks.create_issue`; die Einstiege unterscheiden sich nur darin,
+was sie vorausfüllen und welche Quelle sie mitgeben.
+
+| Einstieg | Wo | Vorausgefüllt | Danach |
+|---|---|---|---|
+| **Mail** | Mail-Fenster und Leser im Eingang: „Create issue…“ neben „Create task…“ | Betreff als Titel, Text als Zitat, am Ende eine Zeile mit dem Weg zurück zur Mail | Karte bietet „Reply with link“: normaler Mail-Entwurf an den Absender mit dem Link zum Issue |
+| **Eingang** | jeder Eintrag (ntfy-Alarm, Nextcloud, Talk, GitHub-Check …): „Create issue…“ | Titel und Text des Eintrags, Link der Quelle | Eintrag wird erledigt, wie bei `create_task_from_item` |
+| **Aufgaben** | Detail › „…“ › „Move to GitHub…“ | Titel, Beschreibung, Unteraufgaben als Checkliste | Die Aufgabe wird **immer** zum Verweis auf das neue Issue (nichts doppelt) |
+| **Kalender** | Termin › „…“ › „Create issue…“ | Titel des Termins, Beschreibung, Datum | später auch je Aktionspunkt aus einem Besprechungsprotokoll |
+| **Chat** | „Mach daraus ein Issue“ | was der Assistent aus der Unterhaltung oder einem gefundenen Eintrag macht | Issue-Entwurfs-Karte, siehe [assistent.md](assistent.md) |
+| **Report a problem** | jede Torro-App, Menü des App-Umschalters | Version, System; Log-Auszug nur angehakt | Ziel ist fest `mahype/TorroWorkplace` |
+
+Der **Dialog „New issue“** ist ein gemeinsamer Baustein aller Apps (`torro-gui`): Repo (vorgeschlagen),
+Titel, Text (Markdown mit Vorschau), Labels, Zuständige und Meilenstein als Chips aus
+`tasks.describe_github_repo` (G.9), darunter „Possibly the same as …“ und der Schalter **„Also add to
+tasks“** (Standard aus; Liste wählbar). Primärknopf „Create issue“.
+
+### Was der Kern dabei tut
+
+- **Weg zurück:** Mit der Quelle (`from`: Mail, Eintrag im Eingang, Aufgabe, Termin, Unterhaltung)
+  hängt der Kern eine Zeile an, die zur Quelle zurückführt (wie bei `create_task_from_item`), und
+  merkt an der Quelle „Issue owner/repo#142 created“. Der Kern prüft, dass der Schlüssel die Quelle
+  lesen darf; sonst `not-found`, damit niemand eine fremde Quelle vorschiebt.
+- **Text aus Mail und Eingang bleibt Daten.** Er landet als Zitat im Issue, nie als Anweisung.
+- **Öffentliches Repo, privater Text:** Ist das Ziel öffentlich und die Quelle eine Mail, eine
+  Nachricht aus Talk oder ein Eintrag aus dem Eingang, sagt der Dialog bzw. die Karte deutlich „This
+  repository is public. Everyone can read the issue.“ Das ist der häufigste Weg, wie Privates
+  versehentlich öffentlich wird.
+- **Ähnliche Issues:** Vor dem Anlegen sucht der Kern in den offenen Issues des Repos nach ähnlichen
+  Titeln (`tasks.find_similar_issues`, GitHub-Suche `in:title`, höchstens 5). Gibt es welche, zeigt
+  der Dialog sie mit Link und „Add comment there instead“ (`tasks.comment_on_issue`). Anlegen bleibt
+  möglich.
+- **Repo merken je Quelle:** Nach jedem Anlegen merkt sich der Kern das Repo für den Schlüssel der
+  Quelle: Absenderadresse einer Mail, Quelle im Eingang, Aufgabenliste, Kalender.
+  `tasks.suggest_issue_repo` schlägt dieses vor, sonst das zuletzt benutzte. Gespeichert in
+  `<state>/github/issue-repos.json`, nur Schlüssel und `owner/repo`, keine Inhalte.
+- **„Also add to tasks“:** legt nach dem Anlegen einen Verweis in der gewählten Liste an (wie
+  `tasks.add_link`); braucht dafür Schreibrecht auf die Liste.
+- **Grenzen:** Titel höchstens 256 Zeichen, Text höchstens 65 536 Zeichen (Grenze von GitHub),
+  höchstens 20 Labels und 10 Zuständige; sonst `error`, bevor jemand gefragt wird.
+- **Offen gebaut:** Der Request nennt `account` und `repo`, nicht „GitHub“. Was ein Konto anlegt,
+  entscheidet der Kern nach der Art des Kontos; GitLab, Forgejo oder Nextcloud Deck können später als
+  weitere Art dazukommen, ohne dass sich der Request ändert.
+
+### Rechte
+
+- `tasks.create_issue` und `tasks.comment_on_issue` brauchen `Write` im Bereich `github`, das Repo in
+  `github_repos` (sonst `not-found`) **und** den Schalter **„Nach außen“** wie `mail.send_draft`
+  (`Command::is_outbound`): Ein Issue ist für andere sichtbar und lässt sich nicht löschen, nur
+  schließen. Voreinstellung „Mit Freigabe“: Assistent und Agenten legen Issues nur nach Freigabe an.
+- **Öffentliches Repo: immer Freigabe.** Ist das Ziel öffentlich, wartet jeder Client auf Freigabe, auch
+  mit „Nach außen: frei“ (wie „Bei jeder Änderung“). Ob ein Repo öffentlich ist, liest der Kern aus seinem
+  Zwischenspeicher der Repos, nie aus dem Request. Sonst könnte ein Agent Mailtext in `body` kopieren, `from`
+  weglassen und so den Hinweis „public“ umgehen.
+- Die Freigabe nennt, was läuft: „Create issue in owner/repo: “Titel”“, bei einem öffentlichen Repo
+  „Create public issue …“. In den Details stehen die ersten 200 Zeichen des Textes, Labels, Zuständige
+  und der Meilenstein (Name aus dem Zwischenspeicher), wie beim Senden einer Mail; dasselbe für
+  Kommentare. Titel und Text stammen aus dem Request; sie sind das, was angelegt wird, und werden mit
+  der Freigabe festgehalten. Ändert der Mensch etwas, ist es ein neuer Request; das Protokoll verknüpft
+  dann beide Freigaben, damit erkennbar bleibt, dass der Anstoß vom Assistenten kam.
+- **`tasks.find_similar_issues` und `tasks.suggest_issue_repo`:** Repos außerhalb `github_repos` →
+  `not-found`, ohne GitHub zu fragen; der Vorschlag braucht Leserecht auf die Quelle und nennt auch beim
+  Rückgriff auf „zuletzt benutzt“ nur Repos aus der Auswahl. Suchbegriffe kommen nie ins Protokoll. Die
+  Schlüssel in `issue-repos.json` (Absenderadressen) liegen nur als SHA-256 auf der Platte.
+- **`from: conversation`** dürfen nur der Assistent (für seine eigenen Unterhaltungen) und der
+  App-Schlüssel setzen; für alle anderen `not-found`.
+- Mit Quelle zusätzlich Leserecht auf die Quelle; für „Move to GitHub“ Schreibrecht auf die Liste der
+  Aufgabe, für den Eingang Schreibrecht auf `inbox` (Eintrag erledigen).
+- Das Token braucht „Issues: Read and write“ (wie schon fürs Schließen).
+- **„Report a problem“ mit Log-Auszug** nur mit dem App-Schlüssel (`Request::kept_for_people`, wie das
+  Mikrofon): Logs können Namen von Konten, Ordnern und Fehlertexte von Servern enthalten. Agenten
+  bekommen über `system.collect_diagnostics` nur Version und System; Zahl und Art der Konten nur mit
+  Leserecht in `accounts` (der Bereich `system` steht sonst jedem Client offen, auch Hook-Schlüsseln). Der Kern entfernt vor der
+  Vorschau Tokens, Passwörter, Adressen mit Zugangsdaten und den Pfad des Home-Verzeichnisses (wird
+  `~`). Ohne GitHub-Konto öffnet der Dialog die Seite „New issue“ auf github.com mit vorausgefülltem
+  Titel und Text im Browser, dann **nie** mit Log-Auszug: Die Adresse landet im Verlauf des Browsers.
+- Protokoll nur mit Konto, `owner/repo#nummer` und Art der Quelle, nie Titel oder Text.
+
+### Entscheidungen
+
+Getroffen am 2026-10-14.
+
+1. **Assistent und Agenten dürfen Issues anlegen, mit Freigabe** („Nach außen“). Im Chat ist die
+   Issue-Entwurfs-Karte die Freigabe.
+2. **Zuerst GitHub**, der Request so gebaut, dass weitere Systeme dazukommen können.
+3. **Alle Einstiege:** Mail und Eingang, Chat, Aufgaben und Kalender, „Report a problem“.
+4. **„Also add to tasks“ als Schalter, Standard aus.** Wird eine Aufgabe zum Issue, wird sie immer
+   zum Verweis.
+5. **Ähnliche Issues als Hinweis** mit „Add comment there instead“; Anlegen bleibt möglich.
+6. **Repo je Quelle merken**, sonst das zuletzt benutzte; immer per Klick änderbar.
+7. **„Reply with link“ als Angebot** nach einem Issue aus einer Mail, als normaler Mail-Entwurf.
+8. **„Report a problem“:** Version und System immer; Log-Auszug nur angehakt, in der Vorschau
+   sichtbar, Geheimnisse und Home-Pfade vorher entfernt.
+
 ## Offene Punkte
 
 1. **Schnittstellen-Änderungen freigeben:** `PimSource::account()` → Liste der Konten (M1),
@@ -247,3 +356,9 @@ einer **Auswahl der Repos und Organisationen** (`github_repos: Selection`, neben
 8. **Verweise in geteilten Listen** (entschieden, G.6c): Sie werden nicht abgeglichen (G.6b) und
    behalten den Titel vom Anlegen; Abhaken erledigt dort nur die Aufgabe, das Issue bleibt offen
    (siehe „Abhaken“). Wer dort ein Issue schließen will, tut das in einer Filterliste oder auf GitHub.
+9. **Log-Auszug nur für Menschen** („Issues anlegen“, Rechte): Eine Regel nach dem Wert eines Requests
+   (`kept_for_people`) gehört in „Was nie nach außen geht“ ([api.md](api.md)). Vorschlag: als Punkt 8
+   dort aufnehmen; Admin allein reicht nicht, weil auch Skript-Schlüssel Admin haben können. Vor G.13
+   entscheiden, weil G.13 den Request anlegt.
+10. **Issues aus Besprechungsprotokollen:** Aktionspunkte aus einem Transkript (z. B. Plaud) je als
+    Issue. Braucht erst eine Quelle für Protokolle; bis dahin nur „Create issue…“ am Termin.

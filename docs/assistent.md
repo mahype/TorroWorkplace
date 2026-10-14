@@ -273,6 +273,25 @@ einen Termin an, verschiebt ihn oder nimmt eine Einladung an, die kollidiert, ne
 „Send by mail“ am Termin legt einen Entwurf mit dem Termin als Anhang an und zeigt ihn als
 Entwurfs-Karte darunter: Man sieht immer, was rausgeht, bevor es rausgeht.
 
+### Issue-Entwurf
+
+Konzept: „Issues anlegen“ in [github.md](github.md). Sagt die Person „Mach daraus ein Issue“, ruft der
+Assistent `tasks.create_issue` (mit `from`: die Unterhaltung oder der gefundene Eintrag). Weil Issues
+nach außen gehen, wartet der Befehl auf Freigabe, und wie beim Mail-Entwurf **ist die Karte die
+Freigabe**:
+
+- **Zeigt:** Repo (`owner/repo`, mit „public“, wenn öffentlich, und dem Hinweis „Everyone can read
+  the issue.“, wenn der Text aus Mail oder Eingang stammt), Titel, Labels, Zuständige, Meilenstein,
+  Text als Markdown, die Zeile mit dem Weg zurück; darunter „Possibly the same as #41“ mit Link, wenn
+  der Kern ähnliche offene Issues findet; Schalter „Also add to tasks“ (Standard aus).
+- **Knöpfe:** **Create issue** (= Allow) · **Edit** (Felder auf der Karte; danach schickt die App einen
+  neuen Request mit ihrem Schlüssel und lehnt die alte Freigabe ab; das Protokoll verknüpft beide, damit
+  der Anstoß des Assistenten erkennbar bleibt) · **Discard** (= Deny); bei
+  Treffern zusätzlich „Add comment there instead“.
+- **Danach** wird sie zur Issue-Karte: `owner/repo#142`, Zustand offen, „Open on GitHub“, „Add to
+  tasks“, und bei einer Mail als Quelle „Reply with link“ (legt einen Mail-Entwurf an, der als
+  Entwurfs-Karte erscheint).
+
 Später, nach denselben Regeln: Tagesplan, Zeitvorschläge („Wann habe ich Zeit?“, braucht einen
 Freebusy-Befehl), gefundene Mail, Inbox-Eintrag, Workspace-Vorlage mit Skizze der Kacheln,
 GitHub-Issue/PR, Konto-Status, Bot-Vorschlag, „Gemerkt“, Änderung mit Rückgängig, Rückfrage mit
