@@ -40,6 +40,10 @@ cargo test --workspace
 
 Alle drei müssen ohne Fehler durchlaufen. Melde ehrlich, was nicht geht.
 
+GitHub Actions läuft nur bei Releases (Tags), jede Minute kostet Geld. Die CI läuft deshalb lokal:
+`scripts/ci-local.sh` (dieselben Schritte wie `ci.yml`). Einmal pro Klon `git config core.hooksPath .githooks`,
+dann prüft `pre-commit` Format und Design, `pre-push` alles. Starte keine Workflows auf GitHub von Hand.
+
 ## Code
 
 - Rust 2024, Workspace-Lints: kein `unsafe`, kein `unwrap()`, kein `todo!()`, kein `dbg!()`.

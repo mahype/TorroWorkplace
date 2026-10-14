@@ -1,9 +1,11 @@
 name: CI
 
+# Runs only for releases or when started by hand: every minute on GitHub Actions is billed, macOS and Windows
+# runners many times over. release.yml calls this workflow before it builds anything (dist `plan-jobs`), a failed
+# check stops the release. Before each commit and push the same checks run locally (scripts/ci-local.sh, .githooks/).
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_call:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
