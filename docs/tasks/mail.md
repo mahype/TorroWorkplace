@@ -555,3 +555,104 @@ ihre Texte im Bericht.
   `calendar_respond_invitation`; im Paneel „Accept / Maybe / Decline“, Termin in den Standardkalender, Antwort per Mail.
 - **M7.6 Kontakte (CardDAV)**, Empfänger-Vorschläge im Schreibfenster.
 - Sieve (Filter, Abwesenheit), OAuth für Google/Microsoft (braucht registrierte Client-IDs), JMAP.
+
+## HTML-Mail (M8)
+
+Entschieden 2026-10-14 (siehe [mail.md](../mail.md), Entscheidung 8): Mail wird als HTML gezeigt, nicht mehr
+nur als Text. Das ersetzt „HTML nur zu Text umgewandelt“ (M2.4) und „Externe Bilder werden nie geladen“ (E4.2).
+Darstellung in einem eigenen Fenster mit System-Webview, externe Bilder werden immer geladen.
+
+```
+M8.1 ─┬─ M8.2
+      └─ M8.3   (M8.3 braucht das Fenster aus M8.2 zum Öffnen, die Demo-Daten nicht)
+```
+
+### M8.1 HTML im Kern: aufheben, bereinigen, herausgeben
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M3.1 · **Dateien:** `Cargo.toml` (`ammonia` in `[workspace.dependencies]`),
+  `crates/torro-mail/src/message.rs`, `crates/torro-mail-imap/{Cargo.toml,src/mime.rs,tests/mime_roundtrip.rs}`,
+  `crates/torroworkplace/src/mail/{store,read,sync,write}.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,mcp}.rs`, `crates/torro-ipc/src/{inbox,mail}.rs` und
+  `crates/torroinbox/src/compose.rs` (bauen `GetMail` aus, Feld ergänzen), `docs/api-reference.md`,
+  `crates/torro-inbox/src/demo.rs` (Feld ergänzen)
+- `Message` bekommt `html: Option<String>` (nur mit `include_html`) und `AttachmentInfo` `content_id:
+  Option<String>` (ohne `<>`), beides optional, also verträglich. `mime.rs` liest neben dem Text den ersten
+  HTML-Teil und bereinigt ihn mit `ammonia` über eine **Erlaubt-Liste**: Textauszeichnung und Gliederung (`p`,
+  `div`, `span`, `br`, `hr`, `h1`–`h6`, `b`, `strong`, `i`, `em`, `u`, `s`, `small`, `sub`, `sup`, `font`,
+  `center`, `blockquote`, `pre`, `code`, Listen), Tabellen (`table` bis `td`/`th`, `colgroup`, `col`, `caption`),
+  `a` (nur `href` mit `http`, `https`, `mailto`), `img` (`src` mit `http`, `https`, `cid`, `data:image/png|jpeg|gif|
+  webp`), das `style`-Element und die Attribute `style`, `class`, `id`, `align`, `valign`, `width`, `height`,
+  `bgcolor`, `color`, `border`, `cellpadding`, `cellspacing`, `alt`, `title`, `dir`, `lang`. Alles andere fällt
+  weg, ausdrücklich `script`, `iframe`, `object`, `embed`, `form`, `input`, `button`, `base`, `meta`, `link`
+  (auch `rel=stylesheet`), `svg` und alle `on*`-Attribute. Obergrenze 2 MiB bereinigtes HTML; darüber ist
+  `html` `None` und die Mail wird als Text gezeigt. Der Text (`text`, `from_html`) bleibt wie bisher, Agenten und Suche arbeiten weiter damit.
+- Speicher: Spalte `html` in `bodies` (Migration, alte Zeilen `NULL`). Fehlt das HTML einer schon gecachten Mail,
+  holt `mail.get_message` mit `include_html` den Inhalt neu vom Server (`BODY.PEEK`, kein `\Seen`).
+- **API:** `Request::GetMail` bekommt `include_html: bool` (`#[serde(default)]`) · `mail.get_message` · Read;
+  Beschreibung im Katalog ergänzen („with `include_html` also the cleaned HTML part, for showing it to a person;
+  agents rarely need it, the text is enough. It is `untrusted` and may name pictures on the web“). Kein neuer
+  Befehl.
+- **MCP:** `mail_get_message` reicht `include_html` durch (Voreinstellung `false`).
+- **Oberfläche:** M8.2 (Mail-Fenster), M8.3 (TorroInbox).
+- **Abnahme:** Tests: Mail mit Text- und HTML-Teil → `text` aus dem Textteil, `html` bereinigt; Skript,
+  `onclick`, `<form>`, `<iframe>`, `javascript:`-Link sind weg, `style` und `cid:`-Bild bleiben; `content_id` der
+  Inline-Teile gesetzt; ohne `include_html` kein `html` in der Antwort; alte Cache-Zeile ohne HTML wird nachgeholt,
+  ohne `\Seen` zu setzen; HTML über 2 MiB → `html: None`; Rechte wie `mail.get_message` (fremdes Konto →
+  `not-found`). Protokoll ohne Inhalte: kein HTML, kein Ausschnitt (auch nicht in Fehlern der Bereinigung), keine
+  `content_id`, Bild- oder Link-URLs, kein Betreff, kein Absender. API-Referenz neu erzeugt.
+
+### M8.2 Mail-Fenster `torromailview`
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M8.1 · **Dateien:** `Cargo.toml` (`wry`, `tao` in `[workspace.dependencies]`,
+  Mitglied `crates/torromailview`), neu `crates/torromailview/` (`Cargo.toml`, `src/main.rs`, `src/page.rs`,
+  `build.rs` wie bei den anderen Programmen), `scripts/ci-local.sh` und `.github/workflows/ci.yml`
+  (Linux-Pakete `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`), `docs/mail.md` (nur falls sich beim Bau etwas
+  Grundsätzliches ändert, dann vorher fragen)
+- Eigenes Programm, eigener Prozess: `torromailview <m:id>` (Fensterklasse und App-ID `torro-mailview`, kachelt
+  sich neben die Liste). tao + wry statt Iced, weil Iced kein HTML zeichnet und sich unter Wayland keine Webview in
+  ein winit-Fenster einbetten lässt. Spricht nur über `torro_ipc` mit dem Kern (App-Schlüssel wie `torroinbox`),
+  liest und schreibt nichts selbst. Einzige Ausnahme wie beim Öffnen von Anhängen: Die Datei, die
+  `mail.get_attachment` im verwalteten Ordner abgelegt hat, liest es, um sie der Webview zu geben.
+- Seite: `mail.get_message` mit `include_body` und `include_html`. Oben ein schlichter Kopf aus eigenem HTML (Von,
+  An, Cc, Datum, Betreff, Anhänge als Liste; Farben und Schrift aus dem aktiven Design, hell/dunkel), darunter die
+  Mail. Mail ohne HTML → Text in `<pre>`-artigem Block mit Zeilenumbruch. Alles aus der Mail wird escaped bzw. kommt
+  nur als bereinigtes HTML aus M8.1.
+- **Sicherheit im Fenster** (zweite Schicht nach der Bereinigung): Meta-CSP `default-src 'none'; script-src
+  'none'; base-uri 'none'; form-action 'none'; img-src https: http: data: torro-cid:; style-src 'unsafe-inline' https: http:; font-src https: http:
+  data:`; keine Skripte von uns in der Seite; wo wry es erlaubt, JavaScript abschalten (Linux über die
+  WebKitGTK-Einstellungen). Navigation abfangen: Links (`http`, `https`, `mailto`) öffnen über `webbrowser` im
+  Standardprogramm, die Seite selbst wechselt nie. Keine Downloads, keine neuen Fenster, kein Kontextmenü
+  „Inspect“. Externe Bilder lädt die Webview direkt (Entscheidung 8: immer laden).
+- `cid:`-Bilder: Seite schreibt `cid:x` in `torro-cid://x` um; das eigene Protokoll (wry custom protocol) holt den
+  Teil über `mail.get_attachment` (Teil zur `content_id` aus `attachments`) und liefert die Datei aus dem verwalteten
+  Ordner aus, nur `image/png`, `image/jpeg`, `image/gif`, `image/webp` (kein SVG), sonst 404.
+- Tasten: `Esc`/`Ctrl+W` schließen, `Ctrl+C` kopiert die Auswahl, `Ctrl +`/`-`/`0` Zoom. Fehler (Kern weg,
+  `not-found`) als einfache Seite mit `tr()`-Text. `--demo` zeigt eine Demo-HTML-Mail ohne Kern.
+- **API/MCP:** keine neuen Befehle (nutzt `mail.get_message`, `mail.get_attachment`).
+- **Abnahme:** Tests: Kopf escaped Absender/Betreff mit `<script>`; CSP steht in jeder Seite; `cid:` wird
+  umgeschrieben, Nicht-Bild-Teil → 404; Navigation zu fremder URL wird abgewiesen und an den Browser gegeben (Logik
+  als reine Funktion getestet); SVG über `torro-cid://` → 404. Protokoll ohne Inhalte: keine Link- oder Bild-URLs,
+  keine `content_id`, kein Betreff, kein Absender, kein HTML. Baut auf Linux, macOS, Windows (`scripts/ci-local.sh`). Sichtprüfung mit `--demo`
+  (Newsletter mit Tabellen und Bildern, reine Textmail), hell/dunkel; im Bericht die neuen Übersetzungen nennen.
+
+### M8.3 TorroInbox: HTML-Mail öffnen
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** M8.1, M8.2 · **Dateien:** `crates/torroinbox/src/{mail,keys,app}.rs`,
+  `crates/torro-inbox/src/demo.rs` (Demo-Newsletter mit `html`), `crates/torro-core/src/i18n/de.rs` (nur wenn nicht
+  parallel, sonst im Bericht)
+- **Oberfläche:** Das Paneel zeigt weiter Kopf, Anhänge und Knöpfe. Hat die Mail HTML, steht über dem Text der Knopf
+  „View as HTML“ (Taste `v`), und `Enter` bzw. Doppelklick in der Liste öffnet die Mail direkt im Mail-Fenster
+  (`torromailview <id>`, wie `--compose` gestartet). Der Hinweis „Made from HTML. Pictures and other content from
+  the web are not loaded.“ entfällt; der Text im Paneel ist nur noch Vorschau. Eintrag im Eingang gilt beim Öffnen
+  des Fensters als geöffnet (wie heute über `mail.get_message` mit dem App-Schlüssel).
+- `apps.open_app` mit Ziel `mail:` öffnet weiter `torroinbox --view mail` (Fußnote 13 in [api.md](../api.md)):
+  Das ist die Mail-Ansicht des Eingangs, `torromailview` zeigt nur eine einzelne Mail und wird aus ihr heraus
+  geöffnet. Agenten brauchen das HTML-Fenster nicht, sie lesen über `mail_get_message`.
+- **API/MCP:** nutzt M8.1, keine neuen Befehle.
+- **Abnahme:** Sichtprüfung mit `--demo` (Breit/Mittel/Schmal, hell/dunkel); Tests der Nachrichten: `v` und
+  `Enter` starten das Fenster nur bei Mails mit HTML, ohne HTML bleibt alles wie bisher; Übersetzung „View as HTML“.
+  Protokoll ohne Inhalte (keine Kennung im Klartext neben Betreff oder Absender).
+
+### Später zu M8
+- Antworten und Weiterleiten mit dem HTML der Vorlage (zitiert als HTML), Schreiben mit einfacher Formatierung.
+- Schalter „Load pictures from the web“ (immer / pro Absender / nie), falls das Laden stört.
