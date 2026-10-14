@@ -622,6 +622,14 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    nennt oder seinen Vorschlag bestätigt; diese Bestätigung gibt nie ein Agent oder Modell. Das
    Fragen selbst braucht danach keine weitere Freigabe, die Befehle des Bots aber wie gewohnt, und
    der Bot arbeitet nur mit dem, was beide dürfen.
+8. **Log-Auszug lesen** (`system.collect_diagnostics` mit `logs: true`, „Report a problem“,
+   [github.md](github.md) „Issues anlegen“, G.19): nur mit dem App-Schlüssel, also nur durch einen
+   Menschen im Dialog „Report a problem“, der den Auszug vor dem Absenden sieht. Logs können Namen von
+   Konten und Ordnern und Fehlertexte von Servern enthalten, auch aus Bereichen, die ein Agent nicht
+   sehen darf. Wie beim Mikrofon entscheidet der Wert, nicht der Befehl: `Request::kept_for_people`
+   und `Rights::allows_request` geben einem Client `forbidden`, auch mit Admin-Rechten (Skript-Schlüssel
+   können Admin haben). Ohne `logs` ist der Befehl gewöhnliches Lesen im Bereich `system` (Version,
+   System; Konten nur mit Leserecht in `accounts`).
 
 Allgemein gilt: Jeder Befehl mit `Mcp::Never` ist nur mit dem App-Schlüssel erlaubt. `Rights::allows`
 setzt das durch (seit G.1), auch ein Script-Schlüssel mit Admin-Rechten bekommt `forbidden`.

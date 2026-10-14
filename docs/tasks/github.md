@@ -564,15 +564,15 @@ laufen Kern, Oberfläche und Karte nebeneinander.
 G.9 ── G.13 ─┬─ G.14 ─┬─ G.16 ── G.17
              │        └─ G.18 (braucht die Karten im Chat)
              ├─ G.15 ─┘
-             └─ G.19 (nach Klärung von Punkt 9 in github.md)
+             └─ G.19 (nach G.16)
 ```
 
 ### G.13 Issue anlegen: Gerüst und Kern
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** G.9, Punkt 9 in [github.md](../github.md) entschieden · **Dateien:**
+- **Modell:** Opus · **Braucht:** G.9 · **Dateien:**
   `crates/torro-ipc/src/{lib,api,pim}.rs`, `crates/torro-pim-github/src/{api,lib}.rs`, `crates/torro-pim/src/source.rs`,
   `crates/torroworkplace/src/{pim,core,mcp,approvals,audit}.rs`, `docs/api-reference.md`, `docs/api.md` („Nach
-  außen“, ggf. Punkt 8 in „Was nie nach außen geht“)
+  außen“)
 - **Alle Requests der Funktion mit Katalogeintrag** (Handler, die erst später kommen, antworten bis dahin
   `unsupported`): `CreateIssue`, `FindSimilarIssues`, `SuggestIssueRepo`, `CommentOnIssue` (Bereich `github`) und
   `CollectDiagnostics` (Bereich `system`). Felder wie unten in den Aufgaben, Beschreibungen englisch.
@@ -679,12 +679,12 @@ G.9 ── G.13 ─┬─ G.14 ─┬─ G.16 ── G.17
 
 ### G.19 „Report a problem“
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** G.16, Klärung von Punkt 9 in [github.md](../github.md) · **Dateien:**
+- **Modell:** Opus · **Braucht:** G.16 · **Dateien:**
   `crates/torroworkplace/src/{core,diagnostics}.rs` (neu: `diagnostics.rs`), `crates/torro-ipc/src/lib.rs`,
   `crates/torro-gui/src/{shell,issue}.rs`
 - `Request::CollectDiagnostics { logs: bool }` · `system.collect_diagnostics` · Read · Bereich `system`: Version der
   Suite und der Apps, Betriebssystem, Fenstermanager, Zahl und Art der Konten (ohne Adressen); mit `logs` die letzten
-  200 Zeilen des Logs, `logs: true` nur mit dem App-Schlüssel (`Request::kept_for_people`). Der Kern entfernt
+  200 Zeilen des Logs, `logs: true` nur mit dem App-Schlüssel (`Request::kept_for_people`, Punkt 8 in „Was nie nach außen geht“). Der Kern entfernt
   Tokens, Passwörter, Adressen mit Zugangsdaten und ersetzt den Home-Pfad durch `~`. Zahl und Art der Konten nur
   mit Leserecht in `accounts` (`system` steht jedem Client offen).
 - Menü des App-Umschalters in jeder App: „Report a problem…“ öffnet den Dialog aus G.16 mit Ziel

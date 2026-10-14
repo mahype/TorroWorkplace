@@ -330,6 +330,7 @@ Getroffen am 2026-10-14.
 7. **„Reply with link“ als Angebot** nach einem Issue aus einer Mail, als normaler Mail-Entwurf.
 8. **„Report a problem“:** Version und System immer; Log-Auszug nur angehakt, in der Vorschau
    sichtbar, Geheimnisse und Home-Pfade vorher entfernt.
+9. **Log-Auszug nur für Menschen:** Punkt 8 in „Was nie nach außen geht“ ([api.md](api.md)).
 
 ## Offene Punkte
 
@@ -356,9 +357,7 @@ Getroffen am 2026-10-14.
 8. **Verweise in geteilten Listen** (entschieden, G.6c): Sie werden nicht abgeglichen (G.6b) und
    behalten den Titel vom Anlegen; Abhaken erledigt dort nur die Aufgabe, das Issue bleibt offen
    (siehe „Abhaken“). Wer dort ein Issue schließen will, tut das in einer Filterliste oder auf GitHub.
-9. **Log-Auszug nur für Menschen** („Issues anlegen“, Rechte): Eine Regel nach dem Wert eines Requests
-   (`kept_for_people`) gehört in „Was nie nach außen geht“ ([api.md](api.md)). Vorschlag: als Punkt 8
-   dort aufnehmen; Admin allein reicht nicht, weil auch Skript-Schlüssel Admin haben können. Vor G.13
-   entscheiden, weil G.13 den Request anlegt.
+9. **Log-Auszug nur für Menschen** (entschieden 2026-10-14): Punkt 8 in „Was nie nach außen geht“
+   ([api.md](api.md)); durchgesetzt über `Request::kept_for_people` wie beim Mikrofon.
 10. **Issues aus Besprechungsprotokollen:** Aktionspunkte aus einem Transkript (z. B. Plaud) je als
     Issue. Braucht erst eine Quelle für Protokolle; bis dahin nur „Create issue…“ am Termin.
