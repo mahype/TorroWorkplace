@@ -20,6 +20,7 @@ members = [
     "crates/torrocalendar",
     "crates/torroinbox",
     "crates/torroassistant",
+    "crates/torromailview",
 ]
 resolver = "3"
 
@@ -81,6 +82,20 @@ roxmltree = "0.21.1"
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 schemars = { version = "1.2.2", features = ["chrono04"] }
 webbrowser = "1.2.4"
+# The mail window (torromailview, task M9.2): a native window (tao) with the system's web view (wry: WebKitGTK on
+# Linux, WKWebView on macOS, WebView2 on Windows) for HTML mail, which Iced cannot draw. Default features: on Linux
+# the GTK web view and X11 next to Wayland.
+tao = "0.37.1"
+wry = "0.57.0"
+# The mail window's menu on macOS (Copy, Select All, Close, zoom), where key equivalents only reach the web view through
+# the menu bar. The version tray-icon already brings.
+muda = { version = "0.21.2", default-features = false }
+# Linux only: the program name GTK gives the window (Wayland app id, X11 class) of the mail window. The version wry
+# and tao already bring.
+gtk = { version = "0.18.2", default-features = false }
+# The fonts of the design in the mail window's page, as `data:` URLs (the page loads nothing else of ours). The
+# version other crates already bring.
+base64 = "0.22.1"
 winreg = "0.56.0"
 # Only used by the build scripts of the three executables (icon and version info). Without the `toml` feature:
 # the values are set in `build.rs`, not read from `Cargo.toml`.

@@ -604,7 +604,12 @@ M9.4            (Versuch, unabhängig; ersetzt M9.2 nur, wenn er trägt und es e
   `content_id`, Bild- oder Link-URLs, kein Betreff, kein Absender. API-Referenz neu erzeugt.
 
 ### M9.2 Mail-Fenster `torromailview`
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `Cargo.lock`, `crates/torro-core/src/i18n/de.rs` (sechs neue Texte), in der Wurzel-`Cargo.toml`
+  auch `muda` (Menü unter macOS: dort bekommt WKWebView ⌘C, `Esc`, ⌘W und Zoom nur über Menüeinträge), `gtk` (Linux:
+  Programmname = Wayland-App-ID/X11-Klasse `torro-mailview`) und `base64` (Schriften des Designs als `data:`-URL); die Seite
+  kommt über ein eigenes Protokoll `torro-page://localhost/` (WebView2 nimmt HTML-Text nur bis 2 MB), die Mail steht in
+  einem deklarativen Shadow-Root mit Layout-/Paint-Containment, damit ihr CSS den Kopf nicht verdecken oder fälschen kann;
+  Linux und Windows nicht im Fenster geprüft, Windows per `clippy --target x86_64-pc-windows-msvc` ohne Fehler)
 - **Modell:** Opus · **Braucht:** M9.1 · **Dateien:** `Cargo.toml` (`wry`, `tao` in `[workspace.dependencies]`,
   Mitglied `crates/torromailview`), neu `crates/torromailview/` (`Cargo.toml`, `src/main.rs`, `src/page.rs`,
   `build.rs` wie bei den anderen Programmen), `scripts/ci-local.sh` und `.github/workflows/ci.yml`

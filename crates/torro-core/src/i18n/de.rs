@@ -3275,4 +3275,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{area} geht nie an Coding-Agenten wie Claude Code: Deine Datenregel hält es auf deinen Computern. Wähle dafür ein KI-Konto auf diesem Computer.",
     ),
     ("Never gets your mail", "Bekommt nie deine Mails"),
+    // Mail window (torromailview, M9.2)
+    (
+        "The mail is no longer there. It may have been moved or deleted.",
+        "Die Mail ist nicht mehr da. Vielleicht wurde sie verschoben oder gelöscht.",
+    ),
+    ("Try again from the inbox.", "Versuche es im Eingang noch einmal."),
+    ("Select all", "Alles auswählen"),
+    ("Actual size", "Originalgröße"),
+    ("Window", "Fenster"),
+    ("Close window", "Fenster schließen"),
 ];
