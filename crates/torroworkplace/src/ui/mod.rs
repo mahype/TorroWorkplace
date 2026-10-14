@@ -40,7 +40,7 @@
 
 mod accounts;
 mod agent_wizard;
-mod agents;
+pub(crate) mod agents;
 mod approvals;
 mod apps;
 mod assistant;

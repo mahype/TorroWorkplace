@@ -784,6 +784,7 @@ fn the_entries_after_an_appearing_answer_wait_for_it() {
             input: serde_json::json!({}),
             summary: "2 events".into(),
             error: None,
+            lack: None,
         },
     };
     let entries = vec![answer_entry(2, "Let me look."), tool];

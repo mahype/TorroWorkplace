@@ -100,6 +100,17 @@ const DETAIL_CHARS: usize = 300;
 /// provider, and the data rule keeps mail on the person's computers.
 const NEVER_TO_AGENTS: &[Area] = &[Area::Mail];
 
+/// The areas the engine `engine` never gets, whatever the assistant's rights say: [`NEVER_TO_AGENTS`]
+/// for a coding agent (`claude-code`), none for an AI account or the test engine. The gate names
+/// them as the reason of a `forbidden` (issue #133), apart from the areas switched off in a
+/// conversation.
+pub fn never_given(engine: &str) -> &'static [Area] {
+    match Agent::of(engine) {
+        Some(_) => NEVER_TO_AGENTS,
+        None => &[],
+    }
+}
+
 /// A coding agent that can drive the assistant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Agent {
@@ -200,7 +211,7 @@ impl Agents {
 /// with a key of the assistant's client lent by `host`, until the agent is done, fails, takes
 /// too long or the run is stopped. Its last entry ends the run.
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job, agent: Agent) {
-    let mut run = Running { assistant, job, agent, model: None, calls: HashMap::new(), answered: false };
+    let mut run = Running { assistant, job, agent, model: None, calls: HashMap::new(), answered: false, rights: None };
     let ended = run.go(host.as_ref()).await;
     match ended {
         Ok(Ended::Stopped) => {}
@@ -284,6 +295,9 @@ struct Running {
     calls: HashMap<String, (String, Value)>,
     /// An answer entry was added.
     answered: bool,
+    /// The rights of the client the run uses, as stored when it started: why a tool was
+    /// `forbidden` is told from them (issue #133).
+    rights: Option<torro_ipc::api::Rights>,
 }
 
 impl Running {
@@ -309,6 +323,7 @@ impl Running {
         let lent = host.lend_in(&actor, &self.job.conversation, &self.job.engine, &without);
         let Some(lent) = lent else { return Err(no_client()) };
         let areas = allowed_areas(actor.kind(), &client.rights, &without);
+        self.rights = Some(client.rights.clone());
         // The personality and the memory (task C.10); the prompt keeps the notes marked
         // `local_only` from the agent, which runs elsewhere. A bot has its own personality and no
         // memory (task B.1).
@@ -335,7 +350,9 @@ impl Running {
             eprintln!("torroworkplace: cannot prepare a run of {} in {}: {err}", self.agent.name(), runs.display());
             Failed::Prepare
         })?;
-        let arguments = claude::arguments(&folder.config(), &system, self.job.model.as_deref());
+        // The tools of the areas it does not get are not offered at all (issue #133): the model then
+        // never tries them, and the prompt says why.
+        let arguments = claude::arguments(&folder.config(), &system, self.job.model.as_deref(), &without);
         let mut child = start(&command, &arguments, folder.path(), lent.key())
             .await
             .map_err(|err| Failed::Start(detail(&err.to_string(), lent.key(), &[folder.path(), &home])))?;
@@ -422,7 +439,8 @@ impl Running {
             }
             claude::Event::ToolResult { id, text, error } => {
                 let (name, input) = self.calls.remove(&id).unwrap_or_else(|| (String::new(), Value::Null));
-                if !self.add(tool_line(&name, input, &text, error), false).await {
+                let lack = if error { self.lack(&name, &text) } else { None };
+                if !self.add(tool_line(&name, input, &text, error, lack, self.agent.name()), false).await {
                     return Some(Ok(Ended::Stopped));
                 }
             }
@@ -430,6 +448,18 @@ impl Running {
             claude::Event::Done { error: None, text } => return Some(Ok(Ended::Done(text))),
         }
         None
+    }
+
+    /// Why the tool `tool` (Claude Code's name of it) was refused with the error `text` (issue #133):
+    /// for `forbidden`, what the rights, the conversation's switches and [`NEVER_TO_AGENTS`] say.
+    fn lack(&self, tool: &str, text: &str) -> Option<torro_ipc::api::Lack> {
+        if error_code(text) != "forbidden" {
+            return None;
+        }
+        let tool = tools::callable(tool.strip_prefix(claude::TOOL_PREFIX).unwrap_or(tool))?;
+        let operation = torro_ipc::api::Operation { command: tool.command, access: tool.command.access };
+        let kind = self.job.actor.kind();
+        tools::lack_of(kind, self.rights.as_ref(), operation, &self.job.without, NEVER_TO_AGENTS)
     }
 
     /// Adds `content` while this run is the conversation's running answer; `last` ends it.
@@ -489,20 +519,29 @@ fn message(job: &Job) -> String {
 
 /// A tool line for the call of `tool` (Claude Code's name of it) with `input` and its result
 /// `text`: the command's catalogue name, the result in a few words, the error code of an error
-/// (`forbidden: …` as the MCP server writes it; `pending` for one that waits for a person).
-fn tool_line(tool: &str, input: Value, text: &str, error: bool) -> EntryContent {
+/// (`forbidden: …` as the MCP server writes it; `pending` for one that waits for a person), and
+/// why it was `forbidden` (`lack`, issue #133) in words that name the agent `engine`.
+fn tool_line(
+    tool: &str,
+    input: Value,
+    text: &str,
+    error: bool,
+    lack: Option<torro_ipc::api::Lack>,
+    engine: &str,
+) -> EntryContent {
     let tool = tool.strip_prefix(claude::TOOL_PREFIX).unwrap_or(tool);
     let name = if tool.is_empty() { "unknown".to_string() } else { command_name(tool) };
     let input = if input.is_null() { serde_json::json!({}) } else { input };
     if error {
         let code = error_code(text);
-        return EntryContent::Tool { name, input, summary: tools::error_summary(&code), error: Some(code) };
+        let summary = lack.map_or_else(|| tools::error_summary(&code), |lack| tools::lack_summary(lack, engine));
+        return EntryContent::Tool { name, input, summary, error: Some(code), lack };
     }
     let summary = match serde_json::from_str::<Response>(text) {
         Ok(response) => tools::summary(&response, false),
         Err(_) => tr("Done").into(),
     };
-    EntryContent::Tool { name, input, summary, error: None }
+    EntryContent::Tool { name, input, summary, error: None, lack: None }
 }
 
 /// The error code at the start of a tool error (`forbidden: this client may not …`); `error`

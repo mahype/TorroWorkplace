@@ -18,7 +18,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use chrono::{DateTime, Duration, Utc};
 use torro_core::ai::AiModel;
 use torro_core::i18n::{tr, trf};
-use torro_ipc::api::{Area, AreaRights, Level, Rights};
+use torro_ipc::api::{Access, Area, AreaRights, Lack, Level, Rights};
 use torro_ipc::assistant::{
     ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, LETTER_AVATAR, Profile,
 };
@@ -376,8 +376,8 @@ impl State {
                 (tr("Denied"), Some("denied".to_owned()), tr(DENIED_REPLY))
             };
             let input = serde_json::json!({"title": tr("Focus time"), "start": "2026-10-14T14:00"});
-            let content =
-                EntryContent::Tool { name: "calendar.save_event".into(), input, summary: summary.into(), error };
+            let (name, summary) = ("calendar.save_event".into(), summary.into());
+            let content = EntryContent::Tool { name, input, summary, error, lack: None };
             conversation.push(now, content);
             conversation.growing = Some(Growing { text: reply.to_owned(), shown: 0, frozen: false });
         }
@@ -438,7 +438,19 @@ fn message(text: &str) -> EntryContent {
 }
 
 fn tool(name: &str, input: serde_json::Value, summary: &str, error: Option<&str>) -> EntryContent {
-    EntryContent::Tool { name: name.into(), input, summary: summary.into(), error: error.map(str::to_owned) }
+    EntryContent::Tool {
+        name: name.into(),
+        input,
+        summary: summary.into(),
+        error: error.map(str::to_owned),
+        lack: None,
+    }
+}
+
+/// A tool line the core refused for `lack` (issue #133), with the words the core gives it.
+fn refused_tool(name: &str, input: serde_json::Value, summary: String, lack: Lack) -> EntryContent {
+    let error = Some("forbidden".to_owned());
+    EntryContent::Tool { name: name.into(), input, summary, error, lack: Some(lack) }
 }
 
 /// A conversation with `entries` (numbered from 1), last active `ago` before `now`.
@@ -517,11 +529,11 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         vec![
             message(tr("Make a task for every mail from Anna this week.")),
             tool("mail.search_messages", serde_json::json!({"query": "from:anna"}), tr("5 results"), None),
-            tool(
+            refused_tool(
                 "tasks.save_todo",
                 serde_json::json!({"title": "Answer Anna"}),
-                "forbidden: the assistant has no access to tasks",
-                Some("forbidden"),
+                trf("Needs write access to {area}", &[("area", &tr("Tasks"))]),
+                Lack::Level { area: Area::Tasks, needs: Access::Write },
             ),
             answer(tr(
                 "I found five mails from Anna, but I may not create tasks. You can allow it in the control centre.",

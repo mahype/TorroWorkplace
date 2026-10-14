@@ -9,7 +9,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use torro_core::ai::{AiError, BoxFuture};
 use torro_core::i18n::{tr, trf};
-use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Level, Rights};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area, AreaRights, Lack, Level, Rights};
 use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent};
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
@@ -282,12 +282,15 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
                 input: json!({}),
                 summary: trf("{count} results", &[("count", &0)]),
                 error: None,
+                lack: None,
             },
             EntryContent::Tool {
                 name: "mail.list_folders".into(),
                 input: json!({"account": "mail:anna@example.org"}),
-                summary: tr("Not allowed for the assistant").into(),
+                // Issue #133: the line says why, and that no change of rights helps.
+                summary: trf("{engine} never gets {area}", &[("engine", &"Claude Code"), ("area", &tr("Mail"))]),
                 error: Some("forbidden".into()),
+                lack: Some(Lack::NeverToAgents { area: Area::Mail }),
             },
             answer("You have no calendars."),
         ]
@@ -447,8 +450,14 @@ async fn errors_become_error_entries_without_the_key() {
     assert_eq!(contents(&entries)[1..], [EntryContent::Error { code: "error".into(), message }]);
 
     // A pending approval is told as such.
-    let line =
-        tool_line("mcp__torroworkplace__workspaces_delete_template", json!({"id": "x"}), "pending: waiting", true);
+    let line = tool_line(
+        "mcp__torroworkplace__workspaces_delete_template",
+        json!({"id": "x"}),
+        "pending: waiting",
+        true,
+        None,
+        "Claude Code",
+    );
     assert_eq!(
         line,
         EntryContent::Tool {
@@ -456,6 +465,7 @@ async fn errors_become_error_entries_without_the_key() {
             input: json!({"id": "x"}),
             summary: tr("Waiting for your approval").into(),
             error: Some("pending".into()),
+            lack: None,
         }
     );
 }

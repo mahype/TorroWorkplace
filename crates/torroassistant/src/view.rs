@@ -592,8 +592,8 @@ impl App {
                 Some((_, items)) => markdown::view(items, colours).map(Message::OpenLink),
                 None => typo::text(typo::body(), text.as_str()).into(),
             },
-            EntryContent::Tool { name, input, summary, error } => {
-                self.tool(entry.seq, name, input, summary, error.as_deref())
+            EntryContent::Tool { name, input, summary, error, lack } => {
+                self.tool(entry.seq, name, input, summary, error.as_deref(), *lack)
             }
             EntryContent::Approval { id } => self.approval_card(id, self.approvals.get(id)),
             EntryContent::Error { message, .. } => row![
@@ -615,7 +615,8 @@ impl App {
 
     /// A tool line: the area's icon, "Searched mail · 12 results" and a chevron; a click unfolds
     /// its input and result, and "Open Calendar" for the app that shows it. A refused tool says so
-    /// in the error colour, and for `forbidden` how to change it.
+    /// in the error colour, and for `forbidden` why (`lack`, issue #133) and, where the rights lift
+    /// it, how to change them ([`chat::refusal_hint`]).
     fn tool<'a>(
         &'a self,
         seq: u64,
@@ -623,6 +624,7 @@ impl App {
         input: &'a serde_json::Value,
         summary: &'a str,
         error: Option<&'a str>,
+        lack: Option<torro_ipc::api::Lack>,
     ) -> Element<'a, Message> {
         let area = chat::area_of(name);
         let open = self.expanded.contains(&seq);
@@ -664,16 +666,18 @@ impl App {
         // A bot the assistant may not ask is the person's to name or confirm (task B.2), not a
         // right to change.
         if error == Some("forbidden") && area != Some(Area::Bots) {
-            let what = match area {
-                Some(area) => trf("The assistant has no access to {area}.", &[("area", &chat::area_name(area))]),
-                None => tr("The assistant has no access to this.").to_owned(),
-            };
-            let hint = row![
-                typo::text(typo::meta(), what).style(theme::text_2),
-                widgets::text_button(None, tr("Change access"), style::button::ghost, Some(Message::SetUp))
-            ]
-            .spacing(space::s())
-            .align_y(Alignment::Center);
+            let (what, change) = chat::refusal_hint(area, lack);
+            let mut hint = row![typo::text(typo::meta(), what).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
+                .spacing(space::s())
+                .align_y(Alignment::Center);
+            if change {
+                hint = hint.push(widgets::text_button(
+                    None,
+                    tr("Change access"),
+                    style::button::ghost,
+                    Some(Message::SetUp),
+                ));
+            }
             parts = parts.push(container(hint).padding(Padding::new(0.0).left(tool_indent())));
         }
         if let Some(asked) = asked.as_ref().filter(|_| open) {
@@ -839,8 +843,13 @@ impl App {
                     }
                     (EngineKind::Ai, Some(Err(_))) => vec![item(tr("Automatic").to_owned(), pick(None))],
                     (EngineKind::Ai, None) => vec![item(tr("Automatic").to_owned(), pick(None))],
-                    // An agent and the test engine pick their model themselves.
-                    (EngineKind::Agent | EngineKind::Test, _) => vec![item(engine.name.clone(), pick(None))],
+                    // An agent picks its model itself, and never gets mail (issue #133): said where it
+                    // is picked, not only when a tool is refused.
+                    (EngineKind::Agent, _) => vec![
+                        item(engine.name.clone(), pick(None)),
+                        MenuItem::new(Icon::Info, tr("Never gets your mail"), Message::CloseMenu),
+                    ],
+                    (EngineKind::Test, _) => vec![item(engine.name.clone(), pick(None))],
                 };
                 let title = match &engine.problem {
                     Some(problem) => format!("{} · {problem}", engine.name),

@@ -9,7 +9,8 @@
 //! - The areas the person can switch off for one conversation ([`switchable_areas`], the
 //!   `without` of `assistant.send_message`).
 //! - The requests the window sends for a click ([`send_request`], [`decide_request`]) and the words
-//!   of a tool line ([`tool_title`], [`tool_outcome`]).
+//!   of a tool line ([`tool_title`], [`tool_outcome`]), and under a refused one why, with "Change
+//!   access" only where that helps ([`refusal_hint`], issue #133).
 //! - The sidebar's two groups, pinned and recent, filtered by the search ([`sidebar_groups`]).
 
 use std::collections::HashSet;
@@ -18,7 +19,7 @@ use torro_core::AppId;
 use torro_core::ai::{AiModel, is_this_computer};
 use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
-use torro_ipc::api::{Area, CATALOGUE, Level, Rights};
+use torro_ipc::api::{Access, Area, CATALOGUE, Lack, Level, Rights};
 use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent};
 
 /// The entries of one conversation as the window has them.
@@ -303,6 +304,40 @@ pub fn tool_outcome(summary: &str, error: Option<&str>) -> String {
     }
 }
 
+/// The sentence under a `forbidden` tool line of `area` and whether "Change access" goes with it
+/// (issue #133): the reason the core gave (`lack`), and the button only where changing the
+/// assistant's rights lifts it – not for what an agent never gets, not for an area switched off in
+/// this conversation, not for what only the person may do. Without a reason (an older line, a
+/// refusal of the core's own) the general sentence and the button, as before.
+pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>) -> (String, bool) {
+    let name = |area: Area| area_name(area);
+    let Some(lack) = lack else {
+        let text = match area {
+            Some(area) => trf("The assistant has no access to {area}.", &[("area", &name(area))]),
+            None => tr("The assistant has no access to this.").to_owned(),
+        };
+        return (text, true);
+    };
+    let text = match lack {
+        Lack::Area { area } => trf("The assistant has no access to {area}.", &[("area", &name(area))]),
+        Lack::Level { area, needs: Access::Delete } => {
+            trf("The assistant needs full access to {area} for this.", &[("area", &name(area))])
+        }
+        Lack::Level { area, .. } => {
+            trf("The assistant needs write access to {area} for this.", &[("area", &name(area))])
+        }
+        Lack::Admin { area } => trf("The assistant needs admin rights for {area}.", &[("area", &name(area))]),
+        Lack::Outbound => tr("Sending mail on your behalf is switched off for the assistant.").to_owned(),
+        Lack::ForPeople => tr("Only you can do this, in Torro Workplace.").to_owned(),
+        Lack::SwitchedOff { area } => trf("You switched off {area} for this conversation.", &[("area", &name(area))]),
+        Lack::NeverToAgents { area } => trf(
+            "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
+            &[("area", &name(area))],
+        ),
+    };
+    (text, lack.in_rights())
+}
+
 /// The collapsed line of a tool: "Searched mail · 12 results".
 pub fn tool_line(name: &str, summary: &str, error: Option<&str>) -> String {
     let outcome = tool_outcome(summary, error);
@@ -377,6 +412,7 @@ mod tests {
                 input: serde_json::json!({}),
                 summary: "12 results".into(),
                 error: None,
+                lack: None,
             },
         }
     }
@@ -546,6 +582,26 @@ mod tests {
         assert_eq!(area_of("mail.search_messages"), Some(Area::Mail));
         assert_eq!(area_of("find_tools"), None);
         assert_eq!(app_of(Area::Mail), Some(AppId::INBOX));
+    }
+
+    /// Issue #133: a refused tool says why; "Change access" only where the rights lift it.
+    #[test]
+    fn a_refusal_says_why_and_offers_a_change_only_where_it_helps() {
+        let mail = Some(Area::Mail);
+        let hint = |lack| refusal_hint(mail, Some(lack));
+        let named = |text: &'static str| trf(text, &[("area", &tr("Mail"))]);
+        assert_eq!(refusal_hint(mail, None), (named("The assistant has no access to {area}."), true), "older lines");
+        assert_eq!(hint(Lack::Area { area: Area::Mail }), (named("The assistant has no access to {area}."), true));
+        let write = hint(Lack::Level { area: Area::Mail, needs: Access::Write });
+        assert_eq!(write, (named("The assistant needs write access to {area} for this."), true));
+        let full = hint(Lack::Level { area: Area::Mail, needs: Access::Delete });
+        assert_eq!(full, (named("The assistant needs full access to {area} for this."), true));
+        assert!(hint(Lack::Outbound).1, "sending is a switch of the rights");
+        let off = hint(Lack::SwitchedOff { area: Area::Mail });
+        assert_eq!(off, (named("You switched off {area} for this conversation."), false));
+        let (never, change) = hint(Lack::NeverToAgents { area: Area::Mail });
+        assert!(!change && never.contains("Claude Code"), "{never}");
+        assert!(!hint(Lack::ForPeople).1);
     }
 
     #[test]

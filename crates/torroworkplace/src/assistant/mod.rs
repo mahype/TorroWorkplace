@@ -85,6 +85,7 @@ use crate::account::ai::AiAccounts;
 use crate::bots::Bots;
 pub use data_rule::{Place, place_of};
 pub use delegate::Asking;
+pub use engines::never_given;
 pub use model::{Actor, Delegation, Host, Limits, ModelAccess};
 use store::{Conversation, Line};
 
@@ -565,6 +566,7 @@ impl Assistant {
                 input: serde_json::json!({}),
                 summary: tr("A test step: nothing ran").to_string(),
                 error: None,
+                lack: None,
             };
             if !assistant.add_to_run(&conversation, run, tool, false).await {
                 return;

@@ -552,6 +552,7 @@ mod tests {
                 input,
                 summary: "3 steps".into(),
                 error: error.map(str::to_owned),
+                lack: None,
             },
         }
     }

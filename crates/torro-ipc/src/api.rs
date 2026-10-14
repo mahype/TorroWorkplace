@@ -150,7 +150,7 @@ impl Area {
 }
 
 /// What a command does to the data of its area. Rights are granted per area and level.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Access {
     /// Changes nothing.
@@ -606,6 +606,146 @@ fn common_repos(mine: &Selection, theirs: &Selection) -> Selection {
         }
     }
     Selection::Only(names)
+}
+
+/// Why a client may not send a command (issue #133): the reason a `forbidden` answer names, so
+/// neither an agent nor the person has to guess. [`Lack::of`] finds it; [`Lack::message`] says it
+/// to an agent (the answer's `message`, English), the assistant's chat says it to the person
+/// (`EntryContent::Tool::lack`) and offers "Change access" only where that helps
+/// ([`Lack::in_rights`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum Lack {
+    /// The client has no access to the area at all.
+    Area { area: Area },
+    /// The client has access to the area, but less than the command needs (`write` to save a
+    /// draft, `delete` – "full" in the control centre – to delete).
+    Level { area: Area, needs: Access },
+    /// The command is an admin command of the area and the client's admin switch is off.
+    Admin { area: Area },
+    /// The command sends mail on the person's behalf, and "Send on my behalf" says never
+    /// ([`Rights::outbound`]).
+    Outbound,
+    /// Only the person may do this, whatever the rights say: commands kept from agents
+    /// ([`Mcp::Never`]), `clients.*`, the admin commands of `system` and `approvals`, switching the
+    /// microphone on.
+    ForPeople,
+    /// The person switched the area off for this conversation of the assistant
+    /// (`assistant.send_message`'s `without`).
+    SwitchedOff { area: Area },
+    /// The engine that runs never gets the area, whatever the rights say: a coding agent answers
+    /// outside the person's computers, and the data rule keeps mail on them
+    /// (`NEVER_TO_AGENTS` in the core, task C.7).
+    NeverToAgents { area: Area },
+}
+
+impl Lack {
+    /// Why `rights` of a client of `kind` refuse `operation` when the engine never gets the areas
+    /// `never` and the person switched off `switched_off` for the conversation; `None` when they
+    /// allow it, and for what the client's kind decides whatever its rights say: what it may never
+    /// do ([`loops_back`], the assistant driving itself, a bot asking a bot) and what it may always
+    /// do ([`allowed_by_kind`]), where a refusal is one of the core's own rules.
+    ///
+    /// `rights` are the client's rights as stored, not yet narrowed by `switched_off` or `never`.
+    /// The first reason that applies wins, in this order: `never`, `switched_off`, only for people
+    /// ([`Lack::ForPeople`]), sending switched off, the area's level, its admin switch. The
+    /// microphone (a value, not a command, [`Request::kept_for_people`]) is the caller's to check.
+    pub fn of(
+        kind: &str,
+        rights: &Rights,
+        operation: Operation,
+        switched_off: &[Area],
+        never: &[Area],
+    ) -> Option<Lack> {
+        if loops_back(kind, operation) || allowed_by_kind(kind, operation) {
+            return None;
+        }
+        let area = operation.area();
+        if never.contains(&area) {
+            return Some(Lack::NeverToAgents { area });
+        }
+        if switched_off.contains(&area) {
+            return Some(Lack::SwitchedOff { area });
+        }
+        if rights.allows(operation) {
+            return None;
+        }
+        // `system`, `approvals` and `clients` have no level to grant: what they refuse is the person's.
+        if operation.command.mcp == Mcp::Never || !area.grantable() {
+            return Some(Lack::ForPeople);
+        }
+        if operation.command.is_outbound()
+            && rights.outbound == Outbound::Never
+            && rights.area(area).allows(Access::Write)
+        {
+            return Some(Lack::Outbound);
+        }
+        let held = rights.area(area);
+        Some(match operation.access {
+            Access::Admin => Lack::Admin { area },
+            _ if held.level == Level::NoAccess => Lack::Area { area },
+            needs => Lack::Level { area, needs },
+        })
+    }
+
+    /// The reason for an agent, in English, to follow "this client may not use <command>: ". It
+    /// tells what is missing and who can change it, never a secret or a value of the request.
+    pub fn message(self) -> String {
+        match self {
+            Lack::Area { area } => {
+                format!("it has no access to {} (only the person can grant it, in Torro Workplace)", area.name())
+            }
+            Lack::Level { area, needs } => format!(
+                "it needs {} access to {}, which this client does not have (only the person can grant it, in Torro \
+                 Workplace)",
+                access_word(needs),
+                area.name()
+            ),
+            Lack::Admin { area } => {
+                format!("it is an admin command of {}, and this client's admin rights there are off", area.name())
+            }
+            Lack::Outbound => "sending mail on the person's behalf is switched off for this client".into(),
+            Lack::ForPeople => "only the person can do this, in Torro Workplace".into(),
+            Lack::SwitchedOff { area } => {
+                format!("the person switched off {} for this conversation; do not try it again here", area.name())
+            }
+            Lack::NeverToAgents { area } => format!(
+                "{} is never given to a coding agent that drives the assistant: the person's data rule keeps it on \
+                 their own computers. Changing the rights does not change this; say so instead of trying",
+                area.name()
+            ),
+        }
+    }
+
+    /// Whether changing the client's rights in the control centre would lift it: not for what only
+    /// the person may do, not for an area switched off in the conversation (that is the composer's
+    /// switch), not for what an engine never gets.
+    pub fn in_rights(self) -> bool {
+        matches!(self, Lack::Area { .. } | Lack::Level { .. } | Lack::Admin { .. } | Lack::Outbound)
+    }
+
+    /// The area the reason is about; `None` for [`Lack::Outbound`] (always mail's switch) and
+    /// [`Lack::ForPeople`].
+    pub fn area(self) -> Option<Area> {
+        match self {
+            Lack::Area { area }
+            | Lack::Level { area, .. }
+            | Lack::Admin { area }
+            | Lack::SwitchedOff { area }
+            | Lack::NeverToAgents { area } => Some(area),
+            Lack::Outbound | Lack::ForPeople => None,
+        }
+    }
+}
+
+/// The level that grants `access`, as the control centre names it: `read`, `write`, `full`, `admin`.
+fn access_word(access: Access) -> &'static str {
+    match access {
+        Access::Read => "read",
+        Access::Write => "write",
+        Access::Delete => "full",
+        Access::Admin => "admin",
+    }
 }
 
 /// The rights a new client starts with; afterwards every row can be changed.
@@ -2675,6 +2815,68 @@ mod tests {
     use torro_inbox::{AgentKind, Lane, State, StateFilter};
 
     use crate::{SettingKey, StatsRange};
+
+    /// Issue #133: every cause of a `forbidden` has a reason of its own, and only the ones a change
+    /// of rights lifts offer it.
+    #[test]
+    fn a_refusal_names_what_is_missing() {
+        let op = |command: &'static Command| Operation { command, access: command.access };
+        let mut mail = Rights::assistant();
+        mail.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        mail.mail_accounts = Selection::All;
+        let lack = |rights: &Rights, command, without: &[Area], never: &[Area]| {
+            Lack::of("script", rights, op(command), without, never)
+        };
+
+        assert_eq!(lack(&mail, &SEARCH_MESSAGES, &[], &[]), None, "read access reads");
+        // 1. The engine never gets mail, whatever the rights say.
+        assert_eq!(
+            lack(&mail, &SEARCH_MESSAGES, &[Area::Mail], &[Area::Mail]),
+            Some(Lack::NeverToAgents { area: Area::Mail })
+        );
+        // 2. Switched off for this conversation.
+        assert_eq!(lack(&mail, &SEARCH_MESSAGES, &[Area::Mail], &[]), Some(Lack::SwitchedOff { area: Area::Mail }));
+        // 3. More than reading: write for a draft, full for deleting, sending switched off.
+        assert_eq!(lack(&mail, &SAVE_DRAFT, &[], &[]), Some(Lack::Level { area: Area::Mail, needs: Access::Write }));
+        assert_eq!(
+            lack(&mail, &DELETE_MESSAGES, &[], &[]),
+            Some(Lack::Level { area: Area::Mail, needs: Access::Delete })
+        );
+        let mut writer = mail.clone();
+        writer.areas.insert(Area::Mail, AreaRights { level: Level::Write, admin: false });
+        writer.outbound = Outbound::Never;
+        assert_eq!(lack(&writer, &SEND_DRAFT, &[], &[]), Some(Lack::Outbound));
+        // 4. Mail accounts are listed in `accounts`, an area of its own.
+        assert_eq!(lack(&mail, &LIST_ACCOUNTS, &[], &[]), Some(Lack::Area { area: Area::Accounts }));
+        assert_eq!(lack(&mail, &CONNECT_AI, &[], &[]), Some(Lack::ForPeople), "kept from agents");
+        let mut accounts = mail.clone();
+        accounts.areas.insert(Area::Accounts, AreaRights { level: Level::Full, admin: false });
+        assert_eq!(lack(&accounts, &REMOVE_ACCOUNT, &[], &[]), Some(Lack::Admin { area: Area::Accounts }));
+        assert_eq!(lack(&mail, &QUIT, &[], &[]), Some(Lack::ForPeople));
+        assert_eq!(lack(&mail, &LIST_CLIENTS, &[], &[]), Some(Lack::ForPeople));
+        // What the kind decides is the core's rule, no lack of rights.
+        assert_eq!(Lack::of(ASSISTANT_CLIENT, &mail, op(&SEND_MESSAGE), &[], &[]), None, "no loop");
+        assert_eq!(Lack::of(BOT_CLIENT, &mail, op(&LIST_BOTS), &[], &[]), None, "no chain");
+        assert_eq!(Lack::of("script", &mail, op(&LIST_BOTS), &[], &[]), Some(Lack::Area { area: Area::Bots }));
+
+        for (lack, lifted) in [
+            (Lack::Area { area: Area::Accounts }, true),
+            (Lack::Level { area: Area::Mail, needs: Access::Write }, true),
+            (Lack::Admin { area: Area::Accounts }, true),
+            (Lack::Outbound, true),
+            (Lack::ForPeople, false),
+            (Lack::SwitchedOff { area: Area::Mail }, false),
+            (Lack::NeverToAgents { area: Area::Mail }, false),
+        ] {
+            assert_eq!(lack.in_rights(), lifted, "{lack:?}");
+            assert!(!lack.message().is_empty());
+        }
+        assert!(Lack::NeverToAgents { area: Area::Mail }.message().contains("never given"));
+        assert!(Lack::SwitchedOff { area: Area::Mail }.message().contains("this conversation"));
+        assert!(Lack::Level { area: Area::Mail, needs: Access::Delete }.message().contains("full access to mail"));
+        let wire = serde_json::to_value(Lack::Level { area: Area::Mail, needs: Access::Write }).expect("serializes");
+        assert_eq!(wire, serde_json::json!({"kind": "level", "area": "mail", "needs": "write"}));
+    }
 
     /// The values an enum schema allows: `enum` for plain enums, `oneOf` with `const` for enums
     /// whose variants have doc comments (schemars then keeps each variant's description).

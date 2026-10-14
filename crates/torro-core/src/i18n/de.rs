@@ -3223,4 +3223,27 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "“{name}” and its access will be deleted for good. Its conversations stay, but no one answers there any more.",
         "„{name}“ und sein Zugriff werden endgültig gelöscht. Seine Unterhaltungen bleiben, aber dort antwortet niemand mehr.",
     ),
+    // Issue #133: why the assistant may not do something.
+    ("No access to {area}", "Kein Zugriff auf {area}"),
+    ("Needs full access to {area}", "Braucht vollen Zugriff auf {area}"),
+    ("Needs write access to {area}", "Braucht Schreibzugriff auf {area}"),
+    ("Needs admin rights for {area}", "Braucht Admin-Rechte für {area}"),
+    ("Sending mail is switched off", "Mail senden ist ausgeschaltet"),
+    ("Only you can do this", "Das kannst nur du"),
+    ("{area} is off in this conversation", "{area} ist in dieser Unterhaltung aus"),
+    ("{engine} never gets {area}", "{engine} bekommt nie {area}"),
+    ("The assistant needs full access to {area} for this.", "Der Assistent braucht dafür vollen Zugriff auf {area}."),
+    ("The assistant needs write access to {area} for this.", "Der Assistent braucht dafür Schreibzugriff auf {area}."),
+    ("The assistant needs admin rights for {area}.", "Der Assistent braucht Admin-Rechte für {area}."),
+    (
+        "Sending mail on your behalf is switched off for the assistant.",
+        "Mail in deinem Namen senden ist für den Assistenten ausgeschaltet.",
+    ),
+    ("Only you can do this, in Torro Workplace.", "Das kannst nur du, in Torro Workplace."),
+    ("You switched off {area} for this conversation.", "Du hast {area} für diese Unterhaltung ausgeschaltet."),
+    (
+        "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
+        "{area} geht nie an Coding-Agenten wie Claude Code: Deine Datenregel hält es auf deinen Computern. Wähle dafür ein KI-Konto auf diesem Computer.",
+    ),
+    ("Never gets your mail", "Bekommt nie deine Mails"),
 ];

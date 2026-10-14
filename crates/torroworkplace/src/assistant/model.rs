@@ -33,7 +33,7 @@ use chrono::{Local, Utc};
 use serde_json::{Value, json};
 use torro_core::ai::{AiError, BoxFuture, ChatMessage, ChatReply, ChatRequest, Provider, ToolCall, open_weights_only};
 use torro_core::i18n::{self, tr, trf};
-use torro_ipc::api::Area;
+use torro_ipc::api::{Area, Lack};
 use torro_ipc::assistant::{Entry, EntryContent, Note};
 use torro_ipc::bots::Bot;
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
@@ -477,7 +477,7 @@ impl Answering {
         let name = command_name(&call.name);
         let Some(tool) = tools::callable(&call.name) else {
             let message = format!("there is no tool {}", call.name.chars().take(64).collect::<String>());
-            return self.refused(name, input, "error", &message).await;
+            return self.refused(name, input, "error", &message, None).await;
         };
         // Making a task of an inbox entry writes a task too (as the core checks its rights); making
         // an event of one writes to a calendar (task E8.5b); making a task of a mail in a folder
@@ -492,12 +492,12 @@ impl Answering {
             _ => vec![tool.command.area],
         };
         if let Some(area) = touched.into_iter().find(|area| self.job.without.contains(area)) {
-            let message = format!("the person switched off {} for this conversation", area.name());
-            return self.refused(name, input, "forbidden", &message).await;
+            let lack = Lack::SwitchedOff { area };
+            return self.refused(name, input, "forbidden", &lack.message(), Some(lack)).await;
         }
         let request = match tools::request_for(&call.name, &call.arguments) {
             Ok(request) => self.kept_local(request, place),
-            Err(message) => return self.refused(name, input, "error", &message).await,
+            Err(message) => return self.refused(name, input, "error", &message, None).await,
         };
         let area = request.operation().area();
         let outcome = self.run(request.clone()).await?;
@@ -511,7 +511,8 @@ impl Answering {
                         self.read_mail |= asked.read_mail;
                         self.untrusted |= asked.untrusted;
                         let summary = asked.summary(&bot);
-                        let line = EntryContent::Tool { name, input, summary, error: asked.error.clone() };
+                        let error = asked.error.clone();
+                        let line = EntryContent::Tool { name, input, summary, error, lack: None };
                         return self.add(line, false).await.then(|| asked.for_model(place).to_string());
                     }
                     // Refused: the core's message tells the model what to do (propose the bot).
@@ -553,7 +554,13 @@ impl Answering {
                 Some("expired".to_string()),
             ),
         };
-        let line = EntryContent::Tool { name, input, summary, error };
+        // Issue #133: a refusal says what is missing, in the line as in the answer the model reads.
+        let lack = match error.as_deref() {
+            Some("forbidden") => self.lack(request.operation()),
+            _ => None,
+        };
+        let summary = lack.map_or(summary, |lack| tools::lack_summary(lack, &self.job.engine));
+        let line = EntryContent::Tool { name, input, summary, error, lack };
         self.add(line, false).await.then_some(result)
     }
 
@@ -589,10 +596,27 @@ impl Answering {
         tools::found(&matches).to_string()
     }
 
-    /// A call that never reached the core: its tool line, and the error for the model.
-    async fn refused(&self, name: String, input: Value, code: &str, message: &str) -> Option<String> {
-        let line = EntryContent::Tool { name, input, summary: tools::error_summary(code), error: Some(code.into()) };
+    /// A call that never reached the core: its tool line, and the error for the model; `lack` says
+    /// why it was `forbidden` (issue #133).
+    async fn refused(
+        &self,
+        name: String,
+        input: Value,
+        code: &str,
+        message: &str,
+        lack: Option<Lack>,
+    ) -> Option<String> {
+        let summary =
+            lack.map_or_else(|| tools::error_summary(code), |lack| tools::lack_summary(lack, &self.job.engine));
+        let line = EntryContent::Tool { name, input, summary, error: Some(code.into()), lack };
         self.add(line, false).await.then(|| failure(code, message))
+    }
+
+    /// Why the core refused `operation` with `forbidden` (issue #133), from the client's rights of
+    /// now and the areas switched off here; `None` for the core's fixed refusals.
+    fn lack(&self, operation: torro_ipc::api::Operation) -> Option<Lack> {
+        let rights = self.host.client_of(&self.job.actor).map(|client| client.rights);
+        tools::lack_of(self.job.actor.kind(), rights.as_ref(), operation, &self.job.without, &[])
     }
 
     /// Hands `request` to the core as the assistant's client and waits for a person where it must.
@@ -992,13 +1016,24 @@ pub(crate) mod tests {
         place: Place,
         script: Arc<Script>,
     ) -> (Arc<Assistant>, Arc<FakeHost>) {
+        set_up_with(dir, rights, place, script, answers)
+    }
+
+    /// [`set_up`] with a fake core that answers `answer`.
+    fn set_up_with(
+        dir: &std::path::Path,
+        rights: Option<Rights>,
+        place: Place,
+        script: Arc<Script>,
+        answer: fn(&Request) -> Response,
+    ) -> (Arc<Assistant>, Arc<FakeHost>) {
         let limits = Limits { max_steps: 4, approval_poll: Duration::from_millis(5) };
         let assistant = Arc::new(assistant_in(dir, Duration::ZERO).with_limits(limits));
         let host = Arc::new(FakeHost {
             rights,
             place,
             script,
-            answer: answers,
+            answer,
             ran: Mutex::new(Vec::new()),
             untrusted: Mutex::new(Vec::new()),
             actors: Mutex::new(Vec::new()),
@@ -1230,6 +1265,54 @@ pub(crate) mod tests {
         assert_eq!(*host.actors.lock().expect("lock"), [Actor::Bot("9f8e7d6c".into())], "as the bot's client");
     }
 
+    /// Issue #133: a refused tool line says why – the area not granted, a level too low, the area
+    /// switched off here – and the model reads the reason too.
+    #[tokio::test]
+    async fn a_refused_tool_says_what_is_missing() {
+        fn refuses(request: &Request) -> Response {
+            let message = format!("this client may not use {}", request.operation().name());
+            Response::Error { code: "forbidden".into(), message }
+        }
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![
+            calls("workspaces_delete_template", json!({"id": "old-plans"})),
+            calls("accounts_list_accounts", json!({})),
+            calls("calendar_list_calendars", json!({})),
+            says("I may not."),
+        ]);
+        let mut rights = reader();
+        rights.areas.insert(Area::Workspaces, AreaRights { level: Level::Read, admin: false });
+        let (assistant, _host) = set_up_with(dir.path(), Some(rights), Place::Local, Arc::clone(&script), refuses);
+
+        let id = ask(&assistant, None, "Tidy up", vec![Area::Calendar]).await;
+        let entries = finished(&assistant, &id).await;
+        let lines: Vec<(Option<Lack>, String)> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Tool { lack, summary, .. } => Some((*lack, summary.clone())),
+                _ => None,
+            })
+            .collect();
+        let named = |text: &'static str, area: &'static str| trf(text, &[("area", &tr(area))]);
+        assert_eq!(
+            lines,
+            [
+                (
+                    Some(Lack::Level { area: Area::Workspaces, needs: torro_ipc::api::Access::Delete }),
+                    named("Needs full access to {area}", "Workspaces")
+                ),
+                (Some(Lack::Area { area: Area::Accounts }), named("No access to {area}", "Accounts")),
+                (
+                    Some(Lack::SwitchedOff { area: Area::Calendar }),
+                    named("{area} is off in this conversation", "Calendar")
+                ),
+            ]
+        );
+        assert!(
+            tool_result(&script, "calendar_list_calendars").contains("switched off calendar for this conversation")
+        );
+    }
+
     #[tokio::test]
     async fn a_tool_call_runs_through_the_core_and_the_model_answers_with_its_result() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1246,6 +1329,7 @@ pub(crate) mod tests {
                     input: json!({}),
                     summary: trf("{count} results", &[("count", &0)]),
                     error: None,
+                    lack: None,
                 },
                 &EntryContent::Answer {
                     text: "You have no calendars.".into(),
@@ -1487,6 +1571,7 @@ pub(crate) mod tests {
                     input: json!({"id": "old-plans"}),
                     summary: tr("Nobody approved this in time").into(),
                     error: Some("expired".into()),
+                    lack: None,
                 },
             ]
         );
