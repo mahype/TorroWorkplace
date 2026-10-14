@@ -557,6 +557,21 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // New inbox sources (E5.1)
+    ("Everything from {repo}", "Alles aus {repo}"),
+    ("Review requests", "Review-Anfragen"),
+    ("Failed checks", "Fehlgeschlagene Prüfungen"),
+    ("Successful checks", "Erfolgreiche Prüfungen"),
+    ("Cancelled checks", "Abgebrochene Prüfungen"),
+    ("Files", "Dateien"),
+    ("Messages from {person}", "Nachrichten von {person}"),
+    ("The topic {topic}", "Das Thema {topic}"),
+    ("Priority {n}", "Priorität {n}"),
+    ("The tag {tag}", "Das Schlagwort {tag}"),
+    ("Direct messages", "Direktnachrichten"),
+    ("Group conversations", "Gruppenunterhaltungen"),
+    ("Issues", "Issues"),
+    ("Checks", "Prüfungen"),
     // Polish of notifications, hub, tasks and rules (E8.12)
     ("Hide sender", "Absender ausblenden"),
     ("Hide domain", "Domain ausblenden"),
