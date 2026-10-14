@@ -4,8 +4,7 @@ Konzept: [sync.md](../sync.md). Regeln für die Arbeit: [CLAUDE.md](../../CLAUDE
 `torro-task`, Nextcloud: Skill `nextcloud` bzw. Agent `nextcloud-expert`, Oberfläche: Skill `torro-design`. Wer einen
 Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review`.
 
-> **Stand 2026-10-14: Entwurf.** Vor dem Start freigeben: Punkte 1–6 unter „Offen“ im Konzept (neuer Bereich `sync`, Feld `device` an `Entry`,
-> neuer Punkt 9 in „Was nie nach außen geht“, Verschlüsselung, fehlender Antrieb, Mail-Inhalte, Ordner, Zoom).
+> **Stand 2026-10-14: freigegeben.** Alle offenen Punkte sind entschieden (Abschnitt „Entscheidungen“ im Konzept).
 > Stufe 1 gleicht den ganzen Assistenten ab (Gedächtnis, Profil, Persönlichkeit, Bots, Unterhaltungen) und die
 > Einstellungen aus der Liste im Konzept.
 
@@ -20,12 +19,12 @@ N.2 und N.3 laufen parallel (verschiedene Crates). N.7 kann nach N.1 beginnen.
 
 ### N.1 Gerüst: Bereich `sync`, Requests, Katalog, `sync.json`
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** Freigabe des offenen Punkts 1 · **Dateien:**
+- **Modell:** Opus · **Braucht:** – · **Dateien:**
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-ipc/src/sync.rs` (neu), `crates/torroworkplace/src/sync/mod.rs`
   (neu), `crates/torroworkplace/src/{core,mcp,approvals}.rs`, `docs/api.md` (Punkt 9, Bereich in der Tabelle),
   `docs/api-reference.md`
 - `Area::Sync`; Requests und Katalog nach der Tabelle „Drei Wege“ im Konzept: `sync.get_status` (Read),
-  `sync.update_sync { enabled?, account?, areas? }` (Admin), `sync.run_now` (Write), `sync.list_devices` (Read),
+  `sync.update_sync { enabled?, account?, areas?, keep_mail_local? }` (Admin), `sync.run_now` (Write), `sync.list_devices` (Read),
   `sync.rename_device` (Write), `sync.confirm_device` (Admin, `Mcp::Never`, in `kept_back`),
   `sync.remove_device` (Admin; mit der eigenen Kennung = „Remove this computer from sync“, bei einem unbestätigten
   Rechner = ablehnen), `sync.list_conflicts` (Read), `sync.resolve_conflict { id, keep }` (Admin; „Restore?“ ist
@@ -107,12 +106,15 @@ N.2 und N.3 laufen parallel (verschiedene Crates). N.7 kann nach N.1 beginnen.
   Client der Art `bot` mit `Rights::none` und einen Eintrag im Eingang „Grant access?“. Einstellungen nur aus der
   Liste, `voice` und `startAtLogin` nie.
 - **Erster Stand:** beim Einschalten den heutigen Stand dieses Rechners als Einträge (für N.5).
-- Kennung „von welchem Rechner“ an `Entry` als optionales Feld (verträglich; Schnittstelle, darum vor dem Start
-  freigeben lassen).
+- Kennung „von welchem Rechner“ an `Entry` als optionales Feld `device` (verträglich, freigegeben am 2026-10-14).
+- Mit `keep_mail_local` werden Mail-Inhalte in Werkzeug-Ergebnissen (Werkzeuge im Bereich `mail` und Mail-Einträge
+  des Eingangs, dieselbe Abgrenzung wie die Datenregel in `assistant/data_rule.rs`) im Ausgang durch „withheld“
+  ersetzt; lokal bleiben sie vollständig.
 - **Oberfläche/API/MCP:** keine neuen; vorhandene Befehle verhalten sich gleich.
 - **Abnahme:** Tests mit Temp-Verzeichnis: jede Änderung erzeugt den richtigen Eintrag; Eintragen fremder
   Einträge ergibt die richtigen Dateien (`memory.md`, `persona.md`, `bot.json`, `.jsonl`); `seq` steigt nur;
-  Bot ohne Rechte; `voice` aus dem Abgleich wird verworfen, als einzelner Schlüssel wie als ganzes Objekt.
+  Bot ohne Rechte; `voice` und `zoom` aus dem Abgleich werden verworfen (`voice` als einzelner Schlüssel wie als
+  ganzes Objekt); mit `keep_mail_local` enthält der Ausgang keinen Mail-Text.
 
 ### N.5 Abgleich mit Nextcloud
 - [ ] erledigt
@@ -158,7 +160,7 @@ N.2 und N.3 laufen parallel (verschiedene Crates). N.7 kann nach N.1 beginnen.
 - **Modell:** Opus · **Braucht:** N.1 (Gerüst-Antworten), fertig nach N.6 · **Dateien:**
   `crates/torroworkplace/src/ui/{mod,sync,persona,bots,accounts}.rs` (`sync.rs` neu)
 - Neue Seite „Sync“ (`Section::Sync`, `torroworkplace ui --section sync`): Schalter, Nextcloud-Konto, Bereiche
-  (Assistant, Settings), Stand („Last synced 2 min ago“, Fehler), „Sync now“.
+  (Assistant, Settings), „Keep mail contents on this computer“, Stand („Last synced 2 min ago“, Fehler), „Sync now“.
 - „Computers“: dieser Rechner (umbenennen), andere (bestätigen mit Schlüssel-Kurzform, entfernen),
   „Remove this computer from sync“.
 - „Conflicts“: je Konflikt beide Fassungen nebeneinander mit Rechner und Zeit, „Keep this“ je Seite; bei Texten

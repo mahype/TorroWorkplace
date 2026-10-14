@@ -30,7 +30,7 @@ geändert, sagt er mir, wo, und ich entscheide.
 
 Antriebe haben auf jedem Rechner dieselbe Kennung (`ai:ollama@localhost:11434`, `claude-code`). Fehlt
 ein Antrieb auf diesem Rechner, zeigt der Bot „Not available on this computer“ und bietet einen
-anderen an. Die Wahl gilt dann für alle Rechner (Offen, Punkt 3).
+anderen an. Die Wahl gilt dann für alle Rechner (Entscheidung 3).
 
 ## Grundidee: Jeder Rechner schreibt nur in sein eigenes Protokoll
 
@@ -211,7 +211,7 @@ Darum gilt:
    Namen von Rechnern, keine Texte.
 9. **Inhalt auf dem Server:** In Stufe 1 liegen die Einträge unverschlüsselt in den eigenen
    Nextcloud-Dateien, wie Kalender und Aufgaben auch. Nextcloud hält Versionen und Papierkorb, das ist
-   ein Backup nebenbei. Ende-zu-Ende-Verschlüsselung mit einer Passphrase ist Stufe 2 (Offen, Punkt 2).
+   ein Backup nebenbei. Ende-zu-Ende-Verschlüsselung mit einer Passphrase ist Stufe 2 (Entscheidung 2).
 
 ## Wo die Logik liegt
 
@@ -238,7 +238,7 @@ gesperrt (`loops_back`), sonst könnten sie über einen Konflikt ihre eigene Per
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | Stand lesen (an/aus, Konto, Bereiche, letzter Abgleich, Fehler, Zahl der Konflikte) | Steuerzentrale › Sync | `sync.get_status` · Read | `sync_get_status` |
-| Ein-/ausschalten, Konto und Bereiche wählen | ebenda | `sync.update_sync { enabled?, account?, areas? }` · Admin (Freigabe) | `sync_update_sync` |
+| Ein-/ausschalten, Konto, Bereiche und „Keep mail contents on this computer“ wählen | ebenda | `sync.update_sync { enabled?, account?, areas?, keep_mail_local? }` · Admin (Freigabe) | `sync_update_sync` |
 | Jetzt abgleichen | „Sync now“, Tray | `sync.run_now` · Write | `sync_run_now` |
 | Rechner auflisten (Name, System, zuletzt gesehen, bestätigt) | Sync › Computers | `sync.list_devices` · Read | `sync_list_devices` |
 | Diesen Rechner umbenennen | ebenda | `sync.rename_device` · Write | `sync_rename_device` |
@@ -259,16 +259,19 @@ Ende-zu-Ende-Verschlüsselung, `notify_push`.
 
 ## Offen
 
-1. **Schnittstellen:** neuer Bereich `sync`, Punkt 9 in „Was nie nach außen geht“ und das optionale
-   Feld `device` an `Entry` (von welchem Rechner ein Eintrag kommt). Das ändert festgelegte
-   Schnittstellen (`Area`, `api.md`, `torro-ipc`) und braucht eine Freigabe.
-2. **Verschlüsselung:** Stufe 1 ohne (wie Kalender und Aufgaben)? Vorschlag: ja. Ende-zu-Ende mit
-   Passphrase in Stufe 2.
-3. **Antrieb fehlt auf einem Rechner:** Vorschlag Stufe 1: Antrieb und Modell gleichen sich ab, ein
-   fehlender wird angezeigt, und die Auswahl eines anderen gilt überall. Ein Antrieb je Rechner
-   („hier Ollama, dort OpenRouter“) wäre ein Feld, das nicht abgeglichen wird. Später, falls nötig.
-4. **Mail-Inhalte in Unterhaltungen:** Werkzeug-Ergebnisse können Mail-Text enthalten. Vorschlag: Sie
-   gehen mit (eigener Server, wie der Mail-Cache auf der Platte). Ein Schalter „Keep mail contents on
-   this computer“ ersetzt sie in den Einträgen durch „withheld“.
-5. **Ordner:** fest `Torro Workplace/Sync/` oder wählbar? Vorschlag: fest in Stufe 1.
-6. **`zoom`** je Rechner (Vorschlag) oder abgleichen?
+Nichts.
+
+## Entscheidungen
+
+Getroffen am 2026-10-14.
+
+1. **Schnittstellen freigegeben:** neuer Bereich `sync`, Punkt 9 in „Was nie nach außen geht“
+   (Rechner bestätigen nur durch einen Menschen) und das optionale Feld `device` an `Entry`.
+2. **Stufe 1 ohne Verschlüsselung:** Die Einträge liegen wie Kalender und Aufgaben in den eigenen
+   Nextcloud-Dateien. Ende-zu-Ende mit Passphrase kommt in Stufe 2.
+3. **Fehlender Antrieb:** Antrieb und Modell gleichen sich ab. Ein fehlender Antrieb wird angezeigt
+   („Not available on this computer“), und die Wahl eines anderen gilt auf allen Rechnern.
+4. **Mail-Inhalte gehen mit.** Ein Schalter „Keep mail contents on this computer“ (Standard aus,
+   in `sync.update_sync`) ersetzt sie in den Einträgen durch „withheld“.
+5. **Ordner fest:** `Torro Workplace/Sync/`.
+6. **`zoom` bleibt je Rechner.**
