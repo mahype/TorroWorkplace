@@ -1,0 +1,154 @@
+{
+  "ocs": {
+    "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+    "data": [
+      {
+        "notification_id": 1043,
+        "app": "files_sharing",
+        "user": "anna",
+        "datetime": "2026-10-13T08:15:00+00:00",
+        "object_type": "remote_share",
+        "object_id": "77",
+        "subject": "Bert Example shared Quarterly report.pdf with you",
+        "message": "",
+        "link": "https://cloud.example.org/apps/files/?fileid=4711",
+        "subjectRich": "{user} shared {file} with you",
+        "subjectRichParameters": {
+          "user": { "type": "user", "id": "bert", "name": "Bert Example" },
+          "file": { "type": "file", "id": "4711", "name": "Quarterly report.pdf", "path": "Shared/Quarterly report.pdf", "link": "https://cloud.example.org/f/4711" }
+        },
+        "messageRich": "",
+        "messageRichParameters": [],
+        "icon": "https://cloud.example.org/apps/files_sharing/img/app.svg",
+        "shouldNotify": true,
+        "actions": []
+      },
+      {
+        "notification_id": 1042,
+        "app": "spreed",
+        "user": "anna",
+        "datetime": "2026-10-13T07:58:12+00:00",
+        "object_type": "chat",
+        "object_id": "x7k2m9qa",
+        "subject": "Carla Example mentioned you in conversation Team Alpha",
+        "message": "Hi Anna Example, can you check the plan?",
+        "link": "https://cloud.example.org/call/x7k2m9qa",
+        "subjectRich": "{user} mentioned you in conversation {call}",
+        "subjectRichParameters": {
+          "user": { "type": "user", "id": "carla", "name": "Carla Example" },
+          "call": { "type": "call", "id": "x7k2m9qa", "name": "Team Alpha", "call-type": "group", "icon-url": "https://cloud.example.org/ocs/v2.php/apps/spreed/api/v1/room/x7k2m9qa/avatar" }
+        },
+        "messageRich": "Hi {mention-user1}, can you check the plan?",
+        "messageRichParameters": {
+          "mention-user1": { "type": "user", "id": "anna", "name": "Anna Example" }
+        },
+        "icon": "https://cloud.example.org/apps/spreed/img/app-dark.svg",
+        "shouldNotify": true,
+        "actions": [
+          { "label": "View chat", "link": "https://cloud.example.org/call/x7k2m9qa", "type": "WEB", "primary": false }
+        ]
+      },
+      {
+        "notification_id": 1041,
+        "app": "updatenotification",
+        "user": "anna",
+        "datetime": "2026-10-12T22:00:00+00:00",
+        "object_type": "calendar",
+        "object_id": "5.5.3",
+        "subject": "Update for Calendar to version 5.5.3 is available.",
+        "message": "",
+        "link": "https://apps.example.com/apps/calendar",
+        "subjectRich": "",
+        "subjectRichParameters": [],
+        "messageRich": "",
+        "messageRichParameters": [],
+        "icon": "",
+        "shouldNotify": true,
+        "actions": []
+      },
+      {
+        "notification_id": 1040,
+        "app": "backup_app",
+        "user": "anna",
+        "datetime": "2026-10-12T03:00:00Z",
+        "object_type": "backup",
+        "object_id": "nightly",
+        "subject": "Backup finished",
+        "message": "All files are saved.\r\nNext backup tomorrow.",
+        "link": "",
+        "actions": []
+      },
+      {
+        "notification_id": 1043,
+        "app": "files_sharing",
+        "user": "anna",
+        "datetime": "2026-10-13T08:15:00+00:00",
+        "object_type": "remote_share",
+        "object_id": "77",
+        "subject": "duplicate",
+        "message": "",
+        "link": "",
+        "actions": []
+      },
+      {
+        "notification_id": "1039",
+        "app": "files",
+        "user": "anna",
+        "datetime": "2026-10-11T10:00:00+00:00",
+        "object_type": "file",
+        "object_id": "1",
+        "subject": "id as text",
+        "message": "",
+        "link": "",
+        "actions": []
+      },
+      {
+        "notification_id": 0,
+        "app": "files",
+        "user": "anna",
+        "datetime": "2026-10-11T10:00:00+00:00",
+        "object_type": "file",
+        "object_id": "1",
+        "subject": "id zero",
+        "message": "",
+        "link": "",
+        "actions": []
+      },
+      {
+        "notification_id": 1038,
+        "app": "bad app!",
+        "user": "anna",
+        "datetime": "2026-10-11T10:00:00+00:00",
+        "object_type": "file",
+        "object_id": "1",
+        "subject": "bad app id",
+        "message": "",
+        "link": "",
+        "actions": []
+      },
+      {
+        "notification_id": 1037,
+        "app": "files",
+        "user": "anna",
+        "datetime": "yesterday",
+        "object_type": "file",
+        "object_id": "1",
+        "subject": "bad time",
+        "message": "",
+        "link": "",
+        "actions": []
+      },
+      {
+        "notification_id": 1036,
+        "app": "files",
+        "user": "anna",
+        "datetime": "2026-10-11T10:00:00+00:00",
+        "object_id": "1",
+        "subject": "no object type",
+        "message": "",
+        "link": "",
+        "actions": []
+      }
+    ]
+  }
+}

@@ -1597,7 +1597,8 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   Betreff.
 
 ### E5.7 Nextcloud: Benachrichtigungen und Talk lesen (Crate `torro-nextcloud`)
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `Nextcloud` mit `capabilities`, `notifications(etag)`, `delete_notification`, `rooms`,
+  `mark_read`, `rich::{plain,line}`; Weiterleitungen nur im selben Origin; 404 beim Löschen gilt als erledigt)
 - **Modell:** Opus · **Braucht:** – (sofort möglich nach Freigabe 10) · **Dateien:** neu `crates/torro-nextcloud/`
   (`Cargo.toml`, `src/{lib,ocs,capabilities,notifications,talk,rich}.rs`, `tests/fixtures/`), Wurzel-`Cargo.toml`
 - **OCS:** Hülle entpacken; `OCS-APIRequest: true`, `Accept: application/json`; Basic Auth nur im Kopf; keine

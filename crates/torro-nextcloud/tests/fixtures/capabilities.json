@@ -1,0 +1,35 @@
+{
+  "ocs": {
+    "meta": { "status": "ok", "statuscode": 200, "message": "OK" },
+    "data": {
+      "version": { "major": 31, "minor": 0, "micro": 9, "string": "31.0.9", "edition": "", "extendedSupport": false },
+      "capabilities": {
+        "core": { "pollinterval": 60, "webdav-root": "remote.php/webdav", "reference-api": true },
+        "notifications": {
+          "ocs-endpoints": ["list", "get", "delete", "delete-all", "icons", "rich-strings", "action-web", "user-status", "exists", "test-push"],
+          "push": ["devices", "object-data", "delete"],
+          "admin-notifications": ["ocs", "cli"]
+        },
+        "spreed": {
+          "features": ["audio", "video", "chat-v2", "conversation-v4", "guest-signaling", "chat-read-marker", "direct-mention-flag", "chat-read-last", "notification-levels", "note-to-self", "archived-conversations-v2"],
+          "features-local": ["favorites", "chat-read-status", "archived-conversations-v2"],
+          "config": {
+            "attachments": { "allowed": true, "folder": "/Talk" },
+            "chat": { "max-length": 32000, "read-privacy": 0 },
+            "conversations": { "can-create": true }
+          },
+          "config-local": { "chat": ["read-privacy"] },
+          "version": "21.0.4"
+        },
+        "notify_push": {
+          "type": ["files", "activities", "notifications"],
+          "endpoints": {
+            "websocket": "wss://cloud.example.org/push/ws",
+            "pre_auth": "https://cloud.example.org/apps/notify_push/pre_auth"
+          }
+        },
+        "user_status": { "enabled": true, "restore": true, "supports_emoji": true }
+      }
+    }
+  }
+}
