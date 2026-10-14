@@ -45,7 +45,7 @@ use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeDelta, Utc};
 use torro_inbox::item::{Hidden, HideScope, ItemTask, MuteEffect, MuteOption, MuteScope, Muted, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
-use torro_mail::{Flag, Folder, InvitationAnswer, Message, MessageSummary};
+use torro_mail::{Flag, Folder, InvitationAnswer, Message, MessageSummary, Order};
 use torro_pim::EventTime;
 
 use crate::mail::{Delivery, MoveTarget};
@@ -143,16 +143,17 @@ impl InboxClient {
     }
 
     /// `mail.search_messages` in the folder `folder` (an id of [`InboxClient::mail_folders`]):
-    /// at most `limit` (1 to 100) messages, newest first, matching `query` when there is one,
-    /// from `cursor` on (the second value of the previous page). Answers the page and the cursor
-    /// of the next one (`None` on the last page). Nothing filters by flags or time: the window
-    /// shows the folder as it is.
+    /// at most `limit` (1 to 100) messages in `order` (task E8.15), matching `query` when there
+    /// is one, from `cursor` on (the second value of the previous page, asked in the same
+    /// `order`). Answers the page and the cursor of the next one (`None` on the last page).
+    /// Nothing filters by flags or time: the window shows the folder as it is.
     pub async fn search_mail(
         &self,
         folder: String,
         query: Option<String>,
         limit: u32,
         cursor: Option<String>,
+        order: Order,
     ) -> Result<(Vec<MessageSummary>, Option<String>), InboxError> {
         let request = Request::SearchMail {
             account: None,
@@ -164,6 +165,7 @@ impl InboxClient {
             before: None,
             limit,
             cursor,
+            order: asked(order),
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -359,6 +361,12 @@ fn inbox_answer(answer: Result<Response, IpcError>) -> Result<Response, InboxErr
     }
 }
 
+/// `order` as a request carries it: the default (newest first) is left out, so a request reads as
+/// it did before the field existed (task E8.15).
+fn asked(order: Order) -> Option<Order> {
+    (order != Order::default()).then_some(order)
+}
+
 /// An answer that is not the variant the request asks for.
 fn unexpected(response: Response) -> InboxError {
     InboxError::Other(format!("unexpected answer: {response:?}"))
@@ -367,8 +375,8 @@ fn unexpected(response: Response) -> InboxError {
 impl InboxSource for InboxClient {
     /// `inbox.list_items` with the fields of `filter`; the core sorts, wakes and cuts.
     async fn list_items(&self, filter: ItemFilter) -> Result<Vec<Item>, InboxError> {
-        let ItemFilter { lane, source, state, since, limit } = filter;
-        match self.ask(Request::ListItems { lane, source, state, since, limit }).await? {
+        let ItemFilter { lane, source, state, since, limit, order } = filter;
+        match self.ask(Request::ListItems { lane, source, state, since, limit, order: asked(order) }).await? {
             Response::Items { items } => Ok(items),
             other => Err(unexpected(other)),
         }
@@ -544,11 +552,12 @@ mod tests {
         match request {
             Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
             // The id names the filter that arrived.
-            Request::ListItems { lane, source, state, since, limit } => Response::Items {
+            Request::ListItems { lane, source, state, since, limit, order } => Response::Items {
                 items: vec![item(&format!(
-                    "{lane:?}|{}|{state:?}|{}|{limit:?}",
+                    "{lane:?}|{}|{state:?}|{}|{limit:?}{}",
                     source.map(|s| s.key()).unwrap_or_default(),
-                    since.map(|s| s.to_rfc3339()).unwrap_or_default()
+                    since.map(|s| s.to_rfc3339()).unwrap_or_default(),
+                    order.map(|order| format!("|{}", order.word())).unwrap_or_default()
                 ))],
             },
             Request::ListSources => Response::Sources {
@@ -772,12 +781,14 @@ mod tests {
             state: Some(StateFilter::Open),
             since: Some(at(7)),
             limit: Some(50),
+            order: Order::OldestFirst,
         };
         let items = core.client().list_items(filter).await.expect("listed");
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].id, format!("Some(ForMe)|agent:codex|Some(Open)|{}|Some(50)", at(7).to_rfc3339()));
+        let said = format!("Some(ForMe)|agent:codex|Some(Open)|{}|Some(50)|oldest-first", at(7).to_rfc3339());
+        assert_eq!(items[0].id, said);
         let all = core.client().list_items(ItemFilter::default()).await.expect("listed");
-        assert_eq!(all[0].id, "None||None||None");
+        assert_eq!(all[0].id, "None||None||None", "newest first is left out");
         assert!(all[0].untrusted, "the flag comes along");
     }
 
@@ -1077,9 +1088,15 @@ mod tests {
                 before: None,
                 limit: 50,
                 cursor,
+                order,
             } => Response::MailMessages {
                 messages: vec![summary(
-                    &format!("{}|{}", query.unwrap_or_default(), cursor.unwrap_or_default()),
+                    &format!(
+                        "{}|{}{}",
+                        query.unwrap_or_default(),
+                        cursor.unwrap_or_default(),
+                        order.map(|order| format!("|{}", order.word())).unwrap_or_default()
+                    ),
                     &folder,
                 )],
                 cursor: Some("next".into()),
@@ -1122,12 +1139,14 @@ mod tests {
         let client = core.client();
         let folders = client.mail_folders().await.expect("folders");
         assert_eq!(folders.iter().map(|f| f.id.as_str()).collect::<Vec<_>>(), ["f:inbox"]);
-        let (page, next) =
-            client.search_mail("f:inbox".into(), Some("offer".into()), 50, Some("c1".into())).await.expect("a page");
+        let search = |order| client.search_mail("f:inbox".into(), Some("offer".into()), 50, Some("c1".into()), order);
+        let (page, next) = search(Order::NewestFirst).await.expect("a page");
         assert_eq!(
             (page[0].id.as_str(), page[0].folder.as_str(), next.as_deref()),
             ("offer|c1", "f:inbox", Some("next"))
         );
+        let (oldest, _) = search(Order::OldestFirst).await.expect("a page");
+        assert_eq!(oldest[0].id, "offer|c1|oldest-first", "the order goes along");
         assert!(page[0].untrusted, "foreign text stays marked");
         let message = client.get_mail("m:1".into()).await.expect("the message");
         assert_eq!((message.summary.id.as_str(), message.text.as_deref()), ("m:1", Some("Hello")));

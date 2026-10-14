@@ -226,6 +226,7 @@ mod tests {
             before: None,
             limit,
             cursor: None,
+            order: None,
         }
     }
 

@@ -169,7 +169,7 @@ use torro_ipc::{
     ApprovalInfo, ClientInfo, InboxStats, Request, Response, RuleHits, SourceStats, StatsCounts, StatsDay, StatsRange,
     StatsSuggestion,
 };
-use torro_mail::{ACCOUNT_PREFIX, Notify};
+use torro_mail::{ACCOUNT_PREFIX, Notify, Order};
 use torro_pim_github::IssueRef;
 
 use crate::account::github::GithubAccounts;
@@ -1415,9 +1415,9 @@ fn answer(
         // Security rule 4: a hook's key sits in files the agent reads, so it reads nothing.
         Request::ListItems { .. } if is_hook(client) => Err(Failure::NotFound("no inbox entries for this key".into())),
         Request::GetItem { id } if is_hook(client) => Err(no_item(&id)),
-        Request::ListItems { lane, source, state, since, limit } => {
+        Request::ListItems { lane, source, state, since, limit, order } => {
             wake_due(db, now)?;
-            let filter = ItemFilter { lane, source, state, since, limit };
+            let filter = ItemFilter { lane, source, state, since, limit, order: order.unwrap_or_default() };
             Ok(Response::Items { items: list_items(db, &filter, client)? })
         }
         Request::GetItem { id } => {
@@ -1877,8 +1877,13 @@ fn list_items(db: &Connection, filter: &ItemFilter, client: Option<&ClientInfo>)
         conditions.push("updated >= ?");
         values.push(text(stamp(since)));
     }
-    // The order of `rules::order`: urgent first, then the most recently updated, then by id.
-    let mut tail = String::from(" ORDER BY urgent DESC, updated DESC, id");
+    // The order of `rules::order_in`: urgent first, then newest or oldest by `updated` (task
+    // E8.15), then by id.
+    let updated = match filter.order {
+        Order::NewestFirst => "DESC",
+        Order::OldestFirst => "ASC",
+    };
+    let mut tail = format!(" ORDER BY urgent DESC, updated {updated}, id");
     if let Some(limit) = filter.limit {
         tail.push_str(" LIMIT ?");
         values.push(Value::Integer(i64::from(limit)));
@@ -4176,7 +4181,7 @@ pub(crate) mod tests {
     }
 
     fn all() -> Request {
-        Request::ListItems { lane: None, source: None, state: None, since: None, limit: None }
+        Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None }
     }
 
     /// Files `item` as the core would (E2.1), for the entries no request may create.
@@ -4265,7 +4270,8 @@ pub(crate) mod tests {
         assert_eq!(done.state, State::Done { at: at(8, 5) });
         let listed = |now| {
             let open = Some(StateFilter::Open);
-            let request = Request::ListItems { lane: None, source: None, state: open, since: None, limit: None };
+            let request =
+                Request::ListItems { lane: None, source: None, state: open, since: None, limit: None, order: None };
             items(inbox.handle(request, None, now))
         };
         assert!(listed(at(8, 6)).is_empty());
@@ -4385,10 +4391,17 @@ pub(crate) mod tests {
         }
         let inbox = inbox_in(dir.path());
         posted(inbox.handle(notice("newer", None), None, at(8, 0)));
-        let for_me =
-            Request::ListItems { lane: Some(Lane::ForMe), source: None, state: None, since: None, limit: None };
+        let for_me = Request::ListItems {
+            lane: Some(Lane::ForMe),
+            source: None,
+            state: None,
+            since: None,
+            limit: None,
+            order: None,
+        };
         assert_eq!(items(inbox.handle(for_me, None, at(9, 0))).into_iter().map(|i| i.id).collect::<Vec<_>>(), ["old"]);
-        let info = |limit| Request::ListItems { lane: None, source: None, state: None, since: None, limit };
+        let info =
+            |limit| Request::ListItems { lane: None, source: None, state: None, since: None, limit, order: None };
         let ordered = items(inbox.handle(info(Some(1)), None, at(9, 0)));
         assert_eq!(ordered[0].id, "old", "urgent first although older");
         let db = Connection::open(&file).expect("opens");
@@ -4405,8 +4418,14 @@ pub(crate) mod tests {
         let source = SourceRef::script("script aa01");
 
         assert!(items(inbox.handle(all(), Some(&blind), at(8, 1))).is_empty());
-        let named =
-            Request::ListItems { lane: None, source: Some(source.clone()), state: None, since: None, limit: None };
+        let named = Request::ListItems {
+            lane: None,
+            source: Some(source.clone()),
+            state: None,
+            since: None,
+            limit: None,
+            order: None,
+        };
         assert!(items(inbox.handle(named, Some(&blind), at(8, 1))).is_empty());
         assert_eq!(inbox.handle(Request::ListSources, Some(&blind), at(8, 1)), Response::Sources { sources: vec![] });
         for request in [
@@ -4627,6 +4646,7 @@ pub(crate) mod tests {
                 state: None,
                 since: None,
                 limit: None,
+                order: None,
             };
             assert_eq!(items(inbox.handle(of_suite, Some(&client), at(8, 1))), vec![]);
             assert_eq!(
@@ -4802,13 +4822,39 @@ pub(crate) mod tests {
             |request| items(inbox.handle(request, None, at(9, 0))).into_iter().map(|i| i.title).collect::<Vec<_>>();
         let waiting = trf("{agent} is waiting for you", &[("agent", &"Gemini CLI")]);
         assert_eq!(
-            titles(Request::ListItems { lane: Some(Lane::ForMe), source: None, state: None, since: None, limit: None }),
+            titles(Request::ListItems {
+                lane: Some(Lane::ForMe),
+                source: None,
+                state: None,
+                since: None,
+                limit: None,
+                order: None
+            }),
             [waiting.as_str(), "newer", "older"]
         );
         assert_eq!(
-            titles(Request::ListItems { lane: None, source: None, state: None, since: Some(at(8, 1)), limit: Some(1) }),
+            titles(Request::ListItems {
+                lane: None,
+                source: None,
+                state: None,
+                since: Some(at(8, 1)),
+                limit: Some(1),
+                order: None
+            }),
             ["newer"]
         );
+        // Task E8.15: oldest first in SQL as `rules::order_in` does it, the waiting agent still on
+        // top; `limit` takes the oldest.
+        let oldest = |limit| Request::ListItems {
+            lane: Some(Lane::ForMe),
+            source: None,
+            state: None,
+            since: None,
+            limit,
+            order: Some(Order::OldestFirst),
+        };
+        assert_eq!(titles(oldest(None)), [waiting.as_str(), "older", "newer"]);
+        assert_eq!(titles(oldest(Some(2))), [waiting.as_str(), "older"]);
         assert_eq!(tr("Suite"), SourceRef::suite().label(), "texts go through tr()");
     }
 
@@ -5141,8 +5187,14 @@ pub(crate) mod tests {
 
     /// The entries of the source `suite`, as the app key lists them.
     fn suite(inbox: &Inbox, now: DateTime<Utc>) -> Vec<Item> {
-        let request =
-            Request::ListItems { lane: None, source: Some(SourceRef::suite()), state: None, since: None, limit: None };
+        let request = Request::ListItems {
+            lane: None,
+            source: Some(SourceRef::suite()),
+            state: None,
+            since: None,
+            limit: None,
+            order: None,
+        };
         let mut items = items(inbox.handle(request, None, now));
         items.sort_by(|a, b| a.thread_key.cmp(&b.thread_key));
         items

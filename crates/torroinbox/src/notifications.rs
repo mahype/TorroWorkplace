@@ -10,7 +10,7 @@
 //!   and keeps what the window shows ([`Shown::shows`]).
 //! - **Board** ([`Board`], [`board`]): in the wide layout a column per app ([`app_columns`]: head
 //!   with icon, name and number, the sources with the most entries first, the rest together under
-//!   "Other apps"), or "By time" a grid of cards, newest first ([`by_time`]); "By app | By time" in
+//!   "Other apps"), or "By time" a grid of cards, newest or oldest first ([`by_time`], task E8.15); "By app | By time" in
 //!   the header bar ([`Arrange`]). Narrow windows, and any with no room for two columns, show one
 //!   column: "For me", then "Info" ([`groups`]).
 //! - **Card** (comfortable density, `widgets::card`): the source's tile, the title, a line with
@@ -58,7 +58,7 @@ use torro_gui::theme::{self, size, space};
 use torro_gui::ui_state::Density;
 use torro_gui::widgets::{self, BarWords, ButtonStyle, Mark, RowAction, TileFace, TileSize, Trail};
 use torro_gui::{style, typo};
-use torro_inbox::{Action, Item, Kind, Lane, Link, SourceInfo, SourceKind, SourceRef, State};
+use torro_inbox::{Action, Item, Kind, Lane, Link, Order, SourceInfo, SourceKind, SourceRef, State};
 
 use crate::app::{self, Message, View};
 use crate::detail;
@@ -79,7 +79,8 @@ pub enum Arrange {
     /// A column per app ([`app_columns`]).
     #[default]
     ByApp,
-    /// Newest first: a grid of cards, rows in the compact density ([`by_time`]).
+    /// By time, newest first unless the window turned it: a grid of cards, rows in the compact
+    /// density ([`by_time`]).
     ByTime,
 }
 
@@ -217,7 +218,7 @@ pub enum Board {
     Single,
     /// So many columns side by side, one per app ([`app_columns`]).
     Columns(usize),
-    /// Newest first ([`by_time`]) in rows of so many cards; 1 in the compact density – a list of rows.
+    /// By time ([`by_time`]) in rows of so many cards; 1 in the compact density – a list of rows.
     Grid(usize),
 }
 
@@ -302,11 +303,11 @@ pub fn app_columns<'a>(items: &'a [Item], count: usize) -> Vec<AppColumn<'a>> {
     columns
 }
 
-/// The entries of `items`, newest first (by when they last changed); entries of the same moment
-/// keep their order.
-pub fn by_time(items: &[Item]) -> Vec<&Item> {
+/// The entries of `items` by when they last changed, newest or oldest first as `sort` says (task
+/// E8.15); entries of the same moment keep their order.
+pub fn by_time(items: &[Item], sort: Order) -> Vec<&Item> {
     let mut all: Vec<&Item> = items.iter().collect();
-    all.sort_by_key(|item| std::cmp::Reverse(item.updated));
+    all.sort_by(|a, b| sort.apply(b.updated.cmp(&a.updated)));
     all
 }
 
@@ -324,12 +325,12 @@ pub fn groups<'a>(items: &'a [Item], view: &View) -> Vec<(Option<Lane>, Vec<&'a 
 }
 
 /// The entries of `items` in the order the keys walk them on `board` in `view`: group after group,
-/// column after column, or newest first.
-pub fn order<'a>(items: &'a [Item], board: Board, view: &View) -> Vec<&'a Item> {
+/// column after column, or by time in `sort`.
+pub fn order<'a>(items: &'a [Item], board: Board, view: &View, sort: Order) -> Vec<&'a Item> {
     match board {
         Board::Single => groups(items, view).into_iter().flat_map(|(_, entries)| entries).collect(),
         Board::Columns(count) => app_columns(items, count).into_iter().flat_map(|column| column.items).collect(),
-        Board::Grid(_) => by_time(items),
+        Board::Grid(_) => by_time(items, sort),
     }
 }
 
@@ -387,8 +388,8 @@ fn group_height(density: Density) -> f32 {
 
 /// Where the card or row of `id` lies in the board's scrolling content as `(top, bottom)` – in its
 /// column on the board "By app", whose heads stand above the scrolling part; the first of a group
-/// starts at its head. `None` for an entry not shown.
-pub fn span(items: &[Item], board: Board, view: &View, density: Density, id: &str) -> Option<(f32, f32)> {
+/// starts at its head. `None` for an entry not shown. `sort` is the order by time ([`by_time`]).
+pub fn span(items: &[Item], board: Board, view: &View, density: Density, id: &str, sort: Order) -> Option<(f32, f32)> {
     let cards = density == Density::Comfortable;
     let gap = if cards { size::card_gap() } else { 0.0 };
     let top = if board.flush(density) { 0.0 } else { list::cards_inset().top };
@@ -425,7 +426,7 @@ pub fn span(items: &[Item], board: Board, view: &View, density: Density, id: &st
         }),
         Board::Grid(count) => {
             let mut y = top;
-            for line in by_time(items).chunks(count.max(1)) {
+            for line in by_time(items, sort).chunks(count.max(1)) {
                 let tallest = line.iter().map(|item| high(item)).fold(0.0, f32::max);
                 if line.iter().any(|item| item.id == id) {
                     return Some((y, y + tallest));
@@ -699,6 +700,8 @@ pub struct BoardData<'a> {
     pub sources: &'a [SourceInfo],
     /// The theme's attention colour: the tile of a card that waits is tinted in it (an alert).
     pub attention: Color,
+    /// Newest or oldest first on the board "By time" (task E8.15).
+    pub sort: Order,
 }
 
 /// What the empty state of `view` says in the notifications window: "Nothing new." for "New", as
@@ -781,10 +784,10 @@ fn single<'a>(data: &BoardData<'a>, width: f32) -> Element<'a, Message> {
     if cards { container(content).padding(list::cards_inset()).into() } else { content.into() }
 }
 
-/// The grid by time `width` wide: rows of `count` cards (newest first), the last row filled up with
+/// The grid by time `width` wide: rows of `count` cards (in `data.sort`), the last row filled up with
 /// room so its cards keep the width of the others; with rows (compact) one list.
 fn grid<'a>(data: &BoardData<'a>, count: usize, width: f32) -> Element<'a, Message> {
-    let all = by_time(data.items);
+    let all = by_time(data.items, data.sort);
     if data.board.flush(data.density) {
         return column(all.into_iter().map(|item| entry_row(item, data, width))).width(Fill).into();
     }
@@ -1105,7 +1108,9 @@ mod tests {
         let all: usize = columns.iter().map(|column| column.items.len()).sum();
         assert_eq!(all, items.len(), "nothing lost");
         // The order of the keys is the same however many columns fit.
-        let walk = |count| order(&items, Board::Columns(count), &View::Overview).into_iter().map(|i| i.id.clone());
+        let walk = |count| {
+            order(&items, Board::Columns(count), &View::Overview, Order::NewestFirst).into_iter().map(|i| i.id.clone())
+        };
         assert_eq!(walk(2).collect::<Vec<_>>(), walk(6).collect::<Vec<_>>());
         assert_eq!(app_columns(&items, 100).len(), 12, "one column per source when there is room");
     }
@@ -1126,36 +1131,38 @@ mod tests {
     #[test]
     fn one_column_has_for_me_then_info_and_by_time_is_newest_first() {
         let items = open();
-        let walked = order(&items, Board::Single, &View::Overview);
+        let walked = order(&items, Board::Single, &View::Overview, Order::NewestFirst);
         let first_info = walked.iter().position(|item| item.lane == Lane::Info).expect("Info entries");
         assert!(walked[..first_info].iter().all(|item| item.lane == Lane::ForMe));
         assert!(walked[first_info..].iter().all(|item| item.lane == Lane::Info));
         assert_eq!(groups(&items, &View::Done).len(), 1, "Later and Done have no heads");
-        let newest = by_time(&items);
+        let newest = by_time(&items, Order::NewestFirst);
         assert!(newest.windows(2).all(|pair| pair[0].updated >= pair[1].updated));
+        let oldest = by_time(&items, Order::OldestFirst);
+        assert!(oldest.windows(2).all(|pair| pair[0].updated <= pair[1].updated), "task E8.15");
     }
 
     #[test]
     fn spans_count_captions_cards_and_gaps() {
         let items = open();
-        let walked = order(&items, Board::Single, &View::Overview);
+        let walked = order(&items, Board::Single, &View::Overview, Order::NewestFirst);
         let top = list::cards_inset().top;
         let first = card_height(walked[0]);
         let comfortable = Density::Comfortable;
         assert_eq!(
-            span(&items, Board::Single, &View::Overview, comfortable, &walked[0].id),
+            span(&items, Board::Single, &View::Overview, comfortable, &walked[0].id, Order::NewestFirst),
             Some((top, top + overview::caption_height() + first)),
             "the first card starts at its caption"
         );
         let second = top + overview::caption_height() + first + size::card_gap();
         assert_eq!(
-            span(&items, Board::Single, &View::Overview, comfortable, &walked[1].id),
+            span(&items, Board::Single, &View::Overview, comfortable, &walked[1].id, Order::NewestFirst),
             Some((second, second + card_height(walked[1])))
         );
         // Rows of one column are flush: no inset, no gaps.
         let head = list::group_head() - list::head_trim();
         assert_eq!(
-            span(&items, Board::Single, &View::Overview, Density::Compact, &walked[1].id),
+            span(&items, Board::Single, &View::Overview, Density::Compact, &walked[1].id, Order::NewestFirst),
             Some((head + list::row_height_of(walked[0]), head + 2.0 * size::row_notice()))
         );
         // In a column of the board "By app" the heads stand above the scrolling part.
@@ -1163,10 +1170,10 @@ mod tests {
         let second_in_first = &columns[0].items[1];
         let below = top + card_height(columns[0].items[0]) + size::card_gap();
         assert_eq!(
-            span(&items, Board::Columns(2), &View::Overview, comfortable, &second_in_first.id),
+            span(&items, Board::Columns(2), &View::Overview, comfortable, &second_in_first.id, Order::NewestFirst),
             Some((below, below + card_height(second_in_first)))
         );
-        assert_eq!(span(&items, Board::Grid(2), &View::Overview, comfortable, "gone"), None);
+        assert_eq!(span(&items, Board::Grid(2), &View::Overview, comfortable, "gone", Order::NewestFirst), None);
     }
 
     #[test]
