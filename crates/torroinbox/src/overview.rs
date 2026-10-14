@@ -626,7 +626,7 @@ fn card<'a>(item: &'a Item, rows: &Rows<'a>, deciding: bool, width: f32) -> Elem
         .padding(space::m())
         .style(card_style(selected))
         .on_press(Message::Select(item.id.clone()));
-    let actions = list::actions(item, rows.hidable.contains(&item.id.as_str()));
+    let actions = rows.anchors.mark(selected, list::actions(item, rows.hidable.contains(&item.id.as_str())));
     let words = widgets::row_actions_words(&actions, inner);
     // Beside the card's own buttons, not over its text.
     let card = if has_buttons(item) {
@@ -634,7 +634,7 @@ fn card<'a>(item: &'a Item, rows: &Rows<'a>, deciding: bool, width: f32) -> Elem
     } else {
         widgets::row_actions(card, actions, selected, words)
     };
-    if selected { widgets::anchored(&rows.anchor, card) } else { card }
+    if selected { widgets::anchored(&rows.anchors.row, card) } else { card }
 }
 
 /// The card's look: `raised` with a `line_strong` frame, radius [`radius::md()`]; hovered and
@@ -876,7 +876,7 @@ mod tests {
             view: &crate::app::View::Overview,
             selected: None,
             now: now(),
-            anchor: widgets::Anchor::new(),
+            anchors: detail::Anchors::default(),
             accounts: vec!["anna@work.example.org"],
             hidable: Vec::new(),
             look: Look::Rows,

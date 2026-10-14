@@ -883,31 +883,32 @@ fn card<'a>(item: &'a Item, data: &BoardData<'a>, names: Names) -> Element<'a, M
         });
         parts.push(container(lines).width(Fill).height(text_height()).clip(true).into());
     }
-    let bar = buttons(card_buttons(item, data.deciding), bell(item));
-    // The menus of a card's buttons (the bell's, "Later until", task E8.12, finding 6) open at its
-    // row of buttons: below it, or above it where the window has no room below – never over the
-    // bell that opened them, as they did at the whole card.
-    parts.push(if selected { widgets::anchored(&data.rows.anchor, bar) } else { bar });
+    let bar = buttons(card_buttons(item, data.deciding), bell(item), (data.rows.anchors.clone(), selected));
+    // The menus of a card's buttons (the bell's, "Later until", task E8.12, finding 6) open at the
+    // button that opened them (issue #122): below it, or above it where the window has no room below
+    // – never over it. Its row of buttons is the fallback, never the whole card.
+    parts.push(if selected { widgets::anchored(&data.rows.anchors.row, bar) } else { bar });
     widgets::card(parts, selected, Some(Message::Select(item.id.clone())))
 }
 
 /// The row of buttons of a card: `main` from the left, the `bell` at the right; all with their
 /// words where they fit the card's width, else icons with the word as tooltip – only the lead, the
 /// one the entry is about ("Go to window", "Open"), may keep its word alone ([`worded`], task E8.12:
-/// a bar never mixes words and icons otherwise).
-fn buttons<'a>(main: Vec<CardButton>, bell: Option<CardButton>) -> Element<'a, Message> {
+/// a bar never mixes words and icons otherwise). Under the cursor (the `bool` of `at`) each button
+/// that opens a menu registers its anchor (issue #122, `detail::Anchors::wrap`).
+fn buttons<'a>(main: Vec<CardButton>, bell: Option<CardButton>, at: (detail::Anchors, bool)) -> Element<'a, Message> {
+    let (anchors, shown) = at;
     let line = responsive(move |bounds| {
         let words = worded(&main, bell.is_some(), bounds.width);
         let mut line = row![].spacing(space::s()).align_y(Alignment::Center);
         for (i, button) in main.iter().enumerate() {
-            line = line.push(card_button(button.clone(), words.worded(i)));
+            let element = card_button(button.clone(), words.worded(i));
+            line = line.push(anchors.wrap(shown, button.on_press.as_ref(), element));
         }
         if let Some(bell) = &bell {
-            line = line.push(iced::widget::space::horizontal()).push(widgets::icon_button(
-                bell.icon,
-                bell.label.clone(),
-                bell.on_press.clone(),
-            ));
+            let element = widgets::icon_button(bell.icon, bell.label.clone(), bell.on_press.clone());
+            line =
+                line.push(iced::widget::space::horizontal()).push(anchors.wrap(shown, bell.on_press.as_ref(), element));
         }
         line.into()
     });
@@ -942,11 +943,11 @@ fn entry_row<'a>(item: &'a Item, data: &BoardData<'a>, width: f32) -> Element<'a
     let height = list::row_height_of(item);
     let content = list::notice_content(item, &data.rows, width);
     let line = list::sized_row(content, selected, Message::Select(item.id.clone()), height);
-    let actions = row_actions(item);
+    let actions = data.rows.anchors.mark(selected, row_actions(item));
     let words = widgets::row_actions_words(&actions, width);
     let middle = list::first_line_middle(height, list::line_count(item));
     let line = widgets::row_actions_at(line, actions, selected, words, middle);
-    if selected { widgets::anchored(&data.rows.anchor, line) } else { line }
+    if selected { widgets::anchored(&data.rows.anchors.row, line) } else { line }
 }
 
 /// The rows of "This window shows" in the sidebar in `mode`: per source of `listed` a check box in
@@ -1261,7 +1262,7 @@ mod tests {
             view: &view,
             selected: None,
             now: now(),
-            anchor: widgets::Anchor::new(),
+            anchors: detail::Anchors::default(),
             accounts: Vec::new(),
             hidable: Vec::new(),
             look: list::Look::Rows,

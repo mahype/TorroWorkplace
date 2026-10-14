@@ -682,14 +682,23 @@ pub struct RowAction<'a, M> {
     /// The key that does the same in the list ("E"), shown as [`kbd`] in the tooltip.
     pub key: &'static str,
     /// Sent when the button is pressed. The app moves its cursor to the row and acts as the key
-    /// would, so menus opened from the bar open at the row.
+    /// would.
     pub on_press: M,
+    /// Registered by the button when set ([`RowAction::at`]): the menu it opens hangs at the button
+    /// itself (issue #122), not at the whole row. Only the row under the cursor sets it, so one
+    /// anchor is never registered by two rows.
+    pub anchor: Option<Anchor>,
 }
 
 impl<'a, M> RowAction<'a, M> {
-    /// A button with `icon`, `label` and the key hint `key` that sends `on_press`.
+    /// A button with `icon`, `label` and the key hint `key` that sends `on_press`; no anchor.
     pub fn new(icon: Icon, label: impl IntoFragment<'a>, key: &'static str, on_press: M) -> Self {
-        Self { icon, label: label.into_fragment(), key, on_press }
+        Self { icon, label: label.into_fragment(), key, on_press, anchor: None }
+    }
+
+    /// The same button registering `anchor`, for the menu it opens.
+    pub fn at(self, anchor: &Anchor) -> Self {
+        Self { anchor: Some(anchor.clone()), ..self }
     }
 }
 
@@ -1024,7 +1033,8 @@ fn row_action_button<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -
             .height(size::control_sm())
             .padding(0)
     };
-    tip(button.style(style).on_press(action.on_press), tooltip, tooltip::Position::Bottom)
+    let button = tip(button.style(style).on_press(action.on_press), tooltip, tooltip::Position::Bottom);
+    anchored_if(action.anchor.as_ref(), button)
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1041,6 +1051,8 @@ fn row_action_button<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -
 pub struct Anchor {
     bounds: Rc<Cell<Option<Rectangle>>>,
     area: Option<Rectangle>,
+    /// Where to float instead while this anchor's trigger was not laid out ([`Anchor::or`]).
+    fallback: Option<Rc<Anchor>>,
 }
 
 impl Anchor {
@@ -1053,20 +1065,32 @@ impl Anchor {
     /// For triggers that are not widgets of their own: an event drawn on a canvas anchors the
     /// canvas with [`anchored`] and floats its card next to `anchor.area(event_rect)`.
     pub fn area(&self, area: Rectangle) -> Anchor {
-        Anchor { bounds: Rc::clone(&self.bounds), area: Some(area) }
+        Anchor { bounds: Rc::clone(&self.bounds), area: Some(area), fallback: self.fallback.clone() }
+    }
+
+    /// This anchor, or `fallback` while this one's trigger is not on screen in the frame: a menu
+    /// opened by a key hangs at the button that does the same, and at the row when that button is
+    /// missing (issue #122). Chains: `a.or(&b).or(&c)` tries `a`, then `b`, then `c`.
+    pub fn or(&self, fallback: &Anchor) -> Anchor {
+        let fallback = match &self.fallback {
+            Some(next) => next.or(fallback),
+            None => fallback.clone(),
+        };
+        Anchor { fallback: Some(Rc::new(fallback)), ..self.clone() }
     }
 
     fn set(&self, bounds: Rectangle) {
         self.bounds.set(Some(bounds));
     }
 
-    /// The anchored rectangle in window coordinates, once the trigger has been laid out.
+    /// The anchored rectangle in window coordinates, once the trigger has been laid out; else the
+    /// fallback's ([`Anchor::or`]).
     fn get(&self) -> Option<Rectangle> {
-        let bounds = self.bounds.get()?;
-        Some(match self.area {
+        let own = self.bounds.get().map(|bounds| match self.area {
             Some(area) => Rectangle { x: bounds.x + area.x, y: bounds.y + area.y, ..area },
             None => bounds,
-        })
+        });
+        own.or_else(|| self.fallback.as_ref().and_then(|fallback| fallback.get()))
     }
 }
 
@@ -1083,6 +1107,14 @@ pub fn anchored<'a, M: 'a>(anchor: &Anchor, content: impl Into<Element<'a, M>>) 
             Vector::ZERO
         })
         .into()
+}
+
+/// `content`, registering `anchor` when there is one ([`anchored`]); as it is without.
+pub fn anchored_if<'a, M: 'a>(anchor: Option<&Anchor>, content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    match anchor {
+        Some(anchor) => anchored(anchor, content),
+        None => content.into(),
+    }
 }
 
 /// Which edge of the anchor a card below it lines up with.
@@ -1127,6 +1159,12 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
     Point::new(clamp(x, viewport.x, viewport.width, card.width), clamp(y, viewport.y, viewport.height, card.height))
 }
 
+/// The top-left corner of a card of `card` size in the middle of `viewport`: where a card whose
+/// anchor never showed goes (issue #122), rather than the window's top-left corner.
+fn centre(card: Size, viewport: Rectangle) -> Point {
+    Point::new(viewport.x + (viewport.width - card.width) / 2.0, viewport.y + (viewport.height - card.height) / 2.0)
+}
+
 /// The top of a card of `card` size that opens under `target` (task E8.12): [`below_gap()`] under
 /// it while the card fits above the viewport's bottom margin, else as far above it when it fits
 /// there; with room on neither side, on the side with more room – the clamp in [`place`] then keeps
@@ -1145,7 +1183,8 @@ fn below_or_above(target: Rectangle, card: Size, viewport: Rectangle) -> f32 {
 /// with [`escape`].
 ///
 /// The card stays inside the window: it moves in from the edges and flips to the other side of
-/// the anchor for [`Placement::Beside`].
+/// the anchor for [`Placement::Beside`]. While the anchor (and its fallbacks, [`Anchor::or`]) was
+/// not laid out, the card stands in the middle of the window.
 pub fn floating<'a, M: Clone + 'a>(
     anchor: &Anchor,
     placement: Placement,
@@ -1158,7 +1197,7 @@ pub fn floating<'a, M: Clone + 'a>(
     // also draws it above the rest of the window and gives it the pointer first.
     let card = float(card).translate(move |bounds, viewport| match anchor.get() {
         Some(target) => place(target, bounds.size(), viewport, placement) - bounds.position(),
-        None => Vector::ZERO,
+        None => centre(bounds.size(), viewport) - bounds.position(),
     });
     stack![catcher, card].into()
 }
@@ -3164,6 +3203,35 @@ mod tests {
         assert_eq!(anchor.get(), Some(rect(40.0, 50.0, 300.0, 400.0)), "clones share the cell");
         let event = anchor.area(rect(10.0, 96.0, 120.0, 48.0));
         assert_eq!(event.get(), Some(rect(50.0, 146.0, 120.0, 48.0)), "an area is relative to the trigger");
+    }
+
+    #[test]
+    fn an_anchor_falls_back_while_its_trigger_is_missing() {
+        let (button, row, window) = (Anchor::new(), Anchor::new(), Anchor::new());
+        let at = button.or(&row).or(&window);
+        assert_eq!(at.get(), None, "none laid out");
+        window.set(rect(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(at.get(), Some(rect(0.0, 0.0, 800.0, 600.0)), "the last in the chain");
+        row.set(rect(0.0, 100.0, 800.0, 88.0));
+        assert_eq!(at.get(), Some(rect(0.0, 100.0, 800.0, 88.0)), "the row before the window");
+        button.set(rect(700.0, 110.0, 28.0, 28.0));
+        assert_eq!(at.get(), Some(rect(700.0, 110.0, 28.0, 28.0)), "the button itself first");
+    }
+
+    #[test]
+    fn a_card_without_its_anchor_stands_in_the_middle() {
+        let at = centre(Size::new(240.0, 200.0), rect(0.0, 0.0, 800.0, 600.0));
+        assert_eq!(at, Point::new(280.0, 200.0));
+    }
+
+    #[test]
+    fn a_row_action_registers_its_anchor_only_when_asked() {
+        let action = RowAction::new(Icon::Clock, "Later", "S", Msg::Go);
+        assert!(action.anchor.is_none());
+        let anchor = Anchor::new();
+        let action = action.at(&anchor);
+        action.anchor.as_ref().expect("set").set(rect(1.0, 2.0, 3.0, 4.0));
+        assert_eq!(anchor.get(), Some(rect(1.0, 2.0, 3.0, 4.0)), "shares the cell");
     }
 
     #[test]

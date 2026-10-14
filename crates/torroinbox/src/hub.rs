@@ -1191,21 +1191,25 @@ fn card<'a>(item: &'a Item, data: &HubData<'a>) -> Element<'a, Message> {
     if data.layout.narrow && detail::is_approval(item) {
         parts.push(big_decide(item, &acts, data.deciding));
     } else {
-        parts.push(buttons(item, acts, data.deciding));
+        parts.push(buttons(item, acts, data.deciding, (data.rows.anchors.clone(), selected)));
     }
     let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
-    if selected { widgets::anchored(&data.rows.anchor, card) } else { card }
+    if selected { widgets::anchored(&data.rows.anchors.row, card) } else { card }
 }
 
 /// The buttons of `item` in one row, from the left: all with their words where they fit, else
 /// icons with the word as tooltip – only the lead (what the entry is about) may keep its word alone
-/// (`notifications::worded`, task E8.12).
-fn buttons<'a>(item: &Item, acts: Vec<Act>, deciding: bool) -> Element<'a, Message> {
+/// (`notifications::worded`, task E8.12). Under the cursor (the `bool` of `at`) each button that
+/// opens a menu registers its anchor (issue #122, `detail::Anchors::wrap`).
+fn buttons<'a>(item: &Item, acts: Vec<Act>, deciding: bool, at: (detail::Anchors, bool)) -> Element<'a, Message> {
     let pressed: Vec<notifications::CardButton> = acts.iter().map(|act| card_button(act, item, deciding)).collect();
+    let (anchors, shown) = at;
     let line = responsive(move |bounds| {
         let words = notifications::worded(&pressed, false, bounds.width);
-        let line =
-            pressed.iter().enumerate().map(|(i, button)| notifications::card_button(button.clone(), words.worded(i)));
+        let line = pressed.iter().enumerate().map(|(i, button)| {
+            let element = notifications::card_button(button.clone(), words.worded(i));
+            anchors.wrap(shown, button.on_press.as_ref(), element)
+        });
         row(line).spacing(space::s()).align_y(Alignment::Center).into()
     });
     container(line).width(Fill).height(size::control_sm()).into()
@@ -1354,8 +1358,11 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
     let parts: Vec<Element<'a, Message>> = if data.layout.narrow {
         let buttons: Vec<notifications::CardButton> = pressed.into_iter().map(|(_, button)| button).collect();
         let words = notifications::worded(&buttons, false, inner);
-        let line =
-            buttons.into_iter().enumerate().map(|(i, button)| notifications::card_button(button, words.worded(i)));
+        let line = buttons.into_iter().enumerate().map(|(i, button)| {
+            let message = button.on_press.clone();
+            let element = notifications::card_button(button, words.worded(i));
+            data.rows.anchors.wrap(selected, message.as_ref(), element)
+        });
         let line = row(line).spacing(space::s()).align_y(Alignment::Center);
         vec![widgets::card_head(Some(lead(item, &data.rows, data.attention)), title, meta, None), line.into()]
     } else {
@@ -1363,7 +1370,10 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
         for (slot, width) in slots.widths.iter().enumerate() {
             let Some(width) = *width else { continue };
             let cell: Element<'a, Message> = match pressed.iter().find(|(at, _)| *at == slot) {
-                Some((_, button)) => notifications::card_button(button.clone(), slots.words),
+                Some((_, button)) => {
+                    let element = notifications::card_button(button.clone(), slots.words);
+                    data.rows.anchors.wrap(selected, button.on_press.as_ref(), element)
+                }
                 None => Space::new().into(),
             };
             line = line.push(container(cell).width(width));
@@ -1377,7 +1387,7 @@ fn sort_card<'a>(item: &'a Item, data: &HubData<'a>, width: f32, slots: &SortSlo
         ]
     };
     let card = widgets::card(parts, selected, Some(Message::Select(item.id.clone())));
-    if selected { widgets::anchored(&data.rows.anchor, card) } else { card }
+    if selected { widgets::anchored(&data.rows.anchors.row, card) } else { card }
 }
 
 /// The row of `item` in Agents or To sort `width` wide (compact, [`as_rows`]): the mail or notice
@@ -1399,10 +1409,11 @@ fn entry_row<'a>(item: &'a Item, data: &HubData<'a>, width: f32) -> Element<'a, 
             Some(RowAction::new(act.icon(), act.label(), act.key(), message))
         })
         .collect();
+    let actions = data.rows.anchors.mark(selected, actions);
     let words = widgets::row_actions_words(&actions, width);
     let middle = list::first_line_middle(height, list::line_count(item));
     let line = widgets::row_actions_at(line, actions, selected, words, middle);
-    if selected { widgets::anchored(&data.rows.anchor, line) } else { line }
+    if selected { widgets::anchored(&data.rows.anchors.row, line) } else { line }
 }
 
 /// The width the text of a row of "Coming back" gets: the properties column less its inset, the
@@ -1704,7 +1715,7 @@ mod tests {
             view: &view,
             selected: None,
             now: now(),
-            anchor: widgets::Anchor::new(),
+            anchors: detail::Anchors::default(),
             accounts: Vec::new(),
             hidable: Vec::new(),
             look: list::Look::Rows,

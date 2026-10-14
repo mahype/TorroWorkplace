@@ -32,7 +32,7 @@
 //! each text from its width and cuts it with an ellipsis itself (`typo::ellipsize`); the cells still
 //! clip, in case the estimate runs over.
 //!
-//! The row under the cursor (E3.2) is the highlighted one; it registers [`Rows::anchor`], so the
+//! The row under the cursor (E3.2) is the highlighted one; it registers [`Rows::anchors`], so the
 //! snooze menu and the lane question open beside it. The list reports its scroll position
 //! (`Message::Scrolled`), so the app can keep the cursor in view ([`row_span`]).
 //!
@@ -72,7 +72,7 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::typo::{self, Level};
-use torro_gui::widgets::{self, Anchor, BarWords, Mark, RowAction};
+use torro_gui::widgets::{self, BarWords, Mark, RowAction};
 use torro_gui::{datetime, layout, style};
 use torro_inbox::item::FacetKey;
 use torro_inbox::{Item, Kind, Link, SourceKind, SourceRef, State, rules};
@@ -93,8 +93,8 @@ pub struct Rows<'a> {
     pub selected: Option<&'a str>,
     /// "Now", for the times ("16:40", "Yesterday 16:40").
     pub now: DateTime<Utc>,
-    /// Registered by the selected row, for the menus that open beside it.
-    pub anchor: Anchor,
+    /// Registered by the selected row (`row`) and its buttons that open a menu (issue #122).
+    pub anchors: detail::Anchors,
     /// The addresses of the mail accounts in the order the sidebar lists them: an account's place
     /// gives its colour ([`account_index`]), and from two accounts on the mail rows name theirs.
     pub accounts: Vec<&'a str>,
@@ -326,10 +326,11 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
     let height = row_height_of(item);
     let row = sized_row(content, selected, Message::Select(item.id.clone()), height);
     let actions = entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.folders, rows.now);
+    let actions = rows.anchors.mark(selected, actions);
     let words = widgets::row_actions_words(&actions, width);
     // On the first line, over the time: the preview and the account below stay readable.
     let row = widgets::row_actions_at(row, actions, selected, words, first_line_middle(height, line_count(item)));
-    if selected { widgets::anchored(&rows.anchor, row) } else { row }
+    if selected { widgets::anchored(&rows.anchors.row, row) } else { row }
 }
 
 /// What the action bar of `item` offers, in its order (task E3.9), as the panel does:
@@ -542,7 +543,10 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     if more.is_some() {
         tail.push(iced::widget::space::horizontal().into());
     }
-    tail.extend(more.map(|more| widgets::icon_button(more.icon, more.label, Some(more.on_press))));
+    tail.extend(more.map(|more| {
+        let anchor = more.anchor.clone();
+        widgets::anchored_if(anchor.as_ref(), widgets::icon_button(more.icon, more.label, Some(more.on_press)))
+    }));
     parts.push(row(tail).spacing(space::s()).align_y(Alignment::Center).into());
     widgets::card(parts, selected, Some(on_press))
 }
@@ -559,13 +563,15 @@ fn spoken(buttons: &[RowAction<'_, Message>], more: bool, room: f32) -> BarWords
 }
 
 /// A button of a card: with its icon and word (`secondary`), or – without `words` – the icon alone
-/// with the word as tooltip.
+/// with the word as tooltip. Registers the button's anchor when it has one (issue #122).
 fn card_button<'a>(action: RowAction<'a, Message>, words: bool) -> Element<'a, Message> {
-    if words {
+    let anchor = action.anchor.clone();
+    let button = if words {
         widgets::text_button(Some(action.icon), action.label, style::button::secondary, Some(action.on_press))
     } else {
         widgets::icon_button(action.icon, action.label, Some(action.on_press))
-    }
+    };
+    widgets::anchored_if(anchor.as_ref(), button)
 }
 
 /// The height of a mail card ([`mail_card`]) with `preview` lines of preview ([`preview_lines`]),
@@ -650,7 +656,7 @@ fn card_preview(item: &Item) -> Option<String> {
 }
 
 /// The card of `item` `width` wide (task E8.3): a mail entry's card with its buttons
-/// ([`card_buttons`]); highlighted under the cursor, where it registers [`Rows::anchor`] so the
+/// ([`card_buttons`]); highlighted under the cursor, where it registers [`Rows::anchors`] so the
 /// menus open at it. A click opens it, as a row's does. Rows that are no cards – the look is
 /// [`Look::Rows`], or the entry is no mail – stay rows ([`entry_row`]).
 pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
@@ -663,13 +669,13 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
     let card = MailCard {
         lines,
         chips: entry_chips(item, rows.now),
-        buttons,
-        more,
+        buttons: rows.anchors.mark(selected, buttons),
+        more: rows.anchors.mark(selected, more.into_iter().collect()).pop(),
         selected,
         on_press: Message::Select(item.id.clone()),
     };
     let card = mail_card(card, width);
-    if selected { widgets::anchored(&rows.anchor, card) } else { card }
+    if selected { widgets::anchored(&rows.anchors.row, card) } else { card }
 }
 
 /// A row of the list `height` high (including its line): `content` with 16 at the sides, centred
@@ -1493,7 +1499,7 @@ mod tests {
                 view: &view,
                 selected: Some("demo-1"),
                 now: now(),
-                anchor: Anchor::new(),
+                anchors: detail::Anchors::default(),
                 accounts,
                 hidable: vec!["demo-1"],
                 look: Look::Rows,
@@ -1695,7 +1701,7 @@ mod tests {
             view: &view,
             selected: Some("demo-1"),
             now: now(),
-            anchor: Anchor::new(),
+            anchors: detail::Anchors::default(),
             accounts: vec!["anna@work.example.org", "anna@example.org"],
             hidable: vec!["demo-1"],
             look: Look::Cards,
@@ -1757,7 +1763,7 @@ mod tests {
                 view: &view,
                 selected: Some(item.id.as_str()),
                 now: now(),
-                anchor: Anchor::new(),
+                anchors: detail::Anchors::default(),
                 accounts: vec!["anna@work.example.org"],
                 hidable: Vec::new(),
                 look,

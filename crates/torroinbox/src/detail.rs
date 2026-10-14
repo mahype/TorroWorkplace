@@ -54,7 +54,7 @@ use torro_gui::icon::{self, Icon};
 use torro_gui::panel::{self, Panel};
 use torro_gui::theme::{self, space};
 
-use torro_gui::widgets::{self, Anchor, Mark, Status};
+use torro_gui::widgets::{self, Anchor, Mark, RowAction, Status};
 use torro_gui::{datetime, style, typo};
 use torro_inbox::{Action, Item, Kind, Lane, Link, State, rules};
 
@@ -63,23 +63,67 @@ use crate::keys::Command;
 use crate::{hub, list, mail};
 
 /// The triggers of the menus that open for an entry, made new in every `view` and shared with the
-/// floating layer ([`widgets::floating`]).
+/// floating layer ([`widgets::floating`]). The window makes two sets (issue #122): one for the
+/// buttons of the panel or the reader, one for the row (or card) under the cursor and its buttons –
+/// a menu hangs at the button that opened it.
 #[derive(Debug, Clone, Default)]
 pub struct Anchors {
-    /// The row under the cursor in the list (registered by `list.rs`).
+    /// The row or card under the cursor in the list (registered by `list.rs` and its kin); unused in
+    /// the panel's set.
     pub row: Anchor,
-    /// The footer's "Later": the snooze menu and the picker open here while the panel is open.
+    /// "Later": the snooze menu and the picker open here.
     pub snooze: Anchor,
-    /// The footer's "Move to …": the lane question opens here while the panel is open.
+    /// "Move to …": the lane question opens here.
     pub lane: Anchor,
-    /// The footer's "Make task": its dialog opens here while the panel is open (task E3.5).
+    /// "Make task" / "Task": its dialog opens here (task E3.5).
     pub task: Anchor,
-    /// The footer's "Make event": its dialog opens here while the panel is open (task E8.5b).
+    /// "Make event": its dialog opens here (task E8.5b).
     pub event: Anchor,
-    /// The footer's "…": the menu "Hide from inbox" opens here while the panel is open (task
-    /// E3.10); in the notifications window the footer's bell, where the bell's menu opens (task
-    /// E8.6b).
+    /// "…" / "Hide": the menu "Hide from inbox" opens here (task E3.10); in the notifications window
+    /// the bell, where the bell's menu opens (task E8.6b).
     pub hide: Anchor,
+}
+
+impl Anchors {
+    /// The anchor of a button that sends `message`, when that opens a menu or dialog: `Act` with
+    /// the command of a key (`s`, `l`, `t`, `c`, `m`) from rows and cards, the `Ask…` messages of
+    /// the panel and the reader. `None` for every other message.
+    pub fn of(&self, message: &Message) -> Option<&Anchor> {
+        match message {
+            Message::Act(_, Command::Snooze) | Message::AskSnooze(_) => Some(&self.snooze),
+            Message::Act(_, Command::Lane) | Message::AskLane(_) => Some(&self.lane),
+            Message::Act(_, Command::MakeTask) | Message::AskTask(_) | Message::AskMailTask(_) => Some(&self.task),
+            Message::Act(_, Command::MakeEvent) | Message::AskEvent(_) => Some(&self.event),
+            Message::Act(_, Command::Hide) | Message::AskHide(_) => Some(&self.hide),
+            _ => None,
+        }
+    }
+
+    /// `actions` of the row or card under the cursor (`shown`), each that opens a menu registering
+    /// its anchor ([`Anchors::of`]); other rows' as they are, so no anchor is registered twice.
+    pub fn mark<'a>(&self, shown: bool, actions: Vec<RowAction<'a, Message>>) -> Vec<RowAction<'a, Message>> {
+        if !shown {
+            return actions;
+        }
+        actions
+            .into_iter()
+            .map(|action| match self.of(&action.on_press).cloned() {
+                Some(anchor) => action.at(&anchor),
+                None => action,
+            })
+            .collect()
+    }
+
+    /// `button`, which sends `message`, registering its anchor ([`Anchors::of`]) while its row or
+    /// card is under the cursor (`shown`).
+    pub fn wrap<'a>(
+        &self,
+        shown: bool,
+        message: Option<&Message>,
+        button: Element<'a, Message>,
+    ) -> Element<'a, Message> {
+        widgets::anchored_if(message.filter(|_| shown).and_then(|message| self.of(message)), button)
+    }
 }
 
 /// What the footer needs besides the entry.
@@ -304,7 +348,9 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     buttons.push(widgets::anchored(&footer.anchors.lane, move_to));
     if footer.hide {
         let hide = if footer.bell {
-            widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::Act(item.id.clone(), Command::Hide)))
+            // `AskHide` like "…", not `Act`: the bell's menu hangs at this bell (issue #122), not at
+            // the row; in the notifications window it opens the bell's menu.
+            widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::AskHide(item.id.clone())))
         } else {
             widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())))
         };
@@ -419,6 +465,32 @@ mod tests {
 
     fn sample(id: &str) -> Item {
         demo::sample(now()).into_iter().find(|i| i.id == id).expect("in the sample")
+    }
+
+    /// Issue #122: every button that opens a menu registers the anchor of that menu – the same for
+    /// a row's `Act` and the panel's `Ask…` –, other buttons none.
+    #[test]
+    fn a_button_that_opens_a_menu_names_its_anchor() {
+        let anchors = Anchors::default();
+        let id = || "demo-6".to_owned();
+        let at = |message: Message, which: &Anchor| anchors.of(&message).is_some_and(|got| std::ptr::eq(got, which));
+        assert!(at(Message::Act(id(), Command::Snooze), &anchors.snooze));
+        assert!(at(Message::AskSnooze(id()), &anchors.snooze));
+        assert!(at(Message::Act(id(), Command::Lane), &anchors.lane));
+        assert!(at(Message::AskLane(id()), &anchors.lane));
+        assert!(at(Message::Act(id(), Command::MakeTask), &anchors.task));
+        assert!(at(Message::AskMailTask(id()), &anchors.task));
+        assert!(at(Message::AskEvent(id()), &anchors.event));
+        assert!(at(Message::Act(id(), Command::Hide), &anchors.hide));
+        assert!(at(Message::AskHide(id()), &anchors.hide));
+        assert!(anchors.of(&Message::Act(id(), Command::Done)).is_none(), "Done opens no menu");
+        let actions = vec![
+            RowAction::new(Icon::Check, "Done", "E", Message::Act(id(), Command::Done)),
+            RowAction::new(Icon::Clock, "Later", "S", Message::Act(id(), Command::Snooze)),
+        ];
+        let marked = anchors.mark(true, actions.clone());
+        assert!(marked[0].anchor.is_none() && marked[1].anchor.is_some(), "only Later");
+        assert!(anchors.mark(false, actions).iter().all(|action| action.anchor.is_none()), "not under the cursor");
     }
 
     #[test]
