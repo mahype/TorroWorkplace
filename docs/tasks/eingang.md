@@ -1510,7 +1510,7 @@ E8.9   unabhängig (torro-wm, core.rs)
   den vorhandenen Dialog sofort, eine leise Zeile sagt „Asking your AI…“, dann füllt der Vorschlag Titel,
   Fälligkeit (`Due::On` für andere Tage), Notiz bzw. Tag, Beginn, Dauer (`Length::Minutes`), Ort und Teilnehmer
   („With: …“ als Notiz). Entscheidungen: Knöpfe nur in Paneel und Leser – dort, wo der Inhalt gelesen wurde, wie
-  „Reply“; Zeilen und Karten behalten ihre Leisten (`RowAction` kennt keinen ausgegrauten Zustand). Ganztägige
+  „Reply“; Zeilen und Karten behalten ihre Leisten (`RowAction` kennt keinen ausgegrauten Zustand; nachgeholt in E8.27). Ganztägige
   Vorschläge werden 09:00 für eine Stunde, weil der Dialog nur Termine mit Uhrzeit anlegt. Teilnehmer landen in der
   Notiz, weil ein Termin der Suite keine Teilnehmer hat. Kein Tastenkürzel)
 - **Modell:** Opus · **Braucht:** E3.5, E8.5b, C.15 · **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`,
@@ -1569,6 +1569,24 @@ E8.9   unabhängig (torro-wm, core.rs)
   (`apps.open_app`, `inbox.list_items`, `inbox.open_item`, Fehlertexte der Sicherheitsregel 1, MCP-Anleitung).
 - **Abnahme:** Tests: die drei Namen teilen kein Wort (beide Sprachen), jedes Fenster eigenes Icon und eigene Farbe,
   Titel „Notification Hub · …“ / „Mail · …“ / „App Feed · …“, „For me“ ohne `Icon::Inbox`.
+
+### E8.27 Gesperrte Icon-Knöpfe gedimmt, KI-Knöpfe an Zeilen und Karten (Issue #168)
+- [x] erledigt (2026-10-14: `torro-gui`: Knöpfe ohne Nachricht (`icon_button`, `boxed_button`, `compact_button`,
+  `text_button`) blenden ihr Icon auf 40 % ab (`Svg::opacity`, weil Iced beim Tönen des Icons die Deckkraft
+  verwirft); `busy_button` bleibt voll. `RowAction` bekommt `blocked(grund)`, `press()` und `tip()`: gesperrt
+  steht der Knopf gedimmt in der Leiste, nimmt keinen Klick und nennt den Grund im Tooltip; ohne Taste kein
+  `kbd`. Eingang: „AI task“ steht gleich nach „Task“, „AI event“ gleich nach „Event“ – in den Aktionsleisten der
+  Zeilen (Zentrale, Mail, App Feed), auf den Karten von Mail-Einträgen, App Feed und Zentrale; ohne KI gesperrt mit
+  „Set up an AI first“. Auf Karten sind sie Begleiter (immer nur Icon, zählen nicht beim Wählen zwischen Wörtern
+  und Icons), damit die Karten ihre Wörter behalten; in den einzeiligen Karten von „To sort“ treten sie zurück, wo
+  die Wörter nur ohne sie passen. Ordnernachrichten ohne Eintrag bekommen keine KI-Knöpfe (der Vorschlag braucht
+  einen Eintrag). `suggest::off_button` entfällt)
+- **Modell:** Opus · **Braucht:** E8.24 · **Dateien:** `crates/torro-gui/src/widgets.rs`,
+  `crates/torroinbox/src/{suggest,list,notifications,hub,overview,mail,app}.rs`
+- **Oberfläche:** Icon-Knöpfe überall; Zeilen und Karten des Eingangs. **API/MCP:** keine Änderung
+  (`inbox.suggest_task_from_item`, `inbox.suggest_event_from_item` gibt es seit E8.24).
+- **Abnahme:** Tests: gesperrte Knöpfe blenden das Icon ab; `RowAction::blocked` ohne Klick, mit Grund; KI-Knöpfe
+  an Zeilen und Karten, ohne KI gesperrt mit Tooltip, mit KI schicken sie den Vorschlag; „To sort“ behält die Wörter.
 
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
