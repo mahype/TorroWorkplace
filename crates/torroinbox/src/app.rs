@@ -3259,6 +3259,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// A button of a row's action bar (task E3.9): the cursor – and an open panel – to the entry
     /// `id`, then `command` as its key would do it, so a menu opens at the row.
     fn act(&mut self, id: &str, command: Command) -> Task<Message> {
+        if self.view.is_mail() {
+            return self.act_for_message(id, command);
+        }
         let Some(item) = self.items.iter().find(|item| item.id == id).cloned() else { return Task::none() };
         self.close_menus();
         self.column = self.launch.kind.column_or_first(Column::of(&item));
@@ -3267,6 +3270,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             self.detail = Some(item);
         }
         self.run(command)
+    }
+
+    /// A button of a message's card for the message's entry `id` in "For me" (task E8.11: "Later" and
+    /// "…" of an invitation in the smart view, `mail::message_buttons`): the cursor to the message,
+    /// whose card the menu then opens at, and the snooze menu or "Hide from inbox" for the entry, as
+    /// under "For me". Nothing for an entry the window does not hold, or other commands.
+    fn act_for_message(&mut self, id: &str, command: Command) -> Task<Message> {
+        let Some(Link::Mail { message }) = self.for_me.iter().find(|item| item.id == id).and_then(|i| i.link.clone())
+        else {
+            return Task::none();
+        };
+        self.close_menus();
+        self.cursor = Some(message);
+        match command {
+            Command::Snooze => self.ask_snooze(id),
+            Command::Hide => self.ask_hide(id),
+            _ => {}
+        }
+        Task::none()
+    }
+
+    /// The entry in "For me" of the message under the cursor (task E8.11), in the views of mail.
+    fn cursor_message_entry(&self) -> Option<String> {
+        let id = self.cursor.as_deref()?;
+        mail::entry_of(&self.for_me, id).map(|item| item.id.clone())
     }
 
     /// Folds or unfolds "Info" at the end of `column` and remembers it in `ui.json` (task E3.11). A
@@ -3315,9 +3343,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.reveal(index)
     }
 
-    /// The entry with `id`: in the list, or the one in the panel or an open menu.
+    /// The entry with `id`: in the list, or the one in the panel or an open menu, or in "For me" –
+    /// the views of mail list messages, whose entries are there (task E8.11).
     fn find(&self, id: &str) -> Option<&Item> {
-        self.items.iter().chain(self.detail.as_ref()).chain(self.subject.as_ref()).find(|item| item.id == id)
+        let held = self.items.iter().chain(self.detail.as_ref()).chain(self.subject.as_ref());
+        held.chain(&self.for_me).find(|item| item.id == id)
     }
 
     /// Where the keys go: a menu of choices, the picker, another menu or the drawer, else the list.
@@ -3376,6 +3406,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 _ => Task::none(),
             },
             Command::Undo => self.undo(),
+            // In the views of mail `s` and `m` act on the message's entry in "For me", as its card's
+            // "Later" and "…" do (task E8.11).
+            Command::Snooze | Command::Hide if self.view.is_mail() => match self.cursor_message_entry() {
+                Some(entry) => self.act_for_message(&entry, command),
+                None => Task::none(),
+            },
             Command::Snooze => {
                 if let Some(id) = cursor {
                     self.ask_snooze(&id);
@@ -3476,19 +3512,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             let column = self.column;
             let sections = Sections::of(&self.items, column, self.now);
             let open = self.info_open[column.index()];
-            let (look, lead) = (self.look(), self.lead().is_some());
+            let (look, lead, width) = (self.look(), self.lead().is_some(), self.card_width());
             let span = sections
                 .order(open)
                 .get(index)
-                .and_then(|item| overview::row_span(&sections, open, &item.id, look, lead));
+                .and_then(|item| overview::row_span(&sections, open, &item.id, look, lead, width));
             (self.column_scroll[column.index()], span, column.scroll_id())
         } else if self.view.is_mail() {
             // A folder's messages have no group heads: every row is as high as the next; a card is
             // as high as what it shows.
+            let width = self.card_width();
             let span = self.messages.get(index).map(|message| match self.look() {
-                Look::Cards { words } => {
-                    let above = self.messages[..index].iter().map(|message| mail::message_card_height(message, words));
-                    list::card_span(above, mail::message_card_height(message, words))
+                Look::Cards => {
+                    let above = self.messages[..index].iter().map(|message| mail::message_card_height(message, width));
+                    list::card_span(above, mail::message_card_height(message, width))
                 }
                 Look::Rows => {
                     let row = list::message_height();
@@ -3498,7 +3535,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             });
             (self.scroll, span, list::SCROLL)
         } else {
-            (self.scroll, list::row_span(&self.items, index, self.look()), list::SCROLL)
+            (self.scroll, list::row_span(&self.items, index, self.look(), self.card_width()), list::SCROLL)
         };
         let (Some((offset, height)), Some((top, bottom))) = (scroll, span) else { return Task::none() };
         let target = if top < offset {
@@ -4392,21 +4429,44 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     }
 
     /// How the lists draw mail (task E8.3): cards in the comfortable density of the mail window –
-    /// with their buttons' words in the narrow layout, where a card has the window's width –, rows
-    /// otherwise. The notifications window draws its own cards (task E8.4, `notifications.rs`); the
-    /// hub keeps its rows until E8.5.
+    /// their buttons carry their words as far as the card has room (task E8.11), in every layout –,
+    /// rows otherwise. The notifications window draws its own cards (task E8.4, `notifications.rs`);
+    /// the hub keeps its rows until E8.5.
     pub fn look(&self) -> Look {
         if self.launch.kind != Kind::Mail || self.density() != Density::Comfortable {
             return Look::Rows;
         }
-        Look::Cards { words: self.class() == SizeClass::Narrow }
+        Look::Cards
     }
 
-    /// What the narrow mail window's comfortable "For me" leads with (task E8.3, "N new for you"):
-    /// the number of mails for the user and their newest senders ("From Anna, Ben, Chris"). `None`
-    /// elsewhere, and while nothing is for the user (the calm line says so).
+    /// The width the mail window's cards get (task E8.11; their previews take the lines they need at
+    /// it): the list's width less the cards' inset – in the wide layout the list beside the reader
+    /// ([`size::list()`]), else the window less the rail with the inset beside the content (as
+    /// [`App::board_width`]), the overview's column at most [`size::content_max()`]. An estimate from
+    /// the window's size, because the keys need the cards' heights as well as the drawing; a few
+    /// points off only move the scrolling a little.
+    fn card_width(&self) -> f32 {
+        let class = self.class();
+        let list = if class == SizeClass::Wide {
+            size::list()
+        } else {
+            let chrome = match shell::sidebar_mode(class, self.sidebar) {
+                Some(SidebarMode::Expanded) => size::sidebar() + layout::inset(),
+                Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
+                None => 0.0,
+            };
+            let room = self.size.width - chrome;
+            if self.view == View::Overview { room.min(overview::width(1)) } else { room }
+        };
+        (list - list::cards_side()).max(0.0)
+    }
+
+    /// What the narrow mail window's "For me" leads with (task E8.3, "N new for you"; task E8.11 in
+    /// both densities): the number of mails for the user and their newest senders ("From Anna, Ben,
+    /// Chris"). `None` elsewhere, and while nothing is for the user (the calm line says so).
     fn lead(&self) -> Option<(usize, String)> {
-        if self.look() != (Look::Cards { words: true }) || self.view != View::Overview {
+        let narrow = self.class() == SizeClass::Narrow;
+        if self.launch.kind != Kind::Mail || !narrow || self.view != View::Overview {
             return None;
         }
         let count = Sections::of(&self.items, Column::Mail, self.now).for_me();
@@ -4431,6 +4491,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
         };
         Some(mail::reader(reading, entry, anchors.clone(), self.density() == Density::Comfortable))
+    }
+
+    /// The reader's column of the wide mail window while no mail is open (task E8.11,
+    /// `mail::empty_reader`): the list keeps the width it has beside a mail ([`size::list()`]) and
+    /// its scrollbar stands at its edge, instead of a wide empty space beside it. `None` elsewhere,
+    /// while a panel is open, and before the first load (the loading or error state fills the window).
+    fn empty_reader<'a>(&self, class: SizeClass) -> Option<Element<'a, Message>> {
+        let shown = self.launch.kind == Kind::Mail && class == SizeClass::Wide && self.loaded;
+        (shown && !self.panel_open()).then(mail::empty_reader)
     }
 
     /// The layout class of the window.
@@ -4508,6 +4577,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             folders: if self.launch.kind == Kind::Mail { &self.folders } else { &[] },
             now: self.now,
             error: self.error.as_ref().map(|failure| failure.what),
+            // Its numbers count mail: "From …" right under them (task E8.11).
+            mail: self.launch.kind == Kind::Mail,
         };
         match class {
             SizeClass::Strip => glance::strip(&data, self.content_size()),
@@ -4571,8 +4642,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
             Some(Menu::Mute) => Some(widgets::floating(hide_at, below, self.mute_menu(), Message::CloseMenu)),
         };
-        // The wide mail window reads beside the list (task E8.3), without the panel.
-        if let Some(reader) = self.wide_reader(class, &anchors) {
+        // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
+        // open the reader's column says what shows up there (task E8.11).
+        if let Some(reader) = self.wide_reader(class, &anchors).or_else(|| self.empty_reader(class)) {
             let list = container(self.body(class, &anchors.row)).width(size::list()).height(Fill);
             let body = row![list, rule::vertical(size::HAIRLINE).style(style::rule), reader];
             let placed = panel::place(class, body, None, layer);
@@ -4843,6 +4915,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     more: self.more.is_some(),
                     attention,
                     look: self.look(),
+                    // An invitation's card offers its entry's Later and "…" (task E8.11).
+                    entries: &self.for_me,
+                    hidable: self
+                        .for_me
+                        .iter()
+                        .filter(|item| !self.hide_choices(item).is_empty())
+                        .map(|item| item.id.as_str())
+                        .collect(),
                 })
             }
         } else if self.is_board() {
@@ -6661,12 +6741,12 @@ mod tests {
     fn moving_scrolls_the_cursor_into_view() {
         let mut app = loaded(&[]);
         // The group head and two rows fit.
-        let (_, second) = list::row_span(&app.items, 1, Look::Rows).expect("a second row");
+        let (_, second) = list::row_span(&app.items, 1, Look::Rows, 480.0).expect("a second row");
         let _ = app.update(Message::Scrolled(0.0, second));
         assert_eq!(press(&mut app, Key::Down).units(), 0, "the first row is in view");
         let _ = press(&mut app, Key::Down);
         assert!(press(&mut app, Key::Down).units() > 0, "the third row needs a scroll");
-        let (_, third) = list::row_span(&app.items, 2, Look::Rows).expect("a third row");
+        let (_, third) = list::row_span(&app.items, 2, Look::Rows, 480.0).expect("a third row");
         assert_eq!(app.scroll, Some((third - second, second)));
         // Back up to the first row: the list scrolls to its group head at the top.
         let _ = press(&mut app, Key::Up);
@@ -8175,14 +8255,17 @@ mod tests {
         }
     }
 
-    /// Task E8.3: cards in the comfortable mail window – with words when narrow –, rows elsewhere.
+    /// Task E8.3: cards in the comfortable mail window, rows elsewhere; task E8.11: the same cards in
+    /// every layout (their words follow the room, `list::spoken`), the wide cards beside the reader.
     #[test]
     fn comfortable_mail_is_cards_and_everything_else_rows() {
         let mut app = mail_window("comfortable", &[]);
         let _ = app.update(Message::Resized(WIDE));
-        assert_eq!(app.look(), Look::Cards { words: false });
+        assert_eq!(app.look(), Look::Cards);
+        assert_eq!(app.card_width(), size::list() - list::cards_side(), "the list beside the reader");
         let _ = app.update(Message::Resized(NARROW));
-        assert_eq!(app.look(), Look::Cards { words: true });
+        assert_eq!(app.look(), Look::Cards);
+        assert_eq!(app.card_width(), NARROW.width - list::cards_side(), "the window's width");
         let compact = mail_window("compact", &[]);
         assert_eq!(compact.look(), Look::Rows);
         let hub = overview_at(&["--view", "hub", "--density", "comfortable"]);
@@ -8199,6 +8282,65 @@ mod tests {
         let (count, senders) = app.lead().expect("a lead in narrow");
         assert_eq!(count, app.for_me.len());
         assert!(senders.starts_with(tr("From {senders}").trim_end_matches("{senders}")), "{senders}");
+        // Task E8.11 (finding 7): in both densities.
+        let mut compact = mail_window("compact", &[]);
+        let _ = compact.update(Message::Resized(NARROW));
+        assert_eq!(compact.lead(), app.lead(), "compact leads the same");
+        let _ = compact.update(Message::Resized(WIDE));
+        assert_eq!(compact.lead(), None);
+        for size in SIZES {
+            let _ = compact.update(Message::Resized(size));
+            let _ = compact.view();
+        }
+    }
+
+    /// Task E8.11 (finding 4): the wide mail window keeps the reader's column while nothing is open,
+    /// with the empty state, so the list keeps its width; the panel and the other layouts have none.
+    #[test]
+    fn the_wide_mail_window_keeps_an_empty_reader() {
+        for density in ["comfortable", "compact"] {
+            let mut app = mail_window(density, &[]);
+            let _ = app.update(Message::Resized(WIDE));
+            assert!(!app.panel_open());
+            assert!(app.empty_reader(SizeClass::Wide).is_some(), "{density}: the empty reader");
+            assert!(app.empty_reader(SizeClass::Medium).is_none(), "{density}: medium has no reader");
+            let _ = app.view();
+        }
+        let mut open = mail_window("comfortable", &["--open", "mail-entry"]);
+        let _ = open.update(Message::Resized(WIDE));
+        assert!(open.empty_reader(SizeClass::Wide).is_none(), "a mail is open");
+        let hub = overview_at(&["--view", "hub"]);
+        assert!(hub.empty_reader(SizeClass::Wide).is_none(), "the hub has no reader");
+    }
+
+    /// Task E8.11 (finding 3): in "Invitations" the card's "Later" and "…" act on the mail's entry in
+    /// "For me", and `s` does the same on the message under the cursor.
+    #[test]
+    fn an_invitation_card_puts_off_and_hides_its_entry() {
+        let mut app = mail_window("comfortable", &[]);
+        let _ = app.update(Message::Show(View::Invitations));
+        load(&mut app);
+        let (message, entry) = app
+            .messages
+            .iter()
+            .find_map(|message| {
+                mail::entry_of(&app.for_me, &message.id).map(|item| (message.id.clone(), item.id.clone()))
+            })
+            .expect("an invitation with its entry in For me");
+        let _ = app.update(Message::Act(entry.clone(), Command::Snooze));
+        assert_eq!(app.menu, Some(Menu::Snooze));
+        assert_eq!(app.subject.as_ref().map(|item| item.id.as_str()), Some(entry.as_str()), "the entry");
+        assert_eq!(app.cursor.as_deref(), Some(message.as_str()), "the menu opens at the message's card");
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::Act(entry.clone(), Command::Hide));
+        assert_eq!(app.menu, Some(Menu::Hide));
+        let _ = app.update(Message::CloseMenu);
+        let _ = press(&mut app, Key::S);
+        assert_eq!(app.menu, Some(Menu::Snooze), "s on the message");
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::Act("gone".into(), Command::Snooze));
+        assert_eq!(app.menu, None, "an entry the window does not hold");
+        let _ = app.view();
     }
 
     /// Task E8.3: in the wide mail window an open mail stands in the reader beside the list; the

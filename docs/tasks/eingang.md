@@ -1230,7 +1230,12 @@ E8.9   unabhängig (torro-wm, core.rs)
   `scripts/design-check.sh` sauber; Sichtprüfung der Stellen hell und dunkel.
 
 ### E8.11 Feinschliff Mail-Fenster nach der Sichtprüfung
-- [ ] erledigt
+- [x] erledigt (Karten in jeder Größe mit Reply · Task · Done · Later, Wörter nach Platz, `Look::Cards` ohne
+  `words`; Einladungen unter „Invitations“ mit Later und „…“ für ihren Eintrag, `s`/`m` ebenso; Breit: Liste 460 mit
+  Leser-Spalte, leer „Select a mail to read it“; Kartenhöhe aus der Zeilenzahl der Vorschau bei geschätzter Breite;
+  Gruppenköpfe über Karten mit Icon „Today 3“; „N new for you“ in Schmal in beiden Dichten; Mini und Leiste: Kopfzahl
+  in `display()`, „From …“ darunter, keine Gesamtzahl ungelesener Mail; Compact-Zeile ohne Konto gleich Domain.
+  Sichtprüfung offen: Bildschirm gesperrt, Befunde durch Tests abgedeckt)
 - **Modell:** Opus · **Braucht:** E8.10 · **Dateien:** `crates/torroinbox/src/{app,list,mail,overview,glance}.rs`,
   `crates/torro-core/src/i18n/de.rs`
 - **Befunde der Sichtprüfung vom 2026-10-14** (Bilder im Scratchpad unter `review-e8/`), Fehler:

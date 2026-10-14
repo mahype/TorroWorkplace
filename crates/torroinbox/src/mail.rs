@@ -17,7 +17,8 @@
 //!   window (task E8.3, [`message_card`]) – and the smart view "With attachments" ([`attachments`]:
 //!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
 //!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3): Reply ·
-//!   Reply all · Forward | Done · Later · Task, the text in the reading level (`typo::read()`).
+//!   Reply all · Forward | Done · Later · Task, the text in the reading level (`typo::read()`);
+//!   [`empty_reader`] keeps its column while no mail is open (task E8.11).
 //! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
 //!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
 //!
@@ -57,6 +58,7 @@ use torro_mail::{
 
 use crate::app::{INBOX, Message, View};
 use crate::detail;
+use crate::keys::Command as Key;
 use crate::list::{self, Look};
 
 /// How many messages one page of a folder holds.
@@ -804,6 +806,18 @@ pub struct MailList<'a> {
     pub attention: Color,
     /// Rows or cards (task E8.3).
     pub look: Look,
+    /// The open entries of "For me" (task E8.11): an invitation's card whose mail has its entry here
+    /// ([`entry_of`]) offers that entry's "Later" and "…", as the same mail does under "For me".
+    pub entries: &'a [Item],
+    /// Ids of those entries whose menu "Hide from inbox" has entries (`App::hide_choices`).
+    pub hidable: Vec<&'a str>,
+}
+
+/// The open entry of `entries` that holds the message `id` (it links to it, [`Link::Mail`]).
+pub fn entry_of<'a>(entries: &'a [Item], id: &str) -> Option<&'a Item> {
+    entries
+        .iter()
+        .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == id) && item.state.is_open())
 }
 
 /// A folder's messages, scrolling, with "Load more" at the end when there are more; the empty
@@ -836,9 +850,9 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
 /// The rows at `width`, or a column of cards.
 fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
     let mut rows = column![].width(Fill);
-    if let Look::Cards { words } = data.look {
+    if data.look.cards() {
         let inner = width - list::cards_side();
-        let cards = data.messages.iter().map(|message| message_card(data, message, inner, words));
+        let cards = data.messages.iter().map(|message| message_card(data, message, inner));
         rows = rows.push(container(column(cards).spacing(size::card_gap())).padding(list::cards_inset()));
     } else {
         rows = rows.extend(data.messages.iter().map(|message| message_row(data, message, width)));
@@ -894,12 +908,10 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
 }
 
 /// The card of a message `width` wide (task E8.3, `list::mail_card`): the lines of its row, as chips
-/// "Attachments" and "Flagged", and its buttons Reply (`r`), Task (`t`, `tasks.create_todo_from_mail`,
-/// task E8.7b) and Archive (`e`, what "done" is in a folder); a message has no "Later" of its own.
-/// An invitation (task E8.3b) shows when it is and the answer given as chips, and Accept · Maybe ·
-/// Decline · Task instead ([`Message::AnswerInvitation`]; none once its event is over). In the smart
-/// views, which hold every account's mail, the head names the account.
-fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32, words: bool) -> Element<'a, Message> {
+/// "Attachments" and "Flagged", and its buttons ([`message_buttons`]). An invitation (task E8.3b)
+/// shows when it is and the answer given as chips. In the smart views, which hold every account's
+/// mail, the head names the account.
+fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut chips = Vec::new();
     if let Some(invite) = &message.invite {
         chips.extend(invite_chips(invite, data.now));
@@ -910,24 +922,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if message.flags.contains(&Flag::Flagged) {
         chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
     }
-    let id = || message.id.clone();
-    let open_invite = message.invite.as_ref().filter(|invite| !invite_over(invite, data.now));
-    let buttons = match open_invite {
-        Some(_) => {
-            let answer = |(icon, word, answer): (Icon, &'static str, InvitationAnswer)| {
-                let send = Message::AnswerInvitation(message.account.clone(), id(), answer);
-                RowAction::new(icon, word, "", send)
-            };
-            let mut buttons: Vec<_> = answers().into_iter().map(answer).collect();
-            buttons.push(RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id())));
-            buttons
-        }
-        None => vec![
-            RowAction::new(Icon::Reply, tr("Reply"), "R", Message::Mail(MailAction::Reply, id())),
-            RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id())),
-            RowAction::new(Icon::Archive, tr("Archive"), "E", Message::Mail(MailAction::Archive, id())),
-        ],
-    };
+    let (buttons, more) = message_buttons(message, data.entries, &data.hidable, data.now);
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
     let smart = matches!(data.view, View::Attachments | View::Invitations);
@@ -945,23 +940,63 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         account_name: several.then(|| account_name(&message.account)),
     };
     let selected = data.selected == Some(message.id.as_str());
-    let card = list::MailCard {
-        lines,
-        chips,
-        buttons,
-        more: None,
-        words,
-        selected,
-        on_press: Message::SelectMail(message.id.clone()),
-    };
+    let card =
+        list::MailCard { lines, chips, buttons, more, selected, on_press: Message::SelectMail(message.id.clone()) };
     let card = list::mail_card(card, width);
     if selected { widgets::anchored(&data.anchor, card) } else { card }
 }
 
-/// The height of the card of `message` with its buttons with `words` ([`message_card`]).
-pub fn message_card_height(message: &MessageSummary, words: bool) -> f32 {
+/// The buttons of the card of `message` at `now`, with "…" as the second part:
+///
+/// - a message: Reply (`r`), Task (`t`, `tasks.create_todo_from_mail`, task E8.7b) and Archive (`e`,
+///   what "done" is in a folder); a message has no "Later" of its own, and no "…";
+/// - an invitation whose event is not over (task E8.3b): Accept · Maybe · Decline
+///   ([`Message::AnswerInvitation`]) · Later · Task, as the same mail under "For me" (task E8.11):
+///   "Later" and "…" ("Hide from inbox", while `hidable` lists the entry) act on its entry in
+///   `entries` ([`entry_of`], `Message::Act` with its id); without an open entry, only the answers
+///   and Task.
+pub fn message_buttons<'a>(
+    message: &MessageSummary,
+    entries: &[Item],
+    hidable: &[&str],
+    now: DateTime<Utc>,
+) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
+    let id = || message.id.clone();
+    let task = RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::AskMailTask(id()));
+    if message.invite.as_ref().is_none_or(|invite| invite_over(invite, now)) {
+        let buttons = vec![
+            RowAction::new(Icon::Reply, tr("Reply"), "R", Message::Mail(MailAction::Reply, id())),
+            task,
+            RowAction::new(Icon::Archive, tr("Archive"), "E", Message::Mail(MailAction::Archive, id())),
+        ];
+        return (buttons, None);
+    }
+    let answer = |(icon, word, answer): (Icon, &'static str, InvitationAnswer)| {
+        RowAction::new(icon, word, "", Message::AnswerInvitation(message.account.clone(), id(), answer))
+    };
+    let mut buttons: Vec<_> = answers().into_iter().map(answer).collect();
+    let entry = entry_of(entries, &message.id);
+    let act = |item: &Item, command| Message::Act(item.id.clone(), command);
+    buttons.extend(entry.map(|item| RowAction::new(Icon::Clock, tr("Later"), "S", act(item, Key::Snooze))));
+    buttons.push(task);
+    let more = entry
+        .filter(|item| hidable.contains(&item.id.as_str()))
+        .map(|item| RowAction::new(Icon::Ellipsis, tr("Hide from inbox"), "M", act(item, Key::Hide)));
+    (buttons, more)
+}
+
+/// The height of the card of `message`, `width` wide ([`message_card`]): its preview takes the lines
+/// it needs at that width (task E8.11, `list::preview_lines`).
+pub fn message_card_height(message: &MessageSummary, width: f32) -> f32 {
     let chips = message.has_attachments || message.flags.contains(&Flag::Flagged) || message.invite.is_some();
-    list::mail_card_height(!list::one_line(&message.snippet).is_empty(), chips, words)
+    let snippet = Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty());
+    list::mail_card_height(list::preview_lines(snippet.as_deref(), width), chips)
+}
+
+/// The reader of the wide mail window while no mail is open (task E8.11): the column beside the
+/// list says what shows up there, so the list keeps its width and its edge.
+pub fn empty_reader<'a>() -> Element<'a, Message> {
+    list::empty_state(Icon::Mail, tr("Select a mail to read it"), tr("Its text and attachments show up here."))
 }
 
 /// The name of the account `mail:<address>` on a card: the domain of its address, as a row names
@@ -2026,7 +2061,12 @@ mod tests {
         let folders = folders();
         let folder = FolderView::of(first_inbox(&folders).expect("an inbox"));
         let views = [View::Folder(folder.clone()), View::Attachments, View::Mail];
-        let looks = [Look::Rows, Look::Cards { words: false }, Look::Cards { words: true }];
+        let looks = [Look::Rows, Look::Cards];
+        let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
+            &DemoSource::new(now()),
+            Default::default(),
+        ))
+        .expect("the demo answers");
         for accounts in [Vec::new(), vec!["anna@work.example.org", "anna@example.org"]] {
             for (view, look) in views.iter().flat_map(|view| looks.map(|look| (view, look))) {
                 for messages in [&summaries[..], &[]] {
@@ -2041,17 +2081,15 @@ mod tests {
                         more: true,
                         attention: Color::BLACK,
                         look,
+                        entries: &all,
+                        hidable: all.iter().map(|item| item.id.as_str()).collect(),
                     };
                     let _ = list(data);
                 }
             }
         }
-        let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
-            &DemoSource::new(now()),
-            Default::default(),
-        ));
-        let entry =
-            all.expect("the demo answers").into_iter().find(|item| item.source.kind == SourceKind::Mail).expect("mail");
+        let _ = empty_reader();
+        let entry = all.iter().find(|item| item.source.kind == SourceKind::Mail).cloned().expect("mail");
         let open = task(false);
         let done = ItemTask { due: Some(TaskDue::Date(now().date_naive())), ..task(true) };
         for (message, task) in mail.iter().zip([None, Some(&open), Some(&done)].into_iter().cycle()) {
@@ -2080,6 +2118,49 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Task E8.11 (finding 3): an invitation's card in "Invitations" offers Later and "…" for its
+    /// entry, as the same mail does under "For me"; without an open entry only the answers and Task;
+    /// a message as any keeps Reply · Task · Archive.
+    #[test]
+    fn an_invitation_card_offers_later_and_more_for_its_entry() {
+        let mut message = demo::mail_sample(now()).remove(0).summary;
+        let start = now() + chrono::TimeDelta::days(1);
+        message.invite = Some(Invite { title: "Planning".into(), start, end: None, all_day: false, answered: None });
+        let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
+            &DemoSource::new(now()),
+            Default::default(),
+        ))
+        .expect("the demo answers");
+        let mail = all.iter().find(|item| item.source.kind == SourceKind::Mail).expect("a mail entry");
+        let entry = Item { link: Some(Link::Mail { message: message.id.clone() }), state: State::New, ..mail.clone() };
+        let entries = [entry.clone()];
+        let words =
+            |buttons: &[RowAction<'_, Message>]| buttons.iter().map(|b| b.label.to_string()).collect::<Vec<_>>();
+        let (buttons, more) = message_buttons(&message, &entries, &[entry.id.as_str()], now());
+        assert_eq!(words(&buttons), [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Later"), tr("Task")]);
+        assert!(matches!(&buttons[3].on_press, Message::Act(id, Key::Snooze) if *id == entry.id));
+        assert!(matches!(more.map(|more| more.on_press), Some(Message::Act(id, Key::Hide)) if id == entry.id));
+        let (_, more) = message_buttons(&message, &entries, &[], now());
+        assert!(more.is_none(), "nothing to hide: no \"…\"");
+        let (alone, more) = message_buttons(&message, &[], &[], now());
+        assert_eq!(words(&alone), [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Task")], "no entry: no Later");
+        assert!(more.is_none());
+        let done = Item { state: State::Done { at: now() }, ..entry.clone() };
+        assert_eq!(message_buttons(&message, &[done], &[], now()).0.len(), 4, "a done entry is put away");
+        let plain = MessageSummary { invite: None, ..message.clone() };
+        assert_eq!(words(&message_buttons(&plain, &entries, &[], now()).0), [tr("Reply"), tr("Task"), tr("Archive")]);
+    }
+
+    /// Task E8.11 (finding 5): a message's card is as high as the lines its preview takes.
+    #[test]
+    fn a_message_card_is_as_high_as_its_preview() {
+        let message = demo::mail_sample(now()).remove(0).summary;
+        let short = MessageSummary { snippet: "Short.".into(), ..message.clone() };
+        let long = MessageSummary { snippet: "word ".repeat(80), ..message.clone() };
+        let line = typo::line_height(typo::body());
+        assert_eq!(message_card_height(&long, 480.0) - message_card_height(&short, 480.0), line);
     }
 
     /// A task made of a mail, open or `completed`, in the list "Work", without a due day.
@@ -2176,7 +2257,7 @@ mod tests {
         assert_eq!(answer("m:w4"), Ok(Delivery::Accepted));
         assert!(matches!(answer("m:w1"), Err(InboxError::Other(_))), "no invitation");
         assert_eq!(answer("m:nope"), Err(InboxError::NotFound));
-        let height = |invite| message_card_height(&MessageSummary { invite, ..found[1].clone() }, true);
+        let height = |invite| message_card_height(&MessageSummary { invite, ..found[1].clone() }, 480.0);
         assert!(height(Some(lunch.clone())) >= height(None), "the chips' row");
         let full = iced::futures::executor::block_on(MailSource::get_mail(&demo, "m:w4".into())).expect("the mail");
         assert!(full.invitation && full.summary.invite.is_some());
@@ -2263,11 +2344,12 @@ mod tests {
         message.has_attachments = false;
         message.flags.clear();
         message.snippet = "Short".into();
-        let plain = message_card_height(&message, false);
+        let plain = message_card_height(&message, 480.0);
         message.has_attachments = true;
-        assert_eq!(message_card_height(&message, false), plain, "chips beside the icons: no extra row");
-        assert!(message_card_height(&message, true) > message_card_height(&{ message.clone() }, false));
+        let row = size::card_gap() + size::control_sm();
+        assert_eq!(message_card_height(&message, 480.0), plain + row, "the chips get a row of their own");
+        message.has_attachments = false;
         message.snippet.clear();
-        assert!(message_card_height(&message, false) < plain, "no preview, no preview lines");
+        assert!(message_card_height(&message, 480.0) < plain, "no preview, no preview lines");
     }
 }
