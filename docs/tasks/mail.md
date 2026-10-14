@@ -643,7 +643,11 @@ M9.4            (Versuch, unabhängig; ersetzt M9.2 nur, wenn er trägt und es e
   (Newsletter mit Tabellen und Bildern, reine Textmail), hell/dunkel; im Bericht die neuen Übersetzungen nennen.
 
 ### M9.3 TorroInbox: HTML-Mail öffnen
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `dist-workspace.toml` (`[dist.dependencies.apt]` mit `libwebkit2gtk-4.1-dev`,
+  `libgtk-3-dev` für den Linux-Release von M9.2), `crates/torro-core/src/i18n/de.rs`; das Paneel fragt
+  `mail.get_message` mit `include_html` und fällt ohne HTML auf die reine Textabfrage zurück (offline, alte
+  Cache-Zeile); `Enter` und Doppelklick öffnen das Paneel wie bisher und das Fenster, sobald die Mail HTML hat;
+  Demo: `m:p2` (aus HTML) und `m:w14` (Text und HTML), „View as HTML“ startet dort `torromailview --demo`)
 - **Modell:** Sonnet · **Braucht:** M9.1, M9.2 · **Dateien:** `crates/torroinbox/src/{mail,keys,app}.rs`,
   `crates/torro-inbox/src/demo.rs` (Demo-Newsletter mit `html`), `crates/torro-core/src/i18n/de.rs` (nur wenn nicht
   parallel, sonst im Bericht)

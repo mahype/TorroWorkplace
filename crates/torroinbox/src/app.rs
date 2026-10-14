@@ -76,6 +76,13 @@
 //! ([`Message::Act`], [`Message::Mail`]). Reply is no button of rows and cards: it stands in the
 //! reader, where the mail has been read.
 //!
+//! HTML mail (task M9.3): a mail that came with HTML (`mail::shows_html`) shows "View as HTML" over
+//! its text, and `v`, `Enter` and a double click on its row open it in the mail window
+//! ([`App::view_html`], `torromailview <id>`). Whether it has HTML is known once its whole mail is
+//! loaded; `Enter` and a double click on a row not loaded yet open the panel as before and the
+//! window as soon as the mail turns out to have HTML ([`App::want_html`]). Without HTML nothing
+//! changes.
+//!
 //! The panel is `torro_gui::panel`: beside the list in the wide layout, over it in the medium and
 //! narrow ones (full width in narrow). Mini and strip show the glance instead (`glance.rs`, E3.3a):
 //! the numbers of "For me" and its top entries, no chrome and no keys; the panel, menus and the
@@ -202,6 +209,10 @@ const REFRESH: Duration = Duration::from_secs(10);
 /// How long the toast after a change shows, and with it "Undo" (`u`, Ctrl + Z): the suite's
 /// [`widgets::TOAST_FOR`].
 pub const UNDO_FOR: Duration = widgets::TOAST_FOR;
+
+/// Two presses on the same row within this time are a double click (task M9.3): the usual default
+/// of the desktops. Rows are buttons, which take every press themselves, so the app counts them.
+const DOUBLE_PRESS: Duration = Duration::from_millis(500);
 
 /// How often a shown hint checks whether its time is up. Only while a hint shows.
 const HINT_TICK: Duration = Duration::from_secs(1);
@@ -795,6 +806,8 @@ pub enum Sent {
     Letter(String),
     /// The compose window, started with these arguments ([`mail::compose_args`]).
     Compose(Vec<String>),
+    /// The mail window (task M9.3), started with these arguments ([`mail::view_args`]).
+    MailView(Vec<String>),
     /// `mail.get_attachment`: message and part, to open it.
     Attachment(String, String),
     /// The next page of the folder, from this cursor.
@@ -1678,6 +1691,12 @@ pub struct App<S> {
     /// The mail of `--message` shown in its folder: it stays readable there though it may not be on
     /// the folder's first page ([`App::wanted_letter`]).
     pinned_mail: Option<String>,
+    /// The message `Enter` or a double click asked to see as HTML (task M9.3) while its whole mail
+    /// still loads: the mail window opens when it has HTML ([`App::want_html`]). Dropped when the
+    /// panel turns to another mail.
+    html_wanted: Option<String>,
+    /// The row pressed last and when (`Select`, `SelectMail`), to tell a double click (task M9.3).
+    pressed: Option<(String, Instant)>,
     /// The tile of "Act now" clicked (task E8.5): its origin's entries alone show. Window state.
     filter: Option<Origin>,
     /// The hub shows To sort alone (its sidebar entry "To sort"), on the entries of its overview.
@@ -1928,6 +1947,11 @@ pub enum Message {
     ToggleSources,
     /// The compose window could not be started.
     ComposeStarted(Result<(), String>),
+    /// "View as HTML" in the panel or reader (task M9.3): open the message with this id in the mail
+    /// window. Only offered for a mail with HTML.
+    ViewHtml(String),
+    /// The mail window could not be started.
+    MailViewStarted(Result<(), String>),
     /// "This window shows" in the sidebar, or a chip (task E8.4): switch this source on or off.
     ToggleSource(SourceRef),
     /// "By app | By time" in the header bar of the notifications window.
@@ -2216,6 +2240,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             made: Vec::new(),
             start_mail: launch.message.clone(),
             pinned_mail: None,
+            html_wanted: None,
+            pressed: None,
             filter: None,
             sorting: open == Some(Open::ToSort),
             // Insights is the hub's (task E8.8b).
@@ -2371,12 +2397,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 }
             }
             Message::Select(id) => {
-                self.close_menus();
-                // "Coming back" opens snoozed entries, which the overview does not list (task E8.5).
-                self.detail = self.items.iter().chain(&self.snoozed).find(|item| item.id == id).cloned();
-                if let Some(item) = &self.detail {
-                    self.column = self.launch.kind.column_or_first(Column::of(item));
-                    self.cursor = Some(id);
+                let twice = self.pressed_again(&id);
+                self.select(id);
+                let mail = match self.detail.as_ref().and_then(|item| item.link.as_ref()) {
+                    Some(Link::Mail { message }) if twice => Some(message.clone()),
+                    _ => None,
+                };
+                if let Some(message) = mail {
+                    return self.want_html(&message);
                 }
             }
             Message::Act(id, command) => return self.act(&id, command),
@@ -2666,10 +2694,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 connect::open_settings();
             }
             Message::SelectMail(id) => {
-                self.close_menus();
-                if self.messages.iter().any(|message| message.id == id) {
-                    self.cursor = Some(id);
-                    self.reading = true;
+                let twice = self.pressed_again(&id);
+                if self.select_mail(id.clone()) && twice {
+                    return self.want_html(&id);
                 }
             }
             Message::LetterLoaded(id, result) => {
@@ -2679,8 +2706,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
+                    // `Enter` or a double click asked for the window before the mail was in (task M9.3).
+                    let window =
+                        self.html_wanted.as_deref() == Some(id.as_str()) && result.as_ref().is_ok_and(mail::shows_html);
                     letter.loaded = Some(result);
-                    return self.ask_invite_side(&id, invite.as_ref());
+                    if self.html_wanted.as_deref() == Some(id.as_str()) {
+                        self.html_wanted = None;
+                    }
+                    let side = self.ask_invite_side(&id, invite.as_ref());
+                    return if window { Task::batch([side, self.view_html(&id)]) } else { side };
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -2743,6 +2777,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::ComposeStarted(Ok(())) => {}
             Message::ComposeStarted(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't open the compose window."), err));
+            }
+            Message::ViewHtml(id) => return self.view_html(&id),
+            Message::MailViewStarted(Ok(())) => {}
+            Message::MailViewStarted(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't open the mail window."), err));
             }
             Message::ToggleSource(source) => return self.toggle_source(&source),
             Message::Arrange(arrange) => self.arrange = arrange,
@@ -3044,6 +3083,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// marked read, as mail apps do; an entry's mail is read once the entry is done (the core).
     fn follow_letter(&mut self) -> Task<Message> {
         let wanted = self.wanted_letter();
+        // The window asked for by `Enter` or a double click belongs to that mail only (task M9.3).
+        if self.html_wanted.is_some() && self.html_wanted != wanted {
+            self.html_wanted = None;
+        }
         if wanted.as_deref() == self.letter.as_ref().map(|letter| letter.id.as_str()) {
             return Task::none();
         }
@@ -3172,6 +3215,82 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.sent.push(Sent::Compose(mail::compose_args(kind, id, self.launch.demo)));
         let command = mail::compose_command(kind, id, self.launch.demo);
         Task::perform(async move { mail::start(command) }, Message::ComposeStarted)
+    }
+
+    /// Opens the message `id` in the mail window (task M9.3, [`mail::view_command`]):
+    /// `torromailview <id>`, on the demo `torromailview --demo`. The window asks the core for the
+    /// mail itself; opening it there counts as opening its entry, as the panel's reading does.
+    fn view_html(&mut self, id: &str) -> Task<Message> {
+        self.close_menus();
+        #[cfg(test)]
+        self.sent.push(Sent::MailView(mail::view_args(id, self.launch.demo)));
+        let command = mail::view_command(id, self.launch.demo);
+        Task::perform(async move { mail::start(command) }, Message::MailViewStarted)
+    }
+
+    /// `Enter` or a double click on the message `id` (task M9.3): the mail window when its whole
+    /// mail has HTML, nothing when it has none or could not be read; while it still loads (or is
+    /// not asked for yet – the panel opening with the same press asks for it) the window opens
+    /// once it is in and has HTML ([`App::html_wanted`]).
+    fn want_html(&mut self, id: &str) -> Task<Message> {
+        match &self.letter {
+            Some(Letter { id: held, loaded: Some(Ok(mail)) }) if held == id => {
+                if mail::shows_html(mail) {
+                    return self.view_html(id);
+                }
+                Task::none()
+            }
+            Some(Letter { id: held, loaded: Some(Err(_)) }) if held == id => Task::none(),
+            _ => {
+                self.html_wanted = Some(id.to_owned());
+                Task::none()
+            }
+        }
+    }
+
+    /// `v` (task M9.3): the mail the panel or reader shows in the mail window, when it has HTML
+    /// – what its button "View as HTML" does; nothing otherwise.
+    fn key_view_html(&mut self) -> Task<Message> {
+        let id = match &self.letter {
+            Some(Letter { id, loaded: Some(Ok(mail)) }) if mail::shows_html(mail) => id.clone(),
+            _ => return Task::none(),
+        };
+        self.view_html(&id)
+    }
+
+    /// Whether this press on the row `id` follows one on the same row within [`DOUBLE_PRESS`]: a
+    /// double click. A third press starts counting anew.
+    fn pressed_again(&mut self, id: &str) -> bool {
+        let now = Instant::now();
+        let twice = self
+            .pressed
+            .as_ref()
+            .is_some_and(|(last, at)| last == id && now.saturating_duration_since(*at) <= DOUBLE_PRESS);
+        self.pressed = if twice { None } else { Some((id.to_owned(), now)) };
+        twice
+    }
+
+    /// The entry `id` under the cursor and in the panel; "Coming back" opens snoozed entries, which
+    /// the overview does not list (task E8.5).
+    fn select(&mut self, id: String) {
+        self.close_menus();
+        self.detail = self.items.iter().chain(&self.snoozed).find(|item| item.id == id).cloned();
+        if let Some(item) = &self.detail {
+            self.column = self.launch.kind.column_or_first(Column::of(item));
+            self.cursor = Some(id);
+        }
+    }
+
+    /// The folder's message `id` under the cursor and in the panel; `false` when the folder does not
+    /// list it.
+    fn select_mail(&mut self, id: String) -> bool {
+        self.close_menus();
+        let listed = self.messages.iter().any(|message| message.id == id);
+        if listed {
+            self.cursor = Some(id);
+            self.reading = true;
+        }
+        listed
     }
 
     /// Starts the compose window for a new message ([`compose::new_command`], task E4.3).
@@ -3588,6 +3707,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Command::Forward => self.key_mail(MailAction::Forward),
             Command::Delete => self.key_mail(MailAction::Delete),
             Command::Search => self.focus_search(),
+            Command::ViewHtml => self.key_view_html(),
             Command::Done => match self.cursor_item().cloned() {
                 Some(item) if detail::is_approval(&item) => {
                     self.note(tr("An approval closes once it is decided.").to_owned());
@@ -3757,19 +3877,30 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
 
     /// Enter: opens what the entry under the cursor links to – its page, its app, the agent's
     /// window – as [`App::open_entry`] does; an entry without such a link, and a mail (task E4.2),
-    /// opens in the panel. In a folder Enter opens the message under the cursor in the panel.
+    /// opens in the panel. In a folder Enter opens the message under the cursor in the panel. A
+    /// mail with HTML opens in the mail window as well (task M9.3, [`App::want_html`]). The keys go
+    /// past the presses of [`App::pressed_again`]: two quick `Enter`s are no double click.
     fn open_cursor(&mut self) -> Task<Message> {
         if self.view.is_mail() {
-            return match self.cursor.clone() {
-                Some(id) => self.update(Message::SelectMail(id)),
-                None => Task::none(),
-            };
+            let Some(id) = self.cursor.clone() else { return Task::none() };
+            if !self.select_mail(id.clone()) {
+                return Task::none();
+            }
+            let letter = self.follow_letter();
+            return Task::batch([letter, self.want_html(&id)]);
         }
         let Some(item) = self.cursor_item().cloned() else { return Task::none() };
-        match detail::openable(&item) {
-            Some(Link::Mail { .. }) | None => self.update(Message::Select(item.id)),
-            Some(_) => self.open_entry(&item),
+        if let Some(Link::Url { .. } | Link::App { .. } | Link::Window) = detail::openable(&item) {
+            return self.open_entry(&item);
         }
+        let mail = match &item.link {
+            Some(Link::Mail { message }) => Some(message.clone()),
+            _ => None,
+        };
+        self.select(item.id);
+        let Some(message) = mail else { return Task::none() };
+        let letter = self.follow_letter();
+        Task::batch([letter, self.want_html(&message)])
     }
 
     /// Opens the snooze menu for the entry with `id`. Done entries are not snoozed, and an approval is
@@ -8246,6 +8377,116 @@ mod tests {
         let _ = press(&mut app, Key::U);
         deliver_mail(&mut app);
         assert!(message_ids(&app).contains(&"m:w1"), "back in the inbox, with the same id");
+    }
+
+    // HTML mail (task M9.3).
+
+    /// How often the mail window was started.
+    fn windows(app: &App<DemoSource>) -> usize {
+        app.sent.iter().filter(|sent| matches!(sent, Sent::MailView(_))).count()
+    }
+
+    #[test]
+    fn the_mail_window_gets_the_id_or_the_demo() {
+        assert_eq!(mail::view_args("m:7", false), ["m:7"]);
+        assert_eq!(mail::view_args("m:7", true), ["--demo"], "the mail window shows its own sample");
+        let command = mail::view_command("m:7", false);
+        assert!(command.get_program().to_string_lossy().contains(mail::MAIL_VIEW), "next to this binary");
+        assert_eq!(command.get_args().collect::<Vec<_>>(), ["m:7"]);
+    }
+
+    /// `v` and Enter start the mail window for a mail with HTML – one with a text and an HTML part as
+    /// well (`from_html` false) – and do nothing new for one without.
+    #[test]
+    fn v_and_enter_open_a_mail_with_html_in_the_mail_window() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SelectMail("m:w14".into()));
+        deliver_letter(&mut app, "m:w14");
+        let Some(Letter { loaded: Some(Ok(mail)), .. }) = &app.letter else { panic!("the mail is in") };
+        assert!(!mail.from_html && mail::shows_html(mail), "text and HTML: the button shows");
+        draw_everywhere(&mut app);
+        let _ = press(&mut app, Key::V);
+        assert_eq!(app.sent.last(), Some(&Sent::MailView(mail::view_args("m:w14", true))));
+        let _ = press(&mut app, Key::Enter);
+        assert_eq!(windows(&app), 2, "Enter opens it too");
+        let _ = app.update(Message::ViewHtml("m:w14".into()));
+        assert_eq!(windows(&app), 3, "the button");
+
+        let mut plain = in_folder("f:work-inbox");
+        let _ = plain.update(Message::SelectMail("m:w1".into()));
+        deliver_letter(&mut plain, "m:w1");
+        let _ = press(&mut plain, Key::V);
+        let _ = press(&mut plain, Key::Enter);
+        assert_eq!(windows(&plain), 0, "no HTML, no window");
+        assert!(
+            plain.reading && plain.letter.as_ref().is_some_and(|letter| letter.id == "m:w1"),
+            "the panel as before"
+        );
+    }
+
+    /// Enter on a row whose mail is not loaded yet opens the panel and – once the mail turns out to
+    /// have HTML – the mail window; a mail without HTML only the panel, and moving on forgets it.
+    #[test]
+    fn enter_before_the_mail_is_in_opens_the_window_once_it_has_html() {
+        let mut app = in_folder("f:private-inbox");
+        app.cursor = Some("m:p2".into());
+        let _ = press(&mut app, Key::Enter);
+        assert!(app.reading, "the panel opens as before");
+        assert_eq!(windows(&app), 0, "not known yet");
+        deliver_letter(&mut app, "m:p2");
+        assert_eq!(app.sent.last(), Some(&Sent::MailView(mail::view_args("m:p2", true))), "made from HTML");
+        assert_eq!(app.html_wanted, None);
+
+        let mut plain = in_folder("f:work-inbox");
+        plain.cursor = Some("m:w1".into());
+        let _ = press(&mut plain, Key::Enter);
+        deliver_letter(&mut plain, "m:w1");
+        assert_eq!((windows(&plain), plain.html_wanted.as_deref()), (0, None));
+
+        let mut left = in_folder("f:work-inbox");
+        left.cursor = Some("m:w14".into());
+        let _ = press(&mut left, Key::Enter);
+        let _ = left.update(Message::SelectMail("m:w1".into()));
+        assert_eq!(left.html_wanted, None, "another mail in the panel: forgotten");
+        deliver_letter(&mut left, "m:w14");
+        assert_eq!(windows(&left), 0);
+    }
+
+    /// A double click on a row (two presses on it in a short time) opens a mail with HTML in the mail
+    /// window; one press only shows it in the panel.
+    #[test]
+    fn a_double_click_on_a_row_opens_the_mail_window() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::SelectMail("m:w14".into()));
+        deliver_letter(&mut app, "m:w14");
+        assert_eq!(windows(&app), 0, "one press: the panel");
+        let _ = app.update(Message::SelectMail("m:w14".into()));
+        assert_eq!(windows(&app), 1, "the second press: the window");
+
+        let mut early = in_folder("f:work-inbox");
+        let _ = early.update(Message::SelectMail("m:w14".into()));
+        let _ = early.update(Message::SelectMail("m:w14".into()));
+        deliver_letter(&mut early, "m:w14");
+        assert_eq!(windows(&early), 1, "pressed twice before the mail was in");
+
+        let mut plain = in_folder("f:work-inbox");
+        let _ = plain.update(Message::SelectMail("m:w1".into()));
+        let _ = plain.update(Message::SelectMail("m:w1".into()));
+        deliver_letter(&mut plain, "m:w1");
+        assert_eq!(windows(&plain), 0, "no HTML, no window");
+
+        // The newsletter's entry under "Info" (sent to a list), clicked twice.
+        let mut entries = loaded(&["--lane", "info"]);
+        let entry = entries
+            .items
+            .iter()
+            .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == "m:w14"))
+            .map(|item| item.id.clone())
+            .expect("the newsletter's entry");
+        let _ = entries.update(Message::Select(entry.clone()));
+        let _ = entries.update(Message::Select(entry));
+        deliver_letter(&mut entries, "m:w14");
+        assert_eq!(windows(&entries), 1);
     }
 
     /// Issue #118: Delete (the key, or the row's button, which sends the same) moves a folder's

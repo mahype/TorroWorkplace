@@ -13,6 +13,10 @@
 //! - Reply, reply all and forward open the compose window (task E4.3) as its own process
 //!   ([`compose_command`]): `torroinbox --compose --reply <id>`, `--reply-all <id>` or
 //!   `--forward <id>`, started like the suite starts its programs ([`source::sibling`]).
+//! - "View as HTML" (task M9.3) opens the mail as it was written in the mail window, its own
+//!   program ([`view_command`]: `torromailview <id>`, `torromailview --demo` on the demo). The
+//!   panel learns whether a mail has HTML from the same `mail.get_message` that brings its text
+//!   ([`MailSource::get_mail`] asks with `include_html`); only then the button shows.
 //! - [`list`] draws a folder's messages – rows, or cards in the comfortable density of the mail
 //!   window (task E8.3, [`message_card`]) – and the smart view "With attachments" ([`attachments`]:
 //!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
@@ -22,8 +26,8 @@
 //! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
 //!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
 //!
-//! **Mail is foreign text** (`untrusted`). The core turns HTML into text and fetches nothing it
-//! names, so no picture or other content from the web is ever loaded. The text is drawn as it is;
+//! **Mail is foreign text** (`untrusted`). The panel draws only its text – a preview; the HTML
+//! (cleaned by the core) is shown by the mail window alone, never here. The text is drawn as it is;
 //! web addresses in it ([`pieces`]) become links that show the whole address and open only on a
 //! click. An attachment is fetched by the core into its attachment folder and opened with the
 //! system, except files that could run programs ([`runs_programs`]): their folder opens instead.
@@ -87,7 +91,11 @@ pub trait MailSource: Send + Sync {
         order: Order,
     ) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
-    /// `mail.get_message` with its text. Reading does not mark it read.
+    /// `mail.get_message` with its text and – asked with `include_html` (task M9.3) – its cleaned
+    /// HTML, so the panel knows whether to offer "View as HTML" ([`shows_html`]). Its text only
+    /// when the HTML cannot be had (the core must fetch it for an old cached mail and the server is
+    /// out of reach): the panel then works as before, without the button. Reading does not mark it
+    /// read.
     fn get_mail(&self, id: String) -> impl Future<Output = Result<Mail, InboxError>> + Send;
 
     /// `mail.get_attachment`: the attachment `part` of the message `id` as a file in the core's
@@ -184,7 +192,12 @@ impl MailSource for InboxClient {
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
-        InboxClient::get_mail(self, id).await
+        // With the HTML the core may have to fetch the mail once more (cached before it kept HTML);
+        // offline that fails, and the text it holds must still show.
+        match InboxClient::get_mail_html(self, id.clone()).await {
+            Ok(mail) => Ok(mail),
+            Err(_) => InboxClient::get_mail(self, id).await,
+        }
     }
 
     async fn mail_attachment(&self, id: String, part: String) -> Result<PathBuf, InboxError> {
@@ -574,6 +587,29 @@ pub fn compose_args(kind: Compose, id: &str, demo: bool) -> Vec<String> {
 pub fn compose_command(kind: Compose, id: &str, demo: bool) -> Command {
     let mut command = Command::new(source::sibling(INBOX.binary));
     command.args(compose_args(kind, id, demo));
+    command
+}
+
+/// The program of the mail window (task M9.2), next to this one.
+pub const MAIL_VIEW: &str = "torromailview";
+
+/// Whether the panel offers "View as HTML" for `mail` (task M9.3): it came with cleaned HTML. A
+/// mail with a text part and an HTML part has it as well as one made from HTML (`from_html`).
+pub fn shows_html(mail: &Mail) -> bool {
+    mail.html.as_deref().is_some_and(|html| !html.trim().is_empty())
+}
+
+/// The arguments of the mail window for the message `id`: just the id (`torromailview <id>`); on
+/// the demo `--demo` instead, as the mail window knows no demo mail by id and shows its sample.
+pub fn view_args(id: &str, demo: bool) -> Vec<String> {
+    vec![if demo { "--demo".to_owned() } else { id.to_owned() }]
+}
+
+/// The command that opens the mail window (task M9.3): [`MAIL_VIEW`] next to the running binary
+/// (as [`compose_command`] finds its own, [`source::sibling`]) with [`view_args`].
+pub fn view_command(id: &str, demo: bool) -> Command {
+    let mut command = Command::new(source::sibling(MAIL_VIEW));
+    command.args(view_args(id, demo));
     command
 }
 
@@ -1450,8 +1486,8 @@ pub fn panel<'a>(reading: &Reading<'a>, folder: Option<&'a FolderView>) -> panel
 }
 
 /// The mail in the panel: who wrote it to whom and when, the actions (reply, reply all, forward,
-/// archive, delete, flag, read), the attachments, the text with its links, and the notes that the
-/// text comes from outside and – for HTML – that nothing from the web was loaded.
+/// archive, delete, flag, read), the attachments, "View as HTML" when it has HTML (task M9.3), the
+/// text with its links, and the note that the text comes from outside.
 pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     let mut body = column![].spacing(space::l());
     if let Some(summary) = reading.summary() {
@@ -1865,10 +1901,17 @@ fn attachment_row<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
 }
 
 /// The text in `level` with its web addresses as links ([`pieces`]: the whole address shows,
-/// underlined, and opens on a click), then the notes on foreign text.
+/// underlined, and opens on a click), then the note on foreign text. A mail with HTML
+/// ([`shows_html`]) has "View as HTML" over it (task M9.3, `v`): the text is only its preview.
 fn text_block<'a>(mail: &'a Mail, link: Color, level: typo::Level) -> Element<'a, Message> {
     let text = mail.text.as_deref().map(list::plain).unwrap_or_default();
     let mut block = column![].spacing(space::s());
+    if shows_html(mail) {
+        let open = Some(Message::ViewHtml(mail.summary.id.clone()));
+        let button = widgets::text_button(Some(Icon::ArrowUpRight), tr("View as HTML"), style::button::secondary, open);
+        // Below the button the text keeps its gap to the actions (`space::l()` between the parts).
+        block = block.push(container(button).padding(Padding::new(0.0).bottom(space::s())));
+    }
     if !text.trim().is_empty() {
         let spans: Vec<iced::widget::text::Span<'a, String>> = pieces(&text)
             .into_iter()
@@ -1887,9 +1930,6 @@ fn text_block<'a>(mail: &'a Mail, link: Color, level: typo::Level) -> Element<'a
         block = block.push(message);
     }
     block = block.push(note(detail::foreign_note()));
-    if mail.from_html {
-        block = block.push(note(tr("Made from HTML. Pictures and other content from the web are not loaded.")));
-    }
     // No title over the text: the headers above already say whose mail it is (and "Message" reads
     // as a notice in German, the entries' word).
     block.into()

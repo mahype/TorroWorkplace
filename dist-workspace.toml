@@ -43,3 +43,10 @@ pr-run-mode = "skip"
 # the release contents (a called workflow cannot have more rights than its caller grants).
 [dist.github-custom-job-permissions]
 "publish-macos-app" = { contents = "write" }
+
+# System packages the Linux builds need (torromailview, task M9.2: wry draws with WebKitGTK in a GTK
+# window). dist installs them with apt before building; macOS and Windows use the system web view.
+[dist.dependencies.apt]
+# Quoted: a bare key would split at the dot.
+"libwebkit2gtk-4.1-dev" = "*"
+libgtk-3-dev = "*"
