@@ -228,7 +228,7 @@ Beispiel bleibt gelöscht oder geändert; überschrieben wird nie etwas. Die Dat
 ### Schritte
 
 1. **Ordner anlegen:** `<data>/designs/<id>/`, `<id>` klein (`a-z`, `0-9`, `-`). Am schnellsten: Steuerzentrale ›
-   General › Design › „Open designs folder“, dort `plex` kopieren und umbenennen.
+   Appearance › Design › „Open designs folder“, dort `plex` kopieren und umbenennen.
 2. **`design.toml` beginnen:** `format = 1`, `[about]` mit `name` und `version`. Damit ist das Paket schon gültig – es
    sieht aus wie Torro. Ab hier nur eintragen, was abweicht.
 3. **Schrift:** TTF/OTF nach `fonts/`, die Lizenz als `fonts/LICENSE.txt`, `font_license` in `[about]`.
@@ -250,7 +250,7 @@ Beispiel bleibt gelöscht oder geändert; überschrieben wird nie etwas. Die Dat
    eine Form in einer Farbe, die auf hellen und dunklen Leisten trägt; macOS färbt sie ohnehin selbst.
 7. **Vorschau:** `preview.png` höchstens 1200 × 800, am besten ein Ausschnitt des eigenen Demo-Fensters im
    Seitenverhältnis 3 : 2 (Plex: 600 × 400, 60 KB).
-8. **Prüfen:** Steuerzentrale › General › Design › „Reload“: Das Paket steht in der Liste, ungültig mit jedem Grund
+8. **Prüfen:** Steuerzentrale › Appearance › Design › „Reload“: Das Paket steht in der Liste, ungültig mit jedem Grund
    in einer eigenen Zeile. Ansehen ohne die eigene Einstellung zu ändern: `torrocalendar --demo --design <id>` (ebenso
    `torrotasks`, `torroinbox`, `torroworkplace ui`), mit `--appearance light` und `dark`.
 
@@ -273,7 +273,7 @@ Zeilen 32 bei 760 Höhe). Darum hat Plex Seitenleistenzeilen 30 statt 32.
 
 ## Wählen und wechseln
 
-- Gewählt wird in der Steuerzentrale, **General › Appearance**: Liste der Pakete mit Vorschau (Bild oder Farbmuster und
+- Gewählt wird in der Steuerzentrale, **Appearance**: Liste der Pakete mit Vorschau (Bild oder Farbmuster und
   Schriftprobe), das aktive markiert, ungültige mit ihren Gründen. Dazu „Open designs folder“.
 - Der Wechsel wirkt **sofort in allen offenen Fenstern**, wie heute hell/dunkel und der Zoom. Hell/dunkel bleibt eine
   eigene Einstellung: Jedes Paket hat beide Fassungen.
@@ -284,8 +284,8 @@ Zeilen 32 bei 760 Höhe). Darum hat Plex Seitenleistenzeilen 30 statt 32.
 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
-| Pakete auflisten (id, Name, Version, Autor, Beschreibung, Standard ja/nein, gültig, Gründe) | General › Appearance | `settings.list_designs` · Read | `settings_list_designs` |
-| Paket wählen | General › Appearance | `settings.set_setting { key: design, value: "<id>" }` · Admin (gibt es) | `settings_set_setting` (gibt es) |
+| Pakete auflisten (id, Name, Version, Autor, Beschreibung, Standard ja/nein, gültig, Gründe) | Appearance | `settings.list_designs` · Read | `settings_list_designs` |
+| Paket wählen | Appearance | `settings.set_setting { key: design, value: "<id>" }` · Admin (gibt es) | `settings_set_setting` (gibt es) |
 | Gewähltes Paket lesen | – | `settings.get_settings` (Feld `design`) | `settings_get_settings` |
 | Paket installieren / entfernen | Ordner öffnen (Stufe 1) | später | später, frühestens Admin mit Freigabe |
 

@@ -1,10 +1,16 @@
-//! General settings (task S.9 in `docs/tasks/steuerzentrale.md`): settings groups, each with a
-//! footer sentence that explains the consequence. "Language" and "Appearance" are lists of choices
-//! – one row each, the whole row is the button, a check mark at the chosen one (Deutsch is shown in
-//! its own name, like the language picker of any app); "Design" lists the design packs (task L.4,
-//! below); "Interface" has the zoom of the suite with −, the value, + and "Reset" (task Z.1);
-//! "Calendar" has the night with its two times "From" and "Until" on the quarter hour (task
-//! K.27); "Startup" has the "Start at login" switch. There is no Save button: every change sends
+//! The settings pages General and Appearance (tasks S.9 and S.14 in `docs/tasks/steuerzentrale.md`):
+//! settings groups, each with a footer sentence that explains the consequence.
+//!
+//! - **General** ([`view`]): "Language", a list of choices – one row each, the whole row is the
+//!   button, a check mark at the chosen one (Deutsch is shown in its own name, like the language
+//!   picker of any app); "Calendar" has the night with its two times "From" and "Until" on the
+//!   quarter hour (task K.27); "Startup" has the "Start at login" switch.
+//! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
+//!   glance): "Appearance" (System, Light, Dark) as a list of choices like the language; "Design"
+//!   lists the design packs (task L.4, below); "Interface" has the zoom of the suite with −, the
+//!   value, + and "Reset" (task Z.1).
+//!
+//! Both pages share one state and one message type. There is no Save button: every change sends
 //! `Request::SetSetting` with the one key that changed, and the shell reloads `Data` afterwards.
 //! The zoom goes through the window's own zoom instead (`Action::Zoom`), which saves it and
 //! applies it at once, also in the demo. The page shows `data.settings`, so it follows the daemon.
@@ -129,7 +135,8 @@ pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
     Action::Send(Request::SetSetting { key, value })
 }
 
-pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+/// The page General: language, calendar, startup.
+pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings;
     let language = |label: &'static str, language: Language| {
         choice(label, settings.language == language, Message::Language(language))
@@ -146,20 +153,6 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Some(tr("Applies to apps you open afterwards. “System” follows your system language.").to_string()),
     );
 
-    // The control centre itself follows at once: it reloads the settings after every change.
-    let appearance = |label: &'static str, appearance: Appearance| {
-        choice(label, settings.appearance == appearance, Message::Appearance(appearance))
-    };
-    let appearance = widgets::group(
-        tr("Appearance"),
-        vec![
-            appearance(tr("System"), Appearance::System),
-            appearance(tr("Light"), Appearance::Light),
-            appearance(tr("Dark"), Appearance::Dark),
-        ],
-        Some(tr("Light or dark colors for all Torro apps. “System” follows your desktop.").to_string()),
-    );
-
     let switch =
         toggler(settings.start_at_login).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::StartAtLogin);
     let startup = widgets::group(
@@ -167,15 +160,6 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         vec![setting_row(None, tr("Start at login"), None, switch)],
         Some(
             tr("Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready.")
-                .to_string(),
-        ),
-    );
-
-    let interface = widgets::group(
-        tr("Interface"),
-        vec![setting_row(None, tr("Zoom"), None, zoom_control(settings.zoom))],
-        Some(
-            tr("Makes all Torro apps larger or smaller, like zooming in a browser: Ctrl + Plus and Ctrl + Minus, Ctrl + 0 resets.")
                 .to_string(),
         ),
     );
@@ -189,8 +173,37 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
     );
 
+    column![language, calendar, startup].spacing(layout::section_gap()).into()
+}
+
+/// The page Appearance: light or dark, the design pack, the zoom.
+pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let settings = &data.settings;
+    // The control centre itself follows at once: it reloads the settings after every change.
+    let appearance = |label: &'static str, appearance: Appearance| {
+        choice(label, settings.appearance == appearance, Message::Appearance(appearance))
+    };
+    let appearance = widgets::group(
+        tr("Color mode"),
+        vec![
+            appearance(tr("System"), Appearance::System),
+            appearance(tr("Light"), Appearance::Light),
+            appearance(tr("Dark"), Appearance::Dark),
+        ],
+        Some(tr("Light or dark colors for all Torro apps. “System” follows your desktop.").to_string()),
+    );
+
+    let interface = widgets::group(
+        tr("Interface"),
+        vec![setting_row(None, tr("Zoom"), None, zoom_control(settings.zoom))],
+        Some(
+            tr("Makes all Torro apps larger or smaller, like zooming in a browser: Ctrl + Plus and Ctrl + Minus, Ctrl + 0 resets.")
+                .to_string(),
+        ),
+    );
+
     let design = designs(state, data);
-    column![language, appearance, design, interface, calendar, startup].spacing(layout::section_gap()).into()
+    column![appearance, design, interface].spacing(layout::section_gap()).into()
 }
 
 /// The group "Design": a row per pack, then the row of the designs folder.

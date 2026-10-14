@@ -25,7 +25,7 @@ pub const STATUS_ERROR: Rgb = Rgb(0xFF, 0x3B, 0x30);
 /// Not set up, not present.
 pub const STATUS_INACTIVE: Rgb = Rgb(0x8E, 0x8E, 0x93);
 
-/// The appearance the user picked (control centre › General › Appearance), stored in the
+/// The appearance the user picked (control centre › Appearance), stored in the
 /// suite settings. The apps turn it into a light or dark Iced theme
 /// (`torro_gui::theme::for_appearance`); it lives here because the core stores and serves it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]

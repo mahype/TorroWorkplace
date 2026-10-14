@@ -104,3 +104,21 @@ Gemeinsam für alle Seiten-Aufgaben:
 - `status` ohne `--json` zeigt je Konto eine Zeile (`nextcloud  wagesve@cloud.example.org  connected, synced 12:04`).
 - **Abnahme:** Tests für Serialisierung (alt ohne `accounts` lesbar) und die Textausgabe; fmt,
   clippy, test (auch `TORRO_LANG=de`) grün.
+
+### S.14 Eigene Seite „Appearance“
+- [x] erledigt (2026-10-14: Symbol `sun`, weil die Suite kein Paletten-Symbol hat; die Gruppe heißt dort
+  „Color mode“, damit Seite und Gruppe nicht gleich heißen)
+- **Modell:** Opus · **Dateien:** `crates/torroworkplace/src/ui/{mod,general,launch}.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `crates/torro-core/src/theme.rs` (Kommentar),
+  `.claude/skills/torro-design/SKILL.md`, `docs/design-pakete.md`
+- Warum (Wunsch 2026-10-14): Hell/Dunkel und das Design-Paket standen unten auf der Seite General, die nur über
+  das Zahnrad erreichbar ist; man fand sie nicht.
+- Neue Seite **Appearance** sichtbar in der Seitenleiste (vor General, das am Fuß bleibt), auch mit
+  `torroworkplace ui --section appearance`: Gruppen „Color mode“ (System, Light, Dark), „Design“ (die Pakete) und
+  „Interface“ (Zoom). General behält Sprache, Kalender und Start beim Anmelden. Die Pakete werden beim Öffnen
+  von Appearance gelistet; `--open design` öffnet Appearance.
+- **Oberfläche/API/MCP:** keine neue Funktion – dieselben Einstellungen (`settings.set_setting` für
+  `appearance`, `design`, `zoom`; `settings.list_designs`), nur an anderer Stelle der Oberfläche.
+- **Abnahme:** Tests: Seite in der Navigation und per `--section appearance`; Öffnen von Appearance listet die
+  Pakete, General nicht mehr; `--open design` landet auf Appearance. Sichtprüfung der Steuerzentrale mit
+  `--demo --section appearance`, hell und dunkel.
