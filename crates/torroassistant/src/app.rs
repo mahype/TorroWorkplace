@@ -18,9 +18,16 @@
 //! this computer first) and the areas switched off for this conversation ("Without Mail").
 //!
 //! Following an answer: there is no `subscribe` yet, so the window asks `assistant.get_conversation`
-//! with `after` = the last number it has, every [`FOLLOW`] while an answer runs and every
-//! [`REFRESH`] otherwise, and merges what comes ([`Transcript::merge`]): the answer the model is
-//! still writing comes again and again under the same number and replaces itself.
+//! with `after` = the last number it has, every [`FOLLOW`] while an answer runs ([`FOLLOW_WAITING`]
+//! while it waits for an approval) and every [`REFRESH`] otherwise, and merges what comes
+//! ([`Transcript::merge`]): the answer the model is still writing comes again and again under the
+//! same number and replaces itself.
+//!
+//! Smooth streaming (issue #135): an answer that comes while the window watches appears letter by
+//! letter on the window's frames ([`Stream`], [`crate::stream`]), at a pace that follows what came;
+//! one that was there when the conversation opened shows at once. Entries after it wait until it
+//! shows whole, so the text never runs on below a tool line. The history follows the newest entry
+//! only while it is scrolled to the bottom ([`App::follow_bottom`]); scrolled up, nothing moves.
 //!
 //! First start: without the client "Assistant" (`clients.list_clients`) a new chat asks the person
 //! to choose what the assistant may use, with a button that opens the control centre on its page
@@ -45,6 +52,7 @@ use std::time::{Duration, Instant};
 use iced::theme::Mode;
 use iced::widget::markdown;
 use iced::widget::operation;
+use iced::widget::scrollable;
 use iced::widget::text_editor::{self, Binding, Content, KeyPress};
 use iced::{Size, Subscription, Task, Theme, keyboard};
 use torro_core::AppId;
@@ -68,6 +76,7 @@ use crate::bots::{BotDraft, DraftEdit, Proposal};
 use crate::chat::{self, Choice, Transcript};
 use crate::demo;
 use crate::launch::{Launch, Open, Window};
+use crate::stream::{self, Smoother};
 
 /// The main window's identity: window class `torro-assistant`, binary `torroassistant`, state in
 /// `torroassistant/`.
@@ -91,8 +100,18 @@ pub const CHAT_SIZE: Size = Size::new(560.0, 760.0);
 /// conversation while nothing runs. The core is local and cheap to ask.
 const REFRESH: Duration = Duration::from_secs(5);
 
-/// How often the window follows an answer that runs: often enough that the text flows.
-const FOLLOW: Duration = Duration::from_millis(500);
+/// How often the window follows an answer that runs: often enough that the text comes in small
+/// pieces, which [`Stream`] spreads evenly over the frames. Only while an answer runs; the core is
+/// local and the request small.
+const FOLLOW: Duration = Duration::from_millis(50);
+
+/// How often the window follows an answer that waits for the person's approval: nothing is
+/// written meanwhile, only the decision (in the tray or the inbox) is looked for.
+const FOLLOW_WAITING: Duration = Duration::from_millis(500);
+
+/// What the first frame after a pause counts: one frame at 60 Hz, so the pause itself is not
+/// caught up at once.
+const FRAME: Duration = Duration::from_micros(16_667);
 
 /// How often a shown notice checks whether its time is up.
 const NOTICE_TICK: Duration = Duration::from_secs(1);
@@ -191,6 +210,17 @@ pub struct Notice {
 /// One full or partial answer of `assistant.get_conversation` or `assistant.send_message`.
 pub type Loaded = Result<(ConversationSummary, Vec<Entry>), Refusal>;
 
+/// The answer that appears letter by letter (issue #135).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stream {
+    /// The answer's number in the transcript.
+    pub seq: u64,
+    pub smoother: Smoother,
+    /// The time of the last frame; `None` while nothing is left to show, so the frame after a
+    /// pause counts as one ([`FRAME`]).
+    pub frame: Option<Instant>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// The band above the content was pressed: drag the window (see `shell::titlebar`).
@@ -201,6 +231,10 @@ pub enum Message {
     Tick,
     /// Every [`FOLLOW`] while an answer runs: ask for the open conversation.
     Follow,
+    /// A frame of the window, while an answer appears letter by letter.
+    Frame(Instant),
+    /// The history scrolled, or its entries grew.
+    HistoryScrolled(scrollable::Viewport),
     /// The conversations, pinned first, then the newest.
     Listed(Result<Vec<ConversationSummary>, Refusal>),
     /// The engines the assistant can answer with.
@@ -379,8 +413,13 @@ pub struct App {
     pub(crate) deciding: Option<String>,
     /// The tool lines unfolded, by number.
     pub(crate) expanded: HashSet<u64>,
-    /// The answers as Markdown blocks, by number, with the text they were made from.
+    /// The answers as Markdown blocks, by number, with the text they were made from: for the
+    /// answer in [`App::stream`] what of it shows ([`crate::stream::display`]).
     pub(crate) answers: HashMap<u64, (String, Vec<markdown::Item>)>,
+    /// The answer that appears letter by letter; `None` when every answer shows whole.
+    pub(crate) stream: Option<Stream>,
+    /// The history is scrolled to the bottom and follows the newest entry; scrolled up, it stays.
+    pub(crate) follow_bottom: bool,
 
     /// The composer's text.
     pub(crate) editor: Content,
@@ -461,6 +500,8 @@ impl App {
             deciding: None,
             expanded: HashSet::new(),
             answers: HashMap::new(),
+            stream: None,
+            follow_bottom: true,
             editor: Content::new(),
             mini: String::new(),
             choice: None,
@@ -546,7 +587,12 @@ impl App {
         ];
         // Only while an answer runs (or a message is on its way): a window at rest asks rarely.
         if self.transcript.running() || self.sending {
-            subscriptions.push(iced::time::every(FOLLOW).map(|_| Message::Follow));
+            let every = if self.waits_for_approval() { FOLLOW_WAITING } else { FOLLOW };
+            subscriptions.push(iced::time::every(every).map(|_| Message::Follow));
+        }
+        // Frames only while letters wait to show: a window at rest draws nothing.
+        if self.stream.as_ref().is_some_and(|stream| stream.smoother.revealing()) {
+            subscriptions.push(iced::window::frames().map(Message::Frame));
         }
         if self.dialog.is_some() || self.menu.is_some() || self.drawer || self.notice.is_some() {
             subscriptions.push(widgets::escape().map(|()| Message::Escape));
@@ -591,6 +637,8 @@ impl App {
                 return Task::batch(tasks);
             }
             Message::Follow => return self.follow(),
+            Message::Frame(now) => self.frame(now),
+            Message::HistoryScrolled(viewport) => return self.history_scrolled(viewport),
             Message::Listed(result) => return self.listed(result),
             Message::Engines(result) => return self.take_engines(result),
             Message::Models(engine, result) => {
@@ -998,16 +1046,14 @@ impl App {
                 self.bot = summary.bot.clone();
                 self.transcript = Transcript::new(summary, entries);
                 self.chat_error = None;
-                self.after_change();
+                // What was there when the conversation opened shows at once.
+                self.after_change(false);
                 if matches!(self.launch.open, Some(Open::Tools | Open::BotAsked)) && self.expanded.is_empty() {
                     let first = self.transcript.entries.iter().find(|e| matches!(e.content, EntryContent::Tool { .. }));
                     self.expanded.extend(first.map(|entry| entry.seq));
                 }
                 self.choose_default();
-                // The entries are anchored at the bottom: offset 0 is the newest entry, also when
-                // the list kept the offset of the conversation shown before.
-                let newest = operation::snap_to(HISTORY, operation::RelativeOffset::START);
-                Task::batch([self.fetch_approvals(), newest])
+                Task::batch([self.fetch_approvals(), self.scroll_to_newest()])
             }
             Err(refusal) if refusal.code == "not-found" => self.gone(),
             Err(refusal) => {
@@ -1026,7 +1072,7 @@ impl App {
             Ok((summary, entries)) => {
                 let known: HashSet<String> = self.transcript.approvals().into_iter().map(str::to_owned).collect();
                 if self.transcript.merge(summary, entries) {
-                    self.after_change();
+                    self.after_change(true);
                 }
                 let new: Vec<String> = self
                     .transcript
@@ -1052,25 +1098,45 @@ impl App {
     }
 
     /// After the transcript changed: its summary in the sidebar, the Markdown of new or grown
-    /// answers, and the areas of its last message once.
-    fn after_change(&mut self) {
+    /// answers, and the areas of its last message once. With `animate` (an answer that came while
+    /// the window watches) a new answer appears letter by letter ([`App::stream`]); without, every
+    /// answer shows whole.
+    fn after_change(&mut self, animate: bool) {
         if let Some(summary) = self.transcript.summary.clone() {
             match self.conversations.iter_mut().find(|c| c.id == summary.id) {
                 Some(listed) => *listed = summary,
                 None => self.conversations.insert(0, summary),
             }
         }
-        let mut seen = HashSet::new();
-        for entry in &self.transcript.entries {
-            if let EntryContent::Answer { text, .. } = &entry.content {
-                seen.insert(entry.seq);
-                let fresh = self.answers.get(&entry.seq).is_none_or(|(had, _)| had != text);
-                if fresh {
-                    self.answers.insert(entry.seq, (text.clone(), torro_gui::markdown::parse(text)));
-                }
+        // An answer is complete once it is stored, or when no answer runs any more.
+        let (last, running) = (self.transcript.last(), self.transcript.running());
+        let answers: Vec<(u64, String, bool)> = self
+            .transcript
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Answer { text, .. } => Some((entry.seq, text.clone(), entry.seq <= last || !running)),
+                _ => None,
+            })
+            .collect();
+        let seen: HashSet<u64> = answers.iter().map(|(seq, ..)| *seq).collect();
+        // The streaming answer is gone (stopped, or stored under another number): what it showed
+        // goes on under the new number, nothing is written twice.
+        let mut moved = self.stream.as_ref().is_some_and(|stream| !seen.contains(&stream.seq));
+        for (seq, text, complete) in answers {
+            if let Some(stream) = self.stream.as_mut().filter(|stream| stream.seq == seq) {
+                stream.smoother.set(&text, complete);
+            } else if animate && !self.answers.contains_key(&seq) {
+                self.start_stream(seq, &text, complete, std::mem::take(&mut moved));
+            } else if self.answers.get(&seq).is_none_or(|(had, _)| *had != text) {
+                self.answers.insert(seq, (text.clone(), torro_gui::markdown::parse(&text)));
             }
         }
         self.answers.retain(|seq, _| seen.contains(seq));
+        if self.stream.as_ref().is_some_and(|stream| !seen.contains(&stream.seq)) {
+            self.stream = None;
+        }
+        self.refresh_stream();
         if self.take_without {
             self.take_without = false;
             let usable = self.switchable();
@@ -1079,6 +1145,91 @@ impl App {
                 self.without.retain(|area| usable.contains(area));
             }
         }
+    }
+
+    // -- Smooth streaming (issue #135) ----------------------------------------------------------
+
+    /// Lets the new answer `seq` appear letter by letter. One answer appears at a time: one still
+    /// appearing shows whole at once – unless it is gone (`moved`), then its letters go on here.
+    fn start_stream(&mut self, seq: u64, text: &str, complete: bool, moved: bool) {
+        match self.stream.take() {
+            Some(mut stream) if moved => {
+                stream.seq = seq;
+                stream.smoother.set(text, complete);
+                self.stream = Some(stream);
+                return;
+            }
+            Some(mut stream) => {
+                stream.smoother.finish();
+                let whole = stream.smoother.shown().to_owned();
+                self.answers.insert(stream.seq, (whole.clone(), torro_gui::markdown::parse(&whole)));
+            }
+            None => {}
+        }
+        let mut smoother = Smoother::new();
+        smoother.set(text, complete);
+        self.stream = Some(Stream { seq, smoother, frame: None });
+    }
+
+    /// One frame: the next letters of the streaming answer.
+    fn frame(&mut self, now: Instant) {
+        let Some(stream) = self.stream.as_mut() else { return };
+        let elapsed = stream.frame.map_or(FRAME, |last| now.saturating_duration_since(last));
+        stream.smoother.advance(elapsed);
+        stream.frame = stream.smoother.revealing().then_some(now);
+        self.refresh_stream();
+    }
+
+    /// The Markdown of what shows of the streaming answer, parsed again only when that changed;
+    /// once the answer shows whole it is an answer like any other and the stream ends.
+    fn refresh_stream(&mut self) {
+        let Some(stream) = &self.stream else { return };
+        let done = stream.smoother.done();
+        let shown = stream::display(stream.smoother.shown(), done);
+        if self.answers.get(&stream.seq).is_none_or(|(had, _)| *had != shown) {
+            let items = torro_gui::markdown::parse(&shown);
+            self.answers.insert(stream.seq, (shown.into_owned(), items));
+        }
+        if done {
+            self.stream = None;
+        }
+    }
+
+    /// Whether the answer `seq` shows anything yet: the streaming answer shows nothing before its
+    /// first letter, and then takes no room.
+    pub(crate) fn answer_shows(&self, seq: u64) -> bool {
+        self.answers.get(&seq).is_none_or(|(shown, _)| !shown.is_empty())
+    }
+
+    /// The number of the answer still appearing: the entries after it wait until it shows whole.
+    pub(crate) fn appearing(&self) -> Option<u64> {
+        self.stream.as_ref().map(|stream| stream.seq)
+    }
+
+    /// The history scrolled or grew: it follows the newest entry while it is at the bottom, and
+    /// stays where the person scrolled to otherwise.
+    fn history_scrolled(&mut self, viewport: scrollable::Viewport) -> Task<Message> {
+        let hidden = (viewport.content_bounds().height - viewport.bounds().height).max(0.0);
+        let at_bottom = hidden - viewport.absolute_offset().y <= theme::space::l();
+        let back = at_bottom && !self.follow_bottom;
+        self.follow_bottom = at_bottom;
+        // Back at the bottom: from now on the history keeps to it as it grows.
+        if back { self.scroll_to_newest() } else { Task::none() }
+    }
+
+    /// The history at its newest entry, following it as it grows (a relative offset of 1 stays at
+    /// the bottom; scrolling by hand leaves it).
+    fn scroll_to_newest(&mut self) -> Task<Message> {
+        self.follow_bottom = true;
+        operation::snap_to(HISTORY, operation::RelativeOffset::END)
+    }
+
+    /// The answer waits for an approval of the person.
+    pub(crate) fn waits_for_approval(&self) -> bool {
+        self.transcript
+            .approvals()
+            .iter()
+            .any(|id| self.approvals.get(*id).is_some_and(|approval| approval.state.is_pending()))
     }
 
     fn fetch_approvals(&mut self) -> Task<Message> {
@@ -1129,6 +1280,8 @@ impl App {
         self.deciding = None;
         self.expanded.clear();
         self.answers.clear();
+        self.stream = None;
+        self.follow_bottom = true;
         self.without.clear();
         self.take_without = true;
     }
@@ -1170,8 +1323,9 @@ impl App {
                 } else {
                     self.transcript.merge(summary, entries);
                 }
-                self.after_change();
-                Task::batch([self.follow(), self.load_list()])
+                self.after_change(true);
+                // The person sent something: the history goes to it, wherever it was scrolled.
+                Task::batch([self.follow(), self.load_list(), self.scroll_to_newest()])
             }
             Err(refusal) => {
                 let what = match refusal.code.as_str() {
