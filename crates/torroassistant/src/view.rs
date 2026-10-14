@@ -10,6 +10,9 @@
 //! - **Narrow:** flush; the drawer holds the conversations, the header a "New chat" button.
 //! - **Mini, strip:** the newest answer and a one-line composer; nothing else.
 //! - **Chat window:** flush in every size, without sidebar.
+//!
+//! Bots (task B.3): their rows, the editor that takes the chat's place, a bot's menu and the card of
+//! a proposal are drawn in [`editor`].
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, stack, text_editor, text_input};
@@ -28,7 +31,10 @@ use torro_ipc::{ApprovalInfo, ApprovalState};
 use crate::app::{
     Access, App, Dialog, EDITOR, HISTORY, MAIN, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, composer_binding,
 };
+use crate::bots;
 use crate::chat::{self, Choice};
+
+mod editor;
 
 /// The anchors of the menus that float next to their buttons; new in every `view`.
 #[derive(Default)]
@@ -38,6 +44,10 @@ struct Anchors {
     picker: Anchor,
     areas: Anchor,
     row: Anchor,
+    /// A bot's row in the sidebar, for its menu.
+    bot_row: Anchor,
+    /// The engine of the bot editor.
+    bot_picker: Anchor,
 }
 
 /// The composer's text area: two lines high at first, at most eight, then it scrolls.
@@ -117,6 +127,7 @@ fn area_icon(area: Option<Area>) -> Icon {
         Some(Area::Settings) => Icon::Settings,
         Some(Area::Apps) => Icon::AppWindow,
         Some(Area::Ai) => Icon::Sparkles,
+        Some(Area::Bots) => Icon::Users,
         _ => Icon::Search,
     }
 }
@@ -208,7 +219,18 @@ impl App {
             Menu::Picker => widgets::floating(
                 &anchors.picker,
                 Placement::Below(Align::Start),
-                self.picker_menu(),
+                self.picker_menu(self.choice.as_ref(), Message::Pick),
+                Message::CloseMenu,
+            ),
+            Menu::BotPicker => {
+                let chosen = self.bot_draft.as_ref().and_then(|draft| draft.choice.as_ref());
+                let menu = self.picker_menu(chosen, |choice| Message::Draft(bots::DraftEdit::Engine(choice)));
+                widgets::floating(&anchors.bot_picker, Placement::Below(Align::Start), menu, Message::CloseMenu)
+            }
+            Menu::Bot { id } => widgets::floating(
+                &anchors.bot_row,
+                Placement::Below(Align::Start),
+                self.bot_menu(id),
                 Message::CloseMenu,
             ),
             Menu::Areas => {
@@ -245,6 +267,20 @@ impl App {
                 .style(style::text_input)
                 .on_input(Message::Search);
             items.push(search.into());
+            // The bots (task B.3) before the conversations: few, and each a way into its chat.
+            if self.bots_loaded {
+                items.push(widgets::sidebar_group_in(mode, tr("Bots"), None));
+                items.extend(self.bots.iter().map(|bot| self.bot_row(bot, anchors)));
+                let new = self.bot_draft.as_ref().is_some_and(|draft| draft.id.is_none());
+                items.push(widgets::sidebar_item_in(
+                    mode,
+                    Icon::Plus,
+                    tr("New bot"),
+                    Trail::None,
+                    new,
+                    Message::NewBot,
+                ));
+            }
             let (pinned, recent) = chat::sidebar_groups(&self.conversations, &self.search);
             if !pinned.is_empty() {
                 items.push(widgets::sidebar_group_in(mode, tr("Pinned"), None));
@@ -348,16 +384,29 @@ impl App {
         if narrow_main && !shell::has_band() {
             leading.push(shell::sidebar_toggle(Message::ToggleSidebar));
         }
-        // Who answers: the assistant's picture, and its name before the engine (task C.10).
-        leading.push(avatar(self.assistant_name(), self.assistant_avatar(), header_avatar()));
+        if let Some(draft) = &self.bot_draft {
+            return self.editor_header(draft, leading);
+        }
+        // Who answers: the assistant's or the bot's picture, and its name before the engine (task
+        // C.10, B.3).
+        let (name, picture) = self.speaker();
+        leading.push(avatar(&name, &picture, header_avatar()));
         // A new chat has no engine yet: its picture says who answers, the welcome says the name.
-        let note = (class != SizeClass::Narrow)
-            .then(|| self.engine_note().map(|engine| format!("{} · {engine}", self.assistant_name())))
-            .flatten();
+        // Narrow keeps who answers when it is a bot, and drops the engine; a deleted bot has none.
+        let note = match (class == SizeClass::Narrow, self.chat_bot().is_some(), self.bot_gone()) {
+            (_, true, true) => Some(name.clone()),
+            (true, true, false) => Some(name.clone()),
+            (true, false, _) => None,
+            (false, _, _) => self.engine_note().map(|engine| format!("{name} · {engine}")),
+        };
         let title = shell::header_title(None, self.conversation_title(), note);
         let mut trailing = Vec::new();
         if narrow_main {
             trailing.push(widgets::icon_button(Icon::SquarePen, tr("New chat"), Some(Message::NewChat)));
+        }
+        if let Some(id) = self.chat_bot().filter(|_| !self.bot_gone()) {
+            let edit = Message::EditBot(id.to_owned());
+            trailing.push(widgets::icon_button(Icon::SlidersHorizontal, tr("Edit bot"), Some(edit)));
         }
         if let Some(id) = self.current.clone().filter(|_| self.transcript.summary.is_some()) {
             let menu = Menu::Conversation { id, at: MenuAt::Header };
@@ -393,6 +442,9 @@ impl App {
 
     /// The chat: the entries above, the composer below; or loading and the error of the first load.
     fn body<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Element<'a, Message> {
+        if let Some(draft) = &self.bot_draft {
+            return self.editor(draft, class, anchors);
+        }
         if !self.chat_only && !self.listed {
             return match &self.list_error {
                 Some(_) => widgets::error_state(tr("Couldn't load the conversations."), Message::Retry),
@@ -425,15 +477,23 @@ impl App {
                 .height(Fill)
                 .into()
         };
-        let composer = container(widgets::content(size::content_max(), self.composer(class, anchors)))
-            .width(Fill)
-            .padding(Padding { top: 0.0, right: side, bottom: side, left: side });
+        let composer: Element<'a, Message> =
+            if self.bot_gone() { self.gone_note() } else { self.composer(class, anchors) };
+        let composer = container(widgets::content(size::content_max(), composer)).width(Fill).padding(Padding {
+            top: 0.0,
+            right: side,
+            bottom: side,
+            left: side,
+        });
         column![history, composer].height(Fill).into()
     }
 
     /// What a new chat shows above the composer: the first start without the assistant's client,
     /// the hint without an AI account, else a short welcome.
     fn welcome(&self) -> Element<'_, Message> {
+        if let Some(bot) = self.chat_bot() {
+            return self.bot_welcome(bot);
+        }
         if self.access == Access::Missing {
             return prompt_state(
                 tr("Choose what the assistant may use"),
@@ -496,6 +556,10 @@ impl App {
             previous_tool = Some(tool);
             list = list.push(self.entry(entry, colours));
         }
+        // The assistant proposed a bot and waits for the person's word (task B.2).
+        if let Some(card) = self.proposal_card() {
+            list = list.push(Space::new().height(space::l())).push(card);
+        }
         // An answer runs, and nothing shows it yet: a quiet word, no spinner.
         let waiting = self
             .transcript
@@ -556,14 +620,31 @@ impl App {
     ) -> Element<'a, Message> {
         let area = chat::area_of(name);
         let open = self.expanded.contains(&seq);
+        let asked = bots::asked_bot(name, input);
+        // A bot the person has not asked for yet is a proposal, no failure: its mark stays quiet.
+        let proposed = asked.is_some() && error == Some("forbidden");
         let mark: Element<'a, Message> = match error {
-            Some(_) => tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.error_text),
-            None => tinted(area_icon(area), icon::SIZE_SM, |p| p.text_3),
+            Some(_) if !proposed => tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.error_text),
+            _ => tinted(area_icon(area), icon::SIZE_SM, |p| p.text_3),
         };
         let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
+        let words = match (&asked, error) {
+            // "Asked Travel planner · 3 steps" (task B.2): the core's words, the bot by its name.
+            (Some(_), None) if !summary.is_empty() => summary.to_owned(),
+            // Refused because the person had not asked for it: a proposal, the card follows.
+            (Some(asked), Some("forbidden")) => trf("Wants to ask {bot}", &[("bot", &self.bot_name(&asked.bot))]),
+            (Some(asked), _) => {
+                let tool = trf("Asked {bot}", &[("bot", &self.bot_name(&asked.bot))]);
+                match chat::tool_outcome(summary, error) {
+                    outcome if outcome.is_empty() => tool,
+                    outcome => trf("{tool} · {outcome}", &[("tool", &tool), ("outcome", &outcome)]),
+                }
+            }
+            (None, _) => chat::tool_line(name, summary, error),
+        };
         let line = row![
             mark,
-            typo::text(typo::meta(), chat::tool_line(name, summary, error)).wrapping(Wrapping::WordOrGlyph),
+            typo::text(typo::meta(), words).wrapping(Wrapping::WordOrGlyph),
             tinted(chevron, icon::SIZE_SM, |p| p.text_3)
         ]
         .spacing(space::s())
@@ -574,7 +655,9 @@ impl App {
             .style(style::button::ghost)
             .on_press(Message::ToggleTool(seq));
         let mut parts = column![line].spacing(space::xs());
-        if error == Some("forbidden") {
+        // A bot the assistant may not ask is the person's to name or confirm (task B.2), not a
+        // right to change.
+        if error == Some("forbidden") && area != Some(Area::Bots) {
             let what = match area {
                 Some(area) => trf("The assistant has no access to {area}.", &[("area", &chat::area_name(area))]),
                 None => tr("The assistant has no access to this.").to_owned(),
@@ -587,7 +670,24 @@ impl App {
             .align_y(Alignment::Center);
             parts = parts.push(container(hint).padding(Padding::new(0.0).left(tool_indent())));
         }
-        if open {
+        if let Some(asked) = asked.as_ref().filter(|_| open) {
+            // Asking a bot: the question in words and the way to its chat, no ids (task B.2).
+            let question = input.get("text").and_then(serde_json::Value::as_str).unwrap_or_default();
+            let mut detail = column![
+                typo::text(typo::caption(), tr("Question")).style(theme::text_3),
+                typo::text(typo::body(), question.to_owned()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+            ]
+            .spacing(space::xs());
+            if error.is_none() {
+                detail = detail.push(widgets::text_button(
+                    Some(Icon::ArrowUpRight),
+                    tr("Open chat"),
+                    style::button::ghost,
+                    Some(self.open_asked(asked.clone())),
+                ));
+            }
+            parts = parts.push(container(detail).padding(Padding::new(0.0).left(tool_indent())));
+        } else if open {
             let mut result =
                 row![typo::text(typo::meta(), summary).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
                     .spacing(space::s())
@@ -662,9 +762,10 @@ impl App {
     fn composer<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Element<'a, Message> {
         let body = typo::body();
         let (least, most) = editor_heights();
+        let placeholder = self.placeholder();
         let editor = text_editor(&self.editor)
             .id(EDITOR)
-            .placeholder(tr("Ask the assistant…"))
+            .placeholder(placeholder)
             .size(body.size)
             .line_height(body.line_height)
             .font(body.font)
@@ -685,7 +786,8 @@ impl App {
             None if self.engines_loaded => typo::text(typo::meta(), tr("No AI account")).style(theme::text_3).into(),
             None => typo::text(typo::meta(), tr("Loading …")).style(theme::text_3).into(),
         });
-        let areas = self.switchable();
+        // A bot answers with its own client's rights: nothing of the assistant's to switch off.
+        let areas = if self.chat_bot().is_some() { Vec::new() } else { self.switchable() };
         if !areas.is_empty() {
             let label = if self.without.is_empty() {
                 tr("All areas").to_owned()
@@ -709,9 +811,9 @@ impl App {
     }
 
     /// The picker: each engine with the models that can call tools; an engine whose models did
-    /// not come is offered as it is, and the engine picks its model.
-    fn picker_menu(&self) -> Element<'_, Message> {
-        let chosen = self.choice.as_ref();
+    /// not come is offered as it is, and the engine picks its model. `chosen` has the check, a
+    /// pick sends `pick` (the composer's choice, or the bot editor's engine).
+    fn picker_menu(&self, chosen: Option<&Choice>, pick_message: fn(Choice) -> Message) -> Element<'_, Message> {
         let check = palette(&self.theme()).text_2;
         let sections = self
             .engines
@@ -720,7 +822,7 @@ impl App {
                 let pick = |model: Option<String>| Choice { engine: engine.id.clone(), model };
                 let item = |label: String, choice: Choice| {
                     let on = chosen == Some(&choice);
-                    MenuItem::new(Mark::Check(check, on), label, Message::Pick(choice))
+                    MenuItem::new(Mark::Check(check, on), label, pick_message(choice))
                 };
                 let items = match (engine.kind, self.offered_models(&engine.id)) {
                     (EngineKind::Ai, Some(Ok(models))) if !models.is_empty() => {
@@ -812,6 +914,20 @@ impl App {
                 );
                 (tr("Delete this conversation?"), words.into(), confirm)
             }
+            Dialog::DeleteBot { name, .. } => {
+                let text = trf(
+                    "“{name}” and its access will be deleted for good. Its conversations stay, but no one answers there any more.",
+                    &[("name", name)],
+                );
+                let words = typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+                let confirm = widgets::text_button(
+                    Some(Icon::Trash2),
+                    tr("Delete bot"),
+                    style::button::danger,
+                    Some(Message::ConfirmDeleteBot),
+                );
+                (tr("Delete this bot?"), words.into(), confirm)
+            }
         };
         let cancel = widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseDialog));
         let buttons = row![Space::new().width(Fill), cancel, confirm].spacing(space::s()).align_y(Alignment::Center);
@@ -827,7 +943,7 @@ impl App {
         let strip = class == SizeClass::Strip;
         let padding = if strip { Padding::new(space::s()).horizontal(space::m()) } else { Padding::new(space::m()) };
         let body = typo::body();
-        let field = text_input(tr("Ask the assistant…"), &self.mini)
+        let field = text_input(&self.placeholder(), &self.mini)
             .id(MINI_INPUT)
             .size(body.size)
             .line_height(body.line_height)
@@ -837,6 +953,13 @@ impl App {
             .style(style::text_input)
             .on_input(Message::MiniInput)
             .on_submit(Message::Send);
+        // A deleted bot answers no more: no field to type into, the note says why.
+        let field: Element<'_, Message> = if self.bot_gone() {
+            let note = typo::ellipsize(tr("This bot was deleted."), typo::meta(), self.size.width);
+            typo::text(typo::meta(), note).style(theme::text_3).wrapping(Wrapping::None).into()
+        } else {
+            field.into()
+        };
         let mut composer = row![field].spacing(space::s()).align_y(Alignment::Center);
         if self.transcript.running() {
             composer =

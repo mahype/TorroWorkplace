@@ -34,7 +34,8 @@
 //! `torro_ipc::SettingKey`.
 //!
 //! Profile and memory (task C.10) are pages below this one, opened from the rows under the status
-//! ([`persona`]): the page here only hands them their messages, header, dialog and view.
+//! ([`persona`]): the page here only hands them their messages, header, dialog and view. So are the
+//! bots' pages (task B.3, [`bots`]): the group "Bots" lists them, each opens its rights.
 //!
 //! **Voice** (task C.9, `docs/assistent.md`, "Sprache"), once the assistant is on: talking by voice
 //! on or off (`settings.set_setting voice_enabled`; only here and in the tray, since only the app
@@ -65,7 +66,7 @@ use torro_ipc::{
 use super::accounts::{Tone, status_line};
 use super::general::choice;
 use super::{Action, Data, Header, Section, chevron, confirm, pressable, setting_row};
-use super::{agent_wizard, agents, persona};
+use super::{agent_wizard, agents, bots, persona};
 
 /// The name of the assistant's client, as the agents list and the audit log show it (decision 5:
 /// one client "Assistant").
@@ -99,6 +100,8 @@ pub struct State {
     confirm_off: bool,
     /// The pages Profile and Memory below this one (task C.10).
     persona: persona::State,
+    /// The bots' pages below this one (task B.3).
+    pub bots: bots::State,
     /// Talking by voice (task C.9).
     voice: Voice,
 }
@@ -144,6 +147,7 @@ impl Default for State {
             creating: false,
             confirm_off: false,
             persona: persona::State::default(),
+            bots: bots::State::default(),
             voice: Voice::default(),
         }
     }
@@ -207,6 +211,8 @@ pub enum Message {
     CloseDialog,
     /// The pages Profile and Memory and their rows here (task C.10).
     Persona(persona::Message),
+    /// The group "Bots" and a bot's page (task B.3).
+    Bots(bots::Message),
     /// Ask how voice stands (`settings.voice_status`): on the clock, or "Check again".
     CheckVoice,
     /// "Talk to the assistant" on or off.
@@ -268,6 +274,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::Persona(message) => persona::update(&mut state.persona, message, data),
+        Message::Bots(message) => bots::update(&mut state.bots, message, data),
         Message::CheckVoice => {
             let voice = &mut state.voice;
             if voice.asking {
@@ -344,6 +351,7 @@ fn rights(state: &mut State, message: agents::Message, data: &Data) -> Action {
 /// answer goes to the rights editor (`ok` of a saved change, an error that drops it).
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> Option<Action> {
     persona::answered(&mut state.persona, result);
+    bots::answered(&mut state.bots, result);
     if let Some(next) = voice_answered(&mut state.voice, result) {
         return next;
     }
@@ -411,6 +419,7 @@ pub fn loaded(state: &mut State, data: &Data) {
     // "Turn on assistant" is done once the core lists the client.
     state.creating &= assistant_client(data).is_none();
     agents::loaded(&mut state.editor);
+    bots::loaded(&mut state.bots);
     persona::loaded(&mut state.persona, data);
 }
 
@@ -418,12 +427,13 @@ pub fn loaded(state: &mut State, data: &Data) {
 /// and a few times after voice was switched. None while nothing waits.
 pub fn subscription(state: &State) -> Subscription<Message> {
     let rights = agents::subscription(&state.editor).map(Message::Rights);
+    let bots = bots::subscription(&state.bots).map(Message::Bots);
     let voice = &state.voice;
     let unknown = voice.status.is_none() && !voice.failed;
     if voice.asking || !(unknown || voice.polls > 0) {
-        return rights;
+        return Subscription::batch([rights, bots]);
     }
-    Subscription::batch([rights, iced::time::every(VOICE_POLL).map(|_| Message::CheckVoice)])
+    Subscription::batch([rights, bots, iced::time::every(VOICE_POLL).map(|_| Message::CheckVoice)])
 }
 
 /// What Escape means on this page: close the confirmation; on Profile and Memory what they say.
@@ -488,6 +498,9 @@ pub fn retention_label(retention: Retention) -> String {
 // ----- Views --------------------------------------------------------------------------------
 
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    if let Some(sub) = bots::view(&state.bots, data) {
+        return sub.map(Message::Bots);
+    }
     if let Some(sub) = persona::view(&state.persona, data) {
         return sub.map(Message::Persona);
     }
@@ -507,8 +520,13 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
             .map(|group| group.map(Message::Rights));
     let mut page = column![].spacing(layout::section_gap());
     match assistant_client(data) {
+        // The bots do not need the assistant: their group comes after its first start.
         None => {
-            page = page.push(off_group()).push(preset_group(rights)).extend(groups);
+            page = page
+                .push(off_group())
+                .push(preset_group(rights))
+                .extend(groups)
+                .push(bots::bots_group(data).map(Message::Bots));
         }
         // Status, who the assistant is (profile and memory) and its engines first, then the rights –
         // the reason the chat's hint opens this page –, voice, and the retention, which is set once
@@ -517,6 +535,7 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
             page = page
                 .push(on_group(client, column))
                 .push(persona::profile_rows(data).map(Message::Persona))
+                .push(bots::bots_group(data).map(Message::Bots))
                 .push(engines_group(data))
                 .extend(groups)
                 .push(voice_group(&state.voice, data, column))
@@ -532,6 +551,9 @@ fn page<'a>(state: &'a State, data: &'a Data, column: Option<f32>) -> Element<'a
 /// button, where it stays in sight while the rights below are chosen; busy while the core creates
 /// the client. Only its icon in narrow windows.
 pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
+    if let Some(sub) = bots::header(&state.bots, data, class) {
+        return sub.map(Message::Bots);
+    }
     if let Some(sub) = persona::header(&state.persona, class) {
         return Header {
             sub_page: sub.sub_page.map(|(name, back)| (name, Message::Persona(back))),

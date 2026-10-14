@@ -9,8 +9,8 @@
 //! Two kinds of window from one program: `torroassistant` is the main window (class
 //! `torro-assistant`), `torroassistant --chat <id>|new` a single chat window (class
 //! `torro-assistant-chat`), which `assistant.open_window` starts and a workspace template brings
-//! back with its argument. `--bot <id>` is for stage 2 and refused until then. The start
-//! parameters are [`launch::Launch`]'s.
+//! back with its argument; `--bot <id>` is the chat with a bot in such a window (task B.3). The
+//! start parameters are [`launch::Launch`]'s.
 //!
 //! Without a window: `--listen` waits for the wake word and talks with the assistant by voice
 //! (task C.9); `--voice-status` and `--voice-test` answer the core's `settings.voice_status` and
@@ -18,6 +18,7 @@
 
 mod app;
 mod backend;
+mod bots;
 mod chat;
 mod demo;
 mod launch;
@@ -86,7 +87,7 @@ fn demo_for(open: Option<Open>) -> demo::Demo {
 fn run(backend: Backend, suite: Source, launch: Launch) -> iced::Result {
     let mut window = match launch.window {
         Window::Main => torro_gui::window(MAIN),
-        Window::Chat(_) => iced::window::Settings { size: CHAT_SIZE, ..torro_gui::window(CHAT) },
+        Window::Chat(_) | Window::Bot(_) => iced::window::Settings { size: CHAT_SIZE, ..torro_gui::window(CHAT) },
     };
     if let Some((width, height)) = launch.size {
         window.size = iced::Size::new(f32::from(width), f32::from(height));

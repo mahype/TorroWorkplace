@@ -268,7 +268,13 @@ B.1 ──┬── B.2
   (Hauptbot darf Mail, Bot nicht → keine Mail; umgekehrt ebenso); Bot kann keinen Bot fragen; Protokoll nennt beide.
 
 ### B.3 App und Steuerzentrale: Bots anlegen, Rechte, Chat, Fenster
-- [ ] erledigt
+- [x] erledigt (Bot-Gespräche stehen in der Seitenleiste mit den anderen unter „Recent“, ein Klick auf einen Bot öffnet
+  sein neuestes Gespräch; im Bot-Chat gibt es kein „without …“, der Bot hat eigene Rechte; der Editor ersetzt den
+  Chat, „Save“ steht in der Kopfleiste; die Karte „Ask {bot}?“ schickt `assistant.confirm_bot` und danach die Nachricht
+  „Yes, ask {bot}.“, damit der Assistent weitermacht; Bot-Clients bilden unter Agents & API eine eigene Gruppe, ihre
+  Zeilen öffnen Assistant › Bots; `assistant.open_window { bot }` startet `torroassistant --bot <id>`, `not-found` für
+  einen unbekannten Bot; nachgetragen (zwingend mechanisch): `crates/torroworkplace/src/core.rs` (Test erwartete
+  `unsupported`); Sichtprüfung auf macOS mit AeroSpace statt Hyprland)
 - **Modell:** Opus · **Braucht:** B.1 · **Dateien:** `crates/torroassistant/**`, `crates/torroworkplace/src/ui/**`
 - App: Seitenleiste „Bots“ (Liste, „New bot“), Chat mit einem Bot (Kopf mit Bild und Name), Bot-Editor (Profil,
   Persönlichkeit, Anweisungen, Skills als Texte, Antrieb/Modell), „Access…“ öffnet die Rechte in der Steuerzentrale.

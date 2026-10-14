@@ -44,6 +44,7 @@ mod agents;
 mod approvals;
 mod apps;
 mod assistant;
+mod bots;
 mod general;
 mod glance;
 mod inbox;
@@ -208,6 +209,8 @@ pub struct Data {
     pub profile: Option<torro_ipc::assistant::Profile>,
     /// The notes of the assistant's memory, oldest first (`assistant.list_memories`).
     pub memories: Vec<torro_ipc::assistant::Note>,
+    /// The bots, by name (`bots.list_bots`, task B.3); none from a core without bots.
+    pub bots: Vec<torro_ipc::bots::BotSummary>,
     /// Why the last load failed (daemon not running, …).
     pub error: Option<String>,
 }
@@ -246,6 +249,9 @@ pub enum Action {
     OpenDesignsFolder,
     /// Put the keyboard focus into the text field with this id (a note's field, task C.10).
     Focus(&'static str),
+    /// Show the page of the bot with this id under Assistant › Bots (task B.3): from a bot's row on
+    /// the agents page.
+    OpenBot(String),
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -445,6 +451,10 @@ impl Ui {
         if let Some(open) = open {
             ui.open(open);
         }
+        // `--section bot:<id>`: the bot's rights (task B.3), what the assistant app's "Access…" opens.
+        if let Some(id) = ui.launch.bot.clone() {
+            let _ = ui.perform(Action::OpenBot(id));
+        }
         // A start on the Appearance page lists the design packs, as opening it does.
         let designs = match ui.section == Section::Appearance && general::unlisted(&ui.general) {
             true => ui.perform(Action::ListDesigns),
@@ -626,6 +636,27 @@ impl Ui {
                     }
                     _ => {}
                 }
+                messages
+            }
+            // A bot's rights (task B.3): one with some, one that may use nothing yet.
+            Open::AssistantBot | Open::AssistantBotNew => {
+                let id = if open == Open::AssistantBot { launch::DEMO_TRAVEL } else { launch::DEMO_RELEASE };
+                vec![
+                    Message::Select(Section::Assistant),
+                    Message::Assistant(assistant::Message::Bots(bots::Message::Open(id.into()))),
+                ]
+            }
+            // An agent that may use bots and read the assistant's conversations: both warnings.
+            Open::AgentBots => {
+                let codex = self.data.clients.iter_mut().find(|client| client.kind == "codex");
+                let id = codex.map(|client| {
+                    let on = |level| torro_ipc::api::AreaRights { level, admin: false };
+                    client.rights.areas.insert(torro_ipc::api::Area::Bots, on(torro_ipc::api::Level::Write));
+                    client.rights.areas.insert(torro_ipc::api::Area::Assistant, on(torro_ipc::api::Level::Read));
+                    client.id.clone()
+                });
+                let mut messages = vec![Message::Select(Section::Agents)];
+                messages.extend(id.map(|id| Message::Agents(agents::Message::Open(id))));
                 messages
             }
             // The design packs: the demo's sample packs, one of them broken.
@@ -924,6 +955,12 @@ impl Ui {
                 Task::none()
             }
             Action::Focus(id) => iced::widget::operation::focus(id),
+            Action::OpenBot(id) => {
+                self.select(Section::Assistant);
+                let open = assistant::Message::Bots(bots::Message::Open(id));
+                let next = assistant::update(&mut self.assistant, open, &self.data);
+                self.perform(next)
+            }
             Action::Zoom(step) => self.zoom(zoom::Message::Step(step)),
             Action::Copy(text) => iced::clipboard::write(text),
             Action::Setup(job) => Task::perform(crate::client_setup::perform(job), |outcome| {
@@ -1365,6 +1402,9 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Memories { notes }) = client::call(&socket, &Request::ListMemories).await {
                 data.memories = notes;
+            }
+            if let Ok(Response::Bots { bots }) = client::call(&socket, &Request::ListBots).await {
+                data.bots = bots;
             }
             data
         },
@@ -1909,7 +1949,7 @@ mod tests {
             let mut ui = started(&["--demo", "--open", state]);
             assert_eq!(ui.section, Section::Agents, "{state}");
             assert!(ui.agents.wizard.is_some() && ui.page_overlay().is_some(), "{state}: the dialog is open");
-            assert_eq!(ui.data.clients.len(), 5, "{state}: the demo changes nothing");
+            assert_eq!(ui.data.clients.len(), launch::demo_data().clients.len(), "{state}: the demo changes nothing");
             let _ = ui.update(Message::Escape);
             assert!(ui.agents.wizard.is_none(), "{state}: Escape closes it");
         }
@@ -1928,7 +1968,7 @@ mod tests {
         assert_eq!(demo.perform(Action::Copy("torro_x".into())).units(), 0, "the demo leaves the clipboard alone");
         let removed = demo.update(Message::Agents(agents::Message::Open(id)));
         assert_eq!(removed.units(), 0);
-        assert_eq!(demo.data.clients.len(), 5, "the demo changes nothing");
+        assert_eq!(demo.data.clients.len(), launch::demo_data().clients.len(), "the demo changes nothing");
     }
 
     #[test]
@@ -2092,5 +2132,23 @@ mod tests {
         assert_eq!(demo.data.settings.zoom.percent(), 150);
         let _ = demo.update(Message::Zoom(zoom::Message::Step(Step::Reset)));
         assert_eq!((demo.zoom.factor(), layout::of(demo.size)), (1.0, SizeClass::Wide));
+    }
+
+    /// Task B.3: `--section bot:<id>` opens the bot's page under Assistant › Bots, the way the
+    /// assistant app's "Access…" does; a bot's row on the agents page goes there too.
+    #[test]
+    fn a_bots_rights_open_by_deep_link_and_from_the_agents_page() {
+        let ui = started(&["--demo", "--section", "bot:b0000001"]);
+        assert_eq!(ui.section, Section::Assistant);
+        assert_eq!(ui.assistant.bots.open.as_deref(), Some(launch::DEMO_TRAVEL));
+        for class in [SizeClass::Narrow, SizeClass::Wide] {
+            let _ = ui.window(class);
+        }
+
+        let mut agents = started(&["--demo", "--section", "agents"]);
+        let client = agents.data.bots.iter().find(|bot| bot.id == launch::DEMO_RELEASE).map(|bot| bot.client.clone());
+        let _ = agents.update(Message::Agents(agents::Message::ShowBot(client.expect("a bot client"))));
+        assert_eq!(agents.section, Section::Assistant);
+        assert_eq!(agents.assistant.bots.open.as_deref(), Some(launch::DEMO_RELEASE));
     }
 }
