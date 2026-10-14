@@ -407,7 +407,15 @@ B.1 ──┬── B.2
 - **Abnahme:** Vertragstest; ein Bot-Client bekommt `forbidden`; Warten und Stand mit `after`.
 
 ### B.5 Rechte gleich im Bot-Editor vergeben
-- [ ] erledigt
+- [x] erledigt (Regel beim Anschalten als `Rights::set_level` mit `present` als Closure, dazu `Rights::selection`,
+  `api::present_sources` und `api::signed_in_mail`, damit Steuerzentrale und Editor dieselben Kandidaten anbieten;
+  Detailzeile bei Mail „{n} of {m} mail accounts · sending: …“ (Senden ab „Write“) wie bei den anderen Auswahlen,
+  GitHub „{n} repositories“; Zeile „Ask first“ mit eigener Detailzeile in derselben Gruppe; eine Zeile, die auf den
+  gelesenen Stand zurückgestellt wird, gilt nicht als geändert; die Tests der App beantworten jede Anfrage mit der
+  Abbildung, die das Fenster ihr gab (`App::replies`), statt sie aus dem Request zu raten; neuer `--demo`-Zustand
+  `--open bot-access`; nachgetragen (zwingend mechanisch): `Cargo.lock` (neue Abhängigkeiten `torro-inbox`,
+  `torro-pim` in `crates/torroassistant/Cargo.toml` für die gelesenen Antworten); Sichtprüfung auf macOS mit
+  AeroSpace statt Hyprland, ohne `torro-design-review`)
 - **Modell:** Opus · **Braucht:** B.3 · **Dateien:** `crates/torroassistant/**`, `crates/torro-ipc/src/api.rs`
   (gemeinsame Hilfen, siehe unten), `crates/torroworkplace/src/ui/agents.rs` (nutzt die Hilfen; Regel beim Anschalten,
   siehe unten), `crates/torro-core/src/i18n/de.rs` (nur über die Koordination)

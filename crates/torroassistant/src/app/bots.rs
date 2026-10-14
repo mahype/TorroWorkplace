@@ -1,16 +1,23 @@
 //! What the window does with bots (task B.3, see the module documentation of [`crate::app`]): the
 //! list, a bot's chat, the editor, deleting, and the way a `--bot` window finds its conversation.
-//! Every change is a request (`bots.*`, `assistant.open_window`); rights are the control centre's.
+//! Every change is a request (`bots.*`, `assistant.open_window`).
+//!
+//! The editor's section "Access" (task B.5) reads the bot's rights and what exists each time it
+//! opens ([`App::read_access`]). "Save" is `bots.save_bot` first, whose answer gives the editor the
+//! bot's id and client at once, so a second "Save" never makes a second bot; then, only when a row
+//! of "Access" changed, `clients.list_clients` again and `clients.update_client` with the changed
+//! rows laid onto what the core holds now ([`crate::bots::BotAccess::onto`]). Only then does the
+//! editor close. When the access cannot be set, the bot is saved anyway: the editor stays open and
+//! says so, and "Save" tries again.
 
 use iced::Task;
 use torro_core::i18n::tr;
-use torro_ipc::Request;
-use torro_ipc::Response;
 use torro_ipc::bots::{Bot, BotSummary};
+use torro_ipc::{ClientInfo, Request, Response};
 
 use super::{App, Dialog, Message, Window};
 use crate::backend::Refusal;
-use crate::bots::{self, BotDraft, Proposal};
+use crate::bots::{self, AccessNote, BotAccess, BotDraft, Known, Listed, Proposal};
 use crate::demo;
 use crate::launch::Open;
 
@@ -116,9 +123,10 @@ impl App {
     }
 
     /// "New bot": the editor of a new bot, answering with the window's engine.
-    pub(super) fn new_bot(&mut self) {
+    pub(super) fn new_bot(&mut self) -> Task<Message> {
         self.close_menus();
         self.bot_draft = Some(BotDraft::new(self.choice.clone()));
+        self.read_access()
     }
 
     /// "Edit bot": the whole bot first (`bots.get_bot`), with its long texts.
@@ -127,19 +135,77 @@ impl App {
         self.ask(Request::GetBot { id }, |result| Message::BotLoaded(result.and_then(bot_of)))
     }
 
-    pub(super) fn bot_loaded(&mut self, result: Result<Bot, Refusal>) {
+    pub(super) fn bot_loaded(&mut self, result: Result<Bot, Refusal>) -> Task<Message> {
         match result {
-            Ok(bot) => self.bot_draft = Some(BotDraft::of(&bot)),
-            Err(refusal) => self.note_failure(tr("Couldn't open the bot."), &refusal),
+            Ok(bot) => {
+                self.bot_draft = Some(BotDraft::of(&bot));
+                let read = self.read_access();
+                if self.launch.open != Some(Open::BotAccess) {
+                    return read;
+                }
+                // The demo state for screenshots: the form at its end, where "Access" is.
+                let end =
+                    iced::widget::operation::snap_to(super::BOT_FORM, iced::widget::operation::RelativeOffset::END);
+                Task::batch([read, end])
+            }
+            Err(refusal) => {
+                self.note_failure(tr("Couldn't open the bot."), &refusal);
+                Task::none()
+            }
         }
     }
 
+    /// The editor opened: the clients (the bot's rights) and what exists, read anew each time, so
+    /// the section "Access" never shows an old state.
+    fn read_access(&mut self) -> Task<Message> {
+        self.known = Known::default();
+        let clients = self.ask(Request::ListClients, |result| Message::BotClients(result.and_then(clients_of)));
+        let calendars = self
+            .ask(Request::CalendarCollections, |result| Message::Known(collection_ids(result).map(Listed::Calendars)));
+        let lists =
+            self.ask(Request::TaskCollections, |result| Message::Known(collection_ids(result).map(Listed::TaskLists)));
+        let sources = self.ask(Request::ListSources, |result| {
+            Message::Known(result.and_then(|response| match response {
+                Response::Sources { sources } => Ok(Listed::Sources(sources)),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        });
+        let accounts = self.ask(Request::Accounts, |result| {
+            Message::Known(result.and_then(|response| match response {
+                Response::Accounts { accounts } => Ok(Listed::Accounts(accounts)),
+                other => Err(Refusal::unexpected(&other)),
+            }))
+        });
+        Task::batch([clients, calendars, lists, sources, accounts])
+    }
+
+    /// The clients the editor read when it opened: the section "Access" starts from the bot's
+    /// rights (a new bot's from none). Taken once per opening; without them the section says it
+    /// cannot show the access, and saving leaves it alone.
+    pub(super) fn bot_clients(&mut self, result: Result<Vec<ClientInfo>, Refusal>) {
+        let clients = match result {
+            Ok(clients) => clients,
+            Err(refusal) => {
+                eprintln!("cannot read the bot's access: {}", refusal.message);
+                Vec::new()
+            }
+        };
+        let Some(draft) = self.bot_draft.as_mut().filter(|draft| draft.access.is_none()) else { return };
+        draft.access = BotAccess::of(draft.client.as_deref(), &clients);
+        draft.access_note = draft.access.is_none().then_some(AccessNote::Unreadable);
+        self.known.clients = clients;
+    }
+
     /// "Save": `bots.save_bot` once the bot keeps its limits; else the problem shows from now on.
+    /// After a save that stored the bot but not its access, it goes again with the bot's id.
     pub(super) fn save_bot(&mut self) -> Task<Message> {
         let Some(draft) = self.bot_draft.as_mut() else { return Task::none() };
         draft.tried = true;
         if draft.saving {
             return Task::none();
+        }
+        if draft.access_note == Some(AccessNote::NotSet) {
+            draft.access_note = None;
         }
         let Some(request) = draft.request() else {
             // The problem shows at the top of the form, which goes there; a problem of the name also
@@ -153,17 +219,21 @@ impl App {
         self.ask(request, |result| Message::BotSaved(result.and_then(bot_of)))
     }
 
-    /// Saved: the editor closes; a new bot's chat opens, so the person can talk to it at once.
+    /// The bot is saved: the editor takes its id and client at once. When a row of "Access" changed,
+    /// the access follows ([`App::access_now`]); else the editor closes ([`App::bot_done`]).
     pub(super) fn bot_saved(&mut self, result: Result<Bot, Refusal>) -> Task<Message> {
         match result {
             Ok(bot) => {
-                let new = self.bot_draft.as_ref().is_some_and(|draft| draft.id.is_none());
-                self.bot_draft = None;
                 self.bots.retain(|listed| listed.id != bot.id);
                 self.bots.push(bot.summary());
-                self.note(tr("Bot saved").to_owned());
-                let chat = if new { self.new_bot_chat(bot.id) } else { Task::none() };
-                Task::batch([chat, self.load_bots()])
+                let Some(draft) = self.bot_draft.as_mut() else { return self.load_bots() };
+                draft.id = Some(bot.id.clone());
+                draft.client = Some(bot.client.clone());
+                if !draft.access.as_ref().is_some_and(BotAccess::changed) {
+                    return self.bot_done(bot.id);
+                }
+                let again = self.ask(Request::ListClients, |result| Message::AccessNow(result.and_then(clients_of)));
+                Task::batch([again, self.load_bots()])
             }
             Err(refusal) => {
                 if let Some(draft) = self.bot_draft.as_mut() {
@@ -173,6 +243,62 @@ impl App {
                 Task::none()
             }
         }
+    }
+
+    /// The clients as the core holds them now, after the save: the changed rows of "Access" laid
+    /// onto the bot's client's rights go out as `clients.update_client`, unless they change
+    /// nothing there.
+    pub(super) fn access_now(&mut self, result: Result<Vec<ClientInfo>, Refusal>) -> Task<Message> {
+        let Some(draft) = self.bot_draft.as_ref().filter(|draft| draft.saving) else { return Task::none() };
+        let (Some(id), Some(client), Some(access)) = (draft.id.clone(), draft.client.clone(), draft.access.as_ref())
+        else {
+            return Task::none();
+        };
+        let clients = match result {
+            Ok(clients) => clients,
+            Err(refusal) => return self.access_failed(&refusal),
+        };
+        let Some(current) = clients.iter().find(|info| info.id == client).map(|info| info.rights.clone()) else {
+            return self.access_failed(&Refusal::new("not-found", format!("no client {client:?}")));
+        };
+        let rights = access.onto(&current, &self.known.present());
+        self.known.clients = clients;
+        if rights == current {
+            return self.bot_done(id);
+        }
+        self.ask(Request::UpdateClient { id: client, rights }, |result| Message::AccessSet(result.map(|_| ())))
+    }
+
+    /// `clients.update_client` answered: done, or the bot is saved without its access.
+    pub(super) fn access_set(&mut self, result: Result<(), Refusal>) -> Task<Message> {
+        let Some(id) = self.bot_draft.as_ref().filter(|draft| draft.saving).and_then(|draft| draft.id.clone()) else {
+            return Task::none();
+        };
+        match result {
+            Ok(()) => self.bot_done(id),
+            Err(refusal) => self.access_failed(&refusal),
+        }
+    }
+
+    /// Everything is saved: the editor closes; a new bot's chat opens, so the person can talk to it
+    /// at once.
+    fn bot_done(&mut self, id: String) -> Task<Message> {
+        let new = self.bot_draft.take().is_some_and(|draft| draft.new);
+        self.note(tr("Bot saved").to_owned());
+        let chat = if new { self.new_bot_chat(id) } else { Task::none() };
+        Task::batch([chat, self.load_bots()])
+    }
+
+    /// The bot is saved, its access not: the editor stays open with the note at its top, and the
+    /// next "Save" tries again with the bot's id.
+    fn access_failed(&mut self, refusal: &Refusal) -> Task<Message> {
+        eprintln!("cannot set the bot's access: {}", refusal.message);
+        if let Some(draft) = self.bot_draft.as_mut() {
+            draft.saving = false;
+            draft.access_note = Some(AccessNote::NotSet);
+        }
+        let top = iced::widget::operation::snap_to(super::BOT_FORM, iced::widget::operation::RelativeOffset::START);
+        Task::batch([top, self.load_bots()])
     }
 
     /// "Delete bot…": asks first.
@@ -249,10 +375,10 @@ impl App {
             return Task::none();
         }
         match self.launch.open {
-            Some(Open::BotEditor) => self.edit_bot(demo::TRAVEL.into()),
+            Some(Open::BotEditor | Open::BotAccess) => self.edit_bot(demo::TRAVEL.into()),
             Some(Open::BotNew) => {
-                self.new_bot();
-                self.save_bot()
+                let read = self.new_bot();
+                Task::batch([read, self.save_bot()])
             }
             Some(Open::BotDelete) => {
                 self.ask_delete_bot(demo::TRAVEL.into());
@@ -267,6 +393,22 @@ impl App {
 fn bots_of(response: Response) -> Result<Vec<BotSummary>, Refusal> {
     match response {
         Response::Bots { bots } => Ok(bots),
+        other => Err(Refusal::unexpected(&other)),
+    }
+}
+
+/// The clients of an answer of `clients.list_clients`.
+fn clients_of(response: Response) -> Result<Vec<ClientInfo>, Refusal> {
+    match response {
+        Response::Clients { clients } => Ok(clients),
+        other => Err(Refusal::unexpected(&other)),
+    }
+}
+
+/// The ids of the collections of an answer of `calendar.list_calendars` or `tasks.list_lists`.
+fn collection_ids(result: Result<Response, Refusal>) -> Result<Vec<String>, Refusal> {
+    match result? {
+        Response::Collections { collections } => Ok(collections.into_iter().map(|c| c.id).collect()),
         other => Err(Refusal::unexpected(&other)),
     }
 }

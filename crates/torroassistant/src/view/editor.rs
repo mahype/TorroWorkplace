@@ -4,12 +4,18 @@
 //!
 //! The editor is a form of reading width ([`size::form_max`]) in settings groups: name,
 //! description, picture, personality (with the assistant's templates), instructions, skills as
-//! named texts, the engine, and where its access is set; "Save" at the end is the window's one
-//! primary button while the editor is open. Problems show after the first "Save" only.
+//! named texts, the engine, and its access (task B.5): a row per area with what applies under its
+//! name and the levels as a segmented control, then "Ask first", and a link to the control centre
+//! for the rest. As on the control centre's rights page, the segmented controls start in one slot
+//! at the right while names and lines fit beside it, else each stands under its name. "Save" in the
+//! header is the window's one primary button while the editor is open. Problems show after the
+//! first "Save" only.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, TextInput, column, container, mouse_area, row, scrollable, text_editor, text_input};
-use iced::{Alignment, Element, Fill, Padding, Theme};
+use iced::widget::{
+    Space, TextInput, column, container, mouse_area, responsive, row, scrollable, text_editor, text_input,
+};
+use iced::{Alignment, Element, Fill, Length, Padding, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::SizeClass;
@@ -17,12 +23,14 @@ use torro_gui::shell;
 use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, Mark, MenuItem, MenuSection};
 use torro_gui::{layout, style, typo};
+use torro_ipc::api::{self, Confirm, Level};
 use torro_ipc::assistant::AVATARS;
 use torro_ipc::bots::{BotSummary, MAX_INSTRUCTIONS_CHARS, MAX_PERSONALITY_CHARS, MAX_SKILL_CHARS, MAX_SKILLS};
 
 use super::{Anchors, avatar, avatar_icon, header_avatar, prompt_state, row_title_room, tinted};
 use crate::app::{App, BOT_FORM, BOT_NAME, Menu, Message};
-use crate::bots::{self, Asked, BotDraft, DraftEdit, Template, editor_text};
+use crate::bots::{self, AccessNote, Asked, BotAccess, BotDraft, DraftEdit, Template, editor_text};
+use crate::chat;
 
 /// The personality's field shows this many lines before it scrolls.
 const PERSONALITY_LINES: f32 = 8.0;
@@ -296,6 +304,9 @@ impl App {
         if let Some(problem) = draft.problem().filter(|_| draft.tried) {
             form = form.push(problem_line(problem));
         }
+        if let (Some(AccessNote::NotSet), Some(id)) = (draft.access_note, &draft.id) {
+            form = form.push(access_failed_line(id));
+        }
         form = form
             .push(section(tr("Name"), name, None))
             .push(section(tr("Description"), description, Some(tr("Shown under the name in the chat."))))
@@ -322,7 +333,7 @@ impl App {
                 self.engine_choice(draft, anchors),
                 Some(tr("What the bot answers with when the assistant asks it. A chat with the bot can pick another.")),
             ))
-            .push(widgets::group(tr("Access"), vec![inset(access(draft))], None));
+            .push(self.access_section(draft));
         if let Some(id) = &draft.id {
             let delete = Message::AskDeleteBot(id.clone());
             let button = widgets::text_button(None, tr("Delete bot…"), style::button::danger, Some(delete));
@@ -356,6 +367,48 @@ impl App {
             })
             .collect();
         row![preview, widgets::chip_row(chips)].spacing(space::l()).align_y(Alignment::Center).into()
+    }
+
+    /// The section "Access" (task B.5, [`BotAccess`]): a row per area a bot can be given, with what
+    /// applies under its name ([`bots::detail`]) and the levels the area offers, then "Ask first";
+    /// under it what only the control centre sets, with the link there. While the bot's rights are
+    /// read a calm "Loading …", and a line when they could not be.
+    fn access_section<'a>(&'a self, draft: &'a BotDraft) -> Element<'a, Message> {
+        let group: Element<'a, Message> = match &draft.access {
+            Some(access) => {
+                let rows = access_rows(access, &self.known.present());
+                let footer = tr("Write includes reading, Full also deletes and overwrites.");
+                responsive(move |size| {
+                    let column = control_column(&rows, size.width);
+                    let shown = rows.iter().map(|line| line.view(column)).collect();
+                    widgets::group(tr("Access"), shown, Some(footer.to_owned()))
+                })
+                .height(Length::Shrink)
+                .into()
+            }
+            None => {
+                let words = match draft.access_note {
+                    Some(AccessNote::Unreadable) => {
+                        tr("Couldn't read the bot's access. You can set it in Torro Workplace.")
+                    }
+                    _ => tr("Loading …"),
+                };
+                let line = typo::text(typo::body(), words).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+                widgets::group(tr("Access"), vec![inset(line)], None)
+            }
+        };
+        let words = typo::text(
+            typo::meta(),
+            tr("Which calendars, lists, repositories, sources and mail accounts it sees, sending mail and admin commands are set in Torro Workplace."),
+        )
+        .style(theme::text_2)
+        .wrapping(Wrapping::WordOrGlyph);
+        let open = draft.id.clone().map(Message::BotAccess);
+        let link =
+            widgets::text_button(Some(Icon::ArrowUpRight), tr("More in Torro Workplace…"), style::button::ghost, open);
+        // Moved left by its own padding, so its word stands on the form's axis.
+        let link = row![Space::new(), link].spacing(-style::button_padding().left);
+        column![group, column![words, link].spacing(space::xs())].spacing(layout::item_gap()).into()
     }
 
     /// The engine and model, chosen in the picker; without any engine, where to add one.
@@ -462,17 +515,119 @@ fn skills(draft: &BotDraft) -> Element<'_, Message> {
     list.push(last).into()
 }
 
-/// Where the bot's access is set: a sentence, and "Access…" once the bot is saved.
-fn access(draft: &BotDraft) -> Element<'_, Message> {
-    let words = typo::text(
-        typo::body(),
-        tr("A bot starts with access to nothing. You choose what it may use in the control centre."),
-    )
-    .style(theme::text_2)
-    .wrapping(Wrapping::WordOrGlyph);
-    let open = draft.id.clone().map(Message::BotAccess);
-    let button = widgets::text_button(Some(Icon::ArrowUpRight), tr("Access…"), style::button::secondary, open);
-    row![container(words).width(Fill), button].spacing(space::l()).align_y(Alignment::Center).into()
+/// A row of the section "Access": the name, what applies, and the segments with the one chosen.
+#[derive(Debug, Clone)]
+struct AccessRow {
+    label: &'static str,
+    detail: String,
+    options: Vec<(&'static str, Message)>,
+    active: usize,
+}
+
+impl AccessRow {
+    /// The row with its segmented control in the slot `column` at the right, or without one under
+    /// its name (a narrow form, [`control_column`]).
+    fn view<'a>(&self, column: Option<f32>) -> Element<'a, Message> {
+        let control = widgets::segmented(self.options.clone(), self.active);
+        match column {
+            Some(slot) => widgets::group_row(self.label, Some(self.detail.clone()), container(control).width(slot)),
+            None => {
+                let lines = column![
+                    typo::text(typo::body(), self.label),
+                    typo::text(typo::meta(), self.detail.clone()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+                ];
+                container(column![lines, control].spacing(space::s()))
+                    .width(Fill)
+                    .padding([space::m(), space::l()])
+                    .into()
+            }
+        }
+    }
+}
+
+/// The level's word on its segment, the control centre's.
+fn level_label(level: Level) -> &'static str {
+    match level {
+        Level::NoAccess => tr("None"),
+        Level::Read => tr("Read"),
+        Level::Write => tr("Write"),
+        Level::Full => tr("Full"),
+    }
+}
+
+/// The options of "Ask first", in the control centre's order and words.
+fn confirm_options() -> [(&'static str, Confirm); 3] {
+    [
+        (tr("Never"), Confirm::Never),
+        (tr("On delete"), Confirm::OnDelete),
+        (tr("On every change"), Confirm::OnEveryChange),
+    ]
+}
+
+/// The rows of the section: an area per row ([`BotAccess::areas`]) with the levels it offers
+/// (`api::levels`), the one shown chosen (`api::active_level`), then "Ask first".
+fn access_rows(access: &BotAccess, present: &bots::Present) -> Vec<AccessRow> {
+    let rights = access.shown(present);
+    let mut rows: Vec<AccessRow> = BotAccess::areas()
+        .map(|area| {
+            let offered = api::levels(area);
+            let active = api::active_level(&offered, rights.area(area).level);
+            AccessRow {
+                label: chat::area_name(area),
+                detail: bots::detail(area, &rights, present),
+                options: offered
+                    .into_iter()
+                    .map(|level| (level_label(level), Message::Draft(DraftEdit::Level(area, level))))
+                    .collect(),
+                active,
+            }
+        })
+        .collect();
+    let options = confirm_options();
+    rows.push(AccessRow {
+        label: tr("Ask first"),
+        detail: tr("The bot waits until you allow it").to_owned(),
+        active: options.iter().position(|(_, confirm)| *confirm == rights.confirm).unwrap_or(0),
+        options: options.map(|(label, confirm)| (label, Message::Draft(DraftEdit::Confirm(confirm)))).to_vec(),
+    });
+    rows
+}
+
+/// The estimated width of a segmented control with `labels` (`widgets::segmented`): each label in
+/// `caption` with the button padding, plus the frame's inset and border. `typo::text_width`
+/// estimates generously, so the control fits.
+fn segmented_width(labels: &[&str]) -> f32 {
+    let padding = style::button_padding().left + style::button_padding().right;
+    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding).sum();
+    segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
+}
+
+/// Where the section puts its segmented controls in a group `width` wide: `Some(slot)`, a slot as
+/// wide as the widest control at the right of every row, while the longest name and line fit
+/// beside it; `None` when they would not (a narrow window), then each control stands under its
+/// name. Decided by what fits, so longer translations hold too.
+fn control_column(rows: &[AccessRow], width: f32) -> Option<f32> {
+    let slot = rows
+        .iter()
+        .map(|line| segmented_width(&line.options.iter().map(|(label, _)| *label).collect::<Vec<_>>()))
+        .fold(0.0, f32::max);
+    let text = rows
+        .iter()
+        .flat_map(|line| [typo::text_width(line.label, typo::body()), typo::text_width(&line.detail, typo::meta())])
+        .fold(0.0, f32::max);
+    // A row of a group: 16 at both sides and 16 between the text and the control.
+    (width >= 3.0 * space::l() + text + slot).then_some(slot)
+}
+
+/// The bot is saved, its access not: the line at the top of the form, with "Access…" to set it in
+/// the control centre; "Save" tries again.
+fn access_failed_line<'a>(id: &str) -> Element<'a, Message> {
+    let alert = tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.error_text);
+    let words =
+        typo::text(typo::body(), tr("Bot saved, but its access couldn't be set.")).wrapping(Wrapping::WordOrGlyph);
+    let open = Message::BotAccess(id.to_owned());
+    let button = widgets::text_button(None, tr("Access…"), style::button::secondary, Some(open));
+    row![alert, container(words).width(Fill), button].spacing(space::s()).align_y(Alignment::Center).into()
 }
 
 /// A part of the form: its title in `caption` and `text_3`, 4 below it the field, 4 below that
