@@ -39,6 +39,8 @@ mod prompt;
 mod store;
 mod tools;
 
+pub use prompt::skill;
+
 use std::collections::HashMap;
 use std::io;
 use std::path::PathBuf;
