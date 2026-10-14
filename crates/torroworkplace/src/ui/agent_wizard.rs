@@ -526,7 +526,7 @@ fn template_label(template: RightsTemplate) -> &'static str {
     }
 }
 
-fn template_detail(template: RightsTemplate) -> &'static str {
+pub(super) fn template_detail(template: RightsTemplate) -> &'static str {
     match template {
         RightsTemplate::ReadOnly => tr("Reads everything, changes nothing"),
         RightsTemplate::ReadAndWrite => tr("Changes everything; deleting needs approval"),

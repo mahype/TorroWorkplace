@@ -1,0 +1,916 @@
+//! How the assistant's window looks (design skill `torro-design`): the Linear frame of the suite
+//! (`torro_gui::shell`) with the conversations in the sidebar, the chat as the content – its
+//! entries in a column of reading width ([`size::content_max`]) that stays at the bottom while an
+//! answer grows, the composer below – and the glance of mini and strip tiles.
+//!
+//! Nothing here changes state: every control sends a [`Message`] that [`App::update`] handles.
+//!
+//! - **Wide:** sidebar (or the rail) | header "title · engine" with "…" | chat.
+//! - **Medium:** the rail; the expanded sidebar opens as a drawer (panel button, search, `[`).
+//! - **Narrow:** flush; the drawer holds the conversations, the header a "New chat" button.
+//! - **Mini, strip:** the newest answer and a one-line composer; nothing else.
+//! - **Chat window:** flush in every size, without sidebar.
+
+use iced::widget::text::Wrapping;
+use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, stack, text_editor, text_input};
+use iced::{Alignment, Background, Element, Fill, Padding, Theme};
+use torro_core::i18n::{tr, trf};
+use torro_gui::icon::{self, Icon};
+use torro_gui::layout::SizeClass;
+use torro_gui::shell::{self, Cover, SidebarMode, Surface, TitleButtons};
+use torro_gui::theme::{self, Palette, palette, size, space};
+use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Trail};
+use torro_gui::{layout, markdown, style, typo};
+use torro_ipc::api::Area;
+use torro_ipc::assistant::{ConversationSummary, EngineKind, Entry, EntryContent};
+use torro_ipc::{ApprovalInfo, ApprovalState};
+
+use crate::app::{
+    Access, App, Dialog, EDITOR, HISTORY, MAIN, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, composer_binding,
+};
+use crate::chat::{self, Choice};
+
+/// The anchors of the menus that float next to their buttons; new in every `view`.
+#[derive(Default)]
+struct Anchors {
+    switcher: Anchor,
+    header: Anchor,
+    picker: Anchor,
+    areas: Anchor,
+    row: Anchor,
+}
+
+/// The composer's text area: two lines high at first, at most eight, then it scrolls.
+fn editor_heights() -> (f32, f32) {
+    let line = typo::line_height(typo::body());
+    let frame = style::INPUT_PADDING.top + style::INPUT_PADDING.bottom;
+    (2.0 * line + frame, 8.0 * line + frame)
+}
+
+/// How wide the label of the picker and of the areas may get before it is cut: room for both
+/// beside "Send" in a narrow window.
+fn label_room(class: SizeClass) -> f32 {
+    match class {
+        SizeClass::Wide | SizeClass::Medium => size::sidebar(),
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => size::props() / 2.0,
+    }
+}
+
+/// The colours answers are read in: the paragraphs of Markdown in `text`, not the quieter
+/// `text_2` of notes, since the answer is what the person asked for.
+fn answer_colours(mut colours: Palette) -> Palette {
+    colours.text_2 = colours.text;
+    colours
+}
+
+/// Above and below a tool line's words: one line is then as high as a small control.
+fn tool_inset() -> f32 {
+    ((size::control_sm() - typo::line_height(typo::meta())) / 2.0).max(0.0)
+}
+
+/// A tool's input: for an object one line per field, the name quiet, the value in monospace; any
+/// other input as JSON.
+fn input_view<'a>(input: &serde_json::Value) -> Element<'a, Message> {
+    let mono = |text: String| typo::text(typo::meta(), text).font(markdown::MONO).style(theme::text_2);
+    let Some(fields) = input.as_object().filter(|fields| !fields.is_empty()) else {
+        return mono(serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string())).into();
+    };
+    let lines = fields.iter().map(|(name, value)| {
+        let value = match value {
+            serde_json::Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        row![typo::text(typo::meta(), name.clone()).style(theme::text_3), mono(value).wrapping(Wrapping::WordOrGlyph)]
+            .spacing(space::s())
+            .into()
+    });
+    column(lines).spacing(space::xs()).into()
+}
+
+/// The width a conversation's title has in a sidebar row: the sidebar less its edges and the
+/// row's own padding.
+fn row_title_room() -> f32 {
+    size::sidebar() - 2.0 * space::s() - style::ITEM_PADDING.left - style::ITEM_PADDING.right
+}
+
+/// How far what belongs to a tool line (its input, result and hints) is indented: under its words,
+/// past the icon.
+fn tool_indent() -> f32 {
+    icon::SIZE_SM + space::s()
+}
+
+/// `which` at `edge` in a colour of the palette.
+fn tinted<'a>(which: Icon, edge: f32, colour: fn(&Palette) -> iced::Color) -> Element<'a, Message> {
+    icon::icon(which, edge).style(move |t, _| iced::widget::svg::Style { color: Some(colour(&palette(t))) }).into()
+}
+
+/// The icon of a tool's area.
+fn area_icon(area: Option<Area>) -> Icon {
+    match area {
+        Some(Area::Calendar) => Icon::Calendar,
+        Some(Area::Tasks) => Icon::ListTodo,
+        Some(Area::Github) => Icon::Github,
+        Some(Area::Inbox) => Icon::Inbox,
+        Some(Area::Mail) => Icon::Mail,
+        Some(Area::Workspaces) => Icon::LayoutGrid,
+        Some(Area::Accounts) => Icon::Users,
+        Some(Area::Settings) => Icon::Settings,
+        Some(Area::Apps) => Icon::AppWindow,
+        Some(Area::Ai) => Icon::Sparkles,
+        _ => Icon::Search,
+    }
+}
+
+impl App {
+    /// The window with the zoom badge and the notice over it; in mini and strip the glance.
+    pub fn view(&self) -> Element<'_, Message> {
+        let class = self.class();
+        if self.is_glance() {
+            let surface = if self.listed || self.chat_only { Surface::of(class) } else { Surface::Window };
+            return widgets::ctrl_guard(shell::titlebar(
+                self.zoom.view(self.glance(class)),
+                self.zoom.factor(),
+                surface,
+                Cover::Nothing,
+                TitleButtons::none(),
+                Message::DragWindow,
+            ));
+        }
+        // Always two layers, so the window keeps its state when the notice comes and goes.
+        let window = stack![self.window(class), self.notice_layer()].width(Fill).height(Fill);
+        let surface = if self.chat_only { Surface::Panel } else { Surface::of(class) };
+        let mut buttons = TitleButtons::none().settings(Message::OpenSettings);
+        if !self.chat_only {
+            let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
+            buttons = buttons.sidebar(label, Message::ToggleSidebar);
+        }
+        let content = self.zoom.view(window);
+        widgets::ctrl_guard(shell::titlebar(
+            content,
+            self.zoom.factor(),
+            surface,
+            self.cover(),
+            buttons,
+            Message::DragWindow,
+        ))
+    }
+
+    /// What lies over the top of the window, which the title band repeats.
+    fn cover(&self) -> Cover {
+        let drawer = if self.chat_only { Cover::Nothing } else { Cover::drawer(self.class(), self.drawer) };
+        Cover::dialog(self.dialog.is_some()).or(drawer)
+    }
+
+    /// The notice at the bottom centre; empty without one.
+    fn notice_layer(&self) -> Element<'_, Message> {
+        match &self.notice {
+            Some(notice) => widgets::toast(notice.text.as_str(), None),
+            None => Space::new().into(),
+        }
+    }
+
+    /// The whole window in the layout of `class`, with its menus and dialogs.
+    fn window(&self, class: SizeClass) -> Element<'_, Message> {
+        let anchors = Anchors::default();
+        let header = self.header(class, &anchors);
+        let body = self.body(class, &anchors);
+        let layer = self.layer(&anchors);
+        let window: Element<'_, Message> = if self.chat_only {
+            // A chat window has no sidebar: the flush frame of the narrow layout in every size.
+            shell::shell(SizeClass::Narrow, Space::new(), header, body, None).overlay(layer).into()
+        } else {
+            let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
+                .then(|| self.sidebar(SidebarMode::Rail, &anchors));
+            shell::shell(class, self.sidebar(SidebarMode::Expanded, &anchors), header, body, None)
+                .rail(rail)
+                .drawer(self.drawer, Message::CloseMenu)
+                .overlay(layer)
+                .into()
+        };
+        match &self.dialog {
+            Some(dialog) => {
+                widgets::modal(window, self.dialog_view(dialog), widgets::DIALOG_WIDTH, Message::CloseDialog)
+            }
+            None => window,
+        }
+    }
+
+    /// The open menu, floating at its button.
+    fn layer(&self, anchors: &Anchors) -> Option<Element<'_, Message>> {
+        let menu = self.menu.as_ref()?;
+        Some(match menu {
+            Menu::Switcher => widgets::floating(
+                &anchors.switcher,
+                Placement::Below(Align::Start),
+                shell::switcher_menu(MAIN, Message::Switcher),
+                Message::CloseMenu,
+            ),
+            Menu::Picker => widgets::floating(
+                &anchors.picker,
+                Placement::Below(Align::Start),
+                self.picker_menu(),
+                Message::CloseMenu,
+            ),
+            Menu::Areas => {
+                widgets::floating(&anchors.areas, Placement::Below(Align::Start), self.areas_menu(), Message::CloseMenu)
+            }
+            Menu::Conversation { id, at } => {
+                let (anchor, align) = match at {
+                    MenuAt::Header => (&anchors.header, Align::End),
+                    MenuAt::Row => (&anchors.row, Align::Start),
+                };
+                widgets::floating(anchor, Placement::Below(align), self.conversation_menu(id), Message::CloseMenu)
+            }
+        })
+    }
+
+    // -- Sidebar --------------------------------------------------------------------------------
+
+    /// The sidebar in `mode`: the search and the conversations, pinned ones first, in the expanded
+    /// sidebar; the rail has the head alone (the conversations have no icons to tell them apart,
+    /// and the drawer lists them).
+    fn sidebar<'a>(&'a self, mode: SidebarMode, anchors: &Anchors) -> Element<'a, Message> {
+        let head = shell::sidebar_head(mode, MAIN, &anchors.switcher, Message::Switcher, Message::ToggleSidebar);
+        let mut items: Vec<Element<'a, Message>> = Vec::new();
+        // Before the conversations came there is nothing to search.
+        if mode == SidebarMode::Expanded && self.listed {
+            let body = typo::body();
+            let search = text_input(tr("Search conversations"), &self.search)
+                .id(SEARCH)
+                .size(body.size)
+                .line_height(body.line_height)
+                .font(body.font)
+                .padding(style::INPUT_PADDING)
+                .width(Fill)
+                .style(style::text_input)
+                .on_input(Message::Search);
+            items.push(search.into());
+            let (pinned, recent) = chat::sidebar_groups(&self.conversations, &self.search);
+            if !pinned.is_empty() {
+                items.push(widgets::sidebar_group_in(mode, tr("Pinned"), None));
+                items.extend(pinned.into_iter().map(|c| self.conversation_row(c, anchors)));
+            }
+            if !recent.is_empty() {
+                items.push(widgets::sidebar_group_in(mode, tr("Recent"), None));
+                items.extend(recent.into_iter().map(|c| self.conversation_row(c, anchors)));
+            }
+            if self.listed && self.conversations.is_empty() {
+                items.push(sidebar_note(tr("No conversations yet")));
+            } else if self.listed && !self.search.trim().is_empty() && self.shown_count() == 0 {
+                items.push(sidebar_note(tr("No conversation matches")));
+            }
+        }
+        // Where the band has it (macOS), "Settings" sits in its top right corner.
+        let footer = (!shell::has_band())
+            .then(|| {
+                widgets::sidebar_item_in(
+                    mode,
+                    Icon::Settings,
+                    tr("Settings"),
+                    Trail::None,
+                    false,
+                    Message::OpenSettings,
+                )
+            })
+            .into_iter()
+            .collect();
+        shell::sidebar(head, items, footer)
+    }
+
+    /// How many conversations the search leaves.
+    fn shown_count(&self) -> usize {
+        let (pinned, recent) = chat::sidebar_groups(&self.conversations, &self.search);
+        pinned.len() + recent.len()
+    }
+
+    /// A conversation in the sidebar: its title on a row of the sidebar's height, the open one
+    /// chosen, one that answers with a quiet mark. A click opens it, a double click opens it in a
+    /// window of its own, a right click its menu.
+    fn conversation_row<'a>(
+        &'a self,
+        conversation: &'a ConversationSummary,
+        anchors: &Anchors,
+    ) -> Element<'a, Message> {
+        let id = conversation.id.clone();
+        let active = self.current.as_ref() == Some(&id);
+        let hovered = self.hover.as_ref() == Some(&id);
+        // The title fits the row or ends in "…", with the whole title as tooltip.
+        let mark = if conversation.running { icon::SIZE_SM + space::s() } else { 0.0 };
+        let room = row_title_room() - mark;
+        let shown = typo::ellipsize(&conversation.title, typo::body(), room);
+        let cut = shown != conversation.title;
+        let title = container(typo::text(typo::body(), shown).wrapping(Wrapping::None)).width(Fill).clip(true);
+        let title: Element<'a, Message> =
+            if cut { widgets::with_tooltip(title, conversation.title.as_str()) } else { title.into() };
+        let mut content = row![title].spacing(space::s()).align_y(Alignment::Center);
+        if conversation.running {
+            content = content.push(widgets::with_tooltip(
+                tinted(Icon::CircleDotDashed, icon::SIZE_SM, |p| p.text_3),
+                tr("Answering"),
+            ));
+        }
+        // The row is no button, so the double and right clicks reach it; it takes the button
+        // style of a sidebar row for its surface and text.
+        let surface = container(content)
+            .width(Fill)
+            .height(size::row_sidebar())
+            .padding(style::ITEM_PADDING)
+            .center_y(size::row_sidebar())
+            .style(move |t: &Theme| {
+                let status = if hovered { button::Status::Hovered } else { button::Status::Active };
+                let look = style::button::sidebar_item(active)(t, status);
+                container::Style {
+                    background: look.background,
+                    text_color: Some(look.text_color),
+                    border: look.border,
+                    ..container::Style::default()
+                }
+            });
+        let row = mouse_area(surface)
+            .on_press(Message::Select(id.clone()))
+            .on_double_click(Message::OpenInWindow(id.clone()))
+            .on_right_press(Message::ToggleMenu(Menu::Conversation { id: id.clone(), at: MenuAt::Row }))
+            .on_enter(Message::Hover(Some(id.clone())))
+            .on_exit(Message::Hover(None))
+            .interaction(iced::mouse::Interaction::Pointer);
+        let menu_here = matches!(&self.menu, Some(Menu::Conversation { id: open, at: MenuAt::Row }) if *open == id);
+        if menu_here { widgets::anchored(&anchors.row, row) } else { row.into() }
+    }
+
+    // -- Header ---------------------------------------------------------------------------------
+
+    /// The header: the conversation's title with its engine and model quietly beside it, and its
+    /// "…" menu; in the narrow main window the drawer button and "New chat".
+    fn header<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Element<'a, Message> {
+        let mut leading = Vec::new();
+        // Narrow has neither sidebar nor rail, whose head holds "New".
+        let narrow_main = !self.chat_only && class == SizeClass::Narrow;
+        if narrow_main && !shell::has_band() {
+            leading.push(shell::sidebar_toggle(Message::ToggleSidebar));
+        }
+        let note = (class != SizeClass::Narrow).then(|| self.engine_note()).flatten();
+        let title = shell::header_title(None, self.conversation_title(), note);
+        let mut trailing = Vec::new();
+        if narrow_main {
+            trailing.push(widgets::icon_button(Icon::SquarePen, tr("New chat"), Some(Message::NewChat)));
+        }
+        if let Some(id) = self.current.clone().filter(|_| self.transcript.summary.is_some()) {
+            let menu = Menu::Conversation { id, at: MenuAt::Header };
+            let more = widgets::icon_button(Icon::Ellipsis, tr("More"), Some(Message::ToggleMenu(menu)));
+            trailing.push(widgets::anchored(&anchors.header, more));
+        }
+        shell::header_bar(leading, title, trailing)
+    }
+
+    /// "Ollama · qwen3:14b": who answered the open conversation last.
+    fn engine_note(&self) -> Option<String> {
+        let summary = self.transcript.summary.as_ref()?;
+        Some(self.choice_label(&Choice { engine: summary.engine.clone(), model: summary.model.clone() }))
+    }
+
+    /// An engine with its model, as the picker names them.
+    fn choice_label(&self, choice: &Choice) -> String {
+        let engine = self.engines.iter().find(|engine| engine.id == choice.engine);
+        let engine_name = engine.map_or(choice.engine.as_str(), |engine| engine.name.as_str());
+        let model_name = choice.model.as_ref().map(|id| {
+            let listed = self.models.get(&choice.engine).and_then(|models| models.as_ref().ok());
+            listed
+                .and_then(|models| models.iter().find(|model| &model.id == id))
+                .map_or(id.as_str(), |m| m.name.as_str())
+        });
+        match model_name {
+            Some(model) => format!("{engine_name} · {model}"),
+            None => engine_name.to_owned(),
+        }
+    }
+
+    // -- Body -----------------------------------------------------------------------------------
+
+    /// The chat: the entries above, the composer below; or loading and the error of the first load.
+    fn body<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Element<'a, Message> {
+        if !self.chat_only && !self.listed {
+            return match &self.list_error {
+                Some(_) => widgets::error_state(tr("Couldn't load the conversations."), Message::Retry),
+                None => widgets::loading(),
+            };
+        }
+        if self.chat_error.is_some() {
+            return widgets::error_state(tr("Couldn't load the conversation."), Message::Retry);
+        }
+        if self.current.is_some() && self.transcript.summary.is_none() {
+            return widgets::loading();
+        }
+        let side = match class {
+            SizeClass::Wide | SizeClass::Medium => space::l(),
+            _ => space::m(),
+        };
+        let history: Element<'a, Message> = if self.current.is_none() {
+            container(self.welcome()).width(Fill).height(Fill).into()
+        } else {
+            let entries = container(widgets::content(size::content_max(), self.entries()))
+                .width(Fill)
+                .padding(Padding { top: space::xl(), right: side, bottom: space::l(), left: side });
+            // The anchor after the direction, which replaces the scrollbar and its anchor.
+            scrollable(entries)
+                .id(HISTORY)
+                .direction(scrollable::Direction::Vertical(style::scrollbar()))
+                .anchor_bottom()
+                .style(style::scrollable)
+                .width(Fill)
+                .height(Fill)
+                .into()
+        };
+        let composer = container(widgets::content(size::content_max(), self.composer(class, anchors)))
+            .width(Fill)
+            .padding(Padding { top: 0.0, right: side, bottom: side, left: side });
+        column![history, composer].height(Fill).into()
+    }
+
+    /// What a new chat shows above the composer: the first start without the assistant's client,
+    /// the hint without an AI account, else a short welcome.
+    fn welcome(&self) -> Element<'_, Message> {
+        if self.access == Access::Missing {
+            return prompt_state(
+                tr("Choose what the assistant may use"),
+                tr(
+                    "Until then it answers without your calendar, tasks, inbox or mail. You decide area by area, and you can change it any time.",
+                ),
+                Some((tr("Set up access"), Message::SetUp)),
+            );
+        }
+        if self.engines_loaded && self.engines.is_empty() {
+            return prompt_state(
+                tr("No AI account yet"),
+                tr("Add a model on this computer with Ollama or LM Studio, or open models over OpenRouter."),
+                Some((tr("Add an AI account"), Message::OpenSettings)),
+            );
+        }
+        prompt_state(
+            tr("What can I do for you?"),
+            tr("Ask about your calendar, tasks, inbox or mail. The assistant uses only what you allowed."),
+            None,
+        )
+    }
+
+    /// The entries in order, the growing answer last; tool lines close together, everything else
+    /// with room between.
+    fn entries(&self) -> Element<'_, Message> {
+        let colours = answer_colours(palette(&self.theme()));
+        let mut list = column![].width(Fill);
+        let mut previous_tool: Option<bool> = None;
+        for entry in &self.transcript.entries {
+            let tool = matches!(entry.content, EntryContent::Tool { .. });
+            if let Some(was_tool) = previous_tool {
+                let gap = if was_tool && tool { space::xs() } else { space::l() };
+                list = list.push(Space::new().height(gap));
+            }
+            previous_tool = Some(tool);
+            list = list.push(self.entry(entry, colours));
+        }
+        // An answer runs, and nothing shows it yet: a quiet word, no spinner.
+        let waiting = self
+            .transcript
+            .approvals()
+            .iter()
+            .any(|id| self.approvals.get(*id).is_some_and(|approval| approval.state.is_pending()));
+        if self.transcript.running() && self.transcript.growing().is_none() && !waiting {
+            list = list.push(Space::new().height(space::l()));
+            list = list.push(typo::text(typo::meta(), tr("Working …")).style(theme::text_3));
+        }
+        list.into()
+    }
+
+    fn entry<'a>(&'a self, entry: &'a Entry, colours: Palette) -> Element<'a, Message> {
+        match &entry.content {
+            EntryContent::Message { text, .. } => {
+                let bubble = container(typo::text(typo::body(), text.as_str()).wrapping(Wrapping::WordOrGlyph))
+                    .padding([space::s(), space::m()])
+                    .max_width(size::form_max())
+                    .style(style::container::group);
+                container(bubble).width(Fill).align_right(Fill).into()
+            }
+            EntryContent::Answer { text, .. } => match self.answers.get(&entry.seq) {
+                Some((_, items)) => markdown::view(items, colours).map(Message::OpenLink),
+                None => typo::text(typo::body(), text.as_str()).into(),
+            },
+            EntryContent::Tool { name, input, summary, error } => {
+                self.tool(entry.seq, name, input, summary, error.as_deref())
+            }
+            EntryContent::Approval { id } => self.approval_card(id, self.approvals.get(id)),
+            EntryContent::Error { message, .. } => row![
+                tinted(Icon::CircleAlert, icon::SIZE, |p| p.error_text),
+                typo::text(typo::body(), message.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into(),
+            EntryContent::Stopped => row![
+                tinted(Icon::Square, icon::SIZE_SM, |p| p.text_3),
+                typo::text(typo::meta(), tr("Stopped")).style(theme::text_3)
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+            .into(),
+        }
+    }
+
+    /// A tool line: the area's icon, "Searched mail · 12 results" and a chevron; a click unfolds
+    /// its input and result, and "Open Calendar" for the app that shows it. A refused tool says so
+    /// in the error colour, and for `forbidden` how to change it.
+    fn tool<'a>(
+        &'a self,
+        seq: u64,
+        name: &'a str,
+        input: &'a serde_json::Value,
+        summary: &'a str,
+        error: Option<&'a str>,
+    ) -> Element<'a, Message> {
+        let area = chat::area_of(name);
+        let open = self.expanded.contains(&seq);
+        let mark: Element<'a, Message> = match error {
+            Some(_) => tinted(Icon::CircleAlert, icon::SIZE_SM, |p| p.error_text),
+            None => tinted(area_icon(area), icon::SIZE_SM, |p| p.text_3),
+        };
+        let chevron = if open { Icon::ChevronDown } else { Icon::ChevronRight };
+        let line = row![
+            mark,
+            typo::text(typo::meta(), chat::tool_line(name, summary, error)).wrapping(Wrapping::WordOrGlyph),
+            tinted(chevron, icon::SIZE_SM, |p| p.text_3)
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        // A long line wraps rather than being cut; one line is as high as a small control.
+        let line = button(line)
+            .padding(Padding { top: tool_inset(), bottom: tool_inset(), left: 0.0, right: space::s() })
+            .style(style::button::ghost)
+            .on_press(Message::ToggleTool(seq));
+        let mut parts = column![line].spacing(space::xs());
+        if error == Some("forbidden") {
+            let what = match area {
+                Some(area) => trf("The assistant has no access to {area}.", &[("area", &chat::area_name(area))]),
+                None => tr("The assistant has no access to this.").to_owned(),
+            };
+            let hint = row![
+                typo::text(typo::meta(), what).style(theme::text_2),
+                widgets::text_button(None, tr("Change access"), style::button::ghost, Some(Message::SetUp))
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            parts = parts.push(container(hint).padding(Padding::new(0.0).left(tool_indent())));
+        }
+        if open {
+            let mut result =
+                row![typo::text(typo::meta(), summary).style(theme::text_2).wrapping(Wrapping::WordOrGlyph)]
+                    .spacing(space::s())
+                    .align_y(Alignment::Center);
+            if let Some(app) = area.and_then(chat::app_of).filter(|_| error.is_none()) {
+                let label = trf("Open {app}", &[("app", &app_short_name(app))]);
+                let open_app = Message::OpenApp(app.binary.to_owned());
+                result = result.push(widgets::text_button(
+                    Some(Icon::ArrowUpRight),
+                    label,
+                    style::button::ghost,
+                    Some(open_app),
+                ));
+            }
+            let detail = column![
+                typo::text(typo::caption(), tr("Input")).style(theme::text_3),
+                input_view(input),
+                typo::text(typo::caption(), tr("Result")).style(theme::text_3),
+                result,
+            ]
+            .spacing(space::xs());
+            parts = parts.push(container(detail).padding(Padding::new(0.0).left(tool_indent())));
+        }
+        parts.into()
+    }
+
+    /// The approval card: what the tool would do, in the core's words (its summary and details,
+    /// never the model's text), and "Allow" / "Deny" while it waits – disabled while a decision
+    /// is on its way. Decided, it says how.
+    fn approval_card<'a>(&'a self, id: &'a str, approval: Option<&'a ApprovalInfo>) -> Element<'a, Message> {
+        let head = row![
+            tinted(Icon::ShieldAlert, icon::SIZE, |p| p.attention_text),
+            typo::text(typo::body_strong(), tr("Approval needed"))
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        let mut card = column![head].spacing(space::s());
+        let Some(approval) = approval else {
+            card = card.push(typo::text(typo::meta(), tr("Loading …")).style(theme::text_3));
+            return container(card).width(Fill).padding(layout::panel_padding()).style(style::container::group).into();
+        };
+        card = card.push(typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph));
+        for line in &approval.details {
+            card =
+                card.push(typo::text(typo::meta(), line.as_str()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+        }
+        let footer: Element<'a, Message> = match &approval.state {
+            ApprovalState::Pending => {
+                let open = self.deciding.is_none();
+                let decide = |allow: bool| open.then(|| Message::Decide(id.to_owned(), allow));
+                row![
+                    widgets::text_button(Some(Icon::Check), tr("Allow"), style::button::secondary, decide(true)),
+                    widgets::text_button(Some(Icon::X), tr("Deny"), style::button::secondary, decide(false)),
+                ]
+                .spacing(space::s())
+                .into()
+            }
+            ApprovalState::Running | ApprovalState::Done { .. } => {
+                outcome(tinted(Icon::CircleCheck, icon::SIZE_SM, |p| p.ok), tr("Allowed"))
+            }
+            ApprovalState::Denied => outcome(tinted(Icon::CircleX, icon::SIZE_SM, |p| p.error_text), tr("Denied")),
+            ApprovalState::Expired => outcome(tinted(Icon::Clock, icon::SIZE_SM, |p| p.text_3), tr("Expired")),
+        };
+        card = card.push(footer);
+        container(card).width(Fill).padding(layout::panel_padding()).style(style::container::group).into()
+    }
+
+    // -- Composer -------------------------------------------------------------------------------
+
+    /// The composer: the text (`Enter` sends, `Shift + Enter` a new line), below it the engine and
+    /// model, the areas, and "Send" – or "Stop" while an answer runs.
+    fn composer<'a>(&'a self, class: SizeClass, anchors: &Anchors) -> Element<'a, Message> {
+        let body = typo::body();
+        let (least, most) = editor_heights();
+        let editor = text_editor(&self.editor)
+            .id(EDITOR)
+            .placeholder(tr("Ask the assistant…"))
+            .size(body.size)
+            .line_height(body.line_height)
+            .font(body.font)
+            .padding(style::INPUT_PADDING)
+            .min_height(least)
+            .max_height(most)
+            .wrapping(Wrapping::WordOrGlyph)
+            .style(style::text_editor)
+            .key_binding(composer_binding)
+            .on_action(Message::Edit);
+        let room = label_room(class);
+        let mut controls = row![].spacing(space::s()).align_y(Alignment::Center);
+        controls = controls.push(match &self.choice {
+            Some(choice) => {
+                let label = typo::ellipsize(&self.choice_label(choice), typo::caption(), room);
+                widgets::select_button(&anchors.picker, label, Message::ToggleMenu(Menu::Picker))
+            }
+            None if self.engines_loaded => typo::text(typo::meta(), tr("No AI account")).style(theme::text_3).into(),
+            None => typo::text(typo::meta(), tr("Loading …")).style(theme::text_3).into(),
+        });
+        let areas = self.switchable();
+        if !areas.is_empty() {
+            let label = if self.without.is_empty() {
+                tr("All areas").to_owned()
+            } else {
+                let names: Vec<&str> = self.without.iter().map(|area| chat::area_name(*area)).collect();
+                trf("Without {areas}", &[("areas", &names.join(", "))])
+            };
+            let label = typo::ellipsize(&label, typo::caption(), room);
+            controls = controls.push(widgets::select_button(&anchors.areas, label, Message::ToggleMenu(Menu::Areas)));
+        }
+        controls = controls.push(Space::new().width(Fill));
+        controls = controls.push(if self.transcript.running() {
+            widgets::text_button(Some(Icon::Square), tr("Stop"), style::button::secondary, Some(Message::Stop))
+        } else if self.sending {
+            widgets::busy_button(tr("Sending…"), style::button::primary)
+        } else {
+            let ready = self.choice.is_some() && !self.editor.text().trim().is_empty();
+            widgets::text_button(Some(Icon::Send), tr("Send"), style::button::primary, ready.then_some(Message::Send))
+        });
+        column![editor, controls].spacing(space::s()).into()
+    }
+
+    /// The picker: each engine with the models that can call tools; an engine whose models did
+    /// not come is offered as it is, and the engine picks its model.
+    fn picker_menu(&self) -> Element<'_, Message> {
+        let chosen = self.choice.as_ref();
+        let check = palette(&self.theme()).text_2;
+        let sections = self
+            .engines
+            .iter()
+            .map(|engine| {
+                let pick = |model: Option<String>| Choice { engine: engine.id.clone(), model };
+                let item = |label: String, choice: Choice| {
+                    let on = chosen == Some(&choice);
+                    MenuItem::new(Mark::Check(check, on), label, Message::Pick(choice))
+                };
+                let items = match (engine.kind, self.offered_models(&engine.id)) {
+                    (EngineKind::Ai, Some(Ok(models))) if !models.is_empty() => {
+                        models.into_iter().map(|model| item(model.name.clone(), pick(Some(model.id)))).collect()
+                    }
+                    (EngineKind::Ai, Some(Ok(_))) => {
+                        vec![MenuItem::new(Icon::CircleAlert, tr("No model here can use tools"), Message::CloseMenu)]
+                    }
+                    (EngineKind::Ai, Some(Err(_))) => vec![item(tr("Automatic").to_owned(), pick(None))],
+                    (EngineKind::Ai, None) => vec![item(tr("Automatic").to_owned(), pick(None))],
+                    (EngineKind::Test, _) => vec![item(engine.name.clone(), pick(None))],
+                };
+                let title = match &engine.problem {
+                    Some(problem) => format!("{} · {problem}", engine.name),
+                    None => engine.name.clone(),
+                };
+                MenuSection::titled(title, items)
+            })
+            .collect();
+        widgets::menu(sections)
+    }
+
+    /// The areas of the composer: each with a check while the assistant may use it here.
+    fn areas_menu(&self) -> Element<'_, Message> {
+        let check = palette(&self.theme()).text_2;
+        let items = self
+            .switchable()
+            .into_iter()
+            .map(|area| {
+                let on = !self.without.contains(&area);
+                MenuItem::new(Mark::Check(check, on), chat::area_name(area), Message::ToggleArea(area))
+            })
+            .collect();
+        widgets::menu(vec![MenuSection::titled(tr("The assistant may use"), items)])
+    }
+
+    /// A conversation's menu: Rename, Pin or Unpin, Open in new window (main window), Delete.
+    fn conversation_menu(&self, id: &str) -> Element<'_, Message> {
+        let pinned = self.conversations.iter().find(|c| c.id == id).is_some_and(|c| c.pinned);
+        let mut items = vec![
+            MenuItem::new(Icon::SquarePen, tr("Rename"), Message::AskRename(id.to_owned())),
+            if pinned {
+                MenuItem::new(Icon::PinOff, tr("Unpin"), Message::Pin(id.to_owned(), false))
+            } else {
+                MenuItem::new(Icon::Flag, tr("Pin"), Message::Pin(id.to_owned(), true))
+            },
+        ];
+        if !self.chat_only {
+            items.push(MenuItem::new(Icon::AppWindow, tr("Open in new window"), Message::OpenInWindow(id.to_owned())));
+        }
+        let delete = MenuItem::new(Icon::Trash2, tr("Delete"), Message::AskDelete(id.to_owned()));
+        widgets::menu(vec![MenuSection::new(items), MenuSection::new(vec![delete])])
+    }
+
+    /// The dialog over the window: renaming (the field, "Cancel", "Rename") or the question before
+    /// deleting.
+    fn dialog_view<'a>(&'a self, dialog: &'a Dialog) -> Element<'a, Message> {
+        let body = typo::body();
+        let (title, content, confirm): (&str, Element<'a, Message>, Element<'a, Message>) = match dialog {
+            Dialog::Rename { title, .. } => {
+                let field = text_input(tr("Title"), title)
+                    .id(RENAME)
+                    .size(body.size)
+                    .line_height(body.line_height)
+                    .font(body.font)
+                    .padding(style::INPUT_PADDING)
+                    .width(Fill)
+                    .style(style::text_input)
+                    .on_input(Message::RenameInput)
+                    .on_submit(Message::ConfirmRename);
+                let ready = !title.trim().is_empty();
+                let confirm = widgets::text_button(
+                    None,
+                    tr("Rename"),
+                    style::button::secondary,
+                    ready.then_some(Message::ConfirmRename),
+                );
+                (tr("Rename conversation"), field.into(), confirm)
+            }
+            Dialog::Delete { title, .. } => {
+                let text = trf("“{title}” and everything in it will be deleted for good.", &[("title", title)]);
+                let words = typo::text(typo::body(), text).style(theme::text_2).wrapping(Wrapping::WordOrGlyph);
+                let confirm = widgets::text_button(
+                    Some(Icon::Trash2),
+                    tr("Delete conversation"),
+                    style::button::danger,
+                    Some(Message::ConfirmDelete),
+                );
+                (tr("Delete this conversation?"), words.into(), confirm)
+            }
+        };
+        let cancel = widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseDialog));
+        let buttons = row![Space::new().width(Fill), cancel, confirm].spacing(space::s()).align_y(Alignment::Center);
+        let card = column![typo::text(typo::title(), title), content, buttons].spacing(space::l());
+        container(card).width(Fill).padding(layout::panel_padding()).style(style::container::popover).into()
+    }
+
+    // -- Mini and strip -------------------------------------------------------------------------
+
+    /// The glance of mini and strip tiles: the newest answer, read from a distance, and a one-line
+    /// composer – the tile's one purpose. No sidebar, menus or dialogs.
+    fn glance(&self, class: SizeClass) -> Element<'_, Message> {
+        let strip = class == SizeClass::Strip;
+        let padding = if strip { Padding::new(space::s()).horizontal(space::m()) } else { Padding::new(space::m()) };
+        let body = typo::body();
+        let field = text_input(tr("Ask the assistant…"), &self.mini)
+            .id(MINI_INPUT)
+            .size(body.size)
+            .line_height(body.line_height)
+            .font(body.font)
+            .padding(style::INPUT_PADDING)
+            .width(Fill)
+            .style(style::text_input)
+            .on_input(Message::MiniInput)
+            .on_submit(Message::Send);
+        let mut composer = row![field].spacing(space::s()).align_y(Alignment::Center);
+        if self.transcript.running() {
+            composer =
+                composer.push(widgets::text_button(None, tr("Stop"), style::button::secondary, Some(Message::Stop)));
+        }
+        let shown = self.glance_answer();
+        let content: Element<'_, Message> = if strip {
+            // A flat strip: the answer takes the height, the composer stands beside it.
+            row![shown, container(composer).width(size::props()).center_y(Fill)].spacing(space::m()).into()
+        } else {
+            let mut column = column![].spacing(space::s());
+            if self.current.is_some() {
+                let title = typo::ellipsize(&self.conversation_title(), typo::meta(), self.size.width);
+                column = column.push(typo::text(typo::meta(), title).style(theme::text_3).wrapping(Wrapping::None));
+            }
+            column.push(shown).push(composer).into()
+        };
+        container(content)
+            .width(Fill)
+            .height(Fill)
+            .padding(padding)
+            .style(|t: &Theme| container::Style {
+                background: Some(Background::Color(palette(t).panel)),
+                ..container::Style::default()
+            })
+            .into()
+    }
+
+    /// What the glance shows above (or beside) its composer: an approval that waits, in the
+    /// core's words – the person decides in a larger window –, else the newest answer, scrolled to
+    /// its end so nothing is cut off unseen; "Working …" while an answer runs without text yet.
+    fn glance_answer(&self) -> Element<'_, Message> {
+        let waiting = self
+            .transcript
+            .approvals()
+            .into_iter()
+            .find_map(|id| self.approvals.get(id).filter(|approval| approval.state.is_pending()));
+        let content: Element<'_, Message> = if let Some(approval) = waiting {
+            column![
+                row![
+                    tinted(Icon::ShieldAlert, icon::SIZE, |p| p.attention_text),
+                    typo::text(typo::body_strong(), tr("Approval needed"))
+                ]
+                .spacing(space::s())
+                .align_y(Alignment::Center),
+                typo::text(typo::body(), approval.summary.as_str()).wrapping(Wrapping::WordOrGlyph),
+                typo::text(typo::meta(), tr("Allow or deny it in a larger window.")).style(theme::text_3),
+            ]
+            .spacing(space::xs())
+            .into()
+        } else if let Some(entry) = self.transcript.last_answer() {
+            self.entry(entry, answer_colours(palette(&self.theme())))
+        } else if self.transcript.running() {
+            typo::text(typo::meta(), tr("Working …")).style(theme::text_3).into()
+        } else {
+            typo::text(typo::meta(), tr("Ask anything – the answer shows here.")).style(theme::text_3).into()
+        };
+        scrollable(container(content).width(Fill))
+            .direction(scrollable::Direction::Vertical(style::scrollbar()))
+            .anchor_bottom()
+            .style(style::scrollable)
+            .width(Fill)
+            .height(Fill)
+            .into()
+    }
+}
+
+/// The short name of an app for "Open …": "Calendar", "Tasks", "Inbox".
+fn app_short_name(app: torro_core::AppId) -> &'static str {
+    match app.binary {
+        "torrocalendar" => tr("Calendar"),
+        "torrotasks" => tr("Tasks"),
+        "torroinbox" => tr("Inbox"),
+        _ => app.display_name,
+    }
+}
+
+/// How a decided approval went: a mark and a word.
+fn outcome<'a>(mark: Element<'a, Message>, word: &'a str) -> Element<'a, Message> {
+    row![mark, typo::text(typo::meta(), word).style(theme::text_2)]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// A quiet line in the sidebar ("No conversations yet").
+fn sidebar_note<'a>(text: &'a str) -> Element<'a, Message> {
+    container(typo::text(typo::meta(), text).style(theme::text_3)).padding(style::ITEM_PADDING.top(space::m())).into()
+}
+
+/// A state in the middle of the chat: what this is (`title`), what to do (`hint`), and a button
+/// that does it – the empty state with a way out.
+fn prompt_state<'a>(title: &'a str, hint: &'a str, action: Option<(&'a str, Message)>) -> Element<'a, Message> {
+    let mut content = column![
+        tinted(Icon::Sparkles, icon::SIZE, |p| p.text_3),
+        typo::text(typo::body_strong(), title).align_x(Alignment::Center),
+        typo::text(typo::body(), hint).style(theme::text_2).align_x(Alignment::Center)
+    ]
+    .spacing(space::s())
+    .align_x(Alignment::Center)
+    .max_width(size::panel());
+    if let Some((label, message)) = action {
+        content = content.push(Space::new().height(space::xs()));
+        content = content.push(widgets::text_button(None, label, style::button::secondary, Some(message)));
+    }
+    container(content).center(Fill).padding(space::xl()).into()
+}

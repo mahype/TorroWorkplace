@@ -38,6 +38,19 @@ impl AppId {
     pub const INBOX: AppId =
         AppId { window_class: "torro-inbox", binary: "torroinbox", dir: "torroinbox", display_name: "Torro Inbox" };
 
+    /// The assistant's main window (task C.4, `docs/assistent.md`): its conversations and the chat.
+    /// The same binary opens single chat windows (`torroassistant --chat <id>|new`) with a class of
+    /// their own, `torro-assistant-chat`; such a window is no app of its own, so it is not listed
+    /// here, as the inbox's compose window is not. A workspace template stores the window's whole
+    /// command line, so a chat window comes back with its conversation.
+    pub const ASSISTANT: AppId = AppId {
+        window_class: "torro-assistant",
+        binary: "torroassistant",
+        dir: "torroassistant",
+        display_name: "Torro Assistant",
+    };
+
     /// Every app of the suite, in launcher order.
-    pub const ALL: &'static [AppId] = &[AppId::WORKPLACE, AppId::INBOX, AppId::TASKS, AppId::CALENDAR];
+    pub const ALL: &'static [AppId] =
+        &[AppId::WORKPLACE, AppId::INBOX, AppId::TASKS, AppId::CALENDAR, AppId::ASSISTANT];
 }

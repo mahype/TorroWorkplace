@@ -17,6 +17,7 @@ members = [
     "crates/torrotasks",
     "crates/torrocalendar",
     "crates/torroinbox",
+    "crates/torroassistant",
 ]
 resolver = "3"
 

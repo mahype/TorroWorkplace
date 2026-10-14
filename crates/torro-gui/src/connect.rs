@@ -85,10 +85,16 @@ impl Connect {
 /// Opens the control centre on the accounts page. The app does not wait for it; the process
 /// is reaped in the background once it exits. Failures are only logged, the app keeps polling.
 pub fn open_settings() {
+    open_section("accounts");
+}
+
+/// Opens the control centre on the page `section`, what `torroworkplace ui --section` takes
+/// (`accounts`, `assistant` …), like [`open_settings`]: not waited for, failures only logged.
+pub fn open_section(section: &str) {
     let program = sibling(torro_core::AppId::WORKPLACE.binary);
     let mut command = Command::new(&program);
     command
-        .args(["ui", "--section", "accounts"])
+        .args(["ui", "--section", section])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
