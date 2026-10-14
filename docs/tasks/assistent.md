@@ -96,7 +96,7 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** `torro-design-review` in allen Größenklassen; Texte über `tr()`, Übersetzungen im Bericht.
 
 ### C.5 MCP-Tools `assistant_*`
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
 - Je Katalogeintrag ein Tool; `assistant_send_message` wartet bis zur Antwort oder 60 s, dann Stand mit `after`.
 - **Abnahme:** Vertragstest; Test, dass ein Client der Art `assistant` `forbidden` bekommt.
