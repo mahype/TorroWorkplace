@@ -274,7 +274,10 @@ Neue Abhängigkeiten (in `[workspace.dependencies]`): `schemars` (A.0), `sha2`, 
   Text zeigen statt der englischen API-Meldung (Text in der App mit `tr()`).
 
 ### A.9 API-Referenz und Abschluss
-- [ ] erledigt
+- [x] erledigt (Dateien: `crates/torro-ipc/src/api.rs` (Test `reference`), `docs/api-reference.md`,
+  `crates/torro-core/src/i18n/de.rs`; Sichtprüfung nicht möglich, kein Hyprland; offen aus der API-Prüfung:
+  13 Request-Felder ohne Doc-Kommentar, Tabelle in `api.md` „Bereiche und Befehle heute“ unvollständig,
+  `system.collect_diagnostics` steht in `api.md`, kommt erst mit G.19)
 - **Modell:** Opus · **Braucht:** A.4, A.6, A.8
 - `docs/api-reference.md` aus dem Katalog erzeugen (Test mit `TORRO_BLESS=1`), Übersetzungen
   eintragen, Design-Prüfung der neuen Seiten, `torro-api-review` über alles.

@@ -4820,3 +4820,340 @@ mod tests {
         }
     }
 }
+
+/// The API reference `docs/api-reference.md` (task A.9), built from [`CATALOGUE`] and
+/// [`request_schema`], so it cannot drift from the code: the test compares the file with what it
+/// builds and fails on any difference; `TORRO_BLESS=1 cargo test -p torro-ipc` writes it anew.
+///
+/// The frame (intro, headings, labels) is German like every document in `docs/`; descriptions of
+/// commands and fields are the English texts agents read (catalogue and doc comments of the
+/// requests), so the reference shows exactly what an MCP client gets.
+#[cfg(test)]
+mod reference {
+    use std::path::PathBuf;
+
+    use serde_json::Value;
+
+    use super::{Area, CATALOGUE, Command, Mcp};
+
+    fn path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/api-reference.md")
+    }
+
+    #[test]
+    fn the_api_reference_matches_the_catalogue() {
+        let built = reference();
+        let path = path();
+        if std::env::var_os("TORRO_BLESS").is_some_and(|value| value == "1") {
+            std::fs::write(&path, &built).expect("write docs/api-reference.md");
+            return;
+        }
+        // A checkout with CRLF line ends holds the same text.
+        let stored = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+        if stored != built {
+            // The whole file in an assert message buries the difference: name the first line.
+            let line = stored.lines().zip(built.lines()).take_while(|(old, new)| old == new).count() + 1;
+            panic!(
+                "docs/api-reference.md differs from the catalogue from line {line} on: \
+                 run `TORRO_BLESS=1 cargo test -p torro-ipc` and commit the file"
+            );
+        }
+    }
+
+    #[test]
+    fn the_reference_names_every_command_once() {
+        let built = reference();
+        for command in CATALOGUE {
+            let heading = format!("### `{}`\n", command.name);
+            assert_eq!(built.matches(&heading).count(), 1, "{}", command.name);
+        }
+    }
+
+    /// The whole document.
+    fn reference() -> String {
+        let mut lines = intro();
+        lines.extend(overview());
+        for area in Area::ALL {
+            lines.extend(area_section(area));
+        }
+        let mut text = lines.join("\n");
+        text.push('\n');
+        text
+    }
+
+    fn intro() -> Vec<String> {
+        let version = crate::API_VERSION;
+        [
+            "# API-Referenz",
+            "",
+            "<!-- Erzeugt aus dem Befehlskatalog. Nicht von Hand ändern: `TORRO_BLESS=1 cargo test -p torro-ipc`. -->",
+            "",
+            "Alle Befehle des Dienstes `torroworkplace`, erzeugt aus dem Befehlskatalog",
+            "(`crates/torro-ipc/src/api.rs`) und den Typen der Requests. Ein Test vergleicht diese Datei mit",
+            "dem Code und schlägt bei jeder Abweichung fehl; `TORRO_BLESS=1 cargo test -p torro-ipc` schreibt",
+            "sie neu. Konzept, Rechte, Freigaben und Protokoll: [api.md](api.md).",
+            "",
+            "Die Beschreibungen der Befehle und Felder sind englisch: Es sind dieselben Texte, die Agenten",
+            "als Beschreibung der MCP-Tools lesen.",
+            "",
+            "## Aufruf",
+            "",
+            "- **Socket:** `core.sock` im State-Verzeichnis (Unix-Socket, 0600), unter Windows die Named Pipe",
+            "  `\\\\.\\pipe\\torro-workplace-<SID>`. Ein Request je Verbindung, eine JSON-Zeile je Richtung:",
+            "",
+            "  ```json",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .chain([
+            format!(
+                "  {{\"v\":{version},\"key\":\"torro_…\",\"request\":{{\"method\":\"calendar.list_events\",\"start\":\"…\",\"end\":\"…\"}}}}"
+            ),
+        ])
+        .chain(
+            [
+                "  ```",
+                "",
+                "  `method` ist der Name des Befehls, die Felder aus den Tabellen unten stehen daneben im",
+                "  Objekt `request`. Ohne gültigen Schlüssel antwortet der Dienst nur auf `system.ping`.",
+                "- **Antwort:** ein JSON-Objekt mit `result` (etwa `events`, `done`, `error`, `pending`).",
+                "  Clients müssen unbekannte Werte von `result` tolerieren.",
+                "- **Fehler:** `{\"result\":\"error\",\"code\":\"…\",\"message\":\"…\"}`. `code` ist fest, `message` ist für",
+                "  Menschen. Codes: `not-found`, `conflict`, `offline`, `auth`, `busy`, `unsupported`,",
+                "  `not-connected`, `workspace-not-empty`, `unauthorized`, `forbidden`, `error`.",
+                "- **Freigabe:** Wartet ein Befehl auf einen Menschen, antwortet der Dienst mit `result: \"pending\"`",
+                "  und der Freigabe (Kennung, Zusammenfassung, Ablauf). Nachfragen mit `approvals.approval_status`.",
+                "- **MCP:** `torroworkplace mcp` (stdio, Schlüssel aus `TORRO_TOKEN`). Das Tool heißt wie der",
+                "  Befehl mit `_` statt `.`, seine Eingabe sind die Felder unten. `calendar_list_events`,",
+                "  `calendar_save_event`, `tasks_save_todo`, `inbox_list_items` und `inbox_post_item` nehmen",
+                "  zusätzlich bequeme Kurzformen an (`crates/torroworkplace/src/mcp.rs`); Kurzformen legen nur an.",
+                "  Auf `pending` wartet das Tool bis 60 s und meldet danach den Tool-Fehler `pending` mit der",
+                "  Kennung.",
+                "- **Zugriff:** `read` ändert nichts, `write` legt an, ändert oder löst aus, `delete` entfernt oder",
+                "  überschreibt unwiederbringlich, `admin` verwaltet Konten, Einstellungen und Verbindungen.",
+                "  Genannt ist die Stufe, die ein Befehl mindestens braucht; manche brauchen je nach Feldern mehr",
+                "  (`workspaces.load_template` mit `mode: replace` braucht `delete`), siehe die Fußnoten in",
+                "  [api.md](api.md#bereiche-und-befehle-heute).",
+                "- **Nur App-Schlüssel:** Befehle ohne MCP-Tool gibt es nur für die Steuerzentrale und die Apps",
+                "  („Was nie nach außen geht“ in [api.md](api.md#was-nie-nach-außen-geht)). Jeder andere Schlüssel",
+                "  bekommt `forbidden`, auch mit Admin-Rechten.",
+                "",
+            ]
+            .into_iter()
+            .map(str::to_string),
+        )
+        .collect()
+    }
+
+    /// One row per area with links to its commands.
+    fn overview() -> Vec<String> {
+        let mut lines = vec![
+            "## Übersicht".to_string(),
+            String::new(),
+            "| Bereich | Befehle |".to_string(),
+            "|---|---|".to_string(),
+        ];
+        for area in Area::ALL {
+            let links: Vec<String> =
+                commands_of(area).map(|command| format!("[`{}`](#{})", command.name, anchor(command.name))).collect();
+            lines.push(format!("| [`{}`](#{}) | {} |", area.name(), area.name(), links.join(", ")));
+        }
+        lines.push(String::new());
+        lines
+    }
+
+    fn commands_of(area: Area) -> impl Iterator<Item = &'static &'static Command> {
+        CATALOGUE.iter().filter(move |command| command.area == area)
+    }
+
+    /// The anchor GitHub gives a heading `` `calendar.delete_event` ``: lower case, without the dot.
+    fn anchor(name: &str) -> String {
+        name.chars().filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-').collect()
+    }
+
+    fn area_section(area: Area) -> Vec<String> {
+        let mut lines = vec![format!("## `{}`", area.name()), String::new()];
+        if area.prefix() != area.name() {
+            lines.push(format!(
+                "Die Befehle heißen `{}.…`; Rechte vergibt die Person im Bereich `{}`.",
+                area.prefix(),
+                area.name()
+            ));
+            lines.push(String::new());
+        }
+        if !area.grantable() {
+            lines.push(
+                "Für diesen Bereich vergibt niemand Rechte: Befehle mit MCP-Tool darf jeder gültige \
+                 Schlüssel, die übrigen nur der App-Schlüssel (siehe [api.md](api.md#rechte))."
+                    .to_string(),
+            );
+            lines.push(String::new());
+        } else if !area.in_templates() {
+            lines.push(
+                "Nicht in den Vorlagen enthalten, auch nicht in *Full access*: Die Person schaltet den \
+                 Bereich je Client eigens ein."
+                    .to_string(),
+            );
+            lines.push(String::new());
+        }
+        for command in commands_of(area) {
+            lines.extend(command_section(command));
+        }
+        lines
+    }
+
+    fn command_section(command: &Command) -> Vec<String> {
+        let access = serde_json::to_value(command.access).ok().and_then(|v| v.as_str().map(str::to_string));
+        let mut facts = vec![format!("Zugriff `{}`", access.unwrap_or_default())];
+        facts.push(match command.mcp {
+            Mcp::Tool => format!("MCP-Tool `{}`", command.tool_name()),
+            Mcp::Never => "kein MCP-Tool, nur App-Schlüssel".to_string(),
+        });
+        if command.is_outbound() {
+            facts.push("sendet nach außen, braucht zusätzlich `outbound`".to_string());
+        }
+        let mut lines = vec![
+            format!("### `{}`", command.name),
+            String::new(),
+            facts.join(" · "),
+            String::new(),
+            one_line(command.description),
+            String::new(),
+        ];
+        lines.extend(fields(command));
+        lines
+    }
+
+    /// The fields of the command's input as a table, from its JSON Schema. Fields of nested objects
+    /// follow their parent with a path (`event.summary`, `attachments[].name`), so the whole input of
+    /// a command is here, not only its first level.
+    fn fields(command: &Command) -> Vec<String> {
+        let schema = command.input_schema().map(|schema| schema.as_value().clone()).unwrap_or(Value::Null);
+        let mut rows = Vec::new();
+        field_rows("", &schema, 0, &mut rows);
+        if rows.is_empty() {
+            return vec!["Keine Felder.".to_string(), String::new()];
+        }
+        let mut lines = vec!["| Feld | Typ | Pflicht | Beschreibung |".to_string(), "|---|---|---|---|".to_string()];
+        lines.extend(rows);
+        lines.push(String::new());
+        lines
+    }
+
+    /// How deep nested objects are listed. Deeper ones (settings of one account inside the
+    /// settings) stay `object`; their description says what they hold.
+    const DEPTH: usize = 3;
+
+    /// One row per property of `object`, each followed by the rows of its own fields.
+    fn field_rows(path: &str, object: &Value, depth: usize, rows: &mut Vec<String>) {
+        let Some(properties) = object.get("properties").and_then(Value::as_object) else {
+            return;
+        };
+        let required: Vec<&str> = object
+            .get("required")
+            .and_then(Value::as_array)
+            .map(|names| names.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        for (name, field) in properties {
+            let mut kind = type_of(field);
+            if field.get("writeOnly") == Some(&Value::Bool(true)) {
+                kind.push_str(", nur schreiben");
+            }
+            let needed = if required.contains(&name.as_str()) {
+                "ja".to_string()
+            } else {
+                match field.get("default") {
+                    Some(default) => format!("nein, Standard `{default}`"),
+                    None => "nein".to_string(),
+                }
+            };
+            let description = field.get("description").and_then(Value::as_str).map(one_line).unwrap_or_default();
+            let full = format!("{path}{name}");
+            rows.push(format!("| `{full}` | {} | {} | {} |", cell(&kind), cell(&needed), cell(&description)));
+            if depth + 1 < DEPTH
+                && let Some((inner, list)) = nested_object(field)
+            {
+                let prefix = if list { format!("{full}[].") } else { format!("{full}.") };
+                field_rows(&prefix, inner, depth + 1, rows);
+            }
+        }
+    }
+
+    /// The object with fields inside `field`, if any: the field itself, the items of a list
+    /// (`true`), or the non-null branch of an optional object.
+    fn nested_object(field: &Value) -> Option<(&Value, bool)> {
+        if field.get("properties").is_some() {
+            return Some((field, false));
+        }
+        if let Some(items) = field.get("items") {
+            return nested_object(items).map(|(inner, _)| (inner, true));
+        }
+        let branches = field.get("anyOf").or_else(|| field.get("oneOf")).and_then(Value::as_array)?;
+        let mut objects = branches.iter().filter(|branch| branch.get("properties").is_some());
+        // Several object branches (a tagged enum) have no single set of fields to list.
+        let only = objects.next()?;
+        objects.next().is_none().then_some((only, false))
+    }
+
+    /// A short type for a field: `string (date-time)`, `array<object>`, the values of an enum.
+    fn type_of(schema: &Value) -> String {
+        if let Some(value) = schema.get("const") {
+            return format!("`{value}`");
+        }
+        if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+            // `null` in the values only says the field is optional, which the column "Pflicht" says.
+            return values
+                .iter()
+                .filter(|value| !value.is_null())
+                .map(|value| format!("`{value}`"))
+                .collect::<Vec<_>>()
+                .join(" | ");
+        }
+        for key in ["oneOf", "anyOf"] {
+            if let Some(branches) = schema.get(key).and_then(Value::as_array) {
+                let mut kinds: Vec<String> = Vec::new();
+                for kind in branches.iter().map(type_of) {
+                    if kind != "null" && !kinds.contains(&kind) {
+                        kinds.push(kind);
+                    }
+                }
+                return kinds.join(" | ");
+            }
+        }
+        if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+            return reference.rsplit('/').next().unwrap_or(reference).to_string();
+        }
+        match schema.get("type") {
+            Some(Value::String(kind)) => single_type(kind, schema),
+            Some(Value::Array(kinds)) => kinds
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|kind| *kind != "null")
+                .map(|kind| single_type(kind, schema))
+                .collect::<Vec<_>>()
+                .join(" | "),
+            _ => "any".to_string(),
+        }
+    }
+
+    fn single_type(kind: &str, schema: &Value) -> String {
+        match kind {
+            "array" => format!("array<{}>", schema.get("items").map(type_of).unwrap_or_else(|| "any".to_string())),
+            "string" => match schema.get("format").and_then(Value::as_str) {
+                Some(format) => format!("string ({format})"),
+                None => "string".to_string(),
+            },
+            other => other.to_string(),
+        }
+    }
+
+    /// Doc comments span lines and paragraphs; a table cell and a description line take one.
+    fn one_line(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// Text for a table cell: `|` would end the cell, also inside code.
+    fn cell(text: &str) -> String {
+        text.replace('|', "\\|")
+    }
+}
