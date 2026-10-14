@@ -450,7 +450,9 @@ fn edit(state: &mut State, data: &Data, message: Message) -> Action {
 /// level already set, "Selected" while already selected, a name that is no repository) and an area
 /// the client's kind does not show ([`shows_area`]) leave `rights` as they are and return `false`.
 /// "Selected" starts with every known candidate ticked ([`candidates`]): the client keeps what it
-/// reaches until the person unticks something.
+/// reaches until the person unticks something. Switching mail on while no mail account is ticked
+/// ticks every account signed in now (issue #133): mail without an account grants nothing, and the
+/// person meant to grant something. Accounts added later stay off until ticked.
 pub(super) fn change_rights(
     rights: &mut Rights,
     kind: &str,
@@ -461,8 +463,13 @@ pub(super) fn change_rights(
     let before = rights.clone();
     match message {
         Message::Level(area, level) if shows_area(area, kind) => {
-            let admin = rights.area(area).admin;
-            rights.areas.insert(area, AreaRights { level, admin });
+            let held = rights.area(area);
+            rights.areas.insert(area, AreaRights { level, admin: held.admin });
+            let switched_on = held.level == Level::NoAccess && level != Level::NoAccess;
+            if area == Area::Mail && switched_on && rights.mail_accounts == Selection::Only(Vec::new()) {
+                let accounts = candidates(Pick::MailAccounts, data, &rights.mail_accounts);
+                rights.mail_accounts = Selection::Only(accounts.into_iter().map(|candidate| candidate.id).collect());
+            }
         }
         Message::Admin(area, admin) if shows_area(area, kind) => {
             let level = rights.area(area).level;
@@ -845,7 +852,9 @@ fn level_label(level: Level) -> &'static str {
     }
 }
 
-fn area_label(area: Area) -> &'static str {
+/// The area's name for people, translated: `Calendar`, `Agents & API`. The assistant's tool lines
+/// name areas with it too (issue #133).
+pub(crate) fn area_label(area: Area) -> &'static str {
     match area {
         Area::System => tr("System"),
         Area::Workspaces => tr("Workspaces"),
@@ -1789,6 +1798,30 @@ mod tests {
             (vec![Message::All(Pick::MailAccounts, false), Message::All(Pick::MailAccounts, true)], |r| {
                 r.mail_accounts == Selection::All
             }),
+            // Issue #133: mail switched on without an account ticks the accounts signed in now…
+            (
+                vec![
+                    Message::Level(Area::Mail, Level::NoAccess),
+                    Message::All(Pick::MailAccounts, false),
+                    Message::Tick(Pick::MailAccounts, "mail:anna@mailbox.org".into(), false),
+                    Message::Tick(Pick::MailAccounts, "mail:anna@work.example.net".into(), false),
+                    Message::Level(Area::Mail, Level::Read),
+                ],
+                |r| {
+                    r.mail_accounts
+                        == Selection::Only(vec!["mail:anna@mailbox.org".into(), "mail:anna@work.example.net".into()])
+                },
+            ),
+            // …and keeps a choice the person made.
+            (
+                vec![
+                    Message::Level(Area::Mail, Level::NoAccess),
+                    Message::All(Pick::MailAccounts, false),
+                    Message::Tick(Pick::MailAccounts, "mail:anna@work.example.net".into(), false),
+                    Message::Level(Area::Mail, Level::Write),
+                ],
+                |r| r.mail_accounts == Selection::Only(vec!["mail:anna@mailbox.org".into()]),
+            ),
             (
                 vec![
                     Message::All(Pick::InboxSources, false),

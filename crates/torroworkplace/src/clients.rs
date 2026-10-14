@@ -48,7 +48,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use torro_inbox::{AgentKind, SourceRef};
-use torro_ipc::api::{ASSISTANT_CLIENT, Area, HOOK_CLIENT, Operation, Rights, RightsTemplate, Selection};
+use torro_ipc::api::{ASSISTANT_CLIENT, Area, HOOK_CLIENT, Lack, Operation, Rights, RightsTemplate, Selection};
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
 /// Keychain service all suite secrets are filed under (as for the accounts).
@@ -134,9 +134,24 @@ pub enum Refused {
     /// (`approvals.json` cannot be written): error code `forbidden`, nothing runs. Normally the
     /// core answers `pending` instead ([`crate::approvals`]).
     NeedsApproval { command: &'static str },
+    /// A known client whose rights, conversation or engine do not cover the command, with the
+    /// reason (issue #133): error code `forbidden`, its message says what is missing.
+    Lacks { command: &'static str, lack: Lack },
 }
 
 impl Refused {
+    /// The command that was refused, by its catalogue name; for tests that compare refusals whatever
+    /// their reason.
+    #[cfg(test)]
+    pub fn command(self) -> &'static str {
+        match self {
+            Refused::Unauthorized { command }
+            | Refused::Forbidden { command }
+            | Refused::NeedsApproval { command }
+            | Refused::Lacks { command, .. } => command,
+        }
+    }
+
     /// The answer to the client. It names the command, never the key.
     pub fn response(self) -> Response {
         let (code, message) = match self {
@@ -144,6 +159,9 @@ impl Refused {
             Refused::Forbidden { command } => ("forbidden", format!("this client may not use {command}")),
             Refused::NeedsApproval { command } => {
                 ("forbidden", format!("{command} needs a person's approval, which the core cannot ask for now"))
+            }
+            Refused::Lacks { command, lack } => {
+                ("forbidden", format!("this client may not use {command}: {}", lack.message()))
             }
         };
         Response::Error { code: code.into(), message }
@@ -489,12 +507,34 @@ impl Clients {
         match key.map_or(Caller::Anonymous, |key| self.identify(key)) {
             Caller::App => Ok(Caller::App),
             Caller::Client { id, rights } if rights.allows(operation) => Ok(Caller::Client { id, rights }),
-            Caller::Client { .. } => Err(Refused::Forbidden { command }),
+            Caller::Client { id, .. } => Err(match key.and_then(|key| self.lack(key, &id, operation)) {
+                Some(lack) => Refused::Lacks { command, lack },
+                None => Refused::Forbidden { command },
+            }),
             Caller::Anonymous if std::ptr::eq(operation.command, Request::Ping.operation().command) => {
                 Ok(Caller::Anonymous)
             }
             Caller::Anonymous => Err(Refused::Unauthorized { command }),
         }
+    }
+
+    /// Why the client `id` with `key` may not send `operation` (issue #133): its stored rights, and
+    /// for a lent key the areas it was lent without, told apart into those its engine never gets
+    /// ([`crate::assistant::never_given`]) and those the person switched off in the conversation.
+    /// `None` when none of them refuses it (a refusal of the core's own).
+    fn lack(&self, key: &Key, id: &str, operation: Operation) -> Option<Lack> {
+        let hash = hash(key.expose());
+        let state = self.lock();
+        let record = &state.clients.iter().find(|entry| entry.record.id == id)?.record;
+        let (kind, rights) = (record.kind.clone(), record.rights.clone());
+        let lease = state.leases.iter().find(|lease| same(&lease.hash, &hash));
+        let (never, without) = match lease {
+            Some(lease) => (crate::assistant::never_given(&lease.engine), lease.without.clone()),
+            None => (&[][..], Vec::new()),
+        };
+        drop(state);
+        let switched_off: Vec<Area> = without.into_iter().filter(|area| !never.contains(area)).collect();
+        Lack::of(&kind, &rights, operation, &switched_off, never)
     }
 
     /// Who `key` belongs to. A known client's last use is noted.
@@ -1217,7 +1257,7 @@ fn from_hex(text: &str) -> Option<KeyHash> {
 pub(crate) mod tests {
     use std::collections::HashMap;
 
-    use torro_ipc::api::{Access, Area, AreaRights, CATALOGUE, Level, Mcp, Selection};
+    use torro_ipc::api::{Access, Area, AreaRights, CATALOGUE, Lack, Level, Mcp, Selection};
 
     use super::*;
 
@@ -1426,7 +1466,7 @@ pub(crate) mod tests {
             tasks: true,
         };
         let refused = clients.admit(Some(&key), &sign_in);
-        assert_eq!(refused, Err(Refused::Forbidden { command: "accounts.connect_caldav" }));
+        assert_eq!(refused, Err(Refused::Lacks { command: "accounts.connect_caldav", lack: Lack::ForPeople }));
         assert_eq!(clients.admit(Some(&app_key(dir.path())), &sign_in), Ok(Caller::App));
         let search = Request::DiscoverServices { address: "anna@mailbox.org".into() };
         assert!(clients.admit(Some(&key), &search).is_ok());
@@ -1474,11 +1514,14 @@ pub(crate) mod tests {
                         (_, Access::Delete) => level == Level::Full,
                     };
                     let expected = match allowed {
-                        true => caller(&client.id, rights.clone()),
-                        false => Err(Refused::Forbidden { command: command.name }),
+                        true => caller(&client.id, rights.clone()).map_err(Refused::command),
+                        false => Err(command.name),
                     };
                     let operation = Operation { command, access: command.access };
                     let got = clients.admit_operation(Some(&key), operation);
+                    // Refused with the reason (issue #133), always as `forbidden`.
+                    assert!(got.is_ok() || code(got.clone()) == "forbidden", "{}", command.name);
+                    let got = got.map_err(Refused::command);
                     assert_eq!(got, expected, "{} with {level:?}, admin {admin}", command.name);
                 }
             }
@@ -1516,7 +1559,7 @@ pub(crate) mod tests {
             Request::RemoveClient { id: id.clone() },
         ] {
             let command = request.operation().name();
-            assert_eq!(clients.admit(Some(&key), &request), Err(Refused::Forbidden { command }));
+            assert_eq!(clients.admit(Some(&key), &request), Err(Refused::Lacks { command, lack: Lack::ForPeople }));
             assert_eq!(clients.admit(Some(&app_key(dir.path())), &request), Ok(Caller::App));
         }
     }
@@ -1704,14 +1747,18 @@ pub(crate) mod tests {
             tasks: false,
             caldav: None,
         };
-        assert_eq!(clients.admit(Some(&key), &connect), Err(Refused::Forbidden { command: "accounts.connect_mail" }));
+        let refused = Refused::Lacks { command: "accounts.connect_mail", lack: Lack::ForPeople };
+        assert_eq!(clients.admit(Some(&key), &connect), Err(refused));
         assert_eq!(clients.admit(Some(&app_key(dir.path())), &connect), Ok(Caller::App));
 
         let send = Request::SendDraft { id: "m:1".into() };
         assert!(clients.admit(Some(&key), &send).is_ok(), "with approval by default");
         let never = Rights { outbound: torro_ipc::api::Outbound::Never, ..full };
         clients.update(&client.id, never).await.expect("updated");
-        assert_eq!(clients.admit(Some(&key), &send), Err(Refused::Forbidden { command: "mail.send_draft" }));
+        assert_eq!(
+            clients.admit(Some(&key), &send),
+            Err(Refused::Lacks { command: "mail.send_draft", lack: Lack::Outbound })
+        );
     }
 
     #[tokio::test]
@@ -2138,6 +2185,66 @@ pub(crate) mod tests {
         let reopened = open_in(dir.path());
         let stored = reopened.records().into_iter().find(|record| record.id == agent.id).expect("stored").rights;
         expected(&stored);
+    }
+
+    /// Issue #133: a `forbidden` from the gate names its cause – the engine that never gets mail, an
+    /// area switched off in the conversation, a level too low, an area not granted – and its message
+    /// tells the agent so.
+    #[tokio::test]
+    async fn a_refusal_of_the_gate_names_its_cause() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients =
+            Clients::open(&app_key_file(dir.path()), &clients_file(dir.path()), Box::new(MemoryKeychain::default()))
+                .expect("opens");
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        rights.mail_accounts = Selection::All;
+        let (assistant, own) = clients.add("Assistant", ASSISTANT_CLIENT, rights).await.expect("added");
+        let refused = |key: &Key, request: &Request| clients.admit(Some(key), request).expect_err("refused");
+        let message = |refused: Refused| match refused.response() {
+            Response::Error { code, message } if code == "forbidden" => message,
+            other => panic!("{other:?}"),
+        };
+        let folders = Request::MailFolders { account: None };
+
+        // 1. Claude Code never gets mail, whatever the rights say.
+        let agent = clients.lend(&assistant.id, "claude-code", &[Area::Mail, Area::Tasks]).expect("lent");
+        let never = refused(agent.key(), &folders);
+        assert_eq!(
+            never,
+            Refused::Lacks { command: "mail.list_folders", lack: Lack::NeverToAgents { area: Area::Mail } }
+        );
+        assert!(message(never).contains("never given"));
+        // 2. Switched off for this conversation, with an agent and with an AI account alike.
+        let tasks = refused(agent.key(), &Request::TaskCollections);
+        assert_eq!(
+            tasks,
+            Refused::Lacks { command: "tasks.list_lists", lack: Lack::SwitchedOff { area: Area::Tasks } }
+        );
+        assert!(message(tasks).contains("switched off tasks for this conversation"));
+        let model = clients.lend(&assistant.id, "ai:openrouter@openrouter.ai", &[Area::Mail]).expect("lent");
+        assert_eq!(
+            refused(model.key(), &folders),
+            Refused::Lacks { command: "mail.list_folders", lack: Lack::SwitchedOff { area: Area::Mail } }
+        );
+        // 3. More than reading, with the client's own key.
+        let draft = Request::DeleteMail { ids: vec!["m:1".into()], permanent: false };
+        let level = refused(&own, &draft);
+        assert_eq!(
+            level,
+            Refused::Lacks {
+                command: "mail.delete_messages",
+                lack: Lack::Level { area: Area::Mail, needs: Access::Delete }
+            }
+        );
+        assert!(message(level).contains("needs full access to mail"));
+        // 4. Mail accounts are listed in `accounts`.
+        let accounts = refused(&own, &Request::Accounts);
+        assert_eq!(
+            accounts,
+            Refused::Lacks { command: "accounts.list_accounts", lack: Lack::Area { area: Area::Accounts } }
+        );
+        assert!(message(accounts).contains("no access to accounts"));
     }
 
     #[tokio::test]

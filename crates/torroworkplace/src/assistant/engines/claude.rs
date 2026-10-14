@@ -13,6 +13,7 @@ use std::ffi::OsString;
 use std::path::Path;
 
 use serde_json::{Value, json};
+use torro_ipc::api::{Area, CATALOGUE, Mcp};
 
 use crate::client_setup::SERVER_NAME;
 
@@ -52,8 +53,6 @@ const FLAGS: &[&str] = &[
     "",
     "--allowedTools",
     ALLOWED_TOOLS,
-    "--disallowedTools",
-    DENIED_TOOLS,
     "--permission-mode",
     "dontAsk",
     r#"--settings={"disableAllHooks":true}"#,
@@ -73,12 +72,15 @@ pub fn mcp_config(program: &Path) -> Value {
     })
 }
 
-/// The arguments of a run: [`FLAGS`], the MCP configuration in the file `config`, the system
-/// prompt to add to Claude Code's own, and the model when the message named one that looks like
-/// a model's name (`sonnet`, `claude-sonnet-4-5`); another is left out, so nothing from a client
-/// can become a flag of its own. Never the key.
-pub fn arguments(config: &Path, prompt: &str, model: Option<&str>) -> Vec<OsString> {
+/// The arguments of a run: [`FLAGS`], the denied tools ([`DENIED_TOOLS`] and every tool of the
+/// suite in the areas `without`, [`denied`]), the MCP configuration in the file `config`, the
+/// system prompt to add to Claude Code's own, and the model when the message named one that looks
+/// like a model's name (`sonnet`, `claude-sonnet-4-5`); another is left out, so nothing from a
+/// client can become a flag of its own. Never the key.
+pub fn arguments(config: &Path, prompt: &str, model: Option<&str>, without: &[Area]) -> Vec<OsString> {
     let mut arguments: Vec<OsString> = FLAGS.iter().map(OsString::from).collect();
+    arguments.push("--disallowedTools".into());
+    arguments.push(denied(without).into());
     arguments.push("--mcp-config".into());
     arguments.push(config.as_os_str().to_owned());
     if let Some(model) = model.filter(|model| is_model_name(model)) {
@@ -87,6 +89,18 @@ pub fn arguments(config: &Path, prompt: &str, model: Option<&str>) -> Vec<OsStri
     // `=`: the prompt is one value whatever it starts with.
     arguments.push(format!("--append-system-prompt={prompt}").into());
     arguments
+}
+
+/// [`DENIED_TOOLS`] and, as Claude Code names them, the suite's tools of the areas `without` (issue
+/// #133): the areas the agent never gets and those switched off in the conversation. Claude Code
+/// leaves denied tools out of what its model sees, so the model does not try mail and run into
+/// `forbidden`; the core refuses them anyway.
+fn denied(without: &[Area]) -> String {
+    let tools = CATALOGUE
+        .iter()
+        .filter(|command| command.mcp == Mcp::Tool && without.contains(&command.area))
+        .map(|command| format!("{TOOL_PREFIX}{}", command.tool_name()));
+    std::iter::once(DENIED_TOOLS.to_string()).chain(tools).collect::<Vec<_>>().join(",")
 }
 
 /// A model's name as Claude Code takes it: letters, digits and `.-_:[]/@`, at most 100.
@@ -195,7 +209,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_command_line_leaves_only_the_suites_tools_and_never_a_key() {
-        let arguments = arguments(Path::new("/run/mcp.json"), "## Prompt", Some("sonnet"));
+        let arguments = arguments(Path::new("/run/mcp.json"), "## Prompt", Some("sonnet"), &[Area::Mail]);
         let arguments: Vec<String> = arguments.iter().map(|a| a.to_string_lossy().into_owned()).collect();
         let after = |flag: &str| {
             let at = arguments.iter().position(|a| a == flag).unwrap_or_else(|| panic!("{flag} is missing"));
@@ -206,6 +220,12 @@ pub(crate) mod tests {
         for tool in ["Bash", "Read", "Edit", "Write", "WebFetch", "WebSearch", "Task"] {
             assert!(after("--disallowedTools").split(',').any(|denied| denied == tool), "{tool}");
         }
+        // Issue #133: the mail tools are not offered at all, the others are.
+        let denied: Vec<String> = after("--disallowedTools").split(',').map(str::to_string).collect();
+        assert!(denied.contains(&"mcp__torroworkplace__mail_search_messages".to_string()));
+        assert!(denied.contains(&"mcp__torroworkplace__mail_send_draft".to_string()));
+        assert!(!denied.iter().any(|tool| tool.starts_with("mcp__torroworkplace__calendar_")));
+        assert_eq!(arguments.iter().filter(|a| *a == "--disallowedTools").count(), 1, "one list");
         assert_eq!(after("--mcp-config"), "/run/mcp.json");
         assert_eq!(after("--permission-mode"), "dontAsk");
         assert!(arguments.contains(&"--strict-mcp-config".to_string()));
@@ -213,7 +233,7 @@ pub(crate) mod tests {
         assert!(arguments.contains(&"--model=sonnet".to_string()));
         assert_eq!(arguments.last().map(String::as_str), Some("--append-system-prompt=## Prompt"));
 
-        let odd = super::arguments(Path::new("c"), "p", Some("--dangerously-skip-permissions"));
+        let odd = super::arguments(Path::new("c"), "p", Some("--dangerously-skip-permissions"), &[]);
         assert!(odd.iter().all(|a| !a.to_string_lossy().contains("dangerously")), "no flag from a client");
     }
 

@@ -27,7 +27,7 @@ use std::sync::OnceLock;
 use serde_json::{Map, Value, json};
 use torro_core::ai::ToolSpec;
 use torro_core::i18n::{tr, trf};
-use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area, CATALOGUE, Command, Mcp, Operation, Rights, own_memory};
+use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area, CATALOGUE, Command, Lack, Mcp, Operation, Rights, own_memory};
 use torro_ipc::{Request, Response};
 
 /// At most this many tools are offered at once, [`FIND_TOOLS`] included.
@@ -356,6 +356,40 @@ pub fn error_summary(code: &str) -> String {
         _ => tr("Failed"),
     }
     .into()
+}
+
+/// Why the core refused `operation` of a client of `kind` with `rights` (as stored) with `forbidden`
+/// (issue #133), with the areas `without` switched off in the conversation and `never` those its
+/// engine never gets ([`crate::assistant::never_given`]): what the tool line then says
+/// ([`Lack::of`]). `None` without rights and for the core's fixed refusals (the assistant driving
+/// itself, a bot it was not asked for).
+pub fn lack_of(
+    kind: &str,
+    rights: Option<&Rights>,
+    operation: Operation,
+    without: &[Area],
+    never: &[Area],
+) -> Option<Lack> {
+    Lack::of(kind, rights?, operation, without, never)
+}
+
+/// The tool line's words for a call refused for `lack`, for people: `Needs write access to Mail`,
+/// `Claude Code never gets Mail` (`engine` is the name of the engine that answers).
+pub fn lack_summary(lack: Lack, engine: &str) -> String {
+    let area = |area: Area| crate::ui::agents::area_label(area);
+    match lack {
+        Lack::Area { area: a } => trf("No access to {area}", &[("area", &area(a))]),
+        Lack::Level { area: a, needs: Access::Delete } => trf("Needs full access to {area}", &[("area", &area(a))]),
+        Lack::Level { area: a, needs: Access::Write } => trf("Needs write access to {area}", &[("area", &area(a))]),
+        Lack::Level { area: a, .. } => trf("No access to {area}", &[("area", &area(a))]),
+        Lack::Admin { area: a } => trf("Needs admin rights for {area}", &[("area", &area(a))]),
+        Lack::Outbound => tr("Sending mail is switched off").into(),
+        Lack::ForPeople => tr("Only you can do this").into(),
+        Lack::SwitchedOff { area: a } => trf("{area} is off in this conversation", &[("area", &area(a))]),
+        Lack::NeverToAgents { area: a } => {
+            trf("{engine} never gets {area}", &[("engine", &engine), ("area", &area(a))])
+        }
+    }
 }
 
 /// How many billion parameters the model `id` has, read from its name: `qwen3:8b` 8,

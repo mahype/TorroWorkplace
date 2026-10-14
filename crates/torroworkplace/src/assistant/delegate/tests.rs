@@ -12,7 +12,8 @@ fn entry(seq: u64, content: EntryContent) -> Entry {
 }
 
 fn tool(name: &str, error: Option<&str>) -> EntryContent {
-    EntryContent::Tool { name: name.into(), input: json!({}), summary: "Done".into(), error: error.map(str::to_string) }
+    let error = error.map(str::to_string);
+    EntryContent::Tool { name: name.into(), input: json!({}), summary: "Done".into(), error, lack: None }
 }
 
 fn answer(text: &str) -> EntryContent {

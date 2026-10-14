@@ -184,6 +184,12 @@ pub enum EntryContent {
         /// The error code when the command failed (`forbidden`, `not-found` …).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+        /// Why a `forbidden` command was refused (issue #133), when it was the rights, the
+        /// conversation's switch or the engine: the chat says it and offers "Change access" only
+        /// where that helps ([`crate::api::Lack::in_rights`]). `None` for every other line and for
+        /// the core's fixed refusals.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lack: Option<crate::api::Lack>,
     },
     /// A command of the assistant waits for a person's approval: its id for
     /// `approvals.approval_status`. The summary to show comes from the approval, never from the

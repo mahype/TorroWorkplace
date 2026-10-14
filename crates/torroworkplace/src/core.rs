@@ -1318,7 +1318,17 @@ impl Core {
         // assistant's own memory is its own whatever its rights in `assistant` say (task C.10).
         let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
         if !allowed || self.switches_microphone_on(&request) {
-            return Err(Refused::Forbidden { command: request.operation().name() });
+            let (command, operation) = (request.operation().name(), request.operation());
+            // Issue #133: the answer says what is missing. The microphone is the person's whatever
+            // the rights say.
+            let lack = match allowed || request.kept_for_people() {
+                true => Some(torro_ipc::api::Lack::ForPeople),
+                false => {
+                    let kind = self.client_kind(&id).unwrap_or_default();
+                    torro_ipc::api::Lack::of(&kind, &rights, operation, &[], &[])
+                }
+            };
+            return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
         }
         // The assistant asks a bot (task B.2): only from its conversation, where the person asked for
         // the bot ([`crate::assistant::Assistant::delegate`]); the bot then runs with what both
@@ -1572,7 +1582,14 @@ impl Core {
                 let via = Via { origin, untrusted, asking };
                 self.handle_client(info.id.clone(), info.rights.clone(), request, &via).await
             }
-            _ => Err(Refused::Forbidden { command }),
+            // Issue #133: the answer says what the rights lack.
+            Some(info) => {
+                Err(match torro_ipc::api::Lack::of(&info.kind, &info.rights, request.operation(), &[], &[]) {
+                    Some(lack) => Refused::Lacks { command, lack },
+                    None => Refused::Forbidden { command },
+                })
+            }
+            None => Err(Refused::Forbidden { command }),
         };
         let response = answer.unwrap_or_else(Refused::response);
         let line = crate::audit::entry(client.map(|info| info.id), command, ids, &response, Utc::now());
@@ -4652,7 +4669,7 @@ fn error(err: &SetupsError) -> Response {
 mod tests {
     use torro_core::i18n::{tr, trf};
     use torro_inbox::AgentKind;
-    use torro_ipc::api::{Area, AreaRights, Level, Rights, RightsTemplate, Selection};
+    use torro_ipc::api::{Area, AreaRights, Lack, Level, Rights, RightsTemplate, Selection};
     use torro_mail_imap::discover::MailUnsupported;
 
     use super::*;
@@ -5893,7 +5910,7 @@ mod tests {
         let (_, key) = client(&core, rights).await;
         let set = Request::SetGithubToken { token: torro_ipc::Secret::new(TOKEN) };
         let Err(refused) = core.handle_from(Some(&key), set).await else { panic!("refused") };
-        assert_eq!(refused, Refused::Forbidden { command: "accounts.set_github_token" });
+        assert_eq!(refused, Refused::Lacks { command: "accounts.set_github_token", lack: Lack::ForPeople });
         assert!(record.lock().expect("record").is_empty(), "nothing went to GitHub");
         assert_eq!(tokens.get_plain("github:mahype"), None);
         assert!(!format!("{refused:?} {:?}", refused.response()).contains("SECRET"));
@@ -11410,11 +11427,7 @@ mod tests {
         let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         for request in assistant_requests("0123456789abcdef") {
             let name = request.operation().name();
-            assert_eq!(
-                core.handle_from(Some(&key), request).await,
-                Err(Refused::Forbidden { command: name }),
-                "{name}"
-            );
+            assert_eq!(core.handle_from(Some(&key), request).await.map_err(Refused::command), Err(name), "{name}");
         }
 
         let mut rights = RightsTemplate::ReadAndWrite.rights();
@@ -11631,7 +11644,10 @@ mod tests {
         let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
         for request in bots_requests(&bot.id) {
             let name = request.operation().name();
-            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+            assert_eq!(
+                core.handle_from(Some(&key), request).await,
+                Err(Refused::Lacks { command: name, lack: Lack::Area { area: Area::Bots } })
+            );
         }
 
         let mut rights = RightsTemplate::ReadAndWrite.rights();
@@ -11736,7 +11752,7 @@ mod tests {
             key: torro_ipc::Secret::new(AI_KEY),
         };
         let Err(refused) = core.handle_from(Some(&key), connect(ollama.url("/v1"))).await else { panic!("refused") };
-        assert_eq!(refused, Refused::Forbidden { command: "accounts.connect_ai" });
+        assert_eq!(refused, Refused::Lacks { command: "accounts.connect_ai", lack: Lack::ForPeople });
         assert_eq!(keys.get_plain(&format!("ai:ollama@127.0.0.1:{}", ollama.port())), None);
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
 
@@ -12277,7 +12293,9 @@ mod tests {
         entries
             .iter()
             .filter_map(|entry| match &entry.content {
-                torro_ipc::assistant::EntryContent::Tool { name, input, summary, error } if name == "bots.ask_bot" => {
+                torro_ipc::assistant::EntryContent::Tool { name, input, summary, error, .. }
+                    if name == "bots.ask_bot" =>
+                {
                     Some((input.clone(), summary.clone(), error.clone()))
                 }
                 _ => None,
@@ -13127,7 +13145,7 @@ mod tests {
             secret: torro_ipc::Secret::new("tk_clientSECRET"),
         };
         let Err(refused) = core.handle_from(Some(&key), login).await else { panic!("refused") };
-        assert_eq!(refused, Refused::Forbidden { command: "accounts.set_ntfy_login" });
+        assert_eq!(refused, Refused::Lacks { command: "accounts.set_ntfy_login", lack: Lack::ForPeople });
         assert!(!format!("{refused:?} {:?}", refused.response()).contains("SECRET"));
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval stored");
 

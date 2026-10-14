@@ -221,6 +221,26 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** Tests des Glätters (gleichmäßig, holt Rückstand auf, endet exakt mit dem ganzen Text, Grapheme) und
   des Fensters (erscheint Buchstabe für Buchstabe, beim Öffnen ganz, Einträge danach warten).
 
+### C.13 „Forbidden“ mit Grund (Issue #133)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** C.7, C.11 · **Dateien:** `crates/torro-ipc/src/{api,assistant}.rs`,
+  `crates/torroworkplace/src/{clients,core,mcp}.rs`, `crates/torroworkplace/src/assistant/{mod,model,tools,prompt}.rs`,
+  `crates/torroworkplace/src/assistant/engines/{mod,claude,tests}.rs`, `crates/torroworkplace/src/ui/{mod,agents}.rs`,
+  `crates/torroassistant/src/{chat,view,demo,bots}.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Befund:** Rechte werden nicht zwischengespeichert. „Forbidden“ trotz Mail-Recht kam vor allem von Claude Code
+  (`NEVER_TO_AGENTS`), dazu: Mail in der Unterhaltung aus, zu niedrige Stufe, `accounts.*` statt Mail, keine Mailkonten.
+- **Grund im Fehler:** `api::Lack` (Bereich fehlt, Stufe, Admin, Senden aus, nur für Menschen, in der Unterhaltung aus,
+  Engine bekommt es nie). Der Dienst nennt ihn im `forbidden` (`Refused::Lacks`, Text für Agenten), die Tool-Zeile
+  trägt ihn (`EntryContent::Tool::lack`, neues optionales Feld) mit Worten für Menschen; der Chat zeigt den Grund und
+  „Change access“ nur, wo eine Rechteänderung hilft.
+- **Claude Code:** Die Datenregel bleibt (Mail nie an Agenten). Die Tools der entzogenen und abgeschalteten Bereiche
+  werden gar nicht angeboten (`--disallowedTools`), der Prompt sagt es, der Picker zeigt „Never gets your mail“.
+- **Mail einschalten** (Rechte-Ansicht): Ist kein Mailkonto angehakt, werden die jetzt angemeldeten angehakt (nicht
+  „All“, damit spätere Konten aus bleiben).
+- **Oberfläche/API/MCP:** kein neuer Befehl; jede `forbidden`-Antwort von API und MCP trägt den Grund im `message`.
+- **Abnahme:** je Ursache ein Test (Gate, Antrieb A, Antrieb B, `Lack::of`, Chat-Hinweis, Rechte-Ansicht).
+- **Offen:** Nachstellen mit echtem Ollama/OpenRouter und Claude Code (manuell).
+
 ## Stufe 2: Bots (B.1–B.4)
 
 Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Geplant am 2026-10-14 nach Stufe 1.

@@ -224,8 +224,10 @@ fn generated(context: &Context<'_>) -> String {
     }
     lines.push(match context.model.trim().is_empty() {
         true => format!(
-            "- You answer as the agent {}, outside the person's computers (remote). The person's data rule keeps \
-             mail on their own computers, so mail is not among your areas here.",
+            "- You answer as the agent {0}, outside the person's computers (remote). The person's data rule keeps \
+             mail on their own computers, so mail is not among your areas here: it is never given to {0}, whatever \
+             the rights say. If the person asks for mail, say so instead of trying, and that an AI account on their \
+             own computer can read it.",
             one_line(context.engine)
         ),
         false => format!(
@@ -421,6 +423,7 @@ mod tests {
         let answer = line(&prompt, "- You answer").expect("the engine's line");
         assert!(answer.starts_with("- You answer as the agent Claude Code, outside"), "{answer}");
         assert!(answer.contains("mail is not among your areas"), "{answer}");
+        assert!(answer.contains("never given to Claude Code"), "issue #133: {answer}");
         assert!(!answer.contains("model"), "{answer}");
     }
 
