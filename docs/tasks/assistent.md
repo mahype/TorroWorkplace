@@ -314,13 +314,13 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   Argumente); Ask before changes erzeugt Freigaben, auch mit geliehenem Schlüssel; kein Modus öffnet, was die Rechte
   schließen (Tabellentest über den Katalog, Kern-Test); die Freigabe behält den Modus.
 
-## Stufe 2: Bots (B.1–B.4)
+## Stufe 2: Bots (B.1–B.5)
 
 Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Geplant am 2026-10-14 nach Stufe 1.
 
 ```
 B.1 ──┬── B.2
-      ├── B.3
+      ├── B.3 ── B.5
       └── B.4
 ```
 
@@ -405,3 +405,61 @@ B.1 ──┬── B.2
 - **Modell:** Haiku · **Braucht:** B.1 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
 - Je Katalogeintrag ein Tool; `bots_ask_bot` wartet wie `assistant_send_message` bis zur Antwort oder 60 s.
 - **Abnahme:** Vertragstest; ein Bot-Client bekommt `forbidden`; Warten und Stand mit `after`.
+
+### B.5 Rechte gleich im Bot-Editor vergeben
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** B.3 · **Dateien:** `crates/torroassistant/**`, `crates/torro-ipc/src/api.rs`
+  (gemeinsame Hilfen, siehe unten), `crates/torroworkplace/src/ui/agents.rs` (nutzt die Hilfen; Regel beim Anschalten,
+  siehe unten), `crates/torro-core/src/i18n/de.rs` (nur über die Koordination)
+- **Oberfläche:** Bot-Editor im Assistenten, neuer Abschnitt „Access“ unter Antrieb/Modell, beim Anlegen und beim
+  Ändern. Je Bereich, den die Steuerzentrale für einen Bot zeigt (`shows_area` mit `BOT_CLIENT`: alle vergebbaren außer
+  `assistant` und `bots`), eine Zeile mit Namen, Detailzeile und Segmenten der Stufen, die der Bereich anbietet
+  (`levels`: „None“, „Read“, „Write“, „Full“). Darunter „Ask first“ (`Confirm`: „Never“, „On delete“, „On every
+  change“). Am Ende ein Hinweis mit Link „More in Torro Workplace…“ (öffnet wie heute `ui --section bot:<id>`): welche
+  Kalender, Listen, Repositories, Quellen und Mailkonten, Senden von Mail und Admin-Befehle stellt man dort ein. Ein
+  neuer Bot zeigt alle Bereiche auf „None“ und „Ask first“ auf „On delete“ (`Rights::none`). Die Werte im Abschnitt
+  entstehen nur durch Klicks der Person, nie aus einem Vorschlag des Hauptbots oder aus dem Chat.
+- **API:** kein neuer Request, kein neuer Katalogeintrag. Rechte lesen mit `clients.list_clients` · Admin, setzen mit
+  `clients.update_client` · Admin (beide gibt es, nur App-Schlüssel, wie die Steuerzentrale). Für Detailzeilen und die
+  Regel beim Anschalten liest der Editor beim Öffnen `calendar.list_calendars`, `tasks.list_lists`,
+  `inbox.list_sources` und `accounts.list_accounts` (alle gibt es). `bots.save_bot` bleibt ohne Rechte, damit auch der
+  Hauptbot (MCP) beim Vorschlagen nie Rechte mitgibt.
+- **MCP:** **Never** – Rechte vergibt nur ein Mensch (Punkt 2 in „Was nie nach außen geht“, `docs/api.md`).
+- **Öffnen:** Der Editor liest `clients.list_clients` jedes Mal neu, zeigt also nie einen alten Stand.
+- **Ablauf beim Speichern:** `bots.save_bot` → aus der Antwort `Bot::client`; der Editor übernimmt sofort die neue
+  Kennung des Bots, damit ein zweites „Save“ keinen zweiten Bot anlegt. Nur wenn sich im Abschnitt etwas geändert hat:
+  `clients.list_clients` neu lesen, die **geänderten** Zeilen (Stufen, „Ask first“) auf die aktuellen Rechte des
+  Clients legen, `clients.update_client`. So überschreibt der Editor nichts, was inzwischen in der Steuerzentrale
+  geändert wurde (Auswahl, Senden, Admin-Schalter bleiben). Bekannte Grenze: zwischen Lesen und Schreiben liegt ein
+  kurzes Fenster, `update_client` ersetzt die Rechte ganz (wie in der Steuerzentrale); ein gezielter Befehl wäre eine
+  spätere Aufgabe. Erst danach schließt der Editor und öffnet beim neuen Bot den Chat. Scheitert `update_client`, ist
+  der Bot gespeichert: Hinweis „Bot saved, but its access couldn't be set.“ mit „Access…“, der Editor bleibt offen,
+  ein zweites „Save“ versucht es erneut (mit `id`).
+- **Bereich anschalten (gemeinsame Regel, auch für die Steuerzentrale):** Wird ein Bereich von „None“ auf eine Stufe
+  gestellt und ist seine Auswahl leer (`Selection::Only([])`, wie bei jedem neuen Bot), bekommt er die **jetzt
+  vorhandenen** Kennungen (`Only(ids)`): Kalender, Aufgabenlisten, Eingangsquellen und angemeldete Mailkonten – die
+  Regel aus Issue #133, auf alle Auswahlen ausgeweitet. Später hinzugefügte bleiben aus, nie `All`. GitHub hat keine
+  Kandidatenliste: die Auswahl bleibt leer, die Detailzeile sagt „No repositories · choose in Torro Workplace“. Eine
+  schon gesetzte Auswahl bleibt, wie sie ist. Die Regel steht als reine Hilfe in `torro_ipc::api` und ersetzt den
+  Mail-Fall in `change_rights`; die Steuerzentrale ändert sich damit bewusst (Kalender usw. anschalten gibt jetzt die
+  vorhandenen statt keiner).
+- **Detailzeile:** was gilt, z. B. „All calendars“, „{n} of {m} calendars“, „No mail account“, „{n} mail accounts ·
+  sending: never“; steht eine Zeile auf „None“, ist ihr Admin-Schalter aber in der Steuerzentrale an: „Admin commands
+  allowed“ (der Editor lässt `admin` beim Ändern der Stufe stehen, wie `change_rights`).
+- **Gemeinsame Hilfen:** `has_command`, `levels`, `shows_area` und `active_level` ziehen aus `ui/agents.rs` nach
+  `torro_ipc::api` (ohne Verhaltensänderung); `agents.rs` reicht sie mit `pub(super) use` weiter, damit `ui/bots.rs`
+  und `ui/assistant.rs` unverändert bleiben. Die reine Logik des Abschnitts (Zeilen, Änderungen merken, auf aktuelle
+  Rechte legen, Detailzeilen) steht in `crates/torroassistant/src/bots.rs` und ist ohne Fenster testbar; Typ heißt
+  `BotAccess` (in `app.rs` gibt es schon ein `Access`). Texte der Bereiche und Stufen mit denselben englischen
+  Schlüsseln wie in der Steuerzentrale, damit die vorhandenen Übersetzungen greifen.
+- **Nicht in B.5:** Auswahl einzelner Kalender/Konten, Senden, Admin-Schalter und Vorlagen („Read only“ …) im
+  Editor; das bleibt in der Steuerzentrale.
+- **Abnahme:** Tests der reinen Logik: neuer Bot ohne Änderung schickt kein `update_client`; nur geänderte Zeilen
+  landen in den Rechten, eine inzwischen geänderte Auswahl und `outbound` bleiben; Anschalten gibt die vorhandenen
+  Kennungen (Mail ohne Konto → leer, „No mail account“; GitHub bleibt leer), eine vorhandene Auswahl bleibt;
+  `assistant`/`bots` kommen nie vor; „None“ mit Admin-Schalter zeigt den Hinweis. Test in `agents.rs` für die
+  ausgeweitete Regel. App-Tests mit Test-Backend: Reihenfolge `bots.save_bot` → `clients.list_clients` →
+  `clients.update_client`; Fehler bei `update_client` → Hinweis, Editor offen, zweites „Save“ legt keinen zweiten Bot
+  an; ein vom Hauptbot vorgeschlagener Bot zeigt beim Öffnen überall „None“. `--demo`-Zustand mit Abschnitt,
+  `scripts/design-check.sh`, `torro-design-review` (schmal bis breit), `TORRO_LANG=de cargo test --workspace`;
+  Übersetzungen im Bericht.
