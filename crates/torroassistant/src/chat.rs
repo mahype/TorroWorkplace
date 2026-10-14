@@ -1,0 +1,560 @@
+//! What the chat window decides apart from drawing, kept pure so it can be tested on its own:
+//!
+//! - [`Transcript`]: the entries of the open conversation, merged from every answer of
+//!   `assistant.get_conversation` – one entry per number, and the answer the model is still writing
+//!   (numbered `last + 1`, see `torro_ipc::assistant`) replaced each time it comes again.
+//! - The engine and model picker: engines in the order of Open First ([`ordered`]), only models
+//!   that can call tools ([`tool_models`]), and what is chosen before the person picks
+//!   ([`default_choice`]).
+//! - The areas the person can switch off for one conversation ([`switchable_areas`], the
+//!   `without` of `assistant.send_message`).
+//! - The requests the window sends for a click ([`send_request`], [`decide_request`]) and the words
+//!   of a tool line ([`tool_title`], [`tool_outcome`]).
+//! - The sidebar's two groups, pinned and recent, filtered by the search ([`sidebar_groups`]).
+
+use std::collections::HashSet;
+
+use torro_core::AppId;
+use torro_core::ai::{AiModel, is_this_computer};
+use torro_core::i18n::{tr, trf};
+use torro_ipc::Request;
+use torro_ipc::api::{Area, CATALOGUE, Level, Rights};
+use torro_ipc::assistant::{ConversationSummary, Engine, EngineKind, Entry, EntryContent};
+
+/// The entries of one conversation as the window has them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Transcript {
+    /// The conversation's head as last answered; `None` before the first answer.
+    pub summary: Option<ConversationSummary>,
+    /// In order of their numbers, one per number; the last may be the answer the model is still
+    /// writing (numbered after `summary.last`).
+    pub entries: Vec<Entry>,
+}
+
+impl Transcript {
+    /// A transcript from a full answer of `assistant.get_conversation` (without `after`).
+    pub fn new(summary: ConversationSummary, mut entries: Vec<Entry>) -> Transcript {
+        entries.sort_by_key(|entry| entry.seq);
+        entries.dedup_by_key(|entry| entry.seq);
+        Transcript { summary: Some(summary), entries }
+    }
+
+    /// The number of the newest stored entry: what the next `assistant.get_conversation` passes as
+    /// `after`. 0 before the first answer.
+    pub fn last(&self) -> u64 {
+        self.summary.as_ref().map_or(0, |summary| summary.last)
+    }
+
+    /// Takes an answer of `assistant.get_conversation` with `after` = [`Transcript::last`], or of
+    /// `assistant.send_message`: every entry replaces the one with its number or joins in order,
+    /// and an entry after the new `last` that the answer no longer has is dropped – a growing
+    /// answer that has since become something else, or was stopped.
+    ///
+    /// An answer older than what the window has (its `last` lower, from a request that overtook
+    /// another) is ignored and `false` returned, so the window never goes back.
+    pub fn merge(&mut self, summary: ConversationSummary, entries: Vec<Entry>) -> bool {
+        if let Some(have) = &self.summary {
+            if have.id != summary.id {
+                *self = Transcript::new(summary, entries);
+                return true;
+            }
+            if summary.last < have.last {
+                return false;
+            }
+        }
+        let fresh: HashSet<u64> = entries.iter().map(|entry| entry.seq).collect();
+        for entry in entries {
+            match self.entries.binary_search_by_key(&entry.seq, |have| have.seq) {
+                Ok(at) => self.entries[at] = entry,
+                Err(at) => self.entries.insert(at, entry),
+            }
+        }
+        let last = summary.last;
+        self.entries.retain(|entry| entry.seq <= last || fresh.contains(&entry.seq));
+        self.summary = Some(summary);
+        true
+    }
+
+    /// The answer the model is still writing: the entry after [`Transcript::last`].
+    pub fn growing(&self) -> Option<&Entry> {
+        let last = self.last();
+        self.entries.last().filter(|entry| entry.seq > last)
+    }
+
+    /// An answer runs in the conversation (the core says so).
+    pub fn running(&self) -> bool {
+        self.summary.as_ref().is_some_and(|summary| summary.running)
+    }
+
+    /// The ids of the approvals the conversation waits for or waited for, in order.
+    pub fn approvals(&self) -> Vec<&str> {
+        self.entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Approval { id } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The newest answer, the one still being written included: what the mini tile shows.
+    pub fn last_answer(&self) -> Option<&Entry> {
+        self.entries.iter().rev().find(|entry| matches!(entry.content, EntryContent::Answer { .. }))
+    }
+
+    /// The text of [`Transcript::last_answer`].
+    #[cfg(test)]
+    pub fn last_answer_text(&self) -> Option<&str> {
+        self.last_answer().and_then(|entry| match &entry.content {
+            EntryContent::Answer { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The areas switched off for the newest message: a conversation opened again keeps them.
+    pub fn last_without(&self) -> Option<Vec<Area>> {
+        self.entries.iter().rev().find_map(|entry| match &entry.content {
+            EntryContent::Message { without, .. } => Some(without.clone()),
+            _ => None,
+        })
+    }
+}
+
+/// What answers the next message: an engine (`assistant.list_engines`) and, for an AI account, its
+/// model (`ai.list_models`); `None` lets the engine pick one that can call tools.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    pub engine: String,
+    pub model: Option<String>,
+}
+
+/// Whether `engine` is an AI account on this computer (Ollama, LM Studio, a server on
+/// `localhost`): its id is `ai:<provider>@<host>`.
+pub fn is_local(engine: &Engine) -> bool {
+    engine.kind == EngineKind::Ai && engine.id.split_once('@').is_some_and(|(_, authority)| is_this_computer(authority))
+}
+
+/// `engines` in the order the picker lists them (Open First): AI accounts first, those on this
+/// computer on top, then the rest in the core's order; the test engine last.
+pub fn ordered(mut engines: Vec<Engine>) -> Vec<Engine> {
+    engines.sort_by_key(|engine| match engine.kind {
+        EngineKind::Ai if is_local(engine) => 0,
+        EngineKind::Ai => 1,
+        EngineKind::Test => 2,
+    });
+    engines
+}
+
+/// The models the picker offers for an AI account: those that can call tools, which the assistant
+/// needs to do anything in the suite. A model the server says nothing about (LM Studio, vLLM do
+/// not tell) stays, as `ai.list_models` keeps it for open weights: only a model known to have no
+/// tools is left out. The order stays.
+pub fn tool_models(models: &[AiModel]) -> Vec<AiModel> {
+    models.iter().filter(|model| model.tools != Some(false)).cloned().collect()
+}
+
+/// What answers before the person picks: the engine and model of the newest conversation if that
+/// engine is still there ("the last one used"), else the first engine of [`ordered`] with its
+/// first model that can call tools (`models` gives an engine's listed models, `None` while they
+/// are not in), else nothing (no engine at all).
+pub fn default_choice<'a>(
+    conversations: &[ConversationSummary],
+    engines: &[Engine],
+    models: impl Fn(&str) -> Option<&'a [AiModel]>,
+) -> Option<Choice> {
+    let newest = conversations.iter().max_by_key(|conversation| conversation.updated);
+    if let Some(conversation) = newest.filter(|c| engines.iter().any(|engine| engine.id == c.engine)) {
+        return Some(Choice { engine: conversation.engine.clone(), model: conversation.model.clone() });
+    }
+    let engine = ordered(engines.to_vec()).into_iter().next()?;
+    let model = models(&engine.id).and_then(|models| tool_models(models).into_iter().next()).map(|model| model.id);
+    Some(Choice { engine: engine.id, model })
+}
+
+/// The areas the composer offers to switch off, in this order: those of the assistant's own
+/// client that it may use at all (`rights`, from `clients.list_clients`). Without a client, none:
+/// the assistant can use no tool then.
+pub fn switchable_areas(rights: Option<&Rights>) -> Vec<Area> {
+    const SHOWN: [Area; 6] = [Area::Mail, Area::Calendar, Area::Tasks, Area::Inbox, Area::Workspaces, Area::Github];
+    let Some(rights) = rights else { return Vec::new() };
+    SHOWN.into_iter().filter(|area| rights.area(*area).level != Level::NoAccess).collect()
+}
+
+/// The request of "Send": `assistant.send_message` with the text as typed (trailing blank lines
+/// dropped), to `conversation` or a new one; `None` for a text that is only blank or without an
+/// engine, which the core would refuse anyway.
+pub fn send_request(
+    conversation: Option<&str>,
+    choice: Option<&Choice>,
+    text: &str,
+    without: &[Area],
+) -> Option<Request> {
+    let text = text.trim_end();
+    let choice = choice?;
+    if text.trim().is_empty() {
+        return None;
+    }
+    Some(Request::SendMessage {
+        conversation: conversation.map(str::to_owned),
+        engine: choice.engine.clone(),
+        model: choice.model.clone(),
+        text: text.to_owned(),
+        without: without.to_vec(),
+    })
+}
+
+/// The request of the approval card's "Allow" (`allow`) or "Deny": `approvals.decide_approval`.
+/// Only ever sent for a person's click; the model has no way to it.
+pub fn decide_request(approval: &str, allow: bool) -> Request {
+    Request::DecideApproval { id: approval.to_owned(), allow }
+}
+
+/// The area of the catalogue command `name` (`calendar.list_events` → calendar); `None` for a name
+/// the catalogue does not know (the assistant's own `find_tools`).
+pub fn area_of(name: &str) -> Option<Area> {
+    CATALOGUE.iter().find(|command| command.name == name).map(|command| command.area)
+}
+
+/// The name of an area as the control centre writes it ("Calendar", "Mail").
+pub fn area_name(area: Area) -> &'static str {
+    match area {
+        Area::System => tr("System"),
+        Area::Workspaces => tr("Workspaces"),
+        Area::Calendar => tr("Calendar"),
+        Area::Tasks => tr("Tasks"),
+        Area::Github => tr("GitHub"),
+        Area::Inbox => tr("Inbox"),
+        Area::Mail => tr("Mail"),
+        Area::Accounts => tr("Accounts"),
+        Area::Ai => tr("AI"),
+        Area::Assistant => tr("Assistant"),
+        Area::Settings => tr("Settings"),
+        Area::Apps => tr("Apps"),
+        Area::Clients => tr("Agents & API"),
+        Area::Approvals => tr("Approvals"),
+    }
+}
+
+/// The app that shows what a tool of `area` looked at or changed, for "Open …" under an unfolded
+/// tool line: the calendar, the tasks app (GitHub filter lists are task lists there), the inbox
+/// (mail too). `None` for the other areas.
+pub fn app_of(area: Area) -> Option<AppId> {
+    match area {
+        Area::Calendar => Some(AppId::CALENDAR),
+        Area::Tasks | Area::Github => Some(AppId::TASKS),
+        Area::Inbox | Area::Mail => Some(AppId::INBOX),
+        _ => None,
+    }
+}
+
+/// What a tool did, in the past tense, for its collapsed line ("Searched mail"): known commands by
+/// name, any other by its catalogue name, so nothing is hidden.
+pub fn tool_title(name: &str) -> String {
+    let known = match name {
+        "calendar.list_calendars" => tr("Looked up calendars"),
+        "calendar.list_events" => tr("Looked up events"),
+        "calendar.save_event" => tr("Saved event"),
+        "calendar.delete_event" => tr("Deleted event"),
+        "tasks.list_lists" => tr("Looked up task lists"),
+        "tasks.list_todos" => tr("Looked up tasks"),
+        "tasks.save_todo" => tr("Saved task"),
+        "tasks.delete_todo" => tr("Deleted task"),
+        "tasks.move_todo" => tr("Moved task"),
+        "inbox.list_items" => tr("Looked at the inbox"),
+        "inbox.get_item" => tr("Read inbox entry"),
+        "inbox.post_item" => tr("Posted to the inbox"),
+        "inbox.set_item_done" => tr("Marked entry done"),
+        "inbox.create_task_from_item" => tr("Made a task"),
+        "mail.list_folders" => tr("Looked up mail folders"),
+        "mail.search_messages" => tr("Searched mail"),
+        "mail.get_message" => tr("Read mail"),
+        "mail.get_thread" => tr("Read conversation"),
+        "mail.save_draft" => tr("Saved draft"),
+        "mail.send_draft" => tr("Sent mail"),
+        "mail.move_messages" => tr("Moved mail"),
+        "mail.delete_messages" => tr("Deleted mail"),
+        "workspaces.list_templates" => tr("Looked up templates"),
+        "workspaces.load_template" => tr("Loaded template"),
+        "workspaces.save_template" => tr("Saved template"),
+        "find_tools" => tr("Looked for tools"),
+        other => return other.to_owned(),
+    };
+    known.to_owned()
+}
+
+/// What came of a tool, after its title: the core's few words ("12 results"), or for an error
+/// code a word people read ("No access", "Denied"). The core's summary repeats the error then, so
+/// only the word shows.
+pub fn tool_outcome(summary: &str, error: Option<&str>) -> String {
+    match error {
+        None => summary.to_owned(),
+        Some("forbidden") => tr("No access").to_owned(),
+        Some("not-found") => tr("Not found").to_owned(),
+        Some("denied") => tr("Denied").to_owned(),
+        Some("expired") => tr("Expired").to_owned(),
+        Some("offline") => tr("Offline").to_owned(),
+        Some(_) => tr("Failed").to_owned(),
+    }
+}
+
+/// The collapsed line of a tool: "Searched mail · 12 results".
+pub fn tool_line(name: &str, summary: &str, error: Option<&str>) -> String {
+    let outcome = tool_outcome(summary, error);
+    if outcome.is_empty() {
+        tool_title(name)
+    } else {
+        trf("{tool} · {outcome}", &[("tool", &tool_title(name)), ("outcome", &outcome)])
+    }
+}
+
+/// The sidebar's conversations: pinned ones, then the rest, each newest first, both narrowed to
+/// the titles that contain `query` (any case; all of them for a blank query).
+pub fn sidebar_groups<'a>(
+    conversations: &'a [ConversationSummary],
+    query: &str,
+) -> (Vec<&'a ConversationSummary>, Vec<&'a ConversationSummary>) {
+    let query = query.trim().to_lowercase();
+    let mut shown: Vec<&ConversationSummary> = conversations
+        .iter()
+        .filter(|conversation| query.is_empty() || conversation.title.to_lowercase().contains(&query))
+        .collect();
+    shown.sort_by_key(|conversation| std::cmp::Reverse(conversation.updated));
+    shown.into_iter().partition(|conversation| conversation.pinned)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, TimeZone, Utc};
+    use torro_ipc::api::AreaRights;
+    use torro_ipc::assistant::TEST_ENGINE;
+
+    use super::*;
+
+    fn at(minute: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 14, 9, minute, 0).single().expect("a time")
+    }
+
+    fn summary(id: &str, last: u64, running: bool) -> ConversationSummary {
+        ConversationSummary {
+            id: id.into(),
+            title: "Plan for tomorrow".into(),
+            engine: "ai:ollama@localhost:11434".into(),
+            model: Some("qwen3:8b".into()),
+            created: at(0),
+            updated: at(1),
+            pinned: false,
+            running,
+            last,
+        }
+    }
+
+    fn answer(seq: u64, text: &str) -> Entry {
+        Entry { seq, time: at(2), content: EntryContent::Answer { text: text.into(), engine: "e".into(), model: None } }
+    }
+
+    fn message(seq: u64, text: &str) -> Entry {
+        Entry {
+            seq,
+            time: at(2),
+            content: EntryContent::Message { text: text.into(), engine: "e".into(), model: None, without: Vec::new() },
+        }
+    }
+
+    fn tool(seq: u64) -> Entry {
+        Entry {
+            seq,
+            time: at(2),
+            content: EntryContent::Tool {
+                name: "mail.search_messages".into(),
+                input: serde_json::json!({}),
+                summary: "12 results".into(),
+                error: None,
+            },
+        }
+    }
+
+    fn texts(transcript: &Transcript) -> Vec<(u64, String)> {
+        transcript
+            .entries
+            .iter()
+            .map(|entry| {
+                let text = match &entry.content {
+                    EntryContent::Answer { text, .. } | EntryContent::Message { text, .. } => text.clone(),
+                    EntryContent::Tool { name, .. } => name.clone(),
+                    other => format!("{other:?}"),
+                };
+                (entry.seq, text)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_growing_answer_is_replaced_by_its_number() {
+        let mut transcript = Transcript::new(summary("c1", 1, true), vec![message(1, "What is on?")]);
+        assert!(transcript.merge(summary("c1", 1, true), vec![answer(2, "Tomorrow")]));
+        assert_eq!(transcript.growing().map(|entry| entry.seq), Some(2));
+        assert!(transcript.merge(summary("c1", 1, true), vec![answer(2, "Tomorrow you have")]));
+        assert_eq!(texts(&transcript), [(1, "What is on?".into()), (2, "Tomorrow you have".into())], "one entry");
+        // Stored now: `last` reaches it and it comes once more, final.
+        assert!(transcript.merge(summary("c1", 2, false), vec![answer(2, "Tomorrow you have four events.")]));
+        assert_eq!(transcript.growing(), None);
+        assert_eq!(transcript.last_answer_text(), Some("Tomorrow you have four events."));
+        assert!(!transcript.running());
+    }
+
+    #[test]
+    fn a_growing_answer_that_became_a_tool_or_went_is_dropped() {
+        let mut transcript = Transcript::new(summary("c1", 1, true), vec![message(1, "Hi")]);
+        transcript.merge(summary("c1", 1, true), vec![answer(2, "Let me")]);
+        // The model called a tool instead: number 2 is the tool now, 3 grows.
+        transcript.merge(summary("c1", 2, true), vec![tool(2), answer(3, "You have")]);
+        assert_eq!(texts(&transcript), [(1, "Hi".into()), (2, "mail.search_messages".into()), (3, "You have".into())]);
+        // Stopped before anything was stored of it: the partial text is gone from the answer.
+        transcript.merge(summary("c1", 2, false), Vec::new());
+        assert_eq!(transcript.entries.len(), 2, "the stale growing answer is dropped");
+    }
+
+    #[test]
+    fn polled_entries_join_in_order_and_old_answers_are_ignored() {
+        let mut transcript = Transcript::new(summary("c1", 2, false), vec![answer(2, "b"), message(1, "a")]);
+        assert_eq!(transcript.entries.iter().map(|entry| entry.seq).collect::<Vec<_>>(), [1, 2], "sorted");
+        assert!(transcript.merge(summary("c1", 4, false), vec![tool(3), answer(4, "d")]));
+        assert_eq!(transcript.last(), 4);
+        assert!(!transcript.merge(summary("c1", 3, false), vec![answer(3, "old")]), "an older answer");
+        assert_eq!(transcript.entries.len(), 4);
+        assert_eq!(texts(&transcript)[2], (3, "mail.search_messages".into()), "kept");
+        // Another conversation's answer replaces everything.
+        assert!(transcript.merge(summary("c2", 1, false), vec![message(1, "other")]));
+        assert_eq!(texts(&transcript), [(1, "other".into())]);
+    }
+
+    fn engine(id: &str, kind: EngineKind) -> Engine {
+        Engine { id: id.into(), kind, name: id.into(), problem: None }
+    }
+
+    fn model(id: &str, tools: Option<bool>) -> AiModel {
+        AiModel { id: id.into(), name: id.into(), tools, open_weights: None, context: None }
+    }
+
+    #[test]
+    fn the_picker_lists_local_accounts_first_and_only_tool_models() {
+        let engines = vec![
+            engine(TEST_ENGINE, EngineKind::Test),
+            engine("ai:openrouter@openrouter.ai", EngineKind::Ai),
+            engine("ai:ollama@localhost:11434", EngineKind::Ai),
+            engine("ai:lm_studio@127.0.0.1:1234", EngineKind::Ai),
+        ];
+        let ids: Vec<String> = ordered(engines).into_iter().map(|engine| engine.id).collect();
+        assert_eq!(
+            ids,
+            ["ai:ollama@localhost:11434", "ai:lm_studio@127.0.0.1:1234", "ai:openrouter@openrouter.ai", TEST_ENGINE]
+        );
+
+        let models = [model("qwen3:8b", Some(true)), model("gemma3:4b", Some(false)), model("local", None)];
+        let offered: Vec<String> = tool_models(&models).into_iter().map(|model| model.id).collect();
+        assert_eq!(offered, ["qwen3:8b", "local"], "a model known to have no tools is left out");
+    }
+
+    #[test]
+    fn the_last_engine_used_comes_first_else_a_local_tool_model() {
+        let engines = vec![
+            engine("ai:openrouter@openrouter.ai", EngineKind::Ai),
+            engine("ai:ollama@localhost:11434", EngineKind::Ai),
+        ];
+        let models = vec![model("gemma3:4b", Some(false)), model("qwen3:8b", Some(true))];
+        let listed = |id: &str| (id == "ai:ollama@localhost:11434").then_some(models.as_slice());
+        let first = default_choice(&[], &engines, listed);
+        assert_eq!(first, Some(Choice { engine: "ai:ollama@localhost:11434".into(), model: Some("qwen3:8b".into()) }));
+
+        let mut older = summary("c1", 1, false);
+        older.engine = "ai:openrouter@openrouter.ai".into();
+        older.model = Some("qwen/qwen3-32b".into());
+        let mut gone = summary("c2", 1, false);
+        gone.engine = "ai:removed@example.com".into();
+        gone.updated = at(0);
+        assert_eq!(
+            default_choice(&[gone.clone(), older], &engines, listed),
+            Some(Choice { engine: "ai:openrouter@openrouter.ai".into(), model: Some("qwen/qwen3-32b".into()) })
+        );
+        assert_eq!(
+            default_choice(&[gone], &engines, |_| None),
+            Some(Choice { engine: "ai:ollama@localhost:11434".into(), model: None }),
+            "the newest conversation's engine is gone; models not in yet: the engine picks"
+        );
+        assert_eq!(default_choice(&[], &[], listed), None);
+    }
+
+    #[test]
+    fn send_builds_the_message_request() {
+        let choice = Choice { engine: "ai:ollama@localhost:11434".into(), model: Some("qwen3:8b".into()) };
+        assert_eq!(
+            send_request(Some("c1"), Some(&choice), "What is on tomorrow?\n\n", &[Area::Mail]),
+            Some(Request::SendMessage {
+                conversation: Some("c1".into()),
+                engine: "ai:ollama@localhost:11434".into(),
+                model: Some("qwen3:8b".into()),
+                text: "What is on tomorrow?".into(),
+                without: vec![Area::Mail],
+            })
+        );
+        assert_eq!(send_request(None, Some(&choice), " \n ", &[]), None, "blank");
+        assert_eq!(send_request(None, None, "Hi", &[]), None, "no engine");
+    }
+
+    #[test]
+    fn the_approval_card_decides_with_the_app_request() {
+        assert_eq!(
+            decide_request("9c1f0a7e3b2d4c58", true),
+            Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: true }
+        );
+        assert_eq!(
+            decide_request("9c1f0a7e3b2d4c58", false),
+            Request::DecideApproval { id: "9c1f0a7e3b2d4c58".into(), allow: false }
+        );
+    }
+
+    #[test]
+    fn only_areas_the_assistant_may_use_can_be_switched_off() {
+        assert!(switchable_areas(None).is_empty());
+        let mut rights = Rights::assistant();
+        assert_eq!(switchable_areas(Some(&rights)), [Area::Calendar, Area::Tasks, Area::Inbox]);
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        assert_eq!(switchable_areas(Some(&rights)), [Area::Mail, Area::Calendar, Area::Tasks, Area::Inbox]);
+    }
+
+    #[test]
+    fn tool_lines_say_what_was_done_and_how_it_went() {
+        assert_eq!(
+            tool_line("mail.search_messages", "12 results", None),
+            trf("{tool} · {outcome}", &[("tool", &tr("Searched mail")), ("outcome", &"12 results")])
+        );
+        assert_eq!(tool_title("calendar.frobnicate"), "calendar.frobnicate", "unknown names show as they are");
+        assert_eq!(tool_outcome("forbidden: no access to mail", Some("forbidden")), tr("No access"));
+        assert_eq!(tool_line("find_tools", "", None), tr("Looked for tools"));
+        assert_eq!(area_of("mail.search_messages"), Some(Area::Mail));
+        assert_eq!(area_of("find_tools"), None);
+        assert_eq!(app_of(Area::Mail), Some(AppId::INBOX));
+    }
+
+    #[test]
+    fn the_sidebar_puts_pinned_first_newest_first_and_searches_titles() {
+        let mut list = Vec::new();
+        for (minute, title, pinned) in
+            [(1, "Trip to Lisbon", false), (5, "Plan for tomorrow", true), (3, "Release", false)]
+        {
+            let mut conversation = summary(title, 1, false);
+            conversation.title = title.into();
+            conversation.updated = at(minute);
+            conversation.pinned = pinned;
+            list.push(conversation);
+        }
+        let titles = |group: Vec<&ConversationSummary>| group.iter().map(|c| c.title.clone()).collect::<Vec<_>>();
+        let (pinned, recent) = sidebar_groups(&list, "");
+        assert_eq!(
+            (titles(pinned), titles(recent)),
+            (vec!["Plan for tomorrow".to_owned()], vec!["Release".to_owned(), "Trip to Lisbon".to_owned()])
+        );
+        let (pinned, recent) = sidebar_groups(&list, "  LISBON ");
+        assert_eq!((titles(pinned).len(), titles(recent)), (0, vec!["Trip to Lisbon".to_owned()]));
+    }
+}

@@ -768,6 +768,7 @@ fn app_name(app: AppId) -> &'static str {
         "torroinbox" => tr("Inbox"),
         "torrotasks" => tr("Tasks"),
         "torrocalendar" => tr("Calendar"),
+        "torroassistant" => tr("Assistant"),
         _ => tr("Workplace"),
     }
 }
@@ -777,6 +778,7 @@ fn app_icon(app: AppId) -> Icon {
         "torroinbox" => Icon::Inbox,
         "torrotasks" => Icon::ListTodo,
         "torrocalendar" => Icon::Calendar,
+        "torroassistant" => Icon::Sparkles,
         _ => Icon::LayoutGrid,
     }
 }
