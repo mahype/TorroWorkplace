@@ -2051,6 +2051,8 @@ pub enum Message {
     AppOpened(Result<(), String>),
     /// Open the control centre.
     OpenSettings,
+    /// Open the control centre on the Inbox page, where the rules are ("All rules" in the bell's menu).
+    OpenRules,
     /// From a folder's list: the message with this id under the cursor and in the panel.
     SelectMail(String),
     /// The whole mail for the panel, or why it could not be read.
@@ -2911,6 +2913,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::OpenSettings => {
                 self.close_menus();
                 connect::open_settings();
+            }
+            Message::OpenRules => {
+                self.close_menus();
+                connect::open_section("inbox");
             }
             Message::SelectMail(id) => {
                 self.close_menus();
@@ -6179,8 +6185,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let segment = |control: Element<'a, Message>| {
             container(control).padding(Padding::ZERO.left(space::s()).right(space::s()).bottom(space::xs()))
         };
-        let rules = MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenSettings)
-            .trail(Trail::Icon(Icon::ArrowUpRight));
+        let rules = rules_entry();
         list = list
             .push(menu_line())
             .push(menu_caption(tr("For")))
@@ -6625,6 +6630,12 @@ fn segmented_width(labels: &[&str]) -> f32 {
     let segments: f32 =
         labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding.left + padding.right).sum();
     segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
+}
+
+/// "All rules ↗" at the foot of the bell's menu. It opens the Inbox page of the control centre, not
+/// the accounts page the gear opens ([`Message::OpenSettings`]), because the rules are listed there.
+fn rules_entry<'a>() -> MenuItem<'a, Message> {
+    MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenRules).trail(Trail::Icon(Icon::ArrowUpRight))
 }
 
 /// The width of the bell's menu with `choices`: as a menu of choices ([`choice_menu_width`]), and
@@ -10322,6 +10333,15 @@ mod tests {
         let last = app.choices().pop().expect("choices");
         assert_eq!(last.label, trf("Unmute {source}", &[("source", &"deploy")]));
         assert!(last.line && matches!(last.message, Message::AskMute(ref id) if id == "demo-6"));
+    }
+
+    /// Task S.15: "All rules" sends its own message, which opens the control centre's Inbox page;
+    /// it is not the gear's `OpenSettings`, which opens the accounts page.
+    #[test]
+    fn all_rules_opens_the_inbox_page_not_the_accounts_page() {
+        let rules = rules_entry();
+        assert!(matches!(rules.on_press, Message::OpenRules));
+        assert!(!matches!(rules.on_press, Message::OpenSettings));
     }
 
     /// Task E8.6b: the rule's words – effect, end and what it mutes – and when a muting ends.
