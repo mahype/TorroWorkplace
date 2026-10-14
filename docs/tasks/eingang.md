@@ -1524,6 +1524,32 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests mit Fake-Provider: Datum im Text wird `due` bzw. Terminzeit (`suggest.rs`, Kern-Test mit
   Ollama-/OpenRouter-Attrappe samt Datenregel). Ohne KI sind die Knöpfe gesperrt und zeigen den Tooltip (`tr(...)`).
 
+### E8.25 Stummschalten im Mail-Fenster, ein Menü für Mail (Issue #123)
+- [x] erledigt (2026-10-14: Entscheidung: „Hide from inbox“ und „Mute“ sind für Mail **ein** Menü, die Glocke
+  „Mute…“ (`App::mutes_by_bell`, in jedem Fenster). Sie steht in Zeilen und Karten statt „…“
+  (`list::hide_action`, `mail::message_buttons`), im Leser und im Paneel; `m` öffnet sie. Dauer neu mit „1 week“
+  (`MuteFor::OneWeek`): 1 Stunde · bis morgen (= heute) · 1 Woche · immer. „This conversation“ + „Hide“ + „Always“
+  ist das alte „This conversation“, Absender/Domain sind Merkmale, „Always to Info“ entfällt (Absender + „Only
+  Info“), „Move to junk“ bleibt als letzter Punkt. Andere Quellen behalten „Hide from inbox“ (This entry, Mute
+  source). Ordnernachrichten ohne Eintrag: Glocke in Zeile, Karte, Leser und Paneel (`Message::AskMuteMail`),
+  `inbox.list_mute_options`/`inbox.mute_item` nehmen die Kennung der Mail (`m:…`): mit Eintrag gilt der Eintrag
+  (`Inbox::entry_of_message`), ohne werden nur die Merkmale aus dem Mail-Speicher angeboten
+  (`rules::message_stand_in`, `inbox_feed::message_stand_in`, `Inbox::handle_message`); die Unterhaltung ist dort
+  `error`. Freigaben nennen Absender usw. aus dem Speicher. Entfernt: `Message::HideSender`, `Undo::Hidden` im
+  Fenster (der Request `inbox.hide_sender` bleibt für API/MCP). Demo-Zustand `--open mute-mail`. Sichtprüfung nicht
+  möglich: macOS ohne Hyprland, die Ansichten aller Größen rendern im Test)
+- **Modell:** Opus · **Braucht:** E8.6b, E8.19 · **Dateien:** `crates/torroinbox/src/{app,mail,list,detail,keys}.rs`,
+  `crates/torro-inbox/src/{rules,demo}.rs`, `crates/torroworkplace/src/{core,inbox}.rs`,
+  `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/{api,eingang}.md`
+- **Oberfläche:** Mail-Fenster (Zeilen, Karten, Leser, Paneel; auch Mail-Einträge der Zentrale). **API:** vorhanden
+  `Request::ListMuteOptions` · `inbox.list_mute_options` · Read und `Request::MuteItem` · `inbox.mute_item` · Write
+  (Regel Admin); neu: `id` darf eine Mail-Kennung `m:…` sein (kein neuer Befehl, Katalogbeschreibung ergänzt).
+  **MCP:** `inbox_list_mute_options`, `inbox_mute_item` (dieselben Tools).
+- **Abnahme:** Tests: Mute im Mail-Fenster sendet `inbox.mute_item` (Unterhaltung, Domain, Absender, 1 Woche);
+  eine Unterhaltung für eine Weile hält weitere Mails aus „For me“ (Kern); Ordnernachricht ohne Eintrag nur mit
+  Merkmalen, für Clients nur mit Konto, Freigabe nennt den Absender aus dem Speicher.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,

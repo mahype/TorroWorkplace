@@ -833,8 +833,6 @@ pub struct MailList<'a> {
     /// The open entries of "For me" (task E8.11): an invitation's card whose mail has its entry here
     /// ([`entry_of`]) offers that entry's "Later" and "…", as the same mail does under "For me".
     pub entries: &'a [Item],
-    /// Ids of those entries whose menu "Hide from inbox" has entries (`App::hide_choices`).
-    pub hidable: Vec<&'a str>,
     /// Every folder of every account: Archive and Delete show only where the message's account has
     /// such a folder ([`filing_actions`], issue #118).
     pub folders: &'a [Folder],
@@ -946,7 +944,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     let on_press = Message::SelectMail(message.id.clone());
     let height = list::message_height();
     let row = list::sized_row(list::mail_content(lines, width), selected, on_press, height);
-    let (mut actions, more) = message_buttons(message, data.entries, &data.hidable, data.folders, data.now);
+    let (mut actions, more) = message_buttons(message, data.entries, data.folders, data.now);
     actions.extend(more);
     let actions = data.anchors.mark(selected, actions);
     let words = widgets::row_actions_words(&actions, width);
@@ -970,7 +968,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if message.flags.contains(&Flag::Flagged) {
         chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
     }
-    let (buttons, more) = message_buttons(message, data.entries, &data.hidable, data.folders, data.now);
+    let (buttons, more) = message_buttons(message, data.entries, data.folders, data.now);
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
     let smart = matches!(data.view, View::Attachments | View::Invitations | View::Search(_));
@@ -997,32 +995,32 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if selected { widgets::anchored(&data.anchors.row, card) } else { card }
 }
 
-/// The buttons of the card (and the action bar of the row) of `message` at `now`, with "…" as the
-/// second part:
+/// The buttons of the card (and the action bar of the row) of `message` at `now`, with the bell
+/// "Mute…" (`m`, issue #123) as the second part:
 ///
 /// - a message: Archive (`e`, what "done" is in a folder) and Delete (`#`, into the trash) as far as
 ///   its account has those folders ([`filing_actions`], issue #118), then Task (`t`,
-///   `tasks.create_todo_from_mail`, task E8.7b); a message has no "Later" of its own, and no "…".
-///   No Reply: from a list the mail is not read yet – Reply stands in the reader;
+///   `tasks.create_todo_from_mail`, task E8.7b); a message has no "Later" of its own. No Reply:
+///   from a list the mail is not read yet – Reply stands in the reader. The bell acts on the
+///   message: its entry's menu when it has one, else the message's own traits;
 /// - an invitation whose event is not over (task E8.3b): Accept · Maybe · Decline
 ///   ([`Message::AnswerInvitation`]) · Later · Task, as the same mail under "For me" (task E8.11):
-///   "Later" and "…" ("Hide from inbox", while `hidable` lists the entry) act on its entry in
-///   `entries` ([`entry_of`], `Message::Act` with its id); without an open entry, only the answers
-///   and Task.
+///   "Later" and the bell act on its entry in `entries` ([`entry_of`], `Message::Act` with its id);
+///   without an open entry, only the answers and Task, and the bell on the message.
 pub fn message_buttons<'a>(
     message: &MessageSummary,
     entries: &[Item],
-    hidable: &[&str],
     folders: &[Folder],
     now: DateTime<Utc>,
 ) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
     let id = || message.id.clone();
     // `Act`, as `t` at the row: the dialog then opens at this button, not at the reader's (issue #122).
     let task = RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::Act(id(), Key::MakeTask));
+    let bell = |id: String| RowAction::new(Icon::BellOff, tr("Mute…"), "M", Message::Act(id, Key::Hide));
     if message.invite.as_ref().is_none_or(|invite| invite_over(invite, now)) {
         let mut buttons = filing_actions(folders, &message.account, Some(&message.folder), &message.id, "E");
         buttons.push(task);
-        return (buttons, None);
+        return (buttons, Some(bell(id())));
     }
     let answer = |(icon, word, answer): (Icon, &'static str, InvitationAnswer)| {
         RowAction::new(icon, word, "", Message::AnswerInvitation(message.account.clone(), id(), answer))
@@ -1032,10 +1030,7 @@ pub fn message_buttons<'a>(
     let act = |item: &Item, command| Message::Act(item.id.clone(), command);
     buttons.extend(entry.map(|item| RowAction::new(Icon::Clock, tr("Later"), "S", act(item, Key::Snooze))));
     buttons.push(task);
-    let more = entry
-        .filter(|item| hidable.contains(&item.id.as_str()))
-        .map(|item| RowAction::new(Icon::Ellipsis, tr("Hide from inbox"), "M", act(item, Key::Hide)));
-    (buttons, more)
+    (buttons, Some(bell(entry.map_or_else(id, |item| item.id.clone()))))
 }
 
 /// The height of the card of `message`, `width` wide ([`message_card`]): its preview takes the lines
@@ -1423,21 +1418,28 @@ impl<'a> Reading<'a> {
 }
 
 /// The panel of a folder's message: the account and folder as path, the subject as title, the
-/// mail as body ([`body`]). No footer: the mail's actions stand above its text.
-pub fn panel<'a>(reading: &Reading<'a>, folder: Option<&'a FolderView>) -> panel::Panel<'a, Message> {
+/// mail as body ([`body`]). No footer: the mail's actions stand above its text; `anchors` are where
+/// the menus of its buttons open (the app's window, issue #122).
+pub fn panel<'a>(
+    reading: &Reading<'a>,
+    folder: Option<&'a FolderView>,
+    anchors: &detail::Anchors,
+) -> panel::Panel<'a, Message> {
     let mark = Some(Mark::Icon(folder_icon(folder.and_then(|folder| folder.role))));
     let parts: Vec<String> = folder.map(|f| vec![address(&f.account).to_owned(), f.name.clone()]).unwrap_or_default();
-    panel::panel(panel::path(mark, parts), panel::title(reading.title()), body(reading), Message::CloseDetail)
+    let body = body(reading, Some(anchors));
+    panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail)
 }
 
 /// The mail in the panel: who wrote it to whom and when, the actions (reply, reply all, forward,
 /// archive, delete, flag, read), the attachments, the text with its links, and the notes that the
-/// text comes from outside and – for HTML – that nothing from the web was loaded.
-pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
+/// text comes from outside and – for HTML – that nothing from the web was loaded. `anchors` of a
+/// folder's panel take the menus of its buttons ([`panel`]); an entry's panel has them in its footer.
+pub fn body<'a>(reading: &Reading<'a>, anchors: Option<&detail::Anchors>) -> Element<'a, Message> {
     let mut body = column![].spacing(space::l());
     if let Some(summary) = reading.summary() {
         body = body.push(panel::inset(header(reading, summary)));
-        body = body.push(panel::inset(actions(reading, summary)));
+        body = body.push(panel::inset(actions(reading, summary, anchors)));
     }
     if let Some(summary) = reading.summary()
         && let Some(invite) = &summary.invite
@@ -1480,7 +1482,7 @@ fn text_level(read: bool) -> typo::Level {
 #[derive(Debug, Clone, Copy)]
 pub struct ReaderEntry<'a> {
     pub item: &'a Item,
-    /// "Hide from inbox" has entries for it (`App::hide_choices`): the reader shows its "…".
+    /// The entry can be muted (`App::hidable`): the reader shows its bell "Mute…" (issue #123).
     pub hide: bool,
     /// An AI is set up (issue #120): "AI task" and "AI event" after "Task" are on; else off, with
     /// a tooltip that says to set one up first.
@@ -1655,10 +1657,11 @@ impl ReaderButton {
 
 /// The reader's actions in one row (task E8.3): Reply (the window's one primary button), Reply
 /// all, Forward | Done, Later, Task on the mail's entry – "Archive" and "Task" (task E8.7b,
-/// `tasks.create_todo_from_mail`) in their place for a folder's message, where `e` archives –, then at the right as icons Delete, Flag, read or unread, for an
-/// entry also Archive, "Move to …" and "…" (Hide from inbox), and Close. In comfortable the first
-/// six carry their words while they fit into `room`, else every button is its icon with the word
-/// as tooltip.
+/// `tasks.create_todo_from_mail`) in their place for a folder's message, where `e` archives –, then
+/// at the right as icons Delete, Flag, read or unread, for an entry also Archive and "Move to …",
+/// the bell "Mute…" (issue #123, a folder's message too), and Close. In comfortable the first six
+/// carry their words while they fit into `room`, else every button is its icon with the word as
+/// tooltip.
 fn reader_actions<'a>(
     reading: &Reading<'a>,
     summary: &MessageSummary,
@@ -1715,9 +1718,10 @@ fn reader_actions<'a>(
             let move_to =
                 ReaderButton::new(crate::app::lane_icon(lane), lane_word(lane), Some(Message::AskLane(item_id())));
             tools.push(move_to.at(&anchors.lane));
+            // The bell (issue #123): mail's one menu to mute, "Hide from inbox" went into it.
             if hide {
-                let more = ReaderButton::new(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item_id())));
-                tools.push(more.at(&anchors.hide));
+                let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskHide(item_id())));
+                tools.push(bell.at(&anchors.hide));
             }
         }
         None => {
@@ -1725,6 +1729,9 @@ fn reader_actions<'a>(
             // A folder's message becomes a task of its own (task E8.7b, `tasks.create_todo_from_mail`).
             let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskMailTask(id.to_owned())));
             triage.push(task.at(&anchors.task));
+            // And is muted by its own traits (issue #123).
+            let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskMuteMail(id.to_owned())));
+            tools.push(bell.at(&anchors.hide));
         }
     }
     // "Copy text" (issue #119) once there is a text to copy.
@@ -1861,7 +1868,11 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 /// The mail's actions in a row: "Reply" with its words, reply all and forward as icons, then at
 /// the right archive, delete, flag and read as icons. Delete is off in the trash.
-fn actions<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, Message> {
+fn actions<'a>(
+    reading: &Reading<'a>,
+    summary: &MessageSummary,
+    anchors: Option<&detail::Anchors>,
+) -> Element<'a, Message> {
     let id = reading.id;
     let act = |action: MailAction| Some(Message::Mail(action, id.to_owned()));
     let flagged = summary.flags.contains(&Flag::Flagged);
@@ -1873,8 +1884,15 @@ fn actions<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, M
     // a folder's panel shows the date (`dated`), so it tells the two apart.
     let task = reading.dated.then(|| Message::AskMailTask(id.to_owned()));
     let mut tools = row![].spacing(space::xs()).align_y(Alignment::Center);
+    let at = |pick: fn(&detail::Anchors) -> &Anchor, button| match anchors {
+        Some(anchors) => widgets::anchored(pick(anchors), button),
+        None => button,
+    };
     if task.is_some() {
-        tools = tools.push(widgets::icon_button(Icon::ListTodo, tr("Task"), task));
+        tools = tools.push(at(|a| &a.task, widgets::icon_button(Icon::ListTodo, tr("Task"), task)));
+        // The bell too (issue #123): the message's entry's menu, or its own traits without one.
+        let bell = widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::AskMuteMail(id.to_owned())));
+        tools = tools.push(at(|a| &a.hide, bell));
     }
     row![
         widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, act(MailAction::Reply)),
@@ -2229,7 +2247,6 @@ mod tests {
                         attention: Color::BLACK,
                         look,
                         entries: &all,
-                        hidable: all.iter().map(|item| item.id.as_str()).collect(),
                         folders: &folders,
                         highlights: &highlights,
                         text: Color::BLACK,
@@ -2262,7 +2279,7 @@ mod tests {
                         answering: false,
                         invite: InviteSide::default(),
                     };
-                    let _ = panel(&reading, Some(&folder));
+                    let _ = panel(&reading, Some(&folder), &detail::Anchors::default());
                     for entry in [None, Some(ReaderEntry { item: &entry, hide: true, ai: false })] {
                         let _ = reader(reading, entry, detail::Anchors::default(), read);
                     }
@@ -2290,19 +2307,19 @@ mod tests {
         let words =
             |buttons: &[RowAction<'_, Message>]| buttons.iter().map(|b| b.label.to_string()).collect::<Vec<_>>();
         let folders = folders();
-        let (buttons, more) = message_buttons(&message, &entries, &[entry.id.as_str()], &folders, now());
+        let (buttons, more) = message_buttons(&message, &entries, &folders, now());
         assert_eq!(words(&buttons), [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Later"), tr("Task")]);
         assert!(matches!(&buttons[3].on_press, Message::Act(id, Key::Snooze) if *id == entry.id));
         assert!(matches!(more.map(|more| more.on_press), Some(Message::Act(id, Key::Hide)) if id == entry.id));
-        let (_, more) = message_buttons(&message, &entries, &[], &folders, now());
-        assert!(more.is_none(), "nothing to hide: no \"…\"");
-        let (alone, more) = message_buttons(&message, &[], &[], &folders, now());
+        let (alone, more) = message_buttons(&message, &[], &folders, now());
         assert_eq!(words(&alone), [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Task")], "no entry: no Later");
-        assert!(more.is_none());
+        let more = more.expect("the bell (issue #123)");
+        assert_eq!((more.icon, more.label.to_string()), (Icon::BellOff, tr("Mute…").to_owned()));
+        assert!(matches!(more.on_press, Message::Act(id, Key::Hide) if id == message.id), "the message's own");
         let done = Item { state: State::Done { at: now() }, ..entry.clone() };
-        assert_eq!(message_buttons(&message, &[done], &[], &folders, now()).0.len(), 4, "a done entry is put away");
+        assert_eq!(message_buttons(&message, &[done], &folders, now()).0.len(), 4, "a done entry is put away");
         let plain = MessageSummary { invite: None, ..message.clone() };
-        let words_of = words(&message_buttons(&plain, &entries, &[], &folders, now()).0);
+        let words_of = words(&message_buttons(&plain, &entries, &folders, now()).0);
         assert_eq!(words_of, [trc("action", "Archive"), tr("Delete"), tr("Task")]);
     }
 
@@ -2313,13 +2330,14 @@ mod tests {
     fn a_message_is_archived_and_deleted_from_its_row_never_replied_to() {
         let message = MessageSummary { invite: None, ..demo::mail_sample(now()).remove(0).summary };
         let folders = folders();
-        let (buttons, more) = message_buttons(&message, &[], &[], &folders, now());
+        let (buttons, more) = message_buttons(&message, &[], &folders, now());
         let sent: Vec<&Message> = buttons.iter().map(|button| &button.on_press).collect();
         assert!(matches!(sent[0], Message::Mail(MailAction::Archive, id) if *id == message.id), "{sent:?}");
         assert!(matches!(sent[1], Message::Mail(MailAction::Delete, id) if *id == message.id), "{sent:?}");
         assert!(matches!(sent[2], Message::Act(id, Key::MakeTask) if *id == message.id), "{sent:?}");
         assert_eq!(buttons.iter().map(|button| button.key).collect::<Vec<_>>(), ["E", "#", "T"]);
-        assert!(more.is_none());
+        let bell = more.map(|more| more.on_press);
+        assert!(matches!(bell, Some(Message::Act(id, Key::Hide)) if id == message.id), "the bell (issue #123)");
         assert!(!sent.iter().any(|message| matches!(message, Message::Mail(MailAction::Reply, _))));
 
         let words =

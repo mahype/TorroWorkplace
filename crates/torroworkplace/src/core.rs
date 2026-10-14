@@ -717,6 +717,26 @@ fn with_entry_title(request: Request, entry: Option<&torro_inbox::Item>) -> Requ
 
 /// The answer to an approved `inbox.*` command whose entry changed after the approval was asked
 /// for ([`EntryPin`]): the person allowed something else.
+/// The mail message's id (`m:…`) that `inbox.list_mute_options` or `inbox.mute_item` mutes by
+/// (issue #123); `None` for an entry's id and every other request.
+fn mute_message_id(request: &Request) -> Option<&str> {
+    match request {
+        Request::ListMuteOptions { id } | Request::MuteItem { id, .. } if torro_inbox::rules::is_message_id(id) => {
+            Some(id)
+        }
+        _ => None,
+    }
+}
+
+/// `request` muting by the entry `entry` instead of the mail message it names ([`mute_message_id`]).
+fn with_entry_id(request: Request, entry: String) -> Request {
+    match request {
+        Request::ListMuteOptions { .. } => Request::ListMuteOptions { id: entry },
+        Request::MuteItem { scope, until, effect, .. } => Request::MuteItem { id: entry, scope, until, effect },
+        other => other,
+    }
+}
+
 fn entry_conflict() -> Response {
     Response::Error {
         code: "conflict".into(),
@@ -1503,9 +1523,18 @@ impl Core {
             },
             _ => None,
         };
+        // Muting by a mail message's id (issue #123): its entry's id when it has one, else the
+        // message as an entry would hold it, checked here as the inbox checks an entry.
+        let (request, stand_in) = match self.resolve_message(request, reach).await {
+            Ok(resolved) => resolved,
+            Err(refused) => return Ok(refused),
+        };
         // Nobody is asked to approve what the inbox would refuse anyway.
         if let Some(info) = &inbox_client
-            && let Some(refused) = self.inbox.refusal(&request, Some(info))
+            && let Some(refused) = match &stand_in {
+                Some(stand_in) => self.inbox.message_refusal(&request, stand_in, Some(info)),
+                None => self.inbox.refusal(&request, Some(info)),
+            }
         {
             return Ok(refused);
         }
@@ -1843,6 +1872,12 @@ impl Core {
             }
             (_, Area::Inbox) => {
                 let mut facts = self.inbox.facts(&request);
+                // A mail message without an entry (issue #123): its traits as the mail store holds
+                // them, never as the client says.
+                if facts.item.is_none() && mute_message_id(&request).is_some() {
+                    facts.item =
+                        self.resolve_message(request.clone(), Reach::Client(rights)).await.ok().and_then(|r| r.1);
+                }
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
                 }
@@ -2523,6 +2558,15 @@ impl Core {
         client: Option<&torro_ipc::ClientInfo>,
         pin: Option<EntryPin>,
     ) -> Response {
+        // Muting by a mail message's id (issue #123): as its entry's when it has one, else by the
+        // message itself – also after an approval, which pinned the message as it was then.
+        let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
+        let request = match self.resolve_message(request, reach).await {
+            Ok((request, None)) => request,
+            Ok((_, Some(stand_in))) if pin.is_some_and(|pin| !pin.holds(&stand_in)) => return entry_conflict(),
+            Ok((request, Some(stand_in))) => return self.inbox.handle_message(request, &stand_in, client, Utc::now()),
+            Err(refused) => return refused,
+        };
         match request {
             Request::OpenItem { id } => self.open_item(&id, client, pin).await,
             Request::CreateTaskFromItem { id, collection, title, due, notes } => {
@@ -2866,6 +2910,27 @@ impl Core {
         };
         let todo = task_from_mail(&found, origin, collection, title, due);
         self.pim.handle_within(Request::SaveTodo { todo }, reach).await
+    }
+
+    /// `request` as it runs for `reach` when it mutes by a mail message's id (issue #123:
+    /// `inbox.list_mute_options` or `inbox.mute_item` with `m:…`, [`mute_message_id`]): with the id
+    /// of the entry the message was filed in, when there is one, and no stand-in; else as it is,
+    /// with the message as an entry would hold it ([`crate::mail::inbox_feed::message_stand_in`],
+    /// for [`Inbox::handle_message`]). Every other request comes back as it is. `not-found` for a
+    /// message none of the stores `reach` sees holds, as for an unknown entry.
+    async fn resolve_message(
+        &self,
+        request: Request,
+        reach: Reach<'_>,
+    ) -> Result<(Request, Option<torro_inbox::Item>), Response> {
+        let Some(id) = mute_message_id(&request) else { return Ok((request, None)) };
+        let Some(stand_in) = crate::mail::inbox_feed::message_stand_in(&self.mail, reach, id).await else {
+            return Err(Response::Error { code: "not-found".into(), message: "no such inbox entry or mail".into() });
+        };
+        match self.inbox.entry_of_message(&stand_in.source.key(), &stand_in.id) {
+            Some(entry) => Ok((with_entry_id(request, entry), None)),
+            None => Ok((request, Some(stand_in))),
+        }
     }
 
     /// For the approval of `tasks.create_todo_from_mail` (task E8.7a): the mail as the store holds
@@ -9874,6 +9939,82 @@ mod tests {
         assert!(!format!("{:?}", core.mail.infos(Reach::Suite).await).contains(MAIL_PASSWORD));
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval was asked for");
         nowhere(dir.path(), MAIL_PASSWORD, &[&answer, &listed]);
+    }
+
+    /// Issue #123: a folder's message without an entry is muted by its id – its traits only, from
+    /// the mail store; a client needs the account, the admin switch and the person, who sees the
+    /// sender as the store holds it.
+    #[tokio::test]
+    async fn a_message_without_an_entry_is_muted_by_its_id() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        let raw = format!(
+            "From: Shop <news@shop.example>\r\nTo: anna@example.org\r\nSubject: Weekly news\r\nDate: {date}\r\n\
+             Message-ID: <news-1@shop.example>\r\nList-Id: <news.shop.example>\r\n\
+             Content-Type: text/plain\r\n\r\nAutumn sale\r\n"
+        );
+        server.add("Archive", &raw, &[]);
+        let secrets = MemoryTokens::default();
+        store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+        };
+        let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
+            panic!("a page")
+        };
+        let id = messages.first().map(|message| message.id.clone()).expect("the newsletter");
+
+        let options = ask(&core, Some(&app_key), Request::ListMuteOptions { id: id.clone() }).await;
+        let Response::MuteOptions { options } = options else { panic!("options, got {options:?}") };
+        let scopes: Vec<MuteScope> = options.iter().map(|option| option.scope).collect();
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
+        assert!(scopes.contains(&sender) && !scopes.contains(&MuteScope::Conversation), "{scopes:?}");
+        let conversation = |id: &str| Request::MuteItem {
+            id: id.into(),
+            scope: MuteScope::Conversation,
+            until: Some(Utc::now() + chrono::TimeDelta::days(7)),
+            effect: MuteEffect::Hide,
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), conversation(&id)).await), "error", "no entry to close");
+        assert_eq!(code(&ask(&core, Some(&app_key), conversation("m:nope")).await), "not-found");
+
+        let by_sender = || Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Info };
+        let mut stranger = RightsTemplate::FullAccess.rights();
+        stranger.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: true });
+        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, stranger) = client(&core, stranger).await;
+        assert_eq!(code(&ask(&core, Some(&stranger), by_sender()).await), "not-found", "another account only");
+        let mut admin = RightsTemplate::FullAccess.rights();
+        admin.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: true });
+        admin.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        admin.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        let (_, admin) = client(&core, admin).await;
+        let asked = waits(ask(&core, Some(&admin), by_sender()).await);
+        let what = format!("\"{}\"", trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        assert!(asked.summary.contains(&what), "the sender as the store holds it: {}", asked.summary);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
+        let Response::Muted(muted) = *response else { panic!("muting answers what it changed") };
+        let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
+        assert_eq!((facet.key, facet.value.as_str()), (FacetKey::Sender, "news@shop.example"));
     }
 
     /// Task M3.1: a client reads the mail of its account; the audit log names the account and
