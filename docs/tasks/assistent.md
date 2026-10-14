@@ -241,6 +241,28 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** je Ursache ein Test (Gate, Antrieb A, Antrieb B, `Lack::of`, Chat-Hinweis, Rechte-Ansicht).
 - **Offen:** Nachstellen mit echtem Ollama/OpenRouter und Claude Code (manuell).
 
+### C.14 Eigene Rechte kennen, alle Rechte end-to-end (Issue #134)
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** C.13 · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
+  `crates/torroworkplace/src/{core,mcp,audit,daemon,pim}.rs`, `crates/torroworkplace/src/assistant/{model,tools,prompt}.rs`,
+  `crates/torroworkplace/src/assistant/engines/mod.rs`, `crates/torroassistant/src/chat.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/assistent.md`
+- **Prompt** („This conversation“): je Bereich, den der Assistent nutzt, Stufe, Admin, Zahl der Kalender, Listen,
+  Repositories, Quellen und Mailkonten, Senden; was auf Freigabe wartet; Bereiche, die die Engine nie bekommt, obwohl
+  sie erlaubt sind.
+- **Request** `assistant.my_access`: die **wirksamen** Rechte des fragenden Clients (`MyAccess`: Rechte, Engine,
+  `withheld`, `switched_off`), nach Leihe, `without` und für Bots, die für den Assistenten laufen, `Rights::common`.
+  Assistent und Bots dürfen ihn durch ihre Art (`allowed_by_kind`), andere Clients mit `assistant`; der App-Schlüssel
+  bekommt `unsupported`. Rechte bleiben nur über den App-Schlüssel änderbar.
+- **Oberfläche:** keine eigene; der Assistent antwortet im Chat („Looked up its access“), die Person sieht die Rechte
+  in Agents & API bzw. Assistant.
+- **API:** `Request::MyAccess` · `assistant.my_access` · Read
+- **MCP:** `assistant_my_access`
+- **Abnahme:** Prompt-Test; End-to-End im Dienst mit Fake-Modell (alle Rechte, Mail mit allen Konten, `without`)
+  gegen `clients.list_clients` und das Protokoll; Leihe für Claude Code (ohne Mail, ohne abgeschaltete Bereiche);
+  Bot für den Assistenten = `Rights::common`; MCP-End-to-End mit dem Schlüssel des Assistenten.
+- **Offen:** manuell mit echtem Ollama/OpenRouter und Claude Code fragen „Welche Rechte hast du?“.
+
 ## Stufe 2: Bots (B.1–B.4)
 
 Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Geplant am 2026-10-14 nach Stufe 1.

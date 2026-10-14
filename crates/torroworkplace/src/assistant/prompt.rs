@@ -10,7 +10,9 @@
 //!    It comes *after* the personality, and the personality's header says the rules win, so a
 //!    personality can never talk the model out of them.
 //! 3. **This conversation** ([`Context`]): date, time zone, language, the person's name, the areas
-//!    the assistant may use and those switched off, the model and where it runs, and the notes the
+//!    the assistant may use with what it may do in each (level, admin, how many collections, sending,
+//!    what waits for approval, what the engine never gets; issue #134, [`access`]) and those switched
+//!    off, the model and where it runs, and the notes the
 //!    person asked it to remember ([`Context::memory`], task C.10): each one line, all of them
 //!    within [`MEMORY_CHARS`], newest kept first, and none marked `local_only` for a model elsewhere
 //!    (the data rule).
@@ -28,7 +30,7 @@
 
 use chrono::{DateTime, Local};
 use torro_core::i18n::Lang;
-use torro_ipc::api::Area;
+use torro_ipc::api::{Area, Confirm, Level, Outbound, Rights, Selection};
 use torro_ipc::assistant::{MAX_NOTE_CHARS, Note};
 use torro_ipc::bots::{Bot, MAX_INSTRUCTIONS_CHARS, MAX_NAME_CHARS, MAX_SKILL_CHARS, MAX_SKILL_NAME_CHARS, Skill};
 
@@ -76,6 +78,12 @@ pub struct Context<'a> {
     /// The areas the person switched off for this conversation (`assistant.send_message`'s
     /// `without`).
     pub without: &'a [Area],
+    /// The rights of the client that answers, as stored (issue #134): what it may do in each of
+    /// [`Context::areas`] goes into the prompt, so it can tell the person. `None` leaves that out.
+    pub rights: Option<&'a Rights>,
+    /// The areas the engine never gets whatever the rights say: `mail` for a coding agent
+    /// (`super::engines`); empty for an AI account.
+    pub withheld: &'a [Area],
     /// The engine that answers (the AI account's id, or an agent's name).
     pub engine: &'a str,
     /// The model that answers; empty for an agent (engine B, task C.7), which picks its model
@@ -215,6 +223,7 @@ fn generated(context: &Context<'_>) -> String {
             .to_string(),
         areas => format!("- Areas you may use: {}.", names(areas)),
     });
+    lines.extend(access(context));
     if !context.without.is_empty() {
         lines.push(format!(
             "- Switched off for this conversation: {}. The person turned them off here; if a request needs one, \
@@ -239,6 +248,86 @@ fn generated(context: &Context<'_>) -> String {
     });
     lines.extend(memory(context.memory, context.place));
     lines.join("\n")
+}
+
+/// What the answering client may do (issue #134), from [`Context::rights`]: one line per area it
+/// may use (level, admin commands, how many calendars, task lists, repositories, sources or mail
+/// accounts it sees, sending) and per area its engine never gets though the rights grant it, then
+/// what waits for the person's approval. Nothing without rights or areas. The same facts as
+/// `assistant.my_access`, in words, so the model answers "what may you do?" truthfully.
+fn access(context: &Context<'_>) -> Vec<String> {
+    let Some(rights) = context.rights else { return Vec::new() };
+    let granted = |area: &Area| rights.area(*area).level != Level::NoAccess || rights.area(*area).admin;
+    let withheld: Vec<Area> = context.withheld.iter().copied().filter(granted).collect();
+    if context.areas.is_empty() && withheld.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![
+        "- What you may do there, as the person set it (tell them this when they ask what you may do; \
+         assistant_my_access has the details; only the person changes it, in Torro Workplace):"
+            .to_string(),
+    ];
+    let mut areas = context.areas.to_vec();
+    areas.sort();
+    areas.dedup();
+    for area in areas {
+        lines.push(format!("  - {}: {}", area.name(), area_access(rights, area)));
+    }
+    for area in withheld {
+        lines.push(format!("  - {}: granted, but never given to you here (the person's data rule)", area.name()));
+    }
+    lines.push(format!(
+        "- Waits for the person's approval: {}.",
+        match rights.confirm {
+            Confirm::Never => "admin commands",
+            Confirm::OnDelete => "deleting and admin commands",
+            Confirm::OnEveryChange => "every change",
+        }
+    ));
+    lines
+}
+
+/// What `rights` allow in `area`, in words: `read, all calendars`, `full, 2 mail accounts; sending:
+/// each time after the person's approval`.
+fn area_access(rights: &Rights, area: Area) -> String {
+    let held = rights.area(area);
+    let mut parts = vec![
+        match held.level {
+            Level::NoAccess => "no access",
+            Level::Read => "read",
+            Level::Write => "read and write",
+            Level::Full => "full (deleting too)",
+        }
+        .to_string(),
+    ];
+    if held.admin {
+        parts.push("admin commands".into());
+    }
+    let selection = match area {
+        Area::Calendar => Some((&rights.calendars, "calendar", "calendars")),
+        Area::Tasks => Some((&rights.task_lists, "task list", "task lists")),
+        Area::Github => Some((&rights.github_repos, "repository", "repositories")),
+        Area::Inbox => Some((&rights.inbox_sources, "source", "sources")),
+        Area::Mail => Some((&rights.mail_accounts, "mail account", "mail accounts")),
+        _ => None,
+    };
+    if let Some((selection, one, many)) = selection {
+        parts.push(match selection {
+            Selection::All => format!("all {many}"),
+            Selection::Only(ids) if ids.is_empty() => format!("no {many}"),
+            Selection::Only(ids) if ids.len() == 1 => format!("1 {one}"),
+            Selection::Only(ids) => format!("{} {many}", ids.len()),
+        });
+    }
+    let mut text = parts.join(", ");
+    if area == Area::Mail && matches!(held.level, Level::Write | Level::Full) {
+        text.push_str(match rights.outbound {
+            Outbound::Never => "; sending: never",
+            Outbound::WithApproval => "; sending: each time after the person's approval",
+            Outbound::Free => "; sending: without asking",
+        });
+    }
+    text
 }
 
 /// The lines of the memory: the notes a model at `place` may read (none marked `local_only` for a
@@ -351,11 +440,50 @@ mod tests {
             person: Some("Anna"),
             areas,
             without,
+            rights: None,
+            withheld: &[],
             engine: "ai:ollama@localhost:11434",
             model: "qwen3:8b",
             place: Place::Local,
             memory: &[],
         }
+    }
+
+    /// Issue #134: the prompt says what the assistant may do in each area, as the person set it,
+    /// and what its engine never gets.
+    #[test]
+    fn the_prompt_says_what_the_assistant_may_do() {
+        use torro_ipc::api::AreaRights;
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Full, admin: false });
+        rights.areas.insert(Area::Accounts, AreaRights { level: Level::Read, admin: true });
+        rights.mail_accounts = Selection::Only(vec!["mail:anna@mailbox.org".into(), "mail:anna@work.example".into()]);
+        rights.task_lists = Selection::Only(vec!["nextcloud:anna/tasks".into()]);
+        let areas = [Area::Calendar, Area::Tasks, Area::Inbox, Area::Mail, Area::Accounts];
+        let mut assistant = context(&areas, &[]);
+        assistant.rights = Some(&rights);
+        let prompt = system(None, &assistant);
+        for wanted in [
+            "- What you may do there, as the person set it",
+            "  - calendar: read, all calendars",
+            "  - tasks: read, 1 task list",
+            "  - inbox: read, all sources",
+            "  - mail: full (deleting too), 2 mail accounts; sending: each time after the person's approval",
+            "  - accounts: read, admin commands",
+            "- Waits for the person's approval: deleting and admin commands.",
+        ] {
+            assert!(prompt.lines().any(|line| line == wanted || line.starts_with(wanted)), "{wanted}\n{prompt}");
+        }
+
+        // An agent: mail is granted, but never given to it.
+        let areas = [Area::Calendar];
+        let mut agent = context(&areas, &[]);
+        (agent.rights, agent.withheld, agent.engine, agent.model) = (Some(&rights), &[Area::Mail], "Claude Code", "");
+        let prompt = system(None, &agent);
+        assert!(prompt.contains("  - mail: granted, but never given to you here"), "{prompt}");
+        assert!(!prompt.contains("  - tasks:"), "only the areas it uses: {prompt}");
+        // Without rights, no summary.
+        assert!(!system(None, &context(&areas, &[])).contains("What you may do"));
     }
 
     /// The line of the generated part that starts with `label`.

@@ -337,6 +337,8 @@ impl Running {
             person: None,
             areas: &areas,
             without: &self.job.without,
+            rights: Some(&client.rights),
+            withheld: NEVER_TO_AGENTS,
             engine: self.agent.name(),
             model: "",
             place: Place::Remote,

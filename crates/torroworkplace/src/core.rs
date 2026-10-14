@@ -1330,6 +1330,11 @@ impl Core {
             };
             return Err(lack.map_or(Refused::Forbidden { command }, |lack| Refused::Lacks { command, lack }));
         }
+        // Its own access (issue #134): the rights it was admitted with, which are already narrowed
+        // as for every other command, and what the request came through.
+        if matches!(request, Request::MyAccess) {
+            return Ok(my_access(&rights, &via.origin));
+        }
         // The assistant asks a bot (task B.2): only from its conversation, where the person asked for
         // the bot ([`crate::assistant::Assistant::delegate`]); the bot then runs with what both
         // clients may. No approval of the ask itself: the person's words are the yes, and the bot's
@@ -2399,6 +2404,16 @@ impl Core {
             | Request::Forget { .. }) => {
                 crate::assistant::answer_own(&self.assistant, request, sees_local_notes(reach)).await
             }
+            // A client's own access (issue #134) is answered in `handle_client`, which knows what the
+            // request came through; here only its rights. The app key may do everything.
+            Request::MyAccess => match reach {
+                Reach::Client(rights) => my_access(rights, &crate::approvals::Origin::default()),
+                Reach::Suite => Response::Error {
+                    code: "unsupported".into(),
+                    message: "assistant.my_access tells a client key its own rights; the app key may do everything"
+                        .into(),
+                },
+            },
         }
     }
 
@@ -4446,6 +4461,17 @@ fn decided_ids(request: &Request, origin: &crate::approvals::Origin) -> Vec<Stri
 /// Whether `reach` may see notes of the assistant's memory kept from remote models
 /// ([`torro_ipc::assistant::Note::local_only`], task C.10): the suite, and a client with read access
 /// to mail – such a note may retell a mail. A key lent to an agent never has mail.
+/// `assistant.my_access` (issue #134) for a client admitted with `rights` (already narrowed as the
+/// core checks its commands: by the areas of a lent key, and for a bot that runs for the assistant to
+/// what both may), the request coming as `origin` says: the engine, and its areas split into those the
+/// engine never gets ([`crate::assistant::never_given`]) and those switched off in the conversation.
+fn my_access(rights: &torro_ipc::api::Rights, origin: &crate::approvals::Origin) -> Response {
+    let never = origin.engine.as_deref().map_or(&[][..], crate::assistant::never_given);
+    let switched_off: Vec<Area> = origin.without.iter().filter(|area| !never.contains(area)).copied().collect();
+    let access = torro_ipc::assistant::MyAccess::of(rights.clone(), origin.engine.clone());
+    Response::MyAccess { access: access.withholding(never).switching_off(&switched_off) }
+}
+
 fn sees_local_notes(reach: Reach<'_>) -> bool {
     match reach {
         Reach::Suite => true,
@@ -12011,6 +12037,113 @@ mod tests {
         );
     }
 
+    /// The access in an answer of `assistant.my_access` (issue #134).
+    fn my_access_of(response: &Response) -> torro_ipc::assistant::MyAccess {
+        match response {
+            Response::MyAccess { access } => access.clone(),
+            other => panic!("expected the access, got {other:?}"),
+        }
+    }
+
+    /// Issue #134, end to end with a scripted model (engine A): every right switched on, mail with
+    /// every account. The prompt sums up what the assistant may do, `assistant.my_access` answers
+    /// what the person set (`clients.list_clients`) without what the conversation switched off, a
+    /// reading call in each area runs, and the log names each call with the engine.
+    #[tokio::test]
+    async fn the_assistant_knows_its_rights_and_they_match_the_settings() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let ollama = fake_ollama().await;
+        let script = Script::new(vec![
+            calls("assistant_my_access", serde_json::json!({})),
+            calls("tasks_list_lists", serde_json::json!({})),
+            calls("inbox_list_sources", serde_json::json!({})),
+            calls("calendar_list_calendars", serde_json::json!({})),
+            says("I may read and change everything but the calendar here."),
+        ]);
+        let mut every = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL.into_iter().filter(|area| area.in_templates()) {
+            every.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        every.mail_accounts = Selection::All;
+        let (core, _host, engine, client) = assistant_core(dir.path(), &ollama, every, Arc::clone(&script)).await;
+        let Response::Clients { clients } = core.handle(Request::ListClients).await else { panic!("the clients") };
+        let set = clients.into_iter().find(|info| info.id == client).expect("the assistant's client").rights;
+
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: engine.clone(),
+            model: Some("qwen3:8b".into()),
+            text: "Which rights do you have?".into(),
+            without: vec![Area::Calendar],
+            bot: None,
+        };
+        let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
+        let entries = conversation_until(&core, &conversation.id, |running, _| !running).await;
+        assert_eq!(
+            tool_lines(&entries),
+            [
+                ("assistant.my_access".to_string(), None),
+                ("tasks.list_lists".to_string(), None),
+                ("inbox.list_sources".to_string(), None),
+                ("calendar.list_calendars".to_string(), Some("forbidden".to_string())),
+            ]
+        );
+        // The prompt says it, in each area the conversation leaves on.
+        let system = script.asked()[0].messages[0].content.clone();
+        for line in
+            ["  - mail: full (deleting too), admin commands, all mail accounts; sending: each time", "  - tasks: full"]
+        {
+            assert!(system.contains(line), "{line}\n{system}");
+        }
+        assert!(!system.contains("  - calendar:"), "switched off here: {system}");
+        assert!(system.contains("- Waits for the person's approval: admin commands."), "{system}");
+        // The tool answers what the person set, without the calendar switched off here.
+        let read: serde_json::Value =
+            serde_json::from_str(&read_by_model(&script, "assistant_my_access")).expect("json for the model");
+        let access: torro_ipc::assistant::MyAccess =
+            serde_json::from_value(read["access"].clone()).expect("the access");
+        let mut expected = set.clone();
+        expected.areas.remove(&Area::Calendar);
+        expected.calendars = Selection::Only(Vec::new());
+        assert_eq!(access.rights, expected, "no calendar of the area switched off either");
+        assert_eq!((access.engine.as_deref(), access.switched_off), (Some(engine.as_str()), vec![Area::Calendar]));
+        assert!(access.withheld.is_empty(), "an AI account on this computer gets mail");
+        let engine_id = format!("engine:{engine}");
+        let logged: Vec<_> =
+            audit_lines(dir.path()).into_iter().map(|line| (line.command, line.ids, line.result)).collect();
+        assert!(logged.contains(&("assistant.my_access".into(), vec![engine_id], "ok".into())), "{logged:?}");
+    }
+
+    /// Issue #134 for an agent (engine B): with the lent key the access is the assistant's rights
+    /// without mail (never given to an agent) and without what the conversation switched off; with
+    /// its own key exactly what the person set; the app key may do everything and gets `unsupported`.
+    #[tokio::test]
+    async fn a_lent_key_tells_its_access_without_what_it_never_gets() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = audited(dir.path());
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        rights.mail_accounts = Selection::All;
+        let (_, own) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights.clone()).await.expect("the client");
+
+        let lent = Host::lend(&core, "claude-code", &[Area::Mail, Area::Tasks]).expect("lent");
+        let access = my_access_of(&ask(&core, Some(lent.key()), Request::MyAccess).await);
+        let mut expected = rights.clone();
+        expected.areas.retain(|area, _| !matches!(area, Area::Mail | Area::Tasks));
+        (expected.mail_accounts, expected.task_lists) = (Selection::Only(Vec::new()), Selection::Only(Vec::new()));
+        assert_eq!(access.rights, expected, "no mail account, no address");
+        assert_eq!(access.engine.as_deref(), Some("claude-code"));
+        assert_eq!((access.withheld, access.switched_off), (vec![Area::Mail], vec![Area::Tasks]));
+
+        let mine = my_access_of(&ask(&core, Some(&own), Request::MyAccess).await);
+        assert_eq!((mine.rights, mine.engine, mine.withheld), (rights, None, Vec::new()));
+        assert_eq!(code(&core.handle(Request::MyAccess).await), "unsupported");
+        // Another agent reads its own only with the area `assistant`, as every assistant command.
+        let (_, agent) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        assert_eq!(code(&ask(&core, Some(&agent), Request::MyAccess).await), "forbidden");
+    }
+
     /// Task C.7: the key lent to an agent that drives the assistant runs as the assistant's
     /// client without the areas it was lent without, the log names the engine and never the key,
     /// and once the run drops it the key is worth nothing.
@@ -12375,9 +12508,14 @@ mod tests {
         let bot_tools: Vec<&str> = asked[3].tools.iter().map(|tool| tool.name.as_str()).collect();
         assert!(bot_tools.contains(&"calendar_list_calendars"), "{bot_tools:?}");
         assert!(
-            bot_tools
-                .iter()
-                .all(|tool| !["mail_", "workspaces_", "bots_", "assistant_"].iter().any(|p| tool.starts_with(p))),
+            bot_tools.iter().filter(|tool| **tool != "assistant_my_access").all(|tool| ![
+                "mail_",
+                "workspaces_",
+                "bots_",
+                "assistant_"
+            ]
+            .iter()
+            .any(|p| tool.starts_with(p))),
             "{bot_tools:?}"
         );
 
@@ -12451,6 +12589,14 @@ mod tests {
         assert_eq!(code(&run(actor.clone(), Request::MailFolders { account: None }).await), "forbidden");
         assert_eq!(code(&run(actor.clone(), Request::ListTemplates).await), "forbidden");
         assert_eq!(code(&run(delegation(vec![Area::Calendar]), Request::CalendarCollections).await), "forbidden");
+        // Issue #134: what the bot may for the assistant is what both may (`Rights::common`), without
+        // the areas switched off in the conversation.
+        let bots = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client").rights;
+        let origin = crate::approvals::Origin { without: vec![Area::Calendar], ..Default::default() };
+        let mut both = origin.narrow(&bots).common(&origin.narrow(&client.rights));
+        both.calendars = Selection::Only(Vec::new());
+        let access = my_access_of(&run(delegation(vec![Area::Calendar]), Request::MyAccess).await);
+        assert_eq!((access.rights, access.switched_off), (both, vec![Area::Calendar]));
         // As its own client the bot reads its templates: only for the assistant it may not.
         let own = crate::assistant::Actor::Bot(bot.client.clone());
         assert!(matches!(run(own, Request::ListTemplates).await, Response::Templates { .. }));

@@ -282,6 +282,7 @@ pub fn tool_title(name: &str) -> String {
         "workspaces.load_template" => tr("Loaded template"),
         "workspaces.save_template" => tr("Saved template"),
         "bots.list_bots" => tr("Looked up bots"),
+        "assistant.my_access" => tr("Looked up its access"),
         "bots.save_bot" => tr("Suggested a bot"),
         "find_tools" => tr("Looked for tools"),
         other => return other.to_owned(),
@@ -577,6 +578,7 @@ mod tests {
             trf("{tool} · {outcome}", &[("tool", &tr("Searched mail")), ("outcome", &"12 results")])
         );
         assert_eq!(tool_title("calendar.frobnicate"), "calendar.frobnicate", "unknown names show as they are");
+        assert_eq!(tool_title("assistant.my_access"), tr("Looked up its access"), "issue #134");
         assert_eq!(tool_outcome("forbidden: no access to mail", Some("forbidden")), tr("No access"));
         assert_eq!(tool_line("find_tools", "", None), tr("Looked for tools"));
         assert_eq!(area_of("mail.search_messages"), Some(Area::Mail));

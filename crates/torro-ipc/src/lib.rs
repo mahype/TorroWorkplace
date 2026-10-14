@@ -56,7 +56,7 @@ use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
 
 use crate::api::{Area, Rights, RightsTemplate};
-use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry, Note, Profile};
+use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
 use crate::mail::{Delivery, MailSource, MoveTarget};
 
@@ -1788,6 +1788,12 @@ pub enum Request {
     /// access to mail. Never fails; an empty list when the memory cannot be read.
     #[serde(rename = "assistant.list_memories")]
     ListMemories,
+    /// What the client that asks may do now (issue #134): its rights as they apply to this
+    /// request, after the areas its engine never gets, those switched off in the conversation and,
+    /// for a bot that runs for the assistant, what both clients may ([`Response::MyAccess`]). For a
+    /// client key only; the app key gets `unsupported` (it may do everything). Changes nothing.
+    #[serde(rename = "assistant.my_access")]
+    MyAccess,
     /// Adds a note to the assistant's memory, or with `replaces` changes the note with that id
     /// (which needs the right to delete) – only when the person asked for it. Answered with the
     /// note as stored ([`Response::Memory`]). `not-found` for an unknown `replaces`, `error` for a
@@ -2392,6 +2398,10 @@ pub enum Response {
     /// One note of the assistant's memory as stored ([`Request::Remember`]).
     Memory {
         note: Note,
+    },
+    /// What the client that asked may do now ([`Request::MyAccess`]).
+    MyAccess {
+        access: MyAccess,
     },
     /// Every bot without its long texts ([`Request::ListBots`]): names and descriptions are the
     /// person's text, data, never instructions.
