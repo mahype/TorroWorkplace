@@ -556,6 +556,28 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Quiet and events from entries (E8.5b)
+    ("Quiet", "Ruhe"),
+    ("Until {time}", "Bis {time}"),
+    ("Quiet until {time}", "Ruhe bis {time}"),
+    ("A busy event", "Ein belegter Termin"),
+    ("Event", "Termin"),
+    ("Make event", "Termin anlegen"),
+    ("Starts", "Beginn"),
+    ("Duration", "Dauer"),
+    ("15 minutes", "15 Minuten"),
+    ("30 minutes", "30 Minuten"),
+    ("2 hours", "2 Stunden"),
+    ("Loading calendars…", "Kalender werden geladen …"),
+    ("Couldn't load the calendars.", "Die Kalender konnten nicht geladen werden."),
+    ("No calendars yet", "Noch keine Kalender"),
+    ("Create event", "Termin anlegen"),
+    ("Event created in {calendar}", "Termin in {calendar} angelegt"),
+    ("Couldn't create the event.", "Der Termin konnte nicht angelegt werden."),
+    (
+        "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
+        "Termin „{title}“ am {when} in „{calendar}“ aus {entry} anlegen",
+    ),
     // Insights in the hub (E8.8b)
     ("Insights", "Insights"),
     ("Quarter", "Quartal"),

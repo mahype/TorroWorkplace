@@ -262,9 +262,13 @@ impl Answering {
             let message = format!("there is no tool {}", call.name.chars().take(64).collect::<String>());
             return self.refused(name, input, "error", &message).await;
         };
-        // Making a task of an inbox entry writes a task too (as the core checks its rights).
+        // Making a task of an inbox entry writes a task too (as the core checks its rights); making
+        // an event of one writes to a calendar (task E8.5b); making a task of a mail in a folder
+        // reads the mail (task E8.7a).
         let touched = match tool.command.name {
             "inbox.create_task_from_item" => vec![tool.command.area, Area::Tasks],
+            "inbox.create_event_from_item" => vec![tool.command.area, Area::Calendar],
+            "tasks.create_todo_from_mail" => vec![tool.command.area, Area::Mail],
             _ => vec![tool.command.area],
         };
         if let Some(area) = touched.into_iter().find(|area| self.job.without.contains(area)) {
@@ -800,6 +804,27 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn a_task_of_a_mail_needs_mail_switched_on() {
+        // Making a task of a mail in a folder reads the mail (task E8.7a): with mail switched off it
+        // is refused, though tasks are on.
+        let dir = tempfile::tempdir().expect("temp dir");
+        let call = ToolCall {
+            id: "call_tasks_create_todo_from_mail".into(),
+            name: "tasks_create_todo_from_mail".into(),
+            arguments: json!({"account": "mail:anna@example.org", "id": "m1", "collection": "c"}).to_string(),
+        };
+        let step = ChatReply { tool_calls: vec![call], finish: Finish::ToolCalls, ..ChatReply::default() };
+        let script = Script::new(vec![Step::Reply(Vec::new(), step), says("Sorry.")]);
+        let mut rights = reader();
+        rights.areas.insert(Area::Tasks, AreaRights { level: Level::Write, admin: false });
+        let (assistant, host) = set_up(dir.path(), Some(rights), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "Make a task of Anna's mail", vec![Area::Mail]).await;
+        finished(&assistant, &id).await;
+        assert!(host.ran.lock().expect("lock").is_empty(), "nothing reached the core");
+        assert!(tool_result(&script, "tasks_create_todo_from_mail").contains("switched off mail"));
+    }
+
+    #[tokio::test]
     async fn switched_off_areas_bad_input_and_unknown_tools_go_back_to_the_model() {
         let dir = tempfile::tempdir().expect("temp dir");
         // All in one step: a model may call several tools at once.
@@ -810,6 +835,10 @@ pub(crate) mod tests {
             ("approvals_list_approvals", json!({})),
             ("inbox_create_task_from_item", json!({"id": "a1", "collection": "c"})),
             ("inbox_list_sources", json!({"oops": true})),
+            (
+                "inbox_create_event_from_item",
+                json!({"id": "a1", "collection": "c", "start": "2026-10-14T10:00:00Z", "end": "2026-10-14T11:00:00Z"}),
+            ),
         ]
         .into_iter()
         .map(|(tool, arguments)| ToolCall {
@@ -834,13 +863,22 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(
             errors,
-            [Some("forbidden"), Some("forbidden"), Some("error"), Some("error"), Some("forbidden"), Some("error")]
+            [
+                Some("forbidden"),
+                Some("forbidden"),
+                Some("error"),
+                Some("error"),
+                Some("forbidden"),
+                Some("error"),
+                Some("forbidden")
+            ]
         );
         assert!(host.ran.lock().expect("lock").is_empty(), "nothing reached the core");
         assert!(tool_result(&script, "calendar_list_calendars").contains("switched off calendar"));
         assert!(tool_result(&script, "clients_list_clients").contains("no tool"));
         assert!(tool_result(&script, "approvals_list_approvals").contains("no tool"), "approvals are no tool");
         assert!(tool_result(&script, "inbox_create_task_from_item").contains("switched off tasks"));
+        assert!(tool_result(&script, "inbox_create_event_from_item").contains("switched off calendar"));
         assert!(tool_result(&script, "inbox_list_sources").contains("invalid input"));
         assert!(script.asked()[0].tools.iter().all(|tool| !tool.name.starts_with("calendar_")));
         let system = &script.asked()[0].messages[0].content;
