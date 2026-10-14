@@ -552,7 +552,7 @@ mod tests {
                 ))],
             },
             Request::ListSources => Response::Sources {
-                sources: vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false }],
+                sources: vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false, health: None }],
             },
             // A dismissed entry is titled so, to see the flag arrived.
             Request::SetItemDone { id, done, dismissed } => {
@@ -785,7 +785,7 @@ mod tests {
     async fn sources_are_listed() {
         let core = start(|request| async move { answer(request) }).await;
         let sources = core.client().list_sources().await.expect("listed");
-        assert_eq!(sources, vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false }]);
+        assert_eq!(sources, vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false, health: None }]);
     }
 
     #[tokio::test]
@@ -816,9 +816,9 @@ mod tests {
         assert_eq!(client.set_item_done("a".into(), true).await.expect("done").title, "dismissed false");
         let options = client.list_mute_options("m1".into()).await.expect("options");
         assert_eq!((options.len(), options[0].label.as_str()), (1, "m1"));
-        let sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender };
+        let sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender, nth: 0 };
         let muted = client.mute_item("m1".into(), sender, Some(at(12)), MuteEffect::Info).await.expect("muted");
-        assert_eq!(muted.moved, ["m1|Facet { key: Sender }|true|Info"]);
+        assert_eq!(muted.moved, ["m1|Facet { key: Sender, nth: 0 }|true|Info"]);
     }
 
     /// Task E8.8a: the statistics are one request with the span.

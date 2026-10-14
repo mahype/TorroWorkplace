@@ -233,7 +233,7 @@ impl Section {
         Some(match item.kind {
             Kind::Approval => Section::Decide,
             Kind::AgentWaiting | Kind::AgentDone => Section::Agents,
-            Kind::Notice | Kind::AccountProblem | Kind::Message => Section::ToSort,
+            Kind::Notice | Kind::AccountProblem | Kind::Message | Kind::Alert => Section::ToSort,
         })
     }
 
@@ -300,6 +300,10 @@ impl Origin {
             SourceKind::Agent => Origin::Agents,
             SourceKind::Suite => Origin::Suite,
             SourceKind::Script => Origin::Script(item.source.name.clone()),
+            // For now like a script, by the product's name (task E5.1); E5.15 gives them their own.
+            SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
+                Origin::Script(item.source.label())
+            }
         }
     }
 
@@ -1526,12 +1530,12 @@ mod tests {
         let sections = Sections::of(&items, None);
         assert_eq!(ids(&sections.decide), ["demo-3"], "the approval");
         assert_eq!(ids(&sections.agents), ["demo-1", "demo-2", "demo-4"], "waiting first, then the finished one");
-        assert_eq!(sections.to_sort.len(), 9);
+        assert_eq!(sections.to_sort.len(), 14, "with GitHub, Nextcloud, Talk and the ntfy alert (task E5.1)");
         assert!(sections.to_sort.iter().all(|item| item.lane == Lane::ForMe), "no Info");
         let for_me = items.iter().filter(|item| item.lane == Lane::ForMe).count();
         assert_eq!(sections.order(false).len(), for_me, "every entry for the user, once");
         assert_eq!(sections.order(true), sections.to_sort, "To sort alone");
-        assert_eq!(summary(&sections), format!("1 {} · 3 {} · 9 {}", tr("to decide"), tr("agents"), tr("to sort")));
+        assert_eq!(summary(&sections), format!("1 {} · 3 {} · 14 {}", tr("to decide"), tr("agents"), tr("to sort")));
         let done = entries(StateFilter::Done);
         assert!(Sections::of(&done, None).is_empty(), "nothing done is to act on");
     }
@@ -1629,7 +1633,7 @@ mod tests {
         let items = entries(StateFilter::Open);
         let tiles = tiles(&items);
         assert_eq!(tiles.first().map(|tile| (&tile.origin, tile.count)), Some((&Origin::Mail, 5)));
-        assert_eq!(tiles.iter().map(|tile| tile.count).sum::<usize>(), 13, "every entry for the user");
+        assert_eq!(tiles.iter().map(|tile| tile.count).sum::<usize>(), 18, "every entry for the user");
         let agents = tiles.iter().find(|tile| tile.origin == Origin::Agents).expect("an agents tile");
         assert_eq!(
             agents.line,

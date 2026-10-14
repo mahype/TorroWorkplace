@@ -688,7 +688,7 @@ pub(crate) mod tests {
         let set = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.5) };
         assert_eq!(super::ids(&set), vec!["setting:zoom".to_string()]);
         // Muting (task E8.6a): the entry only, never the trait or a value of it.
-        let sender = torro_inbox::item::MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender };
+        let sender = torro_inbox::item::MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender, nth: 0 };
         let mute = Request::MuteItem {
             id: "3d29c13547a49e39".into(),
             scope: sender,

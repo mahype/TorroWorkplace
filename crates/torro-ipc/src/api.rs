@@ -470,10 +470,15 @@ impl Rights {
     /// [`Rights::mail_accounts`] besides: its entries hold subjects, senders and the start of mail.
     /// Rights belong to client keys only; the app key sees every source without them. The core
     /// filters its queries by the same rule (`inbox::Scope` in the core).
+    ///
+    /// The remote sources of task E5 (GitHub, Nextcloud, Talk, ntfy) stay unseen by clients until
+    /// task E5.2 gives them their rules.
     pub fn reaches_source(&self, source: &SourceRef) -> bool {
         let mail = || self.area(Area::Mail).allows(Access::Read) && self.reaches_mail_account(&source.key());
         match source.kind {
-            SourceKind::Suite => false,
+            SourceKind::Suite | SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => {
+                false
+            }
             SourceKind::Mail => self.inbox_sources.contains(&source.key()) && mail(),
             SourceKind::Agent | SourceKind::Script => self.inbox_sources.contains(&source.key()),
         }
@@ -734,7 +739,8 @@ pub fn inbox_poster(client: Option<&ClientInfo>) -> Poster {
 
 /// The kind a post of `kind` from `client` is stored as (security rule 3), or the `forbidden`
 /// answer: `approval` and `account_problem` come only from the core, `agent_waiting` and
-/// `agent_done` only from hook clients and become `notice` from anyone else.
+/// `agent_done` only from hook clients and become `notice` from anyone else, `message` and `alert`
+/// (task E5.1) only from the core and become `notice` from any client.
 pub fn admit_post(kind: Kind, client: Option<&ClientInfo>) -> Result<Kind, InboxForbidden> {
     rules::admitted_kind(kind, inbox_poster(client))
         .ok_or(InboxForbidden("approvals and account problems are filed by Torro Workplace itself"))
@@ -2782,7 +2788,7 @@ mod tests {
             Request::ListMuteOptions { id: "i1".into() },
             Request::MuteItem {
                 id: "i1".into(),
-                scope: MuteScope::Facet { key: FacetKey::Sender },
+                scope: MuteScope::Facet { key: FacetKey::Sender, nth: 0 },
                 until: Some(now),
                 effect: MuteEffect::NoPopup,
             },
@@ -3962,7 +3968,7 @@ mod tests {
         }
         assert_eq!(mute(MuteScope::Conversation, None, MuteEffect::NoPopup).operation().access, Access::Admin);
         for key in [FacetKey::Sender, FacetKey::Domain, FacetKey::List, FacetKey::Project, FacetKey::Client] {
-            let facet = mute(MuteScope::Facet { key }, None, MuteEffect::Hide);
+            let facet = mute(MuteScope::Facet { key, nth: 0 }, None, MuteEffect::Hide);
             assert_eq!(facet.operation().access, Access::Admin, "{key:?}");
             assert!(!rights.allows(facet.operation()));
         }

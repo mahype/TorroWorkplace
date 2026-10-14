@@ -298,6 +298,15 @@ fn place(rule: &Rule) -> Option<String> {
             }
             FacetKey::Project | FacetKey::Kind => Some(tr("All agents").to_owned()),
             FacetKey::Account | FacetKey::Agent | FacetKey::Client | FacetKey::Conversation => None,
+            // The traits of the remote sources (task E5.1); where they hold is shown with E5.14.
+            FacetKey::Repo
+            | FacetKey::Reason
+            | FacetKey::Result
+            | FacetKey::App
+            | FacetKey::Person
+            | FacetKey::Topic
+            | FacetKey::Priority
+            | FacetKey::Tag => None,
         };
     }
     if is_hidden(rule) {

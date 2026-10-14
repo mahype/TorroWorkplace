@@ -1036,7 +1036,7 @@ mod tests {
 
     #[test]
     fn the_sidebar_lists_apps_first_and_chosen_sources_without_entries() {
-        let info = |source: SourceRef| SourceInfo { source, open: 1, muted: false };
+        let info = |source: SourceRef| SourceInfo { source, open: 1, muted: false, health: None };
         let sources = vec![
             info(SourceRef::suite()),
             info(SourceRef::agent("codex")),
@@ -1083,7 +1083,7 @@ mod tests {
         // The order of the keys is the same however many columns fit.
         let walk = |count| order(&items, Board::Columns(count), &View::Overview).into_iter().map(|i| i.id.clone());
         assert_eq!(walk(2).collect::<Vec<_>>(), walk(6).collect::<Vec<_>>());
-        assert_eq!(app_columns(&items, 100).len(), 9, "one column per source when there is room");
+        assert_eq!(app_columns(&items, 100).len(), 13, "one column per source when there is room");
     }
 
     #[test]

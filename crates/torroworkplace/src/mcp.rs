@@ -1921,7 +1921,7 @@ mod tests {
         use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
         let arguments = json!({"id": "i1", "scope": {"kind": "facet", "key": "sender"}, "effect": "no_popup"});
         let request = request_for("inbox_mute_item", args(arguments), &Utc);
-        let sender = MuteScope::Facet { key: FacetKey::Sender };
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
         assert_eq!(
             request,
             Ok(Request::MuteItem { id: "i1".into(), scope: sender, until: None, effect: MuteEffect::NoPopup })
