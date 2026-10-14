@@ -7,14 +7,22 @@
 //! ("Tasks from Anna's mails"), and a stopped answer. A message sent in the demo gets an answer
 //! that grows a little each time the window asks, as a model's would. Their ids are fixed
 //! ([`TOOLS`], [`APPROVAL`] …), so `torroassistant --demo --chat <id>` opens one of them.
+//!
+//! Bots (task B.3): "Travel planner" ([`TRAVEL`]) with a conversation of its own ([`BOT_CHAT`]),
+//! which the assistant asked in "Weekend in Porto" ([`ASKED`]), and "Release helper"; a
+//! conversation of a bot that was deleted ([`GONE`]). They are made, changed and deleted in memory,
+//! so `torroassistant --demo --bot b0000001` opens the travel planner's chat.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Duration, Utc};
 use torro_core::ai::AiModel;
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_ipc::api::{Area, AreaRights, Level, Rights};
-use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
+use torro_ipc::assistant::{
+    ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, LETTER_AVATAR, Profile,
+};
+use torro_ipc::bots::{Bot, Skill};
 use torro_ipc::{ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
 
 /// "Plan for tomorrow": messages, tool lines and an answer in Markdown. Pinned.
@@ -25,6 +33,22 @@ pub const APPROVAL: &str = "d000000000000002";
 pub const STREAMING: &str = "d000000000000003";
 /// "Tasks from Anna's mails": a tool the assistant may not use.
 pub const FORBIDDEN: &str = "d000000000000004";
+
+/// "Train to Lisbon": the conversation of the bot "Travel planner".
+pub const BOT_CHAT: &str = "d000000000000007";
+/// "Weekend in Porto": the assistant asked the travel planner.
+pub const ASKED: &str = "d000000000000008";
+/// "Train or plane to Vienna?": the assistant proposes the travel planner and waits for the person.
+pub const PROPOSAL: &str = "d00000000000000a";
+/// "Release notes": a conversation of a bot that was deleted.
+pub const GONE: &str = "d000000000000009";
+
+/// The bot "Travel planner".
+pub const TRAVEL: &str = "b0000001";
+/// The bot "Release helper".
+pub const RELEASE: &str = "b0000002";
+/// The bot of [`GONE`], which is no more.
+const GONE_BOT: &str = "b00000ff";
 
 /// The approval "Block the afternoon" waits for.
 pub const APPROVAL_ID: &str = "a000000000000001";
@@ -66,7 +90,9 @@ struct State {
     now: DateTime<Utc>,
     conversations: Vec<Conversation>,
     approvals: Vec<ApprovalInfo>,
-    /// The number of the next conversation made in the demo.
+    /// The bots, by name.
+    bots: Vec<Bot>,
+    /// The number of the next conversation (and bot) made in the demo.
     next: u64,
 }
 
@@ -91,7 +117,8 @@ impl Demo {
     pub fn new(now: DateTime<Utc>, setup: Setup) -> Demo {
         let conversations = if setup.conversations { samples(now) } else { Vec::new() };
         let approvals = if setup.conversations { vec![approval(now)] } else { Vec::new() };
-        Demo { state: Mutex::new(State { setup, now, conversations, approvals, next: 100 }) }
+        let bots = if setup.conversations { sample_bots() } else { Vec::new() };
+        Demo { state: Mutex::new(State { setup, now, conversations, approvals, bots, next: 100 }) }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -110,8 +137,8 @@ impl Demo {
             Request::ListClients => Response::Clients { clients: state.client().into_iter().collect() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
-            Request::SendMessage { conversation, engine, model, text, without, .. } => {
-                state.send(conversation, engine, model, text, without)
+            Request::SendMessage { conversation, engine, model, text, without, bot } => {
+                state.send(conversation, engine, model, text, without, bot)
             }
             Request::CancelAnswer { conversation } => state.cancel(&conversation),
             Request::RenameConversation { id, title } => state.change(&id, |c| c.summary.title = title),
@@ -130,6 +157,31 @@ impl Demo {
             Request::OpenApp { .. } => Response::Ok,
             // The assistant's profile (task C.10): a name and a symbol of its own.
             Request::GetProfile => Response::Profile { profile: profile() },
+            // Bots (task B.3), in memory.
+            Request::ListBots => Response::Bots { bots: state.bots.iter().map(Bot::summary).collect() },
+            Request::GetBot { id } => match state.bots.iter().find(|bot| bot.id == id) {
+                Some(bot) => Response::Bot { bot: bot.clone() },
+                None => no_bot(&id),
+            },
+            request @ Request::SaveBot { .. } => match torro_ipc::bots::limit_refusal(&request) {
+                Some(refused) => refused,
+                None => state.save_bot(request),
+            },
+            // The person's yes to asking a bot (task B.2): the next ask of the assistant may go.
+            Request::ConfirmBot { conversation, bot } => {
+                if !state.bots.iter().any(|known| known.id == bot) {
+                    no_bot(&bot)
+                } else if state.find(&conversation).is_none() {
+                    unknown(&conversation)
+                } else {
+                    Response::Ok
+                }
+            }
+            Request::DeleteBot { id } => {
+                let before = state.bots.len();
+                state.bots.retain(|bot| bot.id != id);
+                if state.bots.len() < before { Response::Ok } else { no_bot(&id) }
+            }
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
         }
     }
@@ -161,8 +213,15 @@ impl State {
         })
     }
 
+    /// A conversation's head as the core answers it: whether its bot is gone.
+    fn head(&self, summary: &ConversationSummary) -> ConversationSummary {
+        let mut head = summary.clone();
+        head.bot_deleted = head.bot.as_ref().is_some_and(|id| !self.bots.iter().any(|bot| &bot.id == id));
+        head
+    }
+
     fn summaries(&self) -> Vec<ConversationSummary> {
-        let mut list: Vec<ConversationSummary> = self.conversations.iter().map(|c| c.summary.clone()).collect();
+        let mut list: Vec<ConversationSummary> = self.conversations.iter().map(|c| self.head(&c.summary)).collect();
         list.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.updated.cmp(&a.updated)));
         list
     }
@@ -182,7 +241,8 @@ impl State {
                 entries.push(entry(conversation.summary.last + 1, now, answer(&text)));
             }
         }
-        Response::Conversation { conversation: conversation.summary.clone(), entries }
+        let summary = conversation.summary.clone();
+        Response::Conversation { conversation: self.head(&summary), entries }
     }
 
     fn send(
@@ -192,8 +252,13 @@ impl State {
         model: Option<String>,
         text: String,
         without: Vec<Area>,
+        bot: Option<String>,
     ) -> Response {
         let now = self.now;
+        if let Some(id) = bot.as_deref().filter(|id| !self.bots.iter().any(|bot| bot.id == *id)) {
+            return no_bot(id);
+        }
+        let reply = if bot.is_some() { BOT_REPLY } else { REPLY };
         let id = match conversation {
             Some(id) => id,
             None => {
@@ -210,7 +275,7 @@ impl State {
                     pinned: false,
                     running: false,
                     last: 0,
-                    bot: None,
+                    bot: bot.clone(),
                     bot_deleted: false,
                 };
                 self.conversations.push(Conversation { summary, entries: Vec::new(), growing: None });
@@ -218,13 +283,51 @@ impl State {
             }
         };
         let Some(conversation) = self.find(&id) else { return unknown(&id) };
+        if conversation.summary.bot != bot {
+            return refused("error", "this conversation belongs to someone else");
+        }
         if conversation.summary.running {
             return refused("busy", "the assistant still answers in this conversation; stop it or wait");
         }
         let message = conversation.push(now, EntryContent::Message { text, engine, model, without });
         conversation.summary.running = true;
-        conversation.growing = Some(Growing { text: tr(REPLY).to_owned(), shown: 0, frozen: false });
+        conversation.growing = Some(Growing { text: tr(reply).to_owned(), shown: 0, frozen: false });
         Response::Conversation { conversation: conversation.summary.clone(), entries: vec![message] }
+    }
+
+    /// `bots.save_bot`: a new bot with an id and a client of its own, or the bot `id` replaced.
+    fn save_bot(&mut self, request: Request) -> Response {
+        let Request::SaveBot { id, name, description, avatar, engine, model, personality, instructions, skills } =
+            request
+        else {
+            return refused("error", "not a bot");
+        };
+        let id = match id {
+            Some(id) if self.bots.iter().any(|bot| bot.id == id) => id,
+            Some(id) => return no_bot(&id),
+            None => {
+                self.next += 1;
+                format!("b{:07x}", self.next)
+            }
+        };
+        let client =
+            self.bots.iter().find(|bot| bot.id == id).map_or_else(|| format!("c{}", &id[1..]), |b| b.client.clone());
+        let bot = Bot {
+            id: id.clone(),
+            name,
+            description,
+            avatar: avatar.unwrap_or_else(|| LETTER_AVATAR.to_owned()),
+            engine,
+            model,
+            personality,
+            instructions,
+            skills,
+            client,
+        };
+        self.bots.retain(|old| old.id != id);
+        self.bots.push(bot.clone());
+        self.bots.sort_by_key(|bot| bot.name.to_lowercase());
+        Response::Bot { bot }
     }
 
     fn cancel(&mut self, id: &str) -> Response {
@@ -304,6 +407,10 @@ impl Conversation {
         }
     }
 }
+
+/// The answer of a bot to a message sent in the demo.
+const BOT_REPLY: &str =
+    "This is the demo, so I planned nothing. With an AI account I would answer with what you allowed me.";
 
 /// The answer to a message sent in the demo.
 pub(crate) const REPLY: &str = "This is the demo, so nothing was looked up. With an AI account the assistant reads your \
@@ -452,7 +559,96 @@ fn samples(now: DateTime<Utc>) -> Vec<Conversation> {
         ],
     );
     release.summary.pinned = true;
-    vec![plan, block, draft, forbidden, trip, release]
+
+    // A bot's own conversation, the assistant asking that bot, and a conversation of a bot that went.
+    let mut lisbon = sample(
+        BOT_CHAT,
+        tr("Train to Lisbon"),
+        now,
+        Duration::hours(4),
+        vec![message(tr("Which trains get me from Hamburg to Lisbon in two days?")), answer(tr(LISBON_ANSWER))],
+    );
+    lisbon.summary.bot = Some(TRAVEL.into());
+    let porto = sample(
+        ASKED,
+        tr("Weekend in Porto"),
+        now,
+        Duration::hours(5),
+        vec![
+            message(tr("Ask the travel planner for a weekend in Porto in November.")),
+            tool(
+                "bots.ask_bot",
+                serde_json::json!({"bot": TRAVEL, "text": "A weekend in Porto in November", "conversation": BOT_CHAT}),
+                &trf("Asked {bot} · {steps} steps", &[("bot", &tr("Travel planner")), ("steps", &3)]),
+                None,
+            ),
+            answer(tr("The travel planner suggests the night train to Madrid and on to Porto on Friday.")),
+        ],
+    );
+    let mut gone = sample(
+        GONE,
+        tr("Release notes"),
+        now,
+        Duration::days(5),
+        vec![message(tr("Write the release notes for 0.9.")), answer(tr("Here are the notes for 0.9."))],
+    );
+    gone.summary.bot = Some(GONE_BOT.into());
+    let vienna = sample(
+        PROPOSAL,
+        tr("Train or plane to Vienna?"),
+        now,
+        Duration::hours(6),
+        vec![
+            message(tr("Should I take the train or the plane to Vienna next week?")),
+            tool(
+                "bots.ask_bot",
+                serde_json::json!({"bot": TRAVEL, "text": "Train or plane from Hamburg to Vienna next week?"}),
+                tr("Not allowed for the assistant"),
+                Some("forbidden"),
+            ),
+            answer(tr("Your travel planner knows the night trains well. Shall I ask Travel planner?")),
+        ],
+    );
+    vec![plan, block, draft, forbidden, trip, release, lisbon, porto, gone, vienna]
+}
+
+/// The travel planner's answer in "Train to Lisbon".
+const LISBON_ANSWER: &str = "Two days work well:\n\n\
+- Day 1: Hamburg to Paris, then the night train to Irún\n\
+- Day 2: Irún to Lisbon by day\n\n\
+Book the night train early; it fills up on Fridays.";
+
+/// The demo's bots: the travel planner with a skill, and the release helper.
+fn sample_bots() -> Vec<Bot> {
+    vec![
+        Bot {
+            id: RELEASE.into(),
+            name: tr("Release helper").into(),
+            description: tr("Writes release notes and checks what is open").into(),
+            avatar: "radar".into(),
+            engine: OPENROUTER.into(),
+            model: Some("qwen/qwen3-32b".into()),
+            personality: String::new(),
+            instructions: tr("Read the open tasks of the release list first.").into(),
+            skills: Vec::new(),
+            client: "c0000002".into(),
+        },
+        Bot {
+            id: TRAVEL.into(),
+            name: tr("Travel planner").into(),
+            description: tr("Plans trips by train").into(),
+            avatar: LETTER_AVATAR.into(),
+            engine: OLLAMA.into(),
+            model: Some("qwen3:14b".into()),
+            personality: crate::bots::Template::Calm.text().into(),
+            instructions: tr("Suggest trains before flights. Ask for the budget first.").into(),
+            skills: vec![Skill {
+                name: tr("Packing").into(),
+                text: tr("Pack light: one bag, layers and a rain jacket.").into(),
+            }],
+            client: "c0000001".into(),
+        },
+    ]
 }
 
 /// The answer of "Plan for tomorrow", in Markdown.
@@ -520,13 +716,18 @@ fn open_window(state: &State, window: ChatWindow) -> Response {
         }
         ChatWindow::Conversation(id) => id,
         ChatWindow::New => "new".to_owned(),
-        ChatWindow::Bot(_) => return refused("unsupported", "there are no bots yet"),
+        ChatWindow::Bot(id) if !state.bots.iter().any(|bot| bot.id == id) => return no_bot(&id),
+        ChatWindow::Bot(id) => format!("--bot={id}"),
     };
+    // `--chat <id>` or `--bot=<id>` (one word, so both fit the same call).
+    let flag = if target.starts_with("--bot=") { None } else { Some("--chat") };
     #[cfg(not(test))]
     {
         let started = std::env::current_exe().and_then(|program| {
             std::process::Command::new(program)
-                .args(["--demo", "--chat", &target])
+                .arg("--demo")
+                .args(flag)
+                .arg(&target)
                 .stdin(std::process::Stdio::null())
                 .spawn()
                 .map(|mut child| {
@@ -538,7 +739,7 @@ fn open_window(state: &State, window: ChatWindow) -> Response {
         }
     }
     #[cfg(test)]
-    let _ = target;
+    let _ = (flag, target);
     Response::Ok
 }
 
@@ -558,6 +759,10 @@ fn refused(code: &str, message: &str) -> Response {
 
 fn unknown(id: &str) -> Response {
     refused("not-found", &format!("no conversation {id:?}"))
+}
+
+fn no_bot(id: &str) -> Response {
+    refused("not-found", &format!("no bot {id:?}"))
 }
 
 #[cfg(test)]

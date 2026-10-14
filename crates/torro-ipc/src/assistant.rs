@@ -244,7 +244,7 @@ pub enum ChatWindow {
     /// A new, empty conversation.
     New,
     /// The chat with a bot (stage 2, `docs/assistent.md` "Bots"): its newest conversation or a new
-    /// one. The app cannot show a bot's chat yet (task B.3), so the core answers `unsupported`.
+    /// one (`torroassistant --bot <id>`, task B.3).
     Bot(String),
 }
 

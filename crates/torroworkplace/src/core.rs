@@ -9171,7 +9171,7 @@ mod tests {
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
         let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
-        assert_eq!(code(&ask(&core, Some(&key), bot).await), "unsupported");
+        assert_eq!(code(&ask(&core, Some(&key), bot).await), "not-found", "no such bot (task B.3)");
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nothing to approve");
         asking.confirm = torro_ipc::api::Confirm::OnDelete;
         core.clients.update(&id, asking).await.expect("asks before deleting");

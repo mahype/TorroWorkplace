@@ -388,8 +388,8 @@ impl Assistant {
     /// and again by [`answer_from`]: its limits, a conversation the core does not have (`not-found`),
     /// for a message (also `bots.ask_bot`) an engine that does not answer ([`Assistant::engine`]),
     /// a conversation that still answers (`busy`), a bot that is not there (`not-found`) or a
-    /// conversation of another bot or of none ([`Assistant::bot_refusal`]), a bot's window
-    /// (`unsupported`). `None` when it may run.
+    /// conversation of another bot or of none ([`Assistant::bot_refusal`]), the window of a
+    /// bot that is not there (`not-found`). `None` when it may run.
     pub async fn refusal(&self, ai: &AiAccounts, request: &Request) -> Option<Response> {
         if let Some(refused) =
             torro_ipc::assistant::limit_refusal(request).or_else(|| torro_ipc::bots::limit_refusal(request))
@@ -427,7 +427,9 @@ impl Assistant {
         match (request, &bot) {
             (Request::SendMessage { engine, .. }, _) => self.engine(ai, engine, &actor).await.err(),
             (Request::AskBot { .. }, Some(bot)) => self.engine(ai, &bot.engine, &actor).await.err(),
-            (Request::OpenChatWindow { window: ChatWindow::Bot(_) }, _) => Some(no_bots()),
+            (Request::OpenChatWindow { window: ChatWindow::Bot(id) }, _) if self.bots.get(id).await.is_none() => {
+                Some(crate::bots::no_bot(id))
+            }
             _ => None,
         }
     }
@@ -775,16 +777,24 @@ impl Assistant {
         removed
     }
 
-    /// `assistant.open_window`: starts `torroassistant --chat <id>` or `--chat new`. Bots do not
-    /// exist yet (stage 2): `unsupported`.
+    /// `assistant.open_window`: starts `torroassistant --chat <id>`, `--chat new` or, for a bot,
+    /// `--bot <id>` (task B.3); `not-found` for a conversation or bot the core does not have.
     pub async fn open_window(&self, window: ChatWindow) -> Response {
         let target = match window {
             ChatWindow::Conversation(id) if !self.state().await.conversations.contains_key(&id) => return unknown(&id),
             ChatWindow::Conversation(id) => id,
             ChatWindow::New => "new".to_string(),
-            ChatWindow::Bot(_) => return no_bots(),
+            // The app opens the bot's newest conversation or a new one (task B.3).
+            ChatWindow::Bot(id) if self.bots.get(&id).await.is_none() => return crate::bots::no_bot(&id),
+            ChatWindow::Bot(id) => return self.start(&[BINARY.to_string(), "--bot".into(), id]),
         };
-        match (self.launch)(&[BINARY.to_string(), "--chat".into(), target]) {
+        self.start(&[BINARY.to_string(), "--chat".into(), target])
+    }
+
+    /// Starts the assistant app with `command` (its program name first): `Ok`, or `error` when it
+    /// does not start.
+    fn start(&self, command: &[String]) -> Response {
+        match (self.launch)(command) {
             Ok(()) => Response::Ok,
             Err(err) => failure(&format!("cannot start {BINARY}: {err}")),
         }
@@ -1085,11 +1095,6 @@ fn no_app(_: &[String]) -> Result<(), String> {
 /// The `busy` answer for a message to a conversation that still answers.
 fn busy() -> Response {
     refusal("busy", "the assistant still answers in this conversation; stop it or wait")
-}
-
-/// The `unsupported` answer for a bot's window: bots are stage 2.
-fn no_bots() -> Response {
-    refusal("unsupported", "there are no bots yet")
 }
 
 /// The `not-found` answer for conversation `id`.
@@ -1414,7 +1419,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn windows_open_a_conversation_or_a_new_one_and_bots_wait() {
+    async fn windows_open_a_conversation_a_new_one_or_a_bots_chat() {
         static STARTED: StdMutex<Vec<Vec<String>>> = StdMutex::new(Vec::new());
         fn record(command: &[String]) -> Result<(), String> {
             STARTED.lock().unwrap_or_else(PoisonError::into_inner).push(command.to_vec());
@@ -1425,19 +1430,46 @@ pub(crate) mod tests {
         }
         let dir = tempfile::tempdir().expect("temp dir");
         let ai = no_ai(dir.path());
-        let assistant = Arc::new(Assistant::new(Some(dir.path().join("assistant")), Some(Duration::ZERO), record));
+        let assistant = Arc::new(
+            Assistant::new(Some(dir.path().join("assistant")), Some(Duration::ZERO), record)
+                .with_config(dir.path().join("config/assistant")),
+        );
         let (started, _) = opened(answer(&assistant, &ai, send(None, "Hi")).await);
+        let clients = crate::clients::tests::open_in(dir.path());
+        let save = Request::SaveBot {
+            id: None,
+            name: "Travel planner".into(),
+            description: String::new(),
+            avatar: None,
+            engine: TEST_ENGINE.into(),
+            model: None,
+            personality: String::new(),
+            instructions: String::new(),
+            skills: Vec::new(),
+        };
+        let bot = match crate::bots::answer(&assistant, &clients, save).await {
+            Response::Bot { bot } => bot,
+            other => panic!("expected a bot, got {other:?}"),
+        };
 
         let open = |window| Request::OpenChatWindow { window };
         assert_eq!(answer(&assistant, &ai, open(ChatWindow::Conversation(started.id.clone()))).await, Response::Ok);
         assert_eq!(answer(&assistant, &ai, open(ChatWindow::New)).await, Response::Ok);
-        assert_eq!(code(&answer(&assistant, &ai, open(ChatWindow::Bot("travel".into()))).await), "unsupported");
+        assert_eq!(answer(&assistant, &ai, open(ChatWindow::Bot(bot.id.clone()))).await, Response::Ok);
+        let unknown_bot = open(ChatWindow::Bot("0a0b0c0d".into()));
+        assert_eq!(code(&answer(&assistant, &ai, unknown_bot.clone()).await), "not-found");
+        assert_eq!(
+            assistant.refusal(&ai, &unknown_bot).await.as_ref().map(code),
+            Some("not-found"),
+            "before an approval"
+        );
         let started_commands = STARTED.lock().unwrap_or_else(PoisonError::into_inner).clone();
         assert_eq!(
             started_commands,
             vec![
                 vec![BINARY.to_string(), "--chat".into(), started.id.clone()],
                 vec![BINARY.to_string(), "--chat".into(), "new".into()],
+                vec![BINARY.to_string(), "--bot".into(), bot.id.clone()],
             ]
         );
 

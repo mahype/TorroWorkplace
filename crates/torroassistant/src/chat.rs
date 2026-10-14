@@ -182,13 +182,14 @@ pub fn switchable_areas(rights: Option<&Rights>) -> Vec<Area> {
 }
 
 /// The request of "Send": `assistant.send_message` with the text as typed (trailing blank lines
-/// dropped), to `conversation` or a new one; `None` for a text that is only blank or without an
-/// engine, which the core would refuse anyway.
+/// dropped), to `conversation` or a new one, to the bot `bot` (task B.3) or the assistant; `None`
+/// for a text that is only blank or without an engine, which the core would refuse anyway.
 pub fn send_request(
     conversation: Option<&str>,
     choice: Option<&Choice>,
     text: &str,
     without: &[Area],
+    bot: Option<&str>,
 ) -> Option<Request> {
     let text = text.trim_end();
     let choice = choice?;
@@ -201,7 +202,7 @@ pub fn send_request(
         model: choice.model.clone(),
         text: text.to_owned(),
         without: without.to_vec(),
-        bot: None,
+        bot: bot.map(str::to_owned),
     })
 }
 
@@ -279,6 +280,8 @@ pub fn tool_title(name: &str) -> String {
         "workspaces.list_templates" => tr("Looked up templates"),
         "workspaces.load_template" => tr("Loaded template"),
         "workspaces.save_template" => tr("Saved template"),
+        "bots.list_bots" => tr("Looked up bots"),
+        "bots.save_bot" => tr("Suggested a bot"),
         "find_tools" => tr("Looked for tools"),
         other => return other.to_owned(),
     };
@@ -493,7 +496,7 @@ mod tests {
     fn send_builds_the_message_request() {
         let choice = Choice { engine: "ai:ollama@localhost:11434".into(), model: Some("qwen3:8b".into()) };
         assert_eq!(
-            send_request(Some("c1"), Some(&choice), "What is on tomorrow?\n\n", &[Area::Mail]),
+            send_request(Some("c1"), Some(&choice), "What is on tomorrow?\n\n", &[Area::Mail], None),
             Some(Request::SendMessage {
                 conversation: Some("c1".into()),
                 engine: "ai:ollama@localhost:11434".into(),
@@ -503,8 +506,11 @@ mod tests {
                 bot: None,
             })
         );
-        assert_eq!(send_request(None, Some(&choice), " \n ", &[]), None, "blank");
-        assert_eq!(send_request(None, None, "Hi", &[]), None, "no engine");
+        assert_eq!(send_request(None, Some(&choice), " \n ", &[], None), None, "blank");
+        assert_eq!(send_request(None, None, "Hi", &[], None), None, "no engine");
+        // Task B.3: a message to a bot names it; the core runs it with the bot's client.
+        let to_bot = send_request(None, Some(&choice), "Plan Lisbon", &[], Some("b0000001"));
+        assert!(matches!(to_bot, Some(Request::SendMessage { bot: Some(ref bot), .. }) if bot == "b0000001"));
     }
 
     #[test]

@@ -25,6 +25,12 @@
 //!   log (command and result, never contents); "Create new key" and "Disconnect…", each behind a
 //!   confirmation that says what goes ([`disconnect_text`]). A new key is shown once, with a copy
 //!   button.
+//! - **Bots** (`api::BOT_CLIENT`, task B.3) are a group of their own; their rows open the bot's page
+//!   under Assistant › Bots, where the same rights view sets what each bot may use. The areas
+//!   `assistant` and `bots` have no row for a bot or for the assistant itself – the core refuses
+//!   them whatever the rights say (`api::loops_back`). For every other agent a short warning stands
+//!   under `bots` (it would act with a bot's rights) and `assistant` (it would also read the
+//!   conversations with bots) while they are on ([`bot_warning`]).
 //! - **Hook clients** (`api::HOOK_CLIENT`) show the agent they report for and their fixed rights,
 //!   read-only: the core narrows a hook's rights to `Rights::hook` whatever is sent, because its key
 //!   sits in files the agent can read itself.
@@ -67,7 +73,7 @@ use torro_gui::widgets::{self, Status, color_dot};
 use torro_gui::{style, typo};
 use torro_inbox::{AgentKind, SourceKind, SourceRef};
 use torro_ipc::api::{
-    self, ASSISTANT_CLIENT, Access, Area, AreaRights, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights,
+    self, ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights,
 };
 use torro_ipc::api::{Outbound, RightsTemplate, Selection};
 use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
@@ -238,6 +244,9 @@ pub enum Message {
     Open(String),
     /// The assistant's row in the list: its rights live on the Assistant page (task C.6).
     ShowAssistant,
+    /// A bot's row in the list (its client's id): its rights live on its page under Assistant ›
+    /// Bots (task B.3).
+    ShowBot(String),
     /// Back from a detail page to the list.
     Back,
     /// A segment of an area's level.
@@ -298,6 +307,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             save_now(state)
         }
         Message::ShowAssistant => Action::Select(Section::Assistant),
+        Message::ShowBot(client) => match data.bots.iter().find(|bot| bot.client == client) {
+            Some(bot) => Action::OpenBot(bot.id.clone()),
+            // A bot's client without its bot (the bots could not be listed): its own page here.
+            None => update(state, Message::Open(client), data),
+        },
         Message::RepoInput(text) => {
             state.repo_input = text;
             Action::None
@@ -473,11 +487,38 @@ pub(super) fn change_rights(
 }
 
 /// Whether the rights view offers `area` for a client of `kind`: every grantable area
-/// ([`Area::grantable`]), except `assistant` for the assistant's own client. The core refuses it that
-/// area whatever its rights say ([`api::loops_back`]), so a switch there would promise what never
-/// happens.
+/// ([`Area::grantable`]), except `assistant` and `bots` for the assistant's own client and for a
+/// bot's (task B.3). The core refuses them those areas whatever their rights say
+/// ([`api::loops_back`]; the assistant uses the bots it may by its kind, never by a right), so a
+/// switch there would promise what never happens.
 pub(super) fn shows_area(area: Area, kind: &str) -> bool {
-    area.grantable() && !(kind == ASSISTANT_CLIENT && area == Area::Assistant)
+    let closed = matches!(kind, ASSISTANT_CLIENT | BOT_CLIENT) && matches!(area, Area::Assistant | Area::Bots);
+    area.grantable() && !closed
+}
+
+/// The warning under an area's row of a client of `kind` with `rights`, while that area reaches the
+/// bots (task B.3): `bots` lets the client act with a bot's rights, `assistant` read the
+/// conversations with bots too. `None` for every other area, while the area is off, and for the
+/// assistant and the bots themselves, which never get those rows ([`shows_area`]).
+pub fn bot_warning(area: Area, rights: &Rights, kind: &str) -> Option<&'static str> {
+    if !shows_area(area, kind) || rights.area(area).level == Level::NoAccess {
+        return None;
+    }
+    match area {
+        Area::Bots => Some(tr("Lets the agent act with a bot's rights.")),
+        Area::Assistant => Some(tr("Also reads the conversations with bots.")),
+        _ => None,
+    }
+}
+
+/// A warning in a row of its own: a mark in the attention colour and the sentence, which wraps in a
+/// narrow window.
+fn warning_row<'a>(words: &'a str) -> Element<'a, Message> {
+    let mark = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) });
+    let words = typo::text(typo::meta(), words).style(theme::text_2);
+    let content = row![mark, words.width(Fill)].spacing(space::m());
+    container(content).width(Fill).padding([space::m(), space::l()]).into()
 }
 
 /// Sends a waiting draft now: `clients.update_client` with the whole rights.
@@ -897,6 +938,7 @@ pub fn kind_label(client: &ClientInfo) -> String {
         "cursor" => "Cursor".to_string(),
         "script" => tr("Script").to_string(),
         ASSISTANT_CLIENT => tr("Assistant").to_string(),
+        BOT_CLIENT => tr("Bot").to_string(),
         HOOK_CLIENT => match client.agent {
             Some(agent) => trf("{agent} hooks", &[("agent", &agent.label())]),
             None => tr("Hooks").to_string(),
@@ -909,7 +951,7 @@ pub fn kind_label(client: &ClientInfo) -> String {
 /// sits in the group "Scripts", and "Claude Code" needs no "Claude Code" below it.
 fn kind_word(client: &ClientInfo) -> Option<String> {
     let kind = kind_label(client);
-    (Category::of(client) != Category::Script && kind != client.name).then_some(kind)
+    (!matches!(Category::of(client), Category::Script | Category::Bot) && kind != client.name).then_some(kind)
 }
 
 /// "Used 5 min ago", or "Never used".
@@ -950,6 +992,13 @@ fn disconnect_text(client: &ClientInfo) -> (&'static str, String) {
                 &[("name", name)],
             ),
         ),
+        Category::Bot => (
+            tr("Take this bot's access away?"),
+            trf(
+                "{name} loses its access at once. Saving the bot again in the assistant gives it a new one, without any rights.",
+                &[("name", name)],
+            ),
+        ),
         Category::Script => (
             tr("Disconnect this script?"),
             trf(
@@ -964,16 +1013,19 @@ fn disconnect_text(client: &ClientInfo) -> (&'static str, String) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Category {
     Agent,
+    /// The assistant's bots (task B.3).
+    Bot,
     Hook,
     Script,
 }
 
 impl Category {
-    const ALL: [Category; 3] = [Category::Agent, Category::Hook, Category::Script];
+    const ALL: [Category; 4] = [Category::Agent, Category::Bot, Category::Hook, Category::Script];
 
     fn of(client: &ClientInfo) -> Category {
         match client.kind.as_str() {
             HOOK_CLIENT => Category::Hook,
+            BOT_CLIENT => Category::Bot,
             "script" => Category::Script,
             _ => Category::Agent,
         }
@@ -983,6 +1035,7 @@ impl Category {
     fn singular(self) -> &'static str {
         match self {
             Category::Agent => tr("Agent"),
+            Category::Bot => tr("Bot"),
             Category::Hook => tr("Hook"),
             Category::Script => tr("Script"),
         }
@@ -991,6 +1044,7 @@ impl Category {
     fn title(self) -> &'static str {
         match self {
             Category::Agent => tr("Agents"),
+            Category::Bot => tr("Bots"),
             Category::Hook => tr("Hooks"),
             Category::Script => tr("Scripts"),
         }
@@ -1001,6 +1055,7 @@ impl Category {
             Category::Agent => {
                 tr("Coding agents and apps that use Torro Workplace through MCP, each with its own key.")
             }
+            Category::Bot => tr("The assistant's bots, each with rights of its own. Open one to set what it may use."),
             Category::Hook => {
                 tr("Hooks report to the inbox what an agent waits for or has finished. They see nothing.")
             }
@@ -1252,6 +1307,7 @@ fn client_row<'a>(state: &State, client: &'a ClientInfo, now: DateTime<Utc>) -> 
     // The assistant's rights are edited on its own page, next to its other settings.
     let open = match client.kind.as_str() {
         ASSISTANT_CLIENT => Message::ShowAssistant,
+        BOT_CLIENT => Message::ShowBot(client.id.clone()),
         _ => Message::Open(client.id.clone()),
     };
     pressable(row, Some(open))
@@ -1327,6 +1383,7 @@ fn access_group<'a>(rights: &Rights, column: Option<f32>, kind: &str, title: &'a
             active,
         );
         rows.push(segment_row(area_label(area), Some(area_detail(area).to_string()), control, column));
+        rows.extend(bot_warning(area, rights, kind).map(warning_row));
         if area == Area::Mail && can_send(granted.level) {
             rows.extend(outbound_rows(rights, column));
         }
@@ -1355,12 +1412,9 @@ fn outbound_rows<'a>(rights: &Rights, column: Option<f32>) -> Vec<Element<'a, Me
     let control = widgets::segmented(options.map(|(label, outbound)| (label, Message::Outbound(outbound))), active);
     let mut rows = vec![segment_row(tr("Send on my behalf"), Some(outbound_detail().to_string()), control, column)];
     if sends_freely(rights) {
-        let mark = icon::icon(Icon::CircleAlert, icon::SIZE)
-            .style(|t: &Theme, _| svg::Style { color: Some(palette(t).attention_text) });
-        let words = typo::text(typo::meta(), tr("Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first."))
-            .style(theme::text_2);
-        let content = row![mark, words.width(Fill)].spacing(space::m());
-        rows.push(container(content).width(Fill).padding([space::m(), space::l()]).into());
+        rows.push(warning_row(tr(
+            "Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first.",
+        )));
     }
     rows
 }
@@ -2146,5 +2200,39 @@ mod tests {
             let _ = update(&mut state, Message::AskDisconnect, &data);
             assert!(overlay(&state, &data).is_some());
         }
+    }
+
+    /// Task B.3: the assistant and the bots get no rows for `assistant` and `bots`; every other
+    /// agent does, with a warning while one of them is on.
+    #[test]
+    fn bot_areas_are_hidden_where_they_do_nothing_and_warned_about_elsewhere() {
+        for kind in [ASSISTANT_CLIENT, BOT_CLIENT] {
+            assert!(!shows_area(Area::Assistant, kind) && !shows_area(Area::Bots, kind), "{kind}");
+            assert!(shows_area(Area::Calendar, kind), "{kind}");
+        }
+        assert!(shows_area(Area::Bots, "codex") && shows_area(Area::Assistant, "codex"));
+
+        let mut rights = RightsTemplate::ReadOnly.rights();
+        assert_eq!(bot_warning(Area::Bots, &rights, "codex"), None, "off: no warning");
+        rights.areas.insert(Area::Bots, AreaRights { level: Level::Write, admin: false });
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        assert_eq!(bot_warning(Area::Bots, &rights, "codex"), Some(tr("Lets the agent act with a bot's rights.")));
+        assert_eq!(bot_warning(Area::Assistant, &rights, "codex"), Some(tr("Also reads the conversations with bots.")));
+        assert_eq!(bot_warning(Area::Calendar, &rights, "codex"), None);
+        assert_eq!(bot_warning(Area::Bots, &rights, BOT_CLIENT), None, "a bot has no such row");
+        assert_eq!(bot_warning(Area::Assistant, &rights, ASSISTANT_CLIENT), None);
+
+        let bot = ClientInfo {
+            id: "c0000001".into(),
+            name: "Travel planner".into(),
+            kind: BOT_CLIENT.into(),
+            created: Utc::now(),
+            last_used: None,
+            rights: Rights::none(),
+            agent: None,
+        };
+        assert_eq!(Category::of(&bot), Category::Bot);
+        assert_eq!(kind_label(&bot), tr("Bot"));
+        assert_eq!(kind_word(&bot), None, "the group says it");
     }
 }

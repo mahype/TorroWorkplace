@@ -5,8 +5,9 @@
 //! - `--chat <id>` / `--chat new`: one conversation in a window of its own, class
 //!   `torro-assistant-chat` ([`crate::app::CHAT`]); `assistant.open_window` starts it this way, and a
 //!   workspace template stores the command line, so the same conversation comes back.
-//! - `--bot <id>`: the chat with a bot (stage 2). There are no bots yet: refused with
-//!   [`LaunchError::NoBots`].
+//! - `--bot <id>`: the chat with a bot in a window of its own (task B.3): its newest conversation
+//!   or a new one, class `torro-assistant-chat`, titled "{bot} · {title}". `assistant.open_window`
+//!   starts it this way, and a workspace template brings the same bot back with its argument.
 //! - `--demo`: sample conversations in memory instead of the core ([`crate::demo`]).
 //! - `--open <state>`: start in a state ([`Open`]), for screenshots; needs `--demo`.
 //! - `--appearance light|dark|system`: this process only, nothing is stored.
@@ -29,6 +30,9 @@ pub enum Window {
     /// A single chat window without sidebar (`--chat`): the conversation with this id, or a new
     /// one (`None`, `--chat new`).
     Chat(Option<String>),
+    /// A single chat window with the bot of this id (`--bot`): its newest conversation once the
+    /// conversations are listed, else a new one.
+    Bot(String),
 }
 
 /// A state the window can start in (`--demo --open <state>`), so every state can be photographed
@@ -67,11 +71,29 @@ pub enum Open {
     Drawer,
     /// The app switcher (in the drawer where there is no sidebar).
     Switcher,
+    /// The chat with the demo's bot "Travel planner" in the main window: its conversation.
+    Bot,
+    /// A new chat with the bot "Travel planner": its welcome above the composer.
+    BotWelcome,
+    /// The menu of the bot "Travel planner" in the sidebar (New chat, Edit, Access, Delete).
+    BotMenu,
+    /// The editor of the bot "Travel planner": profile, personality, instructions, skills.
+    BotEditor,
+    /// The editor of a new bot, after a first "Save" without a name: the problem shows.
+    BotNew,
+    /// The question before deleting the bot "Travel planner".
+    BotDelete,
+    /// "Weekend in Porto": the assistant asked a bot; its tool line unfolded with "Open chat".
+    BotAsked,
+    /// A conversation of a bot that was deleted: it can be read, not continued.
+    BotGone,
+    /// "Train or plane to Vienna?": the assistant proposes a bot; the card "Ask Travel planner?".
+    BotProposal,
 }
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 16] = [
+    pub const ALL: [(&'static str, Open); 25] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -88,6 +110,15 @@ impl Open {
         ("loading", Open::Loading),
         ("drawer", Open::Drawer),
         ("switcher", Open::Switcher),
+        ("bot", Open::Bot),
+        ("bot-welcome", Open::BotWelcome),
+        ("bot-menu", Open::BotMenu),
+        ("bot-editor", Open::BotEditor),
+        ("bot-new", Open::BotNew),
+        ("bot-delete", Open::BotDelete),
+        ("bot-asked", Open::BotAsked),
+        ("bot-gone", Open::BotGone),
+        ("bot-proposal", Open::BotProposal),
     ];
 }
 
@@ -114,8 +145,6 @@ pub enum LaunchError {
     NeedsDemo(&'static str),
     /// Two flags that each choose the window.
     Conflict(&'static str, &'static str),
-    /// `--bot`: bots come with stage 2 of the assistant.
-    NoBots,
 }
 
 impl fmt::Display for LaunchError {
@@ -127,7 +156,6 @@ impl fmt::Display for LaunchError {
             }
             LaunchError::NeedsDemo(flag) => write!(f, "{flag} only works together with --demo"),
             LaunchError::Conflict(one, other) => write!(f, "{one} and {other} cannot be used together"),
-            LaunchError::NoBots => f.write_str("bots are not available yet"),
         }
     }
 }
@@ -205,7 +233,10 @@ fn window(args: &[String]) -> Result<Window, LaunchError> {
     let bot = flag_value(args, "--bot")?;
     match (chat, bot) {
         (Some(_), Some(_)) => Err(LaunchError::Conflict("--chat", "--bot")),
-        (None, Some(_)) => Err(LaunchError::NoBots),
+        (None, Some(id)) if is_id(id) => Ok(Window::Bot(id.to_owned())),
+        (None, Some(id)) => {
+            Err(LaunchError::UnknownValue { flag: "--bot", value: id.to_owned(), valid: "a bot's id".to_owned() })
+        }
         (None, None) => Ok(Window::Main),
         (Some("new"), None) => Ok(Window::Chat(None)),
         (Some(id), None) if is_id(id) => Ok(Window::Chat(Some(id.to_owned()))),
@@ -258,11 +289,19 @@ mod tests {
         assert!(matches!(window_of(&["--chat", &long]), Err(LaunchError::UnknownValue { .. })));
     }
 
+    /// Task B.3: `--bot <id>` opens the bot's chat window; a word that is no id is refused.
     #[test]
-    fn bots_are_not_there_yet() {
-        assert_eq!(window_of(&["--bot", "travel"]), Err(LaunchError::NoBots));
+    fn bot_takes_an_id() {
+        assert_eq!(window_of(&["--bot", "1a2b3c4d"]), Ok(Window::Bot("1a2b3c4d".into())));
+        assert_eq!(window_of(&["--bot=1a2b3c4d", "--demo"]), Ok(Window::Bot("1a2b3c4d".into())));
+        assert_eq!(window_of(&["--bot"]), Err(LaunchError::MissingValue("--bot")));
+        for bad in ["--demo", "", "two words", "a\u{7}"] {
+            assert!(
+                matches!(window_of(&["--bot", bad]), Err(LaunchError::UnknownValue { flag: "--bot", .. })),
+                "{bad:?}"
+            );
+        }
         assert_eq!(window_of(&["--chat", "new", "--bot", "travel"]), Err(LaunchError::Conflict("--chat", "--bot")));
-        assert_eq!(LaunchError::NoBots.to_string(), "bots are not available yet");
     }
 
     #[test]
