@@ -1177,7 +1177,11 @@ pub fn valid_repo(input: &str) -> Option<String> {
 /// The inbox sources an agent can be allowed: the sources with entries or muted
 /// (`inbox.list_sources`), the source of every connected client (where its reports would land,
 /// [`api::post_source`]), every mail account (its new mail, task E4.1: the source's key is the
-/// account's id) and those `selection` names; each once, agents first, then scripts, then mail.
+/// account's id), the inbox sources of every GitHub, Nextcloud and ntfy account (task E5.14:
+/// GitHub, Nextcloud, Talk, ntfy, [`remote_sources`]) and those `selection` names; each once, in the
+/// order of [`SourceKind`] (agents, scripts, mail, GitHub, Nextcloud, Talk, ntfy). Each remote source
+/// says its account below its name; GitHub adds that its entries also need read access to GitHub
+/// and the repository, which the core checks besides the source (task E5.2).
 /// Never the suite: its entries (approvals, account problems) are only for the person, the core
 /// shows them to no client whatever the selection says (task E1.2c). A selection that still names
 /// it shows it as no longer available ([`candidates`]), so it can be unticked.
@@ -1185,6 +1189,7 @@ fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
     let mut sources: Vec<SourceRef> = data.sources.iter().map(|info| info.source.clone()).collect();
     sources.extend(data.clients.iter().filter_map(|client| api::post_source(Some(client), None).ok()));
     sources.extend(mail_candidates(data).iter().filter_map(|account| account.id.parse::<SourceRef>().ok()));
+    sources.extend(remote_sources(data));
     if let Selection::Only(keys) = selection {
         sources.extend(keys.iter().filter_map(|key| key.parse::<SourceRef>().ok()));
     }
@@ -1198,12 +1203,33 @@ fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
                 SourceKind::Agent => tr("Agent").to_string(),
                 SourceKind::Script | SourceKind::Suite => tr("Script").to_string(),
                 SourceKind::Mail => tr("Mail").to_string(),
-                // The remote sources of task E5.1 by their account; E5.14 words them.
-                SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => source.name.clone(),
+                SourceKind::Github => {
+                    trf("{account} · Also needs read access to GitHub and the repository", &[("account", &source.name)])
+                }
+                SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => source.name.clone(),
             };
             Candidate::plain(source.key(), source.label(), Some(detail))
         })
         .collect()
+}
+
+/// The inbox sources of the remote accounts, whether or not they have entries yet: a GitHub
+/// account's notifications, a Nextcloud account's notifications and its Talk, an ntfy account's
+/// topics. Each account's id is the key of its source; Talk's is the Nextcloud account's with
+/// `talk` in front. A sign-in that still runs has no id and no source.
+fn remote_sources(data: &Data) -> Vec<SourceRef> {
+    let mut sources = Vec::new();
+    for source in data.accounts.iter().filter_map(|account| account.id.parse::<SourceRef>().ok()) {
+        match source.kind {
+            SourceKind::Nextcloud => {
+                sources.push(SourceRef::talk(source.name.clone()));
+                sources.push(source);
+            }
+            SourceKind::Github | SourceKind::Ntfy => sources.push(source),
+            _ => {}
+        }
+    }
+    sources
 }
 
 /// The mail accounts an agent can be allowed (`accounts.list_accounts`, kind `mail`): the id is
@@ -2085,7 +2111,10 @@ mod tests {
                 "script:gone",
                 "script:nightly",
                 "mail:anna@mailbox.org",
-                "mail:anna@work.example.net"
+                "mail:anna@work.example.net",
+                // The Nextcloud account brings its notifications and Talk (task E5.14).
+                "nextcloud:anna@cloud.example.org",
+                "talk:anna@cloud.example.org"
             ]
         );
 
@@ -2094,6 +2123,36 @@ mod tests {
         let offered = candidates(Pick::InboxSources, &data, &stale);
         let suite = offered.iter().find(|candidate| candidate.id == "suite").expect("the stale entry");
         assert_eq!(suite.detail.as_deref(), Some(tr("No longer available")));
+    }
+
+    #[test]
+    fn remote_accounts_offer_their_sources_by_kind_with_the_account_below() {
+        let mut data = data();
+        data.accounts.push(account("github:anna-dev", "github", "anna-dev"));
+        data.accounts.push(account("ntfy:push.example.org", "ntfy", "anna@push.example.org"));
+        data.accounts.push(account("caldav:anna@posteo.de@posteo.de", "caldav", "anna@posteo.de"));
+        let offered = candidates(Pick::InboxSources, &data, &Selection::Only(Vec::new()));
+        let remote: Vec<(&str, &str, &str)> = offered
+            .iter()
+            .filter(|c| ["github:", "nextcloud:", "talk:", "ntfy:"].iter().any(|kind| c.id.starts_with(kind)))
+            .map(|c| (c.id.as_str(), c.label.as_str(), c.detail.as_deref().unwrap_or_default()))
+            .collect();
+        let github =
+            trf("{account} · Also needs read access to GitHub and the repository", &[("account", &"anna-dev")]);
+        assert_eq!(
+            remote,
+            [
+                ("github:anna-dev", "GitHub", github.as_str()),
+                ("nextcloud:anna@cloud.example.org", "Nextcloud", "anna@cloud.example.org"),
+                ("talk:anna@cloud.example.org", "Talk", "anna@cloud.example.org"),
+                ("ntfy:push.example.org", "ntfy", "push.example.org"),
+            ],
+            "a CalDAV account brings no source"
+        );
+        // A source with entries is offered once, not again for its account.
+        data.sources.push(SourceInfo { source: SourceRef::github("anna-dev"), open: 3, muted: false, health: None });
+        let again = candidates(Pick::InboxSources, &data, &Selection::All);
+        assert_eq!(again.iter().filter(|c| c.id == "github:anna-dev").count(), 1);
     }
 
     #[test]

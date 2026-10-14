@@ -1746,7 +1746,15 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   ignoriert; Drossel; stumm trennt; 401 → `health: signed_out`; Protokoll ohne Titel und Themen.
 
 ### E5.14 Steuerzentrale: ntfy einrichten, Eingang je Konto
-- [ ] erledigt
+- [x] erledigt (2026-10-14: Assistent „ntfy“ Server → Themen (Name und Etikett je Zeile, Fehler erst nach dem ersten
+  „Connect“, Prüfung mit den Sätzen des Kerns) → bei `auth` Anmeldung (Benutzer und Passwort oder Token, `Secret`, beim
+  Senden genommen) → „Your topics are subscribed.“; Kontoseite ntfy mit Themen (Dialog zum Umbenennen, „Unsubscribe…“
+  mit Rückfrage, „Add topic…“), „Change login…“ und „Remove account…“; Gruppe „Inbox“ bei GitHub (ein Schalter,
+  `missing_scope` als Satz) und Nextcloud („Notifications“, „Talk“, Grund unter dem Namen), je `inbox.mute_source`;
+  Agents & API bietet GitHub, Nextcloud, Talk und ntfy je Konto an, GitHub mit dem Hinweis; Demo `--open
+  wizard-ntfy|wizard-ntfy-topics|wizard-ntfy-invalid|wizard-ntfy-login|wizard-ntfy-done`, Demo-Konto
+  `ntfy:push.example.org` und Quellen; die Kontoseite ntfy und ihre Dialoge haben noch keinen `--open`-Zustand, weil
+  `ui/mod.rs` dafür einen Zweig braucht; deutsche Texte trägt die Koordination ein)
 - **Modell:** Opus · **Braucht:** E5.4, E5.8, E5.9, E5.12 · **Dateien:**
   `crates/torroworkplace/src/ui/{wizard,accounts,agents,launch}.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Assistent „ntfy“** (`Provider::Ntfy`): Server („ntfy.sh when empty“) → Themen (je Zeile Thema und Etikett) →
