@@ -47,7 +47,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use torro_inbox::AgentKind;
+use torro_inbox::{AgentKind, SourceRef};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, HOOK_CLIENT, Operation, Rights, RightsTemplate, Selection};
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
@@ -815,7 +815,8 @@ impl Clients {
 
     /// Takes the account `id` out of every client's rights before the account is removed
     /// (`accounts.remove_account`, task M2.7b): its id from `mail_accounts` and `inbox_sources`
-    /// (a mail account's id is also its inbox source, `mail:<address>`), and its collections
+    /// (a mail, GitHub, Nextcloud or ntfy account's id is also its inbox source, task E5.2; a
+    /// Nextcloud account's Talk, `talk:<login>@<host>`, goes with it), and its collections
     /// (`<id>/<url>`) from `calendars` and `task_lists`. Otherwise an agent would get its reach
     /// back without asking when the same address is connected again. Works for every kind of
     /// account (Nextcloud, CalDAV, GitHub's filter lists, mail); `All` stays `All`.
@@ -833,6 +834,8 @@ impl Clients {
         let belongs = |collection: &str| {
             torro_pim::account::account_of(collection, &owners, |owner: &&str| owner).is_some_and(|owner| *owner == id)
         };
+        // Talk is a source of its own, but the Nextcloud account's (task E5.2).
+        let talk = id.strip_prefix("nextcloud:").map(|account| SourceRef::talk(account).key());
         let before: Vec<(String, Rights)> = {
             let mut state = self.lock();
             let mut before = Vec::new();
@@ -846,7 +849,7 @@ impl Clients {
                 }
                 for selection in [&mut rights.mail_accounts, &mut rights.inbox_sources] {
                     if let Selection::Only(ids) = selection {
-                        ids.retain(|selected| selected != id);
+                        ids.retain(|selected| selected != id && Some(selected.as_str()) != talk.as_deref());
                     }
                 }
                 if *rights != old {
@@ -2101,7 +2104,10 @@ pub(crate) mod tests {
         let at = |account: &str, url: &str| format!("{account}/{url}");
         let mut rights = read_only();
         rights.mail_accounts = Selection::Only(vec![anna.into(), "mail:bob@example.org".into()]);
-        rights.inbox_sources = Selection::Only(vec![anna.into(), "agent:codex".into()]);
+        // Task E5.2: a Nextcloud account's Talk goes with it, the other account's stays.
+        let (talk, nested_talk) = ("talk:anna@cloud.example.org", "talk:anna@cloud.example.org/nc");
+        rights.inbox_sources =
+            Selection::Only([anna, "agent:codex", cloud, talk, nested_talk, github].map(String::from).to_vec());
         rights.calendars = Selection::Only(vec![
             at(anna, "https://dav.example.org/work/"),
             at(cloud, "https://cloud.example.org/remote.php/dav/calendars/anna/home/"),
@@ -2119,7 +2125,7 @@ pub(crate) mod tests {
         clients.forget_account(github, &known).await.expect("forgotten");
         let expected = |rights: &Rights| {
             assert_eq!(rights.mail_accounts, Selection::Only(vec!["mail:bob@example.org".into()]));
-            assert_eq!(rights.inbox_sources, Selection::Only(vec!["agent:codex".into()]));
+            assert_eq!(rights.inbox_sources, Selection::Only(vec!["agent:codex".into(), nested_talk.into()]));
             assert_eq!(
                 rights.calendars,
                 Selection::Only(vec![at(nested, "https://cloud.example.org/nc/remote.php/dav/calendars/anna/home/")])

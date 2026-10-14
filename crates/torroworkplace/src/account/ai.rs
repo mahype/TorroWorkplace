@@ -248,6 +248,7 @@ impl Slot {
             collections: Vec::new(),
             scopes: None,
             mail: None,
+            ntfy: None,
         }
     }
 }

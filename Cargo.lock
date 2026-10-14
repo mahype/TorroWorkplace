@@ -5259,6 +5259,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "torro-nextcloud"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "httpmock",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "torro-core",
+]
+
+[[package]]
+name = "torro-ntfy"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "httpmock",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "torro-core",
+]
+
+[[package]]
 name = "torro-pim"
 version = "0.1.0"
 dependencies = [
@@ -5291,6 +5315,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "getrandom 0.4.3",
+ "httpmock",
  "reqwest",
  "serde",
  "serde_json",
@@ -5423,6 +5448,8 @@ dependencies = [
  "torro-ipc",
  "torro-mail",
  "torro-mail-imap",
+ "torro-nextcloud",
+ "torro-ntfy",
  "torro-pim",
  "torro-pim-caldav",
  "torro-pim-github",

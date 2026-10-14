@@ -75,7 +75,7 @@ use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, 
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{style, typo};
 use torro_inbox::{Rule, SourceInfo};
-use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Response, Status, client};
+use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Response, RuleHits, Status, client};
 use torro_pim::Collection;
 use torro_setups::TemplateSummary;
 
@@ -205,6 +205,9 @@ pub struct Data {
     pub sources: Vec<SourceInfo>,
     /// The lasting rules of the inbox (`inbox.list_rules`): remembered lanes and muted sources.
     pub rules: Vec<Rule>,
+    /// How much each rule caught and since when (`inbox.list_rules`, task E8.8a), by the rule's id;
+    /// empty from a core before E8.8a.
+    pub rule_hits: Vec<RuleHits>,
     /// The assistant's profile (`assistant.get_profile`, task C.10); `None` until the first answer.
     pub profile: Option<torro_ipc::assistant::Profile>,
     /// The notes of the assistant's memory, oldest first (`assistant.list_memories`).
@@ -538,6 +541,19 @@ impl Ui {
                 let github = accounts::listed(&self.data.accounts).find(|account| account.kind == "github");
                 let mut messages = vec![Message::Select(Section::Accounts)];
                 messages.extend(github.map(|account| Message::Accounts(accounts::Message::Open(account.id.clone()))));
+                messages
+            }
+            Open::NtfyDetail | Open::NtfyTopic | Open::NtfyLogin => {
+                let ntfy = accounts::listed(&self.data.accounts).find(|account| account.kind == "ntfy");
+                let mut messages = vec![Message::Select(Section::Accounts)];
+                if let Some(account) = ntfy {
+                    messages.push(Message::Accounts(accounts::Message::Open(account.id.clone())));
+                    match open {
+                        Open::NtfyTopic => messages.push(Message::Accounts(accounts::Message::EditTopic(0))),
+                        Open::NtfyLogin => messages.push(Message::Accounts(accounts::Message::ChangeLogin)),
+                        _ => {}
+                    }
+                }
                 messages
             }
             Open::MailDetail | Open::MailDetailProblem | Open::MailPassword | Open::MailServers => {
@@ -900,7 +916,7 @@ impl Ui {
             }
             Switcher::OpenApp(app) => {
                 self.close_menus();
-                Action::Send(Request::OpenApp { app: app.to_string() })
+                Action::Send(Request::OpenApp { app: app.to_string(), target: None })
             }
             // The control centre has nothing to search yet; the button only closes open menus.
             Switcher::Search => {
@@ -1394,8 +1410,9 @@ fn load() -> Task<Message> {
             if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
                 data.sources = sources;
             }
-            if let Ok(Response::Rules { rules }) = client::call(&socket, &Request::ListRules).await {
+            if let Ok(Response::Rules { rules, hits }) = client::call(&socket, &Request::ListRules).await {
                 data.rules = rules;
+                data.rule_hits = hits;
             }
             if let Ok(Response::Profile { profile }) = client::call(&socket, &Request::GetProfile).await {
                 data.profile = Some(profile);
@@ -1733,7 +1750,7 @@ mod tests {
         let mut ui = ui(Section::Overview);
         ui.menu = Some(Menu::Switcher);
         let action = ui.switcher(Switcher::OpenApp(AppId::CALENDAR.binary));
-        assert!(matches!(action, Action::Send(Request::OpenApp { ref app }) if app == "torrocalendar"));
+        assert!(matches!(action, Action::Send(Request::OpenApp { ref app, .. }) if app == "torrocalendar"));
         assert_eq!(ui.menu, None);
     }
 
@@ -2030,6 +2047,12 @@ mod tests {
         assert_eq!(ai.accounts.selected.as_deref(), Some("ai:openrouter@openrouter.ai"));
         let github = started(&["--demo", "--open", "scopes-detail"]);
         assert_eq!(github.accounts.selected.as_deref(), Some("github:anna-dev"));
+        for state in ["ntfy-detail", "ntfy-topic", "ntfy-login"] {
+            let ntfy = started(&["--demo", "--open", state]);
+            assert_eq!(ntfy.accounts.selected.as_deref(), Some("ntfy:push.example.org"), "{state}");
+            assert_eq!(ntfy.accounts.topic.is_some(), state == "ntfy-topic", "{state}: the topic dialog");
+            assert_eq!(ntfy.accounts.login.is_some(), state == "ntfy-login", "{state}: the login dialog");
+        }
 
         let remove = started(&["--demo", "--open", "remove"]);
         assert_eq!(remove.accounts.selected.as_ref(), Some(&first));
@@ -2094,7 +2117,7 @@ mod tests {
             assert_eq!(demo.update(message).units(), 0, "{text}");
         }
         assert_eq!(demo.data.accounts.len(), accounts, "removing an account in the demo changes nothing");
-        assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 5, "nor do the inbox's controls");
+        assert!(demo.data.settings.quiet_when_busy && demo.data.rules.len() == 7, "nor do the inbox's controls");
         // Without --demo the same action is a request.
         assert_eq!(ui(Section::Overview).perform(sync()).units(), 1);
         assert_eq!(ui(Section::Overview).update(Message::Tick).units(), 2, "the reload and the zoom");

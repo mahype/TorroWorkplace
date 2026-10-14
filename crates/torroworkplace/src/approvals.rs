@@ -46,7 +46,8 @@ use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
 use torro_gui::datetime::{format_short_date, format_time, to_local};
-use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceRef};
+use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
+use torro_inbox::{HideScope, Item, Lane, Link, Rule, RuleEffect, SourceKind, SourceRef};
 use torro_ipc::api::{Area, Mcp, Rights};
 use torro_ipc::{ApprovalInfo, ApprovalState, Request, Response};
 use torro_mail::{MailAddress, Role};
@@ -297,6 +298,11 @@ pub struct Facts {
     /// then says "an unknown bot". A new bot (`bots.save_bot` without `id`) has none yet; its name
     /// is the client's text, and it is what will be written.
     pub bot: Option<String>,
+    /// For `accounts.set_ntfy_topic` (task E5.12): the label the account keeps for the topic,
+    /// looked up by the topic's name in the account. `None` for a topic it does not have yet. The
+    /// account's label (its server) is [`Facts::name`]. The summary never names the topic itself:
+    /// on a public server its name is a password.
+    pub topic: Option<String>,
 }
 
 /// What the core holds about the messages, drafts and folders a `mail.*` command names, for the
@@ -337,6 +343,9 @@ pub struct MailFacts {
     pub folder: Option<String>,
     /// For `mail.send_draft` and for `mail.save_draft` with an id: the draft as the core stores it.
     pub draft: Option<DraftFacts>,
+    /// For `mail.respond_to_invitation` (task E8.3b): the organizer's address the answer goes to,
+    /// as the invitation read from the server names it.
+    pub organizer: Option<String>,
 }
 
 /// A draft as the core stores it, for [`MailFacts::draft`]: what the person must see before it
@@ -1066,6 +1075,29 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             }
             _ => tr("Reorder an unknown task").to_string(),
         },
+        // Task E8.7a: the title that will be written (the core puts the subject in when the client
+        // left it out, before it asks), the list by the name the core knows, the mail by the
+        // subject its store holds ([`MailFacts::subjects`]), never what the client says of it.
+        Request::CreateTodoFromMail { collection, title, due, .. } => {
+            let subject = facts.mail.as_ref().and_then(|mail| mail.subjects.first());
+            let subject = match subject.map(|subject| subject.trim()) {
+                Some("") => tr("(no subject)").to_string(),
+                Some(subject) => format!("\"{}\"", quote(subject)),
+                None => tr("an unknown mail").to_string(),
+            };
+            let title = quote(title.as_deref().unwrap_or_default());
+            let list = named(collection);
+            match due {
+                Some(due) => trf(
+                    "Make a task \"{title}\" in \"{list}\" due {when} from the mail {subject}",
+                    &[("title", &title), ("list", &list), ("when", &when(due, today)), ("subject", &subject)],
+                ),
+                None => trf(
+                    "Make a task \"{title}\" in \"{list}\" from the mail {subject}",
+                    &[("title", &title), ("list", &list), ("subject", &subject)],
+                ),
+            }
+        }
         Request::DeleteTemplate { id } => trf("Delete template \"{name}\"", &[("name", &named(id))]),
         Request::UpdateTemplate { id } => {
             trf("Overwrite template \"{name}\" with the active workspace", &[("name", &named(id))])
@@ -1083,6 +1115,19 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         }
         Request::ConnectNextcloud { server } => trf("Connect the Nextcloud at {server}", &[("server", &quote(server))]),
         Request::ConnectGithub => tr("Connect a GitHub account").to_string(),
+        // The server only, never the topics: their names are passwords on a public server. Written
+        // as the core would read it (`ntfy.sh` is `https://ntfy.sh`); one that is no address stays
+        // as typed, the core refuses it anyway.
+        Request::ConnectNtfy { server, .. } => {
+            let server = torro_ntfy::Server::parse(server).map_or_else(|_| server.clone(), |s| s.as_str().to_string());
+            trf("Connect the ntfy server {server}", &[("server", &quote(&server))])
+        }
+        Request::SetNtfyTopic { account, label, subscribed, .. } => ntfy_topic_summary(
+            &named(account),
+            facts.topic.as_deref().map(quote).as_deref(),
+            label.as_deref().map(quote).as_deref(),
+            *subscribed,
+        ),
         Request::RemoveAccount { id } => trf("Remove the account {account}", &[("account", &named(id))]),
         Request::UpdateMailAccount { id, sender_name, signature, notify, services, folder_roles } => trf(
             "Change the mail account {account}: {changes}",
@@ -1112,7 +1157,19 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             trf("Hide \"{collection}\" in the suite", &[("collection", &named(collection))])
         }
         Request::UpdateSettings { .. } => tr("Replace all settings").to_string(),
-        Request::OpenApp { app } => trf("Open {app}", &[("app", &quote(app))]),
+        // The suite's name of the app (a window class like `torro-inbox-mail` says little); a name
+        // of no app stays as sent – the core refuses it with `not-found`.
+        // With a target (task E8.7a) also what it shows: the mail's subject or the task's title as
+        // the core holds them ([`Facts::item`]), never the target's text.
+        Request::OpenApp { app, target } => {
+            let name = AppId::find(app).map_or(app.as_str(), |known| known.display_name);
+            match (target, &facts.item) {
+                (Some(_), Some(shown)) => {
+                    trf("Open \"{title}\" in {app}", &[("title", &quote(&shown.title)), ("app", &quote(name))])
+                }
+                _ => trf("Open {app}", &[("app", &quote(name))]),
+            }
+        }
         // The account by the label the core knows; the name is what the list will be called.
         Request::CreateTaskList { account, name, .. } => {
             trf("Create task list \"{name}\" in {account}", &[("name", &quote(name)), ("account", &named(account))])
@@ -1187,6 +1244,9 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
                 )
             }
         },
+        Request::RespondToInvitation { account, answer, collection, .. } => {
+            invitation_answered(*answer, account, collection.as_deref(), facts, today)
+        }
         Request::SendDraft { .. } => match facts.mail.as_ref().and_then(|mail| mail.draft.as_ref()) {
             Some(draft) => {
                 let account = facts.mail.as_ref().and_then(|mail| mail.account.as_deref()).unwrap_or_default();
@@ -1210,6 +1270,57 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// What answering an invitation would do, in words (task E8.3b): `Accept the invitation "Planning"
+/// on Thu 15 Oct 10:00: reply from anna@example.org to jonas@example.com, add the event to "Work"`;
+/// "Answer maybe to …" and "Decline …" alike, a decline with `, remove the event from "<calendar>"`
+/// when it removes the copy made before. Title and start as the mail store holds them
+/// ([`Facts::item`]), the account's address and the organizer from [`MailFacts`], the calendar by
+/// the name the core caches ([`Facts::name`]), else its id. All of it through [`quote`]. Without what
+/// the store holds: "Answer an unknown invitation".
+fn invitation_answered(
+    answer: torro_mail::InvitationAnswer,
+    account: &str,
+    collection: Option<&str>,
+    facts: &Facts,
+    today: chrono::NaiveDate,
+) -> String {
+    use torro_mail::InvitationAnswer;
+    let (Some(item), Some(mail)) = (&facts.item, &facts.mail) else {
+        return tr("Answer an unknown invitation").to_string();
+    };
+    let title = match quote(&item.title) {
+        empty if empty.is_empty() => tr("(no title)").to_string(),
+        title => title,
+    };
+    let when = item.start.map(|start| when(&start, today)).unwrap_or_default();
+    let account = quote(mail.account.as_deref().unwrap_or(account));
+    let organizer = quote(mail.organizer.as_deref().unwrap_or_default());
+    let calendar = facts.name.as_deref().or(collection).map(quote);
+    let mut args: Vec<(&str, &dyn std::fmt::Display)> =
+        vec![("title", &title), ("when", &when), ("account", &account), ("organizer", &organizer)];
+    let calendar = calendar.unwrap_or_default();
+    args.push(("calendar", &calendar));
+    let removes = !calendar.is_empty();
+    let text = match (answer, removes) {
+        (InvitationAnswer::Accept, _) => {
+            "Accept the invitation \"{title}\" on {when}: reply from {account} to \
+                                          {organizer}, add the event to \"{calendar}\""
+        }
+        (InvitationAnswer::Tentative, _) => {
+            "Answer maybe to the invitation \"{title}\" on {when}: reply from \
+                                             {account} to {organizer}, add the event to \"{calendar}\""
+        }
+        (InvitationAnswer::Decline, true) => {
+            "Decline the invitation \"{title}\" on {when}: reply from {account} \
+                                              to {organizer}, remove the event from \"{calendar}\""
+        }
+        (InvitationAnswer::Decline, false) => {
+            "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}"
+        }
+    };
+    trf(text, &args)
 }
 
 /// What an `assistant.*` command would do, in words (task C.1): `Delete the assistant
@@ -1293,6 +1404,30 @@ fn assistant_summary(request: &Request, facts: &Facts) -> String {
         }
         // Bots do not exist yet and are refused before anyone is asked; say which command it is.
         (other, _) => trf("Run {command}", &[("command", &other.operation().name())]),
+    }
+}
+
+/// What `accounts.set_ntfy_topic` would do, in words (task E5.12): the account by its label
+/// (`account`, its server), the topic by the label the account keeps for it (`held`), a new label by
+/// what will be written (`label`). Never the topic's name. All of it went through [`quote`].
+fn ntfy_topic_summary(account: &str, held: Option<&str>, label: Option<&str>, subscribed: bool) -> String {
+    match (subscribed, held, label) {
+        (true, None, Some(label)) => trf(
+            "Subscribe the ntfy account {account} to a topic \"{label}\"",
+            &[("account", &account), ("label", &label)],
+        ),
+        (true, Some(held), Some(label)) => trf(
+            "Rename the topic \"{label}\" of the ntfy account {account} to \"{new}\"",
+            &[("label", &held), ("account", &account), ("new", &label)],
+        ),
+        (false, Some(held), _) => trf(
+            "Unsubscribe the ntfy account {account} from the topic \"{label}\"",
+            &[("account", &account), ("label", &held)],
+        ),
+        (false, None, _) => {
+            trf("Unsubscribe the ntfy account {account} from an unknown topic", &[("account", &account)])
+        }
+        (true, _, None) => trf("Change a topic of the ntfy account {account}", &[("account", &account)]),
     }
 }
 
@@ -1521,8 +1656,9 @@ pub struct InboxFacts {
     pub item: Option<Item>,
     /// The rule `inbox.remove_rule` would remove, as stored; `None` when unknown.
     pub rule: Option<Rule>,
-    /// The display name of the task list `inbox.create_task_from_item` writes to, as the core
-    /// caches it (task E3.5); `None` when unknown: the summary then shows the list's id.
+    /// The display name of the task list `inbox.create_task_from_item` writes to (task E3.5), or
+    /// of the calendar of `inbox.create_event_from_item` (task E8.5b), as the core caches it;
+    /// `None` when unknown: the summary then shows the id.
     pub list: Option<String>,
 }
 
@@ -1556,7 +1692,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 &[("host", &quote(&web_host(url).unwrap_or_default())), ("entry", &entry())],
             ),
             Some(Link::App { app }) => {
-                let name = AppId::ALL.iter().find(|known| known.binary == app).map_or(app.as_str(), |a| a.display_name);
+                let name = AppId::find(app).map_or(app.as_str(), |a| a.display_name);
                 trf("Open {app} from {entry}", &[("app", &quote(name)), ("entry", &entry())])
             }
             Some(Link::Window) => trf("Bring the agent window of {entry} to the front", &[("entry", &entry())]),
@@ -1572,7 +1708,7 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
             let title = title.as_deref().filter(|title| !title.trim().is_empty());
             let title = quote(title.or(facts.item.as_ref().map(|item| item.title.as_str())).unwrap_or_default());
             let list = quote(facts.list.as_deref().unwrap_or(collection));
-            match due {
+            let made = match due {
                 Some(due) => trf(
                     "Make a task \"{title}\" in \"{list}\" due {when} from {entry}",
                     &[("title", &title), ("list", &list), ("when", &when(due, today)), ("entry", &entry())],
@@ -1581,13 +1717,30 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                     "Make a task \"{title}\" in \"{list}\" from {entry}",
                     &[("title", &title), ("list", &list), ("entry", &entry())],
                 ),
-            }
+            };
+            // Done reaches a remote source (task E5.2).
+            with_settling(made, facts.item.as_ref())
+        }
+        // The title that will be written, as for a task, the calendar by its cached name and the
+        // start (task E8.5b).
+        Request::CreateEventFromItem { collection, title, start, .. } => {
+            let title = title.as_deref().filter(|title| !title.trim().is_empty());
+            let title = quote(title.or(facts.item.as_ref().map(|item| item.title.as_str())).unwrap_or_default());
+            let calendar = quote(facts.list.as_deref().unwrap_or(collection));
+            let made = trf(
+                "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
+                &[("title", &title), ("when", &when(start, today)), ("calendar", &calendar), ("entry", &entry())],
+            );
+            with_settling(made, facts.item.as_ref())
         }
         // Done marks the mail of a mail entry read on its server (task E4.1).
         Request::SetItemDone { done: true, .. } if is_mail(facts.item.as_ref()) => {
             trf("Mark {entry} as done and its mail as read", &[("entry", &entry())])
         }
-        Request::SetItemDone { done: true, .. } => trf("Mark {entry} as done", &[("entry", &entry())]),
+        // And reaches the server of a remote source (task E5.2).
+        Request::SetItemDone { done: true, .. } => {
+            with_settling(trf("Mark {entry} as done", &[("entry", &entry())]), facts.item.as_ref())
+        }
         Request::SetItemDone { done: false, .. } => trf("Open {entry} again", &[("entry", &entry())]),
         Request::SnoozeItem { until: Some(until), .. } => trf(
             "Snooze {entry} until {when}",
@@ -1640,7 +1793,36 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 (_, None) => trf("Hide the sender of {entry} in the inbox", &[("entry", &entry())]),
             }
         }
+        // The trait and its value as the inbox holds them for the entry, never as the client says
+        // (task E8.6a): a trait holds for every source of the kind.
+        Request::MuteItem { scope, until, effect, .. } => {
+            let target = facts
+                .item
+                .as_ref()
+                .and_then(|item| torro_inbox::rules::mute_target(item, *scope).map(|facet| (item.source.kind, facet)));
+            let what = match (scope, target) {
+                (MuteScope::Conversation, _) => trf("the conversation {entry}", &[("entry", &entry())]),
+                (MuteScope::Facet { .. }, Some((kind, facet))) => {
+                    let named = format!("\"{}\"", quote(&torro_inbox::rules::facet_label(&facet)));
+                    reach_of(kind, facet.key, named)
+                }
+                (MuteScope::Facet { .. }, None) => trf("a trait of {entry}", &[("entry", &entry())]),
+            };
+            let effect = mute_effect_name(*effect);
+            match until {
+                Some(until) => trf(
+                    "Mute {what} until {when} ({effect})",
+                    &[("what", &what), ("when", &when(&EventTime::DateTime(*until), today)), ("effect", &effect)],
+                ),
+                None => trf("Mute {what} for good ({effect})", &[("what", &what), ("effect", &effect)]),
+            }
+        }
         Request::RemoveRule { .. } => match &facts.rule {
+            // A muted trait (task E8.6a), named by its words.
+            Some(Rule { facet: Some(facet), .. }) => trf(
+                "Stop muting {what} in the inbox",
+                &[("what", &format!("\"{}\"", quote(&torro_inbox::rules::facet_label(facet))))],
+            ),
             // A hidden sender or domain is hidden in every mail account (task E3.11).
             Some(Rule { sender: Some(sender), effect: RuleEffect::Muted, .. }) => {
                 trf("Show mail from {sender} in the inbox again", &[("sender", &format!("\"{}\"", quote(sender)))])
@@ -1664,7 +1846,8 @@ pub fn inbox_summary(request: &Request, facts: &InboxFacts) -> String {
                 "Stop sending notices of {source} to {lane}",
                 &[("source", &source_name(source)), ("lane", &lane_name(*lane))],
             ),
-            None => tr("Remove an unknown inbox rule").to_string(),
+            // Only rules with a trait keep no popups; one without is nothing the core makes.
+            Some(Rule { effect: RuleEffect::NoPopup, .. }) | None => tr("Remove an unknown inbox rule").to_string(),
         },
         other => summary(other, &Facts::default()),
     }
@@ -1681,9 +1864,53 @@ fn web_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.to_string())
 }
 
+/// `what` with how far a muted trait of `key`, taken from an entry of a source of `kind`, reaches
+/// (task E8.6a): one that can name more than one source holds for every source of the kind, also
+/// those the asking key may not see, which the person must know before allowing it (as for a
+/// hidden sender, "in every mail account"). The kind decides, since `kind` is a trait of agents,
+/// GitHub and Talk alike (task E5.2).
+fn reach_of(kind: SourceKind, key: FacetKey, what: String) -> String {
+    if matches!(key, FacetKey::Account | FacetKey::Agent | FacetKey::Client | FacetKey::Conversation) {
+        return what;
+    }
+    match kind {
+        SourceKind::Mail => trf("{what} in every mail account", &[("what", &what)]),
+        SourceKind::Agent => trf("{what} for every agent", &[("what", &what)]),
+        SourceKind::Github => trf("{what} in every GitHub account", &[("what", &what)]),
+        SourceKind::Nextcloud => trf("{what} in every Nextcloud account", &[("what", &what)]),
+        SourceKind::Talk => trf("{what} in Talk of every Nextcloud account", &[("what", &what)]),
+        SourceKind::Ntfy => trf("{what} on every ntfy server", &[("what", &what)]),
+        SourceKind::Suite | SourceKind::Script => what,
+    }
+}
+
+/// `summary` of a command that marks `item` done, with what that does on the server of its remote
+/// source (task E5.2): "…, mark its GitHub notification done and any mail about it read" (mail
+/// that E5.6 attached to the entry is marked read too), "… and delete its Nextcloud notification",
+/// "… and mark the Talk conversation read". Unchanged for every other entry, ntfy
+/// too, which is not told.
+fn with_settling(summary: String, item: Option<&Item>) -> String {
+    let what = [("what", &summary as &dyn std::fmt::Display)];
+    match item.map(|item| item.source.kind) {
+        Some(SourceKind::Github) => trf("{what}, mark its GitHub notification done and any mail about it read", &what),
+        Some(SourceKind::Nextcloud) => trf("{what} and delete its Nextcloud notification", &what),
+        Some(SourceKind::Talk) => trf("{what} and mark the Talk conversation read", &what),
+        _ => summary,
+    }
+}
+
+/// What muting does, in a few words for a summary (task E8.6a): "no popup", "only Info", "hidden".
+fn mute_effect_name(effect: MuteEffect) -> &'static str {
+    match effect {
+        MuteEffect::NoPopup => tr("no popup"),
+        MuteEffect::Info => tr("only Info"),
+        MuteEffect::Hide => tr("hidden"),
+    }
+}
+
 /// `item` is an entry of a mail account (task E4.1).
 fn is_mail(item: Option<&Item>) -> bool {
-    item.is_some_and(|item| item.source.kind == torro_inbox::SourceKind::Mail)
+    item.is_some_and(|item| item.source.kind == SourceKind::Mail)
 }
 
 /// A source for a summary: its label and its key, `"Codex" (agent:codex)`, both quoted.
@@ -2597,6 +2824,102 @@ pub(crate) mod tests {
         assert_eq!(summary(&reorder, &Facts::default()), tr("Reorder an unknown task"));
     }
 
+    /// Task E8.3b: an answer to an invitation names the answer, title and start as the store holds
+    /// them, the account, the organizer and the calendar; never what the client claims.
+    #[test]
+    fn an_answered_invitation_names_what_the_store_holds() {
+        use torro_mail::InvitationAnswer;
+        let today = Local::now().date_naive();
+        let answer = |answer, collection: Option<&str>| Request::RespondToInvitation {
+            account: "mail:anna@example.org".into(),
+            id: "m:1".into(),
+            answer,
+            collection: collection.map(str::to_string),
+        };
+        let mail = MailFacts {
+            account: Some("anna@example.org".into()),
+            count: 1,
+            organizer: Some("jonas@example.com".into()),
+            ..MailFacts::default()
+        };
+        let known = |name: Option<&str>| Facts {
+            item: cached("Planning", Some(day(15))),
+            name: name.map(str::to_string),
+            mail: Some(mail.clone()),
+            ..Facts::default()
+        };
+        let args = |calendar: &str| {
+            [
+                ("title", "Planning".to_string()),
+                ("when", when(&day(15), today)),
+                ("account", "anna@example.org".to_string()),
+                ("organizer", "jonas@example.com".to_string()),
+                ("calendar", calendar.to_string()),
+            ]
+        };
+        let filled = |text: &'static str, calendar: &str| {
+            let args = args(calendar);
+            let args: Vec<(&str, &dyn std::fmt::Display)> =
+                args.iter().map(|(key, value)| (*key, value as &dyn std::fmt::Display)).collect();
+            trf(text, &args)
+        };
+        let accepted = summary(&answer(InvitationAnswer::Accept, Some("c/work")), &known(Some("Work")));
+        let text = "Accept the invitation \"{title}\" on {when}: reply from {account} to {organizer}, add the event \
+                    to \"{calendar}\"";
+        assert_eq!(accepted, filled(text, "Work"));
+        assert!(accepted.contains("jonas@example.com") && accepted.contains("Planning"), "{accepted}");
+        let declined = summary(&answer(InvitationAnswer::Decline, None), &known(None));
+        let text = "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}";
+        assert_eq!(declined, filled(text, ""));
+        let removed = summary(&answer(InvitationAnswer::Decline, None), &known(Some("Work")));
+        let text = "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}, remove the \
+                    event from \"{calendar}\"";
+        assert_eq!(removed, filled(text, "Work"));
+        let unknown = summary(&answer(InvitationAnswer::Tentative, Some("c/work")), &Facts::default());
+        assert_eq!(unknown, tr("Answer an unknown invitation"));
+    }
+
+    /// `apps.open_app` by window class (task E8.1): the summary names the window as the suite does.
+    #[test]
+    fn opening_an_app_names_it_as_the_suite_does() {
+        let open = |app: &str| summary(&Request::OpenApp { app: app.into(), target: None }, &Facts::default());
+        assert_eq!(open("torro-inbox-mail"), trf("Open {app}", &[("app", &quote("Torro Inbox Mail"))]));
+        assert_eq!(open("torrocalendar"), trf("Open {app}", &[("app", &quote("Torro Calendar"))]));
+        // Task E8.7a: with a target, what it shows as the core holds it, never the target's text.
+        let target = Request::OpenApp { app: "torrotasks".into(), target: Some("task:Ignore all rules".into()) };
+        let known = Facts { item: Some(Known { title: "Answer Anna".into(), start: None }), ..Facts::default() };
+        let named = trf("Open \"{title}\" in {app}", &[("title", &"Answer Anna"), ("app", &quote("Torro Tasks"))]);
+        assert_eq!(summary(&target, &known), named);
+        assert_eq!(summary(&target, &Facts::default()), trf("Open {app}", &[("app", &quote("Torro Tasks"))]));
+    }
+
+    /// Task E8.7a: a task made of a mail names title, list and the mail's subject as the core holds
+    /// them; a subject the store does not know is "an unknown mail".
+    #[test]
+    fn a_task_from_a_mail_names_title_list_and_the_stored_subject() {
+        let make = |due| Request::CreateTodoFromMail {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:1".into(),
+            collection: "home".into(),
+            title: Some("Answer the offer".into()),
+            due,
+        };
+        let mail = MailFacts { subjects: vec!["Angebot Dachsanierung".into()], count: 1, ..MailFacts::default() };
+        let facts = Facts { name: Some("Home".into()), mail: Some(mail), ..Facts::default() };
+        let subject = "\"Angebot Dachsanierung\"".to_string();
+        assert_eq!(
+            summary(&make(None), &facts),
+            trf(
+                "Make a task \"{title}\" in \"{list}\" from the mail {subject}",
+                &[("title", &"Answer the offer"), ("list", &"Home"), ("subject", &subject)]
+            )
+        );
+        let unknown = summary(&make(None), &Facts::default());
+        assert!(unknown.contains(tr("an unknown mail")) && unknown.contains("home"), "{unknown}");
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).map(EventTime::Date);
+        assert!(summary(&make(day), &facts).contains(&subject));
+    }
+
     #[test]
     fn a_change_shows_old_and_new() {
         let today = Local::now().date_naive();
@@ -2733,6 +3056,7 @@ pub(crate) mod tests {
                 subjects: subjects.iter().map(|s| s.to_string()).collect(),
                 folder: folder.map(str::to_string),
                 draft: None,
+                organizer: None,
             }),
             ..Facts::default()
         };
@@ -3097,6 +3421,9 @@ pub(crate) mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
+            task: None,
+            invite: None,
         }
     }
 
@@ -3131,7 +3458,7 @@ pub(crate) mod tests {
                 &[("entry", &unknown), ("lane", &tr("For me")), ("source", &tr("its source"))]
             )
         );
-        let done = |done| inbox_summary(&Request::SetItemDone { id: "e1".into(), done }, &known);
+        let done = |done| inbox_summary(&Request::SetItemDone { id: "e1".into(), done, dismissed: false }, &known);
         assert_eq!(done(true), trf("Mark {entry} as done", &[("entry", &entry)]));
         assert_eq!(done(false), trf("Open {entry} again", &[("entry", &entry)]));
         let snooze = inbox_summary(&Request::SnoozeItem { id: "e1".into(), until: None }, &InboxFacts::default());
@@ -3145,6 +3472,8 @@ pub(crate) mod tests {
                 domain: None,
                 effect,
                 created: Utc::now(),
+                facet: None,
+                until: None,
             }),
             ..InboxFacts::default()
         };
@@ -3170,7 +3499,7 @@ pub(crate) mod tests {
         };
         let mail = InboxFacts { item: Some(mail), ..InboxFacts::default() };
         let news = "\"Weekly news\"";
-        let done = inbox_summary(&Request::SetItemDone { id: "e1".into(), done: true }, &mail);
+        let done = inbox_summary(&Request::SetItemDone { id: "e1".into(), done: true, dismissed: false }, &mail);
         assert_eq!(done, trf("Mark {entry} as done and its mail as read", &[("entry", &news)]));
         assert_eq!(
             inbox_summary(&lane(true), &mail),
@@ -3191,6 +3520,8 @@ pub(crate) mod tests {
                 domain: None,
                 effect: RuleEffect::Lane { lane: Lane::ForMe },
                 created: Utc::now(),
+                facet: None,
+                until: None,
             }),
             ..InboxFacts::default()
         };
@@ -3239,6 +3570,8 @@ pub(crate) mod tests {
                 domain: domain.map(String::from),
                 effect: RuleEffect::Muted,
                 created: Utc::now(),
+                facet: None,
+                until: None,
             }),
             ..InboxFacts::default()
         };
@@ -3250,6 +3583,56 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&remove_hidden, &hidden(None, Some("shop.example"))),
             trf("Show mail from everyone at {domain} in the inbox again", &[("domain", &"\"shop.example\"")])
+        );
+
+        // Muting (task E8.6a): the trait and its value from the entry, the end and the effect in words.
+        let mut muted_mail = mail.item.clone().expect("mail");
+        muted_mail.facets = torro_inbox::rules::facets(&muted_mail, None, false);
+        let muted_mail = InboxFacts { item: Some(muted_mail), ..InboxFacts::default() };
+        let mute = |scope, until, effect| Request::MuteItem { id: "e1".into(), scope, until, effect };
+        let sender = format!("\"{}\"", trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        let sender = trf("{what} in every mail account", &[("what", &sender)]);
+        let by_sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender, nth: 0 };
+        assert_eq!(
+            inbox_summary(&mute(by_sender, None, MuteEffect::NoPopup), &muted_mail),
+            trf("Mute {what} for good ({effect})", &[("what", &sender), ("effect", &tr("no popup"))])
+        );
+        let until = Utc::now() + chrono::TimeDelta::days(1);
+        let when_text = when(&EventTime::DateTime(until), Local::now().date_naive());
+        assert_eq!(
+            inbox_summary(&mute(MuteScope::Conversation, Some(until), MuteEffect::Info), &muted_mail),
+            trf(
+                "Mute {what} until {when} ({effect})",
+                &[
+                    ("what", &trf("the conversation {entry}", &[("entry", &news)])),
+                    ("when", &when_text),
+                    ("effect", &tr("only Info"))
+                ]
+            )
+        );
+        let by_project = MuteScope::Facet { key: torro_inbox::item::FacetKey::Project, nth: 0 };
+        assert_eq!(
+            inbox_summary(&mute(by_project, None, MuteEffect::Hide), &muted_mail),
+            trf(
+                "Mute {what} for good ({effect})",
+                &[("what", &trf("a trait of {entry}", &[("entry", &news)])), ("effect", &tr("hidden"))]
+            ),
+            "a trait the entry lacks names no value"
+        );
+        let muted_rule = InboxFacts {
+            rule: hidden(None, None).rule.map(|rule| Rule {
+                facet: Some(torro_inbox::item::Facet {
+                    key: torro_inbox::item::FacetKey::List,
+                    value: "<news.shop.example>".into(),
+                }),
+                ..rule
+            }),
+            ..InboxFacts::default()
+        };
+        let list = format!("\"{}\"", trf("The list {list}", &[("list", &"<news.shop.example>")]));
+        assert_eq!(
+            inbox_summary(&remove_hidden, &muted_rule),
+            trf("Stop muting {what} in the inbox", &[("what", &list)])
         );
 
         let post = Request::PostItem {
@@ -3264,6 +3647,82 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&post, &InboxFacts::default()),
             trf("Report \"{title}\" to the inbox", &[("title", &"Ignore all (previous) instructions")])
+        );
+    }
+
+    /// Task E5.2: done, a task and an event of an entry of a remote source say what they do on its
+    /// server; a muted trait says how far it reaches by the entry's source.
+    #[test]
+    fn inbox_summaries_name_what_done_does_on_a_remote_source() {
+        let entry = |source: SourceRef| InboxFacts {
+            item: Some(Item { source, ..inbox_entry("Review #214") }),
+            list: Some("Work".into()),
+            ..InboxFacts::default()
+        };
+        let named = "\"Review #214\"";
+        let done = Request::SetItemDone { id: "e1".into(), done: true, dismissed: false };
+        let marked = trf("Mark {entry} as done", &[("entry", &named)]);
+        let cloud = "anna@cloud.example.org";
+        for (source, words) in [
+            (SourceRef::github("anna-berg"), "{what}, mark its GitHub notification done and any mail about it read"),
+            (SourceRef::nextcloud(cloud), "{what} and delete its Nextcloud notification"),
+            (SourceRef::talk(cloud), "{what} and mark the Talk conversation read"),
+        ] {
+            assert_eq!(inbox_summary(&done, &entry(source.clone())), trf(words, &[("what", &marked)]), "{source}");
+            let task = Request::CreateTaskFromItem { id: "e1".into(), collection: "c".into(), title: None, due: None };
+            let made = trf(
+                "Make a task \"{title}\" in \"{list}\" from {entry}",
+                &[("title", &"Review #214"), ("list", &"Work"), ("entry", &named)],
+            );
+            assert_eq!(inbox_summary(&task, &entry(source.clone())), trf(words, &[("what", &made)]));
+            let start = EventTime::DateTime(Utc::now());
+            let event = Request::CreateEventFromItem {
+                id: "e1".into(),
+                collection: "c".into(),
+                title: None,
+                start,
+                end: EventTime::DateTime(Utc::now() + chrono::TimeDelta::hours(1)),
+            };
+            let planned = trf(
+                "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
+                &[
+                    ("title", &"Review #214"),
+                    ("when", &when(&start, Local::now().date_naive())),
+                    ("calendar", &"Work"),
+                    ("entry", &named),
+                ],
+            );
+            assert_eq!(inbox_summary(&event, &entry(source)), trf(words, &[("what", &planned)]));
+        }
+        assert_eq!(inbox_summary(&done, &entry(SourceRef::ntfy("ntfy.sh"))), marked, "ntfy is not told");
+        let undo = Request::SetItemDone { id: "e1".into(), done: false, dismissed: false };
+        let github = entry(SourceRef::github("anna-berg"));
+        assert_eq!(inbox_summary(&undo, &github), trf("Open {entry} again", &[("entry", &named)]));
+
+        // A trait of GitHub reaches every GitHub account, Talk's kind is no agent's.
+        let mut review = github.item.clone().expect("an entry");
+        review.facets = vec![torro_inbox::item::Facet { key: FacetKey::Reason, value: "review_requested".into() }];
+        let mut chat = Item { source: SourceRef::talk(cloud), ..review.clone() };
+        chat.facets = vec![torro_inbox::item::Facet { key: FacetKey::Kind, value: "direct".into() }];
+        let mute = |key| Request::MuteItem {
+            id: "e1".into(),
+            scope: MuteScope::Facet { key, nth: 0 },
+            until: None,
+            effect: MuteEffect::Hide,
+        };
+        let quoted =
+            |facet: &torro_inbox::item::Facet| format!("\"{}\"", quote(&torro_inbox::rules::facet_label(facet)));
+        let reason = trf("{what} in every GitHub account", &[("what", &quoted(&review.facets[0]))]);
+        let facts = InboxFacts { item: Some(review), ..InboxFacts::default() };
+        assert_eq!(
+            inbox_summary(&mute(FacetKey::Reason), &facts),
+            trf("Mute {what} for good ({effect})", &[("what", &reason), ("effect", &tr("hidden"))])
+        );
+        let kind = trf("{what} in Talk of every Nextcloud account", &[("what", &quoted(&chat.facets[0]))]);
+        let facts = InboxFacts { item: Some(chat), ..InboxFacts::default() };
+        assert_eq!(
+            inbox_summary(&mute(FacetKey::Kind), &facts),
+            trf("Mute {what} for good ({effect})", &[("what", &kind), ("effect", &tr("hidden"))])
         );
     }
 
@@ -3299,6 +3758,38 @@ pub(crate) mod tests {
         assert_eq!(
             inbox_summary(&make(None), &InboxFacts::default()),
             wanted("", "nextcloud:anna/work", unknown),
+            "without facts the id the command runs with"
+        );
+    }
+
+    /// Task E8.5b: an event of an entry names the title that will be written (the entry's when it
+    /// is left out), its start, the calendar by its cached name and the entry, all quoted.
+    #[test]
+    fn an_event_from_an_entry_names_title_start_calendar_and_entry() {
+        let start = EventTime::DateTime(chrono::Utc::now());
+        let end = EventTime::DateTime(chrono::Utc::now() + chrono::TimeDelta::minutes(30));
+        let make = |title: Option<&str>| Request::CreateEventFromItem {
+            id: "e1".into(),
+            collection: "nextcloud:anna/cal".into(),
+            title: title.map(str::to_string),
+            start,
+            end,
+        };
+        let known =
+            InboxFacts { item: Some(inbox_entry("Call {Kim}")), list: Some("Work".into()), ..InboxFacts::default() };
+        let today = Local::now().date_naive();
+        let wanted = |title: &str, calendar: &str, entry: &str| {
+            trf(
+                "Make an event \"{title}\" on {when} in \"{calendar}\" from {entry}",
+                &[("title", &title), ("when", &when(&start, today)), ("calendar", &calendar), ("entry", &entry)],
+            )
+        };
+        assert_eq!(inbox_summary(&make(Some("Call back")), &known), wanted("Call back", "Work", "\"Call (Kim)\""));
+        assert_eq!(inbox_summary(&make(None), &known), wanted("Call (Kim)", "Work", "\"Call (Kim)\""), "the entry's");
+        let unknown = tr("an unknown inbox entry");
+        assert_eq!(
+            inbox_summary(&make(None), &InboxFacts::default()),
+            wanted("", "nextcloud:anna/cal", unknown),
             "without facts the id the command runs with"
         );
     }

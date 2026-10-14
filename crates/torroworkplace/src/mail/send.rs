@@ -476,6 +476,7 @@ pub(crate) async fn prepare(
         signature: settings.signature.clone(),
         reply,
         attachments,
+        calendar: None,
         message_id: message_id.clone(),
         // The draft's own date, so building it again gives the same bytes.
         date: read.date.unwrap_or(stored_date),
@@ -688,34 +689,122 @@ async fn send_with<C: SentCopy>(
     if approved.is_some_and(|approved| approved != prepared.fingerprint()) {
         return Err(SendError::Changed);
     }
+    let parcel = Parcel {
+        account: &prepared.draft.account,
+        imap_host: &prepared.imap_host,
+        send_id: prepared.send_id(),
+        built: &prepared.built,
+        copy: prepared.sent_copy(),
+    };
+    match deliver(mail, &parcel, copier).await? {
+        Delivered::Accepted { filed } => {
+            let removed = match remove_draft(mail, &prepared.draft).await {
+                Ok(()) => true,
+                Err(err) => {
+                    eprintln!("torroworkplace: a sent draft could not be removed: {}", err_code(&err));
+                    false
+                }
+            };
+            // Done with: the draft is gone, so the same send cannot come again.
+            if filed && removed {
+                forget_send(mail, &parcel.send_id).await;
+            }
+            Ok(Response::MailSent { delivery: Delivery::Accepted })
+        }
+        Delivered::Unknown => Ok(Response::MailSent { delivery: Delivery::Unknown }),
+    }
+}
+
+/// Sends `outgoing`, a message the core made itself and that is no draft (task E8.3b: the answer to
+/// an invitation), from `account` under the send rule, as [`send_draft`] sends a draft: the journal
+/// entry named by the account and the `Message-ID` (the same message is never sent twice by
+/// itself), the account's SMTP server, the copy in the Sent folder (filed later when that fails).
+/// Nothing is checked here: the caller has checked who may send it (`Rights::outbound` and the
+/// approval in the core).
+///
+/// Answers how it went ([`Delivery`]); errors as for [`send_draft`] ([`SendError::response`]),
+/// none of them sent anything.
+pub(crate) async fn send_message(
+    mail: &MailService,
+    account: &str,
+    outgoing: &Outgoing,
+) -> Result<Delivery, SendError> {
+    let config = mail.config(account).await?;
+    let built = mime::build(outgoing).map_err(SendError::Unbuildable)?;
+    let parcel = Parcel {
+        account,
+        imap_host: &config.imap.host,
+        send_id: send_id_of(account, &outgoing.message_id),
+        built: &built,
+        copy: built.bytes.clone(),
+    };
+    match deliver(mail, &parcel, |account| ImapCopy { mail, account: account.to_string() }).await? {
+        Delivered::Accepted { filed } => {
+            // No draft to wait for: once the copy is filed, the send is done with.
+            if filed {
+                forget_send(mail, &parcel.send_id).await;
+            }
+            Ok(Delivery::Accepted)
+        }
+        Delivered::Unknown => Ok(Delivery::Unknown),
+    }
+}
+
+/// One message on its way out ([`deliver`]): from which account, whether its provider files sent
+/// mail itself, its id in the journal, what is sent and the copy for the Sent folder.
+struct Parcel<'a> {
+    account: &'a str,
+    /// The account's IMAP host: whether the provider files sent mail itself.
+    imap_host: &'a str,
+    send_id: String,
+    built: &'a Built,
+    copy: Vec<u8>,
+}
+
+/// What [`deliver`] did with a message the server did not refuse.
+enum Delivered {
+    /// The server took it; `filed`: its copy is in the Sent folder or none is needed.
+    Accepted { filed: bool },
+    /// The server may have it: it is never sent again by itself.
+    Unknown,
+}
+
+/// Hands `parcel` to the SMTP server of its account under the send rule and files its copy
+/// through what `copier` makes: a send the journal knows the outcome of is not sent again, the
+/// copy's bytes are kept before the send (so a crash after an acceptance still finds them), and a
+/// refused password is noted at the account. "Not accepted" is the error
+/// ([`SendError::NotAccepted`]): nothing went out.
+async fn deliver<C: SentCopy>(
+    mail: &MailService,
+    parcel: &Parcel<'_>,
+    copier: impl FnOnce(&str) -> C,
+) -> Result<Delivered, SendError> {
     let outbox = mail.outbox().await?;
-    let send_id = prepared.send_id();
-    let account = prepared.draft.account.clone();
-    let plan = match keeps_sent_copies(&prepared.imap_host) {
+    let (send_id, account) = (&parcel.send_id, parcel.account);
+    let plan = match keeps_sent_copies(parcel.imap_host) {
         true => CopyPlan::ProviderKeepsIt,
         false => CopyPlan::Append,
     };
     // A send the journal knows the outcome of needs no server: it is not asked again.
     let settled = outbox
         .journal
-        .entry(&send_id)?
+        .entry(send_id)?
         .is_some_and(|entry| matches!(entry.submission, Submission::Accepted | Submission::Unknown));
     let smtp = match settled {
         true => Submitter::Done,
-        false => outbox.submitter(mail, &account).await?,
+        false => outbox.submitter(mail, account).await?,
     };
-    let copy = prepared.sent_copy();
     if !settled && plan == CopyPlan::Append {
         // Before the send: the journal keeps no message, and a crash after an acceptance must
         // still find the copy's bytes.
-        outbox.keep(&send_id, &account, &copy).map_err(|err| SendError::Mail(MailError::Store(err.into())))?;
+        outbox.keep(send_id, account, &parcel.copy).map_err(|err| SendError::Mail(MailError::Store(err.into())))?;
     }
-    let envelope = &prepared.built.envelope;
-    let report = match smtp::send(&outbox.journal, &send_id, envelope, &prepared.built.bytes, &smtp, plan).await {
+    let envelope = &parcel.built.envelope;
+    let report = match smtp::send(&outbox.journal, send_id, envelope, &parcel.built.bytes, &smtp, plan).await {
         Ok(report) => report,
         Err(err) => {
             if !settled {
-                outbox.discard(&send_id);
+                outbox.discard(send_id);
             }
             return Err(err.into());
         }
@@ -726,43 +815,37 @@ async fn send_with<C: SentCopy>(
     match report.submission {
         Submission::Accepted => {
             let filed = match report.copy {
-                CopyStatus::Pending => file_copy(&outbox, &send_id, &copy, &copier(&account), true).await,
+                CopyStatus::Pending => file_copy(&outbox, send_id, &parcel.copy, &copier(account), true).await,
                 CopyStatus::Saved | CopyStatus::NotNeeded => true,
             };
             if filed {
-                outbox.discard(&send_id);
+                outbox.discard(send_id);
             }
-            let removed = match remove_draft(mail, &prepared.draft).await {
-                Ok(()) => true,
-                Err(err) => {
-                    eprintln!("torroworkplace: a sent draft could not be removed: {}", err_code(&err));
-                    false
-                }
-            };
-            // Done with: the draft is gone, so the same send cannot come again.
-            if filed
-                && removed
-                && let Err(err) = outbox.journal.forget(&send_id)
-            {
-                eprintln!("torroworkplace: cannot clear send {send_id} from the journal: {err}");
-            }
-            Ok(Response::MailSent { delivery: Delivery::Accepted })
+            Ok(Delivered::Accepted { filed })
         }
         Submission::NotAccepted => {
-            outbox.discard(&send_id);
+            outbox.discard(send_id);
             let error = report.error.unwrap_or(SmtpError::Protocol);
             if error == SmtpError::Auth {
                 // One password for IMAP and SMTP: the account shows it, and nothing tries it again
                 // until the person connects the account anew, so no server locks it.
-                mail.note_password_refused(&account).await;
+                mail.note_password_refused(account).await;
             }
             Err(SendError::NotAccepted(error))
         }
         // "Submitting" is never reported; read as unknown like the journal does.
         Submission::Unknown | Submission::Submitting => {
-            outbox.discard(&send_id);
-            Ok(Response::MailSent { delivery: Delivery::Unknown })
+            outbox.discard(send_id);
+            Ok(Delivered::Unknown)
         }
+    }
+}
+
+/// Clears the finished send `id` from the journal.
+async fn forget_send(mail: &MailService, id: &str) {
+    let Ok(outbox) = mail.outbox().await else { return };
+    if let Err(err) = outbox.journal.forget(id) {
+        eprintln!("torroworkplace: cannot clear send {id} from the journal: {err}");
     }
 }
 

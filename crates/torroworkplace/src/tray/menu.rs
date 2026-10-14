@@ -141,7 +141,7 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
         menu.push(info(line));
     }
     menu.push(Item::Separator);
-    menu.push(entry(tr("Settings…"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string() }));
+    menu.push(entry(tr("Settings…"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None }));
     menu.push(entry(tr("Quit"), Request::Quit));
     menu
 }
@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(action_of(&menu, tr("Tasks")), Some(Action::OpenApp(AppId::TASKS)));
         assert_eq!(
             action_of(&menu, tr("Settings…")),
-            Some(Action::Run(Box::new(Request::OpenApp { app: AppId::WORKPLACE.binary.to_string() })))
+            Some(Action::Run(Box::new(Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None })))
         );
         assert_eq!(action_of(&menu, tr("Quit")), Some(Action::Run(Box::new(Request::Quit))));
     }

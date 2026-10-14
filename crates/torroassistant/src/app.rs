@@ -80,6 +80,8 @@ pub const CHAT: AppId = AppId {
     binary: AppId::ASSISTANT.binary,
     dir: AppId::ASSISTANT.dir,
     display_name: AppId::ASSISTANT.display_name,
+    // A chat window starts with `--chat <id>|new`, which names the conversation; no entry of its own.
+    args: &[],
 };
 
 /// The size a chat window opens at: a column of conversation, not the main window's two parts.

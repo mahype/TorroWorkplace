@@ -15,13 +15,24 @@
 //! source is a mail account, the senders and domains in the inbox's rules, what hiding a sender
 //! answers (its rule names the sender), and the task made from an inbox entry (its title can be the
 //! subject of a mail; the core does not tell which source the entry had, so it is withheld for
-//! every entry). The approvals, whose summaries and answers can quote mail, are no tool of the
-//! assistant at all (`tools::callable`).
+//! every entry). Since the three inbox windows (step E8): the values of rules by trait (`facet`),
+//! the ways to mute an entry and what muting answers, the statistics with their suggestions, a task
+//! made of a mail in a folder, and the mail's subject and sender in a task's link (`link.mail`). The approvals, whose summaries and answers can quote mail, are no tool of the
+//! assistant at all (`tools::callable`). The event made from an inbox entry (task E8.5b) is
+//! withheld like its task: its title and description can be a mail's subject and sender. The answer
+//! to an invitation (`mail.respond_to_invitation`, task E8.3b) is a `mail.*` answer with the event
+//! made of the invitation in it, so it is withheld as well; only its errors go through. Quiet
+//! (`inbox.get_quiet`) names a calendar event at most, no mail.
 //!
 //! The assistant's memory (task C.10): a note a model on this computer kept after the conversation
 //! read mail is marked `local_only` (`super::model`), and a model elsewhere never reads such a note –
 //! neither in its prompt (`super::prompt`) nor in what `assistant.list_memories` answers
 //! ([`for_model`]).
+//!
+//! The remote sources of the inbox (task E5.2, decision 15 of E5, `docs/ki.md`: "mail and
+//! messengers only local, GitHub may go to the cloud"): entries of Nextcloud and Talk are held back
+//! like mail, a model elsewhere reads only their id and source ([`held_back`]); entries of GitHub
+//! and ntfy go through, until KI.1 brings rules per source.
 //!
 //! Known limit, for KI.1: a task made from a mail entry keeps the subject as its title, and
 //! `tasks.list_todos` shows it to every model; tasks are the person's own data from then on.
@@ -85,7 +96,16 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
     let result = value.get("result").and_then(Value::as_str).unwrap_or_default();
     let whole = match request {
         request if request.operation().area() == Area::Mail => !MAIL_ANSWERS_ALLOWED.contains(&result),
-        Request::HideSender { .. } | Request::CreateTaskFromItem { .. } => result != "error",
+        // Muting by trait and the statistics name senders, domains and lists of mail (tasks E8.6a,
+        // E8.8a); a task made of a mail takes its subject as title (task E8.7a), and so does an
+        // event made of an entry, with the line naming the mail in its description (task E8.5b).
+        Request::HideSender { .. }
+        | Request::CreateTaskFromItem { .. }
+        | Request::CreateEventFromItem { .. }
+        | Request::ListMuteOptions { .. }
+        | Request::MuteItem { .. }
+        | Request::GetStats { .. }
+        | Request::CreateTodoFromMail { .. } => result != "error",
         _ => false,
     };
     if whole {
@@ -94,16 +114,28 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
     match response {
         Response::Items { items } => {
             let shown: Vec<Value> = items.iter().map(item_for_remote).collect();
-            let withheld = items.iter().any(from_mail);
+            let withheld = items.iter().any(held_back);
             Screened { value: json!({ "result": result, "items": shown }), withheld }
         }
         Response::Item { item } => {
-            Screened { value: json!({ "result": result, "item": item_for_remote(item) }), withheld: from_mail(item) }
+            Screened { value: json!({ "result": result, "item": item_for_remote(item) }), withheld: held_back(item) }
         }
-        Response::Rules { rules } => {
+        // The hits per rule (task E8.8a) stay home: counts of what a rule caught say nothing a model
+        // needs. A rule by trait (task E8.6a) can name a mail's sender, domain or list in `facet`.
+        Response::Rules { rules, .. } => {
             let shown: Vec<Value> = rules.iter().map(rule_for_remote).collect();
-            let withheld = rules.iter().any(|rule| rule.sender.is_some() || rule.domain.is_some());
+            let withheld =
+                rules.iter().any(|rule| rule.sender.is_some() || rule.domain.is_some() || rule.facet.is_some());
             Screened { value: json!({ "result": result, "rules": shown }), withheld }
+        }
+        // A task made of a mail carries the mail's subject and sender in `link.mail` (task E8.7a).
+        Response::Todos { todos } => {
+            let shown: Vec<Value> = todos.iter().map(todo_for_remote).collect();
+            let withheld = todos.iter().any(names_a_mail);
+            Screened { value: json!({ "result": result, "todos": shown }), withheld }
+        }
+        Response::Todo { todo } => {
+            Screened { value: json!({ "result": result, "todo": todo_for_remote(todo) }), withheld: names_a_mail(todo) }
         }
         // Notes a local model kept after reading mail (task C.10).
         Response::Memories { notes } => {
@@ -126,25 +158,46 @@ pub fn reads_mail(name: &str) -> bool {
     name.starts_with("mail.") || name.starts_with("inbox.") || name == "bots.ask_bot"
 }
 
-/// An inbox entry from a mail account is mail content.
-fn from_mail(item: &Item) -> bool {
-    item.source.kind == SourceKind::Mail
+/// An inbox entry from a mail account is mail content; one of Nextcloud or Talk (task E5.2) is held
+/// back the same way, messages and notifications of people the person works with. GitHub and ntfy
+/// go through (module docs).
+fn held_back(item: &Item) -> bool {
+    matches!(item.source.kind, SourceKind::Mail | SourceKind::Nextcloud | SourceKind::Talk)
 }
 
-/// `item` for a model elsewhere: as it is, or for an entry of a mail account only its id and
-/// source.
+/// `item` for a model elsewhere: as it is, or for an entry of a mail account, Nextcloud or Talk
+/// only its id and source.
 fn item_for_remote(item: &Item) -> Value {
-    if from_mail(item) {
+    if held_back(item) {
         return json!({ "id": item.id, "source": item.source.key(), "withheld": WITHHELD });
     }
     serde_json::to_value(item).unwrap_or(Value::Null)
 }
 
-/// A rule of the inbox for a model elsewhere: the sender and domain it names are a mail's.
+/// Whether `todo` shows what a mail holds: its link names a mail and the core filled in the mail's
+/// subject and sender (task E8.7a).
+fn names_a_mail(todo: &torro_pim::Todo) -> bool {
+    todo.link.as_ref().is_some_and(|link| link.mail.is_some())
+}
+
+/// `todo` for a model elsewhere: as it is, with the mail's details in its link withheld.
+fn todo_for_remote(todo: &torro_pim::Todo) -> Value {
+    let mut value = serde_json::to_value(todo).unwrap_or(Value::Null);
+    if names_a_mail(todo)
+        && let Some(mail) = value.get_mut("link").and_then(|link| link.get_mut("mail"))
+    {
+        *mail = json!(WITHHELD);
+    }
+    value
+}
+
+/// A rule of the inbox for a model elsewhere: the sender and domain it names are a mail's, and so
+/// can be the value of its trait (`facet`, task E8.6a: a sender, a domain, a list), so all three are
+/// withheld.
 fn rule_for_remote(rule: &Rule) -> Value {
     let mut value = serde_json::to_value(rule).unwrap_or(Value::Null);
     if let Some(object) = value.as_object_mut() {
-        for field in ["sender", "domain"] {
+        for field in ["sender", "domain", "facet"] {
             if let Some(named) = object.get_mut(field) {
                 *named = json!(WITHHELD);
             }
@@ -194,6 +247,9 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
+            task: None,
+            invite: None,
         }
     }
 
@@ -235,6 +291,37 @@ mod tests {
     }
 
     #[test]
+    fn an_answered_invitation_goes_to_local_models_only() {
+        // Task E8.3b: the answer carries the event made of the invitation (its title, text and the
+        // line naming the mail); a model elsewhere reads that something was withheld, or the error.
+        let answer: Request = serde_json::from_value(json!({
+            "method": "mail.respond_to_invitation", "account": "mail:anna@example.org", "id": "m:1", "answer": "accept"
+        }))
+        .expect("an answer");
+        let start = torro_pim::EventTime::DateTime(chrono::Utc::now());
+        let event = torro_pim::Event {
+            uid: "planning-1".into(),
+            collection: "work".into(),
+            href: None,
+            etag: None,
+            summary: "Salary talk with Jonas".into(),
+            start,
+            end: None,
+            location: None,
+            description: None,
+            recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
+        };
+        let answered =
+            Response::InvitationAnswered { delivery: torro_ipc::mail::Delivery::Accepted, event: Some(event) };
+        assert!(!for_model(&answer, &answered, Place::Local).withheld);
+        let remote = for_model(&answer, &answered, Place::Remote);
+        assert_eq!((remote.withheld, remote.value.clone()), (true, json!({ "withheld": WITHHELD })));
+        let refused = Response::Error { code: "forbidden".into(), message: "no sending".into() };
+        assert_eq!(for_model(&answer, &refused, Place::Remote).value["result"], "error");
+    }
+
+    #[test]
     fn inbox_entries_of_mail_accounts_are_withheld_one_by_one() {
         let list: Request = serde_json::from_value(json!({"method": "inbox.list_items"})).expect("a list");
         let items = Response::Items {
@@ -254,6 +341,73 @@ mod tests {
         assert!(!for_model(&Request::GetItem { id: "b2".into() }, &one, Place::Remote).withheld);
     }
 
+    /// Task E5.2: Nextcloud and Talk stay with local models like mail, GitHub and ntfy go through.
+    #[test]
+    fn nextcloud_and_talk_entries_are_withheld_and_github_and_ntfy_are_not() {
+        let list: Request = serde_json::from_value(json!({"method": "inbox.list_items"})).expect("a list");
+        let cloud = "anna@cloud.example.org";
+        let items = Response::Items {
+            items: vec![
+                item("n1", SourceRef::nextcloud(cloud), "Jonas shared Budget.ods"),
+                item("t1", SourceRef::talk(cloud), "Lena: are you coming?"),
+                item("g1", SourceRef::github("anna-berg"), "Review requested"),
+                item("y1", SourceRef::ntfy("ntfy.sh"), "Backup failed"),
+            ],
+        };
+        let remote = for_model(&list, &items, Place::Remote);
+        assert!(remote.withheld);
+        let text = remote.value.to_string();
+        assert!(!text.contains("Budget") && !text.contains("Lena"), "{text}");
+        assert!(text.contains("Review requested") && text.contains("Backup failed"), "{text}");
+        for (n, id) in ["n1", "t1"].into_iter().enumerate() {
+            assert_eq!(remote.value["items"][n]["withheld"], WITHHELD);
+            assert_eq!(remote.value["items"][n]["id"], id);
+        }
+        assert!(!for_model(&list, &items, Place::Local).withheld);
+        let one = Response::Item { item: item("t1", SourceRef::talk(cloud), "Lena: are you coming?") };
+        assert!(for_model(&Request::GetItem { id: "t1".into() }, &one, Place::Remote).withheld);
+    }
+
+    /// Task E5.12: a topic's name is a password on a public server. The assistant lists accounts
+    /// with its own client key, which gets the labels only, so a model elsewhere never reads a name.
+    #[tokio::test]
+    async fn a_remote_model_reads_ntfy_topics_by_their_labels_only() {
+        use crate::account::ntfy::tests::{fake_ntfy, service, topic};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = fake_ntfy().await;
+        let ntfy = service(dir.path(), &crate::account::github::tests::MemoryTokens::default());
+        let base = format!("http://127.0.0.1:{}", server.port());
+        ntfy.connect(&base, &[topic("open_backups", "Backups")]).await.expect("connected");
+
+        let accounts = Response::Accounts { accounts: ntfy.infos(false).await };
+        let screened = for_model(&Request::Accounts, &accounts, Place::Remote).value.to_string();
+        assert!(!screened.contains("open_backups") && screened.contains("Backups"), "{screened}");
+    }
+
+    /// Task E8.3c: the invitation a mail entry carries is the mail's content and goes with the rest
+    /// of the entry – a model elsewhere reads neither its title nor when it is.
+    #[test]
+    fn the_invitation_of_a_mail_entry_is_withheld_with_it() {
+        let start = Utc.with_ymd_and_hms(2026, 10, 20, 12, 0, 0).single().expect("valid time");
+        let invite = torro_mail::Invite {
+            title: "Board meeting".into(),
+            start,
+            end: None,
+            all_day: false,
+            answered: Some(torro_mail::InvitationAnswer::Accept),
+        };
+        let entry = Item { invite: Some(invite), ..item("a1", mail_source(), "Invitation") };
+        let one = Response::Item { item: entry.clone() };
+        let remote = for_model(&Request::GetItem { id: "a1".into() }, &one, Place::Remote);
+        let text = remote.value.to_string();
+        assert!(remote.withheld && !text.contains("Board meeting") && !text.contains("2026-10-20"), "{text}");
+        let list: Request = serde_json::from_value(json!({"method": "inbox.list_items"})).expect("a list");
+        let many = for_model(&list, &Response::Items { items: vec![entry] }, Place::Remote).value.to_string();
+        assert!(!many.contains("Board meeting") && !many.contains("invite"), "{many}");
+        let local = for_model(&Request::GetItem { id: "a1".into() }, &one, Place::Local);
+        assert!(local.value.to_string().contains("Board meeting"), "a local model reads it");
+    }
+
     #[test]
     fn the_senders_in_the_inbox_rules_are_withheld() {
         let rule = Rule {
@@ -263,14 +417,88 @@ mod tests {
             domain: None,
             effect: torro_inbox::RuleEffect::Muted,
             created: Utc.with_ymd_and_hms(2026, 10, 13, 9, 0, 0).single().expect("valid time"),
+            facet: None,
+            until: None,
         };
         let quiet = Rule { id: "r2".into(), source: agent_source(), sender: None, ..rule.clone() };
-        let rules = Response::Rules { rules: vec![rule, quiet] };
+        // A rule by trait (task E8.6a) names the list in its facet; that is a mail's too.
+        let list_rule = Rule {
+            id: "r3".into(),
+            sender: None,
+            facet: Some(torro_inbox::item::Facet {
+                key: torro_inbox::item::FacetKey::List,
+                value: "news.lists.acme.example".into(),
+            }),
+            ..rule.clone()
+        };
+        let rules = Response::Rules { rules: vec![rule, quiet, list_rule], hits: Vec::new() };
         let list: Request = serde_json::from_value(json!({"method": "inbox.list_rules"})).expect("rules");
         let remote = for_model(&list, &rules, Place::Remote);
         let text = remote.value.to_string();
-        assert!(remote.withheld && !text.contains("acme") && text.contains("r1") && text.contains("r2"), "{text}");
+        assert!(remote.withheld && !text.contains("acme") && text.contains("r1") && text.contains("r3"), "{text}");
         assert!(for_model(&list, &rules, Place::Local).value.to_string().contains("acme"));
+        let only_agents = Response::Rules { rules: vec![quiet_rule(&rules)], hits: Vec::new() };
+        assert!(!for_model(&list, &only_agents, Place::Remote).withheld, "an agent's rule names no mail");
+    }
+
+    fn quiet_rule(rules: &Response) -> Rule {
+        let Response::Rules { rules, .. } = rules else { panic!("rules") };
+        rules[1].clone()
+    }
+
+    #[test]
+    fn the_mail_of_a_task_is_withheld() {
+        // A task made of a mail (task E8.7a): the core fills in the mail's subject and sender.
+        let todo: torro_pim::Todo = serde_json::from_value(json!({
+            "uid": "t1", "collection": "work", "summary": "Reply to Anna", "completed": false,
+            "link": { "id": "mail:anna@example.org:abc@example.org", "mail": {
+                "message": "m1", "subject": "Secret offer", "sender": "Anna",
+                "date": "2026-10-13T09:00:00Z", "new_replies": 1 } }
+        }))
+        .expect("a task");
+        let list: Request = serde_json::from_value(json!({"method": "tasks.list_todos"})).expect("list");
+        let remote = for_model(&list, &Response::Todos { todos: vec![todo.clone()] }, Place::Remote);
+        let text = remote.value.to_string();
+        assert!(remote.withheld && !text.contains("Secret offer") && text.contains("Reply to Anna"), "{text}");
+        assert!(
+            for_model(&list, &Response::Todos { todos: vec![todo] }, Place::Local).value.to_string().contains("Secret")
+        );
+        // Muting by trait and the statistics are withheld as a whole for a model elsewhere.
+        let options: Request =
+            serde_json::from_value(json!({"method": "inbox.list_mute_options", "id": "a"})).expect("options");
+        assert!(for_model(&options, &Response::Ok, Place::Remote).withheld);
+    }
+
+    /// Task E8.5b: an event made of an entry is withheld as a whole for a model elsewhere, as its
+    /// task is (a mail's subject as title, the mail named in the description); quiet is no mail.
+    #[test]
+    fn the_event_of_an_entry_is_withheld_and_quiet_is_not() {
+        let made: Request = serde_json::from_value(json!({
+            "method": "inbox.create_event_from_item", "id": "a1", "collection": "work",
+            "start": {"datetime": "2026-10-14T13:00:00Z"}, "end": {"datetime": "2026-10-14T13:30:00Z"}
+        }))
+        .expect("an event of an entry");
+        let event: torro_pim::Event = serde_json::from_value(json!({
+            "uid": "e1", "collection": "work", "href": null, "etag": null, "summary": "Secret offer",
+            "start": {"datetime": "2026-10-14T13:00:00Z"}, "end": {"datetime": "2026-10-14T13:30:00Z"},
+            "location": null, "description": "From mail: Anna", "recurring": false
+        }))
+        .expect("an event");
+        let answer = Response::Event { event };
+        let remote = for_model(&made, &answer, Place::Remote);
+        assert!(remote.withheld && !remote.value.to_string().contains("Secret"), "{}", remote.value);
+        assert!(for_model(&made, &answer, Place::Local).value.to_string().contains("Secret offer"));
+        let error = Response::Error { code: "not-found".into(), message: "no such calendar".into() };
+        assert_eq!(for_model(&made, &error, Place::Remote).value["result"], "error");
+        let quiet = Response::Quiet {
+            quiet: Some(torro_ipc::Quiet {
+                reason: torro_ipc::QuietReason::Busy,
+                until: Utc.with_ymd_and_hms(2026, 10, 14, 15, 0, 0).single().expect("valid time"),
+                title: Some("Customer call".into()),
+            }),
+        };
+        let asked = for_model(&Request::GetQuiet, &quiet, Place::Remote);
+        assert!(!asked.withheld && asked.value.to_string().contains("Customer call"), "{}", asked.value);
     }
 
     /// Task C.10: notes a local model kept after reading mail stay with local models.

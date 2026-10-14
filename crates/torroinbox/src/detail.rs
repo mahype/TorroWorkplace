@@ -4,28 +4,41 @@
 //! Head: the source and the view as path. Title: the entry's title, wrapping; for a coding agent's
 //! session with a name (task E2.6) the name, with the entry's title below it in `text_2`
 //! ([`heading`]). Body: "Properties"
-//! (status as dot and word, lane, source, time with how long ago, merged reports), for coding
+//! (status as dot and word – "Urgent" for an ntfy alert –, lane, source, for a service what its
+//! traits say – repository and reason, app and person, topic and priority, task E5.15 –, time with
+//! how long ago, merged reports), for coding
 //! agents "Agent" (agent, project, branch and – for a hook's entry – "Go to window", E2.4), the
 //! message with – right under it – a quiet note that the text comes from outside the suite, and a
 //! link to open when it is safe ([`openable`]). Every link opens through the core
 //! (`inbox.open_item`), the window of a coding agent included.
-//! Footer: "Mark as done" / "Reopen"; approvals show "Allow" and "Deny" instead, which send
+//! Footer: "Done" / "Reopen"; approvals show "Allow" and "Deny" instead, which send
 //! `approvals.decide_approval` (task E3.8; disabled while a decision is on its way) – an approval
-//! resolves itself once decided, so it has no "Mark as done".
+//! resolves itself once decided, so it has no "Done".
 //!
-//! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Snooze" (`s`)
-//! opens the snooze menu, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
+//! The footer also carries the triage of E3.2 for the mouse, the same as the keys: "Later" (`s`)
+//! opens the snooze menu – the words of the cards in all three windows (task E8.5: "Later" and
+//! "Done", no more "Snooze" and "Mark as done") –, and at the right "Move to Info" / "Move to For me" (`l`) as a quiet
 //! text button – only its icon in narrow windows, where the words do not fit ([`Footer::compact`]),
 //! and beside "…", which leaves no room for them in the panel's 400 either – and "…" (`m`, task
 //! E3.10), which opens the menu "Hide from inbox": the entry, its sender or
 //! domain, "Always to Info" and "Move to junk" for mail, muting the source for the others
-//! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". "Make task"
+//! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". In the
+//! notifications window the bell stands there instead ([`Footer::bell`], task E8.6b): it opens the
+//! bell's menu, as `m` and the bell of the card do; it is the crossed-out bell (`BellOff`, task
+//! E8.10). "Move to Info" has the circled "i" (`app::lane_icon`), never a bell. "Make task"
 //! (`t`, task E3.5) is an
-//! icon button next to "Snooze": its words would not fit beside the others in the panel's 400.
-//! Approvals have none – they close once decided, and a task would not decide them.
+//! icon button next to "Later": its words would not fit beside the others in the panel's 400, and
+//! so is "Make event" beside it (`c`, task E8.5b: the hub's dialog of an event).
+//! Approvals have neither – they close once decided, and a task would not decide them – and no
+//! "Later" either (task E8.5): an approval waits for yes or no and must not vanish by accident.
 //!
 //! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, actions, attachments,
 //! text) in place of its short text; the footer stays the entry's.
+//!
+//! Task with a way back (task E8.7b): an entry made into a task shows it in a section "Task" (the
+//! card of `mail::task_card` with "Open task"; a whole mail carries it over its text instead). The
+//! suite's "You finished a task from a mail" (`hub::is_follow_up`) has Reply and "Mark mail done" in
+//! its footer before "Done", and neither "Later" nor "Make task".
 //!
 //! Commands in a message ("cargo test --workspace") should not break at their hyphens: the message
 //! shows them as non-breaking hyphens ([`unbroken`]), which Inter draws the same.
@@ -45,7 +58,8 @@ use torro_gui::{datetime, style, typo};
 use torro_inbox::{Action, Item, Kind, Lane, Link, State, rules};
 
 use crate::app::{self, Message};
-use crate::list;
+use crate::keys::Command;
+use crate::{hub, list, mail};
 
 /// The triggers of the menus that open for an entry, made new in every `view` and shared with the
 /// floating layer ([`widgets::floating`]).
@@ -53,14 +67,17 @@ use crate::list;
 pub struct Anchors {
     /// The row under the cursor in the list (registered by `list.rs`).
     pub row: Anchor,
-    /// The footer's "Snooze": the snooze menu and the picker open here while the panel is open.
+    /// The footer's "Later": the snooze menu and the picker open here while the panel is open.
     pub snooze: Anchor,
     /// The footer's "Move to …": the lane question opens here while the panel is open.
     pub lane: Anchor,
     /// The footer's "Make task": its dialog opens here while the panel is open (task E3.5).
     pub task: Anchor,
+    /// The footer's "Make event": its dialog opens here while the panel is open (task E8.5b).
+    pub event: Anchor,
     /// The footer's "…": the menu "Hide from inbox" opens here while the panel is open (task
-    /// E3.10).
+    /// E3.10); in the notifications window the footer's bell, where the bell's menu opens (task
+    /// E8.6b).
     pub hide: Anchor,
 }
 
@@ -69,8 +86,11 @@ pub struct Anchors {
 pub struct Footer {
     pub anchors: Anchors,
     /// The menu "Hide from inbox" has entries for this entry (`App::hide_choices`): the footer
-    /// shows its "…".
+    /// shows its "…" – or its bell with [`Footer::bell`].
     pub hide: bool,
+    /// The notifications window (task E8.6b): the footer's last button is the bell ("Mute…", `m`),
+    /// which opens the bell's menu, instead of "…". Only shown with [`Footer::hide`].
+    pub bell: bool,
     /// A decision of an approval is on its way: Allow and Deny are disabled until it is answered.
     pub deciding: bool,
     /// Narrow windows (the panel fills the window): "Move to …" shows only its icon, with the
@@ -110,8 +130,11 @@ pub fn panel<'a>(
     }
     // The note on foreign text belongs to the text: right under the message, or – without one –
     // at the end of the body, where it still speaks of the title. A whole mail has its own.
-    let mut untrusted = (item.untrusted && letter.is_none())
-        .then(|| note(tr("This text comes from outside the suite and is shown as plain text.")));
+    let mut untrusted = (item.untrusted && letter.is_none()).then(|| note(foreign_note()));
+    // The task made of the entry (task E8.7b); a whole mail shows it over its text itself.
+    if let Some(task) = item.task.as_ref().filter(|_| letter.is_none()) {
+        body = body.push(column![section(tr("Task")), panel::inset(mail::task_card(task, now))].spacing(space::xs()));
+    }
     if let Some(letter) = letter {
         body = body.push(letter);
     } else if let Some(text) = item.body.as_deref().map(list::plain).filter(|text| !text.trim().is_empty()) {
@@ -144,7 +167,9 @@ fn heading<'a>(item: &Item) -> Element<'a, Message> {
     column![panel::title(name), state].spacing(space::xs()).into()
 }
 
-/// Status, lane, source, time and – from two on – the number of merged reports.
+/// Status, lane, source, what a service's traits say (task E5.15, `list::facet_words`: repository
+/// and reason, app and person, kind of conversation, topic and priority – each a row with its
+/// icon, foreign values as plain text), time and – from two on – the number of merged reports.
 fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
     let (status, word) = status(item, now);
     let dot = container(widgets::status_dot(status)).center_x(icon::SIZE);
@@ -152,8 +177,9 @@ fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message
         widgets::prop_row(None, row![dot, one_line_text(word)].spacing(space::s()).align_y(Alignment::Center), None),
         value_row(app::lane_icon(item.lane), lane_label(item.lane).to_owned()),
         value_row(list::source_icon(&item.source), item.source.label()),
-        value_row(Icon::Clock, when(item.updated, now)),
     ];
+    rows.extend(list::facet_words(item).into_iter().map(|(mark, word)| value_row(mark, word)));
+    rows.push(value_row(Icon::Clock, when(item.updated, now)));
     if item.count > 1 {
         rows.push(value_row(Icon::Repeat, trf("{n} reports", &[("n", &item.count)])));
     }
@@ -165,12 +191,14 @@ pub fn status(item: &Item, now: DateTime<Utc>) -> (Status, String) {
     match item.state {
         State::Done { .. } => (Status::Ok, tr("Done").to_owned()),
         State::Snoozed { until } => {
-            (Status::Inactive, trf("Snoozed until {time}", &[("time", &list::wake_text(until, now))]))
+            // "Later", as the buttons say it in all three windows (task E8.1b).
+            (Status::Inactive, trf("Later until {time}", &[("time", &list::wake_text(until, now))]))
         }
         State::New | State::Seen if item.kind == Kind::AccountProblem => {
             (Status::Error, tr("Needs your attention").to_owned())
         }
-        State::New | State::Seen if item.urgent => (Status::Attention, tr("Waiting for you").to_owned()),
+        // "Urgent" for an alert (task E5.15), which waits for nobody.
+        State::New | State::Seen if item.urgent => (Status::Attention, list::waiting_word(item).to_owned()),
         State::New => (Status::Inactive, tr("New").to_owned()),
         State::Seen => (Status::Inactive, tr("Seen").to_owned()),
     }
@@ -187,7 +215,8 @@ pub fn is_approval(item: &Item) -> bool {
 /// offer. The core checks again when it opens ([`Message::OpenItem`]).
 pub fn openable(item: &Item) -> Option<Link> {
     let link = item.link.clone()?;
-    let known_app = |app: &str| AppId::ALL.iter().any(|known| known.binary == app);
+    // A binary or a window class (task E8.1b), as the core reads it; anything else is no app.
+    let known_app = |app: &str| AppId::find(app).is_some();
     rules::may_open(item, known_app).then_some(link)
 }
 
@@ -205,8 +234,7 @@ fn link_label(link: &Link) -> String {
     match link {
         Link::Url { url } => url.clone(),
         Link::App { app } => {
-            let name =
-                AppId::ALL.iter().find(|known| known.binary == app).map_or(app.as_str(), |known| known.display_name);
+            let name = AppId::find(app).map_or(app.as_str(), |known| known.display_name);
             trf("Open {app}", &[("app", &name)])
         }
         Link::Window => tr("Go to window").to_owned(),
@@ -226,22 +254,37 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 }
 
 /// The buttons below the line: Allow/Deny for an approval, else done or reopen;
-/// then "Snooze" for an entry that is not done and "Make task" for one that is no approval, and at
-/// the right "Move to …" and "…" (hide from the inbox) when there is a way to hide it.
+/// then "Later" for an entry that is not done and no approval, "Make task" and "Make event" for one
+/// that is no approval, and at the right "Move to …" and "…" (hide from the inbox) when there is a
+/// way to hide it.
 fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
-    let mut buttons = decide(item, footer.deciding);
-    if !matches!(item.state, State::Done { .. }) {
+    let follow_up = hub::is_follow_up(item) && item.state.is_open();
+    let mut buttons = Vec::new();
+    // "You finished a task from a mail" (task E8.7b): answer the mail or mark it done, before
+    // closing the question; it is a task already and waits for nothing, so no "Make task", no "Later".
+    if follow_up {
+        let id = || item.id.clone();
+        let reply = Some(Message::Act(id(), Command::Reply));
+        buttons.push(widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, reply));
+        let done = Some(Message::MarkMailDone(id()));
+        buttons.push(widgets::text_button(Some(Icon::Check), tr("Mark mail done"), style::button::secondary, done));
+    }
+    buttons.extend(decide(item, footer.deciding));
+    if !matches!(item.state, State::Done { .. }) && !is_approval(item) && !follow_up {
         let snooze = widgets::text_button(
             Some(Icon::Clock),
-            tr("Snooze"),
+            tr("Later"),
             style::button::secondary,
             Some(Message::AskSnooze(item.id.clone())),
         );
         buttons.push(widgets::anchored(&footer.anchors.snooze, snooze));
     }
-    if !is_approval(item) {
+    if !is_approval(item) && !follow_up {
         let task = widgets::icon_button(Icon::ListTodo, tr("Make task"), Some(Message::AskTask(item.id.clone())));
         buttons.push(widgets::anchored(&footer.anchors.task, task));
+        let event =
+            widgets::icon_button(Icon::CalendarPlus, tr("Make event"), Some(Message::AskEvent(item.id.clone())));
+        buttons.push(widgets::anchored(&footer.anchors.event, event));
     }
     buttons.push(iced::widget::space::horizontal().into());
     let lane = app::other_lane(item.lane);
@@ -250,15 +293,20 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
         trf("Move to {lane}", &[("lane", &lane_label(lane))]),
         Message::AskLane(item.id.clone()),
     );
-    // Beside "…" the words would push the last button out of the panel's 400.
-    let move_to = if footer.compact || footer.hide {
+    // Beside "…" – or beside Reply and "Mark mail done" – the words would push the last button out of
+    // the panel's 400.
+    let move_to = if footer.compact || footer.hide || follow_up {
         widgets::icon_button(icon, label, Some(ask))
     } else {
         widgets::text_button(Some(icon), label, style::button::ghost, Some(ask))
     };
     buttons.push(widgets::anchored(&footer.anchors.lane, move_to));
     if footer.hide {
-        let hide = widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())));
+        let hide = if footer.bell {
+            widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::Act(item.id.clone(), Command::Hide)))
+        } else {
+            widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())))
+        };
         buttons.push(widgets::anchored(&footer.anchors.hide, hide));
     }
     buttons
@@ -295,12 +343,9 @@ pub(crate) fn decide(item: &Item, deciding: bool) -> Vec<Element<'_, Message>> {
         State::Done { .. } => {
             widgets::text_button(None, tr("Reopen"), style::button::secondary, Some(done(item, false)))
         }
-        State::New | State::Seen | State::Snoozed { .. } => widgets::text_button(
-            Some(Icon::Check),
-            tr("Mark as done"),
-            style::button::secondary,
-            Some(done(item, true)),
-        ),
+        State::New | State::Seen | State::Snoozed { .. } => {
+            widgets::text_button(Some(Icon::Check), tr("Done"), style::button::secondary, Some(done(item, true)))
+        }
     };
     vec![button]
 }
@@ -328,6 +373,20 @@ fn section<'a>(title: &'a str) -> Element<'a, Message> {
 /// showing: the entry keeps its text.
 pub fn unbroken(text: &str) -> String {
     text.replace('-', "\u{2011}")
+}
+
+/// The note under foreign text, in this panel and under a whole mail (`mail::body`, task E8.13):
+/// short enough for one line in the wide panel (`note_room`), so no word stands alone on a second
+/// line.
+pub(crate) fn foreign_note() -> &'static str {
+    tr("Text from outside the suite, shown as plain text.")
+}
+
+/// The width a [`note`] has in the panel beside the list (`size::panel()`): less the padding of
+/// the panel's body and of `panel::inset`, and the scroller beside them.
+#[cfg(test)]
+fn note_room() -> f32 {
+    theme::size::panel() - 6.0 * space::s()
 }
 
 /// A quiet sentence under the content (`META`, `text_3`).
@@ -359,7 +418,19 @@ mod tests {
         assert_eq!(status(&sample("demo-11"), now()), (Status::Ok, tr("Done").to_owned()));
         let (dot, word) = status(&sample("demo-10"), now());
         assert_eq!(dot, Status::Inactive);
-        assert!(word.starts_with(tr("Snoozed until {time}").trim_end_matches("{time}")), "{word}");
+        assert!(word.starts_with(tr("Later until {time}").trim_end_matches("{time}")), "{word}");
+        // Task E5.15: an alert is urgent, nobody waits there.
+        assert_eq!(status(&sample("demo-18"), now()), (Status::Attention, tr("Urgent").to_owned()));
+    }
+
+    /// Task E5.15: a service's traits stand among the properties, one row each.
+    #[test]
+    fn a_service_shows_its_traits_as_properties() {
+        let plain = properties(&sample("demo-6"), now()).len();
+        assert_eq!(properties(&sample("demo-14"), now()).len(), plain + 2, "repository and reason");
+        assert_eq!(properties(&sample("demo-16"), now()).len(), plain + 2, "app and person");
+        assert_eq!(properties(&sample("demo-17"), now()).len() - 1, plain + 1, "kind, and two reports");
+        assert_eq!(properties(&sample("demo-18"), now()).len(), plain + 2, "topic and priority");
     }
 
     #[test]
@@ -372,8 +443,13 @@ mod tests {
         assert_eq!(openable(&notice_with_window), None, "a window only on entries of hooks");
         let local_file = Item { link: Some(Link::Url { url: "file:///etc/passwd".into() }), ..deploy.clone() };
         assert_eq!(openable(&local_file), None);
-        let unknown_app = Item { link: Some(Link::App { app: "rm".into() }), ..deploy };
+        let unknown_app = Item { link: Some(Link::App { app: "rm".into() }), ..deploy.clone() };
         assert_eq!(openable(&unknown_app), None);
+        // Task E8.1b: a window of the suite by its class; an unknown class is no app.
+        let mail = Link::App { app: "torro-inbox-mail".into() };
+        assert_eq!(openable(&Item { link: Some(mail.clone()), ..deploy.clone() }), Some(mail));
+        let unknown_class = Item { link: Some(Link::App { app: "torro-inbox-secret".into() }), ..deploy };
+        assert_eq!(openable(&unknown_class), None);
     }
 
     #[test]
@@ -382,21 +458,38 @@ mod tests {
         assert!(is_approval(&approval));
         assert_eq!(decide(&approval, false).len(), 2, "Allow and Deny");
         assert!(!is_approval(&sample("demo-1")));
-        assert_eq!(decide(&sample("demo-1"), false).len(), 1, "Mark as done");
+        assert_eq!(decide(&sample("demo-1"), false).len(), 1, "Done");
     }
 
     fn footer(hide: bool) -> Footer {
-        Footer { anchors: Anchors::default(), hide, deciding: false, compact: false }
+        Footer { anchors: Anchors::default(), hide, bell: false, deciding: false, compact: false }
     }
 
     #[test]
     fn the_footer_offers_triage_to_the_mouse() {
-        // Mark as done, Snooze, Make task, the gap, Move to, "…".
-        assert_eq!(buttons(&sample("demo-1"), &footer(true)).len(), 6);
-        // Allow, Deny, Snooze, the gap, Move to: an approval has no way to hide it and no task.
-        assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 5);
-        // Reopen, Make task, the gap, Move to, "…": a done entry is not snoozed.
-        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 5);
+        // Done, Later, Make task, Make event (task E8.5b), the gap, Move to, "…".
+        assert_eq!(buttons(&sample("demo-1"), &footer(true)).len(), 7);
+        // Allow, Deny, the gap, Move to: an approval has no way to hide it, no task, no event and no
+        // Later.
+        assert_eq!(buttons(&sample("demo-3"), &footer(false)).len(), 4);
+        // Reopen, Make task, Make event, the gap, Move to, "…": a done entry is not snoozed.
+        assert_eq!(buttons(&sample("demo-11"), &footer(true)).len(), 6);
+    }
+
+    /// Task E8.7b: the question after a finished task answers or closes the mail, and is no task to
+    /// make or to put off; an entry made into a task shows it.
+    #[test]
+    fn a_finished_task_asks_to_reply_or_mark_the_mail_done() {
+        let mut question = sample("demo-9");
+        app::demo_task(&mut question, now());
+        assert!(hub::is_follow_up(&question));
+        // Reply, Mark mail done, Done, the gap, Move to.
+        assert_eq!(buttons(&question, &footer(false)).len(), 5);
+        let _ = panel(&question, tr("Act now").to_owned(), now(), footer(false), None);
+        let mut handed = sample("demo-11");
+        app::demo_task(&mut handed, now());
+        assert!(handed.task.as_ref().is_some_and(|task| !task.completed));
+        let _ = panel(&handed, tr("Done").to_owned(), now(), footer(true), None);
     }
 
     #[test]
@@ -423,7 +516,19 @@ mod tests {
             link_label(&Link::App { app: "torroworkplace".into() }),
             trf("Open {app}", &[("app", &"Torro Workplace")])
         );
+        assert_eq!(
+            link_label(&Link::App { app: "torro-inbox-mail".into() }),
+            trf("Open {app}", &[("app", &AppId::INBOX_MAIL.display_name)]),
+            "a window class names its window"
+        );
         assert_eq!(link_label(&Link::Url { url: "https://x.example".into() }), "https://x.example");
+    }
+
+    /// Task E8.13: the note on foreign text takes one line in the wide panel, in either language –
+    /// no word of its own on a second line.
+    #[test]
+    fn the_note_on_foreign_text_fits_one_line_in_the_wide_panel() {
+        assert!(typo::text_width(foreign_note(), typo::meta()) <= note_room(), "{}", foreign_note());
     }
 
     #[test]

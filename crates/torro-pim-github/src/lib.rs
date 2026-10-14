@@ -15,6 +15,9 @@
 //!   before GitHub is asked (task G.2b).
 //! - Closing and reopening an issue (task G.5): [`graphql::issue_id_body`] and
 //!   [`graphql::set_done_body`], sent by [`Api::set_issue_done`].
+//! - [`notifications`]: the account's GitHub notifications over REST (task E5.3), read for the
+//!   inbox and marked done there. A type of its own ([`notifications::Notifications`]) with its own
+//!   error ([`notifications::NotificationsError`]); it never touches the filter lists.
 //!
 //! Who may see which repository is not decided here: the core checks a client's searches with
 //! [`scope::confined`] and filters every [`Item`] by its repository ([`Item::repo`]) before it
@@ -25,6 +28,7 @@ pub mod api;
 pub mod graphql;
 pub mod item;
 pub mod lists;
+pub mod notifications;
 pub mod scope;
 
 use std::fmt;

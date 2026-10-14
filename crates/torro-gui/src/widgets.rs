@@ -1,7 +1,11 @@
 //! Building blocks of a Linear-style window: buttons (also busy), sidebar rows, list rows, group
 //! heads, the action bar of a row ([`row_actions`]), the toast with "Undo" ([`toast`]), menus, floating cards, chips (also to choose), property rows (also with the name in
 //! front), label chips, state pills, progress bars, settings groups and the empty, loading and
-//! error states.
+//! error states. For the comfortable density of the inbox (task E8.2): cards ([`card`],
+//! [`card_head`]), source tiles ([`source_tile`]) and the switch between the densities
+//! ([`density_switch`]). For figures and charts (task E8.8b, the hub's "Insights"): a figure tile
+//! ([`stat_tile`]), a stacked column chart with its legend ([`column_chart`], [`chart_legend`]), a
+//! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -60,8 +64,9 @@ use crate::icon::{self, Icon, icon};
 use crate::layout;
 use crate::shell::{SidebarMode, is_sidebar_key};
 use crate::style;
-use crate::theme::{self, Palette, palette, radius, size, space};
+use crate::theme::{self, ChartColor, Palette, palette, radius, size, space};
 use crate::typo;
+use crate::ui_state::Density;
 
 /// A button style from [`crate::style::button`] (`style::button::primary`, `ghost` …).
 pub type ButtonStyle = fn(&Theme, button::Status) -> button::Style;
@@ -112,8 +117,9 @@ const PROP_LABEL_WIDTH: f32 = 88.0;
 const PROP_PADDING_Y: f32 = 6.0;
 /// Height of the pill with a state word ([`state_pill`]) and of its round ends.
 const STATE_PILL_HEIGHT: f32 = 22.0;
-/// Size of the progress bar ([`progress_bar`]).
-const PROGRESS_WIDTH: f32 = 64.0;
+/// Size of the progress bar ([`progress_bar`]); its width is public so a head can tell whether the
+/// bar fits beside its words.
+pub const PROGRESS_WIDTH: f32 = 64.0;
 const PROGRESS_HEIGHT: f32 = 4.0;
 
 // ---------------------------------------------------------------------------------------------
@@ -423,6 +429,59 @@ pub fn segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
     container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
 }
 
+/// The switch "Compact | Comfortable" in the header bar of every inbox window (task E8.2): a
+/// [`segmented`] control whose segments carry an icon ([`Icon::List`] for rows, [`Icon::LayoutGrid`]
+/// for cards) and, with `words`, the word after it. Without `words` (the narrow layout) the
+/// segments are square icons with the word as tooltip. The segment of `density` is chosen; a press
+/// sends `on_press` with the density of the segment.
+///
+/// The app keeps the density (`Option<Density>`, `None` until the person picks one, then
+/// [`Density::default_for`] the layout), shows it and remembers a choice in `ui.json`
+/// (`ui_state::save_density_task`); see [`Density`].
+///
+/// ```ignore
+/// let words = class != SizeClass::Narrow;
+/// trailing.push(widgets::density_switch(self.density(), words, Message::SetDensity));
+/// ```
+pub fn density_switch<'a, M: Clone + 'a>(
+    density: Density,
+    words: bool,
+    on_press: impl Fn(Density) -> M,
+) -> Element<'a, M> {
+    let inner = size::control_sm() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
+    let options =
+        [(Density::Compact, Icon::List, tr("Compact")), (Density::Comfortable, Icon::LayoutGrid, tr("Comfortable"))];
+    let segments = options.into_iter().map(|(choice, which, label)| {
+        let active = choice == density;
+        let style = style::button::segment(active);
+        let mark: Element<'a, M> = icon(which, icon::SIZE_SM)
+            .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
+            .into();
+        let segment: Element<'a, M> = if words {
+            let content = row![mark, typo::text(typo::caption(), label).wrapping(Wrapping::None)]
+                .spacing(ICON_GAP)
+                .align_y(Alignment::Center);
+            button(container(content).center_y(Fill))
+                .height(inner)
+                .padding(style::button_padding())
+                .style(style)
+                .on_press(on_press(choice))
+                .into()
+        } else {
+            let square: Element<'a, M> = button(center(mark))
+                .width(inner)
+                .height(inner)
+                .padding(0)
+                .style(style)
+                .on_press(on_press(choice))
+                .into();
+            with_tooltip(square, label)
+        };
+        segment
+    });
+    container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
+}
+
 // ---------------------------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------------------------
@@ -641,8 +700,174 @@ const BAR_INSET: f32 = style::SEGMENT_INSET;
 /// The width of one button of the bar with its word: the button padding, the icon (14), the gap and
 /// the word in `CAPTION` (estimated like [`typo::ellipsize`]).
 fn row_action_width(label: &str) -> f32 {
+    text_button_width(true, label)
+}
+
+/// The width a [`text_button`] with `label` takes, with its icon (`icon`) or without: the button
+/// padding, the icon (14) and its gap, the word in `CAPTION` – estimated like [`typo::ellipsize`],
+/// on the wide side. For choosing between words and icons before laying out.
+pub fn text_button_width(icon: bool, label: &str) -> f32 {
     let pad = style::button_padding();
-    pad.left + pad.right + icon::SIZE_SM + ICON_GAP + typo::text_width(label, typo::caption())
+    let mark = if icon { icon::SIZE_SM + ICON_GAP } else { 0.0 };
+    pad.left + pad.right + mark + typo::text_width(label, typo::caption())
+}
+
+/// How a row of buttons on a card shows its words (task E8.12, finding 4): all or none – a bar never
+/// mixes words and icons, except that its lead (the action the entry is about: "Open", "Go to
+/// window", "Reply") may keep its word while the others are icons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BarWords {
+    /// Every button with its icon and word.
+    All,
+    /// The first with its word, the rest as icons with their word as tooltip.
+    Lead,
+    /// Icons alone, each with its word as tooltip.
+    None,
+}
+
+impl BarWords {
+    /// Whether the button at `index` (from the left) shows its word.
+    pub fn worded(self, index: usize) -> bool {
+        match self {
+            BarWords::All => true,
+            BarWords::Lead => index == 0,
+            BarWords::None => false,
+        }
+    }
+}
+
+/// The width a bar of buttons with `labels` (icon and word each, from the left) takes as `words`
+/// says, followed by `icons` more icon-only buttons (a bell, "…"), [`space::s()`] between all of
+/// them: each worded button [`text_button_width`], each icon [`size::control_sm()`].
+pub fn bar_width(labels: &[&str], words: BarWords, icons: usize) -> f32 {
+    let buttons: f32 = labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| if words.worded(i) { text_button_width(true, label) } else { size::control_sm() })
+        .sum();
+    let count = labels.len() + icons;
+    buttons + icons as f32 * size::control_sm() + space::s() * count.saturating_sub(1) as f32
+}
+
+/// How the bar of `labels` (plus `icons` icon-only buttons, see [`bar_width`]) shows its words in
+/// `room`: [`BarWords::All`] when they fit; else [`BarWords::Lead`] when the first is the bar's
+/// `lead` action and fits with its word; else [`BarWords::None`].
+///
+/// ```ignore
+/// let words = widgets::bar_words(&["Open", "Task", "Later"], true, 1, inner);
+/// for (i, button) in buttons.iter().enumerate() { /* text_button if words.worded(i), else icon_button */ }
+/// ```
+pub fn bar_words(labels: &[&str], lead: bool, icons: usize, room: f32) -> BarWords {
+    if bar_width(labels, BarWords::All, icons) <= room {
+        BarWords::All
+    } else if lead && labels.len() > 1 && bar_width(labels, BarWords::Lead, icons) <= room {
+        BarWords::Lead
+    } else {
+        BarWords::None
+    }
+}
+
+/// The parts of a meta line ("Mail · Jonas Weber · anna@work.example.org · Tue, 13 Oct") that fit
+/// `room` in `level`, joined by " · " (task E8.12, finding 1): all of them when they fit, else
+/// without the parts at the indices of `drop`, left out one after the other in that order (the
+/// account first, then the sender) until the line fits. What still does not fit is for the caller
+/// to cut with "…" ([`typo::ellipsize`]). Empty parts are skipped.
+pub fn meta_fit(parts: &[String], drop: &[usize], level: typo::Level, room: f32) -> String {
+    let join = |left_out: &[usize]| {
+        let kept: Vec<&str> = parts
+            .iter()
+            .enumerate()
+            .filter(|(i, part)| !part.is_empty() && !left_out.contains(i))
+            .map(|(_, part)| part.as_str())
+            .collect();
+        kept.join(" · ")
+    };
+    let mut line = join(&[]);
+    for n in 1..=drop.len() {
+        if typo::text_width(&line, level) <= room {
+            break;
+        }
+        line = join(&drop[..n]);
+    }
+    line
+}
+
+/// The narrowest the words of a [`card_line`] get before its action gives up its word: half the
+/// properties column, room for a short title.
+fn card_line_words_min() -> f32 {
+    size::props() / 2.0
+}
+
+/// The one line of a small card that points somewhere else (task E8.12, findings 1–3: "From" in a
+/// task, the task in a mail): `lead` (an avatar or a mark, `lead_width` wide), the `title` in
+/// `BODY_STRONG` over the `meta` line in `META`/`text_3`, and the `action` at the right. Laid out
+/// at the width it gets:
+///
+/// - the action keeps its word ([`text_button`], `secondary`) while the words keep at least half
+///   the properties column, else it is its icon with the word as tooltip – it never pushes the
+///   title away;
+/// - the meta line leaves out the parts at `drop` in that order where it does not fit
+///   ([`meta_fit`]), and title and meta are cut with "…", showing the whole as tooltip – never cut
+///   silently.
+///
+/// Put it into a [`card`] (`widgets::card(vec![card_line(…)], false, None)`).
+pub fn card_line<'a, M: Clone + 'a>(
+    lead: impl Fn() -> Element<'a, M> + 'a,
+    lead_width: f32,
+    title: String,
+    meta: Vec<String>,
+    drop: Vec<usize>,
+    action: RowAction<'a, M>,
+) -> Element<'a, M> {
+    responsive(move |room| {
+        let gap = space::m();
+        let (spoken, words_room) = card_line_split(room.width, lead_width, action.label.as_ref());
+        let button = if spoken {
+            text_button(
+                Some(action.icon),
+                action.label.clone(),
+                style::button::secondary,
+                Some(action.on_press.clone()),
+            )
+        } else {
+            icon_button(action.icon, action.label.clone(), Some(action.on_press.clone()))
+        };
+        let whole = meta.iter().filter(|part| !part.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
+        let fitted = meta_fit(&meta, &drop, typo::meta(), words_room);
+        let words = column![
+            cut_line(typo::body_strong(), &title, title.clone(), theme::text, words_room),
+            cut_line(typo::meta(), &fitted, whole, theme::text_3, words_room),
+        ]
+        .width(Fill);
+        row![lead(), words, button].spacing(gap).align_y(Alignment::Center).into()
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+/// How a [`card_line`] `width` wide with a lead `lead_width` wide splits its room: whether its
+/// action keeps its word `label` (the words keep at least [`card_line_words_min`] beside it), and
+/// the room left for title and meta – beside the button with its word, or beside its icon.
+pub fn card_line_split(width: f32, lead_width: f32, label: &str) -> (bool, f32) {
+    let words = width - lead_width - 2.0 * space::m();
+    let worded = text_button_width(true, label);
+    let spoken = words - worded >= card_line_words_min();
+    (spoken, (words - if spoken { worded } else { size::control_sm() }).max(0.0))
+}
+
+/// `text` in `level` on one line cut to `room` with "…"; when it is cut or is not all of `whole`,
+/// `whole` shows as tooltip.
+fn cut_line<'a, M: 'a>(
+    level: typo::Level,
+    text: &str,
+    whole: String,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+    room: f32,
+) -> Element<'a, M> {
+    let shown = typo::ellipsize(text, level, room);
+    let cut = shown != whole;
+    let line = container(typo::text(level, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+    if cut { with_tooltip(line, whole) } else { line.into() }
 }
 
 /// The width the action bar of `actions` takes with `words` (icon and word on every button) or
@@ -872,7 +1097,8 @@ pub enum Align {
 /// Where a floating card goes relative to its anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Placement {
-    /// 4 below the anchor (menus).
+    /// 4 below the anchor (menus); 4 above it when the window has no room below but room above
+    /// (task E8.12: a menu never covers its trigger where it can help it, [`below_or_above`]).
     Below(Align),
     /// 8 right of the anchor, top edges in line; left of it when there is no room (event cards).
     Beside,
@@ -882,8 +1108,8 @@ pub enum Placement {
 /// keeps 8 from the viewport edges when it fits.
 fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placement) -> Point {
     let (x, y) = match placement {
-        Placement::Below(Align::Start) => (target.x, target.y + target.height + below_gap()),
-        Placement::Below(Align::End) => (target.x + target.width - card.width, target.y + target.height + below_gap()),
+        Placement::Below(Align::Start) => (target.x, below_or_above(target, card, viewport)),
+        Placement::Below(Align::End) => (target.x + target.width - card.width, below_or_above(target, card, viewport)),
         Placement::Beside => {
             let right = target.x + target.width + beside_gap();
             let x = if right + card.width <= viewport.x + viewport.width - beside_gap() {
@@ -899,6 +1125,18 @@ fn place(target: Rectangle, card: Size, viewport: Rectangle, placement: Placemen
         if high < low { low } else { value.clamp(low, high) }
     };
     Point::new(clamp(x, viewport.x, viewport.width, card.width), clamp(y, viewport.y, viewport.height, card.height))
+}
+
+/// The top of a card of `card` size that opens under `target` (task E8.12): [`below_gap()`] under
+/// it while the card fits above the viewport's bottom margin, else as far above it when it fits
+/// there; with room on neither side, on the side with more room – the clamp in [`place`] then keeps
+/// it on screen.
+fn below_or_above(target: Rectangle, card: Size, viewport: Rectangle) -> f32 {
+    let below = target.y + target.height + below_gap();
+    let above = target.y - below_gap() - card.height;
+    let room_below = viewport.y + viewport.height - beside_gap() - below;
+    let room_above = target.y - below_gap() - (viewport.y + beside_gap());
+    if card.height <= room_below || (card.height > room_above && room_below >= room_above) { below } else { above }
 }
 
 /// The layer for an open menu or floating card: `card` ([`menu`], [`popover`]) next to `anchor`
@@ -978,6 +1216,20 @@ impl<'a, M> MenuSection<'a, M> {
     pub fn titled(title: impl IntoFragment<'a>, items: Vec<MenuItem<'a, M>>) -> Self {
         Self { title: Some(title.into_fragment()), items }
     }
+}
+
+/// One entry of a [`menu`] on its own, for a menu card that holds more than entries – the bell's
+/// menu of the inbox (task E8.6b) has segments between its entries and ends in "All rules ↗". Draws
+/// exactly what [`menu`] draws for the item: 30 high, mark, label, trail, the dot of `current`.
+/// Put it in a card of `style::container::menu` with [`style::MENU_INSET`] inside.
+///
+/// ```ignore
+/// let rules = MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenSettings)
+///     .trail(Trail::Icon(Icon::ArrowUpRight));
+/// list = list.push(widgets::menu_item(rules));
+/// ```
+pub fn menu_item<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
+    menu_entry(item)
 }
 
 fn menu_entry<'a, M: Clone + 'a>(item: MenuItem<'a, M>) -> Element<'a, M> {
@@ -1282,6 +1534,253 @@ pub fn popover<'a, M: 'a>(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Cards and source tiles (task E8.2, the comfortable density of the inbox)
+// ---------------------------------------------------------------------------------------------
+
+/// A card: one entry in the comfortable density of the inbox (task E8.2, `docs/eingang.md` "Zwei
+/// Dichten"; Canary Mail for mail, the columns of the notifications window for the rest). Surface
+/// `raised`, frame `line_strong`, radius [`radius::lg()`], padding [`layout::panel_padding()`] (16),
+/// its `parts` stacked with [`size::card_gap()`] (12) between them, as wide as its column. Lay
+/// several out with the same gap: `column(cards).spacing(size::card_gap())`.
+///
+/// `parts` from top to bottom, typically [`card_head`] (or a row with an avatar), the text, a
+/// [`chip_row`] of [`state_pill`]s (attachment, "Answer by Fri") and **the card's buttons, always
+/// shown** – a row of [`text_button`]s and [`icon_button`]s with [`space::s()`] between them, not the
+/// hover bar of [`row_actions`]. Nothing in the card is red but a primary button, and that only
+/// where the window has no other.
+///
+/// `selected` (the card under the keyboard cursor, the one in the reader) gives it the `selected`
+/// surface with the `line_selected` edge, as a chosen chip. With `on_press` the whole card is a
+/// button (it opens the entry): hover and press draw the `line_selected` edge, press also the
+/// `selected` surface. Buttons inside take their own clicks first, so a click on "Done" does not
+/// open the card as well. Text in the card is `text` unless a part sets its own colour.
+///
+/// ```ignore
+/// let head = widgets::card_head(Some(widgets::source_tile(TileFace::letter("Slack"), TileSize::Medium, None)),
+///     "#dev-torro · Thread", "3 new · 10:12", Some(Message::Dismiss(id.clone())));
+/// let text = typo::text(typo::body(), preview).style(theme::text_2);
+/// let chips = widgets::chip_row(vec![widgets::state_pill(Icon::Paperclip, "Angebot_v2.pdf")]);
+/// let buttons = row![
+///     widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, Some(Message::Reply(id.clone()))),
+///     widgets::text_button(Some(Icon::Clock), tr("Later"), style::button::ghost, Some(Message::Later(id.clone()))),
+/// ]
+/// .spacing(space::s());
+/// widgets::card(vec![head, text.into(), chips, buttons.into()], selected, Some(Message::Select(id)))
+/// ```
+pub fn card<'a, M: Clone + 'a>(parts: Vec<Element<'a, M>>, selected: bool, on_press: Option<M>) -> Element<'a, M> {
+    let content = column(parts).spacing(size::card_gap()).width(Fill);
+    match on_press {
+        Some(message) => button(content)
+            .width(Fill)
+            .padding(layout::panel_padding())
+            .style(card_style(selected))
+            .on_press(message)
+            .into(),
+        None => container(content)
+            .width(Fill)
+            .padding(layout::panel_padding())
+            .style(move |t| {
+                let style = card_style(selected)(t, button::Status::Active);
+                container::Style {
+                    background: style.background,
+                    text_color: Some(style.text_color),
+                    border: style.border,
+                    ..container::Style::default()
+                }
+            })
+            .into(),
+    }
+}
+
+/// The look of a [`card`]: `raised` with a `line_strong` frame at rest, `line_selected` on hover,
+/// `selected` with `line_selected` when pressed or `selected` – the states of a framed button
+/// (`style::button::secondary`), with the card's radius.
+fn card_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style + Copy {
+    move |t, status| {
+        let p = palette(t);
+        let (surface, edge) = match status {
+            _ if selected => (p.selected, p.line_selected),
+            button::Status::Pressed => (p.selected, p.line_selected),
+            button::Status::Hovered => (p.raised, p.line_selected),
+            button::Status::Active | button::Status::Disabled => (p.raised, p.line_strong),
+        };
+        button::Style {
+            background: Some(Background::Color(surface)),
+            text_color: p.text,
+            border: border::rounded(radius::lg()).color(edge).width(LINE),
+            ..button::Style::default()
+        }
+    }
+}
+
+/// The head of a [`card`] (task E8.2): `lead` (a [`source_tile`], an avatar, an icon) at the left,
+/// then the `title` in `BODY_STRONG` and `text` with `meta` below it in `META` and `text_3` ("3 new
+/// · 10:12", "Direct message · 09:58"); an empty `meta` leaves its line out. Both stay on one line
+/// each and are cut with "…" to the room they get, the whole text as tooltip ([`typo::ellipsize`]).
+///
+/// `dismiss` puts the ✕ ([`icon_button`], tooltip "Dismiss") at the top right: "gone, without doing
+/// anything" (`docs/eingang.md`, "Knöpfe je Eintrag"). Leave it out where an entry must not vanish
+/// by accident – mail in the mail window, approvals.
+///
+/// ```ignore
+/// widgets::card_head(None, "Jonas Brandt", "Direct message · 09:58", Some(Message::Dismiss(id)))
+/// ```
+pub fn card_head<'a, M: Clone + 'a>(
+    lead: Option<Element<'a, M>>,
+    title: impl IntoFragment<'a>,
+    meta: impl IntoFragment<'a>,
+    dismiss: Option<M>,
+) -> Element<'a, M> {
+    let mut words = column![one_line(typo::body_strong(), title, theme::text)];
+    let meta = meta.into_fragment();
+    if !meta.is_empty() {
+        words = words.push(one_line(typo::meta(), meta, theme::text_3));
+    }
+    let mut head = row![].spacing(space::m()).align_y(Alignment::Center);
+    if let Some(lead) = lead {
+        head = head.push(lead);
+    }
+    head = head.push(container(words).width(Fill));
+    if let Some(message) = dismiss {
+        head = head.push(icon_button(Icon::X, tr("Dismiss"), Some(message)));
+    }
+    head.into()
+}
+
+/// What a [`source_tile`] shows: the app's icon, or – for a source without one – a letter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileFace {
+    /// An icon of [`crate::icon`] (GitHub, the calendar, the suite's grid …).
+    Icon(Icon),
+    /// One letter, upper case; build it with [`TileFace::letter`].
+    Letter(char),
+}
+
+impl TileFace {
+    /// The first letter or digit of `name`, upper case ("slack" → "S", "#dev" → "D"); "?" when
+    /// `name` has none.
+    pub fn letter(name: &str) -> TileFace {
+        let first = name.chars().find(|c| c.is_alphanumeric()).and_then(|c| c.to_uppercase().next());
+        TileFace::Letter(first.unwrap_or('?'))
+    }
+}
+
+/// The three sizes of a [`source_tile`] (task E8.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TileSize {
+    /// [`size::tile_sm()`] (20), radius [`radius::xs()`]: beside a word, in a compact row or a menu.
+    Small,
+    /// [`size::tile()`] (28), radius [`radius::sm()`]: a notice row, a column head ("Slack 5").
+    Medium,
+    /// [`size::tile_lg()`] (36), radius [`radius::md()`]: an attachment, the head of an app's card.
+    Large,
+}
+
+impl TileSize {
+    /// The edge of the tile.
+    pub fn edge(self) -> f32 {
+        match self {
+            TileSize::Small => size::tile_sm(),
+            TileSize::Medium => size::tile(),
+            TileSize::Large => size::tile_lg(),
+        }
+    }
+
+    /// The corner radius: a quarter of the edge or so, from the radius scale.
+    fn radius(self) -> f32 {
+        match self {
+            TileSize::Small => radius::xs(),
+            TileSize::Medium => radius::sm(),
+            TileSize::Large => radius::md(),
+        }
+    }
+
+    /// The edge of the icon on the tile: 12 on the small one (as in an [`icon_pill`]), 16 else.
+    fn icon(self) -> f32 {
+        match self {
+            TileSize::Small => pill_icon(),
+            TileSize::Medium | TileSize::Large => icon::SIZE,
+        }
+    }
+
+    /// The level of the letter on the tile.
+    fn level(self) -> typo::Level {
+        match self {
+            TileSize::Small | TileSize::Medium => typo::caption(),
+            TileSize::Large => typo::body_strong(),
+        }
+    }
+}
+
+/// A source tile (task E8.2): which app an entry comes from, as a small square with its icon or,
+/// for a source without one, its letter ([`TileFace`]) in `text`. Three sizes ([`TileSize`]).
+///
+/// Without `tint` the tile is neutral: `selected` with a `line_strong` frame. With a colour (the
+/// source's or account's colour the person chose, `collection_color(…)`) it is that colour as a
+/// tinted surface ([`Palette::tinted`] over `panel`, as an event block) without a frame – never the
+/// full colour: colours belong to the person and are no large saturated surfaces (design skill,
+/// section 1). The tile is no button; the row or card around it takes the click.
+///
+/// ```ignore
+/// widgets::source_tile(TileFace::Icon(Icon::Github), TileSize::Medium, None)
+/// widgets::source_tile(TileFace::letter(&source.name), TileSize::Small, Some(widgets::collection_color(source.color.as_deref())))
+/// ```
+pub fn source_tile<'a, M: 'a>(face: TileFace, size: TileSize, tint: Option<Color>) -> Element<'a, M> {
+    let glyph: Element<'a, M> = match face {
+        TileFace::Icon(which) => toned(which, size.icon(), Tone::Text),
+        TileFace::Letter(letter) => {
+            typo::text(size.level(), letter.to_string()).style(theme::text).wrapping(Wrapping::None).into()
+        }
+    };
+    let edge = size.edge();
+    let corner = size.radius();
+    container(glyph)
+        .center(edge)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            let (surface, frame) = match tint {
+                Some(colour) => (theme::over(p.tinted(colour), p.panel), Color::TRANSPARENT),
+                None => (p.selected, p.line_strong),
+            };
+            container::Style {
+                background: Some(Background::Color(surface)),
+                border: border::rounded(corner).color(frame).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// `text` in `level` and the colour `colour` picks, on one line cut with "…" to the room it gets
+/// ([`typo::ellipsize`]); a cut text shows the whole of it as tooltip.
+/// `text` on one line in `level` and `colour` (`theme::text`, `theme::text_2` …), cut with "…" to
+/// the room it gets and then shown whole as tooltip ([`typo::ellipsize`]) – never cut silently. For
+/// a name in a row whose width the layout decides (a suggestion of the hub's Insights, task E8.8b).
+pub fn ellipsized<'a, M: 'a>(
+    level: typo::Level,
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    one_line(level, text, colour)
+}
+
+fn one_line<'a, M: 'a>(
+    level: typo::Level,
+    text: impl IntoFragment<'a>,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+) -> Element<'a, M> {
+    let full = text.into_fragment().into_owned();
+    responsive(move |room| {
+        let shown = typo::ellipsize(&full, level, room.width);
+        let cut = shown != full;
+        let line = container(typo::text(level, shown).style(colour).wrapping(Wrapping::None)).clip(true);
+        if cut { with_tooltip(line, full.clone()) } else { line.into() }
+    })
+    .height(Length::Shrink)
+    .into()
+}
+
+// ---------------------------------------------------------------------------------------------
 // Chips, pills, key hints, properties
 // ---------------------------------------------------------------------------------------------
 
@@ -1343,6 +1842,16 @@ fn chip_with<'a, M: Clone + 'a>(
 }
 
 /// Chips side by side with 6 between them, wrapping onto more lines when they do not fit.
+///
+/// Also the chips of a [`card`] (task E8.2): [`state_pill`]s for an attachment and a due date the
+/// mail asks for, the colour only in the icon:
+///
+/// ```ignore
+/// widgets::chip_row(vec![
+///     widgets::state_pill(Icon::Paperclip, "Angebot_v2.pdf"),
+///     widgets::state_pill(Mark::Tinted(Icon::Clock, theme::attention()), tr("Answer by Fri")),
+/// ])
+/// ```
 pub fn chip_row<'a, M: 'a>(chips: Vec<Element<'a, M>>) -> Element<'a, M> {
     row(chips).spacing(ICON_GAP).wrap().vertical_spacing(ICON_GAP).into()
 }
@@ -2014,6 +2523,390 @@ pub fn modal<'a, M: Clone + 'a>(
     stack![base.into(), opaque(scrim), center(opaque(card)).padding(space::l())].into()
 }
 
+// ---------------------------------------------------------------------------------------------
+// Charts and figures (task E8.8b, the hub's "Insights")
+// ---------------------------------------------------------------------------------------------
+
+/// The gap between stacked segments and the least gap between columns: the surface shows between
+/// fills, so neighbours never touch (dataviz: 2-px spacer).
+const MARK_GAP: f32 = 2.0;
+/// Edge of the colour swatch in a legend and a chart's tooltip.
+const SWATCH: f32 = 8.0;
+/// Width of a chart's tooltip card, so its numbers stand in one column.
+const CHART_TIP_WIDTH: f32 = 176.0;
+/// Size of a [`share_bar`]: as wide as a [`progress_bar`].
+const SHARE_HEIGHT: f32 = 4.0;
+
+/// The height of the plot of a [`column_chart`]: five list rows (200 in the standard design).
+fn chart_height() -> f32 {
+    size::row() * 5.0
+}
+
+/// The widest a column's bar gets in a [`column_chart`] with few columns, so a week does not draw
+/// slabs (44 in the standard design).
+fn bar_max() -> f32 {
+    size::control_lg() + space::s()
+}
+
+/// One series of a [`column_chart`]: its `name` (legend, tooltip) and the colour it wears. Give
+/// colours by what the series is, never by its rank ([`ChartColor`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChartSeries {
+    pub name: String,
+    pub color: ChartColor,
+}
+
+/// One column of a [`column_chart`]: a day, a week, an hour.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChartColumn {
+    /// Under the column on the axis, short ("Mon", "13", "7 Oct", "9"). The chart leaves out as many
+    /// labels as it must so that none touch, always keeping the last column's.
+    pub label: String,
+    /// The head of the column's tooltip, whole ("Monday, 13 Oct", "09:00–10:00").
+    pub title: String,
+    /// One value per series of the chart, in the order of its series; drawn as a stack from the
+    /// bottom up. Missing values count as 0.
+    pub values: Vec<u32>,
+}
+
+impl ChartColumn {
+    /// All values together: the height of the stack.
+    pub fn total(&self) -> u32 {
+        self.values.iter().fold(0u32, |sum, value| sum.saturating_add(*value))
+    }
+}
+
+/// The values on the y-axis of a chart whose largest column is `max`: from 0 in steps of 1, 2 or 5
+/// times a power of ten, at most four steps, the last one at or above `max`. `[0, 1]` for an empty
+/// chart, so the axis still has a top.
+pub fn axis_ticks(max: u32) -> Vec<u32> {
+    if max == 0 {
+        return vec![0, 1];
+    }
+    let mut power: u32 = 1;
+    loop {
+        for factor in [1, 2, 5] {
+            let step = factor * power;
+            if max.div_ceil(step) <= 4 {
+                return (0..=max.div_ceil(step)).map(|i| i * step).collect();
+            }
+        }
+        power = power.saturating_mul(10);
+    }
+}
+
+/// Which column labels a chart of `count` columns, `cell` wide each, shows when the widest label is
+/// `label` wide: every one that fits with a gap, counted back from the last, so the newest column
+/// is always named.
+pub fn shown_labels(count: usize, cell: f32, label: f32) -> Vec<bool> {
+    let need = label + space::s();
+    let every = if cell <= 0.0 { count.max(1) } else { ((need / cell).ceil() as usize).max(1) };
+    (0..count).map(|i| (count - 1 - i).is_multiple_of(every)).collect()
+}
+
+/// A column chart (task E8.8b; the dataviz method): one column per entry of `columns`, each a stack
+/// of its `series` values from the bottom up, in their colours ([`ChartColor`]), with a 2-px gap of
+/// surface between segments and the top corners of a stack rounded ([`radius::xs`]). One series
+/// makes a plain column chart.
+///
+/// - **Axes:** gridlines in `line` at [`axis_ticks`] with their values at the left (`MICRO`,
+///   tabular, `text_3`), the baseline in `line_strong`; the column labels below, as many as fit
+///   ([`shown_labels`]).
+/// - **Hover:** the whole height of a column is its hit area; it shows a tooltip at once with the
+///   column's `title`, its total and each series with its swatch and value (the top of the stack
+///   first). Text stays in the text colours, only the swatches wear the series' colour.
+/// - **Size:** as wide as it is given, [`chart_height`] plus the axis labels high; bars at most
+///   [`bar_max`] wide. Put a [`chart_legend`] over it for two series or more, and offer the same
+///   numbers as a [`data_table`] (identity must never hang on colour alone).
+///
+/// ```ignore
+/// let series = vec![ChartSeries { name: tr("Mail").into(), color: ChartColor::Series(0) }];
+/// let columns = days.iter().map(|day| ChartColumn { label: day.short.clone(), title: day.long.clone(), values: vec![day.mail] });
+/// column![widgets::chart_legend(&series), widgets::column_chart(series, columns.collect())]
+/// ```
+pub fn column_chart<'a, M: 'a>(series: Vec<ChartSeries>, columns: Vec<ChartColumn>) -> Element<'a, M> {
+    let axis = typo::micro().tabular();
+    let ticks = axis_ticks(columns.iter().map(ChartColumn::total).max().unwrap_or(0));
+    let top = ticks.last().copied().unwrap_or(1).max(1);
+    let half = typo::line_height(axis) / 2.0;
+    let labels_width = ticks.iter().map(|tick| typo::text_width(&tick.to_string(), axis)).fold(0.0, f32::max);
+    let height = chart_height() + 2.0 * half + space::xs() + typo::line_height(axis);
+    responsive(move |room| {
+        let plot_width = (room.width - labels_width - space::s()).max(0.0);
+        let count = columns.len().max(1);
+        let gap = column_gap(count, plot_width);
+        let cell = (plot_width - gap * (count - 1) as f32) / count as f32;
+        let y_axis = y_labels(&ticks, top, labels_width, half);
+        let plot = stack![gridlines(&ticks), bars(&series, &columns, top, gap)].width(Fill).height(chart_height());
+        let chart = row![y_axis, container(plot).padding([half, 0.0]).width(Fill)].spacing(space::s());
+        let longest = columns.iter().map(|c| typo::text_width(&c.label, axis)).fold(0.0, f32::max);
+        let shown = shown_labels(columns.len(), cell, longest);
+        let x_axis = x_labels(&columns, &shown, cell, gap, plot_width);
+        let x_axis = row![blank().width(labels_width), x_axis].spacing(space::s());
+        column![chart, x_axis].spacing(space::xs()).into()
+    })
+    .height(height)
+    .into()
+}
+
+/// The gap between columns: wider where there is room (a week), down to the 2-px spacer for many
+/// columns in a narrow chart.
+fn column_gap(count: usize, width: f32) -> f32 {
+    if width / count as f32 >= bar_max() { space::s() } else { MARK_GAP }
+}
+
+/// The values of the y-axis, right-aligned, each centred on its gridline.
+fn y_labels<'a, M: 'a>(ticks: &[u32], top: u32, width: f32, half: f32) -> Element<'a, M> {
+    let axis = typo::micro().tabular();
+    let layers = ticks.iter().map(|&tick| {
+        let y = chart_height() * (1.0 - tick as f32 / top as f32);
+        let label = typo::text(axis, tick.to_string()).style(theme::text_3).wrapping(Wrapping::None);
+        pin(container(label).width(width).align_right(width)).y(y).into()
+    });
+    let base = blank().width(width).height(chart_height() + 2.0 * half);
+    stack(std::iter::once(base.into()).chain(layers)).into()
+}
+
+/// The gridlines at `ticks`, the lowest (the baseline) stronger.
+fn gridlines<'a, M: 'a>(ticks: &[u32]) -> Element<'a, M> {
+    let steps = ticks.len().saturating_sub(1).max(1);
+    let between = (chart_height() - LINE * (steps + 1) as f32) / steps as f32;
+    let mut lines = column![];
+    for i in 0..=steps {
+        if i > 0 {
+            lines = lines.push(blank().height(between));
+        }
+        let strong = i == steps;
+        lines = lines.push(container(blank().width(Fill).height(LINE)).style(move |t| {
+            let p = palette(t);
+            container::background(if strong { p.line_strong } else { p.line })
+        }));
+    }
+    lines.width(Fill).into()
+}
+
+/// The columns side by side, each with its tooltip over its whole height.
+fn bars<'a, M: 'a>(series: &[ChartSeries], columns: &[ChartColumn], top: u32, gap: f32) -> Element<'a, M> {
+    let cells = columns.iter().map(|column| {
+        let stack = bar_stack(series, column, top);
+        let cell = container(stack).center_x(Fill).align_bottom(chart_height());
+        let tip = chart_tip(series, column);
+        tooltip(cell, tip, tooltip::Position::Top).gap(space::xs()).into()
+    });
+    row(cells).spacing(gap).width(Fill).height(chart_height()).into()
+}
+
+/// One column's stack: its non-zero values from the bottom up, each as high as its share of `top`,
+/// the gaps taken from the upper segments so the stack keeps its height.
+fn bar_stack<'a, M: 'a>(series: &[ChartSeries], column: &ChartColumn, top: u32) -> Element<'a, M> {
+    let filled: Vec<(ChartColor, u32)> = series
+        .iter()
+        .zip(column.values.iter().copied().chain(std::iter::repeat(0)))
+        .filter(|(_, value)| *value > 0)
+        .map(|(series, value)| (series.color, value))
+        .collect();
+    let last = filled.len().saturating_sub(1);
+    let mut stack = column![].spacing(MARK_GAP).width(Fill).max_width(bar_max());
+    // Top first: a column lays its children out from the top.
+    for (i, (colour, value)) in filled.iter().copied().enumerate().rev() {
+        let full = chart_height() * value as f32 / top as f32;
+        let height = if i == 0 { full } else { full - MARK_GAP }.max(LINE);
+        let rounded = i == last;
+        stack = stack.push(container(blank().width(Fill).height(height)).style(move |t| {
+            let radius = if rounded { radius::xs() } else { 0.0 };
+            container::Style {
+                background: Some(Background::Color(palette(t).chart_color(colour))),
+                border: border::rounded(border::top(radius)),
+                ..container::Style::default()
+            }
+        }));
+    }
+    stack.into()
+}
+
+/// The tooltip of a column: its title and total, then each series with swatch and value, the top
+/// of the stack first (one series: the title and its value only).
+fn chart_tip<'a, M: 'a>(series: &[ChartSeries], column: &ChartColumn) -> Element<'a, M> {
+    let head = row![
+        typo::text(typo::body_strong(), column.title.clone()).width(Fill),
+        typo::text(typo::body_strong().tabular(), column.total().to_string()),
+    ]
+    .spacing(space::s());
+    let mut lines = column![head].spacing(space::xs());
+    if series.len() > 1 {
+        for (i, series) in series.iter().enumerate().rev() {
+            let value = column.values.get(i).copied().unwrap_or(0);
+            lines = lines.push(
+                row![
+                    swatch(series.color),
+                    typo::text(typo::meta(), series.name.clone()).style(theme::text_2).width(Fill),
+                    typo::text(typo::meta().tabular(), value.to_string()),
+                ]
+                .spacing(ICON_GAP)
+                .align_y(Alignment::Center),
+            );
+        }
+    }
+    container(lines).width(CHART_TIP_WIDTH).padding([space::s(), space::m()]).style(style::container::menu).into()
+}
+
+/// The labels under the columns: `shown` ones centred under their column, `cell` wide with `gap`
+/// between, in a strip `width` wide.
+fn x_labels<'a, M: 'a>(columns: &[ChartColumn], shown: &[bool], cell: f32, gap: f32, width: f32) -> Element<'a, M> {
+    let axis = typo::micro().tabular();
+    let layers = columns.iter().zip(shown).enumerate().filter(|(_, (_, shown))| **shown).map(|(i, (column, _))| {
+        let label_width = typo::text_width(&column.label, axis) + space::xs();
+        let centre = i as f32 * (cell + gap) + cell / 2.0;
+        let x = (centre - label_width / 2.0).clamp(0.0, (width - label_width).max(0.0));
+        let label = typo::text(axis, column.label.clone()).style(theme::text_3).wrapping(Wrapping::None);
+        pin(container(label).width(label_width).center_x(label_width)).x(x).into()
+    });
+    let base = blank().width(Fill).height(typo::line_height(axis));
+    stack(std::iter::once(base.into()).chain(layers)).width(Fill).into()
+}
+
+/// The square of a series' colour in a legend or tooltip.
+fn swatch<'a, M: 'a>(colour: ChartColor) -> Element<'a, M> {
+    container(blank().width(SWATCH).height(SWATCH))
+        .style(move |t| container::Style {
+            background: Some(Background::Color(palette(t).chart_color(colour))),
+            border: border::rounded(MARK_GAP),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// The legend of a chart: each series' swatch and name (`META`, `text_2`), in the series' order,
+/// wrapping onto more lines where it must. For two series or more; one series needs none (the
+/// chart's title names it).
+pub fn chart_legend<'a, M: 'a>(series: &[ChartSeries]) -> Element<'a, M> {
+    let entries = series.iter().map(|series| {
+        row![swatch(series.color), typo::text(typo::meta(), series.name.clone()).style(theme::text_2)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center)
+            .into()
+    });
+    row(entries).spacing(space::m()).wrap().vertical_spacing(space::xs()).into()
+}
+
+/// The frame of a chart or a table of figures (task E8.8b): `title` (`BODY_STRONG`) with a quiet
+/// `note` at its right (`META`, `text_3`: "average, Mon–Fri", "by day"), the `body` below. On
+/// `panel` – the surface the chart colours were checked on – with a `line_strong` frame, the card
+/// radius and a panel's padding, as wide as it is given.
+pub fn chart_card<'a, M: 'a>(
+    title: impl IntoFragment<'a>,
+    note: impl IntoFragment<'a>,
+    body: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
+    let head = row![
+        typo::text(typo::body_strong(), title).width(Fill).wrapping(Wrapping::None),
+        typo::text(typo::meta(), note).style(theme::text_3).wrapping(Wrapping::None),
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    container(column![head, body.into()].spacing(space::l()))
+        .width(Fill)
+        .padding(layout::panel_padding())
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.panel)),
+                text_color: Some(p.text),
+                border: border::rounded(radius::lg()).color(p.line_strong).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// A figure on its own (task E8.8b, "Insights"): `label` (`META`, `text_3`) over the `value` in
+/// `DISPLAY` with tabular figures, and a `note` (`META`, `text_2`) that says what it means ("12 a
+/// day"). On `raised` with a `line_strong` frame and the card radius, as wide as it is given.
+///
+/// ```ignore
+/// row![widgets::stat_tile(tr("Notifications"), "372", tr("53 a day"))].spacing(space::m())
+/// ```
+pub fn stat_tile<'a, M: 'a>(
+    label: impl IntoFragment<'a>,
+    value: impl IntoFragment<'a>,
+    note: impl IntoFragment<'a>,
+) -> Element<'a, M> {
+    let content = column![
+        typo::text(typo::meta(), label).style(theme::text_3).wrapping(Wrapping::None),
+        typo::text(typo::display().tabular(), value).wrapping(Wrapping::None),
+        typo::text(typo::meta(), note).style(theme::text_2),
+    ]
+    .spacing(space::xs());
+    container(content)
+        .width(Fill)
+        .padding([space::m(), space::l()])
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(p.raised)),
+                text_color: Some(p.text),
+                border: border::rounded(radius::lg()).color(p.line_strong).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
+/// A share as a quiet bar: `part` of `whole` filled in `text_3` on a `line_strong` track, as wide
+/// as a [`progress_bar`]. Neutral – it is a measure, not a status; put the number next to it
+/// ("3 %").
+pub fn share_bar<'a, M: 'a>(part: u32, whole: u32) -> Element<'a, M> {
+    let fraction = if whole == 0 { 0.0 } else { (part as f32 / whole as f32).clamp(0.0, 1.0) };
+    let fill = container(blank().width(PROGRESS_WIDTH * fraction).height(SHARE_HEIGHT)).style(|t| container::Style {
+        background: Some(Background::Color(palette(t).text_3)),
+        border: border::rounded(SHARE_HEIGHT / 2.0),
+        ..container::Style::default()
+    });
+    container(fill)
+        .width(PROGRESS_WIDTH)
+        .height(SHARE_HEIGHT)
+        .style(|t| container::Style {
+            background: Some(Background::Color(palette(t).line_strong)),
+            border: border::rounded(SHARE_HEIGHT / 2.0),
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A table of figures (task E8.8b, the "Table view" of a chart): `head` as captions (`CAPTION`,
+/// `text_3`), then one row per entry of `rows`, and – with `total` – a last row in `BODY_STRONG`.
+/// The first column is the name (`BODY`, wider), the others are numbers, right-aligned with
+/// tabular figures. Rows are [`size::control`] high with a `line` between them; every row should
+/// have as many cells as `head`.
+pub fn data_table<'a, M: 'a>(head: Vec<String>, rows: Vec<Vec<String>>, total: Option<Vec<String>>) -> Element<'a, M> {
+    let line = |cells: Vec<String>, level: typo::Level, colour: fn(&Theme) -> iced::widget::text::Style| {
+        let cells = cells.into_iter().enumerate().map(move |(i, cell)| {
+            if i == 0 {
+                container(typo::text(level, cell).style(colour).wrapping(Wrapping::None))
+                    .width(Length::FillPortion(2))
+                    .clip(true)
+                    .into()
+            } else {
+                let number = typo::text(level.tabular(), cell).style(colour).wrapping(Wrapping::None);
+                container(number).width(Fill).align_right(Fill).into()
+            }
+        });
+        container(row(cells).spacing(space::s()).align_y(Alignment::Center))
+            .center_y(size::control())
+            .padding([0.0, space::s()])
+    };
+    let mut table = column![line(head, typo::caption(), theme::text_3)];
+    let mut lines: Vec<(Vec<String>, typo::Level)> = rows.into_iter().map(|row| (row, typo::body())).collect();
+    if let Some(total) = total {
+        lines.push((total, typo::body_strong()));
+    }
+    for (cells, level) in lines {
+        table = table.push(rule::horizontal(LINE).style(style::rule));
+        table = table.push(line(cells, level, theme::text));
+    }
+    table.width(Fill).into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2026,6 +2919,33 @@ mod tests {
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
         Rectangle { x, y, width, height }
+    }
+
+    /// Task E8.8b: the y-axis ends at or above the largest column in at most four round steps.
+    #[test]
+    fn axis_ticks_are_round_and_cover_the_largest_column() {
+        assert_eq!(axis_ticks(0), [0, 1], "an empty chart still has a top");
+        assert_eq!(axis_ticks(3), [0, 1, 2, 3]);
+        assert_eq!(axis_ticks(7), [0, 2, 4, 6, 8]);
+        assert_eq!(axis_ticks(74), [0, 20, 40, 60, 80]);
+        assert_eq!(axis_ticks(90), [0, 50, 100]);
+        assert_eq!(axis_ticks(1200), [0, 500, 1000, 1500]);
+        for max in [1, 9, 11, 49, 101, 999, 12_345] {
+            let ticks = axis_ticks(max);
+            assert!(ticks.len() <= 5 && ticks.last().is_some_and(|&top| top >= max), "{max}: {ticks:?}");
+        }
+    }
+
+    /// Task E8.8b: labels that would touch are left out, counted back from the newest column.
+    #[test]
+    fn column_labels_thin_out_from_the_end() {
+        assert_eq!(shown_labels(3, 60.0, 20.0), [true, true, true], "room for all");
+        assert_eq!(shown_labels(5, 10.0, 12.0), [true, false, true, false, true], "every second");
+        let month = shown_labels(30, 14.0, 12.0);
+        assert!(month[29] && !month[28], "the last one always, its neighbour not");
+        assert_eq!(month.iter().filter(|&&shown| shown).count(), 15);
+        let column = ChartColumn { label: "Mon".into(), title: "Monday".into(), values: vec![3, 0, 4] };
+        assert_eq!(column.total(), 7);
     }
 
     const WINDOW: Rectangle = Rectangle { x: 0.0, y: 0.0, width: 900.0, height: 700.0 };
@@ -2154,12 +3074,85 @@ mod tests {
 
     #[test]
     fn cards_stay_inside_the_window() {
-        // A trigger at the right edge with a start-aligned menu, and one near the bottom.
+        // A trigger at the right edge near the bottom with a start-aligned menu: moved in from the
+        // edge, and above the trigger, which has no room below (task E8.12).
         let at = place(rect(850.0, 680.0, 40.0, 16.0), menu_size(), WINDOW, Placement::Below(Align::Start));
-        assert_eq!(at, Point::new(900.0 - menu_size().width - beside_gap(), 700.0 - menu_size().height - beside_gap()));
+        assert_eq!(at, Point::new(900.0 - menu_size().width - beside_gap(), 680.0 - below_gap() - menu_size().height));
         // A card larger than the window keeps its top-left corner on screen.
         let huge = place(rect(10.0, 10.0, 10.0, 10.0), Size::new(2000.0, 2000.0), WINDOW, Placement::Beside);
         assert_eq!(huge, Point::new(beside_gap(), beside_gap()));
+    }
+
+    /// Task E8.12 (finding 4): a bar of buttons shows all words or none – only its lead may keep its
+    /// word alone –, and the estimate takes the gap the buttons really have.
+    #[test]
+    fn a_bar_shows_all_its_words_or_none_but_its_lead() {
+        let labels = ["Open", "Task", "Later"];
+        let all = bar_width(&labels, BarWords::All, 1);
+        let expected: f32 = labels.iter().map(|label| text_button_width(true, label)).sum::<f32>()
+            + size::control_sm()
+            + 3.0 * space::s();
+        assert_eq!(all, expected);
+        assert_eq!(text_button_width(true, "Open") - text_button_width(false, "Open"), icon::SIZE_SM + ICON_GAP);
+        assert_eq!(bar_words(&labels, true, 1, all), BarWords::All, "exactly the room");
+        let lead = bar_width(&labels, BarWords::Lead, 1);
+        assert_eq!(bar_words(&labels, true, 1, all - 1.0), BarWords::Lead);
+        assert_eq!(bar_words(&labels, false, 1, all - 1.0), BarWords::None, "no lead: no word at all");
+        assert_eq!(bar_words(&labels, true, 1, lead - 1.0), BarWords::None);
+        let words: Vec<bool> = (0..3).map(|i| BarWords::Lead.worded(i)).collect();
+        assert_eq!(words, [true, false, false]);
+        assert!((0..3).all(|i| BarWords::All.worded(i) && !BarWords::None.worded(i)));
+    }
+
+    /// Task E8.12 (finding 1): a meta line leaves out the account, then the sender, before it is cut.
+    #[test]
+    fn a_meta_line_leaves_out_parts_before_it_is_cut() {
+        let parts: Vec<String> =
+            ["Mail", "Jonas Weber", "anna@work.example.org", "Tue, 13 Oct"].map(String::from).to_vec();
+        let level = typo::meta();
+        let whole = "Mail · Jonas Weber · anna@work.example.org · Tue, 13 Oct";
+        assert_eq!(meta_fit(&parts, &[2, 1], level, 1000.0), whole);
+        let without_account = "Mail · Jonas Weber · Tue, 13 Oct";
+        let room = typo::text_width(without_account, level);
+        assert_eq!(meta_fit(&parts, &[2, 1], level, room), without_account);
+        assert_eq!(meta_fit(&parts, &[2, 1], level, room - 1.0), "Mail · Tue, 13 Oct");
+        assert_eq!(meta_fit(&parts, &[2, 1], level, 10.0), "Mail · Tue, 13 Oct", "the rest is cut by the line");
+        let gaps = vec!["Mail".to_string(), String::new(), "Tue".to_string()];
+        assert_eq!(meta_fit(&gaps, &[], level, 1000.0), "Mail · Tue", "no empty part");
+    }
+
+    /// Task E8.12 (finding 3): a card's action gives up its word before it pushes the title away.
+    #[test]
+    fn a_card_line_keeps_room_for_its_title() {
+        let lead = size::avatar();
+        let worded = text_button_width(true, "Open mail");
+        let enough = lead + 2.0 * space::m() + worded + card_line_words_min() + 0.5;
+        let (spoken, room) = card_line_split(enough, lead, "Open mail");
+        assert!(spoken && (room - card_line_words_min() - 0.5).abs() < 0.01, "{room}");
+        let (spoken, room) = card_line_split(enough - 1.0, lead, "Open mail");
+        assert!(!spoken, "a medium window: the icon alone");
+        assert!(room > card_line_words_min(), "the title gets the button's room: {room}");
+        assert_eq!(card_line_split(10.0, lead, "Open mail"), (false, 0.0), "never below nothing");
+    }
+
+    /// Task E8.12 (finding 6): a menu opens above its trigger when only there is room, never over
+    /// it; with room on neither side it takes the side with more and stays on screen.
+    #[test]
+    fn a_menu_without_room_below_opens_above_its_trigger() {
+        let menu = Size::new(240.0, 260.0);
+        let trigger = rect(600.0, 560.0, 28.0, 28.0);
+        let at = place(trigger, menu, WINDOW, Placement::Below(Align::End));
+        assert_eq!(at, Point::new(628.0 - 240.0, 560.0 - below_gap() - 260.0), "above, right edges in line");
+        assert!(at.y + menu.height <= trigger.y, "the trigger stays free");
+        let roomy = place(rect(600.0, 100.0, 28.0, 28.0), menu, WINDOW, Placement::Below(Align::End));
+        assert_eq!(roomy.y, 128.0 + below_gap(), "below while it fits there");
+        // A window 400 high: neither side has room for 300, the larger side wins, kept on screen.
+        let small = Rectangle { height: 400.0, ..WINDOW };
+        let tall = Size::new(240.0, 300.0);
+        let low = place(rect(600.0, 300.0, 28.0, 28.0), tall, small, Placement::Below(Align::End));
+        assert_eq!(low.y, beside_gap(), "more room above: from the top margin");
+        let high = place(rect(600.0, 60.0, 28.0, 28.0), tall, small, Placement::Below(Align::End));
+        assert_eq!(high.y, 400.0 - 300.0 - beside_gap(), "more room below: up from the bottom margin");
     }
 
     #[test]
@@ -2324,5 +3317,26 @@ mod tests {
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::SHIFT), "redo");
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::ALT), "AltGr");
         assert!(!z("x", Code::KeyX, command));
+    }
+
+    /// Task E8.2: the blocks of the comfortable density build in every variant, and the tiles take
+    /// their sizes and letters from the tokens.
+    #[test]
+    fn cards_tiles_and_the_density_switch_build() {
+        let tile = source_tile(TileFace::letter("slack"), TileSize::Medium, None);
+        let head = card_head(Some(tile), "#dev", "10:12", Some(Msg::Close));
+        let chips = chip_row(vec![state_pill(Icon::Paperclip, "Angebot_v2.pdf")]);
+        let _: Element<'_, Msg> = card(vec![head, chips], true, Some(Msg::Go));
+        let _: Element<'_, Msg> = card(vec![card_head(None, "Jonas Brandt", "", None)], false, None);
+        let _: Element<'_, Msg> = source_tile(TileFace::Icon(Icon::Github), TileSize::Large, Some(Color::WHITE));
+        for words in [true, false] {
+            let _: Element<'_, Msg> = density_switch(Density::Compact, words, |_| Msg::Go);
+        }
+        assert_eq!(TileFace::letter("slack"), TileFace::Letter('S'));
+        assert_eq!(TileFace::letter("#dev-torro"), TileFace::Letter('D'), "the first letter, not the #");
+        assert_eq!(TileFace::letter("#!"), TileFace::Letter('?'));
+        let edges = [TileSize::Small, TileSize::Medium, TileSize::Large].map(TileSize::edge);
+        assert_eq!(edges, [size::tile_sm(), size::tile(), size::tile_lg()]);
+        assert_eq!(edges, [20.0, 28.0, 36.0], "the standard's tiles");
     }
 }

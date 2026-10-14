@@ -19,7 +19,22 @@
 //!
 //! The overview (task E3.9, [`Focus::Overview`]) takes the keys of the list, and `h`/`l` and ←/→
 //! change the column. There `l` changes the column instead of moving the entry to the other lane:
-//! the overview shows both lanes, and "Move to …" stays in the panel.
+//! the overview shows both lanes, and "Move to …" stays in the panel. In the notifications window
+//! (task E8.4) the same keys go from app column to app column.
+//!
+//! `x` dismisses a notification (task E8.4, the card's ✕): done, counted apart. The app decides
+//! where it works – never for mail and approvals.
+//!
+//! The bell's menu (task E8.6b, [`Focus::Mute`]; `m` in the notifications window) takes the digits
+//! for its ways to mute, ←/→ for "For" (shorter, longer) and ↑/↓ for "What happens" (milder,
+//! stronger), as its segments lie from left to right.
+//!
+//! The hub's "Act now" (task E8.5) is one list of sections, so it takes the keys of the list
+//! ([`Focus::List`]): `j`/`k` walk Decide, Agents and To sort, `l` moves an entry to the other lane.
+//! `s` on an approval opens no snooze menu – an approval waits for yes or no.
+//!
+//! `c` makes an event of the entry (task E8.5b, "Event" in To sort and the panel): its dialog takes
+//! the keys as the one of "Make task" does ([`Focus::Task`]), `Enter` creates the event.
 
 use iced::keyboard::{self, Key as Name, key::Named};
 use torro_gui::shell;
@@ -51,8 +66,12 @@ pub enum Key {
     H,
     /// `m`.
     M,
+    /// `x`.
+    X,
     /// `t`.
     T,
+    /// `c`.
+    C,
     /// `r`.
     R,
     /// `a`.
@@ -78,9 +97,13 @@ pub enum Focus {
     Overview,
     /// A menu of choices for an entry is open (snooze, lane, hide); its entries carry digits.
     Choices,
+    /// The bell's menu (task E8.6b): its ways to mute carry digits, the arrows change "For" and
+    /// "What happens".
+    Mute,
     /// The date and time picker of "Pick…" is open.
     Picker,
-    /// The dialog of "Make task" is open (task E3.5); its title field takes what is typed.
+    /// The dialog of "Make task" (task E3.5) or of "Make event" (task E8.5b) is open; its title
+    /// field takes what is typed.
     Task,
     /// The navigation menu, the app switcher or the drawer is open; only `[` works.
     Elsewhere,
@@ -102,6 +125,8 @@ pub enum Command {
     Open,
     /// Mark the entry done, or open it again when it is done.
     Done,
+    /// Dismiss the notification (task E8.4, the ✕): done without doing anything, counted apart.
+    Dismiss,
     /// Undo the last change while its hint shows.
     Undo,
     /// Open the snooze menu.
@@ -112,6 +137,8 @@ pub enum Command {
     Hide,
     /// Open the dialog that makes a task of the entry (task E3.5).
     MakeTask,
+    /// Open the dialog that makes an event of the entry (task E8.5b).
+    MakeEvent,
     /// Reply to the mail under the cursor (task E4.2).
     Reply,
     /// Reply to everyone on the mail under the cursor.
@@ -124,6 +151,10 @@ pub enum Command {
     Search,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
+    /// The bell's menu: "For" one step longer (→, `true`) or shorter (←).
+    MuteFor { longer: bool },
+    /// The bell's menu: "What happens" one step stronger (↓, `true`: towards "Hide") or milder (↑).
+    MuteHow { stronger: bool },
     /// Picker: one day earlier.
     EarlierDay,
     /// Picker: one day later.
@@ -132,7 +163,7 @@ pub enum Command {
     EarlierTime,
     /// Picker: the next time of the day.
     LaterTime,
-    /// Picker: snooze to the picked time; dialog of "Make task": create the task.
+    /// Picker: snooze to the picked time; dialog of "Make task" or "Make event": create it.
     Confirm,
     /// Collapse or expand the sidebar, open or close the drawer.
     Sidebar,
@@ -168,7 +199,9 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Character("l") => Key::L,
         Name::Character("h") => Key::H,
         Name::Character("m") => Key::M,
+        Name::Character("x") => Key::X,
         Name::Character("t") => Key::T,
+        Name::Character("c") => Key::C,
         Name::Character("r") => Key::R,
         Name::Character("a") => Key::A,
         Name::Character("f") => Key::F,
@@ -197,13 +230,19 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::S) => Some(Command::Snooze),
         (Focus::List, Key::L) => Some(Command::Lane),
         (Focus::List, Key::M) => Some(Command::Hide),
+        (Focus::List, Key::X) => Some(Command::Dismiss),
         (Focus::List, Key::T) => Some(Command::MakeTask),
+        (Focus::List, Key::C) => Some(Command::MakeEvent),
         (Focus::List, Key::R) => Some(Command::Reply),
         (Focus::List, Key::A) => Some(Command::ReplyAll),
         (Focus::List, Key::F) => Some(Command::Forward),
         (Focus::List, Key::Hash) => Some(Command::Delete),
         (Focus::List, Key::Slash) => Some(Command::Search),
-        (Focus::Choices, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
+        (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
+        (Focus::Mute, Key::Left) => Some(Command::MuteFor { longer: false }),
+        (Focus::Mute, Key::Right) => Some(Command::MuteFor { longer: true }),
+        (Focus::Mute, Key::Up) => Some(Command::MuteHow { stronger: false }),
+        (Focus::Mute, Key::Down) => Some(Command::MuteHow { stronger: true }),
         (Focus::Picker, Key::Left) => Some(Command::EarlierDay),
         (Focus::Picker, Key::Right) => Some(Command::LaterDay),
         (Focus::Picker, Key::Up) => Some(Command::EarlierTime),
@@ -263,7 +302,9 @@ mod tests {
             (char("s"), Command::Snooze),
             (char("l"), Command::Lane),
             (char("m"), Command::Hide),
+            (char("x"), Command::Dismiss),
             (char("t"), Command::MakeTask),
+            (char("c"), Command::MakeEvent),
             (char("r"), Command::Reply),
             (char("a"), Command::ReplyAll),
             (char("f"), Command::Forward),
@@ -290,6 +331,7 @@ mod tests {
             (char("e"), Command::Done),
             (char("s"), Command::Snooze),
             (char("m"), Command::Hide),
+            (char("x"), Command::Dismiss),
             (char("t"), Command::MakeTask),
             (char("["), Command::Sidebar),
         ] {
@@ -307,7 +349,7 @@ mod tests {
         for modifiers in [Modifiers::CTRL, Modifiers::ALT, Modifiers::LOGO] {
             assert_eq!(heard(char("e"), modifiers, Status::Ignored), None, "{modifiers:?}");
         }
-        assert_eq!(heard(char("x"), Modifiers::empty(), Status::Ignored), None, "not a key of the inbox");
+        assert_eq!(heard(char("q"), Modifiers::empty(), Status::Ignored), None, "not a key of the inbox");
         assert_eq!(heard(char("0"), Modifiers::empty(), Status::Ignored), None, "choices count from 1");
         assert_eq!(heard(char("E"), Modifiers::SHIFT, Status::Ignored), None, "Shift + e is not e");
     }
@@ -317,8 +359,20 @@ mod tests {
         assert_eq!(heard(char("2"), Modifiers::empty(), Status::Ignored), Some(Key::Digit(2)));
         assert_eq!(command(Focus::Choices, Key::Digit(2)), Some(Command::Choose(2)));
         assert_eq!(command(Focus::List, Key::Digit(2)), None, "digits only pick menu entries");
-        for key in [Key::Down, Key::E, Key::S, Key::M, Key::Enter, Key::Sidebar] {
+        for key in [Key::Down, Key::E, Key::S, Key::M, Key::X, Key::Enter, Key::Sidebar] {
             assert_eq!(command(Focus::Choices, key), None, "{key:?} stays out of the open menu");
+        }
+    }
+
+    #[test]
+    fn the_bells_menu_takes_digits_and_arrows() {
+        assert_eq!(command(Focus::Mute, Key::Digit(3)), Some(Command::Choose(3)));
+        assert_eq!(command(Focus::Mute, Key::Left), Some(Command::MuteFor { longer: false }));
+        assert_eq!(command(Focus::Mute, Key::Right), Some(Command::MuteFor { longer: true }));
+        assert_eq!(command(Focus::Mute, Key::Up), Some(Command::MuteHow { stronger: false }));
+        assert_eq!(command(Focus::Mute, Key::Down), Some(Command::MuteHow { stronger: true }));
+        for key in [Key::E, Key::S, Key::M, Key::X, Key::Enter, Key::Sidebar] {
+            assert_eq!(command(Focus::Mute, key), None, "{key:?} stays out of the open menu");
         }
     }
 
@@ -335,7 +389,7 @@ mod tests {
     #[test]
     fn the_task_dialog_takes_enter_and_nothing_of_the_list() {
         assert_eq!(command(Focus::Task, Key::Enter), Some(Command::Confirm));
-        for key in [Key::Down, Key::E, Key::S, Key::T, Key::U, Key::Digit(1), Key::Sidebar] {
+        for key in [Key::Down, Key::E, Key::S, Key::T, Key::C, Key::U, Key::Digit(1), Key::Sidebar] {
             assert_eq!(command(Focus::Task, key), None, "{key:?} stays out of the dialog");
         }
     }

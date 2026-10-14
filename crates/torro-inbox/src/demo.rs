@@ -5,7 +5,16 @@
 //! list always read "4 min", "2 h" and so on. It has every kind of entry the first steps bring:
 //! two waiting agents, a finished one, an approval, an account problem, script notices in both
 //! lanes, a snoozed and a done entry. The agents' sessions have names (task E2.6), except the done
-//! one of Codex, which shows how an entry without a name looks.
+//! one of Codex, which shows how an entry without a name looks. Quotes in titles and texts are
+//! typographic (“…”, ’), as in the rest of the suite's texts.
+//!
+//! The remote sources of task E5.1 have one entry of each kind ([`remote_sample`]): a review
+//! requested and a failed workflow run on GitHub, a file shared on Nextcloud, a one-to-one chat in
+//! Talk and an ntfy alert "Backup failed" with priority 5 and a page to open. They are placed and
+//! given their traits by the rules the core uses ([`rules::github_place`] …,
+//! [`rules::remote_facets`]). GitHub also has a security alert seen three days ago (`demo-13`, until
+//! task E5.15 a script named `github`), so its column has three entries. Their texts come from
+//! servers in the real app, so they stay as they are, like mail.
 //!
 //! Mail (task E4.2): two mail accounts ([`MAIL_ACCOUNTS`], private and work) with their folders
 //! and messages, and the entries the core would file for their new mail (task E4.1). The methods
@@ -32,8 +41,8 @@ use torro_core::i18n::{tr, trf};
 use torro_mail::{AttachmentInfo, Draft, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
 
 use crate::item::{
-    Action, AgentInfo, AgentKind, Hidden, HideScope, Item, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo,
-    SourceRef, State,
+    Action, AgentInfo, AgentKind, Facet, FacetKey, Hidden, HideScope, Item, Kind, Lane, Link, MuteEffect, MuteOption,
+    MuteScope, Muted, Rule, RuleEffect, Sender, SourceInfo, SourceKind, SourceRef, State,
 };
 use crate::rules;
 use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
@@ -45,9 +54,10 @@ pub const APPROVAL_ID: &str = "demo-approval-1";
 struct Data {
     items: Vec<Item>,
     muted: BTreeSet<SourceRef>,
-    /// The senders and domains hidden from the inbox (task E3.10), in memory only.
+    /// The senders and domains hidden from the inbox (task E3.10) and the traits muted (task
+    /// E8.6a), in memory only.
     hidden: Vec<Rule>,
-    /// How many hiding rules were made, for their ids: one removed leaves no gap to reuse.
+    /// How many of these rules were made, for their ids: one removed leaves no gap to reuse.
     rules_made: usize,
     /// The tasks made from entries ("Make task", task E3.5), in memory only.
     tasks: Vec<DemoTask>,
@@ -73,14 +83,48 @@ impl Data {
         domain: Option<String>,
         now: DateTime<Utc>,
     ) -> (Option<Rule>, bool) {
-        if let Some(known) = self.hidden.iter().find(|rule| rule.sender == sender && rule.domain == domain) {
+        let known =
+            self.hidden.iter().find(|rule| rule.facet.is_none() && rule.sender == sender && rule.domain == domain);
+        if let Some(known) = known {
             return (Some(known.clone()), false);
         }
-        self.rules_made += 1;
-        let id = format!("demo-rule-{}", self.rules_made);
-        let rule = Rule { id, source, sender, domain, effect: RuleEffect::Muted, created: now };
+        let id = self.next_rule_id();
+        let rule =
+            Rule { id, source, sender, domain, effect: RuleEffect::Muted, created: now, facet: None, until: None };
         self.hidden.push(rule.clone());
         (Some(rule), true)
+    }
+
+    fn next_rule_id(&mut self) -> String {
+        self.rules_made += 1;
+        format!("demo-rule-{}", self.rules_made)
+    }
+
+    /// The rule muting `facet` with `effect` until `until` (task E8.6a), as the core keeps it: the
+    /// same rule already there for a source of the same kind (its end then the later of both), else
+    /// a new one about `source`; with whether it is new.
+    fn muting_rule(
+        &mut self,
+        source: SourceRef,
+        facet: Facet,
+        effect: RuleEffect,
+        until: Option<DateTime<Utc>>,
+        now: DateTime<Utc>,
+    ) -> (Rule, bool) {
+        let same = |rule: &Rule| {
+            rule.facet.as_ref() == Some(&facet)
+                && rule.effect == effect
+                && rules::reaches(rule, &source)
+                && rules::is_active(rule, now)
+        };
+        if let Some(known) = self.hidden.iter_mut().find(|rule| same(rule)) {
+            known.until = rules::later_end(known.until, until);
+            return (known.clone(), false);
+        }
+        let id = self.next_rule_id();
+        let rule = Rule { id, source, sender: None, domain: None, effect, created: now, facet: Some(facet), until };
+        self.hidden.push(rule.clone());
+        (rule, true)
     }
 }
 
@@ -174,6 +218,9 @@ fn entry(now: DateTime<Utc>, n: u32, source: SourceRef, kind: Kind, title: Strin
         link: None,
         actions: Vec::new(),
         untrusted: true,
+        facets: Vec::new(),
+        task: None,
+        invite: None,
     }
 }
 
@@ -195,7 +242,7 @@ fn agent(agent: AgentKind, session: &str, project: &str, branch: &str, title: Op
     })
 }
 
-/// The sample entries, thirteen of them; times are relative to `now`.
+/// The sample entries, twelve of them and the six of [`remote_sample`]; times are relative to `now`.
 pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
     let claude = || SourceRef::agent(AgentKind::ClaudeCode.id());
     let codex = || SourceRef::agent(AgentKind::Codex.id());
@@ -237,7 +284,7 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
                 3,
                 SourceRef::suite(),
                 Kind::Approval,
-                tr("Claude Desktop wants to delete the event \"Team meeting\"").into(),
+                tr("Claude Desktop wants to delete the event “Team meeting”").into(),
                 8,
             )
         },
@@ -266,7 +313,7 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
             )
         },
         Item {
-            body: Some(tr("Step \"migrate\" exited with code 1.").into()),
+            body: Some(tr("Step “migrate” exited with code 1.").into()),
             link: Some(Link::Url { url: "https://ci.example.org/runs/1842".into() }),
             ..notice(now, 6, "deploy", Lane::ForMe, tr("Deploy to staging failed"), 50)
         },
@@ -300,10 +347,110 @@ pub fn sample(now: DateTime<Utc>) -> Vec<Item> {
             body: Some(tr("2 invoices could not be matched to a customer.").into()),
             ..notice(now, 12, "invoices", Lane::ForMe, tr("Invoice run needs a check"), 22 * 60)
         },
+    ]
+    .into_iter()
+    // The traits the core gives every report (task E8.6a).
+    .map(|item| Item { facets: rules::facets(&item, None, false), ..item })
+    .chain(remote_sample(now))
+    .collect()
+}
+
+/// The traits `pairs` of a remote source of `kind`, as the core files them ([`rules::remote_facets`]).
+fn remote_facets(kind: SourceKind, pairs: &[(FacetKey, &str)]) -> Vec<Facet> {
+    rules::remote_facets(kind, pairs.iter().map(|&(key, value)| Facet { key, value: value.into() }).collect())
+}
+
+/// One entry of each remote source of task E5.1, `demo-14` to `demo-18`, and GitHub's security alert
+/// `demo-13` (task E5.15; see the module docs).
+pub fn remote_sample(now: DateTime<Utc>) -> Vec<Item> {
+    let github = || SourceRef::github("anna-berg");
+    let cloud = "anna@cloud.example.org";
+    let review =
+        [(FacetKey::Kind, "pull_request"), (FacetKey::Repo, "torro/workplace"), (FacetKey::Reason, "review_requested")];
+    let shared = [(FacetKey::App, "files_sharing"), (FacetKey::Person, "Jonas Weber")];
+    let run = [
+        (FacetKey::Kind, "check_suite"),
+        (FacetKey::Repo, "torro/workplace"),
+        (FacetKey::Reason, "ci_activity"),
+        (FacetKey::Result, "failed"),
+    ];
+    let alerts = [
+        (FacetKey::Kind, "repository_vulnerability_alert"),
+        (FacetKey::Repo, "torro/website"),
+        (FacetKey::Reason, "security_alert"),
+    ];
+    let lena = Sender { name: "Lena Hoffmann".into(), address: None };
+    let jonas = Sender { name: "Jonas Weber".into(), address: None };
+    let (alert, alert_lane) = rules::ntfy_place(5);
+    vec![
+        // Seen three days ago, so the overview has an entry before yesterday (task E3.11). Until
+        // task E5.15 a script named `github` reported it.
         Item {
-            body: Some(tr("Renew it before 27 October to keep the intranet reachable.").into()),
+            thread_key: "8812345513".into(),
+            lane: rules::github_place("security_alert", "repository_vulnerability_alert", None),
             state: State::Seen,
-            ..notice(now, 13, "certs", Lane::ForMe, tr("Certificate for the intranet expires in 14 days"), 3 * 24 * 60)
+            link: Some(Link::Url { url: "https://github.com/torro/website/security/dependabot".into() }),
+            facets: remote_facets(SourceKind::Github, &alerts),
+            ..entry(now, 13, github(), Kind::Notice, "2 vulnerable packages in website".into(), 3 * 24 * 60)
+        },
+        Item {
+            thread_key: "8812345601".into(),
+            lane: rules::github_place("review_requested", "pull_request", None),
+            link: Some(Link::Url { url: "https://github.com/torro/workplace/pull/214".into() }),
+            facets: remote_facets(SourceKind::Github, &review),
+            ..entry(now, 14, github(), Kind::Notice, "Inbox: sources for GitHub, Nextcloud and ntfy".into(), 18)
+        },
+        Item {
+            thread_key: "8812345602".into(),
+            lane: rules::github_place("ci_activity", "check_suite", Some("failed")),
+            link: Some(Link::Url { url: "https://github.com/torro/workplace/actions".into() }),
+            facets: remote_facets(SourceKind::Github, &run),
+            ..entry(now, 15, github(), Kind::Notice, "CI workflow run failed for main branch".into(), 45)
+        },
+        Item {
+            thread_key: "files_sharing:share:1842".into(),
+            lane: rules::nextcloud_place("files_sharing", "share"),
+            from: Some(jonas),
+            link: Some(Link::Url { url: "https://cloud.example.org/apps/files/?openfile=1842".into() }),
+            facets: remote_facets(SourceKind::Nextcloud, &shared),
+            ..entry(
+                now,
+                16,
+                SourceRef::nextcloud(cloud),
+                Kind::Notice,
+                "Jonas Weber shared “Budget 2027.xlsx” with you".into(),
+                70,
+            )
+        },
+        Item {
+            thread_key: "k7pq2xd9".into(),
+            lane: rules::talk_place(rules::TalkRoom::Direct, false, rules::TalkLevel::Default).unwrap_or(Lane::ForMe),
+            body: Some("Lena: Can we go through the sidebar drafts before 3?".into()),
+            from: Some(lena),
+            count: 2,
+            link: Some(Link::Url { url: "https://cloud.example.org/call/k7pq2xd9".into() }),
+            facets: remote_facets(
+                SourceKind::Talk,
+                &[(FacetKey::Kind, rules::TalkRoom::Direct.facet(false)), (FacetKey::Person, "Lena Hoffmann")],
+            ),
+            ..entry(now, 17, SourceRef::talk(cloud), Kind::Message, "Lena Hoffmann".into(), 6)
+        },
+        Item {
+            thread_key: "backup:Backup failed".into(),
+            lane: alert_lane,
+            body: Some("rsync to the NAS stopped: “No space left on device”.".into()),
+            // ntfy's `click`: the page the message points to.
+            link: Some(Link::Url { url: "https://nas.example.org/backups".into() }),
+            facets: remote_facets(
+                SourceKind::Ntfy,
+                &[
+                    (FacetKey::Topic, "Server"),
+                    (FacetKey::Priority, "5"),
+                    (FacetKey::Tag, "warning"),
+                    (FacetKey::Tag, "backup"),
+                ],
+            ),
+            ..entry(now, 18, SourceRef::ntfy("ntfy.sh"), alert, "Backup failed".into(), 3)
         },
     ]
 }
@@ -444,6 +591,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             snippet,
             flags: letter.flags.to_vec(),
             has_attachments: !attachments.is_empty(),
+            invite: None,
             untrusted: true,
         },
         cc: Vec::new(),
@@ -624,7 +772,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
         Letter {
             from: ("Clara Berg", "clara@example.org"),
             minutes: 3 * 24 * 60,
-            text: "Dinner for Mum's birthday on the 24th? I would book the Italian place for seven.",
+            text: "Dinner for Mum’s birthday on the 24th? I would book the Italian place for seven.",
             ..Letter::new("m:p7", PRIVATE, "inbox", "Birthday dinner on the 24th")
         },
     ];
@@ -645,7 +793,7 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 name: from.name.clone().unwrap_or_else(|| from.address.clone()),
                 address: Some(from.address.clone()),
             });
-            Item {
+            let entry = Item {
                 id: format!("demo-mail-{}", n + 1),
                 source: SourceRef::mail(summary.account.trim_start_matches("mail:")),
                 thread_key: summary.thread_id.clone(),
@@ -663,7 +811,13 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 link: Some(Link::Mail { message: summary.id.clone() }),
                 actions: Vec::new(),
                 untrusted: true,
-            }
+                facets: Vec::new(),
+                task: None,
+                invite: None,
+            };
+            // The traits the core gives new mail (task E8.6a), its list and bulk from the headers.
+            let list = m.traits.list_id.as_deref();
+            Item { facets: rules::facets(&entry, list, list.is_some()), ..entry }
         })
         .collect()
 }
@@ -949,6 +1103,7 @@ impl InboxSource for DemoSource {
                 )
                 .unwrap_or(u32::MAX),
                 muted: data.muted.contains(source),
+                health: None,
             })
             .collect())
     }
@@ -961,6 +1116,62 @@ impl InboxSource for DemoSource {
             self.set_mail_flags(std::slice::from_ref(message), &[Flag::Seen], &[])?;
         }
         Ok(item)
+    }
+
+    /// Done like [`InboxSource::set_item_done`]; demo mode keeps no statistics.
+    async fn dismiss_item(&self, id: String) -> Result<Item, InboxError> {
+        self.set_item_done(id, true).await
+    }
+
+    async fn list_mute_options(&self, id: String) -> Result<Vec<MuteOption>, InboxError> {
+        let data = self.lock();
+        let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
+        Ok(rules::mute_options(item))
+    }
+
+    /// As the core does (task E8.6a): the value from the entry, a rule unless the conversation is
+    /// hidden or moved for good, then the entries it holds for changed at once. Demo mode gets no new
+    /// reports, so the rule changes nothing later. [`InboxError::Forbidden`] for the person's own
+    /// entries is the app key's: the demo is the person, so they are [`InboxError::Other`] here like
+    /// a trait the entry lacks.
+    async fn mute_item(
+        &self,
+        id: String,
+        scope: MuteScope,
+        until: Option<DateTime<Utc>>,
+        effect: MuteEffect,
+    ) -> Result<Muted, InboxError> {
+        let now = self.now();
+        let mut data = self.lock();
+        let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
+        if until.is_some_and(|until| until <= now) {
+            return Err(InboxError::Other("the end of muting has passed".into()));
+        }
+        let target = rules::mute_target(item, scope)
+            .ok_or_else(|| InboxError::Other("this entry has nothing to mute it by".into()))?;
+        let source = item.source.clone();
+        let (rule, new_rule) = if scope.keeps_rule(effect, until.is_some()) {
+            let (rule, new_rule) = data.muting_rule(source, target, effect.rule_effect(), until, now);
+            (Some(rule), new_rule)
+        } else {
+            (None, false)
+        };
+        let mut muted = Muted { rule: rule.clone(), new_rule, ..Muted::default() };
+        for entry in &mut data.items {
+            let holds = match &rule {
+                Some(rule) => rules::mutes(rule, entry, now),
+                None => entry.id == id,
+            };
+            if !holds {
+                continue;
+            }
+            match rules::mute_entry(entry, effect, now) {
+                Some(rules::MutedEntry::Done) => muted.done.push(entry.id.clone()),
+                Some(rules::MutedEntry::Moved) => muted.moved.push(entry.id.clone()),
+                None => {}
+            }
+        }
+        Ok(muted)
     }
 
     async fn snooze_item(&self, id: String, until: Option<DateTime<Utc>>) -> Result<Item, InboxError> {
@@ -1015,7 +1226,7 @@ impl InboxSource for DemoSource {
         Ok(Hidden { rule, new_rule, done })
     }
 
-    /// Removes a hidden sender or domain (the only rules demo mode keeps); muted sources are taken
+    /// Removes a hidden sender or domain or a muted trait (the only rules demo mode keeps); muted sources are taken
     /// back with [`InboxSource::mute_source`]. [`InboxError::NotFound`] for an unknown rule.
     async fn remove_rule(&self, id: String) -> Result<(), InboxError> {
         let mut data = self.lock();
@@ -1124,6 +1335,26 @@ mod tests {
         assert_eq!(count(&|i| matches!(i.state, State::Done { .. })), 1);
     }
 
+    /// Task E8.13: titles and texts quote typographically – no straight quote or apostrophe in the
+    /// entries or the mail, in either language. Task E5.15: GitHub's entries come from a GitHub
+    /// source, none from a script that calls itself `github`.
+    #[test]
+    fn the_sample_quotes_typographically_and_has_an_app_of_its_own() {
+        let items = sample(now());
+        let mail = mail_sample(now());
+        let texts = items
+            .iter()
+            .flat_map(|i| [Some(i.title.as_str()), i.body.as_deref()])
+            .chain(mail.iter().flat_map(|m| [Some(m.summary.subject.as_str()), m.text.as_deref()]))
+            .flatten();
+        for text in texts {
+            assert!(!text.contains(['"', '\'']), "straight quote in {text:?}");
+        }
+        assert!(!items.iter().any(|i| i.source == SourceRef::script("github")), "no script dressed as GitHub");
+        let github = items.iter().filter(|i| i.source.kind == SourceKind::Github).map(|i| i.id.as_str());
+        assert_eq!(github.collect::<Vec<_>>(), ["demo-13", "demo-14", "demo-15"], "GitHub's column");
+    }
+
     #[test]
     fn the_sample_follows_the_rules() {
         let items = sample(now());
@@ -1159,14 +1390,20 @@ mod tests {
     async fn for_me_lists_urgent_entries_first() {
         let demo = DemoSource::new(now());
         let for_me = demo.list_items(open_in(Lane::ForMe)).await.expect("list");
+        // The ntfy alert (task E5.1) is urgent like a waiting agent.
         let urgent_first = [
+            "demo-18",
             "demo-1",
             "demo-3",
             "demo-2",
+            "demo-17",
+            "demo-14",
             "demo-mail-1",
             "demo-4",
+            "demo-15",
             "demo-6",
             "demo-mail-4",
+            "demo-16",
             "demo-5",
             "demo-mail-2",
             "demo-mail-6",
@@ -1190,7 +1427,7 @@ mod tests {
         assert_eq!(ids(&demo.list_items(done_view).await.expect("list")), ["demo-1", "demo-11"]);
         let back = demo.set_item_done("demo-1".into(), false).await.expect("open again");
         assert_eq!(back.state, State::Seen);
-        assert_eq!(ids(&demo.list_items(open_in(Lane::ForMe)).await.expect("list"))[0], "demo-1");
+        assert_eq!(ids(&demo.list_items(open_in(Lane::ForMe)).await.expect("list"))[..2], ["demo-18", "demo-1"]);
     }
 
     #[tokio::test]
@@ -1228,13 +1465,16 @@ mod tests {
                 "agent:claude-code",
                 "agent:codex",
                 "script:backup",
-                "script:certs",
                 "script:ci",
                 "script:deploy",
                 "script:invoices",
                 "script:uptime",
                 "mail:anna@example.org",
-                "mail:anna@work.example.org"
+                "mail:anna@work.example.org",
+                "github:anna-berg",
+                "nextcloud:anna@cloud.example.org",
+                "talk:anna@cloud.example.org",
+                "ntfy:ntfy.sh",
             ]
         );
         let open = |sources: &[SourceInfo], key: &str| {
@@ -1348,6 +1588,104 @@ mod tests {
         assert!(twice.done.is_empty(), "nothing was open any more");
         let notice = demo.hide_sender("demo-6".into(), HideScope::Conversation).await;
         assert!(matches!(notice, Err(InboxError::Other(_))), "only mail: {notice:?}");
+    }
+
+    /// Task E8.6a: the menu is built from the entry's traits, and the person's own entries have none.
+    #[tokio::test]
+    async fn the_demo_offers_the_traits_of_its_entries() {
+        let demo = DemoSource::new(now());
+        let waiting = demo.list_mute_options("demo-1".into()).await.expect("options");
+        let keys: Vec<MuteScope> = waiting.iter().map(|option| option.scope).collect();
+        assert_eq!(
+            keys,
+            [
+                MuteScope::Conversation,
+                MuteScope::Facet { key: crate::item::FacetKey::Agent, nth: 0 },
+                MuteScope::Facet { key: crate::item::FacetKey::Project, nth: 0 },
+                MuteScope::Facet { key: crate::item::FacetKey::Kind, nth: 0 },
+            ]
+        );
+        assert!(demo.list_mute_options("demo-3".into()).await.expect("approval").is_empty());
+        assert_eq!(demo.list_mute_options("nope".into()).await, Err(InboxError::NotFound));
+        let mail =
+            demo.lock().items.iter().find(|item| item.lane == Lane::Info && item.id.starts_with("demo-mail")).cloned();
+        let mail = mail.expect("a newsletter");
+        let list = mail.facets.iter().find(|facet| facet.key == crate::item::FacetKey::List);
+        assert_eq!(list.map(|facet| facet.value.as_str()), Some("<news.example>"), "from List-Id");
+    }
+
+    /// Task E8.6a: muting hides or moves at once and answers what to take back.
+    #[tokio::test]
+    async fn muting_in_the_demo_changes_the_entries_it_holds_for() {
+        let demo = DemoSource::new(now());
+        let project = MuteScope::Facet { key: crate::item::FacetKey::Kind, nth: 0 };
+        let muted = demo.mute_item("demo-1".into(), project, None, MuteEffect::Info).await.expect("muted");
+        assert!(muted.new_rule && muted.rule.is_some());
+        assert_eq!(muted.moved, ["demo-1", "demo-2"], "both waiting agents");
+        assert_eq!(demo.lock().items[0].lane, Lane::Info);
+        let again = demo.mute_item("demo-2".into(), project, None, MuteEffect::Info).await.expect("again");
+        assert!(!again.new_rule && again.moved.is_empty(), "the same rule, nothing more to move");
+        let conversation =
+            demo.mute_item("demo-6".into(), MuteScope::Conversation, None, MuteEffect::Hide).await.expect("hidden");
+        assert_eq!(conversation, Muted { done: vec!["demo-6".into()], ..Muted::default() }, "no rule");
+        let past = demo.mute_item("demo-7".into(), MuteScope::Conversation, Some(now()), MuteEffect::Hide).await;
+        assert!(matches!(past, Err(InboxError::Other(_))), "{past:?}");
+        let lacking = MuteScope::Facet { key: crate::item::FacetKey::Sender, nth: 0 };
+        let lacking = demo.mute_item("demo-7".into(), lacking, None, MuteEffect::Hide).await;
+        assert!(matches!(lacking, Err(InboxError::Other(_))), "a script has no sender: {lacking:?}");
+        let rule = muted.rule.expect("a rule");
+        demo.remove_rule(rule.id).await.expect("removed like any rule");
+        let dismissed = demo.dismiss_item("demo-8".into()).await.expect("dismissed");
+        assert!(matches!(dismissed.state, State::Done { .. }));
+    }
+
+    /// Task E5.1: one entry of each remote source, placed and given its traits by the core's rules.
+    #[test]
+    fn the_sample_has_an_entry_of_each_remote_source() {
+        let items = remote_sample(now());
+        let of = |id: &str| items.iter().find(|item| item.id == id).expect("in the sample");
+        let keys = |item: &Item| item.facets.iter().map(|facet| facet.key).collect::<Vec<_>>();
+        let review = of("demo-14");
+        assert_eq!((review.source.kind, review.kind, review.lane), (SourceKind::Github, Kind::Notice, Lane::ForMe));
+        assert_eq!(keys(review), [FacetKey::Kind, FacetKey::Repo, FacetKey::Reason]);
+        let run = of("demo-15");
+        assert_eq!(run.lane, Lane::ForMe, "a failed run of the person's");
+        assert!(run.facets.contains(&Facet { key: FacetKey::Result, value: "failed".into() }));
+        let shared = of("demo-16");
+        assert_eq!((shared.source.kind, shared.lane), (SourceKind::Nextcloud, Lane::ForMe));
+        assert_eq!(keys(shared), [FacetKey::App, FacetKey::Person]);
+        let chat = of("demo-17");
+        assert_eq!((chat.source.kind, chat.kind, chat.lane), (SourceKind::Talk, Kind::Message, Lane::ForMe));
+        assert_eq!(chat.facets[0], Facet { key: FacetKey::Kind, value: "direct".into() });
+        let alert = of("demo-18");
+        assert_eq!((alert.source.key().as_str(), alert.kind), ("ntfy:ntfy.sh", Kind::Alert));
+        assert!(alert.urgent && alert.lane == Lane::ForMe, "priority 5 is urgent");
+        assert_eq!(keys(alert), [FacetKey::Topic, FacetKey::Priority, FacetKey::Tag, FacetKey::Tag]);
+        assert_eq!(alert.title, "Backup failed");
+        assert!(items.iter().all(|item| item.untrusted), "foreign text");
+        let old = of("demo-13");
+        assert_eq!((old.source.kind, old.state, old.lane), (SourceKind::Github, State::Seen, Lane::ForMe));
+        assert!(items.iter().filter(|item| item.id != "demo-13").all(|item| item.state == State::New), "the rest new");
+        // Talk and Nextcloud share the account, Talk with its own key.
+        assert_eq!(shared.source.name, chat.source.name);
+        assert_eq!(chat.source.key(), "talk:anna@cloud.example.org");
+    }
+
+    /// Task E5.1: every tag of the alert is offered on its own, by its place among the tags.
+    #[tokio::test]
+    async fn each_tag_is_muted_on_its_own() {
+        let demo = DemoSource::new(now());
+        let options = demo.list_mute_options("demo-18".into()).await.expect("options");
+        let tags: Vec<(MuteScope, Option<&str>)> = options
+            .iter()
+            .filter(|option| matches!(option.scope, MuteScope::Facet { key: FacetKey::Tag, .. }))
+            .map(|option| (option.scope, option.value.as_deref()))
+            .collect();
+        let tag = |nth| MuteScope::Facet { key: FacetKey::Tag, nth };
+        assert_eq!(tags, [(tag(0), Some("warning")), (tag(1), Some("backup"))]);
+        let muted = demo.mute_item("demo-18".into(), tag(1), None, MuteEffect::NoPopup).await.expect("muted");
+        let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
+        assert_eq!(facet, Facet { key: FacetKey::Tag, value: "backup".into() }, "the second tag");
     }
 
     fn folder<'a>(folders: &'a [Folder], id: &str) -> &'a Folder {

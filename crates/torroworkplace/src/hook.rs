@@ -4,7 +4,8 @@
 //! object to its stdin. The command reads it ([`STDIN_MAX`] at most), reads `.git/HEAD` of the
 //! payload's `cwd` for the branch ([`git_head`], no process is started), lets
 //! [`torro_inbox::hook::interpret`] decide what it means, adds the chain of parent processes on
-//! Linux ([`parent_pids`], for jumping to the agent's window in E2.4) and sends one request with
+//! Linux and macOS ([`parent_pids`], for jumping to the agent's window in E2.4 and E8.9; macOS
+//! runs `/bin/ps` once for it, only for a report) and sends one request with
 //! the hook client's key: `inbox.post_item` for "waiting" and "done", `inbox.resolve_items` when
 //! the session goes on or ends.
 //!
@@ -99,7 +100,7 @@ pub const DEBUG_VAR: &str = "TORRO_HOOK_DEBUG";
 const SMALL_FILE_MAX: u64 = 4096;
 
 /// The most parent processes collected; deeper chains are cut, nearest kept.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 const PARENTS_MAX: usize = 32;
 
 /// The option that names the file holding the hook client's key (task E2.3b).
@@ -662,30 +663,75 @@ fn read_small(path: &Path) -> Option<String> {
 }
 
 /// The parent processes of this process, nearest first, at most [`PARENTS_MAX`], without init
-/// (pid 1). Read from `/proc/<pid>/stat` on Linux; empty on other systems.
+/// (pid 1, `launchd` on macOS). Read from `/proc/<pid>/stat` on Linux and from one run of
+/// `/bin/ps` on macOS ([`parents_from_ps`]); empty on other systems and when reading fails.
 pub fn parent_pids() -> Vec<u32> {
     #[cfg(target_os = "linux")]
     {
         parent_chain(Path::new("/proc"), std::process::id())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        parents_from_ps(std::process::id())
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Vec::new()
     }
 }
 
-/// The chain of parents of `pid` under the proc file system at `proc`: follows the parent id in
-/// each `stat` until pid 1 or 0, a missing process or [`PARENTS_MAX`] entries.
+/// The chain of parents of `pid` under the proc file system at `proc` ([`walk_parents`] over
+/// each `stat`).
 #[cfg(target_os = "linux")]
 fn parent_chain(proc: &Path, pid: u32) -> Vec<u32> {
+    walk_parents(pid, |current| {
+        read_small(&proc.join(current.to_string()).join("stat")).and_then(|stat| parent_of(&stat))
+    })
+}
+
+/// The chain of parents of `pid` from `ps -A -o pid= -o ppid=` (macOS has no `/proc`; one run
+/// lists every process, cheaper than one run per parent). Empty when `ps` cannot run.
+#[cfg(target_os = "macos")]
+fn parents_from_ps(pid: u32) -> Vec<u32> {
+    let listed = std::process::Command::new("/bin/ps")
+        .args(["-A", "-o", "pid=", "-o", "ppid="])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    match listed {
+        Ok(output) if output.status.success() => {
+            let table = parent_table(&String::from_utf8_lossy(&output.stdout));
+            walk_parents(pid, |current| table.get(&current).copied())
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Parent by process from the lines `<pid> <ppid>` that `ps -o pid= -o ppid=` prints; lines that
+/// are not two numbers are skipped.
+#[cfg(any(target_os = "macos", test))]
+fn parent_table(ps: &str) -> std::collections::HashMap<u32, u32> {
+    ps.lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let pid = fields.next()?.parse().ok()?;
+            let parent = fields.next()?.parse().ok()?;
+            Some((pid, parent))
+        })
+        .collect()
+}
+
+/// The parents of `pid`, nearest first, following `parent_of` until pid 1 or 0, an unknown
+/// process or [`PARENTS_MAX`] entries.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn walk_parents(pid: u32, parent_of: impl Fn(u32) -> Option<u32>) -> Vec<u32> {
     let mut chain = Vec::new();
     let mut current = pid;
     while chain.len() < PARENTS_MAX {
-        let Some(parent) = read_small(&proc.join(current.to_string()).join("stat")).and_then(|stat| parent_of(&stat))
-        else {
+        let Some(parent) = parent_of(current) else {
             break;
         };
-        // Init adopts orphans and is no window's process; a loop would be a broken /proc.
+        // Init adopts orphans and is no window's process; a loop would be a broken process table.
         if parent <= 1 || chain.contains(&parent) {
             break;
         }
@@ -1165,6 +1211,22 @@ mod tests {
         assert_eq!(parent_of("12 (a) b) R 34 12"), Some(34));
     }
 
+    /// Task E8.9: macOS reads the chain from one run of `ps`, which lists every process.
+    #[test]
+    fn parents_come_from_the_process_list() {
+        let ps = "    1     0\n  410   1\n  413   410\n  700   413\n  701   700\n  702 701\n garbage\n 800 x\n";
+        let table = parent_table(ps);
+        assert_eq!(table.len(), 6, "only lines of two numbers");
+        // The hook (702) under `sh -c`, Claude Code, the shell, login, Terminal; launchd is left out.
+        assert_eq!(walk_parents(702, |pid| table.get(&pid).copied()), [701, 700, 413, 410]);
+        assert_eq!(walk_parents(999, |pid| table.get(&pid).copied()), Vec::<u32>::new(), "unknown process");
+        let looped = parent_table("5 6\n6 5\n");
+        assert_eq!(walk_parents(5, |pid| looped.get(&pid).copied()), [6, 5]);
+        assert_eq!(walk_parents(1000, |pid| Some(pid + 1)).len(), PARENTS_MAX);
+        #[cfg(target_os = "macos")]
+        assert!(!parent_pids().is_empty(), "the real chain reaches at least the test runner");
+    }
+
     #[test]
     fn without_a_core_the_hook_ends_quickly() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1303,7 +1365,7 @@ mod tests {
         assert_eq!(waiting.body.as_deref(), Some("Claude needs your permission to use Bash"));
         let agent = waiting.agent.as_ref().expect("agent info");
         assert_eq!((agent.session.as_str(), agent.project.as_deref()), ("abc123", Some("my-project")));
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         assert!(!agent.pids.is_empty(), "the parent chain is sent");
 
         // The same report with the key from a private file, as the wizard sets it up (E2.3b).

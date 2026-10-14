@@ -40,6 +40,24 @@
 //! name as title and, where the text stands, what the agent does and where: "Claude Code is
 //! waiting for you · TorroWorkplace · feat/inbox" ([`words`]). Without a name the row is as before.
 //!
+//! **Cards** (task E8.3, [`Look::Cards`]): in the comfortable density of the mail window a mail
+//! is a card instead of a row ([`mail_card`], the E8.2 block `widgets::card`): the avatar
+//! ([`size::avatar()`]) with sender and "domain · account · time" ([`widgets::card_head`]), the
+//! subject, up to two lines of preview ([`clamp_lines`]), chips (several messages, an attachment, a
+//! flag) and its buttons, always shown in a row of their own – Reply · Task · Done · Later in every
+//! size (task E8.11), with all their words where the card's width has room for them, else only the
+//! first's (Reply; Accept for an invitation), else none ([`spoken`], `widgets::bar_words`, task
+//! E8.13), and "…" for "Hide from inbox". Every button does what its key does on the entry ([`Message::Act`]).
+//! Cards have no close button: mail is not dismissed in the mail window. A card is as high as what
+//! it shows at its width – a preview of one line takes one line ([`mail_card_height`],
+//! [`preview_lines`]) –, so the app can scroll the cursor into view.
+//!
+//! **Invitations** (task E8.3c): a mail entry whose mail invites to an event ([`Item::invite`], as
+//! the core fills it in) shows when it is – as a chip with the answer given on its card, as the
+//! calendar's mark in its row – and offers Accept · Maybe · Decline ([`invite_actions`],
+//! `Message::AnswerInvitation` for the message it links to) in place of "Done", as long as the
+//! event is not over: answering is what is done with it, and the window marks the entry done then.
+//!
 //! Titles and bodies of other sources are foreign text (`Item::untrusted`). Iced draws text as it
 //! is, so nothing in it is ever interpreted; [`one_line`] and [`plain`] also drop control and
 //! direction characters, so a title can neither break the row into lines nor turn its text around.
@@ -54,13 +72,14 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, palette, radius, size, space};
 use torro_gui::typo::{self, Level};
-use torro_gui::widgets::{self, Anchor, Mark, RowAction};
+use torro_gui::widgets::{self, Anchor, BarWords, Mark, RowAction};
 use torro_gui::{datetime, layout, style};
-use torro_inbox::{Item, SourceKind, SourceRef, State, rules};
+use torro_inbox::item::FacetKey;
+use torro_inbox::{Item, Kind, Link, SourceKind, SourceRef, State, rules};
 
 use crate::app::{Message, View};
-use crate::detail;
 use crate::keys::Command;
+use crate::{detail, mail};
 
 /// What the rows of entries need besides the entries (task E3.9): the same for the list of a view
 /// and for the columns of the overview.
@@ -81,6 +100,28 @@ pub struct Rows<'a> {
     /// Ids of the entries whose menu "Hide from inbox" has entries (`App::hide_choices`): their
     /// action bar offers "Hide".
     pub hidable: Vec<&'a str>,
+    /// Rows or cards (task E8.3): cards in the comfortable density of the mail window.
+    pub look: Look,
+}
+
+/// How a list draws mail (task E8.3): one row per mail, or a card per mail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Look {
+    /// Rows, the action bar under the pointer or the cursor (the compact density, and the hub until
+    /// E8.5 brings its own cards; the notifications window draws its board, `notifications.rs`).
+    #[default]
+    Rows,
+    /// Cards with their buttons always shown (the comfortable density of the mail window), in a
+    /// row of their own under the card's text, with their words as far as the card has room for
+    /// them ([`spoken`]; task E8.11: by the room, not by the layout class).
+    Cards,
+}
+
+impl Look {
+    /// Cards.
+    pub fn cards(self) -> bool {
+        self == Look::Cards
+    }
 }
 
 /// What the list of a view gets to draw.
@@ -192,11 +233,28 @@ pub fn message_height() -> f32 {
     size::row_message()
 }
 
+/// The height of `item` as a list in `look` draws it: its card `width` wide ([`entry_card_height`])
+/// when it is mail and the list shows cards, else its row ([`row_height_of`], whatever the width).
+pub fn height_of(item: &Item, look: Look, width: f32) -> f32 {
+    match look {
+        Look::Cards if item.source.kind == SourceKind::Mail => entry_card_height(item, width),
+        Look::Cards | Look::Rows => row_height_of(item),
+    }
+}
+
 /// Where row `index` of `items` lies in the list's content as `(top, bottom)`, every row as high
 /// as [`row_height_of`] says; the first row of a group starts at its head, so scrolling up to it
 /// shows the head too. `None` past the end.
-pub fn row_span(items: &[Item], index: usize) -> Option<(f32, f32)> {
+///
+/// With cards (`look`, task E8.3) the list has no heads: the cards, `width` wide (task E8.11: their
+/// previews take the lines they need at it), stand in a column with [`cards_inset`] around it and
+/// [`size::card_gap()`] between them ([`card_span`]). Rows ignore `width`.
+pub fn row_span(items: &[Item], index: usize, look: Look, width: f32) -> Option<(f32, f32)> {
     let item = items.get(index)?;
+    if look.cards() {
+        let above = items[..index].iter().map(|item| height_of(item, look, width));
+        return Some(card_span(above, height_of(item, look, width)));
+    }
     let above: f32 = items[..index].iter().map(row_height_of).sum();
     let groups = groups(items);
     // Every head is shorter by `head_trim()` ([`without_top`]).
@@ -217,11 +275,16 @@ pub fn view<'a>(data: ListData<'a>) -> Element<'a, Message> {
     responsive(move |bounds| list(&data, bounds.width)).into()
 }
 
-/// The rows at `width`, under their group heads when something waits.
+/// The rows at `width`, under their group heads when something waits; with cards (task E8.3) a
+/// card per entry in a column, no heads (mail never waits).
 fn list<'a>(data: &ListData<'a>, width: f32) -> Element<'a, Message> {
     let mut rows = column![].width(Fill);
-    let groups = groups(data.items);
-    if groups.is_empty() {
+    let groups = if data.rows.look.cards() { Vec::new() } else { groups(data.items) };
+    if data.rows.look.cards() {
+        let inner = width - cards_side();
+        let cards = data.items.iter().map(|item| entry_card(item, &data.rows, inner));
+        rows = rows.push(container(column(cards).spacing(size::card_gap())).padding(cards_inset()));
+    } else if groups.is_empty() {
         rows = rows.extend(data.items.iter().map(|item| entry_row(item, &data.rows, width)));
     }
     for (group, range) in groups {
@@ -250,13 +313,15 @@ pub(crate) fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message
 pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let selected = rows.selected == Some(item.id.as_str());
     let content = if item.source.kind == SourceKind::Mail {
-        mail_content(MailLines::of(item, rows), width)
+        // An invitation (task E8.3c): the calendar's mark before the time, as in a folder's row.
+        let marks = item.invite.as_ref().map(|invite| mail::invite_mark(invite, rows.now)).into_iter().collect();
+        mail_content(MailLines { marks, ..MailLines::of(item, rows) }, width)
     } else {
         notice_content(item, rows, width)
     };
     let height = row_height_of(item);
     let row = sized_row(content, selected, Message::Select(item.id.clone()), height);
-    let actions = actions(item, rows.hidable.contains(&item.id.as_str()));
+    let actions = entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.now);
     let words = widgets::row_actions_words(&actions, width);
     // On the first line, over the time: the preview and the account below stay readable.
     let row = widgets::row_actions_at(row, actions, selected, words, first_line_middle(height, line_count(item)));
@@ -267,7 +332,8 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
 ///
 /// - "Task" (`t`) and "Done" (`e`, "Reopen" for a done entry) – not for an approval, which closes
 ///   once it is decided and becomes no task;
-/// - "Later" (`s`) for every entry that is not done;
+/// - "Later" (`s`) for every entry that is not done – not for an approval either (task E8.1b, as
+///   the hub's cards): it waits for yes or no and must not vanish by accident;
 /// - "Hide" (`m`) when the menu "Hide from inbox" has entries for it (`hidable`, from
 ///   `App::hide_choices`: never for an approval, and the suite is never muted).
 pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
@@ -280,13 +346,291 @@ pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
         let (mark, word) = if done { (Icon::Inbox, tr("Reopen")) } else { (Icon::Check, tr("Done")) };
         actions.push(RowAction::new(mark, word, "E", act(Command::Done)));
     }
-    if !done {
+    if !done && !approval {
         actions.push(RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
     }
     if hidable {
         actions.push(RowAction::new(Icon::Ellipsis, tr("Hide"), "M", act(Command::Hide)));
     }
     actions
+}
+
+/// The action bar of `item`'s row at `now`: [`actions`], or for a mail entry with an invitation to
+/// answer (task E8.3c, [`invite_actions`]) Accept · Maybe · Decline · Task · Later (· Hide) – the
+/// answer is what makes the entry done, so "Done" gives way; `e` still marks it done.
+pub fn entry_actions<'a>(item: &Item, hidable: bool, now: DateTime<Utc>) -> Vec<RowAction<'a, Message>> {
+    let mut actions = actions(item, hidable);
+    let answers = invite_actions(item, now);
+    if !answers.is_empty() {
+        actions.retain(|action| !matches!(action.on_press, Message::Act(_, Command::Done)));
+        actions.splice(0..0, answers);
+    }
+    actions
+}
+
+/// The answers to the invitation of the mail entry `item` (task E8.3c): Accept · Maybe · Decline,
+/// each sending `Message::AnswerInvitation` with the entry's account (its source, `mail:<address>`)
+/// and the message it links to ([`Link::Mail`]) – the one whose invitation [`Item::invite`] is.
+/// Empty for an entry without an invitation, one that is done or no mail entry, and once the event
+/// is over at `now` (the core answers no more).
+pub fn invite_actions<'a>(item: &Item, now: DateTime<Utc>) -> Vec<RowAction<'a, Message>> {
+    let open = item.invite.as_ref().is_some_and(|invite| !mail::invite_over(invite, now));
+    let (true, Some(Link::Mail { message }), false) =
+        (open, &item.link, matches!(item.state, State::Done { .. }) || item.source.kind != SourceKind::Mail)
+    else {
+        return Vec::new();
+    };
+    mail::answers()
+        .into_iter()
+        .map(|(icon, word, answer)| {
+            RowAction::new(icon, word, "", Message::AnswerInvitation(item.source.key(), message.clone(), answer))
+        })
+        .collect()
+}
+
+/// How many lines of its text a mail card shows at most (task E8.3, "zwei Zeilen Vorschau").
+const PREVIEW_LINES: usize = 2;
+
+/// How many lines the preview `text` of a card `width` wide takes: [`clamp_lines`] at the card's
+/// inner width ([`card_inner`]) – one for a short text, [`PREVIEW_LINES`] at most, none without
+/// words (task E8.11: a one-line preview leaves no hole of a second line). The card draws these
+/// lines ([`mail_card`]), so its height ([`mail_card_height`]) is what it shows.
+pub(crate) fn preview_lines(text: Option<&str>, width: f32) -> usize {
+    text.map_or(0, |text| clamp_lines(text, typo::body(), card_inner(width), PREVIEW_LINES).len())
+}
+
+/// The width of the text inside a card `width` wide: less the card's padding and frame.
+pub(crate) fn card_inner(width: f32) -> f32 {
+    let pad = layout::panel_padding();
+    (width - pad.left - pad.right - 2.0 * size::HAIRLINE).max(0.0)
+}
+
+/// The padding around a column of cards (task E8.3): [`space::m()`] on every side, as far from the
+/// list's edges as the cards are apart.
+pub(crate) fn cards_inset() -> Padding {
+    Padding::new(space::m())
+}
+
+/// What [`cards_inset`] takes from a list's width.
+pub(crate) fn cards_side() -> f32 {
+    let inset = cards_inset();
+    inset.left + inset.right
+}
+
+/// Where a card `height` high lies in a column of cards after cards of the heights `above`, as
+/// `(top, bottom)`: the inset, then every card with the gap after it.
+pub(crate) fn card_span(above: impl Iterator<Item = f32>, height: f32) -> (f32, f32) {
+    let top = above.fold(cards_inset().top, |y, card| y + card + size::card_gap());
+    (top, top + height)
+}
+
+/// `text` in `level` broken into at most `lines` lines no wider than `width`, word by word; when
+/// text is left over, the last line ends in "…" ([`typo::ellipsize`]), and so does a word wider than
+/// a line. Iced 0.14 cannot cut a paragraph after a number of lines, so a card lays out its preview
+/// here. Empty for a text without words.
+pub(crate) fn clamp_lines(text: &str, level: Level, width: f32, lines: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut words = text.split_whitespace().peekable();
+    while out.len() < lines {
+        let Some(first) = words.next() else { break };
+        let mut line = first.to_owned();
+        while let Some(next) = words.peek() {
+            let longer = format!("{line} {next}");
+            if typo::text_width(&longer, level) > width {
+                break;
+            }
+            line = longer;
+            words.next();
+        }
+        if out.len() + 1 == lines && words.peek().is_some() {
+            let rest: Vec<&str> = words.by_ref().collect();
+            line = format!("{line} {}", rest.join(" "));
+        }
+        out.push(typo::ellipsize(&line, level, width));
+    }
+    out
+}
+
+/// What a mail card shows (task E8.3): the lines of the mail row ([`MailLines`]; its marks are left
+/// out, the card says them as chips), the chips, the buttons and what a click on the card sends.
+pub(crate) struct MailCard<'a> {
+    pub lines: MailLines<'a>,
+    /// [`widgets::state_pill`]s: several messages, an attachment, a flag.
+    pub chips: Vec<Element<'a, Message>>,
+    /// The card's buttons, always shown, in their order.
+    pub buttons: Vec<RowAction<'a, Message>>,
+    /// "…" at the far right ("Hide from inbox"), when there is a menu to open.
+    pub more: Option<RowAction<'a, Message>>,
+    /// Under the cursor (and in the reader): the `selected` card.
+    pub selected: bool,
+    pub on_press: Message,
+}
+
+/// A mail card `width` wide (task E8.3, `widgets::card`): the head with the avatar
+/// ([`size::avatar()`], new with its dot), the sender and "domain · account · time"
+/// ([`widgets::card_head`]); the subject (medium weight while new); the preview on up to
+/// [`PREVIEW_LINES`] lines in `text_2`, as many as it takes ([`preview_lines`]); then the chips in a
+/// row and the buttons in a row of their own, with their words as [`spoken`] says and "…" at the
+/// far right. As high as [`mail_card_height`] says for these parts.
+pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Message> {
+    let inner = card_inner(width);
+    let MailCard { lines, chips, buttons, more, selected, on_press } = card;
+    let MailLines { name, domain, time, subject, new, preview, account, account_name, .. } = lines;
+    let lead = avatar(&name, account, new, size::avatar());
+    let account_name = account_shown(account_name, domain.as_deref());
+    let meta: Vec<String> =
+        [domain, account_name, Some(time)].into_iter().flatten().filter(|p| !p.is_empty()).collect();
+    let head = widgets::card_head(Some(lead), name, meta.join(" · "), None);
+
+    let level = if new { typo::body_strong() } else { typo::body() };
+    let subject =
+        typo::text(level, typo::ellipsize(&subject, level, inner)).style(theme::text).wrapping(Wrapping::None);
+    let mut text = column![subject].spacing(space::xs());
+    if let Some(preview) = preview {
+        let lines: Vec<Element<'a, Message>> = clamp_lines(&preview, typo::body(), inner, PREVIEW_LINES)
+            .into_iter()
+            .map(|line| typo::text(typo::body(), line).style(theme::text_2).wrapping(Wrapping::None).into())
+            .collect();
+        // Only the lines the preview takes (task E8.11), as [`mail_card_height`] counts them.
+        let height = lines.len() as f32 * typo::line_height(typo::body());
+        if !lines.is_empty() {
+            text = text.push(container(column(lines)).height(height).clip(true));
+        }
+    }
+    let mut parts: Vec<Element<'a, Message>> = vec![head, text.into()];
+    if !chips.is_empty() {
+        parts.push(container(widgets::chip_row(chips)).center_y(size::control_sm()).clip(true).into());
+    }
+    // Words by the room (task E8.11, in every layout): all or none, only the lead may keep its word
+    // alone (task E8.13). Without words the buttons stay in their row, so the card keeps its height.
+    let words = spoken(&buttons, more.is_some(), inner);
+    let mut tail: Vec<Element<'a, Message>> =
+        buttons.into_iter().enumerate().map(|(i, button)| card_button(button, words.worded(i))).collect();
+    if more.is_some() {
+        tail.push(iced::widget::space::horizontal().into());
+    }
+    tail.extend(more.map(|more| widgets::icon_button(more.icon, more.label, Some(more.on_press))));
+    parts.push(row(tail).spacing(space::s()).align_y(Alignment::Center).into());
+    widgets::card(parts, selected, Some(on_press))
+}
+
+/// How a card's `buttons` show their words in `room`, with the "…" after them when there is `more`
+/// (`widgets::bar_words`; the rule of task E8.12, in the mail window since task E8.13): all of them
+/// where they fit, else only the first – the card's lead, Reply or, for an invitation, Accept –,
+/// else none. A card never shows some words among icons otherwise.
+fn spoken(buttons: &[RowAction<'_, Message>], more: bool, room: f32) -> BarWords {
+    let labels: Vec<&str> = buttons.iter().map(|button| button.label.as_ref()).collect();
+    widgets::bar_words(&labels, true, usize::from(more), room)
+}
+
+/// A button of a card: with its icon and word (`secondary`), or – without `words` – the icon alone
+/// with the word as tooltip.
+fn card_button<'a>(action: RowAction<'a, Message>, words: bool) -> Element<'a, Message> {
+    if words {
+        widgets::text_button(Some(action.icon), action.label, style::button::secondary, Some(action.on_press))
+    } else {
+        widgets::icon_button(action.icon, action.label, Some(action.on_press))
+    }
+}
+
+/// The height of a mail card ([`mail_card`]) with `preview` lines of preview ([`preview_lines`]),
+/// with or without a row of `chips`: the padding and frame, the head, the subject and the preview,
+/// the chips' row, the buttons' row, [`size::card_gap()`] between the parts.
+pub(crate) fn mail_card_height(preview: usize, chips: bool) -> f32 {
+    let pad = layout::panel_padding();
+    let gap = size::card_gap();
+    let head = size::avatar().max(typo::line_height(typo::body_strong()) + typo::line_height(typo::meta()));
+    let mut text = typo::line_height(typo::body());
+    if preview > 0 {
+        text += space::xs() + preview as f32 * typo::line_height(typo::body());
+    }
+    let row = gap + size::control_sm();
+    let bottom = if chips { 2.0 * row } else { row };
+    pad.top + pad.bottom + 2.0 * size::HAIRLINE + head + gap + text + bottom
+}
+
+/// The buttons of the card of `item` (task E8.3), each doing what its key does at the entry
+/// ([`Message::Act`]): Reply · Task · Done · Later in every size (task E8.11, `docs/eingang.md`
+/// "Knöpfe je Eintrag"); "Reopen" for a done entry, which has no "Later". The second is "…" for
+/// "Hide from inbox", when its menu has entries (`hidable`).
+pub fn card_buttons<'a>(item: &Item, hidable: bool) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
+    let act = |command| Message::Act(item.id.clone(), command);
+    let done = matches!(item.state, State::Done { .. });
+    let reply = RowAction::new(Icon::Reply, tr("Reply"), "R", act(Command::Reply));
+    let task = RowAction::new(Icon::ListTodo, tr("Task"), "T", act(Command::MakeTask));
+    let finish = if done {
+        RowAction::new(Icon::Inbox, tr("Reopen"), "E", act(Command::Done))
+    } else {
+        RowAction::new(Icon::Check, tr("Done"), "E", act(Command::Done))
+    };
+    let later = (!done).then(|| RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
+    let buttons = [Some(reply), Some(task), Some(finish), later].into_iter().flatten().collect();
+    let more = hidable.then(|| RowAction::new(Icon::Ellipsis, tr("Hide from inbox"), "M", act(Command::Hide)));
+    (buttons, more)
+}
+
+/// The buttons of the card of `item` at `now` (task E8.3c): an invitation to answer
+/// ([`invite_actions`]) has Accept · Maybe · Decline · Later · Task – the answer is what makes the
+/// entry done –, every other entry [`card_buttons`]. The second is "…" for "Hide from inbox".
+pub fn entry_card_buttons<'a>(
+    item: &Item,
+    hidable: bool,
+    now: DateTime<Utc>,
+) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
+    let (buttons, more) = card_buttons(item, hidable);
+    let mut answers = invite_actions(item, now);
+    if answers.is_empty() {
+        return (buttons, more);
+    }
+    let rest = |command: Command| buttons.iter().find(|b| matches!(b.on_press, Message::Act(_, c) if c == command));
+    answers.extend([rest(Command::Snooze), rest(Command::MakeTask)].into_iter().flatten().cloned());
+    (answers, more)
+}
+
+/// The chips of a mail entry's card: when its invitation is, with the answer given (task E8.3c,
+/// `mail::invite_chips`), and the number of messages from two on.
+fn entry_chips<'a>(item: &Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
+    let mut chips = item.invite.as_ref().map(|invite| mail::invite_chips(invite, now)).unwrap_or_default();
+    if item.count > 1 {
+        chips.push(widgets::state_pill(Icon::Mail, trf("{n} messages", &[("n", &item.count)])));
+    }
+    chips
+}
+
+/// The height of the card of the mail entry `item`, `width` wide ([`entry_card`]): its preview takes
+/// the lines it needs at that width ([`preview_lines`]).
+pub fn entry_card_height(item: &Item, width: f32) -> f32 {
+    let preview = preview_lines(card_preview(item).as_deref(), width);
+    mail_card_height(preview, item.count > 1 || item.invite.is_some())
+}
+
+/// The text a mail entry's card previews: its whole body on one line, which the card cuts after
+/// [`PREVIEW_LINES`] lines.
+fn card_preview(item: &Item) -> Option<String> {
+    item.body.as_deref().map(one_line).filter(|text| !text.is_empty())
+}
+
+/// The card of `item` `width` wide (task E8.3): a mail entry's card with its buttons
+/// ([`card_buttons`]); highlighted under the cursor, where it registers [`Rows::anchor`] so the
+/// menus open at it. A click opens it, as a row's does. Rows that are no cards – the look is
+/// [`Look::Rows`], or the entry is no mail – stay rows ([`entry_row`]).
+pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
+    if !rows.look.cards() || item.source.kind != SourceKind::Mail {
+        return entry_row(item, rows, width);
+    }
+    let selected = rows.selected == Some(item.id.as_str());
+    let (buttons, more) = entry_card_buttons(item, rows.hidable.contains(&item.id.as_str()), rows.now);
+    let lines = MailLines { preview: card_preview(item), ..MailLines::of(item, rows) };
+    let card = MailCard {
+        lines,
+        chips: entry_chips(item, rows.now),
+        buttons,
+        more,
+        selected,
+        on_press: Message::Select(item.id.clone()),
+    };
+    let card = mail_card(card, width);
+    if selected { widgets::anchored(&rows.anchor, card) } else { card }
 }
 
 /// A row of the list `height` high (including its line): `content` with 16 at the sides, centred
@@ -392,11 +736,19 @@ impl<'a> MailLines<'a> {
     }
 }
 
+/// The account a mail row or card names (`account_name`, the domain of its address), unless it is
+/// the sender's `domain` (task E8.11): mail within one's own domain would name it twice, and the
+/// avatar keeps the account's colour.
+pub(crate) fn account_shown(account_name: Option<String>, domain: Option<&str>) -> Option<String> {
+    account_name.filter(|account| domain != Some(account.as_str()))
+}
+
 /// The content of a mail row `width` wide (task E3.9): avatar, then sender · domain · (marks) ·
-/// time, subject (· count), preview (· account).
+/// time, subject (· count), preview (· account, unless it is the sender's domain: [`account_shown`]).
 pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, Message> {
     let room = words_room(width);
     let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name } = lines;
+    let account_name = account_shown(account_name, domain.as_deref());
 
     // Sender, then the domain in what is left, then the marks and the time.
     let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
@@ -434,7 +786,7 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
     let third = line(preview, ends);
 
     let words = column![first, second, third].width(Fill);
-    row![avatar(&name, account, new), words].spacing(space::m()).align_y(Alignment::Start).into()
+    row![avatar(&name, account, new, mark_width()), words].spacing(space::m()).align_y(Alignment::Start).into()
 }
 
 /// How far below a row's top the middle of its first line lies – where the action bar sits (task
@@ -446,7 +798,7 @@ pub(crate) fn first_line_middle(height: f32, lines: usize) -> f32 {
 }
 
 /// How many lines of text `item`'s row has: three for mail, two for a notice with a text, else one.
-fn line_count(item: &Item) -> usize {
+pub(crate) fn line_count(item: &Item) -> usize {
     if item.source.kind == SourceKind::Mail {
         3
     } else if words(item).1.is_some_and(|text| !text.is_empty()) {
@@ -458,7 +810,7 @@ fn line_count(item: &Item) -> usize {
 
 /// The content of any other entry's row: the source's tile, then title (· count) · time, and the
 /// text below.
-fn notice_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
+pub(crate) fn notice_content<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let room = words_room(width);
     let level = if item.state == State::New { typo::body_strong() } else { typo::body() };
     let time = time_text(item, rows.view, rows.now);
@@ -499,11 +851,12 @@ pub(crate) fn source_tile<'a>(item: &Item) -> Element<'a, Message> {
         .into()
 }
 
-/// The round avatar of a mail row: the initials of `name` ([`initials`], `CAPTION`, `text`) on the
-/// colour of the account at `account` ([`account_index`]) tinted over the panel, or on `raised`
-/// for an account not listed. A `new` entry has a small dot in `text` at its top right – never red.
-fn avatar<'a>(name: &str, account: Option<usize>, new: bool) -> Element<'a, Message> {
-    let edge = mark_width();
+/// The round avatar of a mail row or card, `edge` wide ([`mark_width`] in a row, [`size::avatar()`]
+/// on a card, [`size::avatar_lg()`] in the reader): the initials of `name` ([`initials`], `CAPTION`,
+/// `text`) on the colour of the account at `account` ([`account_index`]) tinted over the panel, or
+/// on `raised` for an account not listed. A `new` entry has a small dot in `text` at its top right –
+/// never red.
+pub(crate) fn avatar<'a>(name: &str, account: Option<usize>, new: bool, edge: f32) -> Element<'a, Message> {
     let letters = typo::text(typo::caption(), initials(name)).style(theme::text).wrapping(Wrapping::None);
     let face = container(letters).center(edge).style(move |t: &Theme| {
         let p = palette(t);
@@ -606,23 +959,140 @@ pub(crate) fn empty_state<'a>(which: Icon, title: &'a str, hint: &'a str) -> Ele
 }
 
 /// The icon of a source: the suite's grid, a spark for coding agents, a window for scripts, the
-/// envelope for a mail account.
+/// envelope for a mail account, and the services' own (task E5.15): GitHub's mark, a cloud for
+/// Nextcloud, a speech bubble for Talk and a radio tower for ntfy. Only the kind of the source
+/// decides – a script that calls itself `github` is a script and shows the window, so no client can
+/// borrow a service's face.
 pub fn source_icon(source: &SourceRef) -> Icon {
     match source.kind {
         SourceKind::Suite => Icon::LayoutGrid,
         SourceKind::Agent => Icon::Sparkles,
         SourceKind::Script => Icon::AppWindow,
         SourceKind::Mail => Icon::Mail,
+        SourceKind::Github => Icon::Github,
+        SourceKind::Nextcloud => Icon::Cloud,
+        SourceKind::Talk => Icon::MessageCircle,
+        SourceKind::Ntfy => Icon::RadioTower,
     }
+}
+
+/// The name of `source` where it stands among `known` (every source the inbox lists, task E5.15):
+/// its label ([`SourceRef::label`]: "GitHub", "Nextcloud", "Talk", "ntfy"), and – only while
+/// `known` holds another account of the same service – the account after " · " ("GitHub ·
+/// anna-berg", "Nextcloud · anna@cloud.example.org"), so two columns or chips of one service can be
+/// told apart. Mail names its address, scripts and agents their own names anyway, so they keep their
+/// label. The account is the source's name as the core keeps it, shown as plain text.
+pub fn source_name<'s>(source: &SourceRef, known: impl IntoIterator<Item = &'s SourceRef>) -> String {
+    let label = source.label();
+    let service =
+        matches!(source.kind, SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy);
+    let twin = service && known.into_iter().any(|other| other.kind == source.kind && other.name != source.name);
+    if twin { format!("{label} · {}", one_line(&source.name)) } else { label }
+}
+
+/// The value of the first trait `key` of `item` that has text.
+fn facet_value(item: &Item, key: FacetKey) -> Option<&str> {
+    item.facets.iter().find(|facet| facet.key == key).map(|facet| facet.value.as_str()).filter(|v| !v.is_empty())
+}
+
+/// What a service's traits say about `item` (task E5.15), in the order to read them, each with the
+/// icon of its row in the panel – the words of the meta line ([`facet_line`]):
+///
+/// - GitHub: the repository (`owner/repo`) and why it came, in the suite's words ("Review
+///   requested", "Check failed" …, [`reason_word`]; a reason without a word is left out);
+/// - Nextcloud: the app ("Files", "Talk", else its id, `rules::app_label`) and the person;
+/// - Talk: the kind of conversation ("Direct message", "Mention", "Group conversation") – the person
+///   is the entry's title already;
+/// - ntfy: the topic's label and the priority, unless it is ntfy's default 3.
+///
+/// Nothing for every other source. Repository, app id and person are foreign text, shown as plain
+/// text (Iced interprets nothing, [`one_line`] drops control characters).
+pub fn facet_words(item: &Item) -> Vec<(Icon, String)> {
+    let value = |key| facet_value(item, key);
+    let mut words = Vec::new();
+    match item.source.kind {
+        SourceKind::Github => {
+            if let Some(repo) = value(FacetKey::Repo) {
+                words.push((Icon::FolderGit2, one_line(repo)));
+            }
+            words.extend(value(FacetKey::Reason).and_then(|reason| reason_word(reason, value(FacetKey::Result))));
+        }
+        SourceKind::Nextcloud => {
+            if let Some(app) = value(FacetKey::App) {
+                let mark = if app == "spreed" { Icon::MessageCircle } else { Icon::Cloud };
+                words.push((mark, one_line(&rules::app_label(app))));
+            }
+            if let Some(person) = value(FacetKey::Person) {
+                words.push((Icon::User, one_line(person)));
+            }
+        }
+        SourceKind::Talk => {
+            let room = match value(FacetKey::Kind) {
+                Some("direct") => Some((Icon::User, tr("Direct message"))),
+                Some("mention") => Some((Icon::Users, tr("Mention"))),
+                Some("group") => Some((Icon::Users, tr("Group conversation"))),
+                _ => None,
+            };
+            words.extend(room.map(|(mark, word)| (mark, word.to_owned())));
+        }
+        SourceKind::Ntfy => {
+            if let Some(topic) = value(FacetKey::Topic) {
+                words.push((Icon::RadioTower, one_line(topic)));
+            }
+            if let Some(priority) = value(FacetKey::Priority).filter(|priority| *priority != "3") {
+                words.push((Icon::SignalHigh, trf("Priority {n}", &[("n", &priority)])));
+            }
+        }
+        SourceKind::Suite | SourceKind::Agent | SourceKind::Script | SourceKind::Mail => {}
+    }
+    words
+}
+
+/// Why GitHub notified, in the suite's words with an icon ("Review requested" with the eye, as the
+/// tasks app has it); a workflow run by how it ended. `None` for a reason the suite has no word for
+/// (`other`, anything new GitHub brings).
+fn reason_word(reason: &str, result: Option<&str>) -> Option<(Icon, String)> {
+    let (mark, word) = match (reason, result) {
+        ("ci_activity", Some("failed")) => (Icon::CircleX, tr("Check failed")),
+        ("ci_activity", Some("succeeded")) => (Icon::CircleCheck, tr("Check passed")),
+        ("ci_activity", Some("cancelled")) => (Icon::CircleDashed, tr("Check cancelled")),
+        ("ci_activity", _) => (Icon::CircleDotDashed, tr("Checks")),
+        ("review_requested", _) => (Icon::Eye, tr("Review requested")),
+        ("mention" | "team_mention", _) => (Icon::User, tr("Mentioned")),
+        ("assign", _) => (Icon::UserCheck, tr("Assigned")),
+        ("author", _) => (Icon::SquarePen, tr("Author")),
+        ("approval_requested", _) => (Icon::Eye, tr("Approval requested")),
+        ("security_alert", _) => (Icon::ShieldAlert, tr("Security alert")),
+        ("invitation", _) => (Icon::Users, tr("Invitation")),
+        ("comment", _) => (Icon::Reply, tr("Comment")),
+        ("state_change", _) => (Icon::CircleDot, tr("State changed")),
+        ("subscribed" | "manual", _) => (Icon::Bell, tr("Subscribed")),
+        _ => return None,
+    };
+    Some((mark, word.to_owned()))
+}
+
+/// The words of [`facet_words`] on one line, " · " between them ("torro/workplace · Review
+/// requested", "Files · Jonas Weber", "Server · Priority 5"); `None` without any.
+pub fn facet_line(item: &Item) -> Option<String> {
+    let words: Vec<String> = facet_words(item).into_iter().map(|(_, word)| word).collect();
+    (!words.is_empty()).then(|| words.join(" · "))
+}
+
+/// The word for an entry that waits ([`is_waiting`]): "Urgent" for an alert (an ntfy message of
+/// priority 5, task E5.15) – nobody waits there, something is wrong –, else "Waiting for you".
+pub fn waiting_word(item: &Item) -> &'static str {
+    if item.kind == Kind::Alert { tr("Urgent") } else { tr("Waiting for you") }
 }
 
 /// The title and the preview of `item`'s row, on one line each ([`one_line`]): for a coding agent's
 /// session with a name ([`session_name`]) the name, and below or beside it [`agent_line`]; for
-/// every other entry its title and the first line of its body ([`preview`]).
+/// every other entry its title and the first line of its body ([`preview`]) – or, for a service's
+/// entry without one (GitHub sends no text), what its traits say ([`facet_line`], task E5.15).
 pub fn words(item: &Item) -> (String, Option<String>) {
     match session_name(item) {
         Some(name) => (name, Some(agent_line(item))),
-        None => (one_line(&item.title), preview(item)),
+        None => (one_line(&item.title), preview(item).or_else(|| facet_line(item))),
     }
 }
 
@@ -731,11 +1201,13 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
             (tr("Nothing for you right now."), tr("Waiting agents, approvals and account problems show up here."))
         }
         View::Info => (tr("No info right now."), tr("Notices from scripts and finished jobs show up here.")),
-        View::Snoozed => (tr("Nothing snoozed."), tr("Snoozed entries wait here until their time.")),
+        View::Snoozed => (tr("Nothing for later."), tr("What you put off waits here until its time.")),
         View::Done => (tr("Nothing done yet."), tr("Done entries stay here for 30 days.")),
         View::Source(_) => (tr("Nothing open from this source."), tr("New entries from it show up here.")),
         // The views of mail have their own list and empty states (`mail::list`).
-        View::Folder(_) | View::Mail => (tr("No messages here."), tr("Mail in this folder shows up here.")),
+        View::Folder(_) | View::Mail | View::Attachments | View::Invitations => {
+            (tr("No messages here."), tr("Mail in this folder shows up here."))
+        }
     }
 }
 
@@ -743,6 +1215,7 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
 mod tests {
     use chrono::{TimeDelta, TimeZone};
     use torro_inbox::demo;
+    use torro_mail::InvitationAnswer;
 
     use super::*;
 
@@ -866,16 +1339,20 @@ mod tests {
         let (notice, message) = (size::row_notice(), size::row_message());
         assert_eq!(row_height_of(&items[0]), notice);
         assert_eq!(row_height_of(&items[items.len() - 1]), message, "mail has three lines");
-        assert_eq!(row_span(&items, 0), Some((0.0, head + notice)), "the first row shows its head");
-        assert_eq!(row_span(&items, 1), Some((head + notice, head + 2.0 * notice)));
+        assert_eq!(row_span(&items, 0, Look::Rows, 480.0), Some((0.0, head + notice)), "the first row shows its head");
+        assert_eq!(row_span(&items, 1, Look::Rows, 480.0), Some((head + notice, head + 2.0 * notice)));
         let other = head + waiting as f32 * notice;
-        assert_eq!(row_span(&items, waiting), Some((other, other + head + notice)), "no double line");
+        assert_eq!(
+            row_span(&items, waiting, Look::Rows, 480.0),
+            Some((other, other + head + notice)),
+            "no double line"
+        );
         let last = items.len() - 1;
         let top = 2.0 * head + last as f32 * notice;
-        assert_eq!(row_span(&items, last), Some((top, top + message)));
-        assert_eq!(row_span(&items, items.len()), None);
+        assert_eq!(row_span(&items, last, Look::Rows, 480.0), Some((top, top + message)));
+        assert_eq!(row_span(&items, items.len(), Look::Rows, 480.0), None);
         let calm = &items[waiting..];
-        assert_eq!(row_span(calm, 1), Some((notice, 2.0 * notice)), "no heads: plain rows");
+        assert_eq!(row_span(calm, 1, Look::Rows, 480.0), Some((notice, 2.0 * notice)), "no heads: plain rows");
         assert_eq!(message_height(), message, "a folder's rows are the mail rows (task E3.11)");
     }
 
@@ -930,7 +1407,7 @@ mod tests {
         let by_id = |id: &str| demo::sample(now()).into_iter().find(|i| i.id == id).expect("in the sample");
         let all = [tr("Task"), tr("Done"), tr("Later"), tr("Hide")];
         assert_eq!(labels(&actions(&by_id("demo-1"), true)), all, "a waiting agent");
-        assert_eq!(labels(&actions(&by_id("demo-3"), false)), [tr("Later")], "an approval: no task, no done, no hide");
+        assert!(actions(&by_id("demo-3"), false).is_empty(), "an approval: no task, no done, no later, no hide");
         assert_eq!(labels(&actions(&by_id("demo-5"), true)), all, "the suite's account problem: its own done");
         assert_eq!(labels(&actions(&by_id("demo-11"), true)), [tr("Task"), tr("Reopen"), tr("Hide")], "done: no later");
         let keys: Vec<&str> = actions(&by_id("demo-1"), true).iter().map(|action| action.key).collect();
@@ -955,6 +1432,7 @@ mod tests {
                 anchor: Anchor::new(),
                 accounts,
                 hidable: vec!["demo-1"],
+                look: Look::Rows,
             };
             for width in [0.0, 240.0, 480.0, 720.0] {
                 for item in &items {
@@ -969,7 +1447,63 @@ mod tests {
         assert_eq!(source_icon(&SourceRef::suite()), Icon::LayoutGrid);
         assert_eq!(source_icon(&SourceRef::agent("codex")), Icon::Sparkles);
         assert_eq!(source_icon(&SourceRef::script("backup")), Icon::AppWindow);
+        // Task E5.15: only the kind decides – a script may not borrow GitHub's face.
+        assert_eq!(source_icon(&SourceRef::script("github")), Icon::AppWindow, "a script named github");
         assert_eq!(source_icon(&SourceRef::mail("anna@example.org")), Icon::Mail);
+        assert_eq!(source_icon(&SourceRef::github("anna-berg")), Icon::Github);
+        assert_eq!(source_icon(&SourceRef::nextcloud("anna@cloud.example.org")), Icon::Cloud);
+        assert_eq!(source_icon(&SourceRef::talk("anna@cloud.example.org")), Icon::MessageCircle);
+        assert_eq!(source_icon(&SourceRef::ntfy("ntfy.sh")), Icon::RadioTower);
+        let sample = demo::sample(now());
+        let of = |id: &str| sample.iter().find(|item| item.id == id).map(|item| source_icon(&item.source));
+        assert_eq!(of("demo-13"), Some(Icon::Github), "from a real GitHub source now");
+        assert_eq!(
+            [of("demo-16"), of("demo-17"), of("demo-18")],
+            [Icon::Cloud, Icon::MessageCircle, Icon::RadioTower].map(Some)
+        );
+    }
+
+    /// Task E5.15: the account joins the name only where two accounts of one service are listed.
+    #[test]
+    fn two_accounts_of_a_service_are_named_by_their_account() {
+        let (anna, work) = (SourceRef::github("anna-berg"), SourceRef::github("anna-work"));
+        let cloud = SourceRef::nextcloud("anna@cloud.example.org");
+        let talk = SourceRef::talk("anna@cloud.example.org");
+        let one = [anna.clone(), cloud.clone(), talk.clone()];
+        assert_eq!(source_name(&anna, &one), "GitHub");
+        assert_eq!(source_name(&talk, &one), "Talk", "Talk and Nextcloud are two services");
+        let two = [anna.clone(), work.clone(), cloud.clone()];
+        assert_eq!(source_name(&anna, &two), "GitHub · anna-berg");
+        assert_eq!(source_name(&work, &two), "GitHub · anna-work");
+        assert_eq!(source_name(&cloud, &two), "Nextcloud");
+        let scripts = [SourceRef::script("ci"), SourceRef::script("deploy")];
+        assert_eq!(source_name(&scripts[0], &scripts), "ci", "scripts say their names anyway");
+    }
+
+    /// Task E5.15: the meta words come from the traits, in the suite's words; foreign values as they are.
+    #[test]
+    fn the_meta_line_says_what_the_traits_say() {
+        let sample = demo::sample(now());
+        let of = |id: &str| sample.iter().find(|item| item.id == id).expect("in the demo");
+        let review = format!("torro/workplace · {}", tr("Review requested"));
+        assert_eq!(facet_line(of("demo-14")).as_deref(), Some(review.as_str()));
+        let run = format!("torro/workplace · {}", tr("Check failed"));
+        assert_eq!(facet_line(of("demo-15")).as_deref(), Some(run.as_str()));
+        let shared = format!("{} · Jonas Weber", tr("Files"));
+        assert_eq!(facet_line(of("demo-16")).as_deref(), Some(shared.as_str()));
+        assert_eq!(facet_line(of("demo-17")).as_deref(), Some(tr("Direct message")));
+        let alert = format!("Server · {}", trf("Priority {n}", &[("n", &5)]));
+        assert_eq!(facet_line(of("demo-18")).as_deref(), Some(alert.as_str()));
+        assert_eq!(facet_line(of("demo-6")), None, "a script has no such traits");
+        // GitHub sends no text: its row says what the traits say instead.
+        assert_eq!(words(of("demo-14")).1, Some(review));
+        assert_eq!(words(of("demo-17")).1.as_deref(), Some("Lena: Can we go through the sidebar drafts before 3?"));
+        let mut quiet = of("demo-18").clone();
+        quiet.facets.retain(|facet| facet.key != FacetKey::Topic);
+        quiet.facets.iter_mut().filter(|f| f.key == FacetKey::Priority).for_each(|f| f.value = "3".into());
+        assert_eq!(facet_line(&quiet), None, "ntfy's default priority says nothing");
+        assert_eq!(waiting_word(of("demo-18")), tr("Urgent"));
+        assert_eq!(waiting_word(of("demo-1")), tr("Waiting for you"));
     }
 
     #[test]
@@ -978,5 +1512,206 @@ mod tests {
         for view in [View::Info, View::Snoozed, View::Done, View::Source(SourceRef::suite())] {
             assert_ne!(empty_text(&view).0, empty_text(&View::ForMe).0, "{view:?} has its own text");
         }
+    }
+
+    /// Task E8.3: a card's preview takes two lines at most and says with "…" that there is more.
+    #[test]
+    fn a_preview_is_cut_after_two_lines() {
+        let level = typo::body();
+        let long = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen";
+        let width = typo::text_width("one two three four", level) + 1.0;
+        let lines = clamp_lines(long, level, width, 2);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "one two three four");
+        assert!(lines[1].ends_with('…'), "{lines:?}");
+        assert!(lines.iter().all(|line| typo::text_width(line, level) <= width + 0.5), "every line fits");
+        assert_eq!(clamp_lines("short", level, width, 2), ["short"]);
+        assert!(clamp_lines("  ", level, width, 2).is_empty());
+        let word = clamp_lines("Donaudampfschifffahrtsgesellschaft", level, 40.0, 2);
+        assert!(word.len() == 1 && word[0].ends_with('…'), "a long word is cut: {word:?}");
+    }
+
+    /// Task E8.11 (finding 2): a mail's card offers Reply · Task · Done · Later in every size, "…" for
+    /// hiding, never a dismiss.
+    #[test]
+    fn a_mail_card_offers_reply_task_done_later() {
+        let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let (buttons, more) = card_buttons(&item, true);
+        assert_eq!(labels(&buttons), [tr("Reply"), tr("Task"), tr("Done"), tr("Later")]);
+        assert_eq!(buttons.iter().map(|action| action.key).collect::<Vec<_>>(), ["R", "T", "E", "S"]);
+        assert_eq!(more.map(|more| more.key), Some("M"));
+        let done = Item { state: State::Done { at: now() }, ..item.clone() };
+        assert_eq!(labels(&card_buttons(&done, false).0), [tr("Reply"), tr("Task"), tr("Reopen")]);
+        assert!(card_buttons(&item, false).1.is_none(), "nothing to hide, no \"…\"");
+        assert!(!labels(&buttons).contains(&tr("Dismiss").to_owned()), "mail is not dismissed");
+    }
+
+    /// Task E8.11 (finding 1): the words of a card's buttons follow the card's room, not the layout:
+    /// the medium window's column (720) has room for every word, the wide window's list (460) at
+    /// least for the lead's (task E8.13: never some words among icons).
+    #[test]
+    fn card_buttons_carry_their_words_where_there_is_room() {
+        let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let (buttons, more) = card_buttons(&item, true);
+        let wide = card_inner(size::list() - cards_side());
+        assert_ne!(spoken(&buttons, more.is_some(), wide), BarWords::None, "Reply in words at least");
+        let medium = card_inner(size::content_max() - cards_side());
+        assert_eq!(spoken(&buttons, more.is_some(), medium), BarWords::All, "Reply · Task · Done · Later in words");
+        let (answers, more) = entry_card_buttons(&invitation(), true, now());
+        assert_eq!(spoken(&answers, more.is_some(), medium), BarWords::All, "Accept · Maybe · Decline · Later · Task");
+    }
+
+    /// Task E8.3, E8.11 (finding 5): a card is as high as what it shows at its width – a preview of one
+    /// line takes one line, a long one two.
+    #[test]
+    fn a_card_is_as_high_as_its_parts() {
+        let width = 480.0;
+        let line = typo::line_height(typo::body());
+        let item = Item { body: Some("Short.".into()), ..mail("Jonas Weber", "jonas@work.example.org", "a@b.c") };
+        let long = Item { body: Some("word ".repeat(80)), ..item.clone() };
+        let bare = Item { body: None, ..item.clone() };
+        assert_eq!(preview_lines(card_preview(&item).as_deref(), width), 1);
+        assert_eq!(preview_lines(card_preview(&long).as_deref(), width), PREVIEW_LINES);
+        assert_eq!(preview_lines(card_preview(&bare).as_deref(), width), 0);
+        assert_eq!(entry_card_height(&long, width) - entry_card_height(&item, width), line, "no hole of a line");
+        assert_eq!(entry_card_height(&item, width) - entry_card_height(&bare, width), space::xs() + line);
+        let several = Item { count: 3, ..item.clone() };
+        let row = size::card_gap() + size::control_sm();
+        assert_eq!(entry_card_height(&several, width), entry_card_height(&item, width) + row, "a row of chips");
+        assert_eq!(height_of(&item, Look::Rows, width), size::row_message());
+        assert_eq!(height_of(&item, Look::Cards, width), entry_card_height(&item, width));
+        let notice = demo::sample(now()).remove(0);
+        assert_eq!(height_of(&notice, Look::Cards, width), size::row_notice(), "no mail: a row");
+        let items = vec![item.clone(), several.clone()];
+        let (top, bottom) = row_span(&items, 1, Look::Cards, width).expect("the second card");
+        assert_eq!(top, cards_inset().top + entry_card_height(&item, width) + size::card_gap());
+        assert_eq!(bottom - top, entry_card_height(&several, width));
+    }
+
+    /// Task E8.11 (finding 10): a row names the account only when it is not the sender's domain.
+    #[test]
+    fn the_account_is_named_only_when_it_says_more_than_the_domain() {
+        let work = Some("work.example.org".to_owned());
+        assert_eq!(account_shown(work.clone(), Some("work.example.org")), None);
+        assert_eq!(account_shown(work.clone(), Some("example.org")), work);
+        assert_eq!(account_shown(work.clone(), None), work);
+        assert_eq!(account_shown(None, Some("example.org")), None);
+    }
+
+    #[test]
+    fn every_card_builds_in_any_width() {
+        let view = View::Overview;
+        let mut items = demo::sample(now());
+        items.push(mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org"));
+        items.push(Item { count: 3, state: State::Seen, ..mail("", "x@y.z", "anna@example.org") });
+        let rows = Rows {
+            view: &view,
+            selected: Some("demo-1"),
+            now: now(),
+            anchor: Anchor::new(),
+            accounts: vec!["anna@work.example.org", "anna@example.org"],
+            hidable: vec!["demo-1"],
+            look: Look::Cards,
+        };
+        for width in [0.0, 240.0, 480.0, 720.0] {
+            for item in &items {
+                let _ = entry_card(item, &rows, width);
+            }
+        }
+        let _ = view_of(&items, rows);
+    }
+
+    /// A mail entry whose mail `m:invite` invites to an event in a day, an hour long.
+    fn invitation() -> Item {
+        let invite = torro_mail::Invite {
+            title: "Planning".into(),
+            start: now() + TimeDelta::days(1),
+            end: Some(now() + TimeDelta::days(1) + TimeDelta::hours(1)),
+            all_day: false,
+            answered: None,
+        };
+        let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        Item { link: Some(Link::Mail { message: "m:invite".into() }), invite: Some(invite), ..item }
+    }
+
+    /// Task E8.3c: an invitation's card in "For me" answers it – Accept · Maybe · Decline · Later ·
+    /// Task, each answer for the mail it links to –, its row offers the answers in place of "Done",
+    /// both show when it is; once the event is over, or the entry is done, it is a mail as any.
+    #[test]
+    fn an_invitation_in_for_me_offers_its_answers() {
+        let item = invitation();
+        let answers = [tr("Accept"), tr("Maybe"), tr("Decline")];
+        let (buttons, more) = entry_card_buttons(&item, true, now());
+        assert_eq!(labels(&buttons), [&answers[..], &[tr("Later"), tr("Task")]].concat());
+        assert!(more.is_some(), "\"…\" for hiding stays");
+        let sent: Vec<Message> = buttons.iter().take(3).map(|button| button.on_press.clone()).collect();
+        let account = SourceRef::mail("anna@work.example.org").key();
+        let Message::AnswerInvitation(to, about, InvitationAnswer::Accept) = &sent[0] else { panic!("{:?}", sent[0]) };
+        assert_eq!((to, about.as_str()), (&account, "m:invite"));
+        assert!(matches!(&sent[2], Message::AnswerInvitation(_, _, InvitationAnswer::Decline)));
+        let row = labels(&entry_actions(&item, false, now()));
+        assert_eq!(row, [&answers[..], &[tr("Task"), tr("Later")]].concat());
+        let bare = Item { invite: None, ..item.clone() };
+        assert!(entry_card_height(&item, 480.0) > entry_card_height(&bare, 480.0), "the chips get a row of their own");
+
+        let over = now() + TimeDelta::days(2);
+        assert!(invite_actions(&item, over).is_empty(), "over: no answers");
+        assert_eq!(labels(&entry_card_buttons(&item, false, over).0), labels(&card_buttons(&item, false).0));
+        let done = Item { state: State::Done { at: now() }, ..item.clone() };
+        assert!(invite_actions(&done, now()).is_empty(), "done: answered or put aside");
+        let unlinked = Item { link: None, ..item.clone() };
+        assert!(invite_actions(&unlinked, now()).is_empty(), "no mail to answer");
+
+        let view = View::Overview;
+        for look in [Look::Rows, Look::Cards] {
+            let rows = Rows {
+                view: &view,
+                selected: Some(item.id.as_str()),
+                now: now(),
+                anchor: Anchor::new(),
+                accounts: vec!["anna@work.example.org"],
+                hidable: Vec::new(),
+                look,
+            };
+            for width in [0.0, 240.0, 360.0, 480.0, 720.0] {
+                let _ = entry_card(&item, &rows, width);
+                let _ = entry_row(&item, &rows, width);
+            }
+        }
+    }
+
+    /// Task E8.13 (the rule of E8.12, `widgets::bar_words`): the invitation's card shows every word
+    /// where they fit, else only Accept's – its lead –, else icons alone; never Accept · Maybe ·
+    /// Decline in words beside Later and Task as icons. A mail's Reply leads the same way.
+    #[test]
+    fn card_buttons_show_all_words_or_only_the_leads() {
+        let (buttons, _) = entry_card_buttons(&invitation(), false, now());
+        let words = labels(&buttons);
+        assert_eq!(words[0], tr("Accept"), "the answer leads");
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let all = widgets::bar_width(&words, BarWords::All, 1);
+        let lead = widgets::bar_width(&words, BarWords::Lead, 1);
+        assert_eq!(spoken(&buttons, true, all), BarWords::All);
+        assert_eq!(spoken(&buttons, true, all - 1.0), BarWords::Lead, "a little short: only Accept keeps its word");
+        assert_eq!(spoken(&buttons, true, lead), BarWords::Lead);
+        assert_eq!(spoken(&buttons, true, lead - 1.0), BarWords::None, "else icons alone");
+        let rank = |words: BarWords| match words {
+            BarWords::None => 0,
+            BarWords::Lead => 1,
+            BarWords::All => 2,
+        };
+        let steps: Vec<u8> = (0..=96).map(|step| rank(spoken(&buttons, true, step as f32 * space::s()))).collect();
+        assert!(steps.windows(2).all(|pair| pair[0] <= pair[1]), "more room, never fewer words: {steps:?}");
+
+        let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let (buttons, more) = card_buttons(&item, true);
+        let words = labels(&buttons);
+        let words: Vec<&str> = words.iter().map(String::as_str).collect();
+        let lead = widgets::bar_width(&words, BarWords::Lead, 1);
+        assert_eq!(spoken(&buttons, more.is_some(), lead), BarWords::Lead, "Reply alone in words");
+    }
+
+    fn view_of<'a>(items: &'a [Item], rows: Rows<'a>) -> Element<'a, Message> {
+        super::view(ListData { items, rows, attention: Color::BLACK })
     }
 }

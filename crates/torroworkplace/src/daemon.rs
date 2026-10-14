@@ -445,6 +445,8 @@ fn describe(request: &Request) -> String {
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
         Request::MoveTodo { .. } => "move todo".into(),
+        // The list only: never the mail account, the mail's id or its Message-ID (task E8.7a).
+        Request::CreateTodoFromMail { collection, .. } => format!("make a task in {collection} of a mail"),
         // Ids only, never a search or a name (tasks G.2, G.7).
         Request::CreateTaskList { account, .. } => format!("create task list in {account}"),
         Request::CreateFilterList { account, .. } => format!("create filter list of {account}"),
@@ -464,7 +466,8 @@ fn describe(request: &Request) -> String {
         Request::Accounts => "accounts".into(),
         Request::RemoveAccount { id } => format!("remove account {id}"),
         Request::RenameTemplate { id, .. } => format!("rename {id}"),
-        Request::OpenApp { app } => format!("open {app}"),
+        // The app only, never the target: it names a mail or a task (task E8.7a).
+        Request::OpenApp { app, .. } => format!("open {app}"),
         Request::ListApps => "apps".into(),
         Request::ListDesigns => "designs".into(),
         Request::ListClients => "clients".into(),
@@ -483,6 +486,10 @@ fn describe(request: &Request) -> String {
         Request::GetItem { id } => format!("inbox item {id}"),
         Request::OpenItem { id } => format!("open inbox item {id}"),
         Request::CreateTaskFromItem { id, collection, .. } => format!("make a task in {collection} of inbox item {id}"),
+        // Never the title or the times (task E8.5b).
+        Request::CreateEventFromItem { id, collection, .. } => {
+            format!("make an event in {collection} of inbox item {id}")
+        }
         Request::ListSources => "inbox sources".into(),
         Request::PostItem { .. } => "post to inbox".into(),
         Request::ResolveItems { .. } => "resolve inbox items".into(),
@@ -493,7 +500,12 @@ fn describe(request: &Request) -> String {
         // Never the address or the domain: they would name who writes to the person.
         Request::HideSender { id, scope: torro_inbox::HideScope::Conversation } => format!("hide inbox item {id}"),
         Request::HideSender { id, .. } => format!("hide the sender of inbox item {id}"),
+        // Never the trait or its value: they would name who writes to the person.
+        Request::ListMuteOptions { id } => format!("mute options of inbox item {id}"),
+        Request::MuteItem { id, .. } => format!("mute by inbox item {id}"),
         Request::ListRules => "inbox rules".into(),
+        Request::GetStats { .. } => "inbox statistics".into(),
+        Request::GetQuiet => "inbox quiet".into(),
         Request::RemoveRule { id } => format!("remove inbox rule {id}"),
         // Never an address, a password, a search, a subject or a folder name (security rule 3 of
         // task M2.1); message and folder ids would let lines be matched with a mailbox.
@@ -503,6 +515,10 @@ fn describe(request: &Request) -> String {
         Request::ImportTorroMailAccount { .. } => "import torromail account".into(),
         // Never the address or the key (task KI.1a).
         Request::ConnectAi { .. } => "connect ai".into(),
+        // Never a topic: on a public server its name is a password (task E5.12).
+        Request::ConnectNtfy { .. } => "connect ntfy".into(),
+        Request::SetNtfyLogin { .. } => "set ntfy login".into(),
+        Request::SetNtfyTopic { account, .. } => format!("set a topic of {account}"),
         Request::AiModels { .. } => "ai models".into(),
         Request::FindAiServers => "find ai servers".into(),
         Request::MailFolders { .. } => "mail folders".into(),
@@ -515,6 +531,8 @@ fn describe(request: &Request) -> String {
         Request::DeleteMail { ids, .. } => format!("delete {} messages", ids.len()),
         Request::SaveDraft { .. } => "save draft".into(),
         Request::SendDraft { .. } => "send draft".into(),
+        // Never the answer, the account or the mail (task E8.3b).
+        Request::RespondToInvitation { .. } => "answer an invitation".into(),
         // Ids only, never a message or a title (task C.1).
         Request::ListEngines => "assistant engines".into(),
         Request::ListConversations => "assistant conversations".into(),
@@ -563,5 +581,47 @@ fn report(what: &str, response: &Response) {
     }
     if let Some((summary, body)) = crate::notify::message(what, response) {
         crate::notify::show(summary, body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Task E8.7a: messages about these requests name the list and the app, never the mail
+    /// account, the mail's id, its Message-ID or what an app was opened on.
+    #[test]
+    fn mail_and_targets_stay_out_of_messages() {
+        let task = Request::CreateTodoFromMail {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:0a1b2c3d".into(),
+            collection: "home".into(),
+            title: Some("Answer Anna".into()),
+            due: None,
+        };
+        assert_eq!(describe(&task), "make a task in home of a mail");
+        let open = Request::OpenApp {
+            app: "torro-inbox-mail".into(),
+            target: Some("mail:anna@mailbox.org:<offer@keller.example>".into()),
+        };
+        assert_eq!(describe(&open), "open torro-inbox-mail");
+        // Task E8.5b: an event of an entry names the calendar and the entry, never the title.
+        let at = torro_pim::EventTime::DateTime(chrono::Utc::now());
+        let event = Request::CreateEventFromItem {
+            id: "e1".into(),
+            collection: "work".into(),
+            title: Some("Secret".into()),
+            start: at,
+            end: at,
+        };
+        assert_eq!(describe(&event), "make an event in work of inbox item e1");
+        // Task E8.3b: an answer to an invitation names nothing of the mail.
+        let answer = Request::RespondToInvitation {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:0a1b2c3d".into(),
+            answer: torro_mail::InvitationAnswer::Decline,
+            collection: Some("work".into()),
+        };
+        assert_eq!(describe(&answer), "answer an invitation");
     }
 }

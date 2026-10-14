@@ -20,5 +20,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+# A local HTTP server standing in for GitHub's REST API in the notification tests (task E5.3).
+httpmock.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

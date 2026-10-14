@@ -8,8 +8,10 @@
 //! CoreGraphics ([`geometry`]).
 //!
 //! The module builds on every system so its tests run everywhere; [`crate::detect`] only looks
-//! for AeroSpace on macOS.
+//! for AeroSpace on macOS. [`apps`] holds what macOS offers besides AeroSpace for finding and
+//! raising the window of a process (task E8.9).
 
+pub mod apps;
 pub mod cli;
 pub mod events;
 pub mod geometry;

@@ -169,9 +169,9 @@ einrichten, ohne Freigabe einer Firma oder eine bei Torro registrierte App.
 | **Codex CLI** | Hooks (`Stop`, `PermissionRequest` …) oder `notify` | indirekt | wie Claude Code |
 | **Gemini CLI, Cursor** | Hooks (`Notification` bzw. `stop`) | nein | Cursor hat keinen Hook für „wartet“ |
 | **Mail** | IMAP IDLE aus dem Mail-Kern ([mail.md](mail.md)) | gelesen, archivieren | größte Quelle |
-| **Nextcloud** | Benachrichtigungen (OCS) und Talk (ungelesen, Erwähnungen); Push über `notify_push`, sonst Abfrage | ja (löschen, gelesen) | Konto gibt es schon, steht in [api.md](api.md) als vorgemerkt |
-| **GitHub** | `GET /notifications`, Grund je Eintrag (`review_requested`, `mention`, `ci_activity`, `agent_session_finished` …), Abfrage im Takt von `X-Poll-Interval` | ja („done“ = Thread löschen) | Konto ist in [settings.md](settings.md) geplant; braucht klassisches Token mit `notifications` |
-| **ntfy / Gotify** | Themen abonnieren (JSON-Strom/WebSocket) | nein | **Universeller Eingang** für alles, was selbst melden kann: CI, Home Assistant, Uptime Kuma, cron, eigene Skripte. Löst auch „Webhook braucht öffentliche URL“: Webhooks gehen an ntfy, der Kern abonniert |
+| **Nextcloud** | Benachrichtigungen (OCS) und Talk (ungelesen, Erwähnungen); Push über `notify_push`, sonst Abfrage | ja (löschen, gelesen) | Konto gibt es schon. Benachrichtigungen seit E5.8: je Konto alle 60 s mit ETag, ein Eintrag je Gegenstand (`<app>:<object_type>:<object_id>`), Erledigt löscht sie auf dem Server ([api.md](api.md), Fußnote 17). Talk seit E5.9 als eigene Quelle `talk:`: ein Eintrag je ungelesener Unterhaltung nach der Benachrichtigungsstufe von Talk, Zähler = ungelesene Nachrichten, Erledigt markiert sie gelesen |
+| **GitHub** | `GET /notifications`, Grund je Eintrag (`review_requested`, `mention`, `ci_activity`, `agent_session_finished` …), Abfrage im Takt von `X-Poll-Interval` | ja („done“ = Thread löschen) | Seit E5.4 im Kern (`sources/github.rs`): je Konto, nie weiter zurück als 3 Tage vor der ersten Abfrage, `Last-Modified` im Lesestand; braucht klassisches Token mit `notifications` (Fine-grained: `health: missing_scope`, keine Einträge). Seit E5.6 gehört GitHubs Mail zum selben Issue oder PR zum GitHub-Eintrag: GitHub-Mail nur, wenn `From: notifications@github.com` mit `X-GitHub-Reason`, `List-Id` (Repo) und `Message-ID` (Repo und Nummer) zusammenpassen. Gibt es einen offenen GitHub-Eintrag dazu, wird die Mail kein eigener Eintrag und zählt nicht; sonst ein gewöhnlicher Mail-Eintrag, der beim Kommen des GitHub-Eintrags in ihn aufgeht (erledigt, als zusammengeführt, nicht als erledigt gezählt). Erledigt am GitHub-Eintrag macht den Thread „done“ und markiert diese Mails gelesen (Clients: auch Schreiben in `mail` und das Konto; bewusst so: das `forbidden` verrät einem Client ohne diese Rechte nur, dass Mail anhängt, nicht welche). Schlimmstenfalls hängt eine gefälschte Mail an einem vorhandenen GitHub-Eintrag desselben Repos und derselben Nummer; ohne solchen Eintrag verschwindet keine Mail |
+| **ntfy / Gotify** | Themen abonnieren (JSON-Strom/WebSocket) | nein | **Universeller Eingang** für alles, was selbst melden kann: CI, Home Assistant, Uptime Kuma, cron, eigene Skripte. Löst auch „Webhook braucht öffentliche URL“: Webhooks gehen an ntfy, der Kern abonniert. Seit E5.13 im Kern (`sources/ntfy.rs`): je Konto ein JSON-Strom für alle Themen; die erste Verbindung holt nichts nach, danach `since` mit der letzten Id (bzw. der Zeit der ersten Verbindung) aus dem Lesestand; Wiederverbinden nach 1 s bis 5 min, nach 2 min ohne Daten neu; geändertes Thema → neu verbinden ab jetzt; stumm oder Konto entfernt → getrennt, Verpasstes bleibt draußen; 401/403 → `health: signed_out` bis zur neuen Anmeldung. Ein Eintrag je Thema und Titel (Vorgang nur als Prüfsummen, das Thema mit einem zufälligen Salz der Quelle, weil `thread_key` an Clients und entfernte Modelle geht und Themen-Namen Passwörter sind); Priorität 5 → `alert` (dringend, auch in Ruhe), 4 → für mich, 1–3 → Zur Info; Merkmale Etikett, Priorität, Tags; Link nur `click` mit `http`/`https`. Drossel: mehr als 60 neue Vorgänge je Stunde und Konto landen bis zum Ende der Stunde in „More from {topic}“ (Zur Info) |
 | **Eigene Skripte** | `torroworkplace notify --title … --source backup` bzw. `inbox.post_item` mit Skript-Schlüssel | – | eine Zeile Shell |
 
 ### Stufe 2: mit eigener Anmeldung beim Dienst
@@ -267,7 +267,11 @@ weder Mail noch Slack).
 | Aufgabe aus einer Mail in einem Ordner (E8.7a) | „Task“ im Mail-Fenster | `tasks.create_todo_from_mail` · Write (prüft auch Leserecht auf das Konto) | `tasks_create_todo_from_mail` |
 | Mail bzw. Aufgabe des Rückbezugs öffnen (E8.7a) | „Open mail“, „Open task“ | `apps.open_app` mit `target` · wie bisher | `apps_open_app` |
 | Statistik (E8.8a) | Zentrale › Insights | `inbox.get_stats` · Read | `inbox_get_stats` |
+| Ruhe-Status (E8.5b) | Zentrale rechts „Quiet“, in Schmal und Mittel eine Zeile unter den Zahlen bzw. Kacheln | `inbox.get_quiet` · Read (Termintitel nur mit Kalender-Leserecht) | `inbox_get_quiet` |
+| Termin aus einem Eintrag (E8.5b) | „Event“ bei „To sort“, Paneel, Taste `c` | `inbox.create_event_from_item` · Write (braucht auch Kalender-Schreibrecht) | `inbox_create_event_from_item` |
+| Einladung beantworten (E8.3b) | Mail-Fenster: Karte (Accept · Maybe · Decline · Task), Leser und Paneel (Karte des Termins), Smart view „Invitations“ | `mail.respond_to_invitation` · Write + „Nach außen“ (prüft auch Kalender-Schreibrecht, beim Ablehnen Löschrecht) | `mail_respond_to_invitation` |
 | Quellen verbinden (Slack, GitHub, ntfy …) | Steuerzentrale › Accounts | `accounts.connect_*` · Admin | wie `connect_nextcloud`: nur Start, Anmeldung im Browser oder in der Steuerzentrale |
+| ntfy: Konto, Anmeldung, Themen (E5.12) | Steuerzentrale › Accounts (E5.14) | `accounts.connect_ntfy`, `accounts.set_ntfy_login`, `accounts.set_ntfy_topic` · Admin | `accounts_connect_ntfy` (Client: öffnet nur die Steuerzentrale), `accounts_set_ntfy_topic`; `set_ntfy_login` **Never** (Geheimnis) |
 | Freigabe entscheiden | Eintrag, Benachrichtigung | `approvals.decide_approval` · Admin | **Never** |
 
 **Sicherheit, neu durch den Eingang:**
@@ -293,7 +297,7 @@ Wie alles andere: **Die Logik steht im Kern**, die App zeigt nur an.
 |---|---|
 | `torro-inbox` | Datenmodell, Regeln, Zusammenführen, Spuren, Selbst-Erledigen. Ohne Ein-/Ausgabe |
 | `torro-store` | SQLite (mit FTS5) für Eingang, Mail-Cache und PIM-Cache, siehe [mail.md](mail.md) |
-| Quellen im Kern | Trait `Source` (verbinden, abonnieren oder abfragen, zurückwirken, Link bauen); je Quelle ein Modul. Mail und Nextcloud nutzen ihre vorhandenen Crates |
+| Quellen im Kern | Je Quelle ein Modul: Mail in `mail/inbox_feed.rs`, GitHub, Nextcloud, Talk und ntfy in `sources/<quelle>.rs` (E5.2, ohne gemeinsamen Trait). Alle legen über den Eingang ab (`Inbox::file_remote` mit den Kennungen des Servers, `resolve_remote`, `retire_remote`, Lesestand in `cursors`, Zustand `health`); Zurückwirken nach Erledigt, Aufgabe oder Termin über `sources::settle_done` |
 | Einwurf | `inbox.post_item` über `core.sock`, CLI `torroworkplace notify`, ntfy-Abo, später HTTP auf `127.0.0.1` ([api.md](api.md), Transport) |
 | Ausgabe | Desktop-Benachrichtigung mit Knöpfen (`notify-rust`), Zahl am Tray, Omarchy-Leistenwidget, Änderungsmeldungen an die App |
 
@@ -423,6 +427,14 @@ Welche Merkmale eine Quelle mitbringt, und damit, wonach sich verlässlich stumm
 Freigaben und Einträge der Suite lassen sich nie stummschalten (Sicherheitsregel 1). Alle Regeln stehen in der
 Steuerzentrale › Inbox › Rules mit „Remove“; zeitlich begrenzte laufen von selbst ab.
 
+**Kern (E8.6a, umgesetzt):** Der Dienst setzt die Merkmale beim Melden (`Item.facets`, nie vom Absender): Mail
+Konto, Absender, Domain, Liste (`List-Id`), Massenmail; Agenten Agent, Projekt (nur von Hooks), Art; Skripte der
+Client. Das **Thema** von Skripten fehlt noch: `inbox.post_item` hat kein Feld dafür. Die Unterhaltung ist kein
+Merkmal am Eintrag, sondern der eigene Umfang `conversation`. Eine Regel mit Merkmal gilt für alle Quellen derselben
+Art (ein Absender in allen Mail-Konten, ein Projekt für alle Agenten), eine für die Unterhaltung nur in ihrer
+Quelle. „Hide“ und „Only Info“ für die Unterhaltung ohne Ablauf legen keine Regel an, sondern erledigen bzw.
+verschieben nur diesen Eintrag. Befehle: [api.md](api.md), Fußnote 11.
+
 ### Aufgabe mit Rückbezug
 
 Eine Aufgabe aus einer Nachricht behält ihre Herkunft, auch in Nextcloud. Gespeichert wird in der Eigenschaft
@@ -448,17 +460,45 @@ Weil der Kern beide Seiten kennt, kann er Bezug nehmen:
 - Wird die Aufgabe **erledigt**, fragt die Zentrale: „You finished … Anna is waiting for an answer“ mit „Reply“
   und „Mark mail done“.
 
+**Kern (E8.7a, umgesetzt):** Die Kennung ist `mail:<adresse>:<Message-ID>`, also die feste Konto-Id
+`mail:<adresse>` aus `accounts.list_accounts` (dieselbe wie in den Rechten und in der Quelle des Eintrags)
+und die Message-ID ohne spitze Klammern, wie der Mail-Speicher sie hält. Gefunden wird die Mail über einen
+Index auf der Message-ID in jedem Ordner. Ein Mail-Eintrag zeigt die Aufgabe, die auf eine seiner Mails oder
+auf eine Mail derselben Unterhaltung zeigt; so bleibt der Bezug, auch wenn die erste Mail verschoben wurde
+und der Eintrag nur noch die Antwort hält. Die Aufgabe zeigt ihre Mail mit Betreff, Absender, Datum und den
+Antworten, die danach kamen (die eigenen nicht mitgezählt). „You finished a task from a mail“ prüft die
+Routine der Suite jede Minute gegen den Aufgaben-Cache; wer erledigt hat (Suite, Nextcloud, ein Agent), ist
+gleich. Gemeldet wird einmal je Aufgabe (`task_notes` in `inbox.sqlite`), nur wenn die Unterhaltung noch
+offen im Eingang liegt, sonst nur vermerkt. Die Knöpfe „Reply“ und „Mark mail done“ baut E8.7b aus
+`task.link` und `task.mail_entry` des Eintrags. `apps.open_app` mit Ziel startet immer ein neues Fenster,
+weil ein laufendes Fenster noch keinen Weg hat, sich etwas anderes zeigen zu lassen. Befehle:
+[api.md](api.md), Fußnoten 12 und 13.
+
 ### Insights
 
 Die Zentrale zählt, damit Optimieren nicht beim Gefühl bleibt: je Tag, Quelle und Merkmal, was kam, was geöffnet,
 verworfen, erledigt, vertagt oder zur Aufgabe wurde, wie viele Popups es gab und wie lange es bis zum Erledigen
-dauerte. Ansicht für Woche, Monat und Quartal: Nachrichten je Tag nach Quelle, Stoßzeiten, und **„Where you could cut
+dauerte. „Geöffnet“ zählt höchstens einmal je Eintrag und Tag, über „Open“ oder indem man die Mail im Mail-Fenster
+liest. Ansicht für Woche, Monat und Quartal: Nachrichten je Tag nach Quelle, Stoßzeiten, und **„Where you could cut
 back“** mit einem fertigen Vorschlag je Zeile („Mute channel“, „Only failed checks“, „Hide sender“).
 
 - Gezählt wird **nur lokal** im Kern, in Tagessummen, höchstens 13 Monate. Keine Titel, keine Texte; Absender und
   Kanäle nur als Merkmal einer Zeile. Nichts davon kommt ins Protokoll.
 - Agenten lesen die Zahlen über `inbox_get_stats` („Wo lohnt sich Aufräumen?“), aber nur für Quellen, die sie sehen
   dürfen.
+
+**Kern (E8.8a, umgesetzt):** Die Tabelle `stats` in `inbox.sqlite` hält Tagessummen je lokalem Tag, Quelle und Merkmal.
+Gezählt werden Meldungen (neue Einträge und zusammengeführte, z. B. die zweite Mail einer Unterhaltung), Geöffnetes
+(`open_item` auf einem neuen Eintrag), Verworfenes, Erledigtes (von Hand, durch `resolve_items`, eine entschiedene
+Freigabe, ein repariertes Konto oder eine anderswo gelesene Mail), Vertagtes, zur Aufgabe Gemachtes, Stummgeschaltetes
+(Meldungen, die eine Regel verwirft, nach „Info“ legt oder ohne Popup lässt, und Einträge, die Ausblenden oder
+Stummschalten schließt bzw. verschiebt) und Popups, davon die in Ruhe zurückgehaltenen. Dazu Meldungen je Stunde und
+die Zeit bis erledigt in Stufen, aus denen der Median kommt. Merkmale, die die Quelle selbst sind (Konto, Agent,
+Client), zählen nicht eigens. Eine Mail, die eine Regel fernhält, zählt einmal, auch wenn der Abgleich sie nach einem
+verpassten Wechsel noch einmal anbietet. Vorschläge: ab zehn Meldungen im Zeitraum, höchstens jede fünfte geöffnet,
+summiert über alle Quellen derselben Art (wie die Regel wirkt), höchstens fünf, nicht für schon stummgeschaltete
+Merkmale. Jede Regel zählt außerdem, was sie gefangen hat, je Quelle; `inbox.list_rules` nennt es als `hits`.
+Befehle: [api.md](api.md), Fußnote 14.
 
 ### Später, vorgemerkt
 
@@ -529,6 +569,7 @@ dazukommt.
 | 17 | Seitenleiste | **Keine Links zu anderen Apps** unten in der Seitenleiste |
 | 18 | Insights | **Statistik in der Zentrale**, um gezielt zu optimieren |
 | 19 | Später | **An einen Agenten geben** und **Fokus-Profile** werden eigens ausgearbeitet |
+| 20 | Namen | **„Torro Inbox“, „Torro Inbox Mail“, „Torro Inbox Notifications“.** TorroMail bleibt ein eigenes Produkt (eigene Konten, eigener MCP-Server); damit niemand das Mail-Fenster der Suite für TorroMail hält, trägt es „Inbox“ im Namen |
 
 ### Belege: was die dritte Spur wäre
 
@@ -553,6 +594,10 @@ Ruhe heißt **keine Popups und keine Töne**, sonst ändert sich nichts:
 - Einstellung in der Steuerzentrale (Seite „Inbox“ bzw. „General“): „Quiet during busy events“ (an/aus,
   Standard an) und später „Quiet during focus sessions“. Termine mit Frei/Belegt „frei“ oder ganztägige
   Termine lösen keine Ruhe aus.
+- Ob gerade Ruhe gilt und bis wann, sagt `inbox.get_quiet` (E8.5b): Die Zentrale zeigt es rechts als
+  „Quiet“ („Until 15:00“, darunter der Termin), wo diese Spalte fehlt, als Zeile „Quiet until 15:00 ·
+  Kundentermin“ unter den Zahlen bzw. Kacheln. Den Titel des Termins bekommen Agenten nur mit Leserecht auf
+  den Kalender, sonst steht dort „A busy event“.
 
 ## Quellen der Recherche
 

@@ -69,6 +69,8 @@ pub const COMPOSE: AppId = AppId {
     binary: AppId::INBOX.binary,
     dir: AppId::INBOX.dir,
     display_name: AppId::INBOX.display_name,
+    // Not an entry of the switcher: the panel starts it with its own arguments (`mail::compose_args`).
+    args: &[],
 };
 
 /// How long after the last change the draft is saved. Short enough to lose little, long enough

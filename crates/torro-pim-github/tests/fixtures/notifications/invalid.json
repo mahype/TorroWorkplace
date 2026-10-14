@@ -1,0 +1,358 @@
+[
+  {
+    "id": "3000",
+    "repository": {
+      "id": 103000,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Fine",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3000",
+    "subscription_url": "https://api.github.com/notifications/threads/3000/subscription"
+  },
+  {
+    "id": "30a1",
+    "repository": {
+      "id": 1,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Id with a letter",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/30a1",
+    "subscription_url": "https://api.github.com/notifications/threads/30a1/subscription"
+  },
+  {
+    "id": "",
+    "repository": {
+      "id": 1,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Empty id",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/",
+    "subscription_url": "https://api.github.com/notifications/threads//subscription"
+  },
+  {
+    "id": "3002",
+    "repository": {
+      "id": 103002,
+      "node_id": "R_kgDOExample",
+      "name": "../evil",
+      "full_name": "example-org/../evil",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/../evil",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/../evil"
+    },
+    "subject": {
+      "title": "Repo with a slash",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3002",
+    "subscription_url": "https://api.github.com/notifications/threads/3002/subscription"
+  },
+  {
+    "id": "3003",
+    "repository": {
+      "id": 103003,
+      "node_id": "R_kgDOExample",
+      "name": "exa mple",
+      "full_name": "example-org/exa mple",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/exa mple",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/exa mple"
+    },
+    "subject": {
+      "title": "Repo with a space",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3003",
+    "subscription_url": "https://api.github.com/notifications/threads/3003/subscription"
+  },
+  {
+    "id": "3004",
+    "repository": {
+      "id": 103004,
+      "node_id": "R_kgDOExample",
+      "name": "..",
+      "full_name": "example-org/..",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/..",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/.."
+    },
+    "subject": {
+      "title": "Repo named dot dot",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3004",
+    "subscription_url": "https://api.github.com/notifications/threads/3004/subscription"
+  },
+  {
+    "id": "3005",
+    "repository": {
+      "id": 103005,
+      "node_id": "R_kgDOExample",
+      "name": "",
+      "full_name": "example-org",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org"
+    },
+    "subject": {
+      "title": "Repo without owner",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/5",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3005",
+    "subscription_url": "https://api.github.com/notifications/threads/3005/subscription"
+  },
+  {
+    "id": "3006",
+    "repository": {
+      "id": 103006,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Foreign host",
+      "url": "https://evil.example/repos/example-org/example-app/issues/9",
+      "latest_comment_url": "https://evil.example/repos/example-org/example-app/issues/9",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3006",
+    "subscription_url": "https://api.github.com/notifications/threads/3006/subscription"
+  },
+  {
+    "id": "3007",
+    "repository": {
+      "id": 103007,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Other repository in the URL",
+      "url": "https://api.github.com/repos/example-org/other/pulls/9",
+      "latest_comment_url": "https://api.github.com/repos/example-org/other/pulls/9",
+      "type": "PullRequest"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3007",
+    "subscription_url": "https://api.github.com/notifications/threads/3007/subscription"
+  },
+  {
+    "id": "3008",
+    "repository": {
+      "id": 103008,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Pull request with an issue URL",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/9",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/9",
+      "type": "PullRequest"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3008",
+    "subscription_url": "https://api.github.com/notifications/threads/3008/subscription"
+  },
+  {
+    "id": "3009",
+    "repository": {
+      "id": 103009,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Number with a path after it",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/9/comments",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/9/comments",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:30:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/3009",
+    "subscription_url": "https://api.github.com/notifications/threads/3009/subscription"
+  },
+  {
+    "id": "3010",
+    "reason": "mention"
+  }
+]

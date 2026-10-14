@@ -24,18 +24,78 @@
 //! [`InboxClient::set_mail_flags`], [`InboxClient::move_mail`] and [`InboxClient::delete_mail`] –,
 //! with the errors mapped as above. Everything a message brings is data from outside
 //! (`untrusted`), never instructions; the client only passes it on.
+//!
+//! Tasks of folder mail (task E8.1b): [`InboxClient::create_todo_from_mail`] sends
+//! `tasks.create_todo_from_mail` and answers the task in the inbox's model ([`ItemTask`]), so the
+//! window needs no calendar model of its own for the due day.
+//!
+//! The hub (task E8.5b): [`InboxClient::get_quiet`] asks whether it is quiet now,
+//! [`InboxClient::list_calendars`] and [`InboxClient::create_event_from_item`] make an event of an
+//! entry, its times as instants, so the window needs no calendar model either.
+//!
+//! Invitations (task E8.3c): [`InboxClient::respond_to_invitation`] sends
+//! `mail.respond_to_invitation` with the calendar the window chose, and
+//! [`InboxClient::list_events`] reads the events of the shown calendars around an invitation as
+//! [`CalendarEvent`]s – title, instants and whether they make their time busy –, so the window can
+//! say what the invitation overlaps without a calendar model.
 
 use std::path::PathBuf;
 
-use chrono::{DateTime, NaiveDate, Utc};
-use torro_inbox::item::{Hidden, HideScope};
+use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeDelta, Utc};
+use torro_inbox::item::{Hidden, HideScope, ItemTask, MuteEffect, MuteOption, MuteScope, Muted, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
-use torro_mail::{Flag, Folder, Message, MessageSummary};
+use torro_mail::{Flag, Folder, InvitationAnswer, Message, MessageSummary};
 use torro_pim::EventTime;
 
-use crate::mail::MoveTarget;
-use crate::{IpcError, Request, Response};
+use crate::mail::{Delivery, MoveTarget};
+use crate::{InboxStats, IpcError, Quiet, Request, Response, StatsRange};
+
+/// An event of a shown calendar as the inbox needs it to tell what an invitation overlaps
+/// ([`InboxClient::list_events`], task E8.3c), in instants, so the window needs no calendar model.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarEvent {
+    /// The event's title (`SUMMARY`) as the calendar holds it; may be empty. Text of the person or
+    /// of whoever invited them: shown as it is, never interpreted.
+    pub title: String,
+    /// When it starts; an all-day event at local midnight of its first day.
+    pub start: DateTime<Utc>,
+    /// When it ends (exclusive): an all-day event at local midnight after its last day (a day after
+    /// its start without an end), a timed event without an end where it starts.
+    pub end: DateTime<Utc>,
+    /// It makes its time busy (`torro_pim::Event::busy`): opaque and not all-day. Free time,
+    /// holidays and birthdays are `false`.
+    pub busy: bool,
+}
+
+impl CalendarEvent {
+    /// `event` in instants, all-day times at local midnight ([`CalendarEvent`]).
+    fn of(event: torro_pim::Event) -> CalendarEvent {
+        let busy = event.busy();
+        let instant = |time: EventTime| match time {
+            EventTime::Date(day) => local_midnight(day),
+            EventTime::DateTime(at) => at,
+        };
+        let start = instant(event.start);
+        let end = match (event.start, event.end) {
+            (_, Some(end)) => instant(end),
+            (EventTime::Date(_), None) => start + TimeDelta::days(1),
+            (EventTime::DateTime(_), None) => start,
+        };
+        CalendarEvent { title: event.summary, start, end: end.max(start), busy }
+    }
+}
+
+/// Midnight at the start of the local day `day`, as an instant; on a day that starts in a gap of
+/// the clock (a change of summer time at midnight) the first instant after it, else UTC midnight.
+fn local_midnight(day: NaiveDate) -> DateTime<Utc> {
+    let midnight = day.and_time(NaiveTime::MIN);
+    midnight
+        .and_local_timezone(Local)
+        .earliest()
+        .or_else(|| (midnight + TimeDelta::hours(1)).and_local_timezone(Local).earliest())
+        .map_or_else(|| midnight.and_utc(), |at| at.with_timezone(&Utc))
+}
 
 /// Talks to the core at its socket.
 #[derive(Debug, Clone)]
@@ -144,6 +204,143 @@ impl InboxClient {
     pub async fn delete_mail(&self, ids: Vec<String>) -> Result<(), InboxError> {
         self.ask_ok(Request::DeleteMail { ids, permanent: false }).await
     }
+
+    /// `tasks.create_todo_from_mail` (task E8.7a; the inbox's "Task" on a folder's message, task
+    /// E8.1b): makes a task of the message `id` of the mail account `account` (`mail:<address>`) in
+    /// the task list `list` (one of [`InboxSource::list_task_lists`]), titled `title` (`None` or
+    /// blank: the core takes the subject), due on the local day `due` as an all-day date (`None`: no
+    /// due date) – as [`InboxSource::create_task_from_item`] sends its day. The mail itself is not
+    /// changed; the core links the task back with `mail:<address>:<Message-ID>`.
+    ///
+    /// Answers the task as an entry carries it ([`ItemTask`]): uid, list (`list.name`), title, due
+    /// and done as the core stored them, its link id (empty when the core sent none),
+    /// `mail_entry` `None`. Errors as mapped above: [`InboxError::NotFound`] for an account, mail or
+    /// list the app may not see, [`InboxError::Unsupported`] for a mail without a `Message-ID` or a
+    /// list that takes no tasks, [`InboxError::Forbidden`] without the right to write tasks.
+    pub async fn create_todo_from_mail(
+        &self,
+        account: String,
+        id: String,
+        list: TaskList,
+        title: Option<String>,
+        due: Option<NaiveDate>,
+    ) -> Result<ItemTask, InboxError> {
+        let request =
+            Request::CreateTodoFromMail { account, id, collection: list.id, title, due: due.map(EventTime::Date) };
+        match self.ask(request).await? {
+            Response::Todo { todo } => Ok(ItemTask {
+                uid: todo.uid,
+                collection: todo.collection,
+                list: list.name,
+                title: todo.summary,
+                due: todo.due.map(|due| match due {
+                    EventTime::Date(day) => TaskDue::Date(day),
+                    EventTime::DateTime(at) => TaskDue::DateTime(at),
+                }),
+                completed: todo.completed,
+                link: todo.link.map(|link| link.id).unwrap_or_default(),
+                mail_entry: None,
+            }),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.get_stats` (task E8.8a): what the core counted over `range` up to the local day
+    /// `until` (`None`: today), for "Insights". The app shows it as it comes; suggestions carry
+    /// the entry and the [`MuteOption`] to pass to [`InboxSource::mute_item`]. Their values are
+    /// foreign text where `untrusted`. Errors as for the other calls.
+    pub async fn get_stats(&self, range: StatsRange, until: Option<NaiveDate>) -> Result<InboxStats, InboxError> {
+        match self.ask(Request::GetStats { range, until }).await? {
+            Response::Stats(stats) => Ok(stats),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.get_quiet` (task E8.5b): whether the inbox is quiet now, why and until when, for the
+    /// hub's "Quiet". `None` when it is not quiet. The app key always gets the event's title.
+    /// Errors as for the other calls.
+    pub async fn get_quiet(&self) -> Result<Option<Quiet>, InboxError> {
+        match self.ask(Request::GetQuiet).await? {
+            Response::Quiet { quiet } => Ok(quiet),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `calendar.list_calendars`, without the calendars nothing can be written to (read-only
+    /// shares) and without collections that hold no events: the calendars an event of an entry can
+    /// go to (task E8.5b), each with its id and name in a [`TaskList`], the inbox's pair of both.
+    pub async fn list_calendars(&self) -> Result<Vec<TaskList>, InboxError> {
+        match self.ask(Request::CalendarCollections).await? {
+            Response::Collections { collections } => Ok(collections
+                .into_iter()
+                .filter(|calendar| calendar.writable && calendar.kind.has_events() && calendar.source.is_none())
+                .map(|calendar| TaskList { id: calendar.id, name: calendar.name })
+                .collect()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `mail.respond_to_invitation` (task E8.3b; the window's Accept · Maybe · Decline, task E8.3c):
+    /// answers the invitation in the message `id` (`m:…`) of the mail account `account`
+    /// (`mail:<address>`) with `answer`. The core replies to the organizer from the account and puts
+    /// the event in `collection` (an id of [`InboxClient::list_calendars`]; `None`: the core's choice,
+    /// the first writable calendar) – unless it made a copy before, which stays in its calendar –,
+    /// or removes that copy for a decline. Nothing about the inbox entry changes: the window marks
+    /// it done itself (`inbox.set_item_done`).
+    ///
+    /// Answers how the reply went ([`Delivery::Unknown`]: it may not have gone out). Errors as
+    /// mapped above: [`InboxError::NotFound`] for an account, mail or calendar the app may not see,
+    /// [`InboxError::Forbidden`], [`InboxError::Unsupported`] for an invitation to a series,
+    /// [`InboxError::Busy`], [`InboxError::Other`] with the core's words for a mail without an
+    /// invitation to answer, an event that is over or a send that failed.
+    pub async fn respond_to_invitation(
+        &self,
+        account: String,
+        id: String,
+        answer: InvitationAnswer,
+        collection: Option<String>,
+    ) -> Result<Delivery, InboxError> {
+        match self.ask(Request::RespondToInvitation { account, id, answer, collection }).await? {
+            Response::InvitationAnswered { delivery, .. } => Ok(delivery),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `calendar.list_events` (task E8.3c): the events of the calendars the suite shows that overlap
+    /// `[start, end)`, as [`CalendarEvent`]s in the core's order – for the window's line on what an
+    /// invitation overlaps. Hidden calendars are not asked (the core lists only shown ones). Errors
+    /// as for the other calls.
+    pub async fn list_events(
+        &self,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<Vec<CalendarEvent>, InboxError> {
+        match self.ask(Request::Events { start, end }).await? {
+            Response::Events { events } => Ok(events.into_iter().map(CalendarEvent::of).collect()),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.create_event_from_item` (task E8.5b, "Event" in the hub and the panel): makes an
+    /// event of the entry `id` in the calendar `calendar` (an id of [`InboxClient::list_calendars`])
+    /// from `start` to `end`, titled `title` (`None` or blank: the core takes the entry's), and
+    /// marks the entry done. The core answers with the new event, which the app does not need.
+    /// Errors as mapped above: [`InboxError::NotFound`] for an entry or calendar the app may not
+    /// see, [`InboxError::Forbidden`] for an approval or an entry of the suite.
+    pub async fn create_event_from_item(
+        &self,
+        id: String,
+        calendar: String,
+        title: Option<String>,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+    ) -> Result<(), InboxError> {
+        let (start, end) = (EventTime::DateTime(start), EventTime::DateTime(end));
+        match self.ask(Request::CreateEventFromItem { id, collection: calendar, title, start, end }).await? {
+            Response::Event { .. } => Ok(()),
+            other => Err(unexpected(other)),
+        }
+    }
 }
 
 /// The core's answer, or the error it reported, as the module documentation maps them.
@@ -185,7 +382,35 @@ impl InboxSource for InboxClient {
     }
 
     async fn set_item_done(&self, id: String, done: bool) -> Result<Item, InboxError> {
-        self.ask_item(Request::SetItemDone { id, done }).await
+        self.ask_item(Request::SetItemDone { id, done, dismissed: false }).await
+    }
+
+    /// `inbox.set_item_done` with `dismissed: true` (task E8.6a).
+    async fn dismiss_item(&self, id: String) -> Result<Item, InboxError> {
+        self.ask_item(Request::SetItemDone { id, done: true, dismissed: true }).await
+    }
+
+    /// `inbox.list_mute_options` (task E8.6a).
+    async fn list_mute_options(&self, id: String) -> Result<Vec<MuteOption>, InboxError> {
+        match self.ask(Request::ListMuteOptions { id }).await? {
+            Response::MuteOptions { options } => Ok(options),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    /// `inbox.mute_item` (task E8.6a): the core keeps the rule or changes the entry and answers what
+    /// changed.
+    async fn mute_item(
+        &self,
+        id: String,
+        scope: MuteScope,
+        until: Option<DateTime<Utc>>,
+        effect: MuteEffect,
+    ) -> Result<Muted, InboxError> {
+        match self.ask(Request::MuteItem { id, scope, until, effect }).await? {
+            Response::Muted(muted) => Ok(muted),
+            other => Err(unexpected(other)),
+        }
     }
 
     async fn snooze_item(&self, id: String, until: Option<DateTime<Utc>>) -> Result<Item, InboxError> {
@@ -308,6 +533,9 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
+            task: None,
+            invite: None,
         }
     }
 
@@ -324,12 +552,27 @@ mod tests {
                 ))],
             },
             Request::ListSources => Response::Sources {
-                sources: vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false }],
+                sources: vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false, health: None }],
             },
-            Request::SetItemDone { id, done } => {
+            // A dismissed entry is titled so, to see the flag arrived.
+            Request::SetItemDone { id, done, dismissed } => {
                 let state = if done { State::Done { at: at(10) } } else { State::Seen };
-                Response::Item { item: Item { state, ..item(&id) } }
+                Response::Item { item: Item { state, title: format!("dismissed {dismissed}"), ..item(&id) } }
             }
+            Request::ListMuteOptions { id } => Response::MuteOptions {
+                options: vec![MuteOption {
+                    scope: MuteScope::Conversation,
+                    value: None,
+                    label: id,
+                    untrusted: false,
+                    admin: false,
+                }],
+            },
+            // The moved id names what arrived.
+            Request::MuteItem { id, scope, until, effect } => Response::Muted(Muted {
+                moved: vec![format!("{id}|{scope:?}|{}|{effect:?}", until.is_some())],
+                ..Muted::default()
+            }),
             Request::SnoozeItem { id, until } => Response::Item {
                 item: Item { state: until.map_or(State::Seen, |until| State::Snoozed { until }), ..item(&id) },
             },
@@ -346,11 +589,78 @@ mod tests {
                     domain: Some("shop.example".into()),
                     effect: torro_inbox::RuleEffect::Muted,
                     created: at(10),
+                    facet: None,
+                    until: None,
                 }),
                 new_rule: true,
                 done: vec![id],
             }),
             Request::RemoveRule { id } if id == "r1" => Response::Ok,
+            // The span names what arrived.
+            Request::GetStats { range, until } => Response::Stats(crate::InboxStats {
+                range,
+                from: until.unwrap_or_default(),
+                until: until.unwrap_or_default(),
+                days: Vec::new(),
+                hours: vec![0; 24],
+                totals: crate::StatsCounts { new: range.days(), ..crate::StatsCounts::default() },
+                median_done_minutes: None,
+                suggestions: Vec::new(),
+            }),
+            Request::GetQuiet => Response::Quiet {
+                quiet: Some(Quiet { reason: crate::QuietReason::Busy, until: at(15), title: Some("Call".into()) }),
+            },
+            Request::CalendarCollections => Response::Collections { collections: lists() },
+            // Only the times the client should send make an event.
+            Request::CreateEventFromItem { id, collection, title, start, end }
+                if id == "i1" && start == EventTime::DateTime(at(14)) && end == EventTime::DateTime(at(15)) =>
+            {
+                Response::Event {
+                    event: torro_pim::Event {
+                        uid: "new".into(),
+                        collection,
+                        href: Some("https://cloud.example.org/c/new.ics".into()),
+                        etag: Some("\"1\"".into()),
+                        summary: title.unwrap_or_default(),
+                        start,
+                        end: Some(end),
+                        location: None,
+                        description: None,
+                        recurring: false,
+                        transparency: torro_pim::Transparency::Opaque,
+                    },
+                }
+            }
+            Request::CreateEventFromItem { .. } => {
+                Response::Error { code: "forbidden".into(), message: "an approval is the person's".into() }
+            }
+            // Task E8.3c: the calendar chosen comes back as the event's, an unknown one is none.
+            Request::RespondToInvitation { id, answer, collection, .. } if id == "m:invite" => {
+                Response::InvitationAnswered {
+                    delivery: match answer {
+                        torro_mail::InvitationAnswer::Tentative => Delivery::Unknown,
+                        _ => Delivery::Accepted,
+                    },
+                    event: collection.map(|collection| event("Lunch", EventTime::DateTime(at(12)), collection)),
+                }
+            }
+            Request::RespondToInvitation { .. } => {
+                Response::Error { code: "error".into(), message: "This mail holds no invitation.".into() }
+            }
+            Request::Events { start, end } if start < end => Response::Events {
+                events: vec![
+                    event("Standup", EventTime::DateTime(start), "work".into()),
+                    torro_pim::Event {
+                        end: Some(EventTime::Date(day(13))),
+                        ..event("Holiday", EventTime::Date(day(12)), "work".into())
+                    },
+                    torro_pim::Event {
+                        transparency: torro_pim::Transparency::Transparent,
+                        end: Some(EventTime::DateTime(end)),
+                        ..event("Home office", EventTime::DateTime(start), "work".into())
+                    },
+                ],
+            },
             Request::OpenItem { id } if id == "window" => Response::Ok,
             Request::TaskCollections => Response::Collections { collections: lists() },
             Request::CreateTaskFromItem { id, collection, title, due } if id == "i1" => Response::Todo {
@@ -373,6 +683,31 @@ mod tests {
             },
             Request::CreateTaskFromItem { .. } => {
                 Response::Error { code: "not-found".into(), message: "no task list \"gone\"".into() }
+            }
+            // A mail of the account with a Message-ID; `m:bare` has none.
+            Request::CreateTodoFromMail { account, id, collection, title, due } if id == "m:1" => Response::Todo {
+                todo: torro_pim::Todo {
+                    uid: "from-mail".into(),
+                    collection,
+                    href: Some("https://cloud.example.org/t/from-mail.ics".into()),
+                    etag: Some("\"1\"".into()),
+                    summary: title.unwrap_or_else(|| "Budget Q4".into()),
+                    due,
+                    priority: None,
+                    completed: false,
+                    parent: None,
+                    description: None,
+                    url: None,
+                    categories: Vec::new(),
+                    sort_order: None,
+                    link: Some(torro_pim::model::Link::mail(&account, "<budget@example.org>")),
+                },
+            },
+            Request::CreateTodoFromMail { id, .. } if id == "m:bare" => {
+                Response::Error { code: "unsupported".into(), message: "the mail has no Message-ID".into() }
+            }
+            Request::CreateTodoFromMail { .. } => {
+                Response::Error { code: "not-found".into(), message: "no such mail".into() }
             }
             Request::OpenItem { .. } => {
                 Response::Error { code: "unsupported".into(), message: "no window of the agent found".into() }
@@ -450,7 +785,7 @@ mod tests {
     async fn sources_are_listed() {
         let core = start(|request| async move { answer(request) }).await;
         let sources = core.client().list_sources().await.expect("listed");
-        assert_eq!(sources, vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false }]);
+        assert_eq!(sources, vec![SourceInfo { source: SourceRef::script("ci"), open: 2, muted: false, health: None }]);
     }
 
     #[tokio::test]
@@ -470,6 +805,101 @@ mod tests {
         assert_eq!((rule.id.as_str(), rule.domain.as_deref()), ("m1|Domain", Some("shop.example")));
         assert_eq!((hidden.new_rule, hidden.done), (true, vec!["m1".to_string()]));
         client.remove_rule("r1".into()).await.expect("removed");
+    }
+
+    /// Task E8.6a: dismissing, the menu and muting each send their one request.
+    #[tokio::test]
+    async fn dismissing_and_muting_send_their_requests() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        assert_eq!(client.dismiss_item("a".into()).await.expect("dismissed").title, "dismissed true");
+        assert_eq!(client.set_item_done("a".into(), true).await.expect("done").title, "dismissed false");
+        let options = client.list_mute_options("m1".into()).await.expect("options");
+        assert_eq!((options.len(), options[0].label.as_str()), (1, "m1"));
+        let sender = MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender, nth: 0 };
+        let muted = client.mute_item("m1".into(), sender, Some(at(12)), MuteEffect::Info).await.expect("muted");
+        assert_eq!(muted.moved, ["m1|Facet { key: Sender, nth: 0 }|true|Info"]);
+    }
+
+    /// Task E8.8a: the statistics are one request with the span.
+    #[tokio::test]
+    async fn stats_send_their_span() {
+        let core = start(|request| async move { answer(request) }).await;
+        let day = NaiveDate::from_ymd_opt(2026, 10, 13).expect("valid date");
+        let stats = core.client().get_stats(StatsRange::Month, Some(day)).await.expect("stats");
+        assert_eq!((stats.range, stats.until, stats.totals.new), (StatsRange::Month, day, 30));
+        let today = core.client().get_stats(StatsRange::Week, None).await.expect("stats");
+        assert_eq!((today.until, today.totals.new), (NaiveDate::default(), 7));
+    }
+
+    /// Task E8.5b: quiet is one request, an event of an entry sends its times as instants, and
+    /// only calendars an event can be written to are offered.
+    #[tokio::test]
+    async fn quiet_and_events_send_their_requests() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let quiet = client.get_quiet().await.expect("quiet").expect("it is quiet");
+        assert_eq!((quiet.until, quiet.title.as_deref()), (at(15), Some("Call")));
+        let calendars = client.list_calendars().await.expect("calendars");
+        let names: Vec<&str> = calendars.iter().map(|calendar| calendar.name.as_str()).collect();
+        assert_eq!(names, ["WORK", "EVENTS"], "no read-only share, no filter list, no list of tasks only");
+        let made = client.create_event_from_item("i1".into(), "work".into(), Some("Call".into()), at(14), at(15));
+        assert_eq!(made.await, Ok(()));
+        let approval = client.create_event_from_item("a1".into(), "work".into(), None, at(14), at(15));
+        assert_eq!(approval.await, Err(InboxError::Forbidden));
+    }
+
+    fn day(day: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, day).expect("valid date")
+    }
+
+    /// An event of `collection` titled `title` from `start` for an hour (a timed one) or without end.
+    fn event(title: &str, start: EventTime, collection: String) -> torro_pim::Event {
+        torro_pim::Event {
+            uid: format!("{title}@test"),
+            collection,
+            href: None,
+            etag: None,
+            summary: title.into(),
+            start,
+            end: match start {
+                EventTime::DateTime(at) => Some(EventTime::DateTime(at + TimeDelta::hours(1))),
+                EventTime::Date(_) => None,
+            },
+            location: None,
+            description: None,
+            recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
+        }
+    }
+
+    /// Task E8.3c: an answer sends the calendar chosen and comes back as how the reply went; the
+    /// events around an invitation come in instants, all-day ones from local midnight, with busy.
+    #[tokio::test]
+    async fn invitations_send_the_calendar_and_events_come_in_instants() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let account = || "mail:anna@example.org".to_string();
+        let accepted = client
+            .respond_to_invitation(account(), "m:invite".into(), InvitationAnswer::Accept, Some("work".into()))
+            .await;
+        assert_eq!(accepted, Ok(Delivery::Accepted));
+        let maybe = client.respond_to_invitation(account(), "m:invite".into(), InvitationAnswer::Tentative, None);
+        assert_eq!(maybe.await, Ok(Delivery::Unknown));
+        let none = client.respond_to_invitation(account(), "m:1".into(), InvitationAnswer::Decline, None).await;
+        assert_eq!(none, Err(InboxError::Other("This mail holds no invitation.".into())));
+
+        let events = client.list_events(at(9), at(11)).await.expect("events");
+        let standup = &events[0];
+        assert_eq!(
+            (standup.title.as_str(), standup.start, standup.end, standup.busy),
+            ("Standup", at(9), at(10), true)
+        );
+        let holiday = &events[1];
+        assert_eq!((holiday.start, holiday.end), (local_midnight(day(12)), local_midnight(day(13))));
+        assert!(!holiday.busy, "all day leaves the time free");
+        assert!(!events[2].busy && events[2].end == at(11), "transparent is free");
+        assert!(matches!(client.list_events(at(11), at(9)).await, Err(InboxError::Other(_))), "unexpected answer");
     }
 
     #[tokio::test]
@@ -513,6 +943,43 @@ mod tests {
         let core = start(|request| async move { answer(request) }).await;
         let lists = core.client().list_task_lists().await.expect("lists");
         assert_eq!(lists, vec![TaskList { id: "work".into(), name: "WORK".into() }]);
+    }
+
+    /// Task E8.1b: a task of a folder's message carries its day as an all-day due date, and comes
+    /// back in the inbox's model with the way back to the mail.
+    #[tokio::test]
+    async fn a_task_of_a_mail_sends_its_day_and_comes_back_as_the_entry_has_it() {
+        let core = start(|request| async move { answer(request) }).await;
+        let client = core.client();
+        let work = TaskList { id: "work".into(), name: "Work".into() };
+        let day = NaiveDate::from_ymd_opt(2026, 10, 16).expect("valid date");
+        let account = "mail:anna@example.org".to_string();
+        let task = client
+            .create_todo_from_mail(account.clone(), "m:1".into(), work.clone(), None, Some(day))
+            .await
+            .expect("made");
+        assert_eq!(
+            task,
+            ItemTask {
+                uid: "from-mail".into(),
+                collection: "work".into(),
+                list: "Work".into(),
+                title: "Budget Q4".into(),
+                due: Some(TaskDue::Date(day)),
+                completed: false,
+                link: "mail:anna@example.org:budget@example.org".into(),
+                mail_entry: None,
+            }
+        );
+        let titled = client
+            .create_todo_from_mail(account.clone(), "m:1".into(), work.clone(), Some("Answer Anna".into()), None)
+            .await
+            .expect("made");
+        assert_eq!((titled.title.as_str(), titled.due), ("Answer Anna", None), "no day: no due date");
+        let bare = client.create_todo_from_mail(account.clone(), "m:bare".into(), work.clone(), None, None).await;
+        assert_eq!(bare, Err(InboxError::Unsupported), "no Message-ID");
+        let gone = client.create_todo_from_mail(account, "m:gone".into(), work, None, None).await;
+        assert_eq!(gone, Err(InboxError::NotFound));
     }
 
     #[tokio::test]
@@ -579,6 +1046,7 @@ mod tests {
             snippet: String::new(),
             flags: Vec::new(),
             has_attachments: false,
+            invite: None,
             untrusted: true,
         }
     }

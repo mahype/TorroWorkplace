@@ -6,22 +6,26 @@
 //!   open entries of "For me" as fit the height, at least the top [`SHOWN`], as rows: the source's icon, the title cut to fit, how long
 //!   ago at the right. Nothing for the user: a calm "Nothing for you right now." under the inbox
 //!   icon.
-//! - **Strip** ([`strip`]): the same numbers at the left, the same entries beside them as cells in
-//!   one row – icon and title, below it the source and how long ago – sharing the width, each at
-//!   most [`cell_max()`] wide (a wide strip is not stretched).
+//! - **Strip** ([`strip`]): the same numbers at the left – the figure in `DISPLAY` as in the mini
+//!   tile (task E8.11) –, the same entries beside them as cells in one row – icon and title, below it
+//!   the source and how long ago – sharing the width, each at most [`cell_max()`] wide (a wide strip
+//!   keeps them together at the left), the last one taking what is left ([`cell_widths`], task
+//!   E8.12), so the strip's end is not empty.
 //!
 //! **Waiting entries** (urgent and open, `list::is_waiting`) lead, as in the list. They are marked
 //! as in its group "Waiting for you": the source's icon in the attention colour – never Torro red –
 //! and, so colour is not the only sign, the attention dot in front of the time, the same dot that
 //! stands before the word "waiting" in the numbers.
 //!
-//! **Mail** (task E4.4): while a mail account has unread mail in its inbox, a small block shows it –
-//! in the mini tile under the numbers, one row per account (address, unread number at the right)
-//! and a quiet line "From Anna, Ben, Chris" with the newest senders of the mail entries in "For me"
-//! ([`latest_senders`]); in the strip as one more cell before the entries, with the total, the
-//! accounts and the senders. When there is no room for every account the block shrinks to the total
-//! ([`mail_rows`]); the entries keep at least half of the rows. Senders are foreign text: drawn as
-//! plain text on one line, cut. The block is a display, not a button: a click opens entries only.
+//! **Mail** (task E4.4, reworked in E8.11): the mail window's numbers count its mail for the user, so
+//! the quiet line "From Anna, Ben, Chris" with the newest senders of those entries
+//! ([`latest_senders`]) stands right under them ([`GlanceData::mail`]). While a mail account has
+//! unread mail in its inbox, a small block shows it – in the mini tile one row per account (address,
+//! unread number at the right), only when every account has its row and the entries keep at least
+//! half of the rows ([`mail_rows`]); in the strip as one more cell before the entries, an account
+//! per line. There is no total of unread mail: a second, other number beside "for you" would only
+//! puzzle. Senders are foreign text: drawn as plain text on one line, cut. The block is a display,
+//! not a button: a click opens entries only.
 //!
 //! Both are displays, not small apps: no header, sidebar, menu, form or dialog, no keys. The one
 //! thing a click does is open the entry: `Message::OpenForMe` puts it under the cursor and into the
@@ -62,7 +66,7 @@ fn row_height() -> f32 {
 fn figure_levels() -> [typo::Level; 2] {
     [typo::display().tabular(), typo::title().tabular()]
 }
-/// The levels of the strip's first line and of the calm line, largest first.
+/// The levels of the calm line, largest first.
 fn head_levels() -> [typo::Level; 2] {
     [typo::title().tabular(), typo::body_strong().tabular()]
 }
@@ -107,6 +111,9 @@ pub struct GlanceData<'a> {
     pub now: DateTime<Utc>,
     /// A later call that failed, as one quiet line (the glance has no retry button).
     pub error: Option<&'a str>,
+    /// The mail window (task E8.11): its numbers count mail, so the newest senders of `items`
+    /// ("From …", [`latest_senders`]) stand right under them. The other windows name no senders.
+    pub mail: bool,
 }
 
 /// How many of `items` wait for the user (`list::is_waiting`).
@@ -173,50 +180,23 @@ pub fn latest_senders(items: &[Item]) -> Vec<String> {
     senders
 }
 
-/// "4 unread".
-pub fn unread_text(unread: u32) -> String {
-    trf("{n} unread", &[("n", &unread)])
-}
-
 /// "From Anna, Ben, Chris".
 pub fn senders_text(senders: &[String]) -> String {
     trf("From {senders}", &[("senders", &senders.join(", "))])
 }
 
-/// What the mini tile's mail block shows, in rows of [`row_height()`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct MailRows {
-    /// One row per account (address and number); they all fit, else [`MailRows::total`] is set.
-    pub accounts: usize,
-    /// One row with the number of unread mail in all accounts, when the accounts do not all fit.
-    pub total: bool,
-    /// The line with the newest senders.
-    pub senders: bool,
+/// How many rows of [`row_height()`] the mini tile's mail block takes when `rows` rows of the tile
+/// are free under the numbers: one per account with unread mail when they all fit in half of the
+/// rows (rounded up), so the entries keep theirs; else none. The block never shrinks to a total of
+/// unread mail (task E8.11): that would be a second, other number beside "for you".
+pub fn mail_rows(unread: &[MailUnread], rows: usize) -> usize {
+    if unread.len() <= rows.div_ceil(2) { unread.len() } else { 0 }
 }
 
-impl MailRows {
-    /// How many rows of the tile the block takes.
-    pub fn used(&self) -> usize {
-        (if self.total { 1 } else { self.accounts }) + usize::from(self.senders)
-    }
-}
-
-/// What the mail block shows when `rows` rows of the tile are free under the numbers: nothing
-/// without unread mail; at most half of the rows (rounded up), so the entries keep theirs. The
-/// senders line comes when there are senders and at least two rows for the block; every account
-/// has a row if they all fit, else the block is the one row with the total.
-pub fn mail_rows(unread: &[MailUnread], has_senders: bool, rows: usize) -> MailRows {
-    let budget = rows.div_ceil(2);
-    if unread.is_empty() || budget == 0 {
-        return MailRows::default();
-    }
-    let senders = has_senders && budget >= 2;
-    let room = budget - usize::from(senders);
-    if unread.len() <= room {
-        MailRows { accounts: unread.len(), total: false, senders }
-    } else {
-        MailRows { accounts: 0, total: true, senders }
-    }
+/// The newest senders the glance names under its numbers: those of `data`'s mail entries in the
+/// mail window ([`GlanceData::mail`]), none elsewhere.
+fn glance_senders(data: &GlanceData<'_>) -> Vec<String> {
+    if data.mail { latest_senders(data.items) } else { Vec::new() }
 }
 
 /// The calm line when nothing is open for the user: the sentence of the empty "For me" view.
@@ -234,10 +214,11 @@ fn error_height() -> f32 {
     space::xs() + line_height(typo::meta())
 }
 
-/// How many rows fit in a mini tile `height` high under the numbers (with room for the error line
-/// if there is one).
-pub fn rows_that_fit(height: f32, error: bool) -> usize {
-    let above = 2.0 * space::m() + figure_height() + space::s() + if error { error_height() } else { 0.0 };
+/// How many rows fit in a mini tile `height` high under the numbers (with room for the line of
+/// `senders` under them and for the error line, if there are any).
+pub fn rows_that_fit(height: f32, error: bool, senders: bool) -> usize {
+    let lines = if error { error_height() } else { 0.0 } + if senders { line_height(typo::meta()) } else { 0.0 };
+    let above = 2.0 * space::m() + figure_height() + space::s() + lines;
     ((height - above) / row_height()).floor().max(0.0) as usize
 }
 
@@ -257,6 +238,20 @@ pub fn cell_width(avail: f32, count: usize) -> f32 {
         return 0.0;
     }
     ((avail - cell_gap() * (count - 1) as f32) / count as f32).clamp(0.0, cell_max())
+}
+
+/// The widths of `count` cells in `avail`, from the left (task E8.12, finding 9): each
+/// [`cell_width`], the last one also taking what is left at the right, so its title is cut later
+/// instead of leaving the strip's end empty. The first cells keep their place, so a wide strip
+/// still keeps its entries together at the left.
+pub fn cell_widths(avail: f32, count: usize) -> Vec<f32> {
+    let width = cell_width(avail, count);
+    let mut widths = vec![width; count];
+    if let Some(last) = widths.last_mut() {
+        let others = (count - 1) as f32 * (width + cell_gap());
+        *last = (avail - others).max(width);
+    }
+    widths
 }
 
 /// The first level of `levels` in which `text` fits `width`, else the last one.
@@ -438,42 +433,24 @@ fn account_row(account: &MailUnread, width: f32) -> Element<'static, Message> {
     )
 }
 
-/// The row with the number of unread mail in all accounts.
-fn total_row(unread: &[MailUnread], width: f32) -> Element<'static, Message> {
-    let total: u32 = unread.iter().map(|account| account.unread).sum();
-    let room = (width - icon::SIZE - space::s()).max(0.0);
-    let text = typo::text(typo::body(), ellipsize(&unread_text(total), typo::body(), room))
-        .style(theme::text)
-        .wrapping(Wrapping::None);
-    mail_row(row![mail_mark(), text].spacing(space::s()).align_y(Alignment::Center))
+/// The line with the newest senders under the numbers (task E8.11), `META` in `text_2`, cut to
+/// `width`.
+fn senders_line(senders: &[String], width: f32) -> Element<'static, Message> {
+    let text = ellipsize(&senders_text(senders), typo::meta(), width.max(0.0));
+    typo::text(typo::meta(), text).style(theme::text_2).wrapping(Wrapping::None).into()
 }
 
-/// The line with the newest senders, under the accounts' text.
-fn senders_row(senders: &[String], width: f32) -> Element<'static, Message> {
-    let indent = icon::SIZE + space::s();
-    let text = ellipsize(&senders_text(senders), typo::meta(), (width - indent).max(0.0));
-    let text = typo::text(typo::meta(), text).style(theme::text_2).wrapping(Wrapping::None);
-    mail_row(row![Space::new().width(indent), text].align_y(Alignment::Center))
-}
-
-/// The mini's mail block as `plan` decides ([`mail_rows`]), `width` wide inside its padding.
-fn mail_block(plan: MailRows, unread: &[MailUnread], senders: &[String], width: f32) -> Element<'static, Message> {
-    let mut block = column![];
-    if plan.total {
-        block = block.push(total_row(unread, width));
-    }
-    for account in unread.iter().take(if plan.total { 0 } else { plan.accounts }) {
-        block = block.push(account_row(account, width));
-    }
-    if plan.senders {
-        block = block.push(senders_row(senders, width));
-    }
+/// The mini's mail block: the first `accounts` of `unread` ([`mail_rows`]), a row each, `width`
+/// wide inside its padding.
+fn mail_block(unread: &[MailUnread], accounts: usize, width: f32) -> Element<'static, Message> {
+    let block = column(unread.iter().take(accounts).map(|account| account_row(account, width)));
     // A raised group like the settings pages' groups, so the summary reads apart from the entries.
     container(block).width(Fill).style(style::container::group).into()
 }
 
-/// The mini tile for a window of `size`: the numbers at the top, the mail block while there is
-/// unread mail, then the top entries that fit the height. Nothing open: the calm tile.
+/// The mini tile for a window of `size`: the numbers at the top – in the mail window with the
+/// newest senders right under them (task E8.11) –, the mail block while there is unread mail and
+/// every account has room, then the top entries that fit the height. Nothing open: the calm tile.
 pub fn mini(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     // The rows' buttons reach to `side()` from the edge, their text to 12 like the head.
     let padding =
@@ -484,32 +461,37 @@ pub fn mini(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
     }
     let head = container(figures_line(&count_parts(data.items), width)).padding(Padding::ZERO.left(side()));
     let mut content = column![head];
+    let senders = glance_senders(data);
+    if !senders.is_empty() {
+        content = content.push(container(senders_line(&senders, width)).padding(Padding::ZERO.left(side())));
+    }
     if let Some(error) = data.error {
         content = content
             .push(Space::new().height(space::xs()))
             .push(container(error_line(error, width)).padding(Padding::ZERO.left(side())));
     }
     content = content.push(Space::new().height(space::s()));
-    let free = rows_that_fit(size.height, data.error.is_some());
-    let (unread, senders) = (mail_unread(data.folders), latest_senders(data.items));
-    let plan = mail_rows(&unread, !senders.is_empty(), free);
-    let shown = free - plan.used();
-    if plan.used() > 0 {
-        content = content.push(mail_block(plan, &unread, &senders, width));
+    let (error, named) = (data.error.is_some(), !senders.is_empty());
+    let free = rows_that_fit(size.height, error, named);
+    let unread = mail_unread(data.folders);
+    let accounts = mail_rows(&unread, free);
+    if accounts > 0 {
+        content = content.push(mail_block(&unread, accounts, width));
         // The gap below the block only where it does not push the last entry out.
-        if rows_that_fit(size.height - mail_gap(), data.error.is_some()) >= free {
+        if rows_that_fit(size.height - mail_gap(), error, named) >= free {
             content = content.push(Space::new().height(mail_gap()));
         }
     }
-    for item in data.items.iter().take(shown) {
+    for item in data.items.iter().take(free - accounts) {
         content = content.push(row_view(item, data, width));
     }
     tile(content, padding)
 }
 
-/// The strip's numbers, `width` wide: "6 for you" in the largest head level that fits, below it
-/// the attention dot and "3 waiting" while something waits.
-fn numbers_column(parts: &[(String, bool)], width: f32) -> Element<'static, Message> {
+/// The strip's numbers, `width` wide: "6 for you" with its figure in `DISPLAY`, as in the mini tile
+/// (task E8.11, [`figures_line`]; the smaller level when it does not fit), below it the attention
+/// dot and "3 waiting" while something waits, and in the mail window the newest `senders`.
+fn numbers_column(parts: &[(String, bool)], senders: &[String], width: f32) -> Element<'static, Message> {
     let mut lines = column![].spacing(space::xs());
     for (text, waiting) in parts {
         if *waiting {
@@ -523,26 +505,28 @@ fn numbers_column(parts: &[(String, bool)], width: f32) -> Element<'static, Mess
                 .align_y(Alignment::Center);
             lines = lines.push(line);
         } else {
-            let level = fit_level(text, &head_levels(), width);
-            lines = lines
-                .push(typo::text(level, ellipsize(text, level, width)).style(theme::text).wrapping(Wrapping::None));
+            lines = lines.push(figures_line(&[(text.clone(), false)], width));
         }
+    }
+    if !senders.is_empty() {
+        lines = lines.push(senders_line(senders, width));
     }
     lines.into()
 }
 
-/// The width the strip's numbers want: the wider of their lines.
-fn numbers_width(parts: &[(String, bool)]) -> f32 {
+/// The width the strip's numbers want: the wider of their lines, the figure at the largest level.
+fn numbers_width(parts: &[(String, bool)], senders: &[String]) -> f32 {
+    let named = if senders.is_empty() { 0.0 } else { text_width(&senders_text(senders), typo::meta()) };
     parts
         .iter()
         .map(|(text, waiting)| {
             if *waiting {
                 dot() + space::xs() + text_width(text, typo::meta())
             } else {
-                text_width(text, head_levels()[0])
+                part_width(text, false, figure_levels()[0])
             }
         })
-        .fold(0.0, f32::max)
+        .fold(named, f32::max)
 }
 
 /// One entry of the strip as a cell `width` wide: the icon beside the title (`BODY`), below the
@@ -597,24 +581,32 @@ pub fn accounts_text(unread: &[MailUnread], width: f32) -> String {
     ellipsize(&join(&short), typo::meta(), width)
 }
 
-/// The strip's mail cell, `width` wide: the icon beside the total unread, below it the accounts
-/// with their numbers and the newest senders, `META` lines cut to fit. Not a button.
-fn mail_cell(unread: &[MailUnread], senders: &[String], width: f32) -> Element<'static, Message> {
-    let total: u32 = unread.iter().map(|account| account.unread).sum();
+/// How many accounts the strip's mail cell names a line each; with more, one line names them all
+/// ([`accounts_text`]).
+const CELL_ACCOUNTS: usize = 2;
+
+/// The strip's mail cell, `width` wide: the icon beside the accounts with unread mail, an account
+/// per line (address in `text_2`, its number at the right) – no total, which would be a second
+/// number beside "for you" (task E8.11) –; with more than [`CELL_ACCOUNTS`] one `META` line with
+/// them all. Not a button.
+fn mail_cell(unread: &[MailUnread], width: f32) -> Element<'static, Message> {
     let room = (width - 2.0 * side() - icon::SIZE - space::s()).max(0.0);
-    let head = typo::text(typo::body_strong(), ellipsize(&unread_text(total), typo::body_strong(), room))
-        .style(theme::text)
-        .wrapping(Wrapping::None);
-    let accounts = typo::text(typo::meta(), accounts_text(unread, room)).style(theme::text_3).wrapping(Wrapping::None);
-    let mut words = column![head, accounts].width(Fill).clip(true);
-    if !senders.is_empty() {
-        words = words.push(
-            typo::text(typo::meta(), ellipsize(&senders_text(senders), typo::meta(), room))
+    let words: Element<'static, Message> = if unread.len() > CELL_ACCOUNTS {
+        typo::text(typo::meta(), accounts_text(unread, room)).style(theme::text_2).wrapping(Wrapping::None).into()
+    } else {
+        let line = |account: &MailUnread| -> Element<'static, Message> {
+            let number = account.unread.to_string();
+            let space = (room - text_width(&number, typo::body()) - space::s()).max(0.0);
+            let address = typo::text(typo::body(), ellipsize(&account.address, typo::body(), space))
                 .style(theme::text_2)
-                .wrapping(Wrapping::None),
-        );
-    }
-    let mark = container(mail_mark()).center_y(line_height(typo::body_strong()));
+                .wrapping(Wrapping::None);
+            let number = typo::text(typo::body().tabular(), number).style(theme::text).wrapping(Wrapping::None);
+            row![container(address).width(Fill).clip(true), number].spacing(space::s()).into()
+        };
+        column(unread.iter().map(line)).into()
+    };
+    let words = container(words).width(Fill).clip(true);
+    let mark = container(mail_mark()).center_y(line_height(typo::body()));
     let padding = Padding { top: space::xs(), bottom: space::xs(), left: side(), right: side() };
     container(row![mark, words].spacing(space::s())).width(width).padding(padding).style(style::container::group).into()
 }
@@ -628,21 +620,23 @@ pub fn strip(data: &GlanceData<'_>, size: Size) -> Element<'static, Message> {
         return tile(nothing(inner, data.error), Padding::new(space::s()));
     }
     let parts = count_parts(data.items);
-    let left = numbers_width(&parts).min(size::sidebar()).min(inner / STRIP_INFO_SHARE).ceil();
-    let mut info = column![numbers_column(&parts, left)];
+    let senders = glance_senders(data);
+    let left = numbers_width(&parts, &senders).min(size::sidebar()).min(inner / STRIP_INFO_SHARE).ceil();
+    let mut info = column![numbers_column(&parts, &senders, left)];
     if let Some(error) = data.error {
         info = info.push(Space::new().height(space::xs())).push(error_line(error, left));
     }
     // The cells' buttons reach `side()` towards the numbers, their text keeps the full gap.
     let avail = (inner - left - space::l() + side()).max(0.0);
-    let (unread, senders) = (mail_unread(data.folders), latest_senders(data.items));
+    let unread = mail_unread(data.folders);
     let (places, with_mail, shown) = cell_plan(avail, !unread.is_empty());
-    let width = cell_width(avail, places);
+    // The last cell takes the rest of the row (task E8.12).
+    let mut widths = cell_widths(avail, places).into_iter();
     let mut cells = row![].spacing(cell_gap()).align_y(Alignment::Center);
     if with_mail {
-        cells = cells.push(mail_cell(&unread, &senders, width));
+        cells = cells.push(mail_cell(&unread, widths.next().unwrap_or_default()));
     }
-    for item in data.items.iter().take(shown) {
+    for (item, width) in data.items.iter().take(shown).zip(widths) {
         cells = cells.push(cell(item, data, width));
     }
     let content = row![
@@ -706,11 +700,12 @@ mod tests {
     #[test]
     fn the_height_of_the_tile_decides_how_many_rows_fit() {
         // 240×160: 12 above and below, the figures (32), 8 gap, rows of 28.
-        assert_eq!(rows_that_fit(160.0, false), 3);
-        assert_eq!(rows_that_fit(150.0, true), 2, "the error line takes room");
-        assert_eq!(rows_that_fit(120.0, false), 2, "the smallest window");
-        assert_eq!(rows_that_fit(40.0, false), 0);
-        assert!(rows_that_fit(480.0, false) > SHOWN, "a tall tile fills its height");
+        assert_eq!(rows_that_fit(160.0, false, false), 3);
+        assert_eq!(rows_that_fit(150.0, true, false), 2, "the error line takes room");
+        assert_eq!(rows_that_fit(120.0, false, false), 2, "the smallest window");
+        assert_eq!(rows_that_fit(160.0, false, true), 2, "the senders' line takes room (task E8.11)");
+        assert_eq!(rows_that_fit(40.0, false, false), 0);
+        assert!(rows_that_fit(480.0, false, false) > SHOWN, "a tall tile fills its height");
     }
 
     #[test]
@@ -719,6 +714,13 @@ mod tests {
         assert_eq!(cells_that_fit(cell_min() * 2.0 + cell_gap()), 2);
         assert_eq!(cells_that_fit(cell_min() - 1.0), 0);
         assert_eq!(cell_width(2000.0, 3), cell_max(), "a wide strip keeps its cells together");
+        // Task E8.12 (finding 9): the last cell takes the rest, the others keep their place.
+        let widths = cell_widths(1000.0, 3);
+        assert_eq!(widths[..2], [cell_max(), cell_max()]);
+        assert_eq!(widths[2], 1000.0 - 2.0 * (cell_max() + cell_gap()));
+        assert_eq!(widths.iter().sum::<f32>() + 2.0 * cell_gap(), 1000.0, "the row is filled");
+        assert_eq!(cell_widths(300.0, 2), vec![cell_width(300.0, 2); 2], "shared evenly: nothing left");
+        assert!(cell_widths(500.0, 0).is_empty());
         assert_eq!(cell_width(cell_min() * 2.0 + cell_gap(), 2), cell_min());
         assert_eq!(cell_width(500.0, 0), 0.0);
     }
@@ -810,7 +812,6 @@ mod tests {
 
     #[test]
     fn the_mail_texts_are_translated() {
-        assert_eq!(unread_text(4), trf("{n} unread", &[("n", &4)]));
         assert_eq!(senders_text(&["Lena".into(), "Ben".into()]), trf("From {senders}", &[("senders", &"Lena, Ben")]));
         let accounts = [
             MailUnread { address: "work@example.com".into(), unread: 5 },
@@ -822,27 +823,44 @@ mod tests {
         assert!(accounts_text(&accounts, tight / 2.0).ends_with('…'), "then cut");
     }
 
+    /// Task E8.11 (finding 8): the mail block shows every account or none – never a total of unread
+    /// mail beside "for you" – and leaves the entries at least half of the rows.
     #[test]
     fn the_mail_block_leaves_the_entries_at_least_half_of_the_rows() {
         let one = [MailUnread { address: "anna@example.org".into(), unread: 3 }];
         let two = [one[0].clone(), MailUnread { address: "work@example.com".into(), unread: 1 }];
-        let rows = |unread: &[MailUnread], senders, free| {
-            let plan = mail_rows(unread, senders, free);
-            (plan.accounts, plan.total, plan.senders, plan.used())
-        };
-        assert_eq!(rows(&[], true, 8), (0, false, false, 0), "no unread mail, no block");
-        assert_eq!(rows(&one, true, 0), (0, false, false, 0), "no room");
-        assert_eq!(rows(&one, true, 1), (1, false, false, 1), "the one row is the account");
-        assert_eq!(rows(&two, true, 1), (0, true, false, 1), "two accounts do not fit one row: the total");
-        assert_eq!(rows(&one, true, 3), (1, false, true, 2), "240x160: the account and the senders, one entry");
-        assert_eq!(rows(&two, true, 3), (0, true, true, 2), "...the total and the senders");
-        assert_eq!(rows(&two, false, 3), (2, false, false, 2), "no senders: both accounts");
-        assert_eq!(rows(&two, true, 14), (2, false, true, 3), "a tall tile: everything");
+        assert_eq!(mail_rows(&[], 8), 0, "no unread mail, no block");
+        assert_eq!(mail_rows(&one, 0), 0, "no room");
+        assert_eq!(mail_rows(&one, 1), 1, "the one row is the account");
+        assert_eq!(mail_rows(&two, 2), 0, "two accounts do not fit one row: no block, no total");
+        assert_eq!(mail_rows(&two, 3), 2, "both accounts");
         for free in 0..16 {
-            for senders in [false, true] {
-                assert!(mail_rows(&two, senders, free).used() <= free.div_ceil(2), "{free} {senders}");
-            }
+            assert!(mail_rows(&two, free) <= free.div_ceil(2), "{free}");
         }
+    }
+
+    /// Task E8.11 (finding 8): only the mail window names the senders under its numbers, and its
+    /// numbers are "for you" alone.
+    #[test]
+    fn the_mail_window_names_its_senders_under_the_numbers() {
+        let items = [mail_entry("a", "Lena", 5), mail_entry("b", "Ben", 10)];
+        let folders = mail_folders();
+        let data = GlanceData { items: &items, selected: None, folders: &folders, now: now(), error: None, mail: true };
+        assert_eq!(glance_senders(&data), ["Lena", "Ben"]);
+        assert_eq!(count_parts(&items), [(trf("{n} for you", &[("n", &2)]), false)], "one number");
+        let other = GlanceData { mail: false, ..data };
+        assert!(glance_senders(&other).is_empty(), "the other windows name no senders");
+    }
+
+    /// Task E8.11 (finding 9): the strip's figure is as big as the mini's.
+    #[test]
+    fn the_strip_shows_its_figure_like_the_mini() {
+        let parts = count_parts(&for_me());
+        let figure = part_width(&parts[0].0, false, figure_levels()[0]);
+        assert_eq!(numbers_width(&parts[..1], &[]), figure, "the figure at the mini's largest level");
+        assert_eq!(figure_levels()[0], typo::display().tabular());
+        let senders = ["Lena".to_owned()];
+        assert!(numbers_width(&parts[..1], &senders) >= text_width(&senders_text(&senders), typo::meta()));
     }
 
     #[test]
@@ -881,9 +899,12 @@ mod tests {
             for (width, height) in sizes {
                 let size = Size::new(width, height);
                 let selected = items.first().map(|item| item.id.as_str());
-                let data = GlanceData { items, selected, folders: &folders, now: now(), error: None };
+                let data = GlanceData { items, selected, folders: &folders, now: now(), error: None, mail: true };
                 let _ = mini(&data, size);
                 let _ = strip(&data, size);
+                let elsewhere = GlanceData { mail: false, ..data };
+                let _ = mini(&elsewhere, size);
+                let _ = strip(&elsewhere, size);
                 let failed = GlanceData { error: Some("Couldn't change the entry."), ..data };
                 let _ = mini(&failed, size);
                 let _ = strip(&failed, size);

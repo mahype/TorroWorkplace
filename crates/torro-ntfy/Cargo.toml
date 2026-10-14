@@ -1,0 +1,23 @@
+[package]
+name = "torro-ntfy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The ntfy subscribe protocol for the inbox: server addresses, topics, logins and the JSON message stream."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true
+chrono.workspace = true
+# The stream is read with `Response::chunk()`, so no `stream` feature is needed (task E5.11, approval 11).
+reqwest.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# A local HTTP server standing in for an ntfy server (task E5.11): no test talks to ntfy.sh.
+httpmock.workspace = true
+tokio.workspace = true

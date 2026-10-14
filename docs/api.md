@@ -78,12 +78,12 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `system` | `ping`, `status` | | | |
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
-| `tasks` | `list_lists`, `list_todos` | `save_todo` | `delete_todo` | |
-| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` | `post_item`, `resolve_items`, `set_item_done` ⁸, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `hide_sender` mit `conversation` ¹⁰ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `remove_rule`, `set_item_lane` mit `remember` ² |
-| `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷ | `delete_messages` | |
-| `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
+| `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
+| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
+| `accounts` | `list_accounts` ¹⁸, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `connect_ntfy` ¹⁸, `set_ntfy_topic` ¹⁸, `remove_account`, `update_mail_account`, `set_github_token`, `set_ntfy_login` ¹⁸, `connect_caldav` und `connect_mail` (die letzten vier **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
-| `apps` | `list_apps` | `open_app` | | |
+| `apps` | `list_apps` | `open_app` ¹³ | | |
 | `clients` | | | | `list_clients`, `create_client`, `update_client`, `new_key`, `remove_client`, `activity` (**nur App-Schlüssel**, siehe unten) |
 | `approvals` | `list_approvals`, `approval_status` | `ask_permission` ⁵ | | `decide_approval` (**nur App-Schlüssel**) |
 
@@ -104,7 +104,8 @@ Zusammenfassung nennt den Host, wie der Browser ihn liest (ohne Benutzerteil vor
 ⁴ `create_task_from_item` (E3.5) schreibt eine Aufgabe und markiert den Eintrag als erledigt. Weil eine
 Operation nur einen Bereich kennt, prüft der Dienst vorher eigens Schreibrecht in `tasks` (sonst
 `forbidden`, genannt als `tasks.save_todo`) und die Aufgabenliste wie bei `tasks.save_todo` (sonst
-`not-found`), vor der Freigabe und bei ihrer Ausführung noch einmal.
+`not-found`), vor der Freigabe und bei ihrer Ausführung noch einmal. `create_event_from_item` (E8.5b, ¹⁵)
+macht es genauso mit einem Kalender.
 
 ⁵ `ask_permission { tool, details, project?, title? }` (E2.5) stellt dem Menschen eine Rückfrage „darf der
 Agent dieses Werkzeug benutzen?“, wie sie der Hook `PermissionRequest` von Claude Code und Codex
@@ -176,6 +177,8 @@ Die Stufe hängt teils vom Request ab (`Request::operation()`):
   `forbidden`, `with_approval` (Voreinstellung, auch in allen Vorlagen und für alte `clients.json`) →
   `pending`, `free` → sendet. Mit `confirm` gilt die strengere Regel: `free` mit `on_every_change` wartet
   trotzdem (`Rights::needs_approval_of`). Hook-Clients haben `never`.
+- `respond_to_invitation` (E8.3b, ¹⁶) verschickt eine Antwort an den Organisator und gilt darum wie
+  `send_draft`: `Write` und „Nach außen“ (`Command::is_outbound`).
 
 Grenzen: höchstens 100 `ids`, `limit` 1 bis 100, `query` höchstens 500 Zeichen, ein Entwurf mit höchstens
 100 Empfängern (mit Bcc), 20 Anhängen und 1 MiB Text, Kennungen und `cursor` höchstens 300 Bytes; sonst
@@ -277,11 +280,12 @@ Anweisungen. Die Sicherheitsregeln aus
 - Die Freigabe eines `inbox.*`-Befehls nennt Eintrag, Regel und Quelle aus dem Speicher des Eingangs
   (`approvals::inbox_summary`, nachgeschlagen über die Kennung), nie aus dem Text des Clients.
   `open_item` nennt, was sich öffnet (Host, App oder Fenster des Agenten), `create_task_from_item`
-  Titel, Liste und Fälligkeit.
+  Titel, Liste und Fälligkeit, `create_event_from_item` Titel, Beginn und Kalender (Name aus dem Cache).
 - Eine Freigabe für einen Eintrag merkt sich, wie er beim Fragen aussah (`updated` und Zahl der
   Meldungen, `approvals::EntryPin`). Hat der Client bis zur Ausführung in denselben Faden neu
   gemeldet, antwortet der Dienst `conflict` und führt nichts aus (E1.2c). `create_task_from_item`
-  ohne Titel bekommt beim Fragen den Titel des Eintrags fest in die Anfrage geschrieben.
+  und `create_event_from_item` ohne Titel bekommen beim Fragen den Titel des Eintrags fest in die Anfrage
+  geschrieben.
 
 Die Ein-Konto-Requests `Account` und `DisconnectAccount` entfallen; es gibt nur noch
 `accounts.list_accounts` und `accounts.remove_account`. Die Liste der Apps (`apps.list_apps`)
@@ -318,6 +322,209 @@ Schlüsseln, die dieses Konto lesen dürfen, obwohl sie in allen Konten wirkt. E
 Konto, das der Schlüssel nicht lesen darf, gibt `hide_sender` nie heraus (auch nicht als
 „gibt es schon“): Der Schlüssel bekommt dann eine eigene Regel in seinem Konto. `not-found` für Einträge, die der Schlüssel nicht sieht, `error` für
 Einträge, die keine Mail sind, und bei `sender`/`domain` für Mail ohne Absender.
+
+¹¹ Stummschalten nach Merkmalen (E8.6a, Konzept [eingang.md](eingang.md#stummschalten-nach-merkmalen)).
+Jeder Eintrag trägt `facets`: die Merkmale, die seine Quelle verlässlich liefert (Mail: Konto,
+Absender, Domain, Liste, Massenmail; Agenten: Agent, Projekt, Art; Skripte: Client), vom Dienst
+beim Melden gesetzt, nie vom Absender. `list_mute_options { id }` (`Read`) nennt die Möglichkeiten
+für das Menü der Glocke: zuerst die Unterhaltung, dann jedes Merkmal mit Umfang, Wert aus dem
+gespeicherten Eintrag, Wort für das Menü, `untrusted` (alles außer Konto, Massenmail und Art ist
+Fremdtext) und `admin` (jede Wahl braucht `Admin`). `mute_item { id, scope: conversation | facet {
+key }, until?, effect: no_popup | info | hide }` nimmt den Wert **immer aus dem gespeicherten
+Eintrag**, nie aus dem Request – so kann kein Agent beliebige Absender stummschalten, und die Freigabe
+zeigt keinen Text des Clients. Stufe in `Request::operation`: `Write` nur für `conversation` mit
+`hide` oder `info` ohne `until` (erledigt bzw. verschiebt nur diesen Eintrag, keine Regel, wie
+`hide_sender` mit `conversation`), alles andere ist eine Regel und `Admin`; der Katalog nennt
+`Write`. Eine Regel (`Rule` mit `facet` und `until`) gilt für alle Quellen derselben Art (ein
+Absender in allen Mail-Konten, ein Projekt für alle Agenten), die Unterhaltung nur in ihrer Quelle;
+sie wird bei der Quelle des Eintrags gespeichert und nur Schlüsseln gezeigt, die diese sehen. Die
+offenen und vertagten Einträge, für die sie gilt, werden sofort erledigt (`hide`) bzw. nach „Info“
+verschoben (`info`); neue Meldungen kommen ohne Popup (`no_popup`), unter „Info“ oder gar nicht.
+Abgelaufene Regeln wirken nicht mehr, fehlen in `list_rules` und werden vom Dienst gelöscht. Dasselbe
+Merkmal noch einmal ergibt die vorhandene Regel (`new_rule: false`), die so lange gilt wie die
+längere der beiden. Antwort `muted`: `rule`, `new_rule`, `done` und `moved` (nur Ids, die der
+Schlüssel sieht). Undo: `remove_rule` bei `new_rule`, `set_item_done` mit `done: false` für `done`,
+`set_item_lane` nach `for_me` für `moved`. Wie `hide_sender` wirkt nichts in die Mail zurück.
+Freigaben und Einträge der Suite trifft keine Regel: `not-found` für Client-Schlüssel, `forbidden`
+für den App-Schlüssel; `error` für ein Merkmal, das der Eintrag nicht hat, oder ein `until` in der
+Vergangenheit; `conflict`, wenn sich der Eintrag während der Freigabe geändert hat. Die Freigabe
+nennt Merkmal und Wert aus dem Eintrag, die Reichweite, Dauer und Wirkung in Worten („Mute “Mail from
+news@shop.example” in every mail account for good (hidden)“). Ins Protokoll kommt nur die Kennung des
+Eintrags. Den Wert einer Regel für die Unterhaltung (den `thread_key`) sieht nur der App-Schlüssel.
+`set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
+Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
+
+¹² Aufgabe mit Rückbezug (E8.7a, Konzept [eingang.md](eingang.md#aufgabe-mit-rückbezug)). Eine Aufgabe
+aus einer Mail trägt in `link.id` (`X-TORRO-LINK`) `mail:<adresse>:<Message-ID>`: die feste Kennung des
+Mail-Kontos aus `accounts.list_accounts` (`mail:<adresse>`) und die Message-ID ohne spitze Klammern,
+wie der Mail-Speicher sie hält. Sie bleibt gültig, wenn die Mail den Ordner wechselt und der Eintrag
+längst aufgeräumt ist. `create_task_from_item` schreibt sie für Mail-Einträge (sonst wie bisher
+`inbox:<id>`), dazu eine lesbare Zeile am Ende der Beschreibung („From mail: …“).
+`create_todo_from_mail { account, id, collection, title?, due? }` macht aus einer beliebigen Mail eine
+Aufgabe, ohne die Mail zu ändern; `Write` im Bereich `tasks`, dazu prüft der Dienst vor der Freigabe
+Leserecht in `mail` und das Konto in `mail_accounts` (sonst `not-found`, wie für eine Mail, die es nicht
+gibt). Ohne Titel schreibt der Dienst beim Fragen den Betreff fest in die Anfrage; die Freigabe nennt
+Titel, Listenname aus dem Cache und Betreff aus dem Mail-Speicher und ist an die Mail gebunden
+(Fingerabdruck aus Message-ID, Betreff, Unterhaltung und Datum, nie beim Client): geändert →
+`conflict`. Beim Lesen füllt der Dienst `link.mail` (Betreff, Absender, Datum, Zahl neuer Antworten,
+`untrusted`) nur für Schlüssel mit Leserecht auf das Konto, und Einträge bekommen `task` (Titel, Liste,
+fällig, erledigt) nur für Schlüssel mit Leserecht in `tasks`, die die Liste sehen; gespeichert wird
+beides nie. Ein Client darf per `save_todo` einen `mail:`-Link nur zu einem Konto setzen, das er lesen
+darf (sonst `not-found`). Wird eine solche Aufgabe erledigt, meldet die Suite einmal je Aufgabe „You
+finished a task from a mail“ (Spur Info, kein Popup), wenn die Unterhaltung noch offen im Eingang
+liegt; Aufgabentitel und Absender stehen nur im Text, `untrusted`. Ins Protokoll kommt nur die Liste:
+nie Konto, Mail-Id oder Message-ID.
+
+¹³ `open_app` bekommt das optionale Feld `target` (E8.7a): `mail:<adresse>:<Message-ID>` öffnet ein
+neues Mail-Fenster mit der Mail (`torroinbox --view mail --message=m:…`), `task:<uid>` die Aufgaben-App
+mit der Aufgabe (`torrotasks --task=<uid>`). Der Dienst schlägt das Ziel nach und baut die Argumente
+selbst (Argumentliste, keine Shell); ein Client braucht Leserecht auf Konto bzw. Liste (sonst
+`not-found`), `app` muss zur Art des Ziels passen (sonst `error`). Die Freigabe nennt Betreff bzw.
+Titel aus dem Cache, das Protokoll nur die App.
+
+¹⁴ Statistik des Eingangs (E8.8a, Konzept [eingang.md](eingang.md#insights)). `get_stats { range: week
+| month | quarter, until? }` (`Read`) zählt über die letzten 7, 30 bzw. 90 Tage bis `until` (ein lokaler
+Tag, sonst heute). Antwort `stats`: `days` (jeder Tag mit den Summen je Quelle: `new`, `opened`,
+`dismissed`, `done`, `snoozed`, `tasks`, `muted`, `popups`, `quiet`), `hours` (Meldungen je lokaler
+Stunde, 24 Werte), `totals`, `median_done_minutes` (Median der Zeit bis erledigt, aufgerundet auf die
+Stufe 1, 5, 15, 30 Minuten, 1, 2, 4, 8 Stunden, 1, 2, 7 Tage) und `suggestions`: Merkmale mit
+mindestens zehn Meldungen im Zeitraum, von denen höchstens jede fünfte geöffnet wurde, je mit der Id
+des jüngsten Eintrags, den der Dienst noch kennt, und der passenden Möglichkeit aus
+`list_mute_options` (`option.scope` geht an `mute_item`); ohne bekannten Eintrag und für schon
+stummgeschaltete Merkmale gibt es keinen Vorschlag. Rechte wie `list_rules`: nur Quellen aus
+`inbox_sources`, Mail nur mit Leserecht auf das Konto, `suite` nie für Client-Schlüssel, Hook-Clients
+sehen nichts. Werte von Merkmalen sind Fremdtext (`option.untrusted`). Ein unbekannter Zeitraum ist
+`error`. `list_rules` gibt dazu je Regel `hits` (`rule`, `hits`, `since`): wie viele Meldungen und
+Einträge sie seit ihrem Anlegen ausgeblendet, nach „Info“ verschoben, ohne Popup gelassen oder in ihre
+Spur gelegt hat, gezählt nur in den Quellen, die der Schlüssel sieht; für Regeln von vor E8.8a ab dem
+Update.
+
+¹⁵ Ruhe und Termin aus einem Eintrag (E8.5b). `get_quiet {}` (`Read`) sagt, ob gerade Ruhe gilt: Antwort
+`quiet` mit `quiet: null` oder `{ reason: "busy", until, title? }`. Ruhe gilt, solange ein Termin „busy“ läuft
+(undurchsichtig, nicht ganztägig, in einem Kalender, den die Suite zeigt) und die Einstellung
+`quiet_when_busy` an ist; `until` ist das Ende des am längsten laufenden dieser Termine, `title` der Titel
+des zuerst begonnenen, aber nur für den App-Schlüssel und für Clients mit Leserecht in `calendar` und dem
+Kalender in `calendars` – sonst fehlt er („a busy event“ in der Oberfläche). Dass Ruhe gilt und bis wann,
+erfährt bewusst jeder Client mit Leserecht in `inbox`, auch wenn der Termin in einem Kalender liegt, den er
+nicht sieht: Er soll wissen, ob eine Meldung jetzt durchkommt. Hook-Clients sehen nichts:
+immer `null`. Ein Kalender, der sich nicht lesen lässt, hält nichts ruhig. Fokus-Profile kommen später als
+weiterer `reason`. `create_event_from_item { id, collection, title?, start, end }` (`Write`) macht aus dem
+Eintrag einen Termin (busy) und markiert ihn als erledigt (gezählt als `done`): Titel (sonst der des
+Eintrags), `start`/`end` beide als Tag oder beide als Zeitpunkt, `end` nach `start` (sonst `error`), Text des
+Eintrags als Beschreibung mit dem Rückbezug am Ende – bei Mail die Zeile „From mail: …“ wie bei Aufgaben,
+sonst der `http`/`https`-Link des Eintrags (ein Termin hat kein eigenes Feld dafür). Rechte wie ⁴: Schreibrecht
+in `calendar` (sonst `forbidden`, genannt als `calendar.save_event`), der Kalender wie bei
+`calendar.save_event` (sonst `not-found`, auch ausgeblendete), dann der Eintrag (`not-found`, `forbidden`
+für Freigaben und Einträge der Suite, bei Mail Schreibrecht in `mail`). Das Protokoll nennt nur Eintrag
+und Kalender, nie Titel oder Zeiten. Für entfernte Modelle des Assistenten ist die Antwort zurückgehalten wie
+bei `create_task_from_item` (der Titel kann der Betreff einer Mail sein).
+
+¹⁶ Einladungen beantworten (E8.3b). `MessageSummary` trägt optional `invite` (`#[serde(default)]`): Titel,
+Beginn, Ende, ganztägig und die aus der Suite gegebene Antwort (`answered`), gelesen aus dem `text/calendar`-Teil
+(iMIP `REQUEST`, kein `CANCEL`, keine Serie), wo der Kern eine ganze Nachricht liest (Sync der Texte,
+`get_message`), gespeichert in der Zeile der Nachricht (Schema 3). `respond_to_invitation { account, id, answer,
+collection? }` mit `answer` `accept | tentative | decline` liest die Einladung beim Server neu und schreibt erst
+den Kalender, dann die Antwort: Annehmen und Vielleicht legen den Termin (busy, UID der Einladung, ohne
+Organisator und Teilnehmer, damit kein CalDAV-Server selbst eine zweite Antwort schickt) an bzw. aktualisieren
+die frühere Kopie – nur ein Termin, den die Suite aus einer Mail gemacht hat (letzte Zeile „From mail: …“),
+mit der UID der Einladung in einem sichtbaren Kalender, einen halben Tag um den Termin gesucht; andere Termine
+mit dieser UID (selbst angelegte, vom Server-Scheduling eingetragene) fasst der Dienst nie an, denn die UID kommt
+von außen. Die Kopie bleibt in ihrem Kalender, ein neuer Termin kommt nach `collection`, sonst in den ersten
+beschreibbaren Kalender; Ablehnen legt nichts an und löscht die Kopie.
+Dann geht ein iTIP-`REPLY` an den Organisator: über das Konto, als Antwort auf die Mail,
+`multipart/alternative` mit kurzem Text und `text/calendar; method=REPLY` (UID, `SEQUENCE`, Zeiten, Titel,
+`ATTENDEE` mit der Adresse des Kontos, wie die Einladung sie schreibt, und `PARTSTAT`), versandt wie ein Entwurf
+(Journal, Kopie in „Gesendet“, `send::send_message`), aber ohne Entwurf. Antwort `invitation_answered` mit
+`delivery` und dem Termin. Rechte: `Write` in `mail` und „Nach außen“ wie `send_draft`, dazu prüft der Dienst
+vor der Freigabe und bei der Ausführung Leserecht und Konto in `mail` (sonst `not-found`), Schreibrecht in
+`calendar` (sonst `forbidden`, genannt als `calendar.save_event`), für Ablehnen Löschrecht (genannt als
+`calendar.delete_event`; mit `confirm: on_delete` wartet Ablehnen wie jedes Löschen auf eine Freigabe) und den
+Kalender in `calendars` (sonst `not-found`). Fehler: `error` ohne beantwortbare Einladung oder für einen
+vergangenen Termin, `unsupported` für Serien, `conflict` wenn Mail oder Termin sich bis zur Freigabe geändert
+haben (Fingerabdruck über Mail, UID, Sequenz, Beginn, Antwort und `href`/`etag` der Kopie), sonst die Codes des
+Versands. Grenze wie bei E8.5b: Der Termin trägt danach Text von außen, `calendar.list_events` kennzeichnet ihn
+nicht als `untrusted`. Die Freigabe
+nennt Antwort, Titel und Beginn aus dem Mail-Speicher, Konto, Organisator und Kalender (Name aus dem Cache).
+Das Protokoll nennt Konto, die Nachricht als Prüfsumme und einen genannten Kalender, nie Antwort, Titel oder
+Organisator. Für entfernte Modelle des Assistenten ist die Antwort zurückgehalten (sie trägt den Termin), und
+der Assistent ordnet das Tool `mail` und `calendar` zu, so greift ein im Gespräch abgeschalteter Kalender.
+
+¹⁷ **Fremde Quellen im Eingang** (E5.2, Plan
+[tasks/eingang.md › E5](tasks/eingang.md#e5-nextcloud-github-ntfy-als-quellen-plan-2026-10-14)): GitHub (`github:<login>`), Nextcloud (`nextcloud:<login>@<host>`), Talk (`talk:<login>@<host>`, eine eigene Quelle
+des Nextcloud-Kontos) und ntfy (`ntfy:<host>`) legt der Dienst selbst ab wie Mail (Module `crate::sources`, Ablage
+`Inbox::file_remote`): Eigentümer ist die Konto-Kennung, so führt kein Request einen solchen Eintrag zusammen oder
+löst ihn auf; immer `untrusted: true`, Merkmale nur über `rules::remote_facets`, Links nur `http`/`https`, gebaut aus
+geprüften Teilen. Welche Kennungen des Servers in welchem Eintrag stecken, steht neben den Einträgen
+(`inbox.sqlite` Schema 8, Tabelle `remote_ids`); dieselbe Kennung zählt nur mit neuer Aktivität noch einmal, ein
+Eintrag ohne Kennung ist erledigt. **Sehen:** Einträge von Nextcloud, Talk und ntfy brauchen nur die Quelle in
+`inbox_sources` (Talk wird eigens freigegeben, `nextcloud:` reicht nicht); GitHub-Einträge zusätzlich Lesen in
+`github` und das Repo des Eintrags in `github_repos` (`Rights::reaches_repo`), gefiltert in SQL vor dem Lesen
+(Spalte `repo`, bei Regeln und Statistik das Merkmal `repo`). Das gilt für `list_items`, `get_item`,
+`list_sources` (offene Einträge nur der sichtbaren Repos), `list_rules`, `get_stats` und `list_mute_options`.
+Ein Client mit eingeschränkten `github_repos` bekommt aus der Statistik der GitHub-Quelle nur die Zeilen je
+sichtbarem Repo, keine Summen der Quelle, keine Zeilen je Grund oder Art und keine Treffer von Regeln: Die zählen
+alle Repos. **Zurückmelden:** `set_item_done` mit `done: true` (auch `dismissed`), `create_task_from_item`
+und `create_event_from_item` wirken im Hintergrund auf die Quelle zurück: GitHub markiert den Thread als „done“
+(`DELETE /notifications/threads/{id}`), Nextcloud löscht die Benachrichtigungen, Talk markiert die Unterhaltung als
+gelesen, ntfy erfährt nichts. Bei GitHub braucht ein Client dafür Schreiben in `github` (sonst `forbidden`, geprüft
+vor der Freigabe und bei der Ausführung); ein Repo außerhalb seiner Reichweite ist `not-found`. Undo, Später, Spur,
+Ausblenden und Stummschalten wirken nie zurück. Die Freigabe nennt es („…, mark its GitHub notification done and any mail about it read“,
+„… and delete its Nextcloud notification“, „… and mark the Talk conversation read“). **Zustand:** `list_sources`
+nennt in `health`, warum eine fremde Quelle gerade nichts bringt (`missing_app`, `missing_scope`, `signed_out`,
+`offline`), auch ohne Einträge; nur im Speicher. **Konto entfernt:** Die offenen Einträge der Quelle (bei Nextcloud
+auch die von Talk) sind erledigt, Statistik, Lesestand (`cursors`) und Kennungen gehen mit, und die Quelle
+verschwindet aus den Rechten aller Clients. **Nextcloud (E5.8):** je Nextcloud-Konto (nicht CalDAV, nicht Mail) alle 60
+s die Benachrichtigungen mit ETag (`304` = nichts Neues), die Capabilities beim Start und stündlich; die erste Abfrage
+legt nur die letzten 3 Tage ab, was während des Stummschaltens kam, nie. Ein Eintrag je Gegenstand
+(`<app>:<object_type>:<object_id>`, zu lang: Prüfsumme), Kennungen = Ids der Benachrichtigungen, Merkmale `app` und
+`person`, Spur aus `rules::nextcloud_place`, Link nur auf dem Origin des Kontos. Fehlt eine Id in der Liste, ist sie
+gestrichen; weil Nextcloud höchstens die 25 neuesten liefert, streicht eine volle Liste nur Ids, die neuer sind als ihre
+älteste. 401/403 → `signed_out`, keine Abfrage bis zur neuen Anmeldung; 503 wartet, 429 so lange wie verlangt; ohne App
+`missing_app`. **Talk (E5.9):** läuft in derselben Schleife wie die Benachrichtigungen des Kontos (gemeinsame Anmeldung,
+Capabilities, Pausen; `signed_out` und `offline` gelten für beide Quellen), aber nur, wenn der Server Talk hat (sonst
+gibt es keine Quelle `talk:` und keinen Zustand). Alle 60 s die Unterhaltungen (`noStatusUpdate=1`); ein Eintrag je
+Unterhaltung (Vorgang = Token), soweit `rules::talk_place` es nach der Benachrichtigungsstufe von Talk sagt (Standard:
+1:1 immer, Gruppen nur mit Erwähnung; „immer“ legt Gruppen ohne Erwähnung unter Zur Info; „nie“ nichts; Changelog und
+Notizen an sich selbst nie). Art `message`, Titel der Name der Unterhaltung, Text „Name: …“ der letzten Nachricht, Link
+`<server>/call/<token>`, Merkmale `person` und `kind` (`direct`, `mention`, `group`). Der Zähler zählt die ungelesenen
+Nachrichten: jede neue ist eine Meldung mit eigener Kennung (`<token>/<id der letzten Nachricht>` bzw. `…~<n>` für die
+n-te davor; höchstens 99 je Runde), wie viele neu sind, sagt der Lesestand `room:<token>` (Lesemarke und gezählte
+Ungelesene). Ungelesen = 0, nicht mehr gewünscht oder nicht mehr in der Liste → erledigt. Erledigen markiert die
+Unterhaltung bis zur neuesten Nachricht der Kennungen als gelesen und löscht ihre Chat-Benachrichtigungen bis zur
+letzten Meldung; Neueres bleibt ungelesen und öffnet den Eintrag wieder. Solange der Server Talk hat, legt Nextcloud die
+Chat-Benachrichtigungen (`spreed`, `chat`) nicht ab, Anrufe und Einladungen schon; vorher abgelegte bleiben, bis Talk
+sie auf dem Server löscht. Nach dem Stummschalten zählt erst, was danach kam (nur im Speicher: nach einem Neustart wird
+das Liegengebliebene doch abgelegt). Antworten gibt es noch nicht.
+**GitHub** (E5.4, `sources/github.rs`): ein Eintrag je Thread der
+Benachrichtigungen (`GET /notifications`, höchstens im Takt von `X-Poll-Interval`, mindestens 60 s, mit
+`If-Modified-Since`; jede Abfrage reicht nur bis 3 Tage vor der ersten des Kontos); Titel des Themas, kein Text,
+Merkmale `repo`, `reason`, `kind`, `result`, Link nur auf `https://github.com/<owner>/<repo>/…`. Ein Thread, der in
+einer vollständigen Liste fehlt, wurde anderswo gelesen: Eintrag erledigt. Erledigt schickt genau ein `DELETE` je
+Übergang offen → erledigt, Undo keins. Eine stumme Quelle fragt GitHub nicht. `health`: `signed_out` (Token
+abgelehnt, bis zur neuen Anmeldung keine Abfrage), `missing_scope` (Fine-grained-Token oder ohne `notifications`;
+keine Einträge), `offline`. `create_task_from_item` bei Issue und PR: `link.id` `github:<owner>/<repo>#<n>`, sonst
+`inbox:<id>`, immer mit der Web-Seite als `url`; wer den Eintrag nicht sieht (ohne Lesen in `github` oder Repo
+außerhalb), bekommt `not-found`, mit Lesen ohne Schreiben `forbidden`. **Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
+wie Mail nur als Kennung; GitHub und ntfy gehen durch (bis KI.1). Das Protokoll nennt wie immer nur die Kennung des
+Eintrags, nie Titel, Text oder Merkmalswerte.
+
+¹⁸ **ntfy-Konten** (E5.12, [tasks/eingang.md › E5.12](tasks/eingang.md#e512-ntfy-konto-gerüst-requests-katalog)):
+`connect_ntfy` prüft Server (`/v1/health`) und Themen ohne Anmeldung und legt das Konto `ntfy:<host>` an
+(`auth`, wenn ein Thema eine Anmeldung braucht, `conflict` bei einem zweiten Konto desselben Servers); ein
+Client-Schlüssel öffnet wie bei `connect_github` nur die Steuerzentrale und bekommt `opened`. `set_ntfy_login`
+(Benutzer und Passwort oder Token `tk_…`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`, Punkt 5); die Anmeldung
+geht nur über `https` oder an diesen Rechner, sonst `error`, und liegt nur im Schlüsselbund. `set_ntfy_topic`
+abonniert, benennt um oder bestellt ab; die Freigabe nennt Server und Etikett. Themen-Namen sind auf öffentlichen
+Servern Passwörter: `list_accounts` zeigt sie nur dem App-Schlüssel (`AccountInfo.ntfy`), Clients sehen die
+Etiketten; Protokoll nur mit der Konto-Kennung.
+
+**Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
+keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als
+Merkmal einer Zeile da und verraten trotzdem, wer dem Menschen schreibt und wie oft; darum gelten für
+die Statistik dieselben Rechte wie für die Einträge selbst, und nichts davon kommt ins Protokoll (dort
+steht nur der Befehl). Summen je Quelle bleiben 13 Monate, Zeilen je Merkmal 90 Tage; wird ein
+Mail-Konto oder ein Client entfernt, gehen seine Zeilen mit (die Quelle eines Agenten erst, wenn kein
+anderer Client mehr für ihn meldet).
 
 `set_collection_shown { collection, shown }` ersetzt das Umschalten über `update_settings` in
 Accounts. Es ist `Admin`, weil ausgeblendete Sammlungen auch für Agenten unsichtbar sind: Wer eine
@@ -391,7 +598,7 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Ein Agent soll den Dienst nicht abschalten können, der ihn prüft und protokolliert.
 5. **Geheimnisse entgegennehmen oder übertragen** (Token einfügen `accounts.set_github_token`,
    Anmeldung mit Passwort `accounts.connect_caldav` und `accounts.connect_mail`, API-Schlüssel eines
-   KI-Kontos `accounts.connect_ai`, Import aus einem fremden
+   KI-Kontos `accounts.connect_ai`, Anmeldung bei ntfy `accounts.set_ntfy_login`, Import aus einem fremden
    Schlüsselbund): nur mit
    dem App-Schlüssel, also nur aus der Oberfläche. Ein Agent nimmt nie ein Passwort entgegen und
    reicht es weiter. Durchgesetzt in `Rights::allows` (auch ein Script-Schlüssel mit Admin-Rechten

@@ -54,7 +54,7 @@ pub struct Design {
     pub about: About,
     /// The (up to) three font families.
     pub fonts: Fonts,
-    /// The eight text levels (`torro_gui::typo`).
+    /// The nine text levels (`torro_gui::typo`).
     pub typo: TypeScale,
     /// The spacing scale (`torro_gui::theme::space`).
     pub space: Space,
@@ -200,7 +200,7 @@ pub struct Level {
     pub line: f32,
 }
 
-/// The eight text levels, named as in `torro_gui::typo` (lowercase).
+/// The nine text levels, named as in `torro_gui::typo` (lowercase).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TypeScale {
     /// Time axis, times in events, weekday letters. Uses `numbers` in the standard.
@@ -213,6 +213,9 @@ pub struct TypeScale {
     pub body: Level,
     /// Header and row titles, event titles.
     pub body_strong: Level,
+    /// Reading text: the whole of a mail in the inbox's reader (task E8.2), a little larger and with
+    /// more line height than [`TypeScale::body`], because it is read for longer than a list.
+    pub read: Level,
     /// Card and dialog titles.
     pub title: Level,
     /// Detail titles, view titles without a header bar.
@@ -223,13 +226,14 @@ pub struct TypeScale {
 
 impl TypeScale {
     /// Every level with its key (`"body"`), smallest first.
-    pub fn levels(&self) -> [(&'static str, Level); 8] {
+    pub fn levels(&self) -> [(&'static str, Level); 9] {
         [
             ("micro", self.micro),
             ("caption", self.caption),
             ("meta", self.meta),
             ("body", self.body),
             ("body_strong", self.body_strong),
+            ("read", self.read),
             ("title", self.title),
             ("headline", self.headline),
             ("display", self.display),
@@ -246,6 +250,7 @@ impl TypeScale {
             "meta" => &mut self.meta,
             "body" => &mut self.body,
             "body_strong" => &mut self.body_strong,
+            "read" => &mut self.read,
             "title" => &mut self.title,
             "headline" => &mut self.headline,
             "display" => &mut self.display,
@@ -332,11 +337,25 @@ pub struct Size {
     pub axis_narrow: f32,
     pub content_max: f32,
     pub form_max: f32,
+    /// The gap between two cards and between the parts of one card (task E8.2,
+    /// `torro_gui::widgets::card`): the comfortable density of the inbox.
+    pub card_gap: f32,
+    /// The avatar of a card (task E8.2): a sender's initials beside a mail card.
+    pub avatar: f32,
+    /// The large avatar (task E8.2): the sender at the head of the mail reader.
+    pub avatar_lg: f32,
+    /// The small source tile (task E8.2, `torro_gui::widgets::source_tile`): beside a word, in a
+    /// compact row or a menu.
+    pub tile_sm: f32,
+    /// The source tile of a notice row and of a column head (task E8.2).
+    pub tile: f32,
+    /// The large source tile (task E8.2): an attachment, the head of a card that stands for an app.
+    pub tile_lg: f32,
 }
 
 impl Size {
     /// Every size with its key (`"row"`), for checks and error messages.
-    pub fn entries(&self) -> [(&'static str, f32); 20] {
+    pub fn entries(&self) -> [(&'static str, f32); 26] {
         [
             ("control_sm", self.control_sm),
             ("control", self.control),
@@ -358,6 +377,12 @@ impl Size {
             ("axis_narrow", self.axis_narrow),
             ("content_max", self.content_max),
             ("form_max", self.form_max),
+            ("card_gap", self.card_gap),
+            ("avatar", self.avatar),
+            ("avatar_lg", self.avatar_lg),
+            ("tile_sm", self.tile_sm),
+            ("tile", self.tile),
+            ("tile_lg", self.tile_lg),
         ]
     }
 
@@ -383,6 +408,12 @@ impl Size {
             "axis_narrow" => &mut self.axis_narrow,
             "content_max" => &mut self.content_max,
             "form_max" => &mut self.form_max,
+            "card_gap" => &mut self.card_gap,
+            "avatar" => &mut self.avatar,
+            "avatar_lg" => &mut self.avatar_lg,
+            "tile_sm" => &mut self.tile_sm,
+            "tile" => &mut self.tile,
+            "tile_lg" => &mut self.tile_lg,
             _ => return None,
         })
     }
@@ -450,6 +481,13 @@ pub struct Palette {
     pub calendar: [Rgba; 5],
     /// Opacity of a calendar colour used as a surface, 0–1.
     pub tint: f32,
+    /// The colours of chart series (task E8.8b, "Insights"), in their fixed order: blue, orange,
+    /// green, magenta. Picked and checked as a set for colour blindness in this order (adjacent
+    /// pairs, the dataviz validator), so a chart gives them to its series in this order and never
+    /// cycles; a fifth series goes to [`Palette::chart_other`]. Never the accent or a status colour.
+    pub chart: [Rgba; 4],
+    /// The grey of the series "Other" in a chart: what is not one of the [`Palette::chart`] series.
+    pub chart_other: Rgba,
     /// The colour of the shadow under menus, cards and dialogs; offset (0, 12) and blur 32 stay
     /// fixed in `torro_gui` (geometry, not colour).
     pub shadow: Rgba,
@@ -545,7 +583,7 @@ impl Palette {
         }
     }
 
-    /// The colour field named `key` (not `calendar`, `tint`), for reading packs.
+    /// The colour field named `key` (not `calendar`, `chart`, `tint`), for reading packs.
     pub(crate) fn slot_mut(&mut self, key: &str) -> Option<&mut Rgba> {
         Some(match key {
             "bg" => &mut self.bg,
@@ -568,6 +606,7 @@ impl Palette {
             "error" => &mut self.error,
             "inactive" => &mut self.inactive,
             "merged" => &mut self.merged,
+            "chart_other" => &mut self.chart_other,
             "shadow" => &mut self.shadow,
             "scrim" => &mut self.scrim,
             "night" => &mut self.night,
@@ -698,6 +737,7 @@ impl Design {
                 meta: level(FontRole::Text, Weight::Regular, 12.0, 16.0),
                 body: level(FontRole::Text, Weight::Regular, 13.0, 20.0),
                 body_strong: level(FontRole::Text, Weight::Medium, 13.0, 20.0),
+                read: level(FontRole::Text, Weight::Regular, 14.0, 22.0),
                 title: level(FontRole::Heading, Weight::Semibold, 16.0, 22.0),
                 headline: level(FontRole::Heading, Weight::Semibold, 22.0, 28.0),
                 display: level(FontRole::Text, Weight::Semibold, 28.0, 32.0),
@@ -748,6 +788,12 @@ pub(crate) const STANDARD_SIZE: Size = Size {
     axis_narrow: 44.0,
     content_max: 720.0,
     form_max: 640.0,
+    card_gap: 12.0,
+    avatar: 36.0,
+    avatar_lg: 40.0,
+    tile_sm: 20.0,
+    tile: 28.0,
+    tile_lg: 36.0,
 };
 
 const STANDARD_DARK: Palette = Palette {
@@ -773,6 +819,10 @@ const STANDARD_DARK: Palette = Palette {
     merged: Rgba::hex(0xA78BFA),
     calendar: [Rgba::hex(0x5B8CFF), Rgba::hex(0x3FB984), Rgba::hex(0xE8A33D), Rgba::hex(0xD96CA8), Rgba::hex(0xA78BFA)],
     tint: 0.18,
+    // Checked with the dataviz validator against `panel` (task E8.8b): lightness band, chroma, CVD
+    // ΔE ≥ 8 for every adjacent pair, ≥ 3:1. "Other" is ΔE ≥ 8 from each of the four.
+    chart: [Rgba::hex(0x3B78D8), Rgba::hex(0xC9701E), Rgba::hex(0x2E9E6B), Rgba::hex(0xB5509A)],
+    chart_other: Rgba::hex(0x5C6068),
     shadow: Rgba::black(0.5),
     scrim: Rgba::black(0.62),
     night: Rgba::hex(0x121626),
@@ -808,6 +858,9 @@ const STANDARD_LIGHT: Palette = Palette {
     merged: Rgba::hex(0x7C5CE6),
     calendar: [Rgba::hex(0x3B6EF0), Rgba::hex(0x1F9D68), Rgba::hex(0xB06F12), Rgba::hex(0xC2508F), Rgba::hex(0x7C5CE6)],
     tint: 0.14,
+    // The same hues stepped for the light panel, checked the same way (task E8.8b).
+    chart: [Rgba::hex(0x2F6BC9), Rgba::hex(0xB8621A), Rgba::hex(0x2A9466), Rgba::hex(0xA8448C)],
+    chart_other: Rgba::hex(0x50545B),
     shadow: Rgba::black(0.12),
     scrim: Rgba::black(0.3),
     night: Rgba::hex(0xE3E7F1),
@@ -889,7 +942,33 @@ mod tests {
         assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 10.0, 8.0]);
         assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [40.0, 232.0, 720.0]);
         assert_eq!([d.size.row_message, d.size.row_notice], [88.0, 64.0], "the inbox's rows (task E3.9)");
+        // The comfortable density of the inbox (task E8.2).
+        assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 14.0, line: 22.0 });
+        assert_eq!([d.size.card_gap, d.size.avatar, d.size.avatar_lg], [12.0, 36.0, 40.0]);
+        assert_eq!([d.size.tile_sm, d.size.tile, d.size.tile_lg], [20.0, 28.0, 36.0]);
         assert_eq!(d.logo, Logo::default());
+        // The chart colours as the dataviz validator checked them (task E8.8b).
+        assert_eq!(d.colors.dark.chart.map(hex), [0x3B78D8, 0xC9701E, 0x2E9E6B, 0xB5509A]);
+        assert_eq!(d.colors.light.chart.map(hex), [0x2F6BC9, 0xB8621A, 0x2A9466, 0xA8448C]);
+        assert_eq!((hex(d.colors.dark.chart_other), hex(d.colors.light.chart_other)), (0x5C6068, 0x50545B));
+    }
+
+    /// `colour` as `0xRRGGBB`.
+    fn hex(colour: Rgba) -> u32 {
+        let byte = |channel: f32| (channel * 255.0).round() as u32;
+        byte(colour.r) << 16 | byte(colour.g) << 8 | byte(colour.b)
+    }
+
+    /// Task E8.8b: chart colours are never the accent or a status colour, in either mode.
+    #[test]
+    fn chart_colours_are_neither_accent_nor_status() {
+        let d = Design::standard();
+        for p in [d.colors.dark, d.colors.light] {
+            let reserved = [p.accent, p.ok, p.attention, p.error, p.inactive, p.merged];
+            for colour in p.chart.iter().chain([&p.chart_other]) {
+                assert!(!reserved.contains(colour), "{colour:?}");
+            }
+        }
     }
 
     #[test]

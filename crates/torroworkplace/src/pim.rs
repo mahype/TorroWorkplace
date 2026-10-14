@@ -298,6 +298,7 @@ impl Slot {
             collections: self.collections.clone(),
             scopes: None,
             mail: None,
+            ntfy: None,
         }
     }
 }
@@ -703,6 +704,32 @@ impl TokenStore for NoKeychain {
     }
 }
 
+/// How the inbox's Nextcloud sources reach one account's server ([`PimService::nextcloud_access`],
+/// tasks E5.8, E5.9).
+#[derive(Clone)]
+pub struct NextcloudAccess {
+    /// The OCS client: the account's server, login name and app password (never shown by `Debug`).
+    pub client: torro_nextcloud::Nextcloud,
+    /// Which sign-in `client` speaks with: the SHA-256 of the app password, so it changes with
+    /// every new sign-in. A source that the server refused (401) waits until this differs instead
+    /// of asking again with the same password (Nextcloud's brute-force protection would hit the
+    /// person). Kept in memory, never logged.
+    pub sign_in: [u8; 32],
+}
+
+impl fmt::Debug for NextcloudAccess {
+    /// Without [`NextcloudAccess::sign_in`]: it is derived from the app password.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NextcloudAccess").field("client", &self.client).finish_non_exhaustive()
+    }
+}
+
+/// [`NextcloudAccess::sign_in`] of `app_password`.
+fn sign_in_of(app_password: &Secret) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(app_password.expose().as_bytes()).into()
+}
+
 /// See the module docs.
 #[derive(Debug)]
 pub struct PimService {
@@ -881,23 +908,7 @@ impl PimService {
                     Err(failed) => self.failed(failed).await,
                 }
             }
-            Request::Todos => {
-                let lists = ids(self.seen(reach, Role::TaskList).await);
-                let state = self.state.read().await;
-                // Links come with what GitHub reports, for whom may see it (task G.6).
-                let mut todos: Vec<Todo> = state
-                    .accounts
-                    .iter()
-                    .flat_map(|slot| &slot.todos)
-                    .filter(|t| lists.contains(&t.collection))
-                    .map(|todo| reach.with_details(todo.clone(), &state.links))
-                    .collect();
-                // Filter lists: every item checked against the client's repositories first.
-                let filters = state.filters.iter().flat_map(|slot| &slot.lists);
-                let seen = filters.filter(|list| lists.contains(&list.collection.id));
-                todos.extend(seen.flat_map(|list| &list.todos).filter_map(|todo| reach.todo_for(todo)));
-                Response::Todos { todos }
-            }
+            Request::Todos => Response::Todos { todos: self.todos_within(reach).await },
             // The core hands in the account's token (`crate::core`); without it GitHub cannot be asked.
             Request::SaveTodo { todo } if self.is_filter_list(&todo.collection).await => {
                 self.save_filter_todo(todo, None, reach).await
@@ -927,6 +938,34 @@ impl PimService {
             },
             _ => error("error", "not a calendar or task request".into()),
         }
+    }
+
+    /// The tasks of every task list `reach` sees, as `tasks.list_todos` answers them: links with
+    /// what GitHub reports for whom may see it (task G.6), the items of filter lists checked
+    /// against a client's repositories first. Mail details ([`Link::mail`]) are the core's to add
+    /// (task E8.7a); here they are always left out, also when a client sent them along.
+    pub async fn todos_within(&self, reach: Reach<'_>) -> Vec<Todo> {
+        let lists = ids(self.seen(reach, Role::TaskList).await);
+        let state = self.state.read().await;
+        let mut todos: Vec<Todo> = state
+            .accounts
+            .iter()
+            .flat_map(|slot| &slot.todos)
+            .filter(|t| lists.contains(&t.collection))
+            .map(|todo| reach.with_details(todo.clone(), &state.links))
+            .collect();
+        let filters = state.filters.iter().flat_map(|slot| &slot.lists);
+        let seen = filters.filter(|list| lists.contains(&list.collection.id));
+        todos.extend(seen.flat_map(|list| &list.todos).filter_map(|todo| reach.todo_for(todo)));
+        for link in todos.iter_mut().filter_map(|todo| todo.link.as_mut()) {
+            link.mail = None;
+        }
+        todos
+    }
+
+    /// The task lists `reach` sees, as `tasks.list_lists` answers them.
+    pub async fn task_lists_within(&self, reach: Reach<'_>) -> Vec<Collection> {
+        self.seen(reach, Role::TaskList).await
     }
 
     /// The cached collections of all accounts that `reach` sees as `role`.
@@ -964,6 +1003,14 @@ impl PimService {
             Request::SaveTodo { todo } if self.links_elsewhere(reach, todo).await => {
                 return todo.link.as_ref().map(|link| link.id.clone());
             }
+            // A mail link set or changed to an account the client may not read (task E8.7a): the
+            // suite reports a finished task of a mail that waits, so a client could otherwise make
+            // it speak of mail it never saw.
+            Request::SaveTodo { todo } if self.links_unread_mail(reach, todo).await => {
+                return todo.link.as_ref().and_then(Link::mail_ref).map(|(account, _)| account.to_string());
+            }
+            // The list as `tasks.save_todo` checks it; the mail by account in the core (task E8.7a).
+            Request::CreateTodoFromMail { collection, .. } => (Role::TaskList, collection, None),
             Request::SaveTodo { todo } | Request::DeleteTodo { todo } => {
                 (Role::TaskList, &todo.collection, todo.href.as_deref())
             }
@@ -1053,8 +1100,11 @@ impl PimService {
             | Request::DecideApproval { .. }
             | Request::AskPermission { .. } => return None,
             // The core checks the task list itself, before the entry and before anything else
-            // (`Core::task_target_refusal`, task E3.5).
-            Request::CreateTaskFromItem { .. } => return None,
+            // (`Core::task_target_refusal`, task E3.5), and the calendar of an event alike
+            // (`Core::event_refusal`, task E8.5b), and the calendar of an answered invitation (E8.3b).
+            Request::CreateTaskFromItem { .. }
+            | Request::CreateEventFromItem { .. }
+            | Request::RespondToInvitation { .. } => return None,
             // No collection: the inbox filters by the client's sources itself (task E1.2).
             Request::ListItems { .. }
             | Request::GetItem { .. }
@@ -1067,8 +1117,12 @@ impl PimService {
             | Request::SetItemLane { .. }
             | Request::MuteSource { .. }
             | Request::HideSender { .. }
+            | Request::ListMuteOptions { .. }
+            | Request::MuteItem { .. }
             | Request::ListRules
-            | Request::RemoveRule { .. } => return None,
+            | Request::RemoveRule { .. }
+            | Request::GetStats { .. }
+            | Request::GetQuiet => return None,
             // No collection: mail is checked by account in the core (`Rights::mail_accounts`,
             // task M2.1).
             Request::ConnectMail { .. }
@@ -1087,6 +1141,8 @@ impl PimService {
             | Request::SendDraft { .. } => return None,
             // No collection: AI accounts have none (task KI.1a).
             Request::ConnectAi { .. } | Request::AiModels { .. } | Request::FindAiServers => return None,
+            // No collection: ntfy accounts have topics only (task E5.12).
+            Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } | Request::SetNtfyTopic { .. } => return None,
             // No collection: the assistant's conversations are its own (task C.1).
             Request::ListEngines
             | Request::ListConversations
@@ -1145,6 +1201,12 @@ impl PimService {
         self.seen(reach, Role::TaskList).await.iter().any(|list| list.id == id)
     }
 
+    /// `id` is a calendar that `reach` sees: shown, in the selection and holding events (task
+    /// E8.5b). What a client may not see behaves as if it did not exist.
+    pub async fn sees_calendar(&self, reach: Reach<'_>, id: &str) -> bool {
+        self.seen(reach, Role::Calendar).await.iter().any(|calendar| calendar.id == id)
+    }
+
     /// `id` is a calendar or a task list that `reach` sees ([`PimService::sees_task_list`], and
     /// the same for calendars): shown, in the selection of its kind and, for a filter list, inside
     /// the client's repositories. For `settings.set_collection_shown` from a client.
@@ -1173,6 +1235,19 @@ impl PimService {
     #[cfg(test)]
     pub async fn cache_events(&self, events: Vec<Event>) {
         if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.events = events;
+        }
+    }
+
+    /// [`PimService::cache_events`] with a cache that covers the days around now (with the margin
+    /// of [`covers`]), so that `calendar.list_events` answers from it, for the core's tests of quiet
+    /// (task E8.5b). The account needs a CalDAV client ([`tests::fake_caldav`]), as every account
+    /// that is read.
+    #[cfg(test)]
+    pub async fn cache_events_of_today(&self, events: Vec<Event>) {
+        let now = Utc::now();
+        if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.window = Some((now - Span::days(2), now + Span::days(2)));
             slot.events = events;
         }
     }
@@ -1210,6 +1285,32 @@ impl PimService {
             }
         }
         accounts
+    }
+
+    /// The ids of the Nextcloud accounts (kind `nextcloud`; neither CalDAV nor mail accounts), in
+    /// the order of `accounts.json`, also those without their app password. For the inbox's
+    /// Nextcloud sources (tasks E5.8, E5.9, `crate::sources`): one source per id. Empty until the
+    /// stored accounts are loaded ([`PimService::start`]).
+    pub async fn nextcloud_accounts(&self) -> Vec<String> {
+        let state = self.state.read().await;
+        state.accounts.iter().filter(|slot| slot.is_nextcloud()).map(|slot| slot.id().to_string()).collect()
+    }
+
+    /// What the inbox's Nextcloud sources need to ask the server of account `id` over OCS (tasks
+    /// E5.8, E5.9), like [`crate::account::github::GithubAccounts::api`] for GitHub: a client with
+    /// the account's server, login name and app password, which stays inside it and the core.
+    /// `None` for an unknown id, an account of another kind, one without its app password (it
+    /// needs a new sign-in) or a server address the client refuses.
+    pub async fn nextcloud_access(&self, id: &str) -> Option<NextcloudAccess> {
+        let state = self.state.read().await;
+        let slot = state.slot(id).filter(|slot| slot.is_nextcloud())?;
+        let Connected { account, app_password } = &slot.connected;
+        if app_password.is_blank() {
+            return None;
+        }
+        let client =
+            torro_nextcloud::Nextcloud::new(&account.server, &account.login_name, app_password.clone()).ok()?;
+        Some(NextcloudAccess { client, sign_in: sign_in_of(app_password) })
     }
 
     /// Removes the account `id` and nothing else: revokes its app password on the server (best
@@ -2958,6 +3059,20 @@ impl PimService {
         new_link(&*self.state.read().await, todo).is_some_and(|issue| !reach.reaches_repo(&issue.repo))
     }
 
+    /// For a client: `todo` sets or changes a mail link (`mail:<address>:<Message-ID>`, task E8.7a)
+    /// to an account it may not read (read access to `mail` and the account in its
+    /// `mail_accounts`). Keeping the link it read (the cached task at its `href` has the same id)
+    /// is fine, so a client may still tick a task a person made of a mail.
+    async fn links_unread_mail(&self, reach: Reach<'_>, todo: &Todo) -> bool {
+        let Reach::Client(rights) = reach else { return false };
+        let Some((account, _)) = todo.link.as_ref().and_then(Link::mail_ref) else { return false };
+        let state = self.state.read().await;
+        let held = todo.href.as_deref().and_then(|href| cached_todo(&state, href)).and_then(|held| held.link.as_ref());
+        let kept = held.zip(todo.link.as_ref()).is_some_and(|(held, sent)| held.id == sent.id);
+        let reads = rights.area(Area::Mail).allows(Access::Read) && rights.reaches_mail_account(account);
+        !(kept || reads)
+    }
+
     /// For a client: why it may not save `todo` – `forbidden` ([`NO_GITHUB_LINK`]) when it sets or
     /// changes a link ([`new_link`]) without read access to `github`. Refreshing that link would
     /// write the item's title and state from GitHub into the task, where the client reads it,
@@ -3284,6 +3399,7 @@ fn account_infos(state: &State) -> Vec<AccountInfo> {
             collections: Vec::new(),
             scopes: None,
             mail: None,
+            ntfy: None,
         });
     }
     infos
@@ -3823,6 +3939,7 @@ pub(crate) mod tests {
                 collections: vec![],
                 scopes: None,
                 mail: None,
+                ntfy: None,
             }
         );
     }
@@ -3851,6 +3968,7 @@ pub(crate) mod tests {
                 collections: vec![collection(&cal("work")), collection(&cal("home"))],
                 scopes: None,
                 mail: None,
+                ntfy: None,
             }]
         );
     }

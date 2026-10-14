@@ -113,6 +113,9 @@ pub const DARK: Palette = Palette {
     merged: hex(0xA78BFA),
     calendar: [hex(0x5B8CFF), hex(0x3FB984), hex(0xE8A33D), hex(0xD96CA8), hex(0xA78BFA)],
     tint: 0.18,
+    // New with E8.8b, nothing drew charts before: the standard's chart colours.
+    chart: [hex(0x3B78D8), hex(0xC9701E), hex(0x2E9E6B), hex(0xB5509A)],
+    chart_other: hex(0x5C6068),
     shadow: shadow(0.5),
     scrim: black(0.62),
     night: hex(0x121626),
@@ -151,6 +154,9 @@ pub const LIGHT: Palette = Palette {
     merged: hex(0x7C5CE6),
     calendar: [hex(0x3B6EF0), hex(0x1F9D68), hex(0xB06F12), hex(0xC2508F), hex(0x7C5CE6)],
     tint: 0.14,
+    // New with E8.8b, as in the dark palette.
+    chart: [hex(0x2F6BC9), hex(0xB8621A), hex(0x2A9466), hex(0xA8448C)],
+    chart_other: hex(0x50545B),
     shadow: shadow(0.12),
     scrim: black(0.3),
     night: hex(0xE3E7F1),

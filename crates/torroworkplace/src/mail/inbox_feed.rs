@@ -13,7 +13,15 @@
 //! - **Done in the inbox** ([`mark_read`]): after `inbox.set_item_done` or
 //!   `inbox.create_task_from_item` marked a mail entry done, the core hands it here and its mail is
 //!   marked read on the server (`\Seen`), never moved or archived (decision 6 in
-//!   `docs/eingang.md`). The inbox checked before that the caller may write mail.
+//!   `docs/eingang.md`). The same for the GitHub mail filed with a GitHub entry (task E5.6). The
+//!   inbox checked before that the caller may write mail (and those accounts).
+//! - **GitHub mail** (task E5.6, [`github_thread`]): a mail is one about a GitHub issue or pull
+//!   request only when `From` is `notifications@github.com` with `X-GitHub-Reason`, `List-Id` names
+//!   the repository (`<repo.owner.github.com>`) and the `Message-ID` the same repository and the
+//!   number (`<owner/repo/pull/<n>…@github.com>`, `/issues/<n>`). `In-Reply-To` is not looked at:
+//!   the store does not keep it, and every GitHub mail names its item in its own `Message-ID`.
+//!   Anything that does not agree is an ordinary mail. The inbox then files it with the item's
+//!   GitHub entry (`Inbox::file_mail`).
 //! - **Missed changes** (the feed fell behind the service, `RecvError::Lagged`): every account is
 //!   looked at anew ([`Feed::catch_up`]): unread mail of the last [`FIRST_SYNC_DAYS`] days is filed
 //!   (a message filed before is never filed twice) and every open entry is checked.
@@ -21,6 +29,11 @@
 //!   accounts the service no longer syncs are done ([`Feed::retire`]); nothing could mark their
 //!   mail read any more. Kept here rather than where accounts change, so the core's account
 //!   commands need not know the inbox.
+//! - **Tasks made of mail** (task E8.7a): a task keeps its mail as `mail:<address>:<Message-ID>`;
+//!   [`mail_for_task`], [`linked_mail`], [`linked_details`], [`mails_of`] and [`conversation_of`]
+//!   find the mail again by its Message-ID in whatever folder it is, and [`from_mail_line`] names it
+//!   in the task's description. They read the store of the account named, whoever asks: the core
+//!   checks the caller's rights before.
 //!
 //! Rights are not checked here: the feed files for the person, and the inbox shows a client a
 //! mail entry only as its rights allow (`crate::inbox`). Mail is data from outside: entries are
@@ -33,8 +46,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
+use torro_core::i18n::{tr, trf};
 use torro_inbox::{Item, Sender, SourceKind, State};
 use torro_mail::{Flag, MailAddress, MessageTraits, Notify, Role};
+use torro_pim_github::IssueRef;
 
 use super::MailStoreError;
 use super::service::{MailChange, MailError, MailService, SharedStore};
@@ -60,6 +75,49 @@ pub fn is_bulk(traits: &MessageTraits) -> bool {
     traits.list_id.is_some() || traits.list_unsubscribe || precedence || automatic
 }
 
+/// The sender of every mail GitHub sends about notifications.
+const GITHUB_SENDER: &str = "notifications@github.com";
+
+/// The GitHub issue or pull request a mail is about (task E5.6), from `from` (`From:`), its
+/// `traits` and `message_id` (`Message-ID:`, with or without angle brackets): only when all three
+/// agree, as the module docs say, else `None` – an ordinary mail. The repository is written as the
+/// `Message-ID` has it. Pure: nothing is looked up, nothing logged. Headers come from outside, so
+/// this decides nothing but which GitHub entry the mail may join (`Inbox::file_mail`).
+pub fn github_thread(from: Option<&MailAddress>, traits: &MessageTraits, message_id: Option<&str>) -> Option<IssueRef> {
+    if !from?.address.trim().eq_ignore_ascii_case(GITHUB_SENDER) || traits.github.is_none() {
+        return None;
+    }
+    // `List-Id: owner/repo <repo.owner.github.com>`; an owner holds no dot, a repository may.
+    let list = traits.list_id.as_deref()?;
+    let list = list.rsplit_once('<').and_then(|(_, rest)| rest.trim().strip_suffix('>'))?;
+    let host = list.trim().to_ascii_lowercase();
+    let (name, owner) = host.strip_suffix(".github.com")?.rsplit_once('.')?;
+    // `Message-ID: <owner/repo/pull/42/…@github.com>`.
+    let id = message_id?.trim();
+    let id = id.strip_prefix('<').unwrap_or(id);
+    let id = id.strip_suffix('>').unwrap_or(id);
+    let (path, domain) = id.rsplit_once('@')?;
+    if !domain.eq_ignore_ascii_case("github.com") {
+        return None;
+    }
+    let mut parts = path.split('/');
+    let (id_owner, id_name, page, number) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    let agrees = id_owner.eq_ignore_ascii_case(owner) && id_name.eq_ignore_ascii_case(name);
+    let digits = !number.is_empty() && number.len() <= 12 && number.bytes().all(|byte| byte.is_ascii_digit());
+    if !(agrees && name_part(id_owner) && name_part(id_name) && matches!(page, "pull" | "issues") && digits) {
+        return None;
+    }
+    let number: u64 = number.parse().ok().filter(|number| *number > 0)?;
+    Some(IssueRef { repo: format!("{id_owner}/{id_name}"), number })
+}
+
+/// An owner or repository name as GitHub allows it: ASCII letters, digits, `-`, `_` and `.`.
+fn name_part(part: &str) -> bool {
+    !part.is_empty()
+        && part.len() <= 100
+        && part.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
 /// Starts the feed of `mail` into `inbox`: listens to the mail service from now on, so call it
 /// before the service syncs ([`MailService::start`]), and works through its changes in a task of
 /// its own. `accounts_file` is `accounts.json`, where each account's `notify` is read when its mail
@@ -70,33 +128,40 @@ pub fn start(inbox: Arc<Inbox>, mail: Arc<MailService>, accounts_file: Option<Pa
 }
 
 /// Marks the mail of `item` read on its server, in the background, when `item` is a mail entry
-/// the inbox just marked done (task E4.1); any other entry is left alone. The core calls it with
-/// the entry `inbox.set_item_done` or `inbox.create_task_from_item` answered with, after the inbox
-/// checked the caller's write access to mail.
+/// the inbox just marked done (task E4.1), or a done GitHub entry with GitHub mail filed with it
+/// (task E5.6, in each of its accounts); any other entry is left alone. The core calls it with the
+/// entry `inbox.set_item_done` or `inbox.create_task_from_item` answered with, after the inbox
+/// checked the caller's write access to mail (and to those accounts).
 ///
 /// The entry's messages are read at once, so mail that arrives in the conversation meanwhile
 /// stays unread. Messages read already or gone are left as they are; failures go to the log (the
-/// entry stays done, the mail unread).
+/// entry stays done, the mail unread), with the account and a code only.
 pub fn mark_read(inbox: &Inbox, mail: &Arc<MailService>, item: &Item) {
-    if item.source.kind != SourceKind::Mail || !matches!(item.state, State::Done { .. }) {
+    let holds_mail = matches!(item.source.kind, SourceKind::Mail | SourceKind::Github);
+    if !holds_mail || !matches!(item.state, State::Done { .. }) {
         return;
     }
-    let account = item.source.key();
-    let messages = match inbox.mail_messages(&item.id) {
-        Ok(messages) if !messages.is_empty() => messages,
+    let by_account = match inbox.mail_by_account(&item.id) {
+        Ok(by_account) if !by_account.is_empty() => by_account,
         Ok(_) => return,
         Err(err) => {
-            eprintln!("torroworkplace: inbox: cannot read the mail of a done entry of {account}: {err}");
+            let source = item.source.key();
+            eprintln!("torroworkplace: inbox: cannot read the mail of a done entry of {source}: {err}");
             return;
         }
     };
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
-    let mail = Arc::clone(mail);
-    runtime.spawn(async move {
-        if let Err(err) = set_seen(&mail, &account, messages).await {
-            eprintln!("torroworkplace: inbox: cannot mark the mail of a done entry of {account} read: {}", err.code());
-        }
-    });
+    for (account, messages) in by_account {
+        let mail = Arc::clone(mail);
+        runtime.spawn(async move {
+            if let Err(err) = set_seen(&mail, &account, messages).await {
+                eprintln!(
+                    "torroworkplace: inbox: cannot mark the mail of a done entry of {account} read: {}",
+                    err.code()
+                );
+            }
+        });
+    }
 }
 
 /// Sets `\Seen` on the server for those of `messages` (`m:…` of `account`) that are unread, and
@@ -151,6 +216,135 @@ pub(crate) async fn set_seen(mail: &MailService, account: &str, messages: Vec<St
         })
         .await?;
     Ok(count)
+}
+
+// ----- tasks made of mail (task E8.7a) -----
+//
+// A task keeps its mail as `mail:<address>:<Message-ID>` (`torro_pim::model::Link::mail`). These
+// look the mail up again in the account's store by its Message-ID, so a mail moved to another
+// folder is still found. Rights are the caller's to check: they read with the store of `account`
+// alone, whoever asks.
+
+/// A mail as a task is made of it ([`mail_for_task`]): its summary, the start of its text and its
+/// `Message-ID` header, `None` when it has none (it cannot be linked then).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailForTask {
+    pub summary: torro_mail::MessageSummary,
+    pub rfc_message_id: Option<String>,
+}
+
+/// The mail `id` (`m:…`) of `account` as a task is made of it. [`MailError::NotFound`] for an
+/// account without mail on, or a mail its store does not hold.
+pub async fn mail_for_task(mail: &MailService, account: &str, id: &str) -> Result<MailForTask, MailError> {
+    let store = mail.store(account).await?;
+    let id = id.to_string();
+    let found = store
+        .run(move |store| {
+            let Some(summary) = store.summary(&id)? else { return Ok(None) };
+            let rfc_message_id = store.resolve_message(&id)?.and_then(|found| found.rfc_message_id);
+            Ok(Some(MailForTask { summary, rfc_message_id }))
+        })
+        .await
+        .map_err(MailError::Store)?;
+    found.ok_or(MailError::NotFound)
+}
+
+/// The newest mail of `account` with the `Message-ID` `message_id` (any folder), `None` when its
+/// store holds none, the account has no mail on or the store fails (that goes to the log, without
+/// the id).
+pub async fn linked_mail(mail: &MailService, account: &str, message_id: &str) -> Option<torro_mail::MessageSummary> {
+    let store = mail.store(account).await.ok()?;
+    let rfc = torro_pim::model::bare_message_id(message_id).to_string();
+    match store.run(move |store| store.messages_by_rfc_id(&rfc)).await {
+        Ok(found) => found.into_iter().next(),
+        Err(err) => {
+            eprintln!("torroworkplace: inbox: cannot look up the mail of a task in {account}: {err}");
+            None
+        }
+    }
+}
+
+/// What a task's link shows of its mail ([`torro_pim::model::MailDetails`]): subject, sender and
+/// date of the newest copy with `message_id`, and the replies after it that are not the
+/// account's own. `None` as for [`linked_mail`].
+pub async fn linked_details(
+    mail: &MailService,
+    account: &str,
+    message_id: &str,
+) -> Option<torro_pim::model::MailDetails> {
+    let found = linked_mail(mail, account, message_id).await?;
+    let store = mail.store(account).await.ok()?;
+    let own = account.strip_prefix(torro_mail::ACCOUNT_PREFIX).unwrap_or(account).to_string();
+    let (thread, date) = (found.thread_id.clone(), found.date);
+    let new_replies = store.run(move |store| store.replies_after(&thread, date, &own)).await.unwrap_or_default();
+    let sender = found.from.as_ref().map(|from| sender(from).name);
+    Some(torro_pim::model::MailDetails {
+        message: found.id,
+        subject: found.subject,
+        sender_address: found.from.map(|from| from.address),
+        sender,
+        date: found.date,
+        new_replies,
+        untrusted: true,
+    })
+}
+
+/// What a mail entry's mails (`messages`, `m:…` of `account`) are, to find the tasks made of them:
+/// their `Message-ID`s and their conversations (`thread_id`), as the store has them. A task linked
+/// to a mail of the same conversation belongs to the entry too, also after that mail was moved or
+/// deleted and the entry holds only a reply. Mails no longer held are left out, and so is
+/// everything when the store fails.
+pub async fn mails_of(mail: &MailService, account: &str, messages: Vec<String>) -> (Vec<String>, Vec<String>) {
+    let Ok(store) = mail.store(account).await else { return (Vec::new(), Vec::new()) };
+    let found = store
+        .run(move |store| {
+            let (mut ids, mut threads) = (Vec::new(), Vec::new());
+            for message in &messages {
+                ids.extend(store.resolve_message(message)?.and_then(|found| found.rfc_message_id));
+                threads.extend(store.summary(message)?.map(|summary| summary.thread_id));
+            }
+            Ok((ids, threads))
+        })
+        .await;
+    found.unwrap_or_default()
+}
+
+/// The ids (`m:…`) of every mail of the conversation of the mail with `message_id` in `account`,
+/// its copies included: what an entry holding that conversation holds. Empty when the store holds
+/// no such mail. `Err` only for an account without mail on ([`MailError::NotFound`]) or a store
+/// that failed, so a caller can tell "gone" from "unknown".
+pub async fn conversation_of(mail: &MailService, account: &str, message_id: &str) -> Result<Vec<String>, MailError> {
+    let store = mail.store(account).await?;
+    let rfc = torro_pim::model::bare_message_id(message_id).to_string();
+    let found = store
+        .run(move |store| {
+            let copies = store.messages_by_rfc_id(&rfc)?;
+            let mut ids: Vec<String> = copies.iter().map(|summary| summary.id.clone()).collect();
+            if let Some(newest) = copies.first() {
+                ids.extend(store.thread_newest(&newest.thread_id, THREAD_LOOKUP_MAX)?.into_iter().map(|m| m.id));
+            }
+            Ok(ids)
+        })
+        .await
+        .map_err(MailError::Store)?;
+    Ok(found)
+}
+
+/// At most this many mails of a conversation are looked at ([`conversation_of`]), the newest: a
+/// conversation a sender made up to be huge stays bounded.
+const THREAD_LOOKUP_MAX: u32 = 100;
+
+/// The readable line a task made of a mail ends its description with (task E8.7a): "From mail:
+/// Anna Keller, “Offer”, 13 Oct", so the mail is named also where `X-TORRO-LINK` means nothing
+/// (Nextcloud Tasks, other programs). Sender and subject are the mail's; the day in local time.
+pub fn from_mail_line(summary: &torro_mail::MessageSummary) -> String {
+    let who = summary.from.as_ref().map_or_else(|| tr("unknown sender").to_string(), |from| sender(from).name);
+    let subject = match summary.subject.trim() {
+        "" => tr("(no subject)").to_string(),
+        subject => subject.to_string(),
+    };
+    let day = torro_gui::datetime::format_day_month(summary.date.with_timezone(&chrono::Local).date_naive());
+    trf("From mail: {sender}, “{subject}”, {day}", &[("sender", &who), ("subject", &subject), ("day", &day)])
 }
 
 /// The feed: the inbox it files into, the mail service it listens to, and where the accounts'
@@ -361,6 +555,14 @@ fn unread_mail(
         if summary.folder != folder || summary.flags.contains(&Flag::Seen) || old {
             continue;
         }
+        // Only a mail with `X-GitHub-Reason` can be a GitHub mail: the others need no lookup.
+        let github = match &message.traits.github {
+            Some(_) => {
+                let rfc = store.resolve_message(id)?.and_then(|found| found.rfc_message_id);
+                github_thread(summary.from.as_ref(), &message.traits, rfc.as_deref())
+            }
+            None => None,
+        };
         mails.push(NewMail {
             account: account.to_string(),
             message: summary.id,
@@ -369,7 +571,9 @@ fn unread_mail(
             snippet: summary.snippet,
             from: summary.from.as_ref().map(sender),
             bulk: is_bulk(&message.traits),
+            list: message.traits.list_id.clone(),
             date: summary.date,
+            github,
         });
     }
     mails.sort_by_key(|mail| mail.date);
@@ -383,13 +587,15 @@ fn sender(from: &MailAddress) -> Sender {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
 
     use torro_inbox::{Kind, Lane, Link};
     use torro_ipc::{Request, Response};
     use torro_mail::MailSettings;
     use torro_pim::AccountState;
+
+    use torro_inbox::SourceRef;
 
     use super::*;
     use crate::account::github::tests::{MemoryTokens, accounts_file};
@@ -418,7 +624,7 @@ mod tests {
     }
 
     /// Anna's account on `server`, stored in `dir` with its password and `notify`.
-    fn anna(dir: &Path, server: &FakeImap, notify: Notify) -> MemoryTokens {
+    pub(crate) fn anna(dir: &Path, server: &FakeImap, notify: Notify) -> MemoryTokens {
         let secrets = MemoryTokens::default();
         let mut account = mail_account("anna@example.org", &server.endpoint);
         account.mail_settings = Some(MailSettings { notify, ..MailSettings::default() });
@@ -449,14 +655,99 @@ mod tests {
         items.iter().find(|item| item.title == title).unwrap_or_else(|| panic!("no entry {title:?} in {items:?}"))
     }
 
-    async fn synced(mail: &MailService) -> bool {
+    pub(crate) async fn synced(mail: &MailService) -> bool {
         let infos = mail.infos(Reach::Suite).await;
         !infos.is_empty()
             && infos.iter().all(|info| matches!(&info.state, AccountState::Connected { last_sync: Some(_), .. }))
     }
 
-    fn idling(server: &FakeImap) -> bool {
+    pub(crate) fn idling(server: &FakeImap) -> bool {
         server.lines().iter().any(|line| line.ends_with(" IDLE"))
+    }
+
+    /// A mail as GitHub sends it about `torro/workplace#42`, with `Message-ID` `message_id`,
+    /// `List-Id` `list` and the sender `from`, sent `minutes_ago` minutes ago.
+    pub(crate) fn github_letter(message_id: &str, list: &str, from: &str, minutes_ago: i64) -> String {
+        let date = (Utc::now() - TimeDelta::minutes(minutes_ago)).to_rfc2822();
+        format!(
+            "From: Bernd Beispiel <{from}>\r\nTo: torro/workplace <workplace@noreply.github.com>\r\n\
+             Subject: [torro/workplace] Add the inbox (PR #42)\r\nDate: {date}\r\nMessage-ID: <{message_id}>\r\n\
+             X-GitHub-Reason: review_requested\r\nList-ID: torro/workplace <{list}>\r\nPrecedence: list\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\n@bernd requested your review.\r\n"
+        )
+    }
+
+    /// The `List-Id` of `torro/workplace` and the `Message-ID` of a review request on its #42.
+    pub(crate) const GITHUB_LIST: &str = "workplace.torro.github.com";
+    pub(crate) const REVIEW_ID: &str = "torro/workplace/pull/42/issue_event/1234567@github.com";
+
+    #[test]
+    fn a_github_mail_is_one_only_when_sender_list_and_message_id_agree() {
+        let from = MailAddress { name: Some("Bernd".into()), address: "Notifications@GitHub.com".into() };
+        let traits = MessageTraits {
+            list_id: Some("torro/workplace <workplace.torro.github.com>".into()),
+            github: Some("review_requested".into()),
+            ..MessageTraits::default()
+        };
+        let thread = |from: &MailAddress, traits: &MessageTraits, id: &str| github_thread(Some(from), traits, Some(id));
+        let pr = IssueRef { repo: "torro/workplace".into(), number: 42 };
+        assert_eq!(thread(&from, &traits, REVIEW_ID), Some(pr.clone()));
+        assert_eq!(thread(&from, &traits, "<torro/workplace/pull/42@github.com>"), Some(pr), "in angle brackets");
+        let issue = thread(&from, &traits, "Torro/Workplace/issues/7/987654@github.com").expect("an issue");
+        assert_eq!((issue.repo.as_str(), issue.number), ("Torro/Workplace", 7), "as the Message-ID writes it");
+        let dotted = MessageTraits { list_id: Some("<torro.github.io.torro.github.com>".into()), ..traits.clone() };
+        assert_eq!(
+            thread(&from, &dotted, "torro/torro.github.io/pull/3@github.com"),
+            Some(IssueRef { repo: "torro/torro.github.io".into(), number: 3 }),
+            "a repository with dots"
+        );
+
+        let someone = MailAddress { name: None, address: "notifications@github.com.evil.example".into() };
+        let no_reason = MessageTraits { github: None, ..traits.clone() };
+        let other_list = MessageTraits { list_id: Some("torro/site <site.torro.github.com>".into()), ..traits.clone() };
+        let no_list = MessageTraits { list_id: None, ..traits.clone() };
+        assert_eq!(thread(&someone, &traits, REVIEW_ID), None, "another sender");
+        assert_eq!(thread(&from, &no_reason, REVIEW_ID), None, "no X-GitHub-Reason");
+        assert_eq!(thread(&from, &other_list, REVIEW_ID), None, "the list names another repository");
+        assert_eq!(thread(&from, &no_list, REVIEW_ID), None);
+        for id in [
+            "torro/workplace/pull/42@github.com.evil.example",
+            "torro/site/pull/42@github.com",
+            "torro/workplace/commit/0123abc@github.com",
+            "torro/workplace/pull/0@github.com",
+            "torro/workplace/pull/4x2@github.com",
+            "torro/workplace/pull@github.com",
+            "torro/work place/pull/42@github.com",
+            "42@example.org",
+        ] {
+            assert_eq!(thread(&from, &traits, id), None, "{id}");
+        }
+        assert_eq!(github_thread(None, &traits, Some(REVIEW_ID)), None);
+        assert_eq!(github_thread(Some(&from), &traits, None), None);
+    }
+
+    #[tokio::test]
+    async fn the_feed_files_a_github_mail_with_its_github_entry_and_a_contradicting_one_as_mail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &github_letter(REVIEW_ID, GITHUB_LIST, GITHUB_SENDER, 2), &[]);
+        let forged = github_letter("torro/workplace/pull/42/c1@github.com", "site.torro.github.com", GITHUB_SENDER, 1);
+        server.add("INBOX", &forged, &[]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let inbox = Arc::new(inbox_in(dir.path()));
+        let review = crate::inbox::tests::remote(SourceRef::github("anna-berg"), "42", &["101"], Utc::now());
+        let github_entry = crate::inbox::tests::filed_remote(&inbox, &review, Utc::now());
+        let mail = Arc::new(service_in(dir.path(), &secrets));
+        start(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())));
+        mail.reload().await;
+
+        eventually("filed", || async { entries(&inbox).len() == 2 }).await;
+        eventually("synced", || synced(&mail)).await;
+        let items = entries(&inbox);
+        let mail_entry = items.iter().find(|item| item.id != github_entry).expect("the contradicting mail");
+        assert_eq!(mail_entry.source.key(), ANNA, "an ordinary mail entry");
+        let filed = inbox.mail_by_account(&github_entry).expect("read");
+        assert_eq!(filed.get(ANNA).map(Vec::len), Some(1), "the review request went with the GitHub entry");
     }
 
     #[test]
@@ -581,7 +872,7 @@ mod tests {
         let other = server.add("INBOX", &bernd("Another", 0), &[]);
         eventually("filed", || async { listed().await.len() == 2 }).await;
         let id = entry(&listed().await, "Offer").id.clone();
-        let done = core.handle(Request::SetItemDone { id, done: true }).await;
+        let done = core.handle(Request::SetItemDone { id, done: true, dismissed: false }).await;
         assert!(matches!(&done, Response::Item { item } if matches!(item.state, State::Done { .. })), "{done:?}");
 
         eventually("read on the server", || async { server.flags("INBOX", uid).contains(&"\\Seen".to_string()) }).await;
@@ -621,7 +912,7 @@ mod tests {
 
         // Removed altogether: an entry opened again by hand is done at the next look.
         let id = entries(&inbox)[0].id.clone();
-        inbox.handle(Request::SetItemDone { id, done: false }, None, Utc::now());
+        inbox.handle(Request::SetItemDone { id, done: false, dismissed: false }, None, Utc::now());
         store_accounts(dir.path(), &secrets, &[]);
         mail.reload().await;
         feed.retire(Utc::now()).await;

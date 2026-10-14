@@ -9,7 +9,8 @@
 //!   services an account offers ([`Services`], task M7.1).
 //! - `discover`: finding the CalDAV service of a mail address without signing in (task M7.1).
 //! - `write`: iCalendar output and ETag-guarded PUT/DELETE (task K.4).
-//! - `ical`: reading iCalendar.
+//! - `ical`: reading iCalendar; [`parse_events`] also reads the event of an invitation that came
+//!   by mail (task E8.3b).
 //!
 //! `sync-collection` and the `torro_pim::Provider` implementation come with the SQLite cache.
 
@@ -22,6 +23,7 @@ pub mod write;
 use std::time::Duration;
 
 pub use client::{CalDavClient, Services};
+pub use ical::parse_events;
 use torro_pim::ProviderError;
 
 /// Where and as whom to connect. The password lives in the system keychain and reaches the

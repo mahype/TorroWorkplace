@@ -26,6 +26,10 @@ torro-pim.workspace = true
 torro-inbox.workspace = true
 torro-pim-caldav.workspace = true
 torro-pim-github.workspace = true
+# Nextcloud's notifications and Talk for the inbox (tasks E5.8, E5.9).
+torro-nextcloud.workspace = true
+# ntfy accounts and their topics for the inbox (tasks E5.12, E5.13).
+torro-ntfy.workspace = true
 # Mail accounts (task M2.1 sets them up for M2.2 to M3.3).
 torro-mail.workspace = true
 torro-mail-imap.workspace = true

@@ -31,6 +31,8 @@
 //!
 //! Task KI.1a: AI accounts (`AccountKind::Ai`) live in [`ai`], apart like the GitHub accounts: no
 //! calendars or task lists, so the calendar service never loads them ([`syncs_calendars`]).
+//!
+//! Task E5.12: ntfy accounts (`AccountKind::Ntfy`) live in [`ntfy`], apart the same way.
 
 use std::future::Future;
 use std::path::Path;
@@ -46,6 +48,7 @@ use torro_pim_caldav::{CalDavAccount, CalDavClient};
 use self::github::TokenStore;
 
 pub mod ai;
+pub mod ntfy;
 pub mod torromail;
 
 /// How often the sign-in is polled while the user is in the browser.
@@ -99,7 +102,7 @@ pub fn stored() -> Result<Vec<Stored>, String> {
 pub fn syncs_calendars(account: &Account) -> bool {
     match account.kind {
         AccountKind::Nextcloud | AccountKind::CalDav => true,
-        AccountKind::GitHub | AccountKind::Ai => false,
+        AccountKind::GitHub | AccountKind::Ai | AccountKind::Ntfy => false,
         AccountKind::Mail => {
             let services = account.mail_settings.as_ref().map(|settings| settings.services).unwrap_or_default();
             account.mail.as_ref().is_some_and(|mail| mail.caldav.is_some()) && (services.calendars || services.tasks)
@@ -396,8 +399,10 @@ pub fn caldav(http: &reqwest::Client, connected: &Connected) -> Result<CalDavCli
         // The CalDAV address of the same sign-in (task M2.1); a mail-only account has none, which
         // no client accepts, and it never syncs calendars ([`syncs_calendars`], task M2.7).
         AccountKind::Mail => account.mail.as_ref().and_then(|mail| mail.caldav.clone()).unwrap_or_default(),
-        // An AI account never syncs calendars ([`syncs_calendars`]), so it never gets here.
-        AccountKind::Nextcloud | AccountKind::GitHub | AccountKind::Ai => nextcloud::dav_url(&account.server),
+        // An AI or ntfy account never syncs calendars ([`syncs_calendars`]), so it never gets here.
+        AccountKind::Nextcloud | AccountKind::GitHub | AccountKind::Ai | AccountKind::Ntfy => {
+            nextcloud::dav_url(&account.server)
+        }
     };
     let dav = CalDavAccount { url, username: account.login_name.clone() };
     CalDavClient::new(http.clone(), &dav, connected.app_password.clone()).map_err(|err| err.to_string())
@@ -742,6 +747,7 @@ pub mod github {
                 collections: Vec::new(),
                 scopes: self.scopes.clone(),
                 mail: None,
+                ntfy: None,
             }
         }
 
@@ -921,6 +927,18 @@ pub mod github {
             let http = self.http.clone()?;
             let token = self.slots.read().await.iter().find(|slot| slot.account.id == id)?.token.clone()?;
             Some(torro_pim_github::Api::new(http, self.graphql.clone(), token))
+        }
+
+        /// What the inbox's GitHub source needs to read and mark the notifications of account `id`
+        /// (task E5.4, `crate::sources`): the HTTP client, GitHub's REST address – this service's
+        /// GraphQL endpoint without `/graphql` (`https://api.github.com`; a fake server in tests) –
+        /// and the account's token, which stays inside the core. `None` for an unknown account, one
+        /// without a token, or without an HTTP client.
+        pub async fn notifications(&self, id: &str) -> Option<torro_pim_github::notifications::Notifications> {
+            let http = self.http.clone()?;
+            let token = self.slots.read().await.iter().find(|slot| slot.account.id == id)?.token.clone()?;
+            let rest = self.graphql.strip_suffix("/graphql").unwrap_or(&self.graphql);
+            Some(torro_pim_github::notifications::Notifications::new(http, rest, token))
         }
 
         /// Takes over the GitHub CLI's sign-in ([`cli_token`]) and connects its account

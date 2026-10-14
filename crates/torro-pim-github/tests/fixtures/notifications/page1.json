@@ -1,0 +1,66 @@
+[
+  {
+    "id": "4001",
+    "repository": {
+      "id": 104001,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Add the settings page",
+      "url": "https://api.github.com/repos/example-org/example-app/pulls/42",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/pulls/42",
+      "type": "PullRequest"
+    },
+    "reason": "review_requested",
+    "unread": true,
+    "updated_at": "2026-10-13T10:00:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/4001",
+    "subscription_url": "https://api.github.com/notifications/threads/4001/subscription"
+  },
+  {
+    "id": "4002",
+    "repository": {
+      "id": 104002,
+      "node_id": "R_kgDOExample",
+      "name": "example-app",
+      "full_name": "example-org/example-app",
+      "private": false,
+      "owner": {
+        "login": "example-org",
+        "id": 1,
+        "type": "User",
+        "site_admin": false
+      },
+      "html_url": "https://github.com/example-org/example-app",
+      "description": "Example repository",
+      "fork": false,
+      "url": "https://api.github.com/repos/example-org/example-app"
+    },
+    "subject": {
+      "title": "Crash when the list is empty",
+      "url": "https://api.github.com/repos/example-org/example-app/issues/7",
+      "latest_comment_url": "https://api.github.com/repos/example-org/example-app/issues/7",
+      "type": "Issue"
+    },
+    "reason": "mention",
+    "unread": true,
+    "updated_at": "2026-10-13T09:00:00Z",
+    "last_read_at": null,
+    "url": "https://api.github.com/notifications/threads/4002",
+    "subscription_url": "https://api.github.com/notifications/threads/4002/subscription"
+  }
+]

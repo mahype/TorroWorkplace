@@ -33,8 +33,13 @@
 //!   any more, **one** message tells how many of the held-back entries are still open. It names
 //!   the event when there was one: it is the person's own calendar on the person's own desktop,
 //!   and `docs/eingang.md` asks for exactly that ("While you were in …"). Its title is shown as
-//!   plain text like every other text here.
+//!   plain text like every other text here. Whether it is quiet now and until when ([`quiet_now`])
+//!   is also what `inbox.get_quiet` answers (task E8.5b).
 //!
+//! - **No popup by choice** (task E8.6a): an entry a muted trait with "no popup" holds for comes
+//!   without one ([`crate::inbox::Inbox::no_popup`], [`Popups::step_except`]), and not later either.
+//! - **Counted** (task E8.8a): each entry that arrives for a popup counts once for the statistics,
+//!   with those quiet holds back apart ([`Popups::arrivals`], `Inbox::count_popups`).
 //! - **Agents name their session** (task E2.6): an entry of a hook whose session has a name pops
 //!   up with that name as summary and the core's own words below it ("Claude Code is waiting for
 //!   you · TorroWorkplace"), so the person knows which job it is ([`session_line`]).
@@ -224,9 +229,9 @@ pub fn request(answer: Answer, popup: &Popup, now: DateTime<Utc>) -> Option<Requ
     match answer {
         Answer::Archive => Some(Request::MoveMail { ids: messages()?, to: MoveTarget::Role(MoveRole::Archive) }),
         Answer::MarkRead => Some(Request::SetMailFlags { ids: messages()?, add: vec![Flag::Seen], remove: Vec::new() }),
-        Answer::Done => Some(Request::SetItemDone { id: popup.entry()?.to_string(), done: true }),
+        Answer::Done => Some(Request::SetItemDone { id: popup.entry()?.to_string(), done: true, dismissed: false }),
         Answer::Snooze => Some(Request::SnoozeItem { id: popup.entry()?.to_string(), until: Some(now + SNOOZE_FOR) }),
-        Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string() }),
+        Answer::Open => Some(Request::OpenApp { app: AppId::INBOX.binary.to_string(), target: None }),
     }
 }
 
@@ -312,10 +317,37 @@ impl Popups {
     /// The first look only learns what is open and shows nothing. After it, an entry arrives
     /// when it is new (state [`State::New`]), in "for me", not [`asks_elsewhere`], and was not
     /// open at the last look or has a different `updated` (merged, woken).
+    ///
+    /// Every entry may pop up here; the core asks [`Popups::step_except`] with the entries a muted
+    /// trait keeps quiet.
+    #[cfg(test)]
     pub fn step(&mut self, now: DateTime<Utc>, open: &[Item], busy: Option<&str>) -> Vec<Popup> {
+        self.step_except(now, open, busy, &BTreeSet::new())
+    }
+
+    /// The entries of `open` that [`Popups::step_except`] would take as arriving for a popup now,
+    /// those of `no_popup` aside: for the statistics (task E8.8a), asked just before the step.
+    /// Empty before the first look, which only learns what is open.
+    pub fn arrivals<'a>(&self, open: &'a [Item], no_popup: &BTreeSet<String>) -> Vec<&'a Item> {
+        let Some(known) = &self.known else { return Vec::new() };
+        open.iter().filter(|item| arrived(known, item) && !no_popup.contains(&item.id)).collect()
+    }
+
+    /// [`Popups::step`], but the entries `no_popup` names (task E8.6a: a muted trait with "no
+    /// popup" holds for them, `Inbox::no_popup`) arrive without a popup: they are known from now on,
+    /// so they do not pop up later either, when the rule ends.
+    pub fn step_except(
+        &mut self,
+        now: DateTime<Utc>,
+        open: &[Item],
+        busy: Option<&str>,
+        no_popup: &BTreeSet<String>,
+    ) -> Vec<Popup> {
         let current = open.iter().map(|item| (item.id.clone(), item.updated)).collect();
-        let Some(known) = self.known.replace(current) else { return Vec::new() };
-        let arrivals: Vec<&Item> = open.iter().filter(|item| arrived(&known, item)).collect();
+        let arrivals = self.arrivals(open, no_popup);
+        if self.known.replace(current).is_none() {
+            return Vec::new();
+        }
         let mut popups = Vec::new();
         match busy {
             Some(event) => {
@@ -552,6 +584,23 @@ pub fn quiet_during(quiet_when_busy: bool, events: &[Event], now: DateTime<Utc>)
     events.iter().filter(|event| event.busy()).filter(runs).min_by_key(|event| event.start)
 }
 
+/// The quiet at `now` among `events` (task E8.5b, `inbox.get_quiet`): the busy event that makes it
+/// quiet ([`quiet_during`]) and when the last of the busy events running now ends. `None` when it
+/// is not quiet.
+pub fn quiet_span(quiet_when_busy: bool, events: &[Event], now: DateTime<Utc>) -> Option<(&Event, DateTime<Utc>)> {
+    let first = quiet_during(quiet_when_busy, events, now)?;
+    let end = |event: &Event| match event.end {
+        Some(EventTime::DateTime(end)) => Some(end),
+        _ => None,
+    };
+    let running = events.iter().filter(|event| event.busy()).filter(|event| match (event.start, end(event)) {
+        (EventTime::DateTime(start), Some(end)) => start <= now && now < end,
+        _ => false,
+    });
+    let until = running.filter_map(end).max()?;
+    Some((first, until))
+}
+
 /// Shows `popups` on `desktop`; each answer goes to `send` as the request [`request`] makes of it.
 pub fn show_all(popups: Vec<Popup>, desktop: &dyn Desktop, send: &Arc<dyn Fn(Request) + Send + Sync>) {
     for popup in popups {
@@ -592,7 +641,10 @@ pub async fn run(core: Arc<Core>, desktop: Arc<dyn Desktop>) {
             Ok(for_me) => {
                 failing = false;
                 let busy = if popups.needs_calendar(&for_me.newest) { busy_title(&core, now).await } else { None };
-                let mut shown = popups.step(now, &for_me.newest, busy.as_deref());
+                let quiet = core.inbox().no_popup(&for_me.newest, now);
+                // Counted before the step, which learns them (task E8.8a); quiet holds back the calm ones.
+                core.inbox().count_popups(&popups.arrivals(&for_me.newest, &quiet), busy.is_some(), now);
+                let mut shown = popups.step_except(now, &for_me.newest, busy.as_deref(), &quiet);
                 shown.iter_mut().for_each(|popup| whole_conversation(core.inbox(), popup));
                 show_all(shown, desktop.as_ref(), &send);
             }
@@ -629,17 +681,23 @@ fn whole_conversation(inbox: &crate::inbox::Inbox, popup: &mut Popup) {
     }
 }
 
-/// The title of the busy event that makes it quiet at `now` ([`quiet_during`]), from the settings
-/// and the calendars the suite shows. A calendar that cannot be read keeps nothing quiet: better
-/// a popup too many than a missed one.
+/// The title of the busy event that makes it quiet at `now` ([`quiet_during`], [`quiet_now`]).
 async fn busy_title(core: &Core, now: DateTime<Utc>) -> Option<String> {
+    quiet_now(core, now).await.map(|(event, _)| event.summary)
+}
+
+/// The quiet at `now` from the settings and the calendars the suite shows ([`quiet_span`]): the
+/// busy event that makes it quiet and when it ends, for the popups and `inbox.get_quiet` (task
+/// E8.5b). A calendar that cannot be read keeps nothing quiet: better a popup too many than a
+/// missed one.
+pub async fn quiet_now(core: &Core, now: DateTime<Utc>) -> Option<(Event, DateTime<Utc>)> {
     let Response::Settings { settings } = core.handle(Request::Settings).await else { return None };
     if !settings.quiet_when_busy {
         return None;
     }
     let window = Request::Events { start: now, end: now + TimeDelta::minutes(1) };
     let Response::Events { events } = core.handle(window).await else { return None };
-    quiet_during(true, &events, now).map(|event| event.summary.clone())
+    quiet_span(true, &events, now).map(|(event, until)| (event.clone(), until))
 }
 
 /// The desktop's notifications. Linux and the BSDs show the buttons; macOS and Windows show the
@@ -751,6 +809,9 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted: true,
+            facets: Vec::new(),
+            task: None,
+            invite: None,
         }
     }
 
@@ -776,6 +837,31 @@ mod tests {
         assert!(!popups.needs_calendar(&open), "nothing arrived before the first look");
         assert_eq!(popups.step(at(0, 1), &open, None), [], "a restart does not repeat the day");
         assert_eq!(popups.step(at(0, 2), &open, None), []);
+    }
+
+    /// Task E8.6a: entries a "no popup" rule holds for come quietly, and not later either.
+    #[test]
+    fn entries_without_a_popup_arrive_quietly() {
+        let mut popups = started();
+        let open = [item("a", at(1, 0)), item("b", at(1, 0))];
+        let quiet = BTreeSet::from(["a".to_string()]);
+        let shown = popups.step_except(at(1, 1), &open, None, &quiet);
+        assert_eq!(shown, [popup_of(&open[1])], "only b pops up");
+        assert_eq!(popups.step_except(at(1, 2), &open, None, &BTreeSet::new()), [], "a stays quiet when the rule ends");
+    }
+
+    /// Task E8.8a: what is counted as a popup is what the step takes as arriving, once.
+    #[test]
+    fn arrivals_are_what_the_next_step_takes_for_a_popup() {
+        let mut popups = Popups::new();
+        let open = [item("a", at(1, 0)), item("b", at(1, 0)), Item { lane: Lane::Info, ..item("c", at(1, 0)) }];
+        assert!(popups.arrivals(&open, &BTreeSet::new()).is_empty(), "the first look counts nothing");
+        popups.step(at(1, 0), &[], None);
+        let quiet = BTreeSet::from(["a".to_string()]);
+        let ids: Vec<&str> = popups.arrivals(&open, &quiet).iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["b"], "not the quiet one, not Info");
+        popups.step_except(at(1, 1), &open, None, &quiet);
+        assert!(popups.arrivals(&open, &quiet).is_empty(), "known from now on");
     }
 
     #[test]
@@ -921,6 +1007,22 @@ mod tests {
         assert_eq!(quiet_during(true, &[running, earlier.clone()], now), Some(&earlier), "the earliest started");
     }
 
+    /// Task E8.5b: quiet lasts until the last busy event running now ends, and is named after the
+    /// one that began first; nothing runs, nothing is quiet.
+    #[test]
+    fn quiet_lasts_until_the_last_running_busy_event_ends() {
+        let now = at(30, 0);
+        let call = Event { summary: "Call".into(), ..event(at(0, 0), Some(at(45, 0))) };
+        let workshop = Event { summary: "Workshop".into(), ..event(at(20, 0), Some(at(59, 0))) };
+        let free = Event { transparency: Transparency::Transparent, ..event(at(0, 0), Some(at(59, 30))) };
+        let events = [call.clone(), workshop, free];
+        assert_eq!(quiet_span(true, &events, now), Some((&call, at(59, 0))));
+        assert_eq!(quiet_span(true, std::slice::from_ref(&call), now), Some((&call, at(45, 0))));
+        assert_eq!(quiet_span(false, &events, now), None, "quiet turned off");
+        assert_eq!(quiet_span(true, &[], now), None, "no event");
+        assert_eq!(quiet_span(true, &events, at(59, 0)), None, "every busy event ended");
+    }
+
     #[test]
     fn texts_name_the_entry_and_its_source() {
         let plain = item("a", at(0, 0));
@@ -977,12 +1079,13 @@ mod tests {
     fn answers_become_requests() {
         let popup = popup_of(&item("a", at(0, 0)));
         let now = at(10, 0);
-        assert_eq!(request(Answer::Done, &popup, now), Some(Request::SetItemDone { id: "a".into(), done: true }));
+        let done = Request::SetItemDone { id: "a".into(), done: true, dismissed: false };
+        assert_eq!(request(Answer::Done, &popup, now), Some(done));
         assert_eq!(
             request(Answer::Snooze, &popup, now),
             Some(Request::SnoozeItem { id: "a".into(), until: Some(now + TimeDelta::hours(1)) })
         );
-        let open = Some(Request::OpenApp { app: "torroinbox".into() });
+        let open = Some(Request::OpenApp { app: "torroinbox".into(), target: None });
         assert_eq!(request(Answer::Open, &popup, now), open);
         let bundle = Popup::Bundle { count: 4, urgent: false };
         assert_eq!((request(Answer::Done, &bundle, now), request(Answer::Snooze, &bundle, now)), (None, None));
@@ -1131,7 +1234,7 @@ mod tests {
         for popup in [other, bundle] {
             assert_eq!((request(Answer::Archive, &popup, now), request(Answer::MarkRead, &popup, now)), (None, None));
         }
-        let open = Some(Request::OpenApp { app: "torroinbox".into() });
+        let open = Some(Request::OpenApp { app: "torroinbox".into(), target: None });
         assert_eq!(request(Answer::Open, &popup, now), open, "a click opens the inbox");
     }
 

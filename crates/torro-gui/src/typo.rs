@@ -82,6 +82,12 @@ pub fn body() -> Level {
 pub fn body_strong() -> Level {
     level(|t| t.body_strong)
 }
+/// 14/22, Regular: reading text – the whole of a mail in the inbox's reader (task E8.2). One step
+/// above [`body`] with more line height, because it is read for longer than a list; never for
+/// rows, labels or inputs, which stay [`body`]. A design pack keeps it at least as large as `body`.
+pub fn read() -> Level {
+    level(|t| t.read)
+}
 /// 16/22, SemiBold: card and dialog titles (the design's heading font).
 pub fn title() -> Level {
     level(|t| t.title)
@@ -96,7 +102,10 @@ pub fn display() -> Level {
     level(|t| t.display)
 }
 
-/// All levels, smallest first.
+/// The eight levels of the Linear scale, smallest first: everything but [`read`], which came with
+/// the inbox's reader (task E8.2). Kept at eight because the test "same picture" of design packs
+/// (`crate::design`) holds them to the constants from before the packs; the tests here check
+/// [`read`] on its own.
 pub fn all() -> [Level; 8] {
     [micro(), caption(), meta(), body(), body_strong(), title(), headline(), display()]
 }
@@ -190,7 +199,7 @@ mod tests {
             (display(), 28.0, 32.0, theme::font_semibold()),
         ];
         assert_eq!(expected.len(), all().len());
-        for (level, size, height, font) in expected {
+        for (level, size, height, font) in expected.into_iter().chain([(read(), 14.0, 22.0, theme::font())]) {
             assert_eq!(level.size.0, size);
             assert_eq!(line(level), height, "line height of {size}px level");
             assert_eq!(level.font, font, "font of {size}px level");
@@ -199,7 +208,7 @@ mod tests {
 
     #[test]
     fn line_heights_are_absolute_and_on_the_grid() {
-        for level in all() {
+        for level in all().into_iter().chain([read()]) {
             assert!(matches!(level.line_height, LineHeight::Absolute(_)));
             assert_eq!(line(level) % 2.0, 0.0, "line height {} is odd", line(level));
             assert!(line(level) > level.size.0);
@@ -208,7 +217,7 @@ mod tests {
 
     #[test]
     fn only_micro_is_smaller_than_12_and_nothing_is_bold() {
-        for level in all() {
+        for level in all().into_iter().chain([read()]) {
             assert!(level.size.0 >= 12.0 || level == micro());
             assert!(matches!(level.font.weight, Weight::Normal | Weight::Medium | Weight::Semibold));
         }
@@ -227,7 +236,7 @@ mod tests {
 
     #[test]
     fn text_builds_in_every_level() {
-        for level in all() {
+        for level in all().into_iter().chain([read()]) {
             let _: Text<'_> = text(level, "Today");
         }
     }
@@ -245,6 +254,7 @@ mod tests {
     #[test]
     fn line_height_is_the_absolute_one() {
         assert_eq!(line_height(body()), 20.0);
+        assert_eq!(line_height(read()), 22.0, "reading text has more room between its lines");
         assert_eq!(line_height(display()), 32.0);
     }
 }

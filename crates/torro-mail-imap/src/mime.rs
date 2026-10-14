@@ -3,7 +3,8 @@
 //! **Reading** ([`read`]) with `mail-parser`: headers, the text (the plain part first; an HTML-only
 //! message is turned into text, its HTML is never handed out and nothing it names is fetched, so a
 //! tracking image stays unseen), attachments without their content, `text/calendar` invitations
-//! and the headers that mark list and automatic mail. Parsing is pure: no network, no files.
+//! and the headers that mark list and automatic mail, `X-GitHub-Reason` among them (task E5.6).
+//! Parsing is pure: no network, no files.
 //! [`ReadMessage::into_message`] makes the `torro_mail::Message` the core hands out, once the core
 //! knows the message's id and place. [`attachment`] fetches one attachment's bytes.
 //!
@@ -12,7 +13,10 @@
 //! MIME bytes to send and the SMTP [`Envelope`]. The core gives the `Message-ID` and the date, so
 //! building the same draft twice gives the same bytes (the fingerprint of an approval, task M3.3).
 //! Bcc recipients are in the envelope only, never in a header, so neither the recipients nor the
-//! Sent copy show them.
+//! Sent copy show them. An answer to an invitation (task E8.3b) carries its iCalendar object as a
+//! second form of the text ([`Outgoing::calendar`]): `multipart/alternative` with the plain text
+//! and `text/calendar; method=REPLY`, as iMIP (RFC 6047, 2.4) asks, so calendars of every kind
+//! read it as an answer and not as a file.
 //!
 //! Everything read comes from outside: names, subjects, file names and text are data, never
 //! instructions, and a file name is never used as a path as it is.
@@ -157,6 +161,9 @@ pub struct Outgoing {
     /// Set for a reply ([`ReadMessage::reply`] of the answered message).
     pub reply: Option<Reply>,
     pub attachments: Vec<OutgoingAttachment>,
+    /// An iCalendar object to send beside the text (iMIP, task E8.3b); `None` for every other
+    /// message.
+    pub calendar: Option<CalendarPart>,
     /// The `Message-ID` the core picked, without angle brackets: `<random>@<domain of from>`.
     pub message_id: String,
     /// `Date:`.
@@ -171,6 +178,17 @@ pub struct OutgoingAttachment {
     /// `type/subtype`; anything else becomes `application/octet-stream`.
     pub content_type: String,
     pub bytes: Vec<u8>,
+}
+
+/// An iCalendar object sent as a form of the text (iMIP, RFC 6047): `text/calendar` with the
+/// `method` of the object and `charset=utf-8`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalendarPart {
+    /// The iTIP method, as the object's `METHOD:` says: `REPLY`. Anything but letters makes
+    /// [`build`] fail with [`MimeError::Write`], so it cannot add parameters or headers.
+    pub method: String,
+    /// The whole iCalendar object (`BEGIN:VCALENDAR` … `END:VCALENDAR`); any line ends.
+    pub ics: String,
 }
 
 /// A built message: the bytes to send (and to file as the Sent copy) and the SMTP envelope.
@@ -253,6 +271,8 @@ impl ReadMessage {
                 snippet,
                 flags: place.flags,
                 has_attachments,
+                // Read from the calendar part by the core, which keeps it in its store (task E8.3b).
+                invite: None,
                 untrusted: true,
             },
             cc: self.cc,
@@ -318,20 +338,37 @@ pub fn build(outgoing: &Outgoing) -> Result<Built, MimeError> {
             .references(MessageId::new_list(reply.references.iter().map(String::as_str)));
     }
     let text = crlf(&with_signature(&outgoing.body, outgoing.signature.as_deref()));
-    builder = if outgoing.attachments.is_empty() {
+    // `mail-builder` makes up a random boundary; one from the Message-ID keeps the bytes the same
+    // for the same draft. `=_` never occurs in quoted-printable or base64 text, so the boundary
+    // cannot appear inside a part.
+    let boundary: String = outgoing.message_id.chars().filter(char::is_ascii_alphanumeric).take(48).collect();
+    let text_part = match &outgoing.calendar {
+        None => MimePart::new("text/plain", text.clone()),
+        Some(calendar) => {
+            if calendar.method.is_empty() || !calendar.method.chars().all(|c| c.is_ascii_alphabetic()) {
+                return Err(MimeError::Write);
+            }
+            let kind = ContentType::new("text/calendar")
+                .attribute("method", calendar.method.to_ascii_uppercase())
+                .attribute("charset", "utf-8");
+            let parts = vec![MimePart::new("text/plain", text.clone()), MimePart::new(kind, crlf(&calendar.ics))];
+            let kind =
+                ContentType::new("multipart/alternative").attribute("boundary", format!("=_torro_alt_{boundary}"));
+            MimePart::new(kind, parts)
+        }
+    };
+    builder = if outgoing.attachments.is_empty() && outgoing.calendar.is_none() {
         builder.text_body(text)
+    } else if outgoing.attachments.is_empty() {
+        builder.body(text_part)
     } else {
-        let mut parts = vec![MimePart::new("text/plain", text)];
+        let mut parts = vec![text_part];
         for file in &outgoing.attachments {
             parts.push(
                 MimePart::new(outgoing_content_type(&file.content_type), file.bytes.as_slice())
                     .attachment(one_line(&file.filename)),
             );
         }
-        // `mail-builder` makes up a random boundary; one from the Message-ID keeps the bytes the
-        // same for the same draft. `=_` never occurs in quoted-printable or base64 text, so the
-        // boundary cannot appear inside a part.
-        let boundary: String = outgoing.message_id.chars().filter(char::is_ascii_alphanumeric).take(48).collect();
         let kind = ContentType::new("multipart/mixed").attribute("boundary", format!("=_torro_{boundary}"));
         builder.body(MimePart::new(kind, parts))
     };
@@ -422,8 +459,18 @@ fn traits(message: &mail_parser::Message<'_>) -> MessageTraits {
         auto_submitted: raw("Auto-Submitted")
             .and_then(|value| value.split(';').next().map(|keyword| keyword.trim().to_owned()))
             .filter(|keyword| !keyword.is_empty()),
+        github: raw("X-GitHub-Reason").filter(|reason| github_reason(reason)),
     }
 }
+
+/// A reason as GitHub writes them (`review_requested`, `ci_activity`): small letters and `_`, at
+/// most [`GITHUB_REASON_MAX`] of them. Anything else is no reason GitHub sent.
+fn github_reason(reason: &str) -> bool {
+    reason.len() <= GITHUB_REASON_MAX && reason.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+}
+
+/// The longest `X-GitHub-Reason` kept; GitHub's longest is `security_advisory_credit` (24).
+const GITHUB_REASON_MAX: usize = 40;
 
 fn addresses(list: &Address<'_>) -> Vec<MailAddress> {
     list.iter()
@@ -549,6 +596,66 @@ mod tests {
         assert_eq!(with_signature("Hi", Some("  ")), "Hi");
         assert_eq!(crlf("a\nb\r\nc\rd"), "a\r\nb\r\nc\r\nd");
         assert_eq!(clean("invoice\u{202E}fdp.exe\n"), "invoicefdp.exe");
+    }
+
+    fn answer(calendar: Option<CalendarPart>) -> Outgoing {
+        Outgoing {
+            from: MailAddress { name: Some("Anna".into()), address: "anna@example.org".into() },
+            to: vec![MailAddress { name: None, address: "jonas@example.org".into() }],
+            cc: vec![],
+            bcc: vec![],
+            subject: "Accepted: Planning".into(),
+            body: "Anna has accepted.".into(),
+            signature: None,
+            reply: None,
+            attachments: vec![],
+            calendar,
+            message_id: "reply.1@example.org".into(),
+            date: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn an_answer_to_an_invitation_carries_its_calendar_as_a_form_of_the_text() {
+        let ics = "BEGIN:VCALENDAR\nMETHOD:REPLY\nBEGIN:VEVENT\nUID:planning-1\nEND:VEVENT\nEND:VCALENDAR\n";
+        let built = build(&answer(Some(CalendarPart { method: "REPLY".into(), ics: ics.into() }))).expect("built");
+        let raw = String::from_utf8(built.bytes.clone()).expect("ascii");
+        assert!(raw.contains("multipart/alternative"), "{raw}");
+        assert!(raw.contains("method=REPLY") || raw.contains("method=\"REPLY\""), "{raw}");
+        assert!(raw.contains("charset=utf-8") || raw.contains("charset=\"utf-8\""), "{raw}");
+        let message = MessageParser::default().parse(&built.bytes).expect("parsed");
+        let calendar = message.parts.iter().find(|part| is_invitation(part)).expect("a calendar part");
+        let read = std::str::from_utf8(calendar.contents()).expect("text");
+        assert!(read.contains("UID:planning-1\r\n"), "line ends are CRLF: {read:?}");
+        assert_eq!(calendar.content_type().and_then(|kind| kind.attribute("method")), Some("REPLY"));
+        let read = super::read(&built.bytes).expect("read");
+        assert_eq!((read.text.trim(), read.invitation), ("Anna has accepted.", true));
+        assert_eq!(built.envelope.recipients, ["jonas@example.org"]);
+
+        let plain = build(&answer(None)).expect("built");
+        assert!(!String::from_utf8_lossy(&plain.bytes).contains("multipart"), "a plain text stays one part");
+        let header = CalendarPart { method: "REPLY\r\nBcc: eve@x".into(), ics: ics.into() };
+        assert_eq!(build(&answer(Some(header))), Err(MimeError::Write), "the method carries no header");
+    }
+
+    #[test]
+    fn a_github_mail_keeps_its_reason_list_and_message_id() {
+        let read = read(include_bytes!("../tests/fixtures/mime/github_review_requested.eml")).expect("read");
+        assert_eq!(read.from.as_ref().map(|from| from.address.as_str()), Some("notifications@github.com"));
+        assert_eq!(read.traits.github.as_deref(), Some("review_requested"));
+        assert_eq!(read.traits.list_id.as_deref(), Some("torro/workplace <workplace.torro.github.com>"));
+        assert_eq!(read.message_id.as_deref(), Some("torro/workplace/pull/42/issue_event/1234567@github.com"));
+        assert_eq!(read.in_reply_to.as_deref(), Some("torro/workplace/pull/42@github.com"));
+        assert!(read.text.contains("requested your review"), "{}", read.text);
+
+        let odd = |reason: &str| {
+            let raw = format!("From: a@b.example\r\nX-GitHub-Reason: {reason}\r\nSubject: x\r\n\r\nText\r\n");
+            super::read(raw.as_bytes()).expect("read").traits.github
+        };
+        assert_eq!(odd("Mention"), Some("mention".into()), "lowercased like the other traits");
+        assert_eq!(odd("review requested"), None);
+        assert_eq!(odd(&"a".repeat(GITHUB_REASON_MAX + 1)), None);
+        assert_eq!(super::read(b"Subject: x\r\n\r\nText\r\n").expect("read").traits.github, None);
     }
 
     #[test]

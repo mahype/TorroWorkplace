@@ -1,0 +1,22 @@
+[package]
+name = "torro-nextcloud"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Nextcloud's OCS API for torroworkplace: capabilities, notifications and Talk conversations."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# A local HTTP server standing in for a Nextcloud in the tests (task E5.7); no test talks to a real server.
+httpmock.workspace = true
+tokio.workspace = true

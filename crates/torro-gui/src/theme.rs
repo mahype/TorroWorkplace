@@ -174,6 +174,13 @@ pub struct Palette {
     pub calendar: [Color; 5],
     /// Opacity of a calendar colour used as a surface (events): 18 % dark, 14 % light.
     pub tint: f32,
+    /// The colours of chart series (task E8.8b), in their fixed order: blue, orange, green,
+    /// magenta. Checked as a set for colour blindness in this order, so take them through
+    /// [`ChartColor`] and never cycle; a fifth series is [`ChartColor::Other`]. Marks only (bars,
+    /// swatches), never text: values and labels stay in the text colours.
+    pub chart: [Color; 4],
+    /// The grey of the series "Other" ([`ChartColor::Other`]).
+    pub chart_other: Color,
     /// The shadow under menus, floating cards and dialogs.
     pub shadow: Shadow,
     /// Dims the window behind a modal dialog.
@@ -256,6 +263,8 @@ impl Palette {
             merged: rgba(c.merged),
             calendar: c.calendar.map(rgba),
             tint: c.tint,
+            chart: c.chart.map(rgba),
+            chart_other: rgba(c.chart_other),
             shadow: Shadow { color: rgba(c.shadow), offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
             scrim: rgba(c.scrim),
             night: rgba(c.night),
@@ -269,11 +278,39 @@ impl Palette {
         }
     }
 
+    /// The colour of a chart series ([`ChartColor`]): one of [`Palette::chart`], or
+    /// [`Palette::chart_other`] for "Other" and for a slot past the fourth.
+    pub fn chart_color(&self, color: ChartColor) -> Color {
+        match color {
+            ChartColor::Series(slot) => self.chart.get(slot).copied().unwrap_or(self.chart_other),
+            ChartColor::Other => self.chart_other,
+        }
+    }
+
     /// `color` as an event surface: the same hue at [`Palette::tint`] opacity, to be drawn over
     /// `panel`. Text on it stays [`Palette::text`] (title) and [`Palette::text_2`] (time).
     pub fn tinted(&self, color: Color) -> Color {
         Color { a: self.tint, ..color }
     }
+}
+
+/// Which colour a chart series wears (task E8.8b): a slot of [`Palette::chart`] in their fixed
+/// order, or the grey of "Other". Views keep this, never a colour, and turn it into one with
+/// [`Palette::chart_color`] inside a style closure, so light and dark mode and design packs follow.
+///
+/// Give slots to series by what they are, not by their rank: the same series keeps its colour when
+/// a filter or another span changes how many there are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChartColor {
+    /// Slot 0 to 3 of [`Palette::chart`]; a higher slot draws as [`ChartColor::Other`].
+    Series(usize),
+    /// What is not one of the series: the grey [`Palette::chart_other`].
+    Other,
+}
+
+impl ChartColor {
+    /// How many series slots there are before "Other".
+    pub const SLOTS: usize = 4;
 }
 
 /// `a` moved towards `b` by `t` (0 = `a`, 1 = `b`) in sRGB, like the mock-ups' CSS `color-mix`.
@@ -558,6 +595,35 @@ pub mod size {
     pub fn form_max() -> f32 {
         design::with(|t| t.design.size.form_max)
     }
+    /// 12: the gap between two cards and between the parts of one card (task E8.2,
+    /// `widgets::card`) – the comfortable density of the inbox, where entries get room instead of
+    /// lines between them.
+    pub fn card_gap() -> f32 {
+        design::with(|t| t.design.size.card_gap)
+    }
+    /// 36: the avatar of a card (task E8.2): a sender's initials, round, beside a mail card's
+    /// lines. A compact mail row keeps its 32 ([`control`]).
+    pub fn avatar() -> f32 {
+        design::with(|t| t.design.size.avatar)
+    }
+    /// 40: the large avatar (task E8.2): the sender at the head of the mail reader.
+    pub fn avatar_lg() -> f32 {
+        design::with(|t| t.design.size.avatar_lg)
+    }
+    /// 20: the small source tile (task E8.2, `widgets::source_tile`): beside a word, in a compact
+    /// row or a menu.
+    pub fn tile_sm() -> f32 {
+        design::with(|t| t.design.size.tile_sm)
+    }
+    /// 28: the source tile of a notice row and of a column head ("Slack 5") (task E8.2).
+    pub fn tile() -> f32 {
+        design::with(|t| t.design.size.tile)
+    }
+    /// 36: the large source tile (task E8.2): an attachment in the reader, the head of a card that
+    /// stands for an app.
+    pub fn tile_lg() -> f32 {
+        design::with(|t| t.design.size.tile_lg)
+    }
     /// 1: a line – separators, grid lines, borders – and a gap as wide as one (keeping labels
     /// above the columns of a grid). Always one logical pixel, also on HiDPI screens; not part of a
     /// design pack, so it stays a constant.
@@ -678,6 +744,23 @@ mod tests {
                 assert!(ratio >= 3.0, "{mode}: {colour:?} on panel is {ratio:.2}:1");
             }
         }
+    }
+
+    #[test]
+    fn chart_colours_stand_out_on_the_panel_and_are_never_status_or_accent() {
+        // Bars and swatches are graphics (WCAG: 3:1 on the panel they sit on), task E8.8b.
+        for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            let reserved = [p.accent, p.ok, p.attention, p.error, p.inactive];
+            for colour in p.chart.into_iter().chain([p.chart_other]) {
+                let ratio = colour.relative_contrast(p.panel);
+                assert!(ratio >= 3.0, "{mode}: {colour:?} on panel is {ratio:.2}:1");
+                assert!(!reserved.contains(&colour), "{mode}: {colour:?} is reserved");
+            }
+        }
+        let p = Palette::dark();
+        assert_eq!(p.chart_color(ChartColor::Series(0)).into_rgba8(), [0x3B, 0x78, 0xD8, 0xFF]);
+        assert_eq!(p.chart_color(ChartColor::Series(ChartColor::SLOTS)), p.chart_other, "past the slots");
+        assert_eq!(Palette::light().chart_color(ChartColor::Other).into_rgba8(), [0x50, 0x54, 0x5B, 0xFF]);
     }
 
     #[test]

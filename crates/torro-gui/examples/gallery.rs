@@ -5,13 +5,19 @@
 //! `-- --blocks` the building blocks, `-- --parts` the states and feedback of everything that answers
 //! a click (choice chips, label choices, segments, the busy primary button; task G.10), the small
 //! parts of the tasks redesign (property
-//! lines, label chips, state pills, progress bars) and every bundled icon, `-- --window` the example "Tasks" window (sample data from
+//! lines, label chips, state pills, progress bars) and every bundled icon, `-- --cards` the blocks of the
+//! inbox's comfortable density (task E8.2: cards, card heads, chips, source tiles, avatars, reading
+//! text and the switch "Compact | Comfortable"), `-- --window` the example "Tasks" window (sample data from
 //! `docs/prototypes/linear/tasks.html`) in the layout that fits the window size – resize it to see
 //! wide, medium and narrow. `--open nav|switcher|drawer` opens that menu at start, `--open panel`
 //! shows the selected task in the side panel of `torro_gui::panel` instead of the detail: beside
 //! the list in the wide layout, over the window in medium and narrow (a click on a task opens it, ✕,
 //! Escape or a click on the dimmed window closes it). The "Styles ·
 //! Blocks · Window" switch in the header changes the page, "Dark · Light" the mode.
+//!
+//! `-- --design <id>` draws everything with the design pack `<id>` from the designs folder
+//! (`TORRO_DATA_HOME/designs`, e.g. `plex`), as `--design` does in the apps; an id that is not a
+//! valid pack is said on stderr and the standard stays.
 //!
 //! States are forced through the style closure (`.style(move |theme, _| f(theme,
 //! Status::Hovered))`), so one screenshot shows hover, pressed, focus and disabled at once; the
@@ -32,14 +38,26 @@ use torro_gui::shell::{self, Switcher};
 use torro_gui::style;
 use torro_gui::theme::{self, Palette, palette, size, space};
 use torro_gui::typo;
-use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Status, Trail};
+use torro_gui::ui_state::Density;
+use torro_gui::widgets::{
+    self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, Status, TileFace, TileSize, Trail,
+};
 
 fn main() -> iced::Result {
     let args: Vec<String> = std::env::args().collect();
     let start = Start::from_args(&args);
+    // Before the settings load the fonts, so the first frame has the pack's.
+    if let Some(id) = args.iter().position(|a| a == "--design").and_then(|i| args.get(i + 1)) {
+        if torro_gui::design::is_choice(id) {
+            torro_gui::design::start(None, Some(id));
+        } else {
+            eprintln!("gallery: no valid design {id:?}; valid: {}", torro_gui::design::choices().join(", "));
+        }
+    }
     let size = match start.page {
         Page::Window => iced::Size::new(1440.0, 900.0),
         Page::Parts => iced::Size::new(3200.0, 840.0),
+        Page::Cards => iced::Size::new(1720.0, 1000.0),
         _ => iced::Size::new(3700.0, 1060.0),
     };
     iced::application(move || Gallery::new(start), Gallery::update, Gallery::view)
@@ -70,6 +88,8 @@ enum Page {
     Blocks,
     /// The small parts of the tasks redesign (R.1) and every bundled icon.
     Parts,
+    /// The blocks of the inbox's comfortable density (task E8.2).
+    Cards,
     Window,
 }
 
@@ -100,6 +120,8 @@ impl Start {
             Page::Blocks
         } else if has("--parts") {
             Page::Parts
+        } else if has("--cards") {
+            Page::Cards
         } else {
             Page::Styles
         };
@@ -138,6 +160,9 @@ struct Gallery {
     show: usize,
     state: usize,
     busy: bool,
+    /// The cards page (task E8.2): the density of its switch and the card under the "cursor".
+    density: Density,
+    card: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -166,6 +191,8 @@ enum Msg {
     Show(usize),
     State(usize),
     Busy(bool),
+    Density(Density),
+    Card(usize),
 }
 
 const SECTIONS: [&str; 5] = ["Buttons", "Rows", "Inputs", "Checks", "Surfaces"];
@@ -198,6 +225,8 @@ impl Gallery {
             show: 0,
             state: 0,
             busy: false,
+            density: Density::Comfortable,
+            card: 0,
         }
     }
 
@@ -260,6 +289,8 @@ impl Gallery {
             Msg::Show(i) => self.show = i,
             Msg::State(i) => self.state = i,
             Msg::Busy(busy) => self.busy = busy,
+            Msg::Density(density) => self.density = density,
+            Msg::Card(i) => self.card = i,
         }
     }
 
@@ -272,6 +303,7 @@ impl Gallery {
             Page::Window => responsive(move |size| self.tasks_window(layout::of(size))).into(),
             Page::Blocks => self.page_frame(self.blocks()),
             Page::Parts => self.page_frame(self.parts()),
+            Page::Cards => self.page_frame(self.cards()),
             Page::Styles => self.page_frame(self.styles()),
         }
     }
@@ -320,16 +352,21 @@ impl Gallery {
 
     fn header(&self) -> Element<'_, Msg> {
         let mode = if self.light { "Light" } else { "Dark" };
-        let title =
-            row![typo::text(typo::body_strong(), "Style gallery"), typo::text(typo::body(), mode).style(theme::text_3)]
-                .spacing(space::s());
-        let pages = [Page::Styles, Page::Blocks, Page::Parts, Page::Window];
+        let design = torro_gui::design::active().about.name.clone();
+        let title = row![
+            typo::text(typo::body_strong(), "Style gallery"),
+            typo::text(typo::body(), mode).style(theme::text_3),
+            typo::text(typo::body(), design).style(theme::text_3),
+        ]
+        .spacing(space::s());
+        let pages = [Page::Styles, Page::Blocks, Page::Parts, Page::Cards, Page::Window];
         let active = pages.iter().position(|p| *p == self.page).unwrap_or(0);
         let pages = widgets::segmented(
             [
                 ("Styles", Msg::Page(Page::Styles)),
                 ("Blocks", Msg::Page(Page::Blocks)),
                 ("Parts", Msg::Page(Page::Parts)),
+                ("Cards", Msg::Page(Page::Cards)),
                 ("Window", Msg::Page(Page::Window)),
             ],
             active,
@@ -440,6 +477,233 @@ fn forced<'a>(
 ) -> button::Button<'a, Msg> {
     let b = button(content).style(move |t, _| style(t, status));
     if status == button::Status::Disabled { b } else { b.on_press(Msg::Noop) }
+}
+
+impl Gallery {
+    /// The blocks of the comfortable density (task E8.2) as the mail and the notifications window
+    /// lay them out: mail cards with avatar, chips and their buttons always shown, a column of one
+    /// app with card heads and ✕, the source tiles in three sizes, the avatars, reading text beside
+    /// body text and the switch "Compact | Comfortable". A click on a mail card selects it.
+    fn cards(&self) -> Element<'_, Msg> {
+        let buttons = |words: &[(Icon, &'static str, ButtonStyle)]| -> Element<'static, Msg> {
+            let all = words
+                .iter()
+                .map(|&(which, word, style)| widgets::text_button(Some(which), word, style, Some(Msg::Noop)));
+            iced::widget::Row::with_children(all).spacing(space::s()).wrap().vertical_spacing(space::s()).into()
+        };
+        let mail_card = |i: usize,
+                         who: (&'static str, &'static str, &'static str),
+                         time: &'static str,
+                         subject: &'static str,
+                         preview: &'static str,
+                         chips: Vec<Element<'static, Msg>>| {
+            let (initials, name, domain) = who;
+            let sender = row![
+                typo::text(typo::body_strong(), name),
+                typo::text(typo::meta(), domain).style(theme::text_3),
+                Space::new().width(Fill),
+                typo::text(typo::meta().tabular(), time).style(theme::text_3),
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            let head = row![
+                avatar(initials, i, size::avatar()),
+                column![sender, typo::text(typo::body_strong(), subject)].width(Fill)
+            ]
+            .spacing(space::m())
+            .align_y(Alignment::Center);
+            let mut parts = vec![head.into(), typo::text(typo::body(), preview).style(theme::text_2).into()];
+            if !chips.is_empty() {
+                parts.push(widgets::chip_row(chips));
+            }
+            parts.push(buttons(&[
+                (Icon::Reply, "Reply", style::button::secondary),
+                (Icon::ListTodo, "Task", style::button::ghost),
+                (Icon::Check, "Done", style::button::ghost),
+                (Icon::Clock, "Later", style::button::ghost),
+            ]));
+            widgets::card(parts, self.card == i, Some(Msg::Card(i)))
+        };
+        let attention = self.palette().attention_text;
+        let mail = column![
+            mail_card(
+                0,
+                ("AK", "Anna Keller", "kellerbau.de"),
+                "09:42",
+                "Angebot Dachsanierung – bis Freitag?",
+                "Hallo Sven, anbei das überarbeitete Angebot. Kannst du uns bis Freitag Bescheid geben? Dann buchen wir das Gerüst für die Woche danach.",
+                vec![
+                    widgets::state_pill(Icon::Paperclip, "Angebot_v2.pdf"),
+                    widgets::state_pill(Mark::Tinted(Icon::Clock, attention), "Answer by Fri"),
+                ],
+            ),
+            mail_card(
+                1,
+                ("CL", "Chris Lang", "Steuerbüro Lang"),
+                "08:31",
+                "Unterlagen Q3",
+                "Für die Umsatzsteuer fehlen uns noch drei Belege aus September. Ich habe dir die Liste angehängt.",
+                vec![widgets::state_pill(Icon::Paperclip, "3 files")],
+            ),
+            mail_card(
+                2,
+                ("MS", "Mara Schulz", "torro.dev"),
+                "07:55",
+                "Re: Release-Notes 0.2",
+                "Ich habe die Liste um die Design-Pakete ergänzt. Magst du einmal drüberschauen?",
+                vec![],
+            ),
+        ]
+        .spacing(size::card_gap())
+        .width(size::list());
+
+        let app_head = |face: TileFace, tint: Option<Color>, name: &'static str, count: &'static str| {
+            row![
+                widgets::source_tile(face, TileSize::Medium, tint),
+                typo::text(typo::body_strong(), name).width(Fill),
+                typo::text(typo::meta().tabular(), count).style(theme::text_3),
+                widgets::icon_button(Icon::BellOff, "Mute", Some(Msg::Noop)),
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center)
+        };
+        let notice =
+            |lead: Option<Element<'static, Msg>>, title: &'static str, meta: &'static str, text: &'static str| {
+                let head = widgets::card_head(lead, title, meta, Some(Msg::Noop));
+                let text = typo::text(typo::body(), text).style(theme::text_2);
+                let acts = buttons(&[
+                    (Icon::Reply, "Reply", style::button::secondary),
+                    (Icon::ListTodo, "Task", style::button::ghost),
+                    (Icon::Clock, "Later", style::button::ghost),
+                ]);
+                widgets::card(vec![head, text.into(), acts], false, None)
+            };
+        let colours = self.palette().calendar;
+        let slack = column![
+            app_head(TileFace::letter("Slack"), Some(colours[3]), "Slack", "5"),
+            notice(
+                None,
+                "#dev-torro · Thread",
+                "3 new · 10:12",
+                "Mara: Kann jemand bis morgen über die Release-Notes schauen? @Sven"
+            ),
+            notice(
+                None,
+                "Jonas Brandt",
+                "Direct message · 09:58",
+                "Hast du heute kurz Zeit für den Workshop-Plan? 15 Minuten reichen."
+            ),
+            notice(
+                None,
+                "A channel with a name far too long for its column",
+                "Info · 08:40 · and a meta line that runs out of room as well",
+                "The title and the meta line are cut with an ellipsis and show the whole as tooltip.",
+            ),
+        ]
+        .spacing(size::card_gap())
+        .width(size::props());
+        let github = column![
+            app_head(TileFace::Icon(Icon::Github), None, "GitHub", "3"),
+            notice(
+                Some(widgets::source_tile(TileFace::Icon(Icon::GitPullRequest), TileSize::Small, None)),
+                "feat(torro-wm): parse hyprland clients",
+                "TorroWorkplace #142 · Felix Arnold",
+                "Review requested.",
+            ),
+            widgets::card(
+                vec![
+                    widgets::card_head(None, "An approval: no ✕, no Later", "Claude Code · 10:20", None),
+                    buttons(&[
+                        (Icon::Check, "Allow", style::button::secondary),
+                        (Icon::X, "Deny", style::button::ghost)
+                    ]),
+                ],
+                false,
+                None,
+            ),
+        ]
+        .spacing(size::card_gap())
+        .width(size::props());
+
+        // The inbox's services (task E5.15): GitHub, Nextcloud, Talk and ntfy with their Lucide icons.
+        let faces = [
+            (TileFace::Icon(Icon::Github), None),
+            (TileFace::Icon(Icon::Cloud), None),
+            (TileFace::Icon(Icon::MessageCircle), None),
+            (TileFace::Icon(Icon::RadioTower), None),
+            (TileFace::Icon(Icon::Calendar), None),
+            (TileFace::letter("whatsapp"), Some(colours[1])),
+        ];
+        let tiles = column(
+            [("Small 20", TileSize::Small), ("Medium 28", TileSize::Medium), ("Large 36", TileSize::Large)].map(
+                |(name, size)| {
+                    let row = faces.iter().map(|&(face, tint)| widgets::source_tile(face, size, tint));
+                    let row = iced::widget::Row::with_children(row).spacing(space::s()).align_y(Alignment::Center);
+                    cell(name, row)
+                },
+            ),
+        )
+        .spacing(space::m());
+        let avatars = row![
+            cell("avatar 36", avatar("AK", 0, size::avatar())),
+            cell("avatar_lg 40", avatar("BO", 1, size::avatar_lg())),
+        ]
+        .spacing(space::xl());
+        let reading = column![
+            cell(
+                "read 14/22",
+                container(typo::text(typo::read(), "Hallo Sven, anbei das überarbeitete Angebot für die Dachsanierung. Wir haben die Dämmung auf 200 mm angepasst und die Dachrinne komplett neu eingeplant, wie besprochen."))
+                    .max_width(size::form_max() / 1.5),
+            ),
+            cell(
+                "body 13/20",
+                container(typo::text(typo::body(), "Hallo Sven, anbei das überarbeitete Angebot für die Dachsanierung. Wir haben die Dämmung auf 200 mm angepasst und die Dachrinne komplett neu eingeplant, wie besprochen.").style(theme::text_2))
+                    .max_width(size::form_max() / 1.5),
+            ),
+        ]
+        .spacing(space::l());
+        let switches = column![
+            cell("with words (wide, medium)", widgets::density_switch(self.density, true, Msg::Density)),
+            cell("icons only (narrow)", widgets::density_switch(self.density, false, Msg::Density)),
+        ]
+        .spacing(space::m());
+        let side = column![
+            section("Source tiles", tiles.into()),
+            section("Avatars", avatars.into()),
+            section("Compact | Comfortable", switches.into()),
+            section("Reading text", reading.into()),
+        ]
+        .spacing(space::xl());
+
+        row![
+            section("Mail cards", mail.into()),
+            section("A column per app", slack.into()),
+            section("Card heads", github.into()),
+            side,
+        ]
+        .spacing(space::xxl())
+        .padding(space::xl())
+        .into()
+    }
+}
+
+/// A round avatar with `initials` on the `colour`-th calendar colour as a tinted surface, `edge`
+/// wide: what a mail card shows beside its lines (the gallery's own; the inbox has its avatar).
+fn avatar<'a>(initials: &'a str, colour: usize, edge: f32) -> Element<'a, Msg> {
+    container(typo::text(typo::caption(), initials).style(theme::text))
+        .center(edge)
+        .style(move |t: &Theme| {
+            let p = palette(t);
+            container::Style {
+                background: Some(Background::Color(theme::over(
+                    p.tinted(p.calendar[colour % p.calendar.len()]),
+                    p.panel,
+                ))),
+                border: border::rounded(edge / 2.0),
+                ..container::Style::default()
+            }
+        })
+        .into()
 }
 
 fn label(text: &str) -> Element<'_, Msg> {

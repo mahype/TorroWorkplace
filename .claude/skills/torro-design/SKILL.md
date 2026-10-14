@@ -114,6 +114,8 @@ aus einem Guss wirkt:
 | `ACCENT` | Torro-Rot `#D50C0C` | dto. | **nur** Primärknopf, Heute, Jetzt-Linie, App-Logo |
 | `merged` | `#A78BFA` | `#7C5CE6` | GitHub „gemergt/erledigt geschlossen“ (Violett): **nur** Icon oder Punkt neben einem Wort (≥ 3:1 auf allen Flächen, `Palette::merged`), nie als Text |
 | Kalender/Listen | `#5B8CFF` `#3FB984` `#E8A33D` `#D96CA8` `#A78BFA` | `#3B6EF0` `#1F9D68` `#B06F12` `#C2508F` `#7C5CE6` | Standardfarben, Tönung 18 % (hell 14 %) |
+| `chart` | `#3B78D8` `#C9701E` `#2E9E6B` `#B5509A` | `#2F6BC9` `#B8621A` `#2A9466` `#A8448C` | Diagrammreihen in fester Reihenfolge (E8.8b), mit dem Dataviz-Validator geprüft; nur Marken, nie Text, nie Status oder Rot |
+| `chart_other` | `#5C6068` | `#50545B` | Grau der Reihe „Other“ (`ChartColor::Other`) |
 
 ### Akzent und Status
 
@@ -148,6 +150,9 @@ aus einem Guss wirkt:
 | `size::row()` | 40 | Listenzeile (Aufgaben) |
 | `size::row_message()` | 88 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau (E3.9) |
 | `size::row_notice()` | 64 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
+| `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
+| `size::avatar()` / `size::avatar_lg()` | 36 / 40 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die kompakte Mail-Zeile bleibt bei 32 |
+| `size::tile_sm()` / `size::tile()` / `size::tile_lg()` | 20 / 28 / 36 | Quellen-Kachel (`widgets::source_tile`, E8.2): neben Wörtern / Hinweiszeile, Spaltenkopf / Anhang, Kopf einer App-Karte |
 | `size::row_sidebar()` | 28 | Seitenleisten- und Menüzeile (Menü 30) |
 | `size::row_group()` | 32 | Gruppenkopf in Listen („Overdue 2“) |
 | `size::header()` | 44 | Kopfleiste |
@@ -187,6 +192,7 @@ aus einem Guss wirkt:
 | `typo::meta()` | 12 / 16 | 400 | Metadaten, Zähler, Fälligkeit |
 | `typo::body()` | 13 / 20 | 400 | Standard: Listen, Seitenleiste, Eingaben, Fließtext |
 | `typo::body_strong()` | 13 / 20 | 500 | Kopfleisten-Titel, Zeilentitel, Termintitel |
+| `typo::read()` | 14 / 22 | 400 | Lesetext: die ganze Mail im Leser des Eingangs (E8.2); nie für Zeilen, Labels, Eingaben |
 | `typo::title()` | 16 / 22 | 600 | Karten- und Dialogtitel |
 | `typo::headline()` | 22 / 28 | 600 | Detailtitel („Review API concept“), Ansichtstitel ohne Kopfleiste |
 | `typo::display()` | 28 / 32 | 600 | Kopfzahl in Mini (Uhrzeit, Zahl offener Aufgaben) |
@@ -222,6 +228,13 @@ aus einem Guss wirkt:
   kräftig (5,4:1). Ansichten wechseln: `segmented` (Grund
   `BG`, aktives Segment `SELECTED` mit `LINE_SELECTED`-Kante). Speichert ein Knopf, zeigt er
   `widgets::busy_button(tr("Creating…"), style)`: volle Farbe, Icon, nimmt keinen zweiten Klick.
+- **Knopfleisten auf Karten** (E8.12): alle Knöpfe mit Wort oder keiner (`widgets::bar_words`, Schätzung
+  mit `widgets::text_button_width`); nur die Hauptaktion vorn (Open, Go to window, Reply) darf ihr Wort
+  allein behalten (`BarWords::Lead`). Sichtbare Kartenknöpfe sind `secondary`, was den Eintrag nur
+  loslässt (Done, Dismiss, Not now) `ghost`; ✕ im Kartenkopf und die Glocke bleiben Icon-Knöpfe. Große
+  Allow/Deny (`size::control_lg()`, halbe Kartenbreite) nur für Entscheidungen in Schmal, sonst nirgends.
+  Menüs eines Kartenknopfs hängen an der Knopfzeile und öffnen über ihr, wenn unten kein Platz ist – nie
+  über dem Auslöser (`Placement::Below`).
 - **Wählbare Chips** (G.10): `widgets::choice_chip(label, mark, on, on_press)` – 28 hoch, Radius 6,
   `RAISED` + `LINE_STRONG`; Hover `HOVER` + `TEXT`; gewählt `SELECTED`, Kante `LINE_SELECTED`, Häkchen 14
   vor dem Text. GitHub-Labels zum Wählen: `widgets::label_choice(hex, name, on, on_press)` (Farbe nur als
@@ -235,6 +248,26 @@ aus einem Guss wirkt:
   tut, was seine Taste an der Zeile tut. Zeilen mit mehreren Zeilen Text (Mail-Zeile, Hinweis mit
   Text) setzen die Leiste auf die erste Zeile, über die Zeit (`widgets::row_actions_at`, E3.11), damit
   Vorschau und Konto darunter frei bleiben.
+- **Zwei Dichten im Eingang** (E8.2, `ui_state::Density`): **Compact** (eine Zeile je Eintrag, Aktionsleiste
+  beim Überfahren) und **Comfortable** (Karten). Umschalter `widgets::density_switch(dichte, wörter, nachricht)` in
+  der Kopfleiste jeder Fensterart, Icons `List` / `LayoutGrid`, in Schmal nur Icons mit Tooltip. Gemerkt je
+  Fensterart und Ausschnitt in `ui.json` (`ui_state::save_density_task`, Schlüssel wie `mail`, `hub/lane:info`);
+  `--density compact|comfortable` beim Start hat Vorrang. Ohne Wahl: Comfortable, in Schmal Compact
+  (`Density::default_for`). Mini und Leiste bleiben Anzeigen.
+- **Karte** (E8.2, `widgets::card(teile, gewählt, on_press)`): Fläche `RAISED`, Rand `LINE_STRONG`, Radius
+  `radius::lg()`, Innenrand `layout::panel_padding()` (16), Teile mit `size::card_gap()` (12) untereinander, Karten
+  mit demselben Abstand. Gewählt (Cursor, im Leser) `SELECTED` mit Kante `LINE_SELECTED`; mit `on_press` ist die
+  ganze Karte ein Knopf (Hover: Kante `LINE_SELECTED`), Knöpfe darin nehmen ihren Klick selbst. **Knöpfe der Karte
+  sind immer sichtbar**: eine Reihe `text_button`/`icon_button` mit `space::s()`, nicht die Hover-Leiste.
+  `widgets::card_head(lead, titel, meta, verwerfen)`: Kachel oder Avatar links, Titel `typo::body_strong()`, darunter
+  Meta `typo::meta()` in `TEXT_3`, beide einzeilig mit „…“ und Tooltip; ✕ („Dismiss“) oben rechts nur, wo der
+  Eintrag verschwinden darf (nicht bei Mail im Mail-Fenster, nicht bei Freigaben). Chips der Karte (Anhang,
+  „Answer by Fri“): `widgets::state_pill` in `widgets::chip_row`, Farbe nur im Icon.
+- **Quellen-Kachel** (E8.2, `widgets::source_tile(gesicht, größe, tönung)`): `TileFace::Icon(…)` oder
+  `TileFace::letter(name)`, `TileSize::Small | Medium | Large` (20 / 28 / 36, Radius xs / sm / md). Neutral
+  `SELECTED` mit Rand `LINE_STRONG`, Zeichen in `TEXT`; mit Farbe des Nutzers nur getönt (`Palette::tinted` über
+  `PANEL`, ohne Rand), nie die volle Farbe als Fläche. Alle Bausteine der Dichten anschauen:
+  `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design plex` mit `TORRO_DATA_HOME`).
 - **Hinweis mit „Undo“** (E3.11, `widgets::toast`): nach einer Änderung, die sich zurücknehmen lässt
   (Done, Later, Hide …), unten mittig `space::xl()` über dem Fensterrand; Fläche `MENU`, Rand
   `LINE_STRONG`, Radius `radius::md()`, Schatten (`style::container::menu`), Text `typo::body()` in
@@ -256,6 +289,26 @@ aus einem Guss wirkt:
   (`attention`). Hinweise in Zeilen: `ListChecks` (Unteraufgaben), `AlignLeft` (Notiz), `Repeat`,
   `Bell`; `GripVertical` (Ziehgriff), `SignalHigh` (Priorität im Menü), `ChevronUp`/`ChevronDown`
   (vorige/nächste Aufgabe). Lucide 0.469.0 liefert `Github` noch mit.
+  Im Eingang (E8.10): `Bell` nur für Benachrichtigungen (Fensterart, Spalte „Notifications“), die Glocke
+  zum Stummschalten („Mute…“ an Karte, Zeile und Paneel, „Unmute“ im Menü, Vorschläge in Insights) `BellOff`; Spur „Info“ `Info`
+  (nicht `Eye`, das ist „Review angefordert“); „Insights“ `ChartColumn`; „Table view“ `Table`.
+  Quellen im Eingang (E5.15, `list::source_icon`, nur nach der Art der Quelle, nie nach dem Namen eines
+  Skripts): GitHub `Github`, Nextcloud `Cloud`, Talk `MessageCircle`, ntfy `RadioTower`, Skripte `AppWindow`.
+  Das Konto steht nur bei zwei Konten derselben Art im Namen („GitHub · anna-berg“, `list::source_name`);
+  die Metazeile nennt die Merkmale („torro/workplace · Review requested“, `list::facet_line`). Ein ntfy-Alarm
+  (dringend) bekommt die Kachel in `attention` getönt und das Wort „Urgent“, nie Torro-Rot. Ein neues
+  Icon: SVG aus Lucide 0.469.0 mit `stroke-width="1.75"` nach `assets/icons/`, Variante in `Icon` samt
+  Eintrag in `Icon::ALL` – die Tests in `icon.rs` prüfen Datei, Strich und Namen.
+- **Diagramme und Kennzahlen** (E8.8b, zuerst die Insights der Zentrale; Methode: Skill `dataviz`): Farben nur als
+  `theme::ChartColor` (`Series(0..4)` in fester Reihenfolge, `Other`), in der Stilfunktion mit
+  `palette(t).chart_color(…)` – eine Reihe bekommt ihre Farbe nach dem, was sie ist, nie nach dem Rang, eine fünfte wird
+  „Other“. Bausteine: `widgets::stat_tile(label, wert, notiz)` (Kennzahl in `typo::display()` tabellarisch, `RAISED`,
+  Rahmen `LINE_STRONG`, Radius `lg`), `widgets::chart_card(titel, notiz, inhalt)` (auf `PANEL`, der Fläche, gegen die die
+  Farben geprüft sind), `widgets::column_chart(reihen, säulen)` (gestapelt, 2 px Fläche zwischen Segmenten, obere Ecken
+  `radius::xs()`, Gitter `LINE`, Grundlinie `LINE_STRONG`, Achsen `typo::micro()` in `TEXT_3`, Tooltip über die ganze
+  Säulenhöhe mit Titel, Summe und jedem Wert), `widgets::chart_legend` (ab zwei Reihen), `widgets::share_bar` (Anteil
+  neutral in `TEXT_3`, kein Status) und `widgets::data_table(kopf, zeilen, summe)` für die Tabellenansicht – jedes
+  Diagramm bietet dieselben Zahlen als Tabelle. Nie zwei y-Achsen, keine Zahl an jeder Säule.
 - **Kleine Bausteine der Aufgaben-App** (`widgets`, R.1; Beispiele im Doc-Kommentar, Anschauen mit
   `cargo run -p torro-gui --example gallery -- --parts`): `prop_line(label, mark, value, on_press)` –
   Eigenschaftszeile, Bezeichnung 88 in `typo::meta()`/`TEXT_3`, Wert daneben (`prop_value`, `prop_placeholder`

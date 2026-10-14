@@ -43,6 +43,7 @@ fn outgoing() -> Outgoing {
             content_type: "application/pdf".into(),
             bytes: (0u8..=255).collect(),
         }],
+        calendar: None,
         message_id: "t1.abc@example.de".into(),
         date: when(),
     }

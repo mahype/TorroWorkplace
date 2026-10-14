@@ -106,8 +106,10 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
 - **Schreiben in einem eigenen Fenster.** Im Tiling kachelt es sich neben die Liste, man kann
   beim Schreiben nachlesen. Im Fenster-Modus als Paneel.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
-  geht per Mail zurück, der Termin landet im Standardkalender. Das gehört in den Kern, weil
-  Mail und Kalender dort zusammenkommen.
+  geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der
+  Termin landet in dem Kalender, der die frühere Kopie hält, sonst im ersten beschreibbaren (E8.3b,
+  Einzelheiten in [api.md](api.md), Fußnote 16). Das gehört in den Kern, weil Mail und Kalender
+  dort zusammenkommen.
 - **Was die App nicht hat:** eigene Kontoeinstellungen (die liegen in der Steuerzentrale),
   Plugins, eingebettete Fremd-Apps, HTML-Editor im ersten Schritt (Text und einfache
   Formatierung reichen).
@@ -162,6 +164,16 @@ Vertrags-Fixtures als Testfälle.
 Erst Kopfzeilen, Inhalte der jüngsten Nachrichten im Voraus, der Rest beim Öffnen. Neue Mail →
 Benachrichtigung über den Kern (`notify-rust` ist da).
 
+**GitHub-Mail (E5.6):** Der Mail-Speicher je Konto (Schema 4) hält neben `List-Id`,
+`List-Unsubscribe`, `Precedence` und `Auto-Submitted` auch `X-GitHub-Reason`
+(`MessageTraits.github`, nur Kleinbuchstaben und `_`). Eine Mail gilt als GitHub-Mail zu einem
+Issue oder PR nur, wenn alle drei passen: `From: notifications@github.com` mit `X-GitHub-Reason`,
+`List-Id: <repo.owner.github.com>` und `Message-ID: <owner/repo/(pull|issues)/<n>…@github.com>`
+mit demselben Repo. `In-Reply-To` wird dafür nicht gespeichert und nicht gelesen: Jede Mail von
+GitHub nennt Repo und Nummer schon in ihrer eigenen `Message-ID`. Der Eingang ordnet sie dann dem
+GitHub-Eintrag zu ([eingang.md](eingang.md), Quelle GitHub); Erledigt dort markiert sie gelesen
+(`\Seen`), wie bei einem Mail-Eintrag.
+
 **Vorarbeit, die auch ohne Mail nötig ist:** mehrere Konten und Kontotypen. `AccountKind` bekommt
 `Mail`, `PimService` wird nach Konto geschlüsselt, Sammlungs-Kennungen bekommen das Konto vorne
 dran (`<account-id>/<url>`), `PimClient::account()` liefert eine Liste. Das löst auch das
@@ -215,7 +227,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Verschieben / Archiv | Liste, Lesebereich | `mail.move_messages` · Write (nach Trash: Delete) | `mail_move_messages` |
 | Löschen | Liste, Lesebereich | `mail.delete_messages` · Delete | `mail_delete_messages` |
 | Entwurf senden | Schreibfenster | `mail.send_draft` · Write + Senden-Schalter | `mail_send_draft` (antwortet ggf. `pending`) |
-| Einladung beantworten | Lesebereich, Kalender | `calendar.respond_invitation` · Write | `calendar_respond_invitation` |
+| Einladung beantworten (E8.3b) | Leser, Karte, Smart view „Invitations“ | `mail.respond_to_invitation` · Write + Nach außen | `mail_respond_to_invitation` (antwortet ggf. `pending`) |
 | Freigabe entscheiden | Steuerzentrale › Approvals, Benachrichtigung | `approvals.decide` · Admin | **Never** (Liste Punkt 3) |
 | Agenten-Rechte | Steuerzentrale › Agents & API | `clients.*` · Admin | **Never** (Liste Punkt 2) |
 

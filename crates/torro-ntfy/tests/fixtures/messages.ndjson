@@ -1,0 +1,8 @@
+{"id":"SLiKI64DOt","time":1760426990,"event":"open","topic":"backups_x7Qp2,alerts_9Kd"}
+{"id":"hwQ2YpKdmg","time":1760426995,"event":"message","topic":"backups_x7Qp2","message":"Disk almost full"}
+{"id":"DGUDShMCsc","time":1760426998,"event":"keepalive","topic":"backups_x7Qp2,alerts_9Kd"}
+{"id":"h8t4Fgaw7w","time":1760427000,"expires":1760470200,"event":"message","topic":"backups_x7Qp2","title":"Backup failed","message":"The nightly backup of nas-01 stopped at 03:12.\nDisk full.","priority":5,"tags":["warning","floppy_disk"],"click":"https://nas.example.org/backups/42","icon":"https://nas.example.org/icon.png","actions":[{"id":"a1","action":"http","label":"Retry","url":"https://nas.example.org/retry","method":"POST","clear":true}],"attachment":{"name":"log.txt","type":"text/plain","size":1024,"expires":1760470200,"url":"https://ntfy.sh/file/h8t4Fgaw7w.txt"}}
+{"id":"Zq3LmN8pRt","time":1760427060,"event":"message","topic":"alerts_9Kd","title":"   ","message":"Odd one","priority":9,"click":"javascript:alert(1)","tags":["xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx","",42,"t1","t2","t3","t4","t5","t6","t7","t8","t9","t10","t11"]}
+{"id":"poll1","time":1760427100,"event":"poll_request","topic":"backups_x7Qp2","message":"New message","poll_id":"Zq3LmN8pRt"}
+{"id":"del1","time":1760427110,"event":"message_delete","topic":"backups_x7Qp2"}
+{"id":"Kp7Vw2XyZa","time":1760427120,"event":"message","topic":"backups_x7Qp2","message":"Low priority","priority":1,"click":"https://bank.example@evil.example/login","tags":["ääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääää","äääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääääää"]}

@@ -13,6 +13,10 @@
 //! `server` and which kind of server it is in [`Account::ai`]; its API key, if it has one, lives in
 //! the keychain like every secret.
 //!
+//! An ntfy account (task E5.12, [`AccountKind::Ntfy`]) keeps its server's base address in `server`
+//! and the topics it subscribes to with their labels in [`Account::ntfy`]; the login's secret (a
+//! password or an access token `tk_…`), if it has one, lives in the keychain like every secret.
+//!
 //! A secret on its way there travels as a [`Secret`], which never shows its value in `Debug`.
 
 use std::borrow::Cow;
@@ -85,11 +89,16 @@ pub enum AccountKind {
     /// LM Studio) or in the cloud (OpenRouter). Its base address is `server`, its kind of server
     /// [`Account::ai`]. It has no calendars, task lists or mail. Written `ai`.
     Ai,
+    /// An ntfy account (task E5.12, `docs/eingang.md`): a server whose topics the inbox
+    /// subscribes to. Its base address is `server`, its topics and user name [`Account::ntfy`];
+    /// the secret of its login, if any, is in the keychain. No calendars, task lists or mail.
+    /// Written `ntfy`.
+    Ntfy,
 }
 
 impl AccountKind {
     /// How the kind is written in `accounts.json` and in the API (`AccountInfo::kind`):
-    /// `nextcloud`, `github`, `caldav`, `mail`, `ai`.
+    /// `nextcloud`, `github`, `caldav`, `mail`, `ai`, `ntfy`.
     pub fn name(self) -> &'static str {
         match self {
             AccountKind::Nextcloud => "nextcloud",
@@ -97,6 +106,7 @@ impl AccountKind {
             AccountKind::CalDav => "caldav",
             AccountKind::Mail => "mail",
             AccountKind::Ai => "ai",
+            AccountKind::Ntfy => "ntfy",
         }
     }
 }
@@ -192,6 +202,44 @@ pub struct Account {
     /// the other kinds and in lists written before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai: Option<AiProvider>,
+    /// The topics and the user name of an ntfy account ([`AccountKind::Ntfy`], task E5.12);
+    /// `None` for the other kinds and in lists written before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ntfy: Option<NtfyConfig>,
+}
+
+/// What an ntfy account keeps besides its server (task E5.12): the topics it subscribes to and
+/// the user name of its login. The secret of the login is not part of it: it is in the keychain
+/// under the account id ([`Account::set_secret`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NtfyConfig {
+    /// The topics, in the order the person added them; each name at most once.
+    #[serde(default)]
+    pub topics: Vec<NtfyTopic>,
+    /// The user name of a login with a password; `None` for no login or a login with an access
+    /// token (`tk_…`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<String>,
+}
+
+/// One topic of an ntfy account (task E5.12): its name on the server and what the person calls it.
+///
+/// On a public server whoever knows a topic's name can read it, so the name is handled like a
+/// password (open question 10 of E5): `Debug` shows only the label, the name goes to the app key
+/// alone (agents and the inbox's trait `topic` see the label) and never into a log.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct NtfyTopic {
+    /// The topic's name on the server: 1 to 64 of `A-Z a-z 0-9 _ -`.
+    pub topic: String,
+    /// What the person calls the topic (`Backups`), shown in the inbox instead of the name: a
+    /// single line of at most 60 characters, not empty.
+    pub label: String,
+}
+
+impl fmt::Debug for NtfyTopic {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NtfyTopic").field("topic", &"…").field("label", &self.label).finish()
+    }
 }
 
 impl Account {
@@ -206,6 +254,7 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: None,
+            ntfy: None,
         }
     }
 
@@ -240,6 +289,7 @@ impl Account {
             mail: Some(config),
             mail_settings: Some(settings),
             ai: None,
+            ntfy: None,
         })
     }
 
@@ -261,6 +311,7 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: None,
+            ntfy: None,
         }
     }
 
@@ -276,6 +327,7 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: None,
+            ntfy: None,
         }
     }
 
@@ -297,6 +349,32 @@ impl Account {
             mail: None,
             mail_settings: None,
             ai: Some(provider),
+            ntfy: None,
+        }
+    }
+
+    /// The ntfy account at the base address `server` (task E5.12), as `torro_ntfy::Server` writes
+    /// it (`https://ntfy.sh`, `http://localhost:8080`): id `ntfy:<host>`, where `<host>` is the
+    /// host of `server` with its port when that is not the scheme's own (`ntfy:ntfy.sh`,
+    /// `ntfy:localhost:8080`), so it equals the key of its inbox source
+    /// (`torro_inbox::SourceRef::ntfy`); `server` as given; `user` the user name of a login with a
+    /// password (also the login name shown), none for no login or an access token. No topics yet:
+    /// the caller adds them to [`Account::ntfy`].
+    ///
+    /// The id starts with `ntfy:`, so it never names a client key's keychain entry
+    /// ([`RESERVED_ID_PREFIX`]) and never holds a `/` ([`authority`] drops the path).
+    pub fn ntfy(server: &str, user: Option<&str>) -> Account {
+        let user = user.map(str::trim).filter(|user| !user.is_empty()).map(str::to_string);
+        Account {
+            id: format!("ntfy:{}", authority(server)),
+            kind: AccountKind::Ntfy,
+            server: server.to_string(),
+            login_name: user.clone().unwrap_or_default(),
+            display_name: None,
+            mail: None,
+            mail_settings: None,
+            ai: None,
+            ntfy: Some(NtfyConfig { topics: Vec::new(), user }),
         }
     }
 
@@ -514,6 +592,35 @@ mod tests {
         // Lists of other kinds do not grow an `ai` field.
         let written = serde_json::to_string(&Account::github("anna")).expect("json");
         assert!(!written.contains("\"ai\""), "{written}");
+    }
+
+    #[test]
+    fn ntfy_accounts_are_named_after_the_host_and_keep_topics_and_user() {
+        let account = Account::ntfy("https://ntfy.sh", None);
+        assert_eq!(
+            (account.id.as_str(), account.kind, account.login_name.as_str()),
+            ("ntfy:ntfy.sh", AccountKind::Ntfy, "")
+        );
+        assert_eq!(Account::ntfy("http://localhost:8080", Some(" anna ")).id, "ntfy:localhost:8080");
+        assert_eq!(Account::ntfy("https://push.example.org:443", None).id, "ntfy:push.example.org");
+        let mut anna = Account::ntfy("https://push.example.org", Some("anna"));
+        assert_eq!(anna.login_name, "anna");
+        let config = anna.ntfy.as_mut().expect("an ntfy account has its config");
+        assert_eq!(config.user.as_deref(), Some("anna"));
+        config.topics.push(NtfyTopic { topic: "secret_backups".into(), label: "Backups".into() });
+        assert!(!is_reserved_id(&anna.id) && !anna.id.contains('/'));
+
+        let json = serde_json::to_value(&anna).expect("json");
+        assert_eq!(json["kind"], "ntfy");
+        assert_eq!(json["ntfy"]["topics"][0]["topic"], "secret_backups", "the list keeps the name");
+        assert_eq!(serde_json::from_value::<Account>(json).expect("read back"), anna);
+        assert_eq!(AccountKind::Ntfy.name(), "ntfy");
+        // The name is a password on a public server: no `Debug` shows it.
+        let shown = format!("{anna:?}");
+        assert!(!shown.contains("secret_backups") && shown.contains("Backups"), "{shown}");
+        // Lists of other kinds do not grow an `ntfy` field.
+        let written = serde_json::to_string(&Account::github("anna")).expect("json");
+        assert!(!written.contains("ntfy"), "{written}");
     }
 
     #[test]

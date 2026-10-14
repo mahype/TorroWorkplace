@@ -37,6 +37,18 @@
 //! into them ([`loaded`], called by the shell on every reload). Both mail servers are typed as in
 //! the add-account dialog (`server_fields.rs`).
 //!
+//! The inbox (task E5.14): a GitHub account's page has the group "Inbox" with the switch "Show
+//! notifications in the Inbox", a Nextcloud account's the switches "Notifications" and "Talk"; each
+//! switch is `inbox.mute_source` for its source (on = not muted, read from `inbox.list_sources`). Why
+//! a source brings nothing (`SourceInfo::health`) stands next to it in quiet words ([`health_text`]).
+//!
+//! An ntfy account (task E5.14, `AccountInfo::ntfy`) has a page of its own ([`ntfy_detail`]): its
+//! topics by label with their names, each opening a dialog to rename it or "Unsubscribe…" (behind
+//! a confirmation), "Add topic…" (a dialog for the name and label), and "Change login…" (a dialog
+//! with the login form of the add-account dialog, the secret a [`Secret`] until it is sent). They
+//! send `accounts.set_ntfy_topic` and `accounts.set_ntfy_login`; the dialogs wait for the answer and
+//! show a refusal in their foot.
+//!
 //! Requests: `Sync`, `RemoveAccount { id }`, `ConnectCalDav` / `ConnectMail` for "Change
 //! password…", `ConnectMail` for "Server settings…", `UpdateMailAccount` for the settings of a mail
 //! account, and `SetCollectionShown { collection, shown }` for the switches. The pure parts
@@ -60,12 +72,17 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status, collection_color, color_dot, empty_state};
 use torro_gui::{style, typo};
-use torro_ipc::{AccountInfo, MailView, OpenRoleView, Request, Response, ServiceState};
+use torro_inbox::item::SourceHealth;
+use torro_inbox::{SourceKind, SourceRef};
+use torro_ipc::{
+    AccountInfo, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, ServiceState, TopicName,
+};
 use torro_mail::{Notify, Role, Security, Services};
 use torro_pim::{AccountState, Collection, CollectionKind};
 
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, Header, chevron, confirm, dialog, pressable, row_frame, setting_row, wizard};
+use crate::account::ntfy::TOPICS_MAX;
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -81,6 +98,79 @@ pub struct State {
     pub mail: Option<MailDraft>,
     /// The "Server settings" dialog of the open mail account.
     pub servers: Option<ServerSettings>,
+    /// The topic dialog of the open ntfy account (task E5.14): a new topic, or one to rename or
+    /// unsubscribe.
+    pub topic: Option<TopicEdit>,
+    /// The "Change login" dialog of the open ntfy account.
+    pub login: Option<LoginChange>,
+}
+
+/// The topic dialog of an ntfy account's page (task E5.14). For a new topic the name and label are
+/// typed; for one the account has, the name is fixed and the label can change, and "Unsubscribe…"
+/// asks before it goes. The name is a [`TopicName`], so `Debug` never shows it.
+#[derive(Debug)]
+pub struct TopicEdit {
+    name: TopicName,
+    /// The label the account keeps for the topic; `None` for a new topic.
+    stored: Option<String>,
+    label: String,
+    /// "Subscribe" or "Save" was pressed: from then on the dialog says what is wrong.
+    tried: bool,
+    /// "Unsubscribe…" was pressed: the confirmation shows instead of the dialog.
+    confirm_unsubscribe: bool,
+    error: Option<String>,
+    sending: bool,
+}
+
+impl TopicEdit {
+    /// A new topic, nothing typed.
+    fn new() -> TopicEdit {
+        TopicEdit {
+            name: TopicName::new(String::new()),
+            stored: None,
+            label: String::new(),
+            tried: false,
+            confirm_unsubscribe: false,
+            error: None,
+            sending: false,
+        }
+    }
+
+    /// A topic the account has; `None` when the answer held no name (only the app key gets one).
+    fn of(topic: &NtfyTopicView) -> Option<TopicEdit> {
+        let name = topic.topic.as_deref()?;
+        Some(TopicEdit {
+            name: TopicName::new(name),
+            stored: Some(topic.label.clone()),
+            label: topic.label.clone(),
+            ..TopicEdit::new()
+        })
+    }
+
+    /// What keeps the topic from being sent, in the core's words.
+    fn problem(&self) -> Option<String> {
+        let name = self.stored.is_none().then(|| wizard::topic_problem(self.name.as_str())).flatten();
+        name.or_else(|| wizard::label_problem(&self.label))
+    }
+}
+
+/// The "Change login" dialog of an ntfy account (task E5.14): the login form of the add-account
+/// dialog, what went wrong and whether the request is on its way.
+#[derive(Debug, Default)]
+pub struct LoginChange {
+    login: wizard::NtfyLogin,
+    error: Option<String>,
+    sending: bool,
+}
+
+impl LoginChange {
+    /// The form as the account signs in now: its user name, or the token way when it has a login
+    /// without one. The secret is never filled in: the core keeps it.
+    fn of(view: &NtfyView) -> LoginChange {
+        let token = view.login && view.user.is_none();
+        let login = wizard::NtfyLogin { token, user: view.user.clone().unwrap_or_default(), ..Default::default() };
+        LoginChange { login, ..LoginChange::default() }
+    }
 }
 
 /// The "Change password" dialog: the new password, what went wrong, and whether the request is on
@@ -279,6 +369,31 @@ pub enum Message {
     ServersPasswordEdited(Secret),
     SubmitServers,
     CloseServers,
+    /// The switch of one of the account's inbox sources (task E5.14): shown (`true`) or muted.
+    ShowInInbox(SourceRef, bool),
+    /// "Add topic…" on an ntfy account's page.
+    AddTopic,
+    /// A topic's row, by its place in the account's list.
+    EditTopic(usize),
+    /// The new topic's name was typed. A [`TopicName`], so that `Debug` shows none.
+    TopicNameEdited(TopicName),
+    TopicLabelEdited(String),
+    /// "Subscribe" or "Save" in the topic dialog, or Enter in a field.
+    SaveTopic,
+    /// "Unsubscribe…" in the topic dialog.
+    AskUnsubscribe,
+    CancelUnsubscribe,
+    Unsubscribe,
+    CloseTopic,
+    /// "Change login…" on an ntfy account's page.
+    ChangeLogin,
+    /// "User and password" (`false`) or "Access token" (`true`).
+    LoginKind(bool),
+    LoginUserEdited(String),
+    /// The password or token. A [`Secret`], so that `Debug` shows none.
+    LoginSecretEdited(Secret),
+    SubmitLogin,
+    CloseLogin,
 }
 
 /// What Escape means on this page right now: close the add-account dialog, the password or server
@@ -290,6 +405,10 @@ pub fn escape(state: &State) -> Option<Message> {
         Some(Message::ClosePassword)
     } else if state.servers.is_some() {
         Some(Message::CloseServers)
+    } else if let Some(edit) = &state.topic {
+        Some(if edit.confirm_unsubscribe { Message::CancelUnsubscribe } else { Message::CloseTopic })
+    } else if state.login.is_some() {
+        Some(Message::CloseLogin)
     } else if state.confirm_remove {
         Some(Message::CancelRemove)
     } else {
@@ -315,17 +434,13 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         },
         Message::Open(id) => {
             state.selected = Some(id);
-            state.confirm_remove = false;
-            state.password = None;
-            state.servers = None;
+            close_dialogs(state);
             state.mail = selected(state, data).and_then(MailDraft::of);
             Action::None
         }
         Message::Back => {
             state.selected = None;
-            state.confirm_remove = false;
-            state.password = None;
-            state.servers = None;
+            close_dialogs(state);
             state.mail = None;
             Action::None
         }
@@ -438,7 +553,148 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.servers = None;
             Action::None
         }
+        Message::ShowInInbox(source, shown) => Action::Send(Request::MuteSource { source, muted: !shown }),
+        Message::AddTopic => {
+            let room = selected_ntfy(state, data).is_some_and(|(_, view)| view.topics.len() < TOPICS_MAX);
+            state.topic = room.then(TopicEdit::new);
+            Action::None
+        }
+        Message::EditTopic(at) => {
+            state.topic = selected_ntfy(state, data).and_then(|(_, view)| view.topics.get(at)).and_then(TopicEdit::of);
+            Action::None
+        }
+        // A topic the account has keeps its name; only a new one is typed.
+        Message::TopicNameEdited(name) => {
+            edit_topic(state, |edit| {
+                if edit.stored.is_none() {
+                    edit.name = name;
+                }
+            });
+            Action::None
+        }
+        Message::TopicLabelEdited(label) => {
+            edit_topic(state, |edit| edit.label = label);
+            Action::None
+        }
+        Message::SaveTopic => save_topic(state, data),
+        Message::AskUnsubscribe => {
+            if let Some(edit) = state.topic.as_mut().filter(|edit| edit.stored.is_some() && !edit.sending) {
+                edit.confirm_unsubscribe = true;
+            }
+            Action::None
+        }
+        Message::CancelUnsubscribe => {
+            if let Some(edit) = state.topic.as_mut() {
+                edit.confirm_unsubscribe = false;
+            }
+            Action::None
+        }
+        // The confirmation is the last step: a refusal is the shell's notice.
+        Message::Unsubscribe => {
+            let Some((account, _)) = selected_ntfy(state, data) else { return Action::None };
+            if !state.topic.as_ref().is_some_and(|edit| edit.confirm_unsubscribe) {
+                return Action::None;
+            }
+            match state.topic.take() {
+                Some(edit) => Action::Send(Request::SetNtfyTopic {
+                    account: account.id.clone(),
+                    topic: edit.name,
+                    label: None,
+                    subscribed: false,
+                }),
+                None => Action::None,
+            }
+        }
+        Message::CloseTopic => {
+            state.topic = None;
+            Action::None
+        }
+        Message::ChangeLogin => {
+            state.login = selected_ntfy(state, data).map(|(_, view)| LoginChange::of(view));
+            Action::None
+        }
+        Message::LoginKind(token) => {
+            edit_login(state, |login| login.token = token);
+            Action::None
+        }
+        Message::LoginUserEdited(user) => {
+            edit_login(state, |login| login.user = user);
+            Action::None
+        }
+        Message::LoginSecretEdited(secret) => {
+            edit_login(state, |login| login.secret = secret);
+            Action::None
+        }
+        Message::SubmitLogin => submit_login(state, data),
+        Message::CloseLogin => {
+            state.login = None;
+            Action::None
+        }
     }
+}
+
+/// Every dialog and confirmation of a detail page closed: another page opens.
+fn close_dialogs(state: &mut State) {
+    state.confirm_remove = false;
+    state.password = None;
+    state.servers = None;
+    state.topic = None;
+    state.login = None;
+}
+
+/// The open page's ntfy account with its [`NtfyView`]; `None` on every other page.
+fn selected_ntfy<'a>(state: &State, data: &'a Data) -> Option<(&'a AccountInfo, &'a NtfyView)> {
+    let account = selected(state, data)?;
+    Some((account, account.ntfy.as_ref()?))
+}
+
+/// Changes the open topic dialog and clears the refusal of the last try.
+fn edit_topic(state: &mut State, change: impl FnOnce(&mut TopicEdit)) {
+    if let Some(edit) = state.topic.as_mut().filter(|edit| !edit.sending) {
+        change(edit);
+        edit.error = None;
+    }
+}
+
+/// Changes the open login dialog and clears the refusal of the last try.
+fn edit_login(state: &mut State, change: impl FnOnce(&mut wizard::NtfyLogin)) {
+    if let Some(dialog) = state.login.as_mut().filter(|dialog| !dialog.sending) {
+        change(&mut dialog.login);
+        dialog.error = None;
+    }
+}
+
+/// "Subscribe" or "Save" in the topic dialog: from now on it says what is wrong; once nothing is,
+/// sends `SetNtfyTopic` and waits. A label left as it was changes nothing, so nothing is sent.
+fn save_topic(state: &mut State, data: &Data) -> Action {
+    let Some((account, _)) = selected_ntfy(state, data) else { return Action::None };
+    let Some(edit) = state.topic.as_mut().filter(|edit| !edit.sending) else { return Action::None };
+    edit.tried = true;
+    if edit.problem().is_some() {
+        return Action::None;
+    }
+    let label = edit.label.trim().to_string();
+    if edit.stored.as_deref().is_some_and(|stored| stored == label) {
+        state.topic = None;
+        return Action::None;
+    }
+    edit.sending = true;
+    edit.error = None;
+    let topic = TopicName::new(edit.name.as_str().trim());
+    Action::Send(Request::SetNtfyTopic { account: account.id.clone(), topic, label: Some(label), subscribed: true })
+}
+
+/// "Save" in "Change login": sends the login for the account's own server and waits; the topics
+/// stay as they are. The dialog keeps no copy of the secret.
+fn submit_login(state: &mut State, data: &Data) -> Action {
+    let Some((_, view)) = selected_ntfy(state, data) else { return Action::None };
+    let Some(dialog) = state.login.as_mut().filter(|dialog| !dialog.sending && dialog.login.is_ready()) else {
+        return Action::None;
+    };
+    let (user, secret) = dialog.login.take();
+    dialog.sending = true;
+    dialog.error = None;
+    Action::Send(Request::SetNtfyLogin { server: view.server.clone(), topics: Vec::new(), user, secret })
 }
 
 /// The open page's mail account with its [`MailView`]; `None` on every other page.
@@ -628,7 +884,36 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         }
         return true;
     }
+    if let Some(edit) = state.topic.as_mut().filter(|edit| edit.sending) {
+        match failure(result, |response| matches!(response, Response::Ok)) {
+            None => state.topic = None,
+            Some(message) => {
+                edit.sending = false;
+                edit.error = Some(message);
+            }
+        }
+        return true;
+    }
+    if let Some(dialog) = state.login.as_mut().filter(|dialog| dialog.sending) {
+        match failure(result, |response| matches!(response, Response::Account { .. })) {
+            None => state.login = None,
+            Some(message) => {
+                dialog.sending = false;
+                dialog.error = Some(message);
+            }
+        }
+        return true;
+    }
     false
+}
+
+/// What went wrong with a request whose good answer `is_done` knows; `None` when it went through.
+fn failure(result: &Result<Response, String>, is_done: impl Fn(&Response) -> bool) -> Option<String> {
+    match result {
+        Ok(Response::Error { message, .. }) | Err(message) => Some(message.clone()),
+        Ok(response) if is_done(response) => None,
+        Ok(_) => Some(tr("Torro Workplace did not answer as expected. Try again.").to_string()),
+    }
 }
 
 /// What went wrong with a request that signs an account in: `None` when the account connected.
@@ -662,6 +947,14 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
     if let Some(dialog) = &state.servers {
         let (account, mail) = selected_mail(state, data)?;
         return Some(servers_dialog(dialog, account, mail));
+    }
+    if let Some(edit) = &state.topic {
+        let (account, _) = selected_ntfy(state, data)?;
+        return Some(if edit.confirm_unsubscribe { unsubscribe_confirm(edit) } else { topic_dialog(edit, account) });
+    }
+    if let Some(change) = &state.login {
+        let (_, view) = selected_ntfy(state, data)?;
+        return Some(login_dialog(change, view));
     }
     if !state.confirm_remove {
         return None;
@@ -760,6 +1053,7 @@ pub fn provider_name(kind: &str) -> String {
         "mail" => tr("Mail").to_string(),
         "github" => tr("GitHub").to_string(),
         "ai" => tr("AI").to_string(),
+        NTFY_KIND => "ntfy".to_string(),
         other => other.to_string(),
     }
 }
@@ -914,8 +1208,15 @@ fn pending_row<'a>(account: &'a AccountInfo) -> Element<'a, Message> {
 fn account_row<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
     let line = status_line(&account.state);
     let dot = widgets::status_dot(line.tone.status());
-    // An AI account never syncs: "Last synced" would say nothing true about it.
-    let detail = if account.kind == AI_KIND { line.text } else { account_detail(&account.state, now) };
+    // An AI account never syncs: "Last synced" would say nothing true about it. An ntfy account
+    // listens instead, so its topics are what matters.
+    let detail = match (&account.ntfy, &account.state) {
+        (Some(view), AccountState::Connected { problem: None, .. }) => {
+            format!("{} · {}", line.text, topics_text(view.topics.len()))
+        }
+        _ if account.kind == AI_KIND || account.ntfy.is_some() => line.text,
+        _ => account_detail(&account.state, now),
+    };
     let row = setting_row(Some(dot), account.label.as_str(), Some(detail), chevron());
     pressable(row, Some(Message::Open(account.id.clone())))
 }
@@ -942,6 +1243,9 @@ fn detail<'a>(state: &'a State, account: &'a AccountInfo, data: &'a Data, now: D
     if let Some(mail) = &account.mail {
         return mail_detail(state, account, mail, now);
     }
+    if let Some(view) = &account.ntfy {
+        return ntfy_detail(account, view, data, now);
+    }
     // A GitHub account has no calendars or lists (yet); what its token may do matters instead. An
     // AI account has nothing of the kind.
     let middle = match account.kind.as_str() {
@@ -951,6 +1255,7 @@ fn detail<'a>(state: &'a State, account: &'a AccountInfo, data: &'a Data, now: D
     };
     column![heading(account), status_group(account, now)]
         .push(middle)
+        .push(inbox_sources_group(account, data))
         .push(connection_group(account))
         .push(remove_button())
         .spacing(layout::section_gap())
@@ -1316,12 +1621,15 @@ pub(super) fn on_axis<'a, M: 'a>(button: Element<'a, M>) -> Element<'a, M> {
 /// The kind of an AI account (task KI.1a), `torro_core::account::AccountKind::Ai` as listed.
 const AI_KIND: &str = "ai";
 
+/// The kind of an ntfy account (task E5.12), `torro_core::account::AccountKind::Ntfy` as listed.
+const NTFY_KIND: &str = "ntfy";
+
 /// The status as a dot and a word, when it last synced, and "Sync now" for a connected account.
 /// An AI account gets the dot and the word only: nothing of it syncs.
 fn status_group<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a, Message> {
     let line = status_line(&account.state);
     let (detail, sync) = match &account.state {
-        AccountState::Connected { .. } if account.kind == AI_KIND => (None, None),
+        AccountState::Connected { .. } if account.kind == AI_KIND || account.kind == NTFY_KIND => (None, None),
         AccountState::Connected { last_sync, .. } => (
             Some(last_synced_text(*last_sync, now)),
             Some(widgets::text_button(
@@ -1455,6 +1763,274 @@ pub fn github_permissions(scopes: &[String]) -> Vec<Permission> {
     ]
 }
 
+// ----- The inbox (task E5.14) ---------------------------------------------------------------
+
+/// One inbox source of an account: its switch's name and the line under it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Feed {
+    pub source: SourceRef,
+    pub name: &'static str,
+    pub summary: Option<&'static str>,
+}
+
+/// The inbox sources an account brings (its id is the source's key): a GitHub account its
+/// notifications, a Nextcloud account its notifications and Talk. Every other account none here;
+/// a mail account has its own "Show new mail in Inbox", an ntfy account is nothing but its topics.
+pub fn feeds(account: &AccountInfo) -> Vec<Feed> {
+    let Ok(source) = account.id.parse::<SourceRef>() else { return Vec::new() };
+    match source.kind {
+        SourceKind::Github => vec![Feed { source, name: tr("Show notifications in the Inbox"), summary: None }],
+        SourceKind::Nextcloud => {
+            let talk = SourceRef::talk(source.name.clone());
+            vec![
+                Feed { source, name: tr("Notifications"), summary: Some(tr("From Nextcloud and its apps")) },
+                Feed { source: talk, name: tr("Talk"), summary: Some(tr("Unread conversations and mentions")) },
+            ]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Whether the inbox shows `source`: everything is shown unless `inbox.list_sources` says muted.
+pub fn source_shown(data: &Data, source: &SourceRef) -> bool {
+    !data.sources.iter().any(|info| info.source == *source && info.muted)
+}
+
+/// Why `source` brings nothing at the moment, as the core keeps it.
+fn source_health(data: &Data, source: &SourceRef) -> Option<SourceHealth> {
+    data.sources.iter().find(|info| info.source == *source).and_then(|info| info.health)
+}
+
+/// Why a source of `kind` is quiet, in calm words that say what helps.
+pub fn health_text(kind: SourceKind, health: SourceHealth) -> &'static str {
+    match (kind, health) {
+        (SourceKind::Github, SourceHealth::MissingScope) => {
+            tr("Notifications need a classic token with notifications or repo, or the GitHub CLI sign-in.")
+        }
+        (_, SourceHealth::MissingScope) => tr("This sign-in may not read notifications."),
+        (SourceKind::Talk, SourceHealth::MissingApp) => tr("This Nextcloud has no Talk."),
+        (_, SourceHealth::MissingApp) => tr("This Nextcloud has no notifications app, so nothing comes from it."),
+        (_, SourceHealth::SignedOut) => tr("The server refused the sign-in. Sign in again to get notifications."),
+        (_, SourceHealth::Offline) => tr("The server cannot be reached. Notifications come once it answers."),
+    }
+}
+
+/// "Inbox" on a GitHub or Nextcloud account's page: a switch per source ([`feeds`]). A GitHub
+/// account's one row has why it is quiet as the group's sentence; Nextcloud's rows say it under
+/// their names. `None` for an account without inbox sources.
+fn inbox_sources_group<'a>(account: &AccountInfo, data: &Data) -> Option<Element<'a, Message>> {
+    let feeds = feeds(account);
+    if feeds.is_empty() {
+        return None;
+    }
+    let mut footer = None;
+    let rows = feeds
+        .into_iter()
+        .map(|feed| {
+            let source = feed.source.clone();
+            let switch = toggler(source_shown(data, &feed.source))
+                .size(style::CHECK_SIZE)
+                .style(style::toggler)
+                .on_toggle(move |shown| Message::ShowInInbox(source.clone(), shown));
+            let health = source_health(data, &feed.source).map(|health| health_text(feed.source.kind, health));
+            match (feed.summary, health) {
+                (None, health) => {
+                    footer = health.map(str::to_string);
+                    setting_row(None, feed.name, None, switch)
+                }
+                (Some(summary), health) => {
+                    wrapped_row(None, feed.name, health.unwrap_or(summary).to_string(), Some(switch.into()))
+                }
+            }
+        })
+        .collect();
+    Some(widgets::group(tr("Inbox"), rows, footer))
+}
+
+// ----- An ntfy account's page (task E5.14) --------------------------------------------------
+
+/// "1 topic", "3 topics".
+fn topics_text(n: usize) -> String {
+    match n {
+        1 => tr("1 topic").to_string(),
+        n => trf("{n} topics", &[("n", &n)]),
+    }
+}
+
+/// An ntfy account's page: the status, its topics, the server and login, and the removal at the
+/// end. Nothing of it syncs, so the status has no "Sync now".
+fn ntfy_detail<'a>(
+    account: &'a AccountInfo,
+    view: &'a NtfyView,
+    data: &Data,
+    now: DateTime<Utc>,
+) -> Element<'a, Message> {
+    let health = account.id.parse::<SourceRef>().ok().and_then(|source| source_health(data, &source));
+    column![
+        heading(account),
+        status_group(account, now),
+        topics_group(view, health),
+        ntfy_connection_group(view),
+        remove_button(),
+    ]
+    .spacing(layout::section_gap())
+    .into()
+}
+
+/// The topics by label with their names below; a row opens the topic dialog. "Add topic…" ends the
+/// group while the account has room. The sentence under it says why the source is quiet, or what
+/// the label is for.
+fn topics_group(view: &NtfyView, health: Option<SourceHealth>) -> Element<'_, Message> {
+    let mut rows: Vec<Element<'_, Message>> = view
+        .topics
+        .iter()
+        .enumerate()
+        .map(|(at, topic)| {
+            let row = setting_row(None, topic.label.as_str(), topic.topic.clone(), chevron());
+            pressable(row, Some(Message::EditTopic(at)))
+        })
+        .collect();
+    let room = view.topics.len() < TOPICS_MAX;
+    let add = widgets::text_button(
+        Some(Icon::Plus),
+        tr("Add topic…"),
+        style::button::ghost,
+        room.then_some(Message::AddTopic),
+    );
+    rows.push(row_frame(on_axis(add), false));
+    let footer = match health {
+        Some(health) => health_text(SourceKind::Ntfy, health),
+        None => tr("The Inbox shows each topic by its label. On a public server a topic name works like a password."),
+    };
+    widgets::group(tr("Topics"), rows, Some(footer.to_string()))
+}
+
+/// The server and how the account signs in, with "Change login…".
+fn ntfy_connection_group(view: &NtfyView) -> Element<'_, Message> {
+    let login = match (&view.user, view.login) {
+        (Some(user), _) => trf("Signed in as {user}", &[("user", user)]),
+        (None, true) => tr("Access token").to_string(),
+        (None, false) => tr("No login").to_string(),
+    };
+    let change = widgets::text_button(None, tr("Change login…"), style::button::secondary, Some(Message::ChangeLogin));
+    let rows = vec![value_row(tr("Server"), &view.server), setting_row(None, tr("Login"), Some(login), change)];
+    let footer = tr("The password or token stays in the system keychain. Agents never see it.");
+    widgets::group(tr("Connection"), rows, Some(footer.to_string()))
+}
+
+/// The topic dialog: for a new topic its name and label, for one the account has its name (fixed)
+/// and label with "Unsubscribe…" at the left of the foot. What is wrong shows after the first
+/// "Subscribe" or "Save"; the button waits while the server checks the topic.
+fn topic_dialog<'a>(edit: &'a TopicEdit, account: &'a AccountInfo) -> Element<'a, Message> {
+    let new = edit.stored.is_none();
+    let (title, purpose) = if new {
+        (tr("Add topic"), trf("Subscribe {account} to another topic.", &[("account", &account.label)]))
+    } else {
+        (tr("Edit topic"), tr("The Inbox shows the topic by its label.").to_string())
+    };
+    let head = column![typo::text(typo::title(), title), typo::text(typo::body(), purpose).style(theme::text_2)]
+        .spacing(space::xs());
+    let submit = (!edit.sending).then_some(Message::SaveTopic);
+    let name_row = if new {
+        let field = wizard::field("backups-7f3a", edit.name.as_str())
+            .on_input(|name| Message::TopicNameEdited(TopicName::new(name)))
+            .on_submit_maybe(submit.clone());
+        row_frame(field, false)
+    } else {
+        // Fixed: a topic of another name is another topic.
+        row_frame(typo::text(typo::body(), edit.name.as_str()).style(theme::text_2), false)
+    };
+    let label =
+        wizard::field("Backups", &edit.label).on_input(Message::TopicLabelEdited).on_submit_maybe(submit.clone());
+    let mut body = column![
+        widgets::group(tr("Topic name"), vec![name_row], None),
+        widgets::group(
+            tr("Label"),
+            vec![row_frame(label, false)],
+            Some(tr("Shown in the Inbox instead of the name.").to_string())
+        ),
+    ]
+    .spacing(layout::section_gap());
+    if let Some(problem) = edit.problem().filter(|_| edit.tried).or_else(|| edit.error.clone()) {
+        body = body.push(error_text(problem));
+    }
+    // On the dialog's content axis, like "Remove account…" on the page.
+    let unsubscribe = (!new).then(|| {
+        on_axis(widgets::text_button(
+            None,
+            tr("Unsubscribe…"),
+            style::button::danger,
+            (!edit.sending).then_some(Message::AskUnsubscribe),
+        ))
+    });
+    let save = if edit.sending {
+        widgets::busy_button(tr("Checking…"), style::button::primary)
+    } else {
+        widgets::text_button(None, if new { tr("Subscribe") } else { tr("Save") }, style::button::primary, submit)
+    };
+    let foot = row![]
+        .push(unsubscribe)
+        .push(blank::horizontal())
+        .push(widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CloseTopic)))
+        .push(save)
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    dialog(dialog_frame(head, body, foot, space::xl()), size::form_max(), Message::CloseTopic)
+}
+
+/// "Unsubscribe from this topic?", from the topic dialog; its entries stay in the inbox.
+fn unsubscribe_confirm<'a>(edit: &'a TopicEdit) -> Element<'a, Message> {
+    let label = edit.stored.as_deref().unwrap_or_default();
+    confirm(
+        tr("Unsubscribe from this topic?"),
+        trf("{label} no longer comes to the Inbox. Its entries stay there.", &[("label", &label)]),
+        tr("Unsubscribe"),
+        Message::Unsubscribe,
+        Message::CancelUnsubscribe,
+    )
+}
+
+/// "Change login": the login form of the add-account dialog for the account's server, a refusal
+/// in the body, "Cancel" and "Save" right; the button waits while the server checks the login.
+fn login_dialog<'a>(change: &'a LoginChange, view: &'a NtfyView) -> Element<'a, Message> {
+    let head = column![
+        typo::text(typo::title(), tr("Change login")),
+        typo::text(typo::body(), trf("Sign in to {server}. The topics stay as they are.", &[("server", &view.server)]))
+            .style(theme::text_2),
+    ]
+    .spacing(space::xs());
+    let ready = !change.sending && change.login.is_ready();
+    let fields = wizard::ntfy_login_fields(
+        &change.login,
+        Message::LoginKind,
+        Message::LoginUserEdited,
+        Message::LoginSecretEdited,
+        ready.then_some(Message::SubmitLogin),
+    );
+    let mut body = column![fields].spacing(layout::section_gap());
+    if let Some(error) = &change.error {
+        body = body.push(error_text(error.clone()));
+    }
+    let save = if change.sending {
+        widgets::busy_button(tr("Checking…"), style::button::primary)
+    } else {
+        widgets::text_button(None, tr("Save"), style::button::primary, ready.then_some(Message::SubmitLogin))
+    };
+    let foot = row![
+        blank::horizontal(),
+        widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CloseLogin)),
+        save,
+    ]
+    .spacing(space::s())
+    .align_y(Alignment::Center);
+    dialog(dialog_frame(head, body, foot, space::xl()), size::form_max(), Message::CloseLogin)
+}
+
+/// A sentence in the error colour.
+fn error_text<'a>(text: String) -> Element<'a, Message> {
+    typo::text(typo::body(), text).style(|t: &Theme| text::Style { color: Some(palette(t).error_text) }).into()
+}
+
 /// A row with a value at the right in `text_2`, on one line.
 fn value_row<'a>(label: &'a str, value: &'a str) -> Element<'a, Message> {
     setting_row(None, label, None, typo::text(typo::body(), value).style(theme::text_2).wrapping(Wrapping::None))
@@ -1486,6 +2062,7 @@ mod tests {
             collections: vec![],
             scopes: None,
             mail: None,
+            ntfy: None,
         }
     }
 
@@ -2173,5 +2750,174 @@ mod tests {
         drop(view(&state, &data));
         data.accounts[1].mail.as_mut().expect("mail").caldav = Some("https://dav.example.net/".into());
         drop(view(&state, &data));
+    }
+
+    // ----- The inbox and ntfy (task E5.14) -------------------------------------------------------
+
+    const NTFY: &str = "ntfy:push.example.org";
+
+    /// The demo's data with the page of `id` open.
+    fn open_demo(id: &str) -> (State, Data) {
+        let data = super::super::launch::demo_data();
+        let mut state = State::default();
+        update(&mut state, Message::Open(id.into()), &data);
+        assert!(selected(&state, &data).is_some(), "{id} is a demo account");
+        (state, data)
+    }
+
+    #[test]
+    fn github_and_nextcloud_bring_their_inbox_sources() {
+        let data = super::super::launch::demo_data();
+        let of = |id: &str| {
+            let account = data.accounts.iter().find(|account| account.id == id).expect("demo account");
+            feeds(account).into_iter().map(|feed| (feed.source.key(), feed.name)).collect::<Vec<_>>()
+        };
+        assert_eq!(of("github:anna-dev"), [("github:anna-dev".to_string(), tr("Show notifications in the Inbox"))]);
+        assert_eq!(
+            of("nextcloud:anna@cloud.example.org"),
+            [
+                ("nextcloud:anna@cloud.example.org".to_string(), tr("Notifications")),
+                ("talk:anna@cloud.example.org".to_string(), tr("Talk")),
+            ]
+        );
+        for other in [NTFY, MAILBOX, "caldav:anna@posteo.de@posteo.de", "ai:openrouter@openrouter.ai"] {
+            assert!(of(other).is_empty(), "{other}");
+        }
+    }
+
+    #[test]
+    fn an_inbox_switch_mutes_or_unmutes_its_source() {
+        let (mut state, data) = open_demo("nextcloud:anna@cloud.example.org");
+        // The demo's Talk is muted, its notifications are not.
+        assert!(source_shown(&data, &SourceRef::nextcloud("anna@cloud.example.org")));
+        assert!(!source_shown(&data, &SourceRef::talk("anna@cloud.example.org")));
+        assert!(source_shown(&data, &SourceRef::github("someone-else")), "a source not listed is shown");
+        let talk = SourceRef::talk("anna@cloud.example.org");
+        let request = sent(update(&mut state, Message::ShowInInbox(talk.clone(), true), &data));
+        assert!(matches!(request, Request::MuteSource { source, muted: false } if source == talk));
+        let request = sent(update(&mut state, Message::ShowInInbox(talk.clone(), false), &data));
+        assert!(matches!(request, Request::MuteSource { muted: true, .. }));
+    }
+
+    #[test]
+    fn a_quiet_source_says_why_in_calm_words() {
+        assert_eq!(
+            health_text(SourceKind::Github, SourceHealth::MissingScope),
+            tr("Notifications need a classic token with notifications or repo, or the GitHub CLI sign-in.")
+        );
+        assert_eq!(health_text(SourceKind::Talk, SourceHealth::MissingApp), tr("This Nextcloud has no Talk."));
+        assert_ne!(
+            health_text(SourceKind::Nextcloud, SourceHealth::MissingApp),
+            health_text(SourceKind::Talk, SourceHealth::MissingApp)
+        );
+        // Every page builds with every reason.
+        let reasons =
+            [SourceHealth::MissingApp, SourceHealth::MissingScope, SourceHealth::SignedOut, SourceHealth::Offline];
+        for health in reasons {
+            for id in ["github:anna-dev", "nextcloud:anna@cloud.example.org", NTFY] {
+                let (state, mut data) = open_demo(id);
+                for info in &mut data.sources {
+                    info.health = Some(health);
+                }
+                drop(view(&state, &data));
+            }
+        }
+    }
+
+    #[test]
+    fn the_ntfy_row_counts_its_topics_and_the_page_has_no_sync() {
+        let data = super::super::launch::demo_data();
+        let ntfy = data.accounts.iter().find(|account| account.id == NTFY).expect("demo ntfy");
+        assert_eq!(provider_name("ntfy"), "ntfy");
+        assert_eq!(topics_text(3), trf("{n} topics", &[("n", &3)]));
+        assert_eq!(topics_text(1), tr("1 topic"));
+        let (state, data) = open_demo(NTFY);
+        drop(view(&state, &data));
+        drop(account_row(ntfy, Utc::now()));
+    }
+
+    #[test]
+    fn a_new_topic_is_checked_after_the_first_press_and_sent_with_its_label() {
+        let (mut state, data) = open_demo(NTFY);
+        update(&mut state, Message::AddTopic, &data);
+        assert!(state.topic.as_ref().is_some_and(|edit| !edit.tried && edit.problem().is_some()));
+        assert!(matches!(update(&mut state, Message::SaveTopic, &data), Action::None), "nothing typed");
+        assert!(state.topic.as_ref().is_some_and(|edit| edit.tried));
+        update(&mut state, Message::TopicNameEdited(TopicName::new("alerts-77ab")), &data);
+        update(&mut state, Message::TopicLabelEdited(" Alerts ".into()), &data);
+        let request = sent(update(&mut state, Message::SaveTopic, &data));
+        let Request::SetNtfyTopic { account, topic, label, subscribed } = request else { panic!("SetNtfyTopic") };
+        assert_eq!(
+            (account.as_str(), topic.as_str(), label.as_deref(), subscribed),
+            (NTFY, "alerts-77ab", Some("Alerts"), true)
+        );
+        // The dialog waits for the answer: a refusal stays in it, `ok` closes it.
+        let refused = tr("The ntfy server refused: the topics need a login, or this login may not read them.");
+        assert!(answered(&mut state, &Err(refused.to_string())));
+        assert_eq!(state.topic.as_ref().and_then(|edit| edit.error.as_deref()), Some(refused));
+        update(&mut state, Message::SaveTopic, &data);
+        assert!(answered(&mut state, &Ok(Response::Ok)));
+        assert!(state.topic.is_none());
+        // Its name never shows in `Debug`.
+        update(&mut state, Message::AddTopic, &data);
+        update(&mut state, Message::TopicNameEdited(TopicName::new("alerts-77ab")), &data);
+        assert!(!format!("{state:?}").contains("alerts-77ab"));
+    }
+
+    #[test]
+    fn a_topic_is_renamed_or_unsubscribed_after_asking() {
+        let (mut state, data) = open_demo(NTFY);
+        update(&mut state, Message::EditTopic(0), &data);
+        update(&mut state, Message::TopicNameEdited(TopicName::new("other")), &data);
+        assert_eq!(state.topic.as_ref().map(|edit| edit.name.as_str()), Some("backups-7f3a"), "the name is fixed");
+        // The label as it was: nothing to send, the dialog closes.
+        assert!(matches!(update(&mut state, Message::SaveTopic, &data), Action::None));
+        assert!(state.topic.is_none());
+        update(&mut state, Message::EditTopic(0), &data);
+        update(&mut state, Message::TopicLabelEdited("Nightly backups".into()), &data);
+        let request = sent(update(&mut state, Message::SaveTopic, &data));
+        assert!(matches!(
+            request,
+            Request::SetNtfyTopic { ref label, subscribed: true, .. } if label.as_deref() == Some("Nightly backups")
+        ));
+        answered(&mut state, &Ok(Response::Ok));
+
+        update(&mut state, Message::EditTopic(1), &data);
+        assert!(matches!(update(&mut state, Message::Unsubscribe, &data), Action::None), "only after asking");
+        update(&mut state, Message::AskUnsubscribe, &data);
+        assert!(matches!(escape(&state), Some(Message::CancelUnsubscribe)));
+        drop(overlay(&state, &data));
+        let request = sent(update(&mut state, Message::Unsubscribe, &data));
+        let Request::SetNtfyTopic { topic, label, subscribed, .. } = request else { panic!("SetNtfyTopic") };
+        assert_eq!((topic.as_str(), label, subscribed), ("ci-anna-91c2", None, false));
+        assert!(state.topic.is_none());
+    }
+
+    #[test]
+    fn change_login_sends_the_secret_once_for_the_same_server() {
+        let (mut state, data) = open_demo(NTFY);
+        update(&mut state, Message::ChangeLogin, &data);
+        let form = &state.login.as_ref().expect("the dialog").login;
+        assert_eq!((form.token, form.user.as_str()), (false, "anna"), "filled with how it signs in");
+        assert!(matches!(update(&mut state, Message::SubmitLogin, &data), Action::None), "no secret yet");
+        update(&mut state, Message::LoginSecretEdited(Secret::new("n3w-pass")), &data);
+        assert!(!format!("{state:?}").contains("n3w-pass"), "Debug shows no secret");
+        drop(overlay(&state, &data));
+        let request = sent(update(&mut state, Message::SubmitLogin, &data));
+        let Request::SetNtfyLogin { server, topics, user, secret } = request else { panic!("SetNtfyLogin") };
+        assert_eq!((server.as_str(), topics.len(), user.as_deref()), ("https://push.example.org", 0, Some("anna")));
+        assert_eq!(secret.expose(), "n3w-pass");
+        assert!(state.login.as_ref().is_some_and(|dialog| dialog.login.secret.is_blank()), "no copy stays");
+        assert!(answered(&mut state, &Err("refused".into())));
+        assert_eq!(state.login.as_ref().and_then(|dialog| dialog.error.as_deref()), Some("refused"));
+        update(&mut state, Message::LoginKind(true), &data);
+        update(&mut state, Message::LoginSecretEdited(Secret::new("tk_x")), &data);
+        let Request::SetNtfyLogin { user, .. } = sent(update(&mut state, Message::SubmitLogin, &data)) else {
+            panic!("SetNtfyLogin")
+        };
+        assert_eq!(user, None, "a token goes without a user name");
+        let account = data.accounts.iter().find(|account| account.id == NTFY).cloned().expect("demo ntfy");
+        assert!(answered(&mut state, &Ok(Response::Account { account })));
+        assert!(state.login.is_none());
     }
 }

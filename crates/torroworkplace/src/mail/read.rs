@@ -28,21 +28,34 @@
 //! [`ATTACHMENT_MAX_BYTES`], under a cleaned file name, so a name from outside never picks the
 //! path.
 //!
+//! **Invitations** (task E8.3b): wherever a whole message is read (here and in the sync), its
+//! calendar part is read as well ([`invite_of`]) and what it invites to kept with its text, so the
+//! summaries carry it (`MessageSummary::invite`). [`fetch_invitation`] reads the whole invitation
+//! from the server for an answer (`mail.respond_to_invitation`): method, event, sequence,
+//! organizer and attendees ([`Invitation`]); `torro_pim_caldav::parse_events` reads the event, a
+//! small reader here the rest.
+//!
 //! **Log.** Nothing here writes a search term, folder name, file name or text anywhere; the
 //! core's audit log names accounts and hashed ids only (`audit::ids`).
+//!
+//! **Read counts as opened** (task E8.8b, [`answer_counting`]): a mail the person reads in the mail
+//! window (`mail.get_message` with the app key) whose mail is an open entry of the inbox counts that
+//! entry as opened for "Insights", once per entry and day ([`Inbox::mail_read`]). An agent reading
+//! mail is not the person opening it and counts nothing. No new request.
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use torro_core::i18n::tr;
 use torro_ipc::Response;
 use torro_ipc::mail::MailSource;
 use torro_ipc::{Request, mail::limit_refusal};
-use torro_mail::{Message, MessageSummary};
+use torro_mail::{Invite, MailAddress, Message, MessageSummary};
 use torro_mail_imap::imap::Session;
-use torro_mail_imap::mime::{self, MimeError};
+use torro_mail_imap::mime::{self, MimeError, ReadMessage};
 
 use super::MailStoreError;
 use super::service::{MailError, MailService, SharedStore};
 use super::store::{BODY_RETENTION_DAYS, Body, FolderRef, MessageRef, SearchQuery};
+use crate::inbox::Inbox;
 use crate::pim::Reach;
 
 /// The largest attachment `mail.get_attachment` hands out: 50 MiB.
@@ -57,6 +70,23 @@ type Answer<T> = Result<T, Box<Response>>;
 
 /// The stores a caller sees: account id and store, in the order of `accounts.json`.
 type Stores = Vec<(String, SharedStore)>;
+
+/// [`answer`], and then – for `mail.get_message` with the app key ([`Reach::Suite`]) that found the
+/// mail – tells `inbox` the person read it ([`Inbox::mail_read`], task E8.8b): the open entry the
+/// mail is filed into counts as opened, once per entry and day. The answer is [`answer`]'s
+/// unchanged; a client's reading counts nothing. Every window of the suite reads with the app key, so
+/// the compose window fetching the mail it answers or forwards counts too: who answers has read it.
+pub async fn answer_counting(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request: Request) -> Response {
+    let read = match (&request, reach) {
+        (Request::GetMail { id, .. }, Reach::Suite) => Some(id.clone()),
+        _ => None,
+    };
+    let response = answer(mail, reach, request).await;
+    if let (Some(id), Response::MailMessage { message }) = (read, &response) {
+        inbox.mail_read(&message.summary.account, &id, Utc::now());
+    }
+    response
+}
 
 /// Answers a reading mail request for `reach` (`mail.list_folders`, `mail.search_messages`,
 /// `mail.get_message`, `mail.get_thread`, `mail.get_attachment`). The limits are checked first
@@ -504,7 +534,8 @@ async fn fill_texts(
             Err(_) => return,
         };
         let Ok(read) = mime::read(&raw) else { continue };
-        let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments };
+        let invite = invite_of(&raw, &read);
+        let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite };
         let kept = store.run(move |store| {
             store.set_body(&id, &body)?;
             store.message(&id)
@@ -528,7 +559,8 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
     let raw = fetch_raw(mail, located).await?;
     let read = mime::read(&raw).map_err(|_| unreadable())?;
     let id = located.place.id.clone();
-    let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments };
+    let invite = invite_of(&raw, &read);
+    let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite };
     located
         .store
         .run(move |store| {
@@ -559,6 +591,213 @@ async fn peek(session: &mut Session, place: &MessageRef) -> Result<Option<Vec<u8
         return Ok(None);
     }
     Ok(session.fetch_message(place.uid).await?)
+}
+
+// ----- invitations (task E8.3b) -----
+
+/// The largest calendar part read for an invitation: an invitation is a few kilobytes, and
+/// nothing from outside makes the core parse megabytes.
+const CALENDAR_MAX_BYTES: u64 = 256 * 1024;
+
+/// An invitation as the calendar part of a message says it (iTIP, RFC 5546), read for
+/// `mail.respond_to_invitation`. Everything in it came from outside and is data, never
+/// instructions; the core never takes an address or a time from anywhere else than here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Invitation {
+    /// The iTIP method, upper case. Only `REQUEST` asks for an answer; `CANCEL`, `REPLY`, `PUBLISH`
+    /// … do not.
+    pub method: String,
+    /// The first event as `torro_pim_caldav::parse_events` reads it, without a calendar yet
+    /// (`collection` empty) and without `href` or `etag`.
+    pub event: torro_pim::Event,
+    /// `SEQUENCE`, 0 when missing: the answer names the version of the event it answers.
+    pub sequence: u32,
+    /// `ORGANIZER`: who gets the answer.
+    pub organizer: Option<MailAddress>,
+    /// Every `ATTENDEE` with a `mailto:` address, in order.
+    pub attendees: Vec<MailAddress>,
+}
+
+impl Invitation {
+    /// Reads the first event of the iCalendar object `ics` and what an answer needs: the method of
+    /// the object, `SEQUENCE`, `ORGANIZER` and `ATTENDEE` of that event (nested components such as
+    /// `VALARM` left out). `None` without an event with a readable start (or a cancelled one).
+    pub(crate) fn parse(ics: &str) -> Option<Invitation> {
+        let event = torro_pim_caldav::parse_events(ics, "").into_iter().next()?;
+        let mut invitation =
+            Invitation { method: String::new(), event, sequence: 0, organizer: None, attendees: Vec::new() };
+        let (mut open, mut in_first, mut first_done) = (Vec::<String>::new(), false, false);
+        for line in unfold(ics) {
+            let Some((name, params, value)) = content_line(&line) else { continue };
+            match name.to_ascii_uppercase().as_str() {
+                "BEGIN" => {
+                    open.push(value.to_ascii_uppercase());
+                    in_first |= !first_done && open.len() == 2 && value.eq_ignore_ascii_case("VEVENT");
+                }
+                "END" => {
+                    if in_first && open.len() == 2 {
+                        (in_first, first_done) = (false, true);
+                    }
+                    open.pop();
+                }
+                "METHOD" if open.len() == 1 => invitation.method = value.trim().to_ascii_uppercase(),
+                "SEQUENCE" if in_first && open.len() == 2 => invitation.sequence = value.trim().parse().unwrap_or(0),
+                "ORGANIZER" if in_first && open.len() == 2 => invitation.organizer = mailto(&params, &value),
+                "ATTENDEE" if in_first && open.len() == 2 => invitation.attendees.extend(mailto(&params, &value)),
+                _ => {}
+            }
+        }
+        Some(invitation)
+    }
+
+    /// It can be answered: a `REQUEST` with a UID and an organizer, for one event. Invitations to
+    /// a series (`RRULE`, `RDATE`, `RECURRENCE-ID`) cannot yet: the calendar service writes single
+    /// events only, and an answer would lose the rule.
+    pub(crate) fn answerable(&self) -> bool {
+        self.method == "REQUEST"
+            && !self.event.uid.trim().is_empty()
+            && self.organizer.is_some()
+            && !self.event.recurring
+    }
+
+    /// What it invites to, as lists show it ([`Invite`]); `None` when it cannot be answered.
+    pub(crate) fn invite(&self) -> Option<Invite> {
+        if !self.answerable() {
+            return None;
+        }
+        Some(Invite {
+            title: self.event.summary.trim().to_string(),
+            start: instant(self.event.start),
+            end: self.event.end.map(instant),
+            all_day: self.event.all_day(),
+            answered: None,
+        })
+    }
+
+    /// The event is over at `now`: its end (its start without one) has passed.
+    pub(crate) fn ended(&self, now: DateTime<Utc>) -> bool {
+        instant(self.event.end.unwrap_or(self.event.start)) <= now
+    }
+}
+
+/// The instant `time` stands for: an all-day date as midnight UTC.
+fn instant(time: torro_pim::EventTime) -> DateTime<Utc> {
+    match time {
+        torro_pim::EventTime::Date(day) => day.and_time(chrono::NaiveTime::MIN).and_utc(),
+        torro_pim::EventTime::DateTime(at) => at,
+    }
+}
+
+/// The invitation in the message `raw` (read as `read`): the first calendar part (`text/calendar`
+/// before `application/ics`) that holds an event. `None` for a message without one.
+pub(crate) fn invitation_in(raw: &[u8], read: &ReadMessage) -> Option<Invitation> {
+    if !read.invitation {
+        return None;
+    }
+    let mut parts: Vec<_> = read
+        .attachments
+        .iter()
+        .filter(|part| matches!(part.content_type.as_str(), "text/calendar" | "application/ics"))
+        .filter(|part| part.size <= CALENDAR_MAX_BYTES)
+        .collect();
+    parts.sort_by_key(|part| part.content_type != "text/calendar");
+    parts.into_iter().find_map(|part| {
+        let found = mime::attachment(raw, &part.part).ok()?;
+        Invitation::parse(&String::from_utf8_lossy(&found.bytes))
+    })
+}
+
+/// What the message `raw` invites to (the summary's `invite`, kept with its text); `None` without
+/// an invitation that can be answered ([`Invitation::answerable`]).
+pub(crate) fn invite_of(raw: &[u8], read: &ReadMessage) -> Option<Invite> {
+    invitation_in(raw, read).and_then(|invitation| invitation.invite())
+}
+
+/// A message with its invitation, fetched from the server for an answer ([`fetch_invitation`]).
+#[derive(Debug, Clone)]
+pub(crate) struct Invited {
+    /// Where the message is.
+    pub place: MessageRef,
+    /// The message as read from its bytes.
+    pub read: ReadMessage,
+    /// Its invitation; `None` when it carries none.
+    pub invitation: Option<Invitation>,
+}
+
+/// The message `id` of the mail account `account`, fetched from the server (`BODY.PEEK[]`, so it
+/// stays unread) and its invitation read ([`invitation_in`]). What the invitation invites to is
+/// kept in the store as well, so lists show it from now on. `not-found` for a message the
+/// account's store does not hold (or one gone from the server); the account's own errors when it
+/// cannot be reached. The caller checked that it may read the account.
+pub(crate) async fn fetch_invitation(mail: &MailService, account: &str, id: &str) -> Answer<Invited> {
+    let store = mail.store(account).await.map_err(|err| Box::new(err.response()))?;
+    let located = locate(&[(account.to_string(), store)], id).await?;
+    let raw = fetch_raw(mail, &located).await?;
+    let read = mime::read(&raw).map_err(|_| unreadable())?;
+    let invitation = invitation_in(&raw, &read);
+    let body = Body {
+        text: read.text.clone(),
+        from_html: read.from_html,
+        attachments: read.attachments.clone(),
+        invite: invitation.as_ref().and_then(Invitation::invite),
+    };
+    let kept = id.to_string();
+    located.store.run(move |store| store.set_body(&kept, &body)).await.map_err(store_failed)?;
+    Ok(Invited { place: located.place, read, invitation })
+}
+
+/// The parameters of a content line: names upper case, values without quotes.
+type Params = Vec<(String, String)>;
+
+/// Joins folded lines of an iCalendar object (a line break followed by a space or tab continues
+/// the line); bare LF line ends count like CRLF.
+fn unfold(ics: &str) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for raw in ics.split('\n') {
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        match (raw.strip_prefix(' ').or_else(|| raw.strip_prefix('\t')), lines.last_mut()) {
+            (Some(rest), Some(last)) => last.push_str(rest),
+            _ if raw.trim().is_empty() => {}
+            _ => lines.push(raw.to_string()),
+        }
+    }
+    lines
+}
+
+/// One content line split into its name, its parameters (names upper case, quotes removed) and
+/// its value; the value starts at the first colon outside a quoted parameter value.
+fn content_line(line: &str) -> Option<(String, Params, String)> {
+    let mut quoted = false;
+    let colon = line.char_indices().find_map(|(at, c)| match c {
+        '"' => {
+            quoted = !quoted;
+            None
+        }
+        ':' if !quoted => Some(at),
+        _ => None,
+    })?;
+    let (head, value) = (&line[..colon], &line[colon + 1..]);
+    let mut parts = head.split(';');
+    let name = parts.next()?.trim().to_string();
+    let params = parts
+        .filter_map(|part| part.split_once('='))
+        .map(|(key, value)| (key.trim().to_ascii_uppercase(), value.trim().trim_matches('"').to_string()))
+        .collect();
+    Some((name, params, value.to_string()))
+}
+
+/// The address of an `ORGANIZER` or `ATTENDEE` value (`mailto:anna@example.org`, any case) with
+/// its `CN` as the name; `None` for anything but one plain address.
+fn mailto(params: &[(String, String)], value: &str) -> Option<MailAddress> {
+    let value = value.trim();
+    let address = value.get(..7).filter(|scheme| scheme.eq_ignore_ascii_case("mailto:")).map(|_| &value[7..])?;
+    let address = address.trim();
+    let plain = address.split('@').count() == 2 && !address.starts_with('@') && !address.ends_with('@');
+    if !plain || address.chars().any(|c| c.is_whitespace() || c.is_control() || "<>,;\"".contains(c)) {
+        return None;
+    }
+    let name = params.iter().find(|(key, _)| key == "CN").map(|(_, name)| name.trim().to_string());
+    Some(MailAddress { name: name.filter(|name| !name.is_empty()), address: address.to_string() })
 }
 
 // ----- mail.get_attachment -----
@@ -644,10 +883,11 @@ fn no_attachment_folder() -> Box<Response> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::path::Path;
 
     use chrono::Utc;
+    use torro_ipc::StatsRange;
     use torro_ipc::api::{RightsTemplate, Selection};
     use torro_mail::{Flag, Folder, Role};
 
@@ -824,6 +1064,48 @@ mod tests {
         assert_eq!(Cursor::parse(Some(&Cursor::Live(7).text())), Some(Cursor::Live(7)));
     }
 
+    /// Task E8.8b: the person reading a mail of an open entry counts the entry as opened; an agent
+    /// reading it, or a mail of no entry, counts nothing, and the answer stays the same.
+    #[tokio::test]
+    async fn the_person_reading_a_mail_counts_its_entry_as_opened() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &mail_with("Offer", 0, "By Friday"), &[]);
+        server.add("INBOX", &mail_with("Other", 0, "Not filed"), &[]);
+        let service = synced(dir.path(), &server).await;
+        let (offer, other) = (id_of(&service, "Offer").await, id_of(&service, "Other").await);
+        let inbox = crate::inbox::tests::inbox_in(dir.path());
+        let mail = crate::inbox::NewMail {
+            account: ANNA.into(),
+            message: offer.clone(),
+            thread: "t:offer".into(),
+            subject: "Offer".into(),
+            snippet: "By Friday".into(),
+            from: None,
+            bulk: false,
+            list: None,
+            github: None,
+            date: Utc::now(),
+        };
+        inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("an entry");
+        let opened = || match inbox.handle(Request::GetStats { range: StatsRange::Week, until: None }, None, Utc::now())
+        {
+            Response::Stats(stats) => stats.totals.opened,
+            other => panic!("statistics, got {other:?}"),
+        };
+
+        let rights = RightsTemplate::FullAccess.rights();
+        let agent = message(answer_counting(&service, &inbox, Reach::Client(&rights), get(&offer, false)).await);
+        assert_eq!((agent.summary.subject.as_str(), opened()), ("Offer", 0), "an agent reading is no opening");
+        let read = message(answer_counting(&service, &inbox, Reach::Suite, get(&offer, true)).await);
+        assert_eq!(read.summary.subject, "Offer");
+        answer_counting(&service, &inbox, Reach::Suite, get(&offer, false)).await;
+        answer_counting(&service, &inbox, Reach::Suite, get(&other, false)).await;
+        assert_eq!(opened(), 1, "once a day, and only the mail of an entry");
+        let missing = answer_counting(&service, &inbox, Reach::Suite, get("m:nope", false)).await;
+        assert_eq!(code(&missing), "not-found");
+    }
+
     #[tokio::test]
     async fn an_account_a_client_may_not_see_is_not_found_and_nothing_is_fetched() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -936,5 +1218,109 @@ mod tests {
             (vec!["Recent zebra".into()], None, MailSource::Cache)
         );
         assert!(!server.lines()[lines_before..].iter().any(|line| line.contains("SEARCH")), "the store was enough");
+    }
+
+    // ----- invitations (task E8.3b) -----
+
+    /// The invitation of `tests/fixtures/mail/invitation.eml` (Jonas invites Anna to "Planning, Q4"),
+    /// sent now, with the Message-ID `<mid>@example.com`, the UID `planning-<mid>@example.com` and the
+    /// event from `start` to `end`; CRLF line ends, as servers hand out mail.
+    pub(crate) fn invitation_mail(mid: &str, start: DateTime<Utc>, end: DateTime<Utc>) -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail/invitation.eml");
+        let text = std::fs::read_to_string(path).expect("the fixture");
+        let ics = |at: DateTime<Utc>| at.format("%Y%m%dT%H%M%SZ").to_string();
+        text.replace("{DATE}", &Utc::now().to_rfc2822())
+            .replace("{MID}", mid)
+            .replace("{START}", &ics(start))
+            .replace("{END}", &ics(end))
+            .replace("\r\n", "\n")
+            .replace('\n', "\r\n")
+    }
+
+    fn in_a_day() -> (DateTime<Utc>, DateTime<Utc>) {
+        let start = (Utc::now() + Duration::days(1)).with_nanosecond(0).expect("whole seconds");
+        (start, start + Duration::hours(1))
+    }
+
+    use chrono::Timelike;
+
+    #[test]
+    fn an_invitation_is_read_from_its_calendar_part() {
+        let (start, end) = in_a_day();
+        let raw = invitation_mail("p1", start, end).into_bytes();
+        let read = mime::read(&raw).expect("read");
+        assert!(read.invitation);
+        let invitation = invitation_in(&raw, &read).expect("an invitation");
+        assert_eq!(invitation.method, "REQUEST");
+        assert_eq!(invitation.event.uid, "planning-p1@example.com");
+        assert_eq!(invitation.event.summary, "Planning, Q4");
+        assert_eq!(invitation.event.start, torro_pim::EventTime::DateTime(start));
+        assert_eq!(invitation.event.location.as_deref(), Some("Room 3"));
+        assert_eq!(invitation.event.description.as_deref(), Some("Agenda follows."), "not the alarm's text");
+        assert_eq!(invitation.sequence, 2);
+        let jonas = MailAddress { name: Some("Jonas Weber".into()), address: "jonas@example.com".into() };
+        assert_eq!(invitation.organizer, Some(jonas));
+        let attendees: Vec<&str> = invitation.attendees.iter().map(|who| who.address.as_str()).collect();
+        assert_eq!(attendees, ["Anna@Example.org", "carla@example.net"], "the folded line is joined");
+        assert!(invitation.answerable() && !invitation.ended(Utc::now()) && invitation.ended(end));
+        let invite = invite_of(&raw, &read).expect("an invite");
+        assert_eq!(
+            invite,
+            Invite { title: "Planning, Q4".into(), start, end: Some(end), all_day: false, answered: None }
+        );
+        assert!(!read.text.contains("BEGIN:VCALENDAR"), "the text is the plain part");
+    }
+
+    #[test]
+    fn only_requests_for_one_event_can_be_answered() {
+        let (start, end) = in_a_day();
+        let raw = invitation_mail("p2", start, end);
+        let with = |from: &str, to: &str| {
+            let raw = raw.replace(from, to).into_bytes();
+            let read = mime::read(&raw).expect("read");
+            (invitation_in(&raw, &read), invite_of(&raw, &read))
+        };
+        let (cancel, invite) = with("METHOD:REQUEST", "METHOD:CANCEL");
+        assert_eq!(cancel.map(|invitation| invitation.method), Some("CANCEL".into()));
+        assert_eq!(invite, None, "a cancellation is no invitation to answer");
+        let (series, invite) = with("SEQUENCE:2", "SEQUENCE:2\r\nRRULE:FREQ=WEEKLY");
+        assert!(series.is_some_and(|invitation| invitation.event.recurring) && invite.is_none());
+        let (nobody, invite) = with("ORGANIZER;CN=\"Jonas Weber\":mailto:jonas@example.com", "X-NONE:1");
+        assert!(nobody.is_some_and(|invitation| invitation.organizer.is_none()) && invite.is_none());
+        let (bad, _) = with("mailto:jonas@example.com", "mailto:jonas@example.com>, eve@evil.example");
+        assert_eq!(bad.and_then(|invitation| invitation.organizer), None, "one plain address or none");
+        let plain = mail_with("Hello", 0, "No calendar here.").into_bytes();
+        let read = mime::read(&plain).expect("read");
+        assert_eq!((invitation_in(&plain, &read), invite_of(&plain, &read)), (None, None));
+    }
+
+    /// The sync reads what an invitation invites to, and lists and the message carry it.
+    #[tokio::test]
+    async fn synced_invitations_show_in_their_summaries() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let (start, end) = in_a_day();
+        server.add("INBOX", &invitation_mail("p3", start, end), &[]);
+        server.add("INBOX", &mail_with("Hello", 0, "Just text."), &[]);
+        let service = synced(dir.path(), &server).await;
+        let listed = match answer(&service, Reach::Suite, search(None, 10, None)).await {
+            Response::MailMessages { messages, .. } => messages,
+            other => panic!("messages, got {other:?}"),
+        };
+        let invite = |subject: &str| listed.iter().find(|m| m.subject == subject).and_then(|m| m.invite.clone());
+        assert_eq!(
+            invite("Invitation: Planning").map(|invite| (invite.title, invite.start)),
+            Some(("Planning, Q4".into(), start))
+        );
+        assert_eq!(invite("Hello"), None);
+        let id = id_of(&service, "Invitation: Planning").await;
+        let shown = message(answer(&service, Reach::Suite, get(&id, true)).await);
+        assert!(shown.invitation && shown.summary.invite.is_some());
+        let fetched = fetch_invitation(&service, ANNA, &id).await.expect("fetched");
+        assert_eq!(fetched.invitation.map(|invitation| invitation.sequence), Some(2));
+        assert_eq!(fetched.place.id, id);
+        assert!(
+            matches!(fetch_invitation(&service, ANNA, "m:nope").await, Err(answer) if code(&answer) == "not-found")
+        );
     }
 }

@@ -472,13 +472,16 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 ///   `replace` closes windows ([`Request::operation`] asks for `Delete` then), the saves of
 ///   events and tasks, which overwrite the item on the server when they change it, of mail
 ///   `mail.move_messages` (into the trash), `mail.save_draft` (replacing a draft) and
-///   `mail.send_draft` (it removes the draft and cannot be taken back), and
+///   `mail.send_draft` (it removes the draft and cannot be taken back), `mail.respond_to_invitation`
+///   (task E8.3b: the reply cannot be taken back, and a decline deletes the event made before), and
 ///   `inbox.hide_sender`, whose scopes `sender` and `domain` keep a rule for every mail account
-///   and close entries in all of them (admin then, task E3.11).
+///   and close entries in all of them (admin then, task E3.11), and `inbox.mute_item`, whose
+///   traits keep a rule for every source of the kind and close or move entries there (task E8.6a).
 /// - Idempotent where repeating the same call changes nothing more ([`IDEMPOTENT`]).
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
 ///   `apps`, `approvals`, `inbox`); calendar, tasks and accounts talk to servers, so their hint is
-///   left open, and so is `inbox.create_task_from_item`, which writes a task to the server.
+///   left open, and so is it for `inbox.create_task_from_item` and `inbox.create_event_from_item`
+///   (task E8.5b), which write a task or an event to the server.
 pub fn annotations(command: &Command) -> ToolAnnotations {
     let read_only = command.access == Access::Read;
     let destructive = matches!(command.access, Access::Delete | Access::Admin)
@@ -490,20 +493,25 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
                 | "mail.move_messages"
                 | "mail.save_draft"
                 | "mail.send_draft"
+                | "mail.respond_to_invitation"
                 | "inbox.hide_sender"
+                | "inbox.mute_item"
         );
     let hints = ToolAnnotations::new()
         .read_only(read_only)
         .destructive(destructive)
         .idempotent(read_only || IDEMPOTENT.contains(&command.name));
     match command.area {
-        Area::Inbox if command.name == "inbox.create_task_from_item" => hints,
+        Area::Inbox if WRITES_TO_A_SERVER.contains(&command.name) => hints,
         Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox => {
             hints.open_world(false)
         }
         _ => hints,
     }
 }
+
+/// The inbox commands that write to a calendar server: their open-world hint stays open.
+const WRITES_TO_A_SERVER: &[&str] = &["inbox.create_task_from_item", "inbox.create_event_from_item"];
 
 /// Commands that change something, but nothing more when repeated with the same input.
 const IDEMPOTENT: &[&str] = &[
@@ -533,9 +541,13 @@ const IDEMPOTENT: &[&str] = &[
     // Hiding the same sender or domain again answers the rule already there (task E3.10), a
     // hidden conversation again closes nothing more.
     "inbox.hide_sender",
+    // Muting the same trait again answers the rule already there (task E8.6a).
+    "inbox.mute_item",
     "inbox.remove_rule",
     // Setting the same settings, flags or folder again leaves them as they are.
     "accounts.update_mail_account",
+    // Subscribing the same topic with the same label again changes nothing (task E5.12).
+    "accounts.set_ntfy_topic",
     "mail.set_flags",
     "mail.move_messages",
 ];
@@ -1107,11 +1119,11 @@ mod tests {
             if matches!(command.access, Access::Delete | Access::Admin) {
                 assert_eq!(hints.destructive_hint, Some(true), "{}", tool.name);
             }
-            // Making a task of an inbox entry writes to the task server (task E3.5).
+            // Making a task or an event of an inbox entry writes to the server (tasks E3.5, E8.5b).
             let local = matches!(
                 command.area,
                 Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox
-            ) && command.name != "inbox.create_task_from_item";
+            ) && !WRITES_TO_A_SERVER.contains(&command.name);
             assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);
         }
         let schema = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").input_schema.clone();
@@ -1136,6 +1148,28 @@ mod tests {
             assert_eq!(hints(name).and_then(|h| h.destructive_hint), Some(true), "{name}");
         }
         assert_eq!(hints("workspaces_save_template").and_then(|h| h.destructive_hint), Some(false));
+    }
+
+    /// Task E5.12: an agent may ask for ntfy and change topics, but never hands in a login.
+    #[test]
+    fn agents_may_ask_for_ntfy_and_change_topics_but_never_hand_in_a_login() {
+        let topics = json!([{"topic": "backups", "label": "Backups"}]);
+        let connect = request_for("accounts_connect_ntfy", args(json!({"server": "ntfy.sh", "topics": topics})), &Utc);
+        let backups = torro_ipc::NtfyTopic { topic: "backups".into(), label: "Backups".into() };
+        assert_eq!(connect, Ok(Request::ConnectNtfy { server: "ntfy.sh".into(), topics: vec![backups] }));
+        let leave = args(json!({"account": "ntfy:ntfy.sh", "topic": "backups", "subscribed": false}));
+        assert_eq!(
+            request_for("accounts_set_ntfy_topic", leave, &Utc),
+            Ok(Request::SetNtfyTopic {
+                account: "ntfy:ntfy.sh".into(),
+                topic: "backups".into(),
+                label: None,
+                subscribed: false
+            })
+        );
+        let login = args(json!({"server": "ntfy.sh", "secret": "tk_x"}));
+        assert_eq!(request_for("accounts_set_ntfy_login", login, &Utc), Err(ToolError::UnknownTool));
+        assert!(tools().iter().all(|tool| tool.name != "accounts_set_ntfy_login"));
     }
 
     #[test]
@@ -1771,6 +1805,103 @@ mod tests {
         assert!(matches!(refused, Err(ToolError::Input(_))), "the list is needed: {refused:?}");
     }
 
+    /// Task E8.5b: the tool takes the entry, the calendar, start and end and optionally a title; it
+    /// writes a new event to the server every time. Quiet takes nothing and only reads.
+    #[test]
+    fn inbox_create_event_from_item_builds_its_request() {
+        let arguments = json!({
+            "id": "i1", "collection": "work", "title": "Call Kim",
+            "start": {"datetime": "2026-10-14T13:00:00Z"}, "end": {"datetime": "2026-10-14T13:30:00Z"}
+        });
+        let request = request_for("inbox_create_event_from_item", args(arguments), &Utc);
+        let wanted = Request::CreateEventFromItem {
+            id: "i1".into(),
+            collection: "work".into(),
+            title: Some("Call Kim".into()),
+            start: EventTime::DateTime(utc("2026-10-14T13:00:00Z")),
+            end: EventTime::DateTime(utc("2026-10-14T13:30:00Z")),
+        };
+        assert_eq!(request, Ok(wanted));
+        let without_end = json!({"id": "i1", "collection": "work", "start": {"date": "2026-10-14"}});
+        let refused = request_for("inbox_create_event_from_item", args(without_end), &Utc);
+        assert!(matches!(refused, Err(ToolError::Input(_))), "the end is needed: {refused:?}");
+        let tool = tools().iter().find(|tool| tool.name == "inbox_create_event_from_item").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(
+            (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint, hints.open_world_hint),
+            (Some(false), Some(false), Some(false), None),
+        );
+        assert_eq!(request_for("inbox_get_quiet", args(json!({})), &Utc), Ok(Request::GetQuiet));
+        let quiet = tools().iter().find(|tool| tool.name == "inbox_get_quiet").expect("tool");
+        assert_eq!(quiet.annotations.clone().expect("hints").read_only_hint, Some(true));
+    }
+
+    /// Task E8.7a: the tool takes account, mail and list, optionally title and due day; it writes a
+    /// new task to the server every time.
+    #[test]
+    fn tasks_create_todo_from_mail_builds_its_request() {
+        let arguments =
+            json!({"account": "mail:anna@mailbox.org", "id": "m:1", "collection": "work", "title": "Answer"});
+        let request = request_for("tasks_create_todo_from_mail", args(arguments), &Utc);
+        let wanted = Request::CreateTodoFromMail {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:1".into(),
+            collection: "work".into(),
+            title: Some("Answer".into()),
+            due: None,
+        };
+        assert_eq!(request, Ok(wanted));
+        let refused = request_for("tasks_create_todo_from_mail", args(json!({"id": "m:1", "collection": "w"})), &Utc);
+        assert!(matches!(refused, Err(ToolError::Input(_))), "the account is needed: {refused:?}");
+        let tool = tools().iter().find(|tool| tool.name == "tasks_create_todo_from_mail").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(
+            (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint),
+            (Some(false), Some(false), Some(false))
+        );
+    }
+
+    /// Task E8.3b: the tool takes account, mail and answer, the calendar optionally; it sends a reply
+    /// every time, so it is neither idempotent nor harmless.
+    #[test]
+    fn mail_respond_to_invitation_builds_its_request() {
+        let arguments = json!({"account": "mail:anna@mailbox.org", "id": "m:1", "answer": "tentative"});
+        let request = request_for("mail_respond_to_invitation", args(arguments), &Utc);
+        let wanted = Request::RespondToInvitation {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:1".into(),
+            answer: torro_mail::InvitationAnswer::Tentative,
+            collection: None,
+        };
+        assert_eq!(request, Ok(wanted));
+        let with_calendar = json!({"account": "mail:a@b.org", "id": "m:1", "answer": "accept", "collection": "work"});
+        let request = request_for("mail_respond_to_invitation", args(with_calendar), &Utc);
+        assert!(matches!(request, Ok(Request::RespondToInvitation { collection: Some(ref c), .. }) if c == "work"));
+        let maybe = json!({"account": "mail:a@b.org", "id": "m:1", "answer": "maybe"});
+        let refused = request_for("mail_respond_to_invitation", args(maybe), &Utc);
+        assert!(matches!(refused, Err(ToolError::Input(_))), "only the three answers: {refused:?}");
+        let tool = tools().iter().find(|tool| tool.name == "mail_respond_to_invitation").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(
+            (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint, hints.open_world_hint),
+            (Some(false), Some(true), Some(false), None)
+        );
+    }
+
+    /// Task E8.7a: `apps_open_app` takes the target as well, and still works without it.
+    #[test]
+    fn apps_open_app_takes_a_target() {
+        let target = json!({"app": "torrotasks", "target": "task:7d1e"});
+        assert_eq!(
+            request_for("apps_open_app", args(target), &Utc),
+            Ok(Request::OpenApp { app: "torrotasks".into(), target: Some("task:7d1e".into()) })
+        );
+        assert_eq!(
+            request_for("apps_open_app", args(json!({"app": "torrocalendar"})), &Utc),
+            Ok(Request::OpenApp { app: "torrocalendar".into(), target: None })
+        );
+    }
+
     /// Task E2.4: the tool takes the entry's id and nothing else.
     #[test]
     fn inbox_open_item_opens_one_entry_by_its_id() {
@@ -1808,6 +1939,56 @@ mod tests {
         }
     }
 
+    /// Task E8.6a: one entry, the scope, the end and the effect; never a value to mute.
+    #[test]
+    fn inbox_mute_item_mutes_by_the_entry_and_never_by_a_value() {
+        use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
+        let arguments = json!({"id": "i1", "scope": {"kind": "facet", "key": "sender"}, "effect": "no_popup"});
+        let request = request_for("inbox_mute_item", args(arguments), &Utc);
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
+        assert_eq!(
+            request,
+            Ok(Request::MuteItem { id: "i1".into(), scope: sender, until: None, effect: MuteEffect::NoPopup })
+        );
+        let until =
+            json!({"id": "i1", "scope": {"kind": "conversation"}, "until": "2026-10-14T08:00:00Z", "effect": "hide"});
+        assert!(matches!(
+            request_for("inbox_mute_item", args(until), &Utc),
+            Ok(Request::MuteItem { until: Some(_), .. })
+        ));
+        for wrong in [
+            json!({"id": "i1", "scope": {"kind": "facet", "key": "sender"}}),
+            json!({"id": "i1", "scope": {"kind": "facet", "key": "sender"}, "effect": "hide", "value": "a@b.example"}),
+            json!({"id": "i1", "scope": {"kind": "facet", "key": "channel"}, "effect": "hide"}),
+        ] {
+            let refused = request_for("inbox_mute_item", args(wrong.clone()), &Utc);
+            assert!(matches!(refused, Err(ToolError::Input(_))), "{wrong}: {refused:?}");
+        }
+        let options = request_for("inbox_list_mute_options", args(json!({"id": "i1"})), &Utc);
+        assert_eq!(options, Ok(Request::ListMuteOptions { id: "i1".into() }));
+        let tool = tools().iter().find(|tool| tool.name == "inbox_mute_item").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!((hints.destructive_hint, hints.idempotent_hint), (Some(true), Some(true)));
+        let menu = tools().iter().find(|tool| tool.name == "inbox_list_mute_options").expect("tool");
+        assert!(menu.description.as_deref().is_some_and(|text| text.contains("untrusted")));
+    }
+
+    /// Task E8.8a: the statistics are one request with the span; an unknown span is an input error.
+    #[test]
+    fn inbox_get_stats_takes_a_span_and_a_last_day() {
+        let week = request_for("inbox_get_stats", args(json!({"range": "week"})), &Utc);
+        assert_eq!(week, Ok(Request::GetStats { range: torro_ipc::StatsRange::Week, until: None }));
+        let day = NaiveDate::from_ymd_opt(2026, 10, 13);
+        let quarter = request_for("inbox_get_stats", args(json!({"range": "quarter", "until": "2026-10-13"})), &Utc);
+        assert_eq!(quarter, Ok(Request::GetStats { range: torro_ipc::StatsRange::Quarter, until: day }));
+        let year = request_for("inbox_get_stats", args(json!({"range": "year"})), &Utc);
+        assert!(matches!(year, Err(ToolError::Input(_))), "{year:?}");
+        let tool = tools().iter().find(|tool| tool.name == "inbox_get_stats").expect("tool");
+        assert!(tool.description.as_deref().is_some_and(|text| text.contains("untrusted")));
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(hints.read_only_hint, Some(true));
+    }
+
     #[test]
     fn inbox_answers_carry_untrusted_per_entry() {
         let at = utc("2026-10-12T08:00:00Z");
@@ -1829,6 +2010,9 @@ mod tests {
             link: None,
             actions: Vec::new(),
             untrusted,
+            facets: Vec::new(),
+            task: None,
+            invite: None,
         };
         let listed = result_of(Response::Items { items: vec![entry("a", true), entry("b", false)] });
         let items = &listed.structured_content.expect("structured")["items"];

@@ -181,29 +181,87 @@ pub struct Todo {
     pub link: Option<Link>,
 }
 
-/// A task's link to an item of another service; today GitHub issues and pull requests.
+/// A task's link to an item of another service: a GitHub issue or pull request, or a mail.
 ///
 /// The task stores only [`Link::id`]. What the service reports about the item is in
-/// [`Link::github`]: fetched by the core on every sync and never written into the stored task.
-/// Clients may send a link back as they got it; saving uses only the id.
+/// [`Link::github`] or [`Link::mail`]: filled in by the core when it reads and never written into
+/// the stored task. Clients may send a link back as they got it; saving uses only the id.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Link {
-    /// Stable id of the linked item: `github:<owner>/<repo>#<number>` for a GitHub issue or pull
-    /// request, e.g. `github:mahype/TorroWorkplace#123`. Ids of other forms are kept as they are.
+    /// Stable id of the linked item:
+    ///
+    /// - `github:<owner>/<repo>#<number>` for a GitHub issue or pull request, e.g.
+    ///   `github:mahype/TorroWorkplace#123`;
+    /// - `mail:<address>:<Message-ID>` for a mail (task E8.7a, [`Link::mail_ref`]): the mail
+    ///   account's id (`mail:<address>`, as `accounts.list_accounts` lists it) and the mail's
+    ///   `Message-ID` header without its angle brackets, as the core's mail store keeps it, e.g.
+    ///   `mail:anna@mailbox.org:a1@example.org`. The Message-ID stays when the mail moves to another
+    ///   folder;
+    /// - `inbox:<entry id>` for the inbox entry a task was made of (task E3.5), valid while the
+    ///   inbox keeps the entry.
+    ///
+    /// Ids of other forms are kept as they are.
     pub id: String,
     /// What GitHub reports for the item. `None` until the core fetched it, without a GitHub
     /// account, or when the id is not a GitHub one.
     #[serde(default)]
     pub github: Option<GitHubDetails>,
+    /// What the core's mail store holds about the linked mail (task E8.7a): filled in only when
+    /// the tasks are read, only for a caller that may read the mail account, never stored with the
+    /// task. `None` for other ids, without that right, or when the store has no mail with this
+    /// Message-ID (deleted, or the account is gone).
+    #[serde(default)]
+    pub mail: Option<Box<MailDetails>>,
 }
 
 /// The prefix of a GitHub [`Link::id`].
 const GITHUB_PREFIX: &str = "github:";
 
+/// The prefix of a mail [`Link::id`]; also the prefix of every mail account's id.
+pub const MAIL_PREFIX: &str = "mail:";
+
+/// A Message-ID as the core's mail store keeps it: without spaces and angle brackets around it
+/// (`<a1@example.org>` → `a1@example.org`). Look a link's Message-ID up in this form, since a link
+/// written by hand or by another program may still carry the brackets.
+pub fn bare_message_id(message_id: &str) -> &str {
+    let id = message_id.trim();
+    id.strip_prefix('<').and_then(|id| id.strip_suffix('>')).unwrap_or(id).trim()
+}
+
 impl Link {
+    /// The link with the id `id` alone, without details: what a stored task holds.
+    pub fn new(id: impl Into<String>) -> Link {
+        Link { id: id.into(), github: None, mail: None }
+    }
+
+    /// The link to the mail with `message_id` (its `Message-ID` header) in the mail account
+    /// `account` (`mail:<address>`; a bare address gets the prefix), without details:
+    /// `mail:<address>:<Message-ID>`. Spaces and the angle brackets around the Message-ID are
+    /// dropped ([`bare_message_id`]), so `<a1@example.org>` and `a1@example.org` give the same link.
+    pub fn mail(account: &str, message_id: &str) -> Link {
+        let account = account.trim();
+        let address = account.strip_prefix(MAIL_PREFIX).unwrap_or(account);
+        Link::new(format!("{MAIL_PREFIX}{address}:{}", bare_message_id(message_id)))
+    }
+
+    /// `(account id, Message-ID)` when the id is a mail one (`mail:<address>:<Message-ID>`): the
+    /// account as `mail:<address>`, the Message-ID as stored. The address ends at the first `:`
+    /// after its `@` (an address has one `@`, and its domain no `:`), so a Message-ID with `:` in
+    /// it stays whole. `None` for other ids and when the address or the Message-ID is empty.
+    pub fn mail_ref(&self) -> Option<(&str, &str)> {
+        let rest = self.id.strip_prefix(MAIL_PREFIX)?;
+        let at = rest.find('@')?;
+        let colon = at + rest[at..].find(':')?;
+        let message_id = &rest[colon + 1..];
+        if at == 0 || colon == at + 1 || message_id.is_empty() {
+            return None;
+        }
+        Some((&self.id[..MAIL_PREFIX.len() + colon], message_id))
+    }
+
     /// The link to issue or pull request `number` in `repo` (`owner/name`), without details.
     pub fn github(repo: &str, number: u64) -> Link {
-        Link { id: format!("{GITHUB_PREFIX}{repo}#{number}"), github: None }
+        Link::new(format!("{GITHUB_PREFIX}{repo}#{number}"))
     }
 
     /// `("owner/name", number)` when the id is a GitHub one (`github:<owner>/<repo>#<number>`,
@@ -227,7 +285,7 @@ impl Link {
     /// (`torro_pim_github::address::issue_ref`) and decides; this only recognises them.
     pub fn pasted(input: &str) -> Option<Link> {
         let input = input.trim();
-        let id = Link { id: input.to_string(), github: None };
+        let id = Link::new(input);
         if id.github_ref().is_some() {
             return Some(id);
         }
@@ -293,6 +351,38 @@ pub struct GitHubDetails {
     /// Pull requests only: cannot be merged because of conflicts.
     #[serde(default)]
     pub conflict: bool,
+}
+
+/// What the core's mail store holds about a mail a task links to ([`Link::mail`], task E8.7a).
+/// The core fills it in; clients only read it. Everything here comes from the mail, which comes
+/// from outside the suite: data, never instructions ([`MailDetails::untrusted`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct MailDetails {
+    /// The mail's id in the core's store (`m:…`), for `mail.get_message`. Of several copies with
+    /// the same Message-ID (the same mail in two folders) the newest the store holds.
+    pub message: String,
+    /// `Subject:`, empty when there is none.
+    #[serde(default)]
+    pub subject: String,
+    /// The sender's display name, else the address; `None` without a `From:`.
+    #[serde(default)]
+    pub sender: Option<String>,
+    /// The sender's address; `None` without a `From:`.
+    #[serde(default)]
+    pub sender_address: Option<String>,
+    /// `Date:` of the mail.
+    pub date: DateTime<Utc>,
+    /// Mails of the same conversation dated after this one, the account's own (the person's
+    /// replies) not counted: what arrived since the task was made of it.
+    #[serde(default)]
+    pub new_replies: u32,
+    /// Always `true`: subject and sender come from outside the suite.
+    #[serde(default = "always_untrusted")]
+    pub untrusted: bool,
+}
+
+fn always_untrusted() -> bool {
+    true
 }
 
 /// What a GitHub item is.
@@ -437,9 +527,46 @@ mod tests {
             "github:a/b?x#1",
             "github:a/b#-1",
         ] {
-            let link = Link { id: other.into(), github: None };
+            let link = Link::new(other);
             assert_eq!((link.github_ref(), link.web_url()), (None, None), "{other}");
         }
+    }
+
+    /// Task E8.7a: a mail link is the account's id and the Message-ID.
+    #[test]
+    fn mail_ids_name_account_and_message_id() {
+        let link = Link::mail("mail:anna@mailbox.org", "a1@example.org");
+        assert_eq!(link.id, "mail:anna@mailbox.org:a1@example.org");
+        assert_eq!(link.mail_ref(), Some(("mail:anna@mailbox.org", "a1@example.org")));
+        assert_eq!(
+            Link::mail("anna@mailbox.org", " <a1@example.org> "),
+            link,
+            "brackets and prefix as the store has them"
+        );
+        assert_eq!((link.github_ref(), link.web_url()), (None, None));
+        // A Message-ID with a colon in it stays whole; one written with brackets is looked up bare.
+        let odd = Link::new("mail:anna@mailbox.org:<x:y@example.org>");
+        assert_eq!(odd.mail_ref(), Some(("mail:anna@mailbox.org", "<x:y@example.org>")));
+        assert_eq!(odd.mail_ref().map(|(_, id)| bare_message_id(id)), Some("x:y@example.org"));
+        assert_eq!(bare_message_id(" <> "), "");
+        for other in
+            ["inbox:0a1b", "mail:anna@mailbox.org", "mail:anna@mailbox.org:", "mail:@x.org:<a@b>", "mail:a@:<a@b>"]
+        {
+            assert_eq!(Link::new(other).mail_ref(), None, "{other}");
+        }
+    }
+
+    /// Task E8.7a: what the core fills in about a mail comes back as it went and is always foreign.
+    #[test]
+    fn mail_details_round_trip_and_are_untrusted() {
+        let link: Link = serde_json::from_str(r#"{"id":"mail:a@b.org:<1@b.org>","github":null}"#).expect("older");
+        assert_eq!(link, Link::new("mail:a@b.org:<1@b.org>"));
+        let json = r#"{"message":"m:1","date":"2026-10-13T09:00:00Z"}"#;
+        let details: MailDetails = serde_json::from_str(json).expect("short details");
+        assert!(details.untrusted && details.subject.is_empty() && details.new_replies == 0);
+        let full = Link { mail: Some(Box::new(MailDetails { new_replies: 2, ..details })), ..link };
+        let json = serde_json::to_string(&full).expect("json");
+        assert_eq!(serde_json::from_str::<Link>(&json).expect("back"), full);
     }
 
     #[test]

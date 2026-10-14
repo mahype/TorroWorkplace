@@ -14,6 +14,7 @@ use torro_core::AppId;
 use torro_core::ai::{AiError, AiProvider};
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
+use torro_inbox::item::{Facet, FacetKey, SourceHealth};
 use torro_inbox::{AgentKind, Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{
     ASSISTANT_CLIENT, Area, AreaRights, BOT_CLIENT, Confirm, HOOK_CLIENT, Level, Outbound, Rights, RightsTemplate,
@@ -21,7 +22,8 @@ use torro_ipc::api::{
 };
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
-    IssuedKey, Key, MailView, OpenRoleView, Request, Response, ServiceState, Status, TorroMailAccount,
+    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, RuleHits, ServiceState, Status,
+    TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -32,6 +34,8 @@ use torro_setups::TemplateSummary;
 use super::general::Pack;
 use super::wizard;
 use super::{Appearance, Data, Section};
+use crate::account::ntfy::NtfyAccountError;
+use torro_ntfy::NtfyError;
 
 /// A state the control centre can start in (`--demo --open <state>`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,9 +46,9 @@ pub enum Open {
     WizardGithub,
     /// The add-account dialog at the field for a GitHub token.
     WizardToken,
-    /// The add-account dialog on the mail account path (tasks M7.2, M5.1), at the state the script
-    /// of [`wizard::demo_messages`] leads to; the demo's search answers for a few domains
-    /// ([`demo_answer`]).
+    /// The add-account dialog on the mail account path (tasks M7.2, M5.1) or the ntfy path (task
+    /// E5.14), at the state the script of [`wizard::demo_messages`] leads to; the demo's search
+    /// answers for a few domains, its ntfy server wants a login ([`demo_answer`]).
     WizardMail(wizard::Demo),
     /// The add-account dialog on the AI provider path (task KI.1a), at the state the script of
     /// [`wizard::demo_messages`] leads to; the demo finds Ollama on this computer, not LM Studio.
@@ -57,6 +61,12 @@ pub enum Open {
     GithubDetail,
     /// The detail page of the demo's AI account (OpenRouter, task KI.1a).
     AiDetail,
+    /// The detail page of the demo's ntfy account (task E5.14): its topics and its login.
+    NtfyDetail,
+    /// The ntfy account's page with the dialog of its first topic (rename, unsubscribe).
+    NtfyTopic,
+    /// The ntfy account's page with "Change login…" open.
+    NtfyLogin,
     /// The detail page of the first demo mail account (task M5.2): synced mail and calendars, a
     /// signature, and the question for the folder of sent mail.
     MailDetail,
@@ -138,7 +148,7 @@ pub enum Open {
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 63] = [
+    pub const ALL: [(&'static str, Open); 71] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -162,10 +172,18 @@ impl Open {
         ("wizard-ai-refused", Open::WizardAi(wizard::Demo::AiRefused)),
         ("wizard-ai-server", Open::WizardAi(wizard::Demo::AiServer)),
         ("wizard-ai-done", Open::WizardAi(wizard::Demo::AiDone)),
+        ("wizard-ntfy", Open::WizardMail(wizard::Demo::NtfyServer)),
+        ("wizard-ntfy-topics", Open::WizardMail(wizard::Demo::NtfyTopics)),
+        ("wizard-ntfy-invalid", Open::WizardMail(wizard::Demo::NtfyInvalid)),
+        ("wizard-ntfy-login", Open::WizardMail(wizard::Demo::NtfyLogin)),
+        ("wizard-ntfy-done", Open::WizardMail(wizard::Demo::NtfyDone)),
         ("change-password", Open::ChangePassword),
         ("account-detail", Open::AccountDetail),
         ("scopes-detail", Open::GithubDetail),
         ("ai-detail", Open::AiDetail),
+        ("ntfy-detail", Open::NtfyDetail),
+        ("ntfy-topic", Open::NtfyTopic),
+        ("ntfy-login", Open::NtfyLogin),
         ("mail-detail", Open::MailDetail),
         ("mail-detail-problem", Open::MailDetailProblem),
         ("mail-password", Open::MailPassword),
@@ -400,8 +418,9 @@ pub fn demo_designs() -> Vec<Pack> {
 /// templates, the suite's apps, settings with one list hidden, approvals: two open, one done,
 /// one failed, one denied, one expired ([`demo_approvals`]), and five clients with the calendars,
 /// lists (one a GitHub filter list) and inbox sources their selections choose from
-/// ([`demo_clients`]), and inbox rules: two remembered lanes and the muted source of the sources
-/// list ([`demo_rules`]). Times are relative to now.
+/// ([`demo_clients`]), and inbox rules: two remembered lanes, the muted source of the sources
+/// list, a hidden sender and domain and two muted traits, with what each caught ([`demo_rules`],
+/// [`demo_hits`]). Times are relative to now.
 pub fn demo_data() -> Data {
     let now = Utc::now();
     let (mut sample, _, _) = torro_pim::demo::sample(Local::now().date_naive());
@@ -436,6 +455,7 @@ pub fn demo_data() -> Data {
             collections: sample,
             scopes: None,
             mail: None,
+            ntfy: None,
         },
         AccountInfo {
             id: "nextcloud:anna@work.example.net".into(),
@@ -453,6 +473,7 @@ pub fn demo_data() -> Data {
             ],
             scopes: None,
             mail: None,
+            ntfy: None,
         },
         // A GitHub account whose token reads private repositories but has no projects scope, so
         // the detail page shows what is allowed and what is missing.
@@ -469,6 +490,7 @@ pub fn demo_data() -> Data {
             collections: Vec::new(),
             scopes: Some(vec!["repo".into(), "read:org".into(), "workflow".into()]),
             mail: None,
+            ntfy: None,
         },
         // A mail provider's calendars and tasks (task M7.2). Another sign-in than the mail accounts
         // below: the core never lists a CalDAV account beside the mail account of the same
@@ -489,6 +511,7 @@ pub fn demo_data() -> Data {
             ],
             scopes: None,
             mail: None,
+            ntfy: None,
         },
         // Two mail accounts (tasks M3.4, M5.2), so the agents' "Mail accounts" have something to
         // choose from and the account page shows both kinds: one with calendars and tasks, a
@@ -496,6 +519,8 @@ pub fn demo_data() -> Data {
         // reach its server. Their ids are `mail:<address>`, as the core makes them.
         mailbox_account(now),
         work_mail_account(now),
+        // An ntfy server with a login and three topics (task E5.14).
+        ntfy_account(&[("backups-7f3a", "Backups"), ("ci-anna-91c2", "CI builds"), ("home-4d1e", "Home server")], now),
         // An AI account in the cloud (task KI.1a); the demo finds Ollama on this computer
         // unconnected, so the add-account dialog shows both kinds of local rows.
         AccountInfo {
@@ -511,6 +536,7 @@ pub fn demo_data() -> Data {
             collections: Vec::new(),
             scopes: None,
             mail: None,
+            ntfy: None,
         },
     ];
     let template = |id: &str, name: &str, windows, age: Duration| TemplateSummary {
@@ -565,10 +591,22 @@ pub fn demo_data() -> Data {
     });
     let first_calendar = calendars.first().map(|calendar| calendar.id.clone());
     let sources = vec![
-        SourceInfo { source: SourceRef::suite(), open: 2, muted: false },
-        SourceInfo { source: SourceRef::agent("claude-code"), open: 3, muted: false },
-        SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false },
-        SourceInfo { source: SourceRef::script("nightly-build"), open: 0, muted: true },
+        SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None },
+        SourceInfo { source: SourceRef::agent("claude-code"), open: 3, muted: false, health: None },
+        SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false, health: None },
+        SourceInfo { source: SourceRef::script("nightly-build"), open: 0, muted: true, health: None },
+        // The remote sources (task E5.14): Talk of the first Nextcloud muted, the second Nextcloud
+        // offline like its account.
+        SourceInfo { source: SourceRef::github("anna-dev"), open: 4, muted: false, health: None },
+        SourceInfo { source: SourceRef::nextcloud("anna@cloud.example.org"), open: 2, muted: false, health: None },
+        SourceInfo { source: SourceRef::talk("anna@cloud.example.org"), open: 0, muted: true, health: None },
+        SourceInfo {
+            source: SourceRef::nextcloud("anna@work.example.net"),
+            open: 0,
+            muted: false,
+            health: Some(SourceHealth::Offline),
+        },
+        SourceInfo { source: SourceRef::ntfy("push.example.org"), open: 1, muted: false, health: None },
     ];
     Data {
         clients: demo_clients(now, first_calendar),
@@ -576,6 +614,7 @@ pub fn demo_data() -> Data {
         task_lists,
         sources,
         rules: demo_rules(now),
+        rule_hits: demo_hits(now),
         status: Some(Status {
             version: env!("CARGO_PKG_VERSION").into(),
             backend: "hyprland".into(),
@@ -592,6 +631,31 @@ pub fn demo_data() -> Data {
         memories: demo_memories(now),
         bots: demo_bots(),
         error: None,
+    }
+}
+
+/// The demo's ntfy account at `push.example.org` (task E5.14), signed in as `anna` with a password,
+/// subscribed to `topics` (name, label); the control centre has the app key, so it sees the names.
+fn ntfy_account(topics: &[(&str, &str)], now: DateTime<Utc>) -> AccountInfo {
+    let server = "https://push.example.org";
+    let topics = topics
+        .iter()
+        .map(|(topic, label)| NtfyTopicView { label: label.to_string(), topic: Some(topic.to_string()) })
+        .collect();
+    AccountInfo {
+        id: "ntfy:push.example.org".into(),
+        kind: "ntfy".into(),
+        label: "anna@push.example.org".into(),
+        state: AccountState::Connected {
+            server: server.into(),
+            login_name: "anna".into(),
+            last_sync: Some(now - Duration::minutes(1)),
+            problem: None,
+        },
+        collections: Vec::new(),
+        scopes: None,
+        mail: None,
+        ntfy: Some(NtfyView { server: server.into(), topics, user: Some("anna".into()), login: true }),
     }
 }
 
@@ -682,6 +746,7 @@ fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> Accoun
         collections: Vec::new(),
         scopes: None,
         mail: Some(view),
+        ntfy: None,
     }
 }
 
@@ -725,7 +790,9 @@ fn work_mail_account(now: DateTime<Utc>) -> AccountInfo {
 }
 
 /// The demo's inbox rules: Codex's notices remembered in "For me", the backup script's in "Info",
-/// the nightly build muted, as the demo's sources list has it, and a sender and a domain hidden.
+/// the nightly build muted, as the demo's sources list has it, a sender and a domain hidden, and two
+/// traits muted from the bell's menu (task E8.6b): Claude Code's project "torro-workplace" without
+/// popups until tomorrow, newsletters to "Info" for good.
 fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
     let rule = |id: &str, source: SourceRef, effect: RuleEffect, age: Duration| Rule {
         id: id.into(),
@@ -734,6 +801,8 @@ fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
         domain: None,
         effect,
         created: now - age,
+        facet: None,
+        until: None,
     };
     vec![
         rule("5e0b7c2a", SourceRef::agent("codex"), RuleEffect::Lane { lane: Lane::ForMe }, Duration::days(6)),
@@ -748,6 +817,36 @@ fn demo_rules(now: DateTime<Utc>) -> Vec<Rule> {
             domain: Some("deals.example".into()),
             ..rule("e93a5c08", SourceRef::mail("anna@example.org"), RuleEffect::Muted, Duration::hours(2))
         },
+        // Traits muted from the bell's menu (task E8.6b).
+        Rule {
+            facet: Some(Facet { key: FacetKey::Project, value: "torro-workplace".into() }),
+            until: Some(now + Duration::hours(22)),
+            ..rule("4b8d2e61", SourceRef::agent("claude-code"), RuleEffect::NoPopup, Duration::hours(2))
+        },
+        Rule {
+            facet: Some(Facet { key: FacetKey::Bulk, value: "bulk".into() }),
+            ..rule(
+                "9f13c7a5",
+                SourceRef::mail("anna@example.org"),
+                RuleEffect::Lane { lane: Lane::Info },
+                Duration::days(5),
+            )
+        },
+    ]
+}
+
+/// What the demo's rules caught ([`demo_rules`], task E8.8a): counted since each was made, the
+/// domain hidden two hours ago nothing yet.
+fn demo_hits(now: DateTime<Utc>) -> Vec<RuleHits> {
+    let hit = |rule: &str, hits: u32, age: Duration| RuleHits { rule: rule.into(), hits, since: now - age };
+    vec![
+        hit("5e0b7c2a", 14, Duration::days(6)),
+        hit("a81f3d94", 31, Duration::days(3)),
+        hit("2c6e9b17", 9, Duration::days(1)),
+        hit("7d41e0b3", 12, Duration::hours(20)),
+        hit("e93a5c08", 0, Duration::hours(2)),
+        hit("4b8d2e61", 3, Duration::hours(2)),
+        hit("9f13c7a5", 27, Duration::days(5)),
     ]
 }
 
@@ -884,6 +983,7 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                     collections: Vec::new(),
                     scopes: None,
                     mail: None,
+                    ntfy: None,
                 },
             })
         }
@@ -892,6 +992,20 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
         Request::ConnectCalDav { password, .. } if password.expose() == "wrong" => {
             Some(Response::Error { code: "auth".into(), message: tr("Password was refused").into() })
         }
+        // ntfy (task E5.14): the topics of `push.example.org` need a login, the password "wrong" is
+        // refused, a topic is changed at once; nothing is stored.
+        Request::ConnectNtfy { server, .. } if server.contains("push.example.org") => {
+            Some(NtfyAccountError::Ntfy(NtfyError::Auth).response())
+        }
+        Request::SetNtfyLogin { secret, .. } if secret.expose() == "wrong" => {
+            Some(NtfyAccountError::Ntfy(NtfyError::Auth).response())
+        }
+        Request::ConnectNtfy { topics, .. } | Request::SetNtfyLogin { topics, .. } => {
+            let topics: Vec<(&str, &str)> =
+                topics.iter().map(|topic| (topic.topic.as_str(), topic.label.as_str())).collect();
+            Some(Response::Account { account: ntfy_account(&topics, Utc::now()) })
+        }
+        Request::SetNtfyTopic { .. } => Some(Response::Ok),
         Request::ConnectMail { password, .. } if password.expose() == "wrong" => Some(refused("IMAP")),
         Request::ConnectMail { password, .. } if password.expose() == "wrong-smtp" => Some(refused("SMTP")),
         // What the CalDAV address offers is what was asked for, as long as an address was given.

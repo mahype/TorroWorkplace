@@ -1,7 +1,8 @@
 //! What a window remembers about its own look between starts: whether the sidebar is collapsed
 //! (task U.2, [`UiState`]), in the tasks app the repository last chosen for a GitHub filter list
 //! (task G.11, [`last_repo_from`]), and which foldable parts the person unfolded – "Info" in the
-//! columns of the inbox's overview (task E3.11, [`unfolded_from`]). `ui.json` in the app's state directory
+//! columns of the inbox's overview (task E3.11, [`unfolded_from`]), and the density each window of the
+//! inbox shows its entries in (task E8.2, [`Density`], [`density_from`]). `ui.json` in the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
 //!
@@ -28,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
 
+use crate::layout::SizeClass;
 use crate::shell::SidebarMode;
 
 /// The name of the file in the app's state directory.
@@ -39,6 +41,58 @@ const LAST_REPO: &str = "lastRepo";
 
 /// The key of the parts unfolded ([`unfolded_from`]): a list of names the app chooses.
 const UNFOLDED: &str = "unfolded";
+
+/// The key of the densities chosen ([`density_from`]): an object from a window's key to its
+/// [`Density`].
+const DENSITY: &str = "density";
+
+/// How close together a window shows its entries (task E8.2, `docs/eingang.md` "Zwei Dichten"):
+/// one row each, or cards with room, a longer preview and their buttons always shown. Chosen with
+/// `widgets::density_switch` in the header bar, remembered per window ([`save_density_to`]); a
+/// `--density compact|comfortable` at start wins over what is remembered, so a workspace template
+/// brings its windows back as they were. Mini and strip are glances and know no density.
+///
+/// Stored as `"compact"` / `"comfortable"`, the words of `--density` ([`Density::ALL`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Density {
+    /// One row per entry, the actions at the row under the pointer or the cursor: the look up to
+    /// task E3.11, good for small tiles.
+    Compact,
+    /// Cards: more room, a preview over two or three lines, chips (attachment, "Answer by Fri") and
+    /// every button shown at once.
+    Comfortable,
+}
+
+impl Density {
+    /// The words of `--density` and of `ui.json`, in the order the error message lists them.
+    pub const ALL: [(&'static str, Density); 2] =
+        [("compact", Density::Compact), ("comfortable", Density::Comfortable)];
+
+    /// The density of the word `word` (`"compact"`); `None` for any other word.
+    pub fn parse(word: &str) -> Option<Density> {
+        Density::ALL.iter().find(|(name, _)| *name == word).map(|&(_, density)| density)
+    }
+
+    /// The word of this density, as `--density` and `ui.json` write it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Density::Compact => "compact",
+            Density::Comfortable => "comfortable",
+        }
+    }
+
+    /// The density of a window whose person chose none (no `--density`, nothing remembered), in
+    /// the layout `class`: compact in the narrow one, where a card would leave room for two
+    /// entries, comfortable elsewhere. The choice is not stored, so the window follows its size
+    /// until the person picks one.
+    pub fn default_for(class: SizeClass) -> Density {
+        match class {
+            SizeClass::Narrow => Density::Compact,
+            _ => Density::Comfortable,
+        }
+    }
+}
 
 /// The remembered view state of one app. Add fields with `#[serde(default)]` so older files keep
 /// loading.
@@ -210,6 +264,51 @@ pub fn save_unfolded_task<T: Send + 'static>(app: AppId, names: Vec<String>) -> 
     .discard()
 }
 
+/// The density remembered for the window `key` in `path`, as [`save_density_to`] stored it; `None`
+/// when there is none, the file cannot be read or the value is no density word.
+///
+/// `key` names the window, not the app: the three windows of the inbox share one state directory,
+/// and one window per slice (`--lane info`, `--source agent:claude-code`) keeps a density of its
+/// own. The app builds it from what tells its windows apart, e.g. `mail`, `hub/lane:info`.
+pub fn density_from(path: &Path, key: &str) -> Option<Density> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    Density::parse(value.get(DENSITY)?.get(key)?.as_str()?)
+}
+
+/// Stores `density` for the window `key` in `path`, keeping the densities of the other windows and
+/// everything else in the file.
+pub fn save_density_to(path: &Path, key: &str, density: Density) -> Result<(), Error> {
+    let mut densities = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get(DENSITY).and_then(serde_json::Value::as_object).cloned())
+        .unwrap_or_default();
+    densities.insert(key.to_string(), serde_json::Value::String(density.word().to_string()));
+    let mut fields = serde_json::Map::new();
+    fields.insert(DENSITY.into(), serde_json::Value::Object(densities));
+    merge_into(path, fields)
+}
+
+/// [`density_from`] for the window `key` of `app` in the background, for the start of a window
+/// that got no `--density`: `ui_state::load_density_task(app, key).map(Message::Density)`. Like
+/// [`load_task`], tests that only build the app never run it.
+pub fn load_density_task(app: AppId, key: String) -> Task<Option<Density>> {
+    Task::perform(async move { file(app).and_then(|path| density_from(&path, &key)) }, |density| density)
+}
+
+/// [`save_density_to`] for the window `key` of `app` in the background, after the person chose a
+/// density. A failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_density_task<T: Send + 'static>(app: AppId, key: String, density: Density) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_density_to(&path, &key, density));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
 /// Writes `fields` into the JSON object in `path` – over the keys of the same name, beside the
 /// others – atomically, creating the directory if needed. A missing or broken file starts empty.
 fn merge_into(path: &Path, fields: serde_json::Map<String, serde_json::Value>) -> Result<(), Error> {
@@ -345,6 +444,45 @@ mod tests {
             fs::write(&path, content).expect("write");
             let expected: &[&str] = if content.contains('7') { &["a"] } else { &[] };
             assert_eq!(unfolded_from(&path), expected, "{content}");
+        }
+    }
+
+    /// Task E8.2: every window keeps its own density beside the other keys of the file.
+    #[test]
+    fn densities_are_kept_per_window_beside_the_rest() {
+        let dir = TempDir::new("density");
+        let path = dir.0.join(FILE);
+        assert_eq!(density_from(&path, "mail"), None, "nothing chosen yet");
+        save_to(&path, &UiState { sidebar: SidebarMode::Rail }).expect("save the sidebar");
+        save_unfolded_to(&path, &["overview.mail.info".to_string()]).expect("save the unfolded");
+        save_density_to(&path, "mail", Density::Compact).expect("save the mail window");
+        save_density_to(&path, "hub/lane:info", Density::Comfortable).expect("save a slice of the hub");
+        assert_eq!(density_from(&path, "mail"), Some(Density::Compact));
+        assert_eq!(density_from(&path, "hub/lane:info"), Some(Density::Comfortable));
+        assert_eq!(density_from(&path, "hub"), None, "the hub without a slice is a window of its own");
+        assert_eq!(load_from(&path).sidebar, SidebarMode::Rail, "the sidebar stays");
+        assert_eq!(unfolded_from(&path), ["overview.mail.info"], "the unfolded parts stay");
+        save_density_to(&path, "mail", Density::Comfortable).expect("change the mail window");
+        assert_eq!(density_from(&path, "mail"), Some(Density::Comfortable));
+        assert_eq!(density_from(&path, "hub/lane:info"), Some(Density::Comfortable), "the other window stays");
+        assert!(fs::read_to_string(&path).expect("read").contains(r#""mail": "comfortable""#));
+        for content in ["{ not json", r#"{"density":"compact"}"#, r#"{"density":{"mail":"roomy"}}"#] {
+            fs::write(&path, content).expect("write");
+            assert_eq!(density_from(&path, "mail"), None, "{content}");
+        }
+    }
+
+    #[test]
+    fn density_words_and_defaults() {
+        assert_eq!(Density::parse("compact"), Some(Density::Compact));
+        assert_eq!(Density::parse("comfortable"), Some(Density::Comfortable));
+        assert_eq!(Density::parse("cozy"), None);
+        for (word, density) in Density::ALL {
+            assert_eq!(density.word(), word);
+        }
+        assert_eq!(Density::default_for(SizeClass::Narrow), Density::Compact, "narrow windows get rows");
+        for class in [SizeClass::Medium, SizeClass::Wide, SizeClass::Mini, SizeClass::Strip] {
+            assert_eq!(Density::default_for(class), Density::Comfortable, "{class:?}");
         }
     }
 

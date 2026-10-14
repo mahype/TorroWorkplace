@@ -213,7 +213,11 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::ListSources
         | Request::PostItem { .. }
         | Request::ResolveItems { .. }
-        | Request::ListRules => Vec::new(),
+        | Request::ListRules
+        // The span only, never what was counted (task E8.8a).
+        | Request::GetStats { .. }
+        // Never the event's title or times (task E8.5b).
+        | Request::GetQuiet => Vec::new(),
         Request::UpdateTemplate { id: template }
         | Request::DeleteTemplate { id: template }
         | Request::LoadTemplate { id: template, .. }
@@ -227,6 +231,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::MoveTodo { href, before, .. } => {
             [item(&Some(href.clone())), item(before)].into_iter().flatten().collect()
         }
+        // The list only (task E8.7a): never the mail account, the mail's id or its Message-ID,
+        // not even hashed – together they would tell which mail a person turned into a task.
+        Request::CreateTodoFromMail { collection: list, .. } => vec![collection(list)],
         // The account only, never the name of the new list (task G.7).
         Request::CreateTaskList { account: name, .. }
         | Request::CreateFilterList { account: name, .. }
@@ -247,7 +254,9 @@ pub fn ids(request: &Request) -> Vec<String> {
             key.map(|key| vec![id("setting", &key)]).unwrap_or_default()
         }
         Request::RemoveAccount { id: name } => vec![account(name)],
-        Request::OpenApp { app } => match AppId::ALL.iter().any(|known| known.binary == app) {
+        // Only names of the suite (a binary or a window class) are logged, never a free text, and
+        // never the target: it names a mail or a task (task E8.7a).
+        Request::OpenApp { app, .. } => match AppId::find(app).is_some() {
             true => vec![id("app", app)],
             false => Vec::new(),
         },
@@ -266,9 +275,24 @@ pub fn ids(request: &Request) -> Vec<String> {
         | Request::SetItemDone { id: entry, .. }
         | Request::SnoozeItem { id: entry, .. }
         | Request::SetItemLane { id: entry, .. }
-        | Request::HideSender { id: entry, .. } => vec![random("inbox", entry)],
+        | Request::HideSender { id: entry, .. }
+        // The entry only, never the trait muted or its value (task E8.6a).
+        | Request::ListMuteOptions { id: entry }
+        | Request::MuteItem { id: entry, .. } => vec![random("inbox", entry)],
         Request::CreateTaskFromItem { id: entry, collection: list, .. } => {
             vec![random("inbox", entry), collection(list)]
+        }
+        // The entry and the calendar, never the title or the times (task E8.5b).
+        Request::CreateEventFromItem { id: entry, collection: calendar, .. } => {
+            vec![random("inbox", entry), collection(calendar)]
+        }
+        // Answering an invitation (task E8.3b): the account and the mail hashed as for sending, the
+        // calendar when one is named; never the answer, the title, the times or the organizer.
+        Request::RespondToInvitation { account: name, id: message, collection: calendar, .. } => {
+            [Some(account(name)), Some(format!("message:{}", hashed(message))), calendar.as_deref().map(collection)]
+                .into_iter()
+                .flatten()
+                .collect()
         }
         Request::MuteSource { source, .. } => vec![id("source", &source.to_string())],
         Request::RemoveRule { id: rule } => vec![random("rule", rule)],
@@ -280,6 +304,9 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::TorroMailAccounts | Request::ImportTorroMailAccount { .. } => Vec::new(),
         // AI accounts (task KI.1a): never the address typed nor the key; finding names nothing.
         Request::ConnectAi { .. } | Request::FindAiServers => Vec::new(),
+        // ntfy (task E5.12): never the address, a topic or the login; a topic's account only.
+        Request::ConnectNtfy { .. } | Request::SetNtfyLogin { .. } => Vec::new(),
+        Request::SetNtfyTopic { account: name, .. } => vec![account(name)],
         Request::AiModels { account: name, .. } => vec![account(name)],
         Request::UpdateMailAccount { id: name, .. } => vec![account(name)],
         // The assistant (task C.1): the conversation as the core made it, and for a message the
@@ -657,10 +684,41 @@ pub(crate) mod tests {
         assert_eq!(described, vec!["account:github:anna".to_string(), format!("repo:{}", hashed("anna/salary-talks"))]);
         assert!(!described.join(" ").contains("salary"), "{described:?}");
         assert_eq!(describe(" Anna/Salary-Talks"), described);
-        let open = Request::OpenApp { app: "Dinner with Anna".into() };
+        let open = Request::OpenApp { app: "Dinner with Anna".into(), target: None };
         assert_eq!(super::ids(&open), Vec::<String>::new());
+        let mail = Request::OpenApp { app: "torro-inbox-mail".into(), target: None };
+        assert_eq!(super::ids(&mail), vec!["app:torro-inbox-mail".to_string()], "a window class of the suite");
         let set = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.5) };
         assert_eq!(super::ids(&set), vec!["setting:zoom".to_string()]);
+        // Muting (task E8.6a): the entry only, never the trait or a value of it.
+        let sender = torro_inbox::item::MuteScope::Facet { key: torro_inbox::item::FacetKey::Sender, nth: 0 };
+        let mute = Request::MuteItem {
+            id: "3d29c13547a49e39".into(),
+            scope: sender,
+            until: None,
+            effect: torro_inbox::item::MuteEffect::Hide,
+        };
+        assert_eq!(super::ids(&mute), vec!["inbox:3d29c13547a49e39".to_string()]);
+        let options = Request::ListMuteOptions { id: "news@shop.example".into() };
+        let logged = super::ids(&options).join(" ");
+        assert!(logged.starts_with("inbox:hash:") && !logged.contains("shop"), "{logged}");
+        // The statistics name nothing (task E8.8a): no source, no trait, no span.
+        let stats = Request::GetStats { range: torro_ipc::StatsRange::Quarter, until: None };
+        assert!(super::ids(&stats).is_empty());
+        // The remote sources (task E5.2): an entry by its id, never its repository, reason or tag; a
+        // source by its key, the account's id.
+        let by_repo = torro_inbox::item::MuteScope::Facet { key: torro_inbox::item::FacetKey::Repo, nth: 0 };
+        let mute_repo = Request::MuteItem {
+            id: "3d29c13547a49e39".into(),
+            scope: by_repo,
+            until: None,
+            effect: torro_inbox::item::MuteEffect::Info,
+        };
+        assert_eq!(super::ids(&mute_repo), vec!["inbox:3d29c13547a49e39".to_string()]);
+        let done = Request::SetItemDone { id: "3d29c13547a49e39".into(), done: true, dismissed: true };
+        assert_eq!(super::ids(&done), vec!["inbox:3d29c13547a49e39".to_string()]);
+        let github = Request::MuteSource { source: torro_inbox::SourceRef::github("anna-berg"), muted: true };
+        assert_eq!(super::ids(&github), vec!["source:github:anna-berg".to_string()]);
     }
 
     /// Task E1.2c: collection ids keep only their account; ids a client sends are logged as they
@@ -693,6 +751,57 @@ pub(crate) mod tests {
         assert_eq!(account, vec![format!("account:hash:{}", hashed("Anna Smith"))]);
         let task = Request::CreateTaskFromItem { id: "e1".into(), collection: url.into(), title: None, due: None };
         assert_eq!(super::ids(&task), vec!["inbox:e1".to_string(), logged[0].clone()]);
+        // Task E8.5b: an event of an entry logs the entry and the calendar, never title or times.
+        let at = torro_pim::EventTime::DateTime(chrono::Utc::now());
+        let event = Request::CreateEventFromItem {
+            id: "e1".into(),
+            collection: url.into(),
+            title: Some("Secret call".into()),
+            start: at,
+            end: at,
+        };
+        assert_eq!(super::ids(&event), vec!["inbox:e1".to_string(), logged[0].clone()]);
+        assert!(super::ids(&Request::GetQuiet).is_empty());
+        // Task E8.3b: an answered invitation logs the account, the mail hashed and the calendar.
+        let answer = Request::RespondToInvitation {
+            account: "mail:anna@example.org".into(),
+            id: "m:0a1b2c3d".into(),
+            answer: torro_mail::InvitationAnswer::Accept,
+            collection: Some(url.into()),
+        };
+        let expected = vec![
+            "account:mail:anna@example.org".to_string(),
+            format!("message:{}", hashed("m:0a1b2c3d")),
+            logged[0].clone(),
+        ];
+        assert_eq!(super::ids(&answer), expected);
+    }
+
+    /// Task E8.7a: a task made of a mail logs its list only, opening an app with a target the app
+    /// only: no account, mail id, Message-ID or target, not even hashed.
+    #[test]
+    fn mail_tasks_and_targets_log_no_mail() {
+        let list = "nextcloud:anna@cloud.example.org/https://cloud.example.org/remote.php/dav/calendars/anna/tasks/";
+        let task = Request::CreateTodoFromMail {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:0a1b2c3d".into(),
+            collection: list.into(),
+            title: Some("Answer the offer".into()),
+            due: None,
+        };
+        let logged = super::ids(&task);
+        assert_eq!(logged, vec![super::collection(list)]);
+        let message_id = "<offer@keller.example>";
+        let open = Request::OpenApp {
+            app: "torro-inbox-mail".into(),
+            target: Some(format!("mail:anna@mailbox.org:{message_id}")),
+        };
+        let opened = super::ids(&open);
+        assert_eq!(opened, vec!["app:torro-inbox-mail".to_string()]);
+        let all = [logged, opened].concat().join(" ");
+        for secret in ["m:0a1b2c3d", "keller", "offer", &hashed("m:0a1b2c3d"), &hashed(message_id), "Answer"] {
+            assert!(!all.contains(secret), "{secret} in {all}");
+        }
     }
 
     /// Security rule 3 of task M2.1: the account as it is, messages and folders only hashed, never

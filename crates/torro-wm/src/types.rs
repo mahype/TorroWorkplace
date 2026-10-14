@@ -120,3 +120,41 @@ impl fmt::Display for WmError {
 }
 
 impl std::error::Error for WmError {}
+
+/// Why [`crate::focus_process_window`] brought no window to the front (task E8.9).
+///
+/// [`fmt::Display`] says it in English for people, e.g. in the `unsupported` answer of
+/// `inbox.open_item`. Nothing in it comes from the window titles or the hints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NoWindow {
+    /// None of the processes owns a window, and none of them is an app the system could bring
+    /// forward instead: the terminal was closed, or the agent runs under a tmux server, which
+    /// belongs to no window.
+    NotFound,
+    /// The nearest process with windows owns `count` of them, and neither the title hints nor
+    /// the terminal (macOS: Terminal, iTerm2, by the agent's tty) single out one.
+    Ambiguous { count: usize },
+    /// No window manager answers and this system has no other way to raise a window (Linux
+    /// without Hyprland, Windows without GlazeWM). Holds the window manager's reason.
+    Unsupported(String),
+    /// Raising failed: the window manager refused, or the window closed meanwhile
+    /// ([`WmError::NotFound`]).
+    Failed(WmError),
+}
+
+impl fmt::Display for NoWindow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NoWindow::NotFound => f.write_str("no window of the agent's processes is open"),
+            NoWindow::Ambiguous { count } => write!(
+                f,
+                "the agent's terminal has {count} windows and none of their titles names the session; give the \
+                 session a name the terminal shows in its title"
+            ),
+            NoWindow::Unsupported(reason) => write!(f, "cannot raise windows here: {reason}"),
+            NoWindow::Failed(err) => write!(f, "cannot raise the window: {err}"),
+        }
+    }
+}
+
+impl std::error::Error for NoWindow {}
