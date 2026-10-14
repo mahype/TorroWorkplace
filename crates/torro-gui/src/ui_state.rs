@@ -3,7 +3,8 @@
 //! (task G.11, [`last_repo_from`]), and which foldable parts the person unfolded – "Info" in the
 //! columns of the inbox's overview (task E3.11, [`unfolded_from`]), and the density each window of the
 //! inbox shows its entries in (task E8.2, [`Density`], [`density_from`]) and in which order by arrival
-//! (task E8.15, [`order_from`]). `ui.json` in the app's state directory
+//! (task E8.15, [`order_from`]), and how wide the list beside the reader is (issue #130,
+//! [`split_from`]). `ui.json` in the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
 //!
@@ -51,6 +52,10 @@ const DENSITY: &str = "density";
 /// The key of the orders chosen ([`order_from`]): an object from a window's key to its
 /// [`Order`] word.
 const ORDER: &str = "order";
+
+/// The key of the split widths chosen ([`split_from`]): an object from a window's key to the width
+/// of its first pane in layout units.
+const SPLIT: &str = "split";
 
 /// How close together a window shows its entries (task E8.2, `docs/eingang.md` "Zwei Dichten"):
 /// one row each, or cards with room, a longer preview and their buttons always shown. Chosen with
@@ -357,6 +362,53 @@ pub fn save_order_task<T: Send + 'static>(app: AppId, key: String, order: Order)
     .discard()
 }
 
+/// The width of the first pane of a split ([`crate::split`], issue #130) remembered for the window
+/// `key` in `path`, as [`save_split_to`] stored it; `None` when there is none, the file cannot be
+/// read or the value is no positive number. Windows are keyed as for [`density_from`]; the app
+/// clamps the width to its window ([`crate::split::Limits`]).
+pub fn split_from(path: &Path, key: &str) -> Option<f32> {
+    let text = fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let width = value.get(SPLIT)?.get(key)?.as_f64()?;
+    (width.is_finite() && width > 0.0).then_some(width as f32)
+}
+
+/// Stores `width` for the window `key` in `path` – `None`, back to the default, removes it –,
+/// keeping the widths of the other windows and everything else in the file.
+pub fn save_split_to(path: &Path, key: &str, width: Option<f32>) -> Result<(), Error> {
+    let mut widths = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get(SPLIT).and_then(serde_json::Value::as_object).cloned())
+        .unwrap_or_default();
+    match width.and_then(|width| serde_json::Number::from_f64(f64::from(width.round()))) {
+        Some(number) => widths.insert(key.to_string(), serde_json::Value::Number(number)),
+        None => widths.remove(key),
+    };
+    let mut fields = serde_json::Map::new();
+    fields.insert(SPLIT.into(), serde_json::Value::Object(widths));
+    merge_into(path, fields)
+}
+
+/// [`split_from`] for the window `key` of `app` in the background, for the start of a window:
+/// `ui_state::load_split_task(app, key).map(Message::StoredSplit)`. Like [`load_task`], tests that
+/// only build the app never run it.
+pub fn load_split_task(app: AppId, key: String) -> Task<Option<f32>> {
+    Task::perform(async move { file(app).and_then(|path| split_from(&path, &key)) }, |width| width)
+}
+
+/// [`save_split_to`] for the window `key` of `app` in the background, after a drag ended or the
+/// divider was reset. A failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_split_task<T: Send + 'static>(app: AppId, key: String, width: Option<f32>) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_split_to(&path, &key, width));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
 /// Writes `fields` into the JSON object in `path` – over the keys of the same name, beside the
 /// others – atomically, creating the directory if needed. A missing or broken file starts empty.
 fn merge_into(path: &Path, fields: serde_json::Map<String, serde_json::Value>) -> Result<(), Error> {
@@ -537,6 +589,27 @@ mod tests {
         for content in ["{ not json", r#"{"order":"oldest-first"}"#, r#"{"order":{"mail":"oldest"}}"#] {
             fs::write(&path, content).expect("write");
             assert_eq!(order_from(&path, "mail"), None, "{content}");
+        }
+    }
+
+    /// Issue #130: every window keeps the width of its split beside the rest; going back to the
+    /// default removes it.
+    #[test]
+    fn split_widths_are_kept_per_window_and_removed_by_a_reset() {
+        let dir = TempDir::new("split");
+        let path = dir.0.join(FILE);
+        assert_eq!(split_from(&path, "mail"), None, "nothing chosen yet");
+        save_order_to(&path, "mail", Order::OldestFirst).expect("save the order");
+        save_split_to(&path, "mail", Some(522.4)).expect("save the mail window");
+        save_split_to(&path, "hub", Some(400.0)).expect("save another window");
+        assert_eq!(split_from(&path, "mail"), Some(522.0), "whole units");
+        assert_eq!(split_from(&path, "hub"), Some(400.0));
+        assert_eq!(order_from(&path, "mail"), Some(Order::OldestFirst), "the order stays");
+        save_split_to(&path, "mail", None).expect("reset");
+        assert_eq!((split_from(&path, "mail"), split_from(&path, "hub")), (None, Some(400.0)));
+        for content in ["{ not json", r#"{"split":520}"#, r#"{"split":{"mail":"wide"}}"#, r#"{"split":{"mail":-3}}"#] {
+            fs::write(&path, content).expect("write");
+            assert_eq!(split_from(&path, "mail"), None, "{content}");
         }
     }
 

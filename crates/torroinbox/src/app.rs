@@ -152,6 +152,7 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
+use torro_gui::split::{self, Limits, Split, SplitEvent};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::ui_state::{self, Density, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, ToastAction, Trail};
@@ -1687,6 +1688,9 @@ pub struct App<S> {
     order: Order,
     /// The order was turned in this window before `ui.json` answered: what it remembers is late.
     order_chosen: bool,
+    /// The divider between the wide mail window's list and reader (issue #130): the width the person
+    /// dragged the list to, remembered in `ui.json` under the density's key.
+    split: Split,
     /// The suite-wide zoom (Ctrl + Plus / Minus / 0), the factor of the whole window.
     zoom: Zoom,
     /// Follows the design pack the suite settings name (task L.3).
@@ -1862,6 +1866,10 @@ pub enum Message {
     ToggleOrder,
     /// The order remembered for this window in `ui.json`, loaded at start (none: not chosen yet).
     StoredOrder(Option<Order>),
+    /// The divider between the list and the reader (issue #130): grabbed, dragged, released, reset.
+    Split(SplitEvent),
+    /// The list's width remembered for this window in `ui.json`, loaded at start (none: the default).
+    StoredSplit(Option<f32>),
     /// Close the open menu and the drawer (click beside them).
     CloseMenu,
     /// Escape: closes the innermost open thing – menu or drawer, then the panel.
@@ -2210,6 +2218,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             density: launch.density,
             order: Order::default(),
             order_chosen: false,
+            split: Split::default(),
             launch,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
@@ -2223,11 +2232,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             None => ui_state::load_density_task(INBOX, app.launch.density_key()).map(Message::StoredDensity),
         };
         let order = ui_state::load_order_task(INBOX, app.launch.density_key()).map(Message::StoredOrder);
+        // Only the mail window has a divider (issue #130).
+        let split = match app.launch.kind {
+            Kind::Mail => ui_state::load_split_task(INBOX, app.launch.density_key()).map(Message::StoredSplit),
+            _ => Task::none(),
+        };
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
             density,
             order,
+            split,
             app.load(),
             app.fetch_appearance(),
             app.zoom.fetch().map(Message::Zoom),
@@ -2274,6 +2289,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
         if self.hint.is_some() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
+        }
+        // The end of a drag of the divider, wherever the button is released (issue #130).
+        if self.split.dragging {
+            subscriptions.push(split::release().map(|()| Message::Split(SplitEvent::Release)));
         }
         Subscription::batch(subscriptions)
     }
@@ -2573,6 +2592,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 }
             }
             Message::ToggleOrder => return self.set_order(self.order.toggled()),
+            Message::Split(event) => {
+                if self.split.update(event, self.split_limits()) {
+                    return ui_state::save_split_task(INBOX, self.launch.density_key(), self.split.chosen);
+                }
+            }
+            Message::StoredSplit(stored) => {
+                // A width dragged before the file answered wins.
+                if self.split == Split::default() {
+                    self.split = Split::with(stored);
+                }
+            }
             Message::StoredOrder(stored) => {
                 // A turn made before the file answered wins; the first lists went out newest first.
                 if let Some(stored) = stored.filter(|stored| !self.order_chosen && *stored != self.order) {
@@ -4585,21 +4615,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
 
     /// The width the mail window's cards get (task E8.11; their previews take the lines they need at
     /// it): the list's width less the cards' inset – in the wide layout the list beside the reader
-    /// ([`size::list()`]), else the window less the rail with the inset beside the content (as
+    /// (as wide as its divider says, [`App::split_limits`]), else the window less the rail with the inset beside the content (as
     /// [`App::board_width`]) – the whole of it, as the list without a reader fills it (issue #129,
     /// [`App::list_cap`]). An estimate from the window's size, because the keys need the cards'
     /// heights as well as the drawing; a few points off only move the scrolling a little.
     fn card_width(&self) -> f32 {
         let class = self.class();
         let list = if class == SizeClass::Wide {
-            size::list()
+            self.split.width(self.split_limits())
         } else {
-            let chrome = match shell::sidebar_mode(class, self.sidebar) {
-                Some(SidebarMode::Expanded) => size::sidebar() + layout::inset(),
-                Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
-                None => 0.0,
-            };
-            let room = self.size.width - chrome;
+            let room = self.content_width();
             match self.list_cap(1) {
                 Some(cap) if self.view == View::Overview => room.min(cap),
                 _ => room,
@@ -4614,6 +4639,24 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// instead of ending in an empty strip that reads as broken.
     fn list_cap(&self, columns: usize) -> Option<f32> {
         (self.launch.kind != Kind::Mail).then(|| overview::width(columns))
+    }
+
+    /// The width of the content beside the sidebar or rail and its inset: the room of the list (and
+    /// of the reader beside it). An estimate from the window's size, as [`App::card_width`] needs it.
+    fn content_width(&self) -> f32 {
+        let chrome = match shell::sidebar_mode(self.class(), self.sidebar) {
+            Some(SidebarMode::Expanded) => size::sidebar() + layout::inset(),
+            Some(SidebarMode::Rail) => shell::rail() + layout::inset(),
+            None => 0.0,
+        };
+        self.size.width - chrome
+    }
+
+    /// What the divider between the wide mail window's list and reader moves in (issue #130): the
+    /// list [`size::list()`] wide by default, in the content's width ([`App::content_width`]); the
+    /// split keeps both at least `split::min_pane()`.
+    fn split_limits(&self) -> Limits {
+        Limits::new(size::list(), self.content_width())
     }
 
     /// What the narrow mail window's "For me" leads with (task E8.3, "N new for you"; task E8.11 in
@@ -4649,7 +4692,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     }
 
     /// The reader's column of the wide mail window while no mail is open (task E8.11,
-    /// `mail::empty_reader`): the list keeps the width it has beside a mail ([`size::list()`]) and
+    /// `mail::empty_reader`): the list keeps the width it has beside a mail (its divider's, issue #130) and
     /// its scrollbar stands at its edge, instead of a wide empty space beside it. `None` elsewhere,
     /// while a panel is open, and before the first load (the loading or error state fills the window).
     fn empty_reader<'a>(&self, class: SizeClass) -> Option<Element<'a, Message>> {
@@ -4800,8 +4843,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
         // open the reader's column says what shows up there (task E8.11).
         if let Some(reader) = self.wide_reader(class, &anchors).or_else(|| self.empty_reader(class)) {
-            let list = container(self.body(class, &rows)).width(size::list()).height(Fill);
-            let body = row![list, rule::vertical(size::HAIRLINE).style(style::rule), reader];
+            // The divider between them drags (issue #130).
+            let width = self.split.width(self.split_limits());
+            let body = split::split(self.body(class, &rows), reader, width, self.split.dragging, Message::Split);
             let placed = panel::place(class, body, None, layer);
             return shell::shell(class, sidebar, header, placed.body, None)
                 .rail(rail)
@@ -8630,6 +8674,37 @@ mod tests {
         assert_eq!(cards.card_width(), room - list::cards_side(), "the cards take the whole room");
         let hub = overview_at(&["--view", "hub"]);
         assert_eq!(hub.list_cap(2), Some(overview::width(2)), "other windows keep the reading width");
+    }
+
+    /// Issue #130: the divider between the wide mail window's list and reader drags the list's width
+    /// – kept between both panes' least –, the cards follow it, a double click goes back to the
+    /// default, and what `ui.json` remembers counts only until the person drags.
+    #[test]
+    fn the_divider_drags_the_list_width() {
+        let mut app = mail_window("comfortable", &[]);
+        let _ = app.update(Message::Resized(WIDE));
+        let limits = app.split_limits();
+        assert_eq!(app.split.width(limits), size::list(), "the default");
+        let _ = app.update(Message::StoredSplit(Some(600.0)));
+        assert_eq!(app.split.width(limits), 600.0, "as remembered");
+        let _ = app.update(Message::Split(SplitEvent::Grab));
+        let _ = app.view();
+        let _ = app.update(Message::Split(SplitEvent::Drag(700.0)));
+        let _ = app.update(Message::Split(SplitEvent::Release));
+        assert_eq!((app.split.chosen, app.split.dragging), (Some(700.0), false));
+        assert_eq!(app.card_width(), 700.0 - list::cards_side(), "the cards follow the list");
+        let _ = app.update(Message::StoredSplit(Some(500.0)));
+        assert_eq!(app.split.chosen, Some(700.0), "a late answer of the file loses");
+        let _ = app.update(Message::Split(SplitEvent::Grab));
+        let _ = app.update(Message::Split(SplitEvent::Drag(WIDE.width)));
+        assert_eq!(app.split.chosen, Some(limits.clamp(WIDE.width)), "the reader keeps its least");
+        assert!(app.split.width(limits) < app.content_width());
+        let _ = app.update(Message::Split(SplitEvent::Reset));
+        assert_eq!((app.split.chosen, app.split.width(limits)), (None, size::list()));
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
     }
 
     /// Task E8.3: the narrow comfortable "For me" leads with how many mails are new for the user.

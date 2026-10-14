@@ -12,6 +12,7 @@
 //! - [`connect`]: the "connect your Nextcloud" screen every app shows without an account.
 //! - [`datetime`]: German date and time parsing and formatting, week arithmetic.
 //! - [`dialog`]: the frame of a dialog: fixed head and foot, a body that scrolls in low windows.
+//! - [`split`]: the divider between two panes side by side that the pointer drags (list and reader).
 //! - [`style`]: the style functions for every Iced widget, light and dark.
 //! - [`icon`]: the bundled Lucide icons.
 //! - [`layout`]: the size classes of tiled windows (`layout::of(size)`) and the layout gaps by role
@@ -38,6 +39,7 @@ pub mod markdown;
 pub mod panel;
 pub mod shell;
 pub mod source;
+pub mod split;
 pub mod style;
 pub mod theme;
 pub mod typo;
