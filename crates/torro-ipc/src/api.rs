@@ -2020,9 +2020,10 @@ static CREATE_TASK_FROM_ITEM: Command = Command {
                   see, also approvals and account problems); for a mail entry also write access to mail, since done \
                   marks its mail read. Done also reaches a remote source: a GitHub entry's notification is marked \
                   done on GitHub (needs write access to GitHub as well, else `forbidden`), a Nextcloud entry's \
-                  notifications are deleted on the server, a Talk conversation is marked read; ntfy is not told. \
-                  Waiting for approval, the title is fixed when asking, and \
-                  an entry changed before the person allowed it is `conflict`. Returns the new task.",
+                  notifications are deleted on the server, a Talk conversation is marked read up to its newest \
+                  known message and its chat notifications are deleted; ntfy is not told. Waiting for approval, the \
+                  title is fixed when asking, and an entry changed before the person allowed it is `conflict`. \
+                  Returns the new task.",
 };
 
 static CREATE_EVENT_FROM_ITEM: Command = Command {
@@ -2093,7 +2094,8 @@ static SET_ITEM_DONE: Command = Command {
                   needs write access to mail (`forbidden` without). Done (dismissed too) also reaches a remote \
                   source: a GitHub entry's notification thread is marked done on GitHub (needs write access to \
                   GitHub, `forbidden` without), a Nextcloud entry's notifications are deleted on the server, a \
-                  Talk conversation is marked read; ntfy is not told. `done: false`, snoozing, hiding and muting \
+                  Talk conversation is marked read up to its newest known message and its chat notifications are \
+                  deleted; ntfy is not told. `done: false`, snoozing, hiding and muting \
                   never reach the source. Approvals and account problems (the source `suite`) are the person's \
                   and `not-found` for every key.",
 };

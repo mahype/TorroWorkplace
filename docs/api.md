@@ -480,7 +480,22 @@ legt nur die letzten 3 Tage ab, was während des Stummschaltens kam, nie. Ein Ei
 `person`, Spur aus `rules::nextcloud_place`, Link nur auf dem Origin des Kontos. Fehlt eine Id in der Liste, ist sie
 gestrichen; weil Nextcloud höchstens die 25 neuesten liefert, streicht eine volle Liste nur Ids, die neuer sind als ihre
 älteste. 401/403 → `signed_out`, keine Abfrage bis zur neuen Anmeldung; 503 wartet, 429 so lange wie verlangt; ohne App
-`missing_app`. **Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
+`missing_app`. **Talk (E5.9):** läuft in derselben Schleife wie die Benachrichtigungen des Kontos (gemeinsame Anmeldung,
+Capabilities, Pausen; `signed_out` und `offline` gelten für beide Quellen), aber nur, wenn der Server Talk hat (sonst
+gibt es keine Quelle `talk:` und keinen Zustand). Alle 60 s die Unterhaltungen (`noStatusUpdate=1`); ein Eintrag je
+Unterhaltung (Vorgang = Token), soweit `rules::talk_place` es nach der Benachrichtigungsstufe von Talk sagt (Standard:
+1:1 immer, Gruppen nur mit Erwähnung; „immer“ legt Gruppen ohne Erwähnung unter Zur Info; „nie“ nichts; Changelog und
+Notizen an sich selbst nie). Art `message`, Titel der Name der Unterhaltung, Text „Name: …“ der letzten Nachricht, Link
+`<server>/call/<token>`, Merkmale `person` und `kind` (`direct`, `mention`, `group`). Der Zähler zählt die ungelesenen
+Nachrichten: jede neue ist eine Meldung mit eigener Kennung (`<token>/<id der letzten Nachricht>` bzw. `…~<n>` für die
+n-te davor; höchstens 99 je Runde), wie viele neu sind, sagt der Lesestand `room:<token>` (Lesemarke und gezählte
+Ungelesene). Ungelesen = 0, nicht mehr gewünscht oder nicht mehr in der Liste → erledigt. Erledigen markiert die
+Unterhaltung bis zur neuesten Nachricht der Kennungen als gelesen und löscht ihre Chat-Benachrichtigungen bis zur
+letzten Meldung; Neueres bleibt ungelesen und öffnet den Eintrag wieder. Solange der Server Talk hat, legt Nextcloud die
+Chat-Benachrichtigungen (`spreed`, `chat`) nicht ab, Anrufe und Einladungen schon; vorher abgelegte bleiben, bis Talk
+sie auf dem Server löscht. Nach dem Stummschalten zählt erst, was danach kam (nur im Speicher: nach einem Neustart wird
+das Liegengebliebene doch abgelegt). Antworten gibt es noch nicht.
+**Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
 wie Mail nur als Kennung; GitHub und ntfy gehen durch (bis KI.1). Das Protokoll nennt wie immer nur die Kennung des
 Eintrags, nie Titel, Text oder Merkmalswerte.
 

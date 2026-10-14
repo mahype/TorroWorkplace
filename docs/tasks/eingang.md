@@ -1638,7 +1638,7 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   `health`; kein Link mit fremdem Origin; Protokoll ohne Texte.
 
 ### E5.9 Talk: ungelesene Unterhaltungen und Erwähnungen
-- [ ] erledigt
+- [x] erledigt (2026-10-14: Talk in der Schleife von E5.8 (`Poller` mit `talk::Talk`, gemeinsame Anmeldung und Capabilities; ohne `spreed` keine Quelle und kein `health`); Zähler = ungelesene Nachrichten über eine Kennung je neuer Nachricht (`<token>/<id>`, `…~<n>`, höchstens 99 je Runde), wie viele neu sind, aus dem Lesestand `room:<token>`; Erledigen sendet `read` mit der neuesten Nachrichten-Id und löscht die Chat-Benachrichtigungen bis zur letzten Meldung; `wanted` lässt `spreed`/`chat` weg, solange der Server Talk hat; nach Stummschalten zählt erst Neues (nur im Speicher); Katalogtexte von `set_item_done` und `create_task_from_item` nennen das Löschen der Chat-Benachrichtigungen; `clients.rs` unverändert, `talk:` streicht schon E5.2)
 - **Modell:** Opus · **Braucht:** E5.8 · **Dateien:** `crates/torroworkplace/src/sources/{talk,nextcloud}.rs`,
   `crates/torroworkplace/src/clients.rs` (nur falls E5.2 `talk:` beim Entfernen noch nicht streicht); Doku:
   `docs/{api,eingang}.md`
