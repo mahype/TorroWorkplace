@@ -1098,7 +1098,24 @@ E8.9   unabhängig (torro-wm, core.rs)
   nur mit bekanntem Eintrag. `torro-api-review`.
 
 ### E8.8b Insights: Ansicht
-- [ ] erledigt
+- [x] erledigt (Seitenleiste der Zentrale: „Insights“ nach Done today, eine Seite auf den Einträgen der Übersicht,
+  `--open insights|insights-table`; Kopfleiste mit Zeitraum, Week | Month | Quarter und „Table view“ (Schmal oben auf
+  der Seite); vier Kennzahlen (Eingegangen mit Schnitt je Tag, Popups mit in Ruhe zurückgehaltenen, Anteil geöffnet,
+  Median bis erledigt); gestapelte Säulen je Tag (Quartal: je Woche, vom letzten Tag zurück) mit Reihen Mail, Agents,
+  den zwei meistgenutzten Skripten und „Other“ (Suite und übrige Skripte), Legende, Tooltip über die ganze Säulenhöhe;
+  Stoßzeiten je Stunde mit Satz zur vollsten Stunde; „Where you could cut back“ mit Knopf je Vorschlag (`mute_item`
+  mit „For“ und „What happens“ des Fensters, Toast mit Undo; jedes Laden fragt die Zahlen neu, ein genommener
+  Vorschlag verschwindet); „Table view“ zeigt dieselben Zahlen als Tabellen (Test). Neue Tokens `chart` (4) und
+  `chart_other` hell und dunkel, mit dem Dataviz-Validator geprüft (das Grau „Other“ des Entwurfs `#6B6F76` fiel
+  neben Magenta durch, jetzt `#5C6068`), im Paketformat und in den Regeln (≥ 3:1 auf `panel`); fehlen sie im Paket,
+  folgen sie dessen `calendar` bzw. `text_3`; die Pakete in `designs/` bleiben gültig (Test). Bausteine
+  `widgets::{stat_tile, chart_card, column_chart, chart_legend, share_bar, data_table}`, `theme::ChartColor`. Kern:
+  `mail.get_message` mit dem App-Schlüssel zählt den offenen Eintrag der Mail als geöffnet, einmal je Eintrag und Tag,
+  auch gegen `inbox.open_item` (Tabelle `opened_items`, Schema 7); Agenten zählen nicht. Zusätzlich, vom Compiler
+  bzw. vom fehlenden Weg zum Eingang erzwungen: `torroworkplace/src/core.rs` (eine Zeile: `read::answer_counting`
+  mit dem Eingang), `torro-gui/src/design/legacy.rs` (die neuen Felder), Skill `torro-design`. Icon: `ChartGantt`, Lucide
+  `chart-column` bräuchte `icon.rs`. `de.rs` nicht angefasst, Übersetzungen im Bericht; **Sichtprüfung nicht möglich:**
+  Bildschirm gesperrt, die App bekommt kein Fenster – alle Größen nur per Test gezeichnet)
 - **Modell:** Opus · **Braucht:** E8.8a, E8.5 · **Dateien:** neu `crates/torroinbox/src/insights.rs`,
   `crates/torroinbox/src/{app,hub,main}.rs`, `crates/torro-gui/src/{widgets,theme}.rs`,
   `crates/torro-core/src/{design.rs,design/rules.rs,design/pack.rs}`, `crates/torroworkplace/src/{inbox,mail/read}.rs`,

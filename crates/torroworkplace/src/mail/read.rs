@@ -30,6 +30,11 @@
 //!
 //! **Log.** Nothing here writes a search term, folder name, file name or text anywhere; the
 //! core's audit log names accounts and hashed ids only (`audit::ids`).
+//!
+//! **Read counts as opened** (task E8.8b, [`answer_counting`]): a mail the person reads in the mail
+//! window (`mail.get_message` with the app key) whose mail is an open entry of the inbox counts that
+//! entry as opened for "Insights", once per entry and day ([`Inbox::mail_read`]). An agent reading
+//! mail is not the person opening it and counts nothing. No new request.
 
 use chrono::{DateTime, Duration, NaiveDate, Utc};
 use torro_core::i18n::tr;
@@ -43,6 +48,7 @@ use torro_mail_imap::mime::{self, MimeError};
 use super::MailStoreError;
 use super::service::{MailError, MailService, SharedStore};
 use super::store::{BODY_RETENTION_DAYS, Body, FolderRef, MessageRef, SearchQuery};
+use crate::inbox::Inbox;
 use crate::pim::Reach;
 
 /// The largest attachment `mail.get_attachment` hands out: 50 MiB.
@@ -57,6 +63,23 @@ type Answer<T> = Result<T, Box<Response>>;
 
 /// The stores a caller sees: account id and store, in the order of `accounts.json`.
 type Stores = Vec<(String, SharedStore)>;
+
+/// [`answer`], and then – for `mail.get_message` with the app key ([`Reach::Suite`]) that found the
+/// mail – tells `inbox` the person read it ([`Inbox::mail_read`], task E8.8b): the open entry the
+/// mail is filed into counts as opened, once per entry and day. The answer is [`answer`]'s
+/// unchanged; a client's reading counts nothing. Every window of the suite reads with the app key, so
+/// the compose window fetching the mail it answers or forwards counts too: who answers has read it.
+pub async fn answer_counting(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request: Request) -> Response {
+    let read = match (&request, reach) {
+        (Request::GetMail { id, .. }, Reach::Suite) => Some(id.clone()),
+        _ => None,
+    };
+    let response = answer(mail, reach, request).await;
+    if let (Some(id), Response::MailMessage { message }) = (read, &response) {
+        inbox.mail_read(&message.summary.account, &id, Utc::now());
+    }
+    response
+}
 
 /// Answers a reading mail request for `reach` (`mail.list_folders`, `mail.search_messages`,
 /// `mail.get_message`, `mail.get_thread`, `mail.get_attachment`). The limits are checked first
@@ -648,6 +671,7 @@ mod tests {
     use std::path::Path;
 
     use chrono::Utc;
+    use torro_ipc::StatsRange;
     use torro_ipc::api::{RightsTemplate, Selection};
     use torro_mail::{Flag, Folder, Role};
 
@@ -822,6 +846,47 @@ mod tests {
             assert_eq!(Cursor::parse(Some(bad)), None, "{bad}");
         }
         assert_eq!(Cursor::parse(Some(&Cursor::Live(7).text())), Some(Cursor::Live(7)));
+    }
+
+    /// Task E8.8b: the person reading a mail of an open entry counts the entry as opened; an agent
+    /// reading it, or a mail of no entry, counts nothing, and the answer stays the same.
+    #[tokio::test]
+    async fn the_person_reading_a_mail_counts_its_entry_as_opened() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &mail_with("Offer", 0, "By Friday"), &[]);
+        server.add("INBOX", &mail_with("Other", 0, "Not filed"), &[]);
+        let service = synced(dir.path(), &server).await;
+        let (offer, other) = (id_of(&service, "Offer").await, id_of(&service, "Other").await);
+        let inbox = crate::inbox::tests::inbox_in(dir.path());
+        let mail = crate::inbox::NewMail {
+            account: ANNA.into(),
+            message: offer.clone(),
+            thread: "t:offer".into(),
+            subject: "Offer".into(),
+            snippet: "By Friday".into(),
+            from: None,
+            bulk: false,
+            list: None,
+            date: Utc::now(),
+        };
+        inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("an entry");
+        let opened = || match inbox.handle(Request::GetStats { range: StatsRange::Week, until: None }, None, Utc::now())
+        {
+            Response::Stats(stats) => stats.totals.opened,
+            other => panic!("statistics, got {other:?}"),
+        };
+
+        let rights = RightsTemplate::FullAccess.rights();
+        let agent = message(answer_counting(&service, &inbox, Reach::Client(&rights), get(&offer, false)).await);
+        assert_eq!((agent.summary.subject.as_str(), opened()), ("Offer", 0), "an agent reading is no opening");
+        let read = message(answer_counting(&service, &inbox, Reach::Suite, get(&offer, true)).await);
+        assert_eq!(read.summary.subject, "Offer");
+        answer_counting(&service, &inbox, Reach::Suite, get(&offer, false)).await;
+        answer_counting(&service, &inbox, Reach::Suite, get(&other, false)).await;
+        assert_eq!(opened(), 1, "once a day, and only the mail of an entry");
+        let missing = answer_counting(&service, &inbox, Reach::Suite, get("m:nope", false)).await;
+        assert_eq!(code(&missing), "not-found");
     }
 
     #[tokio::test]

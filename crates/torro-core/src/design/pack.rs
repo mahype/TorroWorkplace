@@ -211,7 +211,7 @@ struct LogoFile {
 }
 
 /// The keys of `[colors.dark]` and `[colors.light]`: the fields of [`Palette`].
-const PALETTE_KEYS: [&str; 32] = [
+const PALETTE_KEYS: [&str; 34] = [
     "bg",
     "panel",
     "raised",
@@ -234,6 +234,8 @@ const PALETTE_KEYS: [&str; 32] = [
     "merged",
     "calendar",
     "tint",
+    "chart",
+    "chart_other",
     "shadow",
     "scrim",
     "night",
@@ -483,16 +485,14 @@ fn merge_palette(
                 Some(tint) => palette.tint = tint as f32,
                 None => problems.push(DesignError::OutOfRange { key, value: f32::NAN, min: 0.0, max: 1.0 }),
             },
-            "calendar" => {
-                let colours = value
-                    .as_array()
-                    .and_then(|list| list.iter().map(|v| v.as_str().and_then(Rgba::parse)).collect::<Option<Vec<_>>>())
-                    .and_then(|list| <[Rgba; 5]>::try_from(list).ok());
-                match colours {
-                    Some(list) => palette.calendar = list,
-                    None => problems.push(DesignError::BadColor { key, value: shown(value) }),
-                }
-            }
+            "calendar" => match colour_list::<5>(value) {
+                Some(list) => palette.calendar = list,
+                None => problems.push(DesignError::BadColor { key, value: shown(value) }),
+            },
+            "chart" => match colour_list::<4>(value) {
+                Some(list) => palette.chart = list,
+                None => problems.push(DesignError::BadColor { key, value: shown(value) }),
+            },
             _ => match (palette.slot_mut(name), value.as_str().and_then(Rgba::parse)) {
                 (Some(slot), Some(colour)) => *slot = colour,
                 _ => problems.push(DesignError::BadColor { key, value: shown(value) }),
@@ -510,6 +510,34 @@ fn merge_palette(
         {
             *slot = colour;
         }
+    }
+    chart_fallback(palette, values);
+}
+
+/// `value` as a list of exactly `N` colours (`calendar`, `chart`); `None` for anything else.
+fn colour_list<const N: usize>(value: &toml::Value) -> Option<[Rgba; N]> {
+    let list = value.as_array()?.iter().map(|v| v.as_str().and_then(Rgba::parse)).collect::<Option<Vec<_>>>()?;
+    <[Rgba; N]>::try_from(list).ok()
+}
+
+/// The order in which the chart takes the calendar colours of a pack (task E8.8b): blue, orange,
+/// green, pink – the hues of [`Palette::chart`], so neighbours in a stack stay apart.
+const CHART_FROM_CALENDAR: [usize; 4] = [0, 2, 1, 3];
+
+/// The chart keys a pack leaves out (task E8.8b) follow the pack where the standard's would not
+/// carry: the standard's chart colours were checked against the standard's `panel` only.
+///
+/// - `chart`: a pack with its own `calendar` takes those colours in the chart's order
+///   ([`CHART_FROM_CALENDAR`]); they hold 3:1 on its `panel` already. Without one the standard's
+///   chart colours stay.
+/// - `chart_other`: a pack with its own `panel` takes its `text_3`, which holds 4.5:1 there; with
+///   the standard's `panel` the standard's grey stays.
+fn chart_fallback(palette: &mut Palette, values: &BTreeMap<String, toml::Value>) {
+    if !values.contains_key("chart") && values.contains_key("calendar") {
+        palette.chart = CHART_FROM_CALENDAR.map(|index| palette.calendar[index]);
+    }
+    if !values.contains_key("chart_other") && values.contains_key("panel") {
+        palette.chart_other = palette.text_3;
     }
 }
 
@@ -868,7 +896,7 @@ mod tests {
     fn every_palette_key_has_a_field() {
         let mut p = Design::standard().colors.dark;
         for key in PALETTE_KEYS {
-            assert!(p.slot_mut(key).is_some() || key == "calendar" || key == "tint", "{key}");
+            assert!(p.slot_mut(key).is_some() || ["calendar", "chart", "tint"].contains(&key), "{key}");
         }
     }
 
@@ -903,6 +931,52 @@ mod tests {
         assert_eq!(file.typo["body"].size, Some(14.0));
         assert_eq!(file.typo["body"].line, Some(21.5));
         assert_eq!(file.size["row"], 44.0);
+    }
+
+    /// Task E8.8b: the packs in the repository's `designs/` stay valid with the chart rules – the
+    /// chart keys they leave out follow their own colours.
+    #[test]
+    fn the_shipped_packs_stay_valid() {
+        let shipped = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../designs");
+        let listed = list(&shipped);
+        assert!(listed.len() > 1, "the packs are there");
+        for pack in listed {
+            assert!(pack.result.is_ok(), "{}: {:?}", pack.id, pack.result.err());
+        }
+    }
+
+    /// Task E8.8b: chart keys are read like the calendar's; left out, they follow the pack's own
+    /// calendar and `text_3` where it has them, else the standard's.
+    #[test]
+    fn chart_colours_are_read_and_follow_the_pack_when_left_out() {
+        let standard = Design::standard().colors.dark;
+        let merged = |text: &str| {
+            let mut palette = standard;
+            let values: BTreeMap<String, toml::Value> = toml::from_str(text).expect("toml");
+            let mut problems = Vec::new();
+            merge_palette(Mode::Dark, &mut palette, &values, &mut problems);
+            (palette, problems)
+        };
+        let own = merged("chart = [\"#111111\", \"#222222\", \"#333333\", \"#444444\"]\nchart_other = \"#555555\"");
+        assert_eq!(own.0.chart, [0x111111, 0x222222, 0x333333, 0x444444].map(Rgba::hex));
+        assert_eq!((own.0.chart_other, own.1.len()), (Rgba::hex(0x555555), 0));
+
+        let accent_only = merged("accent = \"#0EA5A4\"").0;
+        assert_eq!((accent_only.chart, accent_only.chart_other), (standard.chart, standard.chart_other));
+        let calendar = "calendar = [\"#0000AA\", \"#00AA00\", \"#AA5500\", \"#AA00AA\", \"#5500AA\"]";
+        let own_calendar = merged(&format!("{calendar}\npanel = \"#202020\"\ntext_3 = \"#A0A0A0\"")).0;
+        assert_eq!(own_calendar.chart, [0x0000AA, 0xAA5500, 0x00AA00, 0xAA00AA].map(Rgba::hex), "blue, orange, green");
+        assert_eq!(own_calendar.chart_other, Rgba::hex(0xA0A0A0), "its own grey on its own panel");
+
+        let (_, problems) = merged("chart = [\"#111111\"]\nchart_other = \"grey\"");
+        let keys: Vec<&str> = problems
+            .iter()
+            .map(|p| match p {
+                DesignError::BadColor { key, .. } => key.as_str(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(keys, ["colors.dark.chart", "colors.dark.chart_other"]);
     }
 
     #[test]

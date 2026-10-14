@@ -174,6 +174,13 @@ pub struct Palette {
     pub calendar: [Color; 5],
     /// Opacity of a calendar colour used as a surface (events): 18 % dark, 14 % light.
     pub tint: f32,
+    /// The colours of chart series (task E8.8b), in their fixed order: blue, orange, green,
+    /// magenta. Checked as a set for colour blindness in this order, so take them through
+    /// [`ChartColor`] and never cycle; a fifth series is [`ChartColor::Other`]. Marks only (bars,
+    /// swatches), never text: values and labels stay in the text colours.
+    pub chart: [Color; 4],
+    /// The grey of the series "Other" ([`ChartColor::Other`]).
+    pub chart_other: Color,
     /// The shadow under menus, floating cards and dialogs.
     pub shadow: Shadow,
     /// Dims the window behind a modal dialog.
@@ -256,6 +263,8 @@ impl Palette {
             merged: rgba(c.merged),
             calendar: c.calendar.map(rgba),
             tint: c.tint,
+            chart: c.chart.map(rgba),
+            chart_other: rgba(c.chart_other),
             shadow: Shadow { color: rgba(c.shadow), offset: Vector::new(0.0, 12.0), blur_radius: 32.0 },
             scrim: rgba(c.scrim),
             night: rgba(c.night),
@@ -269,11 +278,39 @@ impl Palette {
         }
     }
 
+    /// The colour of a chart series ([`ChartColor`]): one of [`Palette::chart`], or
+    /// [`Palette::chart_other`] for "Other" and for a slot past the fourth.
+    pub fn chart_color(&self, color: ChartColor) -> Color {
+        match color {
+            ChartColor::Series(slot) => self.chart.get(slot).copied().unwrap_or(self.chart_other),
+            ChartColor::Other => self.chart_other,
+        }
+    }
+
     /// `color` as an event surface: the same hue at [`Palette::tint`] opacity, to be drawn over
     /// `panel`. Text on it stays [`Palette::text`] (title) and [`Palette::text_2`] (time).
     pub fn tinted(&self, color: Color) -> Color {
         Color { a: self.tint, ..color }
     }
+}
+
+/// Which colour a chart series wears (task E8.8b): a slot of [`Palette::chart`] in their fixed
+/// order, or the grey of "Other". Views keep this, never a colour, and turn it into one with
+/// [`Palette::chart_color`] inside a style closure, so light and dark mode and design packs follow.
+///
+/// Give slots to series by what they are, not by their rank: the same series keeps its colour when
+/// a filter or another span changes how many there are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ChartColor {
+    /// Slot 0 to 3 of [`Palette::chart`]; a higher slot draws as [`ChartColor::Other`].
+    Series(usize),
+    /// What is not one of the series: the grey [`Palette::chart_other`].
+    Other,
+}
+
+impl ChartColor {
+    /// How many series slots there are before "Other".
+    pub const SLOTS: usize = 4;
 }
 
 /// `a` moved towards `b` by `t` (0 = `a`, 1 = `b`) in sRGB, like the mock-ups' CSS `color-mix`.
@@ -707,6 +744,23 @@ mod tests {
                 assert!(ratio >= 3.0, "{mode}: {colour:?} on panel is {ratio:.2}:1");
             }
         }
+    }
+
+    #[test]
+    fn chart_colours_stand_out_on_the_panel_and_are_never_status_or_accent() {
+        // Bars and swatches are graphics (WCAG: 3:1 on the panel they sit on), task E8.8b.
+        for (mode, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+            let reserved = [p.accent, p.ok, p.attention, p.error, p.inactive];
+            for colour in p.chart.into_iter().chain([p.chart_other]) {
+                let ratio = colour.relative_contrast(p.panel);
+                assert!(ratio >= 3.0, "{mode}: {colour:?} on panel is {ratio:.2}:1");
+                assert!(!reserved.contains(&colour), "{mode}: {colour:?} is reserved");
+            }
+        }
+        let p = Palette::dark();
+        assert_eq!(p.chart_color(ChartColor::Series(0)).into_rgba8(), [0x3B, 0x78, 0xD8, 0xFF]);
+        assert_eq!(p.chart_color(ChartColor::Series(ChartColor::SLOTS)), p.chart_other, "past the slots");
+        assert_eq!(Palette::light().chart_color(ChartColor::Other).into_rgba8(), [0x50, 0x54, 0x5B, 0xFF]);
     }
 
     #[test]

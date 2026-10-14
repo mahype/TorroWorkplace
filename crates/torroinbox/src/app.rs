@@ -51,6 +51,12 @@
 //! Act now, To sort (the section alone, [`App::sorting`]), Later, Done today and the sources. An
 //! approval has neither ✕ nor Later anywhere: `s` on it only says that it waits for a decision.
 //!
+//! Insights (task E8.8b, `insights.rs`): the hub's last sidebar entry shows what the inbox counted
+//! (`inbox.get_stats`) instead of "Act now", on the overview's entries, which keep the sidebar's
+//! numbers ([`App::insights`]). Every load asks for the numbers again, so a suggestion muted from
+//! the page goes away; its button is the bell menu's `inbox.mute_item` with the window's "For" and
+//! "What happens", with the same toast and undo. The keys of entries do nothing there.
+//!
 //! Task with a way back (task E8.7b, `docs/eingang.md` "Aufgabe mit Rückbezug"): a mail shows the
 //! task made of it as a card over its text ([`App::task_of`]: its entry's [`Item::task`], or the one
 //! "Task" made of a folder's message, `tasks.create_todo_from_mail`, [`App::ask_mail_task`]); "Open
@@ -154,6 +160,7 @@ use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
 use crate::compose;
 use crate::glance::{self, GlanceData};
 use crate::hub::{self, Origin};
+use crate::insights::{self, Insights, InsightsData, StatsSource};
 use crate::keys::{self, Command, Focus, Key};
 use crate::list::Look;
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
@@ -885,10 +892,14 @@ pub enum Open {
     MuteMenu,
     /// That entry in the panel, with the menu at the panel's bell.
     MutePanel,
+    /// The hub's Insights (task E8.8b) with its charts.
+    Insights,
+    /// Insights with "Table view" on.
+    InsightsTable,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 32] = [
+    const ALL: [(&'static str, Open); 34] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -921,6 +932,8 @@ impl Open {
         ("tile", Open::Tile),
         ("mute-menu", Open::MuteMenu),
         ("mute-panel", Open::MutePanel),
+        ("insights", Open::Insights),
+        ("insights-table", Open::InsightsTable),
     ];
 }
 
@@ -1456,6 +1469,10 @@ pub struct App<S> {
     filter: Option<Origin>,
     /// The hub shows To sort alone (its sidebar entry "To sort"), on the entries of its overview.
     sorting: bool,
+    /// The hub's Insights (task E8.8b, `insights.rs`): shown instead of "Act now" while
+    /// `insights.shown`, on the overview's entries (they keep the sidebar's numbers); its span,
+    /// table switch and numbers stay while the window runs.
+    insights: Insights,
     /// The calls started, for the tests.
     #[cfg(test)]
     sent: Vec<Sent>,
@@ -1682,6 +1699,14 @@ pub enum Message {
     MailDone(Vec<String>, Option<String>),
     /// The mail of `--message` that has no entry, loaded to find its folder (task E8.7b).
     StartMail(String, Result<Box<Mail>, String>),
+    /// "Insights" in the hub's sidebar (task E8.8b): the page of what the inbox counted.
+    ShowInsights,
+    /// "Week | Month | Quarter" of Insights: count over this span.
+    StatsRange(torro_ipc::StatsRange),
+    /// "Table view" of Insights: the numbers as tables (`true`) or as charts.
+    StatsTable(bool),
+    /// The answer to `inbox.get_stats` for this span; dropped when another span is chosen by then.
+    Stats(torro_ipc::StatsRange, Result<torro_ipc::InboxStats, String>),
 }
 
 /// Asks `inbox` for the entries of `view`, the counts for "For me" and "Info" and the sources.
@@ -1786,7 +1811,7 @@ pub async fn fetch<S: InboxSource + MailSource>(
     Ok(Loaded { items, for_me, info, sources, folders, mail, snoozed, done })
 }
 
-impl<S: InboxSource + MailSource + 'static> App<S> {
+impl<S: InboxSource + MailSource + StatsSource + 'static> App<S> {
     pub fn new(inbox: Arc<S>, suite: Source, launch: Launch) -> (App<S>, Task<Message>) {
         let open = launch.open;
         let offset = launch.now.map_or(TimeDelta::zero(), |now| datetime::to_utc(now) - Utc::now());
@@ -1810,9 +1835,15 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 Some(Open::MailEntry) if launch.kind == Kind::Mail => View::Overview,
                 Some(Open::MailEntry) => View::ForMe,
                 Some(Open::Attachments) => View::Attachments,
-                Some(Open::Overview | Open::OverviewInfo | Open::OverviewNotices | Open::ToSort | Open::Tile) => {
-                    View::Overview
-                }
+                Some(
+                    Open::Overview
+                    | Open::OverviewInfo
+                    | Open::OverviewNotices
+                    | Open::ToSort
+                    | Open::Tile
+                    | Open::Insights
+                    | Open::InsightsTable,
+                ) => View::Overview,
                 _ => launch.view.clone().unwrap_or(View::Overview),
             },
             items: Vec::new(),
@@ -1856,6 +1887,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             pinned_mail: None,
             filter: None,
             sorting: open == Some(Open::ToSort),
+            // Insights is the hub's (task E8.8b).
+            insights: Insights {
+                shown: launch.kind == Kind::Hub && matches!(open, Some(Open::Insights | Open::InsightsTable)),
+                table: open == Some(Open::InsightsTable),
+                ..Insights::default()
+            },
             #[cfg(test)]
             sent: Vec::new(),
             appearance: Appearance::System,
@@ -1896,9 +1933,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     }
 
     /// The window title: the window's kind and its view ("Mail · Overview", [`Kind::title`]); the
-    /// hub's To sort alone is "Inbox · To sort".
+    /// hub's To sort alone is "Inbox · To sort", its Insights "Inbox · Insights".
     pub fn title(&self) -> String {
-        if self.is_hub() && self.sorting {
+        if self.is_hub() && (self.sorting || self.insights.shown) {
             return trf("Inbox · {view}", &[("view", &self.view_label())]);
         }
         self.launch.kind.title(&self.view)
@@ -1974,9 +2011,10 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 self.reading = false;
                 self.cursor = None;
                 self.pinned_mail = None;
-                // "Act now" again, all of it (task E8.5).
+                // "Act now" again, all of it (task E8.5), and no more Insights (task E8.8b).
                 self.sorting = false;
                 self.filter = None;
+                self.insights.shown = false;
                 // A folder from the sidebar comes whole; its search field starts empty.
                 self.search = view.folder().and_then(|folder| folder.query.clone()).unwrap_or_default();
                 if view != self.view {
@@ -2306,6 +2344,20 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 return self.load();
             }
             Message::StartMail(id, result) => return self.show_start_mail(id, result),
+            Message::ShowInsights => return self.show_insights(),
+            Message::StatsRange(range) => {
+                if range != self.insights.range {
+                    self.insights.range = range;
+                    self.insights.stats = None;
+                    return self.load_stats();
+                }
+            }
+            Message::StatsTable(table) => self.insights.table = table,
+            Message::Stats(range, stats) => {
+                if range == self.insights.range {
+                    self.insights.stats = Some(stats);
+                }
+            }
         }
         Task::none()
     }
@@ -2316,9 +2368,51 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     }
 
     /// The name of what the window shows, in the header, the panel's path and the title: To sort
-    /// while the hub shows it alone, else the view's name in this window ([`Kind::view_name`]).
+    /// while the hub shows it alone, Insights while it shows them (task E8.8b), else the view's name
+    /// in this window ([`Kind::view_name`]).
     fn view_label(&self) -> String {
-        if self.is_hub() && self.sorting { tr("To sort").to_owned() } else { self.launch.kind.view_name(&self.view) }
+        if self.is_insights() {
+            tr("Insights").to_owned()
+        } else if self.is_hub() && self.sorting {
+            tr("To sort").to_owned()
+        } else {
+            self.launch.kind.view_name(&self.view)
+        }
+    }
+
+    /// Whether the content is the hub's Insights (task E8.8b, `insights.rs`).
+    fn is_insights(&self) -> bool {
+        self.is_hub() && self.insights.shown
+    }
+
+    /// "Insights" in the hub's sidebar: the page on the overview's entries, its numbers asked anew.
+    fn show_insights(&mut self) -> Task<Message> {
+        self.close_menus();
+        self.detail = None;
+        self.cursor = None;
+        self.sorting = false;
+        self.filter = None;
+        self.insights.shown = true;
+        if self.view != View::Overview {
+            self.view = View::Overview;
+        }
+        self.load()
+    }
+
+    /// Asks for the numbers of Insights' span up to the window's day (`inbox.get_stats`); the forced
+    /// states of `--open` as for the entries: loading never ends, the error comes at once.
+    fn load_stats(&self) -> Task<Message> {
+        let range = self.insights.range;
+        match self.launch.open {
+            Some(Open::Loading) => return Task::none(),
+            Some(Open::Error) => return Task::done(Message::Stats(range, Err(DEMO_ERROR.into()))),
+            _ => {}
+        }
+        let until = Some(local_today(self.now));
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.get_stats(range, until).await.map_err(|err| err.to_string()) }, move |stats| {
+            Message::Stats(range, stats)
+        })
     }
 
     /// A tile of "Act now": its origin's entries alone, or all again for the tile already chosen. A
@@ -2339,6 +2433,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         self.cursor = None;
         self.sorting = true;
         self.filter = None;
+        self.insights.shown = false;
         if self.view != View::Overview {
             self.view = View::Overview;
             return self.load();
@@ -2367,7 +2462,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// Whether "Coming back" stands beside "Act now": in the wide layout, while no panel takes its
     /// place.
     fn hub_side(&self) -> bool {
-        self.is_hub() && !self.sorting && self.class() == SizeClass::Wide && !self.panel_open()
+        self.is_hub() && !self.sorting && !self.insights.shown && self.class() == SizeClass::Wide && !self.panel_open()
     }
 
     /// Whether the content is the board of the notifications window (task E8.4,
@@ -2949,6 +3044,8 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             Some(Menu::Task) => Focus::Task,
             Some(Menu::Nav | Menu::Switcher) => Focus::Elsewhere,
             None if self.drawer => Focus::Elsewhere,
+            // Insights has no rows: the keys of entries must not act on "Act now" hidden behind it.
+            None if self.is_insights() => Focus::Elsewhere,
             // The hub's "Act now" is one list of sections: `h`/`l` change no column there.
             None if self.view == View::Overview && !self.is_hub() => Focus::Overview,
             None => Focus::List,
@@ -4047,6 +4144,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
     /// rail, medium, narrow), its count, and
     /// "Refresh". The inbox creates nothing, so there is no primary button.
     fn header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Message> {
+        if self.is_insights() {
+            return self.insights_header(class, nav);
+        }
         let kind = self.launch.kind;
         let icon = if self.is_hub() && self.sorting { Icon::Inbox } else { kind.view_icon(&self.view) };
         let name = self.view_label();
@@ -4114,6 +4214,40 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
                 (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
                 widgets::menu_button(nav, Some(icon), name, Message::ToggleNav),
+                trailing,
+            ),
+        }
+    }
+
+    /// The header of Insights (task E8.8b): its title with the span counted ("7 Oct – 13 Oct"), then
+    /// "Week | Month | Quarter" and "Table view" where there is room (wide, medium; narrow has them
+    /// at the top of the page) and "Refresh". No density switch: Insights has no rows.
+    fn insights_header<'a>(&'a self, class: SizeClass, nav: &Anchor) -> Element<'a, Message> {
+        let name = self.view_label();
+        let note = match &self.insights.stats {
+            Some(Ok(stats)) => Some(insights::span_text(stats)),
+            _ => None,
+        };
+        let mut trailing = Vec::new();
+        if matches!(class, SizeClass::Wide | SizeClass::Medium) {
+            trailing.extend(insights::controls(&self.insights));
+        }
+        trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
+        let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
+        let icon = Some(Icon::ChartGantt);
+        match class {
+            SizeClass::Wide if !rail => shell::header_bar([], shell::header_title(icon, name, note), trailing),
+            SizeClass::Wide | SizeClass::Medium => {
+                let mut title =
+                    row![widgets::menu_button(nav, icon, name, Message::ToggleNav)].align_y(Alignment::Center);
+                if let Some(note) = note {
+                    title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
+                }
+                shell::header_bar([], title, trailing)
+            }
+            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
+                (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
+                widgets::menu_button(nav, icon, name, Message::ToggleNav),
                 trailing,
             ),
         }
@@ -4239,6 +4373,15 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                 icon: self.launch.kind.view_icon(&self.view),
             });
             return container(content.push(board).width(Fill).height(Fill)).width(Fill).into();
+        } else if self.is_insights() {
+            // The hub's Insights (task E8.8b), which caps its own width.
+            let page = insights::view(InsightsData {
+                insights: &self.insights,
+                class,
+                effect: self.mute_effect,
+                today: local_today(self.now),
+            });
+            return container(content.push(page).width(Fill).height(Fill)).width(Fill).into();
         } else if self.is_hub() {
             // The hub's "Act now" (task E8.5), which caps its own width.
             let colours = palette(&self.theme());
@@ -4330,9 +4473,9 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             mark: Mark::Icon(kind.view_icon(&view)),
             label: kind.view_name(&view),
             count,
-            active: view == self.view && !self.sorting,
+            active: view == self.view && !self.sorting && !self.is_insights(),
             view,
-            sort: false,
+            target: Target::View,
         };
         // Like a badge: no "0" when nothing waits. The overview counts what is for the user.
         let for_me = Some(self.for_me.len()).filter(|&n| n > 0);
@@ -4364,9 +4507,18 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     count: to_sort,
                     active: self.is_hub() && self.sorting,
                     view: View::Overview,
-                    sort: true,
+                    target: Target::ToSort,
                 };
-                vec![entry(View::Overview, for_me), sort, entry(View::Snoozed, None), entry(View::Done, None)]
+                // What the inbox counted (task E8.8b), after the views of entries.
+                let insights = NavEntry {
+                    mark: Mark::Icon(Icon::ChartGantt),
+                    label: tr("Insights").to_owned(),
+                    count: None,
+                    active: self.is_insights(),
+                    view: View::Overview,
+                    target: Target::Insights,
+                };
+                vec![entry(View::Overview, for_me), sort, entry(View::Snoozed, None), entry(View::Done, None), insights]
             }
         };
         if kind == Kind::Mail {
@@ -4383,7 +4535,14 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                     info.source.label()
                 };
                 let count = usize::try_from(info.open).ok().filter(|&open| open > 0);
-                NavEntry { mark: Mark::Icon(view.icon()), label, count, active: view == self.view, view, sort: false }
+                NavEntry {
+                    mark: Mark::Icon(view.icon()),
+                    label,
+                    count,
+                    active: view == self.view,
+                    view,
+                    target: Target::View,
+                }
             })
             .collect();
         (views, sources)
@@ -4402,7 +4561,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
             count: None,
             active: view == self.view,
             view,
-            sort: false,
+            target: Target::View,
         }]
     }
 
@@ -4433,7 +4592,7 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
                             count,
                             active: self.view.folder().is_some_and(|shown| shown.id == folder.id),
                             view: View::Folder(FolderView::of(folder)),
-                            sort: false,
+                            target: Target::View,
                         }
                     })
                     .collect(),
@@ -4831,9 +4990,12 @@ impl<S: InboxSource + MailSource + 'static> App<S> {
         let limit = self.page_limit();
         let window = (self.launch.kind, self.shown.clone());
         let demo = self.launch.demo.then_some(self.now);
-        Task::perform(fetch(inbox, view.clone(), empty, limit, window, demo), move |result| {
+        let entries = Task::perform(fetch(inbox, view.clone(), empty, limit, window, demo), move |result| {
             Message::Loaded(view.clone(), result)
-        })
+        });
+        // Insights asks for its numbers with every load (task E8.8b): after muting, after an undo, on
+        // the timer – so a suggestion that was taken goes away.
+        if self.is_insights() { Task::batch([entries, self.load_stats()]) } else { entries }
     }
 
     /// How many messages a load of the view asks for: a page, or as many as "Load more" brought
@@ -4864,14 +5026,29 @@ struct NavEntry {
     /// Shown as counter where there is one.
     count: Option<usize>,
     active: bool,
-    /// The hub's "To sort" (task E8.5): it shows the section alone on the overview, not a view.
-    sort: bool,
+    /// What the row shows: its view, or a page of the hub on the overview's entries.
+    target: Target,
+}
+
+/// What a row of the sidebar shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// Its [`NavEntry::view`].
+    View,
+    /// The hub's "To sort" (task E8.5): the section alone on the overview, not a view.
+    ToSort,
+    /// The hub's Insights (task E8.8b): what the inbox counted, not a view of entries.
+    Insights,
 }
 
 impl NavEntry {
-    /// What a click on the row sends: the view, or the hub's To sort alone.
+    /// What a click on the row sends: the view, the hub's To sort alone or its Insights.
     fn message(&self) -> Message {
-        if self.sort { Message::ShowToSort } else { Message::Show(self.view.clone()) }
+        match self.target {
+            Target::View => Message::Show(self.view.clone()),
+            Target::ToSort => Message::ShowToSort,
+            Target::Insights => Message::ShowInsights,
+        }
     }
 
     /// The row of an inbox folder, which a folded account keeps in the rail and the menu.
@@ -5155,7 +5332,7 @@ mod tests {
     }
 
     /// What the source answers for the app's view, handed to `update` as the task would.
-    fn load<S: InboxSource + MailSource + 'static>(app: &mut App<S>) {
+    fn load<S: InboxSource + MailSource + StatsSource + 'static>(app: &mut App<S>) {
         let empty = app.launch.open == Some(Open::Empty);
         let window = (app.launch.kind, app.shown.clone());
         let demo = app.launch.demo.then_some(app.now);
@@ -5668,7 +5845,11 @@ mod tests {
         let mut app = loaded(&[]);
         let (views, sources) = app.nav_entries();
         let labels: Vec<&str> = views.iter().map(|e| e.label.as_str()).collect();
-        assert_eq!(labels, [tr("Act now"), tr("To sort"), tr("Later"), tr("Done today")], "the hub's (task E8.5)");
+        assert_eq!(
+            labels,
+            [tr("Act now"), tr("To sort"), tr("Later"), tr("Done today"), tr("Insights")],
+            "the hub's (tasks E8.5, E8.8b)"
+        );
         assert_eq!(
             views.iter().map(NavEntry::trail).collect::<Vec<_>>()[..2],
             [Trail::Count(13), Trail::Count(9)],
@@ -5788,7 +5969,7 @@ mod tests {
 
     // ----- Triage (E3.2) ---------------------------------------------------------------------
 
-    fn press<S: InboxSource + MailSource + 'static>(app: &mut App<S>, key: Key) -> Task<Message> {
+    fn press<S: InboxSource + MailSource + StatsSource + 'static>(app: &mut App<S>, key: Key) -> Task<Message> {
         app.update(Message::Key(key))
     }
 
@@ -6694,7 +6875,7 @@ mod tests {
         let _ = app.update(Message::LetterLoaded(id.into(), mail));
     }
 
-    fn draw_everywhere<S: InboxSource + MailSource + 'static>(app: &mut App<S>) {
+    fn draw_everywhere<S: InboxSource + MailSource + StatsSource + 'static>(app: &mut App<S>) {
         for size in SIZES {
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
@@ -6999,7 +7180,7 @@ mod tests {
         app
     }
 
-    fn rows_of<S: InboxSource + MailSource + 'static>(app: &App<S>) -> Vec<&str> {
+    fn rows_of<S: InboxSource + MailSource + StatsSource + 'static>(app: &App<S>) -> Vec<&str> {
         app.rows().iter().map(|item| item.id.as_str()).collect()
     }
 
@@ -7913,5 +8094,78 @@ mod tests {
             App::new(Arc::new(DemoSource::new(launch.start())), Source::from_args(args(&["--demo"])), launch).0;
         load(&mut hub);
         assert!(hub.detail.is_none() && !hub.sent.contains(&Sent::Letter("m:w9".into())));
+    }
+
+    /// The numbers of Insights' span, as the task of [`App::load_stats`] would hand them in.
+    fn deliver_stats(app: &mut App<DemoSource>) {
+        let range = app.insights.range;
+        let stats = block_on(app.inbox.get_stats(range, Some(local_today(app.now)))).map_err(|err| err.to_string());
+        let _ = app.update(Message::Stats(range, stats));
+    }
+
+    /// Task E8.8b: "Insights" in the hub's sidebar shows the page on the overview's entries; no key
+    /// of an entry reaches "Act now" behind it, and "Act now" brings it back.
+    #[test]
+    fn insights_is_a_page_of_the_hub() {
+        let mut hub = overview_at(&["--view", "hub"]);
+        let _ = hub.update(Message::ShowInsights);
+        assert!(hub.is_insights() && hub.view == View::Overview);
+        assert_eq!(hub.title(), trf("Inbox · {view}", &[("view", &tr("Insights"))]));
+        assert_eq!(hub.focus(), Focus::Elsewhere, "j, e and the others act on no hidden row");
+        let active: Vec<String> =
+            hub.nav_entries().0.into_iter().filter(|entry| entry.active).map(|entry| entry.label).collect();
+        assert_eq!(active, [tr("Insights")]);
+        assert!(hub.insights.stats.is_none(), "loading");
+        deliver_stats(&mut hub);
+        assert!(matches!(&hub.insights.stats, Some(Ok(stats)) if stats.range == torro_ipc::StatsRange::Week));
+        draw_everywhere(&mut hub);
+        let _ = hub.update(Message::Show(View::Overview));
+        assert!(!hub.is_insights() && hub.is_hub(), "Act now again");
+        let _ = hub.update(Message::ShowInsights);
+        let _ = hub.update(Message::ShowToSort);
+        assert!(!hub.is_insights() && hub.sorting);
+        // The other windows have no Insights, not even from `--open`.
+        assert!(!overview_at(&["--view", "notifications", "--open", "insights"]).is_insights());
+    }
+
+    /// Task E8.8b: another span is asked anew, an answer for the span left is dropped, and the table
+    /// switch only changes how the numbers show.
+    #[test]
+    fn insights_switches_span_and_table() {
+        let mut hub = overview_at(&["--view", "hub", "--open", "insights"]);
+        deliver_stats(&mut hub);
+        let week = hub.insights.stats.clone();
+        let _ = hub.update(Message::StatsRange(torro_ipc::StatsRange::Quarter));
+        assert!(hub.insights.stats.is_none(), "the quarter loads");
+        let _ = hub.update(Message::Stats(torro_ipc::StatsRange::Week, week.clone().expect("loaded")));
+        assert!(hub.insights.stats.is_none(), "the week's late answer is dropped");
+        deliver_stats(&mut hub);
+        assert!(matches!(&hub.insights.stats, Some(Ok(stats)) if stats.days.len() == 90));
+        let _ = hub.update(Message::StatsTable(true));
+        assert!(hub.insights.table && hub.insights.stats.is_some());
+        draw_everywhere(&mut hub);
+        let table = overview_at(&["--view", "hub", "--open", "insights-table"]);
+        assert!(table.is_insights() && table.insights.table);
+        let mut failed = overview_at(&["--view", "hub", "--open", "insights"]);
+        let _ = failed.update(Message::Stats(torro_ipc::StatsRange::Week, Err(DEMO_ERROR.into())));
+        draw_everywhere(&mut failed);
+    }
+
+    /// Task E8.8b: a suggestion's button mutes its entry by the suggestion's way with the window's
+    /// "For" and "What happens", and the toast offers the undo.
+    #[test]
+    fn a_suggestion_mutes_with_an_undo() {
+        let mut hub = overview_at(&["--view", "hub", "--open", "insights"]);
+        deliver_stats(&mut hub);
+        let Some(Ok(stats)) = hub.insights.stats.clone() else { panic!("numbers") };
+        let cut = insights::cuts(&stats).into_iter().next().expect("a suggestion");
+        let suggestion = &stats.suggestions[0];
+        let _ = hub.update(cut.mute);
+        let expected = Sent::MuteItem(suggestion.item.clone(), suggestion.option.scope, None, MuteEffect::Info);
+        assert_eq!(hub.sent.last(), Some(&expected), "always, only Info: the bell's defaults");
+        deliver(&mut hub);
+        let hint = hub.hint.clone().expect("a toast");
+        assert!(hint.undo.is_some(), "{hint:?}");
+        assert!(hub.is_insights(), "the page stays");
     }
 }

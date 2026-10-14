@@ -41,6 +41,7 @@ mod detail;
 mod empty;
 mod glance;
 mod hub;
+mod insights;
 mod keys;
 mod list;
 mod mail;
@@ -57,6 +58,7 @@ use torro_ipc::inbox::InboxClient;
 
 use crate::app::{App, INBOX, Launch};
 use crate::compose::{ComposeSource, Window};
+use crate::insights::StatsSource;
 use crate::mail::MailSource;
 
 fn main() -> ExitCode {
@@ -104,7 +106,11 @@ fn main() -> ExitCode {
 
 /// The window on `inbox`: the core's client or the demo source. Its window class is the one of its
 /// kind (`--view`, task E8.1), so tiling rules and templates tell the three windows apart.
-fn run<S: InboxSource + MailSource + 'static>(inbox: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
+fn run<S: InboxSource + MailSource + StatsSource + 'static>(
+    inbox: Arc<S>,
+    suite: Source,
+    launch: Launch,
+) -> iced::Result {
     let window = torro_gui::window(launch.kind.app());
     iced::application(move || App::new(inbox.clone(), suite.clone(), launch.clone()), App::update, App::view)
         .settings(torro_gui::settings())

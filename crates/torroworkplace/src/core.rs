@@ -1639,7 +1639,9 @@ impl Core {
             | Request::SearchMail { .. }
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
-            | Request::GetMailAttachment { .. }) => crate::mail::read::answer(&self.mail, reach, request).await,
+            | Request::GetMailAttachment { .. }) => {
+                crate::mail::read::answer_counting(&self.mail, &self.inbox, reach, request).await
+            }
             // Sending (task M3.3): the person sends any draft; a client's send carries its id and
             // never reaches here unnamed (`Core::handle_client`, `Core::run_approved`).
             request @ Request::SendDraft { .. } => match (torro_ipc::mail::limit_refusal(&request), &request, reach) {
