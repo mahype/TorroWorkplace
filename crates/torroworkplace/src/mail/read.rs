@@ -1175,7 +1175,7 @@ pub(crate) mod tests {
             subject: "Offer".into(),
             snippet: "By Friday".into(),
             from: None,
-            bulk: false,
+            bulk: None,
             list: None,
             github: None,
             date: Utc::now(),

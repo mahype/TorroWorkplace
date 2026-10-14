@@ -116,7 +116,10 @@ In dieser Reihenfolge, die erste passende Regel gewinnt:
 1. **Feste Regeln je Quelle** (nicht einstellbar, Entscheidungen statt Optionen):
    - Freigaben, wartende Agenten, Server down, CI rot auf eigenem PR → Für mich, dringend.
    - DM, Erwähnung, Review angefragt, Mail direkt an mich von bekanntem Absender → Für mich.
-   - Mail mit `List-Id`, `List-Unsubscribe`, `Precedence: bulk` oder `Auto-Submitted` → Zur Info.
+   - Mail mit `List-Id`, `Precedence: bulk` oder `Auto-Submitted` → Zur Info. `List-Unsubscribe` allein reicht
+     nicht: Dienste setzen es auch auf Mail an genau eine Person (Issue #128). Der Eintrag nennt den Grund
+     („Info · Mailing list (List-Id)“, `Item.reason`), ebenso einen für den Absender gemerkten Weg und eine
+     Stummschaltung nach Info.
    - Kanal-Nachrichten ohne Erwähnung, CI grün, Bots → Zur Info.
 2. **Neue Absender fragt der Eingang einmal** (wie der „Screener“ bei HEY): „First mail from
    x@y.de: For me / Info / Block“. Die Antwort gilt dauerhaft für diesen Absender.

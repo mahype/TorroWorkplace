@@ -3,8 +3,9 @@
 //!
 //! - **New mail** ([`MailChange::new`] of an inbox folder): every unread message is filed
 //!   ([`Inbox::file_mail`]), one entry per conversation (a second mail counts on the same entry),
-//!   in the lane the rules give: mail sent by machines or to lists ([`is_bulk`]) to "Info", other
-//!   mail "for me", a lane the person kept for the sender before either. The account's setting
+//!   in the lane the rules give: mail sent by machines or to lists ([`bulk_reason`]) to "Info", other
+//!   mail "for me", a lane the person kept for the sender before either; the entry keeps why
+//!   (`Item::reason`, issue #128). The account's setting
 //!   `notify` decides what is filed at all (all, only "for me", nothing). A folder synced for the
 //!   first time, or anew after the server renumbered it, brings only the mail of the last
 //!   [`FIRST_SYNC_DAYS`] days, so connecting an account floods nothing.
@@ -47,7 +48,7 @@ use std::time::Duration;
 use chrono::{DateTime, TimeDelta, Utc};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use torro_core::i18n::{tr, trf};
-use torro_inbox::{Item, Sender, SourceKind, State};
+use torro_inbox::{Item, LaneReason, Sender, SourceKind, State};
 use torro_mail::{Flag, MailAddress, MessageTraits, Notify, Role};
 use torro_pim_github::IssueRef;
 
@@ -66,13 +67,25 @@ const CATCH_UP_MAX: u32 = 500;
 /// How often the entries of mail accounts that were removed or switched off are done.
 pub const RETIRE_EVERY: Duration = crate::inbox::SUITE_EVERY;
 
-/// Mail sent by a machine or to a list (`docs/eingang.md`, "Sortieren"): it has `List-Id` or
-/// `List-Unsubscribe`, `Precedence` `bulk`, `list` or `junk`, or `Auto-Submitted` other than `no`.
-/// Its entry goes to "Info", unless the person keeps the sender elsewhere.
-pub fn is_bulk(traits: &MessageTraits) -> bool {
+/// Whether the mail was sent by a machine or to a list (`docs/eingang.md`, "Sortieren"), and which
+/// header says so, in this order: `List-Id`
+/// ([`LaneReason::List`]), `Precedence` ([`LaneReason::Bulk`]), `Auto-Submitted`
+/// ([`LaneReason::Automated`], other than `no`); `None` for mail a person wrote. Bulk mail goes to
+/// "Info" with this reason, unless the person keeps the sender elsewhere. `List-Unsubscribe` alone
+/// counts for nothing (issue #128): services put it on mail meant for one person too – a creator's
+/// post to a supporter, a receipt –, and such mail belongs "for me".
+pub fn bulk_reason(traits: &MessageTraits) -> Option<LaneReason> {
     let precedence = traits.precedence.as_deref().is_some_and(|value| matches!(value, "bulk" | "list" | "junk"));
     let automatic = traits.auto_submitted.as_deref().is_some_and(|value| value != "no");
-    traits.list_id.is_some() || traits.list_unsubscribe || precedence || automatic
+    if traits.list_id.is_some() {
+        Some(LaneReason::List)
+    } else if precedence {
+        Some(LaneReason::Bulk)
+    } else if automatic {
+        Some(LaneReason::Automated)
+    } else {
+        None
+    }
 }
 
 /// The sender of every mail GitHub sends about notifications.
@@ -570,7 +583,7 @@ fn unread_mail(
             subject: summary.subject,
             snippet: summary.snippet,
             from: summary.from.as_ref().map(sender),
-            bulk: is_bulk(&message.traits),
+            bulk: bulk_reason(&message.traits),
             list: message.traits.list_id.clone(),
             date: summary.date,
             github,
@@ -751,19 +764,58 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn list_and_machine_mail_is_bulk() {
-        assert!(!is_bulk(&MessageTraits::default()));
+    fn list_and_machine_mail_is_bulk_and_says_why() {
+        assert_eq!(bulk_reason(&MessageTraits::default()), None);
         let a_person = MessageTraits { auto_submitted: Some("no".into()), ..MessageTraits::default() };
-        assert!(!is_bulk(&a_person));
-        for bulk in [
-            MessageTraits { list_id: Some("<news.shop.example>".into()), ..MessageTraits::default() },
-            MessageTraits { list_unsubscribe: true, ..MessageTraits::default() },
-            MessageTraits { precedence: Some("bulk".into()), ..MessageTraits::default() },
-            MessageTraits { precedence: Some("list".into()), ..MessageTraits::default() },
-            MessageTraits { auto_submitted: Some("auto-generated".into()), ..MessageTraits::default() },
+        assert_eq!(bulk_reason(&a_person), None);
+        let unsubscribe = MessageTraits { list_unsubscribe: true, ..MessageTraits::default() };
+        assert_eq!(bulk_reason(&unsubscribe), None, "List-Unsubscribe alone is no sign (issue #128)");
+        for (traits, reason) in [
+            (MessageTraits { list_id: Some("<news.shop.example>".into()), ..unsubscribe.clone() }, LaneReason::List),
+            (MessageTraits { precedence: Some("bulk".into()), ..MessageTraits::default() }, LaneReason::Bulk),
+            (MessageTraits { precedence: Some("list".into()), ..unsubscribe.clone() }, LaneReason::Bulk),
+            (MessageTraits { auto_submitted: Some("auto-generated".into()), ..unsubscribe }, LaneReason::Automated),
         ] {
-            assert!(is_bulk(&bulk), "{bulk:?}");
+            assert_eq!(bulk_reason(&traits), Some(reason), "{traits:?}");
         }
+    }
+
+    /// The headers of the mail of issue #128 (`tests/fixtures/mail/creator-post.eml`): a creator's
+    /// post as a membership platform sends it to a supporter, sent now, with `List-Unsubscribe` but
+    /// neither `List-Id`, `Precedence` nor `Auto-Submitted`; CRLF line ends, as servers hand out mail.
+    fn creator_post() -> String {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mail/creator-post.eml");
+        let text = std::fs::read_to_string(path).expect("the fixture");
+        text.replace("{DATE}", &Utc::now().to_rfc2822()).replace("\r\n", "\n").replace('\n', "\r\n")
+    }
+
+    /// Issue #128: the mail was filed in "Info" only because of `List-Unsubscribe`, so it never
+    /// stood under "For me".
+    #[test]
+    fn a_post_with_only_list_unsubscribe_is_for_me() {
+        let read = torro_mail_imap::mime::read(creator_post().as_bytes()).expect("readable");
+        assert!(read.traits.list_unsubscribe, "the fixture has the header: {:?}", read.traits);
+        assert_eq!(bulk_reason(&read.traits), None);
+        assert_eq!(torro_inbox::rules::mail_lane(bulk_reason(&read.traits).is_some(), None), Lane::ForMe);
+    }
+
+    #[tokio::test]
+    async fn the_feed_files_the_post_of_issue_128_for_me_and_a_newsletter_in_info_with_its_reason() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &creator_post(), &[]);
+        let news = letter("Weekly news", "Shop <news@shop.example>", 0, "List-Id: <news.shop.example>\r\n", None);
+        server.add("INBOX", &news, &[]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let (inbox, mail) = fed(dir.path(), &secrets).await;
+
+        eventually("filed", || async { entries(&inbox).len() == 2 }).await;
+        eventually("synced", || synced(&mail)).await;
+        let items = entries(&inbox);
+        let post = items.iter().find(|item| item.title != "Weekly news").expect("the post");
+        assert_eq!((post.lane, post.reason), (Lane::ForMe, None), "{post:?}");
+        let news = entry(&items, "Weekly news");
+        assert_eq!((news.lane, news.reason), (Lane::Info, Some(LaneReason::List)));
     }
 
     #[tokio::test]

@@ -1,0 +1,22 @@
+From: Gold Creator <goldcreator@creator.patreon.example>
+To: Anna Berg <anna@example.org>
+Reply-To: no-reply@patreon.example
+Subject: Gold Creator just shared a new post
+Date: {DATE}
+Message-ID: <20261014144031.c3735814f19957a1@creator.patreon.example>
+List-Unsubscribe: <https://www.patreon.example/notifications/unsubscribe?t=x1>, <mailto:unsubscribe@patreon.example?subject=unsubscribe>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="post"
+
+--post
+Content-Type: text/plain; charset=utf-8
+
+Gold Creator posted for their supporters: "Market update for October". Read it on the page.
+
+--post
+Content-Type: text/html; charset=utf-8
+
+<p>Gold Creator posted for their supporters: <b>Market update for October</b>.</p>
+
+--post--

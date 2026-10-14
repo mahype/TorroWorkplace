@@ -43,8 +43,8 @@ use torro_mail::{
 };
 
 use crate::item::{
-    Action, AgentInfo, AgentKind, Facet, FacetKey, Hidden, HideScope, Item, Kind, Lane, Link, MuteEffect, MuteOption,
-    MuteScope, Muted, Rule, RuleEffect, Sender, SourceInfo, SourceKind, SourceRef, State,
+    Action, AgentInfo, AgentKind, Facet, FacetKey, Hidden, HideScope, Item, Kind, Lane, LaneReason, Link, MuteEffect,
+    MuteOption, MuteScope, Muted, Rule, RuleEffect, Sender, SourceInfo, SourceKind, SourceRef, State,
 };
 use crate::rules;
 use crate::source::{InboxError, InboxSource, ItemFilter, TaskList};
@@ -223,6 +223,7 @@ fn entry(now: DateTime<Utc>, n: u32, source: SourceRef, kind: Kind, title: Strin
         facets: Vec::new(),
         task: None,
         invite: None,
+        reason: None,
     }
 }
 
@@ -816,6 +817,8 @@ fn mail_entries(mail: &[Message]) -> Vec<Item> {
                 facets: Vec::new(),
                 task: None,
                 invite: None,
+                // Sent to a list: the reason it is in "Info" (issue #128).
+                reason: m.traits.list_id.is_some().then_some(LaneReason::List),
             };
             // The traits the core gives new mail (task E8.6a), its list and bulk from the headers.
             let list = m.traits.list_id.as_deref();
