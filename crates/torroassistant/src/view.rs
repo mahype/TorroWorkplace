@@ -702,7 +702,8 @@ impl App {
                     }
                     (EngineKind::Ai, Some(Err(_))) => vec![item(tr("Automatic").to_owned(), pick(None))],
                     (EngineKind::Ai, None) => vec![item(tr("Automatic").to_owned(), pick(None))],
-                    (EngineKind::Test, _) => vec![item(engine.name.clone(), pick(None))],
+                    // An agent and the test engine pick their model themselves.
+                    (EngineKind::Agent | EngineKind::Test, _) => vec![item(engine.name.clone(), pick(None))],
                 };
                 let title = match &engine.problem {
                     Some(problem) => format!("{} · {problem}", engine.name),

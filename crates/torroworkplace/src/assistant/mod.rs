@@ -12,7 +12,8 @@
 //!   [`Assistant::clean_up`], pinned ones and those answering never. Files are read and written on
 //!   the blocking threads, under the conversations' lock, so their lines keep the order of their
 //!   numbers.
-//! - **Engines** ([`Assistant::engines`]): every AI account (engine A, [`model`]), and the test
+//! - **Engines** ([`Assistant::engines`]): every AI account (engine A, [`model`]), the coding
+//!   agents installed while the assistant has its client (engine B, [`engines`]), and the test
 //!   engine ([`TEST_ENGINE`]) with fixed answers, offered in tests and when the core runs with
 //!   `TORRO_TEST_ENGINE=1` ([`TEST_ENGINE_VAR`]), so the app and the control centre can be built
 //!   without a model.
@@ -32,6 +33,7 @@
 //! What goes to a client never names a path; the core's log does.
 
 mod data_rule;
+mod engines;
 mod model;
 mod prompt;
 mod store;
@@ -90,6 +92,8 @@ pub struct Assistant {
     launch: Launch,
     /// The bounds of an answer with a model.
     limits: Limits,
+    /// The coding agents that can answer (engine B).
+    agents: engines::Agents,
     /// The core, for answers with a model ([`Assistant::attach`]); weak, since the core holds the
     /// assistant.
     host: OnceLock<Weak<dyn Host>>,
@@ -161,18 +165,21 @@ impl Assistant {
         }
         let dir = AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.data.join("assistant"));
         let test = std::env::var(TEST_ENGINE_VAR).is_ok_and(|value| value == "1");
-        Assistant::new(dir, test.then_some(TEST_STEP), start_app)
+        let mut assistant = Assistant::new(dir, test.then_some(TEST_STEP), start_app);
+        assistant.agents = engines::Agents::system();
+        assistant
     }
 
     /// The assistant on `dir`, offering the test engine with steps of `test_engine`, starting its
     /// windows with `launch`. Reads nothing yet; answers with a model once a core is attached
-    /// ([`Assistant::attach`]).
+    /// ([`Assistant::attach`]). Offers no coding agent ([`Assistant::system`] does).
     pub fn new(dir: Option<PathBuf>, test_engine: Option<Duration>, launch: Launch) -> Assistant {
         Assistant {
             dir,
             test_engine,
             launch,
             limits: Limits::default(),
+            agents: engines::Agents::none(),
             host: OnceLock::new(),
             state: Mutex::new(State::default()),
         }
@@ -182,6 +189,13 @@ impl Assistant {
     #[cfg(test)]
     pub(crate) fn with_limits(mut self, limits: Limits) -> Assistant {
         self.limits = limits;
+        self
+    }
+
+    /// The assistant with other coding agents, for tests.
+    #[cfg(test)]
+    pub(crate) fn with_agents(mut self, agents: engines::Agents) -> Assistant {
+        self.agents = agents;
         self
     }
 
@@ -240,8 +254,9 @@ impl Assistant {
         blocking(move || store::remove(&dir, &id)).await
     }
 
-    /// `assistant.list_engines`: every AI account in the order they were added, then the test
-    /// engine where it is offered.
+    /// `assistant.list_engines`: every AI account in the order they were added, then the coding
+    /// agents that are installed while the assistant has its own client, then the test engine
+    /// where it is offered.
     pub async fn engines(&self, ai: &AiAccounts) -> Vec<Engine> {
         let mut engines: Vec<Engine> = ai
             .infos()
@@ -255,11 +270,17 @@ impl Assistant {
                 Engine { id: account.id, kind: EngineKind::Ai, name: account.label, problem }
             })
             .collect();
+        engines.extend(self.agents.engines(self.has_client()));
         if self.test_engine.is_some() {
             let name = tr("Test engine").to_string();
             engines.push(Engine { id: TEST_ENGINE.into(), kind: EngineKind::Test, name, problem: None });
         }
         engines
+    }
+
+    /// The attached core has the assistant's own client now.
+    fn has_client(&self) -> bool {
+        self.host().is_some_and(|host| host.client().is_some())
     }
 
     /// `assistant.list_conversations`: pinned first, then the most recently active.
@@ -320,11 +341,14 @@ impl Assistant {
     }
 
     /// What drives `engine`, or why it cannot answer: `not-found` for no engine of
-    /// `assistant.list_engines`, `unsupported` for an AI account while no core is attached
+    /// `assistant.list_engines` (an agent that is not installed, or while the assistant has no
+    /// client), `unsupported` for an AI account while no core is attached
     /// ([`Assistant::attach`]), so nothing is stored for an answer that would never come.
     async fn engine(&self, ai: &AiAccounts, engine: &str) -> Result<EngineKind, Response> {
         if engine == TEST_ENGINE && self.test_engine.is_some() {
             Ok(EngineKind::Test)
+        } else if self.agents.find(engine).is_some() && self.has_client() {
+            Ok(EngineKind::Agent)
         } else if ai.knows(engine).await {
             match self.host() {
                 Some(_) => Ok(EngineKind::Ai),
@@ -370,25 +394,20 @@ impl Assistant {
         let id = conversation.id.clone();
         let history = conversation.entries.clone();
         state.conversations.insert(id.clone(), conversation);
+        let (engine, model, without) = (message.engine, message.model, message.without);
+        let job = |engine: String| model::Job {
+            conversation: id.clone(),
+            run: 0,
+            engine,
+            model,
+            without,
+            history,
+            partial: Arc::default(),
+        };
         match kind {
-            EngineKind::Test => self.start_test_answer(&mut state, &id, message.engine),
-            EngineKind::Ai => {
-                let (engine, model, without) = (message.engine, message.model, message.without);
-                self.start_model_answer(
-                    &mut state,
-                    &id,
-                    model::Job {
-                        conversation: id.clone(),
-                        run: 0,
-                        engine,
-                        model,
-                        without,
-                        history,
-                        partial: Arc::default(),
-                    },
-                )
-                .await;
-            }
+            EngineKind::Test => self.start_test_answer(&mut state, &id, engine),
+            EngineKind::Ai => self.start_model_answer(&mut state, &id, job(engine)).await,
+            EngineKind::Agent => self.start_agent_answer(&mut state, &id, job(engine)).await,
         }
         let running = state.running.contains_key(&id);
         match state.conversations.get(&id) {
@@ -447,6 +466,34 @@ impl Assistant {
         let (engine, partial) = (job.engine.clone(), Arc::clone(&job.partial));
         let task = tokio::spawn(model::answer(Arc::clone(self), host, job));
         state.running.insert(id.to_string(), Run { id: state.next_run, task: task.abort_handle(), engine, partial });
+    }
+
+    /// Starts the answer `job` with the coding agent of its engine ([`engines::answer`]) in
+    /// conversation `id`, registered as its running answer before it can write. Without a core
+    /// (gone meanwhile) or an agent that is installed, the answer is an error entry at once.
+    async fn start_agent_answer(self: &Arc<Self>, state: &mut State, id: &str, mut job: model::Job) {
+        let (Some(host), Some(agent)) = (self.host(), self.agents.find(&job.engine)) else {
+            let error = EntryContent::Error {
+                code: "unsupported".into(),
+                message: tr("This agent cannot answer now. Check that it is installed, then try again.").into(),
+            };
+            self.add_now(state, id, error).await;
+            return;
+        };
+        state.next_run += 1;
+        job.run = state.next_run;
+        let (engine, partial) = (job.engine.clone(), Arc::clone(&job.partial));
+        let task = tokio::spawn(engines::answer(Arc::clone(self), host, job, agent));
+        state.running.insert(id.to_string(), Run { id: state.next_run, task: task.abort_handle(), engine, partial });
+    }
+
+    /// Ends the run `run` of conversation `id` without another entry, while it is still the
+    /// running one.
+    async fn end_run(&self, id: &str, run: u64) {
+        let mut state = self.state().await;
+        if state.running.get(id).is_some_and(|running| running.id == run) {
+            state.running.remove(id);
+        }
     }
 
     /// Adds `content` to conversation `id` now, with the state already locked; a failed write is

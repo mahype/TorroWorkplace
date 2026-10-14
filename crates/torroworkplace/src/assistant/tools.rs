@@ -293,6 +293,8 @@ pub fn error_summary(code: &str) -> String {
         "forbidden" => tr("Not allowed for the assistant"),
         "denied" => tr("You denied this"),
         "expired" => tr("Nobody approved this in time"),
+        // An agent's MCP tool stops waiting after a minute; the approval stays open.
+        "pending" => tr("Waiting for your approval"),
         "not-found" => tr("Not found"),
         _ => tr("Failed"),
     }
