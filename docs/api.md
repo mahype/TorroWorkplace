@@ -79,7 +79,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
 | `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
-| `inbox` ⁸ | `list_items`, `get_item`, `list_sources`, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴, `create_event_from_item` ¹⁵, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
+| `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
 | `accounts` | `list_accounts`, `discover_services` ⁶ | `sync` | | `connect_nextcloud`, `connect_github`, `remove_account`, `update_mail_account`, `set_github_token`, `connect_caldav` und `connect_mail` (die letzten drei **nur App-Schlüssel**, Punkt 5 unten) |
 | `settings` | `get_settings`, `list_designs` ⁹ | | | `set_setting`, `set_collection_shown`, `update_settings` |
@@ -448,6 +448,34 @@ nennt Antwort, Titel und Beginn aus dem Mail-Speicher, Konto, Organisator und Ka
 Das Protokoll nennt Konto, die Nachricht als Prüfsumme und einen genannten Kalender, nie Antwort, Titel oder
 Organisator. Für entfernte Modelle des Assistenten ist die Antwort zurückgehalten (sie trägt den Termin), und
 der Assistent ordnet das Tool `mail` und `calendar` zu, so greift ein im Gespräch abgeschalteter Kalender.
+
+¹⁷ **Fremde Quellen im Eingang** (E5.2, Plan
+[tasks/eingang.md › E5](tasks/eingang.md#e5-nextcloud-github-ntfy-als-quellen-plan-2026-10-14)): GitHub (`github:<login>`), Nextcloud (`nextcloud:<login>@<host>`), Talk (`talk:<login>@<host>`, eine eigene Quelle
+des Nextcloud-Kontos) und ntfy (`ntfy:<host>`) legt der Dienst selbst ab wie Mail (Module `crate::sources`, Ablage
+`Inbox::file_remote`): Eigentümer ist die Konto-Kennung, so führt kein Request einen solchen Eintrag zusammen oder
+löst ihn auf; immer `untrusted: true`, Merkmale nur über `rules::remote_facets`, Links nur `http`/`https`, gebaut aus
+geprüften Teilen. Welche Kennungen des Servers in welchem Eintrag stecken, steht neben den Einträgen
+(`inbox.sqlite` Schema 8, Tabelle `remote_ids`); dieselbe Kennung zählt nur mit neuer Aktivität noch einmal, ein
+Eintrag ohne Kennung ist erledigt. **Sehen:** Einträge von Nextcloud, Talk und ntfy brauchen nur die Quelle in
+`inbox_sources` (Talk wird eigens freigegeben, `nextcloud:` reicht nicht); GitHub-Einträge zusätzlich Lesen in
+`github` und das Repo des Eintrags in `github_repos` (`Rights::reaches_repo`), gefiltert in SQL vor dem Lesen
+(Spalte `repo`, bei Regeln und Statistik das Merkmal `repo`). Das gilt für `list_items`, `get_item`,
+`list_sources` (offene Einträge nur der sichtbaren Repos), `list_rules`, `get_stats` und `list_mute_options`.
+Ein Client mit eingeschränkten `github_repos` bekommt aus der Statistik der GitHub-Quelle nur die Zeilen je
+sichtbarem Repo, keine Summen der Quelle, keine Zeilen je Grund oder Art und keine Treffer von Regeln: Die zählen
+alle Repos. **Zurückmelden:** `set_item_done` mit `done: true` (auch `dismissed`), `create_task_from_item`
+und `create_event_from_item` wirken im Hintergrund auf die Quelle zurück: GitHub markiert den Thread als „done“
+(`DELETE /notifications/threads/{id}`), Nextcloud löscht die Benachrichtigungen, Talk markiert die Unterhaltung als
+gelesen, ntfy erfährt nichts. Bei GitHub braucht ein Client dafür Schreiben in `github` (sonst `forbidden`, geprüft
+vor der Freigabe und bei der Ausführung); ein Repo außerhalb seiner Reichweite ist `not-found`. Undo, Später, Spur,
+Ausblenden und Stummschalten wirken nie zurück. Die Freigabe nennt es („… and mark its GitHub notification done“,
+„… and delete its Nextcloud notification“, „… and mark the Talk conversation read“). **Zustand:** `list_sources`
+nennt in `health`, warum eine fremde Quelle gerade nichts bringt (`missing_app`, `missing_scope`, `signed_out`,
+`offline`), auch ohne Einträge; nur im Speicher. **Konto entfernt:** Die offenen Einträge der Quelle (bei Nextcloud
+auch die von Talk) sind erledigt, Statistik, Lesestand (`cursors`) und Kennungen gehen mit, und die Quelle
+verschwindet aus den Rechten aller Clients. **Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
+wie Mail nur als Kennung; GitHub und ntfy gehen durch (bis KI.1). Das Protokoll nennt wie immer nur die Kennung des
+Eintrags, nie Titel, Text oder Merkmalswerte.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

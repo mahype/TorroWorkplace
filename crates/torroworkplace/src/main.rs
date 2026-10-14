@@ -42,6 +42,7 @@ mod mcp;
 mod notify;
 mod pim;
 mod settings_service;
+mod sources;
 mod tray;
 mod ui;
 

@@ -296,7 +296,7 @@ Wie alles andere: **Die Logik steht im Kern**, die App zeigt nur an.
 |---|---|
 | `torro-inbox` | Datenmodell, Regeln, Zusammenführen, Spuren, Selbst-Erledigen. Ohne Ein-/Ausgabe |
 | `torro-store` | SQLite (mit FTS5) für Eingang, Mail-Cache und PIM-Cache, siehe [mail.md](mail.md) |
-| Quellen im Kern | Trait `Source` (verbinden, abonnieren oder abfragen, zurückwirken, Link bauen); je Quelle ein Modul. Mail und Nextcloud nutzen ihre vorhandenen Crates |
+| Quellen im Kern | Je Quelle ein Modul: Mail in `mail/inbox_feed.rs`, GitHub, Nextcloud, Talk und ntfy in `sources/<quelle>.rs` (E5.2, ohne gemeinsamen Trait). Alle legen über den Eingang ab (`Inbox::file_remote` mit den Kennungen des Servers, `resolve_remote`, `retire_remote`, Lesestand in `cursors`, Zustand `health`); Zurückwirken nach Erledigt, Aufgabe oder Termin über `sources::settle_done` |
 | Einwurf | `inbox.post_item` über `core.sock`, CLI `torroworkplace notify`, ntfy-Abo, später HTTP auf `127.0.0.1` ([api.md](api.md), Transport) |
 | Ausgabe | Desktop-Benachrichtigung mit Knöpfen (`notify-rust`), Zahl am Tray, Omarchy-Leistenwidget, Änderungsmeldungen an die App |
 

@@ -74,7 +74,7 @@
 //! mail to mark read when it is done ([`Inbox::mail_messages`]), and it is done by itself once its
 //! mail was read or moved elsewhere ([`Inbox::open_mail_entries`], [`Inbox::resolve_mail`]). A
 //! client sees mail entries only with read access to mail and the account besides the source
-//! ([`Scope::of`]), and marks one done only with write access to mail ([`check_mail_done`]), since
+//! ([`Scope::of`]), and marks one done only with write access to mail ([`check_done`]), since
 //! that marks the mail read on its server: checked before an approval and when the command runs.
 //! Moving a mail with `remember` keeps the lane for its sender, not for the whole account
 //! ([`remember_lane`]).
@@ -116,6 +116,20 @@
 //! removed mail account or client takes its rows along ([`Inbox::forget_source`]). Reading follows
 //! [`Scope::of`] like `inbox.list_rules`; suggestions name the newest entry the core still holds
 //! with the trait and the option of [`rules::mute_options`] for it ([`suggestions`]).
+//!
+//! **Remote sources** (task E5.2: GitHub, Nextcloud, Talk, ntfy) are filed by the core as well, by
+//! their modules in `crate::sources` ([`Inbox::file_remote`]): owned by the account's id like mail
+//! (security rule 2), one entry per matter ([`Remote::matter`]), always `untrusted`, with the
+//! traits [`rules::remote_facets`] lets through. Which ids of the server went into which entry is
+//! kept beside the entries (`remote_ids`): an id filed before counts again only with newer
+//! activity, an entry whose ids are all gone is done ([`Inbox::resolve_remote`]), and done, a task
+//! or an event of an entry reach the server with exactly those ids ([`Inbox::remote_ids`],
+//! `crate::sources::settle_done`, called by the core). Where a source's module stopped reading is
+//! kept in `cursors` ([`Inbox::cursor`]), why a source is quiet only in memory
+//! ([`Inbox::set_source_health`]). A client sees a GitHub entry only with read access to GitHub
+//! and the entry's repository besides the source ([`Scope::of`]: the column `repo`, and for rules
+//! and statistics the trait `repo`, filtered in SQL), and marks one done only with write access to
+//! GitHub ([`check_done`]), since that marks the notification done on GitHub.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -131,7 +145,7 @@ use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::paths::AppPaths;
-use torro_inbox::item::{Facet, FacetKey, HideScope, ItemTask, MuteEffect, MuteScope, Muted, TaskDue};
+use torro_inbox::item::{Facet, FacetKey, HideScope, ItemTask, MuteEffect, MuteScope, Muted, SourceHealth, TaskDue};
 use torro_inbox::rules::{self, KEEP_DONE_DAYS, MutedEntry, Poster};
 use torro_inbox::{
     Action, AgentInfo, AgentKind, Hidden, Item, ItemFilter, Kind, Lane, Link, Rule, RuleEffect, Sender, SourceInfo,
@@ -155,7 +169,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -358,6 +372,38 @@ CREATE TABLE opened_items (
 );
 ";
 
+/// From schema version 7 to 8 (task E5.2, the remote sources):
+///
+/// - `items` gets `repo`: the repository of a GitHub entry (its trait `repo`, `owner/name` as
+///   GitHub wrote it), empty for every other entry, so a client's repositories filter the rows in
+///   SQL before they are read ([`Scope::condition`]). Rows of version 7 are no GitHub entries.
+/// - `remote_ids`: the ids of a remote source's server filed into an entry, one row per id of a
+///   source (`source` its key, `remote` the id, `item` the entry's id), with `at` the date of the
+///   newest report that carried it: a report whose ids are all known with its date or a later one
+///   counts nothing ([`file_remote`]), and done reaches the server with exactly these ids.
+/// - `cursors`: where a source's module stopped reading, one value per source and `name`
+///   (`last-modified`, `etag`, ntfy's `since`); the module's own, the inbox only keeps it.
+///
+/// The ids of reports a rule kept from the inbox go to `muted_mail` as mail does (`account` is the
+/// source's key, `message` the id), so they are counted once.
+const SCHEMA_V8: &str = "
+ALTER TABLE items ADD COLUMN repo TEXT NOT NULL DEFAULT '';
+CREATE TABLE remote_ids (
+    source TEXT NOT NULL,
+    remote TEXT NOT NULL,
+    item TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (source, remote)
+);
+CREATE INDEX remote_ids_by_item ON remote_ids (item);
+CREATE TABLE cursors (
+    source TEXT NOT NULL,
+    name TEXT NOT NULL,
+    value TEXT NOT NULL,
+    PRIMARY KEY (source, name)
+);
+";
+
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
 
@@ -401,6 +447,9 @@ pub struct Inbox {
     db: Mutex<Option<Connection>>,
     /// Marked after every piece of work that wrote to the file ([`Inbox::with`]), for the tray.
     changed: tokio::sync::watch::Sender<()>,
+    /// Why remote sources are quiet now ([`Inbox::set_source_health`], task E5.2): in memory only,
+    /// since it is the state of a connection, which a restart finds out anew.
+    health: Mutex<BTreeMap<SourceRef, SourceHealth>>,
 }
 
 /// The open entries "for me" as the tray shows them (task E3.3b, [`Inbox::for_me`]).
@@ -427,7 +476,12 @@ impl Inbox {
     }
 
     fn in_file(file: Option<PathBuf>) -> Inbox {
-        Inbox { file, db: Mutex::new(None), changed: tokio::sync::watch::channel(()).0 }
+        Inbox {
+            file,
+            db: Mutex::new(None),
+            changed: tokio::sync::watch::channel(()).0,
+            health: Mutex::new(BTreeMap::new()),
+        }
     }
 
     /// The inbox in `file`, created with its directory on first use. For tests; the core uses
@@ -473,7 +527,38 @@ impl Inbox {
     /// The key check and the rights of the area must have passed ([`crate::core::Core::handle_from`]);
     /// this applies the security rules of the inbox (module docs). Any other request is `error`.
     pub fn handle(&self, request: Request, client: Option<&ClientInfo>, now: DateTime<Utc>) -> Response {
-        self.with(|db| answer(db, request, client, now)).unwrap_or_else(Failure::response)
+        match self.with(|db| answer(db, request, client, now)).unwrap_or_else(Failure::response) {
+            // Why a remote source is quiet lives in memory, not in the file (task E5.2).
+            Response::Sources { sources } => Response::Sources { sources: self.with_health(sources, client) },
+            response => response,
+        }
+    }
+
+    /// `sources` with the health the remote sources have now ([`Inbox::set_source_health`]); a
+    /// source `client` sees that is quiet for a reason is listed even without entries, so the
+    /// control centre can say why it brings nothing.
+    fn with_health(&self, sources: Vec<SourceInfo>, client: Option<&ClientInfo>) -> Vec<SourceInfo> {
+        let health = self.health.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let scope = Scope::of(client);
+        let mut listed: BTreeMap<SourceRef, SourceInfo> =
+            sources.into_iter().map(|info| (info.source.clone(), info)).collect();
+        for (source, health) in health.into_iter().filter(|(source, _)| scope.sees(source)) {
+            let info = SourceInfo { source: source.clone(), open: 0, muted: false, health: None };
+            listed.entry(source).or_insert(info).health = Some(health);
+        }
+        listed.into_values().collect()
+    }
+
+    /// Notes why the remote source `source` brings nothing now (task E5.2), as its module in
+    /// `crate::sources` found out: `Some` while it is so, `None` once it works again. Shown in
+    /// `inbox.list_sources` ([`SourceInfo::health`]); kept in memory only, never in the file, and
+    /// it changes nothing the tray or the popups show.
+    pub fn set_source_health(&self, source: &SourceRef, health: Option<SourceHealth>) {
+        let mut known = self.health.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        match health {
+            Some(health) => known.insert(source.clone(), health),
+            None => known.remove(source),
+        };
     }
 
     /// What `client` gets for `request` before the core asks a person to approve it: the
@@ -489,12 +574,12 @@ impl Inbox {
                 .and_then(|_| api::post_source(Some(client), agent.as_ref()))
                 .map(drop)
                 .map_err(Failure::Forbidden),
-            // Done marks a mail entry's mail read on the server (task E4.1); a task or an event
-            // (task E8.5b) marks it done.
+            // Done marks a mail entry's mail read on the server (task E4.1) and a GitHub entry's
+            // notification done on GitHub (task E5.2); a task or an event (task E8.5b) marks it done.
             Request::SetItemDone { id, done: true, .. }
             | Request::CreateTaskFromItem { id, .. }
             | Request::CreateEventFromItem { id, .. } => {
-                check_mail_done(&changeable(db, id, Some(client))?.item, Some(client))
+                check_done(&changeable(db, id, Some(client))?.item, Some(client))
             }
             // Nobody is asked to approve remembering a mail's lane when there is no sender to keep it for.
             Request::SetItemLane { id, remember: true, .. } => {
@@ -588,8 +673,8 @@ impl Inbox {
     /// not see (a hook client sees none, no client the suite's), `forbidden` when `client` may not
     /// change it (security rule 1: approvals, account problems and the suite's entries are the
     /// person's, so an agent cannot turn an approval into a task and mark it done) or, for a mail
-    /// entry, lacks write access to mail ([`check_mail_done`]: done marks the mail read). The app
-    /// key (`None`) may change every entry.
+    /// entry, lacks write access to mail, for a GitHub entry to GitHub ([`check_done`]: done marks
+    /// the mail read, the notification done). The app key (`None`) may change every entry.
     pub fn entry_for_task(
         &self,
         id: &str,
@@ -599,7 +684,7 @@ impl Inbox {
         self.with(|db| {
             wake_due(db, now)?;
             let item = changeable(db, id, client)?.item;
-            check_mail_done(&item, client)?;
+            check_done(&item, client)?;
             Ok(item)
         })
         .map_err(|failure| Box::new(failure.response()))
@@ -703,11 +788,18 @@ impl Inbox {
     /// Removes the statistics of the source `source` (task E8.8a), a [`SourceRef::key`]: its day
     /// sums, its rows by trait, what rules caught in it and its counted mail. The core calls it when
     /// a mail account (`mail:<address>`) or a client whose source no other client shares is
-    /// removed. `Err` holds the message for the log.
+    /// removed, and for a remote source (task E5.2) when its account is; then also where its module
+    /// stopped reading ([`Inbox::cursor`]), its health and which ids of its server were filed, so
+    /// the account connected again starts afresh. `Err` holds the message for the log.
     pub fn forget_source(&self, source: &str) -> Result<(), String> {
+        if let Ok(source) = source.parse::<SourceRef>() {
+            self.set_source_health(&source, None);
+        }
         self.work(false, |db| {
             db.execute("DELETE FROM stats WHERE source = ?1", params![source])?;
             db.execute("DELETE FROM muted_mail WHERE account = ?1", params![source])?;
+            db.execute("DELETE FROM cursors WHERE source = ?1", params![source])?;
+            db.execute("DELETE FROM remote_ids WHERE source = ?1", params![source])?;
             Ok(())
         })
         .map_err(|failure| failure.to_string())
@@ -923,6 +1015,197 @@ impl Inbox {
             };
             tx.commit()?;
             Ok(filed)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Files the report `remote` of a remote source at `now` (task E5.2), for its module in
+    /// `crate::sources`: as a new entry of its matter ([`Remote::matter`]), or merged into the
+    /// entry of the matter, which counts one more and opens again when it was done
+    /// ([`rules::merge`]; a snoozed one stays snoozed). Returns the entry's id, or `None` when
+    /// nothing was filed:
+    ///
+    /// - every id of [`Remote::ids`] was filed before with this report's date or a later one (a
+    ///   source polled again counts nothing twice; newer activity under the same id counts);
+    /// - the person muted the source, or a rule with a trait hides the report (`hide`); its ids are
+    ///   kept as caught (`muted_mail`), so it is counted once, and lifting the rule lets a report of
+    ///   them in again.
+    ///
+    /// The entry: owned by the account's id, the source's key, so no request merges into or
+    /// resolves one (security rule 2); kind and lane as `remote` says, through
+    /// [`rules::placement`] (an alert is always "for me" and urgent, a lane the person remembered
+    /// for the source beats the module's), a rule with a trait moving it to "Info" moves it there;
+    /// title and text cut as for clients ([`TITLE_MAX`], [`BODY_MAX`], "(no title)" when empty),
+    /// always `untrusted`, the link only an `http`/`https` page of at most [`URL_MAX`] bytes, the
+    /// traits only those [`rules::remote_facets`] lets through, placed by `date` (never later than
+    /// `now`); a report older than the entry's newest leaves its texts, link and traits as they are.
+    /// Counted like a post ([`count_report`]). Not throttled: the modules file what the person
+    /// subscribed to (ntfy throttles itself, task E5.13).
+    ///
+    /// `Err` holds the message for the log, without anything the server sent: a source that is no
+    /// remote source, a kind other than `notice`, `message` or `alert`, a matter that is empty or
+    /// longer than [`THREAD_KEY_MAX`] bytes, a report without an id, or the file.
+    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
+    pub fn file_remote(&self, remote: &Remote, now: DateTime<Utc>) -> Result<Option<String>, String> {
+        if !is_remote(remote.source.kind) {
+            return Err(format!("{} is no remote source", remote.source.key()));
+        }
+        self.with(|db| file_remote(db, remote, now)).map_err(|failure| failure.to_string())
+    }
+
+    /// Takes the ids `gone` of the remote source `source` off their entries at `now` (task E5.2):
+    /// the server no longer holds them (read, deleted or answered elsewhere). An entry left without
+    /// any id is done, snoozed or not, and counted as done; entries with ids left, entries done
+    /// already and ids never filed stay as they are. Returns how many entries were done. `Err`
+    /// holds the message for the log.
+    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
+    pub fn resolve_remote(&self, source: &SourceRef, gone: &[String], now: DateTime<Utc>) -> Result<usize, String> {
+        self.with(|db| {
+            let tx = db.transaction()?;
+            let key = source.key();
+            let mut touched = BTreeSet::new();
+            for id in gone {
+                let item: Option<String> = tx
+                    .query_row(
+                        "SELECT item FROM remote_ids WHERE source = ?1 AND remote = ?2",
+                        params![key, id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if let Some(item) = item {
+                    tx.execute("DELETE FROM remote_ids WHERE source = ?1 AND remote = ?2", params![key, id])?;
+                    touched.insert(item);
+                }
+            }
+            let mut done = 0;
+            for id in touched {
+                let left: i64 =
+                    tx.query_row("SELECT COUNT(*) FROM remote_ids WHERE item = ?1", params![id], |row| row.get(0))?;
+                if left > 0 {
+                    continue;
+                }
+                let condition = "owner = ? AND id = ?";
+                for Stored { mut item, .. } in read_items(&tx, &Scope::All, condition, vec![text(&key), text(id)], "")?
+                {
+                    if !matches!(item.state, State::Done { .. }) {
+                        rules::set_done(&mut item, true, now);
+                        update_item(&tx, &item)?;
+                        // Dealt with on the server: the person dealt with it (task E8.8a).
+                        count(&tx, &item, Count::Done, now)?;
+                        done += 1;
+                    }
+                }
+            }
+            tx.commit()?;
+            Ok(done)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Marks done at `now` the open and snoozed entries of every source of the remote `kind`
+    /// (GitHub, Nextcloud, Talk, ntfy) whose key is not in `active` (task E5.2), as
+    /// [`Inbox::retire_mail`] does for mail: an account that was removed shows nothing any more and
+    /// nothing could reach its server. Returns how many were done. `Err` for a kind that is no
+    /// remote source, or the file's message for the log.
+    pub fn retire_remote(&self, kind: SourceKind, active: &[String], now: DateTime<Utc>) -> Result<usize, String> {
+        if !is_remote(kind) {
+            return Err(format!("{kind:?} is no remote source"));
+        }
+        let prefix = kind_prefix(&SourceRef { kind, name: String::new() });
+        self.with(|db| {
+            let tx = db.transaction()?;
+            let condition = "instr(source, ?) = 1 AND state IN ('new', 'seen', 'snoozed')";
+            let open = read_items(&tx, &Scope::All, condition, vec![text(prefix)], "")?;
+            let mut retired = 0;
+            for Stored { mut item, .. } in open {
+                if !active.contains(&item.source.key()) {
+                    rules::set_done(&mut item, true, now);
+                    update_item(&tx, &item)?;
+                    retired += 1;
+                }
+            }
+            tx.commit()?;
+            Ok(retired)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// The ids of the server filed into the entry `id` (task E5.2), first filed first; empty for an
+    /// entry of no remote source, without ids left or that does not exist. The core reads them the
+    /// moment an entry is done, so its source's module reaches exactly those on the server
+    /// (`crate::sources::settle_done`). `Err` holds the message for the log.
+    pub fn remote_ids(&self, id: &str) -> Result<Vec<String>, String> {
+        self.with(|db| {
+            let mut statement = db.prepare("SELECT remote FROM remote_ids WHERE item = ?1 ORDER BY rowid")?;
+            let rows = statement.query_map([id], |row| row.get::<_, String>(0))?;
+            Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// The entries of the remote source `source` that are open or snoozed, each with the ids of
+    /// the server filed into it, oldest entry first (task E5.2). For its module: an id the server
+    /// no longer lists in a complete listing goes to [`Inbox::resolve_remote`]. `Err` holds the
+    /// message for the log.
+    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
+    pub fn open_remote(&self, source: &SourceRef) -> Result<Vec<RemoteEntry>, String> {
+        self.with(|db| {
+            let mut statement = db.prepare(
+                "SELECT r.item, r.remote FROM remote_ids r JOIN items i ON i.id = r.item
+                 WHERE r.source = ?1 AND i.owner = ?1 AND i.state IN ('new', 'seen', 'snoozed')
+                 ORDER BY i.received, r.item, r.rowid",
+            )?;
+            let rows =
+                statement.query_map([source.key()], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            let mut entries: Vec<RemoteEntry> = Vec::new();
+            for row in rows {
+                let (item, remote) = row?;
+                match entries.last_mut() {
+                    Some(entry) if entry.id == item => entry.ids.push(remote),
+                    _ => entries.push(RemoteEntry { id: item, ids: vec![remote] }),
+                }
+            }
+            Ok(entries)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Where the module of the remote source `source` stopped reading, under `name`
+    /// (`last-modified`, `etag`, `since`: the module's own names), as [`Inbox::set_cursor`] kept it;
+    /// `None` before the first. Survives a restart, goes with [`Inbox::forget_source`]. `Err` holds
+    /// the message for the log.
+    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
+    pub fn cursor(&self, source: &SourceRef, name: &str) -> Result<Option<String>, String> {
+        self.work(false, |db| {
+            let value = db
+                .query_row(
+                    "SELECT value FROM cursors WHERE source = ?1 AND name = ?2",
+                    params![source.key(), name],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            Ok(value)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
+    /// Keeps `value` as where the module of `source` stopped reading under `name`, replacing the
+    /// one before; `None` removes it. Changes nothing the tray or the popups show. `Err` holds the
+    /// message for the log.
+    #[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
+    pub fn set_cursor(&self, source: &SourceRef, name: &str, value: Option<&str>) -> Result<(), String> {
+        self.work(false, |db| {
+            match value {
+                Some(value) => db.execute(
+                    "INSERT INTO cursors (source, name, value) VALUES (?1, ?2, ?3)
+                     ON CONFLICT (source, name) DO UPDATE SET value = excluded.value",
+                    params![source.key(), name, value],
+                )?,
+                None => {
+                    db.execute("DELETE FROM cursors WHERE source = ?1 AND name = ?2", params![source.key(), name])?
+                }
+            };
+            Ok(())
         })
         .map_err(|failure| failure.to_string())
     }
@@ -1207,12 +1490,14 @@ fn owner(client: Option<&ClientInfo>) -> &str {
 enum Scope {
     /// Every source: the app key only.
     All,
-    /// Every source but `suite` and the mail accounts outside `mail` ([`mail_reach`]): a client
-    /// whose selection is "all".
-    AllButSuite { mail: Selection },
-    /// These source keys only ([`SourceRef::key`]), never `suite` nor a mail account out of reach;
-    /// empty sees nothing.
-    Only(Vec<String>),
+    /// Every source but `suite`, the mail accounts outside `mail` ([`mail_reach`]) and GitHub as
+    /// `github` allows ([`github_reach`]: `None` no GitHub source at all, else its entries of these
+    /// repositories): a client whose selection is "all".
+    AllButSuite { mail: Selection, github: Option<Selection> },
+    /// These source keys only ([`SourceRef::key`]), never `suite`, a mail account out of reach or
+    /// GitHub without read access to it; empty sees nothing. Of a GitHub source among them only
+    /// the entries of `repos` ([`Rights::github_repos`]).
+    Only { keys: Vec<String>, repos: Selection },
 }
 
 impl Scope {
@@ -1228,56 +1513,81 @@ impl Scope {
     /// A mail entry holds the subject, sender and start of a mail (task E4.1): a client sees it only
     /// when it could read that mail itself, with read access to mail and the account among its
     /// `mail_accounts`, besides the source among its `inbox_sources`.
+    ///
+    /// A GitHub entry (task E5.2) names a repository, its people and what they do there: a client
+    /// sees it only with read access to GitHub and the entry's repository among its `github_repos`
+    /// ([`Rights::reaches_repo`]), besides the source; and the rules and statistics by the trait
+    /// `repo` alike. Nextcloud, Talk and ntfy need the source alone.
     fn of(client: Option<&ClientInfo>) -> Scope {
         match client {
             None => Scope::All,
-            Some(client) if client.kind == HOOK_CLIENT => Scope::Only(Vec::new()),
+            Some(client) if client.kind == HOOK_CLIENT => {
+                Scope::Only { keys: Vec::new(), repos: Selection::Only(Vec::new()) }
+            }
             Some(client) => {
-                let mail = mail_reach(&client.rights);
-                match &client.rights.inbox_sources {
-                    Selection::All => Scope::AllButSuite { mail },
+                let rights = &client.rights;
+                match &rights.inbox_sources {
+                    Selection::All => Scope::AllButSuite { mail: mail_reach(rights), github: github_reach(rights) },
                     // The rule of `Rights::reaches_source`, so the API says what the queries do.
-                    Selection::Only(keys) => Scope::Only(
-                        keys.iter()
-                            .filter(|key| {
-                                key.parse::<SourceRef>().is_ok_and(|source| client.rights.reaches_source(&source))
-                            })
+                    Selection::Only(keys) => Scope::Only {
+                        keys: keys
+                            .iter()
+                            .filter(|key| key.parse::<SourceRef>().is_ok_and(|source| rights.reaches_source(&source)))
                             .cloned()
                             .collect(),
-                    ),
+                        repos: rights.github_repos.clone(),
+                    },
                 }
             }
         }
     }
 
+    /// The caller sees entries of `source` at all; of a GitHub source perhaps not every one
+    /// ([`Scope::sees_item`]).
     fn sees(&self, source: &SourceRef) -> bool {
         match self {
             Scope::All => true,
-            Scope::AllButSuite { mail } => match source.kind {
+            Scope::AllButSuite { mail, github } => match source.kind {
                 SourceKind::Suite => false,
                 SourceKind::Mail => mail.contains(&source.key()),
-                SourceKind::Agent | SourceKind::Script => true,
-                // Unseen by clients until task E5.2 gives them their rules, as `Rights::reaches_source`.
-                SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy => false,
+                SourceKind::Github => github.is_some(),
+                SourceKind::Agent
+                | SourceKind::Script
+                | SourceKind::Nextcloud
+                | SourceKind::Talk
+                | SourceKind::Ntfy => true,
             },
-            Scope::Only(keys) => keys.contains(&source.key()),
+            Scope::Only { keys, .. } => keys.contains(&source.key()),
         }
     }
 
-    /// The SQL condition on `source` and its parameters; `None` when nothing is visible, so the
-    /// query need not run at all.
-    fn condition(&self) -> Option<(String, Vec<Value>)> {
-        match self {
-            Scope::All => Some(("1".into(), Vec::new())),
-            Scope::AllButSuite { mail } => {
+    /// The caller sees `item`: its source, and for a GitHub entry its repository as
+    /// [`Scope::condition`] has it in SQL.
+    fn sees_item(&self, item: &Item) -> bool {
+        if !self.sees(&item.source) {
+            return false;
+        }
+        let repos = match self {
+            _ if item.source.kind != SourceKind::Github => return true,
+            Scope::All => return true,
+            Scope::AllButSuite { github: None, .. } => return false,
+            Scope::AllButSuite { github: Some(repos), .. } | Scope::Only { repos, .. } => repos,
+        };
+        let Selection::Only(_) = repos else { return true };
+        let reached = |repo: &str| Rights { github_repos: repos.clone(), ..Rights::none() }.reaches_repo(repo);
+        item.facets.iter().any(|facet| facet.key == FacetKey::Repo && reached(&facet.value))
+    }
+
+    /// The SQL condition on the rows of `table` (`items`, `rules` or `stats`) and its parameters;
+    /// `None` when nothing is visible, so the query need not run at all. On `source`, and for
+    /// GitHub on the repository: of an entry its column `repo`, of a rule or a statistics row its
+    /// trait `repo` ([`repo_match`]).
+    fn condition(&self, table: &str) -> Option<(String, Vec<Value>)> {
+        let (mut condition, mut values, repos) = match self {
+            Scope::All => return Some(("1".into(), Vec::new())),
+            Scope::AllButSuite { mail, github } => {
                 let mut condition = "source <> ?".to_string();
                 let mut values = vec![text(SourceRef::suite().key())];
-                // The remote sources of task E5 stay unseen until E5.2 gives them their rules, as
-                // `sees` has it.
-                for prefix in REMOTE_PREFIXES {
-                    condition.push_str(" AND instr(source, ?) <> 1");
-                    values.push(text(prefix));
-                }
                 if let Selection::Only(accounts) = mail {
                     condition.push_str(" AND (instr(source, ?) <> 1");
                     values.push(text(ACCOUNT_PREFIX));
@@ -1287,20 +1597,76 @@ impl Scope {
                     }
                     condition.push(')');
                 }
-                Some((condition, values))
+                // Without read access to GitHub no GitHub source at all, as `sees` has it.
+                if github.is_none() {
+                    condition.push_str(" AND instr(source, ?) <> 1");
+                    values.push(text(GITHUB_PREFIX));
+                }
+                (condition, values, github.as_ref())
             }
-            Scope::Only(keys) if keys.is_empty() => None,
-            Scope::Only(keys) => {
+            Scope::Only { keys, .. } if keys.is_empty() => return None,
+            Scope::Only { keys, repos } => {
                 let marks = vec!["?"; keys.len()].join(", ");
-                Some((format!("source IN ({marks})"), keys.iter().cloned().map(Value::Text).collect()))
+                (format!("source IN ({marks})"), keys.iter().cloned().map(Value::Text).collect(), Some(repos))
             }
+        };
+        if let Some(Selection::Only(names)) = repos {
+            let (matched, more) = repo_match(table, names);
+            condition.push_str(&format!(" AND (instr(source, ?) <> 1 OR {matched})"));
+            values.push(text(GITHUB_PREFIX));
+            values.extend(more);
         }
+        Some((condition, values))
     }
 }
 
-/// The starts of the keys of the remote sources of task E5 (GitHub, Nextcloud, Talk, ntfy), which
-/// no client sees until task E5.2 ([`Scope::condition`]).
-const REMOTE_PREFIXES: [&str; 4] = ["github:", "nextcloud:", "talk:", "ntfy:"];
+/// The start of the keys of GitHub sources, `github:<login>`.
+const GITHUB_PREFIX: &str = "github:";
+
+/// The start of the column `facet` of a rule or statistics row by a repository ([`facet_column`]).
+const REPO_FACET: &str = "repo=";
+
+/// The SQL that is true for the rows of `table` a client with the GitHub repositories `names` sees
+/// (task E5.2), with its parameters, as [`Rights::reaches_repo`] has it: a name is a repository
+/// (`owner/name`) or an owner, in any case. Of an entry (`items`) its column `repo` decides; of a
+/// rule its trait `repo` – rules without one (a muted reason) it does not limit. Of the statistics
+/// (`stats`) only rows by a repository it reaches: a source's sums, the catches of rules and the
+/// rows by reason or kind count the threads of every repository, which such a client must not
+/// learn of, not even as a number.
+fn repo_match(table: &str, names: &[String]) -> (String, Vec<Value>) {
+    let repo = if table == "items" { "repo" } else { "substr(facet, 6)" };
+    let matched = if names.is_empty() {
+        "0".to_string()
+    } else {
+        let marks = vec!["?"; names.len()].join(", ");
+        format!("(lower({repo}) IN ({marks}) OR lower(substr({repo}, 1, instr({repo}, '/') - 1)) IN ({marks}))")
+    };
+    let lowered: Vec<Value> = names.iter().map(|name| text(name.to_ascii_lowercase())).collect();
+    let mut values = Vec::new();
+    if table != "items" {
+        values.push(text(REPO_FACET));
+    }
+    values.extend(lowered.iter().cloned());
+    values.extend(lowered);
+    match table {
+        "items" => (matched, values),
+        "stats" => (format!("(instr(facet, ?) = 1 AND {matched})"), values),
+        _ => (format!("(instr(facet, ?) <> 1 OR {matched})"), values),
+    }
+}
+
+/// The GitHub repositories whose entries a client with `rights` sees (task E5.2): its
+/// `github_repos` when it may read GitHub, else `None`, no GitHub source at all, as
+/// `Rights::reaches_source` has it.
+fn github_reach(rights: &Rights) -> Option<Selection> {
+    rights.area(Area::Github).allows(Access::Read).then(|| rights.github_repos.clone())
+}
+
+/// `kind` is one of the remote sources of task E5, which only their modules in `crate::sources`
+/// file ([`Inbox::file_remote`]).
+pub(crate) fn is_remote(kind: SourceKind) -> bool {
+    matches!(kind, SourceKind::Github | SourceKind::Nextcloud | SourceKind::Talk | SourceKind::Ntfy)
+}
 
 /// The mail accounts whose entries a client with `rights` sees (task E4.1): its `mail_accounts`
 /// when it may read mail, else none, as `Rights::reaches_source` has it. Mail sources are keyed by
@@ -1313,19 +1679,24 @@ fn mail_reach(rights: &Rights) -> Selection {
     }
 }
 
-/// `client` may mark `item` done (task E4.1): marking a mail entry done marks its mail read on the
-/// server, which takes write access to mail; without it `forbidden`. The app key (`None`) and
-/// every other entry pass. Checked before an approval ([`Inbox::refusal`]) and again when the
-/// command runs ([`answer`], [`Inbox::entry_for_task`]), so rights narrowed meanwhile hold.
-fn check_mail_done(item: &Item, client: Option<&ClientInfo>) -> Result<(), Failure> {
-    match client {
-        Some(client)
-            if item.source.kind == SourceKind::Mail && !client.rights.area(Area::Mail).allows(Access::Write) =>
-        {
-            Err(Failure::Forbidden(InboxForbidden(
-                "marking a mail entry done marks the mail read on its server, which needs write access to mail",
-            )))
-        }
+/// `client` may mark `item` done: marking a mail entry done marks its mail read on the server
+/// (task E4.1), which takes write access to mail, and marking a GitHub entry done marks its
+/// notification done on GitHub (task E5.2), which takes write access to GitHub; without it
+/// `forbidden`. (A repository out of reach never got this far: such an entry is `not-found`.) The
+/// app key (`None`) and every other entry pass: deleting a Nextcloud notification or marking a Talk
+/// conversation read touches nothing beyond the inbox's own matter. Checked before an approval
+/// ([`Inbox::refusal`]) and again when the command runs ([`answer`], [`Inbox::entry_for_task`]), so
+/// rights narrowed meanwhile hold.
+fn check_done(item: &Item, client: Option<&ClientInfo>) -> Result<(), Failure> {
+    let Some(client) = client else { return Ok(()) };
+    let writes = |area: Area| client.rights.area(area).allows(Access::Write);
+    match item.source.kind {
+        SourceKind::Mail if !writes(Area::Mail) => Err(Failure::Forbidden(InboxForbidden(
+            "marking a mail entry done marks the mail read on its server, which needs write access to mail",
+        ))),
+        SourceKind::Github if !writes(Area::Github) => Err(Failure::Forbidden(InboxForbidden(
+            "marking a GitHub entry done marks its notification done on GitHub, which needs write access to GitHub",
+        ))),
         _ => Ok(()),
     }
 }
@@ -1359,7 +1730,7 @@ fn read<T>(
     tail: &str,
     row: impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<T>,
 ) -> Result<Vec<T>, Failure> {
-    let Some((visible, mut all)) = scope.condition() else {
+    let Some((visible, mut all)) = scope.condition(table) else {
         return Ok(Vec::new());
     };
     all.extend(values);
@@ -1473,7 +1844,7 @@ fn lane_column(lane: Lane) -> &'static str {
 /// of [`SourceRef`].
 fn list_sources(db: &Connection, client: Option<&ClientInfo>) -> Result<Vec<SourceInfo>, Failure> {
     let scope = Scope::of(client);
-    let Some((visible, values)) = scope.condition() else {
+    let Some((visible, values)) = scope.condition("items") else {
         return Ok(Vec::new());
     };
     let mut sources = BTreeMap::new();
@@ -1827,7 +2198,7 @@ fn change(
 
 /// `inbox.set_item_done` for `client` at `now`: the entry `id` done, or open again with `done:
 /// false` ([`rules::set_done`]); returns it as `client` may see it. A mail entry needs write access
-/// to mail to be done ([`check_mail_done`]). `closed` is how the statistics count it (task E8.8a):
+/// to mail to be done, a GitHub entry to GitHub ([`check_done`]). `closed` is how the statistics count it (task E8.8a):
 /// [`Count::Done`], [`Count::Dismissed`] ("✕", also kept in the column `dismissed`, task E8.6a) or
 /// [`Count::Task`] (made a task); only when it was not done before.
 fn set_done(
@@ -1839,7 +2210,7 @@ fn set_done(
     now: DateTime<Utc>,
 ) -> Result<Item, Failure> {
     if done {
-        check_mail_done(&changeable(db, id, client)?.item, client)?;
+        check_done(&changeable(db, id, client)?.item, client)?;
     }
     let tx = db.transaction()?;
     let mut was_done = false;
@@ -1941,7 +2312,7 @@ fn check_hide(item: &Item, scope: HideScope) -> Result<(), Failure> {
 ///   Snoozed ones too, or they would come back with mail the person hid.
 ///
 /// Only the entries change: no mail is read or moved (module docs). Returns the rule, whether it is
-/// new, and the ids of the entries done that `client` sees ([`Scope::sees`]) – a rule for every
+/// new, and the ids of the entries done that `client` sees ([`Scope::sees_item`]) – a rule for every
 /// account may close entries of accounts the client may not read, which it must not learn of.
 fn hide_sender(
     db: &Connection,
@@ -1989,7 +2360,7 @@ fn hide_sender(
             if let Some(rule) = &rule {
                 hit(db, rule, &entry.source)?;
             }
-            if scope_of_client.sees(&entry.source) {
+            if scope_of_client.sees_item(&entry) {
                 done.push(entry.id);
             }
         }
@@ -2075,7 +2446,7 @@ fn check_mute(
 ///   reaches that it holds for ([`rules::mutes`]) done (`hide`) or moved (`info`), at `now`.
 ///
 /// Like hiding, no mail is read or moved. Returns the rule, whether it is new, and the ids done and
-/// moved that `client` sees ([`Scope::sees`]): a trait holds for every source of the kind, also
+/// moved that `client` sees ([`Scope::sees_item`]): a trait holds for every source of the kind, also
 /// those the client may not see, which it must not learn of.
 fn mute_item(
     db: &Connection,
@@ -2112,7 +2483,7 @@ fn mute_item(
         if let Some(rule) = &rule {
             hit(db, rule, &entry.source)?;
         }
-        if seen_by_client.sees(&entry.source) {
+        if seen_by_client.sees_item(&entry) {
             match change {
                 MutedEntry::Done => muted.done.push(entry.id),
                 MutedEntry::Moved => muted.moved.push(entry.id),
@@ -2236,12 +2607,13 @@ fn read_owned(db: &Connection, owner: &str, thread_key: &str) -> Result<Option<I
     Ok(data.map(|data| serde_json::from_str(&data)).transpose()?)
 }
 
-/// Stores a new entry of `owner`.
+/// Stores a new entry of `owner`, a GitHub entry with its repository in the column `repo`
+/// ([`SCHEMA_V8`]).
 fn insert_item(db: &Connection, owner: &str, item: &Item) -> Result<(), Failure> {
     let (state, state_at) = state_columns(&item.state);
     db.execute(
-        "INSERT INTO items (id, owner, thread_key, source, state, state_at, received, data, lane, urgent, updated)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        "INSERT INTO items (id, owner, thread_key, source, state, state_at, received, data, lane, urgent, updated, repo)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             item.id,
             owner,
@@ -2253,10 +2625,18 @@ fn insert_item(db: &Connection, owner: &str, item: &Item) -> Result<(), Failure>
             serde_json::to_string(item)?,
             lane_column(item.lane),
             item.urgent,
-            stamp(item.updated)
+            stamp(item.updated),
+            repo_column(item)
         ],
     )?;
     Ok(())
+}
+
+/// The column `repo` of `item`: the value of its trait `repo` for a GitHub entry, else empty. A
+/// GitHub thread stays in its repository, so it is written once, with the entry.
+fn repo_column(item: &Item) -> String {
+    let repo = item.facets.iter().find(|facet| facet.key == FacetKey::Repo).map(|facet| facet.value.clone());
+    repo.filter(|_| item.source.kind == SourceKind::Github).unwrap_or_default()
 }
 
 /// Stores the changed `item` over its row. Owner, thread key, source and `received` never change
@@ -2301,8 +2681,10 @@ fn wake_due(db: &mut Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
 fn remove_expired(db: &Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
     let before = stamp(now - TimeDelta::days(KEEP_DONE_DAYS));
     let removed = db.execute("DELETE FROM items WHERE state = 'done' AND state_at <= ?1", params![before])?;
-    // The messages of mail entries that went with them (task E4.1).
+    // The messages of mail entries that went with them (task E4.1), and the ids of remote ones
+    // (task E5.2).
     db.execute("DELETE FROM mail_messages WHERE item NOT IN (SELECT id FROM items)", [])?;
+    db.execute("DELETE FROM remote_ids WHERE item NOT IN (SELECT id FROM items)", [])?;
     Ok(removed)
 }
 
@@ -2386,6 +2768,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 7 {
         tx.execute_batch(SCHEMA_V7)?;
+    }
+    if version < 8 {
+        tx.execute_batch(SCHEMA_V8)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -2957,6 +3342,191 @@ fn file_mail(
         params![mail.account, mail.message, id],
     )?;
     // Filed once per message (above), so counted once (task E8.8a).
+    let remembering = remembering.filter(|rule| remembered_lane(rule) == Some(lane));
+    count_report(&tx, &counted, remembering, muting.map(|(rule, _)| rule), now)?;
+    tx.commit()?;
+    Ok(Some(id))
+}
+
+/// One report of a remote source (GitHub, Nextcloud, Talk, ntfy) as its module in
+/// `crate::sources` hands it to [`Inbox::file_remote`] (task E5.2). Everything but `source` came
+/// from the server or is built from what it sent: never log it.
+///
+/// The module decides what the fields hold from the server's answer, by the rules of its task
+/// (E5.4, E5.8, E5.9, E5.13); the inbox applies the security rules (owner, `untrusted`, traits,
+/// links, lengths), so a module cannot get around them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
+pub struct Remote {
+    /// The account's source, whose key is the account's id (`github:<login>`,
+    /// `nextcloud:<login>@<host>`, `ntfy:<host>`) or, for Talk, the Nextcloud account's with `talk`
+    /// (`talk:<login>@<host>`). Owner of the entry and of its matter.
+    pub source: SourceRef,
+    /// The matter: one entry per matter of the source, like a thread key. GitHub: the thread id;
+    /// Nextcloud: `<app>:<object_type>:<object_id>`; Talk: the conversation's token; ntfy:
+    /// `<topic>:<title>`. A module cuts or hashes a longer one; more than [`THREAD_KEY_MAX`] bytes
+    /// or empty is refused.
+    pub matter: String,
+    /// The server's ids this report stands for, at least one: what resolving takes off
+    /// ([`Inbox::resolve_remote`]) and what done reaches on the server ([`Inbox::remote_ids`]).
+    /// GitHub: the thread id; Nextcloud: the notification ids; ntfy: the message id. An id filed
+    /// before with the same `date` or a later one counts nothing again.
+    pub ids: Vec<String>,
+    /// `notice`, `message` (mail and chat) or `alert` (ntfy priority 5); any other is refused.
+    pub kind: Kind,
+    /// The lane the source's rule gives (`rules::github_place`, `nextcloud_place`, `talk_place`,
+    /// `ntfy_place`); fixed for an alert ([`rules::placement`]).
+    pub lane: Lane,
+    /// One line for the list, as plain text; foreign.
+    pub title: String,
+    /// More text, as plain text; foreign.
+    pub body: Option<String>,
+    /// Who it is from, as the server names them; foreign.
+    pub from: Option<Sender>,
+    /// The web page "Open" shows, built by the module from checked parts only (security rule 6 as
+    /// extended for task E5: a GitHub page from owner, repository and number, a Nextcloud page of
+    /// the account's own origin); only `http`/`https` of at most [`URL_MAX`] bytes is kept.
+    pub url: Option<String>,
+    /// The traits the module read, before [`rules::remote_facets`] keeps those the source may bring.
+    pub facets: Vec<Facet>,
+    /// When it happened on the server: where the entry stands in the list, and what tells newer
+    /// activity under a known id from the same report polled again.
+    pub date: DateTime<Utc>,
+}
+
+/// An open entry of a remote source and the server's ids filed into it ([`Inbox::open_remote`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
+pub struct RemoteEntry {
+    /// The entry's id.
+    pub id: String,
+    /// The ids of the server filed into it, first filed first.
+    pub ids: Vec<String>,
+}
+
+/// [`Inbox::file_remote`] on the open database.
+#[allow(dead_code, reason = "the sources of tasks E5.4, E5.8, E5.9 and E5.13 file through it")]
+fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Result<Option<String>, Failure> {
+    let kind = match remote.kind {
+        Kind::Notice | Kind::Message | Kind::Alert => remote.kind,
+        _ => return Err(Failure::Invalid("a remote source files notices, messages and alerts only".into())),
+    };
+    let matter = remote.matter.trim();
+    if matter.is_empty() || matter.len() > THREAD_KEY_MAX {
+        return Err(Failure::Invalid(format!("a remote matter has 1 to {THREAD_KEY_MAX} bytes")));
+    }
+    let ids: Vec<&str> = remote.ids.iter().map(|id| id.trim()).filter(|id| !id.is_empty()).collect();
+    if ids.is_empty() {
+        return Err(Failure::Invalid("a report of a remote source needs the server's id".into()));
+    }
+    let source = remote.source.clone();
+    let owner = source.key();
+    let date = remote.date.min(now);
+    let tx = db.transaction()?;
+    // Filed before: every id known with this date or a later one (polled again, nothing new).
+    let mut known = true;
+    for id in &ids {
+        let at: Option<String> = tx
+            .query_row("SELECT at FROM remote_ids WHERE source = ?1 AND remote = ?2", params![owner, id], |row| {
+                row.get(0)
+            })
+            .optional()?;
+        known &= at.is_some_and(|at| at >= stamp(date));
+    }
+    if known {
+        return Ok(None);
+    }
+    // The source's own rules, and the traits muted in any source of its kind (task E8.6a).
+    let condition = "source = ? OR (facet <> '' AND instr(source, ?) = 1)";
+    let rules: Vec<Rule> =
+        read_rules(&tx, &Scope::All, condition, vec![text(owner.as_str()), text(kind_prefix(&source))])?
+            .into_iter()
+            .filter(|rule| rules::reaches(rule, &source))
+            .collect();
+    // A lane the person remembered for the source beats the module's.
+    let remembering = rules.iter().filter(|rule| rule.sender.is_none()).find(|rule| remembered_lane(rule).is_some());
+    let (lane, urgent) = rules::placement(kind, Some(remembering.and_then(remembered_lane).unwrap_or(remote.lane)));
+    let existing = read_owned(&tx, &owner, matter)?;
+    let id = match &existing {
+        Some(existing) => existing.id.clone(),
+        None => new_id()?,
+    };
+    let title = remote.title.trim();
+    let body = remote.body.as_deref().map(str::trim).filter(|body| !body.is_empty());
+    let from = remote.from.clone().map(|from| Sender { name: cap(from.name.trim(), TITLE_MAX), ..from });
+    let link = remote.url.clone().filter(|url| url.len() <= URL_MAX).map(|url| Link::Url { url });
+    let mut incoming = Item {
+        id: id.clone(),
+        source,
+        thread_key: matter.to_string(),
+        kind,
+        lane,
+        urgent,
+        title: cap(if title.is_empty() { tr("(no title)") } else { title }, TITLE_MAX),
+        body: body.map(|body| cap(body, BODY_MAX)),
+        from,
+        agent: None,
+        received: date,
+        updated: date,
+        count: 1,
+        state: State::New,
+        link,
+        actions: Vec::new(),
+        // A remote source's server is outside the suite: data, never instructions (rule 5).
+        untrusted: true,
+        // The traits are the core's: only what the source may bring, cut (task E5.1).
+        facets: rules::remote_facets(remote.source.kind, remote.facets.clone()),
+        task: None,
+        invite: None,
+    };
+    // Security rule 6: only a web page.
+    if !rules::may_open(&incoming, is_app_of_the_suite) {
+        incoming.link = None;
+    }
+    let dropping = rules.iter().find(|rule| rules::drops(rule, None));
+    let muting = deciding_mute(&rules, &incoming, now);
+    if let Some(rule) = dropping.or(muting.and_then(|(rule, effect)| (effect == MuteEffect::Hide).then_some(rule))) {
+        // Counted once per report (task E8.8a), however often the server lists it again.
+        let mut first = false;
+        for id in &ids {
+            first |= tx.execute(
+                "INSERT OR IGNORE INTO muted_mail (account, message, at) VALUES (?1, ?2, ?3)",
+                params![owner, id, stamp(now)],
+            )? > 0;
+        }
+        if first {
+            count(&tx, &incoming, Count::Muted, now)?;
+            hit(&tx, rule, &incoming.source)?;
+        }
+        tx.commit()?;
+        return Ok(None);
+    }
+    if let Some((_, MuteEffect::Info)) = muting {
+        rules::set_lane(&mut incoming, Lane::Info);
+    }
+    let counted = incoming.clone();
+    match existing {
+        Some(existing) => {
+            // An older report of the matter, filed late, does not take the place of the newest.
+            if date < existing.updated {
+                incoming.updated = existing.updated;
+                incoming.title = existing.title.clone();
+                incoming.body = existing.body.clone();
+                incoming.from = existing.from.clone();
+                incoming.link = existing.link.clone();
+                incoming.facets = existing.facets.clone();
+            }
+            update_item(&tx, &rules::merge(existing, incoming))?;
+        }
+        None => insert_item(&tx, &owner, &incoming)?,
+    }
+    for remote_id in &ids {
+        tx.execute(
+            "INSERT INTO remote_ids (source, remote, item, at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT (source, remote) DO UPDATE SET item = excluded.item, at = max(at, excluded.at)",
+            params![owner, remote_id, id, stamp(date)],
+        )?;
+    }
     let remembering = remembering.filter(|rule| remembered_lane(rule) == Some(lane));
     count_report(&tx, &counted, remembering, muting.map(|(rule, _)| rule), now)?;
     tx.commit()?;
@@ -4951,34 +5521,431 @@ pub(crate) mod tests {
         assert!(inbox.file_mail(&not_mail, Notify::All, at(9, 4)).is_err());
     }
 
-    /// Task E5.1: entries of GitHub, Nextcloud, Talk and ntfy stay unseen by clients until E5.2
-    /// gives them their rules, even for a client that sees every source; the app key sees them.
+    // ----- remote sources (task E5.2) -----
+
+    /// The GitHub account of the tests, as its source's key.
+    pub(crate) const GITHUB: &str = "github:anna-berg";
+
+    /// The Nextcloud account of the tests, `<login>@<host>`.
+    const CLOUD: &str = "anna@cloud.example.org";
+
+    fn github() -> SourceRef {
+        SourceRef::github("anna-berg")
+    }
+
+    /// A report of `source` about `matter` with the server's `ids` at `date`, as a GitHub module
+    /// would hand it: a review request in `torro/workplace` (traits of other sources are dropped).
+    pub(crate) fn remote(source: SourceRef, matter: &str, ids: &[&str], date: DateTime<Utc>) -> Remote {
+        Remote {
+            source,
+            matter: matter.into(),
+            ids: ids.iter().map(|id| id.to_string()).collect(),
+            kind: Kind::Notice,
+            lane: Lane::ForMe,
+            title: format!("Review {matter}"),
+            body: None,
+            from: None,
+            url: Some(format!("https://github.com/torro/workplace/pull/{matter}")),
+            facets: vec![
+                Facet { key: FacetKey::Kind, value: "pull_request".into() },
+                Facet { key: FacetKey::Repo, value: "torro/workplace".into() },
+                Facet { key: FacetKey::Reason, value: "review_requested".into() },
+            ],
+            date,
+        }
+    }
+
+    /// A GitHub review request about `matter` in `repo`, its id the matter.
+    fn in_repo(matter: &str, repo: &str, date: DateTime<Utc>) -> Remote {
+        let mut report = remote(github(), matter, &[matter], date);
+        report.facets[1].value = repo.into();
+        report
+    }
+
+    /// A Nextcloud notification about `matter` with the ids `ids`.
+    fn shared(matter: &str, ids: &[&str], date: DateTime<Utc>) -> Remote {
+        let facets = vec![Facet { key: FacetKey::App, value: "files_sharing".into() }];
+        Remote { url: None, facets, ..remote(SourceRef::nextcloud(CLOUD), matter, ids, date) }
+    }
+
+    pub(crate) fn filed_remote(inbox: &Inbox, report: &Remote, now: DateTime<Utc>) -> String {
+        inbox.file_remote(report, now).expect("filed").expect("an entry")
+    }
+
+    fn sources_of(inbox: &Inbox, client: Option<&ClientInfo>) -> Vec<SourceInfo> {
+        match inbox.handle(Request::ListSources, client, at(12, 0)) {
+            Response::Sources { sources } => sources,
+            other => panic!("expected sources, got {other:?}"),
+        }
+    }
+
+    /// A client with every right, changed by `change`.
+    fn with_rights(change: impl FnOnce(&mut Rights)) -> ClientInfo {
+        let mut rights = RightsTemplate::FullAccess.rights();
+        change(&mut rights);
+        client("dd04", "claude-code", rights)
+    }
+
     #[test]
-    fn a_client_sees_no_entry_of_a_remote_source_yet() {
+    fn a_remote_report_is_an_untrusted_entry_of_its_account_and_an_id_counts_once() {
         let dir = tempfile::tempdir().expect("temp dir");
         let inbox = inbox_in(dir.path());
-        posted(inbox.handle(notice("Backup done", None), Some(&script()), at(9, 0)));
-        let remote = torro_inbox::demo::remote_sample(at(9, 0));
-        {
-            let db = Connection::open(file_in(dir.path())).expect("opens");
-            for item in &remote {
-                insert_item(&db, &item.source.key(), item).expect("stored");
-            }
+        let mut report = remote(github(), "101", &["101"], at(8, 0));
+        report.title = "  Review \u{201c}Inbox\u{201d}  ".into();
+        report.facets.push(Facet { key: FacetKey::Topic, value: "not GitHub's".into() });
+        let id = filed_remote(&inbox, &report, at(8, 5));
+        let first = entry(&inbox, &id);
+        assert_eq!(
+            (first.source.clone(), first.kind, first.lane, first.urgent),
+            (github(), Kind::Notice, Lane::ForMe, false)
+        );
+        assert!(first.untrusted, "a server outside the suite");
+        assert_eq!((first.title.as_str(), first.thread_key.as_str()), ("Review \u{201c}Inbox\u{201d}", "101"));
+        assert_eq!(first.link, Some(Link::Url { url: "https://github.com/torro/workplace/pull/101".into() }));
+        let keys: Vec<FacetKey> = first.facets.iter().map(|facet| facet.key).collect();
+        assert_eq!(keys, [FacetKey::Kind, FacetKey::Repo, FacetKey::Reason], "only GitHub's traits");
+        assert_eq!((first.received, first.count), (at(8, 0), 1));
+        let owner: String = inbox
+            .with(|db| Ok(db.query_row("SELECT owner FROM items WHERE id = ?1", [&id], |row| row.get(0))?))
+            .expect("read");
+        assert_eq!(owner, GITHUB, "owned by the account, like mail");
+        // No client merges into or resolves it (security rule 2).
+        assert_eq!(
+            inbox.handle(Request::ResolveItems { thread_key: "101".into() }, Some(&script()), at(8, 6)),
+            Response::Ok
+        );
+        assert!(item(get(&inbox, &id, Some(&script()))).thread_key.is_empty(), "the account's matter is its own");
+
+        assert_eq!(inbox.file_remote(&report, at(8, 6)), Ok(None), "polled again");
+        assert_eq!(entry(&inbox, &id).count, 1);
+        inbox.handle(Request::SetItemDone { id: id.clone(), done: true, dismissed: false }, None, at(8, 7));
+        assert_eq!(inbox.file_remote(&report, at(8, 8)), Ok(None), "nothing new keeps it done");
+        assert!(matches!(entry(&inbox, &id).state, State::Done { .. }));
+        let newer = Remote { date: at(9, 0), title: "Review again".into(), ..report.clone() };
+        assert_eq!(filed_remote(&inbox, &newer, at(9, 1)), id, "new activity under the same id");
+        let again = entry(&inbox, &id);
+        assert_eq!((again.count, again.state, again.title.as_str()), (2, State::New, "Review again"));
+        let late = Remote { date: at(8, 30), ids: vec!["101-b".into()], title: "Older".into(), ..report.clone() };
+        assert_eq!(filed_remote(&inbox, &late, at(9, 2)), id);
+        let late_entry = entry(&inbox, &id);
+        assert_eq!((late_entry.count, late_entry.title.as_str(), late_entry.updated), (3, "Review again", at(9, 0)));
+        assert_eq!(inbox.remote_ids(&id), Ok(vec!["101".to_string(), "101-b".to_string()]));
+        let other = filed_remote(&inbox, &remote(github(), "102", &["102"], at(9, 5)), at(9, 5));
+        assert_ne!(other, id, "another matter, another entry");
+        assert_eq!(stats(&inbox, None, at(9, 6)).totals.new, 4, "counted like reports");
+    }
+
+    #[test]
+    fn a_remote_report_keeps_to_the_rules_of_the_inbox() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let base =
+            Remote { facets: Vec::new(), ..remote(SourceRef::ntfy("ntfy.sh"), "backup:Backup", &["m1"], at(8, 0)) };
+        for refused in [
+            Remote { source: SourceRef::script("ci"), ..base.clone() },
+            Remote { source: SourceRef::mail("anna@example.org"), ..base.clone() },
+            Remote { kind: Kind::Approval, ..base.clone() },
+            Remote { kind: Kind::AgentWaiting, ..base.clone() },
+            Remote { ids: vec![" ".into()], ..base.clone() },
+            Remote { matter: " ".into(), ..base.clone() },
+            Remote { matter: "x".repeat(THREAD_KEY_MAX + 1), ..base.clone() },
+        ] {
+            assert!(inbox.file_remote(&refused, at(8, 1)).is_err(), "{refused:?}");
         }
-        for client in [script(), with_mail(Some(Level::Read), Selection::All)] {
-            let titles: Vec<String> =
-                items(inbox.handle(all(), Some(&client), at(9, 1))).into_iter().map(|item| item.title).collect();
-            assert_eq!(titles, ["Backup done"], "{:?}", client.rights);
-            for item in &remote {
-                assert_eq!(code(&get(&inbox, &item.id, Some(&client))), "not-found", "{}", item.id);
-            }
-            let sources = match inbox.handle(Request::ListSources, Some(&client), at(9, 2)) {
-                Response::Sources { sources } => sources,
-                other => panic!("expected sources, got {other:?}"),
+        let alert = Remote {
+            kind: Kind::Alert,
+            lane: Lane::Info,
+            title: "  ".into(),
+            body: Some(format!("  {}  ", "a".repeat(BODY_MAX + 10))),
+            url: Some("javascript:alert(1)".into()),
+            facets: vec![
+                Facet { key: FacetKey::Priority, value: "5".into() },
+                Facet { key: FacetKey::Repo, value: "torro/workplace".into() },
+            ],
+            ..base.clone()
+        };
+        let alert_entry = entry(&inbox, &filed_remote(&inbox, &alert, at(8, 1)));
+        assert_eq!((alert_entry.lane, alert_entry.urgent), (Lane::ForMe, true), "an alert is always for me and urgent");
+        assert_eq!(alert_entry.title, tr("(no title)"));
+        assert_eq!(alert_entry.body.as_deref().map(|body| body.chars().count()), Some(BODY_MAX));
+        assert_eq!(alert_entry.link, None, "only web pages");
+        assert_eq!(alert_entry.facets, [Facet { key: FacetKey::Priority, value: "5".into() }], "only ntfy's traits");
+        let long_link = format!("https://example.org/{}", "a".repeat(URL_MAX));
+        let long = Remote { matter: "other".into(), ids: vec!["m2".into()], url: Some(long_link), ..base };
+        assert_eq!(entry(&inbox, &filed_remote(&inbox, &long, at(8, 2))).link, None);
+    }
+
+    #[test]
+    fn a_remote_entry_is_done_once_the_server_holds_none_of_its_ids() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let cloud = SourceRef::nextcloud(CLOUD);
+        let report = shared("files_sharing:file:7", &["n1", "n2"], at(8, 0));
+        let id = filed_remote(&inbox, &report, at(8, 0));
+        inbox.handle(Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)) }, None, at(8, 1));
+        assert_eq!(inbox.resolve_remote(&cloud, &["n1".into(), "unknown".into()], at(9, 0)), Ok(0));
+        assert!(matches!(entry(&inbox, &id).state, State::Snoozed { .. }), "one id is left");
+        assert_eq!(inbox.open_remote(&cloud), Ok(vec![RemoteEntry { id: id.clone(), ids: vec!["n2".into()] }]));
+        assert_eq!(inbox.resolve_remote(&SourceRef::talk(CLOUD), &["n2".into()], at(9, 0)), Ok(0), "another source");
+        assert_eq!(inbox.resolve_remote(&cloud, &["n2".into()], at(9, 1)), Ok(1));
+        assert!(matches!(entry(&inbox, &id).state, State::Done { .. }), "snoozed or not");
+        assert!(inbox.open_remote(&cloud).expect("read").is_empty());
+        assert!(inbox.remote_ids(&id).expect("read").is_empty());
+        assert_eq!(stats(&inbox, None, at(9, 2)).totals.done, 1, "dealt with on the server");
+        assert_eq!(filed_remote(&inbox, &report, at(9, 3)), id, "listed anew, a report again");
+        assert_eq!(entry(&inbox, &id).state, State::New);
+    }
+
+    #[test]
+    fn entries_of_remote_accounts_gone_are_done_and_others_stay() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let gone = filed_remote(&inbox, &remote(github(), "1", &["1"], at(8, 0)), at(8, 0));
+        let kept = filed_remote(&inbox, &remote(SourceRef::github("bernd"), "2", &["2"], at(8, 0)), at(8, 0));
+        let cloud = filed_remote(&inbox, &shared("3", &["3"], at(8, 0)), at(8, 0));
+        assert_eq!(inbox.retire_remote(SourceKind::Github, &["github:bernd".into()], at(9, 0)), Ok(1));
+        assert!(matches!(entry(&inbox, &gone).state, State::Done { .. }));
+        assert!(entry(&inbox, &kept).state.is_open() && entry(&inbox, &cloud).state.is_open());
+        assert!(inbox.retire_remote(SourceKind::Mail, &[], at(9, 0)).is_err(), "mail has retire_mail");
+    }
+
+    #[test]
+    fn a_muted_remote_source_files_nothing_and_rules_by_trait_hold_as_for_mail() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let mute_github = |muted| Request::MuteSource { source: github(), muted };
+        assert_eq!(inbox.handle(mute_github(true), None, at(7, 0)), Response::Ok);
+        let report = remote(github(), "1", &["1"], at(8, 0));
+        assert_eq!(inbox.file_remote(&report, at(8, 1)), Ok(None));
+        assert_eq!(inbox.file_remote(&report, at(8, 2)), Ok(None));
+        assert!(items(inbox.handle(all(), None, at(8, 3))).is_empty());
+        assert_eq!(stats(&inbox, None, at(8, 3)).totals.muted, 1, "counted once");
+        assert_eq!(inbox.handle(mute_github(false), None, at(8, 3)), Response::Ok);
+        let id = filed_remote(&inbox, &report, at(8, 4));
+
+        // A muted reason holds for every GitHub account.
+        let hidden = muted(inbox.handle(mute(&id, by(FacetKey::Reason), None, MuteEffect::Hide), None, at(8, 5)));
+        assert_eq!(hidden.done, vec![id.clone()]);
+        assert_eq!(inbox.file_remote(&remote(SourceRef::github("bernd"), "2", &["2"], at(8, 6)), at(8, 6)), Ok(None));
+        // A repository to "Info" files its next entries there.
+        let mention = |matter: &str, date| {
+            let mut report = remote(github(), matter, &[matter], date);
+            report.facets[2].value = "mention".into();
+            report
+        };
+        let first = filed_remote(&inbox, &mention("3", at(8, 7)), at(8, 7));
+        assert_eq!(entry(&inbox, &first).lane, Lane::ForMe);
+        inbox.handle(mute(&first, by(FacetKey::Repo), None, MuteEffect::Info), None, at(8, 8));
+        let next = filed_remote(&inbox, &mention("4", at(8, 9)), at(8, 9));
+        assert_eq!(entry(&inbox, &next).lane, Lane::Info);
+        let scopes: Vec<MuteScope> = options(inbox.handle(Request::ListMuteOptions { id: next }, None, at(9, 0)))
+            .into_iter()
+            .map(|o| o.scope)
+            .collect();
+        assert!(scopes.contains(&by(FacetKey::Repo)) && scopes.contains(&by(FacetKey::Reason)), "{scopes:?}");
+    }
+
+    #[test]
+    fn a_client_sees_a_github_entry_only_with_github_and_its_repository() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let ours = filed_remote(&inbox, &in_repo("1", "Torro/Workplace", at(8, 0)), at(8, 0));
+        let secret = filed_remote(&inbox, &in_repo("2", "other/secret", at(8, 1)), at(8, 1));
+        let cloud = filed_remote(&inbox, &shared("3", &["3"], at(8, 2)), at(8, 2));
+        let chat =
+            filed_remote(&inbox, &Remote { source: SourceRef::talk(CLOUD), ..shared("4", &["4"], at(8, 3)) }, at(8, 3));
+        // The person mutes the secret repository and the reason of ours: two rules with a trait.
+        inbox.handle(mute(&secret, by(FacetKey::Repo), None, MuteEffect::NoPopup), None, at(8, 5));
+        inbox.handle(mute(&ours, by(FacetKey::Reason), None, MuteEffect::NoPopup), None, at(8, 5));
+
+        let seen = |client: &ClientInfo| -> BTreeSet<String> {
+            items(inbox.handle(all(), Some(client), at(9, 0))).into_iter().map(|item| item.id).collect()
+        };
+        let set = |ids: &[&String]| ids.iter().map(|id| id.to_string()).collect::<BTreeSet<String>>();
+        let everything = with_rights(|_| {});
+        let no_github = with_rights(|rights| {
+            rights.areas.remove(&Area::Github);
+        });
+        let torro = with_rights(|rights| rights.github_repos = Selection::Only(vec!["torro".into()]));
+        let exact = with_rights(|rights| rights.github_repos = Selection::Only(vec!["torro/WORKPLACE".into()]));
+        let named = with_rights(|rights| {
+            rights.inbox_sources = Selection::Only(vec![GITHUB.into(), format!("nextcloud:{CLOUD}")]);
+            rights.github_repos = Selection::Only(vec!["torro/workplace".into()]);
+        });
+        assert_eq!(seen(&everything), set(&[&ours, &secret, &cloud, &chat]));
+        assert_eq!(seen(&no_github), set(&[&cloud, &chat]), "GitHub needs read access to GitHub");
+        assert_eq!(seen(&torro), set(&[&ours, &cloud, &chat]), "an owner names its repositories");
+        assert_eq!(seen(&exact), set(&[&ours, &cloud, &chat]), "in any case");
+        assert_eq!(seen(&named), set(&[&ours, &cloud]), "Talk is a source of its own");
+        for client in [&no_github, &torro, &named] {
+            assert_eq!(code(&get(&inbox, &secret, Some(client))), "not-found");
+            let options = inbox.handle(Request::ListMuteOptions { id: secret.clone() }, Some(client), at(9, 0));
+            assert_eq!(code(&options), "not-found");
+        }
+        assert_eq!(item(get(&inbox, &ours, Some(&torro))).id, ours);
+
+        let open_of = |client: &ClientInfo| {
+            sources_of(&inbox, Some(client)).into_iter().find(|info| info.source == github()).map(|info| info.open)
+        };
+        assert_eq!((open_of(&everything), open_of(&torro), open_of(&no_github)), (Some(2), Some(1), None));
+
+        let muted_traits = |client: &ClientInfo| -> Vec<FacetKey> {
+            let Response::Rules { rules, .. } = inbox.handle(Request::ListRules, Some(client), at(9, 0)) else {
+                panic!("rules")
             };
-            assert!(sources.iter().all(|info| info.source.kind == SourceKind::Script), "{sources:?}");
+            let mut keys: Vec<FacetKey> = rules.into_iter().filter_map(|rule| rule.facet.map(|f| f.key)).collect();
+            keys.sort();
+            keys
+        };
+        assert_eq!(muted_traits(&everything), [FacetKey::Repo, FacetKey::Reason]);
+        assert_eq!(muted_traits(&torro), [FacetKey::Reason], "the muted repository only with it");
+        assert!(muted_traits(&no_github).is_empty());
+
+        let repo_rows = |client: &ClientInfo| -> BTreeSet<String> {
+            let condition = ("instr(facet, 'repo=') = 1", Vec::new());
+            let rows =
+                inbox.with(|db| read(db, "stats", "facet", &Scope::of(Some(client)), condition, "", |row| row.get(0)));
+            rows.expect("read").into_iter().collect()
+        };
+        let both: BTreeSet<String> = ["repo=Torro/Workplace".to_string(), "repo=other/secret".to_string()].into();
+        assert_eq!(repo_rows(&everything), both);
+        assert_eq!(repo_rows(&torro), ["repo=Torro/Workplace".to_string()].into());
+        assert!(repo_rows(&no_github).is_empty());
+        // A source's sums and the rows by reason count every repository: not for a key limited to some.
+        let sums = |client: &ClientInfo| of(&stats(&inbox, Some(client), at(9, 0)), &github()).new;
+        assert_eq!((sums(&everything), sums(&torro), sums(&no_github)), (2, 0, 0));
+        let reason_rows = |client: &ClientInfo| {
+            let condition = ("instr(facet, 'reason=') = 1", Vec::new());
+            let rows =
+                inbox.with(|db| read(db, "stats", "facet", &Scope::of(Some(client)), condition, "", |row| row.get(0)));
+            rows.expect("read").into_iter().collect::<Vec<String>>()
+        };
+        assert!(!reason_rows(&everything).is_empty() && reason_rows(&torro).is_empty());
+        assert_eq!(code(&inbox.handle(all(), Some(&hook()), at(9, 0))), "not-found");
+
+        // Muting closes entries of repositories out of reach too, but does not name them.
+        let hidden =
+            muted(inbox.handle(mute(&ours, by(FacetKey::Kind), None, MuteEffect::Hide), Some(&torro), at(9, 1)));
+        assert_eq!(hidden.done, vec![ours.clone()]);
+        assert!(matches!(entry(&inbox, &secret).state, State::Done { .. }));
+    }
+
+    #[test]
+    fn marking_a_github_entry_done_needs_write_access_to_github_before_and_when_it_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let id = filed_remote(&inbox, &remote(github(), "1", &["1"], at(8, 0)), at(8, 0));
+        let cloud = filed_remote(&inbox, &shared("2", &["2"], at(8, 0)), at(8, 0));
+        let reader = with_rights(|rights| {
+            rights.areas.insert(Area::Github, AreaRights { level: Level::Read, admin: false });
+        });
+        let done = |id: &str, dismissed| Request::SetItemDone { id: id.into(), done: true, dismissed };
+        for request in [
+            done(&id, false),
+            done(&id, true),
+            Request::CreateTaskFromItem { id: id.clone(), collection: "a/list".into(), title: None, due: None },
+        ] {
+            assert_eq!(inbox.refusal(&request, Some(&reader)).as_ref().map(code), Some("forbidden"), "{request:?}");
         }
-        assert_eq!(items(inbox.handle(all(), None, at(9, 1))).len(), remote.len() + 1, "the app key sees them");
+        assert_eq!(code(&inbox.handle(done(&id, false), Some(&reader), at(9, 0))), "forbidden", "when it runs");
+        assert_eq!(code(&inbox.entry_for_task(&id, Some(&reader), at(9, 0)).expect_err("refused")), "forbidden");
+        assert!(entry(&inbox, &id).state.is_open(), "nothing changed");
+        let snooze = Request::SnoozeItem { id: id.clone(), until: Some(at(18, 0)) };
+        assert!(inbox.refusal(&snooze, Some(&reader)).is_none(), "the rest as for any entry");
+        // Deleting a Nextcloud notification needs nothing beyond the inbox.
+        assert!(inbox.refusal(&done(&cloud, false), Some(&reader)).is_none());
+        assert!(matches!(item(inbox.handle(done(&cloud, false), Some(&reader), at(9, 1))).state, State::Done { .. }));
+        let writer = with_rights(|_| {});
+        assert!(inbox.refusal(&done(&id, false), Some(&writer)).is_none());
+        assert!(matches!(item(inbox.handle(done(&id, false), Some(&writer), at(9, 2))).state, State::Done { .. }));
+    }
+
+    #[test]
+    fn a_file_of_schema_7_keeps_everything_and_learns_the_remote_sources() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let notice_id = posted(inbox.handle(notice("Old", None), Some(&script()), at(8, 0)));
+        let mail_id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        inbox.handle(Request::MuteSource { source: SourceRef::script("x"), muted: true }, None, at(8, 2));
+        inbox
+            .with(|db| {
+                db.execute_batch(
+                    "DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
+                     PRAGMA user_version = 7;",
+                )?;
+                Ok(())
+            })
+            .expect("back to schema 7");
+        drop(inbox);
+        let inbox = inbox_in(dir.path());
+        let ids: BTreeSet<String> = items(inbox.handle(all(), None, at(9, 0))).into_iter().map(|i| i.id).collect();
+        assert_eq!(ids, [notice_id.clone(), mail_id.clone()].into());
+        assert_eq!(rules_of(&inbox).len(), 1);
+        assert_eq!(inbox.mail_messages(&mail_id), Ok(vec!["m:1".to_string()]));
+        let github_id = filed_remote(&inbox, &remote(github(), "1", &["1"], at(9, 0)), at(9, 0));
+        let repo = |id: &str| -> String {
+            inbox
+                .with(|db| Ok(db.query_row("SELECT repo FROM items WHERE id = ?1", [id], |row| row.get(0))?))
+                .expect("read")
+        };
+        assert_eq!((repo(&github_id), repo(&notice_id)), ("torro/workplace".to_string(), String::new()));
+        let db = Connection::open(file_in(dir.path())).expect("opens");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).expect("version");
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn cursors_survive_a_restart_and_go_with_their_source() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let ntfy = SourceRef::ntfy("ntfy.sh");
+        assert_eq!(inbox.cursor(&github(), "last-modified"), Ok(None));
+        let mut changes = inbox.changes();
+        changes.mark_unchanged();
+        inbox.set_cursor(&github(), "last-modified", Some("Mon, 12 Oct 2026 08:00:00 GMT")).expect("kept");
+        inbox.set_cursor(&github(), "last-modified", Some("Mon, 12 Oct 2026 09:00:00 GMT")).expect("kept");
+        inbox.set_cursor(&ntfy, "since", Some("abc")).expect("kept");
+        assert!(!changes.has_changed().expect("alive"), "nothing for the tray");
+        drop(inbox);
+        let inbox = inbox_in(dir.path());
+        assert_eq!(inbox.cursor(&github(), "last-modified"), Ok(Some("Mon, 12 Oct 2026 09:00:00 GMT".into())));
+        assert_eq!(inbox.cursor(&github(), "etag"), Ok(None));
+        inbox.set_cursor(&github(), "last-modified", None).expect("removed");
+        assert_eq!(inbox.cursor(&github(), "last-modified"), Ok(None));
+        inbox.set_cursor(&github(), "etag", Some("W/\"1\"")).expect("kept");
+        inbox.forget_source(GITHUB).expect("forgotten");
+        assert_eq!(inbox.cursor(&github(), "etag"), Ok(None));
+        assert_eq!(inbox.cursor(&ntfy, "since"), Ok(Some("abc".into())), "another source keeps its own");
+    }
+
+    #[test]
+    fn a_quiet_remote_source_says_why_in_the_list_of_sources() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        inbox.set_source_health(&github(), Some(SourceHealth::MissingScope));
+        let quiet = SourceInfo { source: github(), open: 0, muted: false, health: Some(SourceHealth::MissingScope) };
+        assert_eq!(sources_of(&inbox, None), [quiet], "listed without entries");
+        filed_remote(&inbox, &shared("1", &["1"], at(8, 0)), at(8, 0));
+        let cloud = SourceRef::nextcloud(CLOUD);
+        inbox.set_source_health(&cloud, Some(SourceHealth::Offline));
+        let listed = sources_of(&inbox, None);
+        assert_eq!(listed.len(), 2);
+        assert_eq!(
+            (listed[1].source.clone(), listed[1].open, listed[1].health),
+            (cloud.clone(), 1, Some(SourceHealth::Offline))
+        );
+        let no_github = with_rights(|rights| {
+            rights.areas.remove(&Area::Github);
+        });
+        assert_eq!(
+            sources_of(&inbox, Some(&no_github)).iter().map(|info| info.source.clone()).collect::<Vec<_>>(),
+            vec![cloud.clone()]
+        );
+        assert!(sources_of(&inbox, Some(&hook())).is_empty());
+        inbox.set_source_health(&github(), None);
+        assert_eq!(sources_of(&inbox, None).len(), 1, "it works again");
+        inbox.forget_source(&cloud.key()).expect("forgotten");
+        assert_eq!(sources_of(&inbox, None)[0].health, None, "a removed account takes its health along");
     }
 
     #[test]
@@ -6052,11 +7019,13 @@ pub(crate) mod tests {
         let inbox = inbox_in(dir.path());
         let id = posted(inbox.handle(notice("Old", None), Some(&script()), at(8, 0)));
         inbox.handle(Request::MuteSource { source: SourceRef::script("x"), muted: true }, None, at(8, 0));
-        // Back to schema 5: no statistics, no `counted_since`.
+        // Back to schema 5: no statistics, no `counted_since`, nothing of schema 8.
         inbox
             .with(|db| {
                 db.execute_batch(
-                    "DROP TABLE stats; DROP TABLE muted_mail; DROP TABLE opened_items; ALTER TABLE rules DROP COLUMN counted_since;
+                    "DROP TABLE stats; DROP TABLE muted_mail; DROP TABLE opened_items;
+                     ALTER TABLE rules DROP COLUMN counted_since;
+                     DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
                      PRAGMA user_version = 5;",
                 )?;
                 Ok(())

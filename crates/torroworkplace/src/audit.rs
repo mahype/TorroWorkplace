@@ -702,6 +702,20 @@ pub(crate) mod tests {
         // The statistics name nothing (task E8.8a): no source, no trait, no span.
         let stats = Request::GetStats { range: torro_ipc::StatsRange::Quarter, until: None };
         assert!(super::ids(&stats).is_empty());
+        // The remote sources (task E5.2): an entry by its id, never its repository, reason or tag; a
+        // source by its key, the account's id.
+        let by_repo = torro_inbox::item::MuteScope::Facet { key: torro_inbox::item::FacetKey::Repo, nth: 0 };
+        let mute_repo = Request::MuteItem {
+            id: "3d29c13547a49e39".into(),
+            scope: by_repo,
+            until: None,
+            effect: torro_inbox::item::MuteEffect::Info,
+        };
+        assert_eq!(super::ids(&mute_repo), vec!["inbox:3d29c13547a49e39".to_string()]);
+        let done = Request::SetItemDone { id: "3d29c13547a49e39".into(), done: true, dismissed: true };
+        assert_eq!(super::ids(&done), vec!["inbox:3d29c13547a49e39".to_string()]);
+        let github = Request::MuteSource { source: torro_inbox::SourceRef::github("anna-berg"), muted: true };
+        assert_eq!(super::ids(&github), vec!["source:github:anna-berg".to_string()]);
     }
 
     /// Task E1.2c: collection ids keep only their account; ids a client sends are logged as they

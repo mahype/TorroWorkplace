@@ -42,6 +42,7 @@ use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
+use crate::sources::Sources;
 use crate::ui::Section;
 
 /// `name` next to the daemon's binary, else from `PATH`.
@@ -763,6 +764,9 @@ pub struct Core {
     start_control_centre: fn(Section) -> Result<(), String>,
     /// Opens a web page for `inbox.open_item` ([`open_in_browser`]); tests record it instead.
     open_url: fn(&str) -> Result<(), String>,
+    /// Tells a remote source that one of its entries is done (task E5.2,
+    /// [`crate::sources::settle_done`]); tests record it instead.
+    settle_done: fn(&Sources, &torro_inbox::Item),
     /// The mail search of `accounts.discover_services` (task M2.2), built by
     /// `make_mail_discoverer` on first use (its HTTP client costs time every core would pay at
     /// start); `None` when no HTTP client could be built.
@@ -819,6 +823,7 @@ impl Core {
             mail,
             start_control_centre,
             open_url: if cfg!(test) { no_browser } else { open_in_browser },
+            settle_done: crate::sources::settle_done,
             mail_discovery: OnceLock::new(),
             make_mail_discoverer: if cfg!(test) { offline_mail_discoverer } else { system_mail_discoverer },
             searches: Searches::default(),
@@ -942,6 +947,8 @@ impl Core {
         self.ai.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
         self.mail.start();
+        // GitHub, Nextcloud, Talk and ntfy in the inbox (task E5.2).
+        crate::sources::start(self.sources());
         // The assistant's retention (task C.1): read anew each time, so a changed setting applies
         // from the next round.
         let (assistant, settings) = (Arc::clone(&self.assistant), self.settings.clone());
@@ -981,6 +988,21 @@ impl Core {
     /// before the mail sync starts, so no change is missed.
     pub(crate) fn start_mail_feed(&self, accounts_file: Option<std::path::PathBuf>) {
         crate::mail::inbox_feed::start(Arc::clone(&self.inbox), Arc::clone(&self.mail), accounts_file);
+    }
+
+    /// What the remote sources of the inbox reach (task E5.2, [`crate::sources`]): this core's
+    /// inbox, GitHub accounts and calendar service, so a test's own inbox is theirs too.
+    fn sources(&self) -> Sources {
+        Sources { inbox: Arc::clone(&self.inbox), github: Arc::clone(&self.github), pim: Arc::clone(&self.pim) }
+    }
+
+    /// After `inbox.set_item_done`, `inbox.create_task_from_item` or `inbox.create_event_from_item`
+    /// answered with `item` as stored: a done mail entry's mail is marked read (task E4.1), a done
+    /// entry of a remote source reaches its server (task E5.2, [`crate::sources::settle_done`]),
+    /// both in the background. Anything else is left alone; the inbox checked the rights before.
+    fn settle(&self, item: &torro_inbox::Item) {
+        crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, item);
+        (self.settle_done)(&self.sources(), item);
     }
 
     /// A request from the socket with the key the client sent. Every request from outside the
@@ -2361,9 +2383,10 @@ impl Core {
                 let done = matches!(request, Request::SetItemDone { done: true, .. });
                 let reads = matches!(request, Request::ListItems { .. } | Request::GetItem { .. });
                 let mut response = self.inbox.handle(request, client, Utc::now());
-                // Done with a mail entry marks its mail read on the server (task E4.1).
+                // Done with a mail entry marks its mail read on the server (task E4.1), with an
+                // entry of a remote source it reaches that source (task E5.2).
                 if let (true, Response::Item { item }) = (done, &response) {
-                    crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, item);
+                    self.settle(item);
                 }
                 // Entries come with the task made of them, for whom may read it (task E8.7a).
                 let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
@@ -2453,8 +2476,8 @@ impl Core {
             Response::Error { message, .. } => {
                 eprintln!("torroworkplace: inbox: a task was made of entry {id}, but the entry stays open: {message}");
             }
-            // A mail entry's mail is read now (task E4.1).
-            Response::Item { item } => crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, &item),
+            // A mail entry's mail is read now (task E4.1), a remote source is told (task E5.2).
+            Response::Item { item } => self.settle(&item),
             _ => {}
         }
         Response::Todo { todo: saved }
@@ -2528,7 +2551,7 @@ impl Core {
                     "torroworkplace: inbox: an event was made of entry {id}, but the entry stays open: {message}"
                 );
             }
-            Response::Item { item } => crate::mail::inbox_feed::mark_read(&self.inbox, &self.mail, &item),
+            Response::Item { item } => self.settle(&item),
             _ => {}
         }
         Response::Event { event: saved }
@@ -3585,6 +3608,7 @@ impl Core {
             return match self.github.remove(id).await {
                 Ok(()) => {
                     self.pim.forget_filter_lists(id).await;
+                    self.retire_sources(id, &known);
                     Response::Ok
                 }
                 Err(message) => Response::Error { code: "error".into(), message },
@@ -3599,7 +3623,40 @@ impl Core {
         if id.starts_with(torro_mail::ACCOUNT_PREFIX) {
             return self.remove_mail_account(id).await;
         }
-        self.pim.remove_account(id).await
+        let removed = self.pim.remove_account(id).await;
+        if removed == Response::Ok {
+            self.retire_sources(id, &known);
+        }
+        removed
+    }
+
+    /// After the account `id` was removed (task E5.2): the inbox entries of its remote sources are
+    /// done – the GitHub account's notifications, a Nextcloud account's notifications and its Talk
+    /// (`talk:<…>`) –, since nothing can reach their server any more, and their statistics,
+    /// cursors and ids go ([`Inbox::retire_remote`], [`Inbox::forget_source`]). `known` are the ids
+    /// of all accounts the core knew before. Any other account has no remote source; failures go to
+    /// the log, the account is gone anyway.
+    fn retire_sources(&self, id: &str, known: &[String]) {
+        let Ok(removed) = id.parse::<torro_inbox::SourceRef>() else { return };
+        let mut sources = vec![removed.clone()];
+        if removed.kind == torro_inbox::SourceKind::Nextcloud {
+            sources.push(torro_inbox::SourceRef::talk(removed.name.as_str()));
+        }
+        let left: Vec<torro_inbox::SourceRef> =
+            known.iter().filter(|known| *known != id).filter_map(|known| known.parse().ok()).collect();
+        for source in sources.into_iter().filter(|source| crate::inbox::is_remote(source.kind)) {
+            let active: Vec<String> = left
+                .iter()
+                .filter(|other| other.kind == removed.kind)
+                .map(|other| torro_inbox::SourceRef { kind: source.kind, name: other.name.clone() }.key())
+                .collect();
+            if let Err(err) = self.inbox.retire_remote(source.kind, &active, Utc::now()) {
+                eprintln!("torroworkplace: the inbox entries of a removed account stay open: {err}");
+            }
+            if let Err(err) = self.inbox.forget_source(&source.key()) {
+                eprintln!("torroworkplace: the inbox statistics of a removed account stay: {err}");
+            }
+        }
     }
 
     /// `accounts.remove_account` for a mail account (`mail:<address>`, task M2.7), decided by the
@@ -7501,6 +7558,90 @@ mod tests {
         let week = Request::GetStats { range: torro_ipc::StatsRange::Week, until: None };
         let Response::Stats(stats) = ask(&core, Some(&app_key), week).await else { panic!("statistics") };
         assert_eq!((stats.totals.tasks, stats.totals.done), (2, 0));
+    }
+
+    /// The entries a test core told their remote source were done (task E5.2), instead of telling it.
+    static SETTLED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+    fn record_settle(_sources: &Sources, item: &torro_inbox::Item) {
+        assert!(matches!(item.state, torro_inbox::State::Done { .. }), "only done entries reach the source");
+        SETTLED.lock().expect("lock").push(item.id.clone());
+    }
+
+    /// How often the entry `id` reached its source.
+    fn settled(id: &str) -> usize {
+        SETTLED.lock().expect("lock").iter().filter(|settled| *settled == id).count()
+    }
+
+    /// Task E5.2: done (dismissed too), a task and an event of an entry reach its remote source,
+    /// once each; undo, snoozing, a lane, hiding and muting never do.
+    #[tokio::test]
+    async fn only_done_a_task_and_an_event_reach_a_remote_source() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let core = Core { settle_done: record_settle, ..core };
+        let file = |matter: &str| {
+            let report =
+                crate::inbox::tests::remote(torro_inbox::SourceRef::github("anna-berg"), matter, &[matter], Utc::now());
+            crate::inbox::tests::filed_remote(&core.inbox, &report, Utc::now())
+        };
+        let (done, task, event, kept) = (file("1"), file("2"), file("3"), file("4"));
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let later = Utc::now() + chrono::TimeDelta::hours(1);
+        for request in [
+            Request::SetItemDone { id: kept.clone(), done: false, dismissed: false },
+            Request::SnoozeItem { id: kept.clone(), until: Some(later) },
+            Request::SnoozeItem { id: kept.clone(), until: None },
+            Request::SetItemLane { id: kept.clone(), lane: torro_inbox::Lane::Info, remember: false },
+            Request::HideSender { id: kept.clone(), scope: torro_inbox::HideScope::Conversation },
+            Request::MuteItem {
+                id: kept.clone(),
+                scope: torro_inbox::item::MuteScope::Conversation,
+                until: None,
+                effect: torro_inbox::item::MuteEffect::Hide,
+            },
+        ] {
+            ask(&core, Some(&app_key), request).await;
+        }
+        assert!(matches!(entry(&core, dir.path(), &kept).await.state, torro_inbox::State::Done { .. }), "muted");
+        assert_eq!(settled(&kept), 0, "never by undo, snoozing, a lane, hiding or muting");
+
+        let dismiss = Request::SetItemDone { id: done.clone(), done: true, dismissed: true };
+        assert!(matches!(ask(&core, Some(&app_key), dismiss).await, Response::Item { .. }));
+        let undo = Request::SetItemDone { id: done.clone(), done: false, dismissed: false };
+        assert!(matches!(ask(&core, Some(&app_key), undo).await, Response::Item { .. }));
+        assert_eq!(settled(&done), 1, "done once, undo not");
+        assert!(matches!(ask(&core, Some(&app_key), make_task(&task, &fake.work)).await, Response::Todo { .. }));
+        assert_eq!(settled(&task), 1, "a task");
+        let made = ask(&core, Some(&app_key), make_event(&event, &fake.work, None)).await;
+        assert!(matches!(made, Response::Event { .. }), "{made:?}");
+        assert_eq!(settled(&event), 1, "an event");
+    }
+
+    /// Task E5.2: a client without write access to GitHub is refused before anyone is asked, and the
+    /// question for a client that may names what done does on GitHub.
+    #[tokio::test]
+    async fn a_github_entry_is_done_only_with_write_access_to_github_and_the_question_says_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Core { settle_done: record_settle, ..core(dir.path()) };
+        let report = crate::inbox::tests::remote(torro_inbox::SourceRef::github("anna-berg"), "7", &["7"], Utc::now());
+        let id = crate::inbox::tests::filed_remote(&core.inbox, &report, Utc::now());
+        let done = || Request::SetItemDone { id: id.clone(), done: true, dismissed: false };
+        let mut reader = RightsTemplate::FullAccess.rights();
+        reader.areas.insert(Area::Github, AreaRights { level: Level::Read, admin: false });
+        reader.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, reader_key) = client(&core, reader).await;
+        assert_eq!(code(&ask(&core, Some(&reader_key), done()).await), "forbidden");
+        assert!(core.approvals.list(None, Utc::now()).await.expect("approvals").is_empty(), "nobody was asked");
+
+        let mut writer = RightsTemplate::FullAccess.rights();
+        writer.confirm = torro_ipc::api::Confirm::OnEveryChange;
+        let (_, writer_key) = client(&core, writer).await;
+        let asked = waits(ask(&core, Some(&writer_key), done()).await);
+        let entry = format!("\"{}\"", report.title);
+        let marked = trf("Mark {entry} as done", &[("entry", &entry)]);
+        assert_eq!(asked.summary, trf("{what} and mark its GitHub notification done", &[("what", &marked)]));
+        assert_eq!(settled(&id), 0, "not before the person allowed it");
     }
 
     /// Task E8.8a: a client asks for the statistics like for the rules, and a removed client takes

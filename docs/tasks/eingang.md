@@ -1472,7 +1472,7 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
   mit `tr()`; Demo je Art. fmt/clippy/test grün, auch mit `TORRO_LANG=de`.
 
 ### E5.2 Kern: Meldungen fremder Quellen ablegen, zeigen und zurückmelden
-- [ ] erledigt
+- [x] erledigt (2026-10-14: `Inbox::{file_remote, resolve_remote, retire_remote, remote_ids, open_remote, cursor, set_cursor, set_source_health}` mit `Remote`/`RemoteEntry`, Schema 8 (`items.repo`, `remote_ids`, `cursors`); `open_remote` zusätzlich, damit E5.4/E5.8 „fehlt in vollständiger Liste“ ohne `inbox.rs` finden; Kennung zählt erneut nur mit neuerem Datum; Rechte aus Freigabe 7 in `Rights::reaches_source` und `Scope` (SQL über `repo` bzw. Merkmal `repo`); `check_done` (GitHub braucht Schreiben in `github`); `sources::{Sources, start, settle_done}` mit leeren Modulen, Kern ruft `settle_done` nach Erledigt, Aufgabe, Termin; Freigabe-Texte, `reach_of` je Quellenart; `forget_account` streicht `talk:`; Konto entfernt → `retire_remote` + `forget_source`; Datenregel Nextcloud/Talk)
 - **Modell:** Opus · **Braucht:** E5.1, Freigabe 7–9 und 16 · **Dateien:** `crates/torroworkplace/src/inbox.rs`, neu
   `crates/torroworkplace/src/sources/{mod,github,nextcloud,talk,ntfy}.rs` (Gerüst, leer bis E5.4, E5.8, E5.9,
   E5.13), `crates/torroworkplace/src/{main,core,approvals,audit,clients}.rs`,

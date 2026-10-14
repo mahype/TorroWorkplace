@@ -29,6 +29,11 @@
 //! neither in its prompt (`super::prompt`) nor in what `assistant.list_memories` answers
 //! ([`for_model`]).
 //!
+//! The remote sources of the inbox (task E5.2, decision 15 of E5, `docs/ki.md`: "mail and
+//! messengers only local, GitHub may go to the cloud"): entries of Nextcloud and Talk are held back
+//! like mail, a model elsewhere reads only their id and source ([`held_back`]); entries of GitHub
+//! and ntfy go through, until KI.1 brings rules per source.
+//!
 //! Known limit, for KI.1: a task made from a mail entry keeps the subject as its title, and
 //! `tasks.list_todos` shows it to every model; tasks are the person's own data from then on.
 
@@ -109,11 +114,11 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
     match response {
         Response::Items { items } => {
             let shown: Vec<Value> = items.iter().map(item_for_remote).collect();
-            let withheld = items.iter().any(from_mail);
+            let withheld = items.iter().any(held_back);
             Screened { value: json!({ "result": result, "items": shown }), withheld }
         }
         Response::Item { item } => {
-            Screened { value: json!({ "result": result, "item": item_for_remote(item) }), withheld: from_mail(item) }
+            Screened { value: json!({ "result": result, "item": item_for_remote(item) }), withheld: held_back(item) }
         }
         // The hits per rule (task E8.8a) stay home: counts of what a rule caught say nothing a model
         // needs. A rule by trait (task E8.6a) can name a mail's sender, domain or list in `facet`.
@@ -153,15 +158,17 @@ pub fn reads_mail(name: &str) -> bool {
     name.starts_with("mail.") || name.starts_with("inbox.") || name == "bots.ask_bot"
 }
 
-/// An inbox entry from a mail account is mail content.
-fn from_mail(item: &Item) -> bool {
-    item.source.kind == SourceKind::Mail
+/// An inbox entry from a mail account is mail content; one of Nextcloud or Talk (task E5.2) is held
+/// back the same way, messages and notifications of people the person works with. GitHub and ntfy
+/// go through (module docs).
+fn held_back(item: &Item) -> bool {
+    matches!(item.source.kind, SourceKind::Mail | SourceKind::Nextcloud | SourceKind::Talk)
 }
 
-/// `item` for a model elsewhere: as it is, or for an entry of a mail account only its id and
-/// source.
+/// `item` for a model elsewhere: as it is, or for an entry of a mail account, Nextcloud or Talk
+/// only its id and source.
 fn item_for_remote(item: &Item) -> Value {
-    if from_mail(item) {
+    if held_back(item) {
         return json!({ "id": item.id, "source": item.source.key(), "withheld": WITHHELD });
     }
     serde_json::to_value(item).unwrap_or(Value::Null)
@@ -332,6 +339,33 @@ mod tests {
 
         let one = Response::Item { item: item("b2", agent_source(), "Build finished") };
         assert!(!for_model(&Request::GetItem { id: "b2".into() }, &one, Place::Remote).withheld);
+    }
+
+    /// Task E5.2: Nextcloud and Talk stay with local models like mail, GitHub and ntfy go through.
+    #[test]
+    fn nextcloud_and_talk_entries_are_withheld_and_github_and_ntfy_are_not() {
+        let list: Request = serde_json::from_value(json!({"method": "inbox.list_items"})).expect("a list");
+        let cloud = "anna@cloud.example.org";
+        let items = Response::Items {
+            items: vec![
+                item("n1", SourceRef::nextcloud(cloud), "Jonas shared Budget.ods"),
+                item("t1", SourceRef::talk(cloud), "Lena: are you coming?"),
+                item("g1", SourceRef::github("anna-berg"), "Review requested"),
+                item("y1", SourceRef::ntfy("ntfy.sh"), "Backup failed"),
+            ],
+        };
+        let remote = for_model(&list, &items, Place::Remote);
+        assert!(remote.withheld);
+        let text = remote.value.to_string();
+        assert!(!text.contains("Budget") && !text.contains("Lena"), "{text}");
+        assert!(text.contains("Review requested") && text.contains("Backup failed"), "{text}");
+        for (n, id) in ["n1", "t1"].into_iter().enumerate() {
+            assert_eq!(remote.value["items"][n]["withheld"], WITHHELD);
+            assert_eq!(remote.value["items"][n]["id"], id);
+        }
+        assert!(!for_model(&list, &items, Place::Local).withheld);
+        let one = Response::Item { item: item("t1", SourceRef::talk(cloud), "Lena: are you coming?") };
+        assert!(for_model(&Request::GetItem { id: "t1".into() }, &one, Place::Remote).withheld);
     }
 
     /// Task E8.3c: the invitation a mail entry carries is the mail's content and goes with the rest

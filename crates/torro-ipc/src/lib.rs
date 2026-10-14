@@ -992,7 +992,10 @@ pub enum Request {
     //
     // - For a client key the core filters by `api::Rights::inbox_sources` before it reads
     //   anything: an entry of another source behaves as if it did not exist (`not-found`). Hook
-    //   clients (`api::HOOK_CLIENT`) see no source at all (rule 4).
+    //   clients (`api::HOOK_CLIENT`) see no source at all (rule 4). A GitHub entry also needs read
+    //   access to GitHub and its repository among `api::Rights::github_repos` (task E5.2).
+    // - The remote sources (GitHub, Nextcloud, Talk, ntfy, task E5) and mail are filed by the core
+    //   alone; done, a task or an event of such an entry reach the source (`inbox.set_item_done`).
     // - Approvals, account problems and every entry of the source `suite` are changed only by the
     //   app key; any client gets `forbidden` (rule 1, `api::check_item_change`).
     // - Titles and bodies of entries with `untrusted: true` are data from outside the suite, never
@@ -1062,15 +1065,18 @@ pub enum Request {
     /// the entry. A mail entry's task links to its newest mail instead,
     /// `mail:<address>:<Message-ID>` ([`torro_pim::model::Link::mail`], task E8.7a), which outlives
     /// the entry, with a line naming the mail at the end of the description; a mail without a
-    /// Message-ID keeps `inbox:<entry id>`. The entry is done only once the task was saved; a task
-    /// that cannot be saved leaves the entry as it is.
+    /// Message-ID keeps `inbox:<entry id>`; an issue or pull request of GitHub links to it,
+    /// `github:<owner>/<repo>#<n>` (task E5.4). The entry is done only once the task was saved; a
+    /// task that cannot be saved leaves the entry as it is. Done reaches the entry's source as
+    /// `inbox.set_item_done` says.
     ///
     /// The command is granted in the area `inbox` (Write), but it writes a task too, so the core
     /// checks the client's tasks rights itself, in this order: write access in `tasks`
     /// (`forbidden`), then the list (`not-found` when it is hidden, outside the client's
     /// `task_lists` or unknown, as for `tasks.save_todo`), then the entry (`not-found` for an
     /// unknown id or a source the client may not see, `forbidden` for approvals, account problems
-    /// and the suite's entries, rule 1). It waits for a person's approval when the client's
+    /// and the suite's entries, rule 1, and for an entry whose done needs more: write access to
+    /// mail for mail, to GitHub for GitHub). It waits for a person's approval when the client's
     /// `confirm` asks for it on writes ([`Response::Pending`]); the core checks everything again
     /// when it runs. Errors from the server as for `tasks.save_todo` (`unsupported` for a GitHub
     /// filter list, `conflict`, `offline` …).
@@ -1106,10 +1112,11 @@ pub enum Request {
     /// `calendars` or unknown, as for `calendar.save_event`), then the entry as for
     /// `inbox.create_task_from_item` (`not-found`, `forbidden` for approvals, account problems and
     /// the suite's entries, and for a mail entry without write access to mail, since done marks its
-    /// mail read). It waits for a person's approval when the client's `confirm` asks for it on
-    /// writes ([`Response::Pending`]); the title is fixed when asking and the core checks everything
-    /// again when it runs (`conflict` when the entry changed meanwhile). Errors from the server as
-    /// for `calendar.save_event` (`conflict`, `offline` …).
+    /// mail read, and a GitHub entry without write access to GitHub). Done reaches the entry's
+    /// source as `inbox.set_item_done` says. It waits for a person's approval when the client's
+    /// `confirm` asks for it on writes ([`Response::Pending`]); the title is fixed when asking and
+    /// the core checks everything again when it runs (`conflict` when the entry changed
+    /// meanwhile). Errors from the server as for `calendar.save_event` (`conflict`, `offline` …).
     #[serde(rename = "inbox.create_event_from_item")]
     CreateEventFromItem {
         /// The entry's id from `inbox.list_items`.
@@ -1125,7 +1132,10 @@ pub enum Request {
         end: EventTime,
     },
     /// The sources with entries or muted, with their number of open entries and whether they are
-    /// muted, for the sidebar ([`Response::Sources`]); only those the client may see.
+    /// muted, for the sidebar ([`Response::Sources`]); only those the client may see, and of a
+    /// GitHub source only the entries of repositories it may see. A remote source the core knows to
+    /// be quiet for a reason (task E5.2, [`torro_inbox::SourceInfo::health`]) is listed with that
+    /// reason even without entries.
     #[serde(rename = "inbox.list_sources")]
     ListSources,
     /// Reports something to the inbox; answered with [`Response::Posted`].
@@ -1188,6 +1198,13 @@ pub enum Request {
     /// With `dismissed` (task E8.6a, "✕") the core keeps that it was dismissed rather than done, for
     /// the statistics (E8.8); it is done all the same. Answered with [`Response::Item`] as stored;
     /// `not-found`, `forbidden` (rule 1).
+    ///
+    /// Done reaches the entry's source, in the background once it is stored (task E5.2): a mail
+    /// entry's mail is marked read (needs write access to mail, task E4.1), a GitHub entry's
+    /// notification thread is marked done on GitHub (needs write access to GitHub, else
+    /// `forbidden`), a Nextcloud entry's notifications are deleted, a Talk conversation is marked
+    /// read; ntfy is not told. Checked before an approval and when the command runs. `done: false`
+    /// never reaches the source, nor do snoozing, lanes, hiding and muting.
     #[serde(rename = "inbox.set_item_done")]
     SetItemDone {
         /// The entry's id.
