@@ -205,12 +205,12 @@ impl Draft<'_> {
 impl Request {
     /// The bot a request names, for the core's checks and its audit log: `bots.get_bot`,
     /// `bots.delete_bot` and a `bots.save_bot` that changes one by their `id`, `bots.ask_bot` and
-    /// `assistant.send_message` by their `bot`. `None` for every other request and for a
+    /// `assistant.send_message` and `assistant.confirm_bot` by their `bot`. `None` for every other request and for a
     /// `bots.save_bot` that makes a new one.
     pub fn bot(&self) -> Option<&str> {
         match self {
             Request::GetBot { id } | Request::DeleteBot { id } | Request::SaveBot { id: Some(id), .. } => Some(id),
-            Request::AskBot { bot, .. } => Some(bot),
+            Request::AskBot { bot, .. } | Request::ConfirmBot { bot, .. } => Some(bot),
             Request::SendMessage { bot, .. } => bot.as_deref(),
             _ => None,
         }

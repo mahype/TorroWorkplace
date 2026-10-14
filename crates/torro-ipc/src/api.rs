@@ -1014,6 +1014,7 @@ impl Request {
             Request::ListMemories => &LIST_MEMORIES,
             Request::Remember { .. } => &REMEMBER,
             Request::Forget { .. } => &FORGET,
+            Request::ConfirmBot { .. } => &CONFIRM_BOT,
             Request::ListBots => &LIST_BOTS,
             Request::GetBot { .. } => &GET_BOT,
             Request::SaveBot { .. } => &SAVE_BOT,
@@ -1161,6 +1162,7 @@ pub static CATALOGUE: &[&Command] = &[
     &LIST_MEMORIES,
     &REMEMBER,
     &FORGET,
+    &CONFIRM_BOT,
     &LIST_BOTS,
     &GET_BOT,
     &SAVE_BOT,
@@ -2344,6 +2346,19 @@ static FORGET: Command = Command {
                   the person asks to forget something. Usually waits for the person's approval.",
 };
 
+// Write, app key only (`docs/api.md`, "Was nie nach außen geht"): the person's yes to the assistant's
+// proposal to ask a bot (task B.2). An agent that could send it would confirm its own proposals, so
+// it is never a tool and no right opens it.
+static CONFIRM_BOT: Command = Command {
+    name: "assistant.confirm_bot",
+    area: Area::Assistant,
+    access: Access::Write,
+    mcp: Mcp::Never,
+    description: "Confirms for the person that the assistant may ask the bot `bot` in its conversation \
+                  `conversation`, after it proposed the bot by name: the assistant's next ask_bot for that bot \
+                  there runs, once. Only the app key may use it: a confirmation is the person's, never an agent's.",
+};
+
 // Bots (task B.1, `docs/assistent.md` "Bots", "Drei Wege"). Off for every client unless a person
 // switches the area on, also in *Full access* (`Area::in_templates`); a bot's client never uses
 // these, the assistant's own only those of `allowed_by_kind` (`loops_back`).
@@ -2392,7 +2407,9 @@ static DELETE_BOT: Command = Command {
 };
 
 // Write: it starts a run of the bot, which then works with the bot's own rights (that is why the
-// area is off by default).
+// area is off by default). The assistant's own ask (task B.2) is the core's: only when the person
+// named the bot or confirmed it, with what both clients may; its model hears that in the answer.
+// The description stays about the API, for every agent.
 static ASK_BOT: Command = Command {
     name: "bots.ask_bot",
     area: Area::Bots,
@@ -2659,6 +2676,7 @@ mod tests {
             Request::ListMemories,
             Request::Remember { text: "Anna works in sales.".into(), replaces: None, local_only: false },
             Request::Forget { id: "1a2b3c4d".into() },
+            Request::ConfirmBot { conversation: "0123456789abcdef".into(), bot: "1a2b3c4d".into() },
             Request::ListBots,
             Request::GetBot { id: "1a2b3c4d".into() },
             Request::SaveBot {
@@ -2787,6 +2805,8 @@ mod tests {
                         // Point 6: the microphone. Switching voice on through settings.set_setting
                         // is kept back by value (`the_microphone_is_switched_on_by_people_only`).
                         | "settings.test_voice"
+                        // Point 3: a person's yes, here to the assistant asking a bot (task B.2).
+                        | "assistant.confirm_bot"
                 );
             assert_eq!(command.mcp == Mcp::Never, kept_back, "{}", command.name);
             // Only the app key may manage clients, so all of their commands are admin commands.

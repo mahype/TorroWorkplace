@@ -1461,6 +1461,19 @@ pub enum Request {
         /// The note's id from `assistant.list_memories`.
         id: String,
     },
+    /// The person confirms in the assistant's conversation `conversation` that the assistant may
+    /// ask the bot `bot` (task B.2): the assistant proposed it by name, the person said yes in the
+    /// chat ([`Response::Ok`]). It allows the assistant's next `bots.ask_bot` for that bot in that
+    /// conversation, once; it is kept in the core's memory only. App key only and never an MCP tool:
+    /// a confirmation comes from the person, never from an agent. `not-found` for an unknown
+    /// conversation or bot, `error` for a conversation with a bot rather than the assistant.
+    #[serde(rename = "assistant.confirm_bot")]
+    ConfirmBot {
+        /// The assistant's conversation (not one with a bot).
+        conversation: String,
+        /// The bot's id.
+        bot: String,
+    },
 
     // Bots (task B.1, `docs/assistent.md` "Bots"; wire types in [`bots`]). The core keeps every bot
     // in `<config>/assistant/bots/<id>/` (folder 0700, files 0600) with a client of its own (kind

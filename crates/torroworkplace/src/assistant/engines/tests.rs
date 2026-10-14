@@ -142,6 +142,8 @@ async fn ask(setup: &Setup, conversation: Option<&str>, text: &str, without: Vec
         text: text.into(),
         without,
         bot: None,
+        on_behalf: None,
+        person: false,
     };
     match setup.assistant.send(message, EngineKind::Agent, chrono::Utc::now()).await {
         Response::Conversation { conversation, .. } => conversation.id,

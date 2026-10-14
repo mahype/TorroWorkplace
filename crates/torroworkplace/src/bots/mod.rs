@@ -17,7 +17,7 @@
 //! - **Rights** are the core's (`crate::core::Core::handle_client`): a bot's client never sends a
 //!   `bots` or `assistant` command (`torro_ipc::api::loops_back`); the assistant's own client lists
 //!   bots, proposes a new one (always with a person's approval) and asks one only when
-//!   [`assistant_may_ask`] says so.
+//!   [`assistant_may_ask`] says so (task B.2): then the bot runs with what both clients may.
 //!
 //! What goes to a client never names a path; the core's log does.
 
@@ -44,18 +44,51 @@ pub fn folder(assistant_config: &std::path::Path) -> PathBuf {
     assistant_config.join("bots")
 }
 
-/// Whether the assistant's own client may ask a bot with `request` (`bots.ask_bot`) now.
+/// Whether the assistant may ask the bot named `name` now (task B.2): only when the person's last
+/// message in the assistant's conversation (`last_message`; `None` when it has none) names the bot
+/// ([`names_bot`]), or the person confirmed the assistant's proposal of this bot in that
+/// conversation (`confirmed`, from `assistant.confirm_bot`, app key only, counted once by the
+/// caller). Otherwise the assistant must propose the bot by name instead.
 ///
-/// **Task B.2 fills this in:** only when the person's last message in the assistant's conversation
-/// names the bot (any case, also "the travel planner"), or the person confirmed the assistant's
-/// proposal in the chat (`assistant.confirm_bot`, app key only). Then the bot runs with what both
-/// clients may (their rights in common) and the conversation's switched-off areas. Until B.2 it is
-/// never: the core answers `forbidden`, so nothing is open in between. Only the core calls it, for
-/// a request of the assistant's own client that its kind already admits
-/// (`torro_ipc::api::allowed_by_kind`).
-pub fn assistant_may_ask(request: &Request) -> bool {
-    let _ = request;
-    false
+/// Only the assistant calls it ([`crate::assistant::Assistant::delegate`]), for a `bots.ask_bot` of
+/// its own client that the core admitted with the conversation it answers in. Without that
+/// conversation (the assistant's key over the API) the core refuses the ask anyway.
+pub fn assistant_may_ask(last_message: Option<&str>, name: &str, confirmed: bool) -> bool {
+    confirmed || last_message.is_some_and(|text| names_bot(text, name))
+}
+
+/// The articles a bot's name may start with or be named with ("the travel planner", "den
+/// Reiseplaner"): left out of the name before it is looked for.
+const ARTICLES: &[&str] =
+    &["the", "a", "an", "der", "die", "das", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer", "eines"];
+
+/// The endings a word of the name may have in the text ("des Reiseplaners", "the travel planners",
+/// "dem Reiseplaner"): German and English inflection, kept simple.
+const ENDINGS: &[&str] = &["", "s", "n", "e", "en", "es", "er", "ns"];
+
+/// Whether `text` names the bot `name`: its words (without a leading article) follow each other in
+/// `text`, ignoring case and punctuation, each as it is or with a simple ending ([`ENDINGS`]). A
+/// name of nothing but an article or punctuation is never named.
+pub fn names_bot(text: &str, name: &str) -> bool {
+    let mut wanted = words(name);
+    if wanted.len() > 1 && ARTICLES.contains(&wanted[0].as_str()) {
+        wanted.remove(0);
+    }
+    if wanted.is_empty() || (wanted.len() == 1 && ARTICLES.contains(&wanted[0].as_str())) {
+        return false;
+    }
+    let said = words(text);
+    said.windows(wanted.len()).any(|window| {
+        window
+            .iter()
+            .zip(&wanted)
+            .all(|(word, part)| word.strip_prefix(part.as_str()).is_some_and(|ending| ENDINGS.contains(&ending)))
+    })
+}
+
+/// The words of `text` in lower case: runs of letters and digits.
+fn words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric()).filter(|word| !word.is_empty()).map(str::to_lowercase).collect()
 }
 
 /// The bots, on disk.

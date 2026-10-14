@@ -1110,7 +1110,8 @@ impl PimService {
             | Request::GetBot { .. }
             | Request::SaveBot { .. }
             | Request::DeleteBot { .. }
-            | Request::AskBot { .. } => return None,
+            | Request::AskBot { .. }
+            | Request::ConfirmBot { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

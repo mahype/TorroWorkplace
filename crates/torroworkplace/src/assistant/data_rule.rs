@@ -120,9 +120,10 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
 }
 
 /// Whether the command `name` (a catalogue name) reads mail content or may: every `mail.*` and
-/// `inbox.*` command. An answer after one in the same turn may retell a mail.
+/// `inbox.*` command, and asking a bot (task B.2: the bot may have read mail, and the assistant's
+/// tool line does not keep what it read). An answer after one in the same turn may retell a mail.
 pub fn reads_mail(name: &str) -> bool {
-    name.starts_with("mail.") || name.starts_with("inbox.")
+    name.starts_with("mail.") || name.starts_with("inbox.") || name == "bots.ask_bot"
 }
 
 /// An inbox entry from a mail account is mail content.

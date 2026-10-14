@@ -304,7 +304,10 @@ impl Running {
                 without.push(*area);
             }
         }
-        let Some(lent) = host.lend_as(&actor, &self.job.engine, &without) else { return Err(no_client()) };
+        // Lent for this conversation (task B.2): the core then knows where the agent asks a bot from,
+        // and for a bot that runs for the assistant, what both clients may.
+        let lent = host.lend_in(&actor, &self.job.conversation, &self.job.engine, &without);
+        let Some(lent) = lent else { return Err(no_client()) };
         let areas = allowed_areas(actor.kind(), &client.rights, &without);
         // The personality and the memory (task C.10); the prompt keeps the notes marked
         // `local_only` from the agent, which runs elsewhere. A bot has its own personality and no
@@ -443,11 +446,12 @@ impl Running {
 /// The areas a client of `kind` (the assistant's or a bot's) has tools in, without `without`: what
 /// the prompt names.
 fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area]) -> Vec<Area> {
-    // The memory is the assistant's own, not an area the person granted (task C.10).
+    // The memory (task C.10) and the bots (task B.2) are the assistant's own, not areas the person
+    // granted.
     let mut areas: Vec<Area> = tools::allowed_for(kind, Some(rights), without)
         .iter()
         .map(|tool| tool.command.area)
-        .filter(|area| *area != Area::Assistant)
+        .filter(|area| !matches!(area, Area::Assistant | Area::Bots))
         .collect();
     areas.sort();
     areas.dedup();
