@@ -525,19 +525,59 @@ fn area_detail(area: Area) -> &'static str {
 
 /// The line under an area of the section "Access" in `rights`: what applies.
 ///
-/// - off: what the area holds ("Calendars and events"), or "Admin commands allowed" while its
-///   admin switch is on in the control centre (the editor keeps it when the level changes),
+/// - off: what the area holds ("Calendars and events"); while its admin switch is on in the
+///   control centre (the editor keeps it when the level changes) what that allows instead
+///   ("Mutes sources"),
 /// - a selection: "All calendars", "2 of 3 calendars" (counting what exists in `present`), "No
 ///   calendar"; GitHub "3 repositories" or "No repositories · choose in Torro Workplace",
 /// - mail from "Write" on adds sending: "1 of 2 mail accounts · sending: never",
-/// - an area without a selection: what it holds.
+/// - an area without a selection: what it holds,
+/// - and with the admin switch on, what it allows at the end: "All sources · mutes sources".
 pub fn detail(area: Area, rights: &Rights, present: &Present) -> String {
     let held = rights.area(area);
+    let admin = held.admin.then(|| admin_words(area));
     if held.level == Level::NoAccess {
-        return if held.admin { tr("Admin commands allowed") } else { area_detail(area) }.to_owned();
+        return match admin {
+            Some(words) => capitalized(words),
+            None => area_detail(area).to_owned(),
+        };
     }
+    let mut parts = vec![reach(area, rights, present)];
+    if area == Area::Mail && held.level >= Level::Write {
+        parts.push(
+            match rights.outbound {
+                Outbound::Never => tr("sending: never"),
+                Outbound::WithApproval => tr("sending: asks each time"),
+                Outbound::Free => tr("sending: always"),
+            }
+            .to_owned(),
+        );
+    }
+    parts.extend(admin.map(str::to_owned));
+    parts.join(" · ")
+}
+
+/// What the admin switch of `area` allows, in a few words after a line ("mutes sources"); the
+/// control centre names the same switch ("Mute sources and keep rules").
+fn admin_words(area: Area) -> &'static str {
+    match area {
+        Area::Inbox => tr("mutes sources"),
+        Area::Accounts => tr("connects accounts"),
+        Area::Settings => tr("changes settings"),
+        _ => tr("admin commands"),
+    }
+}
+
+/// `words` with a capital first letter, to stand alone on a line.
+fn capitalized(words: &str) -> String {
+    let mut chars = words.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// What an area that is on reaches: its selection in words, or what it holds.
+fn reach(area: Area, rights: &Rights, present: &Present) -> String {
     let Some(selection) = rights.selection(area) else { return area_detail(area).to_owned() };
-    let reach = match (area, selection) {
+    match (area, selection) {
         (Area::Github, Selection::All) => tr("All repositories").to_owned(),
         (Area::Github, Selection::Only(names)) => match names.len() {
             0 => tr("No repositories · choose in Torro Workplace").to_owned(),
@@ -545,16 +585,7 @@ pub fn detail(area: Area, rights: &Rights, present: &Present) -> String {
             n => trf("{n} repositories", &[("n", &n)]),
         },
         (_, selection) => counted(area, selection, present.of(area)),
-    };
-    if area != Area::Mail || held.level < Level::Write {
-        return reach;
     }
-    let sending = match rights.outbound {
-        Outbound::Never => tr("sending: never"),
-        Outbound::WithApproval => tr("sending: asks each time"),
-        Outbound::Free => tr("sending: always"),
-    };
-    format!("{reach} · {sending}")
 }
 
 /// "All calendars", "No calendar" or "{n} of {m} calendars" for the selection of `area`, `n`
@@ -1000,10 +1031,24 @@ mod tests {
         let mut stored = Rights::none();
         stored.areas.insert(Area::Inbox, AreaRights { level: Level::NoAccess, admin: true });
         let present = present();
-        assert_eq!(detail(Area::Inbox, &stored, &present), tr("Admin commands allowed"));
+        let alone = detail(Area::Inbox, &stored, &present);
+        assert_eq!(alone.to_lowercase(), tr("mutes sources").to_lowercase());
+        assert!(alone.starts_with(|c: char| c.is_uppercase()), "stands alone: {alone}");
         let mut access = BotAccess::new(stored);
         access.set_level(Area::Inbox, Level::Read);
-        assert!(access.shown(&present).area(Area::Inbox).admin, "the switch stays, as in the control centre");
+        let shown = access.shown(&present);
+        assert!(shown.area(Area::Inbox).admin, "the switch stays, as in the control centre");
+        assert_eq!(
+            detail(Area::Inbox, &shown, &present),
+            format!("{} · {}", trf("{n} of {m} sources", &[("n", &2), ("m", &2)]), tr("mutes sources")),
+            "on with the switch: both"
+        );
+        let mut settings = Rights::none();
+        settings.areas.insert(Area::Settings, AreaRights { level: Level::Read, admin: true });
+        assert_eq!(
+            detail(Area::Settings, &settings, &present),
+            format!("{} · {}", tr("Settings of the suite"), tr("changes settings"))
+        );
     }
 
     #[test]

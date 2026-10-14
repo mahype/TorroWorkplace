@@ -133,6 +133,9 @@ pub const SEARCH: &str = "assistant-search";
 pub const BOT_NAME: &str = "assistant-bot-name";
 /// The id of the bot editor's scrolling form: a "Save" that finds a problem goes to its top.
 pub const BOT_FORM: &str = "assistant-bot-form";
+/// The id of the bot editor's section "Access" (task B.5): the demo state `--open bot-access`
+/// scrolls the form to it.
+pub const BOT_ACCESS: &str = "assistant-bot-access";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
 /// The control centre's page "Assistant" (task C.6): what the assistant may use.
@@ -690,7 +693,7 @@ impl App {
                 self.size = size;
                 // The demo state for screenshots keeps the editor at its section "Access" in every size.
                 if self.launch.open == Some(Open::BotAccess) && self.bot_draft.is_some() {
-                    return operation::snap_to(BOT_FORM, scrollable::RelativeOffset::END);
+                    return bots::scroll_to_access();
                 }
             }
             Message::Tick => {

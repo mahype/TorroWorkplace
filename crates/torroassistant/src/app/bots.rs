@@ -10,8 +10,11 @@
 //! editor close. When the access cannot be set, the bot is saved anyway: the editor stays open and
 //! says so, and "Save" tries again.
 
-use iced::Task;
+use iced::advanced::widget::operation::{self, Outcome, scrollable::AbsoluteOffset};
+use iced::advanced::widget::{Id, Operation};
+use iced::{Rectangle, Task, Vector};
 use torro_core::i18n::tr;
+use torro_gui::theme::space;
 use torro_ipc::bots::{Bot, BotSummary};
 use torro_ipc::{ClientInfo, Request, Response};
 
@@ -143,10 +146,8 @@ impl App {
                 if self.launch.open != Some(Open::BotAccess) {
                     return read;
                 }
-                // The demo state for screenshots: the form at its end, where "Access" is.
-                let end =
-                    iced::widget::operation::snap_to(super::BOT_FORM, iced::widget::operation::RelativeOffset::END);
-                Task::batch([read, end])
+                // The demo state for screenshots: the form at its section "Access".
+                Task::batch([read, scroll_to_access()])
             }
             Err(refusal) => {
                 self.note_failure(tr("Couldn't open the bot."), &refusal);
@@ -394,6 +395,52 @@ fn bots_of(response: Response) -> Result<Vec<BotSummary>, Refusal> {
     match response {
         Response::Bots { bots } => Ok(bots),
         other => Err(Refusal::unexpected(&other)),
+    }
+}
+
+/// Scrolls the bot form so its section "Access" ([`super::BOT_ACCESS`]) stands at the top, with
+/// the form's own margin above it: for the demo state `--open bot-access`. Iced scrolls only by
+/// offsets, so the operation finds the form and the section in the layout first.
+pub(super) fn scroll_to_access() -> Task<Message> {
+    iced::advanced::widget::operate(ToAccess { form: None, access: None })
+}
+
+/// The operation of [`scroll_to_access`]: the top of the form's content and of the section.
+struct ToAccess {
+    form: Option<f32>,
+    access: Option<f32>,
+}
+
+impl<T: 'static> Operation<T> for ToAccess {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation<T>)) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: Rectangle) {
+        if id == Some(&Id::new(super::BOT_ACCESS)) {
+            self.access = Some(bounds.y);
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&Id>,
+        _bounds: Rectangle,
+        content: Rectangle,
+        _translation: Vector,
+        _state: &mut dyn operation::Scrollable,
+    ) {
+        if id == Some(&Id::new(super::BOT_FORM)) {
+            self.form = Some(content.y);
+        }
+    }
+
+    fn finish(&self) -> Outcome<T> {
+        let (Some(form), Some(access)) = (self.form, self.access) else { return Outcome::None };
+        // The children of a scrollable are laid out unscrolled, so the distance is the offset.
+        let y = (access - form - space::xl()).max(0.0);
+        let to = operation::scrollable::scroll_to(Id::new(super::BOT_FORM), AbsoluteOffset { x: None, y: Some(y) });
+        Outcome::Chain(Box::new(to))
     }
 }
 

@@ -28,7 +28,7 @@ use torro_ipc::assistant::AVATARS;
 use torro_ipc::bots::{BotSummary, MAX_INSTRUCTIONS_CHARS, MAX_PERSONALITY_CHARS, MAX_SKILL_CHARS, MAX_SKILLS};
 
 use super::{Anchors, avatar, avatar_icon, header_avatar, prompt_state, row_title_room, tinted};
-use crate::app::{App, BOT_FORM, BOT_NAME, Menu, Message};
+use crate::app::{App, BOT_ACCESS, BOT_FORM, BOT_NAME, Menu, Message};
 use crate::bots::{self, AccessNote, Asked, BotAccess, BotDraft, DraftEdit, Template, editor_text};
 use crate::chat;
 
@@ -370,18 +370,31 @@ impl App {
     }
 
     /// The section "Access" (task B.5, [`BotAccess`]): a row per area a bot can be given, with what
-    /// applies under its name ([`bots::detail`]) and the levels the area offers, then "Ask first";
-    /// under it what only the control centre sets, with the link there. While the bot's rights are
-    /// read a calm "Loading …", and a line when they could not be.
+    /// applies under its name ([`bots::detail`]) and the levels the area offers; then "Ask first" in
+    /// a group "Approval" of its own, as on the control centre's rights page; then what only the
+    /// control centre sets, with the link there. While the bot's rights are read a calm
+    /// "Loading …", and a line when they could not be. The whole section is the container
+    /// [`BOT_ACCESS`], so the demo state `--open bot-access` can scroll to it.
     fn access_section<'a>(&'a self, draft: &'a BotDraft) -> Element<'a, Message> {
-        let group: Element<'a, Message> = match &draft.access {
+        let groups: Element<'a, Message> = match &draft.access {
             Some(access) => {
-                let rows = access_rows(access, &self.known.present());
-                let footer = tr("Write includes reading, Full also deletes and overwrites.");
+                let (areas, confirm) = access_rows(access, &self.known.present());
                 responsive(move |size| {
-                    let column = control_column(&rows, size.width);
-                    let shown = rows.iter().map(|line| line.view(column)).collect();
-                    widgets::group(tr("Access"), shown, Some(footer.to_owned()))
+                    let column = control_column(areas.iter().chain([&confirm]), size.width);
+                    let levels = widgets::group(
+                        tr("Access"),
+                        areas.iter().map(|line| line.view(column)).collect(),
+                        Some(tr("Write includes reading, Full also deletes and overwrites.").to_owned()),
+                    );
+                    let approval = widgets::group(
+                        tr("Approval"),
+                        vec![confirm.view(column)],
+                        Some(
+                            tr("The agent waits until you allow it in Approvals. Admin commands always wait.")
+                                .to_owned(),
+                        ),
+                    );
+                    column![levels, approval].spacing(layout::section_gap()).into()
                 })
                 .height(Length::Shrink)
                 .into()
@@ -399,16 +412,17 @@ impl App {
         };
         let words = typo::text(
             typo::meta(),
-            tr("Which calendars, lists, repositories, sources and mail accounts it sees, sending mail and admin commands are set in Torro Workplace."),
+            tr("Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen in Torro Workplace."),
         )
         .style(theme::text_2)
         .wrapping(Wrapping::WordOrGlyph);
         let open = draft.id.clone().map(Message::BotAccess);
         let link =
             widgets::text_button(Some(Icon::ArrowUpRight), tr("More in Torro Workplace…"), style::button::ghost, open);
-        // Moved left by its own padding, so its word stands on the form's axis.
+        // Moved left by its own padding, so its icon stands on the form's axis.
         let link = row![Space::new(), link].spacing(-style::button_padding().left);
-        column![group, column![words, link].spacing(space::xs())].spacing(layout::item_gap()).into()
+        let section = column![groups, column![words, link].spacing(space::xs())].spacing(layout::section_gap());
+        container(section).id(BOT_ACCESS).width(Fill).into()
     }
 
     /// The engine and model, chosen in the picker; without any engine, where to add one.
@@ -519,7 +533,7 @@ fn skills(draft: &BotDraft) -> Element<'_, Message> {
 #[derive(Debug, Clone)]
 struct AccessRow {
     label: &'static str,
-    detail: String,
+    detail: Option<String>,
     options: Vec<(&'static str, Message)>,
     active: usize,
 }
@@ -530,12 +544,13 @@ impl AccessRow {
     fn view<'a>(&self, column: Option<f32>) -> Element<'a, Message> {
         let control = widgets::segmented(self.options.clone(), self.active);
         match column {
-            Some(slot) => widgets::group_row(self.label, Some(self.detail.clone()), container(control).width(slot)),
+            Some(slot) => widgets::group_row(self.label, self.detail.clone(), container(control).width(slot)),
             None => {
-                let lines = column![
-                    typo::text(typo::body(), self.label),
-                    typo::text(typo::meta(), self.detail.clone()).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
-                ];
+                let mut lines = column![typo::text(typo::body(), self.label)];
+                if let Some(detail) = &self.detail {
+                    let detail = typo::text(typo::meta(), detail.clone()).style(theme::text_2);
+                    lines = lines.push(detail.wrapping(Wrapping::WordOrGlyph));
+                }
                 container(column![lines, control].spacing(space::s()))
                     .width(Fill)
                     .padding([space::m(), space::l()])
@@ -565,16 +580,16 @@ fn confirm_options() -> [(&'static str, Confirm); 3] {
 }
 
 /// The rows of the section: an area per row ([`BotAccess::areas`]) with the levels it offers
-/// (`api::levels`), the one shown chosen (`api::active_level`), then "Ask first".
-fn access_rows(access: &BotAccess, present: &bots::Present) -> Vec<AccessRow> {
+/// (`api::levels`), the one shown chosen (`api::active_level`); and the row "Ask first".
+fn access_rows(access: &BotAccess, present: &bots::Present) -> (Vec<AccessRow>, AccessRow) {
     let rights = access.shown(present);
-    let mut rows: Vec<AccessRow> = BotAccess::areas()
+    let rows: Vec<AccessRow> = BotAccess::areas()
         .map(|area| {
             let offered = api::levels(area);
             let active = api::active_level(&offered, rights.area(area).level);
             AccessRow {
                 label: chat::area_name(area),
-                detail: bots::detail(area, &rights, present),
+                detail: Some(bots::detail(area, &rights, present)),
                 options: offered
                     .into_iter()
                     .map(|level| (level_label(level), Message::Draft(DraftEdit::Level(area, level))))
@@ -584,13 +599,13 @@ fn access_rows(access: &BotAccess, present: &bots::Present) -> Vec<AccessRow> {
         })
         .collect();
     let options = confirm_options();
-    rows.push(AccessRow {
+    let confirm = AccessRow {
         label: tr("Ask first"),
-        detail: tr("The bot waits until you allow it").to_owned(),
+        detail: None,
         active: options.iter().position(|(_, confirm)| *confirm == rights.confirm).unwrap_or(0),
         options: options.map(|(label, confirm)| (label, Message::Draft(DraftEdit::Confirm(confirm)))).to_vec(),
-    });
-    rows
+    };
+    (rows, confirm)
 }
 
 /// The estimated width of a segmented control with `labels` (`widgets::segmented`): each label in
@@ -606,14 +621,16 @@ fn segmented_width(labels: &[&str]) -> f32 {
 /// wide as the widest control at the right of every row, while the longest name and line fit
 /// beside it; `None` when they would not (a narrow window), then each control stands under its
 /// name. Decided by what fits, so longer translations hold too.
-fn control_column(rows: &[AccessRow], width: f32) -> Option<f32> {
+fn control_column<'r>(rows: impl Iterator<Item = &'r AccessRow> + Clone, width: f32) -> Option<f32> {
     let slot = rows
-        .iter()
+        .clone()
         .map(|line| segmented_width(&line.options.iter().map(|(label, _)| *label).collect::<Vec<_>>()))
         .fold(0.0, f32::max);
     let text = rows
-        .iter()
-        .flat_map(|line| [typo::text_width(line.label, typo::body()), typo::text_width(&line.detail, typo::meta())])
+        .flat_map(|line| {
+            let detail = line.detail.as_deref().map_or(0.0, |detail| typo::text_width(detail, typo::meta()));
+            [typo::text_width(line.label, typo::body()), detail]
+        })
         .fold(0.0, f32::max);
     // A row of a group: 16 at both sides and 16 between the text and the control.
     (width >= 3.0 * space::l() + text + slot).then_some(slot)

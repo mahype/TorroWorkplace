@@ -3306,7 +3306,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("write plain text mail", "E-Mails als reinen Text schreiben"),
     ("{name} ({keys})", "{name} ({keys})"),
     // A bot's access in the bot editor (B.5)
-    ("Admin commands allowed", "Verwaltungsbefehle erlaubt"),
     ("All calendars", "Alle Kalender"),
     ("No calendar", "Kein Kalender"),
     ("{n} of {m} calendars", "{n} von {m} Kalendern"),
@@ -3323,16 +3322,19 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("sending: never", "Senden: nie"),
     ("sending: asks each time", "Senden: fragt jedes Mal"),
     ("sending: always", "Senden: immer"),
-    ("The bot waits until you allow it", "Der Bot wartet, bis du es erlaubst"),
     (
         "Couldn't read the bot's access. You can set it in Torro Workplace.",
         "Der Zugriff des Bots konnte nicht gelesen werden. Du kannst ihn in Torro Workplace festlegen.",
     ),
-    (
-        "Which calendars, lists, repositories, sources and mail accounts it sees, sending mail and admin commands are set in Torro Workplace.",
-        "Welche Kalender, Listen, Repositorys, Quellen und E-Mail-Konten er sieht, das Senden von Mails und Verwaltungsbefehle stellst du in Torro Workplace ein.",
-    ),
     ("More in Torro Workplace…", "Mehr in Torro Workplace…"),
+    ("mutes sources", "schaltet Quellen stumm"),
+    ("connects accounts", "verbindet Konten"),
+    ("changes settings", "ändert Einstellungen"),
+    ("admin commands", "Verwaltungsbefehle"),
+    (
+        "Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen in Torro Workplace.",
+        "Kalender, Listen, Repositorys, Quellen, E-Mail-Konten, Senden und Verwaltungsbefehle wählst du in Torro Workplace.",
+    ),
     (
         "Bot saved, but its access couldn't be set.",
         "Bot gespeichert, aber sein Zugriff konnte nicht festgelegt werden.",
