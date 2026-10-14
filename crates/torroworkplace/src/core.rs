@@ -275,8 +275,16 @@ const INBOX_LINK: &str = "inbox:";
 /// - `link`: for a mail entry whose mail has a Message-ID (`origin`, task E8.7a) the mail's
 ///   `mail:<address>:<Message-ID>`, which stays valid after the entry is gone and the mail moved,
 ///   with the readable line "From mail: …" ([`crate::mail::inbox_feed::from_mail_line`]) after the
-///   text; else `inbox:<entry id>` ([`INBOX_LINK`]), the way back to the entry while the inbox
-///   keeps it (done entries go after 30 days). Apps that do not know a form leave it alone.
+///   text; for a GitHub entry about an issue or a pull request the item's
+///   `github:<owner>/<repo>#<n>` ([`github_link`], task E5.4), which the task list keeps in step
+///   with GitHub like any link task (G.6b); else `inbox:<entry id>` ([`INBOX_LINK`]), the way back
+///   to the entry while the inbox keeps it (done entries go after 30 days). Apps that do not know
+///   a form leave it alone.
+///
+/// A client reaches a GitHub entry only with read access to GitHub and the entry's repository
+/// (`inbox::Scope`), so the GitHub link never names a repository outside its reach: without them
+/// the entry is `not-found` before this is asked ([`Inbox::entry_for_task`]), and with read but no
+/// write access to GitHub `forbidden`, since done marks the notification done.
 ///
 /// New: no `uid`, `href` or `etag`; the server's client gives it its uid.
 fn task_from_entry(
@@ -304,9 +312,30 @@ fn task_from_entry(
         sort_order: None,
         link: Some(match origin {
             Some(origin) => origin.link,
-            None => torro_pim::model::Link::new(format!("{INBOX_LINK}{}", entry.id)),
+            None => {
+                github_link(entry).unwrap_or_else(|| torro_pim::model::Link::new(format!("{INBOX_LINK}{}", entry.id)))
+            }
         }),
     }
+}
+
+/// The link `github:<owner>/<repo>#<n>` of the issue or pull request a GitHub entry is about (task
+/// E5.4): only for an entry of a GitHub source whose trait `kind` is `issue` or `pull_request`,
+/// whose web page names that item on github.com and whose trait `repo` is the page's repository.
+/// The core built both from the thread's checked parts (`crate::sources`), and they must still
+/// agree. `None` for anything else.
+fn github_link(entry: &torro_inbox::Item) -> Option<torro_pim::model::Link> {
+    use torro_inbox::item::FacetKey;
+    if entry.source.kind != torro_inbox::SourceKind::Github {
+        return None;
+    }
+    let facet = |key| entry.facets.iter().find(|facet| facet.key == key).map(|facet| facet.value.as_str());
+    if !matches!(facet(FacetKey::Kind), Some("issue" | "pull_request")) {
+        return None;
+    }
+    let issue = torro_pim_github::address::issue_ref(&web_link(entry)?)?;
+    let same = facet(FacetKey::Repo).is_some_and(|repo| repo.eq_ignore_ascii_case(&issue.repo));
+    same.then(|| torro_pim::model::Link::github(&issue.repo, issue.number))
 }
 
 /// The entry's web page, when it links to one: the inbox keeps only `http`/`https` links (security
@@ -7642,6 +7671,60 @@ mod tests {
         let marked = trf("Mark {entry} as done", &[("entry", &entry)]);
         assert_eq!(asked.summary, trf("{what} and mark its GitHub notification done", &[("what", &marked)]));
         assert_eq!(settled(&id), 0, "not before the person allowed it");
+    }
+
+    /// Task E5.4: a task made of a GitHub entry about a pull request links to it as
+    /// `github:<owner>/<repo>#<n>`, for whom may reach the entry; any other GitHub entry keeps
+    /// `inbox:<id>`, both with the web page as `url`.
+    #[tokio::test]
+    async fn a_task_of_a_github_entry_links_to_its_pull_request_for_whom_may_reach_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let core = Core { settle_done: record_settle, ..core };
+        let github = torro_inbox::SourceRef::github("anna-berg");
+        let file = |report: &crate::inbox::Remote| crate::inbox::tests::filed_remote(&core.inbox, report, Utc::now());
+        let pull = || crate::inbox::tests::remote(github.clone(), "42", &["42"], Utc::now());
+        let link_of = |response: Response| match response {
+            Response::Todo { todo } => (todo.link.map(|link| link.id), todo.url),
+            other => panic!("expected the task, got {other:?}"),
+        };
+        let page = Some("https://github.com/torro/workplace/pull/42".to_string());
+        let wanted = (Some("github:torro/workplace#42".to_string()), page.clone());
+
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        assert_eq!(link_of(ask(&core, Some(&key), make_task(&file(&pull()), &fake.work)).await), wanted);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        assert_eq!(link_of(ask(&core, Some(&app_key), make_task(&file(&pull()), &fake.work)).await), wanted);
+
+        // Not for a workflow run, nor when the page and the trait `repo` disagree.
+        let mut run = pull();
+        run.facets[0].value = "check_suite".into();
+        let id = file(&run);
+        assert_eq!(
+            link_of(ask(&core, Some(&app_key), make_task(&id, &fake.work)).await),
+            (Some(format!("inbox:{id}")), page)
+        );
+        let mut elsewhere = pull();
+        elsewhere.url = Some("https://github.com/someone/else/pull/42".into());
+        let id = file(&elsewhere);
+        let (link, _) = link_of(ask(&core, Some(&app_key), make_task(&id, &fake.work)).await);
+        assert_eq!(link, Some(format!("inbox:{id}")));
+
+        // Rights: GitHub read only is `forbidden` (done marks the notification done), no GitHub at
+        // all or a repository outside the key's is `not-found`, and no task is written.
+        let made = created_on(&fake);
+        let mut reader = RightsTemplate::FullAccess.rights();
+        reader.areas.insert(Area::Github, AreaRights { level: Level::Read, admin: false });
+        let mut blind = RightsTemplate::FullAccess.rights();
+        blind.areas.insert(Area::Github, AreaRights { level: Level::NoAccess, admin: false });
+        let mut other_repo = RightsTemplate::FullAccess.rights();
+        other_repo.github_repos = Selection::Only(vec!["torro/site".into()]);
+        for (rights, expected) in [(reader, "forbidden"), (blind, "not-found"), (other_repo, "not-found")] {
+            let (_, key) = client(&core, rights).await;
+            let id = file(&pull());
+            assert_eq!(code(&ask(&core, Some(&key), make_task(&id, &fake.work)).await), expected);
+        }
+        assert_eq!(created_on(&fake), made, "nothing written");
     }
 
     /// Task E8.8a: a client asks for the statistics like for the rules, and a removed client takes

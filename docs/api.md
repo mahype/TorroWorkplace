@@ -480,7 +480,16 @@ legt nur die letzten 3 Tage ab, was während des Stummschaltens kam, nie. Ein Ei
 `person`, Spur aus `rules::nextcloud_place`, Link nur auf dem Origin des Kontos. Fehlt eine Id in der Liste, ist sie
 gestrichen; weil Nextcloud höchstens die 25 neuesten liefert, streicht eine volle Liste nur Ids, die neuer sind als ihre
 älteste. 401/403 → `signed_out`, keine Abfrage bis zur neuen Anmeldung; 503 wartet, 429 so lange wie verlangt; ohne App
-`missing_app`. **Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
+`missing_app`. **GitHub** (E5.4, `sources/github.rs`): ein Eintrag je Thread der
+Benachrichtigungen (`GET /notifications`, höchstens im Takt von `X-Poll-Interval`, mindestens 60 s, mit
+`If-Modified-Since`; jede Abfrage reicht nur bis 3 Tage vor der ersten des Kontos); Titel des Themas, kein Text,
+Merkmale `repo`, `reason`, `kind`, `result`, Link nur auf `https://github.com/<owner>/<repo>/…`. Ein Thread, der in
+einer vollständigen Liste fehlt, wurde anderswo gelesen: Eintrag erledigt. Erledigt schickt genau ein `DELETE` je
+Übergang offen → erledigt, Undo keins. Eine stumme Quelle fragt GitHub nicht. `health`: `signed_out` (Token
+abgelehnt, bis zur neuen Anmeldung keine Abfrage), `missing_scope` (Fine-grained-Token oder ohne `notifications`;
+keine Einträge), `offline`. `create_task_from_item` bei Issue und PR: `link.id` `github:<owner>/<repo>#<n>`, sonst
+`inbox:<id>`, immer mit der Web-Seite als `url`; wer den Eintrag nicht sieht (ohne Lesen in `github` oder Repo
+außerhalb), bekommt `not-found`, mit Lesen ohne Schreiben `forbidden`. **Assistent:** Einträge von Nextcloud und Talk sehen entfernte Modelle
 wie Mail nur als Kennung; GitHub und ntfy gehen durch (bis KI.1). Das Protokoll nennt wie immer nur die Kennung des
 Eintrags, nie Titel, Text oder Merkmalswerte.
 
