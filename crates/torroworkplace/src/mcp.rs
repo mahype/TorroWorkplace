@@ -833,6 +833,9 @@ struct ItemsInput {
     /// `newest_first` (the default) or `oldest_first` by the time an entry last changed; urgent
     /// entries come first either way, and `limit` takes the first ones of this order.
     order: Option<Order>,
+    /// `false` leaves out the entries the person dismissed without doing anything ("✕"), `true`
+    /// lists only those. Leave out for both.
+    dismissed: Option<bool>,
 }
 
 /// The lane `inbox_list_items` lists.
@@ -899,7 +902,7 @@ fn ask_permission(input: AskInput) -> Request {
 }
 
 fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, ToolError> {
-    let ItemsInput { lane, source, state, since, limit, order } = input;
+    let ItemsInput { lane, source, state, since, limit, order, dismissed } = input;
     let lane = match lane.unwrap_or(LaneChoice::ForMe) {
         LaneChoice::ForMe => Some(Lane::ForMe),
         LaneChoice::Info => Some(Lane::Info),
@@ -912,7 +915,7 @@ fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, Too
         StateChoice::All => None,
     };
     let since = since.map(|since| instant(time(&since, "since", zone)?, zone, "since")).transpose()?;
-    Ok(Request::ListItems { lane, source, state, since, limit: Some(limit.unwrap_or(INBOX_LIMIT)), order })
+    Ok(Request::ListItems { lane, source, state, since, limit: Some(limit.unwrap_or(INBOX_LIMIT)), order, dismissed })
 }
 
 /// Always a notice: from a client key the core makes every other kind one or refuses it.
@@ -1627,7 +1630,7 @@ mod tests {
     }
 
     fn list_items_request(lane: Option<Lane>, state: Option<StateFilter>, limit: u32) -> Request {
-        Request::ListItems { lane, source: None, state, since: None, limit: Some(limit), order: None }
+        Request::ListItems { lane, source: None, state, since: None, limit: Some(limit), order: None, dismissed: None }
     }
 
     #[test]
@@ -1659,11 +1662,15 @@ mod tests {
                 since: Some(utc("2026-10-13T22:00:00Z")),
                 limit: Some(50),
                 order: None,
+                dismissed: None,
             })
         );
         // Task E8.15: the order goes along as given.
         let oldest = request_for("inbox_list_items", args(json!({"order": "oldest_first"})), &Utc);
         assert!(matches!(oldest, Ok(Request::ListItems { order: Some(Order::OldestFirst), .. })), "{oldest:?}");
+        // Issue #117: done for real only, without what the person dismissed.
+        let real = request_for("inbox_list_items", args(json!({"state": "done", "dismissed": false})), &Utc);
+        assert!(matches!(real, Ok(Request::ListItems { dismissed: Some(false), .. })), "{real:?}");
         let suite = request_for("inbox_list_items", args(json!({"source": {"kind": "suite"}})), &Utc);
         assert!(matches!(suite, Ok(Request::ListItems { source: Some(source), .. }) if source == SourceRef::suite()));
 

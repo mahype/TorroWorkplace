@@ -79,7 +79,7 @@ use torro_inbox::{Item, Kind, Link, SourceKind, SourceRef, State, rules};
 
 use crate::app::{Message, View};
 use crate::keys::Command;
-use crate::{detail, mail};
+use crate::{detail, mail, notifications};
 
 /// What the rows of entries need besides the entries (task E3.9): the same for the list of a view
 /// and for the columns of the overview.
@@ -335,7 +335,10 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
 /// - "Later" (`s`) for every entry that is not done – not for an approval either (task E8.1b, as
 ///   the hub's cards): it waits for yes or no and must not vanish by accident;
 /// - "Hide" (`m`) when the menu "Hide from inbox" has entries for it (`hidable`, from
-///   `App::hide_choices`: never for an approval, and the suite is never muted).
+///   `App::hide_choices`: never for an approval, and the suite is never muted);
+/// - the ✕ "Dismiss" (`x`, issue #117) last, for every entry that may simply go
+///   ([`notifications::dismissable`]: no mail, no approval, nothing done) – as in the hub's "Act now"
+///   and the notifications window; the toast takes it back.
 pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
     let act = |command| Message::Act(item.id.clone(), command);
     let approval = detail::is_approval(item);
@@ -351,6 +354,9 @@ pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
     }
     if hidable {
         actions.push(RowAction::new(Icon::Ellipsis, tr("Hide"), "M", act(Command::Hide)));
+    }
+    if notifications::dismissable(item) {
+        actions.push(RowAction::new(Icon::X, tr("Dismiss"), "X", act(Command::Dismiss)));
     }
     actions
 }
@@ -1419,17 +1425,20 @@ mod tests {
     #[test]
     fn the_action_bar_offers_what_works_for_the_entry() {
         let by_id = |id: &str| demo::sample(now()).into_iter().find(|i| i.id == id).expect("in the sample");
-        let all = [tr("Task"), tr("Done"), tr("Later"), tr("Hide")];
+        let all = [tr("Task"), tr("Done"), tr("Later"), tr("Hide"), tr("Dismiss")];
         assert_eq!(labels(&actions(&by_id("demo-1"), true)), all, "a waiting agent");
         assert!(actions(&by_id("demo-3"), false).is_empty(), "an approval: no task, no done, no later, no hide");
         assert_eq!(labels(&actions(&by_id("demo-5"), true)), all, "the suite's account problem: its own done");
         assert_eq!(labels(&actions(&by_id("demo-11"), true)), [tr("Task"), tr("Reopen"), tr("Hide")], "done: no later");
         let keys: Vec<&str> = actions(&by_id("demo-1"), true).iter().map(|action| action.key).collect();
-        assert_eq!(keys, ["T", "E", "S", "M"], "the keys of the list");
+        assert_eq!(keys, ["T", "E", "S", "M", "X"], "the keys of the list");
+        let sent = actions(&by_id("demo-1"), true).pop().map(|action| action.on_press);
+        assert!(matches!(&sent, Some(Message::Act(id, Command::Dismiss)) if id == "demo-1"), "{sent:?}");
         let mail = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
         let sent: Vec<Message> = actions(&mail, true).into_iter().map(|action| action.on_press).collect();
         assert!(matches!(&sent[0], Message::Act(id, Command::MakeTask) if *id == mail.id));
         assert!(matches!(&sent[3], Message::Act(_, Command::Hide)));
+        assert_eq!(sent.len(), 4, "mail is done or hidden, never dismissed");
     }
 
     #[test]

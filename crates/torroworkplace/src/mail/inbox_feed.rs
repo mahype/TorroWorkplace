@@ -657,7 +657,15 @@ pub(crate) mod tests {
 
     /// Every entry, as the app key lists them.
     fn entries(inbox: &Inbox) -> Vec<Item> {
-        let all = Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
+        let all = Request::ListItems {
+            lane: None,
+            source: None,
+            state: None,
+            since: None,
+            limit: None,
+            order: None,
+            dismissed: None,
+        };
         match inbox.handle(all, None, Utc::now()) {
             Response::Items { items } => items,
             other => panic!("expected items, got {other:?}"),
@@ -913,8 +921,15 @@ pub(crate) mod tests {
         .with_mail(service);
         core.start_mail_feed(Some(accounts_file(dir.path())));
         let listed = || async {
-            let all =
-                Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
+            let all = Request::ListItems {
+                lane: None,
+                source: None,
+                state: None,
+                since: None,
+                limit: None,
+                order: None,
+                dismissed: None,
+            };
             match core.handle(all).await {
                 Response::Items { items } => items,
                 other => panic!("expected items, got {other:?}"),

@@ -375,8 +375,9 @@ fn unexpected(response: Response) -> InboxError {
 impl InboxSource for InboxClient {
     /// `inbox.list_items` with the fields of `filter`; the core sorts, wakes and cuts.
     async fn list_items(&self, filter: ItemFilter) -> Result<Vec<Item>, InboxError> {
-        let ItemFilter { lane, source, state, since, limit, order } = filter;
-        match self.ask(Request::ListItems { lane, source, state, since, limit, order: asked(order) }).await? {
+        let ItemFilter { lane, source, state, since, limit, order, dismissed } = filter;
+        match self.ask(Request::ListItems { lane, source, state, since, limit, order: asked(order), dismissed }).await?
+        {
             Response::Items { items } => Ok(items),
             other => Err(unexpected(other)),
         }
@@ -553,12 +554,13 @@ mod tests {
         match request {
             Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
             // The id names the filter that arrived.
-            Request::ListItems { lane, source, state, since, limit, order } => Response::Items {
+            Request::ListItems { lane, source, state, since, limit, order, dismissed } => Response::Items {
                 items: vec![item(&format!(
-                    "{lane:?}|{}|{state:?}|{}|{limit:?}{}",
+                    "{lane:?}|{}|{state:?}|{}|{limit:?}{}{}",
                     source.map(|s| s.key()).unwrap_or_default(),
                     since.map(|s| s.to_rfc3339()).unwrap_or_default(),
-                    order.map(|order| format!("|{}", order.word())).unwrap_or_default()
+                    order.map(|order| format!("|{}", order.word())).unwrap_or_default(),
+                    dismissed.map(|dismissed| format!("|dismissed={dismissed}")).unwrap_or_default()
                 ))],
             },
             Request::ListSources => Response::Sources {
@@ -783,10 +785,12 @@ mod tests {
             since: Some(at(7)),
             limit: Some(50),
             order: Order::OldestFirst,
+            dismissed: Some(false),
         };
         let items = core.client().list_items(filter).await.expect("listed");
         assert_eq!(items.len(), 1);
-        let said = format!("Some(ForMe)|agent:codex|Some(Open)|{}|Some(50)|oldest-first", at(7).to_rfc3339());
+        let said =
+            format!("Some(ForMe)|agent:codex|Some(Open)|{}|Some(50)|oldest-first|dismissed=false", at(7).to_rfc3339());
         assert_eq!(items[0].id, said);
         let all = core.client().list_items(ItemFilter::default()).await.expect("listed");
         assert_eq!(all[0].id, "None||None||None", "newest first is left out");

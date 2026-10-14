@@ -1345,8 +1345,15 @@ mod tests {
         let entries = || {
             let socket = socket.clone();
             async move {
-                let all =
-                    Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None };
+                let all = Request::ListItems {
+                    lane: None,
+                    source: None,
+                    state: None,
+                    since: None,
+                    limit: None,
+                    order: None,
+                    dismissed: None,
+                };
                 match torro_ipc::client::call(&socket, &all).await {
                     Ok(Response::Items { items }) => items,
                     other => panic!("the app key lists the inbox: {other:?}"),

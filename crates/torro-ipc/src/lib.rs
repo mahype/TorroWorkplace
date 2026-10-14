@@ -1117,6 +1117,12 @@ pub enum Request {
         /// this order.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         order: Option<Order>,
+        /// `false`: leave out the entries dismissed ("✕", `inbox.set_item_done` with `dismissed`,
+        /// issue #117), so a list of done entries shows only what was done for real; `true`: only
+        /// those dismissed. Left out: both. A dismissed entry is always done, and opening it again
+        /// (by hand or by a new report) makes it an entry like any other.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        dismissed: Option<bool>,
     },
     /// One entry with all its text ([`Response::Item`]). `not-found` for an unknown id or an entry
     /// of a source the client may not see.

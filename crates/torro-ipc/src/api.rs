@@ -2011,7 +2011,8 @@ static LIST_ITEMS: Command = Command {
     mcp: Mcp::Tool,
     description: "Lists inbox entries, urgent first, then the most recently updated (`order: oldest_first` for the \
                   oldest first, urgent still on top), filtered by lane (`for_me`, `info`), source, state (`open`, \
-                  `snoozed`, `done`), `since` and `limit`; only sources this key \
+                  `snoozed`, `done`), `since` and `limit`; `dismissed: false` leaves out the entries dismissed without \
+                  doing anything, `true` lists only those; only sources this key \
                   may see, never the person's own (`suite`: approvals, account problems); new mail of a mail \
                   account (source `mail:<address>`) only with read access to mail and that account; GitHub \
                   notifications (`github:<login>`) only with read access to GitHub and the entry's repository. \
@@ -2852,6 +2853,7 @@ mod tests {
                 since: None,
                 limit: Some(50),
                 order: None,
+                dismissed: None,
             },
             Request::GetItem { id: "i1".into() },
             Request::OpenItem { id: "i1".into() },

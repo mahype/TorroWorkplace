@@ -1415,9 +1415,9 @@ fn answer(
         // Security rule 4: a hook's key sits in files the agent reads, so it reads nothing.
         Request::ListItems { .. } if is_hook(client) => Err(Failure::NotFound("no inbox entries for this key".into())),
         Request::GetItem { id } if is_hook(client) => Err(no_item(&id)),
-        Request::ListItems { lane, source, state, since, limit, order } => {
+        Request::ListItems { lane, source, state, since, limit, order, dismissed } => {
             wake_due(db, now)?;
-            let filter = ItemFilter { lane, source, state, since, limit, order: order.unwrap_or_default() };
+            let filter = ItemFilter { lane, source, state, since, limit, order: order.unwrap_or_default(), dismissed };
             Ok(Response::Items { items: list_items(db, &filter, client)? })
         }
         Request::GetItem { id } => {
@@ -1872,6 +1872,10 @@ fn list_items(db: &Connection, filter: &ItemFilter, client: Option<&ClientInfo>)
             StateFilter::Snoozed => "state = 'snoozed'",
             StateFilter::Done => "state = 'done'",
         });
+    }
+    if let Some(dismissed) = filter.dismissed {
+        // Only a done entry keeps the mark (`update_item` clears it on every other state).
+        conditions.push(if dismissed { "dismissed = 1" } else { "dismissed = 0" });
     }
     if let Some(since) = filter.since {
         conditions.push("updated >= ?");
@@ -2705,6 +2709,19 @@ fn repo_column(item: &Item) -> String {
 /// Stores the changed `item` over its row. Owner, thread key, source and `received` never change
 /// after it was created ([`rules::merge`] keeps them).
 fn update_item(db: &Connection, item: &Item) -> Result<(), StoreError> {
+    write_item(db, item)?;
+    // An entry that is no longer done is no longer dismissed either (opened again by hand or by a
+    // new report), so `inbox.list_items` with `dismissed` never hides an open entry, and the next
+    // done counts as what it is (issue #117).
+    if !matches!(item.state, State::Done { .. }) {
+        db.execute("UPDATE items SET dismissed = 0 WHERE id = ?1 AND dismissed = 1", params![item.id])?;
+    }
+    Ok(())
+}
+
+/// The columns of version 2 and the JSON of `item` over its row: [`update_item`] without the mark
+/// `dismissed`, which [`backfill`] needs before [`SCHEMA_V4`] brings that column.
+fn write_item(db: &Connection, item: &Item) -> Result<(), StoreError> {
     let (state, state_at) = state_columns(&item.state);
     db.execute(
         "UPDATE items SET state = ?2, state_at = ?3, data = ?4, lane = ?5, urgent = ?6, updated = ?7 WHERE id = ?1",
@@ -2849,7 +2866,7 @@ fn backfill(db: &Connection) -> Result<(), StoreError> {
     let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
     for data in rows {
         let item: Item = serde_json::from_str(&data?)?;
-        update_item(db, &item)?;
+        write_item(db, &item)?;
     }
     Ok(())
 }
@@ -4198,7 +4215,15 @@ pub(crate) mod tests {
     }
 
     fn all() -> Request {
-        Request::ListItems { lane: None, source: None, state: None, since: None, limit: None, order: None }
+        Request::ListItems {
+            lane: None,
+            source: None,
+            state: None,
+            since: None,
+            limit: None,
+            order: None,
+            dismissed: None,
+        }
     }
 
     /// Files `item` as the core would (E2.1), for the entries no request may create.
@@ -4288,8 +4313,15 @@ pub(crate) mod tests {
         assert_eq!(done.state, State::Done { at: at(8, 5) });
         let listed = |now| {
             let open = Some(StateFilter::Open);
-            let request =
-                Request::ListItems { lane: None, source: None, state: open, since: None, limit: None, order: None };
+            let request = Request::ListItems {
+                lane: None,
+                source: None,
+                state: open,
+                since: None,
+                limit: None,
+                order: None,
+                dismissed: None,
+            };
             items(inbox.handle(request, None, now))
         };
         assert!(listed(at(8, 6)).is_empty());
@@ -4300,6 +4332,44 @@ pub(crate) mod tests {
         inbox.handle(Request::SetItemDone { id: id.clone(), done: true, dismissed: false }, None, at(8, 8));
         posted(inbox.handle(notice("Deploy failed again", Some("deploy")), Some(&script()), at(9, 0)));
         assert_eq!(listed(at(9, 1)).iter().map(|i| (i.id.clone(), i.state)).collect::<Vec<_>>(), [(id, State::New)]);
+    }
+
+    /// Issue #117: a dismissed entry is gone – not open, and not in "Done" when the list leaves the
+    /// dismissed out; asked for, it is still there. Opened again, by hand or by a new report, it is
+    /// an entry like any other.
+    #[test]
+    fn dismissed_entries_leave_the_done_list_that_asks_so() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let gone = posted(inbox.handle(notice("Backup finished", Some("backup")), Some(&script()), at(8, 0)));
+        let done = posted(inbox.handle(notice("Deploy failed", Some("deploy")), Some(&script()), at(8, 1)));
+        inbox.handle(Request::SetItemDone { id: gone.clone(), done: true, dismissed: true }, None, at(8, 2));
+        inbox.handle(Request::SetItemDone { id: done.clone(), done: true, dismissed: false }, None, at(8, 3));
+        let listed = |state, dismissed, now| {
+            let request = Request::ListItems {
+                lane: None,
+                source: None,
+                state,
+                since: None,
+                limit: None,
+                order: None,
+                dismissed,
+            };
+            items(inbox.handle(request, None, now)).into_iter().map(|item| item.id).collect::<Vec<_>>()
+        };
+        let finished = Some(StateFilter::Done);
+        assert!(listed(Some(StateFilter::Open), Some(false), at(8, 4)).is_empty());
+        assert_eq!(listed(finished, Some(false), at(8, 4)), [done.as_str()]);
+        assert_eq!(listed(finished, Some(true), at(8, 4)), [gone.as_str()]);
+        assert_eq!(listed(finished, None, at(8, 4)), [done.as_str(), gone.as_str()]);
+
+        // A new report brings it back as an open entry, which no filter on `dismissed` hides.
+        posted(inbox.handle(notice("Backup finished again", Some("backup")), Some(&script()), at(9, 0)));
+        assert_eq!(listed(Some(StateFilter::Open), Some(false), at(9, 1)), [gone.as_str()]);
+        assert!(listed(None, Some(true), at(9, 1)).is_empty());
+        // Done for real afterwards, it is in "Done".
+        inbox.handle(Request::SetItemDone { id: gone.clone(), done: true, dismissed: false }, None, at(9, 2));
+        assert_eq!(listed(finished, Some(false), at(9, 3)), [gone, done]);
     }
 
     #[test]
@@ -4416,10 +4486,18 @@ pub(crate) mod tests {
             since: None,
             limit: None,
             order: None,
+            dismissed: None,
         };
         assert_eq!(items(inbox.handle(for_me, None, at(9, 0))).into_iter().map(|i| i.id).collect::<Vec<_>>(), ["old"]);
-        let info =
-            |limit| Request::ListItems { lane: None, source: None, state: None, since: None, limit, order: None };
+        let info = |limit| Request::ListItems {
+            lane: None,
+            source: None,
+            state: None,
+            since: None,
+            limit,
+            order: None,
+            dismissed: None,
+        };
         let ordered = items(inbox.handle(info(Some(1)), None, at(9, 0)));
         assert_eq!(ordered[0].id, "old", "urgent first although older");
         let db = Connection::open(&file).expect("opens");
@@ -4443,6 +4521,7 @@ pub(crate) mod tests {
             since: None,
             limit: None,
             order: None,
+            dismissed: None,
         };
         assert!(items(inbox.handle(named, Some(&blind), at(8, 1))).is_empty());
         assert_eq!(inbox.handle(Request::ListSources, Some(&blind), at(8, 1)), Response::Sources { sources: vec![] });
@@ -4665,6 +4744,7 @@ pub(crate) mod tests {
                 since: None,
                 limit: None,
                 order: None,
+                dismissed: None,
             };
             assert_eq!(items(inbox.handle(of_suite, Some(&client), at(8, 1))), vec![]);
             assert_eq!(
@@ -4846,7 +4926,8 @@ pub(crate) mod tests {
                 state: None,
                 since: None,
                 limit: None,
-                order: None
+                order: None,
+                dismissed: None
             }),
             [waiting.as_str(), "newer", "older"]
         );
@@ -4857,7 +4938,8 @@ pub(crate) mod tests {
                 state: None,
                 since: Some(at(8, 1)),
                 limit: Some(1),
-                order: None
+                order: None,
+                dismissed: None
             }),
             ["newer"]
         );
@@ -4870,6 +4952,7 @@ pub(crate) mod tests {
             since: None,
             limit,
             order: Some(Order::OldestFirst),
+            dismissed: None,
         };
         assert_eq!(titles(oldest(None)), [waiting.as_str(), "older", "newer"]);
         assert_eq!(titles(oldest(Some(2))), [waiting.as_str(), "older"]);
@@ -5212,6 +5295,7 @@ pub(crate) mod tests {
             since: None,
             limit: None,
             order: None,
+            dismissed: None,
         };
         let mut items = items(inbox.handle(request, None, now));
         items.sort_by(|a, b| a.thread_key.cmp(&b.thread_key));
