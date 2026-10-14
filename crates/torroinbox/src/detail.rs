@@ -22,8 +22,8 @@
 //! domain, "Always to Info" and "Move to junk" for mail, muting the source for the others
 //! (`App::hide_choices`). An entry with no way to hide it – an approval – has no "…". In the
 //! notifications window the bell stands there instead ([`Footer::bell`], task E8.6b): it opens the
-//! bell's menu, as `m` and the bell of the card do. "Move to Info" has the eye, not the bell
-//! (`app::lane_icon`): the bell mutes. "Make task"
+//! bell's menu, as `m` and the bell of the card do; it is the crossed-out bell (`BellOff`, task
+//! E8.10). "Move to Info" has the circled "i" (`app::lane_icon`), never a bell. "Make task"
 //! (`t`, task E3.5) is an
 //! icon button next to "Later": its words would not fit beside the others in the panel's 400, and
 //! so is "Make event" beside it (`c`, task E8.5b: the hub's dialog of an event).
@@ -298,7 +298,7 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     buttons.push(widgets::anchored(&footer.anchors.lane, move_to));
     if footer.hide {
         let hide = if footer.bell {
-            widgets::icon_button(Icon::Bell, tr("Mute…"), Some(Message::Act(item.id.clone(), Command::Hide)))
+            widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::Act(item.id.clone(), Command::Hide)))
         } else {
             widgets::icon_button(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item.id.clone())))
         };

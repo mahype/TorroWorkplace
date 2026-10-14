@@ -547,12 +547,12 @@ fn day_name(day: NaiveDate, today: NaiveDate) -> String {
     }
 }
 
-/// The icon of a lane, as in the sidebar, and of "Move to …". "Info" has the eye – for your
-/// information –, not the bell: the bell mutes (task E8.6b).
+/// The icon of a lane, as in the sidebar, and of "Move to …". "Info" has the circled "i" – for
+/// your information (task E8.10) –, never a bell: the bells are for notifications and muting.
 pub fn lane_icon(lane: Lane) -> Icon {
     match lane {
         Lane::ForMe => Icon::Inbox,
-        Lane::Info => Icon::Eye,
+        Lane::Info => Icon::Info,
     }
 }
 
@@ -3633,7 +3633,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         if self.is_muted(&item.source) {
             let unmute = trf("Unmute {source}", &[("source", &item.source.label())]);
             let line = !choices.is_empty();
-            choices.push(Choice { line, ..Choice::new(Icon::Bell, unmute, Message::AskMute(item.id.clone())) });
+            choices.push(Choice { line, ..Choice::new(Icon::BellOff, unmute, Message::AskMute(item.id.clone())) });
         }
         choices
     }
@@ -4710,7 +4710,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
         trailing.push(widgets::icon_button(Icon::RefreshCw, tr("Refresh"), Some(Message::Refresh)));
         let rail = shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail);
-        let icon = Some(Icon::ChartGantt);
+        let icon = Some(Icon::ChartColumn);
         match class {
             SizeClass::Wide if !rail => shell::header_bar([], shell::header_title(icon, name, note), trailing),
             SizeClass::Wide | SizeClass::Medium => {
@@ -5000,7 +5000,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 };
                 // What the inbox counted (task E8.8b), after the views of entries.
                 let insights = NavEntry {
-                    mark: Mark::Icon(Icon::ChartGantt),
+                    mark: Mark::Icon(Icon::ChartColumn),
                     label: tr("Insights").to_owned(),
                     count: None,
                     active: self.is_insights(),
@@ -8684,10 +8684,13 @@ mod tests {
     }
 
     /// Task E8.6b: the bell's menu opens at the card or row, and at the panel's bell; it draws in
-    /// every size and density, and "Move to Info" no longer has the bell.
+    /// every size and density, and "Move to Info" no longer has the bell. Task E8.10: the bell
+    /// that mutes is crossed out, "Info" has its own icon and neither is the notifications' bell.
     #[test]
     fn the_bells_menu_draws_at_card_row_and_panel() {
-        assert_ne!(lane_icon(Lane::Info), Icon::Bell, "the bell mutes");
+        assert_eq!(lane_icon(Lane::Info), Icon::Info, "Info is for your information");
+        assert!(![Icon::Bell, Icon::BellOff].contains(&lane_icon(Lane::Info)), "the bells notify and mute");
+        assert_eq!(Kind::Notifications.view_icon(&View::Overview), Icon::Bell, "the bell stays for notifications");
         for density in ["compact", "comfortable"] {
             for open in ["mute-menu", "mute-panel"] {
                 let mut app = notifications_window(&["--density", density, "--open", open]);
@@ -8695,6 +8698,9 @@ mod tests {
                 assert_eq!(app.detail.is_some(), open == "mute-panel");
                 deliver(&mut app);
                 assert!(!app.choices().is_empty());
+                let item = app.subject.clone().expect("the menu has its entry");
+                let bell = crate::notifications::bell(&item).map(|bell| bell.icon);
+                assert_eq!(bell, Some(Icon::BellOff), "{open}: the bell that mutes is crossed out");
                 for size in SIZES {
                     let _ = app.update(Message::Resized(size));
                     let _ = app.view();

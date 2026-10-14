@@ -282,6 +282,11 @@ aus einem Guss wirkt:
   (`attention`). Hinweise in Zeilen: `ListChecks` (Unteraufgaben), `AlignLeft` (Notiz), `Repeat`,
   `Bell`; `GripVertical` (Ziehgriff), `SignalHigh` (Priorität im Menü), `ChevronUp`/`ChevronDown`
   (vorige/nächste Aufgabe). Lucide 0.469.0 liefert `Github` noch mit.
+  Im Eingang (E8.10): `Bell` nur für Benachrichtigungen (Fensterart, Spalte „Notifications“), die Glocke
+  zum Stummschalten („Mute…“ an Karte, Zeile und Paneel, „Unmute“ im Menü, Vorschläge in Insights) `BellOff`; Spur „Info“ `Info`
+  (nicht `Eye`, das ist „Review angefordert“); „Insights“ `ChartColumn`; „Table view“ `Table`. Ein neues
+  Icon: SVG aus Lucide 0.469.0 mit `stroke-width="1.75"` nach `assets/icons/`, Variante in `Icon` samt
+  Eintrag in `Icon::ALL` – die Tests in `icon.rs` prüfen Datei, Strich und Namen.
 - **Diagramme und Kennzahlen** (E8.8b, zuerst die Insights der Zentrale; Methode: Skill `dataviz`): Farben nur als
   `theme::ChartColor` (`Series(0..4)` in fester Reihenfolge, `Other`), in der Stilfunktion mit
   `palette(t).chart_color(…)` – eine Reihe bekommt ihre Farbe nach dem, was sie ist, nie nach dem Rang, eine fünfte wird

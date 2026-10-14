@@ -439,7 +439,7 @@ pub fn controls<'a>(insights: &Insights) -> Vec<Element<'a, Message>> {
     let ranges = widgets::segmented(RANGES.map(|range| (range_name(range), Message::StatsRange(range))), chosen);
     let table = widgets::choice_chip(
         tr("Table view"),
-        Some(Mark::Icon(Icon::List)),
+        Some(Mark::Icon(Icon::Table)),
         insights.table,
         Some(Message::StatsTable(!insights.table)),
     );
@@ -647,7 +647,7 @@ fn cut_card<'a>(cut: Cut, effect: MuteEffect) -> Element<'a, Message> {
 
 /// The button of a suggestion: the bell and what muting does ("Only Info").
 fn mute_button<'a>(mute: Message, effect: MuteEffect) -> Element<'a, Message> {
-    widgets::text_button(Some(Icon::Bell), effect_name(effect), style::button::secondary, Some(mute))
+    widgets::text_button(Some(Icon::BellOff), effect_name(effect), style::button::secondary, Some(mute))
 }
 
 // ---------------------------------------------------------------------------------------------

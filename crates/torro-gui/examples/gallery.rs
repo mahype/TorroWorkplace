@@ -562,7 +562,7 @@ impl Gallery {
                 widgets::source_tile(face, TileSize::Medium, tint),
                 typo::text(typo::body_strong(), name).width(Fill),
                 typo::text(typo::meta().tabular(), count).style(theme::text_3),
-                widgets::icon_button(Icon::Bell, "Mute", Some(Msg::Noop)),
+                widgets::icon_button(Icon::BellOff, "Mute", Some(Msg::Noop)),
             ]
             .spacing(space::s())
             .align_y(Alignment::Center)

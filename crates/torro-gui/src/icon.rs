@@ -143,6 +143,15 @@ pub enum Icon {
     Send,
     /// The junk (spam) folder.
     ShieldAlert,
+    // Added for the inbox (E8.10): muting, the lane "Info" and the insights.
+    /// Mute, "Mute…", "Unmute" – everything that silences; [`Icon::Bell`] stays for notifications.
+    BellOff,
+    /// The lane "Info": for your information.
+    Info,
+    /// "Insights" (counts and charts).
+    ChartColumn,
+    /// "Table view": a chart shown as its table.
+    Table,
 }
 
 impl Icon {
@@ -230,6 +239,10 @@ impl Icon {
         Icon::Folder,
         Icon::Send,
         Icon::ShieldAlert,
+        Icon::BellOff,
+        Icon::Info,
+        Icon::ChartColumn,
+        Icon::Table,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -327,6 +340,10 @@ impl Icon {
             Icon::Folder => include_bytes!("../assets/icons/folder.svg"),
             Icon::Send => include_bytes!("../assets/icons/send.svg"),
             Icon::ShieldAlert => include_bytes!("../assets/icons/shield-alert.svg"),
+            Icon::BellOff => include_bytes!("../assets/icons/bell-off.svg"),
+            Icon::Info => include_bytes!("../assets/icons/info.svg"),
+            Icon::ChartColumn => include_bytes!("../assets/icons/chart-column.svg"),
+            Icon::Table => include_bytes!("../assets/icons/table.svg"),
         }
     }
 }
@@ -374,6 +391,31 @@ mod tests {
         bytes.sort();
         bytes.dedup();
         assert_eq!(bytes.len(), Icon::ALL.len(), "two variants share one file, or one is listed twice");
+    }
+
+    #[test]
+    fn every_variant_loads_the_lucide_icon_of_its_name() {
+        // `BellOff` → `bell-off`, `FolderGit2` → `folder-git-2`: the class Lucide writes into each
+        // file, so an arm in `Icon::svg` that points at a neighbouring file fails here.
+        let kebab = |name: &str| {
+            let mut out = String::new();
+            let mut previous: Option<char> = None;
+            for c in name.chars() {
+                let starts_word =
+                    c.is_ascii_uppercase() || (c.is_ascii_digit() && !previous.is_some_and(|p| p.is_ascii_digit()));
+                if starts_word && previous.is_some() {
+                    out.push('-');
+                }
+                out.push(c.to_ascii_lowercase());
+                previous = Some(c);
+            }
+            out
+        };
+        for &which in Icon::ALL {
+            let svg = std::str::from_utf8(which.svg()).expect("icon files are UTF-8");
+            let class = format!(r#"class="lucide lucide-{}""#, kebab(&format!("{which:?}")));
+            assert!(svg.contains(&class), "{which:?}: the file is not {class}");
+        }
     }
 
     #[test]

@@ -594,7 +594,7 @@ pub fn bell(item: &Item) -> Option<CardButton> {
     if !app::rules_allowed(&item.source) || detail::is_approval(item) || matches!(item.state, State::Done { .. }) {
         return None;
     }
-    Some(CardButton::new(Icon::Bell, tr("Mute…"), Some(Message::Act(item.id.clone(), Command::Hide))))
+    Some(CardButton::new(Icon::BellOff, tr("Mute…"), Some(Message::Act(item.id.clone(), Command::Hide))))
 }
 
 /// The action bar of `item`'s row in the compact density (`widgets::row_actions`): Open or Go to

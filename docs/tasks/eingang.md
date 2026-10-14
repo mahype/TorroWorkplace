@@ -1211,7 +1211,10 @@ E8.9   unabhängig (torro-wm, core.rs)
   `unsupported` mit Grund. Von Hand am Mac mit Terminal.app und einem zweiten Terminal geprüft, im Bericht.
 
 ### E8.10 Fehlende Icons nachrüsten
-- [ ] erledigt
+- [x] erledigt (`BellOff`, `Info`, `ChartColumn`, `Table` aus Lucide 0.469.0; `BellOff` an „Mute…“ von Karte, Zeile und
+  Paneel, an „Unmute“ im Menü und an den Vorschlägen in Insights; Spur „Info“ `Info`, Insights `ChartColumn`, „Table view“
+  `Table`; `Bell` bleibt für das Fenster und die Spalte „Notifications“. Neuer Test: jede Variante lädt die Datei ihres
+  Namens. „Mute/Unmute <Quelle>“ im Menü „Hide from inbox“ behält den Mond)
 - **Modell:** Opus · **Braucht:** E8.6b, E8.8b · **Dateien:** `crates/torro-gui/src/icon.rs`,
   `crates/torro-gui/assets/icons/{bell-off,info,chart-column,table}.svg` (neu), `crates/torro-gui/examples/gallery.rs`,
   `crates/torroinbox/src/{app,detail,notifications,insights,list}.rs`, `.claude/skills/torro-design/SKILL.md`
