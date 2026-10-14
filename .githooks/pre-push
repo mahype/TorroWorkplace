@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Complete local CI before every push: fmt, design check, clippy, tests (scripts/ci-local.sh).
+# GitHub Actions no longer runs for pull requests, so this is the check before code reaches main.
+exec "$(git rev-parse --show-toplevel)/scripts/ci-local.sh"

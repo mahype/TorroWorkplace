@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Fast part of the local CI before every commit: formatting and design check (scripts/ci-local.sh).
+# Enable once per clone: git config core.hooksPath .githooks
+exec "$(git rev-parse --show-toplevel)/scripts/ci-local.sh" --quick
