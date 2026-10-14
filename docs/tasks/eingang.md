@@ -857,6 +857,25 @@ E8.9   unabhängig (torro-wm, core.rs)
   Rechte (ohne Kalender-Write → `forbidden`), „Nach außen = never“ → nichts geht raus. `torro-api-review`;
   Sichtprüfung Karte und Leser.
 
+### E8.3c Nacharbeit: Einladungen im Eingang und mit Kalenderwahl
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E8.3b · **Dateien:** `crates/torro-ipc/src/inbox.rs`,
+  `crates/torroinbox/src/{mail,list,overview,app,detail}.rs`, `crates/torroworkplace/src/{mail/write,inbox}.rs`,
+  `crates/torro-inbox/src/item.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Reste aus E8.3b:**
+  - Wird eine Einladung beantwortet, ist ihr Eintrag erledigt (Szenario 5 in `eingang.md`), mit Undo nur für den
+    Eintrag (die Antwort ist verschickt).
+  - Karten und Zeilen in „For me“ zeigen die Einladung (Termin-Chip, Accept · Maybe · Decline); dafür trägt der
+    Eintrag einer Mail-Einladung das Merkmal mit (optional, `#[serde(default)]`).
+  - Die Oberfläche lässt den Kalender wählen (Feld `collection`, Vorschlag wie im Kern); der Antwortweg nutzt einen
+    Helfer `InboxClient::respond_to_invitation` statt `torro_ipc::client::call` direkt.
+  - Hinweis auf Überschneidungen: „Overlaps with … 14:00“ bzw. „No conflicts“ über einen Helfer
+    `InboxClient::list_events` (vorhandenes `calendar.list_events`, nur sichtbare Kalender).
+- **API:** vorhandene `mail.respond_to_invitation`, `calendar.list_events`, `inbox.set_item_done`. **MCP:** vorhandene
+  Tools.
+- **Abnahme:** Tests: Antwort erledigt den Eintrag; Karte in „For me“ mit Knöpfen; Kalenderwahl schickt `collection`;
+  Überschneidung erkannt bzw. „No conflicts“. Sichtprüfung Karte und Leser.
+
 ### E8.4 Benachrichtigungen-Fenster
 - [x] erledigt (Board in `notifications.rs`, im Modul `app` deklariert, weil `main.rs` parallel geändert wurde –
   die Zeile `mod notifications;` gehört bei Gelegenheit nach `main.rs`; ohne `--source` zeigt das Fenster die

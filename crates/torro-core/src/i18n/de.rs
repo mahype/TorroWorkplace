@@ -556,6 +556,66 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
     ("Inbox · {view}", "Eingang · {view}"),
+    // Answering invitations (E8.3b)
+    ("Accepted: {title}", "Angenommen: {title}"),
+    ("Tentative: {title}", "Vorläufig: {title}"),
+    ("Declined: {title}", "Abgelehnt: {title}"),
+    ("{name} has accepted this invitation.", "{name} hat diese Einladung angenommen."),
+    ("{name} has tentatively accepted this invitation.", "{name} hat diese Einladung vorläufig angenommen."),
+    ("{name} has declined this invitation.", "{name} hat diese Einladung abgelehnt."),
+    (
+        "This mail holds no invitation that can be answered.",
+        "Diese Mail enthält keine Einladung, die sich beantworten lässt.",
+    ),
+    ("Answer an unknown invitation", "Eine unbekannte Einladung beantworten"),
+    (
+        "Accept the invitation \"{title}\" on {when}: reply from {account} to {organizer}, add the event to \
+         \"{calendar}\"",
+        "Einladung „{title}“ am {when} annehmen: Antwort von {account} an {organizer}, Termin in „{calendar}“ \
+         eintragen",
+    ),
+    (
+        "Answer maybe to the invitation \"{title}\" on {when}: reply from {account} to {organizer}, add the event \
+         to \"{calendar}\"",
+        "Einladung „{title}“ am {when} mit Vielleicht beantworten: Antwort von {account} an {organizer}, Termin in \
+         „{calendar}“ eintragen",
+    ),
+    (
+        "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}, remove the event from \
+         \"{calendar}\"",
+        "Einladung „{title}“ am {when} ablehnen: Antwort von {account} an {organizer}, Termin aus „{calendar}“ \
+         entfernen",
+    ),
+    (
+        "Decline the invitation \"{title}\" on {when}: reply from {account} to {organizer}",
+        "Einladung „{title}“ am {when} ablehnen: Antwort von {account} an {organizer}",
+    ),
+    ("Invitations", "Einladungen"),
+    ("No invitations.", "Keine Einladungen."),
+    (
+        "Invitations to events you can answer show up here.",
+        "Einladungen zu Terminen, die du beantworten kannst, erscheinen hier.",
+    ),
+    ("Invitation · {when}", "Einladung · {when}"),
+    ("Accept", "Annehmen"),
+    ("Maybe", "Vielleicht"),
+    ("Decline", "Ablehnen"),
+    ("Accepted", "Angenommen"),
+    ("Declined", "Abgelehnt"),
+    ("This event is over.", "Dieser Termin ist vorbei."),
+    ("Couldn't answer the invitation.", "Die Einladung konnte nicht beantwortet werden."),
+    (
+        "The answer may not have gone out. Check your sent mail.",
+        "Die Antwort ist vielleicht nicht rausgegangen. Sieh in deinen gesendeten Mails nach.",
+    ),
+    ("Accepted. The event is in your calendar.", "Angenommen. Der Termin steht in deinem Kalender."),
+    (
+        "Answered maybe. The event is in your calendar.",
+        "Mit Vielleicht geantwortet. Der Termin steht in deinem Kalender.",
+    ),
+    ("Declined. The organizer was told.", "Abgelehnt. Der Organisator weiß Bescheid."),
+    ("Lunch with Maria", "Mittagessen mit Maria"),
+    ("Hike", "Wanderung"),
     // Quiet and events from entries (E8.5b)
     ("Quiet", "Ruhe"),
     ("Until {time}", "Bis {time}"),
