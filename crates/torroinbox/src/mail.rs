@@ -35,7 +35,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, responsive, row, rule, scrollable, svg, text_input};
+use iced::widget::{column, container, responsive, row, rule, scrollable, svg};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
@@ -51,8 +51,10 @@ use torro_inbox::demo::DemoSource;
 use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
-use torro_ipc::inbox::{CalendarEvent, InboxClient};
-use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
+use torro_ipc::inbox::{CalendarEvent, InboxClient, MailFind, MailFound};
+#[cfg(test)]
+use torro_ipc::mail::MailSort;
+use torro_ipc::mail::{Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget};
 use torro_mail::{
     AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message as Mail, MessageSummary, Order, Role,
 };
@@ -64,9 +66,6 @@ use crate::list::{self, Look};
 
 /// How many messages one page of a folder holds.
 pub const PAGE: u32 = 50;
-
-/// The id of the search field above a folder's messages.
-pub const SEARCH: &str = "mail-search";
 
 /// What the window can do with mail. Every method is one `mail.*` request of the app key; the core
 /// checks rights and keeps the security rules, a source never decides them itself. Errors as the
@@ -156,15 +155,36 @@ pub trait MailSource: Send + Sync {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> impl Future<Output = Result<Vec<CalendarEvent>, InboxError>> + Send;
+
+    /// `mail.search_messages` across folders and accounts (issue #136, the search field): where
+    /// `find` says – every folder of every account, one account or one folder –, the words and
+    /// operators as typed, by relevance or by date in `find.order`, `find.limit` from `find.cursor`
+    /// on. Answers the page with whether matches may be missing, where the words matched and about
+    /// how many match in all. Errors as the core maps them; `InboxError::Other` with the core's
+    /// words for an operator it cannot read (`before:soon`).
+    fn find_mail(&self, find: MailFind) -> impl Future<Output = Result<MailFound, InboxError>> + Send;
+
+    /// `mail.index_status`: how far the search index of each mail account is, for the honest line
+    /// under the search field while matches may be missing.
+    fn mail_index_status(&self) -> impl Future<Output = Result<Vec<MailIndexProgress>, InboxError>> + Send;
 }
 
-/// One page of a folder ([`MailSource::search_mail`]).
+/// One page of a folder ([`MailSource::search_mail`]) or of a search ([`MailSource::find_mail`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MailPage {
     /// Newest first.
     pub messages: Vec<MessageSummary>,
     /// The cursor of the next page; `None` on the last one.
     pub next: Option<String>,
+    /// Where the words of a search matched (issue #136); empty for a folder.
+    pub highlights: Vec<MailHighlight>,
+}
+
+impl MailPage {
+    /// A page of `messages` without highlights, `next` the cursor of the page after it.
+    pub fn of(messages: Vec<MessageSummary>, next: Option<String>) -> MailPage {
+        MailPage { messages, next, highlights: Vec::new() }
+    }
 }
 
 impl MailSource for InboxClient {
@@ -181,7 +201,15 @@ impl MailSource for InboxClient {
         order: Order,
     ) -> Result<MailPage, InboxError> {
         let (messages, next) = InboxClient::search_mail(self, folder, query, limit, cursor, order).await?;
-        Ok(MailPage { messages, next })
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn find_mail(&self, find: MailFind) -> Result<MailFound, InboxError> {
+        InboxClient::find_mail(self, find).await
+    }
+
+    async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
+        InboxClient::mail_index_status(self).await
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -248,7 +276,19 @@ impl MailSource for DemoSource {
         for message in &mut messages {
             message.invite = demo_invite(&message.id, message.date);
         }
-        Ok(MailPage { messages, next })
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn find_mail(&self, find: MailFind) -> Result<MailFound, InboxError> {
+        let mut found = crate::search::demo_find(self, find)?;
+        for message in &mut found.messages {
+            message.invite = demo_invite(&message.id, message.date);
+        }
+        Ok(found)
+    }
+
+    async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
+        crate::search::demo_index(self)
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -391,10 +431,18 @@ impl MailSource for crate::empty::EmptySource {
     async fn list_events(&self, _start: DateTime<Utc>, _end: DateTime<Utc>) -> Result<Vec<CalendarEvent>, InboxError> {
         Ok(Vec::new())
     }
+
+    async fn find_mail(&self, _find: MailFind) -> Result<MailFound, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
+        Ok(Vec::new())
+    }
 }
 
-/// The view of one folder: which one, and the search typed into it. Two views of the same folder
-/// with another search are different views, so an answer for the old search is dropped.
+/// The view of one folder: which one, with its name and role. A search in it is a view of its own
+/// (`search::SearchView`, issue #136).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderView {
     /// The folder's id from the core (`f:…`).
@@ -404,26 +452,17 @@ pub struct FolderView {
     /// The name to show ([`folder_name`]).
     pub name: String,
     pub role: Option<Role>,
-    /// The words searched for; `None` lists the whole folder.
-    pub query: Option<String>,
 }
 
 impl FolderView {
-    /// The whole folder `folder`, without a search.
+    /// The folder `folder`.
     pub fn of(folder: &Folder) -> FolderView {
         FolderView {
             id: folder.id.clone(),
             account: folder.account.clone(),
             name: folder_name(folder),
             role: folder.role,
-            query: None,
         }
-    }
-
-    /// The same folder searched for `query`; a blank query lists the whole folder.
-    pub fn searching(&self, query: &str) -> FolderView {
-        let query = Some(query.trim().to_owned()).filter(|query| !query.is_empty());
-        FolderView { query, ..self.clone() }
     }
 }
 
@@ -799,6 +838,19 @@ pub struct MailList<'a> {
     /// Every folder of every account: Archive and Delete show only where the message's account has
     /// such a folder ([`filing_actions`], issue #118).
     pub folders: &'a [Folder],
+    /// Where the words of a search matched (issue #136): the rows and cards of a search show their
+    /// subject and passage with the matches stressed (`list::Hits`); empty elsewhere.
+    pub highlights: &'a [MailHighlight],
+    /// The text colour of the theme, for the matches in a passage.
+    pub text: Color,
+}
+
+impl<'a> MailList<'a> {
+    /// The matches of the message `id`, if the search has some for it.
+    fn hits(&self, id: &str) -> Option<list::Hits<'a>> {
+        let highlight = self.highlights.iter().find(|highlight| highlight.id == id)?;
+        Some(list::Hits { highlight, text: self.text })
+    }
 }
 
 /// The open entry of `entries` that holds the message `id` (it links to it, [`Link::Mail`]).
@@ -816,9 +868,7 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             _ if data.no_accounts => {
                 (Icon::Mail, tr("No mail account yet."), tr("Connect one in Settings, under Accounts."))
             }
-            View::Folder(folder) if folder.query.is_some() => {
-                (Icon::Search, tr("No messages found."), tr("Try other words."))
-            }
+            View::Search(search) => crate::search::empty_texts(search),
             View::Folder(folder) => {
                 (folder_icon(folder.role), tr("No messages here."), tr("Mail in this folder shows up here."))
             }
@@ -890,6 +940,7 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         preview: snippet,
         account,
         account_name: None,
+        hits: data.hits(&message.id),
     };
     let selected = data.selected == Some(message.id.as_str());
     let on_press = Message::SelectMail(message.id.clone());
@@ -922,7 +973,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     let (buttons, more) = message_buttons(message, data.entries, &data.hidable, data.folders, data.now);
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let smart = matches!(data.view, View::Attachments | View::Invitations);
+    let smart = matches!(data.view, View::Attachments | View::Invitations | View::Search(_));
     let several = smart && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
@@ -935,6 +986,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         preview: Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty()),
         account,
         account_name: several.then(|| account_name(&message.account)),
+        hits: data.hits(&message.id),
     };
     let selected = data.selected == Some(message.id.as_str());
     let buttons = data.anchors.mark(selected, buttons);
@@ -1319,26 +1371,6 @@ fn small_icon<'a>(which: Icon, colour: Option<Color>) -> Element<'a, Message> {
     icon::icon(which, icon::SIZE_SM)
         .style(move |t: &Theme, _| svg::Style { color: Some(colour.unwrap_or(palette(t).text_3)) })
         .into()
-}
-
-/// The search above a folder's messages: a field (`Enter` searches, `/` and the sidebar's search
-/// button focus it) and, while a search is shown, "Clear search".
-pub fn search_bar<'a>(input: &str, folder: &FolderView) -> Element<'a, Message> {
-    let field = text_input(&trf("Search {folder}", &[("folder", &folder.name)]), input)
-        .id(SEARCH)
-        .size(typo::body().size)
-        .line_height(typo::body().line_height)
-        .font(typo::body().font)
-        .padding(style::INPUT_PADDING)
-        .width(Fill)
-        .style(style::text_input)
-        .on_input(Message::SearchInput)
-        .on_submit(Message::Search);
-    let mut bar = row![field].spacing(space::s()).align_y(Alignment::Center);
-    if folder.query.is_some() || !input.is_empty() {
-        bar = bar.push(widgets::icon_button(Icon::X, tr("Clear search"), Some(Message::ClearSearch)));
-    }
-    container(bar).width(Fill).padding(Padding::new(space::s()).left(space::l()).right(space::l())).into()
 }
 
 /// What the panel shows of a mail.
@@ -2042,16 +2074,6 @@ mod tests {
     }
 
     #[test]
-    fn a_search_is_part_of_the_view() {
-        let folders = folders();
-        let inbox = FolderView::of(first_inbox(&folders).expect("an inbox"));
-        assert_eq!(inbox.searching("  "), inbox, "blank: the whole folder");
-        let searched = inbox.searching(" budget ");
-        assert_eq!(searched.query.as_deref(), Some("budget"));
-        assert_ne!(searched, inbox, "another search, another view");
-    }
-
-    #[test]
     fn the_compose_window_gets_the_message_and_the_kind() {
         assert_eq!(compose_args(Compose::Reply, "m:1", false), ["--compose", "--reply", "m:1"]);
         assert_eq!(compose_args(Compose::ReplyAll, "m:1", false), ["--compose", "--reply-all", "m:1"]);
@@ -2160,7 +2182,15 @@ mod tests {
         let summaries: Vec<MessageSummary> = mail.iter().map(|m| m.summary.clone()).collect();
         let folders = folders();
         let folder = FolderView::of(first_inbox(&folders).expect("an inbox"));
-        let views = [View::Folder(folder.clone()), View::Attachments, View::Mail];
+        let search = crate::search::SearchView::new("budget", crate::search::Scope::All, MailSort::Relevance);
+        let views = [View::Folder(folder.clone()), View::Attachments, View::Mail, View::Search(search)];
+        // A search's matches in the subject and the passage of the first message (issue #136).
+        let hit = |text: &str, hit| torro_ipc::mail::HighlightSpan { text: text.into(), hit };
+        let highlights = [MailHighlight {
+            id: summaries[0].id.clone(),
+            subject: vec![hit("Budget", true), hit(" review", false)],
+            snippet: vec![hit("the travel ", false), hit("budget", true), hit(" before Thursday", false)],
+        }];
         let looks = [Look::Rows, Look::Cards];
         let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
             &DemoSource::new(now()),
@@ -2184,6 +2214,8 @@ mod tests {
                         entries: &all,
                         hidable: all.iter().map(|item| item.id.as_str()).collect(),
                         folders: &folders,
+                        highlights: &highlights,
+                        text: Color::BLACK,
                     };
                     let _ = list(data);
                 }

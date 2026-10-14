@@ -76,6 +76,7 @@ use torro_gui::widgets::{self, BarWords, Mark, RowAction};
 use torro_gui::{datetime, layout, style};
 use torro_inbox::item::FacetKey;
 use torro_inbox::{Item, Kind, Link, SourceKind, SourceRef, State, rules};
+use torro_ipc::mail::MailHighlight;
 use torro_mail::Folder;
 
 use crate::app::{Message, View};
@@ -509,7 +510,9 @@ pub(crate) struct MailCard<'a> {
 pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Message> {
     let inner = card_inner(width);
     let MailCard { lines, chips, buttons, more, selected, on_press } = card;
-    let MailLines { name, domain, time, subject, new, preview, account, account_name, .. } = lines;
+    let MailLines { name, domain, time, subject, new, preview, account, account_name, hits, .. } = lines;
+    let words = hits.map(|hits| hits.words()).unwrap_or_default();
+    let hit_colour = hits.map_or(Color::TRANSPARENT, |hits| hits.text);
     let lead = avatar(&name, account, new, size::avatar());
     let account_name = account_shown(account_name, domain.as_deref());
     let meta: Vec<String> =
@@ -517,13 +520,12 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     let head = widgets::card_head(Some(lead), name, meta.join(" · "), None);
 
     let level = if new { typo::body_strong() } else { typo::body() };
-    let subject =
-        typo::text(level, typo::ellipsize(&subject, level, inner)).style(theme::text).wrapping(Wrapping::None);
+    let subject = marked(typo::ellipsize(&subject, level, inner), level, theme::text, &words, hit_colour);
     let mut text = column![subject].spacing(space::xs());
     if let Some(preview) = preview {
         let lines: Vec<Element<'a, Message>> = clamp_lines(&preview, typo::body(), inner, PREVIEW_LINES)
             .into_iter()
-            .map(|line| typo::text(typo::body(), line).style(theme::text_2).wrapping(Wrapping::None).into())
+            .map(|line| marked(line, typo::body(), theme::text_2, &words, hit_colour))
             .collect();
         // Only the lines the preview takes (task E8.11), as [`mail_card_height`] counts them.
         let height = lines.len() as f32 * typo::line_height(typo::body());
@@ -760,6 +762,63 @@ pub(crate) struct MailLines<'a> {
     /// The account's name at the end of the preview's line; `None` with one account (or in a
     /// folder, which is one account's).
     pub account_name: Option<String>,
+    /// Where the words of a search matched (issue #136): stressed in the subject and the preview.
+    pub hits: Option<Hits<'a>>,
+}
+
+/// The matches of a search in a mail row or card (issue #136): the words that matched are stressed
+/// wherever they show in the subject and the preview – in medium weight (semibold in a subject
+/// already medium) and in `text` –, never by colour alone. The preview is the passage around the
+/// first match (the app puts it in place of the start of the text).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Hits<'a> {
+    pub highlight: &'a MailHighlight,
+    /// The text colour of the theme, for the matches in the preview (`text_2` around them).
+    pub text: Color,
+}
+
+impl Hits<'_> {
+    /// The words that matched, in lower case, each once.
+    fn words(&self) -> Vec<String> {
+        let mut words: Vec<String> = Vec::new();
+        let spans = self.highlight.subject.iter().chain(&self.highlight.snippet).filter(|span| span.hit);
+        for word in spans.map(|span| span.text.trim().to_lowercase()).filter(|word| !word.is_empty()) {
+            if !words.contains(&word) {
+                words.push(word);
+            }
+        }
+        words
+    }
+}
+
+/// `line` in `level`, coloured by `colour`, with `words` stressed ([`Hits`]): their weight one step
+/// up and in `hit_colour`. A line without a match is plain text.
+fn marked<'a>(
+    line: String,
+    level: Level,
+    colour: fn(&Theme) -> iced::widget::text::Style,
+    words: &[String],
+    hit_colour: Color,
+) -> Element<'a, Message> {
+    let spans = crate::search::spans_of(&line, words);
+    if !spans.iter().any(|span| span.hit) {
+        return typo::text(level, line).style(colour).wrapping(Wrapping::None).into();
+    }
+    let stressed = if level.font == typo::body_strong().font { theme::font_semibold() } else { theme::font_medium() };
+    let spans: Vec<iced::widget::text::Span<'a, Message>> = spans
+        .into_iter()
+        .map(|span| {
+            let piece = iced::widget::span(span.text);
+            if span.hit { piece.font(stressed).color(hit_colour) } else { piece }
+        })
+        .collect();
+    iced::widget::rich_text(spans)
+        .size(level.size)
+        .line_height(level.line_height)
+        .font(level.font)
+        .style(colour)
+        .wrapping(Wrapping::None)
+        .into()
 }
 
 impl<'a> MailLines<'a> {
@@ -777,6 +836,7 @@ impl<'a> MailLines<'a> {
             preview: preview(item),
             account: account_index(item, &rows.accounts),
             account_name: (rows.accounts.len() > 1).then(|| account_label(&item.source)),
+            hits: None,
         }
     }
 }
@@ -792,8 +852,10 @@ pub(crate) fn account_shown(account_name: Option<String>, domain: Option<&str>) 
 /// time, subject (· count), preview (· account, unless it is the sender's domain: [`account_shown`]).
 pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, Message> {
     let room = words_room(width);
-    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name } = lines;
+    let MailLines { name, domain, time, marks, subject, new, count, preview, account, account_name, hits } = lines;
     let account_name = account_shown(account_name, domain.as_deref());
+    let words = hits.map(|hits| hits.words()).unwrap_or_default();
+    let hit_colour = hits.map_or(Color::TRANSPARENT, |hits| hits.text);
 
     // Sender, then the domain in what is left, then the marks and the time.
     let marks_width: f32 = marks.iter().map(|(_, width)| width + cell_gap()).sum();
@@ -814,8 +876,7 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
     // The subject, with the number of messages from two on.
     let level = if new { typo::body_strong() } else { typo::body() };
     let subject_room = room - count.as_deref().map_or(0.0, pill_width);
-    let subject = typo::ellipsize(&subject, level, subject_room);
-    let subject = typo::text(level, subject).style(theme::text).wrapping(Wrapping::None);
+    let subject = marked(typo::ellipsize(&subject, level, subject_room), level, theme::text, &words, hit_colour);
     let second = line(subject, count.map(|count| widgets::pill(None, count)).into_iter().collect());
 
     // The preview, with the account from two accounts on.
@@ -823,7 +884,7 @@ pub(crate) fn mail_content<'a>(lines: MailLines<'a>, width: f32) -> Element<'a, 
         (typo::text_width(name, typo::meta()) + new_dot() + space::xs() + cell_gap()).min(room / 3.0)
     });
     let preview = preview.map(|text| typo::ellipsize(&text, typo::body(), room - account_room)).unwrap_or_default();
-    let preview = typo::text(typo::body(), preview).style(theme::text_2).wrapping(Wrapping::None);
+    let preview = marked(preview, typo::body(), theme::text_2, &words, hit_colour);
     let ends = account_name
         .map(|name| account_cell(account, typo::ellipsize(&name, typo::meta(), account_room - cell_gap())))
         .into_iter()
@@ -1253,7 +1314,7 @@ pub fn empty_text(view: &View) -> (&'static str, &'static str) {
         View::Done => (tr("Nothing done yet."), tr("Done entries stay here for 30 days.")),
         View::Source(_) => (tr("Nothing open from this source."), tr("New entries from it show up here.")),
         // The views of mail have their own list and empty states (`mail::list`).
-        View::Folder(_) | View::Mail | View::Attachments | View::Invitations => {
+        View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_) => {
             (tr("No messages here."), tr("Mail in this folder shows up here."))
         }
     }
