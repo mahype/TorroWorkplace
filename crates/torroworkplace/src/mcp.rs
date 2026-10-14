@@ -461,7 +461,8 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 ///   `replace` closes windows ([`Request::operation`] asks for `Delete` then), the saves of
 ///   events and tasks, which overwrite the item on the server when they change it, of mail
 ///   `mail.move_messages` (into the trash), `mail.save_draft` (replacing a draft) and
-///   `mail.send_draft` (it removes the draft and cannot be taken back), and
+///   `mail.send_draft` (it removes the draft and cannot be taken back), `mail.respond_to_invitation`
+///   (task E8.3b: the reply cannot be taken back, and a decline deletes the event made before), and
 ///   `inbox.hide_sender`, whose scopes `sender` and `domain` keep a rule for every mail account
 ///   and close entries in all of them (admin then, task E3.11), and `inbox.mute_item`, whose
 ///   traits keep a rule for every source of the kind and close or move entries there (task E8.6a).
@@ -481,6 +482,7 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
                 | "mail.move_messages"
                 | "mail.save_draft"
                 | "mail.send_draft"
+                | "mail.respond_to_invitation"
                 | "inbox.hide_sender"
                 | "inbox.mute_item"
         );
@@ -1808,6 +1810,33 @@ mod tests {
         assert_eq!(
             (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint),
             (Some(false), Some(false), Some(false))
+        );
+    }
+
+    /// Task E8.3b: the tool takes account, mail and answer, the calendar optionally; it sends a reply
+    /// every time, so it is neither idempotent nor harmless.
+    #[test]
+    fn mail_respond_to_invitation_builds_its_request() {
+        let arguments = json!({"account": "mail:anna@mailbox.org", "id": "m:1", "answer": "tentative"});
+        let request = request_for("mail_respond_to_invitation", args(arguments), &Utc);
+        let wanted = Request::RespondToInvitation {
+            account: "mail:anna@mailbox.org".into(),
+            id: "m:1".into(),
+            answer: torro_mail::InvitationAnswer::Tentative,
+            collection: None,
+        };
+        assert_eq!(request, Ok(wanted));
+        let with_calendar = json!({"account": "mail:a@b.org", "id": "m:1", "answer": "accept", "collection": "work"});
+        let request = request_for("mail_respond_to_invitation", args(with_calendar), &Utc);
+        assert!(matches!(request, Ok(Request::RespondToInvitation { collection: Some(ref c), .. }) if c == "work"));
+        let maybe = json!({"account": "mail:a@b.org", "id": "m:1", "answer": "maybe"});
+        let refused = request_for("mail_respond_to_invitation", args(maybe), &Utc);
+        assert!(matches!(refused, Err(ToolError::Input(_))), "only the three answers: {refused:?}");
+        let tool = tools().iter().find(|tool| tool.name == "mail_respond_to_invitation").expect("tool");
+        let hints = tool.annotations.clone().expect("hints");
+        assert_eq!(
+            (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint, hints.open_world_hint),
+            (Some(false), Some(true), Some(false), None)
         );
     }
 

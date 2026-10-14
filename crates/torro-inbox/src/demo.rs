@@ -485,6 +485,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             snippet,
             flags: letter.flags.to_vec(),
             has_attachments: !attachments.is_empty(),
+            invite: None,
             untrusted: true,
         },
         cc: Vec::new(),

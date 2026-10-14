@@ -25,5 +25,6 @@ pub use account::{
     is_account_id,
 };
 pub use message::{
-    AttachmentInfo, Draft, DraftAttachment, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role,
+    AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message,
+    MessageSummary, MessageTraits, Role,
 };

@@ -19,6 +19,11 @@
 //! [`BODY_RETENTION_DAYS`] (see [`MailStore::prune_bodies`]). Attachments are not in the database;
 //! see `AttachmentCache`.
 //!
+//! **Invitations** (task E8.3b): what an invitation invites to is read from its `text/calendar` part
+//! wherever a whole message is read (the sync's texts, `mail.get_message`), kept with the text
+//! ([`Body::invite`]) in the message's row, and outlives the text; the answer given from the suite
+//! is kept beside it ([`MailStore::set_invite_answer`]), so lists show both.
+//!
 //! **Full text.** `mail_fts` (FTS5, `unicode61 remove_diacritics 2`) holds subject, sender,
 //! recipients, text and attachment names, so `Muller` finds `Müller` and the other way round.
 //! The words of a search are all required and each matches as a prefix.
@@ -32,7 +37,9 @@ use chrono::{DateTime, Duration, Utc};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension, Row, params, params_from_iter};
 use sha2::{Digest, Sha256};
-use torro_mail::{AttachmentInfo, Flag, Folder, MailAddress, Message, MessageSummary, MessageTraits, Role};
+use torro_mail::{
+    AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message, MessageSummary, MessageTraits, Role,
+};
 
 use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 
@@ -40,11 +47,16 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Version 2 (task E8.7a): messages found by their `Message-ID`, which a task's link names
 /// ([`MailStore::messages_by_rfc_id`]), without reading the whole table.
 const SCHEMA_V2: &str = "CREATE INDEX IF NOT EXISTS messages_by_rfc_id ON messages (rfc_message_id);";
+
+/// Version 3 (task E8.3b): what an invitation invites to (`torro_mail::Invite` as JSON, without the
+/// answer) and the answer given from the suite (`accept`, `tentative`, `decline`).
+const SCHEMA_V3: &str = "ALTER TABLE messages ADD COLUMN invite_json TEXT;
+ALTER TABLE messages ADD COLUMN invite_answer TEXT;";
 
 const FLAG_SEEN: i64 = 1;
 const FLAG_FLAGGED: i64 = 2;
@@ -216,6 +228,10 @@ pub struct Body {
     pub from_html: bool,
     /// All attachments, inline parts included; their names go into the search index.
     pub attachments: Vec<AttachmentInfo>,
+    /// What the message invites to (`mail::read::invite_of`); `None` for a message without an
+    /// invitation that can be answered. Kept in the message's row, so it outlives the text; an
+    /// answer given before stays ([`MailStore::set_invite_answer`]).
+    pub invite: Option<Invite>,
 }
 
 /// A search over the cache; every field narrows the result (`mail.search_messages`). All `None`
@@ -513,9 +529,20 @@ impl MailStore {
              ON CONFLICT (seq) DO UPDATE SET text = ?2, from_html = ?3, attachments_json = ?4, filenames = ?5",
             params![seq, body.text, body.from_html, serde_json::to_string(&body.attachments)?, names.join(" ")],
         )?;
+        // The answer has its own column: reading the text again keeps it.
+        let invite = body.invite.as_ref().map(|invite| Invite { answered: None, ..invite.clone() });
+        let invite = invite.map(|invite| serde_json::to_string(&invite)).transpose()?;
+        tx.execute("UPDATE messages SET invite_json = ?2 WHERE seq = ?1", params![seq, invite])?;
         refresh_index(&tx, seq)?;
         tx.commit()?;
         Ok(true)
+    }
+
+    /// Keeps `answer` as the answer given to the invitation of the message `id`
+    /// (`mail.respond_to_invitation`, task E8.3b); `None` forgets it. `false`: no such message.
+    pub fn set_invite_answer(&self, id: &str, answer: Option<InvitationAnswer>) -> Result<bool, MailStoreError> {
+        let answer = answer.map(InvitationAnswer::as_str);
+        Ok(self.db.execute("UPDATE messages SET invite_answer = ?2 WHERE id = ?1", params![id, answer])? > 0)
     }
 
     /// Drops the texts of messages sent more than [`BODY_RETENTION_DAYS`] before `now`; their
@@ -628,24 +655,24 @@ impl MailStore {
         );
         let row = self.db.query_row(&sql, [id], |row| {
             let summary = summary_from_row(&self.account, row)?;
-            let attachments_json: Option<String> = row.get(19)?;
+            let attachments_json: Option<String> = row.get(21)?;
             Ok(Message {
                 summary,
-                cc: json_column(row, 10)?,
-                reply_to: json_column(row, 11)?,
-                text: row.get(17)?,
-                from_html: row.get::<_, Option<bool>>(18)?.unwrap_or(false),
+                cc: json_column(row, 12)?,
+                reply_to: json_column(row, 13)?,
+                text: row.get(19)?,
+                from_html: row.get::<_, Option<bool>>(20)?.unwrap_or(false),
                 attachments: match attachments_json {
-                    Some(json) => parse_json(&json, 19)?,
+                    Some(json) => parse_json(&json, 21)?,
                     None => Vec::new(),
                 },
                 traits: MessageTraits {
-                    list_id: row.get(12)?,
-                    list_unsubscribe: row.get(13)?,
-                    precedence: row.get(14)?,
-                    auto_submitted: row.get(15)?,
+                    list_id: row.get(14)?,
+                    list_unsubscribe: row.get(15)?,
+                    precedence: row.get(16)?,
+                    auto_submitted: row.get(17)?,
                 },
-                invitation: row.get(16)?,
+                invitation: row.get(18)?,
             })
         });
         Ok(row.optional()?)
@@ -741,7 +768,7 @@ impl MailStore {
         );
         let mut statement = self.db.prepare(&sql)?;
         let rows = statement.query_map(params![thread_id, after.timestamp()], |row| {
-            Ok((summary_from_row(&self.account, row)?, row.get::<_, Option<String>>(10)?))
+            Ok((summary_from_row(&self.account, row)?, row.get::<_, Option<String>>(12)?))
         })?;
         let mut seen = std::collections::BTreeSet::new();
         let mut count = 0u32;
@@ -869,6 +896,10 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
         return Err(if err.to_string().contains("fts5") { MailStoreError::NoFullText } else { err.into() });
     }
     tx.execute_batch(SCHEMA_V2)?;
+    // `ADD COLUMN` cannot be run twice, so only a store from before has it run.
+    if version < 3 {
+        tx.execute_batch(SCHEMA_V3)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -886,8 +917,8 @@ const FOLDER_ORDER: &str =
     "CASE f.role WHEN 'inbox' THEN 0 WHEN 'drafts' THEN 1 WHEN 'sent' THEN 2 WHEN 'archive' THEN 3
         WHEN 'junk' THEN 4 WHEN 'trash' THEN 5 ELSE 6 END, f.path";
 
-const SUMMARY_COLUMNS: &str =
-    "m.id, m.folder_id, m.thread_id, m.from_json, m.to_json, m.subject, m.date, m.snippet, m.flags, m.has_attachments";
+const SUMMARY_COLUMNS: &str = "m.id, m.folder_id, m.thread_id, m.from_json, m.to_json, m.subject, m.date, m.snippet,
+    m.flags, m.has_attachments, m.invite_json, m.invite_answer";
 
 const INSERT_HEADERS: &str = "INSERT INTO messages (id, folder_id, uid, rfc_message_id, thread_id, from_json, to_json,
     cc_json, reply_to_json, subject, sender, recipients, date, snippet, flags, has_attachments, list_id,
@@ -991,8 +1022,18 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         snippet: row.get(7)?,
         flags: flags_from_bits(row.get(8)?),
         has_attachments: row.get(9)?,
+        invite: invite_from_row(row)?,
         untrusted: true,
     })
+}
+
+/// The invitation of a summary row (columns 10 and 11). A value this version cannot read counts as
+/// none: a list must not fail on one message.
+fn invite_from_row(row: &Row<'_>) -> rusqlite::Result<Option<Invite>> {
+    let json: Option<String> = row.get(10)?;
+    let answer: Option<String> = row.get(11)?;
+    let invite = json.and_then(|json| serde_json::from_str::<Invite>(&json).ok());
+    Ok(invite.map(|invite| Invite { answered: answer.as_deref().and_then(InvitationAnswer::from_name), ..invite }))
 }
 
 fn json_column<T: serde::de::DeserializeOwned>(row: &Row<'_>, index: usize) -> rusqlite::Result<T> {
@@ -1138,6 +1179,39 @@ mod tests {
         assert_eq!(store.messages_by_rfc_id("<5@example.org>").expect("copies").len(), 2, "both copies");
     }
 
+    /// Task E8.3b: the invitation read with the text is in every summary, outlives the text and
+    /// keeps the answer given when the text is read again; a store of version 2 gets the columns.
+    #[test]
+    fn invitations_and_their_answers_are_kept_beside_the_text() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", Some(Role::Inbox));
+        let id = add(&store, &inbox, &message(4, "Invitation: Planning"));
+        assert_eq!(store.summary(&id).expect("summary").expect("there").invite, None);
+        let invite =
+            Invite { title: "Planning".into(), start: day(15), end: Some(day(16)), all_day: false, answered: None };
+        let body = Body { text: "Join us".into(), from_html: false, attachments: vec![], invite: Some(invite.clone()) };
+        assert!(store.set_body(&id, &body).expect("body"));
+        assert!(store.set_invite_answer(&id, Some(InvitationAnswer::Accept)).expect("answer"));
+        let summary = store.summary(&id).expect("summary").expect("there");
+        assert_eq!(summary.invite, Some(Invite { answered: Some(InvitationAnswer::Accept), ..invite.clone() }));
+        store.set_body(&id, &body).expect("read again");
+        let listed = store.list_messages(&inbox, 10, 0).expect("listed");
+        assert_eq!(listed[0].invite.as_ref().and_then(|invite| invite.answered), Some(InvitationAnswer::Accept));
+        assert_eq!(store.prune_bodies(day(15) + Duration::days(BODY_RETENTION_DAYS)).expect("pruned"), 1);
+        assert_eq!(
+            store.message(&id).expect("message").expect("there").summary.invite.map(|i| i.title),
+            Some("Planning".into())
+        );
+        assert!(!store.set_invite_answer("m:nope", None).expect("none"));
+
+        // A store as version 2 left it: the columns are added, the messages stay.
+        store.db.execute_batch("ALTER TABLE messages DROP COLUMN invite_json;").expect("drop");
+        store.db.execute_batch("ALTER TABLE messages DROP COLUMN invite_answer; PRAGMA user_version = 2").expect("v2");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        assert_eq!(store.summary(&id).expect("summary").expect("kept").invite, None);
+    }
+
     #[test]
     fn reopening_keeps_the_data_and_a_newer_file_is_refused() {
         let (_tmp, dirs, store) = open();
@@ -1194,7 +1268,9 @@ mod tests {
         let (_tmp, _dirs, store) = open();
         let inbox = folder(&store, "INBOX", None);
         let id = add(&store, &inbox, &message(1, "First"));
-        store.set_body(&id, &Body { text: "the text".into(), from_html: true, attachments: vec![] }).expect("body");
+        store
+            .set_body(&id, &Body { text: "the text".into(), from_html: true, attachments: vec![], invite: None })
+            .expect("body");
         let mut changed = message(1, "Second");
         changed.flags = vec![Flag::Flagged];
         assert_eq!(add(&store, &inbox, &changed), id);
@@ -1237,6 +1313,7 @@ mod tests {
                         size: 10,
                         inline: false,
                     }],
+                    invite: None,
                 },
             )
             .expect("body");
@@ -1343,7 +1420,7 @@ mod tests {
         let archive = folder(&store, "Archive", None);
         let gone = add(&store, &inbox, &message(1, "Grüße"));
         store
-            .set_body(&gone, &Body { text: "secret words".into(), from_html: false, attachments: vec![] })
+            .set_body(&gone, &Body { text: "secret words".into(), from_html: false, attachments: vec![], invite: None })
             .expect("body");
         let kept = add(&store, &archive, &message(1, "Grüße"));
         store.set_highest_modseq(&inbox, Some(42)).expect("modseq");
@@ -1432,7 +1509,9 @@ mod tests {
         let one = add(&store, &inbox, &message(1, "alpha"));
         let two = add(&store, &inbox, &message(2, "beta"));
         let three = add(&store, &inbox, &message(3, "gamma"));
-        store.set_body(&one, &Body { text: "alpha text".into(), from_html: false, attachments: vec![] }).expect("body");
+        store
+            .set_body(&one, &Body { text: "alpha text".into(), from_html: false, attachments: vec![], invite: None })
+            .expect("body");
         let uids = store.folder_uids(&inbox).expect("uids");
         assert_eq!(uids.iter().map(|(uid, _)| *uid).collect::<Vec<_>>(), [1, 2, 3]);
 
@@ -1457,7 +1536,9 @@ mod tests {
         recent.date = now - Duration::days(89);
         let (old, recent) = (add(&store, &inbox, &old), add(&store, &inbox, &recent));
         for id in [&old, &recent] {
-            store.set_body(id, &Body { text: "zebra".into(), from_html: false, attachments: vec![] }).expect("body");
+            store
+                .set_body(id, &Body { text: "zebra".into(), from_html: false, attachments: vec![], invite: None })
+                .expect("body");
         }
         assert_eq!(search_ids(&store, "zebra").len(), 2);
 
@@ -1468,7 +1549,9 @@ mod tests {
         assert_eq!(search_ids(&store, "old mail"), vec![old.clone()], "but still knows the subject");
         assert_eq!(store.prune_bodies(now).expect("prune again"), 0);
         // Fetched again on demand, the text is back.
-        store.set_body(&old, &Body { text: "zebra".into(), from_html: false, attachments: vec![] }).expect("body");
+        store
+            .set_body(&old, &Body { text: "zebra".into(), from_html: false, attachments: vec![], invite: None })
+            .expect("body");
         assert_eq!(search_ids(&store, "zebra").len(), 2);
     }
 
@@ -1486,12 +1569,17 @@ mod tests {
         }];
         assert!(
             store
-                .set_body(&id, &Body { text: "t".into(), from_html: false, attachments: attachments.clone() })
+                .set_body(
+                    &id,
+                    &Body { text: "t".into(), from_html: false, attachments: attachments.clone(), invite: None }
+                )
                 .expect("body")
         );
         assert_eq!(store.message(&id).expect("read").expect("there").attachments, attachments);
         assert!(
-            !store.set_body("m:nope", &Body { text: "t".into(), from_html: false, attachments: vec![] }).expect("body")
+            !store
+                .set_body("m:nope", &Body { text: "t".into(), from_html: false, attachments: vec![], invite: None })
+                .expect("body")
         );
     }
 

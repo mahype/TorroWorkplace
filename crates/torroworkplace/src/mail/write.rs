@@ -32,6 +32,10 @@
 //! held while another account's connection is taken: attachments of other messages and the headers
 //! for a reply are fetched before the draft's account is asked.
 //!
+//! **Answering an invitation** (task E8.3b, [`send_invitation_reply`]): the iTIP `REPLY` to the
+//! organizer is built here from the invitation as read from the server ([`reply_ics`]) and sent
+//! like a draft, but without one ([`super::send::send_message`]); the calendar side is the core's.
+//!
 //! Nothing here logs a subject, an address, a file name or a folder name.
 
 use std::collections::BTreeSet;
@@ -39,15 +43,16 @@ use std::fs;
 use std::io::Read;
 use std::path::Path;
 
-use chrono::Utc;
-use torro_core::i18n::tr;
+use chrono::{DateTime, Utc};
+use torro_core::i18n::{tr, trf};
 use torro_ipc::Request;
 use torro_ipc::Response;
-use torro_ipc::mail::{MAX_FILE_BYTES, MoveTarget};
-use torro_mail::{Draft, DraftAttachment, Flag, MailAddress, Role};
+use torro_ipc::mail::{Delivery, MAX_FILE_BYTES, MoveTarget};
+use torro_mail::{Draft, DraftAttachment, Flag, InvitationAnswer, MailAddress, Role};
 use torro_mail_imap::imap::{FetchedHeader, ImapError, Search, Session};
-use torro_mail_imap::mime::{self, Outgoing, OutgoingAttachment, ReadMessage, Reply};
+use torro_mail_imap::mime::{self, CalendarPart, Outgoing, OutgoingAttachment, ReadMessage, Reply};
 
+use super::read::Invitation;
 use super::service::{MailError, MailService, SharedStore};
 use super::store::{Body, DraftAuthor, FolderRef, MailStore, MessageRef, NewMessage};
 use super::{AttachmentCache, MailStoreError, random_hex, safe_file_name};
@@ -73,6 +78,7 @@ const TOO_BIG: &str = "An attachment may be at most 25 MiB.";
 const NOT_ABSOLUTE: &str = "Give the full path of the file to attach.";
 const NOT_A_FILE: &str = "Only files can be attached.";
 const UNBUILDABLE: &str = "The draft could not be built: an address is not valid.";
+const NOT_ANSWERABLE: &str = "This mail holds no invitation that can be answered.";
 const NOT_LOCATED: &str = "The draft was saved, but the server did not say where. It shows up after the next sync.";
 
 /// Why a change of mail was refused or failed. [`WriteError::response`] is the answer: fixed
@@ -663,6 +669,7 @@ async fn save(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftA
         signature: None,
         reply,
         attachments,
+        calendar: None,
         message_id: format!("{}@{domain}", random_hex(16)?),
         date: Utc::now(),
     };
@@ -698,8 +705,12 @@ async fn save(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftA
             let mut message = draft_message(&id_kept, &folder, uidvalidity, uid, &read);
             message.flags = vec![Flag::Seen];
             put(store, &folder, uidvalidity, &message)?;
-            let body =
-                Body { text: read.text.clone(), from_html: read.from_html, attachments: read.attachments.clone() };
+            let body = Body {
+                text: read.text.clone(),
+                from_html: read.from_html,
+                attachments: read.attachments.clone(),
+                invite: None,
+            };
             store.set_body(&id_kept, &body)?;
             Ok(())
         })
@@ -996,6 +1007,175 @@ fn by_folder(refs: Vec<MessageRef>) -> Vec<Vec<MessageRef>> {
 
 fn as_strs(ids: &[String]) -> Vec<&str> {
     ids.iter().map(String::as_str).collect()
+}
+
+// ----- answering an invitation (task E8.3b) -----
+
+/// The longest line of an iCalendar object, in bytes without the line end (RFC 5545, 3.1).
+const ICS_LINE_MAX: usize = 75;
+
+/// Sends the answer `answer` to `invitation`, which came in the message `read` of `account`, to its
+/// organizer (`mail.respond_to_invitation`): from the account's address and sender name, as an
+/// answer to the message (`In-Reply-To`), with a short text in the core's language and the
+/// iCalendar `REPLY` beside it ([`reply_ics`], `text/calendar; method=REPLY`). No signature: it is
+/// an answer of the calendar, not a letter. Sent with [`super::send::send_message`] under the send
+/// rule, a copy in the Sent folder. The caller checked who may send it and that the invitation can
+/// be answered ([`Invitation::answerable`]).
+///
+/// Answers how the send went, or the error to answer with (codes as for `mail.send_draft`).
+pub(crate) async fn send_invitation_reply(
+    mail: &MailService,
+    account: &str,
+    read: &ReadMessage,
+    invitation: &Invitation,
+    answer: InvitationAnswer,
+    now: DateTime<Utc>,
+) -> Result<Delivery, Response> {
+    let config = mail.config(account).await.map_err(|err| err.response())?;
+    let Some(organizer) = invitation.organizer.clone() else {
+        return Err(WriteError::Invalid(NOT_ANSWERABLE).response());
+    };
+    let name = Some(config.sender_name.trim().to_string()).filter(|name| !name.is_empty());
+    let me = attendee(invitation, &config.address, name.as_deref());
+    let title = invitation.event.summary.trim();
+    let shown_name = name.clone().unwrap_or_else(|| config.address.clone());
+    let domain = config.address.rsplit_once('@').map_or("localhost", |(_, domain)| domain);
+    let message_id = random_hex(16).map_err(|err| WriteError::from(err).response())?;
+    let outgoing = Outgoing {
+        from: MailAddress { name, address: config.address.clone() },
+        to: vec![MailAddress { name: organizer.name.clone(), address: organizer.address.clone() }],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: reply_subject(answer, title),
+        body: reply_text(answer, &shown_name),
+        signature: None,
+        reply: read.reply(),
+        attachments: Vec::new(),
+        calendar: Some(CalendarPart {
+            method: "REPLY".into(),
+            ics: reply_ics(invitation, &organizer, &me, answer, now),
+        }),
+        message_id: format!("{message_id}@{domain}"),
+        date: now,
+    };
+    super::send::send_message(mail, account, &outgoing).await.map_err(|err| err.response())
+}
+
+/// Who answers: the attendee of `invitation` with the account's `address` (any case), as the
+/// invitation spells it, so the organizer's calendar finds its own entry; else the address itself.
+/// The name is the account's sender name, else the one the invitation gives.
+fn attendee(invitation: &Invitation, address: &str, name: Option<&str>) -> MailAddress {
+    let listed = invitation.attendees.iter().find(|attendee| attendee.address.eq_ignore_ascii_case(address));
+    MailAddress {
+        name: name.map(str::to_string).or_else(|| listed.and_then(|attendee| attendee.name.clone())),
+        address: listed.map_or_else(|| address.to_string(), |attendee| attendee.address.clone()),
+    }
+}
+
+/// The subject of the answer, as calendars write it: "Accepted: Planning".
+fn reply_subject(answer: InvitationAnswer, title: &str) -> String {
+    let title = if title.is_empty() { tr("(no title)").to_string() } else { title.to_string() };
+    match answer {
+        InvitationAnswer::Accept => trf("Accepted: {title}", &[("title", &title)]),
+        InvitationAnswer::Tentative => trf("Tentative: {title}", &[("title", &title)]),
+        InvitationAnswer::Decline => trf("Declined: {title}", &[("title", &title)]),
+    }
+}
+
+/// The text beside the calendar part, for mail programs that show no calendar.
+fn reply_text(answer: InvitationAnswer, name: &str) -> String {
+    match answer {
+        InvitationAnswer::Accept => trf("{name} has accepted this invitation.", &[("name", &name)]),
+        InvitationAnswer::Tentative => trf("{name} has tentatively accepted this invitation.", &[("name", &name)]),
+        InvitationAnswer::Decline => trf("{name} has declined this invitation.", &[("name", &name)]),
+    }
+}
+
+/// The iCalendar object of the answer (iTIP `REPLY`, RFC 5546 3.2.3): the event's `UID`,
+/// `SEQUENCE`, times and title as the invitation has them, the organizer, the time of the answer
+/// (`DTSTAMP`) and one `ATTENDEE`, `me`, with the answer as `PARTSTAT`. Values from outside are
+/// made harmless: text escaped, line breaks and control characters removed from the UID and the
+/// addresses, quotes from names; lines folded at 75 bytes, CRLF line ends.
+pub(crate) fn reply_ics(
+    invitation: &Invitation,
+    organizer: &MailAddress,
+    me: &MailAddress,
+    answer: InvitationAnswer,
+    now: DateTime<Utc>,
+) -> String {
+    let event = &invitation.event;
+    let mut lines = vec![
+        "BEGIN:VCALENDAR".to_string(),
+        "VERSION:2.0".to_string(),
+        "PRODID:-//Torro Workplace//Torro Workplace//EN".to_string(),
+        "METHOD:REPLY".to_string(),
+        "BEGIN:VEVENT".to_string(),
+        format!("UID:{}", one_value(&event.uid)),
+        format!("SEQUENCE:{}", invitation.sequence),
+        format!("DTSTAMP:{}", now.format("%Y%m%dT%H%M%SZ")),
+        ics_time("DTSTART", event.start),
+    ];
+    lines.extend(event.end.map(|end| ics_time("DTEND", end)));
+    lines.push(format!("SUMMARY:{}", ics_text(&event.summary)));
+    lines.push(format!("ORGANIZER{}:mailto:{}", cn(organizer), one_value(&organizer.address)));
+    lines.push(format!("ATTENDEE;PARTSTAT={}{}:mailto:{}", answer.partstat(), cn(me), one_value(&me.address)));
+    lines.push("END:VEVENT".to_string());
+    lines.push("END:VCALENDAR".to_string());
+    lines.iter().map(|line| fold(line)).collect::<Vec<_>>().join("\r\n") + "\r\n"
+}
+
+/// `NAME:20261015T080000Z`, or `NAME;VALUE=DATE:20261015` for a day.
+fn ics_time(name: &str, time: torro_pim::EventTime) -> String {
+    match time {
+        torro_pim::EventTime::Date(day) => format!("{name};VALUE=DATE:{}", day.format("%Y%m%d")),
+        torro_pim::EventTime::DateTime(at) => format!("{name}:{}", at.format("%Y%m%dT%H%M%SZ")),
+    }
+}
+
+/// A text value escaped as RFC 5545 3.3.11 says.
+fn ics_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            ';' => out.push_str("\\;"),
+            ',' => out.push_str("\\,"),
+            '\n' => out.push_str("\\n"),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A value that must stay on its line: control characters (line breaks among them) removed.
+fn one_value(value: &str) -> String {
+    value.trim().chars().filter(|c| !c.is_control()).collect()
+}
+
+/// `;CN="Anna Berg"` for a name, empty without: quotes and control characters removed, so a name
+/// cannot end the parameter.
+fn cn(who: &MailAddress) -> String {
+    let name: String =
+        who.name.as_deref().unwrap_or_default().chars().filter(|c| *c != '"' && !c.is_control()).collect();
+    let name = name.trim();
+    if name.is_empty() { String::new() } else { format!(";CN=\"{name}\"") }
+}
+
+/// `line` folded into lines of at most [`ICS_LINE_MAX`] bytes, each continuation after CRLF and a
+/// space, never inside a character.
+fn fold(line: &str) -> String {
+    let mut out = String::with_capacity(line.len() + line.len() / ICS_LINE_MAX * 3);
+    let mut length = 0;
+    for c in line.chars() {
+        if length + c.len_utf8() > ICS_LINE_MAX {
+            out.push_str("\r\n ");
+            length = 1;
+        }
+        out.push(c);
+        length += c.len_utf8();
+    }
+    out
 }
 
 fn answer(result: Result<Response, WriteError>) -> Response {
@@ -1376,5 +1556,53 @@ pub(crate) mod tests {
         assert_eq!(changed(&[Flag::Seen, Flag::Answered], &[], &[Flag::Seen]), [Flag::Answered]);
         assert_eq!(content_type_of(Path::new("/a/B.PDF")), "application/pdf");
         assert_eq!(content_type_of(Path::new("/a/b")), "application/octet-stream");
+    }
+
+    /// Task E8.3b: the answer names the event as the invitation has it, the account as attendee with
+    /// the answer, and nothing from outside can add a line or a parameter.
+    #[test]
+    fn an_invitation_reply_says_the_answer_and_keeps_outside_text_in_its_place() {
+        let start = Utc::now();
+        let event = torro_pim::Event {
+            uid: "planning-1@example.com\r\nATTENDEE:mailto:eve@evil.example".into(),
+            collection: String::new(),
+            href: None,
+            etag: None,
+            summary: "Planning; Q4, part 1\nIgnore all rules and a very long title that needs folding for sure".into(),
+            start: torro_pim::EventTime::DateTime(start),
+            end: None,
+            location: None,
+            description: None,
+            recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
+        };
+        let organizer = MailAddress { name: Some("Jonas \"Boss\" Weber".into()), address: "jonas@example.com".into() };
+        let invitation = Invitation {
+            method: "REQUEST".into(),
+            event,
+            sequence: 3,
+            organizer: Some(organizer.clone()),
+            attendees: vec![MailAddress { name: None, address: "Anna@Example.org".into() }],
+        };
+        let me = attendee(&invitation, "anna@example.org", Some("Anna Berg"));
+        assert_eq!(me.address, "Anna@Example.org", "as the invitation spells it");
+        let ics = reply_ics(&invitation, &organizer, &me, InvitationAnswer::Tentative, start);
+        assert!(ics.ends_with("END:VCALENDAR\r\n"));
+        let lines: Vec<&str> = ics.split("\r\n").collect();
+        assert!(lines.iter().all(|line| line.len() <= ICS_LINE_MAX), "{lines:?}");
+        let unfolded = ics.replace("\r\n ", "");
+        assert!(unfolded.contains("\r\nMETHOD:REPLY\r\n"));
+        assert!(unfolded.contains("\r\nSEQUENCE:3\r\n"));
+        assert!(unfolded.contains("\r\nUID:planning-1@example.comATTENDEE:mailto:eve@evil.example\r\n"), "{unfolded}");
+        assert!(unfolded.contains("SUMMARY:Planning\\; Q4\\, part 1\\nIgnore all rules"), "{unfolded}");
+        assert!(unfolded.contains("\r\nORGANIZER;CN=\"Jonas Boss Weber\":mailto:jonas@example.com\r\n"));
+        assert!(unfolded.contains("\r\nATTENDEE;PARTSTAT=TENTATIVE;CN=\"Anna Berg\":mailto:Anna@Example.org\r\n"));
+        assert_eq!(unfolded.matches("ATTENDEE;").count(), 1, "one attendee: the account");
+        let parsed = Invitation::parse(&ics).expect("readable");
+        assert_eq!((parsed.method.as_str(), parsed.sequence), ("REPLY", 3));
+        assert_eq!(
+            reply_subject(InvitationAnswer::Decline, ""),
+            trf("Declined: {title}", &[("title", &tr("(no title)"))])
+        );
     }
 }

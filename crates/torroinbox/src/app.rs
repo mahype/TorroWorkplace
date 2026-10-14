@@ -161,8 +161,8 @@ use torro_inbox::{
     Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, Link, Rule, SourceInfo, SourceKind, SourceRef, State,
     StateFilter, rules,
 };
-use torro_ipc::mail::{MoveRole, MoveTarget};
-use torro_mail::{Flag, Folder, Message as Mail, MessageSummary, Role};
+use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
+use torro_mail::{Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
 
 use crate::compose;
 use crate::glance::{self, GlanceData};
@@ -780,6 +780,8 @@ pub enum Sent {
     DismissAll(Vec<String>),
     /// Its undo: these entries opened again.
     Reopen(Vec<String>),
+    /// `mail.respond_to_invitation` (task E8.3b): account, message and answer.
+    Answer(String, String, InvitationAnswer),
     /// `tasks.create_todo_from_mail` (task E8.7b): account, message, list, title (`None`: the
     /// subject) and due day (task E8.1b).
     MailTask {
@@ -836,6 +838,9 @@ pub enum View {
     /// The smart view "With attachments" of the mail window (task E8.3): the messages with
     /// attachments of every account's inbox (`mail::attachments`), `mail.*` only.
     Attachments,
+    /// The smart view "Invitations" of the mail window (task E8.3b): the messages of every account's
+    /// inbox that invite to an event not over yet, the soonest first (`mail::invitations`).
+    Invitations,
 }
 
 impl View {
@@ -849,7 +854,7 @@ impl View {
             View::Snoozed => (None, None, StateFilter::Snoozed),
             View::Done => (None, None, StateFilter::Done),
             View::Source(source) => (None, Some(source.clone()), StateFilter::Open),
-            View::Folder(_) | View::Mail | View::Attachments => return None,
+            View::Folder(_) | View::Mail | View::Attachments | View::Invitations => return None,
         };
         Some(ItemFilter { lane, source, state: Some(state), ..ItemFilter::default() })
     }
@@ -866,6 +871,7 @@ impl View {
             View::Folder(folder) => folder.name.clone(),
             View::Mail => tr("Mail").into(),
             View::Attachments => tr("With attachments").into(),
+            View::Invitations => tr("Invitations").into(),
         }
     }
 
@@ -880,6 +886,7 @@ impl View {
             View::Folder(folder) => mail::folder_icon(folder.role),
             View::Mail => Icon::Mail,
             View::Attachments => Icon::Paperclip,
+            View::Invitations => Icon::Calendar,
         }
     }
 
@@ -894,7 +901,7 @@ impl View {
     /// A view of mail: a folder, the smart view of attachments, or a window of mail waiting for its
     /// folders.
     pub fn is_mail(&self) -> bool {
-        matches!(self, View::Folder(_) | View::Mail | View::Attachments)
+        matches!(self, View::Folder(_) | View::Mail | View::Attachments | View::Invitations)
     }
 
     /// What the messages held belong to, for a view that lists messages: the folder's id, or
@@ -903,6 +910,7 @@ impl View {
         match self {
             View::Folder(folder) => Some(folder.id.clone()),
             View::Attachments => Some("attachments".to_owned()),
+            View::Invitations => Some("invitations".to_owned()),
             _ => None,
         }
     }
@@ -1000,6 +1008,11 @@ pub enum Open {
     OverviewNotices,
     /// The smart view "With attachments" of the mail window (task E8.3).
     Attachments,
+    /// The smart view "Invitations" of the mail window (task E8.3b).
+    Invitations,
+    /// "Invitations" with its first invitation open (in the reader of the wide window, else the
+    /// panel), so its card with Accept · Maybe · Decline shows.
+    Invitation,
     /// The notifications window arranged "By time" (task E8.4), where it has room for columns.
     ByTime,
     /// The hub's To sort alone (task E8.5), as its sidebar entry shows it.
@@ -1018,7 +1031,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 35] = [
+    const ALL: [(&'static str, Open); 37] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1047,6 +1060,8 @@ impl Open {
         ("overview-info", Open::OverviewInfo),
         ("overview-notices", Open::OverviewNotices),
         ("attachments", Open::Attachments),
+        ("invitations", Open::Invitations),
+        ("invitation", Open::Invitation),
         ("by-time", Open::ByTime),
         ("to-sort", Open::ToSort),
         ("tile", Open::Tile),
@@ -1552,6 +1567,12 @@ pub struct App<S> {
     /// The approval whose decision is on its way (task E3.8): its Allow and Deny are disabled
     /// until the core answered, so a second click cannot decide it twice.
     deciding: Option<String>,
+    /// The message whose invitation is being answered (task E8.3b): its Accept · Maybe · Decline take
+    /// no click until the core answered.
+    answering: Option<String>,
+    /// The answers this window gave to invitations while it runs, by message id (task E8.3b): kept
+    /// over what loads (the demo keeps no answers, and the core's sync may lag behind).
+    answers: Vec<(String, InvitationAnswer)>,
     /// The folders of the mail accounts (task E4.2), as last loaded.
     folders: Vec<Folder>,
     /// The messages of the folder's view, newest first; the cursor and the panel name them by id.
@@ -1837,6 +1858,11 @@ pub enum Message {
     /// "Task" on a folder's message, or `t` in a folder (task E8.7b): the dialog of "Make task" for
     /// the message with this id, sent as `tasks.create_todo_from_mail`.
     AskMailTask(String),
+    /// Accept · Maybe · Decline on an invitation (task E8.3b): account, message and the answer, sent
+    /// as `mail.respond_to_invitation`.
+    AnswerInvitation(String, String, InvitationAnswer),
+    /// The core's answer for the invitation in the message with this id.
+    InvitationAnswered(String, InvitationAnswer, Result<Delivery, String>),
     /// The answer to `tasks.create_todo_from_mail`: the task made of the message with this id.
     MailTaskCreated(String, Result<torro_inbox::item::ItemTask, String>),
     /// "Open task" (the card of a mail, "Handed off", task E8.7b): the task with this uid in the
@@ -1868,7 +1894,8 @@ pub enum Message {
 ///
 /// Only the entries the window of `kind` shows ([`Kind::keeps`], task E8.3): the mail window counts
 /// and lists mail alone. The smart view "With attachments" asks for the first `limit` messages of
-/// every inbox and keeps those with attachments (`mail::attachments`).
+/// every inbox and keeps those with attachments (`mail::attachments`), "Invitations" (task E8.3b)
+/// those that invite to an event not over yet (`mail::invitations`, as of the demo's "now").
 ///
 /// And only those of the sources `shown` (task E8.4, the notifications window's choice): with one
 /// source the requests ask for it alone (the API's `source`), with more the entries of the others
@@ -1880,6 +1907,15 @@ pub enum Message {
 ///
 /// `demo` is the demo's "now" with `--demo` (else `None`): the entries get the demo's tasks
 /// ([`demo_task`]) before they are sorted into the window, as the core's would come.
+/// `message` with the answer the window gave to its invitation, if `answers` holds one (task E8.3b,
+/// [`App::answers`]).
+fn keep_answer(answers: &[(String, InvitationAnswer)], message: &mut MessageSummary) {
+    let given = answers.iter().find(|(id, _)| *id == message.id).map(|(_, answer)| *answer);
+    if let (Some(answer), Some(invite)) = (given, message.invite.as_mut()) {
+        invite.answered = Some(answer);
+    }
+}
+
 pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     inbox: Arc<S>,
     view: View,
@@ -1950,6 +1986,15 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
             }
             Some(MailPage { messages: mail::attachments(pages), next: None })
         }
+        // The smart view "Invitations" (task E8.3b) the same way, from what the summaries say.
+        View::Invitations => {
+            let mut pages = Vec::new();
+            for inbox_folder in folders.iter().filter(|folder| folder.role == Some(Role::Inbox)) {
+                let page = inbox.search_mail(inbox_folder.id.clone(), None, limit, None).await.map_err(failed)?;
+                pages.push(page.messages);
+            }
+            Some(MailPage { messages: mail::invitations(pages, demo.unwrap_or_else(Utc::now)), next: None })
+        }
         _ => None,
     };
     // "Coming back" (task E8.5) and "Handed off" (task E8.7b) beside the hub's "Act now".
@@ -1988,6 +2033,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 Some(Open::MailEntry) if launch.kind == Kind::Mail => View::Overview,
                 Some(Open::MailEntry) => View::ForMe,
                 Some(Open::Attachments) => View::Attachments,
+                Some(Open::Invitations | Open::Invitation) => View::Invitations,
                 Some(
                     Open::Overview
                     | Open::OverviewInfo
@@ -2025,6 +2071,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             mute_effect: MuteEffect::Info,
             hint: None,
             deciding: None,
+            answering: None,
+            answers: Vec::new(),
             folders: Vec::new(),
             messages: Vec::new(),
             more: None,
@@ -2428,8 +2476,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 }
             }
             Message::LetterLoaded(id, result) => {
+                let mut result = result.map(|mail| *mail);
+                if let Ok(mail) = &mut result {
+                    keep_answer(&self.answers, &mut mail.summary);
+                }
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
-                    letter.loaded = Some(result.map(|mail| *mail));
+                    letter.loaded = Some(result);
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -2495,6 +2547,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::Filter(origin) => self.toggle_filter(origin),
             Message::ShowToSort => return self.show_to_sort(),
             Message::AskMailTask(id) => return self.ask_mail_task(&id),
+            Message::AnswerInvitation(account, id, answer) => return self.answer_invitation(account, id, answer),
+            Message::InvitationAnswered(id, answer, result) => return self.invitation_answered(id, answer, result),
             Message::MailTaskCreated(id, Ok(task)) => {
                 self.note(trf("Task created in {list}", &[("list", &task.list)]));
                 self.made.retain(|(message, _)| *message != id);
@@ -3057,6 +3111,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.folders = loaded.folders;
         let page = loaded.mail.unwrap_or(MailPage { messages: Vec::new(), next: None });
         self.messages = page.messages;
+        for message in &mut self.messages {
+            keep_answer(&self.answers, message);
+        }
         self.more = page.next;
         self.listed = self.view.listing();
         self.loaded = true;
@@ -3720,6 +3777,65 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             async move { inbox.create_task_from_item(item.id, list_id, title, due).await.map_err(|err| err.to_string()) },
             move |result| Message::TaskCreated(result, name.clone()),
         )
+    }
+
+    /// Accept · Maybe · Decline on the invitation in the message `id` of `account` (task E8.3b):
+    /// sends `mail.respond_to_invitation` with `answer`, unless an answer is on its way already
+    /// ([`App::answering`]: the buttons take no second click). The core replies to the organizer and
+    /// puts the event in a calendar; the window waits for its answer ([`App::invitation_answered`]).
+    fn answer_invitation(&mut self, account: String, id: String, answer: InvitationAnswer) -> Task<Message> {
+        if self.answering.is_some() {
+            return Task::none();
+        }
+        self.answering = Some(id.clone());
+        #[cfg(test)]
+        self.sent.push(Sent::Answer(account.clone(), id.clone(), answer));
+        let inbox = self.inbox.clone();
+        let asked = id.clone();
+        Task::perform(
+            async move { inbox.respond_to_invitation(account, asked, answer).await.map_err(|err| err.to_string()) },
+            move |result| Message::InvitationAnswered(id.clone(), answer, result),
+        )
+    }
+
+    /// The core's answer to an invitation answered (task E8.3b): the answer kept on the message (in
+    /// the list and the reader, also over later loads, [`keep_answer`]) and a hint that says
+    /// what happened – there is no undo, a sent answer cannot be taken back; the error line when it
+    /// failed. Then the window loads again.
+    fn invitation_answered(
+        &mut self,
+        id: String,
+        answer: InvitationAnswer,
+        result: Result<Delivery, String>,
+    ) -> Task<Message> {
+        self.answering = None;
+        let delivery = match result {
+            Ok(delivery) => delivery,
+            Err(err) => {
+                self.error = Some(Failure::new(tr("Couldn't answer the invitation."), err));
+                return Task::none();
+            }
+        };
+        self.answers.retain(|(message, _)| *message != id);
+        self.answers.push((id.clone(), answer));
+        for message in self.messages.iter_mut().filter(|message| message.id == id) {
+            if let Some(invite) = &mut message.invite {
+                invite.answered = Some(answer);
+            }
+        }
+        if let Some(Letter { loaded: Some(Ok(mail)), .. }) = self.letter.as_mut().filter(|letter| letter.id == id)
+            && let Some(invite) = &mut mail.summary.invite
+        {
+            invite.answered = Some(answer);
+        }
+        let text = match (delivery, answer) {
+            (Delivery::Unknown, _) => tr("The answer may not have gone out. Check your sent mail."),
+            (_, InvitationAnswer::Accept) => tr("Accepted. The event is in your calendar."),
+            (_, InvitationAnswer::Tentative) => tr("Answered maybe. The event is in your calendar."),
+            (_, InvitationAnswer::Decline) => tr("Declined. The organizer was told."),
+        };
+        self.note(text.to_owned());
+        self.load()
     }
 
     /// "Create task" for a folder's message (task E8.7b): sends `tasks.create_todo_from_mail` with
@@ -4521,7 +4637,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 all.unwrap_or(self.messages.len()).to_string()
             }
             Some(_) => self.messages.len().to_string(),
-            None if self.view == View::Attachments => self.messages.len().to_string(),
+            None if matches!(self.view, View::Attachments | View::Invitations) => self.messages.len().to_string(),
             None if self.view.is_mail() => String::new(),
             // As in the sidebar: what is for the user; "Info" lies folded. The notifications window
             // counts all it shows in "New" (task E8.4): its cards show both lanes.
@@ -4563,6 +4679,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             read: self.look().cards(),
             account: account.and_then(|account| accounts.iter().position(|group| group.account == account)),
             task: self.task_of(&letter.id),
+            answering: self.answering.as_deref() == Some(letter.id.as_str()),
         })
     }
 
@@ -4798,21 +4915,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         (views, sources)
     }
 
-    /// The smart views of the mail window (task E8.3), under "Smart views": "With attachments", while
-    /// there is a mail account. None in the other windows.
+    /// The smart views of the mail window (task E8.3), under "Smart views": "Invitations" (task
+    /// E8.3b) and "With attachments", while there is a mail account. None in the other windows.
     fn smart_entries(&self) -> Vec<NavEntry> {
         if self.launch.kind != Kind::Mail || self.folders.is_empty() {
             return Vec::new();
         }
-        let view = View::Attachments;
-        vec![NavEntry {
-            mark: Mark::Icon(view.icon()),
-            label: view.name(),
-            count: None,
-            active: view == self.view,
-            view,
-            target: Target::View,
-        }]
+        [View::Invitations, View::Attachments]
+            .into_iter()
+            .map(|view| NavEntry {
+                mark: Mark::Icon(view.icon()),
+                label: view.name(),
+                count: None,
+                active: view == self.view,
+                view,
+                target: Target::View,
+            })
+            .collect()
     }
 
     /// The folders of the mail accounts by account (task E4.2), for the sidebar and the menu: one
@@ -5260,7 +5379,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     return self.ask_event(&item.id);
                 }
             }
-            Some(Open::Mail) => {
+            Some(Open::Mail | Open::Invitation) => {
                 self.cursor = self.messages.first().map(|message| message.id.clone());
                 self.reading = self.cursor.is_some();
             }
@@ -7923,7 +8042,7 @@ mod tests {
         assert_eq!(views[0].view, View::Overview);
         assert!(sources.is_empty(), "every source is a mail account, listed by its folders");
         let smart: Vec<String> = app.smart_entries().into_iter().map(|entry| entry.label).collect();
-        assert_eq!(smart, [tr("With attachments")]);
+        assert_eq!(smart, [tr("Invitations"), tr("With attachments")]);
         assert!(!app.mail_groups().is_empty(), "the folders of every account");
         assert!(overview_at(&["--view", "hub"]).smart_entries().is_empty(), "smart views are the mail window's");
         for size in SIZES {
@@ -8023,6 +8142,56 @@ mod tests {
         let _ = press(&mut app, Key::Down);
         let _ = press(&mut app, Key::Enter);
         assert!(app.panel_open(), "Enter reads the message");
+    }
+
+    /// Task E8.3b: "Invitations" lists the invitations of every account, the soonest first; Accept
+    /// sends `mail.respond_to_invitation` once until the core answered, and the answer stays on the
+    /// card and in the reader, also over later loads.
+    #[test]
+    fn invitations_are_listed_and_answered_once_at_a_time() {
+        let mut app = mail_window("comfortable", &[]);
+        let _ = app.update(Message::Show(View::Invitations));
+        load(&mut app);
+        assert_eq!(app.title(), trf("Mail · {view}", &[("view", &tr("Invitations"))]));
+        let starts: Vec<_> = app.messages.iter().filter_map(|m| m.invite.as_ref().map(|i| i.start)).collect();
+        assert_eq!(starts.len(), app.messages.len(), "only invitations");
+        assert_eq!(starts.len(), 2, "the demo has two");
+        assert!(starts.windows(2).all(|pair| pair[0] <= pair[1]), "the soonest first");
+        let first = app.messages[0].clone();
+        let answer = |answer| Message::AnswerInvitation(first.account.clone(), first.id.clone(), answer);
+        let _ = app.update(answer(InvitationAnswer::Accept));
+        let _ = app.update(answer(InvitationAnswer::Decline));
+        let asked: Vec<&Sent> = app.sent.iter().filter(|sent| matches!(sent, Sent::Answer(..))).collect();
+        assert_eq!(asked.len(), 1, "one answer at a time");
+        assert!(matches!(asked[0], Sent::Answer(_, id, InvitationAnswer::Accept) if *id == first.id));
+        let _ = app.view();
+
+        let _ =
+            app.update(Message::InvitationAnswered(first.id.clone(), InvitationAnswer::Accept, Ok(Delivery::Accepted)));
+        assert_eq!(app.answering, None);
+        assert_eq!(
+            app.hint.as_ref().map(|hint| hint.text.as_str()),
+            Some(tr("Accepted. The event is in your calendar."))
+        );
+        load(&mut app);
+        let shown = app.messages.iter().find(|m| m.id == first.id).and_then(|m| m.invite.clone());
+        assert_eq!(shown.and_then(|invite| invite.answered), Some(InvitationAnswer::Accept), "kept over the load");
+
+        let _ = app.update(answer(InvitationAnswer::Tentative));
+        let failed = Err("the outgoing mail server cannot be reached".to_owned());
+        let _ = app.update(Message::InvitationAnswered(first.id.clone(), InvitationAnswer::Tentative, failed));
+        assert!(app.error.is_some() && app.answering.is_none());
+        load(&mut app);
+        let shown = app.messages.iter().find(|m| m.id == first.id).and_then(|m| m.invite.clone());
+        assert_eq!(shown.and_then(|invite| invite.answered), Some(InvitationAnswer::Accept), "a failed answer is none");
+        for size in SIZES {
+            let mut app = mail_window("comfortable", &["--open", "invitation"]);
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+            let mut compact = mail_window("compact", &["--open", "invitation"]);
+            let _ = compact.update(Message::Resized(size));
+            let _ = compact.view();
+        }
     }
 
     // ----- Notifications window (E8.4) ------------------------------------------------------

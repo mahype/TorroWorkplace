@@ -106,8 +106,10 @@ spricht nur über IPC mit dem Dienst wie Kalender und Aufgaben.
 - **Schreiben in einem eigenen Fenster.** Im Tiling kachelt es sich neben die Liste, man kann
   beim Schreiben nachlesen. Im Fenster-Modus als Paneel.
 - **Einladungen** (iMIP) zeigen oben in der Nachricht „Accept / Maybe / Decline“; die Antwort
-  geht per Mail zurück, der Termin landet im Standardkalender. Das gehört in den Kern, weil
-  Mail und Kalender dort zusammenkommen.
+  geht per Mail zurück (iTIP `REPLY` über das Konto, Schalter „Nach außen“ wie beim Senden), der
+  Termin landet in dem Kalender, der die frühere Kopie hält, sonst im ersten beschreibbaren (E8.3b,
+  Einzelheiten in [api.md](api.md), Fußnote 16). Das gehört in den Kern, weil Mail und Kalender
+  dort zusammenkommen.
 - **Was die App nicht hat:** eigene Kontoeinstellungen (die liegen in der Steuerzentrale),
   Plugins, eingebettete Fremd-Apps, HTML-Editor im ersten Schritt (Text und einfache
   Formatierung reichen).
@@ -215,7 +217,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Verschieben / Archiv | Liste, Lesebereich | `mail.move_messages` · Write (nach Trash: Delete) | `mail_move_messages` |
 | Löschen | Liste, Lesebereich | `mail.delete_messages` · Delete | `mail_delete_messages` |
 | Entwurf senden | Schreibfenster | `mail.send_draft` · Write + Senden-Schalter | `mail_send_draft` (antwortet ggf. `pending`) |
-| Einladung beantworten | Lesebereich, Kalender | `calendar.respond_invitation` · Write | `calendar_respond_invitation` |
+| Einladung beantworten (E8.3b) | Leser, Karte, Smart view „Invitations“ | `mail.respond_to_invitation` · Write + Nach außen | `mail_respond_to_invitation` (antwortet ggf. `pending`) |
 | Freigabe entscheiden | Steuerzentrale › Approvals, Benachrichtigung | `approvals.decide` · Admin | **Never** (Liste Punkt 3) |
 | Agenten-Rechte | Steuerzentrale › Agents & API | `clients.*` · Admin | **Never** (Liste Punkt 2) |
 
