@@ -66,13 +66,15 @@ use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Status, color_dot};
 use torro_gui::{style, typo};
 use torro_inbox::{AgentKind, SourceKind, SourceRef};
-use torro_ipc::api::{self, Access, Area, AreaRights, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights};
+use torro_ipc::api::{
+    self, ASSISTANT_CLIENT, Access, Area, AreaRights, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights,
+};
 use torro_ipc::api::{Outbound, RightsTemplate, Selection};
 use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
 use torro_pim::Collection;
 
 use super::accounts::relative_time;
-use super::{Action, Data, Header, agent_wizard, chevron, confirm, dialog, pressable, row_frame, setting_row};
+use super::{Action, Data, Header, Section, agent_wizard, chevron, confirm, dialog, pressable, row_frame, setting_row};
 #[cfg(test)]
 use crate::client_setup::Released;
 use crate::client_setup::{Job, Outcome};
@@ -234,6 +236,8 @@ impl Pick {
 pub enum Message {
     /// Opens the detail page of a client.
     Open(String),
+    /// The assistant's row in the list: its rights live on the Assistant page (task C.6).
+    ShowAssistant,
     /// Back from a detail page to the list.
     Back,
     /// A segment of an area's level.
@@ -293,39 +297,18 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             // Leaving the page is a good moment to save; the clock would do it a moment later.
             save_now(state)
         }
-        Message::Level(area, level) => edit(state, data, |rights| {
-            let admin = rights.area(area).admin;
-            rights.areas.insert(area, AreaRights { level, admin });
-        }),
-        Message::Admin(area, admin) => edit(state, data, |rights| {
-            let level = rights.area(area).level;
-            rights.areas.insert(area, AreaRights { level, admin });
-        }),
-        Message::Confirm(confirm) => edit(state, data, |rights| rights.confirm = confirm),
-        Message::Outbound(outbound) => edit(state, data, |rights| rights.outbound = outbound),
-        Message::All(pick, true) => edit(state, data, |rights| *pick.of_mut(rights) = Selection::All),
-        // "Selected" starts with everything known ticked: the agent keeps what it reaches until the
-        // person unticks something.
-        Message::All(pick, false) => {
-            let Some(rights) = selected_client(state, data).map(|client| shown_rights(state, client)) else {
-                return Action::None;
-            };
-            if matches!(pick.of(rights), Selection::Only(_)) {
-                return Action::None;
-            }
-            let ids = candidates(pick, data, pick.of(rights)).into_iter().map(|candidate| candidate.id).collect();
-            edit(state, data, |rights| *pick.of_mut(rights) = Selection::Only(ids))
-        }
-        Message::Tick(pick, id, on) => edit(state, data, |rights| tick(pick.of_mut(rights), id, on)),
+        Message::ShowAssistant => Action::Select(Section::Assistant),
         Message::RepoInput(text) => {
             state.repo_input = text;
             Action::None
         }
-        Message::AddRepo => {
-            let Some(repo) = valid_repo(&state.repo_input) else { return Action::None };
-            state.repo_input.clear();
-            edit(state, data, |rights| tick(&mut rights.github_repos, repo, true))
-        }
+        message @ (Message::Level(..)
+        | Message::Admin(..)
+        | Message::Confirm(_)
+        | Message::Outbound(_)
+        | Message::All(..)
+        | Message::Tick(..)
+        | Message::AddRepo) => edit(state, data, message),
         Message::Clock(now) => match &state.draft {
             Some(Draft { phase: Phase::Waiting(since), .. }) if now.saturating_duration_since(*since) >= SAVE_DELAY => {
                 save_now(state)
@@ -427,17 +410,84 @@ fn ask(state: &mut State, data: &Data, dialog: Dialog) -> Action {
     Action::None
 }
 
-/// Changes the rights of the client on the detail page with `change` and waits [`SAVE_DELAY`]
-/// before saving. A hook client's rights are fixed: nothing changes.
-fn edit(state: &mut State, data: &Data, change: impl FnOnce(&mut Rights)) -> Action {
+/// Applies the rights control `message` to the rights of the client on the detail page
+/// ([`change_rights`]) and waits [`SAVE_DELAY`] before saving. A hook client's rights are fixed:
+/// nothing changes.
+fn edit(state: &mut State, data: &Data, message: Message) -> Action {
     let Some(client) = selected_client(state, data) else { return Action::None };
     if client.kind == HOOK_CLIENT {
         return Action::None;
     }
     let mut rights = shown_rights(state, client).clone();
-    change(&mut rights);
-    state.draft = Some(Draft { id: client.id.clone(), rights, phase: Phase::Waiting(Instant::now()) });
+    let (id, kind) = (client.id.clone(), client.kind.as_str());
+    if change_rights(&mut rights, kind, message, data, &mut state.repo_input) {
+        state.draft = Some(Draft { id, rights, phase: Phase::Waiting(Instant::now()) });
+    }
     Action::None
+}
+
+/// Applies a control of the rights view ([`rights_groups`]) to `rights` of a client of `kind`: an
+/// area's level or admin switch, "Ask first", "Send on my behalf", "All"/"Selected" or a switch of a
+/// selection, "Add" of a repository (`repo_input` is the text typed there; it is cleared once the
+/// name is added). The agents' detail page and the Assistant page (task C.6) share it, so both
+/// views change rights the same way.
+///
+/// Returns `true` when `rights` changed. Every other message, a control that changes nothing (the
+/// level already set, "Selected" while already selected, a name that is no repository) and an area
+/// the client's kind does not show ([`shows_area`]) leave `rights` as they are and return `false`.
+/// "Selected" starts with every known candidate ticked ([`candidates`]): the client keeps what it
+/// reaches until the person unticks something.
+pub(super) fn change_rights(
+    rights: &mut Rights,
+    kind: &str,
+    message: Message,
+    data: &Data,
+    repo_input: &mut String,
+) -> bool {
+    let before = rights.clone();
+    match message {
+        Message::Level(area, level) if shows_area(area, kind) => {
+            let admin = rights.area(area).admin;
+            rights.areas.insert(area, AreaRights { level, admin });
+        }
+        Message::Admin(area, admin) if shows_area(area, kind) => {
+            let level = rights.area(area).level;
+            rights.areas.insert(area, AreaRights { level, admin });
+        }
+        Message::Confirm(confirm) => rights.confirm = confirm,
+        Message::Outbound(outbound) => rights.outbound = outbound,
+        Message::All(pick, true) => *pick.of_mut(rights) = Selection::All,
+        Message::All(pick, false) if !matches!(pick.of(rights), Selection::Only(_)) => {
+            let ids = candidates(pick, data, pick.of(rights)).into_iter().map(|candidate| candidate.id).collect();
+            *pick.of_mut(rights) = Selection::Only(ids);
+        }
+        Message::Tick(pick, id, on) => tick(pick.of_mut(rights), id, on),
+        Message::AddRepo => {
+            let Some(repo) = valid_repo(repo_input) else { return false };
+            repo_input.clear();
+            tick(&mut rights.github_repos, repo, true);
+        }
+        _ => {}
+    }
+    *rights != before
+}
+
+/// Whether the rights view offers `area` for a client of `kind`: every grantable area
+/// ([`Area::grantable`]), except `assistant` for the assistant's own client. The core refuses it that
+/// area whatever its rights say ([`api::loops_back`]), so a switch there would promise what never
+/// happens.
+pub(super) fn shows_area(area: Area, kind: &str) -> bool {
+    area.grantable() && !(kind == ASSISTANT_CLIENT && area == Area::Assistant)
+}
+
+/// Starts saving `rights` for the client `id` at once, without the delay: the rights view shows
+/// them from now on ([`shown_rights`]) until the core answered and the reload carries them, as after
+/// any change ([`answered`], [`loaded`]). The Assistant page calls it right after the core created
+/// the assistant's client (task C.6), so the rights chosen before it existed show without a jump.
+pub(super) fn save_rights(state: &mut State, id: String, rights: Rights) -> Action {
+    state.selected = Some(id.clone());
+    state.draft = Some(Draft { id: id.clone(), rights: rights.clone(), phase: Phase::Sending });
+    Action::Send(Request::UpdateClient { id, rights })
 }
 
 /// Sends a waiting draft now: `clients.update_client` with the whole rights.
@@ -596,8 +646,13 @@ fn selected_client<'a>(state: &State, data: &'a Data) -> Option<&'a ClientInfo> 
     data.clients.iter().find(|client| client.id == id)
 }
 
+/// The text typed into "Add repository" of the rights view ([`rights_groups`]).
+pub(super) fn repo_input(state: &State) -> &str {
+    &state.repo_input
+}
+
 /// The rights the page shows for `client`: its draft while there is one, else what the core holds.
-fn shown_rights<'a>(state: &'a State, client: &'a ClientInfo) -> &'a Rights {
+pub(super) fn shown_rights<'a>(state: &'a State, client: &'a ClientInfo) -> &'a Rights {
     match &state.draft {
         Some(draft) if draft.id == client.id => &draft.rights,
         _ => &client.rights,
@@ -686,7 +741,7 @@ pub fn segment_slot() -> f32 {
 }
 
 /// `control` at the left of a slot `slot` wide ([`segment_slot`]).
-fn in_slot<'a>(control: Element<'a, Message>, slot: f32) -> Element<'a, Message> {
+fn in_slot<'a, M: 'a>(control: Element<'a, M>, slot: f32) -> Element<'a, M> {
     container(control).width(slot).into()
 }
 
@@ -717,7 +772,7 @@ pub fn control_column(width: f32) -> Option<f32> {
 
 /// `control` where the page puts its controls: at the left of the column, or as it is (at the
 /// right edge of its row) without one ([`control_column`]).
-fn in_column<'a>(control: impl Into<Element<'a, Message>>, column: Option<f32>) -> Element<'a, Message> {
+pub(super) fn in_column<'a, M: 'a>(control: impl Into<Element<'a, M>>, column: Option<f32>) -> Element<'a, M> {
     match column {
         Some(slot) => in_slot(control.into(), slot),
         None => control.into(),
@@ -812,7 +867,7 @@ pub fn admin_detail(area: Area) -> String {
     trf("{area} · each time with your approval", &[("area", &area_label(area))])
 }
 
-fn template_label(template: RightsTemplate) -> &'static str {
+pub(super) fn template_label(template: RightsTemplate) -> &'static str {
     match template {
         RightsTemplate::ReadOnly => tr("Read only"),
         RightsTemplate::ReadAndWrite => tr("Read and write"),
@@ -849,6 +904,7 @@ pub fn kind_label(client: &ClientInfo) -> String {
         "claude-desktop" => "Claude Desktop".to_string(),
         "cursor" => "Cursor".to_string(),
         "script" => tr("Script").to_string(),
+        ASSISTANT_CLIENT => tr("Assistant").to_string(),
         HOOK_CLIENT => match client.agent {
             Some(agent) => trf("{agent} hooks", &[("agent", &agent.label())]),
             None => tr("Hooks").to_string(),
@@ -1201,7 +1257,12 @@ fn client_row<'a>(state: &State, client: &'a ClientInfo, now: DateTime<Utc>) -> 
     parts.push(rights_summary(shown_rights(state, client), &client.kind));
     parts.push(last_used_text(client.last_used, now));
     let row = setting_row(None, client.name.as_str(), Some(parts.join(" · ")), chevron());
-    pressable(row, Some(Message::Open(client.id.clone())))
+    // The assistant's rights are edited on its own page, next to its other settings.
+    let open = match client.kind.as_str() {
+        ASSISTANT_CLIENT => Message::ShowAssistant,
+        _ => Message::Open(client.id.clone()),
+    };
+    pressable(row, Some(open))
 }
 
 /// The detail page in the width the page has ([`control_column`]).
@@ -1228,26 +1289,44 @@ fn detail_page<'a>(
         page = page.push(hook_group(client, column));
     } else {
         let rights = shown_rights(state, client);
-        page = page.push(access_group(rights, column)).push(confirm_group(rights.confirm, column));
-        for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
-            page = page.push(selection_group(state, pick, rights, data, column));
-        }
+        page = page.extend(rights_groups(&state.repo_input, rights, data, column, &client.kind, tr("Access")));
     }
     let disconnect = widgets::text_button(None, tr("Disconnect…"), style::button::danger, Some(Message::AskDisconnect));
     page.push(activity_group(state, client, now)).push(key_group(column)).push(on_axis(disconnect)).into()
 }
 
 /// A text button moved left by its own padding, so its label stands on the page's content axis.
-fn on_axis<'a>(button: Element<'a, Message>) -> Element<'a, Message> {
+pub(super) fn on_axis<'a, M: 'a>(button: Element<'a, M>) -> Element<'a, M> {
     row![Space::new(), button].spacing(-style::button_padding().left).into()
 }
 
-/// The level of every grantable area, each followed by its admin switch where it has one. The
-/// switch is a row of its own, not indented: admin commands are allowed per area whatever the
-/// level (`docs/api.md`, "Rechte"), so its line names the area instead.
-fn access_group<'a>(rights: &Rights, column: Option<f32>) -> Element<'a, Message> {
+/// The rights view of a client of `kind` (task A.6, shared with the Assistant page of task C.6): the
+/// access group titled `title` ([`access_group`]), "Ask first", and the selection of each area the
+/// rights reach (calendars, task lists, repositories, inbox sources, mail accounts).
+/// `repo_input` is the text in "Add repository". Every control sends a message that
+/// [`change_rights`] applies; the caller keeps the rights and saves them.
+pub(super) fn rights_groups<'a>(
+    repo_input: &'a str,
+    rights: &Rights,
+    data: &'a Data,
+    column: Option<f32>,
+    kind: &str,
+    title: &'a str,
+) -> Vec<Element<'a, Message>> {
+    let mut groups = vec![access_group(rights, column, kind, title), confirm_group(rights.confirm, column)];
+    for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
+        groups.push(selection_group(repo_input, pick, rights, data, column));
+    }
+    groups
+}
+
+/// The level of every area a client of `kind` can be given ([`shows_area`]), each followed by its
+/// admin switch where it has one. The switch is a row of its own, not indented: admin commands are
+/// allowed per area whatever the level (`docs/api.md`, "Rechte"), so its line names the area
+/// instead.
+fn access_group<'a>(rights: &Rights, column: Option<f32>, kind: &str, title: &'a str) -> Element<'a, Message> {
     let mut rows = Vec::new();
-    for area in Area::ALL.into_iter().filter(|area| area.grantable()) {
+    for area in Area::ALL.into_iter().filter(|&area| shows_area(area, kind)) {
         let granted = rights.area(area);
         let offered = levels(area);
         let active = active_level(&offered, granted.level);
@@ -1268,7 +1347,7 @@ fn access_group<'a>(rights: &Rights, column: Option<f32>) -> Element<'a, Message
         }
     }
     let footer = tr("Write includes reading, Full also deletes and overwrites.");
-    widgets::group(tr("Access"), rows, Some(footer.to_string()))
+    widgets::group(title, rows, Some(footer.to_string()))
 }
 
 /// The line under "Send on my behalf": what sending means, so "Never" reads as a real choice.
@@ -1307,7 +1386,7 @@ fn confirm_group<'a>(current: Confirm, column: Option<f32>) -> Element<'a, Messa
 /// A selection: "All" or "Selected", and with "Selected" a switch per candidate; for GitHub
 /// also a field to add a repository or owner.
 fn selection_group<'a>(
-    state: &'a State,
+    repo_input: &'a str,
     pick: Pick,
     rights: &Rights,
     data: &'a Data,
@@ -1333,7 +1412,7 @@ fn selection_group<'a>(
             candidate_row(pick, candidate, ticked, column)
         }));
         if pick == Pick::GithubRepos {
-            rows.push(add_repo_row(&state.repo_input));
+            rows.push(add_repo_row(repo_input));
         }
     }
     widgets::group(pick.title(), rows, Some(pick.footer(all).to_string()))

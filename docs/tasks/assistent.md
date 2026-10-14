@@ -102,7 +102,9 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
 - **Abnahme:** Vertragstest; Test, dass ein Client der Art `assistant` `forbidden` bekommt.
 
 ### C.6 Steuerzentrale › Assistant
-- [ ] erledigt
+- [x] erledigt (direkt erreichbar mit `torroworkplace ui --section assistant`; kein Standard-Antrieb als
+  Einstellung, dafür fehlt ein `SettingKey` in `torro-ipc` – die Seite zeigt die Antriebe, ein neuer Chat nimmt
+  den zuletzt benutzten; der Assistent steht in Agents & API mit Verweis auf diese Seite)
 - **Modell:** Opus · **Braucht:** C.1 · **Dateien:** `crates/torroworkplace/src/ui/**`
 - Seite „Assistant“: Standard-Antrieb, Aufbewahrung, „What the assistant may use“ (dieselbe Rechte-Ansicht wie bei
   Clients, Vorlagen, Sammlungen). Erreichbar auch aus dem Hinweis bei `forbidden` im Chat.
