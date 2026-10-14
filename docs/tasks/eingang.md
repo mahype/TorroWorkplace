@@ -1229,6 +1229,32 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Galerie zeigt die vier Icons; Test, dass jede Variante eine Datei hat (falls vorhanden, sonst neu);
   `scripts/design-check.sh` sauber; Sichtprüfung der Stellen hell und dunkel.
 
+### E8.11 Feinschliff Mail-Fenster nach der Sichtprüfung
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E8.10 · **Dateien:** `crates/torroinbox/src/{app,list,mail,overview,glance}.rs`,
+  `crates/torro-core/src/i18n/de.rs`
+- **Befunde der Sichtprüfung vom 2026-10-14** (Bilder im Scratchpad unter `review-e8/`), Fehler:
+  1. Breit/Mittel, Comfortable: Accept · Maybe · Decline (und die anderen Karten-Knöpfe) stehen nur als Icons, obwohl
+     Platz ist; das ✕ für Decline sieht aus wie Verwerfen. Die Wörter hängen am Platz (`spoken()` in `list.rs`), nicht
+     an der Größenklasse (`app.rs`, `Look::Cards { words: … }`).
+  2. Breite Mail-Karte ohne „Reply“: in jeder Größe Reply · Task · Done · Later (Konzept, Knöpfe je Eintrag).
+  3. Smart view „Invitations“ ohne „Later“ und „…“: wie dieselbe Mail unter „For me“.
+- **Sollte:**
+  4. Breit: leere Fläche rechts neben der Liste → Leser-Spalte mit `empty_state` („Select a mail to read it“); der
+     Rollbalken gehört an den Rand der Liste.
+  5. Comfortable-Karten mit einzeiliger Vorschau: kein Loch von zwei Zeilen; die Höhe aus der tatsächlichen
+     Zeilenzahl bei bekannter Breite.
+  6. Gruppenköpfe in beiden Dichten gleich (Icon und Schreibweise „Today 3“), nur der Abstand unterscheidet sich.
+  7. Kopfzeile „N new for you“ in Schmal in beiden Dichten oder in keiner.
+  8. Mini: nur „for you“ als Kopfzahl, „From …“ direkt darunter, außerhalb des Kontenkastens; keine zweite, andere
+     Zahl.
+  9. Leiste: Kopfzahl in `typo::display()` wie in Mini.
+- **Kleinigkeit:** 10. Compact-Zeile: kein Konto-Etikett, wenn es der Domain des Absenders gleicht.
+- **API/MCP:** keine Funktion, nur Darstellung.
+- **Abnahme:** Tests je Befund (Knöpfe mit Wort in Breit, Reply auf der breiten Karte, Later bei Einladungen, Leer-
+  Leser, Kartenhöhe bei einer Zeile, Gruppenkopf gleich, Kopfzahl in Mini/Leiste); `scripts/ci-local.sh`;
+  Sichtprüfung, sobald der Bildschirm offen ist.
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur
