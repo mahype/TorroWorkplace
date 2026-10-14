@@ -1692,12 +1692,10 @@ impl<S: ComposeSource + 'static> Window<S> {
         if let Some(signature) = self.sender().and_then(|sender| sender.signature.as_deref()) {
             form = form.push(signature_block(signature));
         }
+        // The form takes the whole width of its window (issue #124): the compose window is a tile
+        // of its own, sized by the tiling manager, so a reading width would only leave a gap.
         let padding = if narrow { Padding::new(space::m()) } else { Padding::new(space::l()) };
-        container(container(form).width(Fill).max_width(size::content_max()).height(Fill))
-            .center_x(Fill)
-            .height(Fill)
-            .padding(padding)
-            .into()
+        container(form).width(Fill).height(Fill).padding(padding).into()
     }
 
     /// A single-line field of the form.
