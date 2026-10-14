@@ -713,6 +713,24 @@ impl Clients {
         Ok(())
     }
 
+    /// Gives client `id` the name `name` (trimmed, not empty: [`ClientsError::Invalid`]), as a bot's
+    /// client follows its bot's name (task B.1), so the person's approvals name it as they know it.
+    /// Rights and key stay. When the file cannot be written, the old name comes back and the error
+    /// is returned.
+    pub async fn rename(&self, id: &str, name: &str) -> Result<(), ClientsError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ClientsError::Invalid("a client needs a name"));
+        }
+        let _changing = self.shared.changing.lock().await;
+        let old = self.with_client(id, |record| std::mem::replace(&mut record.name, name.to_string()))?;
+        if let Err(err) = self.persist().await {
+            let _ = self.with_client(id, |record| record.name = old);
+            return Err(err);
+        }
+        Ok(())
+    }
+
     /// Gives client `id` a new key and returns it with the client; the old key stops working at
     /// once.
     ///
@@ -1728,6 +1746,23 @@ pub(crate) mod tests {
         let file = clients_file(dir);
         fs::remove_file(&file).expect("written before");
         fs::create_dir_all(file.join("in-the-way")).expect("a directory in the way");
+    }
+
+    /// Task B.1: a bot's client follows its bot's name; rights and key stay, a blank name or an
+    /// unknown client changes nothing.
+    #[tokio::test]
+    async fn a_client_is_renamed_and_keeps_its_rights_and_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (info, key) = clients.add("Travel planner", "bot", Rights::none()).await.expect("added");
+        clients.rename(&info.id, "  Trip planner ").await.expect("renamed");
+        let renamed = clients.list().into_iter().find(|client| client.id == info.id).expect("still there");
+        assert_eq!((renamed.name.as_str(), &renamed.rights), ("Trip planner", &Rights::none()));
+        assert!(matches!(clients.admit(Some(&key), &Request::Ping), Ok(Caller::Client { .. })), "the key works");
+        assert!(matches!(clients.rename(&info.id, " ").await, Err(ClientsError::Invalid(_))));
+        assert!(matches!(clients.rename("00000000", "X").await, Err(ClientsError::NotFound(_))));
+        let reopened = open_in(dir.path());
+        assert_eq!(reopened.list()[0].name, "Trip planner", "stored");
     }
 
     #[tokio::test]

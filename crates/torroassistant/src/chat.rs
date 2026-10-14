@@ -201,6 +201,7 @@ pub fn send_request(
         model: choice.model.clone(),
         text: text.to_owned(),
         without: without.to_vec(),
+        bot: None,
     })
 }
 
@@ -229,6 +230,7 @@ pub fn area_name(area: Area) -> &'static str {
         Area::Accounts => tr("Accounts"),
         Area::Ai => tr("AI"),
         Area::Assistant => tr("Assistant"),
+        Area::Bots => tr("Bots"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
         Area::Clients => tr("Agents & API"),
@@ -346,6 +348,8 @@ mod tests {
             pinned: false,
             running,
             last,
+            bot: None,
+            bot_deleted: false,
         }
     }
 
@@ -496,6 +500,7 @@ mod tests {
                 model: Some("qwen3:8b".into()),
                 text: "What is on tomorrow?".into(),
                 without: vec![Area::Mail],
+                bot: None,
             })
         );
         assert_eq!(send_request(None, Some(&choice), " \n ", &[]), None, "blank");

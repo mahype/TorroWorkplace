@@ -201,6 +201,7 @@ fn sending_starts_a_conversation_and_the_growing_answer_replaces_itself() {
             model: Some("qwen3:14b".into()),
             text: "What is on tomorrow?".into(),
             without: vec![Area::Mail],
+            bot: None,
         }]
     );
     let result = block_on(app.backend.ask(requests[0].clone()));

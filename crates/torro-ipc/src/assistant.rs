@@ -127,6 +127,14 @@ pub struct ConversationSummary {
     /// The number of the newest stored entry ([`Entry::seq`]); 0 without entries. Pass it as
     /// `after`. An answer a model is still writing comes after it and is not counted yet.
     pub last: u64,
+    /// The bot this conversation is with (task B.1): its id from `bots.list_bots`; `None` for a
+    /// conversation with the assistant. Set when it starts, never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot: Option<String>,
+    /// The conversation's bot ([`ConversationSummary::bot`]) was deleted: it can be read, renamed,
+    /// pinned and deleted, but no longer continued.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bot_deleted: bool,
 }
 
 /// One entry of a conversation, in order.
@@ -236,7 +244,7 @@ pub enum ChatWindow {
     /// A new, empty conversation.
     New,
     /// The chat with a bot (stage 2, `docs/assistent.md` "Bots"): its newest conversation or a new
-    /// one. There are no bots yet, so the core answers `unsupported`.
+    /// one. The app cannot show a bot's chat yet (task B.3), so the core answers `unsupported`.
     Bot(String),
 }
 
@@ -313,9 +321,9 @@ pub fn profile_refusal(
 }
 
 impl Request {
-    /// The conversation an `assistant.*` request names, for the core's checks and its audit log:
-    /// `id`, `conversation`, or the conversation of `open_window`. `None` for every other request
-    /// and for `send_message` that starts a new one.
+    /// The conversation an `assistant.*` request or `bots.ask_bot` names, for the core's checks and
+    /// its audit log: `id`, `conversation`, or the conversation of `open_window`. `None` for every
+    /// other request and for `send_message` and `ask_bot` that start a new one.
     pub fn conversation(&self) -> Option<&str> {
         match self {
             Request::GetConversation { id, .. }
@@ -324,7 +332,7 @@ impl Request {
             | Request::PinConversation { id, .. }
             | Request::CancelAnswer { conversation: id }
             | Request::OpenChatWindow { window: ChatWindow::Conversation(id) } => Some(id),
-            Request::SendMessage { conversation, .. } => conversation.as_deref(),
+            Request::SendMessage { conversation, .. } | Request::AskBot { conversation, .. } => conversation.as_deref(),
             _ => None,
         }
     }
@@ -334,9 +342,10 @@ impl Request {
 fn assistant_ids(request: &Request) -> Vec<&str> {
     let mut ids: Vec<&str> = request.conversation().into_iter().collect();
     match request {
-        Request::SendMessage { engine, model, .. } => {
+        Request::SendMessage { engine, model, bot, .. } => {
             ids.push(engine);
             ids.extend(model.as_deref());
+            ids.extend(bot.as_deref());
         }
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => ids.push(bot),
         Request::Forget { id } | Request::Remember { replaces: Some(id), .. } => ids.push(id),
@@ -356,6 +365,7 @@ mod tests {
             model: None,
             text: text.into(),
             without: Vec::new(),
+            bot: None,
         }
     }
 
@@ -389,11 +399,21 @@ mod tests {
         let model = Request::SendMessage {
             conversation: None,
             engine: TEST_ENGINE.into(),
-            model: Some(long),
+            model: Some(long.clone()),
             text: "Hi".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(code(limit_refusal(&model)), Some("error".into()));
+        let bot = Request::SendMessage {
+            conversation: None,
+            engine: TEST_ENGINE.into(),
+            model: None,
+            text: "Hi".into(),
+            without: Vec::new(),
+            bot: Some(long),
+        };
+        assert_eq!(code(limit_refusal(&bot)), Some("error".into()));
         assert_eq!(code(limit_refusal(&Request::Ping)), None, "other requests keep no limit here");
     }
 

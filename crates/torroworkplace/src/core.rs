@@ -692,7 +692,7 @@ impl Core {
             Ok(Caller::App | Caller::Anonymous) => return Ok(self.handle(request).await),
             Ok(Caller::Client { id, rights }) => (Some(id.clone()), Ok((id, rights))),
             Err(refused @ Refused::Unauthorized { .. }) => (None, Err(refused)),
-            Err(refused) => match self.admit_own_memory(key, &request) {
+            Err(refused) => match self.admit_by_kind(key, &request) {
                 Some((id, rights)) => (Some(id.clone()), Ok((id, rights))),
                 None => (self.client_of(key), Err(refused)),
             },
@@ -719,24 +719,78 @@ impl Core {
     }
 
     /// The assistant's own client with `key` and its rights (lent ones narrowed as lent), when its
-    /// rights refused `request` but it is the assistant's own memory
-    /// ([`torro_ipc::api::own_memory`], task C.10): the area `assistant` never opens for that
-    /// client, yet its memory is its own. `None` for every other key and request. `system.ping` is
-    /// open to every client key, so admitting it tells whose key it is and with which rights.
-    fn admit_own_memory(&self, key: Option<&Key>, request: &Request) -> Option<(String, torro_ipc::api::Rights)> {
+    /// rights refused `request` but its kind admits it ([`torro_ipc::api::allowed_by_kind`]): its
+    /// own memory (task C.10) and the bots it may use (task B.1). The areas `assistant` and `bots`
+    /// never open for that client through its rights. `None` for every other key and request.
+    /// `system.ping` is open to every client key, so admitting it tells whose key it is and with
+    /// which rights.
+    fn admit_by_kind(&self, key: Option<&Key>, request: &Request) -> Option<(String, torro_ipc::api::Rights)> {
         let operation = request.operation();
-        if !torro_ipc::api::own_memory(torro_ipc::api::ASSISTANT_CLIENT, operation) {
+        if !torro_ipc::api::allowed_by_kind(torro_ipc::api::ASSISTANT_CLIENT, operation) {
             return None;
         }
         let Ok(Caller::Client { id, rights }) = self.clients.admit(key, &Request::Ping) else { return None };
-        self.is_own_memory(&id, operation).then_some((id, rights))
+        self.allowed_by_kind(&id, operation).then_some((id, rights))
     }
 
-    /// Whether `operation` of the client `id` is the assistant's own memory: the client is the
-    /// assistant's own and the command one of its memory ([`torro_ipc::api::own_memory`]).
-    fn is_own_memory(&self, id: &str, operation: torro_ipc::api::Operation) -> bool {
-        operation.area() == Area::Assistant
-            && self.clients.list().iter().any(|info| info.id == id && torro_ipc::api::own_memory(&info.kind, operation))
+    /// Whether the client `id` may send `operation` by its kind, whatever its rights say
+    /// ([`torro_ipc::api::allowed_by_kind`]): the assistant's own memory and the bots it may use.
+    fn allowed_by_kind(&self, id: &str, operation: torro_ipc::api::Operation) -> bool {
+        matches!(operation.area(), Area::Assistant | Area::Bots)
+            && self
+                .clients
+                .list()
+                .iter()
+                .any(|info| info.id == id && torro_ipc::api::allowed_by_kind(&info.kind, operation))
+    }
+
+    /// The kind of the client `id` as stored now; `None` for one removed meanwhile.
+    fn client_kind(&self, id: &str) -> Option<String> {
+        self.clients.list().into_iter().find(|info| info.id == id).map(|info| info.kind)
+    }
+
+    /// The fixed rules of bots for the client `id`, admitted with `rights`, beyond its rights (task
+    /// B.1), `forbidden` when one refuses `request`:
+    ///
+    /// - the assistant's own client asks a bot only when the person asked for it
+    ///   ([`crate::bots::assistant_may_ask`], filled in by task B.2; never until then),
+    /// - it proposes new bots only, never changes one (`bots.save_bot` with an `id`),
+    /// - any client chats with a bot through `assistant.send_message` only with write access to
+    ///   `bots` as well, as `bots.ask_bot` needs: either way the bot works with its own rights.
+    ///
+    /// A bot's client never gets this far with a `bots` or `assistant` command
+    /// ([`torro_ipc::api::loops_back`]).
+    fn bots_refusal(&self, id: &str, rights: &torro_ipc::api::Rights, request: &Request) -> Option<Refused> {
+        let command = request.operation().name();
+        let assistant = || self.client_kind(id).as_deref() == Some(torro_ipc::api::ASSISTANT_CLIENT);
+        let refused = match request {
+            Request::AskBot { .. } => assistant() && !crate::bots::assistant_may_ask(request),
+            Request::SaveBot { id: Some(_), .. } => assistant(),
+            Request::SendMessage { bot: Some(_), .. } => !rights.area(Area::Bots).allows(Access::Write),
+            _ => false,
+        };
+        refused.then_some(Refused::Forbidden { command })
+    }
+
+    /// Whether `request` of the client `id` is the assistant proposing a bot (task B.1): a
+    /// `bots.save_bot` of the assistant's own client always waits for a person, whatever its rights
+    /// say, since a bot's texts go into a prompt of their own.
+    fn proposes_bot(&self, id: &str, request: &Request) -> bool {
+        matches!(request, Request::SaveBot { .. })
+            && self.client_kind(id).as_deref() == Some(torro_ipc::api::ASSISTANT_CLIENT)
+    }
+
+    /// What the assistant or the bots would refuse `request` with anyway (tasks C.1 and B.1):
+    /// limits, an unknown conversation, engine or bot, a conversation that still answers or is of
+    /// another bot, a bot's window, too many bots. `None` for every other request.
+    async fn assistant_refusal(&self, request: &Request) -> Option<Response> {
+        match (request.operation().area(), request) {
+            (Area::Assistant, _) | (Area::Bots, Request::AskBot { .. }) => {
+                self.assistant.refusal(&self.ai, request).await
+            }
+            (Area::Bots, _) => self.assistant.bots().refusal(request).await,
+            _ => None,
+        }
     }
 
     /// The id of the client whose `key` was refused a command, for its line in the audit log.
@@ -841,9 +895,12 @@ impl Core {
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
         // Point 6 (task C.9): switching the microphone on is a person's, also with every right. The
         // assistant's own memory is its own whatever its rights in `assistant` say (task C.10).
-        let allowed = rights.allows_request(&request) || self.is_own_memory(&id, request.operation());
+        let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
         if !allowed || self.switches_microphone_on(&request) {
             return Err(Refused::Forbidden { command: request.operation().name() });
+        }
+        if let Some(refused) = self.bots_refusal(&id, &rights, &request) {
+            return Err(refused);
         }
         // Making a task of an inbox entry writes a task too, and an operation knows one area only:
         // the tasks rights and the list come first (task E3.5).
@@ -857,10 +914,9 @@ impl Core {
             return Ok(not_reached(&request, &outside));
         }
         // What the assistant would refuse anyway is nothing to approve (task C.1): limits, an
-        // unknown conversation or engine, a conversation that still answers, a bot.
-        if request.operation().area() == Area::Assistant
-            && let Some(refused) = self.assistant.refusal(&self.ai, &request).await
-        {
+        // unknown conversation or engine, a conversation that still answers, a bot's window; nor
+        // what the bots would (task B.1): an unknown bot, too many bots.
+        if let Some(refused) = self.assistant_refusal(&request).await {
             return Ok(refused);
         }
         // A note the client does not see, or a full memory (task C.10): nothing to approve either.
@@ -918,6 +974,7 @@ impl Core {
             || from_mail
             || rights.needs_approval_of(operation)
             || self.opens_a_web_page(&request, inbox_client.as_ref())
+            || self.proposes_bot(&id, &request)
         {
             return self.ask_approval(&id, request, &rights, &via.origin).await;
         }
@@ -944,11 +1001,13 @@ impl Core {
         Ok(self.handle_within(request, reach).await)
     }
 
-    /// Whether `operation` from the client `id` would let the assistant drive itself
-    /// ([`torro_ipc::api::loops_back`]): an `assistant` command from the assistant's own client.
-    /// A client removed meanwhile is refused by its rights already.
+    /// Whether `operation` from the client `id` would let the assistant drive itself or a bot start a
+    /// chain ([`torro_ipc::api::loops_back`]): an `assistant` command from the assistant's own
+    /// client, a `bots` command beyond those it may use, any `assistant` or `bots` command from a
+    /// bot's client (task B.1) – whatever rights a person stored for them. A client removed
+    /// meanwhile is refused by its rights already.
     fn loops_back(&self, id: &str, operation: torro_ipc::api::Operation) -> bool {
-        operation.area() == Area::Assistant
+        matches!(operation.area(), Area::Assistant | Area::Bots)
             && self.clients.list().iter().any(|info| info.id == id && torro_ipc::api::loops_back(&info.kind, operation))
     }
 
@@ -976,13 +1035,30 @@ impl Core {
     /// (task C.11); `untrusted`: the conversation read data from outside the suite, so
     /// `assistant.remember` waits for a person ([`Via::untrusted`]).
     async fn handle_as_assistant(&self, request: Request, engine: &str, untrusted: bool) -> Response {
+        self.handle_as(self.assistant_client(), request, engine, untrusted).await
+    }
+
+    /// The client of the bot whose client id is `client` (kind `torro_ipc::api::BOT_CLIENT`) as
+    /// stored now; `None` when it is not there (task B.1).
+    fn bot_client(&self, client: &str) -> Option<torro_ipc::ClientInfo> {
+        self.clients.list().into_iter().find(|info| info.id == client && info.kind == torro_ipc::api::BOT_CLIENT)
+    }
+
+    /// [`Core::handle_as_assistant`] for the client `client`: the assistant's own or a bot's (task
+    /// B.1). Without one every call is `forbidden`.
+    async fn handle_as(
+        &self,
+        client: Option<torro_ipc::ClientInfo>,
+        request: Request,
+        engine: &str,
+        untrusted: bool,
+    ) -> Response {
         let (command, mut ids) = (request.operation().name(), crate::audit::ids(&request));
         ids.push(crate::audit::engine_id(engine));
-        let client = self.assistant_client();
         let answer = match &client {
             Some(info)
                 if info.rights.allows_request(&request)
-                    || torro_ipc::api::own_memory(&info.kind, request.operation()) =>
+                    || torro_ipc::api::allowed_by_kind(&info.kind, request.operation()) =>
             {
                 let origin = crate::approvals::Origin { engine: Some(engine.to_string()), without: Vec::new() };
                 let via = Via { origin, untrusted };
@@ -1043,8 +1119,15 @@ impl Core {
     ) -> Result<Response, Refused> {
         let command = request.operation().name();
         let info = self.clients.list().into_iter().find(|info| info.id == client);
-        let name = info.as_ref().map(|info| info.name.clone());
+        // A bot's name is anyone's with write access to `bots` (task B.1): its approvals say it is a
+        // bot, so it cannot pass itself off as another client.
+        let name = info.as_ref().map(|info| match info.kind == torro_ipc::api::BOT_CLIENT {
+            true => trf("Bot \"{name}\"", &[("name", &info.name)]),
+            false => info.name.clone(),
+        });
         let mut fingerprint = None;
+        // Lines the person sees besides the summary, for commands not pinned by a fingerprint.
+        let mut shown = Vec::new();
         let (request, pin, summary) = match (&request, request.operation().area()) {
             (Request::AskPermission { tool, details, project, title }, _) => {
                 if let Some(refused) = crate::approvals::question_refusal(tool, details) {
@@ -1086,6 +1169,13 @@ impl Core {
                 let summary = crate::approvals::summary(&request, &facts);
                 (request, None, summary)
             }
+            // A bot's texts go into its prompt (task B.1): the person sees every one of them whole.
+            (Request::SaveBot { .. }, _) => {
+                let facts = self.facts(&request).await;
+                shown = crate::approvals::details(&request, &facts);
+                let summary = crate::approvals::summary(&request, &facts);
+                (request, None, summary)
+            }
             (_, Area::Inbox) => {
                 let mut facts = self.inbox.facts(&request);
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
@@ -1110,7 +1200,7 @@ impl Core {
             }
         };
         let name = name.unwrap_or_default();
-        let (fingerprint, details) = fingerprint.map_or((None, Vec::new()), |(print, details)| (Some(print), details));
+        let (fingerprint, details) = fingerprint.map_or((None, shown), |(print, details)| (Some(print), details));
         let kept = (pin, fingerprint, origin.clone());
         let opened = self.approvals.open_from(client, &name, request, kept, (summary, details), Utc::now()).await;
         match opened {
@@ -1173,10 +1263,15 @@ impl Core {
                 Facts { name: Some(self.assistant.profile().await.name), ..Facts::default() }
             }
             // The conversation by the title the assistant keeps for its id and the engine by its
-            // name (task C.1), never by what the client sends along.
-            request if request.operation().area() == Area::Assistant => {
+            // name (task C.1), the bot by the name it is stored with (task B.1), never by what the
+            // client sends along.
+            request if matches!(request.operation().area(), Area::Assistant | Area::Bots) => {
                 let name = match request.conversation() {
                     Some(id) => self.assistant.title(id).await,
+                    None => None,
+                };
+                let bot = match request.bot() {
+                    Some(id) => self.assistant.bots().get(id).await.map(|bot| bot.name),
                     None => None,
                 };
                 let engine = match request {
@@ -1186,7 +1281,7 @@ impl Core {
                     }
                     _ => None,
                 };
-                Facts { name, engine, ..Facts::default() }
+                Facts { name, engine, bot, ..Facts::default() }
             }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
@@ -1276,10 +1371,12 @@ impl Core {
         };
         info.rights = origin.narrow(&info.rights);
         let rights = &info.rights;
-        let allowed = rights.allows_request(&request) || torro_ipc::api::own_memory(&info.kind, request.operation());
+        let allowed =
+            rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
         if !allowed
             || self.switches_microphone_on(&request)
             || torro_ipc::api::loops_back(&info.kind, request.operation())
+            || self.bots_refusal(client, rights, &request).is_some()
         {
             return Refused::Forbidden { command }.response();
         }
@@ -1520,6 +1617,11 @@ impl Core {
             },
             Request::ListApps => Response::Apps { apps: crate::apps::list() },
             Request::ListClients => Response::Clients { clients: self.clients.list() },
+            // A bot's client is made with its bot (`bots.save_bot`, task B.1), never on its own.
+            Request::CreateClient { kind, .. } if kind.trim() == torro_ipc::api::BOT_CLIENT => Response::Error {
+                code: "error".into(),
+                message: "a bot's access is made with the bot (bots.save_bot)".into(),
+            },
             Request::CreateClient { name, kind, template, agent, rights } => {
                 let rights = rights.unwrap_or_else(|| template.rights());
                 issued(self.clients.add_client(&name, &kind, agent, rights).await)
@@ -1633,7 +1735,14 @@ impl Core {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
-            | Request::OpenChatWindow { .. }) => crate::assistant::answer(&self.assistant, &self.ai, request).await,
+            | Request::OpenChatWindow { .. }
+            | Request::AskBot { .. }) => crate::assistant::answer(&self.assistant, &self.ai, request).await,
+            // Bots (task B.1): rights were checked in `handle_from`; a bot's client is made and
+            // removed with it.
+            request @ (Request::ListBots
+            | Request::GetBot { .. }
+            | Request::SaveBot { .. }
+            | Request::DeleteBot { .. }) => crate::bots::answer(&self.assistant, &self.clients, request).await,
             // Profile and memory (task C.10): a note kept from remote models only for the app key
             // and clients that may read mail.
             request @ (Request::GetProfile
@@ -2716,6 +2825,55 @@ impl crate::assistant::Host for Core {
             Ok(lent) => Some(lent),
             Err(err) => {
                 eprintln!("torroworkplace: cannot lend the assistant a key for {engine}: {err}");
+                None
+            }
+        }
+    }
+
+    // A bot's answer (task B.1) runs as the bot's client, exactly as the assistant's runs as its own.
+
+    fn client_of(&self, actor: &crate::assistant::Actor) -> Option<torro_ipc::ClientInfo> {
+        match actor {
+            crate::assistant::Actor::Assistant => self.assistant_client(),
+            crate::assistant::Actor::Bot(client) => self.bot_client(client),
+        }
+    }
+
+    fn run_as<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(self.handle_as(crate::assistant::Host::client_of(self, actor), request, engine, untrusted))
+    }
+
+    fn approval_as<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        id: &'a str,
+    ) -> torro_core::ai::BoxFuture<'a, Response> {
+        Box::pin(async move {
+            match crate::assistant::Host::client_of(self, actor) {
+                Some(info) => self.approval_status(Some(&info.id), id).await,
+                None => Refused::Forbidden { command: "approvals.approval_status" }.response(),
+            }
+        })
+    }
+
+    /// A key of the bot's client for one run of an agent, as for the assistant's (task B.1).
+    fn lend_as(
+        &self,
+        actor: &crate::assistant::Actor,
+        engine: &str,
+        without: &[Area],
+    ) -> Option<crate::clients::LentKey> {
+        let client = crate::assistant::Host::client_of(self, actor)?;
+        match self.clients.lend(&client.id, engine, without) {
+            Ok(lent) => Some(lent),
+            Err(err) => {
+                eprintln!("torroworkplace: cannot lend a key for {engine}: {err}");
                 None
             }
         }
@@ -8501,6 +8659,7 @@ mod tests {
                 model: None,
                 text: "Hi".into(),
                 without: Vec::new(),
+                bot: None,
             },
             Request::CancelAnswer { conversation: id.into() },
             Request::RenameConversation { id: id.into(), title: "Renamed".into() },
@@ -8676,6 +8835,7 @@ mod tests {
             model: None,
             text: "What is on tomorrow?".into(),
             without: Vec::new(),
+            bot: None,
         };
         let Response::Conversation { conversation, .. } = ask(&core, Some(&app_key), send).await else {
             panic!("the person starts a conversation")
@@ -8734,6 +8894,7 @@ mod tests {
             model: None,
             text: "Dinner with Anna".into(),
             without: Vec::new(),
+            bot: None,
         };
         let Response::Conversation { conversation, .. } = ask(&core, Some(&key), send).await else {
             panic!("the agent starts a conversation")
@@ -8751,6 +8912,7 @@ mod tests {
             model: None,
             text: "Hi".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(code(&ask(&core, Some(&key), nowhere).await), "not-found", "no such engine");
         let bot = Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot("travel".into()) };
@@ -8773,6 +8935,206 @@ mod tests {
             .find(|line| line.command == "assistant.send_message" && line.result == "ok")
             .expect("logged");
         assert_eq!(sent.ids, vec!["engine:test".to_string()]);
+    }
+
+    // ----- Bots (task B.1) -----
+
+    /// `bots.save_bot` of a new bot named `name`, answered by the test engine.
+    fn new_bot(name: &str) -> Request {
+        save_bot(None, name)
+    }
+
+    /// `bots.save_bot` of the bot `id` (a new one for `None`) named `name`.
+    fn save_bot(id: Option<&str>, name: &str) -> Request {
+        Request::SaveBot {
+            id: id.map(str::to_string),
+            name: name.into(),
+            description: "Plans trips by train.".into(),
+            avatar: None,
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            personality: "Calm.".into(),
+            instructions: "Suggest trains before flights. Never book anything yourself.".into(),
+            skills: vec![torro_ipc::bots::Skill { name: "Packing".into(), text: "Pack light.".into() }],
+        }
+    }
+
+    /// The bot an answer holds.
+    fn bot_of(response: Response) -> torro_ipc::bots::Bot {
+        match response {
+            Response::Bot { bot } => bot,
+            other => panic!("expected a bot, got {other:?}"),
+        }
+    }
+
+    /// Every `bots.*` request once, on the bot `id`.
+    fn bots_requests(id: &str) -> Vec<Request> {
+        vec![
+            Request::ListBots,
+            Request::GetBot { id: id.into() },
+            new_bot("Release helper"),
+            save_bot(Some(id), "Travel planner"),
+            Request::DeleteBot { id: id.into() },
+            Request::AskBot { bot: id.into(), text: "Plan Lisbon".into(), conversation: None },
+        ]
+    }
+
+    /// A message to the bot `bot` with the test engine.
+    fn to_bot(bot: &str, conversation: Option<&str>) -> Request {
+        Request::SendMessage {
+            conversation: conversation.map(str::to_string),
+            engine: torro_ipc::assistant::TEST_ENGINE.into(),
+            model: None,
+            text: "Plan a weekend in Lisbon".into(),
+            without: Vec::new(),
+            bot: Some(bot.into()),
+        }
+    }
+
+    /// Task B.1, "Keine Ketten": a bot's client gets `forbidden` for every command of `bots` and
+    /// `assistant`, with its key and as the bot's answer runs its tools, whatever rights a person gave
+    /// it; what its rights allow elsewhere works. A bot starts without any rights.
+    #[tokio::test]
+    async fn a_bots_client_never_reaches_bots_or_the_assistant() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let bot = bot_of(core.handle(new_bot("Travel planner")).await);
+        let info = core.clients.list().into_iter().find(|info| info.id == bot.client).expect("its client");
+        assert_eq!((info.kind.as_str(), &info.rights), (torro_ipc::api::BOT_CLIENT, &Rights::none()));
+        let (_, key) = core.clients.new_key(&bot.client).await.expect("a key to try it with");
+        assert_eq!(code(&ask(&core, Some(&key), Request::CalendarCollections).await), "forbidden", "no rights");
+
+        let mut every = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            every.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        core.clients.update(&bot.client, every).await.expect("a person grants everything");
+        let Response::Conversation { conversation, .. } = core.handle(to_bot(&bot.id, None)).await else {
+            panic!("the person chats with the bot")
+        };
+        let mut requests = bots_requests(&bot.id);
+        requests.extend(assistant_requests(&conversation.id));
+        requests.push(to_bot(&bot.id, Some(&conversation.id)));
+        for request in requests {
+            let name = request.operation().name();
+            assert_eq!(core.handle_from(Some(&key), request.clone()).await, Err(Refused::Forbidden { command: name }));
+            let actor = crate::assistant::Actor::Bot(bot.client.clone());
+            let ran = crate::assistant::Host::run_as(&core, &actor, request, "test", false).await;
+            assert_eq!(code(&ran), "forbidden", "{name} from the bot's answer");
+        }
+        assert!(matches!(ask(&core, Some(&key), Request::CalendarCollections).await, Response::Collections { .. }));
+        assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "nothing waits for approval");
+        // Its approvals say it is a bot: its name is anyone's with write access to `bots`.
+        let setting = Request::SetSetting { key: SettingKey::StartAtLogin, value: serde_json::json!(true) };
+        let asked = waits(ask(&core, Some(&key), setting).await);
+        assert_eq!(asked.client_name, trf("Bot \"{name}\"", &[("name", &"Travel planner")]));
+        // Nobody makes a bot's client but its bot.
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let create = Request::CreateClient {
+            name: "Fake bot".into(),
+            kind: torro_ipc::api::BOT_CLIENT.into(),
+            template: RightsTemplate::ReadOnly,
+            agent: None,
+            rights: None,
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), create).await), "error");
+    }
+
+    /// Task B.1: the assistant's own client lists bots and proposes a new one – always with a
+    /// person's approval that names it and shows its texts whole – but reads, changes, deletes and
+    /// (until task B.2) asks none, whatever its rights say.
+    #[tokio::test]
+    async fn the_assistant_lists_and_proposes_bots_but_asks_none_yet() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let travel = bot_of(core.handle(new_bot("Travel planner")).await);
+        // Even with every right in `bots` stored for it: the rule is the core's, not the rights'.
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Bots, AreaRights { level: Level::Full, admin: true });
+        rights.confirm = torro_ipc::api::Confirm::Never;
+        let (_, key) =
+            core.clients.add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights).await.expect("the assistant");
+
+        let Response::Bots { bots } = ask(&core, Some(&key), Request::ListBots).await else { panic!("the bots") };
+        assert_eq!(bots, vec![travel.summary()], "listed without rights in `bots`");
+        let proposed = waits(ask(&core, Some(&key), new_bot("Release helper")).await);
+        assert_eq!(
+            proposed.summary,
+            trf("Create the bot \"{name}\", without any access", &[("name", &"Release helper")])
+        );
+        let details = proposed.details.join("\n");
+        assert!(details.contains("Suggest trains before flights. Never book anything yourself."), "{details}");
+        assert!(details.contains("Pack light."), "{details}");
+        assert_eq!(core.assistant.bots().list().await.len(), 1, "nothing before the approval");
+        let decided = approval(core.handle(Request::DecideApproval { id: proposed.id, allow: true }).await);
+        assert!(matches!(decided.state, torro_ipc::ApprovalState::Done { .. }), "{decided:?}");
+        let made = core.assistant.bots().list().await;
+        assert_eq!(made.iter().map(|bot| bot.name.as_str()).collect::<Vec<_>>(), ["Release helper", "Travel planner"]);
+        let helper = core.clients.list().into_iter().find(|info| info.id == made[0].client).expect("its client");
+        assert_eq!(helper.rights, Rights::none(), "a proposed bot has no rights either");
+
+        for request in [
+            Request::GetBot { id: travel.id.clone() },
+            save_bot(Some(&travel.id), "Travel planner"),
+            Request::DeleteBot { id: travel.id.clone() },
+            Request::AskBot { bot: travel.id.clone(), text: "Plan Lisbon".into(), conversation: None },
+            to_bot(&travel.id, None),
+        ] {
+            let name = request.operation().name();
+            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+        }
+    }
+
+    /// Decision 7 for bots (task B.1): no template opens `bots`; a person switches it on, then an
+    /// agent asks a bot or chats with it (with `assistant` too), deleting waits for approval named by
+    /// the stored name, and the log names the bot by its id, never by its name or a text.
+    #[tokio::test]
+    async fn other_agents_reach_bots_only_when_a_person_switches_them_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = audited(dir.path()).with_assistant(assistant);
+        let bot = bot_of(core.handle(new_bot("Travel planner")).await);
+        let (id, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        for request in bots_requests(&bot.id) {
+            let name = request.operation().name();
+            assert_eq!(core.handle_from(Some(&key), request).await, Err(Refused::Forbidden { command: name }));
+        }
+
+        let mut rights = RightsTemplate::ReadAndWrite.rights();
+        rights.areas.insert(Area::Bots, AreaRights { level: Level::Full, admin: false });
+        core.clients.update(&id, rights.clone()).await.expect("bots switched on");
+        let ask_bot = Request::AskBot { bot: bot.id.clone(), text: "Plan Lisbon".into(), conversation: None };
+        let Response::Conversation { conversation, .. } = ask(&core, Some(&key), ask_bot).await else {
+            panic!("the agent asks the bot")
+        };
+        assert_eq!(conversation.bot.as_deref(), Some(bot.id.as_str()));
+        // Chatting through the assistant's command needs `assistant` and write access to `bots`.
+        assert_eq!(code(&ask(&core, Some(&key), to_bot(&bot.id, None)).await), "forbidden", "no `assistant`");
+        rights.areas.insert(Area::Assistant, AreaRights { level: Level::Write, admin: false });
+        core.clients.update(&id, rights.clone()).await.expect("assistant switched on");
+        assert!(matches!(ask(&core, Some(&key), to_bot(&bot.id, None)).await, Response::Conversation { .. }));
+        rights.areas.insert(Area::Bots, AreaRights { level: Level::Read, admin: false });
+        core.clients.update(&id, rights).await.expect("bots read only");
+        assert_eq!(code(&ask(&core, Some(&key), to_bot(&bot.id, None)).await), "forbidden", "bots read only");
+        let unknown = Request::GetBot { id: "0a0b0c0d".into() };
+        assert_eq!(code(&ask(&core, Some(&key), unknown).await), "not-found");
+
+        let mut deleting = RightsTemplate::ReadAndWrite.rights();
+        deleting.areas.insert(Area::Bots, AreaRights { level: Level::Full, admin: false });
+        core.clients.update(&id, deleting).await.expect("bots full");
+        let asked = waits(ask(&core, Some(&key), Request::DeleteBot { id: bot.id.clone() }).await);
+        assert_eq!(asked.summary, trf("Delete the bot \"{name}\"", &[("name", &"Travel planner")]));
+        assert_eq!(code(&ask(&core, Some(&key), Request::DeleteBot { id: "0a0b0c0d".into() }).await), "not-found");
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(!log.contains("Travel") && !log.contains("Lisbon") && !log.contains("trains"), "{log}");
+        let asked_bot = audit_lines(dir.path())
+            .into_iter()
+            .find(|line| line.command == "bots.ask_bot" && line.result == "ok")
+            .expect("logged");
+        assert_eq!(asked_bot.ids, vec![format!("bot:{}", bot.id)]);
     }
 
     use crate::account::ai::tests::{KEY as AI_KEY, NOBODY, fake_ollama, fake_openrouter};
@@ -8967,6 +9329,7 @@ mod tests {
             model: Some("qwen3:8b".into()),
             text: text.into(),
             without: Vec::new(),
+            bot: None,
         };
         match core.handle(send).await {
             Response::Conversation { conversation, .. } => conversation.id,

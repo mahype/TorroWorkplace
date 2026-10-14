@@ -288,9 +288,12 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::ListEngines | Request::ListConversations => Vec::new(),
         // Voice (task C.9): no ids, never what was said.
         Request::VoiceStatus | Request::TestVoice => Vec::new(),
-        Request::SendMessage { conversation, engine, .. } => {
-            conversation.iter().map(|id| random("conversation", id)).chain([engine_id(engine)]).collect()
-        }
+        Request::SendMessage { conversation, engine, bot, .. } => conversation
+            .iter()
+            .map(|id| random("conversation", id))
+            .chain(bot.iter().map(|id| random("bot", id)))
+            .chain([engine_id(engine)])
+            .collect(),
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => vec![format!("bot:{}", hashed(bot))],
         Request::OpenChatWindow { window: ChatWindow::New } => Vec::new(),
         Request::GetConversation { id: conversation, .. }
@@ -306,6 +309,18 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::GetProfile | Request::UpdateProfile { .. } | Request::ListMemories => Vec::new(),
         Request::Remember { replaces, .. } => replaces.iter().map(|id| random("note", id)).collect(),
         Request::Forget { id: note } => vec![random("note", note)],
+        // Bots (task B.1): a bot by the id the core made, never its name or texts; a message to one
+        // with its conversation, never the text.
+        Request::ListBots | Request::SaveBot { id: None, .. } => Vec::new(),
+        Request::GetBot { id: bot } | Request::DeleteBot { id: bot } | Request::SaveBot { id: Some(bot), .. } => {
+            vec![random("bot", bot)]
+        }
+        Request::AskBot { bot, conversation, .. } => {
+            [Some(random("bot", bot)), conversation.as_deref().map(|id| random("conversation", id))]
+                .into_iter()
+                .flatten()
+                .collect()
+        }
         mail @ (Request::MailFolders { .. }
         | Request::SearchMail { .. }
         | Request::GetMail { .. }
@@ -552,6 +567,7 @@ pub(crate) mod tests {
             model: Some("secret-model".into()),
             text: "Dinner with Anna".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(
             super::ids(&send),
@@ -563,6 +579,7 @@ pub(crate) mod tests {
             model: None,
             text: "Hi".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(super::ids(&new), vec!["engine:test".to_string()]);
         let odd = Request::SendMessage {
@@ -571,6 +588,7 @@ pub(crate) mod tests {
             model: None,
             text: "Hi".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert_eq!(super::ids(&odd), vec![format!("engine:hash:{}", hashed("Anna's server"))]);
         assert_eq!(super::engine_id("claude-code"), "engine:claude-code", "an agent the core starts is named");

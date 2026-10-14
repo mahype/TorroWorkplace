@@ -35,6 +35,7 @@ use torro_core::ai::{AiError, BoxFuture, ChatMessage, ChatReply, ChatRequest, Pr
 use torro_core::i18n::{self, tr, trf};
 use torro_ipc::api::Area;
 use torro_ipc::assistant::{Entry, EntryContent, Note};
+use torro_ipc::bots::Bot;
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
 
 use super::data_rule::{self, Place};
@@ -81,6 +82,85 @@ pub trait Host: Send + Sync {
         let _ = (engine, without);
         None
     }
+
+    // Who an answer runs as (task B.1): the methods above for any [`Actor`]. The assistant is
+    // answered by them; a bot's client only by a host that runs bots (the core). The defaults fail
+    // closed for bots: no client, `forbidden`, no key.
+
+    /// [`Host::client`] for `actor`: the assistant's own client, or the bot's client (kind
+    /// `torro_ipc::api::BOT_CLIENT`) with its rights as stored now; `None` when it is not there.
+    fn client_of(&self, actor: &Actor) -> Option<ClientInfo> {
+        match actor {
+            Actor::Assistant => self.client(),
+            Actor::Bot(_) => None,
+        }
+    }
+
+    /// [`Host::run`] as `actor`'s client: for a bot exactly as a request with the key of its client
+    /// would run, so a bot's client gets `forbidden` for every `bots` and `assistant` command
+    /// (`torro_ipc::api::loops_back`). `forbidden` when the client is not there.
+    fn run_as<'a>(
+        &'a self,
+        actor: &'a Actor,
+        request: Request,
+        engine: &'a str,
+        untrusted: bool,
+    ) -> BoxFuture<'a, Response> {
+        match actor {
+            Actor::Assistant => self.run(request, engine, untrusted),
+            Actor::Bot(_) => Box::pin(async move { forbidden(request.operation().name()) }),
+        }
+    }
+
+    /// [`Host::approval`] as `actor`'s client: its own approvals only.
+    fn approval_as<'a>(&'a self, actor: &'a Actor, id: &'a str) -> BoxFuture<'a, Response> {
+        match actor {
+            Actor::Assistant => self.approval(id),
+            Actor::Bot(_) => Box::pin(async { forbidden("approvals.approval_status") }),
+        }
+    }
+
+    /// [`Host::lend`] for `actor`'s client: a key for one run of an agent.
+    fn lend_as(&self, actor: &Actor, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
+        match actor {
+            Actor::Assistant => self.lend(engine, without),
+            Actor::Bot(_) => None,
+        }
+    }
+}
+
+/// Whose client an answer runs as (task B.1), and so whose rights, collections, approvals and audit
+/// lines its tools have.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Actor {
+    /// The assistant's own client (kind `torro_ipc::api::ASSISTANT_CLIENT`).
+    Assistant,
+    /// The client of a bot (kind `torro_ipc::api::BOT_CLIENT`), by the client's id as the bot keeps
+    /// it ([`torro_ipc::bots::Bot::client`]).
+    Bot(String),
+}
+
+impl Actor {
+    /// The actor of a conversation with `bot`, or with the assistant for `None`.
+    pub fn of(bot: Option<&Bot>) -> Actor {
+        match bot {
+            Some(bot) => Actor::Bot(bot.client.clone()),
+            None => Actor::Assistant,
+        }
+    }
+
+    /// The client kind it runs as.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Actor::Assistant => torro_ipc::api::ASSISTANT_CLIENT,
+            Actor::Bot(_) => torro_ipc::api::BOT_CLIENT,
+        }
+    }
+}
+
+/// The `forbidden` answer for `command`, as the core gives it.
+fn forbidden(command: &str) -> Response {
+    Response::Error { code: "forbidden".into(), message: format!("this client may not use {command}") }
 }
 
 /// The model of an AI account and where it runs.
@@ -116,6 +196,11 @@ pub(super) struct Job {
     pub history: Vec<Entry>,
     /// The answer as it grows, shown by `assistant.get_conversation`.
     pub partial: Arc<Mutex<Partial>>,
+    /// Whose client the answer runs as (task B.1).
+    pub actor: Actor,
+    /// The bot that answers, as stored when the message came (task B.1): its personality,
+    /// instructions and skills make its prompt. `None` for the assistant.
+    pub bot: Option<Bot>,
 }
 
 /// How a command the model called ended.
@@ -129,7 +214,11 @@ enum Outcome {
 /// Runs the answer `job` of `assistant` with the model of its engine and the tools of `host`, until
 /// the model answers, fails, takes too many steps, or the run is stopped. Its last entry ends the run.
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job) {
-    let (persona, memory) = assistant.persona_and_notes().await;
+    // A bot has its own personality and no memory of the assistant's (task B.1).
+    let (persona, memory) = match &job.bot {
+        Some(bot) => (bot.personality.clone(), Vec::new()),
+        None => assistant.persona_and_notes().await,
+    };
     let read_mail = job.history.iter().any(|entry| match &entry.content {
         EntryContent::Tool { name, .. } => data_rule::reads_mail(name),
         _ => false,
@@ -222,8 +311,8 @@ impl Answering {
         let mut messages = vec![ChatMessage::system(String::new())];
         messages.extend(history(&self.job.history, &self.job.engine, access.place));
         for _ in 0..self.limits.max_steps {
-            let rights = self.host.client().map(|client| client.rights);
-            let allowed = tools::allowed(rights.as_ref(), &self.job.without);
+            let rights = self.host.client_of(&self.job.actor).map(|client| client.rights);
+            let allowed = tools::allowed_for(self.job.actor.kind(), rights.as_ref(), &self.job.without);
             // The memory is the assistant's own, not an area the person granted.
             let areas: BTreeSet<Area> =
                 allowed.iter().map(|tool| tool.command.area).filter(|area| *area != Area::Assistant).collect();
@@ -240,7 +329,11 @@ impl Answering {
                 place: access.place,
                 memory: &self.memory,
             };
-            messages[0] = ChatMessage::system(prompt::system(Some(&self.persona), &context));
+            let system = match &self.job.bot {
+                Some(bot) => prompt::bot_system(Some(&self.persona), &prompt::BotParts::of(bot), &context),
+                None => prompt::system(Some(&self.persona), &context),
+            };
+            messages[0] = ChatMessage::system(system);
             let request = ChatRequest {
                 model: model.clone(),
                 messages: messages.clone(),
@@ -341,7 +434,8 @@ impl Answering {
                     _ => None,
                 };
                 let summary = tools::summary(&response, screened.withheld);
-                (tools::for_model(area, with_hint(screened.value, error.as_deref())), summary, error)
+                let hinted = with_hint(screened.value, error.as_deref(), self.job.bot.is_some());
+                (tools::for_model(area, hinted), summary, error)
             }
             Outcome::Denied => (
                 failure("denied", "A person denied this command; it did not run. Do not try it again unless they ask."),
@@ -377,8 +471,8 @@ impl Answering {
     fn find_tools(&mut self, call: &ToolCall) -> String {
         let input = tools::input_of(&call.arguments);
         let query = input.get("query").and_then(Value::as_str).unwrap_or_default();
-        let rights = self.host.client().map(|client| client.rights);
-        let allowed = tools::allowed(rights.as_ref(), &self.job.without);
+        let rights = self.host.client_of(&self.job.actor).map(|client| client.rights);
+        let allowed = tools::allowed_for(self.job.actor.kind(), rights.as_ref(), &self.job.without);
         let matches = tools::find(&allowed, query);
         self.loaded.extend(matches.iter().map(|tool| tool.spec.name.clone()));
         tools::found(&matches).to_string()
@@ -394,7 +488,8 @@ impl Answering {
     /// The core runs it on a task of its own, so stopping the answer never stops a command half way.
     async fn run(&self, request: Request) -> Option<Outcome> {
         let (host, engine, untrusted) = (Arc::clone(&self.host), self.job.engine.clone(), self.untrusted);
-        let ran = tokio::spawn(async move { host.run(request, &engine, untrusted).await }).await;
+        let actor = self.job.actor.clone();
+        let ran = tokio::spawn(async move { host.run_as(&actor, request, &engine, untrusted).await }).await;
         let response = ran.unwrap_or_else(|err| failed(&format!("the command did not finish: {err}")));
         let Response::Pending { approval } = response else { return Some(Outcome::Answered(Box::new(response))) };
         if !self.add(EntryContent::Approval { id: approval.id.clone() }, false).await {
@@ -402,7 +497,7 @@ impl Answering {
         }
         loop {
             tokio::time::sleep(self.limits.approval_poll).await;
-            match self.host.approval(&approval.id).await {
+            match self.host.approval_as(&self.job.actor, &approval.id).await {
                 Response::Approval { approval } => match approval.state {
                     ApprovalState::Pending | ApprovalState::Running => {}
                     ApprovalState::Done { response } => return Some(Outcome::Answered(response)),
@@ -504,18 +599,23 @@ fn failed(message: &str) -> Response {
     Response::Error { code: "error".into(), message: message.into() }
 }
 
-/// For `forbidden`, a word to the model what to tell the person.
-fn with_hint(mut value: Value, code: Option<&str>) -> Value {
+/// For `forbidden`, a word to the model what to tell the person; for a `bot`, where its access is
+/// set (task B.1).
+fn with_hint(mut value: Value, code: Option<&str>, bot: bool) -> Value {
     if code == Some("forbidden")
         && let Some(object) = value.as_object_mut()
     {
-        object.insert(
-            "hint".into(),
-            json!(
+        let hint = match bot {
+            true => {
+                "The person has not allowed this bot this. Tell them; they can change what the bot may use in Torro \
+                 Workplace, Assistant, Bots."
+            }
+            false => {
                 "The person has not allowed the assistant this. Tell them; they can change what the assistant may \
-                   use in Torro Workplace, Assistant."
-            ),
-        );
+                 use in Torro Workplace, Assistant."
+            }
+        };
+        object.insert("hint".into(), json!(hint));
     }
     value
 }
@@ -643,6 +743,8 @@ pub(crate) mod tests {
         ran: Mutex<Vec<(Request, String)>>,
         /// Whether each request of `ran` came after the conversation read untrusted data.
         untrusted: Mutex<Vec<bool>>,
+        /// Whom each request of `ran` ran as (task B.1).
+        actors: Mutex<Vec<Actor>>,
     }
 
     impl Host for FakeHost {
@@ -676,6 +778,28 @@ pub(crate) mod tests {
         /// Every approval expires here; deciding is tested with the real core.
         fn approval<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Response> {
             Box::pin(async { Response::Approval { approval: approval(ApprovalState::Expired) } })
+        }
+
+        /// A bot's client has the same rights here, with its kind; the runs are kept the same way.
+        fn client_of(&self, actor: &Actor) -> Option<ClientInfo> {
+            let mut client = self.client()?;
+            if let Actor::Bot(id) = actor {
+                (client.id, client.kind) = (id.clone(), torro_ipc::api::BOT_CLIENT.into());
+            }
+            Some(client)
+        }
+
+        fn run_as<'a>(
+            &'a self,
+            actor: &'a Actor,
+            request: Request,
+            engine: &'a str,
+            untrusted: bool,
+        ) -> BoxFuture<'a, Response> {
+            Box::pin(async move {
+                self.actors.lock().expect("lock").push(actor.clone());
+                self.run(request, engine, untrusted).await
+            })
         }
     }
 
@@ -752,6 +876,7 @@ pub(crate) mod tests {
             answer: answers,
             ran: Mutex::new(Vec::new()),
             untrusted: Mutex::new(Vec::new()),
+            actors: Mutex::new(Vec::new()),
         });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
@@ -766,6 +891,7 @@ pub(crate) mod tests {
             model: None,
             text: text.into(),
             without,
+            bot: None,
         };
         match assistant.send(message, EngineKind::Ai, Utc::now()).await {
             Response::Conversation { conversation, .. } => conversation.id,
@@ -914,6 +1040,65 @@ pub(crate) mod tests {
         let own = json!({"result": "todos", "todos": [{"collection": "nextcloud:anna/tasks", "summary": "Hi"}]});
         assert!(tools::untrusted(Area::Tasks, &issue) && tools::untrusted(Area::Tasks, &linked));
         assert!(!tools::untrusted(Area::Tasks, &own));
+    }
+
+    /// Task B.1: a bot answers with its own prompt – its personality first, the rules, then its
+    /// instructions and skills – reads no note of the assistant's memory and is offered none of its
+    /// tools, and its tools run as its own client.
+    #[tokio::test]
+    async fn a_bot_answers_with_its_prompt_and_its_client() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = Script::new(vec![calls("calendar_list_calendars", json!({})), says("No calendars.")]);
+        let (assistant, host) = set_up(dir.path(), Some(reader()), Place::Local, Arc::clone(&script));
+        let change = super::super::profile::Change {
+            personality: Some("Speak like a calm butler.".into()),
+            ..super::super::profile::Change::default()
+        };
+        assert!(matches!(assistant.update_profile(change).await, Response::Profile { .. }));
+        assert!(matches!(assistant.remember("Anna works in sales.", None, false, true).await, Response::Memory { .. }));
+        let bot = Bot {
+            id: "1a2b3c4d".into(),
+            name: "Travel planner".into(),
+            description: String::new(),
+            avatar: "letter".into(),
+            engine: ENGINE.into(),
+            model: None,
+            personality: "Cheerful and quick.".into(),
+            instructions: "Suggest trains before flights.".into(),
+            skills: vec![torro_ipc::bots::Skill { name: "Packing".into(), text: "Pack light.".into() }],
+            client: "9f8e7d6c".into(),
+        };
+        let message = Message {
+            conversation: None,
+            engine: ENGINE.into(),
+            model: None,
+            text: "Which calendars do I have?".into(),
+            without: Vec::new(),
+            bot: Some(bot),
+        };
+        let Response::Conversation { conversation, .. } = assistant.send(message, EngineKind::Ai, Utc::now()).await
+        else {
+            panic!("a conversation with the bot")
+        };
+        assert_eq!(conversation.bot.as_deref(), Some("1a2b3c4d"));
+        finished(&assistant, &conversation.id).await;
+
+        let asked = script.asked();
+        let system = asked[0].messages[0].content.clone();
+        let at = |text: &str| system.find(text).unwrap_or_else(|| panic!("{text:?} is missing: {system}"));
+        assert!(system.starts_with(prompt::PERSONALITY_HEADING), "{system}");
+        assert!(at("> Cheerful and quick.") < at(prompt::skill()), "its personality before the rules");
+        assert!(at(prompt::skill()) < at(prompt::BOT_HEADING), "the rules before its instructions");
+        assert!(at("> Suggest trains before flights.") < at("> Pack light."), "the instructions, then the skills");
+        assert!(at("> Pack light.") < at("## This conversation"), "the conversation last");
+        assert!(!system.contains("calm butler") && !system.contains("Anna"), "nothing of the assistant's: {system}");
+        let offered: Vec<&str> = asked[0].tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert!(offered.contains(&"calendar_list_calendars"), "{offered:?}");
+        assert!(
+            offered.iter().all(|tool| !tool.starts_with("assistant_") && !tool.starts_with("bots_")),
+            "{offered:?}"
+        );
+        assert_eq!(*host.actors.lock().expect("lock"), [Actor::Bot("9f8e7d6c".into())], "as the bot's client");
     }
 
     #[tokio::test]
@@ -1086,6 +1271,7 @@ pub(crate) mod tests {
             model: Some("qwen/qwen3-14b".into()),
             text: "Summarise".into(),
             without: Vec::new(),
+            bot: None,
         };
         assert!(matches!(other.send(message, EngineKind::Ai, Utc::now()).await, Response::Conversation { .. }));
         finished(&other, &id).await;

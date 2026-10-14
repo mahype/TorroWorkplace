@@ -223,7 +223,14 @@ B.1 ──┬── B.2
   erzeugter Teil. Die Regeln gewinnen; Datenregel und Kennzeichnung fremder Daten wie beim Hauptbot.
 
 ### B.1 Gerüst: Bereich `bots`, Speicher, Client-Art, direkter Chat
-- [ ] erledigt
+- [x] erledigt (Kennung eines Bots 8 Hex-Zeichen; `bots.save_bot` ersetzt einen Bot ganz, Ändern braucht wie beim
+  Entwurf das Recht zu löschen; `assistant.send_message { bot }` antwortet mit `engine`/`model` der Anfrage (ohne
+  Modell das des Bots), `bots.ask_bot` mit denen des Bots; eine Unterhaltung gehört für immer ihrem Bot; ein Client
+  braucht für `send_message { bot }` zusätzlich Schreiben in `bots`; der Hauptbot schlägt nur neue Bots vor, `ask_bot`
+  bleibt bis B.2 `forbidden` (Haken `bots::assistant_may_ask`); Werkzeuge `bots_*` bekommt das Modell des Hauptbots
+  erst mit B.2; `assistant.open_window { bot }` bleibt `unsupported` bis B.3; Freigaben eines Bots nennen ihn
+  „Bot "…"“; `docs/api-reference.md` gibt es noch nicht, A.9; nachgetragen (zwingend mechanisch): `main.rs`
+  (`mod bots`), `{daemon,pim,mcp}.rs`, `ui/agents.rs`, `crates/torroassistant/src/**` (`match`-Zweige, neue Felder))
 - **Modell:** Opus · **Braucht:** C.11 · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
   `crates/torro-ipc/src/bots.rs` (neu), `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/bots/**`
   (neu), `crates/torroworkplace/src/{core,clients,approvals,audit}.rs`

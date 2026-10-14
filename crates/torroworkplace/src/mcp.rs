@@ -1882,6 +1882,7 @@ mod tests {
                 model: None,
                 text: "What is on tomorrow?".into(),
                 without: vec![Area::Mail],
+                bot: None,
             })
         );
         let read = request_for("assistant_get_conversation", args(json!({"id": "0123456789abcdef", "after": 4})), &Utc);

@@ -1105,6 +1105,12 @@ impl PimService {
             | Request::ListMemories
             | Request::Remember { .. }
             | Request::Forget { .. } => return None,
+            // No collection: bots are the assistant's (task B.1).
+            Request::ListBots
+            | Request::GetBot { .. }
+            | Request::SaveBot { .. }
+            | Request::DeleteBot { .. }
+            | Request::AskBot { .. } => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {
