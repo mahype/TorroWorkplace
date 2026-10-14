@@ -26,12 +26,18 @@ targets = [
 # Signed and notarised .app bundles for macOS (.github/workflows/publish-macos-app.yml). Needs the
 # signing secrets and the repository variable MACOS_APP_ENABLED=true, see docs/release.md.
 publish-jobs = ["./publish-macos-app"]
+# Before anything is built: clippy, design check and tests on Linux, macOS and Windows (.github/workflows/ci.yml).
+# A failing check stops the release.
+plan-jobs = ["./ci"]
+# release.yml carries one hand edit: the `host` job also needs `custom-ci`, otherwise a failed check would skip the
+# builds but `host` (if: always()) would still create the release. After `dist generate` re-apply it.
+allow-dirty = ["ci"]
 # Where the shell and PowerShell installers put the binaries.
 install-path = "CARGO_HOME"
 # No self-updater: updates go through the package managers.
 install-updater = false
-# Pull requests only run the plan step (no artefact builds).
-pr-run-mode = "plan"
+# Pull requests start no workflow at all: GitHub Actions costs money, checks run locally (scripts/ci-local.sh).
+pr-run-mode = "skip"
 
 # The macOS job downloads the released binaries and uploads the .app bundles, so it needs write access to
 # the release contents (a called workflow cannot have more rights than its caller grants).
