@@ -14,10 +14,14 @@
 //! The counts are part of the [`Snapshot`]; the daemon hands over a new one whenever something
 //! is written to the inbox or an approval changes, so the tray never asks the socket itself and
 //! nothing polls.
+//!
+//! While the voice listener runs (task C.9, [`voice_section`]) the menu says so ("Listening for
+//! “Hey Torro”", "Recording …") and offers "Mute microphone", which switches voice off. Switching
+//! it on is in the control centre, where the microphone is chosen and tested.
 
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
-use torro_ipc::Request;
+use torro_ipc::{Request, SettingKey, VoiceState};
 use torro_pim::AccountState;
 use torro_setups::{LoadMode, TemplateSummary};
 
@@ -100,7 +104,8 @@ const SOURCE_IN_MENU: usize = 16;
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
-    let mut menu = inbox_section(snapshot);
+    let mut menu = voice_section(snapshot.voice);
+    menu.extend(inbox_section(snapshot));
     if let Some(name) = &snapshot.unsupported {
         menu.push(info(trf("{name} not supported yet", &[("name", name)])));
         menu.push(Item::Separator);
@@ -137,6 +142,26 @@ pub fn build(snapshot: &Snapshot) -> Vec<Item> {
     menu.push(entry(tr("Settings…"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string() }));
     menu.push(entry(tr("Quit"), Request::Quit));
     menu
+}
+
+/// What the voice listener does, for the tooltip and the menu; empty while voice is off.
+pub fn voice_line(state: VoiceState) -> &'static str {
+    match state {
+        VoiceState::Off => "",
+        VoiceState::Listening => tr("Listening for “Hey Torro”"),
+        VoiceState::Recording => tr("Recording …"),
+        VoiceState::Answering => tr("Answering …"),
+    }
+}
+
+/// While the voice listener runs: what it does and "Mute microphone", which switches voice off
+/// (`settings.set_setting voice_enabled false`), then a separator. Empty while voice is off.
+fn voice_section(state: VoiceState) -> Vec<Item> {
+    if state == VoiceState::Off {
+        return Vec::new();
+    }
+    let mute = Request::SetSetting { key: SettingKey::VoiceEnabled, value: serde_json::Value::Bool(false) };
+    vec![info(voice_line(state).into()), entry(tr("Mute microphone"), mute), Item::Separator]
 }
 
 /// While something waits: "Inbox (n)" and the newest entries ("title · source"), then a
@@ -424,6 +449,30 @@ mod tests {
 
     /// Titles come from agents and scripts: shown as written, never as a line break or turned
     /// text, and short enough for the bar.
+    /// Task C.9: while the listener runs the menu starts with what it does and "Mute microphone";
+    /// voice off, there is nothing about it.
+    #[test]
+    fn the_menu_shows_listening_and_mutes_the_microphone() {
+        assert_eq!(labels(&build(&snapshot()))[0], format!("{} ▸", tr("Load template")), "off: nothing");
+        for state in [VoiceState::Listening, VoiceState::Recording, VoiceState::Answering] {
+            let menu = build(&Snapshot { voice: state, ..snapshot() });
+            assert_eq!(
+                labels(&menu)[..3],
+                [format!("({})", voice_line(state)), tr("Mute microphone").to_string(), "-".to_string()],
+                "{state:?}"
+            );
+            assert_eq!(
+                action_of(&menu, tr("Mute microphone")),
+                Some(Action::Run(Box::new(Request::SetSetting {
+                    key: SettingKey::VoiceEnabled,
+                    value: serde_json::json!(false)
+                })))
+            );
+        }
+        assert_eq!(voice_line(VoiceState::Recording), tr("Recording …"));
+        assert_eq!(voice_line(VoiceState::Off), "");
+    }
+
     #[test]
     fn foreign_titles_show_as_plain_text() {
         let label = |title: &str, source: &str| entry_label(&line(title, source));

@@ -1096,7 +1096,9 @@ impl PimService {
             | Request::RenameConversation { .. }
             | Request::DeleteConversation { .. }
             | Request::PinConversation { .. }
-            | Request::OpenChatWindow { .. } => return None,
+            | Request::OpenChatWindow { .. }
+            | Request::VoiceStatus
+            | Request::TestVoice => return None,
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {

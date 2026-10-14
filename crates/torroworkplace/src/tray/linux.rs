@@ -47,9 +47,10 @@ pub type TrayHandle = ksni::Handle<Tray>;
 pub struct Tray {
     pub snapshot: Snapshot,
     daemon: Arc<Daemon>,
-    /// The pixmaps for the design they were drawn for (`Snapshot::design`). ksni asks for them on
-    /// every update to see whether the icon changed; they are drawn again only when the design did.
-    icon: Mutex<Option<(String, Vec<ksni::Icon>)>>,
+    /// The pixmaps for the design and voice mark they were drawn for (`Snapshot::design`,
+    /// `Snapshot::voice`). ksni asks for them on every update to see whether the icon changed;
+    /// they are drawn again only when one of the two did.
+    icon: Mutex<Option<((String, icon::Mark), Vec<ksni::Icon>)>>,
 }
 
 /// Shows the icon. Clicks go to `daemon`; [`TrayHandle::update`] replaces the snapshot, and with
@@ -78,22 +79,22 @@ impl ksni::Tray for Tray {
     /// The name and, when something waits, how much. Never a summary: the description may be
     /// read as markup by the bar, and summaries hold text a client sent.
     fn tool_tip(&self) -> ksni::ToolTip {
-        ksni::ToolTip {
-            title: "Torro Workplace".into(),
-            description: menu::waiting_line(Waiting::of(&self.snapshot)),
-            ..Default::default()
-        }
+        let lines =
+            [menu::voice_line(self.snapshot.voice).to_string(), menu::waiting_line(Waiting::of(&self.snapshot))];
+        let description = lines.into_iter().filter(|line| !line.is_empty()).collect::<Vec<_>>().join(" · ");
+        ksni::ToolTip { title: "Torro Workplace".into(), description, ..Default::default() }
     }
 
-    /// The symbol of the chosen design pack, or the grid in its accent (task L.3).
+    /// The symbol of the chosen design pack, or the grid in its accent (task L.3), with the mark
+    /// of the voice listener (task C.9).
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-        let design = &self.snapshot.design;
+        let wanted = (self.snapshot.design.clone(), icon::Mark::of(self.snapshot.voice));
         let mut cached = self.icon.lock().unwrap_or_else(PoisonError::into_inner);
         match cached.as_ref() {
-            Some((drawn_for, drawn)) if drawn_for == design => drawn.clone(),
+            Some((drawn_for, drawn)) if *drawn_for == wanted => drawn.clone(),
             _ => {
-                let drawn = pixmaps(&icon::Look::for_design(design));
-                *cached = Some((design.clone(), drawn.clone()));
+                let drawn = pixmaps(&icon::Look::for_design(&wanted.0).marked(wanted.1));
+                *cached = Some((wanted, drawn.clone()));
                 drawn
             }
         }
