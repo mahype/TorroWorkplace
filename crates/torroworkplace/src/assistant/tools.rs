@@ -229,14 +229,36 @@ pub fn for_model(area: Area, value: Value) -> String {
 }
 
 /// An answer of `area` holds text from outside the suite: everything of mail and of GitHub (issues,
-/// repositories of others) but errors, and inbox answers that carry an entry marked `untrusted`.
-fn untrusted(area: Area, value: &Value) -> bool {
+/// repositories of others) but errors, inbox answers that carry an entry marked `untrusted`, and
+/// task answers that carry GitHub items – an issue of a filter list (its list is `github:…`) or a
+/// task linked to one (`github:…` link, task C.11). After one, a note of the assistant waits for a
+/// person (task C.11, `super::model`).
+pub fn untrusted(area: Area, value: &Value) -> bool {
     let error = value.get("result").and_then(Value::as_str) == Some("error");
     match area {
         Area::Mail | Area::Github => !error,
         Area::Inbox => value.to_string().contains("\"untrusted\":true"),
+        Area::Tasks => {
+            let text = value.to_string();
+            text.contains("\"collection\":\"github:") || text.contains("\"id\":\"github:")
+        }
         _ => false,
     }
+}
+
+/// Whether the command `name` (a catalogue name, as a conversation's tool line keeps it) may have
+/// answered with data from outside the suite ([`untrusted`]): every command of mail, GitHub and
+/// the inbox, and the task commands that read GitHub items (`tasks.list_todos` lists the issues of
+/// filter lists, `tasks.add_link` takes an issue's title). The line does not keep the answer, so
+/// this counts what might have been (task C.11).
+pub fn may_have_read_untrusted(name: &str) -> bool {
+    if matches!(name, "tasks.list_todos" | "tasks.add_link") {
+        return true;
+    }
+    torro_ipc::api::CATALOGUE
+        .iter()
+        .find(|command| command.name == name)
+        .is_some_and(|command| matches!(command.area, Area::Mail | Area::Github | Area::Inbox))
 }
 
 /// `value` within [`RESULT_CHARS`]: texts over [`TEXT_CHARS`] and lists over [`LIST_ITEMS`] cut

@@ -486,6 +486,9 @@ freigeben. Das machen wir anders:
    eigene Antwort (`result: "pending"`).
 5. Bei „Allow“ prüft der Dienst Rechte und Reichweite des Clients **zum Zeitpunkt der
    Entscheidung** erneut und führt den Befehl dann aus; die Antwort steht danach in der Freigabe.
+   Kam der Befehl über einen geliehenen Schlüssel (Assistent mit Claude Code, C.7), gilt dabei weiter, was dem
+   Lauf entzogen war (Mail und abgeschaltete Bereiche); die Freigabe speichert das und den Antrieb, der auch in
+   der Protokollzeile der Entscheidung steht (C.11).
    Entschiedene und abgelaufene Freigaben bleiben einen Tag lesbar. Ein Client kann höchstens zehn
    Freigaben gleichzeitig offen haben (sonst `busy`), damit er den Menschen nicht mit
    Benachrichtigungen überschüttet. Befehle aus „Was nie nach außen geht“ werden nie zu einer

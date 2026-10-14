@@ -876,7 +876,7 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
             let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "5f2c9a1e7b3d4086".repeat(4))));
             Some(Response::ClientKey { client, key })
         }
-        Request::CreateClient { name, kind, template, agent } => {
+        Request::CreateClient { name, kind, template, agent, rights } => {
             // The hook client "Connect agent" creates after the agent (task E2.3) gets an id of
             // its own, as it would from the core.
             let id = if kind == HOOK_CLIENT { "4c7a19e3" } else { "9d4b7e21" };
@@ -886,7 +886,7 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                 kind: kind.clone(),
                 created: Utc::now(),
                 last_used: None,
-                rights: template.rights().for_kind(kind),
+                rights: rights.clone().unwrap_or_else(|| template.rights()).for_kind(kind),
                 agent: *agent,
             };
             let key = IssuedKey::new(Key::new(format!("torro_{id}_{}", "a3e81c0f6d2b9754".repeat(4))));

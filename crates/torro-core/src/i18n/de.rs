@@ -2521,4 +2521,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("picture \"{name}\"", "Bild „{name}“"),
     ("{count} notes", "{count} Notizen"),
     ("{count} of {max} characters", "{count} von {max} Zeichen"),
+    // Hardening (C.11)
+    ("Not listening", "Hört nicht zu"),
 ];

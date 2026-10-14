@@ -480,16 +480,6 @@ pub(super) fn shows_area(area: Area, kind: &str) -> bool {
     area.grantable() && !(kind == ASSISTANT_CLIENT && area == Area::Assistant)
 }
 
-/// Starts saving `rights` for the client `id` at once, without the delay: the rights view shows
-/// them from now on ([`shown_rights`]) until the core answered and the reload carries them, as after
-/// any change ([`answered`], [`loaded`]). The Assistant page calls it right after the core created
-/// the assistant's client (task C.6), so the rights chosen before it existed show without a jump.
-pub(super) fn save_rights(state: &mut State, id: String, rights: Rights) -> Action {
-    state.selected = Some(id.clone());
-    state.draft = Some(Draft { id: id.clone(), rights: rights.clone(), phase: Phase::Sending });
-    Action::Send(Request::UpdateClient { id, rights })
-}
-
 /// Sends a waiting draft now: `clients.update_client` with the whole rights.
 fn save_now(state: &mut State) -> Action {
     match state.draft.as_mut() {

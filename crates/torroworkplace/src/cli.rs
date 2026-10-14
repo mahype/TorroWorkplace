@@ -214,6 +214,7 @@ fn clients_request(verb: &str, args: &[&str], options: &Options) -> Result<Reque
             kind: options.kind.unwrap_or(DEFAULT_KIND).to_string(),
             template: parse_template(options.template)?,
             agent: parse_agent(options.agent)?,
+            rights: None,
         }),
         ("remove", [id]) => Ok(Request::RemoveClient { id: id.to_string() }),
         ("new-key", [id]) => Ok(Request::NewClientKey { id: id.to_string() }),
@@ -698,6 +699,7 @@ mod tests {
             kind: kind.into(),
             template,
             agent: None,
+            rights: None,
         };
         assert_eq!(request(&["ctl", "clients", "add", "Claude Code"]), add("script", RightsTemplate::ReadAndWrite));
         assert_eq!(
