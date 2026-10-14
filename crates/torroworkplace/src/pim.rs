@@ -1275,6 +1275,12 @@ impl PimService {
         }
     }
 
+    /// The stored accounts were read ([`PimService::start`]), or could not be: until then the
+    /// account list is empty although accounts may exist.
+    pub async fn accounts_loaded(&self) -> bool {
+        self.state.read().await.loaded
+    }
+
     /// The accounts with their state, as `reach` may see them: for the suite with all
     /// collections, hidden ones included, so the control centre can show them again (task S.2);
     /// for a client only with the collections it sees as calendar or task list.
