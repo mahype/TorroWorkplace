@@ -565,6 +565,68 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{what} in every Nextcloud account", "{what} in allen Nextcloud-Konten"),
     ("{what} in Talk of every Nextcloud account", "{what} in Talk aller Nextcloud-Konten"),
     ("{what} on every ntfy server", "{what} auf allen ntfy-Servern"),
+    // ntfy accounts (E5.12)
+    (
+        "This is not the address of an ntfy server. Enter it without a topic, like ntfy.sh or https://push.example.org.",
+        "Das ist keine Adresse eines ntfy-Servers. Gib sie ohne Thema ein, etwa ntfy.sh oder https://push.example.org.",
+    ),
+    (
+        "A topic name has 1 to 64 letters, digits, hyphens or underscores.",
+        "Ein Themenname hat 1 bis 64 Buchstaben, Ziffern, Bindestriche oder Unterstriche.",
+    ),
+    (
+        "A login is only sent over https or to this computer. Use an https address.",
+        "Eine Anmeldung geht nur über https oder an diesen Rechner. Nimm eine https-Adresse.",
+    ),
+    (
+        "The ntfy server refused: the topics need a login, or this login may not read them.",
+        "Der ntfy-Server lehnt ab: Die Themen brauchen eine Anmeldung, oder diese Anmeldung darf sie nicht lesen.",
+    ),
+    (
+        "The ntfy server asks to wait. Try again in a moment.",
+        "Der ntfy-Server bittet zu warten. Versuch es gleich noch einmal.",
+    ),
+    (
+        "The ntfy server could not be reached. Check the address and the connection.",
+        "Der ntfy-Server ist nicht erreichbar. Prüfe Adresse und Verbindung.",
+    ),
+    (
+        "The server did not answer like an ntfy server. Check the address.",
+        "Der Server antwortet nicht wie ein ntfy-Server. Prüfe die Adresse.",
+    ),
+    (
+        "This ntfy server is connected already. Add topics on its account page.",
+        "Dieser ntfy-Server ist schon verbunden. Füge Themen auf seiner Kontoseite hinzu.",
+    ),
+    (
+        "Connect again: no login is stored on this device",
+        "Erneut verbinden: Auf diesem Gerät ist keine Anmeldung gespeichert",
+    ),
+    ("Enter the password or the access token.", "Gib das Passwort oder das Zugangs-Token ein."),
+    ("The account has no such topic.", "Das Konto hat kein solches Thema."),
+    ("Give the topic a label.", "Gib dem Thema ein Etikett."),
+    ("Give every topic a label of up to {n} characters.", "Gib jedem Thema ein Etikett mit höchstens {n} Zeichen."),
+    ("Add at least one topic.", "Füge mindestens ein Thema hinzu."),
+    ("An account subscribes to at most {n} topics.", "Ein Konto abonniert höchstens {n} Themen."),
+    ("There is no ntfy account {id}.", "Es gibt kein ntfy-Konto {id}."),
+    ("Connect the ntfy server {server}", "Den ntfy-Server {server} verbinden"),
+    (
+        "Subscribe the ntfy account {account} to a topic \"{label}\"",
+        "Das ntfy-Konto {account} das Thema „{label}“ abonnieren lassen",
+    ),
+    (
+        "Rename the topic \"{label}\" of the ntfy account {account} to \"{new}\"",
+        "Das Thema „{label}“ des ntfy-Kontos {account} in „{new}“ umbenennen",
+    ),
+    (
+        "Unsubscribe the ntfy account {account} from the topic \"{label}\"",
+        "Das Thema „{label}“ des ntfy-Kontos {account} abbestellen",
+    ),
+    (
+        "Unsubscribe the ntfy account {account} from an unknown topic",
+        "Ein unbekanntes Thema des ntfy-Kontos {account} abbestellen",
+    ),
+    ("Change a topic of the ntfy account {account}", "Ein Thema des ntfy-Kontos {account} ändern"),
     // Icons, columns and traits of the new sources (E5.15)
     ("Direct message", "Direktnachricht"),
     ("Mention", "Erwähnung"),
