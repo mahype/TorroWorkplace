@@ -268,19 +268,21 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   Design-Prüfung aller vier Apps und der Steuerzentrale (Agent `torro-design-review`), `torro-api-review` über die
   ganze Stufe, Fehler beheben.
 
-## Stufe 3: KI-Konten (S.23–S.26)
+## Stufe 3: KI (S.23–S.26)
 
-Konzept: [settings.md › KI-Konten](../settings.md#ki-konten), 2026-10-15. Anlass: Ein verbundenes Ollama erschien
-weder unter „Agents & API“ noch auf seiner Kontoseite mit Modellen; dabei fiel auf, dass seine Cloud-Modelle für die
-Datenregel als lokal gelten.
+Konzept: [settings.md › KI](../settings.md#ki), entschieden am 2026-10-15. Zentral richtet man Anbieter ein und schaltet
+ihre Modelle an und ab (Steuerzentrale › AI); welches Modell ein Modul wofür nimmt, stellt man im Modul ein. Anlass: Ein
+verbundenes Ollama erschien weder unter „Agents & API“ noch auf seiner Kontoseite mit Modellen; dabei fiel auf, dass
+seine Cloud-Modelle für die Datenregel als lokal galten (S.23).
 
-S.23 schließt eine Datenschutzlücke und kommt zuerst. S.24–S.26 sind kleine Schritte, die ohne Stufe 2 gehen; ihre
-Dateien überschneiden sich nicht, sie können parallel laufen. S.24 und S.21 ändern beide `ui/accounts.rs`: nicht
-gleichzeitig, und wer später kommt, übernimmt die Gruppe „Models“ bzw. die kurzen Kontoseiten.
+S.24 legt den Befehl und die Regel im Kern fest, danach laufen S.25 (Seite AI) und S.26 (Auswahlen der Module)
+parallel. S.26 und S.17 berühren beide die Auswahl „New chats“: Wer später kommt, übernimmt den Filter bzw. den Umzug in
+`torro-settings-ui`.
 
 ```
-S.23 (Datenregel, sofort)
-S.24 (Modelle auf der Kontoseite) · S.25 (Katalog) · S.26 (Hinweis in „Connect agent“)
+S.23 (Datenregel, erledigt)
+S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
+                                └── S.26 (Auswahlen bieten nur angeschaltete Modelle)
 ```
 
 ### S.23 Ollama-Cloud-Modelle gelten für die Datenregel als entfernt
@@ -315,7 +317,7 @@ S.24 (Modelle auf der Kontoseite) · S.25 (Katalog) · S.26 (Hinweis in „Conne
 - **Verlauf:** `history_allowed` vergleicht heute nur die Engine (`ai:ollama@…`). Künftig Engine **und Modell**
   (`EntryContent::Answer` trägt `model`); fehlt das Modell einer früheren Antwort, gilt sie als von einem anderen
   Modell. So bekommt ein Cloud-Modell nicht, was ein lokales Modell desselben Kontos aus Mail nacherzählt hat.
-- **Oberfläche:** keine in dieser Aufgabe (den Ort zeigt S.24).
+- **Oberfläche:** keine in dieser Aufgabe (den Ort zeigt S.25).
 - **API:** `Request::AiModels` · `ai.list_models` · Read (neues Feld `remote`)
 - **MCP:** `ai_list_models` (dasselbe Tool; Beschreibung um „whether it runs elsewhere“ ergänzen)
 - **Abnahme:** Tests ohne Netz (gefälschter Ollama wie in `account/ai.rs`):
@@ -328,54 +330,115 @@ S.24 (Modelle auf der Kontoseite) · S.25 (Katalog) · S.26 (Hinweis in „Conne
   - eine Notiz, die nach Mail entstand, ist bei einem lokalen Modell `local_only` und erreicht das Cloud-Modell nicht;
   - fmt, clippy, test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
 
-### S.24 Die Kontoseite eines KI-Kontos zeigt seine Modelle
+### S.24 Modelle an- und abschalten: Befehl und Regel im Kern
 - [ ] erledigt
-- **Modell:** Sonnet · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`, `crates/torroworkplace/src/ui/mod.rs`
-  · **Nach:** S.23 (für den Ort „Ollama Cloud“)
-- Warum: Ein verbundenes Ollama zeigte nur Status und Server. Die Modelle sah man nur unter Assistant › New chats,
-  nachdem man dort Ollama gewählt hatte.
-- Zwischen „Status“ und „Connection“ die Gruppe **„Models“**: eine Zeile je Modell mit Name, darunter die Merkmale in
-  einer Zeile („Tools · Thinking · 128k context“) und der Ort („On this computer“, „Ollama Cloud“ bei Ollama mit
-  `remote`, sonst „Cloud“). Modelle mit `tools == Some(false)` blass mit „Can't use tools“. Rechts je Zeile „Use for
-  new chats“ (sekundärer Knopf, nur bei Modellen mit Werkzeugen); das gewählte trägt stattdessen ein Häkchen und
-  „Used for new chats“.
-- Fußzeile: „The assistant offers the models that can use tools. Each chat can pick another.“
-- Geladen werden die Modelle beim Öffnen der Kontoseite (`ai.list_models`, `all: false`), nicht bei jedem Takt;
-  solange sie laden, „Loading models…“. Fehler (Server aus): der Satz des Kerns in der Gruppe, der Status bleibt.
-  OpenRouter: dazu „Show closed models“ (`all: true`).
-- „Use for new chats“ schickt `settings.set_setting assistant_default` mit Konto und Modell; die gespeicherte
-  Denkstufe bleibt.
-- **Oberfläche:** Steuerzentrale › Accounts › KI-Konto › „Models“
-- **API:** `Request::AiModels` · `ai.list_models` · Read; `Request::SetSetting` · `settings.set_setting` · Admin
-- **MCP:** `ai_list_models`, `settings_set_setting` (Admin, beim Agenten mit Freigabe)
-- **Abnahme:** Tests mit Demo-Daten: Modelle mit Merkmalen und Ort, ein Modell ohne Werkzeuge ohne Knopf, „Use for
-  new chats“ baut den richtigen `SetSetting`. Braucht die Sichtprüfung eine neue Demo-Ansicht in `ui/launch.rs`,
-  vorher nachfragen. Sichtprüfung bei 1100, 500 und 360 px (Agent `torro-design-review`); fmt, clippy, test (auch
-  `TORRO_LANG=de`) grün.
+- **Modell:** Opus (neuer Befehl, Regel für alle Module, Datenregel) · **Dateien:** `crates/torro-ipc/src/lib.rs`,
+  `crates/torro-ipc/src/api.rs`, `crates/torro-core/src/ai/mod.rs`, `crates/torroworkplace/src/account/ai.rs`,
+  `crates/torroworkplace/src/assistant/model.rs`, `crates/torroworkplace/src/assistant/delegate.rs`,
+  `crates/torroworkplace/src/assistant/engines/mod.rs`, `crates/torroworkplace/src/assistant/engines/claude.rs`,
+  `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/pim.rs`, `crates/torroworkplace/src/daemon.rs`,
+  `crates/torroworkplace/src/audit.rs`, `crates/torroworkplace/src/approvals.rs`, `crates/torroworkplace/src/mcp.rs`,
+  `docs/api.md`, `docs/api-reference.md`
+- **Neuer Befehl:** `Request::SetModelEnabled { account, model, enabled }` · `ai.set_model_enabled` · Bereich `ai` ·
+  Admin. Schaltet ein Modell eines Anbieters für die ganze Suite an oder aus. Fehlercodes: `not-found` (kein solcher
+  Anbieter; Claude Code nicht gefunden; Anschalten eines Modells, das der Anbieter nicht meldet; Ausschalten geht auch
+  dann), `offline`, `auth`, `not-connected`, `busy` (Anschalten fragt den Server nach seinen Modellen),
+  `forbidden`. Katalogbeschreibung englisch: „Turns a model of an AI provider on or off for the whole suite; modules
+  offer only models that are on. Turning on a model that runs elsewhere is kept for people.“
+- **Nur Menschen schalten entfernte Modelle an:** `enabled: true` für ein Modell, das anderswo rechnet (`remote`), gilt
+  wie `mail_to_cloud: true` als `kept_for_people` (`docs/api.md` Punkt 6 ergänzen); ein Agent bekommt `forbidden` mit
+  Satz. Ausschalten und das Anschalten eines Modells, das hier rechnet, sind gewöhnliche Admin-Befehle mit Freigabe.
+  Die Zusammenfassung der Freigabe (`approvals::Facts`) nimmt Anbieter, Modell und Ort aus der Liste des Kerns, nie aus
+  dem Text des Clients.
+- **Lesen:** `ai.list_models` liefert je Modell das neue Feld `enabled` (verträglich, `#[serde(default)]`; der Kern
+  setzt es aus der Ablage, `account/ai.rs` setzt es beim Abfragen des Servers nie). `account` darf auch die Engine
+  `claude-code` sein, unter derselben Bedingung, unter der `assistant.list_engines` sie anbietet (Befehl gefunden **und**
+  der Assistent hat seinen Client): dann die Modelle aus `engines::claude::models()` mit `remote: true`, `all` wird
+  ignoriert; sonst `not-found`. Doc-Kommentar von `Request::AiModels` und Katalogtext von `ai.list_models` nennen das
+  („or an engine id from assistant_list_engines“), auch dass Leserecht in `ai` damit verrät, ob Claude Code installiert
+  ist.
+- **Ablage:** eigene Datei `<config>/ai-models.json` (0600, atomar geschrieben): je Anbieter die angeschalteten Modelle und
+  ob der Mensch dort schon etwas ausgeschaltet hat. **Nicht** in `settings.json`, damit `settings.update_settings`
+  (Bereich `settings`) die Rechte in `ai` nicht umgeht und gleichzeitige Schaltvorgänge nicht überschreibt. Protokoll
+  (`audit.rs`) nur mit Anbieter und `enabled`, ohne Modellnamen.
+- **Regel am Anfang** (settings.md › KI): an sind die Modelle mit Werkzeugen, die auf diesem Rechner rechnen; aus sind
+  Ollama Cloud, Claude Code, OpenRouter und Server im Netz. Beim ersten Start nach dem Update sind zusätzlich die
+  Modelle an, die schon genutzt werden: `assistant_default` und die Modelle der Bots. Die pro Unterhaltung gewählten
+  Modelle schalten nichts an; sie fallen wie unten auf „Automatic“, mit Hinweis.
+- **Der Kern hält sich daran, in dieser Reihenfolge:** erst das Modell (ein gespeichertes, aber abgeschaltetes wird
+  durch „Automatic“ unter den angeschalteten Modellen desselben Anbieters ersetzt, lokal zuerst wie S.23), dann der Ort,
+  dann Datenregel, Prompt und `local_only` (wie S.23). Das gilt für `assistant.send_message`, Bots ohne oder mit
+  abgeschaltetem Modell (`delegate.rs`) und Engine B: Für Claude Code übergibt der Kern immer ausdrücklich ein
+  angeschaltetes Modell (`--model`), nie „Claude Code wählt selbst“.
+- **Ein Anbieter ganz aus:** `assistant.list_engines` nennt nur Anbieter mit mindestens einem angeschalteten Modell
+  (Katalogtext nachziehen: KI-Konten **und** Claude Code, mit `models`). `send_message` und `ask_bot` mit einer solchen
+  Engine antworten `unsupported` mit „Turn on a model of {provider} in Settings › AI.“; kein Ausweichen auf einen
+  anderen Anbieter. Die Beschreibungen von `assistant.send_message` und `bots.save_bot` sagen, dass ein abgeschaltetes
+  Modell ersetzt wird und die Antwort das gewählte nennt.
+- **Oberfläche:** Steuerzentrale › AI (S.25)
+- **API:** `Request::SetModelEnabled` · `ai.set_model_enabled` · Admin; `Request::AiModels` · `ai.list_models` · Read
+  (neues Feld `enabled`, Engine `claude-code`)
+- **MCP:** `ai_set_model_enabled` (Admin, beim Agenten mit Freigabe; entfernte Modelle anschalten nur Menschen);
+  `ai_list_models` (Beschreibung ergänzt)
+- **Abnahme:** Handler-Tests (Temp-Verzeichnisse, gefälschter Ollama):
+  - Schalten wirkt, überlebt einen Neustart und steht nicht in `settings.get_settings`;
+  - Regel am Anfang: lokales Modell an, `:cloud`, OpenRouter und Claude Code aus; genutzter Standard und Bot-Modell an;
+  - ein Agent kann ein entferntes Modell nicht anschalten (`forbidden`), ein lokales nur mit Freigabe;
+  - ist ein lokales Modell aus und nur ein `:cloud`-Modell desselben Kontos an, nimmt „Automatic“ das Cloud-Modell **und**
+    die Datenregel behandelt es als entfernt;
+  - Claude Code bekommt immer ein angeschaltetes `--model`; ohne angeschaltetes Modell `unsupported`;
+  - Rechte-Tabelle und MCP-Vertragstest grün (automatisch); API-Referenz neu erzeugt
+    (`TORRO_BLESS=1 cargo test -p torro-ipc`); fmt, clippy, test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
 
-### S.25 KI-Anbieter stehen im Katalog oben
+### S.25 Steuerzentrale › AI: Anbieter und ihre Modelle
 - [ ] erledigt
-- **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/wizard.rs`
-- In `provider_step` kommt „AI providers“ an die erste Stelle, mit dem Untertitel „Ollama, LM Studio, OpenRouter and
-  more“ statt „Summaries and agents“. Die übrigen Einträge behalten ihre Reihenfolge.
-- **Oberfläche:** Steuerzentrale › Accounts › Add account
-- **API / MCP:** unverändert (`accounts.connect_ai` bleibt `Never`, Geheimnisse nur über die Oberfläche;
-  `ai.find_local_servers` / `ai_find_local_servers`)
-- **Abnahme:** Test, dass die erste Zeile des Katalogs die KI-Anbieter sind; fmt, clippy, test (auch
-  `TORRO_LANG=de`) grün.
+- **Modell:** Opus (neue Seite, Umzug aus Accounts) · **Braucht:** S.24 · **Dateien:**
+  `crates/torroworkplace/src/ui/ai.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`,
+  `crates/torroworkplace/src/ui/wizard.rs`, `crates/torroworkplace/src/ui/accounts.rs`,
+  `crates/torroworkplace/src/ui/assistant.rs`, `crates/torroworkplace/src/ui/launch.rs`
+- Neuer Abschnitt **AI** in der Seitenleiste nach Accounts (`Section::Ai`, `--section ai`, Symbol nach dem Design-Skill
+  aus dem vorhandenen Satz). Aufbau nach settings.md › KI: Karten der Anbieter (Open First, Status, „3 of 10 models
+  on“), „Add provider“, je Anbieter eine Unterseite mit Status, Verbindung, „Models“ mit Merkmalen, Ort („On this
+  computer“, „Ollama Cloud“, „Cloud“) und Schalter, Suche und „Show closed models“ bei OpenRouter, „Remove provider…“.
+  Claude Code als Karte, sobald gefunden, ohne „Remove“. Die Karten zeigen „3 models on“ aus der Ablage (über
+  `ai.list_models` erst auf der Unterseite), nicht „3 of 10“, damit beim Öffnen der Seite nicht jeder Server gefragt
+  wird. Der Ort steht je Modell: „On this computer“, „Ollama Cloud“, „Cloud (Anthropic)“, „Cloud“.
+- „Add provider“ öffnet den vorhandenen Dialog (`wizard.rs`) gleich bei den KI-Anbietern; der Katalog „Add account“
+  verliert den Eintrag „AI providers“, die Liste unter Accounts die KI-Konten. Wer `--section accounts` mit einem
+  KI-Konto erwartet (alte Verweise), landet über `--section ai` richtig: Die Zeile „Engines“ der Assistentenseite und
+  „No AI account yet“ öffnen künftig AI statt Accounts.
+- Modelle werden beim Öffnen einer Unterseite geladen (`ai.list_models`), nicht bei jedem Takt; „Loading models…“,
+  Fehler des Servers als Satz in der Gruppe.
+- **Oberfläche:** Steuerzentrale › AI
+- `accounts.list_accounts` liefert die KI-Konten weiter (Agenten brauchen ihre Kennungen für `ai_list_models`); nur die
+  Liste unter Accounts in der Oberfläche blendet sie aus.
+- S.25 und S.21 ändern beide `ui/accounts.rs`: nicht gleichzeitig; wer später kommt, übernimmt den Filter bzw. die kurzen
+  Kontoseiten.
+- **API:** `ai.list_models` · Read; `ai.set_model_enabled` · Admin; `ai.find_local_servers` · Read;
+  `assistant.list_engines` · Read (Karte Claude Code); `accounts.connect_ai` · Admin; `accounts.remove_account` · Admin;
+  `accounts.list_accounts` · Read
+- **MCP:** `ai_list_models`, `ai_set_model_enabled`, `ai_find_local_servers`, `assistant_list_engines`,
+  `accounts_remove_account`;
+  `accounts.connect_ai` bleibt **Never** (Schlüssel nur über die Oberfläche)
+- **Abnahme:** Tests mit Demo-Daten: Seite in der Navigation und per `--section ai`, Reihenfolge Open First, ein Schalter
+  baut `SetModelEnabled`, Modelle ohne Werkzeuge ohne Schalter, Claude Code ohne „Remove“, Katalog ohne KI-Anbieter,
+  Accounts ohne KI-Konten. Demo-Ansichten `--demo --section ai` und eine Unterseite für die Sichtprüfung. Sichtprüfung bei
+  1100, 500 und 360 px, hell und dunkel (Agent `torro-design-review`); fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
-### S.26 „Connect agent“ verweist auf die KI-Konten
+### S.26 Die Auswahlen der Module bieten nur angeschaltete Modelle
 - [ ] erledigt
-- **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/agent_wizard.rs`, `crates/torroworkplace/src/ui/agents.rs`
-- Warum: Wer Ollama verbinden will, sucht unter „Connect agent“. Dort gehören aber nur Programme hin, die Torro
-  bedienen.
-- Im ersten Schritt unter der Liste der Clients eine leise Zeile mit Pfeil: „Looking to use a model such as Ollama?
-  Add an AI account“. Ein Klick schließt den Dialog und öffnet Accounts (`Action::Select(Section::Accounts)`); den
-  Dialog „Add account“ gleich bei den KI-Anbietern zu öffnen braucht eine neue `Action` in `ui/mod.rs`: dann vorher
-  nachfragen.
-- Der leere Zustand der Seite nennt es auch: „… or to create a key for a script. AI models such as Ollama are added
-  under Accounts.“
-- **Oberfläche:** Steuerzentrale › Agents & API › Connect agent
-- **API / MCP:** keine; reine Navigation in der Oberfläche.
-- **Abnahme:** Test, dass der Klick die richtige `Action` ergibt; bestehende Tests der Seite grün; fmt, clippy, test
-  (auch `TORRO_LANG=de`) grün.
+- **Modell:** Sonnet · **Braucht:** S.24 · **Dateien:** `crates/torroworkplace/src/ui/assistant.rs`,
+  `crates/torroassistant/src/view.rs`, `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/app.rs`
+- Assistant › New chats (heute in der Steuerzentrale, nach S.17 in `torro-settings-ui`), die Auswahl pro Chat und der
+  Bot-Editor zeigen nur Modelle mit `enabled`. „Show all models“ im Chat entfällt; an seiner Stelle „Manage models…“,
+  das die Steuerzentrale bei AI öffnet (vorhandener Weg `torro_gui::connect::open_section("ai")`, kein neuer Request).
+- Ist bei keinem Anbieter ein Modell an: „No model is turned on. Turn on models in Settings › AI.“ mit demselben Knopf.
+- Ein gespeichertes, aber abgeschaltetes Modell (Standard, Bot) steht oben in der Auswahl mit „Turned off in Settings ›
+  AI“, damit man sieht, warum „Automatic“ antwortet.
+- **Oberfläche:** Steuerzentrale › Assistant › New chats; Assistent › Auswahl im Chat; Bot-Editor
+- **API:** keine neue Funktion; dieselben Befehle, gefiltert nach `enabled`: `ai.list_models` · Read,
+  `assistant.list_engines` · Read, `settings.set_setting assistant_default` · Admin, `bots.save_bot` · Write (Ersetzen
+  eines Bots wie im Katalog)
+- **MCP:** die gleichnamigen Tools (unverändert)
+- **Abnahme:** Tests: nur angeschaltete Modelle in allen drei Auswahlen, Hinweis ohne Modelle, abgeschaltetes Modell mit
+  Hinweis; Sichtprüfung des Assistenten mit `--demo`; fmt, clippy, test (auch `TORRO_LANG=de`) grün.

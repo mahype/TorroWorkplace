@@ -11,7 +11,7 @@ Codex …), Rechte in „Agents & API“ ([api.md](api.md)). Neu ist die umgekeh
 | Richtung | Wer ruft wen | Wo eingestellt | Beispiel |
 |---|---|---|---|
 | **Agenten** | ein Agent ruft die Suite | Steuerzentrale › Agents & API | Claude Code liest den Eingang |
-| **KI-Konten** (neu) | die Suite ruft ein Modell | Steuerzentrale › Accounts (Anbieter „AI“) und Seite „AI“ | Der Eingang lässt eine Spur vorschlagen |
+| **KI-Konten** (neu) | die Suite ruft ein Modell | Steuerzentrale › AI (Anbieter einrichten, Modelle an/aus); welches Modell wofür: in den Einstellungen des Moduls | Der Eingang lässt eine Spur vorschlagen |
 
 Beides bleibt getrennt. Ein Agent bekommt nie Zugriff auf die KI-Konten der Suite, und die Suite
 benutzt nie den Schlüssel eines Agenten.
@@ -60,7 +60,13 @@ damit niemand Modellnamen tippen muss.
 
 ## Zuordnung je Funktion
 
-Seite **„AI“** in der Steuerzentrale (erscheint erst mit einem KI-Konto). Eine Zeile je Funktion:
+**Umgeplant am 2026-10-15** ([settings.md › KI](settings.md#ki)): Steuerzentrale › AI richtet nur Anbieter ein und
+schaltet Modelle an und ab. **Welches Modell eine Funktion nimmt, stellt man im Modul ein**, zu dem sie gehört (die
+Inbox für „suggest lane“ und „summarize item“, in den Einstellungen der Inbox), und zur Wahl stehen nur angeschaltete
+Modelle. Die Tabelle unten bleibt die Übersicht aller Funktionen; die Befehle `ai.list_assignments` und
+`ai.set_assignment` bleiben, nur ihre Oberfläche wandert in die Module.
+
+Ursprünglich geplant: Seite **„AI“** in der Steuerzentrale (erscheint erst mit einem KI-Konto). Eine Zeile je Funktion:
 
 | Funktion | Konto | Modell | Aufwand | Daten |
 |---|---|---|---|---|
@@ -97,7 +103,9 @@ Kommt **nach** E1–E3 des Eingangs. Aufgaben entstehen, wenn dieses Konzept fre
 1. **KI.1 Kern:** KI-Konten (`AccountKind::Ai`), Anbieter-Trait mit OpenAI-kompatibel und Anthropic,
    Modell-Liste, Zuordnung je Funktion, Datenregel je Quelle, Zähler. Tests mit `httpmock`.
 2. **KI.2 Steuerzentrale:** Anbieter „AI providers“ im Assistenten (die Zeile gibt es schon),
-   lokale Anbieter oben, automatische Suche nach Ollama/LM Studio auf `localhost`; Seite „AI“.
+   lokale Anbieter oben, automatische Suche nach Ollama/LM Studio auf `localhost`; Seite „AI“ mit Anbietern und
+   Modellen an/aus (S.24–S.26 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md)), die Zuordnung je Funktion in den
+   Modulen.
 3. **E6.x Eingang:** Spur vorschlagen, Eintrag zusammenfassen, Tageszusammenfassung.
 
 ## Offen
