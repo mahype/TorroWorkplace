@@ -78,6 +78,7 @@ pub fn models() -> Vec<AiModel> {
             open_weights: Some(false),
             context: None,
             reasoning: Some(*effort),
+            remote: None,
         })
         .collect()
 }

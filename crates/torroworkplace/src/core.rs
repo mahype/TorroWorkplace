@@ -2648,8 +2648,10 @@ impl Core {
                 let made = EntryEvent { collection, title, start, end, location, notes };
                 self.create_event_from_item(&id, made, client, pin).await
             }
-            Request::SuggestTaskFromItem { id } => self.suggest_from_item(&id, Wanted::Task, client).await,
-            Request::SuggestEventFromItem { id } => self.suggest_from_item(&id, Wanted::Event, client).await,
+            // Boxed, as the ntfy commands above: asking each AI account for its models (task S.23)
+            // would grow this match's poll frame by a whole suggestion.
+            Request::SuggestTaskFromItem { id } => Box::pin(self.suggest_from_item(&id, Wanted::Task, client)).await,
+            Request::SuggestEventFromItem { id } => Box::pin(self.suggest_from_item(&id, Wanted::Event, client)).await,
             Request::GetQuiet => self.get_quiet(client).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
@@ -2849,7 +2851,8 @@ impl Core {
     /// In this order: the entry as `inbox.get_item` answers it to the caller (`not-found` for one it
     /// may not see, hook clients see none), its text ([`Core::text_for_ai`]), the AI
     /// ([`crate::suggest::choose`]: the person's default of the assistant, else the first AI account;
-    /// the data rule keeps mail, Nextcloud and Talk with local models), then one question to it
+    /// the data rule keeps mail, Nextcloud and Talk with local models, judged by the model each
+    /// account would answer with, [`Core::suggestion_model`]), then one question to it
     /// ([`crate::suggest::suggest`]), dates read in the person's time zone. Errors as the request
     /// says; the protocol names no text.
     async fn suggest_from_item(&self, id: &str, wanted: Wanted, client: Option<&torro_ipc::ClientInfo>) -> Response {
@@ -2869,17 +2872,28 @@ impl Core {
             received: entry.received,
             text: self.text_for_ai(&entry, reach).await,
         };
-        let mut candidates = Vec::new();
-        for account in self.ai.infos().await {
-            let Some((provider, server)) = self.ai.server(&account.id).await else { continue };
-            let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
-            let place = crate::assistant::place_of(provider, &server);
-            candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
-        }
         let default = self.settings.current().assistant_default;
         let local_only = crate::assistant::held_back(&entry);
+        let mut candidates = Vec::new();
+        let mut models = HashMap::new();
+        for account in self.ai.infos().await {
+            if self.ai.server(&account.id).await.is_none() {
+                continue;
+            }
+            let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
+            let wanted = default.as_ref().filter(|default| default.engine == account.id);
+            let (place, model) = match problem {
+                true => (crate::assistant::Place::Remote, None),
+                false => self.suggestion_model(&account.id, wanted.and_then(|d| d.model.as_deref()), local_only).await,
+            };
+            if let Some(model) = model {
+                models.insert(account.id.clone(), model);
+            }
+            candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
+        }
         let chosen = match crate::suggest::choose(&candidates, default.as_ref(), local_only) {
-            Ok(chosen) => chosen,
+            // The model its place was judged by is the one asked (task S.23).
+            Ok(chosen) => crate::suggest::Chosen { model: models.remove(&chosen.engine).or(chosen.model), ..chosen },
             Err(refused) => return refused.response(),
         };
         let provider = match self.ai.provider(&chosen.engine).await {
@@ -2887,6 +2901,39 @@ impl Core {
             Err(err) => return crate::suggest::SuggestError::Ai(err).response(),
         };
         crate::suggest::suggest(provider.as_ref(), &chosen, wanted, &content, now, &chrono::Local).await
+    }
+
+    /// The model the AI account `id` would suggest with and where it runs (task S.23: a cloud model of
+    /// a local Ollama runs elsewhere): `wanted` (the model of the person's default) when it may read
+    /// the entry (it runs locally, or the entry is not `local_only`); else of its models the first
+    /// that fits ([`crate::suggest::pick_model`]) among those on the person's computer, and for an
+    /// entry that may leave it among the others then. Elsewhere and no model when none fits or the
+    /// models cannot be listed: such an account never gets an entry that stays home.
+    async fn suggestion_model(
+        &self,
+        id: &str,
+        wanted: Option<&str>,
+        local_only: bool,
+    ) -> (crate::assistant::Place, Option<String>) {
+        use crate::assistant::Place;
+        let Some((provider, server)) = self.ai.server(id).await else { return (Place::Remote, None) };
+        let place = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model);
+        let models = self.ai.known_models(id, wanted).await;
+        if let Some(wanted) = wanted
+            && let Ok((model, at)) = crate::assistant::ModelAccess::choose(models.clone(), Some(wanted), place)
+            && (at == Place::Local || !local_only)
+        {
+            return (at, Some(model));
+        }
+        let Ok(models) = models else { return (Place::Remote, None) };
+        let (local, elsewhere): (Vec<_>, Vec<_>) = models.into_iter().partition(|model| place(model) == Place::Local);
+        if let Ok(model) = crate::suggest::pick_model(local) {
+            return (Place::Local, Some(model));
+        }
+        match local_only {
+            true => (Place::Remote, None),
+            false => (Place::Remote, crate::suggest::pick_model(elsewhere).ok()),
+        }
     }
 
     /// What an AI reads of `entry` (issue #120): for a mail entry the whole text of its newest mail,
@@ -4464,18 +4511,25 @@ impl crate::assistant::Host for Core {
         self.assistant_client()
     }
 
+    /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
+    /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
+    /// the list lacks), then [`crate::assistant::place_of`] for that model.
     fn model<'a>(
         &'a self,
         engine: &'a str,
+        model: Option<&'a str>,
     ) -> torro_core::ai::BoxFuture<'a, Result<crate::assistant::ModelAccess, torro_core::ai::AiError>> {
         Box::pin(async move {
             let provider = self.ai.provider(engine).await?;
+            let server = self.ai.server(engine).await;
             // An account removed meanwhile counts as elsewhere: nothing of mail goes to it.
-            let place = match self.ai.server(engine).await {
-                Some((kind, server)) => crate::assistant::place_of(kind, &server),
+            let place = |described: &torro_core::ai::AiModel| match &server {
+                Some((kind, server)) => crate::assistant::place_of(*kind, server, described),
                 None => crate::assistant::Place::Remote,
             };
-            Ok(crate::assistant::ModelAccess { provider, place })
+            let models = self.ai.known_models(engine, model).await;
+            let (model, place) = crate::assistant::ModelAccess::choose(models, model, place)?;
+            Ok(crate::assistant::ModelAccess { provider, model, place })
         })
     }
 
@@ -12274,7 +12328,7 @@ mod tests {
         assert_eq!(asked_bot.ids, vec![format!("bot:{}", bot.id)]);
     }
 
-    use crate::account::ai::tests::{KEY as AI_KEY, NOBODY, fake_ollama, fake_openrouter};
+    use crate::account::ai::tests::{KEY as AI_KEY, NOBODY, fake_ollama, fake_ollama_with_cloud, fake_openrouter};
 
     /// [`audited`] with AI accounts in `dir` on the keychain `keys`, looking for local servers at
     /// `local`.
@@ -12412,9 +12466,14 @@ mod tests {
         fn model<'a>(
             &'a self,
             _engine: &'a str,
+            model: Option<&'a str>,
         ) -> torro_core::ai::BoxFuture<'a, Result<ModelAccess, torro_core::ai::AiError>> {
-            let provider = Box::new(Scripted(Arc::clone(&self.script)));
-            Box::pin(async move { Ok(ModelAccess { provider, place: Place::Local }) })
+            let provider = Scripted(Arc::clone(&self.script));
+            Box::pin(async move {
+                let models = torro_core::ai::Provider::models(&provider).await;
+                let (model, place) = ModelAccess::choose(models, model, |_| Place::Local)?;
+                Ok(ModelAccess { provider: Box::new(provider), model, place })
+            })
         }
 
         fn run<'a>(
@@ -13378,6 +13437,46 @@ mod tests {
         assert!(matches!(local, Response::Conversation { .. }), "{local:?}");
     }
 
+    /// Task S.23: a bot without a model answers with what "Automatic" picks – the local model of a
+    /// mixed Ollama – so it may be asked after mail; a bot set to the cloud model may not.
+    #[tokio::test]
+    async fn after_mail_a_bot_on_the_cloud_model_of_ollama_is_not_asked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama_with_cloud(true).await;
+        answers_chat(&ollama, "/v1/chat/completions", "Pack light.").await;
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant));
+        core.attach_assistant();
+        let account =
+            core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        core.clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
+            .await
+            .expect("the assistant");
+        let automatic = bot_with(&core, "Packing helper", &account.id, reading(&[Area::Calendar])).await;
+        let mut save = save_bot(None, "Travel planner");
+        if let Request::SaveBot { engine, model, .. } = &mut save {
+            (*engine, *model) = (account.id.clone(), Some("glm-5.3:cloud".into()));
+        }
+        let cloud = bot_of(core.handle(save).await);
+        let main = said(&core, "Ask the travel planner and the packing helper").await;
+
+        let refused = Host::ask_bot(&*core, &main, ask_bot(&cloud.id), "test", false, true, &[]).await;
+        let Response::Error { code, message } = refused else { panic!("refused: {refused:?}") };
+        assert!(code == "forbidden" && message.contains("mail"), "the data rule: {message}");
+        let local = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, true, &[]).await;
+        let Response::Conversation { entries, .. } = local else { panic!("asked: {local:?}") };
+        let answered: Vec<Option<&str>> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                torro_ipc::assistant::EntryContent::Answer { model, .. } => Some(model.as_deref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answered, [Some("qwen3:8b")], "the model checked answers");
+    }
+
     /// Task B.2: an approval the bot asks for while it runs for the assistant keeps the narrowing:
     /// "Allow" runs it with what both clients may then, never more – the assistant's right taken
     /// away meanwhile, nothing runs – and its log lines name the bot and the assistant.
@@ -13514,6 +13613,35 @@ mod tests {
     }
 
     /// Task C.2: the core reports Ollama as local and OpenRouter as elsewhere, for the data rule.
+    /// Task S.23: the core decides by account and model – a cloud model of a local Ollama runs
+    /// elsewhere, "Automatic" takes the local one, and without `/api/tags` every model is elsewhere.
+    #[tokio::test]
+    async fn the_core_tells_where_each_model_of_ollama_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let at = |engine: String, model: Option<&'static str>| {
+            let core = &core;
+            async move {
+                let access = Host::model(core, &engine, model).await.expect("a model");
+                (access.model, access.place)
+            }
+        };
+        let (with_tags, without) = (fake_ollama_with_cloud(true).await, fake_ollama_with_cloud(false).await);
+        let mut engines = Vec::new();
+        for server in [&with_tags, &without] {
+            let connected = core.ai.connect(AiProvider::Ollama, Some(&server.url("/v1")), Default::default()).await;
+            engines.push(connected.expect("ollama").id);
+        }
+        let (told, untold) = (engines[0].clone(), engines[1].clone());
+        assert_eq!(at(told.clone(), None).await, ("qwen3:8b".to_string(), Place::Local), "Automatic: local first");
+        assert_eq!(at(told.clone(), Some("glm-5.3:cloud")).await, ("glm-5.3:cloud".to_string(), Place::Remote));
+        assert_eq!(at(told.clone(), Some("qwen3:8b")).await, ("qwen3:8b".to_string(), Place::Local));
+        assert_eq!(at(told, Some("llama3:8b")).await.1, Place::Remote, "a model it does not list");
+        assert_eq!(at(untold.clone(), Some("qwen3:8b")).await.1, Place::Remote, "no word from /api/tags");
+        assert_eq!(at(untold, None).await.1, Place::Remote);
+    }
+
     #[tokio::test]
     async fn the_core_tells_where_an_accounts_model_runs() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -13532,7 +13660,7 @@ mod tests {
             .expect("openrouter");
         let place = |engine: String| {
             let core = &core;
-            async move { Host::model(core, &engine).await.map(|access| access.place).expect("a model") }
+            async move { Host::model(core, &engine, None).await.map(|access| access.place).expect("a model") }
         };
         assert_eq!(place(local.id).await, Place::Local);
         assert_eq!(place(remote.id).await, Place::Remote, "its address is on this computer, but it is OpenRouter");
@@ -14129,6 +14257,48 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&app_key), suggest("nothing")).await), "not-found");
         // Nothing was saved: the entries are open as they were.
         assert!(entry_state(&core, &entry).is_open() && entry_state(&core, &filed).is_open());
+    }
+
+    /// Task S.23: the person's default is the cloud model of a local Ollama. A mail entry goes to
+    /// its local model, an entry that may leave the computer to the default's model.
+    #[tokio::test]
+    async fn a_mail_entry_is_suggested_by_the_local_model_of_an_ollama_with_cloud_models() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let ollama = fake_ollama_with_cloud(true).await;
+        answers_chat(&ollama, "/v1/chat/completions", r#"{"title": "Read it"}"#).await;
+        let account =
+            core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        let default = serde_json::json!({"engine": account.id, "model": "glm-5.3:cloud"});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(ask(&core, Some(&app_key), set).await, Response::Ok);
+
+        let mail = crate::inbox::NewMail {
+            account: "mail:anna@example.org".into(),
+            message: "m:1".into(),
+            thread: "t:1".into(),
+            subject: "Offsite".into(),
+            snippet: "Shall we meet on the 20th?".into(),
+            from: Some(torro_inbox::Sender { name: "Anna".into(), address: Some("anna@example.org".into()) }),
+            bulk: None,
+            list: None,
+            github: None,
+            date: Utc::now(),
+        };
+        let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
+        let suggested = |id: String| {
+            let (core, app_key) = (&core, &app_key);
+            async move {
+                match ask(core, Some(app_key), Request::SuggestTaskFromItem { id }).await {
+                    Response::TaskSuggestion { suggestion } => suggestion.model,
+                    other => panic!("a suggestion: {other:?}"),
+                }
+            }
+        };
+        assert_eq!(suggested(filed).await, "qwen3:8b", "mail stays on this computer");
+        assert_eq!(suggested(posted_entry(&core).await).await, "glm-5.3:cloud", "the default's model");
     }
 
     /// The state of the inbox entry `id`, as the app key reads it.

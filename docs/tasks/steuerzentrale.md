@@ -284,7 +284,7 @@ S.24 (Modelle auf der Kontoseite) · S.25 (Katalog) · S.26 (Hinweis in „Conne
 ```
 
 ### S.23 Ollama-Cloud-Modelle gelten für die Datenregel als entfernt
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Sicherheit) · **Dateien:** `crates/torro-core/src/ai/mod.rs`, `crates/torro-core/src/ai/openai.rs`,
   `crates/torroworkplace/src/account/ai.rs`, `crates/torroworkplace/src/assistant/data_rule.rs`,
   `crates/torroworkplace/src/assistant/model.rs`, `crates/torroworkplace/src/assistant/delegate.rs`,

@@ -275,6 +275,14 @@ pub struct AiModel {
     /// a model that is not known to lack it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
+    /// The model runs elsewhere although its server may be local (task S.23): `true` where the
+    /// server says it computes somewhere else (Ollama's cloud models, `remote_host` in `/api/tags`,
+    /// or a name ending in `:cloud` or `-cloud`; every Ollama model when `/api/tags` does not
+    /// answer), `false` for a model of Ollama that runs on its own machine, `null` where nobody
+    /// tells. The data rule reads it (`docs/ki.md`, principle 4): local means the model computes on
+    /// the person's computer, not that its server does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<bool>,
 }
 
 /// How hard a model thinks before it answers (issue #131): sent with a message
@@ -595,7 +603,15 @@ mod tests {
     use super::*;
 
     fn model(id: &str, open_weights: Option<bool>) -> AiModel {
-        AiModel { id: id.into(), name: id.into(), tools: None, open_weights, context: None, reasoning: None }
+        AiModel {
+            id: id.into(),
+            name: id.into(),
+            tools: None,
+            open_weights,
+            context: None,
+            reasoning: None,
+            remote: None,
+        }
     }
 
     #[test]

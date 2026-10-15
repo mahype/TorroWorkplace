@@ -608,7 +608,15 @@ mod tests {
     }
 
     fn model(id: &str, tools: Option<bool>) -> AiModel {
-        AiModel { id: id.into(), name: id.into(), tools, open_weights: None, context: None, reasoning: None }
+        AiModel {
+            id: id.into(),
+            name: id.into(),
+            tools,
+            open_weights: None,
+            context: None,
+            reasoning: None,
+            remote: None,
+        }
     }
 
     #[test]

@@ -1,6 +1,11 @@
 //! Engine A (task C.2, `docs/assistent.md` "Woher das Modell kommt"): the core asks the model of an
 //! AI account and runs the tools it calls itself, until the model answers.
 //!
+//! First the model, then the place (task S.23): the core picks the model the message names or
+//! "Automatic" ([`ModelAccess::automatic`], local models first) and only then says where it runs
+//! ([`Host::model`], [`super::data_rule::place_of`]); the prompt, the earlier answers it may read
+//! and the mark `local_only` of the memory follow from that place.
+//!
 //! One answer is a loop of at most [`Limits::max_steps`] steps. Each step sends the conversation
 //! with the tools the assistant may use now ([`super::tools::allowed`]; rights are read anew every
 //! step, so a change applies from the next one) and streams the model's text into the conversation
@@ -31,7 +36,9 @@ use std::time::Duration;
 
 use chrono::{Local, Utc};
 use serde_json::{Value, json};
-use torro_core::ai::{AiError, BoxFuture, ChatMessage, ChatReply, ChatRequest, Provider, ToolCall, open_weights_only};
+use torro_core::ai::{
+    AiError, AiModel, BoxFuture, ChatMessage, ChatReply, ChatRequest, Provider, ToolCall, open_weights_only,
+};
 use torro_core::i18n::{self, tr, trf};
 use torro_ipc::api::{Area, Lack};
 use torro_ipc::assistant::{Entry, EntryContent, Mode, Note};
@@ -50,10 +57,13 @@ pub trait Host: Send + Sync {
     /// rights as stored now; `None` while a person has not set it up. Read anew on every call.
     fn client(&self) -> Option<ClientInfo>;
 
-    /// The model behind the engine `engine` (an AI account id) and where it runs, for the data rule
-    /// ([`data_rule::place_of`]). Errors as [`AiError`] says (`NotFound` for no such account,
-    /// `NoKey` …).
-    fn model<'a>(&'a self, engine: &'a str) -> BoxFuture<'a, Result<ModelAccess, AiError>>;
+    /// The model `model` of the engine `engine` (an AI account id), or for `None` the one
+    /// "Automatic" picks among its models ([`ModelAccess::automatic`]), and where that model runs,
+    /// for the data rule ([`data_rule::place_of`], task S.23: account **and** model; a model the
+    /// account does not describe counts as elsewhere where that matters). Hosts decide with
+    /// [`ModelAccess::choose`]. Errors as [`AiError`] says (`NotFound` for no such account or no
+    /// model "Automatic" could take, `NoKey` …).
+    fn model<'a>(&'a self, engine: &'a str, model: Option<&'a str>) -> BoxFuture<'a, Result<ModelAccess, AiError>>;
 
     /// What the person lets go to models outside their computers (task C.17, the setting
     /// `mail_to_cloud`), read when an answer starts. The default keeps mail local, so a host that
@@ -314,7 +324,54 @@ fn forbidden(command: &str) -> Response {
 /// The model of an AI account and where it runs.
 pub struct ModelAccess {
     pub provider: Box<dyn Provider>,
+    /// The model that answers ([`AiModel::id`]): the one asked for, or the one "Automatic" picked.
+    pub model: String,
+    /// Where [`ModelAccess::model`] runs (task S.23).
     pub place: Place,
+}
+
+impl ModelAccess {
+    /// The model `asked` among the account's `models`, or "Automatic" for `None`
+    /// ([`ModelAccess::automatic`]), with where it runs as `place` says (a host passes
+    /// [`data_rule::place_of`] for its account). A model the list lacks, or any model when the
+    /// list failed, is judged by its id alone ([`AiModel::remote`] unknown), which `place_of`
+    /// counts as elsewhere for Ollama. Without a list "Automatic" fails with its error.
+    pub fn choose(
+        models: Result<Vec<AiModel>, AiError>,
+        asked: Option<&str>,
+        place: impl Fn(&AiModel) -> Place,
+    ) -> Result<(String, Place), AiError> {
+        let Some(asked) = asked else {
+            let model = ModelAccess::automatic(models?, &place)?;
+            return Ok((model.id.clone(), place(&model)));
+        };
+        let described = models.ok().and_then(|models| models.into_iter().find(|model| model.id == asked));
+        let model = described.unwrap_or_else(|| AiModel {
+            id: asked.to_string(),
+            name: asked.to_string(),
+            tools: None,
+            open_weights: None,
+            context: None,
+            reasoning: None,
+            remote: None,
+        });
+        Ok((model.id.clone(), place(&model)))
+    }
+
+    /// "Automatic", the model of an account when the message names none: of its models with open
+    /// weights (Open First) one that runs on the person's computer (`place`, task S.23), one
+    /// elsewhere only when there is no local one; in each, the first that can call tools, else the
+    /// first that does not say it cannot.
+    pub fn automatic(models: Vec<AiModel>, place: impl Fn(&AiModel) -> Place) -> Result<AiModel, AiError> {
+        let mut models: Vec<AiModel> =
+            open_weights_only(models).into_iter().filter(|model| model.tools != Some(false)).collect();
+        // Stable: the server's order stays within local and elsewhere, with and without a word on tools.
+        models.sort_by_key(|model| (place(model) != Place::Local, model.tools != Some(true)));
+        models
+            .into_iter()
+            .next()
+            .ok_or_else(|| AiError::NotFound(tr("The AI account offers no model that can use tools.").into()))
+    }
 }
 
 /// The bounds of one answer.
@@ -469,16 +526,14 @@ impl Answering {
     /// The loop. `Ok` when it ended with an answer or was stopped; the error ends it with an error
     /// entry.
     async fn go(&mut self) -> Result<(), Ended> {
-        let access = self.host.model(&self.job.engine).await.map_err(Ended::Model)?;
-        let model = match self.job.model.clone() {
-            Some(model) => model,
-            None => default_model(access.provider.as_ref()).await.map_err(Ended::Model)?,
-        };
+        // First the model, then where it runs (task S.23): everything below follows from that place.
+        let access = self.host.model(&self.job.engine, self.job.model.as_deref()).await.map_err(Ended::Model)?;
+        let model = access.model.clone();
         let small = tools::is_small(&model, access.place == Place::Local);
         lock(&self.job.partial).model = Some(model.clone());
         let reader = Reader { place: access.place, rule: self.rule };
         let mut messages = vec![ChatMessage::system(String::new())];
-        messages.extend(history(&self.job.history, &self.job.engine, reader));
+        messages.extend(history(&self.job.history, &self.job.engine, Some(&model), reader));
         for _ in 0..self.limits.max_steps {
             let rights = self.rights();
             let allowed = tools::allowed_in(self.job.actor.kind(), rights.as_ref(), &self.job.without, self.job.mode);
@@ -780,39 +835,33 @@ impl Answering {
     }
 }
 
-/// The model of an account when the message names none: the first of its models with open weights
-/// (Open First) that can call tools, else the first that does not say it cannot.
-async fn default_model(provider: &dyn Provider) -> Result<String, AiError> {
-    let models = open_weights_only(provider.models().await?);
-    models
-        .iter()
-        .find(|model| model.tools == Some(true))
-        .or_else(|| models.iter().find(|model| model.tools.is_none()))
-        .map(|model| model.id.clone())
-        .ok_or_else(|| AiError::NotFound(tr("The AI account offers no model that can use tools.").into()))
-}
-
-/// The conversation's entries as messages for the model of `engine` read as `reader`: the person's
-/// messages and the answers, one answer message per turn (several servers want the two to take
-/// turns), tool lines left out (their results are not kept). An answer the data rule keeps from
-/// the model ([`data_rule::history_allowed`]) is replaced by a note; a turn without an answer gets
-/// one too.
-pub(super) fn history(entries: &[Entry], engine: &str, reader: impl Into<Reader>) -> Vec<ChatMessage> {
+/// The conversation's entries as messages for the model `model` of `engine` read as `reader` (an
+/// agent passes `None`, [`data_rule::history_allowed`]): the person's messages and the answers, one
+/// answer message per turn (several servers want the two to take turns), tool lines left out
+/// (their results are not kept). An answer the data rule keeps from the model (by the engine and
+/// model that wrote it) is replaced by a note; a turn without an answer gets one too.
+pub(super) fn history(
+    entries: &[Entry],
+    engine: &str,
+    model: Option<&str>,
+    reader: impl Into<Reader>,
+) -> Vec<ChatMessage> {
     let reader = reader.into();
+    let asked = (engine, model);
     let mut messages = Vec::new();
     let mut turn: Option<Turn> = None;
     for entry in entries {
         match &entry.content {
             EntryContent::Message { text, .. } => {
                 if let Some(done) = turn.take() {
-                    messages.push(done.answer(engine, reader));
+                    messages.push(done.answer(asked, reader));
                 }
                 messages.push(ChatMessage::user(text.clone()));
                 turn = Some(Turn::default());
             }
-            EntryContent::Answer { text, engine: by, .. } => {
+            EntryContent::Answer { text, engine: by, model } => {
                 if let Some(turn) = &mut turn {
-                    turn.answers.push((text.clone(), by.clone()));
+                    turn.answers.push((text.clone(), by.clone(), model.clone()));
                 }
             }
             EntryContent::Tool { name, .. } => {
@@ -826,22 +875,25 @@ pub(super) fn history(entries: &[Entry], engine: &str, reader: impl Into<Reader>
     messages
 }
 
-/// One earlier turn: the commands it ran and its answers with their engines.
+/// One earlier turn: the commands it ran and its answers with their engines and models.
 #[derive(Default)]
 struct Turn {
     commands: Vec<String>,
-    answers: Vec<(String, String)>,
+    answers: Vec<(String, String, Option<String>)>,
 }
 
 impl Turn {
-    fn answer(self, engine: &str, reader: Reader) -> ChatMessage {
+    /// The turn's answer for the model `asked` (engine and model) read as `reader`.
+    fn answer(self, asked: (&str, Option<&str>), reader: Reader) -> ChatMessage {
         let commands: Vec<&str> = self.commands.iter().map(String::as_str).collect();
         let texts: Vec<String> = self
             .answers
             .into_iter()
-            .map(|(text, by)| match data_rule::history_allowed(&commands, &by, engine, reader) {
-                true => text,
-                false => format!("[An earlier answer, {}.]", data_rule::WITHHELD),
+            .map(|(text, engine, model)| {
+                match data_rule::history_allowed(&commands, (&engine, model.as_deref()), asked, reader) {
+                    true => text,
+                    false => format!("[An earlier answer, {}.]", data_rule::WITHHELD),
+                }
             })
             .collect();
         match texts.is_empty() {
@@ -914,6 +966,8 @@ pub(crate) mod tests {
         /// Answered when the steps ran out.
         then: Mutex<Option<Step>>,
         pub(crate) asked: Mutex<Vec<ChatRequest>>,
+        /// The models it lists; `None`: a model without tools, then one with ([`Scripted`]).
+        models: Mutex<Option<Vec<AiModel>>>,
     }
 
     /// One step of a [`Script`].
@@ -935,6 +989,12 @@ pub(crate) mod tests {
             self
         }
 
+        /// Lists `models` in place of the usual two.
+        pub(crate) fn listing(self: Arc<Self>, models: Vec<AiModel>) -> Arc<Script> {
+            *self.models.lock().expect("lock") = Some(models);
+            self
+        }
+
         /// What the model was asked, step by step.
         pub(crate) fn asked(&self) -> Vec<ChatRequest> {
             self.asked.lock().expect("lock").clone()
@@ -953,29 +1013,38 @@ pub(crate) mod tests {
         Step::Reply(vec![first, second], ChatReply { text: text.into(), ..ChatReply::default() })
     }
 
+    /// A model as a server lists it: whether it calls tools, and whether it runs elsewhere.
+    pub(crate) fn model(id: &str, tools: Option<bool>, remote: Option<bool>) -> AiModel {
+        AiModel { id: id.into(), name: id.into(), tools, open_weights: None, context: None, reasoning: None, remote }
+    }
+
+    /// Where a scripted model runs: one said to run elsewhere does (an Ollama cloud model, task
+    /// S.23), every other at `place`, where the test puts the account.
+    pub(crate) fn scripted_place(place: Place) -> impl Fn(&AiModel) -> Place {
+        move |model| if model.remote == Some(true) { Place::Remote } else { place }
+    }
+
+    /// [`Host::model`] of a fake core whose account plays `script` at `place`: the model asked, or
+    /// "Automatic", as the core chooses it ([`ModelAccess::choose`]).
+    pub(crate) async fn scripted_access(
+        script: &Arc<Script>,
+        model: Option<&str>,
+        place: Place,
+    ) -> Result<ModelAccess, AiError> {
+        let provider = Scripted(Arc::clone(script));
+        let (model, place) = ModelAccess::choose(provider.models().await, model, scripted_place(place))?;
+        Ok(ModelAccess { provider: Box::new(provider), model, place })
+    }
+
     pub(crate) struct Scripted(pub(crate) Arc<Script>);
 
     impl Provider for Scripted {
         fn models(&self) -> BoxFuture<'_, Result<Vec<AiModel>, AiError>> {
             Box::pin(async {
-                Ok(vec![
-                    AiModel {
-                        id: "gemma3:4b".into(),
-                        name: "Gemma".into(),
-                        tools: Some(false),
-                        open_weights: None,
-                        context: None,
-                        reasoning: None,
-                    },
-                    AiModel {
-                        id: "qwen3:8b".into(),
-                        name: "Qwen".into(),
-                        tools: Some(true),
-                        open_weights: None,
-                        context: None,
-                        reasoning: None,
-                    },
-                ])
+                let listed = self.0.models.lock().expect("lock").clone();
+                Ok(listed.unwrap_or_else(|| {
+                    vec![model("gemma3:4b", Some(false), None), model("qwen3:8b", Some(true), None)]
+                }))
             })
         }
 
@@ -1018,6 +1087,8 @@ pub(crate) mod tests {
         untrusted: Mutex<Vec<bool>>,
         /// Whom each request of `ran` ran as (task B.1).
         actors: Mutex<Vec<Actor>>,
+        /// What the person lets go to models elsewhere (task C.17).
+        rule: Mutex<DataRule>,
     }
 
     impl Host for FakeHost {
@@ -1033,10 +1104,12 @@ pub(crate) mod tests {
             })
         }
 
-        fn model<'a>(&'a self, _engine: &'a str) -> BoxFuture<'a, Result<ModelAccess, AiError>> {
-            Box::pin(async {
-                Ok(ModelAccess { provider: Box::new(Scripted(Arc::clone(&self.script))), place: self.place })
-            })
+        fn model<'a>(
+            &'a self,
+            _engine: &'a str,
+            model: Option<&'a str>,
+        ) -> BoxFuture<'a, Result<ModelAccess, AiError>> {
+            Box::pin(scripted_access(&self.script, model, self.place))
         }
 
         fn run<'a>(&'a self, request: Request, engine: &'a str, untrusted: bool) -> BoxFuture<'a, Response> {
@@ -1046,6 +1119,10 @@ pub(crate) mod tests {
                 self.ran.lock().expect("lock").push((request, engine.to_string()));
                 response
             })
+        }
+
+        fn data_rule(&self) -> DataRule {
+            *self.rule.lock().expect("lock")
         }
 
         /// Every approval expires here; deciding is tested with the real core.
@@ -1165,6 +1242,7 @@ pub(crate) mod tests {
             ran: Mutex::new(Vec::new()),
             untrusted: Mutex::new(Vec::new()),
             actors: Mutex::new(Vec::new()),
+            rule: Mutex::new(DataRule::default()),
         });
         let weak = Arc::downgrade(&host);
         let weak: std::sync::Weak<dyn Host> = weak;
@@ -1173,10 +1251,21 @@ pub(crate) mod tests {
     }
 
     async fn ask(assistant: &Arc<Assistant>, conversation: Option<&str>, text: &str, without: Vec<Area>) -> String {
+        ask_model(assistant, conversation, text, without, None).await
+    }
+
+    /// [`ask`] with `model` of the account, or "Automatic" for `None`.
+    async fn ask_model(
+        assistant: &Arc<Assistant>,
+        conversation: Option<&str>,
+        text: &str,
+        without: Vec<Area>,
+        model: Option<&str>,
+    ) -> String {
         let message = Message {
             conversation: conversation.map(str::to_string),
             engine: ENGINE.into(),
-            model: None,
+            model: model.map(str::to_string),
             effort: None,
             text: text.into(),
             without,
@@ -1233,6 +1322,138 @@ pub(crate) mod tests {
             .map(|(request, _)| request.clone())
             .filter(|request| matches!(request, Request::Remember { .. }))
             .collect()
+    }
+
+    // ----- Task S.23: the place of the model, not of the account -----
+
+    /// A cloud model of Ollama: it runs on `ollama.com` through the local Ollama.
+    const CLOUD: &str = "glm-5.3:cloud";
+
+    /// An Ollama account playing `steps` that lists a cloud model first, then a local one, both
+    /// with tools (task S.23).
+    fn mixed(steps: Vec<Step>) -> Arc<Script> {
+        Script::new(steps)
+            .listing(vec![model(CLOUD, Some(true), Some(true)), model("qwen3:8b", Some(true), Some(false))])
+    }
+
+    fn reading_mail() -> Rights {
+        let mut rights = reader();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        rights
+    }
+
+    /// Task S.23: in one Ollama account the cloud model reads "withheld" for a mail entry, the
+    /// local one the mail; with mail let out (task C.17) the cloud model reads it as before.
+    #[tokio::test]
+    async fn a_cloud_model_of_a_local_ollama_reads_no_mail_unless_it_is_let_out() {
+        for (asked, mail_to_cloud, shown) in [(CLOUD, false, false), ("qwen3:8b", false, true), (CLOUD, true, true)] {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let script = mixed(vec![calls("inbox_list_items", json!({})), says("One invoice.")]);
+            let (assistant, host) = set_up(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script));
+            *host.rule.lock().expect("lock") = DataRule { mail_to_cloud };
+            let id = ask_model(&assistant, None, "What came in?", Vec::new(), Some(asked)).await;
+            finished(&assistant, &id).await;
+            let result = tool_result(&script, "inbox_list_items");
+            assert_eq!(result.contains("Invoice 42"), shown, "{asked}, mail out {mail_to_cloud}: {result}");
+            assert_eq!(result.contains(data_rule::WITHHELD), !shown, "{asked}: {result}");
+            assert_eq!(script.asked()[0].model, asked);
+            let told_remote = script.asked()[0].messages[0].content.contains("(remote)");
+            assert_eq!(told_remote, asked == CLOUD, "{asked}: the prompt says where the model runs");
+        }
+    }
+
+    /// Task S.23: "Automatic" takes a local model of a mixed list, and the cloud model only where
+    /// the account has no local one.
+    #[tokio::test]
+    async fn automatic_takes_a_local_model_first() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = mixed(vec![calls("inbox_list_items", json!({})), says("One invoice.")]);
+        let (assistant, _host) = set_up(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script));
+        let id = ask(&assistant, None, "What came in?", Vec::new()).await;
+        let entries = finished(&assistant, &id).await;
+        assert_eq!(script.asked()[0].model, "qwen3:8b");
+        assert!(tool_result(&script, "inbox_list_items").contains("Invoice 42"), "a local model reads mail");
+        let models: Vec<Option<&str>> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                EntryContent::Answer { model, .. } => Some(model.as_deref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(models, [Some("qwen3:8b")], "the answer names the model");
+
+        let place = scripted_place(Place::Local);
+        let cloud_only = vec![model("gemma3:4b", Some(false), Some(false)), model(CLOUD, Some(true), Some(true))];
+        assert_eq!(ModelAccess::automatic(cloud_only, &place).map(|model| model.id), Ok(CLOUD.to_string()));
+        let unsure = vec![model("qwen3:14b", None, Some(false)), model(CLOUD, Some(true), Some(true))];
+        assert_eq!(ModelAccess::automatic(unsure, &place).map(|model| model.id), Ok("qwen3:14b".to_string()));
+        let none = vec![model("gemma3:4b", Some(false), Some(false))];
+        assert!(matches!(ModelAccess::automatic(none, &place), Err(AiError::NotFound(_))));
+        // A model the list lacks, or a list that failed, is judged by its id alone.
+        let (_, at) = ModelAccess::choose(Err(AiError::Offline), Some(CLOUD), |model| {
+            data_rule::place_of(torro_core::ai::AiProvider::Ollama, "http://localhost:11434/v1", model)
+        })
+        .expect("asked");
+        assert_eq!(at, Place::Remote);
+        assert!(ModelAccess::choose(Err(AiError::Offline), None, &place).is_err(), "Automatic needs the list");
+    }
+
+    /// Task S.23: what a local model of the account retold of a mail does not reach its cloud model
+    /// in the same conversation; the local model reads its own answer again.
+    #[tokio::test]
+    async fn an_answer_after_mail_from_a_local_model_is_kept_from_the_cloud_model_of_the_account() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = mixed(vec![
+            calls("inbox_list_items", json!({})),
+            says("ACME wants 42 euros."),
+            says("I cannot see that."),
+            says("ACME, 42 euros."),
+        ]);
+        let (assistant, _host) = set_up(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script));
+        let id = ask_model(&assistant, None, "What came in?", Vec::new(), Some("qwen3:8b")).await;
+        finished(&assistant, &id).await;
+        ask_model(&assistant, Some(&id), "Summarise", Vec::new(), Some(CLOUD)).await;
+        finished(&assistant, &id).await;
+        ask_model(&assistant, Some(&id), "Again", Vec::new(), Some("qwen3:8b")).await;
+        finished(&assistant, &id).await;
+
+        let asked = script.asked();
+        let text = |at: usize| asked[at].messages.iter().map(|message| message.content.clone()).collect::<String>();
+        let cloud = text(2);
+        assert_eq!(asked[2].model, CLOUD);
+        assert!(!cloud.contains("42 euros") && cloud.contains(data_rule::WITHHELD), "{cloud}");
+        assert!(text(3).contains("ACME wants 42 euros."), "the local model reads its own answer");
+    }
+
+    /// Task S.23: a note a local model keeps after reading mail is `local_only`, and the cloud model
+    /// of the same account never reads such a note in its prompt.
+    #[tokio::test]
+    async fn a_note_after_mail_stays_with_the_local_model_of_the_account() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let script = mixed(vec![
+            calls("inbox_list_items", json!({})),
+            calls("assistant_remember", json!({"text": "ACME sent invoice 42.", "local_only": false})),
+            says("Noted."),
+            says("Hello."),
+            says("Hello again."),
+        ]);
+        let (assistant, host) = set_up(dir.path(), Some(reading_mail()), Place::Local, Arc::clone(&script));
+        let id = ask_model(&assistant, None, "Check my inbox and remember it.", Vec::new(), Some("qwen3:8b")).await;
+        finished(&assistant, &id).await;
+        let kept: Vec<bool> = remembered(&host)
+            .into_iter()
+            .map(|request| matches!(request, Request::Remember { local_only: true, .. }))
+            .collect();
+        assert_eq!(kept, [true], "kept by a local model after mail");
+
+        assert!(matches!(assistant.remember("ACME owes 400 €.", None, true, true).await, Response::Memory { .. }));
+        for (asked, shown) in [(CLOUD, false), ("qwen3:8b", true)] {
+            let id = ask_model(&assistant, None, "Hello", Vec::new(), Some(asked)).await;
+            finished(&assistant, &id).await;
+            let last = script.asked().pop().expect("asked");
+            assert_eq!(last.model, asked);
+            assert_eq!(last.messages[0].content.contains("ACME owes"), shown, "{asked}");
+        }
     }
 
     /// Issue #131: the effort of the message goes into every request of its answer.
