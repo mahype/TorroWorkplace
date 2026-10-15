@@ -1644,9 +1644,13 @@ pub fn body<'a>(reading: &Reading<'a>, anchors: Option<&detail::Anchors>) -> Ele
             }
             body = body.push(match reading.html.filter(HtmlReading::shown) {
                 // The HTML reaches the panel's edges (its background with it), the note keeps the inset.
-                Some(html) => column![panel::bleed(html_view(html)), panel::inset(html_note(reading, true))]
-                    .spacing(space::m())
-                    .into(),
+                // A mail without a background of its own starts its text in line with the title, 16
+                // from the panel's edge (`panel::inset`).
+                Some(html) => {
+                    column![panel::bleed(html_view(html).margin(space::l())), panel::inset(html_note(reading, true))]
+                        .spacing(space::m())
+                        .into()
+                }
                 None => panel::inset(text_block(reading.text, text_level(reading.read), true)),
             });
             if let Some(links) = text_links(reading.text).filter(|_| !html_shown(reading)) {
@@ -1678,9 +1682,8 @@ pub struct ReaderEntry<'a> {
 /// ([`reader_actions`]), the subject (`HEADLINE`, in compact `TITLE`), the sender with the large
 /// avatar, to whom and when – and for an entry a rule put in its lane why (issue #128) –, then the
 /// text – in the reading level ([`Reading::read`]) – with its
-/// notes and the attachments, scrolling. A text mail is at most [`size::content_max()`] wide, with
-/// the page's padding; a mail shown as HTML lies edge to edge under a head as wide as the reader
-/// ([`reader_widths`]). `entry` is the mail entry the mail belongs to, `None` for a folder's message;
+/// notes and the attachments, scrolling. Everything uses the reader's whole width with the page's
+/// padding, a mail shown as HTML lies edge to edge ([`reader_widths`]). `entry` is the mail entry the mail belongs to, `None` for a folder's message;
 /// `anchors` are where the menus of its buttons open (the app's window).
 pub fn reader<'a>(
     reading: Reading<'a>,
@@ -1711,20 +1714,16 @@ struct ReaderWidths {
     mail: f32,
 }
 
-/// The widths in a reader `width` wide, for a mail shown as HTML (`html`) or as text. A text keeps
-/// the reading width – at most [`size::content_max()`] inside the page's padding – and the head
-/// with it. HTML is drawn like a mail app does: over the whole reader without padding and without
-/// an upper bound (a newsletter centres itself), and the head above it uses the whole width inside
-/// the padding, so the actions stand at the reader's right edge.
+/// The widths in a reader `width` wide, for a mail shown as HTML (`html`) or as text, like a mail
+/// app: no reading width as an upper bound anywhere – a reader that just stopped short of its
+/// right edge looks odd. The head, a text and what stands under the mail use the whole width
+/// inside the page's padding, so the actions stand at the reader's right edge; HTML lies over the
+/// whole reader without padding (a newsletter centres itself, a mail without a background of its
+/// own gets the padding as its margin, [`HtmlView::margin`]).
 fn reader_widths(width: f32, html: bool) -> ReaderWidths {
     let pad = layout::page_padding();
     let inner = (width - pad.left - pad.right).max(0.0);
-    if html {
-        ReaderWidths { head: inner, mail: width.max(0.0) }
-    } else {
-        let room = inner.min(size::content_max());
-        ReaderWidths { head: room, mail: room }
-    }
+    ReaderWidths { head: inner, mail: if html { width.max(0.0) } else { inner } }
 }
 
 /// The mail's HTML when it is loaded and shows as HTML: then the reader draws it edge to edge.
@@ -1790,7 +1789,8 @@ fn reader_content<'a>(
             if let Some(html) = html_edge(reading) {
                 // The head ends a gap above the mail; the note follows it as closely as in the text.
                 let head = container(body).padding(Padding { bottom: gap, ..pad });
-                let mail = container(html_view(html)).width(widths.mail);
+                // A mail without a background of its own starts its text in line with the head.
+                let mail = container(html_view(html).margin(pad.left)).width(widths.mail);
                 let foot = column![html_note(reading, false)].push(cards).spacing(gap).width(room);
                 let foot = container(foot).padding(Padding { top: space::m(), ..pad });
                 return column![head, mail, foot].into();
@@ -2182,10 +2182,10 @@ fn view_switches<'a>(html: HtmlReading<'a>) -> Element<'a, Message> {
 }
 
 /// The mail's HTML ([`HtmlReading`]) as wide as its parent gives, links reported as
-/// [`Message::HtmlLink`]. The mail brings its own margins and paints its background up to the
-/// view's edges, so the caller places it without padding.
-fn html_view<'a>(html: HtmlReading<'a>) -> Element<'a, Message> {
-    HtmlView::new(html.content).scheme(html.scheme).scale(html.scale).on_link(Message::HtmlLink).into()
+/// [`Message::HtmlLink`]. The mail paints its background up to the view's edges, so the caller
+/// places it without padding and sets the margin of a mail without a background of its own.
+fn html_view<'a>(html: HtmlReading<'a>) -> HtmlView<'a, Message> {
+    HtmlView::new(html.content).scheme(html.scheme).scale(html.scale).on_link(Message::HtmlLink)
 }
 
 /// The note under a mail shown as HTML: it comes from outside, no scripts run; with "Copy text" at
@@ -2361,15 +2361,14 @@ mod tests {
     }
 
     #[test]
-    fn text_keeps_the_reading_width_with_its_head() {
+    fn text_uses_the_whole_width_inside_the_padding() {
         let pad = layout::page_padding();
         let sides = pad.left + pad.right;
-        for width in [2000.0, 1400.0] {
+        for width in [3000.0, 2000.0, 1400.0, 500.0] {
             let text = reader_widths(width, false);
-            assert_eq!(text, ReaderWidths { head: size::content_max(), mail: size::content_max() });
+            assert_eq!(text, ReaderWidths { head: width - sides, mail: width - sides }, "at {width}");
         }
-        let narrow = reader_widths(500.0, false);
-        assert_eq!(narrow, ReaderWidths { head: 500.0 - sides, mail: 500.0 - sides });
+        assert!(reader_widths(2000.0, false).mail > size::content_max(), "no reading width as a cap");
         // Never below nothing, however narrow.
         assert_eq!(reader_widths(10.0, false), ReaderWidths { head: 0.0, mail: 0.0 });
         assert_eq!(reader_widths(10.0, true), ReaderWidths { head: 0.0, mail: 10.0 });

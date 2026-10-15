@@ -11,7 +11,7 @@ use std::sync::{Arc, OnceLock};
 
 use anyrender::{ImageRenderer as _, PaintScene as _};
 use anyrender_vello_cpu::VelloCpuImageRenderer;
-use blitz_dom::{BaseDocument, Document as _, DocumentConfig, FontContext, StyleThreading, local_name};
+use blitz_dom::{BaseDocument, Document as _, DocumentConfig, FontContext, RestyleHint, StyleThreading, local_name};
 use blitz_html::HtmlDocument;
 use blitz_paint::paint_scene;
 use blitz_traits::events::{
@@ -33,6 +33,10 @@ use crate::recolor::{DarkScene, Recolor};
 /// words and plain-text lines that wrap instead of running out of the reader.
 const MAIL_DEFAULTS: &str = "html { font-family: sans-serif; overflow-wrap: break-word; } \
                              pre { white-space: pre-wrap; overflow-wrap: anywhere; }";
+
+/// The margin browsers give `body` (logical pixels), kept unless the app sets another for a mail
+/// without a background of its own ([`crate::HtmlView::margin`]).
+pub(crate) const BROWSER_MARGIN: f32 = 8.0;
 
 /// The viewport height Blitz lays out with, in CSS pixels. The widget is as tall as the mail, so there is no
 /// real viewport height; this only matters for `vh` units and height media queries, rare in mail.
@@ -190,6 +194,12 @@ struct Inner {
     /// Grows whenever what a picture would show changes (layout, selection, pictures arriving).
     generation: u64,
     press: Option<Press>,
+    /// The margin for a mail without a background of its own, as the view asks ([`Content::set_margin`]).
+    margin: f32,
+    /// Whether the mail has no background of its own ([`own_background`]), found at the first layout.
+    plain: Option<bool>,
+    /// The user agent style sheet with the margin in place of the browser's, while one is added.
+    margin_css: Option<String>,
 }
 
 impl Drop for Inner {
@@ -245,6 +255,9 @@ impl Content {
             frame: None,
             generation: 0,
             press: None,
+            margin: BROWSER_MARGIN,
+            plain: None,
+            margin_css: None,
         };
         Self { inner: RefCell::new(inner) }
     }
@@ -269,6 +282,16 @@ impl Content {
         let (top, bottom) = inner.band(fit, top, top + height);
         let rgba = inner.paint(fit, top, bottom, Colors::of(scheme));
         Snapshot { width: fit.width, height: bottom - top, rgba }
+    }
+
+    /// The margin for a mail without a background of its own ([`crate::HtmlView::margin`]); lays the mail
+    /// out again at the next use when it changed.
+    pub(crate) fn set_margin(&self, margin: f32) {
+        let Ok(mut inner) = self.inner.try_borrow_mut() else { return };
+        if inner.margin != margin {
+            inner.margin = margin;
+            inner.fit = None;
+        }
     }
 
     /// Whether pictures are still on their way (or arrived and are not drawn yet).
@@ -384,6 +407,9 @@ impl Inner {
         self.zoom = 1.0;
         self.doc.set_viewport(fit.viewport(1.0));
         self.doc.resolve(0.0);
+        if self.apply_margin() {
+            self.doc.resolve(0.0);
+        }
         let available = fit.logical_width();
         let needed = content_width(&self.doc);
         if needed > available + 1.0 {
@@ -393,6 +419,42 @@ impl Inner {
         }
         self.fit = Some(fit);
         self.measure();
+    }
+
+    /// Puts the asked margin at the sides of `body` of a mail without a background of its own (above
+    /// and below it keeps the browser's, so its text does not touch the edge of a light paper in a dark
+    /// window), as a user agent style sheet, so a margin the mail sets itself still wins. `true` when the styles changed and the mail
+    /// must be resolved again. Whether the mail has a background is looked at once, after its first
+    /// styling: it does not change with the width.
+    fn apply_margin(&mut self) -> bool {
+        let plain = match self.plain {
+            Some(plain) => plain,
+            None => {
+                let plain = !own_background(&self.doc);
+                self.plain = Some(plain);
+                plain
+            }
+        };
+        let css = (plain && self.margin != BROWSER_MARGIN)
+            .then(|| format!("body {{ margin: {BROWSER_MARGIN}px {}px; }}", self.margin));
+        if css == self.margin_css {
+            return false;
+        }
+        if let Some(old) = self.margin_css.take() {
+            self.doc.remove_user_agent_stylesheet(&old);
+        }
+        if let Some(css) = &css {
+            self.doc.add_user_agent_stylesheet(css);
+        }
+        self.margin_css = css;
+        // A changed style sheet restyles nothing by itself: the whole document is styled again.
+        if let Some(root) = self.doc.try_root_element().map(|root| root.id)
+            && let Some(node) = self.doc.get_node_mut(root)
+        {
+            node.set_restyle_hint(RestyleHint::restyle_subtree());
+            node.mark_ancestors_dirty();
+        }
+        true
     }
 
     /// The height of the laid-out mail in logical pixels: the root element or what overflows it, whichever
@@ -539,6 +601,23 @@ fn content_width(doc: &BaseDocument) -> f32 {
         }
     }
     widest
+}
+
+/// Whether the mail paints a background of its own: on `html`, on `body` or on a wrapper around the
+/// whole mail ([`wrapper_background`]).
+fn own_background(doc: &BaseDocument) -> bool {
+    let Some(root) = doc.try_root_element() else { return false };
+    let coloured = |node: &blitz_dom::Node| {
+        node.primary_styles().is_some_and(|styles| {
+            !styles.clone_background_color().resolve_to_absolute(&styles.clone_color()).is_transparent()
+        })
+    };
+    let body = root
+        .children
+        .iter()
+        .filter_map(|&id| doc.get_node(id))
+        .find(|node| node.data.is_element_with_tag_name(&local_name!("body")));
+    coloured(root) || body.is_some_and(coloured) || wrapper_background(doc).is_some()
 }
 
 /// The colour of a wrapper around the whole mail, painted over the whole view under the mail like a

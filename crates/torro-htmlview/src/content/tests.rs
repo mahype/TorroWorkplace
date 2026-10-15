@@ -235,6 +235,42 @@ fn a_narrow_box_or_text_beside_it_is_no_wrapper() {
     }
 }
 
+/// Where the first black pixel is in row `y`, from the left.
+fn first_black(snapshot: &Snapshot, y: u32) -> Option<u32> {
+    (0..snapshot.width).find(|&x| snapshot.pixel(x, y) == Some([0, 0, 0, 255]))
+}
+
+/// A black box 50 wide at the start of a mail, then text: no background of its own.
+const PLAIN: &str = "<div style=\"background:#000;width:50px;height:20px\"></div><p>Text</p>";
+
+#[test]
+fn a_mail_without_a_background_gets_the_asked_margin() {
+    let content = content(PLAIN);
+    let browser = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 40.0);
+    assert_eq!(first_black(&browser, 12), Some(8), "the browser's margin by default");
+    content.set_margin(24.0);
+    let asked = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 40.0);
+    assert_eq!(first_black(&asked, 12), Some(24), "the margin the view asks for, at the sides");
+    assert_eq!(first_black(&asked, 4), None, "the browser's 8 above");
+    content.set_margin(BROWSER_MARGIN);
+    let back = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 40.0);
+    assert_eq!(first_black(&back, 12), Some(8), "and back");
+}
+
+#[test]
+fn a_mail_with_a_background_or_its_own_margin_keeps_it() {
+    let wrapped = content(
+        "<div style=\"background:#f0e0c0\"><div style=\"background:#000;width:50px;height:20px\"></div>\
+         <p>Text</p></div>",
+    );
+    let own = content(&format!("<style>body {{ margin: 0 }}</style>{PLAIN}"));
+    for (content, left) in [(wrapped, 8), (own, 0)] {
+        content.set_margin(24.0);
+        let snapshot = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 40.0);
+        assert_eq!(first_black(&snapshot, 12), Some(left));
+    }
+}
+
 /// The pixel in rows `rows`, columns `left..right`, that differs most from the pixel at `(left - 16, row)`
 /// (the box's own surface): the core of a glyph.
 fn strongest(snapshot: &Snapshot, left: u32, right: u32, rows: std::ops::Range<u32>) -> peniko::Color {
