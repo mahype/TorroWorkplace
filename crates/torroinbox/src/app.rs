@@ -4352,9 +4352,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     list::card_span(above, mail::message_card_height(message, width))
                 }
                 Look::Rows => {
+                    // The cursor's row carries the strip with its actions below its lines.
                     let row = list::message_height();
                     let top = index as f32 * row;
-                    (top, top + row)
+                    (top, top + row + list::strip_height())
                 }
             });
             (self.scroll, span, list::SCROLL)

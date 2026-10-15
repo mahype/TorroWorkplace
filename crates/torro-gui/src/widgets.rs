@@ -1001,6 +1001,35 @@ pub fn card_actions<'a, M: Clone + 'a>(
     with_actions(card.into(), actions, shown, words, Place::Card(inset))
 }
 
+/// The action bar of a row as a strip of its own below the row's lines (the inbox's list): the
+/// buttons of `actions` side by side, [`space::s()`] apart, each `secondary` ([`size::control_sm()`]
+/// high) so they stand out on the row's `selected` surface, with icon and word – or, without
+/// `words`, 28 × 28 with the icon alone ([`row_actions_strip_words`] chooses). Every button's
+/// tooltip names it with its key ([`kbd`]). Unlike [`row_actions`] nothing floats over the row: the
+/// row grows by [`row_actions_strip_height`] while it shows the strip. Empty without actions.
+///
+/// ```ignore
+/// let words = widgets::row_actions_strip_words(&actions, room);
+/// column![lines, widgets::row_actions_strip(actions, words)].spacing(space::s())
+/// ```
+pub fn row_actions_strip<'a, M: Clone + 'a>(actions: Vec<RowAction<'a, M>>, words: bool) -> Element<'a, M> {
+    let buttons = actions.into_iter().map(|action| row_action_button(action, words, style::button::secondary));
+    iced::widget::Row::with_children(buttons).spacing(space::s()).align_y(Alignment::Center).into()
+}
+
+/// The height a [`row_actions_strip`] adds to its row: a button ([`size::control_sm()`]) and the gap
+/// [`space::s()`] above it.
+pub fn row_actions_strip_height() -> f32 {
+    size::control_sm() + space::s()
+}
+
+/// Whether the [`row_actions_strip`] of `actions` shows its words in `room`: when all of them fit,
+/// else icons alone with their word as tooltip – never a mix.
+pub fn row_actions_strip_words<M>(actions: &[RowAction<'_, M>], room: f32) -> bool {
+    let buttons: f32 = actions.iter().map(|action| row_action_width(action.label.as_ref())).sum();
+    buttons + space::s() * actions.len().saturating_sub(1) as f32 <= room
+}
+
 /// Where the bar of [`with_actions`] sits at the right of what it lies over.
 #[derive(Debug, Clone, Copy)]
 enum Place {
@@ -1023,7 +1052,7 @@ fn with_actions<'a, M: Clone + 'a>(
     if actions.is_empty() {
         return base;
     }
-    let buttons = actions.into_iter().map(|action| row_action_button(action, words));
+    let buttons = actions.into_iter().map(|action| row_action_button(action, words, style::button::menu_item(false)));
     let bar = container(iced::widget::Row::with_children(buttons).spacing(BAR_INSET).align_y(Alignment::Center))
         .padding(BAR_INSET)
         .style(|t| {
@@ -1051,13 +1080,17 @@ fn with_actions<'a, M: Clone + 'a>(
     if shown { stack![base, layer].into() } else { iced::widget::hover(base, layer) }
 }
 
-/// One button of [`row_actions`]: on the `menu` surface, so hover and press are `selected` (as in
-/// menus, where `hover` would vanish); the tooltip names it with its key.
+/// One button of [`row_actions`] in `style`: on the `menu` surface `menu_item`, so hover and press
+/// are `selected` (as in menus, where `hover` would vanish); in [`row_actions_strip`] `secondary`.
+/// The tooltip names it with its key.
 ///
 /// An action that is off ([`RowAction::blocked`]) stands there faded – word, icon and all – takes no
 /// press and says why in its tooltip. An action without a key (`""`) shows no key hint.
-fn row_action_button<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -> Element<'a, M> {
-    let style = style::button::menu_item(false);
+fn row_action_button<'a, M: Clone + 'a>(
+    action: RowAction<'a, M>,
+    words: bool,
+    style: impl Fn(&Theme, button::Status) -> button::Style + Copy + 'a,
+) -> Element<'a, M> {
     let press = action.press();
     let on = press.is_some();
     let mut tooltip = row![typo::text(typo::caption(), action.tip()).style(theme::text_2)]

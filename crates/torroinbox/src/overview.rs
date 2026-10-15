@@ -317,7 +317,8 @@ pub fn row_span(
         for (i, item) in items.iter().enumerate() {
             let height = list::row_height_of(item);
             if item.id == id {
-                return Some((if i == 0 { start } else { y }, y + height));
+                // The cursor's row carries the strip with its actions (`list::entry_row`).
+                return Some((if i == 0 { start } else { y }, y + height + list::strip_height()));
             }
             y += height;
         }
@@ -329,7 +330,7 @@ pub fn row_span(
     for item in sections.info.iter().filter(|_| info_open) {
         let height = list::row_height_of(item);
         if item.id == id {
-            return Some((y, y + height));
+            return Some((y, y + height + list::strip_height()));
         }
         y += height;
     }
@@ -763,7 +764,8 @@ mod tests {
         let block = cards_height(&notices.groups[0].1);
         let today = &notices.groups[1].1;
         let first = row_span(&notices, false, &today[0].id, Look::Rows, false, 480.0).expect("the first row of Today");
-        assert_eq!(first, (block + head, block + 2.0 * head + size::row_notice()), "its head comes along");
+        let strip = list::strip_height();
+        assert_eq!(first, (block + head, block + 2.0 * head + size::row_notice() + strip), "its head comes along");
         let rows: f32 = today.iter().map(|item| list::row_height_of(item)).sum();
         // Yesterday and Earlier, each with its head, lie between Today and Info.
         let later: f32 = notices.groups[2..]
@@ -773,7 +775,7 @@ mod tests {
         let info = block + 2.0 * head + rows + later + size::row();
         assert_eq!(
             row_span(&notices, true, "demo-8", Look::Rows, false, 480.0),
-            Some((info, info + size::row_notice()))
+            Some((info, info + size::row_notice() + strip))
         );
         // An approval's card has buttons, so it is taller than a card without.
         let approval = notices.groups[0].1.iter().find(|item| detail::is_approval(item)).expect("an approval");
@@ -790,7 +792,10 @@ mod tests {
         let first = &mail.info[0].id;
         assert_eq!(
             row_span(&mail, true, first, Look::Rows, false, 480.0),
-            Some((calm_height() + size::row(), calm_height() + size::row() + size::row_message()))
+            Some((
+                calm_height() + size::row(),
+                calm_height() + size::row() + size::row_message() + list::strip_height()
+            ))
         );
         assert!(Sections::of(&[], Column::Mail, now()).is_empty());
     }
