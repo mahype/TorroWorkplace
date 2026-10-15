@@ -834,7 +834,13 @@ M9.5 ──── M9.8 ─────────┘
   Netz); Link-Treffer an Koordinaten. `cargo build` auf macOS; Linux/Windows ohne Systempakete (kein GTK).
 
 ### M9.7 TorroInbox: HTML im Lesebereich, Schalter HTML/Text und Hell/Dunkel
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `Cargo.lock`; `tokio` in `crates/torroinbox/Cargo.toml`, weil der `cid:`-Abruf auf dem
+  Arbeits-Thread der Bibliothek auf den Kern wartet. Startparameter `--mail-view html|text` und
+  `--mail-colors app|light|dark` (wie `--appearance`, nichts wird gespeichert) für Sichtprüfung und Vorlagen. Die
+  Demo-Mails: Newsletter `m:p2` mit vier `cid:`-Bildern (die selbstgemachten PNGs aus den Fixtures von
+  `torro-htmlview`, per `include_bytes!`), Outlook-Antwort `m:w2` (Text- und HTML-Teil), Textmail `m:w1`. Unter
+  dem HTML steht statt „shown as plain text“ ein eigener Hinweis; „Links“ unter dem Text nur in der Text-Ansicht.
+  `mailto:` geht wie `http(s)` an `webbrowser`, der es auf macOS dem Standard-Browser gibt)
 - **Modell:** Opus · **Braucht:** M9.5, M9.6 · **Dateien:** `crates/torroinbox/{Cargo.toml,src/mail.rs,src/app.rs,
   src/keys.rs}`, `crates/torro-inbox/src/demo.rs`, `crates/torro-core/src/i18n/de.rs`
 - **Oberfläche:** Der Lesebereich (Leser neben der Liste und Paneel) zeigt eine Mail mit HTML gleich als HTML

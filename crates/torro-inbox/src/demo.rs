@@ -556,8 +556,12 @@ struct Letter {
     /// `(file name, MIME type, size)`.
     attachments: &'static [(&'static str, &'static str, u64)],
     from_html: bool,
-    /// The cleaned HTML part (task M9.3: the panel offers "View as HTML"); `None`: text only.
+    /// The cleaned HTML part, as the core keeps it (task M9.5: legacy attributes already written as
+    /// CSS); the inbox draws it in its reader (task M9.7). `None`: text only.
     html: Option<&'static str>,
+    /// The pictures the HTML shows from inline parts (`cid:`): their Content-IDs in
+    /// [`PICTURES`].
+    pictures: &'static [&'static str],
     /// Sent to a list or by a machine (`List-Id`): the inbox files it under "Info".
     bulk: bool,
 }
@@ -577,6 +581,7 @@ impl Letter {
             attachments: &[],
             from_html: false,
             html: None,
+            pictures: &[],
             bulk: false,
         }
     }
@@ -598,7 +603,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
     };
     let snippet = letter.text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(120).collect();
     let thread = if letter.thread.is_empty() { letter.id } else { letter.thread };
-    let attachments: Vec<AttachmentInfo> = letter
+    let mut attachments: Vec<AttachmentInfo> = letter
         .attachments
         .iter()
         .enumerate()
@@ -611,6 +616,16 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             content_id: None,
         })
         .collect();
+    let files = attachments.len();
+    // The pictures of the HTML follow as inline parts, as mail tools send them.
+    attachments.extend(letter.pictures.iter().enumerate().map(|(i, &content_id)| AttachmentInfo {
+        part: (files + i + 2).to_string(),
+        filename: Some(picture_name(content_id)),
+        content_type: "image/png".into(),
+        size: picture(content_id).map_or(0, |bytes| bytes.len() as u64),
+        inline: true,
+        content_id: Some(content_id.into()),
+    }));
     Message {
         summary: MessageSummary {
             id: letter.id.into(),
@@ -623,7 +638,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             date: now - TimeDelta::minutes(letter.minutes),
             snippet,
             flags: letter.flags.to_vec(),
-            has_attachments: !attachments.is_empty(),
+            has_attachments: files > 0,
             invite: None,
             untrusted: true,
         },
@@ -642,24 +657,104 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
     }
 }
 
-/// The HTML of the demo's newsletter made from HTML (`m:p2`), as the core keeps it cleaned.
-const AUTUMN_SALE_HTML: &str = "<div style=\"font-family:Arial,sans-serif;max-width:600px;margin:0 auto\">\
-<h1 style=\"color:#b5502a\">Autumn sale</h1>\
-<p>20% off all jackets until Sunday.</p>\
-<table width=\"100%\" cellpadding=\"8\"><tr>\
-<td bgcolor=\"#f4ece4\"><b>Rain jacket</b><br>89 € <s>111 €</s></td>\
-<td bgcolor=\"#f4ece4\"><b>Down jacket</b><br>159 € <s>199 €</s></td>\
-</tr></table>\
-<p><a href=\"https://shop.example/sale\">Shop now</a></p>\
-<p style=\"font-size:12px;color:#777\"><a href=\"https://shop.example/unsubscribe\">Unsubscribe</a></p>\
-</div>";
+/// The pictures of the demo's HTML mail, by Content-ID: the shop's newsletter (`m:p2`) shows them
+/// from inline parts (`cid:`), so it draws without the network. Abstract shapes and gradients, the
+/// self-made samples of `torro-htmlview`'s tests.
+const PICTURES: [(&str, &[u8]); 4] = [
+    ("logo@shop.example", include_bytes!("../../torro-htmlview/tests/fixtures/cid/logo@torro.example.png")),
+    ("hero@shop.example", include_bytes!("../../torro-htmlview/tests/fixtures/cid/hero@torro.example.png")),
+    ("rain@shop.example", include_bytes!("../../torro-htmlview/tests/fixtures/cid/tiles@torro.example.png")),
+    ("down@shop.example", include_bytes!("../../torro-htmlview/tests/fixtures/cid/tasks@torro.example.png")),
+];
 
-/// The HTML part of the demo's newsletter with text and HTML (`m:w14`).
-const WINTER_JACKETS_HTML: &str = "<div style=\"font-family:Arial,sans-serif;max-width:600px;margin:0 auto\">\
-<h1>Winter jackets are here</h1>\
-<p>Members get <b>free shipping</b> until Friday.</p>\
-<p><a href=\"https://shop.example/winter\">See the collection</a></p>\
-</div>";
+/// The bytes of the demo picture with this Content-ID ([`PICTURES`]).
+fn picture(content_id: &str) -> Option<&'static [u8]> {
+    PICTURES.iter().find(|(id, _)| *id == content_id).map(|(_, bytes)| *bytes)
+}
+
+/// The file name of a demo picture: its Content-ID's name before the `@`, as PNG.
+fn picture_name(content_id: &str) -> String {
+    format!("{}.png", content_id.split('@').next().unwrap_or(content_id))
+}
+
+/// The HTML of the demo's newsletter made from HTML (`m:p2`), as the core keeps it cleaned: nested
+/// tables with inline styles, pictures from inline parts, a button, two columns, a footer.
+const AUTUMN_SALE_HTML: &str = r#"<div style="margin:0;padding:0;background-color:#f3eee8">
+<table role="presentation" style="width:100%;border-spacing:0;background-color:#f3eee8">
+<tr><td style="text-align:center;padding:24px 12px">
+<table role="presentation" style="width:600px;max-width:100%;margin:0 auto;border-spacing:0;background:#ffffff;border-radius:8px;text-align:left">
+<tr><td style="padding:20px 24px;border-bottom:1px solid #ece4da">
+<table role="presentation" style="width:100%;border-spacing:0"><tr>
+<td style="width:48px;vertical-align:middle;padding:0"><img src="cid:logo@shop.example" width="40" height="40" alt="Shop logo" style="display:block;border-radius:6px"></td>
+<td style="vertical-align:middle;font-family:Helvetica,Arial,sans-serif;font-size:20px;font-weight:bold;color:#2b211a;padding:0 0 0 12px">Shop</td>
+<td style="text-align:right;vertical-align:middle;font-family:Helvetica,Arial,sans-serif;font-size:12px;color:#7a6a5c;padding:0">Autumn sale &middot; until Sunday</td>
+</tr></table>
+</td></tr>
+<tr><td style="padding:0"><a href="https://shop.example/sale"><img src="cid:hero@shop.example" width="600" height="240" alt="Hills at dusk" style="display:block;width:100%;max-width:600px;height:auto"></a></td></tr>
+<tr><td style="padding:24px;font-family:Georgia,'Times New Roman',serif;font-size:16px;line-height:24px;color:#2b2d31">
+<h1 style="margin:0 0 12px 0;font-family:Helvetica,Arial,sans-serif;font-size:26px;line-height:32px;color:#b5502a">20% off all jackets</h1>
+<p style="margin:0 0 16px 0">Autumn is here, and so are our warmest jackets. Until Sunday every jacket costs a fifth less &ndash; in the shop and online.</p>
+<table role="presentation" style="border-spacing:0"><tr><td style="background-color:#b5502a;border-radius:6px;padding:0"><a href="https://shop.example/sale" style="display:inline-block;padding:10px 18px;font-family:Helvetica,Arial,sans-serif;font-size:14px;font-weight:bold;color:#ffffff;text-decoration:none">Shop now</a></td></tr></table>
+</td></tr>
+<tr><td style="padding:0 24px 24px 24px">
+<table role="presentation" style="width:100%;border-spacing:0"><tr>
+<td style="width:50%;vertical-align:top;padding:0 8px 0 0">
+<img src="cid:rain@shop.example" width="268" alt="Rain jacket" style="display:block;width:100%;height:auto;border-radius:4px">
+<h2 style="font-family:Helvetica,Arial,sans-serif;font-size:16px;margin:12px 0 4px 0;color:#18191b">Rain jacket</h2>
+<p style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:20px;margin:0;color:#4f535a">89 &euro; <s style="color:#8a8f98">111 &euro;</s></p>
+</td>
+<td style="width:50%;vertical-align:top;padding:0 0 0 8px">
+<img src="cid:down@shop.example" width="268" alt="Down jacket" style="display:block;width:100%;height:auto;border-radius:4px">
+<h2 style="font-family:Helvetica,Arial,sans-serif;font-size:16px;margin:12px 0 4px 0;color:#18191b">Down jacket</h2>
+<p style="font-family:Helvetica,Arial,sans-serif;font-size:14px;line-height:20px;margin:0;color:#4f535a">159 &euro; <s style="color:#8a8f98">199 &euro;</s></p>
+</td>
+</tr></table>
+</td></tr>
+<tr><td style="text-align:center;padding:16px 24px;background:#faf7f3;border-top:1px solid #ece4da;border-radius:0 0 8px 8px;font-family:Helvetica,Arial,sans-serif;font-size:12px;line-height:18px;color:#7a6a5c">
+You get this mail because you are a member at shop.example.<br>
+<a href="https://shop.example/unsubscribe" style="color:#7a6a5c">Unsubscribe</a> &middot; <a href="mailto:service@shop.example" style="color:#7a6a5c">Write to us</a>
+</td></tr>
+</table>
+</td></tr>
+</table>
+</div>"#;
+
+/// The HTML part of the demo's newsletter with text and HTML (`m:w14`): short, no pictures.
+const WINTER_JACKETS_HTML: &str = r#"<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:8px 0">
+<h1 style="font-size:24px;line-height:30px;color:#18191b;margin:0 0 12px 0">Winter jackets are here</h1>
+<p style="font-size:15px;line-height:22px;color:#2b2d31;margin:0 0 12px 0">Members get <b>free shipping</b> until Friday.</p>
+<p style="margin:0"><a href="https://shop.example/winter" style="color:#3b6ef0">See the collection</a></p>
+</div>"#;
+
+/// The HTML part of Lena's answer (`m:w2`), written in Outlook as the core keeps it cleaned:
+/// `MsoNormal` paragraphs under a style sheet, empty paragraphs as spacing, a signature in small
+/// grey type and the quoted mail under a rule with "From" and "Subject".
+const OUTLOOK_REPLY_HTML: &str = r#"<style>
+p.MsoNormal, li.MsoNormal, div.MsoNormal { margin:0cm; font-size:11.0pt; font-family:"Aptos",sans-serif; }
+a:link, span.MsoHyperlink { color:#467886; text-decoration:underline; }
+</style>
+<div class="WordSection1" lang="EN-US" style="word-wrap:break-word">
+<p class="MsoNormal">Thursday at 14:00 works for me. I will bring the new sidebar drafts:</p>
+<ul style="margin-top:0cm">
+<li class="MsoNormal">the narrow sidebar with icons only,</li>
+<li class="MsoNormal">the mail reader with the <b>new</b> switches.</li>
+</ul>
+<p class="MsoNormal">&nbsp;</p>
+<p class="MsoNormal">Lena</p>
+<p class="MsoNormal">&nbsp;</p>
+<p class="MsoNormal"><b><span style="font-size:10.0pt;color:#1F3864">Lena Hoffmann</span></b></p>
+<p class="MsoNormal"><span style="font-size:9.0pt;color:#595959">Design &middot; Work Example<br><a href="https://work.example.org/"><span style="color:#467886">work.example.org</span></a></span></p>
+<p class="MsoNormal">&nbsp;</p>
+<div style="border:none;border-top:solid #E1E1E1 1.0pt;padding:3.0pt 0cm 0cm 0cm">
+<p class="MsoNormal"><b><span style="font-family:'Calibri',sans-serif">From:</span></b><span style="font-family:'Calibri',sans-serif"> Anna Berg &lt;anna@work.example.org&gt;<br><b>To:</b> Lena Hoffmann &lt;lena.hoffmann@work.example.org&gt;<br><b>Subject:</b> Design review on Thursday</span></p>
+</div>
+<p class="MsoNormal">&nbsp;</p>
+<p class="MsoNormal">Hi Lena,</p>
+<p class="MsoNormal">&nbsp;</p>
+<p class="MsoNormal">can we move the design review to Thursday?</p>
+<p class="MsoNormal">&nbsp;</p>
+<p class="MsoNormal">Anna</p>
+</div>"#;
 
 const READ: &[Flag] = &[Flag::Seen];
 const READ_FLAGGED: &[Flag] = &[Flag::Seen, Flag::Flagged];
@@ -688,8 +783,14 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             from: ("Lena Hoffmann", "lena.hoffmann@work.example.org"),
             minutes: 130,
             flags: &[Flag::Flagged],
-            text: "Thursday at 14:00 works for me. I will bring the new sidebar drafts.\n\n\
-                   > Can we move the design review to Thursday?\n\nLena",
+            text: "Thursday at 14:00 works for me. I will bring the new sidebar drafts:\n\n\
+                   - the narrow sidebar with icons only,\n\
+                   - the mail reader with the new switches.\n\nLena\n\n\
+                   Lena Hoffmann\nDesign · Work Example\nhttps://work.example.org/\n\n\
+                   From: Anna Berg <anna@work.example.org>\nTo: Lena Hoffmann <lena.hoffmann@work.example.org>\n\
+                   Subject: Design review on Thursday\n\n> Can we move the design review to Thursday?",
+            // Written in Outlook: a text part and an HTML part (task M9.7).
+            html: Some(OUTLOOK_REPLY_HTML),
             ..Letter::new("m:w2", WORK, "inbox", "Re: Design review on Thursday")
         },
         Letter {
@@ -775,7 +876,9 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             bulk: true,
             from_html: true,
             html: Some(AUTUMN_SALE_HTML),
+            pictures: &["logo@shop.example", "hero@shop.example", "rain@shop.example", "down@shop.example"],
             text: "Autumn sale: 20% off all jackets until Sunday.\n\nShop now: https://shop.example/sale\n\n\
+                   Rain jacket: 89 € (was 111 €)\nDown jacket: 159 € (was 199 €)\n\n\
                    Unsubscribe: https://shop.example/unsubscribe",
             ..Letter::new("m:p2", PRIVATE, "inbox", "Autumn sale: 20% off")
         },
@@ -973,8 +1076,9 @@ impl DemoSource {
     }
 
     /// `mail.get_attachment`: writes the attachment `part` of the message `id` as a small text
-    /// file into `torro-inbox-demo` in the temporary directory, the demo's stand-in for the core's
-    /// attachment folder, and answers its path. [`InboxError::NotFound`] for an unknown message or
+    /// file – a picture of the HTML as its PNG ([`PICTURES`]) – into `torro-inbox-demo` in the
+    /// temporary directory, the demo's stand-in for the core's attachment folder, and answers its
+    /// path. [`InboxError::NotFound`] for an unknown message or
     /// part, [`InboxError::Other`] when the file cannot be written.
     pub fn mail_attachment(&self, id: &str, part: &str) -> Result<PathBuf, InboxError> {
         let message = self.get_mail(id)?;
@@ -987,8 +1091,12 @@ impl DemoSource {
             .map_or_else(|| format!("attachment-{part}"), |name| name.to_string_lossy().into_owned());
         let dir = std::env::temp_dir().join("torro-inbox-demo");
         let path = dir.join(&name);
+        let bytes = match attachment.content_id.as_deref().and_then(picture) {
+            Some(bytes) => bytes.to_vec(),
+            None => attachment_text(&name).into_bytes(),
+        };
         std::fs::create_dir_all(&dir)
-            .and_then(|()| std::fs::write(&path, attachment_text(&name)))
+            .and_then(|()| std::fs::write(&path, bytes))
             .map_err(|err| InboxError::Other(err.to_string()))?;
         Ok(path)
     }
@@ -1841,6 +1949,25 @@ mod tests {
         assert!(mail.iter().any(|m| !m.attachments.is_empty()));
         let ids: HashSet<&str> = mail.iter().map(|m| m.summary.id.as_str()).collect();
         assert_eq!(ids.len(), mail.len(), "ids are unique");
+    }
+
+    /// The newsletter's pictures are inline parts with a Content-ID (task M9.7): they do not count as
+    /// attachments, and `mail.get_attachment` hands out the PNG its HTML names.
+    #[test]
+    fn the_newsletter_carries_its_pictures_as_inline_parts() {
+        let demo = DemoSource::new(now());
+        let sale = demo.get_mail("m:p2").expect("the newsletter");
+        let html = sale.html.as_deref().expect("its HTML");
+        assert!(!sale.summary.has_attachments, "pictures are no attachments");
+        let pictures: Vec<&AttachmentInfo> = sale.attachments.iter().filter(|a| a.inline).collect();
+        assert_eq!(pictures.len(), 4);
+        for part in pictures {
+            let id = part.content_id.as_deref().expect("a Content-ID");
+            assert!(html.contains(&format!("cid:{id}")), "the HTML shows {id}");
+            let path = demo.mail_attachment("m:p2", &part.part).expect("placed");
+            let bytes = std::fs::read(path).expect("written");
+            assert!(bytes.starts_with(b"\x89PNG"), "{id} is a PNG");
+        }
     }
 
     #[test]

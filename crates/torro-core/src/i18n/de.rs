@@ -2207,7 +2207,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't load the message.", "Die Nachricht konnte nicht geladen werden."),
     ("Couldn't open the attachment.", "Der Anhang konnte nicht geöffnet werden."),
     ("Couldn't open the compose window.", "Das Schreibfenster konnte nicht geöffnet werden."),
-    ("Couldn't open the mail window.", "Das Mail-Fenster konnte nicht geöffnet werden."),
     ("Flag", "Markieren"),
     ("Flagged", "Markiert"),
     ("Forward", "Weiterleiten"),
@@ -2273,8 +2272,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{file} can run programs, so only its folder was opened.",
         "{file} kann Programme ausführen, deshalb wurde nur sein Ordner geöffnet.",
     ),
-    // HTML mail in the inbox (M9.3)
-    ("View as HTML", "Als HTML ansehen"),
+    // HTML mail in the reader of the inbox (M9.7); "HTML" and "Text" read the same in German
+    (
+        "Mail from outside the suite: no scripts run, pictures from the web are loaded.",
+        "Mail von außerhalb der Suite: Es laufen keine Skripte, Bilder aus dem Netz werden geladen.",
+    ),
     // Take accounts over from TorroMail (M7.4)
     ("Connecting…", "Verbinde …"),
     (

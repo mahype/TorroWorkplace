@@ -14,6 +14,8 @@ workspace = true
 [dependencies]
 torro-core.workspace = true
 torro-gui.workspace = true
+# HTML mail in the reader (task M9.7): Blitz draws it inside the window.
+torro-htmlview.workspace = true
 torro-inbox.workspace = true
 torro-ipc.workspace = true
 torro-mail.workspace = true
@@ -21,6 +23,8 @@ torro-pim.workspace = true
 chrono.workspace = true
 iced.workspace = true
 rfd.workspace = true
+# `cid:` pictures are asked of the core on the picture fetcher's worker thread, which blocks on it.
+tokio.workspace = true
 webbrowser.workspace = true
 
 [dev-dependencies]
