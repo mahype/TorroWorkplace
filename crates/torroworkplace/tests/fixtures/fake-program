@@ -1,0 +1,6 @@
+#!/bin/sh
+# A fake helper or agent for tests: runs the shell code its test wrote next to the link it was
+# started by, as `<link>.sh`. Tests link to this one program instead of writing a new one each:
+# macOS checks every new executable file before its first start, one after another and at times
+# for many seconds, so tests waiting for a freshly written program failed now and then.
+. "$0.sh"
