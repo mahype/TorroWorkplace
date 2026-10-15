@@ -982,6 +982,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 

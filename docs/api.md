@@ -77,7 +77,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 |---|---|---|---|---|
 | `system` | `ping`, `status` | | | |
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
-| `calendar` | `list_calendars`, `list_events` | `save_event` | `delete_event` | |
+| `calendar` | `list_calendars`, `list_events` ¹⁹ | `save_event` ¹⁹ | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
@@ -521,6 +521,13 @@ geht nur über `https` oder an diesen Rechner, sonst `error`, und liegt nur im S
 abonniert, benennt um oder bestellt ab; die Freigabe nennt Server und Etikett. Themen-Namen sind auf öffentlichen
 Servern Passwörter: `list_accounts` zeigt sie nur dem App-Schlüssel (`AccountInfo.ntfy`), Clients sehen die
 Etiketten; Protokoll nur mit der Konto-Kennung.
+
+¹⁹ **Erinnerungen eines Termins** (ER1.1, [erinnerungen.md](erinnerungen.md)): `Event` hat seit ER1.1
+`alarms`, die eigenen Erinnerungen (`VALARM` mit `ACTION:DISPLAY` oder `AUDIO`): je Eintrag `trigger`
+(`{"before": {"minutes": 15, "of": "start"}}` oder `{"at": "…Z"}`) und `style` (`null` = wie der Kalender,
+`notification`, `full_screen`; gespeichert als Torros `X-TORRO-STYLE`). Kein neuer Befehl und kein neues Recht:
+`list_events` liefert sie mit, `save_event` schreibt sie. Wer `alarms` so zurückschickt, wie er sie gelesen hat,
+ändert keine Erinnerung; nur eine geänderte Liste ersetzt die Erinnerungen, Mail-Erinnerungen des Servers bleiben.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

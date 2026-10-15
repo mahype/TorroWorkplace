@@ -356,6 +356,7 @@ impl Form {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         });
         event.summary = title.to_string();
         event.start = start;
@@ -1121,6 +1122,7 @@ mod tests {
             description: Some("Bring slides".into()),
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 

@@ -46,7 +46,7 @@ ER3.1 (braucht ER1.4)       ER4 später
 ## ER1 Kern: Erinnerungen planen und auslösen
 
 ### ER1.1 Erinnerungen im Termin lesen und schreiben
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Braucht:** – · **Dateien:**
   `crates/torro-pim/src/{model,demo}.rs`, `crates/torro-pim-caldav/src/{ical,write}.rs`,
   `crates/torro-pim-caldav/tests/fixtures/` (neue Fixtures)

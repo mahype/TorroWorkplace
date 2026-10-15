@@ -33,7 +33,10 @@ use chrono::{DateTime, Datelike, Days, Local, NaiveDate, Utc};
 use crate::account::{GITHUB_KIND, account_of, local_id};
 use crate::model::{ChecksState, GitHubDetails, GitHubFilter, GitHubKind, GitHubLabel, GitHubState, Link, ReviewState};
 use crate::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails, PimSource, move_plan};
-use crate::{AccountState, Collection, CollectionKind, Event, EventTime, PimAccount, ProviderError, Todo};
+use crate::{
+    AccountState, Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime,
+    PimAccount, ProviderError, Todo,
+};
 
 #[derive(Debug, Default)]
 struct Data {
@@ -352,7 +355,13 @@ fn event(collection: &str, uid: &str, summary: &str, start: EventTime, end: Even
         description: None,
         recurring: false,
         transparency: crate::Transparency::Opaque,
+        alarms: Vec::new(),
     }
+}
+
+/// A reminder `minutes` before the start (task ER1.1); `style: None` follows the calendar.
+fn reminder(minutes: i64, style: Option<AlarmStyle>) -> Alarm {
+    Alarm { trigger: AlarmTrigger::Before { minutes, of: AlarmAnchor::Start }, style }
 }
 
 /// A task without href, etag and details. Set the rest with struct update syntax.
@@ -640,6 +649,8 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
                  https://example.org/backlog.\nRemote: https://us02web.zoom.us/j/81234567890"
                     .into(),
             ),
+            // A call to join: over the whole screen shortly before, the day before as a notification.
+            alarms: vec![reminder(5, Some(AlarmStyle::FullScreen)), reminder(24 * 60, Some(AlarmStyle::Notification))],
             ..event(WORK, "sprint-planning@torro-demo", "Sprint planning", at(day(0), 10, 0), at(day(0), 11, 30))
         },
         Event {
@@ -659,6 +670,7 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
         Event {
             location: Some("Video call".into()),
             description: Some("Interim status of the pilot project with the city council.".into()),
+            alarms: vec![reminder(15, Some(AlarmStyle::FullScreen))],
             ..event(WORK, "client-presentation@torro-demo", "Client presentation", at(day(3), 15, 0), at(day(3), 16, 0))
         },
         Event {
@@ -697,6 +709,7 @@ fn sample_events(monday: NaiveDate) -> Vec<Event> {
         },
         Event {
             location: Some("Dental practice Berger".into()),
+            alarms: vec![reminder(60, None)],
             ..event(PERSONAL, "dentist@torro-demo", "Dentist", at(day(8), 8, 0), at(day(8), 8, 45))
         },
         event(FAMILY, "birthday-mum@torro-demo", "Mum's birthday", EventTime::Date(day(6)), EventTime::Date(day(7))),
@@ -1756,6 +1769,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: crate::Transparency::Opaque,
+            alarms: Vec::new(),
         };
         let mut saved = source.save_event(new).await.unwrap();
         assert!(saved.href.is_some() && saved.etag.is_some());
@@ -1773,5 +1787,13 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn some_events_carry_reminders_of_each_style() {
+        let events = sample_events(NaiveDate::from_ymd_opt(2026, 10, 12).expect("a monday"));
+        let styles: HashSet<Option<AlarmStyle>> = events.iter().flat_map(|e| &e.alarms).map(|a| a.style).collect();
+        assert_eq!(styles.len(), 3, "full screen, notification and the calendar's choice: {styles:?}");
+        assert!(events.iter().any(|e| e.alarms.is_empty()), "most events rely on the default");
     }
 }

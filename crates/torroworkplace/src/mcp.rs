@@ -981,6 +981,7 @@ fn save_event<Tz: TimeZone>(input: EventInput, zone: &Tz) -> Result<Request, Too
                     description,
                     recurring: false,
                     transparency: torro_pim::Transparency::Opaque,
+                    alarms: Vec::new(),
                 },
             })
         }
@@ -1526,6 +1527,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 

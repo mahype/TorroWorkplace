@@ -457,6 +457,7 @@ fn event_from_entry(entry: &torro_inbox::Item, made: EntryEvent, origin: Option<
         description: with_note(notes, with_line(entry.body.clone(), way_back)),
         recurring: false,
         transparency: torro_pim::Transparency::Opaque,
+        alarms: Vec::new(),
     }
 }
 
@@ -645,6 +646,7 @@ fn event_from_invitation(
         description: with_line(event.description.clone(), Some(line)),
         recurring: false,
         transparency: torro_pim::Transparency::Opaque,
+        alarms: Vec::new(),
     }
 }
 
@@ -6017,6 +6019,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
@@ -13813,6 +13816,7 @@ mod tests {
                 description: Some("Prepared by Anna.".into()),
                 recurring: false,
                 transparency: torro_pim::Transparency::Opaque,
+                alarms: Vec::new(),
             };
             room.fake.service.cache_events_of_today(vec![foreign]).await;
             let declined = ask(core, key, respond(&room.id, InvitationAnswer::Decline, None)).await;
