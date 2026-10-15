@@ -82,11 +82,18 @@ W.10 Sichtprüfung und API-Prüfung am Ende
 - **API:** `ConnectNextcloud` · Admin · **MCP:** `accounts_connect_nextcloud` (gibt es)
 
 ### W.6 Schritte Kalender und Aufgaben
-- [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/{calendar,tasks}.rs`
-- Sammlungen je Konto mit Schalter (`SetCollectionShown`), „Add a CalDAV calendar“ mit Anbieterwahl im Schritt,
-  GitHub mit beiden Wegen. Die Wege CalDAV und GitHub ziehen dazu als Bausteine nach `ui/connect/` um (wie
-  Nextcloud in W.5), der Dialog nutzt sie mit.
+- [x] erledigt (Kalender-Abos per Link kommen später, Entscheidung 5)
+- **Modell:** Sonnet · **Braucht:** W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/**`,
+  `crates/torroworkplace/src/ui/connect/{mod,caldav,github}.rs`, `crates/torroworkplace/src/ui/{wizard,mod,launch}.rs`,
+  `crates/torro-core/src/i18n/de.rs`
+- Je Konto (Nextcloud, CalDAV, Mail) seine Kalender bzw. Listen mit Schalter (`SetCollectionShown`, sofort sichtbar);
+  „Add a CalDAV account“ als Formular im Schritt (E-Mail, Passwort, unter „Advanced“ Server und Benutzername; der
+  Kern findet den Server über die Adresse); auf dem Aufgaben-Schritt GitHub mit beiden Wegen.
+- Bausteine: GitHub aus dem Dialog nach `ui/connect/github.rs` (der Dialog nutzt ihn), CalDAV neu in
+  `ui/connect/caldav.rs` (der kurze Weg nur für Kalender und Aufgaben; der Mail-Weg des Dialogs bleibt).
+  Demo: `--open setup-calendar`, `setup-calendar-caldav`, `setup-tasks`, `setup-tasks-github`.
+- **API:** `SetCollectionShown` · Admin; `ConnectCalDav`, `SetGithubToken` · Admin, nur App-Schlüssel; `ConnectGithub` ·
+  Admin · **MCP:** `settings_set_collection_shown`, `accounts_connect_github`; CalDAV und Token Never (Geheimnis)
 
 ### W.7 Schritte Mail und Eingang
 - [ ] erledigt

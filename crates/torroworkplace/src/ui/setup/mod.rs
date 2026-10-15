@@ -26,12 +26,13 @@
 
 mod pages;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, rule, scrollable, svg};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
+use torro_core::account::Secret;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, ComponentSwitch, Language, Settings, SetupState};
 use torro_gui::icon::{self, Icon};
@@ -42,6 +43,8 @@ use torro_gui::widgets::{self, Trail};
 use torro_gui::{style, typo};
 use torro_ipc::{Request, Response, SettingKey};
 
+use super::connect::caldav::{self, CalDavSignIn};
+use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
 use super::{Action, Data, page_margin};
 
@@ -137,11 +140,11 @@ impl Step {
         }
     }
 
-    /// Whether the step's page exists yet: W.4 built Welcome, Components and Done, W.5 Nextcloud;
-    /// tasks W.6 to W.8 the others. A step that is not built is not listed, so the setup never
-    /// shows an empty page.
+    /// Whether the step's page exists yet: W.4 built Welcome, Components and Done, W.5 Nextcloud,
+    /// W.6 Calendar and Tasks; tasks W.7 and W.8 the others. A step that is not built is not
+    /// listed, so the setup never shows an empty page.
     fn built(self) -> bool {
-        matches!(self, Step::Welcome | Step::Nextcloud | Step::Components | Step::Done)
+        matches!(self, Step::Welcome | Step::Nextcloud | Step::Components | Step::Calendar | Step::Tasks | Step::Done)
     }
 }
 
@@ -154,7 +157,7 @@ pub fn steps(off: &BTreeSet<Component>) -> Vec<Step> {
 }
 
 /// The setup while it is open.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct State {
     step: Step,
     /// The furthest step reached; those before it count as passed.
@@ -177,6 +180,19 @@ pub struct State {
     signed_in: Option<String>,
     /// What went wrong on the current step, for the footer: the core's answer or the shell's error.
     error: Option<String>,
+    /// Calendars and task lists switched in this setup, by id (task W.6): shown at once, while the
+    /// settings follow with the next reload (and never in the demo).
+    shown: BTreeMap<String, bool>,
+    /// The CalDAV form of the calendar and tasks steps, while it is open.
+    caldav: Option<CalDavSignIn>,
+    /// The account the CalDAV form connected last, for the footer.
+    connected: Option<String>,
+    /// GitHub's sign-in on the tasks step: the token and the check.
+    github: GithubSignIn,
+    /// The token field is open.
+    github_token: bool,
+    /// The GitHub login signed in to in this setup.
+    github_login: Option<String>,
 }
 
 impl State {
@@ -194,6 +210,12 @@ impl State {
             adding: false,
             signed_in: None,
             error: None,
+            shown: BTreeMap::new(),
+            caldav: None,
+            connected: None,
+            github: GithubSignIn::default(),
+            github_token: false,
+            github_login: None,
         }
     }
 
@@ -209,7 +231,18 @@ impl State {
 
     /// A sign-in runs; the shell reloads more often, so the end is seen soon.
     pub fn busy(&self) -> bool {
-        self.nextcloud.running()
+        self.nextcloud.running() || self.github.checking() || self.caldav.as_ref().is_some_and(CalDavSignIn::connecting)
+    }
+
+    /// Whether the apps show the calendar or task list `id`: as switched here, else as stored.
+    fn is_shown(&self, data: &Data, id: &str) -> bool {
+        self.shown.get(id).copied().unwrap_or_else(|| super::accounts::is_shown(&data.settings, id))
+    }
+
+    /// A form of the calendar or tasks step is open, or its check runs: the footer's buttons belong
+    /// to it.
+    fn in_form(&self) -> bool {
+        self.caldav.is_some() || self.github_token || self.github.checking()
     }
 
     /// The steps walked now.
@@ -249,6 +282,14 @@ impl State {
         self.step = step;
         self.reached = self.reached.max(step);
         self.error = None;
+        self.close_forms();
+    }
+
+    /// Closes the forms of the calendar and tasks steps; a check that runs is no longer waited for.
+    fn close_forms(&mut self) {
+        self.caldav = None;
+        self.github_token = false;
+        self.github.stop();
     }
 
     /// The Nextcloud step shows the address form: there is no Nextcloud account yet, or another one
@@ -299,8 +340,23 @@ pub enum Message {
     LoginLinkEdited,
     /// "Add another Nextcloud".
     AddNextcloud,
-    /// "Cancel" on the Nextcloud step: stop waiting for the browser, or stop adding another one.
+    /// "Cancel": stop waiting for the browser or adding another Nextcloud, or close the form of the
+    /// calendar or tasks step.
     Cancel,
+    /// A calendar's or task list's switch.
+    Shown(String, bool),
+    /// "Add a CalDAV account".
+    OpenCalDav,
+    /// The CalDAV form.
+    CalDav(caldav::Message),
+    /// "Use GitHub CLI sign-in".
+    UseGithubCli,
+    /// "Paste a token".
+    PasteToken,
+    /// The token field changed. A [`Secret`], so the derived `Debug` shows no token.
+    TokenChanged(Secret),
+    /// "Create a token on GitHub".
+    OpenTokenPage,
 }
 
 /// What the setup wants the shell to do.
@@ -332,6 +388,8 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
             stay(state.nextcloud.start(data))
         }
         Message::Next if state.step == Step::Nextcloud && state.nextcloud.running() => stay(Action::None),
+        // On the calendar and tasks steps the primary button sends the open form.
+        Message::Next if state.in_form() => stay(submit_form(state)),
         Message::Next => match state.neighbour(true) {
             Some(next) => {
                 state.skipped.remove(&state.step);
@@ -393,13 +451,67 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
         Message::Cancel => {
             if state.nextcloud.running() {
                 state.nextcloud.stop();
+            } else if state.in_form() {
+                state.close_forms();
             } else {
                 state.adding = false;
             }
             state.error = None;
             stay(Action::None)
         }
+        Message::Shown(collection, shown) => {
+            state.shown.insert(collection.clone(), shown);
+            stay(Action::Send(Request::SetCollectionShown { collection, shown }))
+        }
+        Message::OpenCalDav => {
+            state.close_forms();
+            state.caldav = Some(CalDavSignIn::default());
+            state.error = None;
+            stay(Action::None)
+        }
+        Message::CalDav(message) => {
+            if let Some(form) = state.caldav.as_mut() {
+                form.update(message);
+            }
+            stay(Action::None)
+        }
+        Message::UseGithubCli if !state.github.checking() => {
+            state.close_forms();
+            state.error = None;
+            stay(state.github.use_cli())
+        }
+        Message::PasteToken => {
+            state.close_forms();
+            state.github_token = true;
+            state.error = None;
+            stay(Action::None)
+        }
+        Message::TokenChanged(token) => {
+            state.github.token = token;
+            stay(Action::None)
+        }
+        Message::OpenTokenPage => stay(Action::OpenUrl(github::NEW_TOKEN_URL.to_string())),
+        Message::UseGithubCli => stay(Action::None),
     }
+}
+
+/// Sends the open form of the calendar or tasks step: the CalDAV account, showing what the
+/// components that are on need, or the GitHub token. Nothing while it cannot be sent.
+fn submit_form(state: &mut State) -> Action {
+    let calendars = !state.off.contains(&Component::Calendar);
+    let tasks = !state.off.contains(&Component::Tasks);
+    if let Some(form) = state.caldav.as_mut() {
+        if !form.can_connect() {
+            return Action::None;
+        }
+        state.error = None;
+        return form.connect(calendars, tasks);
+    }
+    if state.github_token && state.github.has_token() && !state.github.checking() {
+        state.error = None;
+        return state.github.send_token();
+    }
+    Action::None
 }
 
 /// Follows a Nextcloud sign-in through a reload of `data` (the shell calls it on every reload while
@@ -423,6 +535,28 @@ pub fn observe(state: &mut State, data: &Data) {
 /// The answer to a request the setup sent; `true` when the setup shows it itself (then the shell
 /// shows no notice): a sign-in that could not start shows its reason in the footer.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
+    if let Some(answer) = state.caldav.as_mut().and_then(|form| form.answered(result)) {
+        match answer {
+            Ok(account) => {
+                state.caldav = None;
+                state.connected = Some(account);
+                state.error = None;
+            }
+            Err(message) => state.error = Some(message),
+        }
+        return true;
+    }
+    if let Some(answer) = state.github.answered(result) {
+        match answer {
+            Ok(login) => {
+                state.github_login = Some(login);
+                state.github_token = false;
+                state.error = None;
+            }
+            Err(message) => state.error = Some(message),
+        }
+        return true;
+    }
     match state.nextcloud.answered(result) {
         Some(Err(message)) => {
             state.error = Some(message);
@@ -446,7 +580,7 @@ fn set_setup(state: SetupState) -> Action {
 /// Escape: stop waiting for the browser or adding another Nextcloud, else one step back; nothing
 /// on the first step.
 pub fn escape(state: &State) -> Option<Message> {
-    if state.step == Step::Nextcloud && (state.nextcloud.running() || state.adding) {
+    if (state.step == Step::Nextcloud && (state.nextcloud.running() || state.adding)) || state.in_form() {
         return Some(Message::Cancel);
     }
     state.neighbour(false).map(|_| Message::Back)
@@ -611,12 +745,16 @@ mod tests {
     #[test]
     fn the_walk_goes_through_the_built_steps_and_ends_done() {
         let mut setup = state(Step::Welcome);
-        assert_eq!(setup.steps(), [Step::Welcome, Step::Nextcloud, Step::Components, Step::Done]);
+        let walk = [Step::Welcome, Step::Nextcloud, Step::Components, Step::Calendar, Step::Tasks, Step::Done];
+        assert_eq!(setup.steps(), walk);
         assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
-        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 4)));
+        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 6)));
         update(&mut setup, Message::Next, &data());
         assert_eq!(setup.step, Step::Components, "a Nextcloud is connected: the step goes on");
-        update(&mut setup, Message::Next, &data());
+        for _ in 0..3 {
+            update(&mut setup, Message::Next, &data());
+        }
+        assert_eq!(setup.step, Step::Done);
         let finished = update(&mut setup, Message::Next, &data());
         assert!(matches!(finished, Outcome::Close(_)));
         assert_eq!(sent(&finished), Some((SettingKey::Setup, serde_json::json!("done"))));
@@ -636,7 +774,7 @@ mod tests {
     #[test]
     fn passed_steps_are_checked_and_clicked_ones_can_be_gone_back_to() {
         let mut setup = state(Step::Welcome);
-        for _ in 0..3 {
+        for _ in 0..5 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -644,7 +782,7 @@ mod tests {
         update(&mut setup, Message::Go(Step::Welcome), &data());
         assert_eq!(setup.step, Step::Welcome);
         assert_eq!(setup.mark(Step::Components), Mark::Passed, "reached before, still passed");
-        update(&mut setup, Message::Go(Step::Calendar), &data());
+        update(&mut setup, Message::Go(Step::Mail), &data());
         assert_eq!(setup.step, Step::Welcome, "a step that is not walked cannot be gone to");
     }
 
@@ -756,11 +894,86 @@ mod tests {
     }
 
     #[test]
+    fn a_calendar_switch_shows_at_once_and_is_sent() {
+        let data = data();
+        let mut setup = state(Step::Calendar);
+        let id = data.accounts.iter().flat_map(|a| &a.collections).find(|c| c.kind.has_events()).map(|c| c.id.clone());
+        let id = id.expect("the demo has a calendar");
+        let hide = update(&mut setup, Message::Shown(id.clone(), false), &data);
+        assert!(
+            matches!(hide, Outcome::Stay(Action::Send(Request::SetCollectionShown { ref collection, shown: false })) if *collection == id)
+        );
+        assert!(!setup.is_shown(&data, &id), "before the settings are reloaded");
+    }
+
+    #[test]
+    fn the_caldav_form_connects_what_the_components_need() {
+        let mut setup = state(Step::Calendar);
+        update(&mut setup, Message::Component(Component::Tasks, false), &data());
+        update(&mut setup, Message::OpenCalDav, &data());
+        assert!(setup.in_form());
+        assert_eq!(pages::primary(&setup, &data()), (tr("Connect"), false), "nothing typed yet");
+        assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
+        assert_eq!(setup.step, Step::Calendar, "the form stays");
+
+        update(&mut setup, Message::CalDav(caldav::Message::Address("anna@mailbox.org".into())), &data());
+        update(&mut setup, Message::CalDav(caldav::Message::Password(Secret::new("secret"))), &data());
+        match update(&mut setup, Message::Next, &data()) {
+            Outcome::Stay(Action::Send(Request::ConnectCalDav { calendars, tasks, .. })) => {
+                assert_eq!((calendars, tasks), (true, false), "tasks are off");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(setup.busy());
+        assert!(answered(&mut setup, &Err("Password was refused".into())));
+        assert_eq!(setup.error.as_deref(), Some("Password was refused"));
+        assert!(setup.caldav.is_some(), "the form stays for another try");
+
+        update(&mut setup, Message::CalDav(caldav::Message::Password(Secret::new("right"))), &data());
+        update(&mut setup, Message::Next, &data());
+        let connected = super::super::launch::demo_answer(
+            &Request::ConnectCalDav {
+                address: "anna@mailbox.org".into(),
+                server: None,
+                login_name: "anna@mailbox.org".into(),
+                password: Secret::new("right"),
+                calendars: true,
+                tasks: false,
+            },
+            &data(),
+        );
+        assert!(answered(&mut setup, &connected.ok_or("the demo answers").map_err(String::from)));
+        assert!(setup.caldav.is_none() && setup.connected.is_some() && setup.error.is_none());
+    }
+
+    #[test]
+    fn github_signs_in_on_the_tasks_step_and_a_form_is_cancelled() {
+        let mut setup = state(Step::Tasks);
+        let cli = update(&mut setup, Message::UseGithubCli, &data());
+        assert!(matches!(cli, Outcome::Stay(Action::Send(Request::ConnectGithub))));
+        assert!(setup.busy() && setup.in_form());
+        assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Cancel".into()));
+        update(&mut setup, Message::Cancel, &data());
+        assert!(!setup.busy(), "no longer waited for");
+
+        update(&mut setup, Message::PasteToken, &data());
+        update(&mut setup, Message::TokenChanged(Secret::new("ghp_x")), &data());
+        assert!(matches!(
+            update(&mut setup, Message::Next, &data()),
+            Outcome::Stay(Action::Send(Request::SetGithubToken { .. }))
+        ));
+        let account = data().accounts.into_iter().find(|account| account.kind == "github").expect("the demo's");
+        assert!(answered(&mut setup, &Ok(Response::Account { account })));
+        assert!(setup.github_login.is_some() && !setup.in_form());
+        assert_eq!(setup.step, Step::Tasks, "signing in does not leave the step");
+    }
+
+    #[test]
     fn steps_are_named_by_their_word() {
         for step in Step::ALL.into_iter().filter(|step| step.built()) {
             assert_eq!(Step::from_arg(step.arg()), Some(step));
         }
-        assert_eq!(Step::from_arg("calendar"), None, "not built yet");
-        assert_eq!(Step::args(), ["welcome", "nextcloud", "components", "done"]);
+        assert_eq!(Step::from_arg("mail"), None, "not built yet");
+        assert_eq!(Step::args(), ["welcome", "nextcloud", "components", "calendar", "tasks", "done"]);
     }
 }

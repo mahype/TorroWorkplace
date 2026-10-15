@@ -243,6 +243,46 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Your browser opens to sign in. Torro Workplace keeps an app password in the system keychain.",
         "Zum Anmelden öffnet sich dein Browser. Torro Workplace legt ein App-Passwort im Schlüsselbund des Systems ab.",
     ),
+    // Control centre: first-run setup, calendar and tasks (W.6)
+    ("Add a CalDAV account", "CalDAV-Konto hinzufügen"),
+    (
+        "Choose which calendars the suite shows, and add calendars from other providers.",
+        "Wähle, welche Kalender die Suite zeigt, und füge Kalender anderer Anbieter hinzu.",
+    ),
+    (
+        "Choose which task lists the suite shows; add CalDAV lists and issues from GitHub.",
+        "Wähle, welche Aufgabenlisten die Suite zeigt; füge CalDAV-Listen und Issues aus GitHub hinzu.",
+    ),
+    ("E-mail address", "E-Mail-Adresse"),
+    (
+        "Hidden ones stay on the server; the apps just don't show them.",
+        "Ausgeblendete bleiben auf dem Server; die Apps zeigen sie nur nicht.",
+    ),
+    (
+        "iCloud, Fastmail and a few others need an app password instead of your usual one.",
+        "iCloud, Fastmail und einige andere brauchen statt deines üblichen Passworts ein App-Passwort.",
+    ),
+    ("Issues and pull requests become filter lists", "Issues und Pull Requests werden zu Filterlisten"),
+    ("Leave the server empty to find it from the address.", "Lass den Server leer, um ihn über die Adresse zu finden."),
+    ("Nextcloud · {account}", "Nextcloud · {account}"),
+    (
+        "No calendars yet. Connect a Nextcloud or add a CalDAV account below.",
+        "Noch keine Kalender. Verbinde eine Nextcloud oder füge unten ein CalDAV-Konto hinzu.",
+    ),
+    (
+        "No task lists yet. Connect a Nextcloud or add a CalDAV account below.",
+        "Noch keine Aufgabenlisten. Verbinde eine Nextcloud oder füge unten ein CalDAV-Konto hinzu.",
+    ),
+    ("Other calendars", "Weitere Kalender"),
+    ("Other task lists", "Weitere Aufgabenlisten"),
+    ("The e-mail address", "Die E-Mail-Adresse"),
+    (
+        "mailbox.org, Posteo, Fastmail, iCloud or your own server",
+        "mailbox.org, Posteo, Fastmail, iCloud oder dein eigener Server",
+    ),
+    ("{account} is connected", "{account} ist verbunden"),
+    ("{n} calendars shown", "{n} Kalender sichtbar"),
+    ("{n} lists shown", "{n} Listen sichtbar"),
     // Command line (torroworkplace ctl clients)
     (
         "--kind, --agent and --template only apply to ctl clients add",

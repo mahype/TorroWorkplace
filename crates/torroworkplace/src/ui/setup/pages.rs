@@ -13,8 +13,9 @@ use torro_gui::theme::{self, Appearance, space};
 use torro_gui::widgets::{self, TileFace, TileSize};
 use torro_gui::{style, typo};
 
+use torro_core::account::Secret;
 use torro_ipc::AccountInfo;
-use torro_pim::AccountState;
+use torro_pim::{AccountState, Collection};
 
 use super::{Data, Message, State, Step, app_of};
 use crate::ui::{chevron, connect, pressable, setting_row};
@@ -27,7 +28,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::Components => components(state, data),
         Step::Done => done(state, data),
         // Not listed until their tasks build them ([`Step::built`]).
-        Step::Calendar | Step::Tasks | Step::Mail | Step::Inbox | Step::Ai => Space::new().into(),
+        Step::Calendar => collections(state, data, Kind::Calendars),
+        Step::Tasks => collections(state, data, Kind::Lists),
+        Step::Mail | Step::Inbox | Step::Ai => Space::new().into(),
     }
 }
 
@@ -39,6 +42,21 @@ pub fn status(state: &State, data: &Data) -> Option<String> {
         Step::Nextcloud => super::nextcloud_account(state, data)
             .filter(|_| !state.asks_address(data))
             .map(|account| trf("Signed in as {account}", &[("account", &account.label)])),
+        Step::Calendar | Step::Tasks if state.github.checking() => Some(tr("Checking the connection…").to_string()),
+        Step::Calendar | Step::Tasks if state.caldav.as_ref().is_some_and(|form| form.connecting()) => {
+            Some(tr("Signing in…").to_string())
+        }
+        Step::Calendar | Step::Tasks if state.caldav.is_none() && state.connected.is_some() => {
+            state.connected.as_ref().map(|account| trf("{account} is connected", &[("account", account)]))
+        }
+        Step::Calendar => {
+            let n = shown_count(state, data, Kind::Calendars);
+            Some(trf("{n} calendars shown", &[("n", &n)]))
+        }
+        Step::Tasks => {
+            let n = shown_count(state, data, Kind::Lists);
+            Some(trf("{n} lists shown", &[("n", &n)]))
+        }
         Step::Components => {
             let on = Component::ALL.len() - state.off.len();
             Some(trf("{on} of {all} on", &[("on", &on), ("all", &Component::ALL.len())]))
@@ -53,6 +71,13 @@ pub fn primary(state: &State, data: &Data) -> (&'static str, bool) {
         Step::Welcome => (tr("Get started"), true),
         Step::Nextcloud if state.nextcloud.running() => (tr("Connect"), false),
         Step::Nextcloud if state.asks_address(data) => (tr("Connect"), state.nextcloud.can_start()),
+        Step::Calendar | Step::Tasks if state.in_form() => {
+            let ready = match &state.caldav {
+                Some(form) => form.can_connect(),
+                None => state.github_token && state.github.has_token() && !state.github.checking(),
+            };
+            (tr("Connect"), ready)
+        }
         Step::Done => (tr("Finish"), true),
         _ => (tr("Continue"), true),
     }
@@ -67,6 +92,7 @@ pub fn skip(state: &State, data: &Data) -> Option<(&'static str, Message)> {
         Step::Nextcloud if state.nextcloud.running() || state.adding => Some((tr("Cancel"), Message::Cancel)),
         Step::Nextcloud if state.asks_address(data) => Some((tr("I don't use Nextcloud"), Message::Skip)),
         Step::Nextcloud => None,
+        Step::Calendar | Step::Tasks if state.in_form() => Some((tr("Cancel"), Message::Cancel)),
         _ => Some((tr("Skip"), Message::Skip)),
     }
 }
@@ -206,6 +232,152 @@ fn nextcloud_services(account: &AccountInfo) -> Element<'_, Message> {
         services,
         widgets::group(tr("More accounts"), vec![another], None),
     ])
+}
+
+// ----- Calendar and tasks (task W.6) --------------------------------------------------------------
+
+/// Which collections a step shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Calendars,
+    Lists,
+}
+
+impl Kind {
+    fn takes(self, collection: &Collection) -> bool {
+        match self {
+            Kind::Calendars => collection.kind.has_events(),
+            Kind::Lists => collection.kind.has_todos(),
+        }
+    }
+}
+
+/// The accounts whose calendars or task lists the step shows, with those collections: Nextcloud,
+/// CalDAV and mail accounts. GitHub's filter lists have their own group on the tasks step.
+fn sources(data: &Data, kind: Kind) -> Vec<(&AccountInfo, Vec<&Collection>)> {
+    data.accounts
+        .iter()
+        .filter(|account| matches!(account.kind.as_str(), "nextcloud" | "caldav" | "mail") && !account.id.is_empty())
+        .map(|account| (account, account.collections.iter().filter(|c| kind.takes(c)).collect::<Vec<_>>()))
+        .filter(|(_, collections)| !collections.is_empty())
+        .collect()
+}
+
+/// How many calendars or lists the apps will show.
+fn shown_count(state: &State, data: &Data, kind: Kind) -> usize {
+    sources(data, kind).iter().flat_map(|(_, collections)| collections).filter(|c| state.is_shown(data, &c.id)).count()
+}
+
+/// The calendar or the tasks step: per account its calendars or lists with a switch, a CalDAV
+/// account to add, and on the tasks step GitHub.
+fn collections<'a>(state: &'a State, data: &'a Data, kind: Kind) -> Element<'a, Message> {
+    let (headline, lead) = match kind {
+        Kind::Calendars => {
+            (tr("Calendar"), tr("Choose which calendars the suite shows, and add calendars from other providers."))
+        }
+        Kind::Lists => {
+            (tr("Tasks"), tr("Choose which task lists the suite shows; add CalDAV lists and issues from GitHub."))
+        }
+    };
+    let mut parts = vec![title(headline, lead)];
+    let sources = sources(data, kind);
+    if sources.is_empty() {
+        let none = match kind {
+            Kind::Calendars => tr("No calendars yet. Connect a Nextcloud or add a CalDAV account below."),
+            Kind::Lists => tr("No task lists yet. Connect a Nextcloud or add a CalDAV account below."),
+        };
+        parts.push(typo::text(typo::body(), none).style(theme::text_2).into());
+    }
+    let count = sources.len();
+    for (index, (account, collections)) in sources.into_iter().enumerate() {
+        let rows = collections.into_iter().map(|collection| collection_row(state, data, collection)).collect();
+        let name = match account.kind.as_str() {
+            "nextcloud" => trf("Nextcloud · {account}", &[("account", &account.label)]),
+            _ => account.label.clone(),
+        };
+        // Said once, under the last account.
+        let footer = (index + 1 == count)
+            .then(|| tr("Hidden ones stay on the server; the apps just don't show them.").to_string());
+        parts.push(widgets::group(name, rows, footer));
+    }
+    parts.push(caldav_part(state, kind));
+    if kind == Kind::Lists {
+        parts.push(github_part(state, data));
+    }
+    page(parts)
+}
+
+/// A calendar or task list: its colour, name, "Read-only" where it is, and the switch.
+fn collection_row<'a>(state: &'a State, data: &'a Data, collection: &'a Collection) -> Element<'a, Message> {
+    let id = collection.id.clone();
+    let switch = toggler(state.is_shown(data, &collection.id))
+        .size(style::CHECK_SIZE)
+        .style(style::toggler)
+        .on_toggle(move |shown| Message::Shown(id.clone(), shown));
+    let dot = widgets::color_dot(widgets::collection_color(collection.color.as_deref()), space::s());
+    let detail = (!collection.writable).then(|| tr("Read-only").to_string());
+    setting_row(Some(dot), collection.name.as_str(), detail, switch)
+}
+
+/// "Add a CalDAV account", or its form while it is open.
+fn caldav_part(state: &State, kind: Kind) -> Element<'_, Message> {
+    let title = match kind {
+        Kind::Calendars => tr("Other calendars"),
+        Kind::Lists => tr("Other task lists"),
+    };
+    match &state.caldav {
+        Some(form) => column![
+            typo::text(typo::caption(), tr("Add a CalDAV account")).style(theme::text_3),
+            form.view(Message::CalDav, Message::Next),
+        ]
+        .spacing(layout::item_gap())
+        .into(),
+        None => {
+            let plus = widgets::source_tile(TileFace::Icon(Icon::Plus), TileSize::Medium, None);
+            let add = pressable(
+                setting_row(
+                    Some(plus),
+                    tr("Add a CalDAV account"),
+                    Some(tr("mailbox.org, Posteo, Fastmail, iCloud or your own server").to_string()),
+                    chevron(),
+                ),
+                Some(Message::OpenCalDav),
+            );
+            widgets::group(title, vec![add], None)
+        }
+    }
+}
+
+/// GitHub on the tasks step: connected, or its two ways, or the token field.
+fn github_part<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let login = state
+        .github_login
+        .clone()
+        .or_else(|| data.accounts.iter().find(|account| account.kind == "github").map(|account| account.label.clone()));
+    if let Some(login) = login {
+        let tile = widgets::source_tile(TileFace::Icon(Icon::Github), TileSize::Medium, None);
+        let row = setting_row(
+            Some(tile),
+            trf("Signed in as {account}", &[("account", &login)]),
+            Some(tr("Issues and pull requests become filter lists").to_string()),
+            widgets::state_pill(Icon::CircleCheck, tr("Connected")),
+        );
+        return widgets::group("GitHub", vec![row], None);
+    }
+    if state.github_token {
+        return column![
+            typo::text(typo::caption(), "GitHub").style(theme::text_3),
+            connect::github::token_form(
+                &state.github,
+                |token| Message::TokenChanged(Secret::new(token)),
+                Message::Next,
+                Message::OpenTokenPage
+            ),
+        ]
+        .spacing(layout::item_gap())
+        .into();
+    }
+    connect::github::ways("GitHub", Message::UseGithubCli, Message::PasteToken)
 }
 
 /// What a component is for, one line on its card.

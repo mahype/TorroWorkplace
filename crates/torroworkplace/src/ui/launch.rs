@@ -151,10 +151,14 @@ pub enum Open {
     SetupNextcloudAddress,
     /// The setup's Nextcloud step while the browser signs in, with the link to copy.
     SetupNextcloudWaiting,
+    /// The setup's calendar step with the CalDAV form open, an address typed (task W.6).
+    SetupCalDav,
+    /// The setup's tasks step without the demo's GitHub account: GitHub's two ways.
+    SetupGithub,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 77] = [
+    pub const ALL: [(&'static str, Open); 81] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -231,6 +235,10 @@ impl Open {
         ("setup-nextcloud-address", Open::SetupNextcloudAddress),
         ("setup-nextcloud-waiting", Open::SetupNextcloudWaiting),
         ("setup-components", Open::Setup(super::setup::Step::Components)),
+        ("setup-calendar", Open::Setup(super::setup::Step::Calendar)),
+        ("setup-calendar-caldav", Open::SetupCalDav),
+        ("setup-tasks", Open::Setup(super::setup::Step::Tasks)),
+        ("setup-tasks-github", Open::SetupGithub),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
@@ -1494,8 +1502,11 @@ mod tests {
         let launch = Launch::parse(&args(&["--setup", "--step=components"])).expect("a built step");
         assert_eq!(launch.setup, Some(Step::Components));
         assert_eq!(Launch::parse(&args(&["--step", "done"])), Err(LaunchError::NeedsSetup("--step")));
-        let err = Launch::parse(&args(&["--setup", "--step", "calendar"])).expect_err("not built yet");
-        assert!(err.to_string().ends_with("valid values: welcome, nextcloud, components, done"), "{err}");
+        let err = Launch::parse(&args(&["--setup", "--step", "mail"])).expect_err("not built yet");
+        assert!(
+            err.to_string().ends_with("valid values: welcome, nextcloud, components, calendar, tasks, done"),
+            "{err}"
+        );
     }
 
     #[test]

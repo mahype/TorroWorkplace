@@ -93,13 +93,10 @@ use torro_ntfy::{NtfyError, Topic};
 use crate::account::ntfy::{LABEL_MAX, NtfyAccountError, TOPICS_MAX};
 
 use super::accounts::on_axis;
+use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
-
-/// GitHub's page for a new classic token, with the scope the suite needs (`repo`: private
-/// repositories, closing issues) and a name already filled in.
-pub const NEW_TOKEN_URL: &str = "https://github.com/settings/tokens/new?scopes=repo&description=Torro%20Workplace";
 
 /// OpenRouter's page for API keys (task KI.1a).
 pub const OPENROUTER_KEYS_URL: &str = "https://openrouter.ai/settings/keys";
@@ -272,8 +269,8 @@ pub struct State {
     provider: Provider,
     /// The Nextcloud sign-in: the address as typed and the sign-in while it runs (task W.5).
     nextcloud: NextcloudSignIn,
-    /// The GitHub token as pasted; `Debug` never shows it.
-    token: Secret,
+    /// The GitHub sign-in: the token as pasted and the check (task W.6).
+    github: GithubSignIn,
     /// The step a failed GitHub check goes back to: the two ways or the token field.
     back: Step,
     /// The GitHub login once connected, for Done.
@@ -854,22 +851,20 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
             state.error = Some(message.clone());
             true
         }
-        (Step::Checking, Ok(Response::Account { account })) => {
-            state.login = Some(account.label.clone());
-            state.step = Step::Done;
-            state.error = None;
-            true
-        }
-        (Step::Checking, Ok(_)) => {
-            state.step = state.back;
-            state.error = Some(tr("Torro Workplace did not answer as expected. Try again.").to_string());
-            true
-        }
-        (Step::Checking, Err(message)) => {
-            state.step = state.back;
-            state.error = Some(message.clone());
-            true
-        }
+        (Step::Checking, result) => match state.github.answered(result) {
+            Some(Ok(login)) => {
+                state.login = Some(login);
+                state.step = Step::Done;
+                state.error = None;
+                true
+            }
+            Some(Err(message)) => {
+                state.step = state.back;
+                state.error = Some(message);
+                true
+            }
+            None => false,
+        },
         // The sign-in could not start (no such server): back to the address.
         (Step::SigningIn, Err(message)) => {
             state.step = Step::Server;
@@ -1155,11 +1150,11 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 state.error = None;
                 state.nextcloud.start(data)
             }
-            Step::Token if !state.token.is_blank() => {
+            Step::Token if state.github.has_token() => {
                 state.back = Step::Token;
                 state.step = Step::Checking;
                 state.error = None;
-                Action::Send(Request::SetGithubToken { token: std::mem::take(&mut state.token) })
+                state.github.send_token()
             }
             step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => continue_mail(state, step),
             Step::AiKey if ai_can_connect(state) => connect_ai(state, AiProvider::OpenRouter, None),
@@ -1187,7 +1182,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.back = Step::Github;
             state.step = Step::Checking;
             state.error = None;
-            Action::Send(Request::ConnectGithub)
+            state.github.use_cli()
         }
         Message::PasteToken if state.step == Step::Github => {
             state.step = Step::Token;
@@ -1195,10 +1190,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::TokenChanged(token) => {
-            state.token = token;
+            state.github.token = token;
             Action::None
         }
-        Message::OpenTokenPage => Action::OpenUrl(NEW_TOKEN_URL.to_string()),
+        Message::OpenTokenPage => Action::OpenUrl(github::NEW_TOKEN_URL.to_string()),
         Message::UseTorroMail(id) if state.step == Step::Provider && state.torromail.can_use(&id) => {
             state.torromail.importing = Some(id.clone());
             state.torromail.failed = None;
@@ -1576,15 +1571,7 @@ fn coming_soon_row<'a>(
 
 /// GitHub's two ways in, as rows to press, and where the token stays.
 fn github_step() -> Element<'static, Message> {
-    let way = |name: &'static str, summary: &'static str, message| {
-        pressable(setting_row(None, name, Some(summary.to_string()), chevron()), Some(message))
-    };
-    let rows = vec![
-        way(tr("Use GitHub CLI sign-in"), tr("Uses the sign-in of the gh command."), Message::UseGithubCli),
-        way(tr("Paste a token"), tr("A personal access token from your GitHub settings."), Message::PasteToken),
-    ];
-    let footer = tr("The token stays in the system keychain. Agents never see it.");
-    widgets::group(tr("Sign in with"), rows, Some(footer.to_string()))
+    github::ways(tr("Sign in with"), Message::UseGithubCli, Message::PasteToken)
 }
 
 /// A text field in the look of the suite: `BODY`, 32 high.
@@ -1605,27 +1592,12 @@ fn server_step(state: &State) -> Element<'_, Message> {
 
 /// What the token needs, the way to GitHub's token page, and the masked field.
 fn token_step(state: &State) -> Element<'_, Message> {
-    let create = widgets::text_button(
-        Some(Icon::ArrowUpRight),
-        tr("Create a token on GitHub"),
-        style::button::secondary,
-        Some(Message::OpenTokenPage),
-    );
-    let input = field("ghp_… / github_pat_…", state.token.expose())
-        .secure(true)
-        .on_input(|token| Message::TokenChanged(Secret::new(token)))
-        .on_submit_maybe((!state.token.is_blank()).then_some(Message::Continue));
-    column![
-        typo::text(
-            typo::body(),
-            tr("Reading private repositories and closing issues needs the repo scope; GitHub's page has it selected.")
-        )
-        .style(theme::text_2),
-        row![create],
-        input,
-    ]
-    .spacing(space::m())
-    .into()
+    github::token_form(
+        &state.github,
+        |token| Message::TokenChanged(Secret::new(token)),
+        Message::Continue,
+        Message::OpenTokenPage,
+    )
 }
 
 /// The explanation, the waiting line, the login link to copy and a button to open it again.
@@ -2155,7 +2127,7 @@ fn footer(state: &State) -> Element<'_, Message> {
             primary(tr("Continue"), mail_can_continue(state, state.step).then_some(Message::Continue))
         }
         Step::MailServices => primary(tr("Connect"), mail_can_continue(state, state.step).then_some(Message::Continue)),
-        Step::Token => primary(tr("Continue"), (!state.token.is_blank()).then_some(Message::Continue)),
+        Step::Token => primary(tr("Continue"), state.github.has_token().then_some(Message::Continue)),
         Step::Done => primary(tr("Done"), Some(Message::Close)),
     };
     row![error].push(back).push(cancel).push(next).spacing(space::s()).align_y(Alignment::Center).into()
@@ -2574,7 +2546,7 @@ mod tests {
             "{action:?}"
         );
         assert!(!format!("{action:?}").contains("SECRET"));
-        assert!(state.token.is_blank(), "the dialog keeps no copy");
+        assert!(!state.github.has_token(), "the dialog keeps no copy");
         assert_eq!(state.step, Step::Checking);
     }
 
@@ -2583,10 +2555,10 @@ mod tests {
         let mut state = at_github();
         update(&mut state, Message::PasteToken, &Data::default());
         match update(&mut state, Message::OpenTokenPage, &Data::default()) {
-            Action::OpenUrl(url) => assert_eq!(url, NEW_TOKEN_URL),
+            Action::OpenUrl(url) => assert_eq!(url, github::NEW_TOKEN_URL),
             other => panic!("expected OpenUrl, got {other:?}"),
         }
-        assert!(NEW_TOKEN_URL.contains("scopes=repo"));
+        assert!(github::NEW_TOKEN_URL.contains("scopes=repo"));
         update(&mut state, Message::Back, &Data::default());
         assert_eq!(state.step, Step::Github);
         update(&mut state, Message::Back, &Data::default());

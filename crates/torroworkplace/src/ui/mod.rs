@@ -641,6 +641,16 @@ impl Ui {
             }
             // Without the demo's Nextcloud accounts the step asks for an address; waiting, the core
             // reports a sign-in with its link (nothing is sent, the demo drops the request).
+            Open::SetupCalDav => {
+                self.setup = Some(setup::State::new(setup::Step::Calendar, &self.data.settings));
+                let address = setup::Message::CalDav(connect::caldav::Message::Address("anna@mailbox.org".into()));
+                vec![Message::Setup(setup::Message::OpenCalDav), Message::Setup(address)]
+            }
+            Open::SetupGithub => {
+                self.data.accounts.retain(|account| account.kind != "github");
+                self.setup = Some(setup::State::new(setup::Step::Tasks, &self.data.settings));
+                vec![]
+            }
             Open::SetupNextcloudAddress | Open::SetupNextcloudWaiting => {
                 self.data.accounts.retain(|account| account.kind != "nextcloud");
                 self.setup = Some(setup::State::new(setup::Step::Nextcloud, &self.data.settings));
