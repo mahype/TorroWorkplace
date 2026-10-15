@@ -157,6 +157,9 @@ fn typo(design: &Design, problems: &mut Vec<DesignError>) {
                 let body = design.typo.body.size;
                 (if (12.0..=18.0).contains(&body) { body } else { 12.0 }, 20.0)
             }
+            // A reminder over the whole screen (task ER1.5): read from across the room, but no poster.
+            "hero" => (32.0, 72.0),
+            "countdown" => (20.0, 48.0),
             _ => (11.0, 40.0),
         };
         range(&format!("{key}.size"), level.size, min, max, problems);
@@ -205,7 +208,7 @@ fn layout(design: &Design, problems: &mut Vec<DesignError>) {
 fn size_range(key: &str) -> (f32, f32) {
     match key {
         // Click targets: at least 24 (the concept names no maximum; 96 keeps them controls).
-        "control_sm" | "control" | "control_lg" | "row_group" => (24.0, 96.0),
+        "control_sm" | "control" | "control_lg" | "control_xl" | "row_group" => (24.0, 96.0),
         "row" => (32.0, 64.0),
         "row_two" => (32.0, 96.0),
         // The inbox's rows (task E3.9): three and two lines of text with room around them.

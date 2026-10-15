@@ -520,6 +520,11 @@ pub mod size {
     pub fn control_lg() -> f32 {
         design::with(|t| t.design.size.control_lg)
     }
+    /// 44: the buttons of a reminder over the whole screen (task ER1.5), with text in
+    /// `typo::body_strong()`; nowhere else.
+    pub fn control_xl() -> f32 {
+        design::with(|t| t.design.size.control_xl)
+    }
     /// 40: a list row (tasks).
     pub fn row() -> f32 {
         design::with(|t| t.design.size.row)

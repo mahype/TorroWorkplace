@@ -222,11 +222,15 @@ pub struct TypeScale {
     pub headline: Level,
     /// The big number in a mini tile.
     pub display: Level,
+    /// The title of a reminder over the whole screen (task ER1.5), read from across the room.
+    pub hero: Level,
+    /// The countdown of a reminder over the whole screen ("Starts in 4:32"); uses `numbers`.
+    pub countdown: Level,
 }
 
 impl TypeScale {
     /// Every level with its key (`"body"`), smallest first.
-    pub fn levels(&self) -> [(&'static str, Level); 9] {
+    pub fn levels(&self) -> [(&'static str, Level); 11] {
         [
             ("micro", self.micro),
             ("caption", self.caption),
@@ -237,6 +241,8 @@ impl TypeScale {
             ("title", self.title),
             ("headline", self.headline),
             ("display", self.display),
+            ("hero", self.hero),
+            ("countdown", self.countdown),
         ]
     }
 }
@@ -254,6 +260,8 @@ impl TypeScale {
             "title" => &mut self.title,
             "headline" => &mut self.headline,
             "display" => &mut self.display,
+            "hero" => &mut self.hero,
+            "countdown" => &mut self.countdown,
             _ => return None,
         })
     }
@@ -317,6 +325,8 @@ pub struct Size {
     pub control_sm: f32,
     pub control: f32,
     pub control_lg: f32,
+    /// The buttons of a reminder over the whole screen (task ER1.5): Join, Snooze, Dismiss.
+    pub control_xl: f32,
     pub row: f32,
     pub row_two: f32,
     /// A mail entry's row in the inbox (task E3.9): avatar, sender, subject and preview on three
@@ -355,11 +365,12 @@ pub struct Size {
 
 impl Size {
     /// Every size with its key (`"row"`), for checks and error messages.
-    pub fn entries(&self) -> [(&'static str, f32); 26] {
+    pub fn entries(&self) -> [(&'static str, f32); 27] {
         [
             ("control_sm", self.control_sm),
             ("control", self.control),
             ("control_lg", self.control_lg),
+            ("control_xl", self.control_xl),
             ("row", self.row),
             ("row_two", self.row_two),
             ("row_message", self.row_message),
@@ -391,6 +402,7 @@ impl Size {
             "control_sm" => &mut self.control_sm,
             "control" => &mut self.control,
             "control_lg" => &mut self.control_lg,
+            "control_xl" => &mut self.control_xl,
             "row" => &mut self.row,
             "row_two" => &mut self.row_two,
             "row_message" => &mut self.row_message,
@@ -742,6 +754,8 @@ impl Design {
                 title: level(FontRole::Heading, Weight::Semibold, 16.0, 22.0),
                 headline: level(FontRole::Heading, Weight::Semibold, 22.0, 28.0),
                 display: level(FontRole::Text, Weight::Semibold, 28.0, 32.0),
+                hero: level(FontRole::Heading, Weight::Semibold, 48.0, 56.0),
+                countdown: level(FontRole::Numbers, Weight::Medium, 28.0, 32.0),
             },
             space: Space { xs: 4.0, s: 8.0, m: 12.0, l: 16.0, xl: 24.0, xxl: 32.0 },
             radius: Radius { xs: 4.0, sm: 6.0, md: 8.0, lg: 10.0 },
@@ -772,6 +786,7 @@ pub(crate) const STANDARD_SIZE: Size = Size {
     control_sm: 28.0,
     control: 32.0,
     control_lg: 36.0,
+    control_xl: 44.0,
     row: 40.0,
     row_two: 52.0,
     row_message: 88.0,
@@ -945,6 +960,10 @@ mod tests {
         assert_eq!([d.size.row_message, d.size.row_notice], [88.0, 64.0], "the inbox's rows (task E3.9)");
         // The comfortable density of the inbox (task E8.2).
         assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 14.0, line: 22.0 });
+        // A reminder over the whole screen (task ER1.5).
+        assert_eq!(d.typo.hero, Level { font: FontRole::Heading, weight: Weight::Semibold, size: 48.0, line: 56.0 });
+        assert_eq!(d.typo.countdown, Level { font: FontRole::Numbers, weight: Weight::Medium, size: 28.0, line: 32.0 });
+        assert_eq!(d.size.control_xl, 44.0);
         assert_eq!([d.size.card_gap, d.size.avatar, d.size.avatar_lg], [12.0, 36.0, 40.0]);
         assert_eq!([d.size.tile_sm, d.size.tile, d.size.tile_lg], [20.0, 28.0, 36.0]);
         assert_eq!(d.logo, Logo::default());

@@ -147,6 +147,7 @@ aus einem Guss wirkt:
 | `size::control_sm()` | 28 | Knöpfe, Icon-Knöpfe, Segmente, Menü-Knöpfe in der Kopfleiste |
 | `size::control()` | 32 | Eingaben, Eigenschaftszeilen |
 | `size::control_lg()` | 36 | Schnelleingabe, Primärknopf im Dialog |
+| `size::control_xl()` | 44 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; nirgends sonst |
 | `size::row()` | 40 | Listenzeile (Aufgaben) |
 | `size::row_message()` | 88 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau (E3.9) |
 | `size::row_notice()` | 64 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
@@ -196,6 +197,8 @@ aus einem Guss wirkt:
 | `typo::title()` | 16 / 22 | 600 | Karten- und Dialogtitel |
 | `typo::headline()` | 22 / 28 | 600 | Detailtitel („Review API concept“), Ansichtstitel ohne Kopfleiste |
 | `typo::display()` | 28 / 32 | 600 | Kopfzahl in Mini (Uhrzeit, Zahl offener Aufgaben) |
+| `typo::countdown()` | 28 / 32 | 500 | Countdown und Uhr einer Erinnerung im Vollbild (ER1.5), Ziffernschrift; nirgends sonst |
+| `typo::hero()` | 48 / 56 | 600 | Titel einer Erinnerung im Vollbild (ER1.5), höchstens zwei Zeilen; nirgends sonst |
 
 - Gewichte nur 400/500/600; kein Bold, keine Kursive. Hierarchie über Stufe *und* Farbe
   (`TEXT` → `TEXT_2` → `TEXT_3`).

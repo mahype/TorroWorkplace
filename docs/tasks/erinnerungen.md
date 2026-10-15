@@ -131,11 +131,14 @@ ER3.1 (braucht ER1.4)       ER4 später
   Benachrichtigung bei Vollbild.
 
 ### ER1.5 Schriftstufe für das Vollbild
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torro-core/src/design.rs`, `crates/torro-gui/src/{typo,theme}.rs`,
   `.claude/skills/torro-design/SKILL.md` (Tabelle Typografie)
 - `typo::hero()` 48/56, 600, `typo::countdown()` 28/32, 500, tabellarisch, und `size::control_xl()` 44 für die
-  Knöpfe (Text 14/500) – nur für das Vollbild.
+  Knöpfe (Text `typo::body_strong()`) – nur für das Vollbild.
+- **Umgesetzt (2026-10-15):** auch in `design/pack.rs` (Schlüssel `type.hero`, `type.countdown`; ein Paket ohne
+  sie leitet sie ab: Titel wie `headline`, Countdown Medium, sonst wie `micro`), `design/rules.rs` (hero 32–72,
+  countdown 20–48, `control_xl` ≥ 24) und `docs/design-pakete.md`.
 - **API/MCP:** keine.
 
 ## ER2 Oberflächen
