@@ -691,12 +691,12 @@ async fn busy_title(core: &Core, now: DateTime<Utc>) -> Option<String> {
 /// E8.5b). A calendar that cannot be read keeps nothing quiet: better a popup too many than a
 /// missed one.
 pub async fn quiet_now(core: &Core, now: DateTime<Utc>) -> Option<(Event, DateTime<Utc>)> {
-    let Response::Settings { settings } = core.handle(Request::Settings).await else { return None };
+    let Response::Settings { settings } = Box::pin(core.handle(Request::Settings)).await else { return None };
     if !settings.quiet_when_busy {
         return None;
     }
     let window = Request::Events { start: now, end: now + TimeDelta::minutes(1) };
-    let Response::Events { events } = core.handle(window).await else { return None };
+    let Response::Events { events } = Box::pin(core.handle(window)).await else { return None };
     quiet_span(true, &events, now).map(|(event, until)| (event.clone(), until))
 }
 

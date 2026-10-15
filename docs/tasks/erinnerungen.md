@@ -89,9 +89,14 @@ ER3.1 (braucht ER1.4)       ER4 später
   Kalender-Arten stehen; `Response::Reminders` sagt `paused_until`; Schlummern 1–120 Minuten im Schema.
 
 ### ER1.3 Planer und Zustand
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** ER1.2 · **Dateien:** `crates/torroworkplace/src/reminders.rs` (neu),
-  `crates/torroworkplace/src/{core,daemon,pim}.rs`
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** ER1.2 · **Dateien:** `crates/torroworkplace/src/reminders.rs` (neu, Tests in
+  `reminders/tests.rs`), `crates/torroworkplace/src/{core,daemon,pim,main,approvals,audit}.rs`, `Reminder.preview_by`
+  in `crates/torro-ipc/src/lib.rs`, Übersetzungen in `crates/torro-core/src/i18n/de.rs`
+- **Umgesetzt (2026-10-15):** „Nur zugesagte“ und „außerhalb der Arbeitszeit“ wirken erst mit K.26 bzw. K.33.
+  Nie gezeigte Erinnerungen kommen höchstens 15 Minuten nach dem späteren von Auslösen und Beginn noch,
+  gezeigte bleiben bis zum Ende des Termins. Der Dienst gibt fällige Erinnerungen an `reminders::Sink`;
+  bis ER1.4 ist das `Silent`.
 - Reine Regeln (`Planner`, „jetzt“ als Argument): aus Terminen, Einstellungen und Zustand die Erinnerungen
   der nächsten 36 Stunden; Kennung = Prüfsumme aus Kalender, UID, Vorkommen, Auslöser. Filter aus dem
   Konzept (zugesagt, ganztägig, frei, ausgeblendete Kalender, Pause); läuft ein Termin mit Videolink und

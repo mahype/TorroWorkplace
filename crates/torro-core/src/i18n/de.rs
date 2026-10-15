@@ -3677,4 +3677,22 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} minutes", "{n} Minuten"),
     ("{what}, at \"{place}\"", "{what}, Ort „{place}“"),
     ("{what}, with the note \"{note}\"", "{what}, mit der Notiz „{note}“"),
+    // Reminders of events (ER1.3): approval summaries
+    ("Change how reminders come: {changes}", "Erinnerungen ändern: {changes}"),
+    ("Dismiss an unknown reminder", "Eine unbekannte Erinnerung verwerfen"),
+    ("Dismiss the reminder of \"{title}\" on {when}", "Erinnerung an „{title}“ am {when} verwerfen"),
+    ("Pause all reminders until {when}", "Alle Erinnerungen bis {when} pausieren"),
+    ("Resume reminders", "Erinnerungen fortsetzen"),
+    (
+        "Show the reminder of \"{title}\" on {when} now, as a preview",
+        "Erinnerung an „{title}“ am {when} jetzt als Vorschau zeigen",
+    ),
+    ("Show the reminder of an unknown event", "Die Erinnerung eines unbekannten Termins zeigen"),
+    ("Snooze an unknown reminder", "Eine unbekannte Erinnerung schlummern lassen"),
+    ("Snooze the reminder of \"{title}\" on {when} {how}", "Erinnerung an „{title}“ am {when} {how} schlummern lassen"),
+    ("for {n} min", "für {n} Min."),
+    ("full screen", "Vollbild"),
+    ("notification", "Benachrichtigung"),
+    ("off", "aus"),
+    ("until it starts", "bis zum Beginn"),
 ];

@@ -541,8 +541,8 @@ die Erinnerung eines Termins jetzt, mit „Preview · sent by {client}“, höch
 (sonst `busy`), damit niemand den Bildschirm zuspammt. Die Einstellungen stehen unter `settings.set_setting
 reminders` (Admin): Ein Wert ändert nur die Felder und Kalender, die er nennt; ein Client sieht und setzt nur
 Kalender seiner Auswahl (andere `not-found`), `update_settings` lässt die Kalender-Arten unberührt. Protokoll: nur
-Befehl und Kennung, ein `href` als Prüfsumme, nie Titel oder Zeiten. Bis ER1.3 antworten die fünf Befehle
-`unsupported`.
+Befehl und Kennung, ein `href` als Prüfsumme, nie Titel oder Zeiten. Freigaben nennen Titel und Beginn des Termins aus
+dem Zwischenspeicher, nie den Text des Clients.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

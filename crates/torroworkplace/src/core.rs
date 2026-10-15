@@ -16,7 +16,7 @@ use torro_core::AppId;
 use torro_core::account::AccountKind;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrderEntry;
-use torro_ipc::api::{Access, Area};
+use torro_ipc::api::{Access, Area, Selection};
 use torro_ipc::assistant::Mode;
 use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_mail::MailSettings;
@@ -43,6 +43,7 @@ use crate::inbox::{Inbox, Opening};
 use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
+use crate::reminders::Reminders;
 use crate::settings_service::SettingsStore;
 use crate::sources::Sources;
 use crate::suggest::Wanted;
@@ -929,6 +930,9 @@ pub struct Core {
     /// shows its setup screen although accounts exist. True from the start for a core that is
     /// never started, as in tests.
     accounts_read: tokio::sync::watch::Sender<bool>,
+    /// The reminders of events (task ER1.3): the user's ledger ([`Reminders::system`]); tests keep
+    /// theirs in memory.
+    reminders: Arc<Reminders>,
 }
 
 impl Core {
@@ -968,6 +972,70 @@ impl Core {
             voice: if cfg!(test) { Listener::none() } else { Listener::system() },
             lent_scopes: std::sync::Mutex::new(Vec::new()),
             accounts_read: tokio::sync::watch::Sender::new(true),
+            reminders: Arc::new(Reminders::system()),
+        }
+    }
+
+    /// The reminders, for their run ([`crate::reminders::run`]).
+    pub fn reminders(&self) -> &Reminders {
+        &self.reminders
+    }
+
+    /// What the reminders' run plans with at `now`: the events of the calendars the suite shows
+    /// ([`crate::reminders::window`]; none when the calendars cannot be read) and the setting.
+    pub async fn reminder_inputs(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> (Vec<torro_pim::Event>, torro_core::settings::Reminders) {
+        let events = self.reminder_events(Reach::Suite, now).await.unwrap_or_default();
+        (events, self.settings.current().reminders)
+    }
+
+    /// The events `reach` may read that reminders are planned from at `now`, or the calendar
+    /// service's refusal.
+    async fn reminder_events(
+        &self,
+        reach: Reach<'_>,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Vec<torro_pim::Event>, Response> {
+        let (start, end) = crate::reminders::window(now);
+        match Box::pin(self.pim.handle_within(Request::Events { start, end }, reach)).await {
+            Response::Events { events } => Ok(events),
+            other => Err(other),
+        }
+    }
+
+    /// The reminder commands (task ER1.3) for `reach`; `by` names who asks for a preview (the
+    /// client's id and name; `None` for a person in the suite).
+    async fn reminder_request(&self, request: Request, reach: Reach<'_>, by: Option<(&str, &str)>) -> Response {
+        let now = Utc::now();
+        let settings = self.settings.current().reminders;
+        let events = match self.reminder_events(reach, now).await {
+            Ok(events) => events,
+            Err(refused) => return refused,
+        };
+        match request {
+            Request::ListReminders { due_only } => self.reminders.list(&events, &settings, now, due_only),
+            Request::SnoozeReminder { id, until } => self.reminders.snooze(&id, until, &events, &settings, now),
+            Request::DismissReminder { id } => self.reminders.dismiss(&id, &events, &settings, now),
+            // The pause holds for every calendar, so a client must see them all (task ER1.2).
+            Request::PauseReminders { .. } if matches!(reach, Reach::Client(rights) if rights.calendars != Selection::All) =>
+            {
+                let message = "a pause holds for every calendar; this key sees only some of them".into();
+                Response::Error { code: "forbidden".into(), message }
+            }
+            Request::PauseReminders { until } => self.reminders.pause(until, now),
+            Request::PreviewReminder { href } => match self.pim.cached_event_within(reach, &href).await {
+                Some(event) => {
+                    let (client, name) = by.map_or((None, crate::reminders::SUITE), |(id, name)| (Some(id), name));
+                    self.reminders.preview(&event, &settings, &events, name, client, now)
+                }
+                None => Response::Error { code: "not-found".into(), message: format!("no event {href:?}") },
+            },
+            other => {
+                let message = format!("{} is no reminder command", other.operation().name());
+                Response::Error { code: "error".into(), message }
+            }
         }
     }
 
@@ -1650,6 +1718,11 @@ impl Core {
         if let Request::SaveDraft { draft } = request {
             return Ok(self.save_draft(draft, reach, DraftAuthor::Client(id)).await);
         }
+        // A preview names who sent it and comes once a minute per client (task ER1.3).
+        if let Request::PreviewReminder { .. } = request {
+            let name = self.client_name(&id);
+            return Ok(Box::pin(self.reminder_request(request, reach, Some((&id, &name)))).await);
+        }
         // Boxed: `handle_within` is a large future, and a client's request can run it again inside
         // (the inbox's quiet asks the core for settings and events); on the stack both no longer
         // fit a test thread's in debug builds.
@@ -2073,6 +2146,20 @@ impl Core {
                 };
                 Facts { name, engine, bot, ..Facts::default() }
             }
+            // A reminder by the title and start of its event as the cache holds it (task ER1.3).
+            Request::SnoozeReminder { id, .. } | Request::DismissReminder { id } => {
+                let now = Utc::now();
+                let (events, settings) = self.reminder_inputs(now).await;
+                let (reminders, _) = self.reminders.reminders(&events, &settings, now);
+                let held = reminders.into_iter().find(|reminder| reminder.id == *id);
+                Facts {
+                    item: held.map(|held| crate::approvals::Known {
+                        title: held.event.summary,
+                        start: Some(held.event.start),
+                    }),
+                    ..Facts::default()
+                }
+            }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
             }
@@ -2226,9 +2313,23 @@ impl Core {
             let approved = Some(fingerprint.unwrap_or_default());
             return crate::mail::send::send_draft(&self.mail, reach, &author, draft, approved).await;
         }
+        if let Request::PreviewReminder { .. } = request {
+            let name = self.client_name(client);
+            return Box::pin(self.reminder_request(request, reach, Some((client, &name)))).await;
+        }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
         Box::pin(self.handle_within(request, reach)).await
+    }
+
+    /// The name of the client `id` as a person stored it, a bot's as "Bot …" (as approvals say it,
+    /// so a bot cannot pass itself off as another client); its id when it is gone.
+    fn client_name(&self, id: &str) -> String {
+        match self.clients.list().into_iter().find(|info| info.id == id) {
+            Some(info) if info.kind == torro_ipc::api::BOT_CLIENT => trf("Bot \"{name}\"", &[("name", &info.name)]),
+            Some(info) => info.name,
+            None => id.to_string(),
+        }
     }
 
     /// Answers `request` without a key check, with all rights: for the tray menu inside the
@@ -2389,15 +2490,12 @@ impl Core {
             | Request::DeleteEvent { .. }
             | Request::DeleteTodo { .. }
             | Request::MoveTodo { .. }) => self.pim.handle_within(pim, reach).await,
-            // Reminders (task ER1.2): the commands exist so the UI, API and MCP can be built on
-            // them; the planner that answers them comes with task ER1.3.
-            Request::ListReminders { .. }
+            // Reminders (task ER1.3); a client's preview comes through `handle_client` with its name.
+            request @ (Request::ListReminders { .. }
             | Request::SnoozeReminder { .. }
             | Request::DismissReminder { .. }
             | Request::PauseReminders { .. }
-            | Request::PreviewReminder { .. } => {
-                Response::Error { code: "unsupported".into(), message: "reminders are not planned yet".into() }
-            }
+            | Request::PreviewReminder { .. }) => Box::pin(self.reminder_request(request, reach, None)).await,
             Request::Settings => {
                 let mut settings = self.settings.current();
                 if let Reach::Client(rights) = reach {
@@ -2411,7 +2509,7 @@ impl Core {
                 Response::Settings { settings }
             }
             Request::SetSetting { key: SettingKey::ListOrder, value } => self.set_list_order(&value).await,
-            Request::SetSetting { key: SettingKey::Reminders, value } => self.set_reminders(&value).await,
+            Request::SetSetting { key: SettingKey::Reminders, value } => Box::pin(self.set_reminders(&value)).await,
             Request::UpdateSettings { settings } => {
                 // A client never sees the hidden collections, so what it sends back says nothing
                 // about them; they change only through `set_collection_shown`. Kept under the
@@ -3188,7 +3286,7 @@ impl Core {
         };
         let margin = chrono::TimeDelta::hours(12);
         let (start, end) = (instant(event.start) - margin, instant(event.end.unwrap_or(event.start)) + margin);
-        match self.pim.handle_within(Request::Events { start, end }, reach).await {
+        match Box::pin(self.pim.handle_within(Request::Events { start, end }, reach)).await {
             Response::Events { events } => {
                 let copy = |known: &torro_pim::Event| {
                     known.uid == event.uid.trim() && !known.recurring && made_from_mail(known)
@@ -8828,6 +8926,56 @@ mod tests {
         assert_eq!(event.summary, "Deploy failed");
         assert_eq!(created_on(&fake), 1);
         assert!(matches!(entry(&core, dir.path(), &id).await.state, torro_inbox::State::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn reminders_are_listed_and_handled_only_within_reach() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let now = Utc::now();
+        let href = "https://cloud.example.org/cal/work/sync.ics";
+        let sync = torro_pim::Event {
+            summary: "Weekly sync".into(),
+            start: torro_pim::EventTime::DateTime(now + chrono::TimeDelta::seconds(30)),
+            end: Some(torro_pim::EventTime::DateTime(now + chrono::TimeDelta::minutes(45))),
+            ..event_in(&fake.work, Some(href))
+        };
+        core.pim.cache_events_as_synced(vec![sync]).await;
+        let Response::Reminders { reminders, paused_until } =
+            core.handle(Request::ListReminders { due_only: true }).await
+        else {
+            panic!("reminders")
+        };
+        assert_eq!((reminders.len(), paused_until), (1, None), "a minute before, as the default says");
+        let id = reminders[0].id.clone();
+
+        // A client with the home calendar only sees nothing of work, and reaches nothing there.
+        let mut home_only = RightsTemplate::FullAccess.rights();
+        home_only.calendars = Selection::Only(vec![fake.home.clone()]);
+        let within = |request| core.handle_within(request, Reach::Client(&home_only));
+        let Response::Reminders { reminders, .. } = within(Request::ListReminders { due_only: false }).await else {
+            panic!("reminders")
+        };
+        assert!(reminders.is_empty());
+        assert_eq!(code(&within(Request::DismissReminder { id: id.clone() }).await), "not-found");
+        assert_eq!(code(&within(Request::PauseReminders { until: None }).await), "forbidden", "not all calendars");
+        let (_, key) = client(&core, home_only.clone()).await;
+        let preview = Request::PreviewReminder { href: href.into() };
+        assert_eq!(code(&ask(&core, Some(&key), preview.clone()).await), "not-found", "before anyone is asked");
+
+        // Every calendar: it dismisses, pauses and previews with its name.
+        let all = RightsTemplate::FullAccess.rights();
+        let within = |request| core.handle_within(request, Reach::Client(&all));
+        assert_eq!(within(Request::DismissReminder { id }).await, Response::Ok);
+        let until = now + chrono::TimeDelta::hours(1);
+        assert_eq!(within(Request::PauseReminders { until: Some(until) }).await, Response::Ok);
+        assert_eq!(core.reminders().ledger(now).paused_until, Some(until));
+        assert_eq!(core.handle(Request::PauseReminders { until: None }).await, Response::Ok);
+        assert_eq!(core.handle(preview).await, Response::Ok, "a person's preview");
+        let Response::Reminders { reminders, .. } = core.handle(Request::ListReminders { due_only: true }).await else {
+            panic!("reminders")
+        };
+        assert_eq!(reminders.iter().map(|r| r.preview_by.as_deref()).collect::<Vec<_>>(), [Some("Torro Workplace")]);
     }
 
     #[tokio::test]

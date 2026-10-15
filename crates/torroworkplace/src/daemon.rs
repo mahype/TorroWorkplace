@@ -206,6 +206,9 @@ async fn serve(shows: Shows) -> Result<(), String> {
     tokio::spawn(tend_inbox(Arc::clone(&core)));
     // Popups for new entries "for me" (task E3.4), also when headless: they need no tray.
     tokio::spawn(crate::inbox_notify::run(Arc::clone(&core), Arc::new(crate::inbox_notify::SystemDesktop)));
+    // Reminders of events (task ER1.3): planned and fired here; the inbox and the screen take them
+    // with tasks ER1.4 and ER2.1.
+    tokio::spawn(crate::reminders::run(Arc::clone(&core), Arc::new(crate::reminders::Silent)));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();

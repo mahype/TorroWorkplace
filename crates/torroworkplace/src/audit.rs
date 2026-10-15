@@ -669,6 +669,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reminder_commands_log_their_id_and_never_a_time_or_an_address() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let snooze = Request::SnoozeReminder { id: id.into(), until: torro_ipc::Snooze::Minutes(5) };
+        assert_eq!(ids(&snooze), vec![format!("reminder:{id}")], "32 hex characters are taken as they are");
+        assert_eq!(ids(&Request::DismissReminder { id: id.into() }), vec![format!("reminder:{id}")]);
+        let odd = ids(&Request::DismissReminder { id: "Dinner with Anna".into() });
+        assert!(odd[0].starts_with("reminder:hash:"), "{odd:?}");
+        assert!(ids(&Request::ListReminders { due_only: true }).is_empty());
+        assert!(ids(&Request::PauseReminders { until: Some(Utc::now()) }).is_empty(), "not even the time");
+        let preview = ids(&Request::PreviewReminder { href: "https://cloud.example.org/cal/work/Dinner.ics".into() });
+        assert!(preview[0].starts_with("item:") && !preview[0].contains("Dinner"), "{preview:?}");
+    }
+
+    #[test]
     fn ids_never_carry_a_name_a_title_or_a_search() {
         let event = torro_pim::Event {
             uid: "u".into(),

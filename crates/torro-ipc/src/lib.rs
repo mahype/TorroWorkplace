@@ -2307,6 +2307,10 @@ pub struct Reminder {
     /// The video call to join, when the event's location or notes hold one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join: Option<Join>,
+    /// Set on a preview (`calendar.preview_reminder`): who asked for it, the client's name, or
+    /// "Torro Workplace" for a person in the suite. The window says "Preview · sent by …".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_by: Option<String>,
 }
 
 /// Where a reminder stands.
