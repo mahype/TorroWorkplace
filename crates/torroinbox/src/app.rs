@@ -5673,9 +5673,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     // The panel fills narrow windows: no room for the words of "Move to …".
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
                     ai: self.ai_ready,
+                    // A mail's switches and "Copy text" in the footer, as in the reader's Torro bar
+                    // (task E9.4).
+                    view: self.reading().map(|reading| reading.view_tools()),
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
-                let letter = self.reading().map(|reading| mail::body(&reading, None));
+                let letter = self.reading().map(|reading| mail::body(&reading));
                 detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };

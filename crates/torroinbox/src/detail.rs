@@ -36,8 +36,10 @@
 //! open the same dialogs, filled in by the person's AI; without an AI they are off and say so. With
 //! them "Move to …" is its icon alone, as the words would no longer fit.
 //!
-//! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, actions, attachments,
-//! text) in place of its short text; the footer stays the entry's.
+//! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, the mail standards,
+//! attachments, text) in place of its short text; the footer stays the entry's and takes a second
+//! row (task E9.4, [`Footer::view`]): "Move to …", the bell and the mail's switches "HTML | Text",
+//! "Light | Dark" and "Copy text", in the order of the reader's Torro bar.
 //!
 //! Task with a way back (task E8.7b): an entry made into a task shows it in a section "Task" (the
 //! card of `mail::task_card` with "Open task"; a whole mail carries it over its text instead). The
@@ -151,6 +153,12 @@ pub struct Footer {
     /// An AI is set up (issue #120): "AI task" and "AI event" beside "Make task" and "Make event"
     /// are on; without one they are off and their tooltip says to set one up first.
     pub ai: bool,
+    /// A mail entry's whole mail in the panel (task E9.4, `mail::Reading::view_tools`): the footer
+    /// takes two rows – Done, Later and the task and event buttons with their AI ones in the first;
+    /// "Move to …", the bell and the view group (`mail::view_controls`: "HTML | Text", "Light | Dark",
+    /// "Copy text") in the second, in the order of the reader's Torro bar. `None` for every other
+    /// entry: one row as before.
+    pub view: Option<mail::ViewTools>,
 }
 
 /// The panel for `item`, reached through the view `view_name`; `now` for the times; the footer's
@@ -323,8 +331,23 @@ fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 /// The buttons below the line: Allow/Deny for an approval, else done or reopen;
 /// then "Later" for an entry that is not done and no approval, "Make task" and "Make event" for one
 /// that is no approval, and at the right "Move to …" and "…" (hide from the inbox) when there is a
-/// way to hide it.
+/// way to hide it. With a whole mail ([`Footer::view`], task E9.4) in two rows: those that finish the
+/// entry first, "Move to …", the bell and the mail's view group under them.
 fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
+    let (finish, view) = button_groups(item, footer);
+    match footer.view {
+        None => finish.into_iter().chain([iced::widget::space::horizontal().into()]).chain(view).collect(),
+        Some(_) => {
+            let row = |buttons: Vec<Element<'a, Message>>| row(buttons).spacing(space::s()).align_y(Alignment::Center);
+            vec![column![row(finish), row(view)].spacing(space::s()).into()]
+        }
+    }
+}
+
+/// The footer's buttons in two groups ([`buttons`]): what finishes the entry – decide, Done, Later,
+/// make a task or an event with their AI buttons – and what moves, mutes or shows it – "Move to …",
+/// "…" or the bell, and for a whole mail its view group (`mail::view_controls`).
+fn button_groups<'a>(item: &'a Item, footer: &Footer) -> (Vec<Element<'a, Message>>, Vec<Element<'a, Message>>) {
     let follow_up = hub::is_follow_up(item) && item.state.is_open();
     let mut buttons = Vec::new();
     // "You finished a task from a mail" (task E8.7b): answer the mail or mark it done, before
@@ -356,7 +379,7 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
         buttons.push(widgets::anchored(&footer.anchors.event, event));
         buttons.push(suggest::icon_button(suggest::Wanted::Event, &item.id, footer.ai));
     }
-    buttons.push(iced::widget::space::horizontal().into());
+    let mut side = Vec::new();
     let lane = app::other_lane(item.lane);
     let (icon, label, ask) = (
         app::lane_icon(lane),
@@ -370,7 +393,7 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
     } else {
         widgets::text_button(Some(icon), label, style::button::ghost, Some(ask))
     };
-    buttons.push(widgets::anchored(&footer.anchors.lane, move_to));
+    side.push(widgets::anchored(&footer.anchors.lane, move_to));
     if footer.hide {
         let hide = if footer.bell {
             // `AskHide` like "…", not `Act`: the bell's menu hangs at this bell (issue #122), not at
@@ -383,9 +406,10 @@ fn buttons<'a>(item: &'a Item, footer: &Footer) -> Vec<Element<'a, Message>> {
                 Some(Message::AskHide(item.id.clone())),
             )
         };
-        buttons.push(widgets::anchored(&footer.anchors.hide, hide));
+        side.push(widgets::anchored(&footer.anchors.hide, hide));
     }
-    buttons
+    side.extend(footer.view.map(mail::view_controls).unwrap_or_default());
+    (buttons, side)
 }
 
 /// The entry's lane and, when a rule put it there, why (issue #128): "Info · Mailing list
@@ -580,7 +604,15 @@ mod tests {
     }
 
     fn footer(hide: bool) -> Footer {
-        Footer { anchors: Anchors::default(), hide, bell: false, deciding: false, compact: false, ai: false }
+        Footer {
+            anchors: Anchors::default(),
+            hide,
+            bell: false,
+            deciding: false,
+            compact: false,
+            ai: false,
+            view: None,
+        }
     }
 
     #[test]
@@ -612,6 +644,27 @@ mod tests {
         assert!(handed.task.as_ref().is_some_and(|task| !task.completed));
         let text = Selectable::new(&message_text(&handed));
         let _ = panel(&handed, tr("Done").to_owned(), now(), footer(true), None, &text);
+    }
+
+    /// Task E9.4: with a whole mail the footer takes two rows – what finishes the entry, then "Move
+    /// to …", the bell and the mail's view group –; every other entry keeps its one row.
+    #[test]
+    fn a_mail_footer_takes_the_view_group_in_a_second_row() {
+        let item = sample("demo-1");
+        let view = mail::ViewTools {
+            format: Some(torro_core::settings::MailFormat::Html),
+            scheme: Some(torro_htmlview::Scheme::Light),
+            copy: true,
+        };
+        let with = Footer { view: Some(view), ..footer(true) };
+        let (finish, side) = button_groups(&item, &with);
+        let (plain_finish, plain_side) = button_groups(&item, &footer(true));
+        assert_eq!(finish.len(), plain_finish.len(), "Done, Later, the task and event buttons");
+        assert_eq!(plain_side.len(), 2, "Move to and \"…\"");
+        assert_eq!(side.len(), plain_side.len() + 3, "HTML | Text, Light | Dark, Copy text");
+        assert_eq!(buttons(&item, &with).len(), 1, "two rows in one column");
+        let loading = Footer { view: Some(mail::ViewTools::default()), ..footer(true) };
+        assert_eq!(button_groups(&item, &loading).1.len(), 2, "nothing to switch or copy while it loads");
     }
 
     #[test]
