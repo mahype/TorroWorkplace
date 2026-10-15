@@ -23,6 +23,8 @@ ohne Schlüssel, ohne Konto, ohne Gebühren, unter deren Nutzungsregeln.
 - Bearbeiten im Kontakt selbst, ohne eigenen Dialog; jedes Feld mit Typ (privat, Arbeit, mobil …).
 - Offline lesen und bearbeiten, Konflikte werden gezeigt, nie still überschrieben.
 - Dubletten erkennen und zusammenführen, vCard importieren und exportieren (Stufe KO3).
+- Kontakte teilen: per Mail weiterleiten, in einen Talk-Chat geben, kopieren, als Datei oder
+  QR-Code. Das ist ein Baustein der ganzen Suite, eigener Plan: [teilen.md](teilen.md).
 
 ## Was CardDAV und Nextcloud bieten
 
@@ -173,7 +175,8 @@ von `walkers` (egui): Kachel-Mathematik, Laden mit Cache, Widget aus `canvas` un
     - **KO4:** Karte aller Kontakte.
 
     Jede Stufe ist für sich nutzbar und über alle drei Wege erreichbar. KO3 ersetzt die Aufgabe
-    M7.6 aus [tasks/mail.md](tasks/mail.md).
+    M7.6 aus [tasks/mail.md](tasks/mail.md). Teilen (Mail, Talk, Kopieren, Datei, QR-Code) plant
+    [teilen.md](teilen.md) mit den Aufgaben TL1–TL3; es kann nach KO1 beginnen.
 
 ## Aufbau
 
@@ -300,7 +303,8 @@ Erläuterungen:
 - **Liste:** Foto oder Initialen, Name, Firma, ein Hauptkontakt. Alphabetische Sprungleiste.
   Suchfeld oben; `/` und `Ctrl+F` springen hinein.
 - **Kontakt rechts:**
-  - **Kopf:** großes Foto, Name, Firma und Position, darunter Schnellknöpfe Mail, Call, Map, Copy.
+  - **Kopf:** großes Foto, Name, Firma und Position, darunter Schnellknöpfe Mail, Call, Map, Copy
+    und „Share…“ ([teilen.md](teilen.md)).
   - **Abschnitte:** Telefon, Mail, Adressen (je mit kleiner Karte, KO2), Web und Messenger,
     Geburtstag und Jahrestage, Notiz, Gruppen.
   - **„Edit“** schaltet alle Felder im Kontakt selbst um. „+ Add field“ fügt eine Art hinzu.
