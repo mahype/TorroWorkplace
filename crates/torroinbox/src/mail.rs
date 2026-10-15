@@ -23,9 +23,12 @@
 //! - [`list`] draws a folder's messages – rows, or cards in the comfortable density of the mail
 //!   window (task E8.3, [`message_card`]) – and the smart view "With attachments" ([`attachments`]:
 //!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
-//!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3): Reply ·
-//!   Reply all · Forward | Done · Later · Task, the text in the reading level (`typo::read()`);
-//!   [`empty_reader`] keeps its column while no mail is open (task E8.11).
+//!   panel, [`reader`] the reader beside the list in the wide mail window (task E8.3), the text in
+//!   the reading level (`typo::read()`); [`empty_reader`] keeps its column while no mail is open
+//!   (task E8.11). Both split the buttons (task E9.4): the mail standards at the top – Reply ·
+//!   Reply all · Forward | Archive · Delete, Flag, read –, what Torro adds below – in the reader a
+//!   bar floating over the mail's end (Done · Later · Task | AI task · AI event | Move to · Mute… ·
+//!   "HTML | Text" · "Light | Dark" · Copy text), in the panel its fixed footer.
 //! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
 //!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
 //!
@@ -37,6 +40,7 @@
 //! system, except files that could run programs ([`runs_programs`]): their folder opens instead.
 
 use std::future::Future;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
@@ -1590,11 +1594,27 @@ impl<'a> Reading<'a> {
     pub fn title(&self) -> String {
         self.summary().map_or_else(String::new, subject)
     }
+
+    /// What the view group of the Torro bar and the panel's footer show (task E9.4): for a loaded
+    /// mail its switches – "HTML | Text" for a mail with HTML, "Light | Dark" while the HTML shows –
+    /// and "Copy text" when it has a text; nothing while it loads or after an error.
+    pub fn view_tools(&self) -> ViewTools {
+        if !matches!(self.loaded, Some(Ok(_))) {
+            return ViewTools::default();
+        }
+        ViewTools {
+            format: self.html.map(|html| html.format),
+            scheme: self.html.filter(HtmlReading::shown).map(|html| html.scheme),
+            copy: !self.text.text().trim().is_empty(),
+        }
+    }
 }
 
 /// The panel of a folder's message: the account and folder as path, the subject as title, the
-/// mail as body ([`body`]). No footer: the mail's actions stand above its text; `anchors` are where
-/// the menus of its buttons open (the app's window, issue #122).
+/// mail as body ([`body`]) with the mail standards over it. The Torro functions stand in the
+/// panel's fixed footer (task E9.4, [`folder_footer`]): Task, then the bell "Mute…" and the view's
+/// switches and "Copy text". `anchors` are where the menus of its buttons open (the app's window,
+/// issue #122).
 pub fn panel<'a>(
     reading: &Reading<'a>,
     folder: Option<&'a FolderView>,
@@ -1602,20 +1622,87 @@ pub fn panel<'a>(
 ) -> panel::Panel<'a, Message> {
     let mark = Some(Mark::Icon(folder_icon(folder.and_then(|folder| folder.role))));
     let parts: Vec<String> = folder.map(|f| vec![address(&f.account).to_owned(), f.name.clone()]).unwrap_or_default();
-    let body = body(reading, Some(anchors));
+    let body = body(reading);
     panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail)
+        .footer(folder_footer(reading, anchors))
 }
 
-/// The mail in the panel: who wrote it to whom and when, the actions (reply, reply all, forward,
-/// archive, delete, flag, read), the attachments, for a mail with HTML the switches "HTML | Text"
-/// and "Light | Dark" (task M9.7) over the HTML or the text with its links, and the note that the
-/// mail comes from outside. `anchors` of a folder's
-/// panel take the menus of its buttons ([`panel`]); an entry's panel has them in its footer.
-pub fn body<'a>(reading: &Reading<'a>, anchors: Option<&detail::Anchors>) -> Element<'a, Message> {
+/// The footer of a folder's message in the panel (task E9.4), in the panel's style and in the
+/// order of the reader's Torro bar ([`torro_groups`]): "Task" (task E8.7b), a line, then the bell
+/// "Mute…" (issue #123: the message's own traits) and the view group ([`view_controls`]) – one row
+/// that wraps in a narrow panel. "Later" joins "Task" with task E9.2; the AI buttons need an entry
+/// (the core suggests from entries only), so a folder's message has none.
+fn folder_footer<'a>(reading: &Reading<'a>, anchors: &detail::Anchors) -> Vec<Element<'a, Message>> {
+    let id = reading.id;
+    let task = Some(Message::AskMailTask(id.to_owned()));
+    let task = widgets::text_button(Some(Icon::ListTodo), tr("Task"), style::button::secondary, task);
+    let bell = widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::AskMuteMail(id.to_owned())));
+    let bar = row![widgets::anchored(&anchors.task, task), separator(), widgets::anchored(&anchors.hide, bell)]
+        .extend(view_controls(reading.view_tools()))
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    // One row while it fits; a panel filling a narrow window wraps it.
+    vec![bar.wrap().vertical_spacing(space::s()).into()]
+}
+
+/// What the view group of the Torro bar shows for a mail (task E9.4): the switches of a mail with
+/// HTML and "Copy text". Got from [`Reading::view_tools`]; while the mail loads or could not be
+/// loaded there is nothing to switch or copy, and every field is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ViewTools {
+    /// "HTML | Text" (`v`), as it stands; `None` for a mail without HTML (it shows its text).
+    pub format: Option<MailFormat>,
+    /// "Light | Dark" for the colours of the mail's content, as it stands; only while the HTML
+    /// shows.
+    pub scheme: Option<Scheme>,
+    /// "Copy text" (issue #119): the mail has a text to copy.
+    pub copy: bool,
+}
+
+/// The view group of [`ViewTools`] in the panel's footer (task E9.4), in the panel's own size:
+/// "HTML | Text", "Light | Dark" ([`widgets::segmented`]) and "Copy text" as an icon, each only where
+/// `tools` has it. The entry's footer (`detail::Footer::view`) and a folder's message's
+/// ([`folder_footer`]) put them after "Move to …" and the bell.
+pub fn view_controls<'a>(tools: ViewTools) -> Vec<Element<'a, Message>> {
+    let mut controls = Vec::new();
+    if let Some(format) = tools.format {
+        controls.push(widgets::segmented(formats(), usize::from(format == MailFormat::Text)));
+    }
+    if let Some(scheme) = tools.scheme {
+        controls.push(widgets::segmented(schemes(), usize::from(scheme == Scheme::Dark)));
+    }
+    if tools.copy {
+        controls.push(copy_button());
+    }
+    controls
+}
+
+/// The segments of "HTML | Text" (task M9.7), HTML first.
+fn formats() -> [(String, Message); 2] {
+    [
+        (tr("HTML").to_owned(), Message::ShowMailAs(MailFormat::Html)),
+        (tr("Text").to_owned(), Message::ShowMailAs(MailFormat::Text)),
+    ]
+}
+
+/// The segments of "Light | Dark" (task M9.7), light first.
+fn schemes() -> [(String, Message); 2] {
+    [
+        (tr("Light").to_owned(), Message::MailColors(Scheme::Light)),
+        (tr("Dark").to_owned(), Message::MailColors(Scheme::Dark)),
+    ]
+}
+
+/// The mail in the panel: who wrote it to whom and when, the mail standards (task E9.4,
+/// [`panel_standards`]: reply, reply all, forward, archive, delete, flag, read), the attachments,
+/// the HTML or the text with its links, and the note that the mail comes from outside. The Torro
+/// functions, the switches "HTML | Text" and "Light | Dark" (task M9.7) and "Copy text" stand in the
+/// panel's footer: an entry's (`detail::Footer`) or a folder's message's ([`panel()`]).
+pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     let mut body = column![].spacing(space::l());
     if let Some(summary) = reading.summary() {
         body = body.push(panel::inset(header(reading, summary)));
-        body = body.push(panel::inset(actions(reading, summary, anchors)));
+        body = body.push(panel::inset(panel_standards(reading, summary)));
     }
     if let Some(summary) = reading.summary()
         && let Some(invite) = &summary.invite
@@ -1639,19 +1726,14 @@ pub fn body<'a>(reading: &Reading<'a>, anchors: Option<&detail::Anchors>) -> Ele
                 let rows = files.into_iter().map(|file| attachment_row(reading.id, file)).collect();
                 body = body.push(widgets::prop_section(tr("Attachments"), rows));
             }
-            if let Some(html) = reading.html {
-                body = body.push(panel::inset(view_switches(html)));
-            }
             body = body.push(match reading.html.filter(HtmlReading::shown) {
                 // The HTML reaches the panel's edges (its background with it), the note keeps the inset.
                 // A mail without a background of its own starts its text in line with the title, 16
                 // from the panel's edge (`panel::inset`).
-                Some(html) => {
-                    column![panel::bleed(html_view(html).margin(space::l())), panel::inset(html_note(reading, true))]
-                        .spacing(space::m())
-                        .into()
-                }
-                None => panel::inset(text_block(reading.text, text_level(reading.read), true)),
+                Some(html) => column![panel::bleed(html_view(html).margin(space::l())), panel::inset(html_note())]
+                    .spacing(space::m())
+                    .into(),
+                None => panel::inset(text_block(reading.text, text_level(reading.read))),
             });
             if let Some(links) = text_links(reading.text).filter(|_| !html_shown(reading)) {
                 body = body.push(links);
@@ -1678,13 +1760,24 @@ pub struct ReaderEntry<'a> {
     pub ai: bool,
 }
 
-/// The reader of the wide mail window (task E8.3), beside the list: the mail's actions at the top
-/// ([`reader_actions`]), the subject (`HEADLINE`, in compact `TITLE`), the sender with the large
-/// avatar, to whom and when – and for an entry a rule put in its lane why (issue #128) –, then the
-/// text – in the reading level ([`Reading::read`]) – with its
-/// notes and the attachments, scrolling. Everything uses the reader's whole width with the page's
-/// padding, a mail shown as HTML lies edge to edge ([`reader_widths`]). `entry` is the mail entry the mail belongs to, `None` for a folder's message;
-/// `anchors` are where the menus of its buttons open (the app's window).
+/// The reader of the wide mail window (task E8.3), beside the list, in three parts (task E9.4):
+///
+/// - at the top, fixed – it does not scroll –, the **mail standards** ([`reader_head`]): Reply (the
+///   window's one primary button), Reply all, Forward | Archive, Delete, and at the right as icons
+///   Flag, read or unread, Close;
+/// - under it, scrolling, the subject (`HEADLINE`, in compact `TITLE`), the sender with the large
+///   avatar, to whom and when – and for an entry why a rule put it in its lane (issue #128) –, then
+///   the text in the reading level ([`Reading::read`]) with its notes and the attachments.
+///   Everything uses the reader's whole width with the page's padding, a mail shown as HTML lies
+///   edge to edge ([`reader_widths`]);
+/// - floating over it, fixed at the bottom, the **Torro bar** ([`torro_groups`],
+///   `widgets::floating_bar`): what a mail app does not have. The page keeps room under its end as
+///   high as the bar ([`widgets::floating_bar_clearance`]), so its last line and the attachments
+///   scroll out from under it.
+///
+/// `entry` is the mail entry the mail belongs to, `None` for a folder's message; `anchors` are where
+/// the menus of its buttons open (the app's window) – a menu of the Torro bar opens above it, where
+/// the window has its room.
 pub fn reader<'a>(
     reading: Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
@@ -1693,15 +1786,37 @@ pub fn reader<'a>(
 ) -> Element<'a, Message> {
     responsive(move |bounds| {
         let widths = reader_widths(bounds.width, html_edge(&reading).is_some());
-        let page = reader_content(&reading, entry, &anchors, comfortable, widths);
-        scrollable(page)
+        let groups = torro_groups(&reading, entry, &anchors);
+        let fit = torro_fit(&control_widths(&groups), widgets::floating_bar_room(bounds.width));
+        let page = reader_content(&reading, entry, comfortable, widths, page_end(fit.rows.len()));
+        let page = scrollable(page)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
             .width(Fill)
-            .height(Fill)
-            .into()
+            .height(Fill);
+        let body = match torro_bar(groups, &fit) {
+            Some(bar) => widgets::over_bar(page, bar),
+            None => page.into(),
+        };
+        let Some(summary) = reading.summary() else { return body };
+        let pad = layout::page_padding();
+        let head = container(reader_head(&reading, summary, widths.head)).width(Fill).padding(Padding {
+            top: space::m(),
+            bottom: space::m(),
+            ..pad
+        });
+        column![head, rule::horizontal(size::HAIRLINE).style(style::rule), body].into()
     })
     .into()
+}
+
+/// The padding at the end of the reader's page under a Torro bar of `rows` rows: room for the bar
+/// ([`widgets::floating_bar_clearance`]); the page's own padding without a bar.
+fn page_end(rows: usize) -> f32 {
+    match rows {
+        0 => layout::page_padding().bottom,
+        rows => widgets::floating_bar_clearance(rows),
+    }
 }
 
 /// How wide the parts of the reader are ([`reader_widths`]).
@@ -1733,22 +1848,23 @@ fn html_edge<'a>(reading: &Reading<'a>) -> Option<HtmlReading<'a>> {
 
 /// The reader's page ([`reader`]), its parts as wide as `widths` says: the head and a text mail in
 /// the page's padding; a mail shown as HTML edge to edge between the head and its foot (the note and
-/// the attachments), which keep the padding.
+/// the attachments), which keep the padding. `bottom` is the padding at its end: room for the Torro
+/// bar floating over it ([`page_end`]). The mail's actions stand outside the page, in the reader's
+/// fixed head and its Torro bar (task E9.4).
 fn reader_content<'a>(
     reading: &Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
-    anchors: &detail::Anchors,
     comfortable: bool,
     widths: ReaderWidths,
+    bottom: f32,
 ) -> Element<'a, Message> {
-    let pad = layout::page_padding();
+    let pad = Padding { bottom, ..layout::page_padding() };
     let room = widths.head;
     let gap = if comfortable { layout::section_gap() } else { space::l() };
     let mut body = column![].spacing(gap).width(room);
     let Some(summary) = reading.summary() else {
         return container(body.push(note(tr("Loading the message…")))).padding(pad).into();
     };
-    body = body.push(reader_actions(reading, summary, entry, anchors, comfortable, room));
     let level = if comfortable { typo::headline() } else { typo::title() };
     body = body.push(typo::text(level, subject(summary)).style(theme::text).wrapping(Wrapping::WordOrGlyph));
     let sender = reader_sender(reading, summary, comfortable, room);
@@ -1780,9 +1896,6 @@ fn reader_content<'a>(
             body = body.push(column![what, why].spacing(space::xs()));
         }
         Some(Ok(mail)) => {
-            if let Some(html) = reading.html {
-                body = body.push(view_switches(html));
-            }
             let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
             let cards = (!files.is_empty())
                 .then(|| column(files.into_iter().map(|file| attachment_card(reading.id, file))).spacing(space::s()));
@@ -1791,11 +1904,11 @@ fn reader_content<'a>(
                 let head = container(body).padding(Padding { bottom: gap, ..pad });
                 // A mail without a background of its own starts its text in line with the head.
                 let mail = container(html_view(html).margin(pad.left)).width(widths.mail);
-                let foot = column![html_note(reading, false)].push(cards).spacing(gap).width(room);
+                let foot = column![html_note()].push(cards).spacing(gap).width(room);
                 let foot = container(foot).padding(Padding { top: space::m(), ..pad });
                 return column![head, mail, foot].into();
             }
-            body = body.push(text_block(reading.text, text_level(reading.read), false));
+            body = body.push(text_block(reading.text, text_level(reading.read)));
             if let Some(links) = text_links(reading.text).filter(|_| !html_shown(reading)) {
                 body = body.push(links);
             }
@@ -1839,158 +1952,129 @@ fn reader_sender<'a>(
     row![face, words, when].spacing(space::m()).align_y(Alignment::Center).into()
 }
 
-/// One button of the reader's actions ([`reader_actions`]).
+/// One button of the reader's bars ([`reader_head`], [`torro_bar`]) and of the panel's mail standards
+/// ([`panel_standards`]).
+#[derive(Clone)]
 struct ReaderButton {
     icon: Icon,
     label: String,
     message: Option<Message>,
-    /// Where its menu opens (Later, Task, Move to …, "…").
+    /// Where its menu opens (Later, Task, Move to …, Mute…).
     anchor: Option<Anchor>,
     /// A tooltip of its own (issue #120: an AI button off until an AI is set up says so); `None`:
     /// the word, and only where the button shows its icon alone.
     tip: Option<String>,
+    /// Its icon in the accent colour (task E9.4): the AI buttons, a function of their own.
+    accent: bool,
 }
 
 impl ReaderButton {
     fn new(icon: Icon, label: impl Into<String>, message: Option<Message>) -> Self {
-        ReaderButton { icon, label: label.into(), message, anchor: None, tip: None }
+        ReaderButton { icon, label: label.into(), message, anchor: None, tip: None, accent: false }
     }
 
     fn at(self, anchor: &Anchor) -> Self {
         ReaderButton { anchor: Some(anchor.clone()), ..self }
     }
 
-    /// The button with its word in `style`, or its icon alone.
+    /// The button, [`size::control()`] high (`widgets::bar_button`): with its word in `style`, or
+    /// its icon alone with the word – or its own tooltip – as tooltip.
     fn view<'a>(self, words: bool, style: widgets::ButtonStyle) -> Element<'a, Message> {
-        let button = match (words, self.tip) {
-            (true, None) => widgets::text_button(Some(self.icon), self.label, style, self.message),
-            (true, Some(tip)) => {
-                widgets::with_tooltip(widgets::text_button(Some(self.icon), self.label, style, self.message), tip)
-            }
-            (false, tip) => widgets::icon_button(self.icon, tip.unwrap_or(self.label), self.message),
+        let ReaderButton { icon, label, message, anchor, tip, accent } = self;
+        let shown = if words { label } else { tip.clone().unwrap_or(label) };
+        let button = if accent {
+            widgets::bar_button_accent(icon, shown, words, style, message)
+        } else {
+            widgets::bar_button(icon, shown, words, style, message)
         };
-        match self.anchor {
-            Some(anchor) => widgets::anchored(&anchor, button),
+        let button = match tip.filter(|_| words) {
+            Some(tip) => widgets::with_tooltip(button, tip),
             None => button,
-        }
+        };
+        widgets::anchored_if(anchor.as_ref(), button)
     }
 
-    /// Its width with its word: the button's padding, the icon, the gap and the word.
-    fn width(&self) -> f32 {
-        let pad = style::button_padding();
-        pad.left + pad.right + icon::SIZE_SM + space::xs() + typo::text_width(&self.label, typo::caption())
+    /// Its width with its word (as `widgets::text_button_width` estimates it) or as a square icon.
+    fn width(&self, words: bool) -> f32 {
+        if words { widgets::text_button_width(true, &self.label) } else { size::control() }
     }
 }
 
-/// The reader's actions in one row (task E8.3): Reply (the window's one primary button), Reply
-/// all, Forward | Done, Later, Task on the mail's entry – "Archive" and "Task" (task E8.7b,
-/// `tasks.create_todo_from_mail`) in their place for a folder's message, where `e` archives –, then
-/// at the right as icons Delete, Flag, read or unread, for an entry also Archive and "Move to …",
-/// the bell "Mute…" (issue #123, a folder's message too), and Close. In comfortable the first six
-/// carry their words while they fit into `room`, else every button is its icon with the word as
-/// tooltip.
-fn reader_actions<'a>(
-    reading: &Reading<'a>,
-    summary: &MessageSummary,
-    entry: Option<ReaderEntry<'a>>,
-    anchors: &detail::Anchors,
-    comfortable: bool,
-    room: f32,
-) -> Element<'a, Message> {
+/// The mail standards of a mail (task E9.4): what every mail app has – the reader's fixed head
+/// ([`reader_head`]) and the top of the panel ([`panel_standards`]) hold these and nothing of Torro's.
+struct Standards {
+    /// Reply, Reply all, Forward (the first [`WRITE`]), then Archive and Delete – Delete off in the
+    /// trash.
+    lead: Vec<ReaderButton>,
+    /// Flag or Unflag, Mark read or Mark unread, and in the reader Close: quiet icons at the right.
+    tools: Vec<ReaderButton>,
+}
+
+/// How many of [`Standards::lead`] write (Reply, Reply all, Forward): a line follows them.
+const WRITE: usize = 3;
+
+/// The [`Standards`] of the mail in `reading` with its flags in `summary`; with `close` (the reader)
+/// Close last – the panel has its ✕ in its head. Each sends what its key sends ([`MailAction`]).
+fn standards(reading: &Reading<'_>, summary: &MessageSummary, close: bool) -> Standards {
     let id = reading.id;
     let mail = |action: MailAction| Some(Message::Mail(action, id.to_owned()));
-    let write = [
-        ReaderButton::new(Icon::Reply, tr("Reply"), mail(MailAction::Reply)),
-        ReaderButton::new(Icon::ReplyAll, tr("Reply all"), mail(MailAction::ReplyAll)),
-        ReaderButton::new(Icon::Forward, tr("Forward"), mail(MailAction::Forward)),
-    ];
     let flagged = summary.flags.contains(&Flag::Flagged);
     let read = summary.flags.contains(&Flag::Seen);
     let delete = (!reading.in_trash).then(|| Message::Mail(MailAction::Delete, id.to_owned()));
-    let flag = if flagged { tr("Unflag") } else { tr("Flag") };
-    let mut triage = Vec::new();
-    let mut tools = vec![
+    let lead = vec![
+        ReaderButton::new(Icon::Reply, tr("Reply"), mail(MailAction::Reply)),
+        ReaderButton::new(Icon::ReplyAll, tr("Reply all"), mail(MailAction::ReplyAll)),
+        ReaderButton::new(Icon::Forward, tr("Forward"), mail(MailAction::Forward)),
+        ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)),
         ReaderButton::new(Icon::Trash2, tr("Delete"), delete),
-        ReaderButton::new(Icon::Flag, flag, mail(MailAction::Flag(!flagged))),
+    ];
+    let mut tools = vec![
+        ReaderButton::new(
+            Icon::Flag,
+            if flagged { tr("Unflag") } else { tr("Flag") },
+            mail(MailAction::Flag(!flagged)),
+        ),
         if read {
             ReaderButton::new(Icon::Mail, tr("Mark unread"), mail(MailAction::Read(false)))
         } else {
             ReaderButton::new(Icon::MailOpen, tr("Mark read"), mail(MailAction::Read(true)))
         },
     ];
-    match entry {
-        Some(ReaderEntry { item, hide, ai }) => {
-            let item_id = || item.id.clone();
-            let done = matches!(item.state, State::Done { .. });
-            triage.push(if done {
-                ReaderButton::new(Icon::Inbox, tr("Reopen"), Some(Message::SetDone(item_id(), false)))
-            } else {
-                ReaderButton::new(Icon::Check, tr("Done"), Some(Message::SetDone(item_id(), true)))
-            });
-            if !done {
-                let later = ReaderButton::new(Icon::Clock, tr("Later"), Some(Message::AskSnooze(item_id())));
-                triage.push(later.at(&anchors.snooze));
-            }
-            let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskTask(item_id())));
-            triage.push(task.at(&anchors.task));
-            // "AI task" and "AI event" after it (issue #120): the reader is where the mail was read.
-            for (wanted, message, tip) in crate::suggest::ai_buttons(&item.id, ai) {
-                triage.push(ReaderButton {
-                    tip: Some(tip),
-                    ..ReaderButton::new(Icon::Sparkles, wanted.label(), message)
-                });
-            }
-            tools.insert(0, ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)));
-            let lane = crate::app::other_lane(item.lane);
-            let move_to =
-                ReaderButton::new(crate::app::lane_icon(lane), lane_word(lane), Some(Message::AskLane(item_id())));
-            tools.push(move_to.at(&anchors.lane));
-            // The bell (issue #123): mail's one menu to mute, "Hide from Notification Hub" went into it.
-            if hide {
-                let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskHide(item_id())));
-                tools.push(bell.at(&anchors.hide));
-            }
-        }
-        None => {
-            triage.push(ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)));
-            // A folder's message becomes a task of its own (task E8.7b, `tasks.create_todo_from_mail`).
-            let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskMailTask(id.to_owned())));
-            triage.push(task.at(&anchors.task));
-            // And is muted by its own traits (issue #123).
-            let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskMuteMail(id.to_owned())));
-            tools.push(bell.at(&anchors.hide));
-        }
+    if close {
+        tools.push(ReaderButton::new(Icon::X, tr("Close"), Some(Message::CloseDetail)));
     }
-    // "Copy text" (issue #119) once there is a text to copy.
-    let copy = matches!(reading.loaded, Some(Ok(_))) && !reading.text.text().trim().is_empty();
-    tools.push(ReaderButton::new(Icon::Copy, tr("Copy text"), copy.then_some(Message::CopyText)));
-    tools.push(ReaderButton::new(Icon::X, tr("Close"), Some(Message::CloseDetail)));
+    Standards { lead, tools }
+}
 
-    let spoken: f32 = write.iter().chain(&triage).map(ReaderButton::width).sum();
-    let fit = bar_fit(comfortable, spoken, write.len() + triage.len(), tools.len(), room);
-    let words = fit == BarFit::Words;
-    let mut lead = row![].spacing(space::xs()).align_y(Alignment::Center);
-    for (i, button) in write.into_iter().enumerate() {
-        let style = if i == 0 { style::button::primary } else { style::button::secondary };
-        lead = lead.push(button.view(words, style));
-    }
-    let line = container(rule::vertical(size::HAIRLINE).style(style::rule)).height(typo::line_height(typo::body()));
-    lead = lead.push(container(line).padding(Padding::new(0.0).left(space::xs()).right(space::xs())));
-    for button in triage {
-        lead = lead.push(button.view(words, style::button::ghost));
-    }
-    let mut rest = row![].spacing(space::xs()).align_y(Alignment::Center);
-    for button in tools {
-        rest = rest.push(button.view(false, style::button::ghost));
-    }
-    match fit {
-        BarFit::Words | BarFit::Icons => {
-            row![lead, iced::widget::space::horizontal(), rest].spacing(space::xs()).align_y(Alignment::Center).into()
+/// The reader's fixed head `room` wide (task E9.4): the [`standards`] – Reply as the window's one
+/// primary button, the others `secondary`, a line after Forward – and Flag, read and Close as quiet
+/// icons at the right. The buttons carry their words while they fit ([`bar_fit`]), then Reply alone,
+/// then none – each with its word as tooltip; very narrow the icons at the right take a second row.
+fn reader_head<'a>(reading: &Reading<'a>, summary: &MessageSummary, room: f32) -> Element<'a, Message> {
+    let Standards { lead, tools } = standards(reading, summary, true);
+    let spoken: f32 = lead.iter().map(|button| button.width(true)).sum();
+    let reply = lead.first().map_or(0.0, |button| button.width(true));
+    let fit = bar_fit(spoken, reply, lead.len(), tools.len(), room);
+    let mut first = row![].spacing(space::xs()).align_y(Alignment::Center);
+    for (i, button) in lead.into_iter().enumerate() {
+        if i == WRITE {
+            first = first.push(separator());
         }
-        // Below about 450 the icons no longer fit in one row (issue #119): the tools go to a second
-        // row at the right, and each row wraps rather than leave the window in a very narrow one.
+        let words = fit == BarFit::Words || (fit == BarFit::Lead && i == 0);
+        let style = if i == 0 { style::button::primary } else { style::button::secondary };
+        first = first.push(button.view(words, style));
+    }
+    let rest = row(tools.into_iter().map(|button| button.view(false, style::button::icon)))
+        .spacing(space::xs())
+        .align_y(Alignment::Center);
+    match fit {
+        BarFit::Words | BarFit::Lead | BarFit::Icons => {
+            row![first, iced::widget::space::horizontal(), rest].spacing(space::xs()).align_y(Alignment::Center).into()
+        }
+        // Too narrow for one row of icons (issue #119): the tools go to a second row at the right,
+        // and each row wraps rather than leave the window.
         BarFit::TwoRows => column![
-            lead.wrap().vertical_spacing(space::xs()),
+            first.wrap().vertical_spacing(space::xs()),
             container(rest.wrap().vertical_spacing(space::xs()).align_x(Alignment::End)).align_right(Fill),
         ]
         .spacing(space::xs())
@@ -1998,32 +2082,307 @@ fn reader_actions<'a>(
     }
 }
 
-/// How the reader's actions fit into `room` ([`reader_actions`]).
+/// The mail standards at the top of the panel (task E9.4), in the reader's form – buttons
+/// [`size::control()`] high, Reply primary with its word, the others `secondary` as icons, Flag and
+/// read as quiet icons – in one row that wraps where the panel is narrower than its 400.
+fn panel_standards<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, Message> {
+    let Standards { lead, tools } = standards(reading, summary, false);
+    let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
+    for (i, button) in lead.into_iter().enumerate() {
+        if i == WRITE {
+            bar = bar.push(separator());
+        }
+        let style = if i == 0 { style::button::primary } else { style::button::secondary };
+        bar = bar.push(button.view(i == 0, style));
+    }
+    bar = bar.push(separator());
+    for button in tools {
+        bar = bar.push(button.view(false, style::button::icon));
+    }
+    bar.wrap().vertical_spacing(space::xs()).into()
+}
+
+/// The line between groups of buttons in a bar, as high as a line of text, `space::xs()` beside it.
+fn separator<'a>() -> Element<'a, Message> {
+    let line = container(rule::vertical(size::HAIRLINE).style(style::rule)).height(typo::line_height(typo::body()));
+    container(line).padding(Padding::new(0.0).left(space::xs()).right(space::xs())).into()
+}
+
+/// The width of a [`separator`].
+fn separator_width() -> f32 {
+    2.0 * space::xs() + size::HAIRLINE
+}
+
+/// How the reader's head fits into its room ([`reader_head`], [`bar_fit`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BarFit {
-    /// One row, the write and triage buttons with their words (comfortable only).
+    /// One row, every button of the lead with its word.
     Words,
+    /// One row, Reply with its word, every other button its icon.
+    Lead,
     /// One row of icons.
     Icons,
     /// Too narrow for one row of icons: the tools in a second row.
     TwoRows,
 }
 
-/// How the reader's actions fit into `room`: `lead` buttons (write and triage, `spoken` wide with
-/// their words), the separator, and `tools` icons at the right, `space::xs()` between them all and
+/// How the reader's head fits into `room`: `lead` buttons (`spoken` wide with their words, the first
+/// – Reply – `reply` wide with its word), the line after the writing ones, and `tools` icons at the
+/// right; as an icon every button is [`size::control()`] square, `space::xs()` between them all and
 /// `space::l()` at least before the tools.
-fn bar_fit(comfortable: bool, spoken: f32, lead: usize, tools: usize, room: f32) -> BarFit {
-    let count = lead + tools;
-    let separator = 2.0 * space::xs() + size::HAIRLINE;
-    let gaps = count as f32 * space::xs() + space::l() + separator;
-    let icons = tools as f32 * size::control_sm() + gaps;
-    if comfortable && spoken + icons <= room {
+fn bar_fit(spoken: f32, reply: f32, lead: usize, tools: usize, room: f32) -> BarFit {
+    let icon = size::control();
+    let gaps = (lead + tools) as f32 * space::xs() + space::l() + separator_width();
+    let right = tools as f32 * icon + gaps;
+    if spoken + right <= room {
         BarFit::Words
-    } else if icons + lead as f32 * size::control_sm() <= room {
+    } else if reply + lead.saturating_sub(1) as f32 * icon + right <= room {
+        BarFit::Lead
+    } else if lead as f32 * icon + right <= room {
         BarFit::Icons
     } else {
         BarFit::TwoRows
     }
+}
+
+/// One control of the Torro bar ([`torro_groups`]): a button, or a switch of segments.
+#[derive(Clone)]
+enum BarControl {
+    Button(Box<ReaderButton>),
+    /// The segments, and which of them is chosen.
+    Switch(Vec<(String, Message)>, usize),
+}
+
+impl BarControl {
+    /// Its width with its word or as an icon; a switch keeps its words.
+    fn width(&self, words: bool) -> f32 {
+        match self {
+            BarControl::Button(button) => button.width(words),
+            BarControl::Switch(options, _) => {
+                widgets::segmented_width(&options.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>())
+            }
+        }
+    }
+
+    /// The control in the bar: a `secondary` button with its word or its icon, or the switch
+    /// ([`widgets::bar_segmented`]), all [`size::control()`] high.
+    fn view<'a>(self, words: bool) -> Element<'a, Message> {
+        match self {
+            BarControl::Button(button) => (*button).view(words, style::button::secondary),
+            BarControl::Switch(options, active) => widgets::bar_segmented(options, active),
+        }
+    }
+
+    /// Its words: a button's label, a switch's segments as "HTML | Text".
+    #[cfg(test)]
+    fn label(&self) -> String {
+        match self {
+            BarControl::Button(button) => button.label.clone(),
+            BarControl::Switch(options, _) => {
+                options.iter().map(|(label, _)| label.as_str()).collect::<Vec<_>>().join(" | ")
+            }
+        }
+    }
+}
+
+/// The Torro bar of the mail in `reading` (task E9.4): what Torro adds to a mail app, in three groups
+/// in this order, each with only what it holds (an empty group is left out):
+///
+/// 1. **Done**: for an entry Done – Reopen once done –, Later while it is not done (`AskSnooze`) and
+///    Task (`AskTask`); for a folder's message Task (`AskMailTask`, task E8.7b). "Later" for a
+///    folder's message comes with task E9.2.
+/// 2. **AI**: "AI task" and "AI event" (issue #120, `suggest::ai_buttons`), the sparkles in the
+///    accent colour; off without an AI, the tooltip says why. Only for an entry: the core suggests
+///    from entries.
+/// 3. **View**: for an entry "Move to Info" or "Move to For me" (`AskLane`); the bell "Mute…"
+///    (issue #123) – an entry's where it can be muted (`AskHide`), a folder's message by its own
+///    traits (`AskMuteMail`); then [`Reading::view_tools`]: "HTML | Text", "Light | Dark" and "Copy
+///    text", which are not there while the mail loads or after an error.
+///
+/// Every button sends what it sent in the reader's single row before, so requests and keys stay the
+/// same; those that open a menu register its anchor in `anchors`.
+fn torro_groups(
+    reading: &Reading<'_>,
+    entry: Option<ReaderEntry<'_>>,
+    anchors: &detail::Anchors,
+) -> Vec<Vec<BarControl>> {
+    let id = reading.id;
+    let (mut finish, mut ai, mut view) = (Vec::new(), Vec::new(), Vec::new());
+    match entry {
+        Some(ReaderEntry { item, hide, ai: ready }) => {
+            let item_id = || item.id.clone();
+            let done = matches!(item.state, State::Done { .. });
+            finish.push(if done {
+                ReaderButton::new(Icon::Inbox, tr("Reopen"), Some(Message::SetDone(item_id(), false)))
+            } else {
+                ReaderButton::new(Icon::Check, tr("Done"), Some(Message::SetDone(item_id(), true)))
+            });
+            if !done {
+                let later = ReaderButton::new(Icon::Clock, tr("Later"), Some(Message::AskSnooze(item_id())));
+                finish.push(later.at(&anchors.snooze));
+            }
+            let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskTask(item_id())));
+            finish.push(task.at(&anchors.task));
+            for (wanted, message, tip) in crate::suggest::ai_buttons(&item.id, ready) {
+                let button = ReaderButton::new(Icon::Sparkles, wanted.label(), message);
+                ai.push(ReaderButton { tip: Some(tip), accent: true, ..button });
+            }
+            let lane = crate::app::other_lane(item.lane);
+            let move_to =
+                ReaderButton::new(crate::app::lane_icon(lane), lane_word(lane), Some(Message::AskLane(item_id())));
+            view.push(move_to.at(&anchors.lane));
+            // The bell (issue #123): mail's one menu to mute, "Hide from Notification Hub" went into it.
+            if hide {
+                let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskHide(item_id())));
+                view.push(bell.at(&anchors.hide));
+            }
+        }
+        None => {
+            let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskMailTask(id.to_owned())));
+            finish.push(task.at(&anchors.task));
+            let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskMuteMail(id.to_owned())));
+            view.push(bell.at(&anchors.hide));
+        }
+    }
+    let buttons = |list: Vec<ReaderButton>| {
+        list.into_iter().map(|button| BarControl::Button(Box::new(button))).collect::<Vec<_>>()
+    };
+    let mut view = buttons(view);
+    let tools = reading.view_tools();
+    if let Some(format) = tools.format {
+        view.push(BarControl::Switch(formats().to_vec(), usize::from(format == MailFormat::Text)));
+    }
+    if let Some(scheme) = tools.scheme {
+        view.push(BarControl::Switch(schemes().to_vec(), usize::from(scheme == Scheme::Dark)));
+    }
+    if tools.copy {
+        view.push(BarControl::Button(Box::new(ReaderButton::new(
+            Icon::Copy,
+            tr("Copy text"),
+            Some(Message::CopyText),
+        ))));
+    }
+    [buttons(finish), buttons(ai), view].into_iter().filter(|group| !group.is_empty()).collect()
+}
+
+/// Each control's width in `groups`, with its word and as an icon, for [`torro_fit`].
+fn control_widths(groups: &[Vec<BarControl>]) -> Vec<Vec<(f32, f32)>> {
+    groups
+        .iter()
+        .map(|group| group.iter().map(|control| (control.width(true), control.width(false))).collect())
+        .collect()
+}
+
+/// The rows of the Torro bar ([`torro_fit`]): top to bottom, each its pieces left to right – a group
+/// by its index and the range of its controls (a group wider than a row is split over rows).
+type BarRows = Vec<Vec<(usize, Range<usize>)>>;
+
+/// How the Torro bar fits ([`torro_fit`]).
+#[derive(Debug, Clone, PartialEq)]
+struct TorroFit {
+    /// The buttons carry their words; else their icons, the word as tooltip.
+    words: bool,
+    rows: BarRows,
+}
+
+/// How the Torro bar's `groups` fit into `room` (`widgets::floating_bar_room` of the reader's width),
+/// `groups` holding each control's width with its word and as an icon (a switch is as wide in both):
+/// in one row with words where it is wide; in two rows with words where it is not; else as icons, in
+/// as many rows as they need. Groups keep their order; a group that does not fit beside the row's
+/// moves to the next row, one wider than a row is split over rows. Nothing is cut off, and nothing
+/// hides in a menu.
+fn torro_fit(groups: &[Vec<(f32, f32)>], room: f32) -> TorroFit {
+    let words = |control: &(f32, f32)| control.0;
+    let rows = pack(groups, words, room);
+    if rows.len() <= 2 && rows.iter().all(|row| row_width(groups, row, words) <= room) {
+        return TorroFit { words: true, rows };
+    }
+    TorroFit { words: false, rows: pack(groups, |control| control.1, room) }
+}
+
+/// `groups` packed into rows `room` wide, `width` giving each control's width ([`torro_fit`]).
+fn pack(groups: &[Vec<(f32, f32)>], width: fn(&(f32, f32)) -> f32, room: f32) -> BarRows {
+    let gap = widgets::floating_bar_gap();
+    let join = separator_width() + 2.0 * gap;
+    let mut rows = Vec::new();
+    let mut row: Vec<(usize, Range<usize>)> = Vec::new();
+    let mut used = 0.0;
+    for (index, controls) in groups.iter().enumerate() {
+        let count = controls.len();
+        let whole = span(controls, width);
+        if !row.is_empty() && used + join + whole <= room {
+            row.push((index, 0..count));
+            used += join + whole;
+            continue;
+        }
+        if !row.is_empty() {
+            rows.push(std::mem::take(&mut row));
+        }
+        if whole <= room {
+            row.push((index, 0..count));
+            used = whole;
+            continue;
+        }
+        // Wider than a row: control by control, a new row where the next one no longer fits.
+        let (mut start, mut taken) = (0, 0.0);
+        for (i, control) in controls.iter().enumerate() {
+            let edge = width(control);
+            if i > start && taken + gap + edge > room {
+                rows.push(vec![(index, start..i)]);
+                (start, taken) = (i, edge);
+            } else {
+                taken += if i == start { edge } else { gap + edge };
+            }
+        }
+        row.push((index, start..count));
+        used = taken;
+    }
+    if !row.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
+/// The width of `controls` side by side, `width` giving each one's.
+fn span(controls: &[(f32, f32)], width: fn(&(f32, f32)) -> f32) -> f32 {
+    let gaps = controls.len().saturating_sub(1) as f32 * widgets::floating_bar_gap();
+    controls.iter().map(width).sum::<f32>() + gaps
+}
+
+/// The width of one row of [`pack`]: its pieces with a line between groups.
+fn row_width(groups: &[Vec<(f32, f32)>], row: &[(usize, Range<usize>)], width: fn(&(f32, f32)) -> f32) -> f32 {
+    let join = separator_width() + 2.0 * widgets::floating_bar_gap();
+    let pieces = row.iter().map(|(index, range)| {
+        groups
+            .get(*index)
+            .and_then(|controls| controls.get(range.clone()))
+            .map_or(0.0, |controls| span(controls, width))
+    });
+    pieces.sum::<f32>() + row.len().saturating_sub(1) as f32 * join
+}
+
+/// The Torro bar ([`torro_groups`]) laid out as `fit` says, in a floating bar
+/// ([`widgets::floating_bar`]): each row centred, a line between its groups. `None` without
+/// anything to show.
+fn torro_bar<'a>(groups: Vec<Vec<BarControl>>, fit: &TorroFit) -> Option<Element<'a, Message>> {
+    if fit.rows.is_empty() {
+        return None;
+    }
+    let gap = widgets::floating_bar_gap();
+    let rows = fit.rows.iter().map(|pieces| {
+        let mut line = row![].spacing(gap).align_y(Alignment::Center);
+        for (n, (index, range)) in pieces.iter().enumerate() {
+            if n > 0 {
+                line = line.push(separator());
+            }
+            let controls = groups.get(*index).and_then(|controls| controls.get(range.clone())).unwrap_or_default();
+            for control in controls {
+                line = line.push(control.clone().view(fit.words));
+            }
+        }
+        line.into()
+    });
+    Some(widgets::floating_bar(column(rows).spacing(gap).align_x(Alignment::Center)))
 }
 
 /// "Move to Info" or "Move to For me": the reader's button that moves the entry to `lane`.
@@ -2093,54 +2452,6 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
     )
 }
 
-/// The mail's actions in a row: "Reply" with its words, reply all and forward as icons, then at
-/// the right archive, delete, flag and read as icons. Delete is off in the trash.
-fn actions<'a>(
-    reading: &Reading<'a>,
-    summary: &MessageSummary,
-    anchors: Option<&detail::Anchors>,
-) -> Element<'a, Message> {
-    let id = reading.id;
-    let act = |action: MailAction| Some(Message::Mail(action, id.to_owned()));
-    let flagged = summary.flags.contains(&Flag::Flagged);
-    let read = summary.flags.contains(&Flag::Seen);
-    let (read_icon, read_label) =
-        if read { (Icon::Mail, tr("Mark unread")) } else { (Icon::MailOpen, tr("Mark read")) };
-    let delete = (!reading.in_trash).then(|| Message::Mail(MailAction::Delete, id.to_owned()));
-    // "Task" for a folder's message (task E8.7b); an entry's panel has "Make task" in its footer. Only
-    // a folder's panel shows the date (`dated`), so it tells the two apart.
-    let task = reading.dated.then(|| Message::AskMailTask(id.to_owned()));
-    let mut tools = row![].spacing(space::xs()).align_y(Alignment::Center);
-    let at = |pick: fn(&detail::Anchors) -> &Anchor, button| match anchors {
-        Some(anchors) => widgets::anchored(pick(anchors), button),
-        None => button,
-    };
-    if task.is_some() {
-        tools = tools.push(at(|a| &a.task, widgets::icon_button(Icon::ListTodo, tr("Task"), task)));
-        // The bell too (issue #123): the message's entry's menu, or its own traits without one.
-        let bell = widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::AskMuteMail(id.to_owned())));
-        tools = tools.push(at(|a| &a.hide, bell));
-    }
-    row![
-        widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, act(MailAction::Reply)),
-        widgets::icon_button(Icon::ReplyAll, tr("Reply all"), act(MailAction::ReplyAll)),
-        widgets::icon_button(Icon::Forward, tr("Forward"), act(MailAction::Forward)),
-        iced::widget::space::horizontal(),
-        tools,
-        widgets::icon_button(Icon::Archive, trc("action", "Archive"), act(MailAction::Archive)),
-        widgets::icon_button(Icon::Trash2, tr("Delete"), delete),
-        widgets::icon_button(
-            Icon::Flag,
-            if flagged { tr("Unflag") } else { tr("Flag") },
-            act(MailAction::Flag(!flagged))
-        ),
-        widgets::icon_button(read_icon, read_label, act(MailAction::Read(!read))),
-    ]
-    .spacing(space::xs())
-    .align_y(Alignment::Center)
-    .into()
-}
-
 /// An attachment as a row: the paperclip, its name and size; a click fetches and opens it.
 fn attachment_row<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
     let name = file.filename.as_deref().map(list::one_line).filter(|name| !name.is_empty());
@@ -2166,21 +2477,6 @@ fn html_shown(reading: &Reading<'_>) -> bool {
     reading.html.is_some_and(|html| html.shown())
 }
 
-/// The switches over a mail with HTML (task M9.7): "HTML | Text" (`v`), and in the HTML view
-/// "Light | Dark" for the colours of the mail's content – never of the window. They hold for this
-/// window until the settings change ([`MailLook`]).
-fn view_switches<'a>(html: HtmlReading<'a>) -> Element<'a, Message> {
-    let formats =
-        [(tr("HTML"), Message::ShowMailAs(MailFormat::Html)), (tr("Text"), Message::ShowMailAs(MailFormat::Text))];
-    let mut bar = row![widgets::segmented(formats, usize::from(!html.shown()))].spacing(space::s());
-    if html.shown() {
-        let schemes =
-            [(tr("Light"), Message::MailColors(Scheme::Light)), (tr("Dark"), Message::MailColors(Scheme::Dark))];
-        bar = bar.push(widgets::segmented(schemes, usize::from(html.scheme == Scheme::Dark)));
-    }
-    bar.into()
-}
-
 /// The mail's HTML ([`HtmlReading`]) as wide as its parent gives, links reported as
 /// [`Message::HtmlLink`]. The mail paints its background up to the view's edges, so the caller
 /// places it without padding and sets the margin of a mail without a background of its own.
@@ -2188,35 +2484,23 @@ fn html_view<'a>(html: HtmlReading<'a>) -> HtmlView<'a, Message> {
     HtmlView::new(html.content).scheme(html.scheme).scale(html.scale).on_link(Message::HtmlLink)
 }
 
-/// The note under a mail shown as HTML: it comes from outside, no scripts run; with "Copy text" at
-/// its right where `copy` (the panel) and the mail has a text.
-fn html_note<'a>(reading: &Reading<'a>, copy: bool) -> Element<'a, Message> {
-    let note = note(tr("Mail from outside the suite: no scripts run, pictures from the web are loaded."));
-    foot(note, copy && !reading.text.text().trim().is_empty())
-}
-
-/// The note under the mail, with "Copy text" at its right when `copy`.
-fn foot<'a>(note: Element<'a, Message>, copy: bool) -> Element<'a, Message> {
-    if copy {
-        row![container(note).width(Fill), copy_button()].spacing(space::s()).align_y(Alignment::Center).into()
-    } else {
-        note
-    }
+/// The note under a mail shown as HTML: it comes from outside, no scripts run. "Copy text" stands in
+/// the Torro bar and the panel's footer (task E9.4), not beside it.
+fn html_note<'a>() -> Element<'a, Message> {
+    note(tr("Mail from outside the suite: no scripts run, pictures from the web are loaded."))
 }
 
 /// The text in `level`, to select with the mouse and copy (issue #119, [`Selectable`]), then the
-/// note on foreign text – with "Copy text" at its right where no row of actions carries it
-/// (`copy`: the panel; the reader has it among its actions). The web addresses in the text follow
-/// as "Links" ([`text_links`]), which the caller places.
-fn text_block<'a>(text: &'a Selectable, level: typo::Level, copy: bool) -> Element<'a, Message> {
-    let has_text = !text.text().trim().is_empty();
+/// note on foreign text. "Copy text" stands in the Torro bar and the panel's footer (task E9.4). The
+/// web addresses in the text follow as "Links" ([`text_links`]), which the caller places.
+fn text_block<'a>(text: &'a Selectable, level: typo::Level) -> Element<'a, Message> {
     let mut block = column![].spacing(space::s());
-    if has_text {
+    if !text.text().trim().is_empty() {
         block = block.push(text.view(level, theme::text_2, Message::Text));
     }
     // No title over the text: the headers above already say whose mail it is (and "Message" reads
     // as a notice in German, the entries' word).
-    block.push(foot(note(detail::foreign_note()), copy && has_text)).into()
+    block.push(note(detail::foreign_note())).into()
 }
 
 /// "Links": the web addresses in the mail's text (`torro_gui::selectable::web_links`), each a row
@@ -2436,25 +2720,206 @@ mod tests {
         assert!(text_links(&Selectable::new("no address")).is_none(), "no section without links");
     }
 
-    /// Issue #119: below about 450 the reader's icons no longer fit in one row; the tools go to a
-    /// second row instead of leaving the window (Close, Move to … were cut off).
+    /// The demo's mail `id` loaded, its text and – for a mail with HTML – its HTML shown as `format`,
+    /// handed to `check` as the reader would read it (`loaded` false: still loading).
+    fn reading_of<R>(id: &str, format: MailFormat, loaded: bool, check: impl FnOnce(&Reading<'_>) -> R) -> R {
+        let demo = Arc::new(DemoSource::new(now()));
+        let mail = Ok(DemoSource::get_mail(&demo, id).expect("a demo mail"));
+        let text = Selectable::new(&mail.as_ref().map(text_of).unwrap_or_default());
+        let html = mail.as_ref().ok().and_then(|mail| HtmlMail::new(mail, &demo, true));
+        let summary = mail.as_ref().ok().map(|mail| mail.summary.clone());
+        let reading = Reading {
+            id,
+            summary: summary.as_ref(),
+            loaded: loaded.then_some(&mail),
+            now: now(),
+            text: &text,
+            attention: Color::BLACK,
+            in_trash: false,
+            dated: true,
+            read: true,
+            account: Some(0),
+            task: None,
+            answering: false,
+            invite: InviteSide::default(),
+            html: html.as_ref().map(|html| HtmlReading {
+                content: &html.content,
+                format,
+                scheme: Scheme::Light,
+                scale: 1.0,
+            }),
+        };
+        check(&reading)
+    }
+
+    /// A mail entry of the demo, for the reader's Torro bar.
+    fn mail_entry() -> Item {
+        let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
+            &DemoSource::new(now()),
+            Default::default(),
+        ))
+        .expect("the demo answers");
+        let mut item = all.into_iter().find(|item| item.source.kind == SourceKind::Mail).expect("a mail entry");
+        item.state = State::New;
+        item.lane = Lane::ForMe;
+        item
+    }
+
+    /// The words of the Torro bar's groups.
+    fn group_words(groups: &[Vec<BarControl>]) -> Vec<Vec<String>> {
+        groups.iter().map(|group| group.iter().map(BarControl::label).collect()).collect()
+    }
+
+    /// Task E9.4: the reader's head and the panel's top hold exactly the mail standards – Reply,
+    /// Reply all, Forward, Archive, Delete, then Flag and read, in the reader Close – and nothing of
+    /// Torro's; Reply sends what `r` sends.
     #[test]
-    fn the_reader_actions_take_a_second_row_when_narrow() {
-        // Reply, Reply all, Forward | Done, Later, Task; Archive, Delete, Flag, Read, Move to, "…",
-        // Copy text, Close.
-        let (lead, tools, spoken) = (6, 8, 360.0);
-        assert_eq!(bar_fit(true, spoken, lead, tools, size::content_max()), BarFit::Words);
-        assert_eq!(bar_fit(false, spoken, lead, tools, size::content_max()), BarFit::Icons);
-        assert_eq!(bar_fit(true, spoken, lead, tools, 600.0), BarFit::Icons, "no room for the words");
-        assert_eq!(bar_fit(true, spoken, lead, tools, 400.0), BarFit::TwoRows);
-        assert_eq!(bar_fit(false, spoken, lead, tools, 250.0), BarFit::TwoRows);
-        // The icons of one row, as wide as they are, fit exactly.
-        let one_row = (lead + tools) as f32 * (size::control_sm() + space::xs())
-            + space::l()
-            + 2.0 * space::xs()
-            + size::HAIRLINE;
-        assert_eq!(bar_fit(false, spoken, lead, tools, one_row), BarFit::Icons);
-        assert_eq!(bar_fit(false, spoken, lead, tools, one_row - 1.0), BarFit::TwoRows);
+    fn the_head_holds_exactly_the_mail_standards() {
+        reading_of("m:w1", MailFormat::Html, true, |reading| {
+            let summary = reading.summary().expect("headers");
+            let words = |buttons: &[ReaderButton]| buttons.iter().map(|b| b.label.clone()).collect::<Vec<_>>();
+            let Standards { lead, tools } = standards(reading, summary, true);
+            assert_eq!(
+                words(&lead),
+                [tr("Reply"), tr("Reply all"), tr("Forward"), trc("action", "Archive"), tr("Delete")]
+            );
+            let read = if summary.flags.contains(&Flag::Seen) { tr("Mark unread") } else { tr("Mark read") };
+            let flag = if summary.flags.contains(&Flag::Flagged) { tr("Unflag") } else { tr("Flag") };
+            assert_eq!(words(&tools), [flag, read, tr("Close")]);
+            assert!(matches!(&lead[0].message, Some(Message::Mail(MailAction::Reply, id)) if id == "m:w1"));
+            assert_eq!(words(&lead[..WRITE]), [tr("Reply"), tr("Reply all"), tr("Forward")], "a line after these");
+            let panel = standards(reading, summary, false);
+            assert_eq!(words(&panel.tools), [flag, read], "the panel has its ✕ in its head");
+            let _ = panel_standards(reading, summary);
+        });
+    }
+
+    /// Task E9.4: the Torro bar holds exactly Done, Later, Task | AI task, AI event | Move to, Mute…,
+    /// the switches and Copy text for an entry; for a folder's message Task | Mute…, the switches and
+    /// Copy text. While the mail loads only what works without its content.
+    #[test]
+    fn the_torro_bar_holds_exactly_what_torro_adds() {
+        let item = mail_entry();
+        let entry = Some(ReaderEntry { item: &item, hide: true, ai: true });
+        let anchors = detail::Anchors::default();
+        let (html, light) = (format!("{} | {}", tr("HTML"), tr("Text")), format!("{} | {}", tr("Light"), tr("Dark")));
+        let move_to = lane_word(Lane::Info);
+        reading_of("m:p2", MailFormat::Html, true, |reading| {
+            let groups = torro_groups(reading, entry, &anchors);
+            assert_eq!(
+                group_words(&groups),
+                [
+                    vec![tr("Done").to_owned(), tr("Later").to_owned(), tr("Task").to_owned()],
+                    vec![tr("AI task").to_owned(), tr("AI event").to_owned()],
+                    vec![
+                        move_to.clone(),
+                        tr("Mute…").to_owned(),
+                        html.clone(),
+                        light.clone(),
+                        tr("Copy text").to_owned()
+                    ],
+                ]
+            );
+            assert!(groups[1].iter().all(|c| matches!(c, BarControl::Button(b) if b.accent)), "AI in the accent");
+            let folder = torro_groups(reading, None, &anchors);
+            assert_eq!(
+                group_words(&folder),
+                [
+                    vec![tr("Task").to_owned()],
+                    vec![tr("Mute…").to_owned(), html.clone(), light.clone(), tr("Copy text").to_owned()]
+                ]
+            );
+            assert!(
+                matches!(&folder[0][0], BarControl::Button(b) if matches!(&b.message, Some(Message::AskMailTask(_))))
+            );
+        });
+        // As text: no "Light | Dark", which colours only the HTML.
+        reading_of("m:p2", MailFormat::Text, true, |reading| {
+            let view = group_words(&torro_groups(reading, None, &anchors)).pop().expect("the view group");
+            assert_eq!(view, [tr("Mute…").to_owned(), html.clone(), tr("Copy text").to_owned()]);
+        });
+        // A text mail has no switches at all.
+        reading_of("m:w1", MailFormat::Html, true, |reading| {
+            let view = group_words(&torro_groups(reading, None, &anchors)).pop().expect("the view group");
+            assert_eq!(view, [tr("Mute…").to_owned(), tr("Copy text").to_owned()]);
+        });
+        // Loading: Done, Later, Task, the AI, Move to and the bell; no switch, no copy.
+        reading_of("m:p2", MailFormat::Html, false, |reading| {
+            assert_eq!(reading.view_tools(), ViewTools::default());
+            let words = group_words(&torro_groups(reading, entry, &anchors));
+            assert_eq!(words[2], [move_to.clone(), tr("Mute…").to_owned()]);
+            assert!(view_controls(reading.view_tools()).is_empty(), "the panel's footer neither");
+        });
+        // A done entry reopens and is not put off.
+        let done = Item { state: State::Done { at: now() }, ..item.clone() };
+        reading_of("m:w1", MailFormat::Html, true, |reading| {
+            let entry = Some(ReaderEntry { item: &done, hide: false, ai: false });
+            let words = group_words(&torro_groups(reading, entry, &anchors));
+            assert_eq!(words[0], [tr("Reopen"), tr("Task")]);
+            assert_eq!(words[2], [move_to.clone(), tr("Copy text").to_owned()], "no bell where it cannot mute");
+        });
+    }
+
+    /// Task E9.4: the page under the Torro bar ends with room for it – the bar and its margins –, so
+    /// the last line and the attachments scroll out from under it.
+    #[test]
+    fn the_page_keeps_room_for_the_bar_at_its_end() {
+        for rows in 1..=3 {
+            let bar = widgets::floating_bar_height(rows);
+            assert_eq!(page_end(rows), bar + 2.0 * space::m(), "{rows} rows");
+            assert!(page_end(rows) > bar);
+        }
+        assert!(widgets::floating_bar_height(2) > widgets::floating_bar_height(1));
+        assert_eq!(page_end(0), layout::page_padding().bottom, "no bar, the page's own padding");
+    }
+
+    /// Task E9.4: the Torro bar is one row with words where it is wide, two rows with words in the
+    /// middle, icons where it is narrow – as many rows as they need, none wider than the room, the
+    /// groups in their order.
+    #[test]
+    fn the_torro_bar_fits_every_width() {
+        let item = mail_entry();
+        let entry = Some(ReaderEntry { item: &item, hide: true, ai: true });
+        reading_of("m:p2", MailFormat::Html, true, |reading| {
+            let groups = torro_groups(reading, entry, &detail::Anchors::default());
+            let widths = control_widths(&groups);
+            let all = vec![(0, 0..3), (1, 0..2), (2, 0..5)];
+            let words = |control: &(f32, f32)| control.0;
+            let icons = |control: &(f32, f32)| control.1;
+            let one_row = row_width(&widths, &all, words);
+            assert_eq!(torro_fit(&widths, one_row), TorroFit { words: true, rows: vec![all.clone()] });
+            let middle = torro_fit(&widths, one_row - 1.0);
+            assert!(middle.words && middle.rows.len() == 2, "{middle:?}");
+            assert_eq!(middle.rows.concat(), all, "the groups in their order");
+            for room in [900.0, 600.0, 500.0, 400.0, 300.0, 250.0] {
+                let fit = torro_fit(&widths, room);
+                let width = if fit.words { words } else { icons };
+                assert!(!fit.words || fit.rows.len() <= 2, "words in two rows at most, at {room}");
+                assert!(fit.rows.iter().all(|row| row_width(&widths, row, width) <= room), "{room}: {fit:?}");
+                let shown: usize = fit.rows.iter().flatten().map(|(_, range)| range.len()).sum();
+                assert_eq!(shown, 10, "nothing left out at {room}");
+            }
+            assert!(!torro_fit(&widths, 400.0).words, "narrow: icons");
+            assert!(torro_fit(&widths, 250.0).rows.len() > 2, "very narrow: more rows");
+        });
+    }
+
+    /// Task E9.4: the head keeps its words while they fit, then Reply alone, then icons; very narrow
+    /// the icons at the right take a second row (issue #119).
+    #[test]
+    fn the_head_fits_every_width() {
+        let (lead, tools, spoken, reply) = (5, 3, 420.0, 80.0);
+        let gaps = (lead + tools) as f32 * space::xs() + space::l() + separator_width();
+        let right = tools as f32 * size::control() + gaps;
+        assert_eq!(bar_fit(spoken, reply, lead, tools, spoken + right), BarFit::Words);
+        assert_eq!(bar_fit(spoken, reply, lead, tools, spoken + right - 1.0), BarFit::Lead);
+        let lead_room = reply + (lead - 1) as f32 * size::control() + right;
+        assert_eq!(bar_fit(spoken, reply, lead, tools, lead_room), BarFit::Lead);
+        assert_eq!(bar_fit(spoken, reply, lead, tools, lead_room - 1.0), BarFit::Icons);
+        let icons = lead as f32 * size::control() + right;
+        assert_eq!(bar_fit(spoken, reply, lead, tools, icons), BarFit::Icons);
+        assert_eq!(bar_fit(spoken, reply, lead, tools, icons - 1.0), BarFit::TwoRows);
+        assert_eq!(bar_fit(spoken, reply, lead, tools, size::content_max()), BarFit::Words);
     }
 
     #[test]

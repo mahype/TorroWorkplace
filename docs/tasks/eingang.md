@@ -1724,7 +1724,7 @@ ihre neuen Knöpfe dann gleich in die passende Leiste. Nicht parallel: zwei Aufg
   sent mail“ öffnet das Original. Sichtprüfung (`torro-design-review`). Übersetzungen im Bericht.
 
 ### E9.4 Leser: Standard oben, Torro-Leiste unten (issue #194)
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torroinbox/src/{mail,detail,app}.rs`,
   `crates/torro-gui/src/{widgets,style}.rs` (schwebende Leiste, größerer Knopf), `crates/torro-core/src/i18n/de.rs`
   (nur wenn neue Texte), `.claude/skills/torro-design/` (Muster „schwebende Leiste“ festhalten)
