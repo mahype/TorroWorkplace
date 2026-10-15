@@ -2006,8 +2006,7 @@ static SET_SETTING: Command = Command {
                   first-run setup again, \"skipped\" to put it off, \"done\" when finished) or `component` \
                   ({\"component\": \"calendar\"|\"tasks\"|\"mail\"|\"inbox\"|\"assistant\"|\"workspaces\", \
                   \"enabled\": false} turns a part of the suite off: it leaves the app switcher, the tray and the \
-                  overview and nothing runs in the background for it; accounts and data stay; for now only the first-run \
-                  setup reads it, the rest follows).",
+                  overview and nothing runs in the background for it; accounts and data stay).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {

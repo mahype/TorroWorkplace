@@ -12,7 +12,7 @@
 use iced::widget::{Row, column, container, responsive, row, space as blank};
 use iced::{Alignment, Element, Length};
 use torro_core::i18n::{tr, trf};
-use torro_core::settings::{Setup, SetupState};
+use torro_core::settings::{Component, Setup, SetupState};
 use torro_gui::theme::{self, space};
 use torro_gui::widgets::{self, Status as Dot};
 use torro_gui::{layout, style, typo};
@@ -164,12 +164,17 @@ pub(super) fn attention(accounts: &[AccountInfo]) -> Vec<Attention> {
 
 /// The four tiles in reading order: core, window manager, accounts, workspaces.
 pub(super) fn tiles(data: &Data) -> Vec<Tile> {
-    vec![
-        core_tile(data.status.as_ref(), data.error.as_deref()),
-        window_manager_tile(data.status.as_ref()),
-        accounts_tile(&data.accounts),
-        workspaces_tile(data.templates.len()),
-    ]
+    let mut tiles = vec![core_tile(data.status.as_ref(), data.error.as_deref())];
+    // Without workspaces (task W.2) neither the window manager nor the templates are news.
+    let workspaces = data.settings.component_on(Component::Workspaces);
+    if workspaces {
+        tiles.push(window_manager_tile(data.status.as_ref()));
+    }
+    tiles.push(accounts_tile(&data.accounts));
+    if workspaces {
+        tiles.push(workspaces_tile(data.templates.len()));
+    }
+    tiles
 }
 
 fn core_tile(status: Option<&Status>, error: Option<&str>) -> Tile {
@@ -311,6 +316,15 @@ fn attention_row<'a>(item: &Attention) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn without_workspaces_the_window_manager_and_templates_are_left_out() {
+        let mut data = Data::default();
+        assert_eq!(tiles(&data).len(), 4);
+        data.settings.set_component(Component::Workspaces, false);
+        let titles: Vec<&str> = tiles(&data).iter().map(|tile| tile.title).collect();
+        assert_eq!(titles, [tr("Core"), tr("Accounts")]);
+    }
 
     #[test]
     fn the_setup_is_offered_when_put_off_or_with_new_steps_only() {

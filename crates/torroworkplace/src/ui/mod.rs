@@ -885,6 +885,10 @@ impl Ui {
                 };
                 agents::loaded(&mut self.agents);
                 assistant::loaded(&mut self.assistant, &self.data);
+                // The app switcher of this window follows the components (task W.2).
+                if self.data.error.is_none() {
+                    torro_gui::components::set_off(&self.data.settings.components_off);
+                }
                 if let Some(setup) = self.setup.as_mut() {
                     if self.data.error.is_none() {
                         setup.loaded(&self.data.settings);

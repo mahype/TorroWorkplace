@@ -26,6 +26,8 @@
 
 mod pages;
 
+pub(super) use pages::name as component_name;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use iced::widget::text::Wrapping;

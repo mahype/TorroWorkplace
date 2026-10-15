@@ -915,7 +915,12 @@ impl PimService {
             service.state.write().await.loaded = true;
             loop {
                 let any = !service.state.read().await.accounts.is_empty();
-                if any {
+                // Calendars and task lists serve those two components only (task W.2): with both
+                // turned off nothing is fetched in the background.
+                let settings = service.settings.current();
+                let wanted = settings.component_on(torro_core::settings::Component::Calendar)
+                    || settings.component_on(torro_core::settings::Component::Tasks);
+                if any && wanted {
                     // Each account logs its own failure.
                     let _ = service.sync().await;
                 }

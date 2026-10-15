@@ -37,12 +37,19 @@ W.10 Sichtprüfung und API-Prüfung am Ende
   (mit Talk und Deck, ohne Capabilities, CalDAV-Konto wird nie nach Capabilities gefragt).
 
 ### W.2 Komponenten wirken
-- [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** W.1 · **Dateien:** `crates/torro-gui/src/shell.rs` (App-Umschalter),
-  `crates/torroworkplace/src/tray/menu.rs`, `crates/torroworkplace/src/ui/{apps,overview}.rs`,
-  `crates/torroworkplace/src/{inbox,mail/service}.rs`
-- Abgeschaltete Komponenten fehlen in Umschalter, Tray und Overview; Seite Apps mit Schalter je Komponente;
-  keine Hintergrundarbeit, die nur ihr dient. Die Requests antworten weiter (Entscheidung 1).
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** W.1 · **Dateien:** `crates/torro-gui/src/{components,design,shell,lib}.rs`,
+  `crates/torroworkplace/src/tray/menu.rs`, `crates/torroworkplace/src/ui/{apps,overview,mod,setup/mod}.rs`,
+  `crates/torroworkplace/src/{core,pim}.rs`, `crates/torroworkplace/src/mail/service.rs`,
+  `crates/torroworkplace/src/sources/{mod,github,nextcloud,ntfy}.rs`, `crates/torro-ipc/src/{lib,api}.rs`
+- App-Umschalter: Die Fenster lesen die Einstellungen ohnehin alle zwei Sekunden für das Design-Paket
+  (`design::Follow`); dabei merkt `torro_gui::components` sich prozessweit, was aus ist, und der Umschalter lässt diese
+  Apps weg (die eigene bleibt). Tray: über `Snapshot::components_off` ohne die Apps, ohne Vorlagen bei Workspaces aus.
+  Overview: ohne Fenstermanager- und Vorlagen-Kachel bei Workspaces aus. Apps: ein Schalter je Komponente.
+- Hintergrund: Mail ohne Abruf-Worker (die Konten bleiben lesbar; Umschalten baut sie ab bzw. neu auf),
+  Eingangsquellen fragen keinen Server (GitHub und Nextcloud ab der nächsten Runde, ein laufendes ntfy-Abo bis zu seiner
+  nächsten Erneuerung), Kalender-Sync nur wenn Kalender oder Aufgaben an sind, Spracheingabe nur mit Assistent.
+  Die Requests antworten weiter (Entscheidung 1).
 - **Oberfläche:** Apps (Schalter) · **API/MCP:** wie W.1
 
 ### W.3 KI-Anbieter-Katalog

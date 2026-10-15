@@ -832,6 +832,9 @@ pub struct Snapshot {
     /// The setting `voice_enabled` (task C.11): while it is on, the tray offers to mute the
     /// microphone even when the listener does not run (it crashed, or could not start).
     pub voice_enabled: bool,
+    /// The components a person turned off (task W.2): the tray leaves out their apps, and the
+    /// templates without workspaces.
+    pub components_off: std::collections::BTreeSet<torro_core::settings::Component>,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -1088,6 +1091,8 @@ impl Core {
         self.ai.start();
         self.ntfy.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
+        let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
+        self.mail.pause_from_start(mail_off);
         self.mail.start();
         // GitHub, Nextcloud, Talk and ntfy in the inbox (task E5.2).
         crate::sources::start(self.sources());
@@ -1141,6 +1146,7 @@ impl Core {
             github: Arc::clone(&self.github),
             pim: Arc::clone(&self.pim),
             ntfy: Arc::clone(&self.ntfy),
+            settings: self.settings.clone(),
         }
     }
 
@@ -2363,7 +2369,7 @@ impl Core {
                     true => self.settings.update_keeping_hidden(settings),
                     false => self.settings.update(settings),
                 };
-                self.follow_voice();
+                self.follow_components();
                 match updated {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -2371,7 +2377,7 @@ impl Core {
             }
             Request::SetSetting { key, value } => {
                 let set = self.settings.set(key, &value);
-                self.follow_voice();
+                self.follow_components();
                 match set {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -4217,6 +4223,7 @@ impl Core {
         let settings = self.settings.current();
         snapshot.voice = self.voice.state();
         snapshot.voice_enabled = settings.voice.enabled;
+        snapshot.components_off = settings.components_off.clone();
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
         let for_me = self.inbox.for_me(Utc::now(), TRAY_NEWEST).unwrap_or_default();
         snapshot.inbox_for_me = for_me.open;
@@ -4264,8 +4271,22 @@ impl Core {
     }
 
     /// Starts or stops the voice listener as the setting `voice.enabled` says now (task C.9).
+    /// After the settings changed: the voice listener and the mail workers follow the components
+    /// (task W.2). Stopping or starting the workers runs in the background.
+    fn follow_components(&self) {
+        self.follow_voice();
+        let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let mail = Arc::clone(&self.mail);
+            runtime.spawn(async move { mail.set_paused(mail_off).await });
+        }
+    }
+
     fn follow_voice(&self) {
-        self.voice.follow(self.settings.current().voice.enabled);
+        // Listening is part of the assistant: turned off (task W.2), the microphone stays closed.
+        let settings = self.settings.current();
+        let assistant = settings.component_on(torro_core::settings::Component::Assistant);
+        self.voice.follow(settings.voice.enabled && assistant);
     }
 
     /// Wakes whenever what the voice listener does may have changed, for the tray.

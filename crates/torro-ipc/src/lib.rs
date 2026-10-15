@@ -2198,8 +2198,8 @@ pub enum SettingKey {
     /// false}`, components `calendar`, `tasks`, `mail`, `inbox`, `assistant`, `workspaces`
     /// (`torro_core::settings::ComponentSwitch`). Off: not in the app switcher, the tray and the
     /// overview, and nothing runs in the background only for it. Accounts and data stay, and its
-    /// requests keep answering. For now the setup reads it; switcher, tray and background work
-    /// follow it with task W.2.
+    /// requests keep answering. Calendars and task lists stop syncing only when both are off; an
+    /// ntfy subscription that runs ends at its next renewal.
     Component,
 }
 

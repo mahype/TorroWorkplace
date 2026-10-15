@@ -107,6 +107,11 @@ async fn follow(sources: &Sources, id: &str) {
     let Ok(source) = id.parse::<SourceRef>() else { return };
     let mut poller = Poller::default();
     while let Some(access) = sources.pim.nextcloud_access(id).await {
+        // While the inbox is off (task W.2) the server is not asked.
+        if !sources.inbox_on() {
+            tokio::time::sleep(super::RECHECK).await;
+            continue;
+        }
         let wait = poller.tick(sources, &source, &access, Utc::now()).await;
         tokio::time::sleep(wait).await;
     }
@@ -589,7 +594,8 @@ pub(super) mod tests {
         Sources {
             inbox: Arc::new(crate::inbox::tests::inbox_in(dir)),
             github: Arc::new(github),
-            pim: Arc::new(PimService::with_settings(settings)),
+            pim: Arc::new(PimService::with_settings(settings.clone())),
+            settings,
             ntfy: Arc::new(crate::account::ntfy::NtfyAccounts::new(None, Arc::new(MemoryTokens::default()))),
         }
     }

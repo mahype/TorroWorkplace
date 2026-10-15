@@ -20,8 +20,11 @@
 //! out never depends on it. Switching it on is in the control centre, where the microphone is
 //! chosen and tested.
 
+use std::collections::BTreeSet;
+
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::Component;
 use torro_ipc::{Request, SettingKey, VoiceState};
 use torro_setups::{LoadMode, TemplateSummary};
 
@@ -100,9 +103,12 @@ pub fn waiting_line(waiting: Waiting) -> String {
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
     let mut menu = voice_section(snapshot.voice, snapshot.voice_enabled);
-    menu.extend(apps_section(Waiting::of(snapshot)));
+    menu.extend(apps_section(Waiting::of(snapshot), &snapshot.components_off));
     menu.push(Item::Separator);
-    menu.extend(templates_section(snapshot));
+    // Without workspaces (task W.2) the templates are left out.
+    if !snapshot.components_off.contains(&Component::Workspaces) {
+        menu.extend(templates_section(snapshot));
+    }
     if let Some(line) = status_line(snapshot) {
         menu.push(info(line));
     }
@@ -165,9 +171,9 @@ fn voice_section(state: VoiceState, enabled: bool) -> Vec<Item> {
     vec![info(line.into()), entry(tr("Mute microphone"), mute), Item::Separator]
 }
 
-/// One entry per app of the suite; the control centre is "Settings…". Only the Inbox carries a
-/// number, what waits for the person ("Inbox (3)").
-fn apps_section(waiting: Waiting) -> Vec<Item> {
+/// One entry per app of the suite whose component is on (task W.2); the control centre is
+/// "Settings…". Only the Inbox carries a number, what waits for the person ("Inbox (3)").
+fn apps_section(waiting: Waiting, off: &BTreeSet<Component>) -> Vec<Item> {
     let inbox = match waiting.total() {
         0 => tr("Notification Hub").to_string(),
         n => trf("Notification Hub ({n})", &[("n", &n)]),
@@ -180,6 +186,14 @@ fn apps_section(waiting: Waiting) -> Vec<Item> {
         open(tr("Tasks"), AppId::TASKS),
         open(tr("Assistant"), AppId::ASSISTANT),
     ]
+    .into_iter()
+    .filter(|item| match item {
+        Item::Entry { action: Some(Action::OpenApp(app)), .. } => {
+            torro_gui::components::of(*app).is_none_or(|component| !off.contains(&component))
+        }
+        _ => true,
+    })
+    .collect()
 }
 
 /// "Busy …" while a template is loaded or saved, or the problem the core ran into (the window
@@ -296,6 +310,19 @@ mod tests {
                 tr("Quit").to_string(),
             ]
         );
+    }
+
+    /// Task W.2: components turned off leave the menu.
+    #[test]
+    fn apps_and_templates_of_components_turned_off_are_left_out() {
+        let snapshot =
+            Snapshot { components_off: BTreeSet::from([Component::Mail, Component::Workspaces]), ..snapshot() };
+        let menu = build(&snapshot);
+        assert_eq!(action_of(&menu, tr("Mail")), None);
+        assert!(action_of(&menu, tr("Calendar")).is_some());
+        let shown = labels(&menu);
+        assert!(!shown.iter().any(|label| label.starts_with(tr("Load template"))), "{shown:?}");
+        assert!(!shown.iter().any(|label| label == tr("Save workspace")), "{shown:?}");
     }
 
     #[test]
