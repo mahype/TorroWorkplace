@@ -29,6 +29,14 @@ if [[ "${1:-}" == "--quick" ]]; then
     exit 0
 fi
 
+# The mail window (torromailview, M9.2) builds against the system's web view: on Linux WebKitGTK 4.1 and GTK 3 with
+# their headers, the packages ci.yml installs on its Linux runner.
+if [[ "$(uname -s)" == "Linux" ]] && ! pkg-config --exists webkit2gtk-4.1 gtk+-3.0 2>/dev/null; then
+    echo "Missing Linux packages for torromailview: libwebkit2gtk-4.1-dev libgtk-3-dev (Debian/Ubuntu)," \
+        "webkit2gtk-4.1 gtk3 (Arch)." >&2
+    exit 1
+fi
+
 step "cargo clippy --workspace --all-targets -- -D warnings"
 cargo clippy --workspace --all-targets -- -D warnings
 

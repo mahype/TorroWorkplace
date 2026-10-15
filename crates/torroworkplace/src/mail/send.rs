@@ -475,7 +475,7 @@ pub(crate) async fn prepare(
         body: read.text.clone(),
         // A formatted draft goes out formatted, cleaned once more: it may come from another mail
         // program (issue #125).
-        html: read.html.as_deref().map(html::sanitize).filter(|markup| !markup.trim().is_empty()),
+        html: read.html_source.as_deref().map(html::sanitize).filter(|markup| !markup.trim().is_empty()),
         signature: settings.signature.clone(),
         reply,
         attachments,

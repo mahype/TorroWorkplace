@@ -1,0 +1,67 @@
+# Spike for task M9.4 (docs/tasks/mail.md): can Blitz draw HTML mail inside an Iced window?
+# Its own Cargo project, excluded from the workspace (`exclude = ["spikes/*"]` in the root), so the Blitz
+# crates and their wgpu never touch the workspace, its lock file or CI. Nothing here is product code.
+[package]
+name = "blitz-iced"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[features]
+default = ["blitz"]
+# Draw the mail with Blitz on the CPU (vello_cpu, way 2). Without it the same window shows the cleaned
+# HTML as text: the build that the binary size "without Blitz" is measured on.
+blitz = [
+    "dep:blitz-dom",
+    "dep:blitz-html",
+    "dep:blitz-paint",
+    "dep:blitz-net",
+    "dep:blitz-traits",
+    "dep:anyrender",
+    "dep:anyrender_vello_cpu",
+    "dep:peniko",
+    "dep:keyboard-types",
+    "dep:parley",
+    "dep:bytes",
+    "dep:cursor-icon",
+]
+# Way 1b: Vello on the GPU (wgpu 30, its own device, read back into a picture). Only to compare times; it
+# cannot share Iced's wgpu 27 device (see docs/research.md, "Blitz in Iced").
+gpu = ["blitz", "dep:anyrender_vello"]
+
+[dependencies]
+# Same Iced as the workspace (0.14.0); `image` for the picture Blitz draws, `tokio` for blitz-net,
+# `advanced` for the own widget that passes the mouse on.
+iced = { version = "0.14.0", features = ["image", "tokio", "advanced"] }
+# The real cleaning of M9.1 (ammonia allow list), so the spike sees the HTML that later arrives.
+torro-mail-imap = { path = "../../crates/torro-mail-imap" }
+png = "0.18"
+
+blitz-dom = { version = "=0.3.0-beta.3", optional = true, features = ["floats"] }
+blitz-html = { version = "=0.3.0-beta.3", optional = true }
+blitz-paint = { version = "=0.3.0-beta.3", optional = true }
+blitz-net = { version = "=0.3.0-beta.3", optional = true }
+blitz-traits = { version = "=0.3.0-beta.3", optional = true }
+anyrender = { version = "0.14.0", optional = true }
+anyrender_vello_cpu = { version = "0.18.0", optional = true, features = ["multithreading"] }
+anyrender_vello = { version = "0.15.0", optional = true }
+peniko = { version = "0.6", optional = true }
+keyboard-types = { version = "0.7", optional = true }
+# Only for a font context shared by all mails (the version Blitz uses).
+parley = { version = "0.12", optional = true, default-features = false, features = ["std"] }
+bytes = { version = "1", optional = true }
+cursor-icon = { version = "1", optional = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+todo = "deny"
+dbg_macro = "deny"
+
+[profile.release]
+# Like the workspace's `dist` profile, so the binary sizes compare with a product build.
+strip = "debuginfo"
+lto = "thin"

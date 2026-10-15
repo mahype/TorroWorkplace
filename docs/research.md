@@ -108,3 +108,176 @@ Fensterrechtecken; jedes Backend baut ihn so genau auf, wie es geht.
 - **Windows (später):** Scoop-Bucket; für winget eine `winget import`-Liste, weil es dort keine Metapakete gibt.
 - **`install.sh`:** erkennt das OS und ruft brew, pacman/AUR oder einen Binär-Download auf.
   Auf Omarchy richtet es zusätzlich das workspace-setups-Plugin ein.
+
+## 8. Blitz in Iced (Versuch M9.4)
+
+Stand 2026-10-14. Versuch aus [tasks/mail.md](tasks/mail.md), M9.4: Kann Blitz (DioxusLabs) eine HTML-Mail direkt in
+einem Iced-Fenster zeichnen, statt sie wie M9.2 in einem eigenen Fenster mit System-Webview (`torromailview`) zu zeigen?
+Code: [`spikes/blitz-iced/`](../spikes/blitz-iced/) (eigenes Cargo-Projekt, `exclude = ["spikes"]` im Workspace).
+Gemessen auf einem Apple M4 Max (16 Kerne), macOS 26.6, Bildschirm 5120 × 1440 bei Skalierung 1; Zeiten mit
+`--release`.
+
+**Kurz:** Weg 2 (Blitz zeichnet per CPU in ein Bild, Iced zeigt es) läuft und ist schnell. Weg 1 (gemeinsame `wgpu`)
+geht mit den veröffentlichten Crates nicht. Darstellung meist nah am Browser, aber mit Lücken genau bei altem
+Mail-HTML (Tabellen-Attribute, `<font>`). **Empfehlung: erst später** (unten).
+
+### Welcher Weg lief
+
+- **Weg 1, gemeinsame GPU: geht nicht.** Iced 0.14.0 zeichnet mit `iced_wgpu` 0.14.0 auf **wgpu 27.0.1**. Blitz
+  0.3.0-beta.3 zeichnet über `anyrender` 0.14 → `anyrender_vello` 0.15.0 → **Vello 0.11.0 → wgpu 30.0.1**. Zwei
+  `wgpu`-Versionen sind zwei getrennte Typwelten: Iceds `shader`-Widget reicht ein `wgpu::Device` 27 herein, Vello
+  will eines aus wgpu 30. Kein Blitz-Release passt zu wgpu 27: Das wäre Vello 0.7 (`anyrender_vello` 0.7, `anyrender`
+  0.7), aber `blitz-paint` 0.2.1 nutzt `anyrender` 0.6 (wgpu 26) und 0.3.0-alpha.1 schon `anyrender` 0.8 (wgpu 28).
+  Teilen ginge nur über rohe GPU-Texturen (`wgpu-hal`, `unsafe`, gegen die Regeln) oder mit einem Iced auf wgpu ≥ 30
+  (nicht die Workspace-Version).
+- **Weg 1b, nur zum Vergleich** (`--features gpu`): Vello auf eigener wgpu-30-Instanz, Bild zurückgelesen. Läuft,
+  ist aber langsamer als die CPU (Zeichnen 2–11 ms statt 0,5–3 ms, plus Gerät anlegen beim Öffnen) und bringt eine
+  zweite `wgpu` ins Programm (+4,4 MB gestrippt). Verworfen.
+- **Weg 2, Bild: läuft.** Blitz (`blitz-html` parst, Stylo rechnet CSS, Taffy das Layout, Parley den Text) zeichnet
+  über `anyrender_vello_cpu` (vello_cpu 0.3, mehrere Threads) in einen RGBA-Puffer; Iced zeigt ihn über
+  `image::Handle::from_rgba` in einem eigenen kleinen Widget, das Maus, Rad und ⌘C/Strg+C als Nachrichten
+  weiterreicht. Gezeichnet wird nur der sichtbare Ausschnitt in physischen Pixeln; neu bei Größe, Skalierung,
+  Farbschema, Rad, Klick/Ziehen und wenn Bilder ankommen.
+
+### Versionen
+
+| Teil | Version |
+|---|---|
+| Iced | 0.14.0 (wie der Workspace), `iced_wgpu` 0.14.0 → wgpu 27.0.1 |
+| Blitz | `blitz-dom`, `blitz-html`, `blitz-paint`, `blitz-net`, `blitz-traits` **0.3.0-beta.3** (2026-10-12; letzte stabile 0.2.x) |
+| darin | Stylo 0.22.0, Taffy 0.15.0, Parley 0.12.0, html5ever 0.40.1, reqwest 0.13.5 mit native-tls |
+| Zeichnen | `anyrender` 0.14.0, `anyrender_vello_cpu` 0.18.0 (vello_cpu 0.3.0); für 1b `anyrender_vello` 0.15.0 (Vello 0.11.0, wgpu 30.0.1) |
+| Bereinigung | `torro_mail_imap::mime::clean_html` aus M9.1 (ammonia 4.2.3), dieselbe Erlaubt-Liste |
+
+### Was geprüft wurde
+
+| Anforderung | Ergebnis |
+|---|---|
+| Breite folgt dem Fenster | Ja. Neu-Layout bei normalen Mails 0,1–0,5 ms plus Zeichnen 0,5–3 ms; die Media Query (`max-width: 600px`) greift im schmalen Fenster. Im freien Lauf hat der Torro-Kern das Fenster gekachelt, die Mail lief beim Größenwechsel mit. |
+| Scrollen | Ja, Mausrad an Blitz (`UiEvent::Wheel`), Blitz scrollt selbst; 0,6–1,4 ms je Schritt, lange Mail 2,7–3,1 ms. Tastatur (Bild ab, Pfeile) im Versuch nicht verdrahtet. |
+| Klick auf Link | Erkannt: Blitz ruft den `NavigationProvider` mit der URL, der Versuch gibt sie nur aus (`https://example.com/weekly/42/setups`). |
+| Externe Bilder | Ja, über `blitz-net`. **Fehler in Blitz:** Bilder hinter einer Weiterleitung erscheinen nie (Blitz wartet unter der URL aus `src`, `blitz-net` meldet die Ziel-URL). Im eigenen `NetProvider` umgangen; vor einer Übernahme melden oder beheben. |
+| `cid:`-Bilder | Ja, eigener `NetProvider` liefert die Datei neben der Fixture (im Produkt: `mail.get_attachment`). |
+| Markieren und Kopieren | Markieren per Ziehen geht (Blitz zeichnet die Auswahl, `get_selected_text()` liefert den Text). Kopieren ist über `iced::clipboard::write` eingebaut, im automatischen Lauf aber nicht ausgeführt, um die Zwischenablage des Nutzers nicht zu überschreiben. |
+| Hell/dunkel | Iced-Teil folgt; die Mail bleibt wie bei Apple Mail auf weißem Papier, es sei denn sie bringt `prefers-color-scheme: dark` mit – das wertet Blitz aus (siehe `styled`). |
+| Mauszeiger | Blitz meldet Zeiger über Links und Textcursor über Text (`ShellProvider::set_cursor`), das Widget gibt es an Iced weiter. |
+
+### Zeiten
+
+Erstes Zeichnen = Parsen + Stil/Layout + Zeichnen, ohne Netz. Mit einem **geteilten Schrift-Kontext** (sonst liest
+jede Mail die Systemschriften neu: +20–60 ms). Bereich 960 × 772 logische Pixel.
+
+| Mail | Erstes Zeichnen (×1 / ×2) | Neu-Layout + Zeichnen (×1 / ×2) | Scrollen je Schritt (×1 / ×2) | Bilder da nach |
+|---|---|---|---|---|
+| Newsletter (4,8 KB) | 2,0 / 2,6 ms | 0,7–1,5 / 1,0–3,6 ms | 0,8 / 1,4 ms | 200–1100 ms (Netz) |
+| Rechnung | 2,4 / 2,6 ms | 0,8–1,3 / 1,0–2,8 ms | 0,8 / 1,3 ms | – |
+| Outlook | 1,7 / 2,1 ms | 0,7–1,3 / 0,7–2,6 ms | 0,7 / 1,1 ms | – |
+| Style-Block | 1,5 / 2,0 ms | 0,7–1,5 / 1,1–2,8 ms | 0,8 / 1,3 ms | 300–600 ms (Webfont, Bild) |
+| Textmail | 1,0 / 1,3 ms | 0,6–0,9 / 0,8–2,6 ms | 0,6 / 1,1 ms | – |
+| Lange Mail (1,2 MB bereinigt) | 145 / 138 ms (Stil+Layout 120–125) | 18–22 / 19–22 ms (gleiche Breite: 3–5) | 2,7 / 3,1 ms | – |
+
+Ohne Threads in vello_cpu (schwächerer Rechner) bleibt Zeichnen bei ×2 unter 4,5 ms. Nicht gemessen: das Hochladen
+des Bildes in Iceds Textur (bei ×2 und 960 × 772 sind das 12 MB je Bild); auf dem M4 nicht spürbar. Beim Ziehen des
+Fensters wird bei jeder Größe neu gelayoutet und gezeichnet – bei normalen Mails flüssig, bei der langen Mail
+~20 ms je Schritt.
+
+### Binärgröße
+
+Gleiches Iced-Fenster, einmal mit Blitz, einmal ohne (zeigt das bereinigte HTML als Text); Profil wie `dist`
+(`lto = "thin"`, `strip = "debuginfo"`), daneben vollständig gestrippt. Alle enthalten `torro-mail-imap` für die
+Bereinigung.
+
+| Build | Größe | gestrippt |
+|---|---|---|
+| ohne Blitz | 15,8 MB | 12,8 MB |
+| mit Blitz (CPU, Weg 2) | 38,6 MB (**+22,8**) | 31,9 MB (**+19,1**) |
+| mit Blitz und Vello auf GPU (1b) | 43,8 MB | 36,3 MB |
+| zum Vergleich `torromailview` (M9.2, `--profile dist`) | 7,3 MB | 6,0 MB |
+
+Blitz kostet also rund 19–23 MB in jedem Programm, das Mail zeigt; `torromailview` nutzt die Webview des Systems.
+
+### Screenshots
+
+Links Blitz in Iced (nur der Mail-Bereich, aus `window::screenshot`), rechts dasselbe bereinigte HTML in Chrome
+(headless, Standardmodus, gleiche Größe; dunkel per `@media all` nachgestellt, weil Chrome headless sich nicht auf
+„dunkel bevorzugt“ stellen lässt). Erzeugt mit `cargo run --release -- --shoot shots` und
+`--dump <ordner>` plus Chrome `--headless=new --window-size=960,772 --screenshot`. Das ganze Fenster:
+[hell](../spikes/blitz-iced/shots/newsletter-light-window.png), [dunkel](../spikes/blitz-iced/shots/styled-dark-window.png),
+[schmal](../spikes/blitz-iced/shots/styled-narrow-window.png), mit `screencapture` vom Bildschirm:
+[macOS-Fenster](../spikes/blitz-iced/shots/screencapture-window.png).
+
+| Mail | Blitz in Iced | Chrome |
+|---|---|---|
+| Newsletter: verschachtelte Tabellen, Web- und `cid:`-Bilder | ![](../spikes/blitz-iced/shots/newsletter-light-blitz.png) | ![](../spikes/blitz-iced/shots/newsletter-light-browser.png) |
+| Newsletter, schmal (520) | ![](../spikes/blitz-iced/shots/newsletter-narrow-blitz.png) | ![](../spikes/blitz-iced/shots/newsletter-narrow-browser.png) |
+| Rechnung eines Shops | ![](../spikes/blitz-iced/shots/invoice-light-blitz.png) | ![](../spikes/blitz-iced/shots/invoice-light-browser.png) |
+| Outlook (`MsoNormal`, `<o:p>`, MSO-Kommentare, `font`) | ![](../spikes/blitz-iced/shots/outlook-light-blitz.png) | ![](../spikes/blitz-iced/shots/outlook-light-browser.png) |
+| `<style>`-Block, Media Query, Flexbox, Float, Webfont | ![](../spikes/blitz-iced/shots/styled-light-blitz.png) | ![](../spikes/blitz-iced/shots/styled-light-browser.png) |
+| dasselbe dunkel (`prefers-color-scheme`) | ![](../spikes/blitz-iced/shots/styled-dark-blitz.png) | ![](../spikes/blitz-iced/shots/styled-dark-browser.png) |
+| dasselbe schmal (Media Query greift) | ![](../spikes/blitz-iced/shots/styled-narrow-blitz.png) | ![](../spikes/blitz-iced/shots/styled-narrow-browser.png) |
+| Textmail als `<pre>` | ![](../spikes/blitz-iced/shots/plain-light-blitz.png) | ![](../spikes/blitz-iced/shots/plain-light-browser.png) |
+| Lange Mail (über 1 MiB) | ![](../spikes/blitz-iced/shots/long-light-blitz.png) | ![](../spikes/blitz-iced/shots/long-light-browser.png) |
+
+Bedienung: [Link geklickt](../spikes/blitz-iced/shots/probe-link-blitz.png),
+[Text markiert](../spikes/blitz-iced/shots/probe-select-blitz.png),
+[gescrollt](../spikes/blitz-iced/shots/probe-scroll-blitz.png). Dunkel ohne eigene Farben der Mail:
+[Newsletter](../spikes/blitz-iced/shots/newsletter-dark-blitz.png), [Textmail](../spikes/blitz-iced/shots/plain-dark-blitz.png).
+Chrome zeigt dieselben Mails dunkel genauso (weißes Papier), deshalb dort ohne eigenes Bild.
+
+### Was fehlt oder falsch aussieht
+
+1. **Alte Darstellungs-Attribute fehlen** (Blitz kennt `align`, `width`/`height`, `bgcolor`, `hspace`/`vspace`, `border`
+   an `img`): `cellpadding` (Zellen der Rechnung kleben), `cellspacing` (Blitz lässt 2 px `border-spacing`, im
+   Newsletter sieht man Spalten), `border` an `<table>` (Rechnung und lange Mail ohne Linien), `<font face size color>`
+   (Outlook-Zeile in falscher Schrift, Größe, Farbe). Genau dieses HTML ist in Mails häufig. Abhilfe: im Kern bei der
+   Bereinigung in Inline-CSS übersetzen (klein) oder in Blitz beitragen.
+2. **Tabellenbreiten** weichen ab: `width="30%"` an einer Zelle ergibt in Blitz etwa die Hälfte; zwei 50-%-Zellen
+   werden unterschiedlich breit und um 4 px versetzt.
+3. Kleinigkeiten: Listennummer ohne Abstand („1.The“), `h3` etwas größer als im Browser.
+4. **Bilder hinter Weiterleitungen** (Fehler oben) – ohne Umgehung fehlen fast alle Newsletter-Bilder.
+5. **`blitz-net` bringt `native-tls`** mit (unter Linux OpenSSL) – gegen die Regel „nur rustls“. Im Produkt ein
+   eigener `NetProvider` über das `reqwest` des Workspace (rustls); den braucht es für `cid:` ohnehin.
+6. **Barrierefreiheit:** Iced 0.14 hat keinen Baum für Screenreader; die Mail ist für sie nur ein Bild. Die Webview in
+   `torromailview` liest vor.
+7. Nicht im Versuch: Suchen in der Mail, Kontextmenü, Tastatur-Scrollen, Doppelklick-Wortauswahl, Farbmanagement.
+8. **Beta:** 0.3.0-beta.3 ist zwei Tage alt, die API hat sich zwischen den Alphas oft geändert; Versionen sind genau
+   festgenagelt (`=0.3.0-beta.3`).
+
+### Lizenzen der neuen Abhängigkeiten
+
+Blitz bringt 93 Crates mit, die das Fenster ohne Blitz nicht hat. Die meisten MIT oder Apache-2.0. Abweichend:
+
+- **MPL-2.0** (12): `stylo`, `stylo_atoms`, `stylo_derive`, `stylo_dom`, `stylo_static_prefs`, `stylo_traits`,
+  `selectors`, `cssparser-macros`, `app_units`, `to_shmem`, `to_shmem_derive`, `uluru`; `stylo_taffy` MIT/Apache/MPL.
+  MPL-2.0 gilt je Datei: Mit MIT/Apache-Code mischbar, solange die MPL-Dateien MPL bleiben und ihr Quelltext
+  erreichbar ist (bei unveränderten Crates von crates.io gegeben); eigene Änderungen an diesen Dateien müssten
+  veröffentlicht werden. Im Release in die Liste der Fremdlizenzen aufnehmen.
+- **Unicode-3.0** (6): `icu_casemap`, `icu_segmenter`, `icu_locale_fallback` samt Daten-Crates.
+- **BSD-3-Clause**: `alloc-no-stdlib`, `tiny-skia-path`; `brotli-decompressor` BSD-3-Clause/MIT.
+- `byteorder` Unlicense/MIT, `objc2-core-text` Zlib/Apache/MIT.
+
+Keine GPL, nichts Kostenpflichtiges.
+
+### Systeme
+
+- **macOS:** läuft (alle Zahlen oben).
+- **Linux (Hyprland):** **nicht geprüft**, in dieser Sitzung gab es keinen Linux-Rechner. Erwartet: gleich, denn die
+  Mail ist nur ein Bild in Iced – keine Webview, keine Grenze unter Wayland, kein WebKitGTK; Schriften über
+  fontconfig. `blitz-net` bräuchte OpenSSL (Punkt 5). Vor einer Entscheidung auf Hyprland laufen lassen.
+- **Windows:** `cargo xwin check --release --target x86_64-pc-windows-msvc` ohne Fehler; nicht gestartet.
+
+### Empfehlung: erst später
+
+Die Technik trägt: Die Mail steht als Widget im Iced-Fenster, gezeichnet in wenigen Millisekunden, ohne zweites
+Fenster, ohne zweiten Prozess, ohne Webview-Pakete und ohne JavaScript, das abzuschalten wäre. Für einen Wechsel
+von `torromailview` ist es aber zu früh:
+
+- Blitz ist Beta, und gerade das alte Mail-HTML (Tabellen-Attribute, `<font>`) sieht noch falsch aus; dazu der
+  Weiterleitungs-Fehler bei Bildern.
+- +19–23 MB je Programm, das Mail zeigt; Mail ist für Screenreader nur ein Bild.
+- `torromailview` zeigt dieselben Mails heute richtig.
+
+Wieder ansehen, wenn (a) Blitz 0.3 stabil ist und die Darstellungs-Attribute kennt – oder wir sie bei der
+Bereinigung in CSS übersetzen –, (b) der Versuch auf Hyprland läuft und (c) möglichst Iced auf wgpu ≥ 30 steht, damit
+Weg 1 ohne Bildkopie möglich wird. Dann wäre Blitz als Lesebereich in TorroInbox der Ersatz für `torromailview`; die
+Befehle aus M9.1 bleiben gleich. Entschieden wird mit dem Menschen, nicht hier.

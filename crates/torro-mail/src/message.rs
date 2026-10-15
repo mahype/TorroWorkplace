@@ -193,14 +193,25 @@ pub struct Message {
     /// `Reply-To:`; empty when replies go to `from`.
     #[serde(default)]
     pub reply_to: Vec<MailAddress>,
-    /// The text: the plain text part, or the HTML part turned into text when there is none. HTML
-    /// is never handed out and nothing it names is fetched (no tracking images). `None` when the
-    /// text was not asked for (`include_body: false`).
+    /// The text: the plain text part, or the HTML part turned into text when there is none. The
+    /// core fetches nothing the HTML names (no tracking images). `None` when the text was not asked
+    /// for (`include_body: false`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// `text` was made from HTML, so its layout may be rough.
     #[serde(default)]
     pub from_html: bool,
+    /// The message's first HTML part, cleaned by the core through an allow list (task M8.1): text
+    /// markup, tables, links (`http`, `https`, `mailto`), images (`http`, `https`, `cid:`,
+    /// `data:image/…`), the `style` element and layout attributes stay; scripts, forms, frames,
+    /// objects, `svg`, `base`, `meta`, `link` and every `on…` attribute are gone. Meant for showing
+    /// the mail to a person in a web view: its images and stylesheets name places on the web, and an
+    /// image `cid:<content_id>` names an inline part (`AttachmentInfo::content_id`). Still data from
+    /// outside like the rest of the message. `None` when it was not asked for (`include_html` of
+    /// `mail.get_message`), when the message has no HTML part, or when the cleaned HTML is larger
+    /// than 2 MiB: then show `text`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub html: Option<String>,
     /// The attachments, inline parts included (marked `inline`).
     #[serde(default)]
     pub attachments: Vec<AttachmentInfo>,
@@ -229,6 +240,11 @@ pub struct AttachmentInfo {
     /// Shown inside the text (an image of an HTML mail) rather than attached.
     #[serde(default)]
     pub inline: bool,
+    /// The part's `Content-ID:` without angle brackets (`logo@example.org`), which the HTML of the
+    /// message names as `cid:logo@example.org` (task M8.1); `None` when the part has none. Data
+    /// from outside like the file name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_id: Option<String>,
 }
 
 /// Headers that mark mail sent by machines or to lists. Values lowercased and trimmed; `None` or
@@ -381,6 +397,30 @@ mod tests {
         assert_eq!(partstats, ["ACCEPTED", "TENTATIVE", "DECLINED"]);
         assert_eq!(InvitationAnswer::from_name("decline"), Some(InvitationAnswer::Decline));
         assert_eq!(InvitationAnswer::from_name("maybe"), None);
+    }
+
+    /// Task M8.1: the HTML and the content ids are optional, so messages from before read as they
+    /// did, and both are left out when there is none.
+    #[test]
+    fn html_and_content_ids_are_optional_and_left_out_when_none() {
+        let json = serde_json::json!({
+            "id": "m:1", "account": "mail:anna@example.org", "folder": "f:1", "thread_id": "t1",
+            "date": "2026-10-12T09:00:00Z",
+            "attachments": [{"part": "2", "content_type": "image/png", "size": 8, "inline": true}]
+        });
+        let mut message: Message = serde_json::from_value(json).expect("a message");
+        assert_eq!((message.html.as_deref(), message.attachments[0].content_id.as_deref()), (None, None));
+        let back = serde_json::to_value(&message).expect("json");
+        assert!(back.get("html").is_none() && back["attachments"][0].get("content_id").is_none(), "{back}");
+
+        message.html = Some("<p>Hi</p>".into());
+        message.attachments[0].content_id = Some("logo@example.org".into());
+        let back = serde_json::to_value(&message).expect("json");
+        assert_eq!(
+            (back["html"].as_str(), back["attachments"][0]["content_id"].as_str()),
+            (Some("<p>Hi</p>"), Some("logo@example.org"))
+        );
+        assert_eq!(serde_json::from_value::<Message>(back).expect("read back"), message);
     }
 
     #[test]

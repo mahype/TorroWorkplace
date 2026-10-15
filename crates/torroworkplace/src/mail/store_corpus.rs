@@ -134,8 +134,7 @@ fn put(store: &MailStore, folder: &str, uid: u32, raw: &[u8], flags: Vec<Flag>, 
     };
     let id = store.upsert_message(folder, 1, &new).expect("stored");
     if new.date >= now - Duration::days(BODY_RETENTION_DAYS) {
-        let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite: None };
-        store.set_body(&id, &body).expect("text");
+        store.set_body(&id, &Body::of(read, None)).expect("text");
     } else {
         let names: Vec<&str> = read.attachments.iter().filter_map(|part| part.filename.as_deref()).collect();
         store.index_text(&id, &read.text, &names).expect("indexed");
