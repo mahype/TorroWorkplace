@@ -267,3 +267,115 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
 - Übersetzungen eintragen (`crates/torro-core/src/i18n/de.rs`), `docs/settings.md` an den gebauten Stand anpassen,
   Design-Prüfung aller vier Apps und der Steuerzentrale (Agent `torro-design-review`), `torro-api-review` über die
   ganze Stufe, Fehler beheben.
+
+## Stufe 3: KI-Konten (S.23–S.26)
+
+Konzept: [settings.md › KI-Konten](../settings.md#ki-konten), 2026-10-15. Anlass: Ein verbundenes Ollama erschien
+weder unter „Agents & API“ noch auf seiner Kontoseite mit Modellen; dabei fiel auf, dass seine Cloud-Modelle für die
+Datenregel als lokal gelten.
+
+S.23 schließt eine Datenschutzlücke und kommt zuerst. S.24–S.26 sind kleine Schritte, die ohne Stufe 2 gehen; ihre
+Dateien überschneiden sich nicht, sie können parallel laufen. S.24 und S.21 ändern beide `ui/accounts.rs`: nicht
+gleichzeitig, und wer später kommt, übernimmt die Gruppe „Models“ bzw. die kurzen Kontoseiten.
+
+```
+S.23 (Datenregel, sofort)
+S.24 (Modelle auf der Kontoseite) · S.25 (Katalog) · S.26 (Hinweis in „Connect agent“)
+```
+
+### S.23 Ollama-Cloud-Modelle gelten für die Datenregel als entfernt
+- [ ] erledigt
+- **Modell:** Opus (Sicherheit) · **Dateien:** `crates/torro-core/src/ai/mod.rs`, `crates/torro-core/src/ai/openai.rs`,
+  `crates/torroworkplace/src/account/ai.rs`, `crates/torroworkplace/src/assistant/data_rule.rs`,
+  `crates/torroworkplace/src/assistant/model.rs`, `crates/torroworkplace/src/assistant/delegate.rs`,
+  `crates/torroworkplace/src/core.rs`
+- Warum: `data_rule::place_of` entscheidet je **Konto**: Ollama ist immer `Place::Local`. Modelle mit dem Zusatz
+  `:cloud` (`glm-5.3:cloud`, `kimi-k2.6:cloud`) laufen aber über das lokale Ollama auf `ollama.com`. Solange
+  `mail_to_cloud` aus ist (C.17, Standard), bekämen sie heute trotzdem Mail, Nextcloud- und Talk-Einträge zu lesen.
+- **Schnittstellen (mit dieser Planung freizugeben):**
+  - `AiModel` bekommt das optionale Feld `remote: Option<bool>`: `true`, wenn der Server sagt, dass das Modell
+    anderswo rechnet (Ollama: `remote_host` in `GET <root>/api/tags`), `false` für ein lokales Modell eines lokalen
+    Servers, `null`, wo niemand es sagt. Neue optionale Felder sind nach `api.md` verträglich; API-Referenz neu
+    erzeugen.
+  - `data_rule::place_of` nimmt das Modell dazu (Konto **und** Modell).
+  - `Host::model(engine)` (`assistant/model.rs`, umgesetzt in `core.rs`) bekommt das Modell als Parameter, damit der
+    Kern den Ort für das wirklich gefragte Modell bestimmt.
+- **Ollama:** Die Modellliste liest zusätzlich `/api/tags` (eine Anfrage für alle Modelle) und setzt `remote`. Ein Name
+  mit `:cloud` oder `-cloud` am Ende gilt auch ohne das Feld als entfernt. **Schlägt `/api/tags` fehl, gelten bei
+  Ollama alle Modelle als entfernt** (im Zweifel sicher; mit `ollama cp` kopierte Cloud-Modelle tragen den Zusatz
+  nicht mehr). `remote` lebt so lange wie die Fähigkeiten aus `/api/show` und wird nicht bei jeder Nachricht neu
+  gefragt.
+- **Erst das Modell, dann der Ort:** Heute bestimmt `model.rs` den Ort vor der Modellwahl; Prompt, Verlauf und die
+  Markierung `local_only` des Gedächtnisses hängen daran. Künftig wählt der Kern zuerst das Modell (gewählt oder
+  „Automatic“), dann den Ort, dann alles, was davon abhängt. Der `Reader` aus C.17 (Ort und Regel) bleibt, wie er ist.
+- **„Automatic“** (`default_model` in `assistant/model.rs`) wählt heute das erste Modell mit Werkzeugen. Künftig
+  zuerst ein lokales (Open First), ein entferntes nur, wenn es kein lokales gibt.
+- **Bots** (`delegate.rs`): Ein Bot ohne Modell (`model: None`) löst vor der Prüfung der Datenregel dasselbe
+  „Automatic“ auf wie `model.rs`; geprüft wird das Modell, das dann wirklich antwortet.
+- **Verlauf:** `history_allowed` vergleicht heute nur die Engine (`ai:ollama@…`). Künftig Engine **und Modell**
+  (`EntryContent::Answer` trägt `model`); fehlt das Modell einer früheren Antwort, gilt sie als von einem anderen
+  Modell. So bekommt ein Cloud-Modell nicht, was ein lokales Modell desselben Kontos aus Mail nacherzählt hat.
+- **Oberfläche:** keine in dieser Aufgabe (den Ort zeigt S.24).
+- **API:** `Request::AiModels` · `ai.list_models` · Read (neues Feld `remote`)
+- **MCP:** `ai_list_models` (dasselbe Tool; Beschreibung um „whether it runs elsewhere“ ergänzen)
+- **Abnahme:** Tests ohne Netz (gefälschter Ollama wie in `account/ai.rs`):
+  - ein `:cloud`-Modell mit `remote_host` ist `remote: true`, ein lokales `false`; ohne `/api/tags` sind alle `true`;
+  - `place_of` für ein Cloud-Modell von Ollama ist `Remote`, für ein lokales `Local`;
+  - mit `mail_to_cloud` aus wird ein Mail-Ergebnis an ein Cloud-Modell zu `withheld by your data rule`, an ein lokales
+    nicht; mit `mail_to_cloud` an gilt C.17 unverändert;
+  - Verlauf lokal → Cloud im selben Konto: die Antwort mit Mail-Inhalt wird ersetzt;
+  - „Automatic“ und ein Bot ohne Modell nehmen bei gemischter Liste das lokale Modell;
+  - eine Notiz, die nach Mail entstand, ist bei einem lokalen Modell `local_only` und erreicht das Cloud-Modell nicht;
+  - fmt, clippy, test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
+
+### S.24 Die Kontoseite eines KI-Kontos zeigt seine Modelle
+- [ ] erledigt
+- **Modell:** Sonnet · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`, `crates/torroworkplace/src/ui/mod.rs`
+  · **Nach:** S.23 (für den Ort „Ollama Cloud“)
+- Warum: Ein verbundenes Ollama zeigte nur Status und Server. Die Modelle sah man nur unter Assistant › New chats,
+  nachdem man dort Ollama gewählt hatte.
+- Zwischen „Status“ und „Connection“ die Gruppe **„Models“**: eine Zeile je Modell mit Name, darunter die Merkmale in
+  einer Zeile („Tools · Thinking · 128k context“) und der Ort („On this computer“, „Ollama Cloud“ bei Ollama mit
+  `remote`, sonst „Cloud“). Modelle mit `tools == Some(false)` blass mit „Can't use tools“. Rechts je Zeile „Use for
+  new chats“ (sekundärer Knopf, nur bei Modellen mit Werkzeugen); das gewählte trägt stattdessen ein Häkchen und
+  „Used for new chats“.
+- Fußzeile: „The assistant offers the models that can use tools. Each chat can pick another.“
+- Geladen werden die Modelle beim Öffnen der Kontoseite (`ai.list_models`, `all: false`), nicht bei jedem Takt;
+  solange sie laden, „Loading models…“. Fehler (Server aus): der Satz des Kerns in der Gruppe, der Status bleibt.
+  OpenRouter: dazu „Show closed models“ (`all: true`).
+- „Use for new chats“ schickt `settings.set_setting assistant_default` mit Konto und Modell; die gespeicherte
+  Denkstufe bleibt.
+- **Oberfläche:** Steuerzentrale › Accounts › KI-Konto › „Models“
+- **API:** `Request::AiModels` · `ai.list_models` · Read; `Request::SetSetting` · `settings.set_setting` · Admin
+- **MCP:** `ai_list_models`, `settings_set_setting` (Admin, beim Agenten mit Freigabe)
+- **Abnahme:** Tests mit Demo-Daten: Modelle mit Merkmalen und Ort, ein Modell ohne Werkzeuge ohne Knopf, „Use for
+  new chats“ baut den richtigen `SetSetting`. Braucht die Sichtprüfung eine neue Demo-Ansicht in `ui/launch.rs`,
+  vorher nachfragen. Sichtprüfung bei 1100, 500 und 360 px (Agent `torro-design-review`); fmt, clippy, test (auch
+  `TORRO_LANG=de`) grün.
+
+### S.25 KI-Anbieter stehen im Katalog oben
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/wizard.rs`
+- In `provider_step` kommt „AI providers“ an die erste Stelle, mit dem Untertitel „Ollama, LM Studio, OpenRouter and
+  more“ statt „Summaries and agents“. Die übrigen Einträge behalten ihre Reihenfolge.
+- **Oberfläche:** Steuerzentrale › Accounts › Add account
+- **API / MCP:** unverändert (`accounts.connect_ai` bleibt `Never`, Geheimnisse nur über die Oberfläche;
+  `ai.find_local_servers` / `ai_find_local_servers`)
+- **Abnahme:** Test, dass die erste Zeile des Katalogs die KI-Anbieter sind; fmt, clippy, test (auch
+  `TORRO_LANG=de`) grün.
+
+### S.26 „Connect agent“ verweist auf die KI-Konten
+- [ ] erledigt
+- **Modell:** Haiku · **Dateien:** `crates/torroworkplace/src/ui/agent_wizard.rs`, `crates/torroworkplace/src/ui/agents.rs`
+- Warum: Wer Ollama verbinden will, sucht unter „Connect agent“. Dort gehören aber nur Programme hin, die Torro
+  bedienen.
+- Im ersten Schritt unter der Liste der Clients eine leise Zeile mit Pfeil: „Looking to use a model such as Ollama?
+  Add an AI account“. Ein Klick schließt den Dialog und öffnet Accounts (`Action::Select(Section::Accounts)`); den
+  Dialog „Add account“ gleich bei den KI-Anbietern zu öffnen braucht eine neue `Action` in `ui/mod.rs`: dann vorher
+  nachfragen.
+- Der leere Zustand der Seite nennt es auch: „… or to create a key for a script. AI models such as Ollama are added
+  under Accounts.“
+- **Oberfläche:** Steuerzentrale › Agents & API › Connect agent
+- **API / MCP:** keine; reine Navigation in der Oberfläche.
+- **Abnahme:** Test, dass der Klick die richtige `Action` ergibt; bestehende Tests der Seite grün; fmt, clippy, test
+  (auch `TORRO_LANG=de`) grün.

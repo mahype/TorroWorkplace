@@ -154,7 +154,7 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
 | **GitHub** | Issues und Projekte lesen; später Pull Requests, Reviews, Benachrichtigungen | Ohne eigene OAuth-App: **(a) Anmeldung der GitHub CLI übernehmen**, wenn `gh` angemeldet ist (Token per `gh auth token`, einmal bestätigen; für Projekte `gh auth refresh -s read:project`), oder **(b) Token einfügen** (Personal Access Token, nur Lesen; Link zur Token-Seite mit vorausgewählten Rechten). Token im Schlüsselbund. OAuth Device Flow mit eigener App höchstens später | nächste |
 | **Slack** | Erwähnungen, Direktnachrichten, ausgewählte Kanäle | Weg noch offen (Token statt OAuth wahrscheinlich); Token im Schlüsselbund | später |
 | **ntfy** | Themen abonnieren für den Eingang (CI, Uptime Kuma, Skripte) | Server (leer = `ntfy.sh`) und Themen mit Etikett; nur wenn ein Thema es braucht Benutzer und Passwort oder Token `tk_…` (`accounts.set_ntfy_login`, nur über `https` oder an diesen Rechner), im Schlüsselbund. Themen-Namen sieht nur die Steuerzentrale, Agenten das Etikett (E5.12) | E5 |
-| **KI-Anbieter** (Anthropic, OpenAI, lokal) | Zusammenfassen, Agenten in der Suite | API-Schlüssel (maskiertes Feld, „Key stored“, entfernen), lokal: Adresse | später |
+| **KI-Anbieter** (Ollama, LM Studio, OpenRouter, OpenAI-kompatibel) | Modelle für Assistent, Bots und KI-Funktionen der Apps | lokal: Adresse; sonst API-Schlüssel (maskiertes Feld, „Key stored“, entfernen). Steht im Katalog **zuoberst** (S.25), siehe [KI-Konten](#ki-konten) | gibt es (KI.1a) |
 
 Weitere Anbieter (Google Kalender, Todoist, IMAP über TorroMail …) kommen als neue Einträge im
 Katalog hinzu, nie als Umbau.
@@ -181,6 +181,36 @@ rechts unten:
 - **Verbindung:** Server, Benutzer, App-Passwort „stored in the system keychain“.
 - **„Remove account…“**: „This only removes the account from Torro Workplace. Your data stays on
   the server.“ Das App-Passwort wird dabei, wenn möglich, auch auf dem Server widerrufen.
+
+### KI-Konten
+
+Ergänzt am 2026-10-15. Anlass: Ein verbundenes Ollama erschien weder unter „Agents & API“ noch auf
+seiner Kontoseite mit Modellen. Die Modelle fand man nur unter Assistant › New chats, nachdem man dort
+Ollama gewählt hatte, und die Zeile „Engines“ führte zurück zu den Konten. Aufgaben: S.23–S.26.
+
+**Drei Dinge, die leicht alle „Agent“ heißen**, und wo sie stehen:
+
+| Was | Richtung | Ort | Wort in der Oberfläche |
+|---|---|---|---|
+| Claude Code, Codex, Gemini CLI, Skripte | bedienen Torro mit einem Schlüssel | Steuerzentrale › Agents & API | „Connect agent“ |
+| Ollama, LM Studio, OpenRouter, OpenAI-kompatibel | liefern Torro Modelle | Steuerzentrale › Accounts (KI-Konto) | „AI provider“, „Model“ |
+| Woher der Assistent antwortet (ein KI-Konto oder Claude Code) | antwortet im Chat | Einstellungen des Assistenten › General | „Engine“ |
+
+- **Katalog:** „AI providers“ steht in „Add account“ an erster Stelle, mit dem Untertitel „Ollama, LM
+  Studio, OpenRouter and more“. Im Dialog wie bisher zuerst „On this computer“ (Open First), dann
+  OpenRouter, dann „Other OpenAI-compatible server“ (S.25).
+- **Kontoseite eines KI-Kontos:** zwischen Status und Verbindung die Gruppe „Models“, eine Zeile je
+  Modell mit Name, Merkmalen (Tools, Thinking, Context) und dem Ort, an dem es rechnet: „On this
+  computer“, „Ollama Cloud“ oder „Cloud“. Modelle ohne Werkzeuge stehen blass mit „Can't use tools“.
+  „Use for new chats“ setzt das Modell als Standard des Assistenten (S.24). Die Kontoseite bleibt die
+  Seite des Kontos; Engine, Modell und Denkstufe neuer Chats wählt man weiter in den Einstellungen
+  des Assistenten (S.17).
+- **„Connect agent“** weist alle, die eigentlich ein Modell suchen, mit einer Zeile auf die KI-Konten
+  hin (S.26).
+- **Ollama Cloud:** Modelle mit dem Zusatz `:cloud` laufen über das lokale Ollama auf `ollama.com`.
+  Für die Datenregel ([ki.md](ki.md), Grundsatz 4) gelten sie als **entfernt**, nicht als lokal,
+  erkannt an `remote_host` in Ollamas `/api/tags` (S.23). Ein eigener Anbieter „Ollama Cloud“ (direkt
+  mit API-Schlüssel, ohne lokales Ollama) kommt erst, wenn jemand ihn ohne lokales Ollama braucht.
 
 ### Mehrere Konten
 

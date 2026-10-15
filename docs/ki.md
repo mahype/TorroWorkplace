@@ -35,6 +35,11 @@ benutzt nie den Schlüssel eines Agenten.
    die Rechte sie geben. Für Cloud-Modelle bleiben Einträge von Nextcloud und Talk weiter lokal (Claude
    Code sieht über seinen Schlüssel die Quellen des Eingangs, die ihm die Rechte geben, wie schon vorher).
    Die Regel gilt ab der nächsten Antwort; eine laufende Antwort behält, was beim Start galt.
+   **Lokal heißt: das Modell rechnet auf einem eigenen Rechner**, nicht „der Server ist lokal“. Modelle
+   von Ollama mit `:cloud` laufen über das lokale Ollama auf `ollama.com` und gelten als entfernt
+   (`remote` in `ai.list_models`, Aufgabe S.23 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md)).
+   Jede KI-Funktion bestimmt den Ort über Konto **und** Modell (`data_rule::place_of`), nachdem das
+   Modell gewählt ist, auch bei „Automatic“.
 5. **Vorschlag, nie Urteil.** KI-Ergebnisse sind gekennzeichnet, das Original bleibt sichtbar,
    nichts wird von einer KI versteckt, gelöscht oder verschickt.
 6. **Schlüssel bleiben im Dienst** (Regel 1 und 5 in „Was nie nach außen geht“): API-Schlüssel im
