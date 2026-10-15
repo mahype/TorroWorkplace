@@ -693,15 +693,6 @@ pub fn has_admin(area: Area) -> bool {
     has_command(area, Access::Admin)
 }
 
-/// The options of "Ask first", in the order the control shows them.
-fn confirm_options() -> [(&'static str, Confirm); 3] {
-    [
-        (tr("Never"), Confirm::Never),
-        (tr("On delete"), Confirm::OnDelete),
-        (tr("On every change"), Confirm::OnEveryChange),
-    ]
-}
-
 /// The options of "Send on my behalf", least allowed first.
 fn outbound_options() -> [(&'static str, Outbound); 3] {
     [(tr("Never"), Outbound::Never), (tr("Ask me each time"), Outbound::WithApproval), (tr("Always"), Outbound::Free)]
@@ -719,101 +710,44 @@ pub fn sends_freely(rights: &Rights) -> bool {
     can_send(rights.area(Area::Mail).level) && rights.outbound == Outbound::Free
 }
 
-/// The estimated width of a segmented control (`widgets::segmented`) with `labels`: each label in
-/// `CAPTION` with the button padding, plus the frame's inset and border. `typo::text_width`
-/// estimates generously, so the control fits.
-fn segmented_width(labels: &[&str]) -> f32 {
-    let padding = style::button_padding().left + style::button_padding().right;
-    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding).sum();
-    segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
-}
-
 /// The width of the slot every segmented control of the detail page starts in, left-aligned: as
 /// wide as the widest of them (all four levels, "Ask first", "Send on my behalf", "All · Selected")
-/// in the language
-/// shown. So "None" stands under "None" whether an area offers two levels or four, and the page
-/// lines up in every size class without a width of its own.
+/// in the language shown. So "None" stands under "None" whether an area offers two levels or four,
+/// and the page lines up in every size class without a width of its own.
 pub fn segment_slot() -> f32 {
-    let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(level_label);
-    let confirm = confirm_options().map(|(label, _)| label);
+    let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(widgets::level_label);
+    let confirm = widgets::confirm_options().map(|(label, _)| label);
     let outbound = outbound_options().map(|(label, _)| label);
     let pick = [tr("All"), tr("Selected")];
-    [segmented_width(&levels), segmented_width(&confirm), segmented_width(&outbound), segmented_width(&pick)]
-        .into_iter()
-        .fold(0.0, f32::max)
-}
-
-/// `control` at the left of a slot `slot` wide ([`segment_slot`]).
-fn in_slot<'a, M: 'a>(control: Element<'a, M>, slot: f32) -> Element<'a, M> {
-    container(control).width(slot).into()
+    [&levels[..], &confirm, &outbound, &pick].into_iter().map(widgets::segmented_width).fold(0.0, f32::max)
 }
 
 /// Where the controls of the detail page go on a page `width` wide: `Some(slot)`, a column
 /// [`segment_slot`] wide at the right of every row, when the longest name and line of an area or
 /// admin switch fit next to it in a `setting_row`; `None` when they would be cut off (a narrow
 /// window, the narrow end of the medium one), then every segmented control stands on a line of its
-/// own under its name ([`stacked_row`]) and the other controls go to the right edge. Decided by
-/// what fits rather than by the size class, which the page does not know; it also holds for longer
-/// translations.
+/// own under its name (`widgets::segment_row`) and the other controls go to the right edge.
+/// Decided by what fits (`widgets::segment_column`) rather than by the size class, which the page
+/// does not know; it also holds for longer translations.
 pub fn control_column(width: f32) -> Option<f32> {
-    let slot = segment_slot();
-    let sending =
-        [typo::text_width(tr("Send on my behalf"), typo::body()), typo::text_width(outbound_detail(), typo::meta())];
-    let texts = Area::ALL.into_iter().filter(|area| area.grantable()).flat_map(|area| {
-        let admin = has_admin(area).then(|| {
-            [typo::text_width(admin_label(area), typo::body()), typo::text_width(&admin_detail(area), typo::meta())]
-        });
-        [typo::text_width(area_label(area), typo::body()), typo::text_width(area_detail(area), typo::meta())]
-            .into_iter()
-            .chain(admin.into_iter().flatten())
-    });
-    let text = texts.chain(sending).fold(0.0, f32::max);
-    // A setting row: 16 at both sides and 16 between the text and the control.
-    let row = 3.0 * space::l() + text + slot;
-    (width >= row).then_some(slot)
+    let admins: Vec<(&str, String)> = Area::ALL
+        .into_iter()
+        .filter(|&area| area.grantable() && has_admin(area))
+        .map(|area| (admin_label(area), admin_detail(area)))
+        .collect();
+    let areas =
+        Area::ALL.into_iter().filter(|area| area.grantable()).map(|area| (area_label(area), Some(area_detail(area))));
+    let admins = admins.iter().map(|(label, detail)| (*label, Some(detail.as_str())));
+    let sending = (tr("Send on my behalf"), Some(outbound_detail()));
+    widgets::segment_column(segment_slot(), areas.chain(admins).chain([sending]), width)
 }
 
 /// `control` where the page puts its controls: at the left of the column, or as it is (at the
 /// right edge of its row) without one ([`control_column`]).
 pub(super) fn in_column<'a, M: 'a>(control: impl Into<Element<'a, M>>, column: Option<f32>) -> Element<'a, M> {
     match column {
-        Some(slot) => in_slot(control.into(), slot),
+        Some(slot) => container(control).width(slot).into(),
         None => control.into(),
-    }
-}
-
-/// A row with a segmented `control`: a `setting_row` with the control in the column, or without a
-/// column the control on a line of its own ([`stacked_row`]).
-fn segment_row<'a>(
-    label: &'a str,
-    detail: Option<String>,
-    control: Element<'a, Message>,
-    column: Option<f32>,
-) -> Element<'a, Message> {
-    match column {
-        Some(slot) => setting_row(None, label, detail, in_slot(control, slot)),
-        None => stacked_row(label, detail, control),
-    }
-}
-
-/// `label`, `detail` below it and the segmented `control` on a line of its own under both, for a
-/// page too narrow to put them side by side. The texts wrap rather than being cut off; 16 at the
-/// sides as in every row of a group, 12 above and below.
-fn stacked_row<'a>(label: &'a str, detail: Option<String>, control: Element<'a, Message>) -> Element<'a, Message> {
-    let mut lines = column![typo::text(typo::body(), label)];
-    if let Some(detail) = detail {
-        lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2));
-    }
-    let content = column![lines, control].spacing(space::s());
-    container(content).width(Fill).padding([space::m(), space::l()]).into()
-}
-
-fn level_label(level: Level) -> &'static str {
-    match level {
-        Level::NoAccess => tr("None"),
-        Level::Read => tr("Read"),
-        Level::Write => tr("Write"),
-        Level::Full => tr("Full"),
     }
 }
 
@@ -1357,10 +1291,10 @@ fn access_group<'a>(rights: &Rights, column: Option<f32>, kind: &str, title: &'a
         let offered = levels(area);
         let active = active_level(&offered, granted.level);
         let control = widgets::segmented(
-            offered.into_iter().map(|level| (level_label(level), Message::Level(area, level))),
+            offered.into_iter().map(|level| (widgets::level_label(level), Message::Level(area, level))),
             active,
         );
-        rows.push(segment_row(area_label(area), Some(area_detail(area).to_string()), control, column));
+        rows.push(widgets::segment_row(area_label(area), Some(area_detail(area).to_string()), control, column));
         rows.extend(bot_warning(area, rights, kind).map(warning_row));
         if area == Area::Mail && can_send(granted.level) {
             rows.extend(outbound_rows(rights, column));
@@ -1388,7 +1322,8 @@ fn outbound_rows<'a>(rights: &Rights, column: Option<f32>) -> Vec<Element<'a, Me
     let options = outbound_options();
     let active = options.iter().position(|(_, outbound)| *outbound == rights.outbound).unwrap_or(1);
     let control = widgets::segmented(options.map(|(label, outbound)| (label, Message::Outbound(outbound))), active);
-    let mut rows = vec![segment_row(tr("Send on my behalf"), Some(outbound_detail().to_string()), control, column)];
+    let mut rows =
+        vec![widgets::segment_row(tr("Send on my behalf"), Some(outbound_detail().to_string()), control, column)];
     if sends_freely(rights) {
         rows.push(warning_row(tr(
             "Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first.",
@@ -1399,11 +1334,11 @@ fn outbound_rows<'a>(rights: &Rights, column: Option<f32>) -> Vec<Element<'a, Me
 
 /// "Ask first": never, on delete, on every change.
 fn confirm_group<'a>(current: Confirm, column: Option<f32>) -> Element<'a, Message> {
-    let options = confirm_options();
+    let options = widgets::confirm_options();
     let active = options.iter().position(|(_, confirm)| *confirm == current).unwrap_or(0);
     let control = widgets::segmented(options.map(|(label, confirm)| (label, Message::Confirm(confirm))), active);
     let footer = tr("The agent waits until you allow it in Approvals. Admin commands always wait.");
-    let row = segment_row(tr("Ask first"), None, control, column);
+    let row = widgets::segment_row(tr("Ask first"), None, control, column);
     widgets::group(tr("Approval"), vec![row], Some(footer.to_string()))
 }
 
@@ -1422,7 +1357,7 @@ fn selection_group<'a>(
         [(tr("All"), Message::All(pick, true)), (tr("Selected"), Message::All(pick, false))],
         usize::from(!all),
     );
-    let mut rows = vec![segment_row(tr("Access to"), None, switch, column)];
+    let mut rows = vec![widgets::segment_row(tr("Access to"), None, switch, column)];
     if !all {
         let offered = candidates(pick, data, selection);
         if offered.is_empty() && pick != Pick::GithubRepos {
@@ -1488,7 +1423,7 @@ fn hook_group<'a>(client: &'a ClientInfo, column: Option<f32>) -> Element<'a, Me
             None,
             area_label(Area::Inbox),
             Some(tr("Reports and resolves its own entries, sees none").to_string()),
-            value(level_label(Level::Write)),
+            value(widgets::level_label(Level::Write)),
         ),
     ];
     let footer = tr(
@@ -2206,12 +2141,12 @@ mod tests {
     fn every_segmented_control_fits_the_common_slot() {
         let slot = segment_slot();
         for area in Area::ALL.into_iter().filter(|area| area.grantable()) {
-            let labels: Vec<&str> = levels(area).into_iter().map(level_label).collect();
-            assert!(segmented_width(&labels) <= slot, "{area:?}");
+            let labels: Vec<&str> = levels(area).into_iter().map(widgets::level_label).collect();
+            assert!(widgets::segmented_width(&labels) <= slot, "{area:?}");
         }
-        assert!(segmented_width(&confirm_options().map(|(label, _)| label)) <= slot);
-        assert!(segmented_width(&outbound_options().map(|(label, _)| label)) <= slot);
-        assert!(segmented_width(&[tr("All"), tr("Selected")]) <= slot);
+        assert!(widgets::segmented_width(&widgets::confirm_options().map(|(label, _)| label)) <= slot);
+        assert!(widgets::segmented_width(&outbound_options().map(|(label, _)| label)) <= slot);
+        assert!(widgets::segmented_width(&[tr("All"), tr("Selected")]) <= slot);
         assert!(slot < size::content_max() / 2.0, "leaves room for the area's name");
     }
 
