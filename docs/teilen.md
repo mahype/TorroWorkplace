@@ -16,7 +16,7 @@ der Wahl, was mitgeht, und den Zielen:
 | **Copy** | der Text in die Zwischenablage | TL1 |
 | **Save as file…** | die Datei (`.vcf`) speichern | TL1 |
 | **QR code** | die vCard als QR-Code, zum Abscannen mit dem Handy, ohne Netz | TL1 |
-| **Talk** | eine Nachricht mit Text und Datei in eine Unterhaltung | TL2, kommt mit der Chat-App |
+| **Chat** | eine Nachricht mit Text und Datei in eine Unterhaltung (Nextcloud Talk) | TL2, umgesetzt in CH3 der Chat-App ([chat.md](chat.md)) |
 
 Wie jede Funktion gibt es Teilen dreimal: in der Oberfläche (Teilen-Blatt), über die API und über
 MCP. Ein Agent kann also „Schick Max die Kontaktdaten von Anna“ als Mail-Entwurf vorbereiten. Das
@@ -32,7 +32,7 @@ Senden bleibt, was es heute ist: nach außen und mit Freigabe.
 - **Karte (`ShareCard`):** was der Kern aus Inhalt und Auswahl macht: ein Titel, ein kurzer Text für
   Mail-Text, Chat und Zwischenablage, eine Datei (Name, Typ, Inhalt) und die Liste der mitgehenden
   Felder für die Vorschau.
-- **Ziel:** ein Befehl, der Inhalte annimmt (`mail.save_draft`, später `talk.send_message`), oder eine
+- **Ziel:** ein Befehl, der Inhalte annimmt (`mail.save_draft`, später `chat.send_message`), oder eine
   reine Oberflächen-Aktion (Copy, Save as file, QR code), die nur die Karte braucht.
 
 ## Entscheidungen (2026-10-15)
@@ -40,7 +40,7 @@ Senden bleibt, was es heute ist: nach außen und mit Freigabe.
 1. **Baustein der Suite, kein eigener Bereich.** Es gibt keinen Bereich `share` und kein eigenes
    Recht „teilen“. Wer teilt, braucht, was er ohnehin bräuchte:
    - **Lesen** des Inhalts in dessen Bereich, samt Auswahl (Adressbuch, später Kategorie …).
-   - **Das Recht des Ziels:** Write in `mail` für einen Entwurf; „nach außen“ für Senden und für Talk.
+   - **Das Recht des Ziels:** Write in `mail` für einen Entwurf; „nach außen“ für Senden und für den Chat.
 
    Ein Agent mit Mail-Rechten, aber ohne das Adressbuch, kann einen Kontakt nicht anhängen
    (`not-found`).
@@ -78,16 +78,16 @@ Senden bleibt, was es heute ist: nach außen und mit Freigabe.
    mitgeschickten Karten: „Contact card: Anna Muster (6 fields)“. Namen gehen durch dieselbe
    Entschärfung wie in anderen Freigaben (eine Zeile, keine Steuerzeichen, 60 Zeichen); kennt der
    Cache einen Kontakt nicht mehr, steht dort „unknown contact“.
-6. **Talk als Ziel kommt mit der Chat-App.** Die Chat-App gibt es noch nicht. Hier steht nur, was ihr
-   Senden-Befehl für das Teilen können muss (TL2). Ihr eigener Plan übernimmt das:
-   - Eine Nachricht kann Inhalte tragen: `items: [ShareItem]` mit Auswahl.
+6. **Chat als Ziel kommt mit der Chat-App** ([chat.md](chat.md), Stufe CH3). Hier steht, was ihr
+   Senden-Befehl `chat.send_message` (MCP `chat_send_message`, Bereich `chat`) für das Teilen können
+   muss (TL2):
+   - Eine Nachricht kann Inhalte tragen: `items: [ShareItem]` mit Auswahl (`fields`).
    - Der Kern lädt die Datei in den Talk-Anhangsordner des Menschen (WebDAV, Ordner aus der
      Talk-Konfiguration) und teilt sie in die Unterhaltung (Freigabe-Art 10, Talk), mit dem Text der
      Karte als Beschriftung. Ohne Datei geht nur der Text.
-   - Das ist **nach außen**, wie Mail senden ([erweiterungen.md](erweiterungen.md), Talk). Ob Talk
-     den Schalter „Send on my behalf“ (`Rights::outbound`) mitbenutzt oder einen eigenen bekommt,
-     entscheidet der Chat-Plan. Der Upload schreibt außerdem in die Dateien des Menschen; auch das
-     nennt die Freigabe.
+   - Das ist **nach außen**, wie Mail senden. Der Chat benutzt denselben Schalter „Send on my behalf“
+     (`Rights::outbound`), keinen eigenen ([chat.md](chat.md), Entscheidung 4). Der Upload schreibt
+     außerdem in die Dateien des Menschen; das braucht kein eigenes Recht, steht aber in der Freigabe.
 7. **Copy, Save as file und QR code sind reine Oberfläche.** Sie brauchen nur die Karte, die es über
    die API gibt (`<bereich>.share_card`). Was ein Agent damit macht, ist seine Sache, er hat die Daten
    ja schon lesen dürfen. Einen Befehl „in die Zwischenablage“ oder „Datei speichern“ gibt es nicht:
@@ -106,7 +106,7 @@ torrocontacts ─┐                       torroworkplace (Kern)
 torronotes  …  ├─ torro_gui::share ─IPC─▶ contacts/service.rs  contacts.share_card
 torroinbox  ───┘  (Teilen-Blatt)          share/mod.rs         ShareItem → ShareCard (je Art)
                                           mail/…               save_draft mit DraftAttachment::Items
-                                          talk/… (Chat-Plan)   send_message mit items
+                                          chat/… (Chat-Plan)   send_message mit items
 ```
 
 - **`torro-ipc`:** `ShareItem { kind, id }`, `ShareKind` (vorerst nur `Contact`), `ShareCard`.
@@ -118,10 +118,10 @@ torroinbox  ───┘  (Teilen-Blatt)          share/mod.rs         ShareItem
 - **`torro-contacts`:** `ShareFields`, Voreinstellung, `share_text(contact, fields)` und
   `share_vcard(contact, fields)`. Ohne Ein-/Ausgabe, testbar.
 - **`torro_gui::share`:** das Teilen-Blatt für alle Apps. Vorschau der Karte, Häkchen je Feld,
-  Ziele, QR-Code. Es zeigt nur Ziele, die es gibt: Mail ab einem Mail-Konto, Talk ab der Chat-App
-  und einem Talk-Konto.
+  Ziele, QR-Code. Es zeigt nur Ziele, die es gibt: Mail ab einem Mail-Konto, Chat ab einem Konto
+  mit Talk und Recht auf `chat`.
 - **Kern `share/mod.rs`:** löst ein `ShareItem` über den Dienst seiner Art in eine Karte auf, mit
-  den Rechten des Aufrufers. Wird von `mail` und später `talk` benutzt.
+  den Rechten des Aufrufers. Wird von `mail` und später `chat` benutzt.
 
 ## Befehle
 
@@ -130,7 +130,7 @@ torroinbox  ───┘  (Teilen-Blatt)          share/mod.rs         ShareItem
 | TL1 | `contacts.share_card { ids, fields? }` (Text, Datei, mitgehende Felder) | Read (`contacts`) | `contacts_share_card` |
 | TL1 | `mail.save_draft` mit `attachments: [{ kind: "items", items, fields? }]` (Erweiterung; einen eigenen Entwurf ersetzen braucht wie bisher Delete) | Write (`mail`) + Read der Inhalte | `mail_save_draft` (vorhanden) |
 | TL1 | `apps.open_app` mit `target: "draft:<m:id>"` (Schreibfenster mit dem Entwurf öffnen, Erweiterung) | Write (`apps`) | `apps_open_app` (vorhanden) |
-| TL2 | `talk.send_message { conversation, text, items? }` (im Chat-Plan) | nach außen (`talk`) + Read der Inhalte | `talk_send_message` |
+| TL2 | `chat.send_message { conversation, text, items?, fields? }` (CH3.2 im [Chat-Plan](tasks/chat.md)) | Write (`chat`) + nach außen + Read der Inhalte | `chat_send_message` |
 | TL3 | `notes.share_card`, `calendar.share_card`, `tasks.share_card`, … | Read im jeweiligen Bereich | je ein Tool |
 
 Erläuterungen:
@@ -156,22 +156,22 @@ Kontextmenü, bei Mehrfachauswahl für alle gewählten Inhalte:
   aufklappbarer Liste.
 - **Darunter:** „What to include“ mit Häkchen je Feld, mit der Voreinstellung aus Entscheidung 4.
   Private Felder stehen mit Schloss-Symbol und dem Hinweis „Private“.
-- **Ziele als Reihe:** **Mail**, **Talk** (später), **Copy**, **Save as file…**, **QR code**.
+- **Ziele als Reihe:** **Mail**, **Chat** (später), **Copy**, **Save as file…**, **QR code**.
   - **Mail** fragt nach dem Konto, wenn es mehrere gibt (vorgewählt das zuletzt benutzte), und
     öffnet das Schreibfenster von `torroinbox` mit dem Entwurf. Empfänger setzt der Mensch dort.
   - **QR code** zeigt den Code groß im Blatt. Bei mehr Daten, als ein QR-Code fasst, steht dort „Too
     much for one QR code – remove some fields“.
 - **Schreibfenster der Mail:** Knopf „Attach contact…“ öffnet eine Kontaktsuche (über
   `contacts.list_contacts`) und hängt die Karte an. So geht es auch vom Ziel her.
-- **Talk (TL2):** wählt die Unterhaltung aus einer Liste der letzten Unterhaltungen mit Suche.
+- **Chat (TL2):** wählt die Unterhaltung aus einer Liste der letzten Unterhaltungen mit Suche.
 
 ## Offen (in der jeweiligen Aufgabe klären)
 
 - **Systemweites Teilen** (macOS-Teilen-Menü, Linux-Portal `org.freedesktop.portal`) brächte
   AirDrop und andere Apps. Auf macOS braucht es AppKit-Code in `torro-appkit`. Das ist ein eigener
   Plan, nach Rückfrage.
-- **Talk-Beschriftung:** Ob die Beschriftung einer geteilten Datei auf allen unterstützten
-  Talk-Versionen geht, prüft TL2 gegen die Talk-Doku. Sonst kommen zwei Nachrichten: erst der Text,
-  dann die Datei.
+- **Talk-Beschriftung:** geklärt im Chat-Plan. Die Beschriftung braucht `media-caption` (Talk 18),
+  das alle unterstützten Nextcloud-Versionen haben; fehlt es doch, kommen zwei Nachrichten: erst der
+  Text, dann die Datei (CH3.1).
 - **Mehr Ziele:** Notiz („Save to note“), Aufgabe („Follow up“) und Assistent („Ask about this“) liegen
   nahe. Sie kommen erst, wenn ihr Plan es will.

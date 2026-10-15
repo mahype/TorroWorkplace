@@ -383,9 +383,7 @@ CH4.1 (braucht CH1.2) ── CH4.2 (braucht auch CH1.3) ── CH4.3 (braucht au
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/chat/{service,share}.rs` (`share.rs`
   neu), `crates/torroworkplace/src/{core,approvals,audit}.rs`, `crates/torroworkplace/src/assistant/*`
   (nur die Zuordnung zu den Bereichen der Inhalte), `crates/torroworkplace/src/mcp.rs` (Beschreibung,
-  falls das Schema für `items` Hinweise braucht), `docs/api.md`, `docs/api-reference.md`,
-  `docs/teilen.md` und `docs/tasks/teilen.md` (TL2 und Ziel „Talk“ auf `chat.send_message` und „Chat“
-  umstellen, TL2 auf diese Aufgaben verweisen)
+  falls das Schema für `items` Hinweise braucht), `docs/api.md`, `docs/api-reference.md`
 - **Request:** `chat.send_message` bekommt die optionalen Felder `items: Vec<ShareItem>` und `fields`
   (verträglich). Höchstens 50 Inhalte einer Art, wie `share_card`.
 - **Kern (`chat/share.rs`):** Karte über `share::card_for` mit den Rechten des Aufrufers; fehlt das

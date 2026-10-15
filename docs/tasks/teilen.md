@@ -17,7 +17,7 @@ Aufgaben, die den Katalog ändern (TL1.1, TL1.3), laufen nie parallel zu anderen
 KO1.1a ── TL1.0 ── TL1.1 (braucht KO1.5) ─┬─ TL1.2 (Teilen-Blatt)
                                           └─ TL1.3 (Mail) ── TL1.4 (Schreibfenster)
 TL1.5 (torrocontacts) braucht TL1.2, TL1.3, KO1.7
-TL2 kommt mit dem Plan der Chat-App · TL3 je Art mit ihrem Plan
+TL2 setzt der Chat-Plan um (CH3.1–CH3.3 in chat.md) · TL3 je Art mit ihrem Plan
 ```
 
 ## TL1 Kontakte teilen: Mail, Kopieren, Datei, QR-Code
@@ -58,7 +58,7 @@ TL2 kommt mit dem Plan der Chat-App · TL3 je Art mit ihrem Plan
   ohne `fields` die sparsame Voreinstellung gilt.
 - **Kern `share/mod.rs`:** `card_for(caller, items, fields) -> Result<ShareCard, …>`: holt je Art die
   Karte über deren Dienst, mit den Rechten des Aufrufers. Mischen verschiedener Arten wird abgelehnt
-  (`error`). Diese Funktion benutzen TL1.3 und später Talk.
+  (`error`). Diese Funktion benutzen TL1.3 und später der Chat (CH3.2).
 - **Protokoll:** Befehl, Art und Zahl der Inhalte, Kennungen als Prüfsumme.
 - **Assistent:** `share_card` folgt denselben Regeln wie `get_contact`, auch für entfernte Modelle.
 - **Abnahme:**
@@ -76,8 +76,8 @@ TL2 kommt mit dem Plan der Chat-App · TL3 je Art mit ihrem Plan
   - **Vorschau** der `ShareCard`, bei mehreren Inhalten „3 contacts“ mit aufklappbarer Liste.
   - **„What to include“:** Häkchen je Feld, die privaten mit Schloss und „Private“. Jede Änderung
     holt die Karte neu (Nachricht an die App, das Blatt lädt nichts selbst).
-  - **Ziele:** Mail (mit Kontowahl ab zwei Konten), Copy, Save as file…, QR code. Talk erscheint,
-    sobald die App ein Talk-Ziel meldet (TL2). Ziele ohne Konto werden nicht gezeigt.
+  - **Ziele:** Mail (mit Kontowahl ab zwei Konten), Copy, Save as file…, QR code. Chat erscheint,
+    sobald die App ein Chat-Ziel meldet (TL2, CH3.3). Ziele ohne Konto werden nicht gezeigt.
   - **QR code** groß im Blatt, Fehlerkorrektur M; passt die vCard nicht, der Hinweis aus dem Konzept.
   - Tastatur: `Esc` schließt, Pfeiltasten wählen das Ziel, Enter führt aus.
 - Das Blatt kennt keine Art; es bekommt Karte, Feldliste und Ziele von der App.
@@ -167,22 +167,24 @@ TL2 kommt mit dem Plan der Chat-App · TL3 je Art mit ihrem Plan
 - **API:** `contacts.share_card`, `mail.save_draft`, `apps.open_app`. **MCP:** dieselben Tools.
 - **Abnahme:** Sichtprüfung mit `--demo --open share`; Tests der Nachrichten (die Auswahl geht mit).
 
-## TL2 Talk (mit der Chat-App)
+## TL2 Chat (mit der Chat-App)
 
-Diese Stufe gehört in den Plan der Chat-App, der noch geschrieben wird. Dieser Abschnitt hält fest,
-was er für das Teilen übernehmen muss:
-- **Befehl:** `talk.send_message { conversation, text, items? }`, nach außen, MCP `talk_send_message`.
-  `items` sind `ShareItem`s mit Auswahl, aufgelöst über `share::card_for` mit den Rechten des Aufrufers.
+**Umgesetzt wird diese Stufe in CH3 von [chat.md](chat.md)** (CH3.1 Anbieter, CH3.2 Befehl, CH3.3
+Teilen-Blatt); dort stehen Dateien, Abnahme und Reihenfolge. Dieser Abschnitt hält fest, was das
+Teilen davon braucht:
+- **Befehl:** `chat.send_message { conversation, text, items?, fields? }` im Bereich `chat`, Write und
+  nach außen, MCP `chat_send_message`. `items` sind `ShareItem`s mit Auswahl, aufgelöst über
+  `share::card_for` mit den Rechten des Aufrufers.
 - **Senden mit Datei:** in den Talk-Anhangsordner laden (Ordner aus der Talk-Konfiguration), dann in
   die Unterhaltung teilen, mit dem Text der Karte als Beschriftung. Prüfen gegen die Talk-Doku und die
   ältesten unterstützten Talk-Versionen; ohne Beschriftung zwei Nachrichten.
 - **Freigabe:** Unterhaltung (Name aus dem Cache), jede Karte wie bei Mail und dass eine Datei in
   den Talk-Ordner des Menschen geladen wird.
-- **Rechte:** Ob Talk `Rights::outbound` („Send on my behalf“) mitbenutzt oder einen eigenen Schalter
-  bekommt, entscheidet der Chat-Plan. Die Reichweite der Inhalte wird wie bei Mail vor der Freigabe
-  und bei „Allow“ geprüft.
-- **Teilen-Blatt:** Ziel „Talk“ mit Liste der letzten Unterhaltungen und Suche; `torrocontacts`
-  meldet es, sobald ein Talk-Konto da ist.
+- **Rechte:** Write in `chat` mit dem Konto in `chat_accounts`, der Schalter „Send on my behalf“
+  (`Rights::outbound`, kein eigener Schalter; [chat.md](../chat.md), Entscheidung 4) und Lesen der
+  Inhalte. Die Reichweite der Inhalte wird wie bei Mail vor der Freigabe und bei „Allow“ geprüft.
+- **Teilen-Blatt:** Ziel „Chat“ mit Liste der letzten Unterhaltungen und Suche; `torrocontacts`
+  meldet es, sobald ein Konto mit Talk da ist und der Aufrufer `chat` hat.
 
 ## TL3 Weitere Arten
 
