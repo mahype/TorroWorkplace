@@ -1596,7 +1596,8 @@ was der Kern für wichtig hält. Ziel: zwei klare Ansichten oben, wie „Alle Ei
 ```
 All           ← die Posteingänge aller Konten, eine Liste nach Datum (Startansicht)
 Later         ← was der Mensch selbst zurückgestellt hat
-── Smart views: Invitations, With attachments (bleiben)
+Trash         ← die Papierkörbe aller Konten, immer sichtbar
+── Smart views: Invitations, With attachments (bleiben), Not delivered (neu, E9.3)
 ── Konten mit ihren Ordnern (wie bisher, eingeklappt)
 ```
 
@@ -1607,9 +1608,17 @@ Entschieden am 2026-10-15:
 3. Eine Mail auf später **verschwindet aus „All“** und steht nur unter „Later“. Zur gewählten Zeit kommt sie zurück
    und steht dann **oben** in „All“, als wäre sie eben angekommen.
 4. Tags über IMAP-Keywords kommen danach, eigener Plan.
+5. Der Papierkorb ist immer sichtbar, oben als „Trash“ über alle Konten. Was gelöscht wird, verschwindet sofort aus
+   der Liste, in der es stand, auch aus Eintragslisten, und liegt im Papierkorb.
+6. Unzustellbare Mails (Bounces) erkennt der Kern selbst und zeigt sie als Smart view „Not delivered“ (E9.3a/b).
+7. Der Leser trennt, was jedes Mailprogramm hat, von dem, was nur Torro hat (E9.4): oben eine Kopfleiste mit den
+   Mail-Standards als deutliche Knöpfe, unten eine schwebende, fest stehende „Torro-Leiste“ mit Done, Later, Task,
+   den KI-Knöpfen und den Ansichts-Schaltern. Archive und Delete bleiben oben. Das Paneel der Zentrale teilt genauso.
 
-Reihenfolge: E9.1 (Kern) vor E9.2 (Oberfläche). Beide ändern nichts, was andere laufende Aufgaben anfassen, außer
-`crates/torroinbox` und dem Katalog: nicht neben anderen Aufgaben dort.
+Reihenfolge: E9.1 (Kern) vor E9.2 (Oberfläche). E9.3a (Kern) nach E9.1, darf neben E9.2 laufen; E9.3b nach E9.2 und
+E9.3a; E9.4 (issue #194) zuerst, vor E9.2 und E9.3b, nicht daneben (alle bauen den Leser um): E9.2 und E9.3b setzen
+ihre neuen Knöpfe dann gleich in die passende Leiste. Nicht parallel: zwei Aufgaben in
+`crates/torroinbox` oder zwei am Katalog.
 
 ### E9.1 Später für jede Mail: Kern
 - [ ] erledigt
@@ -1654,15 +1663,108 @@ Reihenfolge: E9.1 (Kern) vor E9.2 (Oberfläche). Beide ändern nichts, was ander
   Mail-Kennung. Danach verschwindet die Mail aus „All“, mit „Undo“ wie bei Einträgen.
 - **„Later“-Ansicht:** zeigt die zurückgestellten Mails (Einträge der Quelle Mail) mit der Zeit der Rückkehr;
   „Bring back now“ beendet das Zurückstellen (`inbox.snooze_item` ohne `until`).
+- **„Trash“ immer sichtbar:** dritte Zeile oben, „Trash“ (`Icon::Trash`), die Papierkörbe aller Konten in einer Liste
+  (`mail.search_messages` ohne Konto, `query: "in:trash"`), wie „All“ mit `cursor`. Kein Zähler.
+- **Gelöscht heißt weg (Fehler vom 2026-10-15):** In „For me“ blieb eine gelöschte Mail stehen. `App::take_out`
+  nimmt nur die Zeile der Ordnerliste heraus, nicht den Eintrag (`self.items`), der die Mail zeigt; der Kern
+  schließt ihn erst nach dem nächsten Abgleich. Beim Archivieren und Löschen verschwinden darum sofort auch die
+  offenen Einträge dieser Mail aus der Liste und dem Paneel (Zentrale, Mail-Fenster), mit „Undo“ wie bisher.
+  Prüfen, dass der Kern den Eintrag nach dem Verschieben in den Papierkorb wirklich erledigt
+  (`inbox_feed`, `MailChange::removed`); wenn nicht, im Bericht melden (Kern-Datei, eigene Aufgabe).
 - **Demo und Tastatur:** `--open` Zustände für „All“ (mit zwei Konten, einer Mail „Back from later“) und „Later“;
   Zustände für die entfallenen Ansichten im Mail-Fenster führen auf „All“. Tastenkürzel der Ansichten anpassen
   (`keys.rs`), leere Zustände mit Text („Your inboxes are empty.“, „Nothing for later.“).
 - **Oberfläche:** Mail-Fenster. **API/MCP:** keine neuen Befehle, nutzt `mail.search_messages` (Feld `snoozed`) und
   `inbox.snooze_item` mit Mail-Kennung aus E9.1; dieselben MCP-Tools.
-- **Abnahme:** Tests: Seitenleiste des Mail-Fensters hat genau „All“ und „Later“ über den Smart views; „All“ schickt
+- **Abnahme:** Tests: Seitenleiste des Mail-Fensters hat genau „All“, „Later“ und „Trash“ über den Smart views;
+  Löschen einer Mail aus einem Eintrag nimmt den Eintrag sofort aus der Liste, „Undo“ bringt ihn zurück; „All“ schickt
   `mail.search_messages` mit `in:inbox`, ohne Konto, mit `snoozed: false`, und blättert mit `cursor`; „Later“ an einer
   Ordnermail ohne Eintrag schickt `inbox.snooze_item` mit `m:…`; Zentrale und App Feed unverändert. Sichtprüfung
   (`torro-design-review`) in allen Größen, hell und dunkel. Übersetzungen im Bericht.
+
+### E9.3a Unzustellbare Mails erkennen: Kern
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E9.1 · **Dateien:** `crates/torro-mail/src/message.rs`,
+  `crates/torro-mail-imap/src/mime.rs`, `crates/torroworkplace/src/mail/{store,service,inbox_feed}.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/mcp.rs`, Testdaten unter
+  `crates/torro-mail-imap/tests/fixtures/`, `docs/{api,api-reference,eingang}.md`
+- **Erkennen:** Eine Mail ist eine Rückmeldung über Nichtzustellung, wenn sie `multipart/report;
+  report-type=delivery-status` ist (RFC 3464) und ihr `message/delivery-status`-Teil mindestens einen Empfänger mit
+  `Action: failed` (oder `delayed`) nennt. Ersatzweise, für Server ohne DSN: Absender `MAILER-DAEMON@…` oder
+  `postmaster@…` mit `Auto-Submitted` oder leerem `Return-Path: <>` und einem Betreff wie „Undelivered“,
+  „Delivery Status Notification“, „Mail delivery failed“, „Unzustellbar“. Abwesenheitsnotizen (`auto-replied`) sind
+  **keine** Bounces.
+- **Was der Kern ausliest:** `MessageSummary.bounce: Option<Bounce>` mit `recipients` (die Adressen, die nicht
+  ankamen), `status` (`failed`/`delayed`), `reason` (`Diagnostic-Code`, gekürzt, `untrusted`) und `original` (die
+  Message-ID der gesendeten Mail aus `message/rfc822` bzw. `text/rfc822-headers`, wenn vorhanden). Im Index gespeichert,
+  beim Neuaufbau des Index auch für alte Mails.
+- **Suche:** Operator `is:bounce` (und `-is:bounce`) in `mail.search_messages`.
+- **Eingang:** Ein Bounce landet in „For me“, nicht in „Info“ (heute schickt `bulk_reason` maschinelle Mail nach
+  „Info“); Grund am Eintrag „Not delivered“.
+- **Oberfläche:** Smart view „Not delivered“ (E9.3b). **API:** vorhanden `Request::SearchMail` ·
+  `mail.search_messages` · Read, neuer Operator `is:bounce`, neues optionales Antwortfeld `bounce`; `mail.get_message`
+  mit demselben Feld. **MCP:** `mail_search_messages`, `mail_get_message` (Beschreibungen ergänzt).
+- **Abnahme:** Tests mit Fixtures echter Bounce-Formen (Postfix, Exim, Gmail, Microsoft 365, Dovecot-LDA, eine
+  deutsche Meldung, eine Abwesenheitsnotiz als Gegenbeispiel): Empfänger, Status, Grund, Original richtig;
+  `is:bounce` findet genau die Bounces; Bounce-Eintrag in „For me“. API-Referenz neu erzeugt.
+
+### E9.3b Smart view „Not delivered“
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E9.2, E9.3a · **Dateien:** `crates/torroinbox/src/{app,mail,list,detail}.rs`,
+  `crates/torro-core/src/i18n/de.rs`
+- **Seitenleiste:** unter „Smart views“ neben „Invitations“ und „With attachments“: „Not delivered“
+  (`Icon::MailWarning` o. ä.), zählt Bounces der letzten 30 Tage, nur sichtbar, wenn es welche gibt. Lädt
+  `mail.search_messages` ohne Konto mit `query: "is:bounce"`.
+- **Zeile und Leser:** statt des Absenders „Not delivered to {recipient}“, darunter der Grund in einfacher Sprache,
+  wo er sich erkennen lässt (Postfach voll, Adresse unbekannt, abgelehnt als Spam), sonst der Text des Servers. Im
+  Leser „Open sent mail“ (die Originalmail aus `bounce.original`, wenn sie im Gesendet-Ordner liegt) und „Edit and
+  send again“ (öffnet sie als neuen Entwurf).
+- **Oberfläche:** Mail-Fenster. **API/MCP:** keine neuen Befehle (E9.3a).
+- **Abnahme:** Tests: Smart view erscheint nur mit Bounces und schickt `is:bounce`; Zeile nennt den Empfänger; „Open
+  sent mail“ öffnet das Original. Sichtprüfung (`torro-design-review`). Übersetzungen im Bericht.
+
+### E9.4 Leser: Standard oben, Torro-Leiste unten (issue #194)
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torroinbox/src/{mail,detail,app}.rs`,
+  `crates/torro-gui/src/{widgets,style}.rs` (schwebende Leiste, größerer Knopf), `crates/torro-core/src/i18n/de.rs`
+  (nur wenn neue Texte), `.claude/skills/torro-design/` (Muster „schwebende Leiste“ festhalten)
+- **Warum:** Heute stehen im Leser (`mail::reader_actions`) Mail-Standards, Torro-Funktionen und Werkzeuge in einer
+  Reihe, alle als kleine `ghost`-Knöpfe (`control_sm`), schmal nur noch Icons. „HTML | Text“ und „Light | Dark“
+  (`view_switches`) stehen zwischen Kopf und Mail und scrollen weg. Man sieht nicht, was „normales Mailprogramm“ ist
+  und was Torro dazugibt, und die Knöpfe oben wirken nicht wie Knöpfe.
+- **Kopfleiste oben (Mail-Standard):** Reply (primär), Reply all, Forward, Trennstrich, Archive, Delete; rechts als
+  Icons Flag, gelesen/ungelesen, Close. Die Knöpfe mit Wort sind `secondary` (Fläche und Rand, nicht `ghost`) und
+  eine Stufe höher (`size::control()`, 32 statt 28). Sie behalten ihr Wort, solange es passt (wie `bar_fit`), sonst
+  Icons mit Tooltip; sehr schmal zwei Reihen wie heute. Die Kopfleiste steht fest über dem Scrollbereich und scrollt
+  nicht mit; Betreff, Absender und Mail scrollen darunter.
+- **Torro-Leiste unten (was ein Mailprogramm nicht hat):** schwebt über dem Inhalt, fest am unteren Rand des Lesers,
+  nicht erst durch Scrollen zu sehen. Eigene Fläche wie ein Menü (Menüfläche, Schatten, `radius::lg`), mittig, mit
+  Abstand `space::m()` zu Rand und Seiten. Der Scrollbereich bekommt unten so viel Polster wie die Leiste hoch ist,
+  damit das Ende der Mail und die Anhänge nicht verdeckt bleiben. Drei Gruppen mit Trennstrichen:
+  1. **Erledigen:** Done bzw. Reopen, Later (Menü), Task (Menü). Bei einer Ordnermail Task (Later kommt mit E9.2
+     hier dazu).
+  2. **KI:** „AI task“, „AI event“ (`suggest::ai_buttons`), mit `Icon::Sparkles` in Akzentfarbe, damit sie als eigene
+     Funktion erkennbar sind; ohne KI aus, mit Tooltip wie heute (issue #120).
+  3. **Ansicht:** Move to Info/For me (nur Eintrag), Mute… (Glocke), „HTML | Text“, „Light | Dark“ (nur in der
+     HTML-Ansicht), Copy text.
+  Knöpfe in derselben Größe und Deutlichkeit wie oben (`secondary`, `control()`), Menüs öffnen nach oben (Anker der
+  Leiste). Breit eine Reihe mit Wörtern, mittel zwei Reihen, schmal Icons; was dann nicht passt, geht in „…“. Lädt
+  die Mail noch oder ist ein Fehler da: nur die Gruppen, die ohne Inhalt gehen (keine Ansichts-Schalter, kein Copy).
+- **Paneel (Zentrale, App Feed, Mail-Fenster schmal):** dieselbe Teilung. Oben im Paneel (`mail::body` → `actions`)
+  nur die Mail-Standards, in derselben deutlicheren Form. Die Torro-Funktionen stehen im festen Fuß des Paneels
+  (`Panel::footer`): bei einem Eintrag der Fuß aus `detail::Footer` wie heute, dazu die Ansichts-Schalter; eine
+  Ordnermail bekommt einen Fuß mit Later, Task, KI, Mute… und den Schaltern. Der Paneel-Fuß bleibt im Stil des
+  Paneels (keine schwebende Fläche), Gruppen und Reihenfolge wie im Leser.
+- **Tasten bleiben**, die Leiste ändert nur den Ort der Knöpfe (`keys.rs` unverändert, `v` schaltet weiter HTML/Text).
+- **Oberfläche:** Mail-Fenster (Leser), Paneel in Zentrale und App Feed. **API/MCP:** keine neuen Befehle; alle
+  Knöpfe schicken dieselben Messages und damit dieselben Requests wie bisher (`mail.*`, `inbox.*`,
+  `tasks.create_todo_from_mail`, KI-Vorschläge), dieselben MCP-Tools.
+- **Abnahme:** Tests: die Kopfleiste hält genau die Mail-Standards (Reply, Reply all, Forward, Archive, Delete, Flag,
+  gelesen, Close), die Torro-Leiste genau Done/Reopen, Later, Task, AI task, AI event, Move to, Mute…, die Schalter
+  und Copy text, für Eintrag und Ordnermail; die Schalter stehen nicht mehr über der Mail; der Scrollbereich hat
+  unten das Polster der Leiste; `bar_fit` für beide Leisten in allen Breiten; Paneel: Standards oben, Rest im Fuß.
+  Sichtprüfung (`torro-design-review`) im Leser und im Paneel, alle Größen, hell und dunkel, mit HTML-Mail, Textmail
+  und langer Mail (letzte Zeile über der Leiste sichtbar). Übersetzungen im Bericht.
 
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
