@@ -64,7 +64,6 @@ use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, center, column, container, responsive, row, svg, text_input, toggler};
 use iced::{Alignment, Color, Element, Fill, Length, Subscription, Theme};
-use torro_core::account::AccountKind;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -73,9 +72,12 @@ use torro_gui::widgets::{self, Status, color_dot};
 use torro_gui::{style, typo};
 use torro_inbox::{AgentKind, SourceKind, SourceRef};
 use torro_ipc::api::{
-    self, ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights,
+    self, ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, Confirm, HOOK_CLIENT, Level, Rights,
 };
-use torro_ipc::api::{Outbound, RightsTemplate, Selection};
+use torro_ipc::api::{Outbound, RightsTemplate, Selection, has_command};
+// Shared with the bot editor of the assistant (task B.5); `ui/bots.rs` and `ui/assistant.rs` reach
+// them here as before.
+pub(super) use torro_ipc::api::{active_level, levels, shows_area};
 use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
 use torro_pim::Collection;
 
@@ -450,9 +452,10 @@ fn edit(state: &mut State, data: &Data, message: Message) -> Action {
 /// level already set, "Selected" while already selected, a name that is no repository) and an area
 /// the client's kind does not show ([`shows_area`]) leave `rights` as they are and return `false`.
 /// "Selected" starts with every known candidate ticked ([`candidates`]): the client keeps what it
-/// reaches until the person unticks something. Switching mail on while no mail account is ticked
-/// ticks every account signed in now (issue #133): mail without an account grants nothing, and the
-/// person meant to grant something. Accounts added later stay off until ticked.
+/// reaches until the person unticks something. A level goes through [`Rights::set_level`], the rule
+/// the bot editor shares (task B.5): switching an area on while nothing of it is ticked ticks
+/// everything of it there is now – calendars, task lists, inbox sources, signed-in mail accounts
+/// (issue #133, widened) –, GitHub stays empty; what is added later stays off until ticked.
 pub(super) fn change_rights(
     rights: &mut Rights,
     kind: &str,
@@ -463,13 +466,11 @@ pub(super) fn change_rights(
     let before = rights.clone();
     match message {
         Message::Level(area, level) if shows_area(area, kind) => {
-            let held = rights.area(area);
-            rights.areas.insert(area, AreaRights { level, admin: held.admin });
-            let switched_on = held.level == Level::NoAccess && level != Level::NoAccess;
-            if area == Area::Mail && switched_on && rights.mail_accounts == Selection::Only(Vec::new()) {
-                let accounts = candidates(Pick::MailAccounts, data, &rights.mail_accounts);
-                rights.mail_accounts = Selection::Only(accounts.into_iter().map(|candidate| candidate.id).collect());
-            }
+            let present = || match Pick::ALL.into_iter().find(|pick| pick.area() == area) {
+                Some(pick) => candidates(pick, data, &Selection::Only(Vec::new())).into_iter().map(|c| c.id).collect(),
+                None => Vec::new(),
+            };
+            rights.set_level(area, level, present);
         }
         Message::Admin(area, admin) if shows_area(area, kind) => {
             let level = rights.area(area).level;
@@ -491,16 +492,6 @@ pub(super) fn change_rights(
         _ => {}
     }
     *rights != before
-}
-
-/// Whether the rights view offers `area` for a client of `kind`: every grantable area
-/// ([`Area::grantable`]), except `assistant` and `bots` for the assistant's own client and for a
-/// bot's (task B.3). The core refuses them those areas whatever their rights say
-/// ([`api::loops_back`]; the assistant uses the bots it may by its kind, never by a right), so a
-/// switch there would promise what never happens.
-pub(super) fn shows_area(area: Area, kind: &str) -> bool {
-    let closed = matches!(kind, ASSISTANT_CLIENT | BOT_CLIENT) && matches!(area, Area::Assistant | Area::Bots);
-    area.grantable() && !closed
 }
 
 /// The warning under an area's row of a client of `kind` with `rights`, while that area reaches the
@@ -697,35 +688,9 @@ pub(super) fn shown_rights<'a>(state: &'a State, client: &'a ClientInfo) -> &'a 
     }
 }
 
-/// Whether `area` has a command agents may use ([`Mcp::Tool`]) that needs `access`. Commands kept
-/// from agents ([`Mcp::Never`]) are refused whatever the rights say, so they count for nothing.
-fn has_command(area: Area, access: Access) -> bool {
-    CATALOGUE.iter().any(|command| command.area == area && command.mcp == Mcp::Tool && command.access == access)
-}
-
-/// The levels worth offering in `area`, least first: always "None" and "Read", "Write" when the
-/// area has commands that change something, "Full" when it has some that delete or overwrite.
-/// So "Settings", whose changes are all admin commands, offers just "None" and "Read".
-pub fn levels(area: Area) -> Vec<Level> {
-    let mut levels = vec![Level::NoAccess, Level::Read];
-    if has_command(area, Access::Write) {
-        levels.push(Level::Write);
-    }
-    if has_command(area, Access::Delete) {
-        levels.push(Level::Full);
-    }
-    levels
-}
-
 /// Whether `area` has admin commands agents may be allowed, so its admin switch is shown.
 pub fn has_admin(area: Area) -> bool {
     has_command(area, Access::Admin)
-}
-
-/// The segment that shows `stored`: the highest offered level it reaches. A template gives "Full"
-/// everywhere, which in an area without deleting commands allows what "Write" allows.
-pub fn active_level(offered: &[Level], stored: Level) -> usize {
-    offered.iter().rposition(|&level| level <= stored).unwrap_or(0)
 }
 
 /// The options of "Ask first", in the order the control shows them.
@@ -1195,10 +1160,7 @@ pub fn valid_repo(input: &str) -> Option<String> {
 /// shows them to no client whatever the selection says (task E1.2c). A selection that still names
 /// it shows it as no longer available ([`candidates`]), so it can be unticked.
 fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
-    let mut sources: Vec<SourceRef> = data.sources.iter().map(|info| info.source.clone()).collect();
-    sources.extend(data.clients.iter().filter_map(|client| api::post_source(Some(client), None).ok()));
-    sources.extend(mail_candidates(data).iter().filter_map(|account| account.id.parse::<SourceRef>().ok()));
-    sources.extend(remote_sources(data));
+    let mut sources = api::present_sources(&data.sources, &data.clients, &data.accounts);
     if let Selection::Only(keys) = selection {
         sources.extend(keys.iter().filter_map(|key| key.parse::<SourceRef>().ok()));
     }
@@ -1222,32 +1184,11 @@ fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
         .collect()
 }
 
-/// The inbox sources of the remote accounts, whether or not they have entries yet: a GitHub
-/// account's notifications, a Nextcloud account's notifications and its Talk, an ntfy account's
-/// topics. Each account's id is the key of its source; Talk's is the Nextcloud account's with
-/// `talk` in front. A sign-in that still runs has no id and no source.
-fn remote_sources(data: &Data) -> Vec<SourceRef> {
-    let mut sources = Vec::new();
-    for source in data.accounts.iter().filter_map(|account| account.id.parse::<SourceRef>().ok()) {
-        match source.kind {
-            SourceKind::Nextcloud => {
-                sources.push(SourceRef::talk(source.name.clone()));
-                sources.push(source);
-            }
-            SourceKind::Github | SourceKind::Ntfy => sources.push(source),
-            _ => {}
-        }
-    }
-    sources
-}
-
 /// The mail accounts an agent can be allowed (`accounts.list_accounts`, kind `mail`): the id is
 /// what the core checks a call against ([`Rights::reaches_mail_account`]), the address is what the
 /// person knows it by. A sign-in that is still running has no id and no mail yet.
 fn mail_candidates(data: &Data) -> Vec<Candidate> {
-    data.accounts
-        .iter()
-        .filter(|account| account.kind == AccountKind::Mail.name() && !account.id.is_empty())
+    api::signed_in_mail(&data.accounts)
         .map(|account| Candidate::plain(account.id.clone(), account.label.clone(), None))
         .collect()
 }
@@ -1845,6 +1786,39 @@ mod tests {
             assert_eq!(id, "c1", "{text}");
             assert!(check(&rights), "{text}: {rights:?}");
         }
+    }
+
+    /// Task B.5: the rule of issue #133 holds for every selection. Switching an area on while
+    /// nothing of it is ticked ticks what there is now (never "All"); GitHub stays empty, a choice
+    /// stays.
+    #[test]
+    fn switching_an_area_on_ticks_what_there_is_now() {
+        let data = data();
+        let mut repo_input = String::new();
+        let mut rights = Rights::none();
+        let mut level = |rights: &mut Rights, area: Area, level: Level| {
+            change_rights(rights, BOT_CLIENT, Message::Level(area, level), &data, &mut repo_input)
+        };
+        for area in [Area::Calendar, Area::Tasks, Area::Github, Area::Inbox, Area::Mail] {
+            assert!(level(&mut rights, area, Level::Read), "{area:?}");
+        }
+        assert_eq!(rights.calendars, Selection::Only(vec!["acc/work".into(), "acc/home".into()]));
+        assert_eq!(rights.task_lists, Selection::Only(vec!["acc/todo".into(), "github:anna/1".into()]));
+        assert_eq!(rights.github_repos, Selection::Only(Vec::new()), "no list of every repository");
+        assert_eq!(
+            rights.mail_accounts,
+            Selection::Only(vec!["mail:anna@mailbox.org".into(), "mail:anna@work.example.net".into()])
+        );
+        let Selection::Only(sources) = &rights.inbox_sources else { panic!("never All") };
+        assert!(sources.contains(&"script:nightly".to_string()) && sources.contains(&"agent:claude-code".to_string()));
+        assert!(!sources.contains(&"suite".to_string()));
+
+        // Off and on again keeps what was ticked meanwhile.
+        rights.calendars = Selection::Only(vec!["acc/home".into()]);
+        assert!(level(&mut rights, Area::Calendar, Level::NoAccess));
+        assert!(level(&mut rights, Area::Calendar, Level::Write));
+        assert_eq!(rights.calendars, Selection::Only(vec!["acc/home".into()]));
+        assert!(!level(&mut rights, Area::Bots, Level::Read), "a bot never gets the row");
     }
 
     #[test]

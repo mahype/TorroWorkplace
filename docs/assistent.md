@@ -162,7 +162,10 @@ Agenten mit eigenem Profil, die auf ein Fachgebiet zugeschnitten sind, z. B. „
   und man jeden Schritt nachvollziehen kann.
 - **Anlegen:** in der App oder der Steuerzentrale. Der Hauptbot kann einen Bot **vorschlagen**
   (Name, Beschreibung, Persönlichkeit, Anweisungen), ein neuer Bot hat aber keine Rechte, bis der
-  Mensch sie vergibt (Punkt 2 in „Was nie nach außen geht“).
+  Mensch sie vergibt (Punkt 2 in „Was nie nach außen geht“). Wer einen Bot selbst anlegt, vergibt
+  die Rechte gleich im Bot-Editor (Abschnitt „Access“: Stufe je Bereich und „Ask first“, B.5);
+  welche Kalender, Konten und Repositories, Senden und Admin-Befehle stellt man in der
+  Steuerzentrale ein.
 - **Später:** Bots als Paket weitergeben (nur Daten: Profil, Anweisungen, Skills, verlangte
   Rechte), passend zu den Erweiterungen ([erweiterungen.md](erweiterungen.md), Punkt 5).
 
@@ -366,7 +369,7 @@ an und speichert den Verlauf. Darum kann man dieselbe Unterhaltung auch über AP
 | **Stufe 2:** Bot anlegen/ändern (ohne Rechte) | Bot-Editor | `bots.save_bot` · Write | `bots_save_bot` |
 | **Stufe 2:** Bot löschen | Bot-Editor | `bots.delete_bot` · Delete | `bots_delete_bot` |
 | **Stufe 2:** Bot fragen | Chat mit dem Bot; Hauptbot gibt ab | `bots.ask_bot` · Write (startet einen Modelllauf) | `bots_ask_bot` |
-| **Stufe 2:** Rechte eines Bots | Bot-Editor › Access | `clients.update_client` (gibt es) | **Never** (Punkt 2) |
+| **Stufe 2:** Rechte eines Bots | Bot-Editor › Access (Stufen je Bereich, „Ask first“, B.5); alles Feinere in der Steuerzentrale › Assistant › Bots | `clients.list_clients` · Admin, `clients.update_client` · Admin (gibt es, nur App-Schlüssel) | **Never** (Punkt 2) |
 | Freigabe im Chat entscheiden | Karte „Allow“/„Deny“, auf Entwurfs- und Eintragskarten „Send“/„Discard“ bzw. „Delete“/„Keep“ | `approvals.decide_approval` (gibt es) | **Never** (Punkt 3) |
 | Einträge als Karten zeigen | Karten im Verlauf | `assistant.show_items` · Write (nur Kennungen aus dieser Unterhaltung, max. 10) | `assistant_show_items` |
 | Karten einer Unterhaltung auflösen | Karten im Verlauf | `assistant.get_cards` · Read (mit den Rechten des Assistenten) | `assistant_get_cards` |
@@ -382,7 +385,7 @@ Clients standardmäßig „Kein Zugriff“, auch in der Vorlage *Full access* (e
 Aufgaben: [tasks/assistent.md](tasks/assistent.md) (C.1–C.9). Antrieb A braucht KI.1 (wird dafür
 vorgezogen, OpenAI-kompatibel zuerst), Antrieb B nur einen verbundenen Agenten.
 Sprache (C.9) kommt zuletzt, wenn der Chat steht. Persönlichkeit und Gedächtnis sind Teil von Stufe 1
-(C.10), Bots sind Stufe 2 (Aufgaben B.1–B.4, geplant am 2026-10-14).
+(C.10), Bots sind Stufe 2 (Aufgaben B.1–B.5, geplant am 2026-10-14).
 
 ## Offen
 

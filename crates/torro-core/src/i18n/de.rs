@@ -3166,10 +3166,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Asked {bot} · {steps} steps", "{bot} gefragt · {steps} Schritte"),
     // Bots in the app and the control centre (B.3)
     (
-        "A bot starts with access to nothing. You choose what it may use in the control centre.",
-        "Ein Bot hat anfangs keinen Zugriff. Was er nutzen darf, wählst du in der Steuerzentrale.",
-    ),
-    (
         "A skill's name is at most {max} characters: “{name}”.",
         "Der Name einer Fähigkeit hat höchstens {max} Zeichen: „{name}“.",
     ),
@@ -3386,6 +3382,40 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("write formatted mail", "formatierte E-Mails schreiben"),
     ("write plain text mail", "E-Mails als reinen Text schreiben"),
     ("{name} ({keys})", "{name} ({keys})"),
+    // A bot's access in the bot editor (B.5)
+    ("All calendars", "Alle Kalender"),
+    ("No calendar", "Kein Kalender"),
+    ("{n} of {m} calendars", "{n} von {m} Kalendern"),
+    ("All task lists", "Alle Aufgabenlisten"),
+    ("No task list", "Keine Aufgabenliste"),
+    ("{n} of {m} task lists", "{n} von {m} Aufgabenlisten"),
+    ("No source", "Keine Quelle"),
+    ("{n} of {m} sources", "{n} von {m} Quellen"),
+    ("No mail account", "Kein E-Mail-Konto"),
+    ("{n} of {m} mail accounts", "{n} von {m} E-Mail-Konten"),
+    ("No repositories · choose in Torro Workplace", "Keine Repositorys · in Torro Workplace wählen"),
+    ("1 repository", "1 Repository"),
+    ("{n} repositories", "{n} Repositorys"),
+    ("sending: never", "Senden: nie"),
+    ("sending: asks each time", "Senden: fragt jedes Mal"),
+    ("sending: always", "Senden: immer"),
+    (
+        "Couldn't read the bot's access. You can set it in Torro Workplace.",
+        "Der Zugriff des Bots konnte nicht gelesen werden. Du kannst ihn in Torro Workplace festlegen.",
+    ),
+    ("More in Torro Workplace…", "Mehr in Torro Workplace…"),
+    ("mutes sources", "schaltet Quellen stumm"),
+    ("connects accounts", "verbindet Konten"),
+    ("changes settings", "ändert Einstellungen"),
+    ("admin commands", "Verwaltungsbefehle"),
+    (
+        "Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen in Torro Workplace.",
+        "Kalender, Listen, Repositorys, Quellen, E-Mail-Konten, Senden und Verwaltungsbefehle wählst du in Torro Workplace.",
+    ),
+    (
+        "Bot saved, but its access couldn't be set.",
+        "Bot gespeichert, aber sein Zugriff konnte nicht festgelegt werden.",
+    ),
     // Inbox: AI task and AI event (issue #120)
     ("AI event", "KI-Termin"),
     ("AI task", "KI-Aufgabe"),
