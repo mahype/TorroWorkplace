@@ -178,6 +178,63 @@ fn dark_turns_white_dark_and_black_light_and_leaves_pictures() {
     assert!(contrast(text, paper(&dark)) >= MIN_TEXT_CONTRAST, "{:.2}", contrast(text, paper(&dark)));
 }
 
+/// A mail that colours its `body` and keeps the browser's margin of 8 around it.
+const COLORED_BODY: &str = "<body style=\"background:#f0e0c0\"><div style=\"height:60px\"></div></body>";
+
+#[test]
+fn the_bodys_background_fills_the_whole_view_as_a_browsers_canvas() {
+    let content = content(COLORED_BODY);
+    for scheme in [Scheme::Light, Scheme::Dark] {
+        let snapshot = content.snapshot(300.0, 1.0, scheme, 0.0, 76.0);
+        let inside = snapshot.pixel(150, 38).expect("pixel");
+        assert_ne!(inside, background(scheme), "the body is coloured in {scheme:?}");
+        // The margin of 8 around the body, up to every edge of the view, has the body's colour.
+        for (x, y) in [(0, 0), (299, 0), (3, 38), (296, 38), (0, 75), (299, 75)] {
+            assert_eq!(snapshot.pixel(x, y), Some(inside), "({x}, {y}) in {scheme:?}");
+        }
+    }
+}
+
+#[test]
+fn the_roots_background_wins_over_the_bodys() {
+    let content = content(
+        "<html style=\"background:#203040\"><body style=\"background:#f0e0c0\">\
+         <div style=\"height:60px\"></div></body></html>",
+    );
+    let snapshot = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 76.0);
+    assert_eq!(snapshot.pixel(2, 2), Some([0x20, 0x30, 0x40, 255]), "the canvas takes the root's colour");
+    assert_eq!(snapshot.pixel(150, 38), Some([0xf0, 0xe0, 0xc0, 255]), "the body keeps its own");
+}
+
+/// A newsletter as the core's cleaning leaves it: `body` and its colour are gone, the same colour is
+/// on a wrapper around the whole mail.
+const WRAPPED: &str = "<style>p { margin: 0 }</style>\n<div style=\"background-color:#f0e0c0\">\
+     <div style=\"height:60px\"></div></div>\n";
+
+#[test]
+fn a_wrapper_around_the_whole_mail_colours_the_view_as_the_lost_body_would() {
+    let content = content(WRAPPED);
+    for scheme in [Scheme::Light, Scheme::Dark] {
+        let snapshot = content.snapshot(300.0, 1.0, scheme, 0.0, 76.0);
+        let inside = snapshot.pixel(150, 38).expect("pixel");
+        assert_ne!(inside, background(scheme), "the wrapper is coloured in {scheme:?}");
+        for (x, y) in [(0, 0), (299, 0), (3, 38), (296, 38), (0, 75), (299, 75)] {
+            assert_eq!(snapshot.pixel(x, y), Some(inside), "({x}, {y}) in {scheme:?}");
+        }
+    }
+}
+
+#[test]
+fn a_narrow_box_or_text_beside_it_is_no_wrapper() {
+    let narrow = content("<div style=\"background:#f0e0c0;width:200px;height:60px\"></div>");
+    let beside = content("Hello <div style=\"background:#f0e0c0;height:60px\"></div>");
+    for content in [narrow, beside] {
+        let snapshot = content.snapshot(300.0, 1.0, Scheme::Light, 0.0, 76.0);
+        assert_eq!(snapshot.pixel(2, 2), Some(background(Scheme::Light)), "the margin keeps the surface");
+        assert_eq!(snapshot.pixel(296, 70), Some(background(Scheme::Light)), "the margin keeps the surface");
+    }
+}
+
 /// The pixel in rows `rows`, columns `left..right`, that differs most from the pixel at `(left - 16, row)`
 /// (the box's own surface): the core of a glyph.
 fn strongest(snapshot: &Snapshot, left: u32, right: u32, rows: std::ops::Range<u32>) -> peniko::Color {

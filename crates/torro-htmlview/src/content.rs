@@ -444,6 +444,7 @@ impl Inner {
         // Blitz paints what its viewport scroll shows; the widget scrolls outside, so it is only set here.
         let scale = f64::from(fit.scale) * f64::from(self.zoom);
         self.doc.set_viewport_scroll(blitz_dom::Point { x: 0.0, y: f64::from(from) / scale });
+        let canvas = wrapper_background(&self.doc);
         let doc = &mut self.doc;
         let mut rgba = Vec::new();
         painter.render_to_vec(
@@ -451,9 +452,18 @@ impl Inner {
                 let all = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
                 scene.fill(Fill::NonZero, Affine::IDENTITY, colors.background, None, &all);
                 match colors.dark {
-                    None => paint_scene(scene, doc, scale, width, height, 0, 0),
+                    None => {
+                        if let Some(canvas) = canvas {
+                            scene.fill(Fill::NonZero, Affine::IDENTITY, canvas, None, &all);
+                        }
+                        paint_scene(scene, doc, scale, width, height, 0, 0);
+                    }
                     Some(recolor) => {
                         let mut dark = DarkScene::new(scene, recolor, scale);
+                        // Through the dark scene: the canvas turns dark like every other surface.
+                        if let Some(canvas) = canvas {
+                            dark.fill(Fill::NonZero, Affine::IDENTITY, canvas, None, &all);
+                        }
                         paint_scene(&mut dark, doc, scale, width, height, 0, 0);
                     }
                 }
@@ -529,6 +539,46 @@ fn content_width(doc: &BaseDocument) -> f32 {
         }
     }
     widest
+}
+
+/// The colour of a wrapper around the whole mail, painted over the whole view under the mail like a
+/// browser's canvas: the one element in `body` (besides `style` and white space), when it is as wide
+/// as the body and has a background colour of its own.
+///
+/// Blitz already paints the background of `html`, else of `body`, over the whole view, as browsers
+/// do. But the core's cleaning drops `body` with its colour (`bgcolor`, `style`), and newsletters
+/// carry the same colour on such a wrapper for the mail apps that do so, too. Without this the
+/// body's margin of 8 around the wrapper shows the reader's surface as a frame around the mail.
+/// When `html` or `body` has a colour after all, Blitz paints it over this one.
+fn wrapper_background(doc: &BaseDocument) -> Option<peniko::Color> {
+    let root = doc.try_root_element()?;
+    let body = root
+        .children
+        .iter()
+        .filter_map(|&id| doc.get_node(id))
+        .find(|node| node.data.is_element_with_tag_name(&local_name!("body")))?;
+    let mut wrapper = None;
+    for node in body.children.iter().filter_map(|&id| doc.get_node(id)) {
+        if node.is_text_node() && !node.is_whitespace_node() {
+            return None;
+        }
+        if !node.is_element() || node.data.is_element_with_tag_name(&local_name!("style")) {
+            continue;
+        }
+        if wrapper.replace(node).is_some() {
+            return None;
+        }
+    }
+    let wrapper = wrapper?;
+    if wrapper.final_layout().size.width + 1.0 < body.final_layout().content_box_width() {
+        return None;
+    }
+    let styles = wrapper.primary_styles()?;
+    let color = styles.clone_background_color().resolve_to_absolute(&styles.clone_color()).into_srgb_legacy();
+    if color.is_transparent() {
+        return None;
+    }
+    Some(peniko::Color::new(*color.raw_components()))
 }
 
 /// A link target the app may open: absolute `http`, `https` or `mailto`.

@@ -72,6 +72,8 @@
 //! The app's state does not depend on the mode: when the window is resized, the same panel moves
 //! from beside to over and back, with its fields, scroll position and open menu kept.
 
+mod bleed;
+
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
 use iced::widget::{column, container, mouse_area, opaque, row, rule, scrollable, stack, svg};
@@ -205,7 +207,7 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         let content =
             column![container(title).width(Fill).padding(Padding::new(0.0).left(space::s()).right(space::s())), body]
                 .spacing(space::l())
-                .padding(Padding { top: space::xs(), right: space::s(), bottom: space::xl(), left: space::s() });
+                .padding(Padding { top: space::xs(), right: body_inset(), bottom: space::xl(), left: body_inset() });
         let scroll = scrollable(content)
             .direction(scrollable::Direction::Vertical(style::scrollbar()))
             .style(style::scrollable)
@@ -276,6 +278,20 @@ fn path_mark<'a, M: 'a>(mark: Mark) -> Element<'a, M> {
 /// borderless `text_editor` in `typo::headline()` instead.
 pub fn title<'a, M: 'a>(text: impl IntoFragment<'a>) -> Element<'a, M> {
     typo::text(typo::headline(), text).style(theme::text).wrapping(Wrapping::WordOrGlyph).width(Fill).into()
+}
+
+/// How far the panel's body stands in from the panel's edges at each side: [`bleed`] reaches past it.
+fn body_inset() -> f32 {
+    space::s()
+}
+
+/// Content over the panel's whole width, reaching past the body's side inset (8 at each side) to
+/// the panel's edges: a mail's HTML, whose own background then fills the panel from edge to edge as
+/// in a mail app. Only directly in the body passed to [`panel`] (nested in further padding it
+/// reaches only that far out). It is as tall as its content; what stands beside it in the body keeps
+/// the inset.
+pub fn bleed<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    bleed::Bleed { content: content.into(), by: body_inset() }.into()
 }
 
 /// Free content in the panel's body (notes, subtasks, a sentence) moved in by 8, so its text
@@ -391,6 +407,14 @@ mod tests {
         )
         .actions(vec![widgets::icon_button(Icon::Ellipsis, "More", Some(Msg::Go))])
         .footer(vec![widgets::text_button(None, "Delete task", style::button::danger, Some(Msg::Go))])
+    }
+
+    #[test]
+    fn bleed_reaches_the_panels_edges() {
+        let by = body_inset();
+        assert_eq!(bleed::spread(384.0, by), (384.0 + 2.0 * by, -by));
+        assert_eq!(bleed::spread(f32::INFINITY, by), (f32::INFINITY, 0.0));
+        let _: Element<'_, Msg> = bleed(typo::text(typo::body(), "Mail"));
     }
 
     #[test]
