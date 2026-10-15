@@ -20,6 +20,7 @@ Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerz
 | Tagesplan | Was ist heute dran, Termine und Aufgaben zusammen? | Kalender und Aufgaben | Idee |
 | Fokus / Pomodoro / Zeiterfassung | Woran arbeite ich gerade und wie lange schon? | lokal; Export nach CalDAV | Idee |
 | Notizen / Scratchpad | Wo lege ich schnell etwas ab, auch für Agenten? | Markdown-Dateien | Idee |
+| **Kontakte** (`torrocontacts`) | Wer ist das, wie erreiche ich ihn, und wo ist das? | CardDAV (Nextcloud zuerst, dann iCloud, Fastmail, Radicale …), Karte mit OpenStreetMap ohne Schlüssel. Konzept: [kontakte.md](kontakte.md) | **Entwurf** ([tasks/kontakte.md](tasks/kontakte.md)) |
 
 ## Arbeiten mit KI
 
