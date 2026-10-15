@@ -174,6 +174,9 @@ ER3.1 (braucht ER1.4)       ER4 später
 ### ER2.4 Steuerzentrale: Calendar › Reminders
 - [ ] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.2 · **Dateien:** `crates/torroworkplace/src/ui/general.rs`
+- **Ort umgeplant (2026-10-15):** Gibt es die Einstellungen im Kalender schon (S.19 in
+  [steuerzentrale.md](steuerzentrale.md), Bibliothek `torro-settings-ui`), kommen die Gruppen als
+  Abschnitt „Reminders“ dorthin statt nach General. Sonst wie hier, und sie ziehen später mit um.
 - Gruppen nach dem Entwurf: „Reminders“ (an/aus, Default reminder, Show on, Sound, Preview),
   „Which events“ (Only accepted, All-day, Free, Outside work hours, Never full screen during a video call), „Calendars“ (je Kalender Off ·
   Notification · Full screen).

@@ -89,7 +89,7 @@ tippt, verliert keinen Tastendruck an „Dismiss“: Die Tasten wirken erst nach
 | `onsite` | vor Ort ohne Videolink: „Dismiss“ ist die Hauptaktion, „Open in Maps“ |
 | `second` | ruhige Fassung für die anderen Bildschirme |
 | `editor` | Termin-Paneel mit „Reminders“ und dem Menü „Add reminder“ |
-| `settings` | Steuerzentrale › Calendar: Reminders, Which events, Calendars |
+| `settings` | Kalender › Settings (bisher geplant: Steuerzentrale › Calendar): Reminders, Which events, Calendars |
 | `quiet` | leise Benachrichtigung und Tray mit „Next“ und „Pause reminders“ |
 
 ## Leise Benachrichtigung
@@ -263,7 +263,7 @@ samt Taskleiste, ohne Wechsel der Bildschirmauflösung und ohne neuen virtuellen
 | Pausieren / fortsetzen | Tray, Steuerzentrale | `calendar.pause_reminders` | Write | `calendar_pause_reminders` |
 | Vorschau eines Termins | Termin-Paneel „…“ › Preview reminder, Steuerzentrale „Preview“ | `calendar.preview_reminder` | Write | `calendar_preview_reminder` |
 | Erinnerungen eines Termins | Termin-Editor „Reminders“ | `calendar.save_event` (neues Feld `alarms`) | Write | `calendar_save_event` (kurz: `reminder_minutes`) |
-| Einstellungen | Steuerzentrale › Calendar › Reminders | `settings.set_setting` (Schlüssel `reminders`) | Admin | `settings_set_setting` |
+| Einstellungen | Kalender › Settings › Reminders ([settings.md](settings.md), S.19) | `settings.set_setting` (Schlüssel `reminders`) | Admin | `settings_set_setting` |
 
 - Die Vorschau von einem Agenten zeigt oben „Preview · sent by {client}“ und geht höchstens einmal je
   Minute und Client (sonst `busy`), damit niemand den Bildschirm zuspammt.
