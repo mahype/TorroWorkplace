@@ -4,6 +4,8 @@ Stand: 2026-10-13. **Entschieden:** Stufe 1 jetzt, Stufe 2 später (welche Schal
 Stufe 3 (freie Anordnung über eine Layout-Sprache) nicht. Aufgaben: [tasks/design-pakete.md](tasks/design-pakete.md).
 **Ergänzt 2026-10-13:** eigene Farben für die Seitenleiste ([unten](#seitenleiste-mit-eigenen-farben), L.6), damit
 Pakete wie Commitr und Ribbon (Issue #80) eine farbige Leiste neben hellem Inhalt haben können.
+**Vorgeschlagen 2026-10-15:** Design, Schrift und Farbschema getrennt wählbar
+([unten](#design-schrift-und-farbschema-getrennt), L.18–L.29).
 
 ## Worum es geht
 
@@ -301,6 +303,183 @@ Beispiel bleibt gelöscht oder geändert; überschrieben wird nie etwas. Die Dat
 Nicht als Grund gemeldet, aber im Bild zu sehen: Höhere Zeilen in der Seitenleiste brauchen Platz. Die Seitenleiste
 des Kalenders rollt nicht; in niedrigen Fenstern schiebt sie dann „Settings“ unten aus dem Bild (gesehen mit
 Zeilen 32 bei 760 Höhe). Darum hat Plex Seitenleistenzeilen 30 statt 32.
+
+## Design, Schrift und Farbschema getrennt
+
+> **Vorschlag 2026-10-15, noch nicht entschieden** (entschieden ist nur: die Schrift ist eine eigene, dritte Wahl,
+> nicht Teil des Designs). Aufgaben L.18–L.29 in [tasks/design-pakete.md](tasks/design-pakete.md). Bis zur
+> Entscheidung gilt alles oben unverändert.
+
+### Warum
+
+Heute ist ein Paket immer alles zugleich: Schrift, Abstände, Maße *und* Farben. Von den dreizehn Beispielen sind sechs
+(Nord, Solarized, Catppuccin, Gruvbox, Dracula, Everforest) eigentlich nur Farben auf der Form von Torro. Wer die Luft
+von Plex mit den Farben von Nord will, Commitr in Dunkelgrün oder Torro in Lato, kann das nicht. Getrennt wählbar wird
+aus *d* Designs, *s* Schriften und *f* Farbschemata *d × s × f* Looks, ohne dass jemand sie einzeln baut.
+
+### Begriffe
+
+| Begriff | Was es bestimmt | Englisch (Code, Oberfläche) |
+|---|---|---|
+| **Design** | Schriftstufen (Rolle, Größe, Zeilenhöhe, Gewicht), Abstände, Radien, Layout-Abstände, Maße; später die Layout-Schalter (Stufe 2) | `Design`, „Design“ |
+| **Schrift** | die Familien der drei Rollen Text, Überschrift, Ziffern mit ihren Schnitten, dazu der Größenausgleich | `FontSet`, „Font“ |
+| **Farbschema** | alle Farbrollen hell und dunkel (Flächen, Text, Linien, Akzent, Status, Kalender, Diagramm, Seitenleiste) und das Logo | `ColorScheme`, „Colour scheme“ |
+| **Aussehen** | Design + Schrift + Farbschema + Modus (hell, dunkel, System) | `Appearance`, „Appearance“ (heißt die Seite schon) |
+
+Nicht „Layout“ für das Design: Das Wort gehört schon Stufe 2 und 3. Nicht „Theme“: Bei Iced meint es die Farben,
+anderswo alles zusammen.
+
+### Die Schnittstellen zwischen den Teilen
+
+Jeder Teil passt zu jedem anderen, weil sie sich nur über feste **Rollen** treffen:
+
+| zwischen | über | Beispiel |
+|---|---|---|
+| Design und Schrift | die drei **Schriftrollen** `text`, `heading`, `numbers` und die vier **Gewichte** | Das Design sagt „`title` ist `heading`, semibold, 16/22“; die Schrift sagt, welche Familie `heading` ist |
+| Design und Farbschema | die **Farbrollen** von `Palette` | Das Design zeichnet Text in `text_2`; das Farbschema sagt, welche Farbe das ist |
+| Schrift und Farbschema | nichts | – |
+
+- **Jede Regel prüft nur einen Teil.** Kontrastregeln vergleichen Farben mit Farben, Maßregeln Maße mit Maßen,
+  Schriftregeln Schriftdateien. Darum ist jede Kombination aus gültigen Teilen gültig, und keine Kombination wird
+  eigens geprüft.
+- **Das muss so bleiben.** Wo zwei Teile doch zusammenkommen (Ziffern in der Zeitachse, siehe unten), prüft jeder Teil
+  gegen eine feste Grenze statt gegen den anderen.
+- Fehlt einem Teil etwas, gilt wie bisher der Wert von Torro bzw. desselben Teils (Seitenleiste, Diagramm).
+
+### Damit jede Schrift in jedes Design passt
+
+Schrift, Größen und Abstände waren bisher ein abgestimmter Satz: Plex ist kleiner gezeichnet als Inter und brauchte
+deshalb Text in 14 statt 13. Getrennt übernimmt das der Kern mit drei Regeln:
+
+1. **Größen eines Designs meinen Inter.** Alle Schriftgrößen im Design sind für Inter gedacht, die Bezugsschrift.
+2. **Größenausgleich der Schrift.** Jede Schrift hat einen Faktor, mit dem die Größen des Designs malgenommen werden,
+   damit ihre Kleinbuchstaben so groß wirken wie die von Inter (wie `font-size-adjust` in CSS). Von selbst berechnet
+   aus der x-Höhe der Textschrift (OS/2 `sxHeight`, über `ttf-parser`): `x-Höhe Inter ÷ x-Höhe Schrift`, begrenzt auf
+   0,90–1,15. Ein Paket kann ihn mit `[fonts] size_adjust` (0,85–1,25) selbst setzen. Wirksame Größe = Größe ×
+   Faktor, auf 0,5 gerundet, nie unter 11; wirksame Zeilenhöhe = die des Designs, mindestens aber 1,2 × wirksame
+   Größe.
+3. **Fehlende Gewichte werden ersetzt.** Nutzt das Design ein Gewicht, das die Schrift nicht hat, nimmt die Suite das
+   nächste: medium → semibold → regular, semibold → bold → medium, bold → semibold. Lato und Selawik ohne Medium bleiben
+   so gültig. Pflicht ist nur `regular` der Textschrift.
+
+**Ziffern in der Zeitachse** sind die eine Stelle, an der Breite zählt: `00:00` in `numbers` muss in `axis` passen.
+Darum gilt für jede Schrift eine Höchstbreite der Ziffern (in em, nach Ausgleich), für jedes Design eine Mindestbreite
+der Zeitachse für genau diese Höchstbreite. Die Grenze wird in L.18 an den Beispielschriften gemessen (breiteste plus
+Spielraum). Breite Schriften kürzen Beschriftungen in Listen eher mit „…“; das ist zu sehen, aber nicht kaputt.
+
+### Warum das Logo zum Farbschema gehört
+
+Die Logos der Beispiele sind Bilder in den festen Farben ihres Schemas (Nord: Berge in Frost-Blau auf Polar Night,
+Dracula: violettes Quadrat). Ein violettes Logo über Nord-Farben passt nicht. Ohne eigenes Logo zeichnet die Suite wie
+bisher das „T“ auf dem Akzent des Farbschemas. Die Vorschau `preview.png` zeigt die Form und gehört zum Design;
+Schriften zeigt die Steuerzentrale als Schriftprobe, Farbschemata als Farbmuster.
+
+### Ein Paket
+
+Ein Paket bleibt ein Ordner unter `designs/<id>/` mit `design.toml`, **`format = 1` bleibt**: Jedes heutige Paket ist
+weiter gültig. Was es mitbringt, ergibt sich aus seinen Abschnitten:
+
+| Das Paket hat … (mindestens einen) | … und bringt damit |
+|---|---|
+| `[type.*]`, `[space]`, `[radius]`, `[layout]`, `[size]` | ein **Design** |
+| `[fonts.*]` | eine **Schrift** |
+| `[colors.*]`, `[logo]` | ein **Farbschema** |
+| nur `[about]` | ein Design (gleich Torro) |
+
+- Mehrere Teile tragen dieselbe id. Torro ist alle drei.
+- Neu und optional in `[about]`: `font = "<id>"` und `color_scheme = "<id>"`, die Schrift und das Farbschema, die zum
+  Design gedacht sind. Fehlt ein Schlüssel und bringt das Paket den Teil selbst, ist es der eigene. Nur Vorschläge,
+  gewählt wird getrennt.
+- Ein Paket, das eine Regel bricht, wird **ganz** abgelehnt, mit allen Teilen, wie bisher.
+- In der Liste der Schriften steht der Familienname der Textschrift („IBM Plex Sans“), darunter das Paket („Plex“).
+- **Beispiele aufräumen** (L.22): Dracula und Everforest verlieren `[radius]` und sind reine Farbschemata. Plex,
+  Commitr, Channelr, Guildr, Quattro und Ribbon bleiben alle drei Teile; ihre `[type.*]`-Größen werden auf Inter
+  zurückgerechnet (geteilt durch den Ausgleich ihrer Schrift), damit sie mit der eigenen Schrift so groß bleiben wie
+  heute. Kopien in Design-Ordnern der Nutzer werden wie immer nicht angefasst; ein altes Plex wirkt dort mit seiner
+  eigenen Schrift eine Spur größer als vorher.
+
+### Wählen
+
+- Drei Einstellungen: `design` (gibt es), neu `font` und `color_scheme`, alle mit `torro` als Standard.
+- **Übernahme alter Einstellungen**, einmal beim Lesen, für `font` und `color_scheme` je für sich, wenn es fehlt:
+  Bringt das gewählte Paket den Teil mit, wird er gewählt, sonst `torro`. Commitr → Commitr/Commitr/Commitr (sieht aus wie
+  vorher), Nord → Torro/Torro/Nord.
+- **Steuerzentrale**, General › Appearance, untereinander: Modus · **Design** (`preview.png` oder drei Probezeilen in
+  den Abständen des Designs) · **Font** (je Zeile eine Probe „Aa 09:41 The quick brown fox“ in der Schrift) ·
+  **Colour scheme** (Farbmuster aus `bg`, `panel`, `accent`, `text` im aktuellen Modus und Logo).
+- Ein Design wählen ändert Schrift und Farbschema **nicht**. Schlägt das gewählte Design andere vor als die aktiven,
+  steht in deren Liste „Suggested for Commitr“ (ein Klick wählt sie).
+- Ungültige Teile, Wechsel ohne Wartezeit und Rückfall auf Torro gelten für alle drei wie unten beschrieben. Ein
+  Wechsel der Schrift lädt Schriften (`iced::font::load`), ein Wechsel von Design oder Farbschema nicht.
+
+### API und MCP
+
+| Funktion | Oberfläche | API · Zugriff | MCP |
+|---|---|---|---|
+| Designs auflisten | Appearance › Design | `settings.list_designs` · Read (gibt es; listet nur noch Pakete mit Design, neue Felder `font` und `colorScheme` mit den Vorschlägen) | `settings_list_designs` |
+| Design wählen | Appearance › Design | `settings.set_setting { key: design }` · Admin (gibt es; eine id ohne Design wird mit Hinweis auf `font`/`color_scheme` abgelehnt) | `settings_set_setting` |
+| Schriften auflisten (id, Familie, Paket, Version, Autor, Lizenz, Standard, gültig, Gründe, aktiv) | Appearance › Font | neu `settings.list_fonts` · Read | neu `settings_list_fonts` |
+| Schrift wählen | Appearance › Font | `settings.set_setting { key: font }` · Admin | `settings_set_setting` |
+| Farbschemata auflisten (id, Name, Version, Autor, Beschreibung, Standard, gültig, Gründe, aktiv) | Appearance › Colour scheme | neu `settings.list_color_schemes` · Read | neu `settings_list_color_schemes` |
+| Farbschema wählen | Appearance › Colour scheme | `settings.set_setting { key: color_scheme }` · Admin | `settings_set_setting` |
+| Gewählte lesen | – | `settings.get_settings` · Read (Felder `design`, `font`, `colorScheme`) | `settings_get_settings` |
+
+Verträglich nach `docs/api.md`: neue Befehle, neue Schlüssel, neue Felder. Dass `list_designs` reine Schriften und
+Farbschemata nicht mehr nennt, ändert den Inhalt, nicht die Form; ein Agent, der `design = "nord"` setzt, bekommt einen
+Fehler, der ihn zu `font` oder `color_scheme` schickt, je nachdem, was das Paket mitbringt.
+
+### Technik
+
+- **`torro_core::design`:** `Design` verliert `fonts`, `colors` und `logo`. Neu `FontSet { id, about, fonts, size_adjust }`
+  und `ColorScheme { id, about, colors, logo }`, je mit `standard()`. `load` liefert das Design eines Pakets, neu
+  `load_font` und `load_color_scheme`; `list` meldet je Paket seine Teile. Wirksame Stufen (Größenausgleich, Ersatz
+  der Gewichte) rechnet der Kern: `Selection { design, font, scheme }` mit `level(name)`, damit Kern, Steuerzentrale und
+  Tests dasselbe sehen.
+- **`torro_gui`:** drei aktive Teile statt einem (`design::active()`, `font::active()`, `scheme::active()`).
+  `typo::body()` liefert die wirksame Stufe, `theme::font()` die Familie der aktiven Schrift, `palette(theme)` die
+  Farben des aktiven Farbschemas. `design::Follow` folgt allen drei Einstellungen. `--demo` bekommt `--font <id>` und
+  `--color-scheme <id>` neben `--design`.
+- **Gleiches Bild:** Mit Torro/Torro/Torro sieht jede App aus wie vorher (exakt). Mit jedem Beispielpaket als alle drei
+  Teile weichen die wirksamen Größen höchstens um 0,5 px von heute ab (Rundung des Ausgleichs).
+- **Stufe 2:** Der Kandidat „Dichte“ fällt weg, das erledigen die Designs Compact und Airy.
+
+### Mitgelieferte Designs (Vorschlag)
+
+Namen sind Daten des Pakets und werden nicht übersetzt, darum englisch. Designs bringen nur Form, keine Schrift und
+keine Farben, schlagen aber eine Schrift vor. Werte gegen Torro (Text 13/20, Zeile 40, Seitenleistenzeile 28, Knopf
+32, Kopfleiste 44, Radien 4/6/8/10, Seitenrand 24), Größen für Inter:
+
+| Design | Idee, für wen | Werte (Auswahl) | schlägt vor |
+|---|---|---|---|
+| **Torro** | Standard, wie heute | – | Inter |
+| **Compact** (Kompakt) | viel auf einen Blick: volle Kalender, lange Listen, kleine Laptops | Text 12/16, Zeile 32, zweizeilig 44, Seitenleiste 24 und 216 breit, Knöpfe 24/28/32, Kopfleiste 36, Radien 3/4/6/8, Seitenrand 16, Paneele 12, Gruppen 16, Elemente 4, Stunde 40 | Inter |
+| **Airy** (Locker) | ruhiges Arbeiten, große Bildschirme | Text 14/22, Lesetext 16/26, Zeile 48, zweizeilig 60, Seitenleiste 32 und 260 breit, Knöpfe 32/36/40, Kopfleiste 52, Radien 6/8/12/14, Seitenrand 32 × 40, Paneele 20 × 24, Gruppen 32, Elemente 12 | Inter |
+| **Clear** (gut lesbar) | schlechte Augen, Abstand zum Bildschirm, Touch | Text 16/24, Lesetext 18/28, Knopfzeile 14, Zeitachse 13, Zeile 52, Seitenleiste 36 und 280 breit, Knöpfe 36/40/44 (Klickziel 44), Kopfleiste 56 | Hyperlegible (und Farbschema High Contrast, wenn es das gibt) |
+| **Folio** | viel lesen: Mail, Notizen | Lesetext 16/26, `content_max` 680, Titel und Überschrift in der Rolle `heading`, sonst nahe Torro | Source |
+| **Pebble** | weich und freundlich | Radien 8/12/16/16 (Knöpfe als Pillen: 16 bei Höhe 32), Zeile 44, Paneele 20, sonst nahe Torro | Nunito |
+| **Square** | eckig und dicht wie ein Terminal | Radien 0/0/2/2, Zeile 36, Seitenleiste 26, Knöpfe 28, Paneele 12 | JetBrains Mono |
+| Plex, Commitr, Channelr, Guildr, Quattro, Ribbon | gibt es schon | wie bisher, Größen auf Inter zurückgerechnet | die eigene |
+
+### Mitgelieferte Schriften (Vorschlag)
+
+Alle unter OFL, mit `LICENSE.txt`. Ziffern wie in L.5 prüfen: gleich breit, sonst eine Ziffernschrift dazu.
+
+| Schrift | Familien | wozu |
+|---|---|---|
+| **Torro** | Inter, Ziffern Inter Tabular | Standard |
+| **Hyperlegible** | Atkinson Hyperlegible Next (Braille Institute) | eindeutige Buchstaben (I, l, 1), für Clear |
+| **Source** | Source Sans 3, Überschriften Source Serif 4 | Lesen, für Folio |
+| **Nunito** | Nunito | runde Strichenden, für Pebble |
+| **JetBrains Mono** | JetBrains Mono für alle Rollen | Terminal-Gefühl, für Square |
+| Plex, Commitr, Channelr, Guildr, Quattro, Ribbon | IBM Plex Sans, Mona Sans, Lato, Figtree, Roboto Flex, Selawik | gibt es schon in den Paketen |
+
+Zu prüfen beim Bauen: Höhere Seitenleistenzeilen (Airy 32, Clear 36) schieben in niedrigen Fenstern „Settings“ aus der
+Seitenleiste des Kalenders (siehe Plex). Clear braucht dort vielleicht eine rollende Seitenleiste, das wäre eine eigene
+Aufgabe in `torro-gui`.
+
+**Ideen für weitere Farbschemata**, nicht als Aufgabe: **High Contrast** (Text 7:1, kräftige Linien, für Clear),
+**Graphite** (ohne bunten Akzent, nur Grau, zum Konzentrieren), **Paper** (warmes Sepia, für Folio), **Torro Blue**
+(Torro mit blauem Akzent für die, denen Rot zu laut ist).
 
 ## Wählen und wechseln
 
