@@ -40,8 +40,9 @@ use torro_gui::shell::{self, SidebarMode};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::widgets::{self, Trail};
 use torro_gui::{style, typo};
-use torro_ipc::{Request, SettingKey};
+use torro_ipc::{Request, Response, SettingKey};
 
+use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
 use super::{Action, Data, page_margin};
 
 /// A step of the setup, in the order it is walked.
@@ -136,17 +137,11 @@ impl Step {
         }
     }
 
-    /// Whether the step's page exists yet: W.4 builds Welcome, Components and Done, tasks W.5 to
-    /// W.8 the others. A step that is not built is not listed, so the setup never shows an empty
-    /// page.
+    /// Whether the step's page exists yet: W.4 built Welcome, Components and Done, W.5 Nextcloud;
+    /// tasks W.6 to W.8 the others. A step that is not built is not listed, so the setup never
+    /// shows an empty page.
     fn built(self) -> bool {
-        matches!(self, Step::Welcome | Step::Components | Step::Done)
-    }
-
-    /// Whether the footer offers "Skip": not where there is nothing to skip (the welcome, the
-    /// choice of components, the end).
-    fn skippable(self) -> bool {
-        !matches!(self, Step::Welcome | Step::Components | Step::Done)
+        matches!(self, Step::Welcome | Step::Nextcloud | Step::Components | Step::Done)
     }
 }
 
@@ -173,6 +168,15 @@ pub struct State {
     off: BTreeSet<Component>,
     /// A choice was made here: from then on the page's choices count, not the reloaded settings.
     touched: bool,
+    /// The Nextcloud step (task W.5): the address and the sign-in while it runs.
+    nextcloud: NextcloudSignIn,
+    /// The Nextcloud step shows the address form although an account exists ("Add another
+    /// Nextcloud").
+    adding: bool,
+    /// The Nextcloud account signed in to in this setup; its services are shown.
+    signed_in: Option<String>,
+    /// What went wrong on the current step, for the footer: the core's answer or the shell's error.
+    error: Option<String>,
 }
 
 impl State {
@@ -186,6 +190,10 @@ impl State {
             appearance: settings.appearance,
             off: settings.components_off.clone(),
             touched: false,
+            nextcloud: NextcloudSignIn::default(),
+            adding: false,
+            signed_in: None,
+            error: None,
         }
     }
 
@@ -193,13 +201,15 @@ impl State {
     /// can open before the core answered the first time.
     pub fn loaded(&mut self, settings: &Settings) {
         if !self.touched {
-            *self = State {
-                step: self.step,
-                reached: self.reached,
-                skipped: std::mem::take(&mut self.skipped),
-                ..State::new(self.step, settings)
-            };
+            self.language = settings.language;
+            self.appearance = settings.appearance;
+            self.off = settings.components_off.clone();
         }
+    }
+
+    /// A sign-in runs; the shell reloads more often, so the end is seen soon.
+    pub fn busy(&self) -> bool {
+        self.nextcloud.running()
     }
 
     /// The steps walked now.
@@ -238,7 +248,21 @@ impl State {
     fn go(&mut self, step: Step) {
         self.step = step;
         self.reached = self.reached.max(step);
+        self.error = None;
     }
+
+    /// The Nextcloud step shows the address form: there is no Nextcloud account yet, or another one
+    /// is being added.
+    fn asks_address(&self, data: &Data) -> bool {
+        self.adding || nextcloud_account(self, data).is_none()
+    }
+}
+
+/// The Nextcloud account the Nextcloud step shows: the one signed in to in this setup, else the
+/// first one there is.
+fn nextcloud_account<'a>(state: &State, data: &'a Data) -> Option<&'a torro_ipc::AccountInfo> {
+    let listed = || data.accounts.iter().filter(|account| account.kind == "nextcloud" && !account.id.is_empty());
+    state.signed_in.as_deref().and_then(|id| listed().find(|account| account.id == id)).or_else(|| listed().next())
 }
 
 /// How a step stands in the list of steps.
@@ -267,6 +291,16 @@ pub enum Message {
     Component(Component, bool),
     /// "Open" of a component's app on the last step (its window class).
     OpenApp(&'static str),
+    /// The Nextcloud address changed.
+    ServerChanged(String),
+    /// "Open the page again" while the browser signs in.
+    OpenLoginPage,
+    /// The login link field is read-only: typing in it changes nothing.
+    LoginLinkEdited,
+    /// "Add another Nextcloud".
+    AddNextcloud,
+    /// "Cancel" on the Nextcloud step: stop waiting for the browser, or stop adding another one.
+    Cancel,
 }
 
 /// What the setup wants the shell to do.
@@ -278,8 +312,10 @@ pub enum Outcome {
     Close(Action),
 }
 
-pub fn update(state: &mut State, message: Message) -> Outcome {
+pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
     let stay = Outcome::Stay;
+    // A finished sign-in is noticed before the message counts.
+    observe(state, data);
     match message {
         Message::Go(step) => {
             if state.steps().contains(&step) {
@@ -287,6 +323,15 @@ pub fn update(state: &mut State, message: Message) -> Outcome {
             }
             stay(Action::None)
         }
+        // On the Nextcloud step the primary button signs in while it asks for an address.
+        Message::Next if state.step == Step::Nextcloud && state.asks_address(data) => {
+            if !state.nextcloud.can_start() {
+                return stay(Action::None);
+            }
+            state.error = None;
+            stay(state.nextcloud.start(data))
+        }
+        Message::Next if state.step == Step::Nextcloud && state.nextcloud.running() => stay(Action::None),
         Message::Next => match state.neighbour(true) {
             Some(next) => {
                 state.skipped.remove(&state.step);
@@ -330,6 +375,61 @@ pub fn update(state: &mut State, message: Message) -> Outcome {
             stay(set(SettingKey::Component, serde_json::to_value(switch).unwrap_or_default()))
         }
         Message::OpenApp(app) => stay(Action::Send(Request::OpenApp { app: app.into(), target: None })),
+        Message::ServerChanged(server) => {
+            state.nextcloud.server = server;
+            stay(Action::None)
+        }
+        Message::OpenLoginPage => match nextcloud::login_url(data) {
+            Some(url) if state.nextcloud.running() => stay(Action::OpenUrl(url.to_string())),
+            _ => stay(Action::None),
+        },
+        Message::LoginLinkEdited => stay(Action::None),
+        Message::AddNextcloud => {
+            state.adding = true;
+            state.nextcloud.server.clear();
+            state.error = None;
+            stay(Action::None)
+        }
+        Message::Cancel => {
+            if state.nextcloud.running() {
+                state.nextcloud.stop();
+            } else {
+                state.adding = false;
+            }
+            state.error = None;
+            stay(Action::None)
+        }
+    }
+}
+
+/// Follows a Nextcloud sign-in through a reload of `data` (the shell calls it on every reload while
+/// the setup is open): signed in, the step shows the account's services; failed, it asks for the
+/// address again and says so. While waiting the footer shows the shell's error, if any.
+pub fn observe(state: &mut State, data: &Data) {
+    if !state.nextcloud.running() {
+        return;
+    }
+    match state.nextcloud.observe(data) {
+        Some(Ended::SignedIn(id)) => {
+            state.signed_in = Some(id);
+            state.adding = false;
+            state.error = None;
+        }
+        Some(Ended::Failed) => state.error = Some(tr("Signing in did not finish. Try again.").to_string()),
+        None => state.error = data.error.clone(),
+    }
+}
+
+/// The answer to a request the setup sent; `true` when the setup shows it itself (then the shell
+/// shows no notice): a sign-in that could not start shows its reason in the footer.
+pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
+    match state.nextcloud.answered(result) {
+        Some(Err(message)) => {
+            state.error = Some(message);
+            true
+        }
+        Some(Ok(())) => true,
+        None => false,
     }
 }
 
@@ -343,8 +443,12 @@ fn set_setup(state: SetupState) -> Action {
     set(SettingKey::Setup, serde_json::to_value(state).unwrap_or_default())
 }
 
-/// Escape: one step back, nothing on the first step.
+/// Escape: stop waiting for the browser or adding another Nextcloud, else one step back; nothing
+/// on the first step.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.step == Step::Nextcloud && (state.nextcloud.running() || state.adding) {
+        return Some(Message::Cancel);
+    }
     state.neighbour(false).map(|_| Message::Back)
 }
 
@@ -451,21 +555,35 @@ pub fn body<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'
 /// The footer: the step's status at the left; "Back" (not in narrow, where the header has it),
 /// "Skip" where the step can be skipped, and the primary button.
 fn footer<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
-    let status = pages::status(state, data).map(|text| typo::text(typo::body(), text).style(theme::text_2));
+    let status: Option<Element<'a, Message>> = match &state.error {
+        Some(error) => Some(problem(error.clone())),
+        None => pages::status(state, data).map(|text| typo::text(typo::body(), text).style(theme::text_2).into()),
+    };
     let mut buttons = row![].spacing(space::s()).align_y(Alignment::Center);
     if class != SizeClass::Narrow && state.neighbour(false).is_some() {
         buttons = buttons.push(widgets::text_button(None, tr("Back"), style::button::ghost, Some(Message::Back)));
     }
-    if state.step.skippable() {
-        buttons = buttons.push(widgets::text_button(None, tr("Skip"), style::button::secondary, Some(Message::Skip)));
+    if let Some((label, message)) = pages::skip(state, data) {
+        buttons = buttons.push(widgets::text_button(None, label, style::button::secondary, Some(message)));
     }
-    buttons =
-        buttons.push(widgets::text_button(None, pages::primary(state), style::button::primary, Some(Message::Next)));
+    let (label, enabled) = pages::primary(state, data);
+    buttons = buttons.push(widgets::text_button(None, label, style::button::primary, enabled.then_some(Message::Next)));
     let left = container(row![].push(status)).width(Fill).clip(true);
     container(row![left, buttons].spacing(space::l()).align_y(Alignment::Center))
         .width(Fill)
         .center_y(size::header() + space::m())
         .padding(layout::row_padding())
+        .into()
+}
+
+/// A problem in the footer: an alert icon in the error colour, the text in `text` – the colour is
+/// only in the icon.
+fn problem<'a>(text: String) -> Element<'a, Message> {
+    let alert = icon::icon(Icon::CircleAlert, icon::SIZE)
+        .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
+    row![alert, typo::text(typo::body(), text).wrapping(Wrapping::None)]
+        .spacing(space::s())
+        .align_y(Alignment::Center)
         .into()
 }
 
@@ -475,6 +593,11 @@ mod tests {
 
     fn state(step: Step) -> State {
         State::new(step, &Settings::default())
+    }
+
+    /// The demo's data: a connected Nextcloud among other accounts.
+    fn data() -> Data {
+        super::super::launch::demo_data()
     }
 
     fn sent(outcome: &Outcome) -> Option<(SettingKey, serde_json::Value)> {
@@ -488,11 +611,13 @@ mod tests {
     #[test]
     fn the_walk_goes_through_the_built_steps_and_ends_done() {
         let mut setup = state(Step::Welcome);
-        assert_eq!(setup.steps(), [Step::Welcome, Step::Components, Step::Done]);
-        assert!(matches!(update(&mut setup, Message::Next), Outcome::Stay(Action::None)));
-        assert_eq!((setup.step, setup.position()), (Step::Components, (2, 3)));
-        update(&mut setup, Message::Next);
-        let finished = update(&mut setup, Message::Next);
+        assert_eq!(setup.steps(), [Step::Welcome, Step::Nextcloud, Step::Components, Step::Done]);
+        assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
+        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 4)));
+        update(&mut setup, Message::Next, &data());
+        assert_eq!(setup.step, Step::Components, "a Nextcloud is connected: the step goes on");
+        update(&mut setup, Message::Next, &data());
+        let finished = update(&mut setup, Message::Next, &data());
         assert!(matches!(finished, Outcome::Close(_)));
         assert_eq!(sent(&finished), Some((SettingKey::Setup, serde_json::json!("done"))));
     }
@@ -501,9 +626,9 @@ mod tests {
     fn later_puts_it_off_and_back_stops_at_the_first_step() {
         let mut setup = state(Step::Welcome);
         assert!(escape(&setup).is_none(), "nothing before the welcome");
-        update(&mut setup, Message::Back);
+        update(&mut setup, Message::Back, &data());
         assert_eq!(setup.step, Step::Welcome);
-        let later = update(&mut setup, Message::Later);
+        let later = update(&mut setup, Message::Later, &data());
         assert!(matches!(later, Outcome::Close(_)));
         assert_eq!(sent(&later), Some((SettingKey::Setup, serde_json::json!("skipped"))));
     }
@@ -511,26 +636,28 @@ mod tests {
     #[test]
     fn passed_steps_are_checked_and_clicked_ones_can_be_gone_back_to() {
         let mut setup = state(Step::Welcome);
-        update(&mut setup, Message::Next);
-        update(&mut setup, Message::Next);
+        for _ in 0..3 {
+            update(&mut setup, Message::Next, &data());
+        }
+        assert_eq!(setup.step, Step::Done);
         assert_eq!(setup.mark(Step::Welcome), Mark::Passed);
-        update(&mut setup, Message::Go(Step::Welcome));
+        update(&mut setup, Message::Go(Step::Welcome), &data());
         assert_eq!(setup.step, Step::Welcome);
         assert_eq!(setup.mark(Step::Components), Mark::Passed, "reached before, still passed");
-        update(&mut setup, Message::Go(Step::Calendar));
+        update(&mut setup, Message::Go(Step::Calendar), &data());
         assert_eq!(setup.step, Step::Welcome, "a step that is not walked cannot be gone to");
     }
 
     #[test]
     fn components_switch_at_once_and_are_sent_one_by_one() {
         let mut setup = state(Step::Components);
-        let off = update(&mut setup, Message::Component(Component::Mail, false));
+        let off = update(&mut setup, Message::Component(Component::Mail, false), &data());
         assert_eq!(
             sent(&off),
             Some((SettingKey::Component, serde_json::json!({"component": "mail", "enabled": false})))
         );
         assert!(setup.off.contains(&Component::Mail));
-        update(&mut setup, Message::Component(Component::Mail, true));
+        update(&mut setup, Message::Component(Component::Mail, true), &data());
         assert!(setup.off.is_empty());
     }
 
@@ -547,9 +674,9 @@ mod tests {
     #[test]
     fn language_and_appearance_are_sent_as_the_settings_take_them() {
         let mut setup = state(Step::Welcome);
-        let german = update(&mut setup, Message::Language(Language::German));
+        let german = update(&mut setup, Message::Language(Language::German), &data());
         assert_eq!(sent(&german), Some((SettingKey::Language, serde_json::json!("german"))));
-        let dark = update(&mut setup, Message::Appearance(Appearance::Dark));
+        let dark = update(&mut setup, Message::Appearance(Appearance::Dark), &data());
         assert_eq!(sent(&dark), Some((SettingKey::Appearance, serde_json::json!("dark"))));
         assert_eq!((setup.language, setup.appearance), (Language::German, Appearance::Dark));
     }
@@ -560,9 +687,72 @@ mod tests {
         let stored = Settings { components_off: BTreeSet::from([Component::Assistant]), ..Settings::default() };
         setup.loaded(&stored);
         assert_eq!((setup.step, setup.off.clone()), (Step::Components, BTreeSet::from([Component::Assistant])));
-        update(&mut setup, Message::Component(Component::Mail, false));
+        update(&mut setup, Message::Component(Component::Mail, false), &data());
         setup.loaded(&Settings::default());
         assert_eq!(setup.off, BTreeSet::from([Component::Assistant, Component::Mail]), "a reload before the save");
+    }
+
+    /// The demo's data without its Nextcloud accounts.
+    fn without_nextcloud() -> Data {
+        let mut data = data();
+        data.accounts.retain(|account| account.kind != "nextcloud");
+        data
+    }
+
+    #[test]
+    fn without_a_nextcloud_the_step_asks_for_the_address_and_signs_in() {
+        let mut setup = state(Step::Nextcloud);
+        let empty = without_nextcloud();
+        assert!(setup.asks_address(&empty));
+        assert_eq!(pages::primary(&setup, &empty), (tr("Connect"), false), "no address yet");
+        assert!(matches!(update(&mut setup, Message::Next, &empty), Outcome::Stay(Action::None)));
+        assert_eq!(setup.step, Step::Nextcloud, "nothing to connect: the step stays");
+        assert!(matches!(pages::skip(&setup, &empty), Some((_, Message::Skip))), "I don't use Nextcloud");
+
+        update(&mut setup, Message::ServerChanged("cloud.example.org".into()), &empty);
+        let started = update(&mut setup, Message::Next, &empty);
+        assert!(matches!(started, Outcome::Stay(Action::Send(Request::ConnectNextcloud { .. }))));
+        assert!(setup.busy());
+        assert!(!pages::primary(&setup, &empty).1, "one sign-in at a time");
+        assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Cancel".into()));
+
+        // The core lists the sign-in, then the new account: the step shows its services.
+        let mut waiting = empty.clone();
+        waiting.accounts.push(super::super::launch::demo_signing_in());
+        observe(&mut setup, &waiting);
+        assert!(setup.busy());
+        observe(&mut setup, &data());
+        assert!(!setup.busy());
+        assert_eq!(setup.signed_in.as_deref(), Some("nextcloud:anna@cloud.example.org"));
+        assert!(!setup.asks_address(&data()));
+        assert_eq!(pages::primary(&setup, &data()), (tr("Continue"), true));
+    }
+
+    #[test]
+    fn a_sign_in_that_cannot_start_says_why_and_cancel_stops_waiting() {
+        let empty = without_nextcloud();
+        let mut setup = state(Step::Nextcloud);
+        update(&mut setup, Message::ServerChanged("nowhere.example".into()), &empty);
+        update(&mut setup, Message::Next, &empty);
+        assert!(answered(&mut setup, &Err("no Nextcloud at nowhere.example".into())));
+        assert_eq!((setup.busy(), setup.error.as_deref()), (false, Some("no Nextcloud at nowhere.example")));
+        assert!(!answered(&mut setup, &Err("something else".into())), "not the setup's answer");
+
+        update(&mut setup, Message::Next, &empty);
+        update(&mut setup, Message::Cancel, &empty);
+        assert!(!setup.busy() && setup.asks_address(&empty), "back to the address");
+    }
+
+    #[test]
+    fn another_nextcloud_can_be_added_and_given_up() {
+        let mut setup = state(Step::Nextcloud);
+        assert!(!setup.asks_address(&data()), "the demo has a Nextcloud");
+        assert!(pages::skip(&setup, &data()).is_none(), "connected: nothing to skip");
+        update(&mut setup, Message::AddNextcloud, &data());
+        assert!(setup.asks_address(&data()));
+        assert!(matches!(pages::skip(&setup, &data()), Some((_, Message::Cancel))));
+        update(&mut setup, Message::Cancel, &data());
+        assert!(!setup.asks_address(&data()));
     }
 
     #[test]
@@ -570,7 +760,7 @@ mod tests {
         for step in Step::ALL.into_iter().filter(|step| step.built()) {
             assert_eq!(Step::from_arg(step.arg()), Some(step));
         }
-        assert_eq!(Step::from_arg("nextcloud"), None, "not built yet");
-        assert_eq!(Step::args(), ["welcome", "components", "done"]);
+        assert_eq!(Step::from_arg("calendar"), None, "not built yet");
+        assert_eq!(Step::args(), ["welcome", "nextcloud", "components", "done"]);
     }
 }

@@ -13,23 +13,32 @@ use torro_gui::theme::{self, Appearance, space};
 use torro_gui::widgets::{self, TileFace, TileSize};
 use torro_gui::{style, typo};
 
+use torro_ipc::AccountInfo;
+use torro_pim::AccountState;
+
 use super::{Data, Message, State, Step, app_of};
-use crate::ui::setting_row;
+use crate::ui::{chevron, connect, pressable, setting_row};
 
 /// The page of the current step.
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     match state.step {
         Step::Welcome => welcome(state),
+        Step::Nextcloud => nextcloud(state, data),
         Step::Components => components(state, data),
         Step::Done => done(state, data),
         // Not listed until their tasks build them ([`Step::built`]).
-        Step::Nextcloud | Step::Calendar | Step::Tasks | Step::Mail | Step::Inbox | Step::Ai => Space::new().into(),
+        Step::Calendar | Step::Tasks | Step::Mail | Step::Inbox | Step::Ai => Space::new().into(),
     }
 }
 
 /// What the footer says at its left on the current step, if anything.
-pub fn status(state: &State, _data: &Data) -> Option<String> {
+pub fn status(state: &State, data: &Data) -> Option<String> {
     match state.step {
+        // The page says it already ("Waiting for the browser …").
+        Step::Nextcloud if state.nextcloud.running() => None,
+        Step::Nextcloud => super::nextcloud_account(state, data)
+            .filter(|_| !state.asks_address(data))
+            .map(|account| trf("Signed in as {account}", &[("account", &account.label)])),
         Step::Components => {
             let on = Component::ALL.len() - state.off.len();
             Some(trf("{on} of {all} on", &[("on", &on), ("all", &Component::ALL.len())]))
@@ -38,12 +47,27 @@ pub fn status(state: &State, _data: &Data) -> Option<String> {
     }
 }
 
-/// The word of the primary button on the current step.
-pub fn primary(state: &State) -> &'static str {
+/// The word of the primary button on the current step, and whether it can be pressed.
+pub fn primary(state: &State, data: &Data) -> (&'static str, bool) {
     match state.step {
-        Step::Welcome => tr("Get started"),
-        Step::Done => tr("Finish"),
-        _ => tr("Continue"),
+        Step::Welcome => (tr("Get started"), true),
+        Step::Nextcloud if state.nextcloud.running() => (tr("Connect"), false),
+        Step::Nextcloud if state.asks_address(data) => (tr("Connect"), state.nextcloud.can_start()),
+        Step::Done => (tr("Finish"), true),
+        _ => (tr("Continue"), true),
+    }
+}
+
+/// The secondary button left of the primary one, if the step has one: "Skip" where a step can be
+/// left out, "Cancel" while the Nextcloud step waits or adds another account. None on the welcome,
+/// the choice of components and the end, where there is nothing to skip.
+pub fn skip(state: &State, data: &Data) -> Option<(&'static str, Message)> {
+    match state.step {
+        Step::Welcome | Step::Components | Step::Done => None,
+        Step::Nextcloud if state.nextcloud.running() || state.adding => Some((tr("Cancel"), Message::Cancel)),
+        Step::Nextcloud if state.asks_address(data) => Some((tr("I don't use Nextcloud"), Message::Skip)),
+        Step::Nextcloud => None,
+        _ => Some((tr("Skip"), Message::Skip)),
     }
 }
 
@@ -93,6 +117,94 @@ fn welcome(state: &State) -> Element<'_, Message> {
             ),
         ),
         preferences,
+    ])
+}
+
+// ----- Nextcloud (task W.5) -------------------------------------------------------------------------
+
+fn nextcloud<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    if state.nextcloud.running() {
+        return page(vec![
+            title(tr("Sign in to Nextcloud"), tr("Your browser opened Nextcloud's sign-in page.")),
+            connect::nextcloud::waiting(data, Message::OpenLoginPage, |_| Message::LoginLinkEdited),
+        ]);
+    }
+    match super::nextcloud_account(state, data).filter(|_| !state.adding) {
+        Some(account) => nextcloud_services(account),
+        None => nextcloud_address(state),
+    }
+}
+
+/// The address form: where the Nextcloud is; the browser does the rest.
+fn nextcloud_address(state: &State) -> Element<'_, Message> {
+    let field = column![
+        typo::text(typo::caption(), tr("Server address")).style(theme::text_2),
+        connect::nextcloud::address(&state.nextcloud, Message::ServerChanged, Message::Next),
+        typo::text(
+            typo::meta(),
+            tr("Your browser opens to sign in. Torro Workplace keeps an app password in the system keychain.")
+        )
+        .style(theme::text_2),
+    ]
+    .spacing(space::xs());
+    let lead = match state.adding {
+        true => tr("Connect one more Nextcloud, for example for work."),
+        false => tr(
+            "Calendars, tasks, notifications and Talk come from your Nextcloud. Without one, add other accounts in the next steps.",
+        ),
+    };
+    page(vec![title(tr("Connect your Nextcloud"), lead), field.into()])
+}
+
+/// The services of the server, as the account's last sync found them (task W.1), and the way to
+/// add another Nextcloud.
+fn nextcloud_services(account: &AccountInfo) -> Element<'_, Message> {
+    use torro_ipc::ServerService as S;
+    let rows: Vec<Element<'_, Message>> = match &account.services {
+        None => vec![setting_row(None, tr("Reading what your server offers…"), None, Space::new())],
+        Some(services) => [
+            (S::Calendars, Icon::Calendar, tr("Calendars"), tr("For the calendar")),
+            (S::Tasks, Icon::ListChecks, tr("Tasks"), tr("For the task lists")),
+            (S::Notifications, Icon::Bell, tr("Notifications"), tr("For the Notification Hub")),
+            (S::Talk, Icon::MessageCircle, "Talk", tr("Chats and mentions for the Notification Hub")),
+            (S::Push, Icon::RadioTower, tr("Push"), tr("News arrive at once, without asking")),
+            (S::Deck, Icon::LayoutGrid, "Deck", tr("Boards and cards, later in the suite")),
+            (S::Notes, Icon::AlignLeft, tr("Notes"), tr("Notes, later in the suite")),
+        ]
+        .into_iter()
+        .map(|(service, symbol, name, purpose)| {
+            let there = services.contains(&service);
+            let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
+            let detail = if there { purpose } else { tr("Not on this server") };
+            let pill = match there {
+                true => widgets::state_pill(Icon::CircleCheck, tr("Available")),
+                false => widgets::state_pill(Icon::CircleDashed, tr("Missing")),
+            };
+            setting_row(Some(tile), name, Some(detail.to_string()), pill)
+        })
+        .collect(),
+    };
+    let host = match &account.state {
+        AccountState::Connected { server, .. } => server.split_once("://").map_or(server.as_str(), |(_, rest)| rest),
+        _ => account.label.as_str(),
+    };
+    let services = widgets::group(
+        host.trim_end_matches('/').to_string(),
+        rows,
+        Some(
+            tr("Calendars and tasks come over CalDAV, which every Nextcloud has; the Calendar and Tasks apps on the server are only their web pages.")
+                .to_string(),
+        ),
+    );
+    let plus = widgets::source_tile(TileFace::Icon(Icon::Plus), TileSize::Medium, None);
+    let another = pressable(
+        setting_row(Some(plus), tr("Add another Nextcloud"), Some(tr("For example for work").to_string()), chevron()),
+        Some(Message::AddNextcloud),
+    );
+    page(vec![
+        title(tr("Nextcloud is connected"), tr("This is what your server offers. The next steps use it.")),
+        services,
+        widgets::group(tr("More accounts"), vec![another], None),
     ])
 }
 

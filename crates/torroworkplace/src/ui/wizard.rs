@@ -77,7 +77,6 @@
 //! click next to the dialog send it. [`view`] is the dialog's content only; `accounts::overlay`
 //! puts it on the dialog surface over the whole window (`super::dialog`).
 
-use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
 use iced::{Alignment, Color, Element, Fill, Theme};
@@ -87,14 +86,14 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, space};
 use torro_gui::{dialog, layout, style, typo, widgets};
-use torro_ipc::{AccountInfo, AiServer, Request, Response, TopicName, TorroMailAccount};
+use torro_ipc::{AiServer, Request, Response, TopicName, TorroMailAccount};
 use torro_mail::{Endpoint, Security};
 use torro_ntfy::{NtfyError, Topic};
-use torro_pim::AccountState;
 
 use crate::account::ntfy::{LABEL_MAX, NtfyAccountError, TOPICS_MAX};
 
 use super::accounts::on_axis;
+use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
 
@@ -271,16 +270,14 @@ pub struct State {
     step: Step,
     /// The provider being set up; Done says what is ready.
     provider: Provider,
-    /// The server address as typed (Nextcloud).
-    server: String,
+    /// The Nextcloud sign-in: the address as typed and the sign-in while it runs (task W.5).
+    nextcloud: NextcloudSignIn,
     /// The GitHub token as pasted; `Debug` never shows it.
     token: Secret,
     /// The step a failed GitHub check goes back to: the two ways or the token field.
     back: Step,
     /// The GitHub login once connected, for Done.
     login: Option<String>,
-    /// The Nextcloud sign-in that runs: its start and the accounts before it.
-    sign_in: Option<SignIn>,
     /// Error text for the footer: the core's answer or the shell's last error.
     error: Option<String>,
     /// What the mail provider path has asked for and learned so far.
@@ -645,18 +642,6 @@ fn app_password_help(provider: &str) -> Option<&'static str> {
     APP_PASSWORDS.iter().find(|(name, _)| name.eq_ignore_ascii_case(provider)).map(|(_, url)| *url)
 }
 
-/// What a Nextcloud sign-in compares against to tell how it ended ([`observe`]).
-#[derive(Debug, Clone)]
-struct SignIn {
-    started: DateTime<Utc>,
-    /// Every account with its problem when the sign-in started.
-    before: Vec<(String, Option<String>)>,
-    /// The entry with an empty id was in a reload, so its absence means the end.
-    seen_pending: bool,
-    /// The server the core signs in at, from that entry; only its accounts count.
-    server: Option<String>,
-}
-
 impl State {
     /// A dialog on its first step.
     pub fn new() -> State {
@@ -673,7 +658,7 @@ impl State {
 
     /// A sign-in or a check runs; the shell reloads more often.
     pub fn busy(&self) -> bool {
-        matches!(self.step, Step::Checking | Step::NtfyChecking) || self.sign_in.is_some()
+        matches!(self.step, Step::Checking | Step::NtfyChecking) || self.nextcloud.running()
     }
 }
 
@@ -760,39 +745,20 @@ pub enum Message {
 /// While waiting it also copies the shell's error (for example "daemon not running") into the
 /// footer.
 pub fn observe(state: &mut State, data: &Data) {
-    let Some(sign_in) = state.sign_in.as_mut().filter(|_| state.step == Step::SigningIn) else { return };
-    if let Some(pending) = data.accounts.iter().find(|account| account.id.is_empty()) {
-        sign_in.seen_pending = true;
-        if let AccountState::SigningIn { server, .. } = &pending.state {
-            sign_in.server = Some(server.clone());
-        }
-        state.error = data.error.clone();
+    if state.step != Step::SigningIn || !state.nextcloud.running() {
         return;
     }
-    if data.accounts.iter().any(|account| signed_in(sign_in, account)) {
-        state.step = Step::Done;
-        state.sign_in = None;
-        state.error = None;
-    } else if sign_in.seen_pending {
-        state.step = Step::Server;
-        state.sign_in = None;
-        state.error = Some(tr("Signing in did not finish. Try again.").to_string());
-    } else {
-        state.error = data.error.clone();
-    }
-}
-
-/// `account` is a Nextcloud account on the server of `sign_in` that changed since it started:
-/// new, synced afterwards, or with another problem than before.
-fn signed_in(sign_in: &SignIn, account: &AccountInfo) -> bool {
-    let AccountState::Connected { server, last_sync, problem, .. } = &account.state else { return false };
-    let same_server = |a: &str, b: &str| a.trim_end_matches('/') == b.trim_end_matches('/');
-    if account.kind != "nextcloud" || !sign_in.server.as_deref().is_none_or(|s| same_server(s, server)) {
-        return false;
-    }
-    match sign_in.before.iter().find(|(id, _)| *id == account.id) {
-        None => true,
-        Some((_, before)) => last_sync.is_some_and(|at| at > sign_in.started) || problem != before,
+    match state.nextcloud.observe(data) {
+        Some(Ended::SignedIn(_)) => {
+            state.step = Step::Done;
+            state.error = None;
+        }
+        Some(Ended::Failed) => {
+            state.step = Step::Server;
+            state.error = Some(tr("Signing in did not finish. Try again.").to_string());
+        }
+        // While waiting the footer shows the shell's error (for example "daemon not running").
+        None => state.error = data.error.clone(),
     }
 }
 
@@ -907,7 +873,7 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         // The sign-in could not start (no such server): back to the address.
         (Step::SigningIn, Err(message)) => {
             state.step = Step::Server;
-            state.sign_in = None;
+            state.nextcloud.stop();
             state.error = Some(message.clone());
             true
         }
@@ -1180,11 +1146,15 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             _ => Action::None,
         },
         Message::ServerChanged(server) => {
-            state.server = server;
+            state.nextcloud.server = server;
             Action::None
         }
         Message::Continue => match state.step {
-            Step::Server if can_continue(state) => start_nextcloud(state, data),
+            Step::Server if state.nextcloud.can_start() => {
+                state.step = Step::SigningIn;
+                state.error = None;
+                state.nextcloud.start(data)
+            }
             Step::Token if !state.token.is_blank() => {
                 state.back = Step::Token;
                 state.step = Step::Checking;
@@ -1209,7 +1179,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Step::NtfyLogin if state.ntfy.login.is_ready() => sign_in_ntfy(state),
             _ => Action::None,
         },
-        Message::OpenLoginPage => match (state.step, login_url(data)) {
+        Message::OpenLoginPage => match (state.step, nextcloud::login_url(data)) {
             (Step::SigningIn, Some(url)) => Action::OpenUrl(url.to_string()),
             _ => Action::None,
         },
@@ -1392,36 +1362,6 @@ fn connect_request(mail: &mut Mail) -> Option<Request> {
         password: std::mem::take(&mut mail.password),
         calendars,
         tasks,
-    })
-}
-
-/// Starts Login Flow v2 and notes what the accounts were, so [`observe`] can tell the end.
-fn start_nextcloud(state: &mut State, data: &Data) -> Action {
-    let server = state.server.trim().to_string();
-    let before = data.accounts.iter().map(|account| (account.id.clone(), problem_of(&account.state))).collect();
-    state.sign_in = Some(SignIn { started: Utc::now(), before, seen_pending: false, server: None });
-    state.step = Step::SigningIn;
-    state.error = None;
-    Action::Send(Request::ConnectNextcloud { server })
-}
-
-fn problem_of(state: &AccountState) -> Option<String> {
-    match state {
-        AccountState::Connected { problem, .. } => problem.clone(),
-        AccountState::NotConnected | AccountState::SigningIn { .. } => None,
-    }
-}
-
-/// Continue is only possible with a server address (spaces do not count).
-fn can_continue(state: &State) -> bool {
-    !state.server.trim().is_empty()
-}
-
-/// The login URL of the account that is signing in, if the core reports one.
-fn login_url(data: &Data) -> Option<&str> {
-    data.accounts.iter().find_map(|account| match &account.state {
-        AccountState::SigningIn { login_url, .. } => Some(login_url.as_str()),
-        _ => None,
     })
 }
 
@@ -1660,10 +1600,7 @@ pub(super) fn field<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_i
 
 /// The server address field and Continue; Enter in the field works like Continue.
 fn server_step(state: &State) -> Element<'_, Message> {
-    field("cloud.example.org", &state.server)
-        .on_input(Message::ServerChanged)
-        .on_submit_maybe(can_continue(state).then_some(Message::Continue))
-        .into()
+    nextcloud::address(&state.nextcloud, Message::ServerChanged, Message::Continue)
 }
 
 /// What the token needs, the way to GitHub's token page, and the masked field.
@@ -1693,29 +1630,7 @@ fn token_step(state: &State) -> Element<'_, Message> {
 
 /// The explanation, the waiting line, the login link to copy and a button to open it again.
 fn signing_in_step(data: &Data) -> Element<'_, Message> {
-    let login = login_url(data);
-    let mut body = column![
-        typo::text(
-            typo::body(),
-            tr("Nextcloud handles the sign-in. You sign in on its own page; Torro Workplace never sees your password.")
-        ),
-        typo::text(typo::body(), tr("Waiting for the browser …")).style(theme::text_2),
-    ]
-    .spacing(space::m());
-    if let Some(url) = login {
-        // `text_input` without an edit handler cannot take focus, so no copying. Editing is
-        // allowed but ignored: the field always shows `url`, so the text stays unchanged.
-        body = body
-            .push(typo::text(typo::body(), tr("If the browser does not open, copy this link:")).style(theme::text_2))
-            .push(field("", url).on_input(|_| Message::LoginLinkEdited));
-    }
-    let again = widgets::text_button(
-        Some(Icon::ArrowUpRight),
-        tr("Open the page again"),
-        style::button::secondary,
-        login.map(|_| Message::OpenLoginPage),
-    );
-    body.push(row![again]).into()
+    nextcloud::waiting(data, Message::OpenLoginPage, |_| Message::LoginLinkEdited)
 }
 
 // ----- AI providers (task KI.1a) --------------------------------------------------------------------
@@ -2230,7 +2145,7 @@ fn footer(state: &State) -> Element<'_, Message> {
         Step::NtfyTopics => primary(tr("Connect"), Some(Message::Continue)),
         Step::NtfyLogin => primary(tr("Connect"), state.ntfy.login.is_ready().then_some(Message::Continue)),
         Step::AiKey | Step::AiServer => primary(tr("Connect"), ai_can_connect(state).then_some(Message::Continue)),
-        Step::Server => primary(tr("Continue"), can_continue(state).then_some(Message::Continue)),
+        Step::Server => primary(tr("Continue"), state.nextcloud.can_start().then_some(Message::Continue)),
         Step::MailAddress => {
             // The first press searches, the second goes on with what was found.
             let label = if state.mail.found.is_none() { tr("Find provider") } else { tr("Continue") };
@@ -2415,8 +2330,10 @@ fn ntfy_demo(demo: Demo) -> Option<Vec<Message>> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeDelta;
+    use chrono::{DateTime, TimeDelta, Utc};
+    use torro_ipc::AccountInfo;
     use torro_mail_imap::discover::MailUnsupported;
+    use torro_pim::AccountState;
 
     use super::*;
 
@@ -2690,14 +2607,14 @@ mod tests {
         update(&mut state, Message::ChooseProvider(Provider::Nextcloud), &empty);
         for typed in ["", "   ", "\t"] {
             update(&mut state, Message::ServerChanged(typed.into()), &empty);
-            assert!(!can_continue(&state), "{typed:?} must not enable Continue");
+            assert!(!state.nextcloud.can_start(), "{typed:?} must not enable Continue");
             let action = update(&mut state, Message::Continue, &empty);
             assert!(matches!(action, Action::None));
             assert_eq!(state.step, Step::Server);
             assert!(!state.busy());
         }
         update(&mut state, Message::ServerChanged("cloud.example.org".into()), &empty);
-        assert!(can_continue(&state));
+        assert!(state.nextcloud.can_start());
     }
 
     #[test]

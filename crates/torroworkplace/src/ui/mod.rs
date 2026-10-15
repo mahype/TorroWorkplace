@@ -45,6 +45,7 @@ mod approvals;
 mod apps;
 mod assistant;
 mod bots;
+mod connect;
 mod general;
 mod glance;
 mod inbox;
@@ -638,6 +639,19 @@ impl Ui {
                 self.setup = Some(setup::State::new(step, &self.data.settings));
                 vec![]
             }
+            // Without the demo's Nextcloud accounts the step asks for an address; waiting, the core
+            // reports a sign-in with its link (nothing is sent, the demo drops the request).
+            Open::SetupNextcloudAddress | Open::SetupNextcloudWaiting => {
+                self.data.accounts.retain(|account| account.kind != "nextcloud");
+                self.setup = Some(setup::State::new(setup::Step::Nextcloud, &self.data.settings));
+                let mut messages = vec![];
+                if open == Open::SetupNextcloudWaiting {
+                    self.data.accounts.push(launch::demo_signing_in());
+                    messages.push(Message::Setup(setup::Message::ServerChanged("cloud.example.org".into())));
+                    messages.push(Message::Setup(setup::Message::Next));
+                }
+                messages
+            }
             // The assistant with rights of its own (the demo's), before it has a client (the
             // first start), with the rights offered on that first start (read only), and asking
             // whether to turn it off.
@@ -753,7 +767,8 @@ impl Ui {
 
     fn subscription(&self) -> Subscription<Message> {
         // Faster while an account is being set up, so the page follows the browser sign-in.
-        let every = if self.accounts.busy() { Duration::from_secs(1) } else { Duration::from_secs(3) };
+        let busy = self.accounts.busy() || self.setup.as_ref().is_some_and(setup::State::busy);
+        let every = if busy { Duration::from_secs(1) } else { Duration::from_secs(3) };
         let mut all = vec![
             iced::system::theme_changes().map(Message::SystemMode),
             iced::event::listen_with(keys),
@@ -835,10 +850,12 @@ impl Ui {
                 };
                 agents::loaded(&mut self.agents);
                 assistant::loaded(&mut self.assistant, &self.data);
-                if let Some(setup) = self.setup.as_mut()
-                    && self.data.error.is_none()
-                {
-                    setup.loaded(&self.data.settings);
+                if let Some(setup) = self.setup.as_mut() {
+                    if self.data.error.is_none() {
+                        setup.loaded(&self.data.settings);
+                    }
+                    // The setup follows a Nextcloud sign-in through the reloaded accounts.
+                    setup::observe(setup, &self.data);
                 }
                 // A mail account's page follows changes from outside while nothing is typed.
                 accounts::loaded(&mut self.accounts, &self.data);
@@ -854,8 +871,9 @@ impl Ui {
                 Action::None
             }
             Message::Sent(result) => {
-                // The add-account dialog shows the outcome of its own requests itself.
-                let in_dialog = accounts::answered(&mut self.accounts, &result);
+                // The add-account dialog and the setup show the outcome of their own requests themselves.
+                let in_setup = self.setup.as_mut().is_some_and(|setup| setup::answered(setup, &result));
+                let in_dialog = in_setup || accounts::answered(&mut self.accounts, &result);
                 approvals::answered(&mut self.approvals);
                 inbox::answered(&mut self.inbox);
                 // Turning the assistant on goes on with its rights; its new client's key is the
@@ -925,7 +943,7 @@ impl Ui {
             },
             Message::Setup(m) => {
                 let Some(state) = self.setup.as_mut() else { return Task::none() };
-                match setup::update(state, m) {
+                match setup::update(state, m, &self.data) {
                     setup::Outcome::Stay(action) => action,
                     // Finished or put off: the window goes on as the control centre.
                     setup::Outcome::Close(action) => {

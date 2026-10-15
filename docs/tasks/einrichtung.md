@@ -67,29 +67,38 @@ W.10 Sichtprüfung und API-Prüfung am Ende
   nennt (W.5–W.8 schalten sie dort frei).
 - **Oberfläche:** Einrichtung · **API:** `SetSetting { Setup, Component, Language, Appearance }` · **MCP:** gibt es
 
-### W.5 Schritt Nextcloud und Bausteine aus „Add account“
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** W.4 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,setup/**}.rs`,
-  `crates/torroworkplace/src/ui/connect/**` (neu)
-- Die Wege Nextcloud, CalDAV, Mail, GitHub, ntfy, KI aus `wizard.rs` als Bausteine herauslösen, die Dialog und
-  Einrichtung gemeinsam nutzen (Verhalten des Dialogs bleibt gleich, seine Tests laufen weiter).
-  Schritt Nextcloud mit Liste der Dienste aus `AccountInfo::services`.
+### W.5 Schritt Nextcloud und der erste Baustein aus „Add account“
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** W.4 · **Dateien:** `crates/torroworkplace/src/ui/{wizard,mod,launch}.rs`,
+  `crates/torroworkplace/src/ui/setup/**`, `crates/torroworkplace/src/ui/connect/**` (neu),
+  `crates/torro-core/src/i18n/de.rs`
+- Der Nextcloud-Weg ist ein Baustein (`ui/connect/nextcloud.rs`: Adresse, Login Flow v2, Ende aus den Reloads,
+  Wartebild). Dialog und Einrichtung nutzen ihn; der Dialog verhält sich wie zuvor, seine Tests laufen weiter.
+- Schritt Nextcloud: ohne Konto die Adresse („Connect“, „I don't use Nextcloud“), dann Warten auf den Browser
+  („Cancel“), danach die Dienste des Servers aus `AccountInfo::services` und „Add another Nextcloud“.
+  Demo: `--open setup-nextcloud`, `setup-nextcloud-address`, `setup-nextcloud-waiting`.
+- Entschieden beim Umsetzen: Die übrigen Wege (CalDAV, GitHub, Mail, ntfy, KI) ziehen nicht alle auf einmal um,
+  sondern mit der Aufgabe, deren Schritt sie braucht (W.6–W.8). So bleibt jeder Umbau klein und geprüft.
+- **API:** `ConnectNextcloud` · Admin · **MCP:** `accounts_connect_nextcloud` (gibt es)
 
 ### W.6 Schritte Kalender und Aufgaben
 - [ ] erledigt
 - **Modell:** Sonnet · **Braucht:** W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/{calendar,tasks}.rs`
 - Sammlungen je Konto mit Schalter (`SetCollectionShown`), „Add a CalDAV calendar“ mit Anbieterwahl im Schritt,
-  GitHub mit beiden Wegen.
+  GitHub mit beiden Wegen. Die Wege CalDAV und GitHub ziehen dazu als Bausteine nach `ui/connect/` um (wie
+  Nextcloud in W.5), der Dialog nutzt sie mit.
 
 ### W.7 Schritte Mail und Eingang
 - [ ] erledigt
 - **Modell:** Sonnet · **Braucht:** W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/{mail,inbox}.rs`
-- TorroMail-Übernahme, Mail-Konto; Eingangsquellen mit Schalter, ntfy, „Quiet during busy events“.
+- TorroMail-Übernahme, Mail-Konto; Eingangsquellen mit Schalter, ntfy, „Quiet during busy events“. Die Wege Mail
+  und ntfy ziehen dazu als Bausteine nach `ui/connect/` um.
 
 ### W.8 Schritt KI
 - [ ] erledigt
 - **Modell:** Sonnet · **Braucht:** W.3, W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/ai.rs`
 - Lokale Suche beim Öffnen, Cloud-Anbieter mit Sitz und Schlüssel in der Zeile, „Use for: Assistant“ mit Modell.
+  Der KI-Weg zieht dazu als Baustein nach `ui/connect/` um.
 
 ### W.9 Auslöser
 - [ ] erledigt

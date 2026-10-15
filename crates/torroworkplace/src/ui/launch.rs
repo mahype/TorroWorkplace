@@ -22,8 +22,8 @@ use torro_ipc::api::{
 };
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
-    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, RuleHits, ServiceState, Status,
-    TorroMailAccount,
+    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, RuleHits, ServerService,
+    ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -147,10 +147,14 @@ pub enum Open {
     AssistantForget,
     /// The first-run setup at this step (task W.4), with the demo's sample data.
     Setup(super::setup::Step),
+    /// The setup's Nextcloud step without a Nextcloud account: the address form (task W.5).
+    SetupNextcloudAddress,
+    /// The setup's Nextcloud step while the browser signs in, with the link to copy.
+    SetupNextcloudWaiting,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 74] = [
+    pub const ALL: [(&'static str, Open); 77] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -223,6 +227,9 @@ impl Open {
         ("assistant-note", Open::AssistantNote),
         ("assistant-forget", Open::AssistantForget),
         ("setup", Open::Setup(super::setup::Step::Welcome)),
+        ("setup-nextcloud", Open::Setup(super::setup::Step::Nextcloud)),
+        ("setup-nextcloud-address", Open::SetupNextcloudAddress),
+        ("setup-nextcloud-waiting", Open::SetupNextcloudWaiting),
         ("setup-components", Open::Setup(super::setup::Step::Components)),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
@@ -443,6 +450,25 @@ pub fn demo_designs() -> Vec<Pack> {
     packs
 }
 
+/// The entry the core lists while a Nextcloud sign-in runs (empty id, the login link), for the
+/// setup's waiting state (`--open setup-nextcloud-waiting`).
+pub fn demo_signing_in() -> AccountInfo {
+    AccountInfo {
+        id: String::new(),
+        kind: "nextcloud".into(),
+        label: "cloud.example.org".into(),
+        state: AccountState::SigningIn {
+            server: "https://cloud.example.org".into(),
+            login_url: "https://cloud.example.org/login/v2/flow/demo".into(),
+        },
+        collections: Vec::new(),
+        scopes: None,
+        mail: None,
+        ntfy: None,
+        services: None,
+    }
+}
+
 /// The sample content of `--demo`: a healthy Nextcloud account with a shared read-only calendar,
 /// a second one that cannot reach its server (so the problem rows show), a GitHub account, three
 /// templates, the suite's apps, settings with one list hidden, approvals: two open, one done,
@@ -486,7 +512,14 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
-            services: None,
+            // What the server offers (task W.1): calendars, tasks, notifications, Talk and push; no Deck.
+            services: Some(vec![
+                ServerService::Calendars,
+                ServerService::Tasks,
+                ServerService::Notifications,
+                ServerService::Talk,
+                ServerService::Push,
+            ]),
         },
         AccountInfo {
             id: "nextcloud:anna@work.example.net".into(),
@@ -1461,8 +1494,8 @@ mod tests {
         let launch = Launch::parse(&args(&["--setup", "--step=components"])).expect("a built step");
         assert_eq!(launch.setup, Some(Step::Components));
         assert_eq!(Launch::parse(&args(&["--step", "done"])), Err(LaunchError::NeedsSetup("--step")));
-        let err = Launch::parse(&args(&["--setup", "--step", "nextcloud"])).expect_err("not built yet");
-        assert!(err.to_string().ends_with("valid values: welcome, components, done"), "{err}");
+        let err = Launch::parse(&args(&["--setup", "--step", "calendar"])).expect_err("not built yet");
+        assert!(err.to_string().ends_with("valid values: welcome, nextcloud, components, done"), "{err}");
     }
 
     #[test]
