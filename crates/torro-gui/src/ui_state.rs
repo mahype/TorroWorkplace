@@ -3,8 +3,9 @@
 //! (task G.11, [`last_repo_from`]), and which foldable parts the person unfolded – "Info" in the
 //! columns of the inbox's overview (task E3.11, [`unfolded_from`]), and the density each window of the
 //! inbox shows its entries in (task E8.2, [`Density`], [`density_from`]) and in which order by arrival
-//! (task E8.15, [`order_from`]), and how wide the list beside the reader is (issue #130,
-//! [`split_from`]). `ui.json` in the app's state directory
+//! (task E8.15, [`order_from`]), how wide the list beside the reader is (issue #130,
+//! [`split_from`]), and the mail searches last made (issue #136, [`searches_from`]). `ui.json` in
+//! the app's state directory
 //! ([`torro_core::paths`]), because it is view state that may be lost – like the scroll position it
 //! is no suite setting and goes through no API.
 //!
@@ -56,6 +57,13 @@ const ORDER: &str = "order";
 /// The key of the split widths chosen ([`split_from`]): an object from a window's key to the width
 /// of its first pane in layout units.
 const SPLIT: &str = "split";
+
+/// The key of the searches last made ([`searches_from`]): a list of what was searched for, newest
+/// first.
+const SEARCHES: &str = "recentSearches";
+
+/// How many searches [`save_searches_to`] keeps at most.
+pub const SEARCHES_MAX: usize = 8;
 
 /// How close together a window shows its entries (task E8.2, `docs/eingang.md` "Zwei Dichten"):
 /// one row each, or cards with room, a longer preview and their buttons always shown. Chosen with
@@ -409,6 +417,49 @@ pub fn save_split_task<T: Send + 'static>(app: AppId, key: String, width: Option
     .discard()
 }
 
+/// The searches last made, newest first, as [`save_searches_to`] stored them (issue #136): what the
+/// person searched for, kept on this device only, for the suggestions under the search field.
+/// Empty when nothing is stored, the file cannot be read or the value is no list (other entries
+/// of a list are skipped); never more than [`SEARCHES_MAX`].
+pub fn searches_from(path: &Path) -> Vec<String> {
+    let Some(value) =
+        fs::read_to_string(path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    else {
+        return Vec::new();
+    };
+    let Some(list) = value.get(SEARCHES).and_then(serde_json::Value::as_array) else { return Vec::new() };
+    list.iter().filter_map(serde_json::Value::as_str).map(str::to_string).take(SEARCHES_MAX).collect()
+}
+
+/// Stores `searches` (newest first, the first [`SEARCHES_MAX`] of them) as the searches last made
+/// in `path`, replacing the list before and keeping everything else in the file. An empty list
+/// forgets them.
+pub fn save_searches_to(path: &Path, searches: &[String]) -> Result<(), Error> {
+    let mut fields = serde_json::Map::new();
+    let list = searches.iter().take(SEARCHES_MAX).cloned().map(serde_json::Value::String).collect();
+    fields.insert(SEARCHES.into(), serde_json::Value::Array(list));
+    merge_into(path, fields)
+}
+
+/// [`searches_from`] for `app` in the background, for the start of a window:
+/// `ui_state::load_searches_task(app).map(Message::RecentSearches)`. Like [`load_task`], tests that
+/// only build the app never run it.
+pub fn load_searches_task(app: AppId) -> Task<Vec<String>> {
+    Task::perform(async move { file(app).map(|path| searches_from(&path)).unwrap_or_default() }, |list| list)
+}
+
+/// [`save_searches_to`] for `app` in the background, after a search was made or the list
+/// forgotten. A failure is reported on stderr and otherwise ignored, as in [`save_task`].
+pub fn save_searches_task<T: Send + 'static>(app: AppId, searches: Vec<String>) -> Task<T> {
+    Task::future(async move {
+        let saved = file(app).ok_or(Error::NoHome).and_then(|path| save_searches_to(&path, &searches));
+        if let Err(err) = saved {
+            eprintln!("{}: {err}", app.binary);
+        }
+    })
+    .discard()
+}
+
 /// Writes `fields` into the JSON object in `path` – over the keys of the same name, beside the
 /// others – atomically, creating the directory if needed. A missing or broken file starts empty.
 fn merge_into(path: &Path, fields: serde_json::Map<String, serde_json::Value>) -> Result<(), Error> {
@@ -611,6 +662,28 @@ mod tests {
             fs::write(&path, content).expect("write");
             assert_eq!(split_from(&path, "mail"), None, "{content}");
         }
+    }
+
+    /// Issue #136: the searches last made stay beside the rest, at most [`SEARCHES_MAX`], and an
+    /// empty list forgets them.
+    #[test]
+    fn recent_searches_are_kept_beside_the_rest() {
+        let dir = TempDir::new("searches");
+        let path = dir.0.join(FILE);
+        assert!(searches_from(&path).is_empty(), "nothing searched yet");
+        save_split_to(&path, "mail", Some(500.0)).expect("save a split");
+        let many: Vec<String> = (0..12).map(|n| format!("budget {n}")).collect();
+        save_searches_to(&path, &many).expect("save the searches");
+        assert_eq!(searches_from(&path), many[..SEARCHES_MAX].to_vec(), "newest first, at most the max");
+        assert_eq!(split_from(&path, "mail"), Some(500.0), "the split stays");
+        save_searches_to(&path, &[]).expect("forget");
+        assert!(searches_from(&path).is_empty());
+        for content in ["{ not json", r#"{"recentSearches":"budget"}"#] {
+            fs::write(&path, content).expect("write");
+            assert!(searches_from(&path).is_empty(), "{content}");
+        }
+        fs::write(&path, r#"{"recentSearches":["a",3,"b"]}"#).expect("write");
+        assert_eq!(searches_from(&path), ["a", "b"], "other entries are skipped");
     }
 
     #[test]

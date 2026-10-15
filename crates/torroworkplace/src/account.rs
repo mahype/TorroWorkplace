@@ -900,6 +900,12 @@ pub mod github {
             Ok(())
         }
 
+        /// The stored accounts were read ([`GithubAccounts::start`]), or could not be: until then
+        /// [`GithubAccounts::infos`] is empty although accounts may exist.
+        pub fn loaded(&self) -> bool {
+            self.loaded.load(Ordering::Acquire)
+        }
+
         /// The accounts as `accounts.list_accounts` lists them, never with their tokens.
         pub async fn infos(&self) -> Vec<AccountInfo> {
             self.slots.read().await.iter().map(Slot::info).collect()

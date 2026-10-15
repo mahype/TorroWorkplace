@@ -1477,7 +1477,7 @@ fn subtitle(state: &State) -> &'static str {
         (Step::AiServer, _) => tr("Enter the address of your AI server."),
         (Step::AiConnecting, _) => tr("Checking the connection with the AI server."),
         (Step::NtfyServer, _) => tr("Enter the address of your ntfy server."),
-        (Step::NtfyTopics, _) => tr("Choose the topics to show in the Inbox."),
+        (Step::NtfyTopics, _) => tr("Choose the topics to show in the Notification Hub."),
         (Step::NtfyLogin, _) => tr("This server needs a login for these topics."),
         (Step::NtfyChecking, _) => tr("Checking the topics with the ntfy server."),
         (Step::Done, Provider::Ntfy) => tr("ntfy is connected."),
@@ -1858,7 +1858,7 @@ fn ntfy_topics_step(state: &State) -> Element<'_, Message> {
             row_frame(row![name, label, remove].spacing(space::s()).align_y(Alignment::Center), false)
         })
         .collect();
-    let footer = tr("The Inbox shows the label. On a public server a topic name works like a password.");
+    let footer = tr("The Notification Hub shows the label. On a public server a topic name works like a password.");
     let add = widgets::text_button(
         Some(Icon::Plus),
         tr("Add topic"),

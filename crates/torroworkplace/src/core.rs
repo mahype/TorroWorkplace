@@ -45,6 +45,7 @@ use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
 use crate::settings_service::SettingsStore;
 use crate::sources::Sources;
+use crate::suggest::Wanted;
 use crate::ui::Section;
 
 /// `name` next to the daemon's binary, else from `PATH`.
@@ -270,6 +271,8 @@ const INBOX_LINK: &str = "inbox:";
 ///
 /// - Title: `title` without the spaces around it; the entry's title when it is left out or blank.
 /// - Due: `due`, as it came.
+/// - A note of the request (issue #120) goes before the description ([`with_note`]); the caller adds
+///   it, [`Core::create_task_from_item`].
 /// - Description: the entry's text as it came. A task holds plain text, and nothing reads it as
 ///   instructions (security rule 5), so the text of a foreign source is not changed.
 /// - `url`: the entry's web page when it links to one; the inbox keeps only `http`/`https` links
@@ -360,6 +363,46 @@ struct EntryEvent {
     title: Option<String>,
     start: torro_pim::EventTime,
     end: torro_pim::EventTime,
+    /// Where it takes place (issue #120); blank: nowhere.
+    location: Option<String>,
+    /// A note before the entry's text (issue #120, [`with_note`]).
+    notes: Option<String>,
+}
+
+/// The fields of `inbox.create_task_from_item` but the entry ([`Request::CreateTaskFromItem`]).
+struct EntryTask {
+    collection: String,
+    title: Option<String>,
+    due: Option<torro_pim::EventTime>,
+    /// A note before the entry's text (issue #120, [`with_note`]).
+    notes: Option<String>,
+}
+
+/// `text` (a task's or event's description) with `note` before it, a blank line between (issue
+/// #120: what an AI suggested, checked by the person); a blank note leaves `text` as it is.
+fn with_note(note: Option<String>, text: Option<String>) -> Option<String> {
+    let note = note.map(|note| note.trim().to_string()).filter(|note| !note.is_empty());
+    match (note, text) {
+        (Some(note), Some(text)) => Some(format!("{note}\n\n{text}")),
+        (note, text) => note.or(text),
+    }
+}
+
+/// `error` when a note or place for a task or event of an entry is longer than the core takes
+/// ([`torro_ipc::SUGGESTION_NOTES_MAX`], [`torro_ipc::SUGGESTION_LOCATION_MAX`], issue #120).
+fn extras_refusal(location: Option<&str>, notes: Option<&str>) -> Option<Response> {
+    let longer = |text: Option<&str>, max: usize| text.is_some_and(|text| text.chars().count() > max);
+    if longer(notes, torro_ipc::SUGGESTION_NOTES_MAX) {
+        return Some(refusal(
+            "error",
+            format!("`notes` may hold at most {} characters", torro_ipc::SUGGESTION_NOTES_MAX),
+        ));
+    }
+    if longer(location, torro_ipc::SUGGESTION_LOCATION_MAX) {
+        let max = torro_ipc::SUGGESTION_LOCATION_MAX;
+        return Some(refusal("error", format!("`location` may hold at most {max} characters")));
+    }
+    None
 }
 
 /// The event `inbox.create_event_from_item` makes of `entry` (task E8.5b), as [`task_from_entry`]
@@ -371,11 +414,14 @@ struct EntryEvent {
 /// - Description: the entry's text as it came, with the way back after it: the line naming the
 ///   mail for a mail entry with a Message-ID (`origin`, as for tasks), else the entry's web page
 ///   ([`web_link`]). An event has no field for a link of its own, and every calendar shows the text.
+///   A note (issue #120) comes first ([`with_note`]).
+/// - Location: `made.location` without the spaces around it; none when blank (issue #120).
 ///
 /// New: no `uid`, `href` or `etag`; the calendar service gives it its uid.
 fn event_from_entry(entry: &torro_inbox::Item, made: EntryEvent, origin: Option<MailOrigin>) -> torro_pim::Event {
-    let EntryEvent { collection, title, start, end } = made;
+    let EntryEvent { collection, title, start, end, location, notes } = made;
     let title = title.map(|title| title.trim().to_string()).filter(|title| !title.is_empty());
+    let location = location.map(|location| location.trim().to_string()).filter(|location| !location.is_empty());
     let way_back = origin.map(|origin| origin.line).or_else(|| web_link(entry));
     torro_pim::Event {
         uid: String::new(),
@@ -385,8 +431,8 @@ fn event_from_entry(entry: &torro_inbox::Item, made: EntryEvent, origin: Option<
         summary: title.unwrap_or_else(|| entry.title.clone()),
         start,
         end: Some(end),
-        location: None,
-        description: with_line(entry.body.clone(), way_back),
+        location,
+        description: with_note(notes, with_line(entry.body.clone(), way_back)),
         recurring: false,
         transparency: torro_pim::Transparency::Opaque,
     }
@@ -655,12 +701,15 @@ fn no_mail() -> Response {
 fn with_entry_title(request: Request, entry: Option<&torro_inbox::Item>) -> Request {
     let blank = |title: &Option<String>| title.as_deref().is_none_or(|title| title.trim().is_empty());
     match (request, entry) {
-        (Request::CreateTaskFromItem { id, collection, title, due }, Some(entry)) if blank(&title) => {
-            Request::CreateTaskFromItem { id, collection, title: Some(entry.title.clone()), due }
+        (Request::CreateTaskFromItem { id, collection, title, due, notes }, Some(entry)) if blank(&title) => {
+            Request::CreateTaskFromItem { id, collection, title: Some(entry.title.clone()), due, notes }
         }
         // An event of an entry alike (task E8.5b).
-        (Request::CreateEventFromItem { id, collection, title, start, end }, Some(entry)) if blank(&title) => {
-            Request::CreateEventFromItem { id, collection, title: Some(entry.title.clone()), start, end }
+        (Request::CreateEventFromItem { id, collection, title, start, end, location, notes }, Some(entry))
+            if blank(&title) =>
+        {
+            let title = Some(entry.title.clone());
+            Request::CreateEventFromItem { id, collection, title, start, end, location, notes }
         }
         (request, _) => request,
     }
@@ -668,6 +717,26 @@ fn with_entry_title(request: Request, entry: Option<&torro_inbox::Item>) -> Requ
 
 /// The answer to an approved `inbox.*` command whose entry changed after the approval was asked
 /// for ([`EntryPin`]): the person allowed something else.
+/// The mail message's id (`m:…`) that `inbox.list_mute_options` or `inbox.mute_item` mutes by
+/// (issue #123); `None` for an entry's id and every other request.
+fn mute_message_id(request: &Request) -> Option<&str> {
+    match request {
+        Request::ListMuteOptions { id } | Request::MuteItem { id, .. } if torro_inbox::rules::is_message_id(id) => {
+            Some(id)
+        }
+        _ => None,
+    }
+}
+
+/// `request` muting by the entry `entry` instead of the mail message it names ([`mute_message_id`]).
+fn with_entry_id(request: Request, entry: String) -> Request {
+    match request {
+        Request::ListMuteOptions { .. } => Request::ListMuteOptions { id: entry },
+        Request::MuteItem { scope, until, effect, .. } => Request::MuteItem { id: entry, scope, until, effect },
+        other => other,
+    }
+}
+
 fn entry_conflict() -> Response {
     Response::Error {
         code: "conflict".into(),
@@ -827,6 +896,12 @@ pub struct Core {
     /// What the keys lent for runs of engine B are for (task B.2, [`LentScope`]): the assistant's
     /// conversation, or a bot's run for the assistant. In memory only, as the leases are.
     lent_scopes: std::sync::Mutex<Vec<LentScope>>,
+    /// Whether the calendar, GitHub and mail services have read their stored accounts. False from
+    /// [`Core::start`] until they have (or [`ACCOUNTS_WAIT`] passed): meanwhile
+    /// `accounts.list_accounts` waits, because an app takes an empty list for "no account yet" and
+    /// shows its setup screen although accounts exist. True from the start for a core that is
+    /// never started, as in tests.
+    accounts_read: tokio::sync::watch::Sender<bool>,
 }
 
 impl Core {
@@ -865,6 +940,7 @@ impl Core {
             assistant: Arc::new(Assistant::system()),
             voice: if cfg!(test) { Listener::none() } else { Listener::system() },
             lent_scopes: std::sync::Mutex::new(Vec::new()),
+            accounts_read: tokio::sync::watch::Sender::new(true),
         }
     }
 
@@ -959,6 +1035,7 @@ impl Core {
     /// with (task C.2, [`Core::attach_assistant`]). The daemon calls it once, next to
     /// `PimService::start`.
     pub fn start(self: &Arc<Self>) {
+        self.await_stored_accounts();
         self.attach_assistant();
         // Voice switched on before the core stopped listens again (task C.9).
         self.follow_voice();
@@ -1014,6 +1091,24 @@ impl Core {
                 refresh_filter_lists(&pim, &github).await;
                 tokio::time::sleep(FILTER_LISTS_EVERY).await;
             }
+        });
+    }
+
+    /// Holds `accounts.list_accounts` back until the calendar, GitHub and mail services have read
+    /// their stored accounts from the keychain ([`Core::accounts_read`]), [`ACCOUNTS_WAIT`] at
+    /// most, so a keychain that never answers does not keep the apps waiting forever. Part of
+    /// [`Core::start`], before the services start loading.
+    fn await_stored_accounts(self: &Arc<Self>) {
+        self.accounts_read.send_replace(false);
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let started = tokio::time::Instant::now();
+            while started.elapsed() < ACCOUNTS_WAIT
+                && !(core.pim.accounts_loaded().await && core.github.loaded() && core.mail.loaded())
+            {
+                tokio::time::sleep(ACCOUNTS_STEP).await;
+            }
+            core.accounts_read.send_replace(true);
         });
     }
 
@@ -1454,9 +1549,18 @@ impl Core {
             },
             _ => None,
         };
+        // Muting by a mail message's id (issue #123): its entry's id when it has one, else the
+        // message as an entry would hold it, checked here as the inbox checks an entry.
+        let (request, stand_in) = match self.resolve_message(request, reach).await {
+            Ok(resolved) => resolved,
+            Err(refused) => return Ok(refused),
+        };
         // Nobody is asked to approve what the inbox would refuse anyway.
         if let Some(info) = &inbox_client
-            && let Some(refused) = self.inbox.refusal(&request, Some(info))
+            && let Some(refused) = match &stand_in {
+                Some(stand_in) => self.inbox.message_refusal(&request, stand_in, Some(info)),
+                None => self.inbox.refusal(&request, Some(info)),
+            }
         {
             return Ok(refused);
         }
@@ -1794,6 +1898,12 @@ impl Core {
             }
             (_, Area::Inbox) => {
                 let mut facts = self.inbox.facts(&request);
+                // A mail message without an entry (issue #123): its traits as the mail store holds
+                // them, never as the client says.
+                if facts.item.is_none() && mute_message_id(&request).is_some() {
+                    facts.item =
+                        self.resolve_message(request.clone(), Reach::Client(rights)).await.ok().and_then(|r| r.1);
+                }
                 if let Request::CreateTaskFromItem { collection, .. } = &request {
                     facts.list = self.list_name(collection).await;
                 }
@@ -2305,6 +2415,8 @@ impl Core {
             | Request::OpenItem { .. }
             | Request::CreateTaskFromItem { .. }
             | Request::CreateEventFromItem { .. }
+            | Request::SuggestTaskFromItem { .. }
+            | Request::SuggestEventFromItem { .. }
             | Request::ListSources
             | Request::PostItem { .. }
             | Request::ResolveItems { .. }
@@ -2472,14 +2584,26 @@ impl Core {
         client: Option<&torro_ipc::ClientInfo>,
         pin: Option<EntryPin>,
     ) -> Response {
+        // Muting by a mail message's id (issue #123): as its entry's when it has one, else by the
+        // message itself – also after an approval, which pinned the message as it was then.
+        let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
+        let request = match self.resolve_message(request, reach).await {
+            Ok((request, None)) => request,
+            Ok((_, Some(stand_in))) if pin.is_some_and(|pin| !pin.holds(&stand_in)) => return entry_conflict(),
+            Ok((request, Some(stand_in))) => return self.inbox.handle_message(request, &stand_in, client, Utc::now()),
+            Err(refused) => return refused,
+        };
         match request {
             Request::OpenItem { id } => self.open_item(&id, client, pin).await,
-            Request::CreateTaskFromItem { id, collection, title, due } => {
-                self.create_task_from_item(&id, collection, title, due, client, pin).await
+            Request::CreateTaskFromItem { id, collection, title, due, notes } => {
+                self.create_task_from_item(&id, EntryTask { collection, title, due, notes }, client, pin).await
             }
-            Request::CreateEventFromItem { id, collection, title, start, end } => {
-                self.create_event_from_item(&id, EntryEvent { collection, title, start, end }, client, pin).await
+            Request::CreateEventFromItem { id, collection, title, start, end, location, notes } => {
+                let made = EntryEvent { collection, title, start, end, location, notes };
+                self.create_event_from_item(&id, made, client, pin).await
             }
+            Request::SuggestTaskFromItem { id } => self.suggest_from_item(&id, Wanted::Task, client).await,
+            Request::SuggestEventFromItem { id } => self.suggest_from_item(&id, Wanted::Event, client).await,
             Request::GetQuiet => self.get_quiet(client).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
@@ -2554,12 +2678,14 @@ impl Core {
     async fn create_task_from_item(
         &self,
         id: &str,
-        collection: String,
-        title: Option<String>,
-        due: Option<torro_pim::EventTime>,
+        made: EntryTask,
         client: Option<&torro_ipc::ClientInfo>,
         pin: Option<EntryPin>,
     ) -> Response {
+        let EntryTask { collection, title, due, notes } = made;
+        if let Some(refused) = extras_refusal(None, notes.as_deref()) {
+            return refused;
+        }
         if let Some(client) = client
             && let Some(refused) = self.task_target_refusal(&collection, &client.rights).await
         {
@@ -2574,7 +2700,8 @@ impl Core {
             return entry_conflict();
         }
         let origin = self.mail_origin_of(&entry).await;
-        let todo = task_from_entry(&entry, collection, title, due, origin);
+        let mut todo = task_from_entry(&entry, collection, title, due, origin);
+        todo.description = with_note(notes, todo.description);
         let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
         let saved = match self.pim.handle_within(Request::SaveTodo { todo }, reach).await {
             Response::Todo { todo } => todo,
@@ -2636,6 +2763,9 @@ impl Core {
         pin: Option<EntryPin>,
     ) -> Response {
         let rights = client.map(|client| &client.rights);
+        if let Some(refused) = extras_refusal(made.location.as_deref(), made.notes.as_deref()) {
+            return refused;
+        }
         if let Some(refused) = self.event_refusal(&made.collection, made.start, made.end, rights).await {
             return refused;
         }
@@ -2664,6 +2794,71 @@ impl Core {
             _ => {}
         }
         Response::Event { event: saved }
+    }
+
+    /// `inbox.suggest_task_from_item` and `inbox.suggest_event_from_item` (issue #120): asks an AI
+    /// what task or event (`wanted`) the entry `id` asks for, for `client` (`None` for the app key).
+    /// Saves nothing.
+    ///
+    /// In this order: the entry as `inbox.get_item` answers it to the caller (`not-found` for one it
+    /// may not see, hook clients see none), its text ([`Core::text_for_ai`]), the AI
+    /// ([`crate::suggest::choose`]: the person's default of the assistant, else the first AI account;
+    /// the data rule keeps mail, Nextcloud and Talk with local models), then one question to it
+    /// ([`crate::suggest::suggest`]), dates read in the person's time zone. Errors as the request
+    /// says; the protocol names no text.
+    async fn suggest_from_item(&self, id: &str, wanted: Wanted, client: Option<&torro_ipc::ClientInfo>) -> Response {
+        let now = Utc::now();
+        let entry = match self.inbox.handle(Request::GetItem { id: id.to_string() }, client, now) {
+            Response::Item { item } => item,
+            refused => return refused,
+        };
+        let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
+        let content = crate::suggest::Content {
+            title: entry.title.clone(),
+            from: entry.from.as_ref().map(|from| match &from.address {
+                Some(address) if !from.name.is_empty() => format!("{} <{address}>", from.name),
+                Some(address) => address.clone(),
+                None => from.name.clone(),
+            }),
+            received: entry.received,
+            text: self.text_for_ai(&entry, reach).await,
+        };
+        let mut candidates = Vec::new();
+        for account in self.ai.infos().await {
+            let Some((provider, server)) = self.ai.server(&account.id).await else { continue };
+            let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
+            let place = crate::assistant::place_of(provider, &server);
+            candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
+        }
+        let default = self.settings.current().assistant_default;
+        let local_only = crate::assistant::held_back(&entry);
+        let chosen = match crate::suggest::choose(&candidates, default.as_ref(), local_only) {
+            Ok(chosen) => chosen,
+            Err(refused) => return refused.response(),
+        };
+        let provider = match self.ai.provider(&chosen.engine).await {
+            Ok(provider) => provider,
+            Err(err) => return crate::suggest::SuggestError::Ai(err).response(),
+        };
+        crate::suggest::suggest(provider.as_ref(), &chosen, wanted, &content, now, &chrono::Local).await
+    }
+
+    /// What an AI reads of `entry` (issue #120): for a mail entry the whole text of its newest mail,
+    /// as `mail.get_message` gives it to `reach` (from the store, else fetched from the server);
+    /// else – and when the mail cannot be read – the entry's own text. Empty for none.
+    async fn text_for_ai(&self, entry: &torro_inbox::Item, reach: Reach<'_>) -> String {
+        let body = || entry.body.clone().unwrap_or_default();
+        let Some(torro_inbox::Link::Mail { message }) = &entry.link else { return body() };
+        if entry.source.kind != torro_inbox::SourceKind::Mail {
+            return body();
+        }
+        let asked = Request::GetMail { id: message.clone(), include_body: true };
+        match crate::mail::read::answer(&self.mail, reach, asked).await {
+            Response::MailMessage { message } => {
+                message.text.filter(|text| !text.trim().is_empty()).unwrap_or_else(body)
+            }
+            _ => body(),
+        }
     }
 
     /// `inbox.get_quiet` (task E8.5b): whether it is quiet now ([`crate::inbox_notify::quiet_now`],
@@ -2741,6 +2936,27 @@ impl Core {
         };
         let todo = task_from_mail(&found, origin, collection, title, due);
         self.pim.handle_within(Request::SaveTodo { todo }, reach).await
+    }
+
+    /// `request` as it runs for `reach` when it mutes by a mail message's id (issue #123:
+    /// `inbox.list_mute_options` or `inbox.mute_item` with `m:…`, [`mute_message_id`]): with the id
+    /// of the entry the message was filed in, when there is one, and no stand-in; else as it is,
+    /// with the message as an entry would hold it ([`crate::mail::inbox_feed::message_stand_in`],
+    /// for [`Inbox::handle_message`]). Every other request comes back as it is. `not-found` for a
+    /// message none of the stores `reach` sees holds, as for an unknown entry.
+    async fn resolve_message(
+        &self,
+        request: Request,
+        reach: Reach<'_>,
+    ) -> Result<(Request, Option<torro_inbox::Item>), Response> {
+        let Some(id) = mute_message_id(&request) else { return Ok((request, None)) };
+        let Some(stand_in) = crate::mail::inbox_feed::message_stand_in(&self.mail, reach, id).await else {
+            return Err(Response::Error { code: "not-found".into(), message: "no such inbox entry or mail".into() });
+        };
+        match self.inbox.entry_of_message(&stand_in.source.key(), &stand_in.id) {
+            Some(entry) => Ok((with_entry_id(request, entry), None)),
+            None => Ok((request, Some(stand_in))),
+        }
     }
 
     /// For the approval of `tasks.create_todo_from_mail` (task E8.7a): the mail as the store holds
@@ -3224,6 +3440,9 @@ impl Core {
     /// does not reach the mail account sees its calendar part only while its rights show it some
     /// of that part's calendars or task lists, and then without the mail view (task M2.8).
     async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
+        // While the core starts, the lists are still empty ([`Core::await_stored_accounts`]).
+        // An error means the sender is gone, which it never is while `self` lives.
+        let _ = self.accounts_read.subscribe().wait_for(|read| *read).await;
         let mut accounts = self.pim.accounts_within(reach).await;
         let mut github = self.github.infos().await;
         for account in &mut github {
@@ -4166,6 +4385,11 @@ impl Core {
 
 /// How often the filter lists are fetched anew (`docs/github.md`, "Technik").
 const FILTER_LISTS_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// At start, how long `accounts.list_accounts` waits at most for the stored accounts
+/// ([`Core::await_stored_accounts`]): long enough for the person to allow the keychain access.
+const ACCOUNTS_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How often the core looks whether the stored accounts are read meanwhile.
+const ACCOUNTS_STEP: std::time::Duration = std::time::Duration::from_millis(50);
 /// At start, how long to wait for the tokens of the accounts with filter lists: 30 × 1 s.
 const TOKEN_WAIT_ROUNDS: u32 = 30;
 const TOKEN_WAIT_STEP: std::time::Duration = std::time::Duration::from_secs(1);
@@ -4838,6 +5062,25 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), Request::SaveTemplate { name: None }).await), "forbidden");
         core.clients.remove(&id).await.expect("removed");
         assert_eq!(code(&ask(&core, Some(&key), Request::Accounts).await), "unauthorized");
+    }
+
+    /// While the core starts, `accounts.list_accounts` waits for the stored accounts instead of
+    /// answering with an empty list, which an app would take for "no account yet" and show its
+    /// setup screen.
+    #[tokio::test]
+    async fn the_account_list_waits_until_the_stored_accounts_are_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Arc::new(core(dir.path()));
+        core.accounts_read.send_replace(false);
+        let asking = tokio::spawn({
+            let core = Arc::clone(&core);
+            async move { core.handle(Request::Accounts).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!asking.is_finished(), "answered before the stored accounts were read");
+
+        core.accounts_read.send_replace(true);
+        assert_eq!(asking.await.expect("answered"), Response::Accounts { accounts: vec![] });
     }
 
     /// `settings.list_designs` (task L.3): the standard first, then the packs of the designs
@@ -7681,7 +7924,7 @@ mod tests {
 
     fn make_task_as(id: &str, collection: &str, title: Option<&str>, due: Option<torro_pim::EventTime>) -> Request {
         let title = title.map(str::to_string);
-        Request::CreateTaskFromItem { id: id.into(), collection: collection.into(), title, due }
+        Request::CreateTaskFromItem { id: id.into(), collection: collection.into(), title, due, notes: None }
     }
 
     /// The answer an allowed approval's command ran with.
@@ -8128,6 +8371,8 @@ mod tests {
             title: title.map(str::to_string),
             start: torro_pim::EventTime::DateTime(start),
             end: torro_pim::EventTime::DateTime(start + chrono::TimeDelta::minutes(30)),
+            location: None,
+            notes: None,
         }
     }
 
@@ -8172,6 +8417,8 @@ mod tests {
             title: title.map(str::to_string),
             start,
             end,
+            location: None,
+            notes: None,
         };
         let event = event_from_entry(&item, made(Some("  Look at the deploy ")), None);
         assert_eq!((event.summary.as_str(), event.collection.as_str()), ("Look at the deploy", "work"));
@@ -8227,6 +8474,8 @@ mod tests {
             title: None,
             start: end,
             end: start,
+            location: None,
+            notes: None,
         };
         assert_eq!(code(&ask(&core, Some(&key), backwards).await), "error");
         assert_eq!(created_on(&fake), 1);
@@ -8289,8 +8538,15 @@ mod tests {
         // The title fixed when asking, the calendar's name and the entry from the core's records.
         let item = entry(&core, dir.path(), &id).await;
         let Request::CreateEventFromItem { id: asked_id, collection, start, end, .. } = request else { panic!() };
-        let titled =
-            Request::CreateEventFromItem { id: asked_id, collection, title: Some(item.title.clone()), start, end };
+        let titled = Request::CreateEventFromItem {
+            id: asked_id,
+            collection,
+            title: Some(item.title.clone()),
+            start,
+            end,
+            location: None,
+            notes: None,
+        };
         let facts = crate::approvals::InboxFacts {
             item: Some(item),
             list: Some(core.calendar_name(&fake.work).await.expect("the calendar's name")),
@@ -8437,12 +8693,12 @@ mod tests {
         let codex = || torro_inbox::SourceRef::agent("codex");
 
         let post = waits(ask(&core, Some(&key), notice("Tests \"pass\"")).await);
-        assert_eq!(post.summary, trf("Report \"{title}\" to the inbox", &[("title", &"Tests 'pass'")]));
+        assert_eq!(post.summary, trf("Report \"{title}\" to the Notification Hub", &[("title", &"Tests 'pass'")]));
         let mute = waits(ask(&core, Some(&key), Request::MuteSource { source: codex(), muted: true }).await);
         let named = "\"Codex\" (agent:codex)";
-        assert_eq!(mute.summary, trf("Mute {source} in the inbox", &[("source", &named)]));
+        assert_eq!(mute.summary, trf("Mute {source} in the Notification Hub", &[("source", &named)]));
         let unmute = waits(ask(&core, Some(&key), Request::MuteSource { source: codex(), muted: false }).await);
-        assert_eq!(unmute.summary, trf("Unmute {source} in the inbox", &[("source", &named)]));
+        assert_eq!(unmute.summary, trf("Unmute {source} in the Notification Hub", &[("source", &named)]));
 
         let lane = Request::SetItemLane { id, lane: torro_inbox::Lane::ForMe, remember: true };
         let moved = waits(ask(&core, Some(&key), lane).await);
@@ -8460,7 +8716,7 @@ mod tests {
             panic!("rules answer with Rules");
         };
         let remove = waits(ask(&core, Some(&key), Request::RemoveRule { id: rules[0].id.clone() }).await);
-        assert_eq!(remove.summary, trf("Unmute {source} in the inbox", &[("source", &named)]));
+        assert_eq!(remove.summary, trf("Unmute {source} in the Notification Hub", &[("source", &named)]));
     }
 
     #[tokio::test]
@@ -9736,6 +9992,82 @@ mod tests {
         assert!(!format!("{:?}", core.mail.infos(Reach::Suite).await).contains(MAIL_PASSWORD));
         assert!(!crate::approvals::tests::file_in(dir.path()).exists(), "no approval was asked for");
         nowhere(dir.path(), MAIL_PASSWORD, &[&answer, &listed]);
+    }
+
+    /// Issue #123: a folder's message without an entry is muted by its id – its traits only, from
+    /// the mail store; a client needs the account, the admin switch and the person, who sees the
+    /// sender as the store holds it.
+    #[tokio::test]
+    async fn a_message_without_an_entry_is_muted_by_its_id() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        let date = Utc::now().to_rfc2822();
+        let raw = format!(
+            "From: Shop <news@shop.example>\r\nTo: anna@example.org\r\nSubject: Weekly news\r\nDate: {date}\r\n\
+             Message-ID: <news-1@shop.example>\r\nList-Id: <news.shop.example>\r\n\
+             Content-Type: text/plain\r\n\r\nAutumn sale\r\n"
+        );
+        server.add("Archive", &raw, &[]);
+        let secrets = MemoryTokens::default();
+        store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+        };
+        let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
+            panic!("a page")
+        };
+        let id = messages.first().map(|message| message.id.clone()).expect("the newsletter");
+
+        let options = ask(&core, Some(&app_key), Request::ListMuteOptions { id: id.clone() }).await;
+        let Response::MuteOptions { options } = options else { panic!("options, got {options:?}") };
+        let scopes: Vec<MuteScope> = options.iter().map(|option| option.scope).collect();
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
+        assert!(scopes.contains(&sender) && !scopes.contains(&MuteScope::Conversation), "{scopes:?}");
+        let conversation = |id: &str| Request::MuteItem {
+            id: id.into(),
+            scope: MuteScope::Conversation,
+            until: Some(Utc::now() + chrono::TimeDelta::days(7)),
+            effect: MuteEffect::Hide,
+        };
+        assert_eq!(code(&ask(&core, Some(&app_key), conversation(&id)).await), "error", "no entry to close");
+        assert_eq!(code(&ask(&core, Some(&app_key), conversation("m:nope")).await), "not-found");
+
+        let by_sender = || Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Info };
+        let mut stranger = RightsTemplate::FullAccess.rights();
+        stranger.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: true });
+        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, stranger) = client(&core, stranger).await;
+        assert_eq!(code(&ask(&core, Some(&stranger), by_sender()).await), "not-found", "another account only");
+        let mut admin = RightsTemplate::FullAccess.rights();
+        admin.areas.insert(Area::Inbox, AreaRights { level: Level::Full, admin: true });
+        admin.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        admin.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        let (_, admin) = client(&core, admin).await;
+        let asked = waits(ask(&core, Some(&admin), by_sender()).await);
+        let what = format!("\"{}\"", trf("Mail from {sender}", &[("sender", &"news@shop.example")]));
+        assert!(asked.summary.contains(&what), "the sender as the store holds it: {}", asked.summary);
+        let decided = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        let torro_ipc::ApprovalState::Done { response } = decided.state else { panic!("allowed is done") };
+        let Response::Muted(muted) = *response else { panic!("muting answers what it changed") };
+        let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
+        assert_eq!((facet.key, facet.value.as_str()), (FacetKey::Sender, "news@shop.example"));
     }
 
     /// Task M3.1: a client reads the mail of its account; the audit log names the account and
@@ -13569,5 +13901,122 @@ mod tests {
         assert!(lines.iter().all(|line| line.ids == [format!("account:{}", account.id)]), "{lines:?}");
         let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
         assert!(!text.contains("open_backups") && !text.contains("Nightly"), "{text}");
+    }
+
+    // ----- An AI's suggestion of a task or event (issue #120) ---------------------------------
+
+    /// A chat answer of `server` at `path` with `content`, as an OpenAI-compatible server sends it
+    /// whole; the mock it set up, to count its calls.
+    async fn answers_chat<'a>(server: &'a httpmock::MockServer, path: &str, content: &str) -> httpmock::Mock<'a> {
+        let body = serde_json::json!({
+            "choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": content}}]
+        });
+        let path = path.to_string();
+        server
+            .mock_async(move |when, then| {
+                when.method("POST").path(path);
+                then.status(200).header("content-type", "application/json").json_body(body);
+            })
+            .await
+    }
+
+    /// Acceptance of issue #120 through the core: the default AI of the assistant answers with its
+    /// model, a date in the text becomes the due date; a mail entry goes to the local AI only, and
+    /// without any AI the answer says to set one up. Nothing is saved, nothing reaches the log.
+    #[tokio::test]
+    async fn an_ai_suggests_a_task_or_event_of_an_entry_and_mail_stays_local() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let entry = posted_entry(&core).await;
+        let suggest = |id: &str| Request::SuggestTaskFromItem { id: id.to_string() };
+        let none = ask(&core, Some(&app_key), suggest(&entry)).await;
+        assert_eq!(code(&none), "not-connected", "no AI yet: {none:?}");
+
+        let (ollama, openrouter) = (fake_ollama().await, fake_openrouter().await);
+        let local =
+            answers_chat(&ollama, "/v1/chat/completions", r#"{"title": "Read it", "start": "2026-10-20"}"#).await;
+        let remote = answers_chat(
+            &openrouter,
+            "/api/v1/chat/completions",
+            r#"{"title": "Fix the deploy", "notes": "Look at run 7.", "due": "2026-10-16"}"#,
+        )
+        .await;
+        for (provider, server, key) in [
+            (AiProvider::Ollama, ollama.url("/v1"), torro_ipc::Secret::default()),
+            (AiProvider::OpenRouter, openrouter.url("/api/v1"), torro_ipc::Secret::new(AI_KEY)),
+        ] {
+            let connect = Request::ConnectAi { provider, server: Some(server), key };
+            assert!(matches!(ask(&core, Some(&app_key), connect).await, Response::Account { .. }));
+        }
+        let engine = format!("ai:openrouter@127.0.0.1:{}", openrouter.port());
+        let default = serde_json::json!({"engine": engine, "model": "qwen/qwen3-14b"});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(ask(&core, Some(&app_key), set).await, Response::Ok);
+
+        let Response::TaskSuggestion { suggestion } = ask(&core, Some(&app_key), suggest(&entry)).await else {
+            panic!("a suggestion")
+        };
+        let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 16).map(torro_pim::EventTime::Date);
+        assert_eq!((suggestion.title.as_str(), suggestion.due), ("Fix the deploy", due));
+        assert_eq!(suggestion.model, "qwen/qwen3-14b", "the default's model");
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 0));
+
+        // A mail entry: the local AI, whatever the default says.
+        let mail = crate::inbox::NewMail {
+            account: "mail:anna@example.org".into(),
+            message: "m:1".into(),
+            thread: "t:1".into(),
+            subject: "Offsite".into(),
+            snippet: "Shall we meet on the 20th?".into(),
+            from: Some(torro_inbox::Sender { name: "Anna".into(), address: Some("anna@example.org".into()) }),
+            bulk: None,
+            list: None,
+            github: None,
+            date: Utc::now(),
+        };
+        let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
+        let asked = ask(&core, Some(&app_key), Request::SuggestEventFromItem { id: filed.clone() }).await;
+        let Response::EventSuggestion { suggestion } = asked else { panic!("a suggestion: {asked:?}") };
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 20).expect("valid date");
+        assert_eq!((suggestion.start, suggestion.end), (Some(torro_pim::EventTime::Date(day)), None));
+        assert!(suggestion.engine.starts_with("ai:ollama@"), "{}", suggestion.engine);
+        assert_eq!((remote.calls_async().await, local.calls_async().await), (1, 1), "mail never went out");
+
+        // Without the local AI, mail has none to go to.
+        let gone = Request::RemoveAccount { id: suggestion.engine.clone() };
+        assert_eq!(ask(&core, Some(&app_key), gone).await, Response::Ok);
+        let refused = ask(&core, Some(&app_key), suggest(&filed)).await;
+        assert_eq!(code(&refused), "not-connected");
+        assert_eq!(remote.calls_async().await, 1);
+        assert_eq!(code(&ask(&core, Some(&app_key), suggest("nothing")).await), "not-found");
+        // Nothing was saved: the entries are open as they were.
+        assert!(entry_state(&core, &entry).is_open() && entry_state(&core, &filed).is_open());
+    }
+
+    /// The state of the inbox entry `id`, as the app key reads it.
+    fn entry_state(core: &Core, id: &str) -> torro_inbox::State {
+        match core.inbox.handle(Request::GetItem { id: id.to_string() }, None, Utc::now()) {
+            Response::Item { item } => item.state,
+            other => panic!("an entry: {other:?}"),
+        }
+    }
+
+    /// Issue #120: a note goes before the entry's text in the task, a place and a note into the
+    /// event; overlong ones are refused.
+    #[test]
+    fn notes_come_first_and_places_are_kept() {
+        assert_eq!(
+            with_note(Some(" Bring slides ".into()), Some("Text".into())).as_deref(),
+            Some("Bring slides\n\nText")
+        );
+        assert_eq!(with_note(Some(" ".into()), Some("Text".into())).as_deref(), Some("Text"));
+        assert_eq!(with_note(Some("Note".into()), None).as_deref(), Some("Note"));
+        let long = "x".repeat(torro_ipc::SUGGESTION_NOTES_MAX + 1);
+        assert_eq!(code(&extras_refusal(None, Some(&long)).expect("refused")), "error");
+        let far = "x".repeat(torro_ipc::SUGGESTION_LOCATION_MAX + 1);
+        assert_eq!(code(&extras_refusal(Some(&far), None).expect("refused")), "error");
+        assert_eq!(extras_refusal(Some("Room 2"), Some("ok")), None);
     }
 }
