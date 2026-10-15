@@ -1588,6 +1588,82 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: gesperrte Knöpfe blenden das Icon ab; `RowAction::blocked` ohne Klick, mit Grund; KI-Knöpfe
   an Zeilen und Karten, ohne KI gesperrt mit Tooltip, mit KI schicken sie den Vorschlag; „To sort“ behält die Wörter.
 
+## E9 Mail-Fenster: Posteingang (Plan 2026-10-15, Branch `feat/mail-inbox`)
+
+Die Seitenleiste des Mail-Fensters ist zu unklar: „Übersicht“ und „Info“ zeigen Einträge, nicht Mails, und nur
+was der Kern für wichtig hält. Ziel: zwei klare Ansichten oben, wie „Alle Eingänge“ bei Apple Mail.
+
+```
+All           ← die Posteingänge aller Konten, eine Liste nach Datum (Startansicht)
+Later         ← was der Mensch selbst zurückgestellt hat
+── Smart views: Invitations, With attachments (bleiben)
+── Konten mit ihren Ordnern (wie bisher, eingeklappt)
+```
+
+Entschieden am 2026-10-15:
+
+1. Im Mail-Fenster entfallen „Overview“, „Info“ und „Done“. Die Zentrale und der App Feed bleiben, wie sie sind.
+2. **Jede** Mail kann auf später gelegt werden, nicht nur Mails mit Eintrag.
+3. Eine Mail auf später **verschwindet aus „All“** und steht nur unter „Later“. Zur gewählten Zeit kommt sie zurück
+   und steht dann **oben** in „All“, als wäre sie eben angekommen.
+4. Tags über IMAP-Keywords kommen danach, eigener Plan.
+
+Reihenfolge: E9.1 (Kern) vor E9.2 (Oberfläche). Beide ändern nichts, was andere laufende Aufgaben anfassen, außer
+`crates/torroinbox` und dem Katalog: nicht neben anderen Aufgaben dort.
+
+### E9.1 Später für jede Mail: Kern
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torroworkplace/src/{core,inbox,mcp}.rs`, `crates/torroworkplace/src/mail/{inbox_feed,service,store}.rs`,
+  `crates/torro-inbox/src/*.rs` (nur wenn nötig), `docs/{api,api-reference,eingang}.md`
+- **Später ohne Eintrag:** `inbox.snooze_item` nimmt wie `inbox.mute_item` (E8.25) auch die Kennung einer Mail
+  (`m:…`). Hat die Mail einen Eintrag (`Inbox::entry_of_message`), gilt der Eintrag. Hat sie keinen, legt der Kern
+  einen an (wie der Feed: `Inbox::file_mail`, Spur nach den Regeln, Grund am Eintrag) und stellt ihn zurück. Ohne
+  `until` und ohne Eintrag: nichts zu tun, Antwort wie bei einem nicht zurückgestellten Eintrag. Rechte wie
+  `inbox.mute_item` mit Mail-Kennung: der Client braucht das Konto (Regel 1), sonst `not-found`.
+- **Aus „All“ heraus:** `mail.search_messages` bekommt das optionale Feld `snoozed: Option<bool>`. `false` lässt
+  Mails weg, deren Eintrag gerade zurückgestellt ist; `true` liefert nur diese; weggelassen wie bisher. Gefiltert
+  wird vor dem Blättern, damit Seiten und `cursor` stimmen (keine halbleeren Seiten).
+- **Oben, wenn sie zurückkommt:** Eine Mail, deren Eintrag aus „Later“ zurückkam, sortiert in einer Suche mit
+  `snoozed: false` nach dem Zeitpunkt der Rückkehr statt nach ihrem Datum, bis sie gelesen oder erledigt ist.
+  `MessageSummary` bekommt dafür optional `back: Option<DateTime<Utc>>` (wann sie zurückkam), damit die Oberfläche
+  „Back from later“ zeigen kann. Wie der Kern das ohne Bruch des Cursors löst, entscheidet die Aufgabe; Entscheidung
+  in `docs/eingang.md` festhalten.
+- **Oberfläche:** Mail-Fenster (E9.2). **API:** vorhanden `Request::SnoozeItem` · `inbox.snooze_item` · Write, neu
+  mit Mail-Kennung (Katalogbeschreibung ergänzen); vorhanden `Request::SearchMail` · `mail.search_messages` · Read,
+  neues optionales Feld `snoozed`, neues optionales Antwortfeld `back` (verträglich, kein `v: 2`).
+  **MCP:** `inbox_snooze_item`, `mail_search_messages` (dieselben Tools, Beschreibung ergänzt).
+- **Abnahme:** Tests im Kern: Mail ohne Eintrag auf später → Eintrag zurückgestellt, Mail fehlt in
+  `in:inbox` mit `snoozed: false`, steht mit `snoozed: true`; nach Ablauf steht sie mit `back` ganz oben, über
+  neueren Mails; Seiten mit `cursor` ohne Lücken und Doppelte; Client ohne das Konto bekommt `not-found`. API-Referenz
+  neu erzeugt (`TORRO_BLESS=1 cargo test -p torro-ipc`). `torro-api-review` ohne Befund.
+
+### E9.2 Seitenleiste „All“ und „Later“
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E9.1 · **Dateien:** `crates/torroinbox/src/{app,mail,list,detail,keys,empty}.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md`
+- **Seitenleiste (`App::nav_entries`, `Kind::Mail`):** oben nur „All“ (`Icon::Inbox`, zählt ungelesene Mails aller
+  Posteingänge, kein „0“) und „Later“ (`Icon::Clock`). „Overview“, „Info“, „Done“ entfallen im Mail-Fenster. Darunter
+  wie bisher „Smart views“ und die Konten.
+- **„All“ ist eine neue Ansicht** (`View::AllInboxes`) und die Startansicht des Mail-Fensters (auch für `View::Mail`
+  und `--source mail`). Sie lädt `mail.search_messages` ohne Konto, mit `query: "in:inbox"` und `snoozed: false`, eine
+  Seite nach der anderen mit `cursor` wie eine Ordneransicht. Zeilen und Karten wie in der Ordneransicht, mit dem
+  Konto in der Zeile, wenn es mehr als eins gibt. Mails mit `back` tragen „Back from later“.
+- **„Later“ an jeder Mail:** In Zeile, Karte, Leser und Paneel jeder Mail (auch ohne Eintrag, auch in Ordnern) steht
+  „Later“ mit der Taste `S` und dem Zeit-Menü wie bei Einträgen; geschickt wird `inbox.snooze_item` mit der
+  Mail-Kennung. Danach verschwindet die Mail aus „All“, mit „Undo“ wie bei Einträgen.
+- **„Later“-Ansicht:** zeigt die zurückgestellten Mails (Einträge der Quelle Mail) mit der Zeit der Rückkehr;
+  „Bring back now“ beendet das Zurückstellen (`inbox.snooze_item` ohne `until`).
+- **Demo und Tastatur:** `--open` Zustände für „All“ (mit zwei Konten, einer Mail „Back from later“) und „Later“;
+  Zustände für die entfallenen Ansichten im Mail-Fenster führen auf „All“. Tastenkürzel der Ansichten anpassen
+  (`keys.rs`), leere Zustände mit Text („Your inboxes are empty.“, „Nothing for later.“).
+- **Oberfläche:** Mail-Fenster. **API/MCP:** keine neuen Befehle, nutzt `mail.search_messages` (Feld `snoozed`) und
+  `inbox.snooze_item` mit Mail-Kennung aus E9.1; dieselben MCP-Tools.
+- **Abnahme:** Tests: Seitenleiste des Mail-Fensters hat genau „All“ und „Later“ über den Smart views; „All“ schickt
+  `mail.search_messages` mit `in:inbox`, ohne Konto, mit `snoozed: false`, und blättert mit `cursor`; „Later“ an einer
+  Ordnermail ohne Eintrag schickt `inbox.snooze_item` mit `m:…`; Zentrale und App Feed unverändert. Sichtprüfung
+  (`torro-design-review`) in allen Größen, hell und dunkel. Übersetzungen im Bericht.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
