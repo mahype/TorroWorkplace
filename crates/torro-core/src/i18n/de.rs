@@ -1500,6 +1500,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The {command} command could not be started.", "Der Befehl {command} ließ sich nicht starten."),
     ("The {command} command reported an error.", "Der Befehl {command} hat einen Fehler gemeldet."),
     ("The {command} command did not finish.", "Der Befehl {command} ist nicht fertig geworden."),
+    ("Something went wrong. Try again.", "Etwas ist schiefgegangen. Versuch es noch einmal."),
     // Control centre: hooks in connect agent (E2.3)
     (
         "Report to the Notification Hub when waiting or done",
