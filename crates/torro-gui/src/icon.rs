@@ -63,6 +63,8 @@ pub enum Icon {
     Square,
     SquarePen,
     Clock,
+    /// A search made before (issue #136).
+    History,
     ChartGantt,
     Radar,
     List,
@@ -161,6 +163,12 @@ pub enum Icon {
     MessageCircle,
     /// ntfy: messages pushed to a subscribed topic.
     RadioTower,
+    /// The compose window's toolbar (issue #125): bold, italic, underline, numbered list, quote.
+    Bold,
+    Italic,
+    Underline,
+    ListOrdered,
+    TextQuote,
 }
 
 impl Icon {
@@ -203,6 +211,7 @@ impl Icon {
         Icon::Square,
         Icon::SquarePen,
         Icon::Clock,
+        Icon::History,
         Icon::ChartGantt,
         Icon::Radar,
         Icon::List,
@@ -256,6 +265,11 @@ impl Icon {
         Icon::Table,
         Icon::MessageCircle,
         Icon::RadioTower,
+        Icon::Bold,
+        Icon::Italic,
+        Icon::Underline,
+        Icon::ListOrdered,
+        Icon::TextQuote,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -308,6 +322,7 @@ impl Icon {
             Icon::Square => include_bytes!("../assets/icons/square.svg"),
             Icon::SquarePen => include_bytes!("../assets/icons/square-pen.svg"),
             Icon::Clock => include_bytes!("../assets/icons/clock.svg"),
+            Icon::History => include_bytes!("../assets/icons/history.svg"),
             Icon::ChartGantt => include_bytes!("../assets/icons/chart-gantt.svg"),
             Icon::Radar => include_bytes!("../assets/icons/radar.svg"),
             Icon::List => include_bytes!("../assets/icons/list.svg"),
@@ -361,6 +376,11 @@ impl Icon {
             Icon::Table => include_bytes!("../assets/icons/table.svg"),
             Icon::MessageCircle => include_bytes!("../assets/icons/message-circle.svg"),
             Icon::RadioTower => include_bytes!("../assets/icons/radio-tower.svg"),
+            Icon::Bold => include_bytes!("../assets/icons/bold.svg"),
+            Icon::Italic => include_bytes!("../assets/icons/italic.svg"),
+            Icon::Underline => include_bytes!("../assets/icons/underline.svg"),
+            Icon::ListOrdered => include_bytes!("../assets/icons/list-ordered.svg"),
+            Icon::TextQuote => include_bytes!("../assets/icons/text-quote.svg"),
         }
     }
 }

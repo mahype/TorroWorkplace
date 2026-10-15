@@ -36,13 +36,20 @@
 //! The bell's menu (task E8.6b, [`Menu::Mute`], `docs/eingang.md` "Stummschalten nach Merkmalen"):
 //! under "Mute" the ways the core offers for the entry (`inbox.list_mute_options`: this
 //! conversation, then its traits – the sender, the project, the client …), under "For" how long
-//! ([`MuteFor`]: 1 hour, until tomorrow, always) and under "What happens" what muting does (no
+//! ([`MuteFor`]: 1 hour, until tomorrow, 1 week, always) and under "What happens" what muting does (no
 //! popup, only Info, hide), and at the end "All rules", which opens the control centre. Picking a
 //! way sends `inbox.mute_item` with the "For" and "What happens" chosen; the toast says what holds
 //! now in the words of the control centre's rules ([`muted_note`]) and its undo takes it back
 //! exactly ([`Undo::Muted`]). "For" and "What happens" stay as chosen while the window runs. The
-//! panel's bell opens the same menu; the mail window keeps "Hide from inbox" (task E3.10), whose
-//! senders and domains are rules of the same list.
+//! panel's bell opens the same menu.
+//!
+//! Mail has one menu to mute (issue #123, [`App::mutes_by_bell`]): its "Hide from Notification Hub" went into
+//! the bell's menu, in every window. Rows and cards of mail show the bell "Mute…" where "…" was, the
+//! reader and the panel too, and `m` opens it: "This conversation" with "Hide" and "Always" is what
+//! "This conversation" was (done, the mail stays unread), sender and domain are traits, "Always to
+//! Info" is the sender with "Only Info", and "Move to junk" stays as the menu's last way. A folder's
+//! message without an entry has the bell as well ([`App::ask_mute_message`]): `inbox.mute_item` with
+//! the message's id, the core offering its traits only.
 //!
 //! The hub (task E8.5, `hub.rs`) is about acting: its overview is "Act now" ([`App::is_hub`]) – one
 //! tile per origin over the sections Decide (approvals), Agents and To sort, each entry with its
@@ -94,17 +101,14 @@
 //! Triage (E3.2): a cursor marks one row (the highlighted one); the open panel always shows it.
 //! The keys (`keys.rs`) and the panel's footer do the same things: mark done ([`Edit::Done`]),
 //! snooze through a menu or the picker of "Pick…" ([`Edit::Snooze`]), move to the other lane,
-//! asking "always for this source?" ([`Edit::Lane`]), and hide it from the inbox in steps (`m`
-//! or the panel's "…", task E3.10, [`Menu::Hide`]): for mail "This conversation" (`inbox.hide_sender`
-//! with `conversation`: done, but the mail stays unread, task E3.11), "Everything from" its sender or
-//! its sender's domain (`inbox.hide_sender`: a rule for every mail account; the mail stays unread and
-//! in place), "Always to Info" and "Move to junk" (only with a junk folder in the account); for
-//! other sources "This entry" (done) and muting or unmuting the source at once (E3.2c: no dialog –
-//! a change with an undo needs no question as well). Every change shows a toast for
+//! asking "always for this source?" ([`Edit::Lane`]), and hide it from the inbox (`m` or the
+//! panel's "…", task E3.10, [`Menu::Hide`]): "This entry" (done) and muting or unmuting the source
+//! at once (E3.2c: no dialog – a change with an undo needs no question as well); mail has the
+//! bell's menu instead (above). Every change shows a toast for
 //! [`UNDO_FOR`] (`widgets::toast`, task E3.11) with "Undo" (`u`, and Ctrl + Z / ⌘ + Z in the whole
-//! window), which sends the change that puts it back ([`Undo`]); Escape takes the toast away. Hiding
-//! is undone exactly: a conversation is opened again, a sender or domain loses the rule the call made
-//! and the entries it closed open again ([`Undo::Hidden`]). A change that takes the entry off the
+//! window), which sends the change that puts it back ([`Undo`]); Escape takes the toast away. Muting
+//! is undone exactly: a rule the call made is removed and the entries it closed or moved come back
+//! ([`Undo::Muted`]). A change that takes the entry off the
 //! list moves the cursor – and the panel – to the row that took its place, so `e`, `e`, `e` works
 //! through a list.
 //!
@@ -114,6 +118,13 @@
 //! sends `inbox.create_task_from_item`: the core makes the task, links it back to the entry and
 //! marks the entry done; the hint says in which list. There is no undo: taking the task back
 //! would delete it, and deleting is for the tasks app.
+//!
+//! AI task and AI event (issue #120, `suggest.rs`): beside "Make task" and "Make event" in the panel
+//! and after "Task" in the reader, off with a tooltip until an AI is set up ([`App::ai_ready`], asked
+//! with every tick). They open the same dialogs at once, with a quiet line while the AI is asked
+//! ([`Suggesting`]); its suggestion fills in title, due day and a note, or day, start, length, place
+//! and who takes part. Nothing is saved before "Create"; the note and place go along
+//! (`inbox.create_task_from_item` / `inbox.create_event_from_item`).
 //!
 //! Make event (task E8.5b): `c`, "Event" in the hub's To sort and the panel's "Make event" open the
 //! same kind of dialog ([`App::ask_event`]) – the title, the calendar (from
@@ -148,7 +159,7 @@ use chrono::{DateTime, Days, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Utc
 use iced::theme::Mode;
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::text::Wrapping;
-use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_input};
+use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_editor, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
@@ -157,6 +168,7 @@ use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::panel;
+use torro_gui::selectable::Selectable;
 use torro_gui::shell::{self, Cover, SidebarMode, Surface, Switcher, TitleButtons};
 use torro_gui::source::Source;
 use torro_gui::split::{self, Limits, Split, SplitEvent};
@@ -165,14 +177,16 @@ use torro_gui::ui_state::{self, Density, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, ToastAction, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
-use torro_inbox::item::{FacetKey, HideScope, MuteEffect, MuteOption, MuteScope, Muted};
+use torro_inbox::item::{FacetKey, MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::source::TaskList;
 use torro_inbox::{
-    Hidden, InboxError, InboxSource, Item, ItemFilter, Lane, Link, Order, Rule, SourceInfo, SourceKind, SourceRef,
-    State, StateFilter, rules,
+    InboxError, InboxSource, Item, ItemFilter, Lane, Link, Order, Rule, SourceInfo, SourceKind, SourceRef, State,
+    StateFilter, rules,
 };
-use torro_ipc::inbox::CalendarEvent;
+use torro_ipc::inbox::{CalendarEvent, EventFields};
 use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
+use torro_ipc::mail::{MailHighlight, MailSort};
+use torro_ipc::{EventSuggestion, TaskSuggestion};
 use torro_mail::{Flag, Folder, InvitationAnswer, Message as Mail, MessageSummary, Role};
 
 use crate::compose;
@@ -184,6 +198,8 @@ use crate::list::Look;
 use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
 use crate::notifications::{self, Arrange, Board, Shown};
 use crate::overview::{self, Column, Sections};
+use crate::search::{self, Found, Scope, ScopeChoice, SearchView, Sort, Suggestion};
+use crate::suggest::{self as ai, SuggestSource};
 use crate::{detail, list};
 
 /// The app's identity: window class `torro-inbox`, binary `torroinbox`, state in `torroinbox/`.
@@ -253,6 +269,19 @@ impl StartTime {
     }
 }
 
+impl StartTime {
+    /// What the dialog offers: [`StartTime::all`], with `self` in its place when it is between two
+    /// of them (an AI's 10:15, issue #120).
+    pub fn offered(self) -> Vec<StartTime> {
+        let mut all = StartTime::all();
+        if !all.contains(&self) {
+            all.push(self);
+            all.sort();
+        }
+        all
+    }
+}
+
 impl fmt::Display for StartTime {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&datetime::format_time(self.0))
@@ -267,6 +296,9 @@ pub enum Length {
     Half,
     Hour,
     TwoHours,
+    /// Any other length in minutes, as an AI suggested it (issue #120): offered beside the others
+    /// while the dialog holds it.
+    Minutes(i64),
 }
 
 impl Length {
@@ -280,7 +312,22 @@ impl Length {
             Length::Half => 30,
             Length::Hour => 60,
             Length::TwoHours => 120,
+            Length::Minutes(minutes) => minutes,
         }
+    }
+
+    /// The length of `minutes`: one of [`Length::ALL`] when it is one, else [`Length::Minutes`].
+    pub fn of_minutes(minutes: i64) -> Length {
+        Length::ALL.into_iter().find(|length| length.minutes() == minutes).unwrap_or(Length::Minutes(minutes))
+    }
+
+    /// What the dialog offers: [`Length::ALL`], and `self` after them when it is none of them.
+    pub fn offered(self) -> Vec<Length> {
+        let mut all = Length::ALL.to_vec();
+        if !all.contains(&self) {
+            all.push(self);
+        }
+        all
     }
 }
 
@@ -291,6 +338,7 @@ impl fmt::Display for Length {
             Length::Half => tr("30 minutes"),
             Length::Hour => tr("1 hour"),
             Length::TwoHours => tr("2 hours"),
+            Length::Minutes(minutes) => return f.write_str(&trf("{n} minutes", &[("n", &minutes)])),
         })
     }
 }
@@ -309,6 +357,10 @@ pub struct EventDraft {
     /// The local time it starts at.
     pub start: StartTime,
     pub length: Length,
+    /// Where it takes place (issue #120): what an AI suggested, to change; empty for nowhere.
+    pub location: String,
+    /// A note put before the entry's text (issue #120): who takes part, as an AI found them.
+    pub notes: String,
 }
 
 impl EventDraft {
@@ -319,7 +371,15 @@ impl EventDraft {
         let step = i64::from(EVENT_STEP_MINUTES) * 60;
         let seconds = i64::from(chrono::Timelike::num_seconds_from_midnight(&local.time()));
         let next = local.date().and_time(NaiveTime::MIN) + TimeDelta::seconds((seconds / step + 1) * step);
-        EventDraft { title, calendar: None, day: next.date(), start: StartTime(next.time()), length: Length::Half }
+        EventDraft {
+            title,
+            calendar: None,
+            day: next.date(),
+            start: StartTime(next.time()),
+            length: Length::Half,
+            location: String::new(),
+            notes: String::new(),
+        }
     }
 
     /// When the event starts and ends, as instants.
@@ -339,6 +399,9 @@ pub enum Due {
     Tomorrow,
     /// Monday of next week.
     NextWeek,
+    /// Another day, as an AI suggested it (issue #120): offered beside the others while the dialog
+    /// holds it.
+    On(NaiveDate),
 }
 
 impl Due {
@@ -353,7 +416,23 @@ impl Due {
             Due::Today => Some(today),
             Due::Tomorrow => Some(today + Days::new(1)),
             Due::NextWeek => Some(datetime::week_start(today) + Days::new(7)),
+            Due::On(day) => Some(day),
         }
+    }
+
+    /// The due date of `day`, seen from `now`: one of [`Due::ALL`] when it names that day, else
+    /// [`Due::On`].
+    pub fn of_day(day: NaiveDate, now: DateTime<Utc>) -> Due {
+        Due::ALL.into_iter().find(|due| due.day(now) == Some(day)).unwrap_or(Due::On(day))
+    }
+
+    /// What the dialog offers: [`Due::ALL`], and `self` after them when it is none of them.
+    pub fn offered(self) -> Vec<Due> {
+        let mut all = Due::ALL.to_vec();
+        if !all.contains(&self) {
+            all.push(self);
+        }
+        all
     }
 }
 
@@ -364,6 +443,9 @@ impl fmt::Display for Due {
             Due::Today => tr("Today"),
             Due::Tomorrow => tr("Tomorrow"),
             Due::NextWeek => tr("Next week"),
+            Due::On(day) => {
+                return f.write_str(&datetime::format_short_date(*day, datetime::to_local(Utc::now()).date()));
+            }
         })
     }
 }
@@ -376,6 +458,21 @@ pub struct TaskDraft {
     /// The list chosen; `None` until the lists are in (then the last one used, else the first).
     pub list: Option<TaskList>,
     pub due: Due,
+    /// A note put before the entry's text (issue #120): what an AI suggested, to change; empty for
+    /// none.
+    pub notes: String,
+}
+
+/// What the AI does for the open dialog of "Make task" or "Make event" (issue #120, "AI task" and
+/// "AI event"): the dialog shows it in a quiet line under the title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Suggesting {
+    /// Asked for the entry with this id; the dialog fills in once the answer is in.
+    Asking(String),
+    /// The dialog holds the AI's suggestion: to check before creating.
+    Done,
+    /// No suggestion, and why; the dialog stays as it opened.
+    Failed(String),
 }
 
 /// A change of one entry, one [`InboxSource`] call each (`inbox.set_item_done`,
@@ -473,10 +570,6 @@ pub enum Undo {
     /// Moves archived or deleted mail back where it was (`mail.move_messages`), and opens the
     /// entry `reopen` again – the core closed it when its mail left the inbox.
     Mail { edit: MailEdit, reopen: Option<String> },
-    /// Takes hiding back (task E3.11): removes the rule `rule` – only one the hiding made, never one
-    /// that was there before (`inbox.remove_rule`) –, then opens the entries `reopen` again
-    /// (`inbox.set_item_done` with `false`), those the hiding closed ([`Hidden::done`]).
-    Hidden { rule: Option<String>, reopen: Vec<String> },
     /// Takes "Dismiss all" back (task E8.4), and "Mark mail done" (task E8.7b): opens the entries it
     /// closed again (`inbox.set_item_done` with `false`, one by one).
     Dismissed(Vec<String>),
@@ -493,13 +586,6 @@ impl Undo {
         let rule = muted.rule.as_ref().filter(|_| muted.new_rule).map(|rule| rule.id.clone());
         let changed = rule.is_some() || !muted.done.is_empty() || !muted.moved.is_empty();
         changed.then(|| Undo::Muted { rule, reopen: muted.done.clone(), moved: muted.moved.clone() })
-    }
-
-    /// The undo of hiding that answered `hidden`; `None` when it changed nothing (a conversation done
-    /// already, a rule there before that closed nothing more).
-    pub fn of_hidden(hidden: &Hidden) -> Option<Undo> {
-        let rule = hidden.rule.as_ref().filter(|_| hidden.new_rule).map(|rule| rule.id.clone());
-        (rule.is_some() || !hidden.done.is_empty()).then(|| Undo::Hidden { rule, reopen: hidden.done.clone() })
     }
 }
 
@@ -590,13 +676,16 @@ pub fn other_lane(lane: Lane) -> Lane {
     }
 }
 
-/// How long the bell's menu mutes (task E8.6b, "For"): window state, kept while it runs.
+/// How long the bell's menu mutes (task E8.6b, "For"; "1 week" since issue #123): window state, kept
+/// while it runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MuteFor {
     /// One hour from now.
     OneHour,
-    /// Until tomorrow morning (9:00 local time, as "Tomorrow" of the snooze menu).
+    /// Until tomorrow morning (9:00 local time, as "Tomorrow" of the snooze menu): the rest of today.
     UntilTomorrow,
+    /// A week from now (issue #123).
+    OneWeek,
     /// For good: no end.
     #[default]
     Always,
@@ -604,13 +693,14 @@ pub enum MuteFor {
 
 impl MuteFor {
     /// In the order of the segments, shortest first.
-    pub const ALL: [MuteFor; 3] = [MuteFor::OneHour, MuteFor::UntilTomorrow, MuteFor::Always];
+    pub const ALL: [MuteFor; 4] = [MuteFor::OneHour, MuteFor::UntilTomorrow, MuteFor::OneWeek, MuteFor::Always];
 
     /// The word of the segment.
     pub fn name(self) -> &'static str {
         match self {
             MuteFor::OneHour => tr("1 hour"),
             MuteFor::UntilTomorrow => tr("Until tomorrow"),
+            MuteFor::OneWeek => tr("1 week"),
             MuteFor::Always => tr("Always"),
         }
     }
@@ -620,6 +710,7 @@ impl MuteFor {
         match self {
             MuteFor::OneHour => Some(now + TimeDelta::hours(1)),
             MuteFor::UntilTomorrow => Some(at_hour(local_today(now) + Days::new(1), MORNING)),
+            MuteFor::OneWeek => Some(now + TimeDelta::days(7)),
             MuteFor::Always => None,
         }
     }
@@ -748,25 +839,6 @@ impl Choice {
     }
 }
 
-/// The text of the toast after hiding (tasks E3.10, E3.11): "Conversation hidden" without a rule,
-/// else the words of the control centre's rules ([`hidden_text`]).
-pub fn hidden_note(hidden: &Hidden) -> String {
-    match &hidden.rule {
-        Some(rule) => hidden_text(rule),
-        None => tr("Conversation hidden").to_owned(),
-    }
-}
-
-/// The text of the hint after hiding with `rule` (task E3.10), in the words of the control
-/// centre's rules: "Hidden: news@shop.example", "Hidden: everything from shop.example".
-pub fn hidden_text(rule: &Rule) -> String {
-    match (&rule.sender, &rule.domain) {
-        (Some(sender), _) => trf("Hidden: {sender}", &[("sender", sender)]),
-        (None, Some(domain)) => trf("Hidden: everything from {domain}", &[("domain", domain)]),
-        (None, None) => trf("New entries from {source} muted", &[("source", &rule.source.label())]),
-    }
-}
-
 /// When a snooze choice wakes, as short as it gets: the time when it is today ("13:30"), else the
 /// short weekday and the time ("Wed 09:00"), in local time seen from `now`.
 pub fn wake_short(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
@@ -782,10 +854,6 @@ pub enum Sent {
     Edit(Edit, Option<After>),
     /// The source, muted or not, and whether the hint with its undo follows (not after an undo).
     Mute(SourceRef, bool, bool),
-    /// `inbox.hide_sender` for the entry with this id (task E3.10).
-    Hide(String, HideScope),
-    /// The undo of hiding (task E3.11): the rule removed, if any, and the entries opened again.
-    Unhide(Option<String>, Vec<String>),
     Link(String),
     /// `inbox.open_item` for the entry with this id.
     Open(String),
@@ -793,13 +861,19 @@ pub enum Sent {
     Decide(String, bool),
     /// The task lists were asked for (the dialog of "Make task" opened).
     Lists,
-    /// `inbox.create_task_from_item`: entry, list, title (`None`: the entry's), due day.
+    /// `inbox.create_task_from_item`: entry, list, title (`None`: the entry's), due day and the note
+    /// (issue #120; `None` for none).
     Task {
         id: String,
         list: TaskList,
         title: Option<String>,
         due: Option<NaiveDate>,
+        notes: Option<String>,
     },
+    /// `inbox.suggest_task_from_item` (issue #120) for the entry with this id.
+    SuggestTask(String),
+    /// `inbox.suggest_event_from_item` (issue #120) for the entry with this id.
+    SuggestEvent(String),
     /// A change of mail (`mail.set_flags`, `mail.move_messages`, `mail.delete_messages`).
     Mail(MailEdit, Option<Hint>),
     /// `mail.get_message` for the message with this id.
@@ -837,13 +911,16 @@ pub enum Sent {
     MailDone(Vec<String>),
     /// The calendars were asked for (the dialog of "Make event" opened, task E8.5b).
     Calendars,
-    /// `inbox.create_event_from_item`: entry, calendar, title (`None`: the entry's), start and end.
+    /// `inbox.create_event_from_item`: entry, calendar, title (`None`: the entry's), start and end,
+    /// place and note (issue #120; `None` for none).
     Event {
         id: String,
         calendar: TaskList,
         title: Option<String>,
         start: DateTime<Utc>,
         end: DateTime<Utc>,
+        location: Option<String>,
+        notes: Option<String>,
     },
     /// `inbox.list_mute_options` for the entry with this id (the bell's menu opened, task E8.6b).
     MuteOptions(String),
@@ -880,6 +957,9 @@ pub enum View {
     /// The smart view "Invitations" of the mail window (task E8.3b): the messages of every account's
     /// inbox that invite to an event not over yet, the soonest first (`mail::invitations`).
     Invitations,
+    /// A search of mail (issue #136, the field over the list): the messages found, a page at a
+    /// time, by relevance or by date; `mail.*` only.
+    Search(SearchView),
 }
 
 impl View {
@@ -893,7 +973,7 @@ impl View {
             View::Snoozed => (None, None, StateFilter::Snoozed),
             View::Done => (None, None, StateFilter::Done),
             View::Source(source) => (None, Some(source.clone()), StateFilter::Open),
-            View::Folder(_) | View::Mail | View::Attachments | View::Invitations => return None,
+            View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_) => return None,
         };
         // "Done" shows what was done for real: a dismissed entry is simply gone (issue #117), its
         // toast's undo the only way back.
@@ -914,6 +994,7 @@ impl View {
             View::Mail => tr("Mail").into(),
             View::Attachments => tr("With attachments").into(),
             View::Invitations => tr("Invitations").into(),
+            View::Search(_) => tr("Search").into(),
         }
     }
 
@@ -929,6 +1010,7 @@ impl View {
             View::Mail => Icon::Mail,
             View::Attachments => Icon::Paperclip,
             View::Invitations => Icon::Calendar,
+            View::Search(_) => Icon::Search,
         }
     }
 
@@ -940,10 +1022,18 @@ impl View {
         }
     }
 
-    /// A view of mail: a folder, the smart view of attachments, or a window of mail waiting for its
+    /// A view of mail: a folder, a smart view, a search, or a window of mail waiting for its
     /// folders.
     pub fn is_mail(&self) -> bool {
-        matches!(self, View::Folder(_) | View::Mail | View::Attachments | View::Invitations)
+        matches!(self, View::Folder(_) | View::Mail | View::Attachments | View::Invitations | View::Search(_))
+    }
+
+    /// The search this view shows, if it is one.
+    pub fn search(&self) -> Option<&SearchView> {
+        match self {
+            View::Search(search) => Some(search),
+            _ => None,
+        }
     }
 
     /// What the messages held belong to, for a view that lists messages: the folder's id, or
@@ -953,6 +1043,9 @@ impl View {
             View::Folder(folder) => Some(folder.id.clone()),
             View::Attachments => Some("attachments".to_owned()),
             View::Invitations => Some("invitations".to_owned()),
+            // One listing for every search: the results before stay while the next ones come, so
+            // typing does not flash "loading" (issue #136).
+            View::Search(_) => Some("search".to_owned()),
             _ => None,
         }
     }
@@ -975,7 +1068,7 @@ pub enum Menu {
     Task,
     /// The dialog that makes an event of `App::subject` (task E8.5b).
     Event,
-    /// "Hide from inbox" for `App::subject` (task E3.10): the ways to hide it, by `m` or the
+    /// "Hide from Notification Hub" for `App::subject` (task E3.10): the ways to hide it, by `m` or the
     /// panel's "…" ([`App::hide_choices`]).
     Hide,
     /// The bell's menu for `App::subject` (task E8.6b): the ways to mute it from
@@ -1048,12 +1141,19 @@ pub enum Open {
     Folder,
     /// That inbox with its newest message in the panel.
     Mail,
+    /// A search of all mail for "budget" from the first account's inbox (issue #136), with its
+    /// results highlighted and the scopes of that folder.
+    Search,
     /// "For me" with its first mail entry in the panel, the whole mail loaded.
     MailEntry,
-    /// The menu "Hide from inbox" of the first mail entry of "For me", at its row (task E3.10).
+    /// The menu of `m` of the first mail entry of "For me", at its row (task E3.10): the bell's menu
+    /// since issue #123.
     Hide,
-    /// That entry in the panel, with the menu at the panel's "…".
+    /// That entry in the panel, with the menu at the panel's bell.
     HidePanel,
+    /// The first account's inbox with the bell's menu of its first message that has no entry, at its
+    /// row (issue #123): the message's own traits.
+    MuteMail,
     /// The overview (task E3.9) with the cursor on the first row of "Mail", so its action bar
     /// shows.
     Overview,
@@ -1084,10 +1184,17 @@ pub enum Open {
     Insights,
     /// Insights with "Table view" on.
     InsightsTable,
+    /// The panel of the first entry that is no approval, with the dialog of "Make task" that "AI
+    /// task" opens, filled in by the demo's AI (issue #120).
+    AiTask,
+    /// That entry with the dialog of "Make event" that "AI event" opens (issue #120).
+    AiEvent,
+    /// That entry in the panel without an AI: the AI buttons are off (issue #120).
+    NoAi,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 37] = [
+    const ALL: [(&'static str, Open); 42] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1110,8 +1217,10 @@ impl Open {
         ("folder", Open::Folder),
         ("mail", Open::Mail),
         ("mail-entry", Open::MailEntry),
+        ("search", Open::Search),
         ("hide", Open::Hide),
         ("hide-panel", Open::HidePanel),
+        ("mute-mail", Open::MuteMail),
         ("overview", Open::Overview),
         ("overview-info", Open::OverviewInfo),
         ("overview-notices", Open::OverviewNotices),
@@ -1125,6 +1234,9 @@ impl Open {
         ("mute-panel", Open::MutePanel),
         ("insights", Open::Insights),
         ("insights-table", Open::InsightsTable),
+        ("ai-task", Open::AiTask),
+        ("ai-event", Open::AiEvent),
+        ("no-ai", Open::NoAi),
     ];
 }
 
@@ -1264,11 +1376,12 @@ impl Kind {
         }
     }
 
-    /// The icon of `view` in this window: "For me" of the mail window has the inbox's, "New" of the
-    /// notifications window the bell.
+    /// The icon of `view` in this window: "For me" of the mail window is `UserCheck` – never the
+    /// inbox tray, which is the mail folder "Inbox" there and so must not stand for the window's first
+    /// view (issue #127) –, "New" of the notifications window the bell.
     pub fn view_icon(self, view: &View) -> Icon {
         match (self, view) {
-            (Kind::Mail, View::Overview) => Icon::Inbox,
+            (Kind::Mail, View::Overview) => Icon::UserCheck,
             (Kind::Notifications, View::Overview) => Icon::Bell,
             _ => view.icon(),
         }
@@ -1281,8 +1394,8 @@ impl Kind {
         let pairs: [(&str, &dyn fmt::Display); 1] = [("view", &name)];
         match self {
             Kind::Mail => trf("Mail · {view}", &pairs),
-            Kind::Notifications => trf("Notifications · {view}", &pairs),
-            Kind::Hub => trf("Inbox · {view}", &pairs),
+            Kind::Notifications => trf("App Feed · {view}", &pairs),
+            Kind::Hub => trf("Notification Hub · {view}", &pairs),
         }
     }
 
@@ -1533,6 +1646,8 @@ pub struct Loaded {
     /// Whether it is quiet now, for the hub's "Quiet" (task E8.5b, `inbox.get_quiet`); `None` when it
     /// is not, in every other window and view, and when the core could not say.
     pub quiet: Option<torro_ipc::Quiet>,
+    /// What the core said about a search beyond its messages (issue #136); `None` in other views.
+    pub found: Option<Box<Found>>,
 }
 
 /// Something that went wrong, as the window shows it: a whole sentence ("Couldn't load the
@@ -1618,6 +1733,11 @@ pub struct App<S> {
     calendars: Option<Result<Vec<TaskList>, String>>,
     /// The id of the calendar the last event went into; the dialog chooses it first next time.
     last_calendar: Option<String>,
+    /// An AI is set up for "AI task" and "AI event" (issue #120): asked at start and on every tick
+    /// ([`SuggestSource::ai_ready`]); off until the answer is in.
+    ai_ready: bool,
+    /// What the AI does for the open dialog (issue #120); `None` for a dialog opened without it.
+    ai_suggesting: Option<Suggesting>,
     /// Whether it is quiet now (task E8.5b), as the last load of the hub's "Act now" said.
     quiet: Option<torro_ipc::Quiet>,
     /// The ways to mute `subject` for the bell's menu (task E8.6b): `None` while they load, then
@@ -1659,11 +1779,28 @@ pub struct App<S> {
     /// The whole mail in the panel: of the message under the cursor in a folder, or of the mail
     /// entry in the panel ([`App::wanted_letter`]).
     letter: Option<Letter>,
+    /// The text of the mail or the entry the panel or reader shows, to select and copy (issue #119):
+    /// follows them after every message ([`App::follow_text`]).
+    text: Selectable,
     /// The folder whose messages `messages` holds; another folder's view shows loading until its
     /// messages are in.
     listed: Option<String>,
-    /// What is typed into the folder's search field.
+    /// What is typed into the search field over the list (issue #136).
     search: String,
+    /// When what is typed should be searched for: [`search::DEBOUNCE`] after the last key.
+    search_due: Option<Instant>,
+    /// The view the search started from: "Clear search" goes back to it, and from a folder the bar
+    /// offers its account and the folder itself as scopes.
+    search_from: Option<View>,
+    /// The suggestions under the field show: from a key in it until the search is made, a
+    /// suggestion picked or Escape.
+    suggesting: bool,
+    /// The searches last made, newest first (`ui.json`, never sent anywhere).
+    recent: Vec<String>,
+    /// What the core said about the search shown beyond its messages.
+    found: Found,
+    /// Where the words of the search shown matched, per message.
+    highlights: Vec<MailHighlight>,
     /// The accounts folded away or unfolded by the person (`true`: unfolded), also as `ui.json`
     /// kept them (issue #121, [`account_key`]); the others follow [`App::account_open`].
     folds: Vec<(String, bool)>,
@@ -1786,8 +1923,12 @@ pub enum Message {
     /// From the hide menu: mute the source of the entry with this id, or unmute it – at once,
     /// with an undo.
     AskMute(String),
-    /// From the panel's "…": the menu "Hide from inbox" for the entry with this id (task E3.10).
+    /// From the panel's "…": the menu "Hide from Notification Hub" for the entry with this id (task E3.10); the
+    /// bell's menu for mail and in the notifications window (task E8.6b, issue #123).
     AskHide(String),
+    /// From the bell of a folder's message in the reader or the panel (issue #123): the bell's menu
+    /// for the message with this id – its entry's, or its own traits without one.
+    AskMuteMail(String),
     /// The ways to mute the entry with this id (`inbox.list_mute_options`, task E8.6b), or why
     /// they could not be read; dropped when the bell's menu is no longer open for it.
     MuteOptions(String, Result<Vec<MuteOption>, String>),
@@ -1804,10 +1945,6 @@ pub enum Message {
     MuteSuggested(String, MuteScope, MuteEffect),
     /// The core's answer to `inbox.mute_item`, with the effect asked for (for the toast).
     MutedBy(Result<Muted, String>, MuteEffect),
-    /// From the hide menu: hide the sender (or its domain) of the mail entry with this id.
-    HideSender(String, HideScope),
-    /// The source's answer to hiding: the rule as stored, or why not.
-    Hidden(Result<Hidden, String>),
     /// An undo that is no edit (hiding, task E3.11) is through, or failed.
     Undone(Result<(), String>, Option<String>),
     /// The parts unfolded in `ui.json` (task E3.11): which "Info" of the overview is open.
@@ -1871,6 +2008,23 @@ pub enum Message {
     EventConfirm,
     /// The source's answer to `inbox.create_event_from_item`, with the calendar's name for the hint.
     EventCreated(Result<(), String>, String),
+    /// "AI task" (issue #120): the dialog of "Make task" for the entry with this id, filled in by the
+    /// AI's suggestion once it is in.
+    SuggestTask(String),
+    /// "AI event" (issue #120): the dialog of "Make event", filled in alike.
+    SuggestEvent(String),
+    /// Whether an AI is set up ([`SuggestSource::ai_ready`]).
+    AiReady(bool),
+    /// The AI's task for the entry with this id, or why there is none.
+    TaskSuggested(String, Result<TaskSuggestion, String>),
+    /// The AI's event for the entry with this id, or why there is none.
+    EventSuggested(String, Result<EventSuggestion, String>),
+    /// The note field of the dialog of "Make task" (issue #120).
+    TaskNotes(String),
+    /// The place field of the dialog of "Make event" (issue #120).
+    EventLocation(String),
+    /// The note field of the dialog of "Make event" (issue #120).
+    EventNotes(String),
     /// The browser could not be started (or was); only logged, as in the other apps.
     LinkOpened(Result<(), String>),
     Refresh,
@@ -1917,6 +2071,8 @@ pub enum Message {
     AppOpened(Result<(), String>),
     /// Open the control centre.
     OpenSettings,
+    /// Open the control centre on the Inbox page, where the rules are ("All rules" in the bell's menu).
+    OpenRules,
     /// From a folder's list: the message with this id under the cursor and in the panel.
     SelectMail(String),
     /// The whole mail for the panel, or why it could not be read.
@@ -1929,18 +2085,35 @@ pub enum Message {
     MoreMail,
     /// The next page of the folder's view it was asked for.
     MoreLoaded(View, Order, Result<MailPage, String>),
-    /// What is typed into the search field.
+    /// What is typed into the search field: it is searched for [`search::DEBOUNCE`] later.
     SearchInput(String),
-    /// `Enter` in the search field: show the folder searched for it.
+    /// `Enter` in the search field: search now and remember the search.
     Search,
-    /// "Clear search": the whole folder again.
+    /// "Clear search" (or Escape in a search): back to the view the search started from.
     ClearSearch,
+    /// The timer of a search that waits ([`search::TICK`]): it runs once it is due.
+    SearchTick(Instant),
+    /// A suggestion under the field: this query in the field, searched for soon.
+    Suggest(String),
+    /// Where the search looks: all mail, this account, this folder.
+    SearchScope(Scope),
+    /// How the results are ordered: by relevance or by date.
+    SearchSort(MailSort),
+    /// The searches last made, as `ui.json` keeps them.
+    RecentSearches(Vec<String>),
+    /// "Clear" beside the searches last made: forget them.
+    ForgetSearches,
     /// An attachment of a message (message id, part) to fetch and open.
     OpenAttachment(String, String),
     /// What became of opening an attachment.
     AttachmentOpened(Result<Opened, String>),
-    /// A web address in a mail's text was clicked.
+    /// A web address under a mail's or an entry's text ("Links") was clicked.
     OpenMailLink(String),
+    /// A click, drag or key on the text in the panel or the reader (issue #119): selects, never
+    /// changes it (`Selectable::perform`).
+    Text(text_editor::Action),
+    /// "Copy text": the whole text in the panel or the reader to the clipboard, with "Copied".
+    CopyText,
     /// The title of an account's group: fold its folders away or show them, and remember it.
     ToggleAccount(String),
     /// The title of the sidebar's "Sources": fold them away or show them, and remember it (issue #121).
@@ -2067,10 +2240,11 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
             info: 0,
             sources: Vec::new(),
             folders: Vec::new(),
-            mail: view.listing().map(|_| MailPage { messages: Vec::new(), next: None }),
+            mail: view.listing().map(|_| MailPage::of(Vec::new(), None)),
             snoozed: Vec::new(),
             done: Vec::new(),
             quiet: None,
+            found: None,
         };
         return Ok(none);
     }
@@ -2115,9 +2289,20 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
     };
     let sources = inbox.list_sources().await.map_err(failed)?;
     let folders = inbox.mail_folders().await.unwrap_or_default();
+    let mut found = None;
     let mail = match &view {
         View::Folder(folder) => {
-            Some(inbox.search_mail(folder.id.clone(), folder.query.clone(), limit, None, order).await.map_err(failed)?)
+            Some(inbox.search_mail(folder.id.clone(), None, limit, None, order).await.map_err(failed)?)
+        }
+        // Nothing typed yet: nothing to ask.
+        View::Search(search) if search.query.is_empty() => Some(MailPage::of(Vec::new(), None)),
+        View::Search(search) => {
+            let page = inbox.find_mail(search.find(order, limit.max(search::PAGE), None)).await.map_err(failed)?;
+            // How far the index is, only while matches may be missing; without an answer the line
+            // still says that some may be.
+            let index = if page.complete { Vec::new() } else { inbox.mail_index_status().await.unwrap_or_default() };
+            found = Some(Box::new(Found { complete: page.complete, total: page.total, index }));
+            Some(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
         }
         View::Attachments => {
             let mut pages = Vec::new();
@@ -2126,7 +2311,7 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
                     inbox.search_mail(inbox_folder.id.clone(), None, limit, None, order).await.map_err(failed)?;
                 pages.push(page.messages);
             }
-            Some(MailPage { messages: mail::attachments(pages, order), next: None })
+            Some(MailPage::of(mail::attachments(pages, order), None))
         }
         // The smart view "Invitations" (task E8.3b) the same way, from what the summaries say.
         View::Invitations => {
@@ -2138,7 +2323,7 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
                     inbox.search_mail(inbox_folder.id.clone(), None, limit, None, newest).await.map_err(failed)?;
                 pages.push(page.messages);
             }
-            Some(MailPage { messages: mail::invitations(pages, demo.unwrap_or_else(Utc::now)), next: None })
+            Some(MailPage::of(mail::invitations(pages, demo.unwrap_or_else(Utc::now)), None))
         }
         _ => None,
     };
@@ -2151,10 +2336,10 @@ pub async fn fetch<S: InboxSource + MailSource + HubSource>(
         ),
         _ => (Vec::new(), Vec::new(), None),
     };
-    Ok(Loaded { order, items, for_me, info, sources, folders, mail, snoozed, done, quiet })
+    Ok(Loaded { order, items, for_me, info, sources, folders, mail, snoozed, done, quiet, found })
 }
 
-impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
+impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static> App<S> {
     pub fn new(inbox: Arc<S>, suite: Source, launch: Launch) -> (App<S>, Task<Message>) {
         let open = launch.open;
         let offset = launch.now.map_or(TimeDelta::zero(), |now| datetime::to_utc(now) - Utc::now());
@@ -2173,7 +2358,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 Some(Open::Snoozed) => View::Snoozed,
                 Some(Open::Done) => View::Done,
                 // The first inbox, once the folders are in.
-                Some(Open::Folder | Open::Mail) => View::Mail,
+                // The search starts there too, so the bar offers the folder and its account.
+                Some(Open::Folder | Open::Mail | Open::Search | Open::MuteMail) => View::Mail,
                 // The mail window's "For me" is its overview (task E8.3).
                 Some(Open::MailEntry) if launch.kind == Kind::Mail => View::Overview,
                 Some(Open::MailEntry) => View::ForMe,
@@ -2212,6 +2398,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             event: EventDraft::new(String::new(), Utc::now() + offset),
             calendars: None,
             last_calendar: None,
+            ai_ready: false,
+            ai_suggesting: None,
             quiet: None,
             mute_options: None,
             mute_for: MuteFor::default(),
@@ -2228,8 +2416,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             more: None,
             reading: false,
             letter: None,
+            text: Selectable::default(),
             listed: None,
             search: String::new(),
+            search_due: None,
+            search_from: None,
+            suggesting: false,
+            recent: Vec::new(),
+            found: Found::default(),
+            highlights: Vec::new(),
             folds: Vec::new(),
             mail_only: launch.view == Some(View::Mail),
             shown: launch.shown.clone(),
@@ -2288,11 +2483,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let task = Task::batch([
             ui_state::load_task(INBOX).map(Message::UiState),
             ui_state::load_unfolded_task(INBOX).map(Message::Unfolded),
+            ui_state::load_searches_task(INBOX).map(Message::RecentSearches),
             density,
             order,
             split,
             app.load(),
             app.fetch_appearance(),
+            app.fetch_ai_ready(),
             app.zoom.fetch().map(Message::Zoom),
             app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
@@ -2305,7 +2502,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// hub's To sort alone is "Inbox · To sort", its Insights "Inbox · Insights".
     pub fn title(&self) -> String {
         if self.is_hub() && (self.sorting || self.insights.shown) {
-            return trf("Inbox · {view}", &[("view", &self.view_label())]);
+            return trf("Notification Hub · {view}", &[("view", &self.view_label())]);
         }
         self.launch.kind.title(&self.view)
     }
@@ -2324,9 +2521,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
             subscriptions.push(iced::event::listen_with(keys::listen));
+            // ⌘F / Ctrl + F, also when the search field or the window's guard took it (issue #136).
+            if !self.folders.is_empty() {
+                subscriptions.push(iced::event::listen_with(keys::find_key));
+            }
             // Escape closes an open menu, drawer, the toast or the panel; nothing listens while none is
             // open.
-            if self.menu.is_some() || self.drawer || self.panel_open() || self.hint.is_some() {
+            if self.menu.is_some()
+                || self.drawer
+                || self.panel_open()
+                || self.hint.is_some()
+                || self.view.search().is_some()
+            {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
             // Ctrl + Z (⌘ + Z) undoes while the toast offers it – not while the dialog of "Make task"
@@ -2337,6 +2543,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
         if self.hint.is_some() {
             subscriptions.push(iced::time::every(HINT_TICK).map(Message::HintTick));
+        }
+        // A search waits for the typing to pause (issue #136).
+        if self.search_due.is_some() {
+            subscriptions.push(iced::time::every(search::TICK).map(Message::SearchTick));
         }
         // The end of a drag of the divider, wherever the button is released (issue #130).
         if self.split.dragging {
@@ -2360,7 +2570,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let task = self.handle(message);
         // Whatever changed, the panel's mail follows the cursor and the entry in the panel.
         let letter = self.follow_letter();
+        self.follow_text();
         Task::batch([task, letter])
+    }
+
+    /// The text shown in the panel or the reader ([`App::text`]): the loaded mail's, else the
+    /// entry's message; empty for neither. Made new only when it changes, so a selection stays.
+    fn follow_text(&mut self) {
+        let shown = match (&self.letter, &self.detail) {
+            (Some(Letter { loaded: Some(Ok(mail)), .. }), _) => mail::text_of(mail),
+            (_, Some(item)) => detail::message_text(item),
+            _ => String::new(),
+        };
+        if shown != self.text.text() {
+            self.text = Selectable::new(&shown);
+        }
     }
 
     /// What `message` does; [`App::update`] lets the panel's mail follow afterwards.
@@ -2389,8 +2613,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 self.sorting = false;
                 self.filter = None;
                 self.insights.shown = false;
-                // A folder from the sidebar comes whole; its search field starts empty.
-                self.search = view.folder().and_then(|folder| folder.query.clone()).unwrap_or_default();
+                // Another view leaves the search: its field starts empty.
+                if view.search().is_none() {
+                    self.leave_search_state();
+                }
                 if view != self.view {
                     self.view = view;
                     return self.load();
@@ -2452,14 +2678,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 return self.ask_lane(&id);
             }
             Message::AskMute(id) => return self.ask_mute(&id),
-            // The notifications window's panel has the bell where the others have "…" (task E8.6b).
-            Message::AskHide(id) if self.launch.kind == Kind::Notifications => {
-                self.menu_at = MenuAt::Panel;
-                return self.ask_mute_menu(&id);
-            }
+            // The bell of the notifications window's panel and of mail (task E8.6b, issue #123), "…"
+            // of the others.
             Message::AskHide(id) => {
                 self.menu_at = MenuAt::Panel;
-                self.ask_hide(&id);
+                return self.ask_hide_or_mute(&id);
+            }
+            // The bell of a folder's message in the reader or the panel (issue #123).
+            Message::AskMuteMail(id) => {
+                self.menu_at = MenuAt::Panel;
+                let entry =
+                    mail::entry_of(&self.for_me, &id).map(|item| item.id.clone()).or_else(|| self.entry_of(&id));
+                return match entry {
+                    Some(entry) => self.ask_mute_menu(&entry),
+                    None => self.ask_mute_message(&id),
+                };
             }
             Message::MuteOptions(id, options) => {
                 if self.menu == Some(Menu::Mute) && self.subject.as_ref().is_some_and(|item| item.id == id) {
@@ -2477,12 +2710,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
             Message::MutedBy(Err(err), _) => {
                 self.error = Some(Failure::new(tr("Couldn't mute the entry."), err));
-            }
-            Message::HideSender(id, scope) => return self.hide_sender(id, scope),
-            Message::Hidden(Ok(hidden)) => {
-                self.hint =
-                    Some(Hint { text: hidden_note(&hidden), undo: Undo::of_hidden(&hidden), shown: Instant::now() });
-                return self.load();
             }
             Message::Undone(Ok(()), back) => {
                 // Undone: the entry is back in its place, and the cursor with it.
@@ -2508,9 +2735,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     }
                 }
                 self.unfolded_names = names;
-            }
-            Message::Hidden(Err(err)) => {
-                self.error = Some(Failure::new(tr("Couldn't hide the sender."), err));
             }
             Message::Junk(id) => return self.move_to_junk(&id),
             Message::ShowPicker => {
@@ -2589,6 +2813,21 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::EventCreated(Err(err), _) => {
                 self.error = Some(Failure::new(tr("Couldn't create the event."), err));
             }
+            Message::SuggestTask(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.suggest_task(&id);
+            }
+            Message::SuggestEvent(id) => {
+                self.menu_at = MenuAt::Panel;
+                return self.suggest_event(&id);
+            }
+            // `--open no-ai` keeps the buttons off, to see them so in the demo.
+            Message::AiReady(ready) => self.ai_ready = ready && self.launch.open != Some(Open::NoAi),
+            Message::TaskSuggested(id, result) => self.take_task_suggestion(&id, result),
+            Message::EventSuggested(id, result) => self.take_event_suggestion(&id, result),
+            Message::TaskNotes(notes) => self.task.notes = notes,
+            Message::EventLocation(location) => self.event.location = location,
+            Message::EventNotes(notes) => self.event.notes = notes,
             // The entry is seen now; the list shows it.
             Message::ItemOpened(Ok(())) => return self.load(),
             Message::ItemOpened(Err(err)) => {
@@ -2599,7 +2838,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Message::Refresh => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
-                return Task::batch([self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom), self.load()]);
+                return Task::batch([
+                    self.fetch_appearance(),
+                    self.fetch_ai_ready(),
+                    self.zoom.fetch().map(Message::Zoom),
+                    self.load(),
+                ]);
             }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
@@ -2626,10 +2870,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             }
             Message::Switcher(Switcher::Toggle) => self.toggle_menu(Menu::Switcher),
             Message::Switcher(Switcher::OpenApp(app)) => return self.update(Message::OpenApp(app.to_owned())),
-            // The search is a folder's (task E4.2): the button focuses its field there. "New" writes a
-            // message when there is a mail account to write from (task E4.3); the inbox has nothing
-            // else to create. Elsewhere the buttons only close what is open.
-            Message::Switcher(Switcher::Search) if self.view.folder().is_some() => return self.focus_search(),
+            // The search button focuses the field over the list of mail, or opens a search where the
+            // view has none (issue #136). "New" writes a message when there is a mail account to
+            // write from (task E4.3); the inbox has nothing else to create. Elsewhere the buttons only
+            // close what is open.
+            Message::Switcher(Switcher::Search) if !self.folders.is_empty() => return self.focus_search(),
             Message::Switcher(Switcher::New) if !self.folders.is_empty() => {
                 self.close_menus();
                 return self.compose_new();
@@ -2676,8 +2921,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 } else if self.hint.is_some() {
                     // The toast goes first: it lies over everything, and the panel stays.
                     self.hint = None;
-                } else {
+                } else if self.suggesting {
+                    self.suggesting = false;
+                } else if self.panel_open() || self.view.search().is_none() {
                     self.close_panel();
+                } else {
+                    // A search with nothing open in front of it: back to where it started.
+                    return self.clear_search();
                 }
             }
             Message::OpenApp(app) => {
@@ -2693,10 +2943,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 self.close_menus();
                 connect::open_settings();
             }
+            Message::OpenRules => {
+                self.close_menus();
+                connect::open_section("inbox");
+            }
             Message::SelectMail(id) => {
                 let twice = self.pressed_again(&id);
-                if self.select_mail(id.clone()) && twice {
-                    return self.want_html(&id);
+                if self.select_mail(id.clone()) {
+                    let kept = self.keep_opened_search();
+                    if twice {
+                        return Task::batch([kept, self.want_html(&id)]);
+                    }
+                    return kept;
                 }
             }
             Message::LetterLoaded(id, result) => {
@@ -2735,19 +2993,51 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     return Task::none();
                 }
                 match result {
-                    Ok(page) => {
+                    Ok(mut page) => {
+                        search::with_passages(&mut page.messages, &page.highlights);
                         let known: Vec<String> = self.messages.iter().map(|message| message.id.clone()).collect();
                         self.messages.extend(page.messages.into_iter().filter(|message| !known.contains(&message.id)));
+                        self.highlights.extend(page.highlights);
                         self.more = page.next;
                     }
                     Err(err) => self.error = Some(Failure::new(tr("Couldn't load more messages."), err)),
                 }
             }
-            Message::SearchInput(text) => self.search = text,
-            Message::Search => return self.search_folder(self.search.clone()),
-            Message::ClearSearch => {
-                self.search.clear();
-                return self.search_folder(String::new());
+            Message::SearchInput(text) => return self.type_search(text),
+            Message::Search => {
+                self.suggesting = false;
+                let remembered = self.remember_search();
+                return Task::batch([self.run_search(), remembered]);
+            }
+            Message::ClearSearch => return self.clear_search(),
+            Message::SearchTick(now) => {
+                if self.search_due.is_some_and(|due| now >= due) {
+                    return self.run_search();
+                }
+            }
+            Message::Suggest(query) => {
+                // An operator picked waits for its value: its suggestions stay; a whole word is done.
+                let more = query.ends_with(':');
+                let typed = self.type_search(query);
+                self.suggesting = more;
+                return Task::batch([typed, operation::focus(search::FIELD)]);
+            }
+            Message::SearchScope(scope) => {
+                if let View::Search(shown) = &self.view {
+                    let view = View::Search(SearchView { scope, ..shown.clone() });
+                    return self.show_search(view);
+                }
+            }
+            Message::SearchSort(sort) => {
+                if let View::Search(shown) = &self.view {
+                    let view = View::Search(SearchView { sort, ..shown.clone() });
+                    return self.show_search(view);
+                }
+            }
+            Message::RecentSearches(recent) => self.recent = recent,
+            Message::ForgetSearches => {
+                self.recent.clear();
+                return ui_state::save_searches_task(INBOX, Vec::new());
             }
             Message::OpenAttachment(id, part) => {
                 #[cfg(test)]
@@ -2764,6 +3054,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 return self.open_url(url);
             }
             Message::OpenMailLink(_) => {}
+            Message::Text(action) => self.text.perform(action),
+            Message::CopyText => {
+                if self.text.text().trim().is_empty() {
+                    return Task::none();
+                }
+                self.note(tr("Copied").to_owned());
+                return iced::clipboard::write(self.text.text().to_owned());
+            }
             Message::ToggleAccount(account) => {
                 let open = !self.account_open(&account);
                 self.folds.retain(|(folded, _)| *folded != account);
@@ -3322,40 +3620,192 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
     }
 
-    /// Shows the folder searched for `query` (the whole folder for a blank one).
-    fn search_folder(&mut self, query: String) -> Task<Message> {
-        let Some(folder) = self.view.folder() else { return Task::none() };
-        let searched = folder.searching(&query);
-        if searched == *folder {
+    /// Whether the field of the search stands over the list (issue #136): in every view of the mail
+    /// window, and in the views of mail of the others – once there is a mail account.
+    fn shows_search(&self) -> bool {
+        !self.folders.is_empty() && (self.launch.kind == Kind::Mail || self.view.is_mail())
+    }
+
+    /// Puts the keyboard into the search field (`/`, ⌘F / Ctrl + F, the search button); where the
+    /// view has no field, an empty search opens with it.
+    fn focus_search(&mut self) -> Task<Message> {
+        self.close_menus();
+        if self.folders.is_empty() {
             return Task::none();
         }
-        self.view = View::Folder(searched);
+        if !self.shows_search() {
+            self.search_from = Some(self.view.clone());
+            self.view = View::Search(SearchView::new("", Scope::All, Sort::Relevance));
+            self.cursor = None;
+            self.detail = None;
+            self.reading = false;
+            self.messages.clear();
+            self.listed = self.view.listing();
+        }
+        operation::focus(search::FIELD)
+    }
+
+    /// Something was typed into the field: it is searched for [`search::DEBOUNCE`] from now; the
+    /// suggestions show. A blank field goes back to where the search started.
+    fn type_search(&mut self, text: String) -> Task<Message> {
+        self.search = text;
+        self.suggesting = true;
+        if self.search.trim().is_empty() {
+            self.search_due = None;
+            if self.view.search().is_none() {
+                return Task::none();
+            }
+            // Where the view the search came from has no field (the hub's views), the empty search
+            // stays, with the searches last made; elsewhere the field stands over that view's list.
+            let from_field = self.launch.kind == Kind::Mail || self.search_from.as_ref().is_some_and(View::is_mail);
+            if from_field {
+                return self.clear_search();
+            }
+            return self.show_search(View::Search(SearchView::new("", Scope::All, Sort::Relevance)));
+        }
+        self.search_due = Some(Instant::now() + search::DEBOUNCE);
+        Task::none()
+    }
+
+    /// Searches for what is typed now: the search view with it, in the scope and order shown (all
+    /// mail, by relevance, for a new search).
+    fn run_search(&mut self) -> Task<Message> {
+        self.search_due = None;
+        let (scope, sort) = match &self.view {
+            View::Search(shown) => (shown.scope.clone(), shown.sort),
+            _ => (Scope::All, Sort::Relevance),
+        };
+        let query = self.search.trim();
+        if query.is_empty() {
+            return Task::none();
+        }
+        self.show_search(View::Search(SearchView::new(query, scope, sort)))
+    }
+
+    /// Shows `view`, a search, remembering where the search started; the same search again asks
+    /// nothing.
+    fn show_search(&mut self, view: View) -> Task<Message> {
+        if view == self.view {
+            return Task::none();
+        }
+        if self.view.search().is_none() {
+            self.search_from = Some(self.view.clone());
+            self.reading = false;
+            self.detail = None;
+        }
+        self.view = view;
         self.cursor = None;
-        self.reading = false;
         self.load()
     }
 
-    /// Puts the keyboard into the search field of a folder.
-    fn focus_search(&mut self) -> Task<Message> {
-        self.close_menus();
-        if self.view.folder().is_none() {
+    /// A result of the search opened: the search was worth keeping (issue #136), and its
+    /// suggestions close. Nothing outside a search.
+    fn keep_opened_search(&mut self) -> Task<Message> {
+        if self.view.search().is_none() {
             return Task::none();
         }
-        operation::focus(mail::SEARCH)
+        self.suggesting = false;
+        self.remember_search()
     }
 
-    /// "Load more": the folder's next page.
-    fn more_mail(&mut self) -> Task<Message> {
-        let (Some(folder), Some(cursor)) = (self.view.folder().cloned(), self.more.clone()) else {
+    /// Keeps the search shown among the searches last made, in `ui.json`.
+    fn remember_search(&mut self) -> Task<Message> {
+        let recent = search::remember(&self.recent, &self.search);
+        if recent == self.recent {
             return Task::none();
+        }
+        self.recent = recent.clone();
+        ui_state::save_searches_task(INBOX, recent)
+    }
+
+    /// "Clear search": the field empty, and back to the view the search started from (the window's
+    /// first view without one).
+    fn clear_search(&mut self) -> Task<Message> {
+        let back = self.search_from.clone();
+        self.leave_search_state();
+        if self.view.search().is_none() {
+            return Task::none();
+        }
+        // Without one: the window's first view.
+        let back = back.unwrap_or(View::Overview);
+        self.update(Message::Show(back))
+    }
+
+    /// Forgets what belongs to a search: the field, the timer, where it started, its results' extras.
+    fn leave_search_state(&mut self) {
+        self.search.clear();
+        self.search_due = None;
+        self.search_from = None;
+        self.suggesting = false;
+        self.found = Found::default();
+        self.highlights.clear();
+    }
+
+    /// The scopes the bar offers: from a folder, its account and the folder itself.
+    fn search_scopes(&self) -> Option<ScopeChoice> {
+        let folder = self.search_from.as_ref().and_then(View::folder).or(self.view.folder())?;
+        let chosen = self.view.search().map_or(Scope::All, |search| search.scope.clone());
+        Some(ScopeChoice { folder: folder.clone(), chosen })
+    }
+
+    /// The suggestions under the field while they show.
+    fn search_suggestions(&self) -> Vec<Suggestion> {
+        let empty_search = self.view.search().is_some_and(|search| search.query.is_empty());
+        if !(self.suggesting || (empty_search && self.search.trim().is_empty())) {
+            return Vec::new();
+        }
+        search::suggestions(&self.search, &self.recent, &search::people(&self.messages), &self.folders)
+    }
+
+    /// `Tab`: the first suggestion, as a click on it.
+    fn take_suggestion(&mut self) -> Task<Message> {
+        match self.search_suggestions().into_iter().next() {
+            Some(first) => self.update(Message::Suggest(first.query)),
+            None => Task::none(),
+        }
+    }
+
+    /// The bar over the list: field, suggestions, scope and order, the line on the results.
+    fn search_bar(&self) -> Element<'_, Message> {
+        let search = self.view.search();
+        let status = search
+            .filter(|search| !search.query.is_empty() && self.listed == self.view.listing() && self.loaded)
+            .map(|_| search::status_line(self.messages.len(), self.more.is_some(), &self.found));
+        search::bar(search::Bar {
+            input: &self.search,
+            search,
+            scopes: self.search_scopes(),
+            suggestions: self.search_suggestions(),
+            status,
+        })
+    }
+
+    /// "Load more": the next page of the folder or the search.
+    fn more_mail(&mut self) -> Task<Message> {
+        let Some(cursor) = self.more.clone() else { return Task::none() };
+        let (inbox, view, order) = (self.inbox.clone(), self.view.clone(), self.order);
+        let next: std::pin::Pin<Box<dyn std::future::Future<Output = Result<MailPage, String>> + Send>> = match &view {
+            View::Folder(folder) => {
+                let folder = folder.id.clone();
+                let cursor = cursor.clone();
+                Box::pin(async move {
+                    inbox
+                        .search_mail(folder, None, mail::PAGE, Some(cursor), order)
+                        .await
+                        .map_err(|err| err.to_string())
+                })
+            }
+            View::Search(shown) => {
+                let find = shown.find(order, search::PAGE, Some(cursor.clone()));
+                Box::pin(async move {
+                    let page = inbox.find_mail(find).await.map_err(|err| err.to_string())?;
+                    Ok(MailPage { messages: page.messages, next: page.cursor, highlights: page.highlights })
+                })
+            }
+            _ => return Task::none(),
         };
         #[cfg(test)]
-        self.sent.push(Sent::More(cursor.clone()));
-        let (inbox, view, order) = (self.inbox.clone(), self.view.clone(), self.order);
-        let next = async move {
-            let page = inbox.search_mail(folder.id, folder.query, mail::PAGE, Some(cursor), order).await;
-            page.map_err(|err| err.to_string())
-        };
+        self.sent.push(Sent::More(cursor));
         Task::perform(next, move |result| Message::MoreLoaded(view.clone(), order, result))
     }
 
@@ -3457,11 +3907,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.info = loaded.info;
         self.sources = loaded.sources;
         self.folders = loaded.folders;
-        let page = loaded.mail.unwrap_or(MailPage { messages: Vec::new(), next: None });
+        let page = loaded.mail.unwrap_or(MailPage::of(Vec::new(), None));
         self.messages = page.messages;
         for message in &mut self.messages {
             keep_answer(&self.answers, message);
         }
+        search::with_passages(&mut self.messages, &page.highlights);
+        self.highlights = page.highlights;
+        self.found = loaded.found.map(|found| *found).unwrap_or_default();
         self.more = page.next;
         self.listed = self.view.listing();
         self.loaded = true;
@@ -3573,7 +4026,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
 
     /// A button of a message's card for the message's entry `id` in "For me" (task E8.11: "Later" and
     /// "…" of an invitation in the smart view, `mail::message_buttons`): the cursor to the message,
-    /// whose card the menu then opens at, and the snooze menu or "Hide from inbox" for the entry, as
+    /// whose card the menu then opens at, and the snooze menu or the bell's menu for the entry, as
     /// under "For me". Nothing for an entry the window does not hold, or other commands.
     fn act_for_message(&mut self, id: &str, command: Command) -> Task<Message> {
         // A message's own button ("Task", task E8.7b): the cursor to it, then what its key does there.
@@ -3590,7 +4043,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.cursor = Some(message);
         match command {
             Command::Snooze => self.ask_snooze(id),
-            Command::Hide => self.ask_hide(id),
+            // Mail is muted through the bell's menu (issue #123).
+            Command::Hide => return self.ask_mute_menu(id),
             _ => {}
         }
         Task::none()
@@ -3708,6 +4162,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Command::Delete => self.key_mail(MailAction::Delete),
             Command::Search => self.focus_search(),
             Command::ViewHtml => self.key_view_html(),
+            Command::Complete => self.take_suggestion(),
             Command::Done => match self.cursor_item().cloned() {
                 Some(item) if detail::is_approval(&item) => {
                     self.note(tr("An approval closes once it is decided.").to_owned());
@@ -3731,6 +4186,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             // "Later" and "…" do (task E8.11).
             Command::Snooze | Command::Hide if self.view.is_mail() => match self.cursor_message_entry() {
                 Some(entry) => self.act_for_message(&entry, command),
+                // A message without an entry is muted by its own traits (issue #123).
+                None if command == Command::Hide => {
+                    self.cursor.clone().map_or_else(Task::none, |id| self.ask_mute_message(&id))
+                }
                 None => Task::none(),
             },
             Command::Snooze => {
@@ -3740,17 +4199,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 Task::none()
             }
             Command::Lane => cursor.map_or_else(Task::none, |id| self.ask_lane(&id)),
-            // In the notifications window `m` is the bell (task E8.6b): its menu; "This entry" of the
-            // hide menu is the ✕ there.
-            Command::Hide if self.launch.kind == Kind::Notifications => {
-                cursor.map_or_else(Task::none, |id| self.ask_mute_menu(&id))
-            }
-            Command::Hide => {
-                if let Some(id) = cursor {
-                    self.ask_hide(&id);
-                }
-                Task::none()
-            }
+            // In the notifications window and for mail `m` is the bell (task E8.6b, issue #123): its
+            // menu; "This entry" of the hide menu is the ✕ there. Else "Hide from Notification Hub".
+            Command::Hide => cursor.map_or_else(Task::none, |id| self.ask_hide_or_mute(&id)),
             // In a folder the message under the cursor becomes a task (task E8.7b).
             Command::MakeTask if self.view.is_mail() => {
                 self.cursor.clone().map_or_else(Task::none, |id| self.ask_mail_task(&id))
@@ -3887,7 +4338,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 return Task::none();
             }
             let letter = self.follow_letter();
-            return Task::batch([letter, self.want_html(&id)]);
+            let kept = self.keep_opened_search();
+            return Task::batch([letter, kept, self.want_html(&id)]);
         }
         let Some(item) = self.cursor_item().cloned() else { return Task::none() };
         if let Some(Link::Url { .. } | Link::App { .. } | Link::Window) = detail::openable(&item) {
@@ -3945,6 +4397,35 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.mute(source, muted, true)
     }
 
+    /// Whether the menu of `m`, "…" and the bell is the bell's menu for `item` (task E8.6b): in the
+    /// notifications window, and for mail in every window – mail's "Hide from Notification Hub" went into the
+    /// bell's menu (issue #123), so mail has one menu to mute it.
+    fn mutes_by_bell(&self, item: &Item) -> bool {
+        self.launch.kind == Kind::Notifications || item.source.kind == SourceKind::Mail
+    }
+
+    /// Whether `item` shows the button of `m` – the bell or "…" – and `m` opens a menu for it: in the
+    /// notifications window where it has a bell ([`notifications::bell`]); for every mail entry (a
+    /// done one too: its sender can still be muted); else while "Hide from Notification Hub" has entries for it
+    /// ([`App::hide_choices`]).
+    pub fn hidable(&self, item: &Item) -> bool {
+        match self.launch.kind {
+            Kind::Notifications => notifications::bell(item).is_some(),
+            _ if item.source.kind == SourceKind::Mail => true,
+            _ => !self.hide_choices(item).is_empty(),
+        }
+    }
+
+    /// `m`, "…" or the bell for the entry `id`: the bell's menu where [`App::mutes_by_bell`] says
+    /// so, else "Hide from Notification Hub".
+    fn ask_hide_or_mute(&mut self, id: &str) -> Task<Message> {
+        if self.find(id).is_some_and(|item| self.mutes_by_bell(item)) {
+            return self.ask_mute_menu(id);
+        }
+        self.ask_hide(id);
+        Task::none()
+    }
+
     /// Opens the bell's menu for the entry with `id` (task E8.6b) and asks the core for its ways to
     /// mute (`inbox.list_mute_options`); "For" and "What happens" keep what was chosen last. The
     /// suite's entries – approvals among them – are never muted (security rule 1): a note instead.
@@ -3954,13 +4435,33 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             self.note(tr("Entries from the suite can't be muted.").to_owned());
             return Task::none();
         }
+        self.open_mute_menu(item)
+    }
+
+    /// Opens the bell's menu for the message `id` of a folder or smart view that has no entry (issue
+    /// #123). The core offers its traits – sender, domain, list … as its mail store holds them – for
+    /// the message's id (`inbox.list_mute_options` and `inbox.mute_item` with `m:…`). The menu's
+    /// subject is the message as an entry would be ([`rules::message_stand_in`]); only the menu
+    /// reads it.
+    fn ask_mute_message(&mut self, id: &str) -> Task<Message> {
+        let Some(summary) = self.message_summary(id) else { return Task::none() };
+        match rules::message_stand_in(&summary, None, false) {
+            Some(stand_in) => self.open_mute_menu(stand_in),
+            None => Task::none(),
+        }
+    }
+
+    /// The bell's menu for `item` – an entry, or a message standing in for one –, its ways to mute
+    /// asked for anew.
+    fn open_mute_menu(&mut self, item: Item) -> Task<Message> {
+        let id = item.id.clone();
         self.drawer = false;
         self.subject = Some(item);
         self.mute_options = None;
         self.menu = Some(Menu::Mute);
         #[cfg(test)]
-        self.sent.push(Sent::MuteOptions(id.to_owned()));
-        let (inbox, id) = (self.inbox.clone(), id.to_owned());
+        self.sent.push(Sent::MuteOptions(id.clone()));
+        let inbox = self.inbox.clone();
         Task::perform(
             async move {
                 let options = inbox.list_mute_options(id.clone()).await.map_err(|err| err.to_string());
@@ -3986,8 +4487,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     }
 
     /// The ways to mute of the bell's menu as choices (picked by click or digit): those the core
-    /// offered, each with its icon, then – while the entry's whole source is muted
-    /// (`inbox.mute_source`) – "Unmute <source>", which takes that back at once.
+    /// offered, each with its icon, then after a line – while the entry's whole source is muted
+    /// (`inbox.mute_source`) – "Unmute <source>", which takes that back at once, and for a mail
+    /// entry "Move to junk" (`mail.move_messages`, where its account has a junk folder), which was
+    /// in mail's "Hide from Notification Hub" before (issue #123).
     fn mute_choices(&self, item: &Item) -> Vec<Choice> {
         let options = match &self.mute_options {
             Some(Ok(options)) => options.as_slice(),
@@ -4000,15 +4503,24 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 Choice::new(mute_icon(option.scope), option.label.clone(), mute)
             })
             .collect();
+        let mut rest = Vec::new();
         if self.is_muted(&item.source) {
             let unmute = trf("Unmute {source}", &[("source", &item.source.label())]);
-            let line = !choices.is_empty();
-            choices.push(Choice { line, ..Choice::new(Icon::BellOff, unmute, Message::AskMute(item.id.clone())) });
+            rest.push(Choice::new(Icon::BellOff, unmute, Message::AskMute(item.id.clone())));
         }
+        // An entry's mail only: a message without an entry has its own "Delete" and "Move to …".
+        let entry_mail = matches!(item.link, Some(Link::Mail { .. })) && !rules::is_message_id(&item.id);
+        if entry_mail && self.junk_folder(&item.source).is_some() {
+            rest.push(Choice::new(Icon::ShieldAlert, tr("Move to junk"), Message::Junk(item.id.clone())));
+        }
+        if let Some(first) = rest.first_mut() {
+            first.line = !choices.is_empty();
+        }
+        choices.extend(rest);
         choices
     }
 
-    /// Opens the menu "Hide from inbox" for the entry with `id` (task E3.10). An entry with no way
+    /// Opens the menu "Hide from Notification Hub" for the entry with `id` (task E3.10). An entry with no way
     /// to hide it – an approval, which closes once decided and whose source is never muted – gets
     /// a note instead.
     fn ask_hide(&mut self, id: &str) {
@@ -4022,51 +4534,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.menu = Some(Menu::Hide);
     }
 
-    /// The ways to hide `item`, in the order of the menu (task E3.10):
-    ///
-    /// - mail: "This conversation" (`inbox.hide_sender` with `conversation`: done, the mail stays
-    ///   unread; a new reply brings it back), "Everything from <address>" and "Everything from
-    ///   <domain>" (`inbox.hide_sender`, in every mail account), then after a line "Always to Info"
-    ///   (`inbox.set_item_lane` with `remember`) and "Move to junk" (`mail.move_messages`, only
-    ///   when the account has a folder with the role junk). Without a sender's address only the
-    ///   first and the junk folder;
-    /// - other sources: "This entry" (done) and "Mute <source>" / "Unmute <source>"; the suite is
-    ///   never muted ([`rules_allowed`]), an approval has no done.
-    ///
-    /// Done entries have no "This …": they are out of the inbox already.
+    /// The ways to hide `item` that is no mail, in the order of the menu (task E3.10): "This entry"
+    /// (done) and "Mute <source>" / "Unmute <source>"; the suite is never muted ([`rules_allowed`]),
+    /// an approval has no done, and done entries have no "This entry": they are out of the inbox
+    /// already. Mail has none: it is muted through the bell's menu ([`App::mutes_by_bell`], issue
+    /// #123), whose "This conversation", sender, domain and "Move to junk" replace this menu's.
     pub fn hide_choices(&self, item: &Item) -> Vec<Choice> {
         let id = || item.id.clone();
         let mut choices = Vec::new();
-        let open = !matches!(item.state, State::Done { .. }) && !detail::is_approval(item);
         if item.source.kind == SourceKind::Mail {
-            // Hidden, not done: the mail stays unread (task E3.11).
-            if open {
-                let conversation = Message::HideSender(id(), HideScope::Conversation);
-                choices.push(Choice::new(Icon::Check, tr("This conversation"), conversation));
-            }
-            let hide = |scope| rules::hide_target(item, scope);
-            if let Some(sender) = hide(HideScope::Sender) {
-                let label = trf("Everything from {sender}", &[("sender", &sender)]);
-                choices.push(Choice::new(Icon::User, label, Message::HideSender(id(), HideScope::Sender)));
-            }
-            if let Some(domain) = hide(HideScope::Domain) {
-                let label = trf("Everything from {domain}", &[("domain", &domain)]);
-                choices.push(Choice::new(Icon::Users, label, Message::HideSender(id(), HideScope::Domain)));
-            }
-            let mut rest = Vec::new();
-            if rules::mail_sender(item).is_some() {
-                let always = Edit::Lane { id: id(), lane: Lane::Info, remember: true };
-                rest.push(Choice::new(lane_icon(Lane::Info), tr("Always to Info"), Message::Edit(always)));
-            }
-            if matches!(item.link, Some(Link::Mail { .. })) && self.junk_folder(&item.source).is_some() {
-                rest.push(Choice::new(Icon::ShieldAlert, tr("Move to junk"), Message::Junk(id())));
-            }
-            if let Some(first) = rest.first_mut() {
-                first.line = !choices.is_empty();
-            }
-            choices.extend(rest);
             return choices;
         }
+        let open = !matches!(item.state, State::Done { .. }) && !detail::is_approval(item);
         if open {
             choices.push(Choice::new(Icon::Check, tr("This entry"), Message::SetDone(id(), true)));
         }
@@ -4086,17 +4565,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     fn junk_folder(&self, source: &SourceRef) -> Option<&torro_mail::Folder> {
         let account = source.key();
         self.folders.iter().find(|folder| folder.account == account && folder.role == Some(Role::Junk))
-    }
-
-    /// Sends `inbox.hide_sender` for the entry `id` and closes the menu; the answer comes as
-    /// [`Message::Hidden`], whose toast names what was hidden and offers to take it back exactly
-    /// ([`Undo::of_hidden`], task E3.11).
-    fn hide_sender(&mut self, id: String, scope: HideScope) -> Task<Message> {
-        self.close_menus();
-        #[cfg(test)]
-        self.sent.push(Sent::Hide(id.clone(), scope));
-        let inbox = self.inbox.clone();
-        Task::perform(async move { inbox.hide_sender(id, scope).await.map_err(|err| err.to_string()) }, Message::Hidden)
     }
 
     /// "Move to junk" for the mail entry `id`: its newest mail to the account's junk folder
@@ -4128,10 +4596,20 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return Task::none();
         }
         self.drawer = false;
-        self.task = TaskDraft { title: list::one_line(&item.title), list: None, due: Due::None };
+        self.ai_suggesting = None;
+        self.task = TaskDraft { title: list::one_line(&item.title), ..TaskDraft::default() };
         self.subject = Some(item);
         self.task_mail = None;
         self.open_task_dialog()
+    }
+
+    /// The message `id` the window holds: in the list of the view, else the one in the reader.
+    fn message_summary(&self, id: &str) -> Option<MessageSummary> {
+        let loaded = || match &self.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => Some(mail.summary.clone()),
+            _ => None,
+        };
+        self.messages.iter().find(|message| message.id == id).cloned().or_else(loaded)
     }
 
     /// Opens the dialog that makes a task of the folder's message `id` (task E8.7b): its subject as
@@ -4141,17 +4619,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         if let Some(entry) = self.entry_of(id) {
             return self.ask_task(&entry);
         }
-        let loaded = || match &self.letter {
-            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => Some(mail.summary.clone()),
-            _ => None,
-        };
-        let Some(summary) = self.messages.iter().find(|message| message.id == id).cloned().or_else(loaded) else {
-            return Task::none();
-        };
+        let Some(summary) = self.message_summary(id) else { return Task::none() };
         self.close_menus();
         // The dialog opens at the cursor's row, as for entries.
         self.cursor = Some(summary.id.clone());
-        self.task = TaskDraft { title: mail::subject(&summary), list: None, due: Due::None };
+        self.task = TaskDraft { title: mail::subject(&summary), ..TaskDraft::default() };
         self.subject = None;
         self.task_mail = Some(summary);
         self.open_task_dialog()
@@ -4190,14 +4662,25 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let (Some(item), Some(list)) = (self.subject.clone(), self.task.list.clone()) else { return Task::none() };
         let title = Some(self.task.title.trim().to_owned()).filter(|title| !title.is_empty());
         let due = self.task.due.day(self.now);
+        let notes = filled(&self.task.notes);
         self.last_list = Some(list.id.clone());
         self.close_menus();
         #[cfg(test)]
-        self.sent.push(Sent::Task { id: item.id.clone(), list: list.clone(), title: title.clone(), due });
+        self.sent.push(Sent::Task {
+            id: item.id.clone(),
+            list: list.clone(),
+            title: title.clone(),
+            due,
+            notes: notes.clone(),
+        });
         let inbox = self.inbox.clone();
         let TaskList { id: list_id, name } = list;
         Task::perform(
-            async move { inbox.create_task_from_item(item.id, list_id, title, due).await.map_err(|err| err.to_string()) },
+            async move {
+                SuggestSource::create_task(&*inbox, item.id, list_id, title, due, notes)
+                    .await
+                    .map_err(|err| err.to_string())
+            },
             move |result| Message::TaskCreated(result, name.clone()),
         )
     }
@@ -4357,6 +4840,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return Task::none();
         }
         self.drawer = false;
+        self.ai_suggesting = None;
         self.event = EventDraft::new(list::one_line(&item.title), self.now);
         self.subject = Some(item);
         self.menu = Some(Menu::Event);
@@ -4389,6 +4873,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         };
         let title = Some(self.event.title.trim().to_owned()).filter(|title| !title.is_empty());
         let (start, end) = self.event.span();
+        let (location, notes) = (filled(&self.event.location), filled(&self.event.notes));
         self.last_calendar = Some(calendar.id.clone());
         self.close_menus();
         #[cfg(test)]
@@ -4398,18 +4883,132 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             title: title.clone(),
             start,
             end,
+            location: location.clone(),
+            notes: notes.clone(),
         });
         let inbox = self.inbox.clone();
         let TaskList { id: calendar_id, name } = calendar;
+        let fields = EventFields { title, start, end, location, notes };
         Task::perform(
             async move {
-                inbox
-                    .create_event_from_item(item.id, calendar_id, title, start, end)
-                    .await
-                    .map_err(|err| err.to_string())
+                SuggestSource::create_event(&*inbox, item.id, calendar_id, fields).await.map_err(|err| err.to_string())
             },
             move |result| Message::EventCreated(result, name.clone()),
         )
+    }
+
+    /// Asks whether an AI is set up (issue #120, [`SuggestSource::ai_ready`]), for the AI buttons.
+    fn fetch_ai_ready(&self) -> Task<Message> {
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.ai_ready().await }, Message::AiReady)
+    }
+
+    /// "AI task" (issue #120): the dialog of "Make task" for the entry `id`, as `t` opens it, and the
+    /// AI asked for its suggestion, which fills it in once it is in ([`App::take_task_suggestion`]).
+    /// Without an AI only a hint says to set one up (the buttons are off then anyway).
+    fn suggest_task(&mut self, id: &str) -> Task<Message> {
+        if !self.ai_ready {
+            self.note(tr("Set up an AI first").to_owned());
+            return Task::none();
+        }
+        let dialog = self.ask_task(id);
+        if self.menu != Some(Menu::Task) {
+            return dialog;
+        }
+        self.ai_suggesting = Some(Suggesting::Asking(id.to_owned()));
+        #[cfg(test)]
+        self.sent.push(Sent::SuggestTask(id.to_owned()));
+        let (inbox, asked, id) = (self.inbox.clone(), id.to_owned(), id.to_owned());
+        let suggested = Task::perform(
+            async move { inbox.suggest_task(asked).await.map_err(|err| err.to_string()) },
+            move |result| Message::TaskSuggested(id.clone(), result),
+        );
+        Task::batch([dialog, suggested])
+    }
+
+    /// "AI event" (issue #120): the dialog of "Make event" for the entry `id` and the AI asked, as
+    /// [`App::suggest_task`] does.
+    fn suggest_event(&mut self, id: &str) -> Task<Message> {
+        if !self.ai_ready {
+            self.note(tr("Set up an AI first").to_owned());
+            return Task::none();
+        }
+        let dialog = self.ask_event(id);
+        if self.menu != Some(Menu::Event) {
+            return dialog;
+        }
+        self.ai_suggesting = Some(Suggesting::Asking(id.to_owned()));
+        #[cfg(test)]
+        self.sent.push(Sent::SuggestEvent(id.to_owned()));
+        let (inbox, asked, id) = (self.inbox.clone(), id.to_owned(), id.to_owned());
+        let suggested = Task::perform(
+            async move { inbox.suggest_event(asked).await.map_err(|err| err.to_string()) },
+            move |result| Message::EventSuggested(id.clone(), result),
+        );
+        Task::batch([dialog, suggested])
+    }
+
+    /// Whether the AI's answer for the entry `id` still has its dialog: the one asked for is open.
+    fn awaits(&self, id: &str, menu: Menu) -> bool {
+        self.menu == Some(menu) && self.ai_suggesting == Some(Suggesting::Asking(id.to_owned()))
+    }
+
+    /// The AI's task for the entry `id` into the open dialog (issue #120): title, due day and note;
+    /// the line under the title says to check it. An answer for a dialog closed or opened anew
+    /// meanwhile is dropped. Without one, the line says why and the dialog stays as it is.
+    fn take_task_suggestion(&mut self, id: &str, result: Result<TaskSuggestion, String>) {
+        if !self.awaits(id, Menu::Task) {
+            return;
+        }
+        match result {
+            Ok(suggestion) => {
+                self.task.title = suggestion.title;
+                self.task.due = ai::due_of(suggestion.due).map_or(Due::None, |day| Due::of_day(day, self.now));
+                self.task.notes = suggestion.notes.unwrap_or_default();
+                self.ai_suggesting = Some(Suggesting::Done);
+            }
+            Err(err) => self.ai_suggesting = Some(Suggesting::Failed(err)),
+        }
+    }
+
+    /// The AI's event for the entry `id` into the open dialog (issue #120): title, day, start and
+    /// length ([`ai::event_times`]; a suggestion without a day keeps the dialog's), place, and who
+    /// takes part as its note. As [`App::take_task_suggestion`] otherwise.
+    fn take_event_suggestion(&mut self, id: &str, result: Result<EventSuggestion, String>) {
+        if !self.awaits(id, Menu::Event) {
+            return;
+        }
+        match result {
+            Ok(suggestion) => {
+                if let Some((day, start, minutes)) = ai::event_times(&suggestion, self.event.length.minutes()) {
+                    self.event.day = day;
+                    self.event.start = StartTime(start);
+                    self.event.length = Length::of_minutes(minutes);
+                }
+                self.event.notes = ai::attendees_note(&suggestion).unwrap_or_default();
+                self.event.title = suggestion.title;
+                self.event.location = suggestion.location.unwrap_or_default();
+                self.ai_suggesting = Some(Suggesting::Done);
+            }
+            Err(err) => self.ai_suggesting = Some(Suggesting::Failed(err)),
+        }
+    }
+
+    /// The quiet line under the title of a dialog the AI fills in (issue #120): asking, done – to
+    /// check –, or why it gave nothing. `None` for a dialog opened without it.
+    fn suggesting_line(&self) -> Option<Element<'_, Message>> {
+        let (text, error) = match self.ai_suggesting.as_ref()? {
+            Suggesting::Asking(_) => (tr("Asking your AI…").to_owned(), false),
+            Suggesting::Done => (tr("Suggested by your AI. Check it before you create it.").to_owned(), false),
+            Suggesting::Failed(why) => (trf("No suggestion: {why}", &[("why", why)]), true),
+        };
+        let mark = icon::icon(if error { Icon::CircleAlert } else { Icon::Sparkles }, icon::SIZE_SM).style(
+            move |t: &Theme, _| iced::widget::svg::Style {
+                color: Some(if error { palette(t).error_text } else { palette(t).text_3 }),
+            },
+        );
+        let words = typo::text(typo::meta(), text).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
+        Some(row![mark, words].spacing(space::s()).align_y(Alignment::Center).into())
     }
 
     /// The task made of the message `id` (task E8.7b), for the card over its text: the one the entry
@@ -4458,7 +5057,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return self.mail_action(MailAction::Reply, message);
         }
         if task.link.is_empty() || self.launch.demo {
-            self.note(tr("The mail is no longer in the inbox.").to_owned());
+            self.note(tr("The mail is no longer in the Notification Hub.").to_owned());
             return Task::none();
         }
         #[cfg(test)]
@@ -4600,24 +5199,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     Ok(())
                 };
                 Task::perform(back, |result| Message::MailEdited(result, None))
-            }
-            Undo::Hidden { rule, reopen } => {
-                #[cfg(test)]
-                self.sent.push(Sent::Unhide(rule.clone(), reopen.clone()));
-                // First the rule, then the entries: the other way round nothing would stop mail of the
-                // sender, and the entries would be open with the rule still there.
-                let back = reopen.first().cloned();
-                let inbox = self.inbox.clone();
-                let undone = async move {
-                    if let Some(id) = rule {
-                        inbox.remove_rule(id).await.map_err(|err| err.to_string())?;
-                    }
-                    for id in reopen {
-                        inbox.set_item_done(id, false).await.map_err(|err| err.to_string())?;
-                    }
-                    Ok(())
-                };
-                Task::perform(undone, move |result| Message::Undone(result, back.clone()))
             }
             Undo::Muted { rule, reopen, moved } => {
                 #[cfg(test)]
@@ -4865,7 +5446,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             true => None,
             false => {
                 let item = self.detail.as_ref()?;
-                Some(mail::ReaderEntry { item, hide: !self.hide_choices(item).is_empty() })
+                Some(mail::ReaderEntry { item, hide: self.hidable(item), ai: self.ai_ready })
             }
         };
         Some(mail::reader(reading, entry, anchors.clone(), self.density() == Density::Comfortable))
@@ -5015,9 +5596,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Some(Menu::Pick) => Some(widgets::floating(&snooze_at, below, self.picker(), Message::CloseMenu)),
             Some(Menu::Task) => Some(widgets::floating(&task_at, dialog, self.task_dialog(), Message::CloseMenu)),
             Some(Menu::Event) => Some(widgets::floating(&event_at, dialog, self.event_dialog(), Message::CloseMenu)),
-            Some(Menu::Hide) => {
-                Some(widgets::floating(&hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
-            }
+            Some(Menu::Hide) => Some(widgets::floating(
+                &hide_at,
+                below,
+                self.choice_menu(tr("Hide from Notification Hub")),
+                Message::CloseMenu,
+            )),
             Some(Menu::Mute) => Some(widgets::floating(&hide_at, below, self.mute_menu(), Message::CloseMenu)),
         };
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
@@ -5035,22 +5619,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
         let detail = if self.view.is_mail() {
             // A folder's message: the mail alone, no entry around it.
-            self.reading().filter(|_| self.reading).map(|reading| mail::panel(&reading, self.view.folder()))
+            self.reading().filter(|_| self.reading).map(|reading| mail::panel(&reading, self.view.folder(), &anchors))
         } else {
             self.detail.as_ref().map(|item| {
-                // The notifications window's panel has the bell where the others have "…" (task E8.6b).
-                let bell = self.launch.kind == Kind::Notifications;
+                // The notifications window's panel and mail have the bell where the others have "…"
+                // (task E8.6b, issue #123).
                 let footer = detail::Footer {
                     anchors: anchors.clone(),
-                    hide: if bell { notifications::bell(item).is_some() } else { !self.hide_choices(item).is_empty() },
-                    bell,
+                    hide: self.hidable(item),
+                    bell: self.mutes_by_bell(item),
                     deciding: self.deciding.is_some(),
                     // The panel fills narrow windows: no room for the words of "Move to …".
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
+                    ai: self.ai_ready,
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
-                let letter = self.reading().map(|reading| mail::body(&reading));
-                detail::panel(item, self.view_label(), self.now, footer, letter)
+                let letter = self.reading().map(|reading| mail::body(&reading, None));
+                detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };
         let placed = panel::place(class, self.body(class, &rows), detail, layer);
@@ -5139,7 +5724,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 if let Some(note) = note {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                // The rail at the left has the panel button.
+                // The rail at the left has the panel button and the window's mark (issue #127).
                 shell::header_bar([], title, trailing)
             }
             // Where the band has the panel button (macOS), the header leaves it out.
@@ -5151,11 +5736,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 if let Some(note) = note.filter(|_| narrow_count(self.launch.kind)) {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                shell::header_bar(
-                    (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
-                    title,
-                    trailing,
-                )
+                shell::header_bar(self.narrow_leading(), title, trailing)
             }
         }
     }
@@ -5187,11 +5768,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                 shell::header_bar([], title, trailing)
             }
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
-                (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
+                self.narrow_leading(),
                 widgets::menu_button(nav, icon, name, Message::ToggleNav),
                 trailing,
             ),
         }
+    }
+
+    /// The start of the narrow header: the drawer button where the window has no band (the band has
+    /// it on macOS), then the window's mark (issue #127, [`shell::app_mark`]): without sidebar or rail
+    /// nothing else says whether this is the hub, mail or the app feed.
+    fn narrow_leading<'a>(&self) -> Vec<Element<'a, Message>> {
+        let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer));
+        toggle.into_iter().chain([shell::app_mark(self.launch.kind.app())]).collect()
     }
 
     /// The quiet number after the title: how many entries the view lists. The title already says
@@ -5208,11 +5797,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             return if self.sorting { sections.to_sort.len().to_string() } else { hub::summary(&sections) };
         }
         match self.view.folder() {
-            Some(folder) if folder.query.is_none() => {
+            Some(folder) => {
                 let all = self.folders.iter().find(|f| f.id == folder.id).map(|f| f.total as usize);
                 all.unwrap_or(self.messages.len()).to_string()
             }
-            Some(_) => self.messages.len().to_string(),
+            // A search counts what the core says it found in all, else what it shows (issue #136).
+            None if self.view.search().is_some_and(|search| !search.query.is_empty()) => {
+                self.found.total.map_or_else(|| self.messages.len().to_string(), |total| total.to_string())
+            }
             None if matches!(self.view, View::Attachments | View::Invitations) => self.messages.len().to_string(),
             None if self.view.is_mail() => String::new(),
             // As in the sidebar: what is for the user; "Info" lies folded. The notifications window
@@ -5248,7 +5840,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             summary,
             loaded: letter.loaded.as_ref(),
             now: self.now,
-            link: colours.text,
+            text: &self.text,
             attention: colours.attention_text,
             in_trash: self.in_trash(&letter.id),
             dated: self.view.is_mail(),
@@ -5281,9 +5873,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         }
         let attention = palette(&self.theme()).attention_text;
         let mut content = column![];
-        // The search stands above the error line: it belongs to the folder, the error to the list.
-        if let Some(folder) = self.view.folder() {
-            content = content.push(mail::search_bar(&self.search, folder));
+        // The search stands above the error line: it belongs to the mail, the error to the list.
+        if self.shows_search() {
+            content = content.push(self.search_bar());
         }
         if let Some(failure) = &self.error {
             content = content.push(container(failure_line(failure)).padding(Padding::new(space::s()).left(space::l())));
@@ -5308,15 +5900,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     more: self.more.is_some(),
                     attention,
                     look: self.look(),
-                    // An invitation's card offers its entry's Later and "…" (task E8.11).
+                    // An invitation's card offers its entry's Later and bell (task E8.11).
                     entries: &self.for_me,
-                    hidable: self
-                        .for_me
-                        .iter()
-                        .filter(|item| !self.hide_choices(item).is_empty())
-                        .map(|item| item.id.as_str())
-                        .collect(),
                     folders: &self.folders,
+                    highlights: &self.highlights,
+                    text: palette(&self.theme()).text,
                 })
             }
         } else if self.is_board() {
@@ -5377,7 +5965,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     }
 
     /// What the rows of entries need (`list::Rows`): the cursor, the time, the mail accounts in the
-    /// sidebar's order (their colours) and which entries have a menu "Hide from inbox".
+    /// sidebar's order (their colours) and which entries have a menu "Hide from Notification Hub".
     fn rows_data<'a>(&'a self, anchors: &detail::Anchors) -> list::Rows<'a> {
         list::Rows {
             view: &self.view,
@@ -5385,14 +5973,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             now: self.now,
             anchors: anchors.clone(),
             accounts: mail::by_account(&self.folders).into_iter().map(|group| mail::address(group.account)).collect(),
-            hidable: self
-                .items
-                .iter()
-                .filter(|item| !self.hide_choices(item).is_empty())
-                .map(|item| item.id.as_str())
-                .collect(),
+            hidable: self.items.iter().filter(|item| self.hidable(item)).map(|item| item.id.as_str()).collect(),
             look: self.look(),
             folders: &self.folders,
+            ai: self.ai_ready,
         }
     }
 
@@ -5701,7 +6285,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
     /// its entries end in one trail only, and these need the time quietly before the key hint.
     ///
     /// The menu is as wide as its longest entry needs ([`choice_menu_width`]), so the addresses and
-    /// domains of "Hide from inbox" show whole.
+    /// domains of "Hide from Notification Hub" show whole.
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
         let choices = self.choices();
         let width = choice_menu_width(&choices);
@@ -5751,8 +6335,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let segment = |control: Element<'a, Message>| {
             container(control).padding(Padding::ZERO.left(space::s()).right(space::s()).bottom(space::xs()))
         };
-        let rules = MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenSettings)
-            .trail(Trail::Icon(Icon::ArrowUpRight));
+        let rules = rules_entry();
         list = list
             .push(menu_line())
             .push(menu_caption(tr("For")))
@@ -5827,11 +6410,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Some(Ok(lists)) => choice(lists.clone(), self.task.list.clone(), Message::TaskList),
         };
         // A folder's message asks for its due day as an entry does (task E8.1b).
-        let due = choice(Due::ALL.to_vec(), Some(self.task.due), Message::TaskDue);
-        let rows = column![
+        let due = choice(self.task.due.offered(), Some(self.task.due), Message::TaskDue);
+        let mut rows = column![
             widgets::prop_line(tr("List"), Some(Mark::Icon(Icon::ListTodo)), list, None),
             widgets::prop_line(tr("Due"), Some(Mark::Icon(Icon::Calendar)), due, None),
         ];
+        // The AI's note (issue #120), only where it filled in the dialog or one is kept.
+        if self.ai_suggesting.is_some() || !self.task.notes.is_empty() {
+            let notes = dialog_field(tr("Notes"), &self.task.notes, Message::TaskNotes);
+            rows = rows.push(widgets::prop_line(tr("Notes"), Some(Mark::Icon(Icon::AlignLeft)), notes, None));
+        }
         let create = self.task.list.is_some().then_some(Message::TaskConfirm);
         let actions = row![
             iced::widget::space::horizontal(),
@@ -5845,6 +6433,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let card = column![
             container(widgets::section_title(tr("Make task"))).padding(inset.bottom(space::xs())),
             container(title).padding(inset.bottom(space::s())),
+            self.suggesting_line().map(|line| container(line).padding(inset.bottom(space::s()))),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
                 .spacing(space::m())
@@ -5890,14 +6479,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         ]
         .spacing(space::xs())
         .align_y(Alignment::Center);
-        let start = choice(StartTime::all(), Some(self.event.start), Message::EventStart);
-        let length = choice(Length::ALL.to_vec(), Some(self.event.length), Message::EventLength);
-        let rows = column![
+        let start = choice(self.event.start.offered(), Some(self.event.start), Message::EventStart);
+        let length = choice(self.event.length.offered(), Some(self.event.length), Message::EventLength);
+        let mut rows = column![
             widgets::prop_line(tr("Calendar"), Some(Mark::Icon(Icon::Calendar)), calendar, None),
             widgets::prop_line(tr("Day"), Some(Mark::Icon(Icon::CalendarDays)), day_row, None),
             widgets::prop_line(tr("Starts"), Some(Mark::Icon(Icon::CalendarClock)), start, None),
             widgets::prop_line(tr("Duration"), Some(Mark::Icon(Icon::Clock)), length, None),
         ];
+        // The AI's place and who takes part (issue #120), only where it filled in the dialog or one
+        // is kept.
+        if self.ai_suggesting.is_some() || !self.event.location.is_empty() || !self.event.notes.is_empty() {
+            let place = dialog_field(tr("Location"), &self.event.location, Message::EventLocation);
+            let notes = dialog_field(tr("Notes"), &self.event.notes, Message::EventNotes);
+            rows = rows
+                .push(widgets::prop_line(tr("Location"), Some(Mark::Icon(Icon::MapPin)), place, None))
+                .push(widgets::prop_line(tr("Notes"), Some(Mark::Icon(Icon::AlignLeft)), notes, None));
+        }
         let create = self.event.calendar.is_some().then_some(Message::EventConfirm);
         let actions = row![
             iced::widget::space::horizontal(),
@@ -5910,6 +6508,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         let card = column![
             container(widgets::section_title(tr("Make event"))).padding(inset.bottom(space::xs())),
             container(title).padding(inset.bottom(space::s())),
+            self.suggesting_line().map(|line| container(line).padding(inset.bottom(space::s()))),
             rows,
             column![iced::widget::rule::horizontal(size::HAIRLINE).style(style::rule), actions]
                 .spacing(space::m())
@@ -5930,6 +6529,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
         self.menu = None;
         self.drawer = false;
         self.subject = None;
+        self.ai_suggesting = None;
     }
 
     /// Asks the core for the stored appearance, on every tick, so a change in the control centre
@@ -5985,6 +6585,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     return self.ask_task(&item.id);
                 }
             }
+            Some(Open::AiTask | Open::AiEvent | Open::NoAi) => {
+                if let Some(item) = self.items.iter().find(|item| !detail::is_approval(item)).cloned() {
+                    self.cursor = Some(item.id.clone());
+                    self.detail = Some(item.clone());
+                    // The demo has an AI; its answer to "is one set up?" may come after this.
+                    self.ai_ready = self.launch.open != Some(Open::NoAi);
+                    match self.launch.open {
+                        Some(Open::AiTask) => return self.suggest_task(&item.id),
+                        Some(Open::AiEvent) => return self.suggest_event(&item.id),
+                        _ => {}
+                    }
+                }
+            }
             Some(Open::Event) => {
                 let sort = hub::Sections::of(&self.items, None).to_sort.first().map(|item| (*item).clone());
                 if let Some(item) = sort.or_else(|| self.items.iter().find(|item| !detail::is_approval(item)).cloned())
@@ -5997,6 +6610,23 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
             Some(Open::Mail | Open::Invitation) => {
                 self.cursor = self.messages.first().map(|message| message.id.clone());
                 self.reading = self.cursor.is_some();
+            }
+            Some(Open::Search) => {
+                self.search = "budget".to_owned();
+                return self.run_search();
+            }
+            Some(Open::MuteMail) => {
+                // Read mail never became an entry (the feed files unread mail only).
+                let alone = |message: &&MessageSummary| {
+                    message.flags.contains(&Flag::Seen)
+                        && mail::entry_of(&self.for_me, &message.id).is_none()
+                        && self.entry_of(&message.id).is_none()
+                };
+                if let Some(id) = self.messages.iter().find(alone).map(|message| message.id.clone()) {
+                    self.cursor = Some(id.clone());
+                    self.menu_at = MenuAt::Row;
+                    return self.ask_mute_message(&id);
+                }
             }
             Some(Open::MailEntry) => {
                 self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
@@ -6022,7 +6652,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + 'static> App<S> {
                     if open == Open::HidePanel {
                         self.detail = Some(item.clone());
                     }
-                    self.ask_hide(&item.id);
+                    return self.ask_hide_or_mute(&item.id);
                 }
             }
             _ => {}
@@ -6152,6 +6782,12 @@ fn segmented_width(labels: &[&str]) -> f32 {
     segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
 }
 
+/// "All rules ↗" at the foot of the bell's menu. It opens the Inbox page of the control centre, not
+/// the accounts page the gear opens ([`Message::OpenSettings`]), because the rules are listed there.
+fn rules_entry<'a>() -> MenuItem<'a, Message> {
+    MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenRules).trail(Trail::Icon(Icon::ArrowUpRight))
+}
+
 /// The width of the bell's menu with `choices`: as a menu of choices ([`choice_menu_width`]), and
 /// at least what its segments need beside the menu's and their insets – "Until tomorrow" and
 /// "Only Info" are long in some languages.
@@ -6189,7 +6825,7 @@ fn narrow_count(kind: Kind) -> bool {
 /// How the digit that picks a choice shows at its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyLook {
-    /// As a key hint (`widgets::kbd`), as in "Later until" and "Hide from inbox".
+    /// As a key hint (`widgets::kbd`), as in "Later until" and "Hide from Notification Hub".
     Kbd,
     /// Quietly in `META`, tabular, `text_3` – the bell's menu (task E8.12), where boxed digits beside
     /// "This conversation" and "Everything from deploy" read like counts.
@@ -6277,7 +6913,7 @@ fn choice_frame(when: Option<&str>, key: &str) -> f32 {
 }
 
 /// The width of a menu of `choices`: [`widgets::menu_width`], wider as far as its longest label
-/// needs to show whole – the address or domain of "Hide from inbox" (task E3.10) –, at most
+/// needs to show whole – the address or domain of "Hide from Notification Hub" (task E3.10) –, at most
 /// [`size::panel()`], beyond which a label ends in "…".
 fn choice_menu_width(choices: &[Choice]) -> f32 {
     let needed = choices.iter().enumerate().map(|(i, choice)| {
@@ -6302,6 +6938,25 @@ where
         .font(typo::caption().font)
         .style(style::pick_list)
         .menu_style(style::pick_list_menu)
+        .into()
+}
+
+/// `text` without the spaces around it, `None` when nothing is left: a note or place of a dialog
+/// as the core takes it (issue #120).
+fn filled(text: &str) -> Option<String> {
+    Some(text.trim().to_owned()).filter(|text| !text.is_empty())
+}
+
+/// A one-line field of a dialog in the suite's look: placeholder `hint`, `value`, `on_input`.
+fn dialog_field<'a>(hint: &'a str, value: &'a str, on_input: fn(String) -> Message) -> Element<'a, Message> {
+    text_input(hint, value)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input)
+        .on_input(on_input)
         .into()
 }
 
@@ -6384,7 +7039,7 @@ pub fn demo_task(item: &mut Item, now: DateTime<Utc>) {
 }
 
 fn load_failed(err: &str) -> Failure {
-    Failure::new(tr("Couldn't load the inbox."), err)
+    Failure::new(tr("Couldn't load the entries."), err)
 }
 
 /// The error state of a first load: the alert icon, the sentence (`BODY_STRONG`, like the title of
@@ -6449,7 +7104,7 @@ mod tests {
     }
 
     /// What the source answers for the app's view, handed to `update` as the task would.
-    fn load<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &mut App<S>) {
+    fn load<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(app: &mut App<S>) {
         let empty = app.launch.open == Some(Open::Empty);
         let window = (app.launch.kind, app.shown.clone());
         let demo = app.launch.demo.then_some(app.now);
@@ -6698,7 +7353,7 @@ mod tests {
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
         let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
         assert_eq!(app.view, View::Info);
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Info"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Info"))]));
 
         let stored = args(&["/usr/bin/torroinbox", "--source", "agent:claude-code"]);
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
@@ -6745,7 +7400,7 @@ mod tests {
             14,
             "suite, two agents, five scripts, two mail accounts, GitHub, Nextcloud, Talk, ntfy"
         );
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("For me"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("For me"))]));
     }
 
     #[test]
@@ -6800,7 +7455,8 @@ mod tests {
         {
             let _ = app.update(Message::Resized(size));
             assert_eq!(app.is_glance(), glance, "{size:?}");
-            let expected = if glance { wide - 2 } else { wide };
+            // The keys, ⌘F of the search (the demo has mail) and Escape.
+            let expected = if glance { wide - 3 } else { wide };
             assert_eq!(app.subscription().units(), expected, "no keys and no Escape in a glance: {size:?}");
             let _ = app.view();
         }
@@ -6862,7 +7518,7 @@ mod tests {
         assert_eq!(oldest, first, "the oldest page first");
         assert_ne!(oldest.first(), newest.first());
         // A page of "Load more" asked newest first does not belong any more.
-        let late = Ok(MailPage { messages: all.messages.clone(), next: None });
+        let late = Ok(MailPage::of(all.messages.clone(), None));
         let _ = app.update(Message::MoreLoaded(app.view.clone(), Order::NewestFirst, late));
         assert_eq!(app.messages.len(), oldest.len(), "dropped");
 
@@ -6988,7 +7644,7 @@ mod tests {
         assert!(!app.loaded, "loading stays");
         let mut app = demo(&["--demo", "--open", "error"]);
         let _ = app.update(Message::Loaded(app.view.clone(), Err(DEMO_ERROR.into())));
-        assert_eq!(app.error, Some(Failure { what: tr("Couldn't load the inbox."), why: DEMO_ERROR.into() }));
+        assert_eq!(app.error, Some(Failure { what: tr("Couldn't load the entries."), why: DEMO_ERROR.into() }));
         assert_eq!(demo(&["--demo", "--open", "menu"]).menu, Some(Menu::Nav));
         assert!(demo(&["--demo", "--open", "drawer"]).drawer);
         // The triage states of E3.2.
@@ -7154,7 +7810,7 @@ mod tests {
 
     // ----- Triage (E3.2) ---------------------------------------------------------------------
 
-    fn press<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(
+    fn press<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
         app: &mut App<S>,
         key: Key,
     ) -> Task<Message> {
@@ -7181,23 +7837,6 @@ mod tests {
             Some(Sent::Decide(approval, allow)) => {
                 let result = block_on(app.inbox.decide_approval(approval, allow));
                 let _ = app.update(Message::Decided(result, allow));
-            }
-            Some(Sent::Hide(id, scope)) => {
-                let result = block_on(app.inbox.hide_sender(id, scope)).map_err(|err| err.to_string());
-                let _ = app.update(Message::Hidden(result));
-            }
-            Some(Sent::Unhide(rule, reopen)) => {
-                let back = reopen.first().cloned();
-                let result: Result<(), String> = (|| {
-                    if let Some(rule) = rule {
-                        block_on(app.inbox.remove_rule(rule)).map_err(|err| err.to_string())?;
-                    }
-                    for id in reopen {
-                        block_on(app.inbox.set_item_done(id, false)).map_err(|err| err.to_string())?;
-                    }
-                    Ok(())
-                })();
-                let _ = app.update(Message::Undone(result, back));
             }
             Some(Sent::DismissAll(ids)) => {
                 for id in &ids {
@@ -7613,77 +8252,93 @@ mod tests {
         (at(&item.id), item, address)
     }
 
+    /// Opens the bell's menu of the entry under the cursor with `m` and lets the core answer.
+    fn bell_by_keys(app: &mut App<DemoSource>) {
+        let _ = press(app, Key::M);
+        assert_eq!((app.menu, app.focus()), (Some(Menu::Mute), Focus::Mute));
+        deliver(app);
+    }
+
+    /// Issue #123: mail has one menu to mute – `m` opens the bell's menu with the core's ways for the
+    /// entry, then "Move to junk" after a line; the domain picked mutes for as long as "For" says,
+    /// the mail stays unread, and the undo brings the entry back.
     #[test]
-    fn m_offers_the_steps_for_mail() {
+    fn m_opens_the_bells_menu_for_mail() {
         let mut app = loaded(&["--open", "info"]);
         let sale = app.items.iter().find(|item| item.title == "Autumn sale: 20% off").cloned().expect("the sale");
         app.cursor = Some(sale.id.clone());
-        let _ = press(&mut app, Key::M);
-        assert_eq!((app.menu, app.focus()), (Some(Menu::Hide), Focus::Choices));
+        bell_by_keys(&mut app);
+        let offered: Vec<String> =
+            rules::mute_options(&stored(&app, &sale.id)).into_iter().map(|option| option.label).collect();
         let choices = app.choices();
-        let labels: Vec<&str> = choices.iter().map(|c| c.label.as_str()).collect();
-        assert_eq!(
-            labels,
-            [
-                tr("This conversation"),
-                trf("Everything from {sender}", &[("sender", &"news@shop.example")]).as_str(),
-                trf("Everything from {domain}", &[("domain", &"shop.example")]).as_str(),
-                tr("Always to Info"),
-                tr("Move to junk"),
-            ]
-        );
-        let lines: Vec<bool> = choices.iter().map(|c| c.line).collect();
-        assert_eq!(lines, [false, false, false, true, false], "a line before the lane and junk");
-
-        let _ = press(&mut app, Key::Digit(3));
-        assert_eq!(app.sent.last(), Some(&Sent::Hide(sale.id.clone(), HideScope::Domain)));
-        assert!(app.menu.is_none());
+        let labels: Vec<String> = choices.iter().map(|choice| choice.label.clone()).collect();
+        assert_eq!(labels[..offered.len()], offered[..], "the core's ways first");
+        assert_eq!(labels.last().map(String::as_str), Some(tr("Move to junk")), "no \"Always to Info\" any more");
+        assert!(choices.last().is_some_and(|choice| choice.line), "after a line");
+        let domain = MuteScope::Facet { key: FacetKey::Domain, nth: 0 };
+        let place = choices.iter().position(|c| matches!(c.message, Message::MuteBy(_, scope) if scope == domain));
+        let digit = place.map(|at| u8::try_from(at + 1).expect("a digit")).expect("the domain is offered");
+        let _ = app.update(Message::MuteFor(MuteFor::OneWeek));
+        let _ = app.update(Message::MuteHow(MuteEffect::Hide));
+        let _ = press(&mut app, Key::Digit(digit));
+        let week = Some(app.now + TimeDelta::days(7));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteItem(sale.id.clone(), domain, week, MuteEffect::Hide)));
         deliver(&mut app);
-        let text = trf("Hidden: everything from {domain}", &[("domain", &"shop.example")]);
-        let hint = app.hint.clone().expect("a hint");
-        // The work account's mail from the shop is hidden too (task E3.11), and Undo takes both back.
-        let all = block_on(app.inbox.list_items(ItemFilter::default())).expect("the demo answers");
-        let winter = all.into_iter().find(|item| item.title == "Winter jackets are here");
-        let winter = winter.expect("the shop's mail in the work account").id;
-        let undo = Undo::Hidden { rule: Some("demo-rule-1".into()), reopen: vec![sale.id.clone(), winter.clone()] };
-        assert_eq!((hint.text, hint.undo), (text, Some(undo.clone())), "an exact undo");
         assert!(!ids(&app).contains(&sale.id.as_str()), "out of the inbox");
         let Some(Link::Mail { message }) = &sale.link else { panic!("a mail entry") };
-        let mail = app.inbox.get_mail(message);
-        let flags = mail.map(|mail| mail.summary.flags).expect("the mail");
-        assert!(!flags.contains(&torro_mail::Flag::Seen), "hiding leaves the mail unread");
-
+        let flags = app.inbox.get_mail(message).map(|mail| mail.summary.flags).expect("the mail");
+        assert!(!flags.contains(&torro_mail::Flag::Seen), "muting leaves the mail unread");
         let _ = press(&mut app, Key::U);
-        let Undo::Hidden { rule, reopen } = undo else { panic!("hiding's undo") };
-        assert_eq!(app.sent.last(), Some(&Sent::Unhide(rule, reopen)));
         deliver(&mut app);
-        assert!(ids(&app).contains(&sale.id.as_str()) && ids(&app).contains(&winter.as_str()), "both back");
-        assert_eq!(cursor(&app), Some(sale.id.as_str()), "the cursor back on the entry");
-        let again = block_on(app.inbox.hide_sender(sale.id.clone(), HideScope::Domain)).expect("hidden again");
-        assert!(again.new_rule, "the rule was removed, so hiding makes it anew");
+        assert!(ids(&app).contains(&sale.id.as_str()), "the undo brings it back");
     }
 
+    /// Issue #123 (acceptance): "This conversation" for a week keeps a rule, so further mail of the
+    /// conversation stays out of "For me"; hidden for good it is done without marking the mail read,
+    /// as "Hide from Notification Hub" did, and the undo of the suite takes it back.
     #[test]
-    fn this_conversation_hides_without_marking_the_mail_read_and_undoes() {
+    fn this_conversation_is_muted_without_marking_the_mail_read_and_undoes() {
         let mut app = loaded(&[]);
         let plans = app.items.iter().find(|item| item.title == "Weekend plans").cloned().expect("a mail entry");
         app.cursor = Some(plans.id.clone());
-        let _ = press(&mut app, Key::M);
+        bell_by_keys(&mut app);
+        let _ = app.update(Message::MuteHow(MuteEffect::Hide));
         let _ = press(&mut app, Key::Digit(1));
-        assert_eq!(app.sent.last(), Some(&Sent::Hide(plans.id.clone(), HideScope::Conversation)));
+        assert_eq!(
+            app.sent.last(),
+            Some(&Sent::MuteItem(plans.id.clone(), MuteScope::Conversation, None, MuteEffect::Hide))
+        );
         deliver(&mut app);
         let hint = app.hint.clone().expect("a hint");
-        let undo = Undo::Hidden { rule: None, reopen: vec![plans.id.clone()] };
+        let undo = Undo::Muted { rule: None, reopen: vec![plans.id.clone()], moved: Vec::new() };
         assert_eq!((hint.text.as_str(), hint.undo), (tr("Conversation hidden"), Some(undo)));
         assert!(!ids(&app).contains(&plans.id.as_str()), "out of the inbox");
         let Some(Link::Mail { message }) = &plans.link else { panic!("a mail entry") };
         let flags = app.inbox.get_mail(message).map(|mail| mail.summary.flags).expect("the mail");
         assert!(!flags.contains(&torro_mail::Flag::Seen), "unlike done, the mail stays unread");
-        // The undo key of the suite does what "Undo" does.
         let _ = app.update(Message::Undo);
-        assert_eq!(app.sent.last(), Some(&Sent::Unhide(None, vec![plans.id.clone()])));
         deliver(&mut app);
         assert!(ids(&app).contains(&plans.id.as_str()), "back");
+
+        // For a week: a rule for the conversation, which holds for its next mail.
+        bell_by_keys(&mut app);
+        let _ = app.update(Message::MuteFor(MuteFor::OneWeek));
+        let _ = press(&mut app, Key::Digit(1));
+        let week = Some(app.now + TimeDelta::days(7));
+        assert_eq!(
+            app.sent.last(),
+            Some(&Sent::MuteItem(plans.id.clone(), MuteScope::Conversation, week, MuteEffect::Hide))
+        );
+        deliver(&mut app);
+        let Some(Undo::Muted { rule: Some(rule), .. }) = app.hint.clone().and_then(|hint| hint.undo) else {
+            panic!("a rule to take back")
+        };
+        // Asked again, the demo answers the rule already kept.
+        let again = block_on(app.inbox.mute_item(plans.id.clone(), MuteScope::Conversation, week, MuteEffect::Hide));
+        let kept = again.ok().and_then(|muted| muted.rule).expect("the rule");
+        assert_eq!(kept.id, rule);
+        let next = Item { id: "next".into(), state: State::New, ..stored(&app, &plans.id) };
+        assert!(rules::mutes(&kept, &next, app.now), "a further mail of the conversation is held back");
     }
 
     #[test]
@@ -7709,18 +8364,26 @@ mod tests {
         assert!(app.sent.is_empty(), "nothing left to undo");
     }
 
+    /// Issue #123: the sender is muted from the bell's menu – the toast in the words of the rules –,
+    /// and "Move to junk", the menu's last way, moves the mail with an undo.
     #[test]
-    fn the_sender_is_hidden_and_mail_goes_to_junk_with_an_undo() {
+    fn the_sender_is_muted_and_mail_goes_to_junk_with_an_undo() {
         let (mut app, offer, address) = at_mail();
-        let _ = press(&mut app, Key::M);
-        let _ = press(&mut app, Key::Digit(2));
-        assert_eq!(app.sent.last(), Some(&Sent::Hide(offer.id.clone(), HideScope::Sender)));
+        bell_by_keys(&mut app);
+        let _ = app.update(Message::MuteHow(MuteEffect::Hide));
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
+        let place =
+            app.choices().iter().position(|c| matches!(c.message, Message::MuteBy(_, scope) if scope == sender));
+        let _ =
+            press(&mut app, Key::Digit(place.map(|at| u8::try_from(at + 1).expect("a digit")).expect("the sender")));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteItem(offer.id.clone(), sender, None, MuteEffect::Hide)));
         deliver(&mut app);
-        let text = trf("Hidden: {sender}", &[("sender", &address)]);
+        let what = trf("Mail from {sender}", &[("sender", &address)]);
+        let text = trf("Hidden: {what}", &[("what", &what)]);
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(text));
 
         let (mut app, item, _) = at_mail();
-        let _ = press(&mut app, Key::M);
+        bell_by_keys(&mut app);
         let junk = app.choices().len();
         let _ = press(&mut app, Key::Digit(u8::try_from(junk).expect("a digit")));
         let Some(Sent::Mail(MailEdit::Move { to, .. }, Some(hint))) = app.sent.last() else {
@@ -7731,11 +8394,11 @@ mod tests {
     }
 
     #[test]
-    fn the_hide_menu_is_wide_enough_for_whole_addresses() {
+    fn the_bells_menu_is_wide_enough_for_whole_addresses() {
         let (mut app, _, _) = at_mail();
-        let _ = press(&mut app, Key::M);
+        bell_by_keys(&mut app);
         let choices = app.choices();
-        let width = choice_menu_width(&choices);
+        let width = mute_menu_width(&choices);
         assert!(width > widgets::menu_width(), "wider than a plain menu: {width}");
         for (i, choice) in choices.iter().enumerate() {
             let shown = choice_label(&choice.label, None, keys::digit(i + 1), width);
@@ -7757,32 +8420,98 @@ mod tests {
         assert!(shown.ends_with(typo::ELLIPSIS) && shown.len() < long.label.len(), "{shown}");
     }
 
+    /// `--open hide` and `hide-panel` show the menu of `m` of the first mail entry – the bell's menu
+    /// since issue #123 –, `mute-mail` the bell's menu of a folder's message without an entry.
     #[test]
-    fn open_hide_shows_the_menu_of_the_first_mail_entry() {
+    fn open_hide_shows_the_bells_menu_of_the_first_mail_entry() {
         for (open, panel) in [("hide", false), ("hide-panel", true)] {
             let mut app = loaded(&["--open", open]);
-            assert_eq!(app.menu, Some(Menu::Hide), "{open}");
+            assert_eq!(app.menu, Some(Menu::Mute), "{open}");
             let subject = app.subject.clone().expect("a subject");
             assert_eq!((subject.source.kind, app.cursor.as_deref()), (SourceKind::Mail, Some(subject.id.as_str())));
             assert_eq!(app.detail.is_some(), panel, "{open}");
+            if !panel {
+                deliver(&mut app);
+            }
             for size in SIZES {
                 let _ = app.update(Message::Resized(size));
                 let _ = app.view();
             }
         }
+        let mut app = loaded(&["--open", "mute-mail"]);
+        load(&mut app);
+        assert_eq!(app.menu, Some(Menu::Mute));
+        let subject = app.subject.clone().expect("the message");
+        assert!(rules::is_message_id(&subject.id) && app.cursor.as_deref() == Some(subject.id.as_str()));
+        deliver(&mut app);
+        assert!(!app.choices().is_empty(), "its traits");
+        for size in SIZES {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+    }
+
+    /// Issue #123: a folder's message without an entry is muted by its own traits – no
+    /// conversation, no junk –, from its row (`m`, the bell) and from the reader; one with an entry
+    /// goes through its entry.
+    #[test]
+    fn a_message_without_an_entry_is_muted_by_its_traits() {
+        let mut app = loaded(&["--open", "folder"]);
+        load(&mut app);
+        // No entry at all, not even a snoozed or done one (that one's menu it would open).
+        let all = block_on(app.inbox.list_items(ItemFilter::default())).expect("the demo answers");
+        let filed =
+            |id: &str| all.iter().any(|item| matches!(&item.link, Some(Link::Mail { message }) if message == id));
+        let alone = app.messages.iter().map(|message| message.id.clone()).find(|id| !filed(id));
+        let alone = alone.expect("a message without an entry");
+        let _ = app.update(Message::Act(alone.clone(), Command::Hide));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteOptions(alone.clone())));
+        assert_eq!((app.menu, app.menu_at), (Some(Menu::Mute), MenuAt::Row));
+        deliver(&mut app);
+        let choices = app.choices();
+        assert!(!choices.is_empty(), "its traits");
+        assert!(
+            choices.iter().all(|c| matches!(c.message, Message::MuteBy(_, MuteScope::Facet { .. }))),
+            "no conversation, no junk"
+        );
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
+        let place = choices.iter().position(|c| matches!(c.message, Message::MuteBy(_, scope) if scope == sender));
+        let _ =
+            press(&mut app, Key::Digit(place.map(|at| u8::try_from(at + 1).expect("a digit")).expect("the sender")));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteItem(alone.clone(), sender, None, app.mute_effect)));
+        deliver(&mut app);
+        assert!(app.hint.as_ref().is_some_and(|hint| hint.undo.is_some()), "a new rule to take back");
+
+        // The reader's bell, and `m` on the row, do the same.
+        let _ = app.update(Message::AskMuteMail(alone.clone()));
+        assert_eq!((app.menu, app.menu_at), (Some(Menu::Mute), MenuAt::Panel));
+        let _ = app.update(Message::CloseMenu);
+        app.cursor = Some(alone.clone());
+        let _ = press(&mut app, Key::M);
+        assert_eq!(app.sent.last(), Some(&Sent::MuteOptions(alone)));
+
+        // A message of an entry opens its entry's menu.
+        let filed = app.messages.iter().find_map(|message| mail::entry_of(&app.for_me, &message.id)).cloned();
+        let entry = filed.expect("a message with an entry in the inbox");
+        let Some(Link::Mail { message }) = entry.link.clone() else { panic!("a mail entry") };
+        let _ = app.update(Message::AskMuteMail(message));
+        assert_eq!(app.sent.last(), Some(&Sent::MuteOptions(entry.id)));
     }
 
     #[test]
-    fn mail_without_a_junk_folder_or_sender_offers_less() {
+    fn mail_has_no_hide_menu_but_the_bell() {
         let (mut app, item, _) = at_mail();
+        assert!(app.hide_choices(&item).is_empty(), "mail's \"Hide from inbox\" went into the bell's menu");
+        assert!(app.hidable(&item), "the bell instead");
+        let done = Item { state: State::Done { at: app.now }, ..item.clone() };
+        assert!(app.hidable(&done), "a done mail's sender can still be muted");
+        bell_by_keys(&mut app);
+        assert!(app.choices().iter().any(|c| c.label == tr("Move to junk")));
         app.folders.retain(|folder| folder.role != Some(Role::Junk));
-        let anonymous = Item { from: None, ..item };
-        let labels: Vec<String> = app.hide_choices(&anonymous).into_iter().map(|c| c.label).collect();
-        assert_eq!(labels, [tr("This conversation").to_owned()], "nothing to hide by, nowhere to move");
-        let done = Item { state: State::Done { at: app.now }, ..anonymous };
-        assert!(app.hide_choices(&done).is_empty());
-        let _ = press(&mut app, Key::M);
-        assert_eq!(app.menu, Some(Menu::Hide), "the mail itself still has its sender");
+        assert!(!app.choices().iter().any(|c| c.label == tr("Move to junk")), "no junk folder, no junk");
+        let other = app.items.iter().find(|item| item.source.kind != SourceKind::Mail && !detail::is_approval(item));
+        let other = other.cloned().expect("an entry of another source");
+        assert!(!app.hide_choices(&other).is_empty(), "the other sources keep \"Hide from inbox\"");
     }
 
     #[test]
@@ -7893,7 +8622,7 @@ mod tests {
 
     /// Runs the task the dialog sent against the demo source and hands its answer to `update`.
     fn deliver_task(app: &mut App<DemoSource>) {
-        let Some(Sent::Task { id, list, title, due }) = app.sent.pop() else { panic!("no task sent") };
+        let Some(Sent::Task { id, list, title, due, .. }) = app.sent.pop() else { panic!("no task sent") };
         let result = block_on(app.inbox.create_task_from_item(id, list.id, title, due)).map_err(|err| err.to_string());
         let _ = app.update(Message::TaskCreated(result, list.name));
         load(app);
@@ -7930,6 +8659,7 @@ mod tests {
                 list: demo_list(1),
                 title: Some("Fix the deploy".into()),
                 due: Some(tomorrow),
+                notes: None,
             })
         );
         assert!(app.menu.is_none(), "the dialog closes");
@@ -8030,6 +8760,125 @@ mod tests {
     // ----- Make event and quiet (task E8.5b) --------------------------------------------------
 
     /// The demo's calendars, handed to `update` as the task of the dialog would.
+    /// Issue #120: "AI task" opens the dialog of "Make task" while the AI is asked, fills it in with
+    /// the suggestion, and "Create task" sends its note too; nothing is saved before.
+    #[test]
+    fn ai_task_fills_the_dialog_and_creates_the_task_with_its_note() {
+        let mut app = at("demo-6");
+        let _ = app.update(Message::AiReady(true));
+        let _ = app.update(Message::SuggestTask("demo-6".into()));
+        assert_eq!(
+            (app.menu, app.ai_suggesting.clone()),
+            (Some(Menu::Task), Some(Suggesting::Asking("demo-6".into())))
+        );
+        assert_eq!(app.sent.last(), Some(&Sent::SuggestTask("demo-6".into())));
+        assert!(app.sent.contains(&Sent::Lists), "the lists are asked for as for Make task");
+        let lists = block_on(app.inbox.list_task_lists()).map_err(|err| err.to_string());
+        let _ = app.update(Message::TaskLists(lists));
+        let suggestion = block_on(app.inbox.suggest_task("demo-6".into())).expect("the demo's AI");
+        let due = ai::due_of(suggestion.due).expect("a day");
+        let _ = app.update(Message::TaskSuggested("demo-6".into(), Ok(suggestion.clone())));
+        assert_eq!(app.ai_suggesting, Some(Suggesting::Done));
+        assert_eq!(app.task.title, suggestion.title);
+        assert_eq!(app.task.due.day(app.now), Some(due), "the date the AI read");
+        assert!(!app.task.notes.is_empty(), "the demo's note");
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Task { .. })), "nothing saved yet");
+        let _ = app.update(Message::TaskNotes("Bring the logs".into()));
+        let _ = press(&mut app, Key::Enter);
+        let Some(Sent::Task { id, title, due: sent_due, notes, .. }) = app.sent.last().cloned() else {
+            panic!("a task: {:?}", app.sent.last())
+        };
+        assert_eq!((id.as_str(), title, sent_due), ("demo-6", Some(suggestion.title), Some(due)));
+        assert_eq!(notes.as_deref(), Some("Bring the logs"));
+        assert_eq!(app.ai_suggesting, None, "the dialog closed");
+    }
+
+    /// Issue #120: without an AI the buttons are off; their message only says to set one up, and an
+    /// answer that comes after its dialog closed changes nothing.
+    #[test]
+    fn without_an_ai_nothing_is_asked_and_late_answers_are_dropped() {
+        let mut app = at("demo-6");
+        let _ = app.update(Message::AiReady(false));
+        let _ = app.update(Message::SuggestEvent("demo-6".into()));
+        assert_eq!(app.menu, None);
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Set up an AI first")));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::SuggestEvent(_))));
+
+        let _ = app.update(Message::AiReady(true));
+        let _ = app.update(Message::SuggestEvent("demo-6".into()));
+        let _ = app.update(Message::CloseMenu);
+        let late = block_on(app.inbox.suggest_event("demo-6".into())).map_err(|err| err.to_string());
+        let _ = app.update(Message::EventSuggested("demo-6".into(), late));
+        assert_eq!((app.menu, app.ai_suggesting.clone()), (None, None));
+        // "Make event" by hand: no AI line, no answer taken.
+        let _ = press(&mut app, Key::C);
+        let title = app.event.title.clone();
+        let late = block_on(app.inbox.suggest_event("demo-6".into())).map_err(|err| err.to_string());
+        let _ = app.update(Message::EventSuggested("demo-6".into(), late));
+        assert_eq!((app.ai_suggesting.clone(), app.event.title.clone()), (None, title));
+        // An AI that fails says why in the dialog, which stays.
+        let _ = app.update(Message::CloseMenu);
+        let _ = app.update(Message::SuggestTask("demo-6".into()));
+        let _ = app.update(Message::TaskSuggested("demo-6".into(), Err("The AI server could not be reached.".into())));
+        assert_eq!(app.ai_suggesting, Some(Suggesting::Failed("The AI server could not be reached.".into())));
+        assert_eq!(app.menu, Some(Menu::Task));
+    }
+
+    /// Issue #120: "AI event" fills in the day, start and length the AI read, the place and who
+    /// takes part, and "Create event" sends place and note.
+    #[test]
+    fn ai_event_fills_the_dialog_with_its_time_and_place() {
+        let mut app = at("demo-6");
+        let _ = app.update(Message::AiReady(true));
+        let _ = app.update(Message::SuggestEvent("demo-6".into()));
+        assert_eq!(app.menu, Some(Menu::Event));
+        let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
+        let _ = app.update(Message::Calendars(calendars));
+        let suggestion = block_on(app.inbox.suggest_event("demo-6".into())).expect("the demo's AI");
+        let _ = app.update(Message::EventSuggested("demo-6".into(), Ok(suggestion.clone())));
+        let (day, start, minutes) = ai::event_times(&suggestion, 30).expect("a time");
+        assert_eq!((app.event.day, app.event.start, app.event.length), (day, StartTime(start), Length::Minutes(45)));
+        assert_eq!(minutes, 45);
+        assert_eq!(app.event.location, "Room 2");
+        assert_eq!(app.event.notes, ai::attendees_note(&suggestion).unwrap_or_default());
+        assert!(Length::Minutes(45).offered().contains(&Length::Minutes(45)));
+        assert_eq!(Length::of_minutes(60), Length::Hour);
+        let _ = press(&mut app, Key::Enter);
+        let Some(Sent::Event { location, end, start: from, .. }) = app.sent.last().cloned() else {
+            panic!("an event: {:?}", app.sent.last())
+        };
+        assert_eq!((location.as_deref(), end - from), (Some("Room 2"), TimeDelta::minutes(45)));
+    }
+
+    /// Issue #120: `--open ai-task` opens the dialog the AI fills in, `--open no-ai` keeps the AI
+    /// buttons off whatever the demo answers.
+    #[test]
+    fn the_ai_states_open_with_the_demo() {
+        let mut app = demo(&["--demo", "--open", "ai-task", "--now", "2026-10-13T10:30"]);
+        load(&mut app);
+        assert!(app.ai_ready);
+        assert_eq!(app.menu, Some(Menu::Task));
+        assert!(matches!(app.ai_suggesting, Some(Suggesting::Asking(_))));
+        let mut off = demo(&["--demo", "--open", "no-ai", "--now", "2026-10-13T10:30"]);
+        load(&mut off);
+        let _ = off.update(Message::AiReady(true));
+        assert!(!off.ai_ready && off.detail.is_some());
+    }
+
+    #[test]
+    fn a_suggested_day_is_offered_with_its_date() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 14, 8, 0, 0).single().expect("valid time");
+        let today = local_today(now);
+        assert_eq!(Due::of_day(today + Days::new(1), now), Due::Tomorrow);
+        let later = today + Days::new(9);
+        assert_eq!(Due::of_day(later, now), Due::On(later));
+        assert_eq!(Due::On(later).offered().last(), Some(&Due::On(later)));
+        assert_eq!(Due::Today.offered(), Due::ALL.to_vec());
+        let quarter = StartTime(NaiveTime::from_hms_opt(10, 15, 0).expect("time"));
+        let offered = quarter.offered();
+        assert!(offered.windows(2).all(|pair| pair[0] < pair[1]) && offered.contains(&quarter));
+    }
+
     fn deliver_calendars(app: &mut App<DemoSource>) {
         assert_eq!(app.sent.last(), Some(&Sent::Calendars), "the dialog asked for the calendars");
         let calendars = block_on(app.inbox.list_calendars()).map_err(|err| err.to_string());
@@ -8072,10 +8921,12 @@ mod tests {
                 title: Some("Call the CI team".into()),
                 start,
                 end: start + TimeDelta::hours(1),
+                location: None,
+                notes: None,
             })
         );
         assert!(app.menu.is_none(), "the dialog closes");
-        let Some(Sent::Event { id, calendar, title, start, end }) = app.sent.pop() else { panic!("no event sent") };
+        let Some(Sent::Event { id, calendar, title, start, end, .. }) = app.sent.pop() else { panic!("no event sent") };
         let made = block_on(app.inbox.create_event_from_item(id, calendar.id, title, start, end));
         let _ = app.update(Message::EventCreated(made.map_err(|err| err.to_string()), calendar.name.clone()));
         load(&mut app);
@@ -8198,7 +9049,9 @@ mod tests {
         let _ = app.update(Message::LetterLoaded(id.into(), mail));
     }
 
-    fn draw_everywhere<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &mut App<S>) {
+    fn draw_everywhere<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+        app: &mut App<S>,
+    ) {
         for size in SIZES {
             let _ = app.update(Message::Resized(size));
             let _ = app.view();
@@ -8217,7 +9070,7 @@ mod tests {
         let newest_first = ["m:w1", "m:w2", "m:w3", "m:w13", "m:w4", "m:w14", "m:w5", "m:w6"];
         assert_eq!(message_ids(&app), newest_first, "newest first");
         assert_eq!(app.count_note(), "8");
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Inbox"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Inbox"))]));
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
         let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
@@ -8562,18 +9415,23 @@ mod tests {
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("This message is in the trash already.")));
     }
 
+    /// Issue #136: a search looks in all mail by default and shows what it found; clearing it goes
+    /// back to the folder it started from.
     #[test]
     fn a_search_shows_what_it_found_and_clearing_it_the_whole_folder() {
         let mut app = in_folder("f:work-inbox");
+        let folder = app.view.clone();
         let _ = app.update(Message::SearchInput("minutes".into()));
         let _ = app.update(Message::Search);
-        assert_eq!(app.view.folder().and_then(|folder| folder.query.as_deref()), Some("minutes"));
+        let shown = app.view.search().cloned().expect("a search");
+        assert_eq!((shown.query.as_str(), &shown.scope, shown.sort), ("minutes", &Scope::All, Sort::Relevance));
         load(&mut app);
         assert_eq!(message_ids(&app), ["m:w6"]);
         assert_eq!(app.count_note(), "1", "what it found");
+        assert_eq!(app.recent, ["minutes"], "Enter keeps the search");
         draw_everywhere(&mut app);
         let _ = app.update(Message::ClearSearch);
-        assert_eq!((app.search.as_str(), app.view.folder().and_then(|f| f.query.clone())), ("", None));
+        assert_eq!((app.search.as_str(), &app.view), ("", &folder), "back where it started");
         load(&mut app);
         assert_eq!(app.messages.len(), 8);
         let _ = app.update(Message::SearchInput("nothing like this".into()));
@@ -8581,6 +9439,105 @@ mod tests {
         load(&mut app);
         assert!(app.messages.is_empty());
         draw_everywhere(&mut app);
+    }
+
+    /// Issue #136: typing searches once the keys pause, not at every key; a blank field goes back.
+    #[test]
+    fn typing_searches_after_a_pause() {
+        let mut app = in_folder("f:work-inbox");
+        let folder = app.view.clone();
+        let _ = app.update(Message::SearchInput("bud".into()));
+        let due = app.search_due.expect("a search waits");
+        assert!(app.view.search().is_none(), "not at once");
+        let _ = app.update(Message::SearchTick(due - Duration::from_millis(10)));
+        assert!(app.view.search().is_none(), "still typing");
+        let _ = app.update(Message::SearchInput("budget".into()));
+        let due = app.search_due.expect("a search waits");
+        let _ = app.update(Message::SearchTick(due));
+        assert_eq!(app.view.search().map(|search| search.query.as_str()), Some("budget"));
+        assert!(app.search_due.is_none());
+        assert!(app.recent.is_empty(), "typing alone keeps no search");
+        load(&mut app);
+        assert!(!app.messages.is_empty() && !app.highlights.is_empty(), "found and highlighted");
+        let first = app.messages[0].id.clone();
+        let _ = app.update(Message::SelectMail(first));
+        assert_eq!(app.recent, ["budget"], "opening a result keeps it");
+        let _ = app.update(Message::SearchInput(String::new()));
+        assert_eq!(app.view, folder, "a blank field goes back");
+    }
+
+    /// Issue #136: from a folder the search can look in its account or the folder alone, by date;
+    /// an incomplete index is said, with how far it is.
+    #[test]
+    fn a_search_narrows_to_the_account_or_folder_and_says_what_is_missing() {
+        let mut app = in_folder("f:work-inbox");
+        let folder = app.view.folder().cloned().expect("a folder");
+        let _ = app.update(Message::SearchInput("budget".into()));
+        let _ = app.update(Message::Search);
+        load(&mut app);
+        assert!(!app.found.complete, "the demo still indexes an account");
+        assert!(!app.found.index.is_empty(), "how far, asked");
+        let scopes = app.search_scopes().expect("from a folder");
+        assert_eq!(scopes.folder, folder);
+        let _ = app.update(Message::SearchScope(Scope::Account(folder.account.clone())));
+        load(&mut app);
+        assert!(app.found.complete, "the work account is indexed");
+        assert!(app.messages.iter().all(|message| message.account == folder.account));
+        let _ = app.update(Message::SearchScope(Scope::Folder(folder.clone())));
+        let _ = app.update(Message::SearchSort(Sort::Date));
+        load(&mut app);
+        let shown = app.view.search().cloned().expect("a search");
+        assert_eq!((shown.scope, shown.sort), (Scope::Folder(folder.clone()), Sort::Date));
+        assert!(app.messages.iter().all(|message| message.folder == folder.id));
+        draw_everywhere(&mut app);
+    }
+
+    /// Issue #136: suggestions under the field – operators, people, folders, searches last made –,
+    /// Tab takes the first; ⌘F / Ctrl + F and `/` focus the field, the button opens a search where
+    /// the view has no field.
+    #[test]
+    fn suggestions_complete_the_search_and_the_keys_reach_the_field() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = app.update(Message::RecentSearches(vec!["budget review".into()]));
+        let _ = app.update(Message::SearchInput("from:jo".into()));
+        let suggestions = app.search_suggestions();
+        assert!(suggestions.iter().any(|s| s.query.starts_with("from:jonas")), "{suggestions:?}");
+        let _ = app.update(Message::Key(Key::Tab));
+        assert!(app.search.starts_with("from:jonas") && app.search.ends_with(' '), "{}", app.search);
+        assert!(!app.suggesting, "taken");
+        let _ = app.update(Message::Escape);
+        let command =
+            if cfg!(target_os = "macos") { iced::keyboard::Modifiers::LOGO } else { iced::keyboard::Modifiers::CTRL };
+        let press = |modifiers| {
+            iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+                key: iced::keyboard::Key::Character("f".into()),
+                modified_key: iced::keyboard::Key::Character("f".into()),
+                physical_key: iced::keyboard::key::Physical::Unidentified(
+                    iced::keyboard::key::NativeCode::Unidentified,
+                ),
+                location: iced::keyboard::Location::Standard,
+                modifiers,
+                text: Some("f".into()),
+                repeat: false,
+            })
+        };
+        let captured = iced::event::Status::Captured;
+        let heard = keys::find_key(press(command), captured, iced::window::Id::unique());
+        assert!(matches!(heard, Some(Message::Key(Key::Find))), "also when the guard took it");
+        let plain = keys::find_key(press(iced::keyboard::Modifiers::empty()), captured, iced::window::Id::unique());
+        assert!(plain.is_none(), "a plain f is no search");
+        assert_eq!(keys::command(Focus::List, Key::Find), Some(Command::Search));
+        // In the hub, which lists no mail, the button opens an empty search with the searches last made.
+        let mut hub = overview_at(&["--view", "hub"]);
+        let _ = hub.update(Message::RecentSearches(vec!["budget review".into()]));
+        let _ = hub.update(Message::Switcher(Switcher::Search));
+        assert_eq!(hub.view.search().map(|search| search.query.as_str()), Some(""));
+        assert_eq!(hub.search_suggestions().first().map(|s| s.query.as_str()), Some("budget review"));
+        draw_everywhere(&mut hub);
+        let _ = hub.update(Message::ForgetSearches);
+        assert!(hub.recent.is_empty() && hub.search_suggestions().is_empty());
+        let _ = hub.update(Message::Escape);
+        assert_eq!(hub.view, View::Overview, "Escape goes back");
     }
 
     #[test]
@@ -8630,6 +9587,32 @@ mod tests {
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.clone()), Some(mail::opened_text(&opened)));
     }
 
+    /// Issue #119: the text in the reader and the panel can be selected – never changed – and "Copy
+    /// text" puts all of it on the clipboard, as written, with "Copied".
+    #[test]
+    fn copy_text_puts_the_whole_plain_text_on_the_clipboard() {
+        let mut app = in_folder("f:work-inbox");
+        assert!(app.update(Message::CopyText).units() == 0 && app.hint.is_none(), "nothing to copy yet");
+        let _ = app.update(Message::SelectMail("m:w1".into()));
+        deliver_letter(&mut app, "m:w1");
+        let Some(Letter { loaded: Some(Ok(mail)), .. }) = app.letter.clone() else { panic!("the mail is loaded") };
+        let plain = mail::text_of(&mail);
+        assert!(!plain.trim().is_empty());
+        assert_eq!(app.text.text(), plain, "the reader's text follows the mail");
+        let _ = app.update(Message::Text(text_editor::Action::SelectAll));
+        let _ = app.update(Message::Text(text_editor::Action::Edit(text_editor::Edit::Delete)));
+        assert_eq!(app.text.text(), plain, "selecting and typing leave it as it is");
+        assert_eq!(app.update(Message::CopyText).units(), 1, "one clipboard::write");
+        assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Copied")));
+        draw_everywhere(&mut app);
+
+        // An entry's message in the panel.
+        let mut entry = loaded(&["--open", "detail"]);
+        let item = entry.detail.clone().expect("an entry in the panel");
+        assert_eq!(entry.text.text(), detail::message_text(&item));
+        draw_everywhere(&mut entry);
+    }
+
     #[test]
     fn the_mail_states_open_and_draw_in_every_size() {
         let mut folder = loaded(&["--open", "folder"]);
@@ -8663,7 +9646,9 @@ mod tests {
         app
     }
 
-    fn rows_of<S: InboxSource + MailSource + StatsSource + HubSource + 'static>(app: &App<S>) -> Vec<&str> {
+    fn rows_of<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+        app: &App<S>,
+    ) -> Vec<&str> {
         app.rows().iter().map(|item| item.id.as_str()).collect()
     }
 
@@ -8676,7 +9661,7 @@ mod tests {
         assert_eq!((app.for_me.len(), app.info), (18, 6), "the sidebar's numbers from the same answer");
         assert_eq!(app.count_note(), hub::summary(&hub::Sections::of(&app.items, None)));
         assert!(app.nav_entries().0[0].active, "the first entry of the sidebar");
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Act now"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Act now"))]));
         let rows = rows_of(&app);
         assert_eq!(rows[..4], ["demo-3", "demo-9", "demo-1", "demo-2"], "Decide, Follow up, then Agents …");
         // Everything for the user, and of Info only the question after a finished task (task E8.7b).
@@ -8697,7 +9682,7 @@ mod tests {
         let _ = press(&mut notices, Key::H);
         let _ = notices.update(Message::ShowColumn(Column::Mail));
         assert_eq!(notices.column, Column::Notices, "there is no mail column to go to");
-        assert_eq!(notices.title(), trf("Notifications · {view}", &[("view", &tr("New"))]));
+        assert_eq!(notices.title(), trf("App Feed · {view}", &[("view", &tr("New"))]));
 
         let mail = overview_at(&["--view", "mail"]);
         assert_eq!(mail.column, Column::Mail);
@@ -8742,7 +9727,7 @@ mod tests {
         assert!(app.sorting && app.view == View::Overview);
         assert_eq!(rows_of(&app).len(), 14);
         assert!(rows_of(&app).iter().all(|id| *id != "demo-3"), "no approval to sort");
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("To sort"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("To sort"))]));
         assert_eq!(app.count_note(), "14");
         assert!(app.nav_entries().0[1].active && !app.nav_entries().0[0].active);
         let _ = app.update(Message::Show(View::Overview));
@@ -8777,7 +9762,7 @@ mod tests {
         assert!(ids(&early).is_empty(), "done yesterday 12:30");
         let late = loaded_late(&["--open", "done"]);
         assert_eq!(ids(&late), ["demo-11"], "done today 01:30");
-        assert_eq!(late.title(), trf("Inbox · {view}", &[("view", &tr("Done today"))]));
+        assert_eq!(late.title(), trf("Notification Hub · {view}", &[("view", &tr("Done today"))]));
         let mut notices =
             demo(&["--demo", "--now", "2026-10-13T10:30", "--view", "notifications", "--source", "agent:codex"]);
         let _ = notices.update(Message::Show(View::Done));
@@ -8836,7 +9821,7 @@ mod tests {
         assert_eq!((app.menu, cursor(&app), app.column), (Some(Menu::Snooze), Some("demo-6"), Column::Notices));
         let _ = app.update(Message::CloseMenu);
         let _ = app.update(Message::Act("demo-mail-4".into(), Command::Hide));
-        assert_eq!((app.menu, app.column), (Some(Menu::Hide), Column::Mail));
+        assert_eq!((app.menu, app.column), (Some(Menu::Mute), Column::Mail));
         let _ = app.update(Message::CloseMenu);
         let _ = app.update(Message::Act("demo-4".into(), Command::Done));
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { id, done: true }, _)) if id == "demo-4"));
@@ -9083,7 +10068,7 @@ mod tests {
             let _ = app.update(Message::CloseMenu);
             let _ = app.update(Message::Act(entry.clone(), Command::Hide));
             let _ = press(&mut app, Key::Down);
-            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Hide), false), "{density}: keys in the menu");
+            assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Mute), false), "{density}: keys in the menu");
             let _ = app.update(Message::CloseMenu);
             let _ = press(&mut app, Key::S);
             assert_eq!((app.menu, app.menu_from_panel()), (Some(Menu::Snooze), true), "{density}: s, reader open");
@@ -9144,7 +10129,7 @@ mod tests {
         assert_eq!(app.cursor.as_deref(), Some(message.as_str()), "the menu opens at the message's card");
         let _ = app.update(Message::CloseMenu);
         let _ = app.update(Message::Act(entry.clone(), Command::Hide));
-        assert_eq!(app.menu, Some(Menu::Hide));
+        assert_eq!(app.menu, Some(Menu::Mute));
         let _ = app.update(Message::CloseMenu);
         let _ = press(&mut app, Key::S);
         assert_eq!(app.menu, Some(Menu::Snooze), "s on the message");
@@ -9192,7 +10177,7 @@ mod tests {
         assert_eq!(app.menu, Some(Menu::Snooze), "s");
         let _ = app.update(Message::CloseMenu);
         let _ = press(&mut app, Key::M);
-        assert_eq!(app.menu, Some(Menu::Hide), "m");
+        assert_eq!(app.menu, Some(Menu::Mute), "m");
         let _ = app.update(Message::CloseMenu);
         let _ = press(&mut app, Key::T);
         assert_eq!(app.menu, Some(Menu::Task), "t");
@@ -9610,6 +10595,15 @@ mod tests {
         assert!(last.line && matches!(last.message, Message::AskMute(ref id) if id == "demo-6"));
     }
 
+    /// Task S.15: "All rules" sends its own message, which opens the control centre's Inbox page;
+    /// it is not the gear's `OpenSettings`, which opens the accounts page.
+    #[test]
+    fn all_rules_opens_the_inbox_page_not_the_accounts_page() {
+        let rules = rules_entry();
+        assert!(matches!(rules.on_press, Message::OpenRules));
+        assert!(!matches!(rules.on_press, Message::OpenSettings));
+    }
+
     /// Task E8.6b: the rule's words – effect, end and what it mutes – and when a muting ends.
     #[test]
     fn muting_reads_as_the_rules_of_the_control_centre() {
@@ -9644,6 +10638,21 @@ mod tests {
         assert_eq!(MuteFor::OneHour.until(now), Some(now + TimeDelta::hours(1)));
         assert_eq!(MuteFor::Always.until(now), None);
         assert_eq!(until_text(now + TimeDelta::hours(1), now).len(), 5, "today: the time alone");
+    }
+
+    /// Issue #127: the three windows say which one they are – "Notification Hub", "Mail" and "App
+    /// Feed" in the title –, and the mail window's first view is not the tray of the folder "Inbox".
+    #[test]
+    fn the_windows_name_themselves_apart() {
+        let view = View::Overview;
+        assert_eq!(Kind::Hub.title(&view), trf("Notification Hub · {view}", &[("view", &tr("Act now"))]));
+        assert_eq!(Kind::Mail.title(&view), trf("Mail · {view}", &[("view", &tr("For me"))]));
+        assert_eq!(Kind::Notifications.title(&view), trf("App Feed · {view}", &[("view", &tr("New"))]));
+        assert_ne!(Kind::Mail.view_icon(&view), Icon::Inbox, "the tray is the folder \"Inbox\"");
+        assert_eq!(Kind::Mail.view_icon(&view), Icon::UserCheck);
+        for kind in [Kind::Hub, Kind::Mail, Kind::Notifications] {
+            assert!(!kind.app().display_name.contains("Inbox"), "{kind:?}");
+        }
     }
 
     /// Task E8.6b: the bell's menu opens at the card or row, and at the panel's bell; it draws in
@@ -9820,7 +10829,8 @@ mod tests {
         let mut app = notifications_window(&["--source", "suite", "--source", "script:uptime"]);
         let question = app.find("demo-9").cloned().expect("the suite's question");
         assert!(hub::is_follow_up(&question));
-        let words: Vec<String> = notifications::card_buttons(&question, false).into_iter().map(|b| b.label).collect();
+        let words: Vec<String> =
+            notifications::card_buttons(&question, false, false).into_iter().map(|b| b.label).collect();
         assert_eq!(words, [tr("Reply"), tr("Mark mail done"), tr("Not now")]);
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
@@ -9920,7 +10930,7 @@ mod tests {
         let mut hub = overview_at(&["--view", "hub"]);
         let _ = hub.update(Message::ShowInsights);
         assert!(hub.is_insights() && hub.view == View::Overview);
-        assert_eq!(hub.title(), trf("Inbox · {view}", &[("view", &tr("Insights"))]));
+        assert_eq!(hub.title(), trf("Notification Hub · {view}", &[("view", &tr("Insights"))]));
         assert_eq!(hub.focus(), Focus::Elsewhere, "j, e and the others act on no hidden row");
         let active: Vec<String> =
             hub.nav_entries().0.into_iter().filter(|entry| entry.active).map(|entry| entry.label).collect();

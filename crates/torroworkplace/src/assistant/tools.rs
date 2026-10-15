@@ -29,6 +29,7 @@ use serde_json::{Map, Value, json};
 use torro_core::ai::ToolSpec;
 use torro_core::i18n::{tr, trf};
 use torro_ipc::api::{ASSISTANT_CLIENT, Access, Area, CATALOGUE, Command, Lack, Mcp, Operation, Rights, own_memory};
+use torro_ipc::assistant::Mode;
 use torro_ipc::{Request, Response};
 
 /// At most this many tools are offered at once, [`FIND_TOOLS`] included.
@@ -369,19 +370,32 @@ pub fn error_summary(code: &str) -> String {
     .into()
 }
 
-/// Why the core refused `operation` of a client of `kind` with `rights` (as stored) with `forbidden`
-/// (issue #133), with the areas `without` switched off in the conversation and `never` those its
-/// engine never gets ([`crate::assistant::never_given`]): what the tool line then says
-/// ([`Lack::of`]). `None` without rights and for the core's fixed refusals (the assistant driving
-/// itself, a bot it was not asked for).
-pub fn lack_of(
+/// [`allowed_for`] in the permission mode `mode` of the answer (issue #132): with the rights narrowed
+/// by it, and in a read-only answer none of the tools that change something, also not the
+/// assistant's own memory or proposing a bot.
+pub fn allowed_in(kind: &str, rights: Option<&Rights>, without: &[Area], mode: Mode) -> Vec<&'static Tool> {
+    let narrowed = rights.map(|rights| mode.narrow(rights));
+    allowed_for(kind, narrowed.as_ref(), without)
+        .into_iter()
+        .filter(|tool| !mode.refuses(Operation { command: tool.command, access: tool.command.access }))
+        .collect()
+}
+
+/// Why the core refused `operation` of a client of `kind` with `rights` (as stored, or narrowed by
+/// `mode`) with `forbidden` (issue #133), with the areas `without` switched off in the conversation,
+/// `never` those its engine never gets ([`crate::assistant::never_given`]) and the permission mode
+/// `mode` of the answer (issue #132): what the tool line then says ([`Lack::of_in`]). `None` without
+/// rights and for the core's fixed refusals (the assistant driving itself, a bot it was not asked
+/// for).
+pub fn lack_in(
     kind: &str,
     rights: Option<&Rights>,
     operation: Operation,
     without: &[Area],
     never: &[Area],
+    mode: Mode,
 ) -> Option<Lack> {
-    Lack::of(kind, rights?, operation, without, never)
+    Lack::of_in(kind, rights?, operation, without, never, mode)
 }
 
 /// The tool line's words for a call refused for `lack`, for people: `Needs write access to Mail`,
@@ -400,6 +414,7 @@ pub fn lack_summary(lack: Lack, engine: &str) -> String {
         Lack::NeverToAgents { area: a } => {
             trf("{engine} never gets {area}", &[("engine", &engine), ("area", &area(a))])
         }
+        Lack::ReadOnly => tr("Read only in this conversation").into(),
     }
 }
 
@@ -441,6 +456,30 @@ mod tests {
 
     fn names(specs: &[ToolSpec]) -> Vec<&str> {
         specs.iter().map(|spec| spec.name.as_str()).collect()
+    }
+
+    /// Issue #132: a read-only answer is offered reading only, also of its memory and the bots; one
+    /// that asks before changes keeps every tool (the changes wait for the person).
+    #[test]
+    fn a_read_only_answer_is_offered_reading_only() {
+        let rights = RightsTemplate::FullAccess.rights();
+        let read_only = allowed_in(ASSISTANT_CLIENT, Some(&rights), &[], Mode::ReadOnly);
+        assert!(!read_only.is_empty());
+        assert!(read_only.iter().all(|tool| tool.reads()), "only reading");
+        assert!(read_only.iter().any(|tool| tool.command.area == Area::Calendar));
+        let asking = allowed_in(ASSISTANT_CLIENT, Some(&rights), &[], Mode::Ask);
+        assert_eq!(asking.len(), allowed_for(ASSISTANT_CLIENT, Some(&rights), &[]).len());
+        let save = Operation {
+            command: named(&asking, "calendar_save_event").expect("offered").command,
+            access: Access::Write,
+        };
+        assert_eq!(lack_in(ASSISTANT_CLIENT, Some(&rights), save, &[], &[], Mode::ReadOnly), Some(Lack::ReadOnly));
+        assert_eq!(
+            lack_in(ASSISTANT_CLIENT, Some(&rights), save, &[Area::Calendar], &[], Mode::ReadOnly),
+            Some(Lack::SwitchedOff { area: Area::Calendar }),
+            "the switch first"
+        );
+        assert_eq!(lack_summary(Lack::ReadOnly, "Ollama"), tr("Read only in this conversation"));
     }
 
     #[test]

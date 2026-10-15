@@ -16,8 +16,8 @@
 //! Every native object (icon, menu) is created and changed on the main thread only. The icon is
 //! always the red grid (issue #114); it is drawn again only when the voice mark changes.
 //!
-//! What waits in the inbox ([`Waiting`], task E3.3b) shows as the inbox section at the top of the
-//! shared menu and as the count in the tooltip ("Torro Workplace · 3 for you"). Neither system
+//! What waits in the inbox ([`Waiting`], task E3.3b) shows as the count next to "Inbox" in the
+//! shared menu and in the tooltip ("Torro Workplace · 3 for you"). Neither system
 //! has a highlight like ksni's `NeedsAttention` for a status item, so urgency stays in the menu
 //! and the notifications; a text next to the icon (macOS `set_title`) would take menu bar room
 //! for every notice and is left out.

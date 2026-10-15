@@ -28,8 +28,8 @@
 //!
 //! **Mail is foreign text** (`untrusted`). The panel draws only its text – a preview; the HTML
 //! (cleaned by the core) is shown by the mail window alone, never here. The text is drawn as it is;
-//! web addresses in it ([`pieces`]) become links that show the whole address and open only on a
-//! click. An attachment is fetched by the core into its attachment folder and opened with the
+//! the text can be selected and copied (issue #119, `torro_gui::selectable`, "Copy text"), and the web
+//! addresses in it are listed under it as "Links" that open only on a click. An attachment is fetched by the core into its attachment folder and opened with the
 //! system, except files that could run programs ([`runs_programs`]): their folder opens instead.
 
 use std::future::Future;
@@ -39,12 +39,13 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Local, NaiveDate, Utc};
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, responsive, rich_text, row, rule, scrollable, span, svg, text_input};
+use iced::widget::{column, container, responsive, row, rule, scrollable, svg};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::panel;
+use torro_gui::selectable::{self, Selectable};
 use torro_gui::source;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Anchor, Mark, RowAction};
@@ -54,8 +55,10 @@ use torro_inbox::demo::DemoSource;
 use torro_inbox::item::{ItemTask, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{Item, Lane, Link, State};
-use torro_ipc::inbox::{CalendarEvent, InboxClient};
-use torro_ipc::mail::{Delivery, MoveRole, MoveTarget};
+use torro_ipc::inbox::{CalendarEvent, InboxClient, MailFind, MailFound};
+#[cfg(test)]
+use torro_ipc::mail::MailSort;
+use torro_ipc::mail::{Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget};
 use torro_mail::{
     AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message as Mail, MessageSummary, Order, Role,
 };
@@ -67,9 +70,6 @@ use crate::list::{self, Look};
 
 /// How many messages one page of a folder holds.
 pub const PAGE: u32 = 50;
-
-/// The id of the search field above a folder's messages.
-pub const SEARCH: &str = "mail-search";
 
 /// What the window can do with mail. Every method is one `mail.*` request of the app key; the core
 /// checks rights and keeps the security rules, a source never decides them itself. Errors as the
@@ -163,15 +163,36 @@ pub trait MailSource: Send + Sync {
         start: DateTime<Utc>,
         end: DateTime<Utc>,
     ) -> impl Future<Output = Result<Vec<CalendarEvent>, InboxError>> + Send;
+
+    /// `mail.search_messages` across folders and accounts (issue #136, the search field): where
+    /// `find` says – every folder of every account, one account or one folder –, the words and
+    /// operators as typed, by relevance or by date in `find.order`, `find.limit` from `find.cursor`
+    /// on. Answers the page with whether matches may be missing, where the words matched and about
+    /// how many match in all. Errors as the core maps them; `InboxError::Other` with the core's
+    /// words for an operator it cannot read (`before:soon`).
+    fn find_mail(&self, find: MailFind) -> impl Future<Output = Result<MailFound, InboxError>> + Send;
+
+    /// `mail.index_status`: how far the search index of each mail account is, for the honest line
+    /// under the search field while matches may be missing.
+    fn mail_index_status(&self) -> impl Future<Output = Result<Vec<MailIndexProgress>, InboxError>> + Send;
 }
 
-/// One page of a folder ([`MailSource::search_mail`]).
+/// One page of a folder ([`MailSource::search_mail`]) or of a search ([`MailSource::find_mail`]).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MailPage {
     /// Newest first.
     pub messages: Vec<MessageSummary>,
     /// The cursor of the next page; `None` on the last one.
     pub next: Option<String>,
+    /// Where the words of a search matched (issue #136); empty for a folder.
+    pub highlights: Vec<MailHighlight>,
+}
+
+impl MailPage {
+    /// A page of `messages` without highlights, `next` the cursor of the page after it.
+    pub fn of(messages: Vec<MessageSummary>, next: Option<String>) -> MailPage {
+        MailPage { messages, next, highlights: Vec::new() }
+    }
 }
 
 impl MailSource for InboxClient {
@@ -188,7 +209,15 @@ impl MailSource for InboxClient {
         order: Order,
     ) -> Result<MailPage, InboxError> {
         let (messages, next) = InboxClient::search_mail(self, folder, query, limit, cursor, order).await?;
-        Ok(MailPage { messages, next })
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn find_mail(&self, find: MailFind) -> Result<MailFound, InboxError> {
+        InboxClient::find_mail(self, find).await
+    }
+
+    async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
+        InboxClient::mail_index_status(self).await
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -260,7 +289,19 @@ impl MailSource for DemoSource {
         for message in &mut messages {
             message.invite = demo_invite(&message.id, message.date);
         }
-        Ok(MailPage { messages, next })
+        Ok(MailPage::of(messages, next))
+    }
+
+    async fn find_mail(&self, find: MailFind) -> Result<MailFound, InboxError> {
+        let mut found = crate::search::demo_find(self, find)?;
+        for message in &mut found.messages {
+            message.invite = demo_invite(&message.id, message.date);
+        }
+        Ok(found)
+    }
+
+    async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
+        crate::search::demo_index(self)
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, InboxError> {
@@ -403,10 +444,18 @@ impl MailSource for crate::empty::EmptySource {
     async fn list_events(&self, _start: DateTime<Utc>, _end: DateTime<Utc>) -> Result<Vec<CalendarEvent>, InboxError> {
         Ok(Vec::new())
     }
+
+    async fn find_mail(&self, _find: MailFind) -> Result<MailFound, InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn mail_index_status(&self) -> Result<Vec<MailIndexProgress>, InboxError> {
+        Ok(Vec::new())
+    }
 }
 
-/// The view of one folder: which one, and the search typed into it. Two views of the same folder
-/// with another search are different views, so an answer for the old search is dropped.
+/// The view of one folder: which one, with its name and role. A search in it is a view of its own
+/// (`search::SearchView`, issue #136).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderView {
     /// The folder's id from the core (`f:…`).
@@ -416,26 +465,17 @@ pub struct FolderView {
     /// The name to show ([`folder_name`]).
     pub name: String,
     pub role: Option<Role>,
-    /// The words searched for; `None` lists the whole folder.
-    pub query: Option<String>,
 }
 
 impl FolderView {
-    /// The whole folder `folder`, without a search.
+    /// The folder `folder`.
     pub fn of(folder: &Folder) -> FolderView {
         FolderView {
             id: folder.id.clone(),
             account: folder.account.clone(),
             name: folder_name(folder),
             role: folder.role,
-            query: None,
         }
-    }
-
-    /// The same folder searched for `query`; a blank query lists the whole folder.
-    pub fn searching(&self, query: &str) -> FolderView {
-        let query = Some(query.trim().to_owned()).filter(|query| !query.is_empty());
-        FolderView { query, ..self.clone() }
     }
 }
 
@@ -766,59 +806,6 @@ pub async fn open_attachment<S: MailSource>(source: Arc<S>, id: String, part: St
     Ok(Opened::File(path))
 }
 
-/// A piece of a mail's text: words, or a web address that may be opened by a click.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Piece<'a> {
-    Text(&'a str),
-    /// An `http://` or `https://` address, whole: the link shows exactly where it goes.
-    Link(&'a str),
-}
-
-/// `text` cut into words and web addresses. An address starts with `http://` or `https://` (any
-/// case) and runs to the next white space or `<`, `>`, `"`; a full stop, comma, closing bracket
-/// and the like at its end belong to the sentence. Nothing else is a link: no `mailto:`, no
-/// `file:`, no address hidden behind other words.
-pub fn pieces(text: &str) -> Vec<Piece<'_>> {
-    let mut pieces = Vec::new();
-    let mut rest = text;
-    while let Some(start) = link_start(rest) {
-        let tail = &rest[start..];
-        let end = tail.find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"')).unwrap_or(tail.len());
-        let link = tail[..end].trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '}', '\'']);
-        let scheme = if tail.to_ascii_lowercase().starts_with("https://") { "https://".len() } else { "http://".len() };
-        if link.len() <= scheme {
-            // Only the scheme: words, not a link.
-            pieces.push(Piece::Text(&rest[..start + end]));
-            rest = &rest[start + end..];
-            continue;
-        }
-        if start > 0 {
-            pieces.push(Piece::Text(&rest[..start]));
-        }
-        pieces.push(Piece::Link(link));
-        rest = &rest[start + link.len()..];
-    }
-    if !rest.is_empty() {
-        pieces.push(Piece::Text(rest));
-    }
-    pieces
-}
-
-/// Where the first web address in `text` starts, at the start of a word.
-fn link_start(text: &str) -> Option<usize> {
-    let lower = text.to_ascii_lowercase();
-    let mut from = 0;
-    while let Some(found) = lower[from..].find("http") {
-        let at = from + found;
-        let word_start = at == 0 || !lower[..at].ends_with(|c: char| c.is_alphanumeric());
-        if word_start && (lower[at..].starts_with("http://") || lower[at..].starts_with("https://")) {
-            return Some(at);
-        }
-        from = at + 4;
-    }
-    None
-}
-
 /// `name <address>`, or the address alone, on one line.
 pub fn person(who: &MailAddress) -> String {
     match who.name.as_deref().map(list::one_line).filter(|name| !name.is_empty()) {
@@ -882,11 +869,22 @@ pub struct MailList<'a> {
     /// The open entries of "For me" (task E8.11): an invitation's card whose mail has its entry here
     /// ([`entry_of`]) offers that entry's "Later" and "…", as the same mail does under "For me".
     pub entries: &'a [Item],
-    /// Ids of those entries whose menu "Hide from inbox" has entries (`App::hide_choices`).
-    pub hidable: Vec<&'a str>,
     /// Every folder of every account: Archive and Delete show only where the message's account has
     /// such a folder ([`filing_actions`], issue #118).
     pub folders: &'a [Folder],
+    /// Where the words of a search matched (issue #136): the rows and cards of a search show their
+    /// subject and passage with the matches stressed (`list::Hits`); empty elsewhere.
+    pub highlights: &'a [MailHighlight],
+    /// The text colour of the theme, for the matches in a passage.
+    pub text: Color,
+}
+
+impl<'a> MailList<'a> {
+    /// The matches of the message `id`, if the search has some for it.
+    fn hits(&self, id: &str) -> Option<list::Hits<'a>> {
+        let highlight = self.highlights.iter().find(|highlight| highlight.id == id)?;
+        Some(list::Hits { highlight, text: self.text })
+    }
 }
 
 /// The open entry of `entries` that holds the message `id` (it links to it, [`Link::Mail`]).
@@ -904,9 +902,7 @@ pub fn list<'a>(data: MailList<'a>) -> Element<'a, Message> {
             _ if data.no_accounts => {
                 (Icon::Mail, tr("No mail account yet."), tr("Connect one in Settings, under Accounts."))
             }
-            View::Folder(folder) if folder.query.is_some() => {
-                (Icon::Search, tr("No messages found."), tr("Try other words."))
-            }
+            View::Search(search) => crate::search::empty_texts(search),
             View::Folder(folder) => {
                 (folder_icon(folder.role), tr("No messages here."), tr("Mail in this folder shows up here."))
             }
@@ -978,12 +974,13 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         preview: snippet,
         account,
         account_name: None,
+        hits: data.hits(&message.id),
     };
     let selected = data.selected == Some(message.id.as_str());
     let on_press = Message::SelectMail(message.id.clone());
     let height = list::message_height();
     let row = list::sized_row(list::mail_content(lines, width), selected, on_press, height);
-    let (mut actions, more) = message_buttons(message, data.entries, &data.hidable, data.folders, data.now);
+    let (mut actions, more) = message_buttons(message, data.entries, data.folders, data.now);
     actions.extend(more);
     let actions = data.anchors.mark(selected, actions);
     let words = widgets::row_actions_words(&actions, width);
@@ -1007,10 +1004,10 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if message.flags.contains(&Flag::Flagged) {
         chips.push(widgets::state_pill(Mark::Tinted(Icon::Flag, data.attention), tr("Flagged")));
     }
-    let (buttons, more) = message_buttons(message, data.entries, &data.hidable, data.folders, data.now);
+    let (buttons, more) = message_buttons(message, data.entries, data.folders, data.now);
     let (name, domain) = sender_parts(message.from.as_ref());
     let account = data.accounts.iter().position(|account| *account == address(&message.account));
-    let smart = matches!(data.view, View::Attachments | View::Invitations);
+    let smart = matches!(data.view, View::Attachments | View::Invitations | View::Search(_));
     let several = smart && data.accounts.len() > 1;
     let lines = list::MailLines {
         name,
@@ -1023,6 +1020,7 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
         preview: Some(list::one_line(&message.snippet)).filter(|snippet| !snippet.is_empty()),
         account,
         account_name: several.then(|| account_name(&message.account)),
+        hits: data.hits(&message.id),
     };
     let selected = data.selected == Some(message.id.as_str());
     let buttons = data.anchors.mark(selected, buttons);
@@ -1033,32 +1031,32 @@ fn message_card<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32
     if selected { widgets::anchored(&data.anchors.row, card) } else { card }
 }
 
-/// The buttons of the card (and the action bar of the row) of `message` at `now`, with "…" as the
-/// second part:
+/// The buttons of the card (and the action bar of the row) of `message` at `now`, with the bell
+/// "Mute…" (`m`, issue #123) as the second part:
 ///
 /// - a message: Archive (`e`, what "done" is in a folder) and Delete (`#`, into the trash) as far as
 ///   its account has those folders ([`filing_actions`], issue #118), then Task (`t`,
-///   `tasks.create_todo_from_mail`, task E8.7b); a message has no "Later" of its own, and no "…".
-///   No Reply: from a list the mail is not read yet – Reply stands in the reader;
+///   `tasks.create_todo_from_mail`, task E8.7b); a message has no "Later" of its own. No Reply:
+///   from a list the mail is not read yet – Reply stands in the reader. The bell acts on the
+///   message: its entry's menu when it has one, else the message's own traits;
 /// - an invitation whose event is not over (task E8.3b): Accept · Maybe · Decline
 ///   ([`Message::AnswerInvitation`]) · Later · Task, as the same mail under "For me" (task E8.11):
-///   "Later" and "…" ("Hide from inbox", while `hidable` lists the entry) act on its entry in
-///   `entries` ([`entry_of`], `Message::Act` with its id); without an open entry, only the answers
-///   and Task.
+///   "Later" and the bell act on its entry in `entries` ([`entry_of`], `Message::Act` with its id);
+///   without an open entry, only the answers and Task, and the bell on the message.
 pub fn message_buttons<'a>(
     message: &MessageSummary,
     entries: &[Item],
-    hidable: &[&str],
     folders: &[Folder],
     now: DateTime<Utc>,
 ) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
     let id = || message.id.clone();
     // `Act`, as `t` at the row: the dialog then opens at this button, not at the reader's (issue #122).
     let task = RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::Act(id(), Key::MakeTask));
+    let bell = |id: String| RowAction::new(Icon::BellOff, tr("Mute…"), "M", Message::Act(id, Key::Hide));
     if message.invite.as_ref().is_none_or(|invite| invite_over(invite, now)) {
         let mut buttons = filing_actions(folders, &message.account, Some(&message.folder), &message.id, "E");
         buttons.push(task);
-        return (buttons, None);
+        return (buttons, Some(bell(id())));
     }
     let answer = |(icon, word, answer): (Icon, &'static str, InvitationAnswer)| {
         RowAction::new(icon, word, "", Message::AnswerInvitation(message.account.clone(), id(), answer))
@@ -1068,10 +1066,7 @@ pub fn message_buttons<'a>(
     let act = |item: &Item, command| Message::Act(item.id.clone(), command);
     buttons.extend(entry.map(|item| RowAction::new(Icon::Clock, tr("Later"), "S", act(item, Key::Snooze))));
     buttons.push(task);
-    let more = entry
-        .filter(|item| hidable.contains(&item.id.as_str()))
-        .map(|item| RowAction::new(Icon::Ellipsis, tr("Hide from inbox"), "M", act(item, Key::Hide)));
-    (buttons, more)
+    (buttons, Some(bell(entry.map_or_else(id, |item| item.id.clone()))))
 }
 
 /// The height of the card of `message`, `width` wide ([`message_card`]): its preview takes the lines
@@ -1409,26 +1404,6 @@ fn small_icon<'a>(which: Icon, colour: Option<Color>) -> Element<'a, Message> {
         .into()
 }
 
-/// The search above a folder's messages: a field (`Enter` searches, `/` and the sidebar's search
-/// button focus it) and, while a search is shown, "Clear search".
-pub fn search_bar<'a>(input: &str, folder: &FolderView) -> Element<'a, Message> {
-    let field = text_input(&trf("Search {folder}", &[("folder", &folder.name)]), input)
-        .id(SEARCH)
-        .size(typo::body().size)
-        .line_height(typo::body().line_height)
-        .font(typo::body().font)
-        .padding(style::INPUT_PADDING)
-        .width(Fill)
-        .style(style::text_input)
-        .on_input(Message::SearchInput)
-        .on_submit(Message::Search);
-    let mut bar = row![field].spacing(space::s()).align_y(Alignment::Center);
-    if folder.query.is_some() || !input.is_empty() {
-        bar = bar.push(widgets::icon_button(Icon::X, tr("Clear search"), Some(Message::ClearSearch)));
-    }
-    container(bar).width(Fill).padding(Padding::new(space::s()).left(space::l()).right(space::l())).into()
-}
-
 /// What the panel shows of a mail.
 #[derive(Debug, Clone, Copy)]
 pub struct Reading<'a> {
@@ -1439,8 +1414,9 @@ pub struct Reading<'a> {
     /// The whole message: `None` while it loads, then the answer.
     pub loaded: Option<&'a Result<Mail, String>>,
     pub now: DateTime<Utc>,
-    /// The colour of links (the text colour, underlined: never Torro red).
-    pub link: Color,
+    /// The mail's text as the window keeps it to select and copy (issue #119): made from the loaded
+    /// mail's text ([`text_of`]); empty while it loads.
+    pub text: &'a Selectable,
     /// The attention colour, for the flag.
     pub attention: Color,
     /// The message lies in the trash: it is not deleted again from here.
@@ -1478,21 +1454,28 @@ impl<'a> Reading<'a> {
 }
 
 /// The panel of a folder's message: the account and folder as path, the subject as title, the
-/// mail as body ([`body`]). No footer: the mail's actions stand above its text.
-pub fn panel<'a>(reading: &Reading<'a>, folder: Option<&'a FolderView>) -> panel::Panel<'a, Message> {
+/// mail as body ([`body`]). No footer: the mail's actions stand above its text; `anchors` are where
+/// the menus of its buttons open (the app's window, issue #122).
+pub fn panel<'a>(
+    reading: &Reading<'a>,
+    folder: Option<&'a FolderView>,
+    anchors: &detail::Anchors,
+) -> panel::Panel<'a, Message> {
     let mark = Some(Mark::Icon(folder_icon(folder.and_then(|folder| folder.role))));
     let parts: Vec<String> = folder.map(|f| vec![address(&f.account).to_owned(), f.name.clone()]).unwrap_or_default();
-    panel::panel(panel::path(mark, parts), panel::title(reading.title()), body(reading), Message::CloseDetail)
+    let body = body(reading, Some(anchors));
+    panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail)
 }
 
 /// The mail in the panel: who wrote it to whom and when, the actions (reply, reply all, forward,
 /// archive, delete, flag, read), the attachments, "View as HTML" when it has HTML (task M9.3), the
-/// text with its links, and the note that the text comes from outside.
-pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
+/// text with its links, and the note that the text comes from outside. `anchors` of a folder's
+/// panel take the menus of its buttons ([`panel`]); an entry's panel has them in its footer.
+pub fn body<'a>(reading: &Reading<'a>, anchors: Option<&detail::Anchors>) -> Element<'a, Message> {
     let mut body = column![].spacing(space::l());
     if let Some(summary) = reading.summary() {
         body = body.push(panel::inset(header(reading, summary)));
-        body = body.push(panel::inset(actions(reading, summary)));
+        body = body.push(panel::inset(actions(reading, summary, anchors)));
     }
     if let Some(summary) = reading.summary()
         && let Some(invite) = &summary.invite
@@ -1516,7 +1499,10 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
                 let rows = files.into_iter().map(|file| attachment_row(reading.id, file)).collect();
                 body = body.push(widgets::prop_section(tr("Attachments"), rows));
             }
-            body = body.push(panel::inset(text_block(mail, reading.link, text_level(reading.read))));
+            body = body.push(panel::inset(text_block(mail, reading.text, text_level(reading.read), true)));
+            if let Some(links) = text_links(reading.text) {
+                body = body.push(links);
+            }
         }
     }
     body.into()
@@ -1532,8 +1518,11 @@ fn text_level(read: bool) -> typo::Level {
 #[derive(Debug, Clone, Copy)]
 pub struct ReaderEntry<'a> {
     pub item: &'a Item,
-    /// "Hide from inbox" has entries for it (`App::hide_choices`): the reader shows its "…".
+    /// The entry can be muted (`App::hidable`): the reader shows its bell "Mute…" (issue #123).
     pub hide: bool,
+    /// An AI is set up (issue #120): "AI task" and "AI event" after "Task" are on; else off, with
+    /// a tooltip that says to set one up first.
+    pub ai: bool,
 }
 
 /// The reader of the wide mail window (task E8.3), beside the list: the mail's actions at the top
@@ -1609,7 +1598,10 @@ fn reader_content<'a>(
             body = body.push(column![what, why].spacing(space::xs()));
         }
         Some(Ok(mail)) => {
-            body = body.push(text_block(mail, reading.link, text_level(reading.read)));
+            body = body.push(text_block(mail, reading.text, text_level(reading.read), false));
+            if let Some(links) = text_links(reading.text) {
+                body = body.push(links);
+            }
             let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
             if !files.is_empty() {
                 let cards = files.into_iter().map(|file| attachment_card(reading.id, file));
@@ -1661,11 +1653,14 @@ struct ReaderButton {
     message: Option<Message>,
     /// Where its menu opens (Later, Task, Move to …, "…").
     anchor: Option<Anchor>,
+    /// A tooltip of its own (issue #120: an AI button off until an AI is set up says so); `None`:
+    /// the word, and only where the button shows its icon alone.
+    tip: Option<String>,
 }
 
 impl ReaderButton {
     fn new(icon: Icon, label: impl Into<String>, message: Option<Message>) -> Self {
-        ReaderButton { icon, label: label.into(), message, anchor: None }
+        ReaderButton { icon, label: label.into(), message, anchor: None, tip: None }
     }
 
     fn at(self, anchor: &Anchor) -> Self {
@@ -1674,10 +1669,12 @@ impl ReaderButton {
 
     /// The button with its word in `style`, or its icon alone.
     fn view<'a>(self, words: bool, style: widgets::ButtonStyle) -> Element<'a, Message> {
-        let button = if words {
-            widgets::text_button(Some(self.icon), self.label, style, self.message)
-        } else {
-            widgets::icon_button(self.icon, self.label, self.message)
+        let button = match (words, self.tip) {
+            (true, None) => widgets::text_button(Some(self.icon), self.label, style, self.message),
+            (true, Some(tip)) => {
+                widgets::with_tooltip(widgets::text_button(Some(self.icon), self.label, style, self.message), tip)
+            }
+            (false, tip) => widgets::icon_button(self.icon, tip.unwrap_or(self.label), self.message),
         };
         match self.anchor {
             Some(anchor) => widgets::anchored(&anchor, button),
@@ -1694,10 +1691,11 @@ impl ReaderButton {
 
 /// The reader's actions in one row (task E8.3): Reply (the window's one primary button), Reply
 /// all, Forward | Done, Later, Task on the mail's entry – "Archive" and "Task" (task E8.7b,
-/// `tasks.create_todo_from_mail`) in their place for a folder's message, where `e` archives –, then at the right as icons Delete, Flag, read or unread, for an
-/// entry also Archive, "Move to …" and "…" (Hide from inbox), and Close. In comfortable the first
-/// six carry their words while they fit into `room`, else every button is its icon with the word
-/// as tooltip.
+/// `tasks.create_todo_from_mail`) in their place for a folder's message, where `e` archives –, then
+/// at the right as icons Delete, Flag, read or unread, for an entry also Archive and "Move to …",
+/// the bell "Mute…" (issue #123, a folder's message too), and Close. In comfortable the first six
+/// carry their words while they fit into `room`, else every button is its icon with the word as
+/// tooltip.
 fn reader_actions<'a>(
     reading: &Reading<'a>,
     summary: &MessageSummary,
@@ -1728,7 +1726,7 @@ fn reader_actions<'a>(
         },
     ];
     match entry {
-        Some(ReaderEntry { item, hide }) => {
+        Some(ReaderEntry { item, hide, ai }) => {
             let item_id = || item.id.clone();
             let done = matches!(item.state, State::Done { .. });
             triage.push(if done {
@@ -1742,14 +1740,22 @@ fn reader_actions<'a>(
             }
             let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskTask(item_id())));
             triage.push(task.at(&anchors.task));
+            // "AI task" and "AI event" after it (issue #120): the reader is where the mail was read.
+            for (wanted, message, tip) in crate::suggest::ai_buttons(&item.id, ai) {
+                triage.push(ReaderButton {
+                    tip: Some(tip),
+                    ..ReaderButton::new(Icon::Sparkles, wanted.label(), message)
+                });
+            }
             tools.insert(0, ReaderButton::new(Icon::Archive, trc("action", "Archive"), mail(MailAction::Archive)));
             let lane = crate::app::other_lane(item.lane);
             let move_to =
                 ReaderButton::new(crate::app::lane_icon(lane), lane_word(lane), Some(Message::AskLane(item_id())));
             tools.push(move_to.at(&anchors.lane));
+            // The bell (issue #123): mail's one menu to mute, "Hide from Notification Hub" went into it.
             if hide {
-                let more = ReaderButton::new(Icon::Ellipsis, tr("Hide from inbox"), Some(Message::AskHide(item_id())));
-                tools.push(more.at(&anchors.hide));
+                let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskHide(item_id())));
+                tools.push(bell.at(&anchors.hide));
             }
         }
         None => {
@@ -1757,29 +1763,74 @@ fn reader_actions<'a>(
             // A folder's message becomes a task of its own (task E8.7b, `tasks.create_todo_from_mail`).
             let task = ReaderButton::new(Icon::ListTodo, tr("Task"), Some(Message::AskMailTask(id.to_owned())));
             triage.push(task.at(&anchors.task));
+            // And is muted by its own traits (issue #123).
+            let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskMuteMail(id.to_owned())));
+            tools.push(bell.at(&anchors.hide));
         }
     }
+    // "Copy text" (issue #119) once there is a text to copy.
+    let copy = matches!(reading.loaded, Some(Ok(_))) && !reading.text.text().trim().is_empty();
+    tools.push(ReaderButton::new(Icon::Copy, tr("Copy text"), copy.then_some(Message::CopyText)));
     tools.push(ReaderButton::new(Icon::X, tr("Close"), Some(Message::CloseDetail)));
 
-    let count = write.len() + triage.len() + tools.len();
-    let gaps = count as f32 * space::xs() + space::l();
     let spoken: f32 = write.iter().chain(&triage).map(ReaderButton::width).sum();
-    let words = comfortable && spoken + tools.len() as f32 * size::control_sm() + gaps <= room;
-    let mut bar = row![].spacing(space::xs()).align_y(Alignment::Center);
+    let fit = bar_fit(comfortable, spoken, write.len() + triage.len(), tools.len(), room);
+    let words = fit == BarFit::Words;
+    let mut lead = row![].spacing(space::xs()).align_y(Alignment::Center);
     for (i, button) in write.into_iter().enumerate() {
         let style = if i == 0 { style::button::primary } else { style::button::secondary };
-        bar = bar.push(button.view(words, style));
+        lead = lead.push(button.view(words, style));
     }
     let line = container(rule::vertical(size::HAIRLINE).style(style::rule)).height(typo::line_height(typo::body()));
-    bar = bar.push(container(line).padding(Padding::new(0.0).left(space::xs()).right(space::xs())));
+    lead = lead.push(container(line).padding(Padding::new(0.0).left(space::xs()).right(space::xs())));
     for button in triage {
-        bar = bar.push(button.view(words, style::button::ghost));
+        lead = lead.push(button.view(words, style::button::ghost));
     }
-    bar = bar.push(iced::widget::space::horizontal());
+    let mut rest = row![].spacing(space::xs()).align_y(Alignment::Center);
     for button in tools {
-        bar = bar.push(button.view(false, style::button::ghost));
+        rest = rest.push(button.view(false, style::button::ghost));
     }
-    bar.into()
+    match fit {
+        BarFit::Words | BarFit::Icons => {
+            row![lead, iced::widget::space::horizontal(), rest].spacing(space::xs()).align_y(Alignment::Center).into()
+        }
+        // Below about 450 the icons no longer fit in one row (issue #119): the tools go to a second
+        // row at the right, and each row wraps rather than leave the window in a very narrow one.
+        BarFit::TwoRows => column![
+            lead.wrap().vertical_spacing(space::xs()),
+            container(rest.wrap().vertical_spacing(space::xs()).align_x(Alignment::End)).align_right(Fill),
+        ]
+        .spacing(space::xs())
+        .into(),
+    }
+}
+
+/// How the reader's actions fit into `room` ([`reader_actions`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BarFit {
+    /// One row, the write and triage buttons with their words (comfortable only).
+    Words,
+    /// One row of icons.
+    Icons,
+    /// Too narrow for one row of icons: the tools in a second row.
+    TwoRows,
+}
+
+/// How the reader's actions fit into `room`: `lead` buttons (write and triage, `spoken` wide with
+/// their words), the separator, and `tools` icons at the right, `space::xs()` between them all and
+/// `space::l()` at least before the tools.
+fn bar_fit(comfortable: bool, spoken: f32, lead: usize, tools: usize, room: f32) -> BarFit {
+    let count = lead + tools;
+    let separator = 2.0 * space::xs() + size::HAIRLINE;
+    let gaps = count as f32 * space::xs() + space::l() + separator;
+    let icons = tools as f32 * size::control_sm() + gaps;
+    if comfortable && spoken + icons <= room {
+        BarFit::Words
+    } else if icons + lead as f32 * size::control_sm() <= room {
+        BarFit::Icons
+    } else {
+        BarFit::TwoRows
+    }
 }
 
 /// "Move to Info" or "Move to For me": the reader's button that moves the entry to `lane`.
@@ -1851,7 +1902,11 @@ pub fn when(at: DateTime<Utc>, now: DateTime<Utc>) -> String {
 
 /// The mail's actions in a row: "Reply" with its words, reply all and forward as icons, then at
 /// the right archive, delete, flag and read as icons. Delete is off in the trash.
-fn actions<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, Message> {
+fn actions<'a>(
+    reading: &Reading<'a>,
+    summary: &MessageSummary,
+    anchors: Option<&detail::Anchors>,
+) -> Element<'a, Message> {
     let id = reading.id;
     let act = |action: MailAction| Some(Message::Mail(action, id.to_owned()));
     let flagged = summary.flags.contains(&Flag::Flagged);
@@ -1863,8 +1918,15 @@ fn actions<'a>(reading: &Reading<'a>, summary: &MessageSummary) -> Element<'a, M
     // a folder's panel shows the date (`dated`), so it tells the two apart.
     let task = reading.dated.then(|| Message::AskMailTask(id.to_owned()));
     let mut tools = row![].spacing(space::xs()).align_y(Alignment::Center);
+    let at = |pick: fn(&detail::Anchors) -> &Anchor, button| match anchors {
+        Some(anchors) => widgets::anchored(pick(anchors), button),
+        None => button,
+    };
     if task.is_some() {
-        tools = tools.push(widgets::icon_button(Icon::ListTodo, tr("Task"), task));
+        tools = tools.push(at(|a| &a.task, widgets::icon_button(Icon::ListTodo, tr("Task"), task)));
+        // The bell too (issue #123): the message's entry's menu, or its own traits without one.
+        let bell = widgets::icon_button(Icon::BellOff, tr("Mute…"), Some(Message::AskMuteMail(id.to_owned())));
+        tools = tools.push(at(|a| &a.hide, bell));
     }
     row![
         widgets::text_button(Some(Icon::Reply), tr("Reply"), style::button::secondary, act(MailAction::Reply)),
@@ -1900,11 +1962,18 @@ fn attachment_row<'a>(id: &str, file: &AttachmentInfo) -> Element<'a, Message> {
     widgets::prop_row(Some(Mark::Icon(Icon::Paperclip)), line, Some(open))
 }
 
-/// The text in `level` with its web addresses as links ([`pieces`]: the whole address shows,
-/// underlined, and opens on a click), then the note on foreign text. A mail with HTML
-/// ([`shows_html`]) has "View as HTML" over it (task M9.3, `v`): the text is only its preview.
-fn text_block<'a>(mail: &'a Mail, link: Color, level: typo::Level) -> Element<'a, Message> {
-    let text = mail.text.as_deref().map(list::plain).unwrap_or_default();
+/// The text of `mail` as the window shows, selects and copies it (issue #119): plain, without
+/// control characters ([`list::plain`]); empty for a mail without text.
+pub fn text_of(mail: &Mail) -> String {
+    mail.text.as_deref().map(list::plain).unwrap_or_default()
+}
+
+/// The text in `level`, to select with the mouse and copy (issue #119, [`Selectable`]), then the
+/// note on foreign text – with "Copy text" at its right where no row of actions carries it
+/// (`copy`: the panel; the reader has it among its actions). The web addresses in the text follow
+/// as "Links" ([`text_links`]), which the caller places. A mail with HTML ([`shows_html`]) has
+/// "View as HTML" over it (task M9.3, `v`): the text is only its preview.
+fn text_block<'a>(mail: &'a Mail, text: &'a Selectable, level: typo::Level, copy: bool) -> Element<'a, Message> {
     let mut block = column![].spacing(space::s());
     if shows_html(mail) {
         let open = Some(Message::ViewHtml(mail.summary.id.clone()));
@@ -1912,27 +1981,33 @@ fn text_block<'a>(mail: &'a Mail, link: Color, level: typo::Level) -> Element<'a
         // Below the button the text keeps its gap to the actions (`space::l()` between the parts).
         block = block.push(container(button).padding(Padding::new(0.0).bottom(space::s())));
     }
-    if !text.trim().is_empty() {
-        let spans: Vec<iced::widget::text::Span<'a, String>> = pieces(&text)
-            .into_iter()
-            .map(|piece| match piece {
-                Piece::Text(words) => span(words.to_owned()),
-                Piece::Link(url) => span(url.to_owned()).color(link).underline(true).link(url.to_owned()),
-            })
-            .collect();
-        let message = rich_text(spans)
-            .size(level.size)
-            .line_height(level.line_height)
-            .font(level.font)
-            .style(theme::text_2)
-            .wrapping(Wrapping::WordOrGlyph)
-            .on_link_click(Message::OpenMailLink);
-        block = block.push(message);
+    let has_text = !text.text().trim().is_empty();
+    if has_text {
+        block = block.push(text.view(level, theme::text_2, Message::Text));
     }
-    block = block.push(note(detail::foreign_note()));
+    let notes = column![note(detail::foreign_note())].spacing(space::s());
     // No title over the text: the headers above already say whose mail it is (and "Message" reads
     // as a notice in German, the entries' word).
-    block.into()
+    if copy && has_text {
+        block
+            .push(row![container(notes).width(Fill), copy_button()].spacing(space::s()).align_y(Alignment::Center))
+            .into()
+    } else {
+        block.push(notes).into()
+    }
+}
+
+/// "Links": the web addresses in the mail's text (`torro_gui::selectable::web_links`), each a row
+/// that opens it ([`Message::OpenMailLink`]); `None` without any. The text itself is selectable and
+/// cannot hold clickable links, so they stand here.
+fn text_links<'a>(text: &Selectable) -> Option<Element<'a, Message>> {
+    selectable::links_section(selectable::web_links(text.text()), Message::OpenMailLink)
+}
+
+/// "Copy text": puts the whole text shown on the clipboard ([`Message::CopyText`]), as an icon
+/// with its words as tooltip.
+pub fn copy_button<'a>() -> Element<'a, Message> {
+    widgets::icon_button(Icon::Copy, tr("Copy text"), Some(Message::CopyText))
 }
 
 /// A quiet sentence (`META`, `text_3`).
@@ -2072,16 +2147,6 @@ mod tests {
     }
 
     #[test]
-    fn a_search_is_part_of_the_view() {
-        let folders = folders();
-        let inbox = FolderView::of(first_inbox(&folders).expect("an inbox"));
-        assert_eq!(inbox.searching("  "), inbox, "blank: the whole folder");
-        let searched = inbox.searching(" budget ");
-        assert_eq!(searched.query.as_deref(), Some("budget"));
-        assert_ne!(searched, inbox, "another search, another view");
-    }
-
-    #[test]
     fn the_compose_window_gets_the_message_and_the_kind() {
         assert_eq!(compose_args(Compose::Reply, "m:1", false), ["--compose", "--reply", "m:1"]);
         assert_eq!(compose_args(Compose::ReplyAll, "m:1", false), ["--compose", "--reply-all", "m:1"]);
@@ -2110,27 +2175,37 @@ mod tests {
         assert_eq!(flags_after(&[Flag::Seen, Flag::Flagged], &unread), [Flag::Flagged]);
     }
 
+    /// Issue #119: the text is selectable, so its web addresses stand under it as "Links" – the same
+    /// cut as the calendar's (`torro_gui::links`); nothing but `http` and `https` opens.
     #[test]
     fn web_addresses_are_links_and_nothing_else_is() {
         let text = "See https://intranet.example.org/budget/q4. Or (http://a.example/x), mailto:me@x.example, \
                     xhttps://no.example and https:// alone.";
-        let links: Vec<&str> = pieces(text)
-            .into_iter()
-            .filter_map(|piece| match piece {
-                Piece::Link(url) => Some(url),
-                Piece::Text(_) => None,
-            })
-            .collect();
+        let links = selectable::web_links(text);
         assert_eq!(links, ["https://intranet.example.org/budget/q4", "http://a.example/x"]);
-        let whole: String = pieces(text)
-            .into_iter()
-            .map(|piece| match piece {
-                Piece::Text(words) | Piece::Link(words) => words,
-            })
-            .collect();
-        assert_eq!(whole, text, "nothing is lost or added");
-        assert_eq!(pieces("HTTPS://Example.org"), [Piece::Link("HTTPS://Example.org")]);
-        assert_eq!(pieces(""), []);
+        assert!(text_links(&Selectable::new(text)).is_some());
+        assert!(text_links(&Selectable::new("no address")).is_none(), "no section without links");
+    }
+
+    /// Issue #119: below about 450 the reader's icons no longer fit in one row; the tools go to a
+    /// second row instead of leaving the window (Close, Move to … were cut off).
+    #[test]
+    fn the_reader_actions_take_a_second_row_when_narrow() {
+        // Reply, Reply all, Forward | Done, Later, Task; Archive, Delete, Flag, Read, Move to, "…",
+        // Copy text, Close.
+        let (lead, tools, spoken) = (6, 8, 360.0);
+        assert_eq!(bar_fit(true, spoken, lead, tools, size::content_max()), BarFit::Words);
+        assert_eq!(bar_fit(false, spoken, lead, tools, size::content_max()), BarFit::Icons);
+        assert_eq!(bar_fit(true, spoken, lead, tools, 600.0), BarFit::Icons, "no room for the words");
+        assert_eq!(bar_fit(true, spoken, lead, tools, 400.0), BarFit::TwoRows);
+        assert_eq!(bar_fit(false, spoken, lead, tools, 250.0), BarFit::TwoRows);
+        // The icons of one row, as wide as they are, fit exactly.
+        let one_row = (lead + tools) as f32 * (size::control_sm() + space::xs())
+            + space::l()
+            + 2.0 * space::xs()
+            + size::HAIRLINE;
+        assert_eq!(bar_fit(false, spoken, lead, tools, one_row), BarFit::Icons);
+        assert_eq!(bar_fit(false, spoken, lead, tools, one_row - 1.0), BarFit::TwoRows);
     }
 
     #[test]
@@ -2180,7 +2255,15 @@ mod tests {
         let summaries: Vec<MessageSummary> = mail.iter().map(|m| m.summary.clone()).collect();
         let folders = folders();
         let folder = FolderView::of(first_inbox(&folders).expect("an inbox"));
-        let views = [View::Folder(folder.clone()), View::Attachments, View::Mail];
+        let search = crate::search::SearchView::new("budget", crate::search::Scope::All, MailSort::Relevance);
+        let views = [View::Folder(folder.clone()), View::Attachments, View::Mail, View::Search(search)];
+        // A search's matches in the subject and the passage of the first message (issue #136).
+        let hit = |text: &str, hit| torro_ipc::mail::HighlightSpan { text: text.into(), hit };
+        let highlights = [MailHighlight {
+            id: summaries[0].id.clone(),
+            subject: vec![hit("Budget", true), hit(" review", false)],
+            snippet: vec![hit("the travel ", false), hit("budget", true), hit(" before Thursday", false)],
+        }];
         let looks = [Look::Rows, Look::Cards];
         let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
             &DemoSource::new(now()),
@@ -2202,8 +2285,9 @@ mod tests {
                         attention: Color::BLACK,
                         look,
                         entries: &all,
-                        hidable: all.iter().map(|item| item.id.as_str()).collect(),
                         folders: &folders,
+                        highlights: &highlights,
+                        text: Color::BLACK,
                     };
                     let _ = list(data);
                 }
@@ -2215,6 +2299,7 @@ mod tests {
         let done = ItemTask { due: Some(TaskDue::Date(now().date_naive())), ..task(true) };
         for (message, task) in mail.iter().zip([None, Some(&open), Some(&done)].into_iter().cycle()) {
             let loaded = Ok(message.clone());
+            let text = Selectable::new(&text_of(message));
             for loaded in [None, Some(&loaded)] {
                 for read in [false, true] {
                     let reading = Reading {
@@ -2223,7 +2308,7 @@ mod tests {
                         summary: Some(&message.summary),
                         loaded,
                         now: now(),
-                        link: Color::BLACK,
+                        text: &text,
                         attention: Color::BLACK,
                         in_trash: false,
                         dated: true,
@@ -2232,8 +2317,8 @@ mod tests {
                         answering: false,
                         invite: InviteSide::default(),
                     };
-                    let _ = panel(&reading, Some(&folder));
-                    for entry in [None, Some(ReaderEntry { item: &entry, hide: true })] {
+                    let _ = panel(&reading, Some(&folder), &detail::Anchors::default());
+                    for entry in [None, Some(ReaderEntry { item: &entry, hide: true, ai: false })] {
                         let _ = reader(reading, entry, detail::Anchors::default(), read);
                     }
                 }
@@ -2260,19 +2345,19 @@ mod tests {
         let words =
             |buttons: &[RowAction<'_, Message>]| buttons.iter().map(|b| b.label.to_string()).collect::<Vec<_>>();
         let folders = folders();
-        let (buttons, more) = message_buttons(&message, &entries, &[entry.id.as_str()], &folders, now());
+        let (buttons, more) = message_buttons(&message, &entries, &folders, now());
         assert_eq!(words(&buttons), [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Later"), tr("Task")]);
         assert!(matches!(&buttons[3].on_press, Message::Act(id, Key::Snooze) if *id == entry.id));
         assert!(matches!(more.map(|more| more.on_press), Some(Message::Act(id, Key::Hide)) if id == entry.id));
-        let (_, more) = message_buttons(&message, &entries, &[], &folders, now());
-        assert!(more.is_none(), "nothing to hide: no \"…\"");
-        let (alone, more) = message_buttons(&message, &[], &[], &folders, now());
+        let (alone, more) = message_buttons(&message, &[], &folders, now());
         assert_eq!(words(&alone), [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Task")], "no entry: no Later");
-        assert!(more.is_none());
+        let more = more.expect("the bell (issue #123)");
+        assert_eq!((more.icon, more.label.to_string()), (Icon::BellOff, tr("Mute…").to_owned()));
+        assert!(matches!(more.on_press, Message::Act(id, Key::Hide) if id == message.id), "the message's own");
         let done = Item { state: State::Done { at: now() }, ..entry.clone() };
-        assert_eq!(message_buttons(&message, &[done], &[], &folders, now()).0.len(), 4, "a done entry is put away");
+        assert_eq!(message_buttons(&message, &[done], &folders, now()).0.len(), 4, "a done entry is put away");
         let plain = MessageSummary { invite: None, ..message.clone() };
-        let words_of = words(&message_buttons(&plain, &entries, &[], &folders, now()).0);
+        let words_of = words(&message_buttons(&plain, &entries, &folders, now()).0);
         assert_eq!(words_of, [trc("action", "Archive"), tr("Delete"), tr("Task")]);
     }
 
@@ -2283,13 +2368,14 @@ mod tests {
     fn a_message_is_archived_and_deleted_from_its_row_never_replied_to() {
         let message = MessageSummary { invite: None, ..demo::mail_sample(now()).remove(0).summary };
         let folders = folders();
-        let (buttons, more) = message_buttons(&message, &[], &[], &folders, now());
+        let (buttons, more) = message_buttons(&message, &[], &folders, now());
         let sent: Vec<&Message> = buttons.iter().map(|button| &button.on_press).collect();
         assert!(matches!(sent[0], Message::Mail(MailAction::Archive, id) if *id == message.id), "{sent:?}");
         assert!(matches!(sent[1], Message::Mail(MailAction::Delete, id) if *id == message.id), "{sent:?}");
         assert!(matches!(sent[2], Message::Act(id, Key::MakeTask) if *id == message.id), "{sent:?}");
         assert_eq!(buttons.iter().map(|button| button.key).collect::<Vec<_>>(), ["E", "#", "T"]);
-        assert!(more.is_none());
+        let bell = more.map(|more| more.on_press);
+        assert!(matches!(bell, Some(Message::Act(id, Key::Hide)) if id == message.id), "the bell (issue #123)");
         assert!(!sent.iter().any(|message| matches!(message, Message::Mail(MailAction::Reply, _))));
 
         let words =

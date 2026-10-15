@@ -156,6 +156,18 @@ impl Default for Services {
     }
 }
 
+/// How new mail, replies and forwards of an account are written (issue #125).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MailFormat {
+    /// Formatted (bold, lists, links, quotes): sent as HTML with a plain text copy beside it
+    /// (`multipart/alternative`), as mail programs do.
+    #[default]
+    Html,
+    /// Plain text only.
+    Plain,
+}
+
 /// What the person set for a mail account. Stored in `accounts.json`; changed with
 /// `accounts.update_mail_account`, never together with servers or password.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -169,6 +181,10 @@ pub struct MailSettings {
     /// Which services the suite uses.
     #[serde(default)]
     pub services: Services,
+    /// How the compose window writes new mail, replies and forwards: formatted (HTML) or plain
+    /// text. Clients that save drafts decide for themselves (`Draft::html`).
+    #[serde(default)]
+    pub format: MailFormat,
     /// Folders the person picked for a role where the server offered two candidates with content
     /// (task M2.3 leaves such a role open, M5.2 asks once): the role and the folder's path as the
     /// server names it. Every other role is found anew on each sync and is not stored. An update
@@ -234,11 +250,14 @@ mod tests {
         let settings: MailSettings = serde_json::from_str("{}").expect("all defaults");
         assert_eq!(settings, MailSettings::default());
         assert_eq!((settings.notify, settings.services), (Notify::All, Services::default()));
+        assert_eq!(settings.format, MailFormat::Html, "formatted unless the person chose plain text");
         assert!(settings.services.mail && !settings.services.calendars && !settings.services.tasks);
         let mut chosen = settings;
         chosen.folder_roles.insert(Role::Sent, "INBOX.Gesendete Objekte".into());
         chosen.notify = Notify::ForMeOnly;
+        chosen.format = MailFormat::Plain;
         let json = serde_json::to_value(&chosen).expect("json");
+        assert_eq!(json["format"], "plain");
         assert_eq!(json["folder_roles"]["sent"], "INBOX.Gesendete Objekte");
         assert_eq!(json["notify"], "for_me_only");
         assert_eq!(serde_json::from_value::<MailSettings>(json).expect("read back"), chosen);

@@ -84,10 +84,10 @@ use torro_setups::launch::{Launcher, SystemLauncher};
 
 use crate::account::ai::AiAccounts;
 use crate::bots::Bots;
-pub use data_rule::{Place, place_of};
+pub use data_rule::{Place, held_back, place_of};
 pub use delegate::Asking;
 pub use engines::never_given;
-pub use model::{Actor, Delegation, Host, Limits, ModelAccess};
+pub use model::{Actor, AskedIn, Delegation, Host, Limits, ModelAccess};
 use store::{Conversation, Line};
 
 /// The environment variable that makes a running core offer the test engine: `1`.
@@ -492,6 +492,7 @@ impl Assistant {
                 model: message.model.clone(),
                 effort: message.effort,
                 without: message.without.clone(),
+                mode: message.mode,
             },
             now,
         );
@@ -508,7 +509,8 @@ impl Assistant {
         }
         let history = conversation.entries.clone();
         state.conversations.insert(id.clone(), conversation);
-        let (engine, model, effort, without) = (message.engine, message.model, message.effort, message.without);
+        let (engine, model, effort, without, mode) =
+            (message.engine, message.model, message.effort, message.without, message.mode);
         let actor = match message.on_behalf {
             Some(delegation) => Actor::Delegated(delegation),
             None => Actor::of(message.bot.as_ref()),
@@ -520,6 +522,7 @@ impl Assistant {
             model,
             effort,
             without,
+            mode,
             history,
             partial: Arc::default(),
             actor,
@@ -994,6 +997,9 @@ struct Message {
     effort: Option<Effort>,
     text: String,
     without: Vec<Area>,
+    /// The permission mode of the answer (issue #132); [`torro_ipc::assistant::Mode::Default`] for a
+    /// bot asked by the assistant, which runs in the assistant's mode through its delegation.
+    mode: torro_ipc::assistant::Mode,
     /// The bot that answers, as stored now (task B.1); `None` for the assistant.
     bot: Option<Bot>,
     /// The bot runs for the assistant (task B.2): as [`Actor::Delegated`], with what both clients
@@ -1043,7 +1049,7 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
         Request::ListEngines => Response::Engines { engines: assistant.engines(ai).await },
         Request::ListConversations => assistant.list().await,
         Request::GetConversation { id, after } => assistant.get(&id, after).await,
-        Request::SendMessage { conversation, engine, model, effort, text, without, bot } => {
+        Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot } => {
             let bot = match bot {
                 Some(id) => match assistant.bots.get(&id).await {
                     Some(bot) => Some(bot),
@@ -1058,7 +1064,8 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
                 Ok(kind) => kind,
                 Err(refused) => return refused,
             };
-            let message = Message { conversation, engine, model, effort, text, without, bot, on_behalf: None, person };
+            let message =
+                Message { conversation, engine, model, effort, text, without, mode, bot, on_behalf: None, person };
             assistant.send(message, kind, Utc::now()).await
         }
         Request::AskBot { bot, text, conversation } => {
@@ -1075,6 +1082,7 @@ pub async fn answer_from(assistant: &Arc<Assistant>, ai: &AiAccounts, request: R
                 effort: None,
                 text,
                 without: Vec::new(),
+                mode: torro_ipc::assistant::Mode::Default,
                 bot: Some(bot),
                 on_behalf: None,
                 person: false,
@@ -1155,6 +1163,7 @@ pub(crate) mod tests {
             effort: None,
             text: text.into(),
             without: vec![Area::Mail],
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         }
     }
@@ -1267,6 +1276,7 @@ pub(crate) mod tests {
             effort: None,
             text: "Hi".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         assert_eq!(code(&answer(&assistant, &ai, other).await), "not-found", "no such engine");
@@ -1327,6 +1337,7 @@ pub(crate) mod tests {
             effort: None,
             text: "Hi".into(),
             without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
             bot: None,
         };
         assert_eq!(code(&answer(&assistant, &ai, to_ollama).await), "unsupported");

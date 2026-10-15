@@ -1109,6 +1109,8 @@ impl PimService {
             Request::ListItems { .. }
             | Request::GetItem { .. }
             | Request::OpenItem { .. }
+            | Request::SuggestTaskFromItem { .. }
+            | Request::SuggestEventFromItem { .. }
             | Request::ListSources
             | Request::PostItem { .. }
             | Request::ResolveItems { .. }
@@ -1271,6 +1273,12 @@ impl PimService {
         if state.slot(tests::ANNA).is_none() {
             state.accounts.push(Slot::new(tests::connected(), None));
         }
+    }
+
+    /// The stored accounts were read ([`PimService::start`]), or could not be: until then the
+    /// account list is empty although accounts may exist.
+    pub async fn accounts_loaded(&self) -> bool {
+        self.state.read().await.loaded
     }
 
     /// The accounts with their state, as `reach` may see them: for the suite with all

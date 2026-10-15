@@ -49,6 +49,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use torro_inbox::{AgentKind, SourceRef};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, HOOK_CLIENT, Lack, Operation, Rights, RightsTemplate, Selection};
+use torro_ipc::assistant::Mode;
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
 /// Keychain service all suite secrets are filed under (as for the accounts).
@@ -380,6 +381,9 @@ struct Lease {
     hash: KeyHash,
     /// The areas taken out of the client's rights for requests with this key.
     without: Vec<Area>,
+    /// The permission mode the client's rights are narrowed by for requests with this key (issue
+    /// #132).
+    mode: Mode,
     /// The approvals asked for with this key: the only ones it sees ([`Clients::lent_approvals`]).
     approvals: Vec<String>,
 }
@@ -528,13 +532,13 @@ impl Clients {
         let record = &state.clients.iter().find(|entry| entry.record.id == id)?.record;
         let (kind, rights) = (record.kind.clone(), record.rights.clone());
         let lease = state.leases.iter().find(|lease| same(&lease.hash, &hash));
-        let (never, without) = match lease {
-            Some(lease) => (crate::assistant::never_given(&lease.engine), lease.without.clone()),
-            None => (&[][..], Vec::new()),
+        let (never, without, mode) = match lease {
+            Some(lease) => (crate::assistant::never_given(&lease.engine), lease.without.clone(), lease.mode),
+            None => (&[][..], Vec::new(), Mode::Default),
         };
         drop(state);
         let switched_off: Vec<Area> = without.into_iter().filter(|area| !never.contains(area)).collect();
-        Lack::of(&kind, &rights, operation, &switched_off, never)
+        Lack::of_in(&kind, &rights, operation, &switched_off, never, mode)
     }
 
     /// Who `key` belongs to. A known client's last use is noted.
@@ -553,12 +557,14 @@ impl Clients {
             }
         }
         // A lent key stands for its client, with the areas it was lent without taken out of the
-        // client's rights of now ([`Clients::lend`]).
+        // client's rights of now and narrowed by its permission mode ([`Clients::lend_in_mode`]).
         let mut without: &[Area] = &[];
+        let mut mode = Mode::Default;
         for lease in &state.leases {
             if same(&lease.hash, &hash) {
                 found = state.clients.iter().position(|entry| entry.record.id == lease.client && !entry.locked);
                 without = &lease.without;
+                mode = lease.mode;
             }
         }
         let Some(index) = found else {
@@ -566,7 +572,7 @@ impl Clients {
         };
         let without = without.to_vec();
         let record = &mut state.clients[index].record;
-        let mut rights = record.rights.clone();
+        let mut rights = mode.narrow(&record.rights);
         rights.areas.retain(|area, _| !without.contains(area));
         let caller = Caller::Client { id: record.id.clone(), rights };
         if note_use(record, Utc::now()) {
@@ -588,6 +594,13 @@ impl Clients {
     /// [`ClientsError::NotFound`] for no such client (or a locked one), [`ClientsError::Damaged`]
     /// while `clients.json` is.
     pub fn lend(&self, id: &str, engine: &str, without: &[Area]) -> Result<LentKey, ClientsError> {
+        self.lend_in_mode(id, engine, without, Mode::Default)
+    }
+
+    /// [`Clients::lend`] for a run in the permission mode `mode` (issue #132): every request with the
+    /// key runs with the client's rights narrowed by it ([`Mode::narrow`]) as well, and an approval
+    /// asked for with the key keeps it ([`Clients::lent_mode`]).
+    pub fn lend_in_mode(&self, id: &str, engine: &str, without: &[Area], mode: Mode) -> Result<LentKey, ClientsError> {
         let mut state = self.lock();
         if state.damaged {
             return Err(ClientsError::Damaged(self.shared.file.clone()));
@@ -602,6 +615,7 @@ impl Clients {
             engine: engine.to_string(),
             hash,
             without: without.to_vec(),
+            mode,
             approvals: Vec::new(),
         });
         Ok(LentKey { key: Key::new(key), hash, shared: Arc::downgrade(&self.shared) })
@@ -617,6 +631,12 @@ impl Clients {
     /// without them too, also after the lease or the core is gone.
     pub fn lent_without(&self, key: &Key) -> Option<Vec<Area>> {
         self.with_lease(key, |lease| lease.without.clone())
+    }
+
+    /// The permission mode the lent `key` was lent in ([`Clients::lend_in_mode`]) while it is lent;
+    /// `None` for every other key. An approval asked for with the key keeps it (issue #132).
+    pub fn lent_mode(&self, key: &Key) -> Option<Mode> {
+        self.with_lease(key, |lease| lease.mode)
     }
 
     /// The approvals asked for with the lent `key` ([`Clients::note_lent_approval`]); `None` for

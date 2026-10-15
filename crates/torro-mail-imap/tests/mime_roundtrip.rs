@@ -34,6 +34,7 @@ fn outgoing() -> Outgoing {
         body: "Hallo Anna,\n\nwie geht’s? Ünïcödé und ein sehr langer Satz, der weit über die übliche Zeilenlänge von \
                achtundsiebzig Zeichen hinausgeht.\n.Zeile mit Punkt\n"
             .into(),
+        html: None,
         signature: Some("Jürgen\nKöln".into()),
         reply: Some(Reply {
             in_reply_to: "docs-2@example.de".into(),
@@ -48,6 +49,46 @@ fn outgoing() -> Outgoing {
         message_id: "t1.abc@example.de".into(),
         date: when(),
     }
+}
+
+/// Issue #125: formatted mail goes as `multipart/alternative` (plain text, then HTML) beside its
+/// attachment; both forms carry the signature above the quoted history, the HTML is cleaned, and
+/// the plain text is made from it.
+#[test]
+fn formatted_mail_carries_html_and_the_plain_text_made_from_it() {
+    let html = concat!(
+        "<p>Hallo <strong>Anna</strong>,<br>siehe <a href=\"https://example.org/q4\">Tabelle</a>.</p>",
+        "<script>steal()</script><img src=\"https://tracker.example/p.gif\">",
+        "<div class=\"torro-quote\"><p>Am Montag schrieb Jonas:</p><blockquote type=\"cite\">Hi</blockquote></div>",
+    );
+    let formatted = Outgoing { html: Some(html.into()), body: "not used".into(), ..outgoing() };
+    let built = mime::build(&formatted).expect("built");
+    let raw = String::from_utf8(built.bytes.clone()).expect("ascii");
+    assert!(raw.contains("multipart/mixed") && raw.contains("multipart/alternative"), "{raw}");
+    let plain_at = raw.find("text/plain").expect("a plain part");
+    let html_at = raw.find("text/html").expect("an HTML part");
+    assert!(plain_at < html_at, "the richer form comes last");
+
+    let read = mime::read(&built.bytes).expect("read back");
+    assert!(!read.from_html, "the plain form is read first");
+    assert_eq!(
+        read.text.trim_end(),
+        "Hallo Anna,\nsiehe Tabelle <https://example.org/q4>.\n\n-- \nJürgen\nKöln\n\nAm Montag schrieb Jonas:\n\n> Hi"
+    );
+    let sent = read.html.expect("the HTML part");
+    assert!(sent.contains("<strong>Anna</strong>") && sent.contains("href=\"https://example.org/q4\""), "{sent}");
+    assert!(!sent.contains("script") && !sent.contains("tracker"), "cleaned: {sent}");
+    let signature = sent.find("torro-signature").expect("signed");
+    assert!(signature < sent.find("torro-quote").expect("the history"), "the signature is above the history");
+    assert_eq!(read.attachments.len(), 1, "the attachment is still there");
+    assert_eq!(mime::build(&formatted).expect("again").bytes, built.bytes, "the same draft, the same bytes");
+
+    // Without attachments the alternative is the whole message.
+    let alone = Outgoing { attachments: vec![], ..formatted };
+    let raw = String::from_utf8(mime::build(&alone).expect("built").bytes).expect("ascii");
+    assert!(raw.contains("multipart/alternative") && !raw.contains("multipart/mixed"), "{raw}");
+    // A plain message has no HTML to read back.
+    assert_eq!(mime::read(&mime::build(&outgoing()).expect("built").bytes).expect("read").html, None);
 }
 
 #[test]

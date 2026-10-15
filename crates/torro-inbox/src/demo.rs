@@ -131,6 +131,28 @@ impl Data {
         self.hidden.push(rule.clone());
         (rule, true)
     }
+
+    /// What `inbox.list_mute_options` and `inbox.mute_item` with `id` mute by, as the core finds it
+    /// (issue #123): the entry `id`; for a mail message (`m:…`) the entry it was filed in, else the
+    /// message as an entry would hold it ([`rules::message_stand_in`], `true`: a stand-in, whose
+    /// conversation is not offered). [`InboxError::NotFound`] for anything else.
+    fn mute_subject(&self, id: &str) -> Result<(Item, bool), InboxError> {
+        if let Some(item) = self.items.iter().find(|item| item.id == id) {
+            return Ok((item.clone(), false));
+        }
+        if !rules::is_message_id(id) {
+            return Err(InboxError::NotFound);
+        }
+        let filed = |item: &&Item| matches!(&item.link, Some(Link::Mail { message }) if message == id);
+        if let Some(item) = self.items.iter().find(filed) {
+            return Ok((item.clone(), false));
+        }
+        let message = self.mail.iter().find(|message| message.summary.id == id).ok_or(InboxError::NotFound)?;
+        let traits = &message.traits;
+        let bulk = traits.list_id.is_some() || traits.list_unsubscribe || traits.precedence.is_some();
+        let stand_in = rules::message_stand_in(&message.summary, traits.list_id.as_deref(), bulk);
+        stand_in.map(|item| (item, true)).ok_or(InboxError::NotFound)
+    }
 }
 
 /// A task the demo made from an entry: the list's id, the title and the due day.
@@ -1173,10 +1195,11 @@ impl InboxSource for DemoSource {
         Ok(item)
     }
 
+    /// As the core does: an entry's conversation and traits; a mail message (`m:…`, issue #123)
+    /// stands for its entry, or – without one – offers its traits only ([`Data::mute_subject`]).
     async fn list_mute_options(&self, id: String) -> Result<Vec<MuteOption>, InboxError> {
-        let data = self.lock();
-        let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
-        Ok(rules::mute_options(item))
+        let (item, stand_in) = self.lock().mute_subject(&id)?;
+        Ok(if stand_in { rules::message_mute_options(&item) } else { rules::mute_options(&item) })
     }
 
     /// As the core does (task E8.6a): the value from the entry, a rule unless the conversation is
@@ -1193,11 +1216,15 @@ impl InboxSource for DemoSource {
     ) -> Result<Muted, InboxError> {
         let now = self.now();
         let mut data = self.lock();
-        let item = data.items.iter().find(|item| item.id == id).ok_or(InboxError::NotFound)?;
+        let (item, stand_in) = data.mute_subject(&id)?;
         if until.is_some_and(|until| until <= now) {
             return Err(InboxError::Other("the end of muting has passed".into()));
         }
-        let target = rules::mute_target(item, scope)
+        if stand_in && scope == MuteScope::Conversation {
+            return Err(InboxError::Other("a mail without an entry is muted by its traits".into()));
+        }
+        let id = item.id.clone();
+        let target = rules::mute_target(&item, scope)
             .ok_or_else(|| InboxError::Other("this entry has nothing to mute it by".into()))?;
         let source = item.source.clone();
         let (rule, new_rule) = if scope.keeps_rule(effect, until.is_some()) {
@@ -1759,6 +1786,31 @@ mod tests {
         assert_eq!(facet, Facet { key: FacetKey::Tag, value: "backup".into() }, "the second tag");
     }
 
+    /// Issue #123: a folder's message without an entry is muted by its traits; one filed in an entry
+    /// stands for that entry.
+    #[tokio::test]
+    async fn a_message_is_muted_by_its_traits_or_through_its_entry() {
+        let demo = DemoSource::new(now());
+        let filed = |message: &str| {
+            let data = demo.lock();
+            data.items.iter().any(|item| matches!(&item.link, Some(Link::Mail { message: m }) if m == message))
+        };
+        assert!(!filed("m:w6"), "the minutes were read and have no entry");
+        let options = demo.list_mute_options("m:w6".into()).await.expect("options of a message");
+        assert!(options.iter().all(|option| option.scope != MuteScope::Conversation), "{options:?}");
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
+        assert!(options.iter().any(|option| option.scope == sender));
+        let conversation = demo.mute_item("m:w6".into(), MuteScope::Conversation, None, MuteEffect::Hide).await;
+        assert!(matches!(conversation, Err(InboxError::Other(_))), "no entry to close: {conversation:?}");
+        let muted = demo.mute_item("m:w6".into(), sender, None, MuteEffect::Info).await.expect("muted");
+        let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
+        assert_eq!(facet, Facet { key: FacetKey::Sender, value: "jonas.weber@work.example.org".into() });
+        assert_eq!(demo.list_mute_options("m:nope".into()).await, Err(InboxError::NotFound));
+        assert!(filed("m:w1"), "the budget mail is an entry");
+        let through = demo.list_mute_options("m:w1".into()).await.expect("its entry's options");
+        assert_eq!(through.first().map(|option| option.scope), Some(MuteScope::Conversation), "the entry's own");
+    }
+
     fn folder<'a>(folders: &'a [Folder], id: &str) -> &'a Folder {
         folders.iter().find(|folder| folder.id == id).expect("a demo folder")
     }
@@ -1887,6 +1939,7 @@ mod tests {
 
     fn draft(account: &str, to: &[&str]) -> Draft {
         Draft {
+            html: None,
             id: None,
             account: account.into(),
             to: to.iter().map(|to| address("", to)).collect(),

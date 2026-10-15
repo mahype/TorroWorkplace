@@ -145,7 +145,7 @@ impl Popup {
     /// The summary (plain text) and body of the popup, in the core's language. The body is shown
     /// as plain text, so whoever shows it escapes it for servers that read markup.
     pub fn text(&self) -> (String, String) {
-        let see = || tr("Open the inbox to see them.").to_string();
+        let see = || tr("Open the Notification Hub to see them.").to_string();
         match self {
             Popup::Entry(entry) => (entry.title.clone(), entry.source.clone()),
             Popup::Bundle { count, .. } => (trf("{n} new for you", &[("n", count)]), see()),
@@ -731,7 +731,7 @@ async fn show_popup(popup: Popup, answer: Box<dyn FnOnce(Answer) + Send>) -> not
         // The summary is plain text by the specification; only the body may carry markup.
         .summary(&summary)
         .body(&crate::notify::plain(&body))
-        .action("default", tr("Open inbox"));
+        .action("default", tr("Open Notification Hub"));
     if popup.messages().is_some() {
         notification.action("archive", torro_core::i18n::trc("action", "Archive")).action("read", tr("Mark read"));
     } else if popup.entry().is_some() {
@@ -1033,7 +1033,7 @@ mod tests {
         let bundle = Popup::Bundle { count: 5, urgent: false };
         assert_eq!(
             bundle.text(),
-            (trf("{n} new for you", &[("n", &5)]), tr("Open the inbox to see them.").to_string())
+            (trf("{n} new for you", &[("n", &5)]), tr("Open the Notification Hub to see them.").to_string())
         );
         let named = Popup::AfterQuiet { count: 4, event: Some(" Kundentermin ".into()) };
         assert_eq!(
@@ -1138,7 +1138,7 @@ mod tests {
             bundle.text(),
             (
                 trf("{n} new messages from {senders}", &[("n", &3), ("senders", &"Lena, Ben")]),
-                tr("Open the inbox to see them.").to_string()
+                tr("Open the Notification Hub to see them.").to_string()
             )
         );
         assert_eq!((bundle.urgent(), bundle.entry(), bundle.messages()), (false, None, None), "no buttons");

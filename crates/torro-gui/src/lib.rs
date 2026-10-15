@@ -20,6 +20,8 @@
 //! - [`links`]: web and mail addresses in plain text (`links::pieces`, `links::openable`,
 //!   `links::meeting`), to make them clickable.
 //! - [`markdown`]: Markdown to read (GitHub texts) in the Torro look.
+//! - [`selectable`]: text to read that can be selected and copied but not changed, with the
+//!   "Links" of its addresses below it.
 //! - [`shell`]: the Linear window frame (sidebar, inset panel, header bar, properties column)
 //!   and the app switcher; the sidebar expanded, collapsed to a rail of icons, or as a drawer.
 //! - [`ui_state`]: what a window remembers between starts (`ui.json`: the sidebar choice).
@@ -37,6 +39,7 @@ pub mod layout;
 pub mod links;
 pub mod markdown;
 pub mod panel;
+pub mod selectable;
 pub mod shell;
 pub mod source;
 pub mod split;

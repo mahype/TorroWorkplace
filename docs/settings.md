@@ -1,11 +1,17 @@
 # Einstellungen: die Steuerzentrale
 
-Stand: 2026-10-11. **Konzept zur Freigabe.**
+Stand: 2026-10-14. **Konzept zur Freigabe**; die Einstellungen in den Apps (unten) sind am
+2026-10-14 entschieden.
 
 Alles, was die Suite als Ganzes betrifft, wird an **einer** Stelle eingestellt: in der
 Steuerzentrale des Kerns (`torroworkplace ui`). Die Apps (Kalender, Aufgaben, später weitere)
 haben keine eigenen Kontoeinstellungen. Fehlt ihnen ein Konto, zeigen sie einen Hinweis mit dem
 Knopf „Open Settings“, der die Steuerzentrale an der richtigen Stelle öffnet.
+
+Was nur eine App betrifft (welche Kalender sie zeigt, die Bots des Assistenten, die Regeln des
+Eingangs …), stellt man **in der App selbst** ein: Das Zahnrad zeigt die Einstellungen dieser App im
+Inhaltsbereich desselben Fensters, ohne eigenes Fenster und ohne Dialog darüber. Siehe
+[Einstellungen in den Apps](#einstellungen-in-den-apps).
 
 Vorbild sind die Einstellungen von **TorroWhisper** (Aufbau, Seiten, Speichern) und
 **TorroMail** (Konten, Anbieter-Katalog, Einrichtungsassistent, Zugriff für KI-Clients). Beide
@@ -44,6 +50,97 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Updates** | Automatisch prüfen, „Check for updates now“, zuletzt geprüft | später |
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
+
+Mit den Einstellungen in den Apps (unten) bekommt die Seitenleiste zwei Gruppen: **Suite**
+(Overview, Accounts, Agents & API, Approvals, Workspaces, Appearance, General) und **Apps**
+(Assistant, Calendar, Tasks, Inbox, Mail). Ein Eintrag unter „Apps“ zeigt dieselben Seiten wie das
+Zahnrad in der App, dazu oben „Open“ und ob die App installiert ist; die heutige Seite **Apps**
+geht darin auf.
+
+## Einstellungen in den Apps
+
+Entschieden am 2026-10-14 (Mockup im Gespräch: der Assistent).
+
+Warum: Heute öffnet das Zahnrad jeder App die Steuerzentrale als eigenes Fenster, immer auf
+„Accounts“. Was man in der App sucht, steht dort weit weg: die Kalender in der Detailseite jedes
+Kontos, die Quellen des Eingangs verteilt auf vier Kontoseiten, die Seite Assistant mit 14 Gruppen
+untereinander. Die Nacht des Kalenders steht an zwei Stellen.
+
+### Wie es aussieht
+
+```
+┌ Seitenleiste der App ┐┌ Inhalt ──────────────────────────────────────────────────────┐
+│ + Neuer Chat         ││ ← Settings › General                                         │
+│ Heute                │├────────────────┬─────────────────────────────────────────────┤
+│  Wochenplanung       ││ General        │ Status                                      │
+│  Mail an Jonas       ││ Profile        │  ● On                     [Turn off…]       │
+│ Bots                 ││ Bots           │ New chats                                   │
+│  Release-Bot         ││ Access         │  Engine · Model · Effort                    │
+│                      ││ Voice          │ Engines                                     │
+│                      ││ History        │  Anthropic ● connected                      │
+│                      ││ ────────────── │                                             │
+│                      ││ Appearance     │                                             │
+│                      ││ ↗ All settings │                                             │
+└──────────────────────┘└────────────────┴─────────────────────────────────────────────┘
+```
+
+- **Das Zahnrad schaltet den Inhaltsbereich um**: statt Chat, Woche oder Liste die Einstellungen
+  der App. Kein eigenes Fenster, kein abgedunkelter Dialog. Die Seitenleiste der App bleibt stehen;
+  ein Klick dort (ein Chat, ein Kalender, eine Liste) schließt die Einstellungen und öffnet ihn.
+- **Kopfleiste** (44): „← Settings › <Abschnitt>“. Der Pfeil, Esc oder ein zweiter Klick aufs
+  Zahnrad führen zurück dorthin, wo man war. Das Zahnrad ist hervorgehoben, solange die
+  Einstellungen offen sind.
+- **Links im Inhalt die Abschnitte** als ruhige Liste (Zeilen wie in der Seitenleiste, ohne
+  Rahmen), rechts die Seite. Eine Seite besteht aus Gruppen wie in der Steuerzentrale (Überschrift,
+  Zeilen, erklärender Satz). Unterseiten (ein Bot, das Gedächtnis) öffnen sich an derselben Stelle,
+  der Pfad wird länger: „← Settings › Bots › Release-Bot“.
+- **Unten in der Liste**: „Appearance“ (in jeder App gleich, mit dem Satz „Applies to all apps of the
+  suite.“) und „All settings ↗“, das die Steuerzentrale beim Eintrag dieser App öffnet.
+- **Kleiner werden** wie überall (Design-Skill, Abschnitt 0): Mittel zeigt die Abschnitte als Menü
+  in der Kopfleiste („General ▾“), Schmal als Liste, aus der ein Abschnitt als eigene Seite mit
+  „‹ Back“ aufgeht.
+- **Direkt öffnen**: `--settings <abschnitt>` in jeder App (auch mit `--demo`, für die
+  Sichtprüfung). Hinweise in der App, die heute die Steuerzentrale öffnen („Change access“ unter
+  einer abgelehnten Antwort, „Access…“ eines Bots, „All rules“ im Eingang), öffnen künftig den
+  passenden Abschnitt im selben Fenster. Konten einrichten bleibt in der Steuerzentrale.
+
+### Was wohin gehört
+
+| App | Abschnitte | kommt heute von |
+|---|---|---|
+| **Assistant** | General (an/aus, neue Chats: Engine, Modell, Denkstufe; Liste der Engines) · Profile (Profil und Gedächtnis) · Bots (je Bot eine Unterseite: was er benutzen darf) · Access (was der Assistent benutzen darf, Freigabe, Auswahl der Sammlungen) · Voice (Sprechen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) | Seite Assistant, aufgeteilt; Bot-Seite |
+| **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert) · Night | Kontodetail „Calendars and lists“; General › Calendar (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) |
+| **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) | Kontodetail „Calendars and lists“ |
+| **Inbox** | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, ntfy-Themen, „Show new mail in Inbox“) · Rules | Seite Inbox; Abschnitte „Inbox“ und „Topics“ der Kontoseiten |
+| **Mail** (im Fenster des Eingangs) | Sender (Absendername, Signatur je Konto) · Folders (offene Ordnerfragen) | Kontodetail Mail |
+
+In der Steuerzentrale bleiben: Konten (Status, Verbindung, welche Dienste ein Konto liefert,
+Entfernen), Agents & API, Approvals, Workspaces, General (Sprache, Start beim Anmelden). Die
+Kontodetailseiten werden dadurch kurz; wo eine Einstellung umzieht, steht dort eine Zeile, die zum
+neuen Ort führt („Calendars and lists are chosen in Calendar and Tasks.“): Sie schlägt den Eintrag der
+App unter „Apps“ in der Steuerzentrale auf.
+
+Was im Fenster gewählt wird, gilt für die ganze Suite (wie heute in der Steuerzentrale). Die
+spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht als Umbau.
+
+### Technik
+
+- Die Seiten ziehen aus dem Programm `torroworkplace` in eine neue Bibliothek
+  `crates/torro-settings-ui` um: die Seiten, die Zeilen-Bausteine (`setting_row`, `pressable`,
+  `chevron`, `dialog`, `confirm`) und ein **Host** für den Inhaltsbereich (Abschnittsliste,
+  Kopfleiste mit Pfad, Seite, Laden und Senden). Die Steuerzentrale und die Apps zeigen dieselben
+  Seiten; nichts wird doppelt gebaut.
+- Seiten bleiben wie heute: Sie geben eine `Action` zurück, der Host schickt den Request und lädt
+  neu. Jede App lädt beim Öffnen der Einstellungen nur, was ihre Abschnitte brauchen.
+  Den Weg zum Dienst gibt die App dem Host; mit `--demo` antwortet er im Speicher und ändert nichts
+  Echtes.
+- Nur ein Mensch öffnet die Einstellungen. Antworten des Assistenten, Mails und Einträge im Eingang
+  können keinen Abschnitt aufschlagen, und Agenten haben kein Ziel `settings:…` für `apps.open_app`.
+- **Oberfläche, API, MCP:** keine neue Funktion. Alle Einstellungen gehen über Requests, die es
+  schon gibt (`settings.set_setting`, `settings.set_collection_shown`, `inbox.mute_source`,
+  `inbox.remove_rule`, `accounts.update_mail_account`, `clients.update_client` …), nur an anderer
+  Stelle der Oberfläche. Die Apps nutzen den App-Schlüssel wie die Steuerzentrale; die Rechte von
+  Assistent und Bots (`clients.*`, `Mcp::Never`) ändert weiter nur ein Mensch, nie ein Agent.
 
 ## Konten
 

@@ -233,7 +233,7 @@ impl App {
             self.choice.as_ref(),
             effort,
             &text,
-            &self.without,
+            (&self.without, self.mode),
             None,
         ) else {
             return Task::none();

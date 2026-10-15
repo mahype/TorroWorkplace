@@ -1471,6 +1471,123 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: neuer Start → zu; Aufklappen → gespeichert → nächster Start offen; Zuklappen vergisst; fremde
   Namen bleiben; `trc` mit und ohne Eintrag, beide Sprachen.
 
+### E8.23 Text markieren und kopieren, Knopfleiste des Lesers bricht um (Issue #119)
+- [x] erledigt (2026-10-14: neuer Baustein `torro_gui::selectable` – `Selectable` ist ein nur lesbarer `text_editor`
+  (Änderungen werden verworfen), der nur die Tasten des Lesens nimmt: ⌘C/Strg+C, ⌘A/Strg+A, Umschalt+Pfeile, Escape;
+  alle anderen Tasten (`e`, `j`, Enter …) bleiben beim Fenster. Links sind darin nicht klickbar, darum stehen die
+  Web-Adressen des Textes darunter als „Links“ (`selectable::links_section`, Zeilen wie im Kalender, Schnitt aus
+  `torro_gui::links`; `mailto:` und alles andere öffnet nicht). Der Eingang hält einen `Selectable` für den Text in
+  Leser bzw. Paneel (`App::follow_text`, neu nur, wenn sich der Text ändert). „Copy text“ (`Icon::Copy`): im Leser
+  bei den Werkzeugen, im Paneel rechts neben den Hinweisen unter der Mail bzw. neben dem Titel „Message“ eines
+  Eintrags; Hinweis „Copied“. Die Eigenbau-Erkennung `mail::pieces` entfällt. Entscheidungen: der Text steht so, wie
+  er geschrieben ist (keine geschützten Bindestriche mehr, `detail::unbroken` entfällt), damit Kopiertes stimmt;
+  die Knopfleiste des Lesers geht, wenn die Icons nicht in eine Zeile passen, in zwei Zeilen (Werkzeuge rechts in
+  der zweiten, beide brechen in sehr schmalen Fenstern um) statt Aktionen in „…“ zu verstecken. Der Kalender nutzt
+  den Baustein noch nicht (eigene Kopie in `editor.rs`), eigene Aufgabe)
+- **Modell:** Opus · **Braucht:** E8.3, E8.21 · **Dateien:** `crates/torro-gui/src/{selectable,lib}.rs`,
+  `crates/torroinbox/src/{app,mail,detail}.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Leser des Mail-Fensters, Paneel eines Eintrags bzw. einer Mail. **API/MCP:** keine – der Text kommt
+  schon über `inbox.get_item` / `mail.get_message`, Markieren und Kopieren sind reine Oberfläche.
+- **Abnahme:** Tests: Änderungen ändern den Text nie, nur Lesetasten werden genommen, „Copy text“ schreibt einmal in
+  die Zwischenablage mit dem Klartext und zeigt „Copied“, Links ohne `mailto:`/`file:`, Knopfleiste in zwei Zeilen
+  unter der Breite einer Icon-Zeile. Sichtprüfung: Markieren mit Maus und ⌘C.
+
+### E8.24 KI-Aufgabe und KI-Termin aus Eintrag oder Mail (Issue #120)
+- [x] erledigt (2026-10-14: zwei neue Requests `inbox.suggest_task_from_item` / `inbox.suggest_event_from_item`
+  (Bereich Inbox, Zugriff Write wegen KI-Kosten, MCP-Tools gleichen Namens, offene Welt). Der Kern liest den Eintrag
+  wie `inbox.get_item` (bei Mail den ganzen Text aus `mail.get_message`, sonst den Eintragstext), wählt die KI
+  (`suggest::choose`: Standard des Assistenten aus `assistant_default`, wenn das ein KI-Konto ist, sonst das erste
+  KI-Konto ohne Problem; Coding-Agenten zählen nicht) und fragt sie einmal ohne Werkzeuge nach genau einem
+  JSON-Objekt. Der Inhalt steht als Daten zwischen `<message>`-Marken (eine schließende Marke im Text wird
+  aufgebrochen), die Anweisung sagt, nichts darin zu befolgen. Datenregel: Einträge von Mail, Nextcloud und Talk gehen
+  nur an lokale Modelle (`data_rule::held_back`); dann wird ein lokales Konto statt des Standards genommen, ohne
+  eines `not-connected`. Daten liest der Kern in der Zeitzone der Person (`2026-10-16` → Tag,
+  `2026-10-16T14:30` → Zeitpunkt; ganztägiges Ende ist der letzte Tag). Gespeichert wird nichts; dafür bekommen
+  `inbox.create_task_from_item` ein optionales `notes` und `inbox.create_event_from_item` optionale `location` und
+  `notes` (vor den Eintragstext gesetzt, Grenzen 2000/200 Zeichen, Freigabe-Zusammenfassung nennt sie). App:
+  „AI task“ / „AI event“ (`Sparkles`) neben „Make task“ / „Make event“ im Paneel und nach „Task“ im Leser; ohne KI
+  aus, Tooltip „AI task · Set up an AI first“ (`assistant.list_engines` beim Start und je Takt). Der Knopf öffnet
+  den vorhandenen Dialog sofort, eine leise Zeile sagt „Asking your AI…“, dann füllt der Vorschlag Titel,
+  Fälligkeit (`Due::On` für andere Tage), Notiz bzw. Tag, Beginn, Dauer (`Length::Minutes`), Ort und Teilnehmer
+  („With: …“ als Notiz). Entscheidungen: Knöpfe nur in Paneel und Leser – dort, wo der Inhalt gelesen wurde, wie
+  „Reply“; Zeilen und Karten behalten ihre Leisten (`RowAction` kennt keinen ausgegrauten Zustand; nachgeholt in E8.27). Ganztägige
+  Vorschläge werden 09:00 für eine Stunde, weil der Dialog nur Termine mit Uhrzeit anlegt. Teilnehmer landen in der
+  Notiz, weil ein Termin der Suite keine Teilnehmer hat. Kein Tastenkürzel)
+- **Modell:** Opus · **Braucht:** E3.5, E8.5b, C.15 · **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`,
+  `crates/torroworkplace/src/{suggest,core,inbox,approvals,audit,daemon,mcp,pim,main}.rs`,
+  `crates/torroworkplace/src/assistant/{mod,data_rule}.rs`, `crates/torroinbox/src/{suggest,app,detail,mail,main}.rs`,
+  `crates/torroinbox/Cargo.toml`, `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Paneel eines Eintrags, Leser des Mail-Fensters; Dialoge „Make task“ / „Make event“.
+- **API:** `Request::SuggestTaskFromItem` · `inbox.suggest_task_from_item` · Zugriff Write;
+  `Request::SuggestEventFromItem` · `inbox.suggest_event_from_item` · Zugriff Write.
+- **MCP:** `inbox_suggest_task_from_item`, `inbox_suggest_event_from_item`.
+- **Abnahme:** Tests mit Fake-Provider: Datum im Text wird `due` bzw. Terminzeit (`suggest.rs`, Kern-Test mit
+  Ollama-/OpenRouter-Attrappe samt Datenregel). Ohne KI sind die Knöpfe gesperrt und zeigen den Tooltip (`tr(...)`).
+
+### E8.25 Stummschalten im Mail-Fenster, ein Menü für Mail (Issue #123)
+- [x] erledigt (2026-10-14: Entscheidung: „Hide from inbox“ und „Mute“ sind für Mail **ein** Menü, die Glocke
+  „Mute…“ (`App::mutes_by_bell`, in jedem Fenster). Sie steht in Zeilen und Karten statt „…“
+  (`list::hide_action`, `mail::message_buttons`), im Leser und im Paneel; `m` öffnet sie. Dauer neu mit „1 week“
+  (`MuteFor::OneWeek`): 1 Stunde · bis morgen (= heute) · 1 Woche · immer. „This conversation“ + „Hide“ + „Always“
+  ist das alte „This conversation“, Absender/Domain sind Merkmale, „Always to Info“ entfällt (Absender + „Only
+  Info“), „Move to junk“ bleibt als letzter Punkt. Andere Quellen behalten „Hide from inbox“ (This entry, Mute
+  source). Ordnernachrichten ohne Eintrag: Glocke in Zeile, Karte, Leser und Paneel (`Message::AskMuteMail`),
+  `inbox.list_mute_options`/`inbox.mute_item` nehmen die Kennung der Mail (`m:…`): mit Eintrag gilt der Eintrag
+  (`Inbox::entry_of_message`), ohne werden nur die Merkmale aus dem Mail-Speicher angeboten
+  (`rules::message_stand_in`, `inbox_feed::message_stand_in`, `Inbox::handle_message`); die Unterhaltung ist dort
+  `error`. Freigaben nennen Absender usw. aus dem Speicher. Entfernt: `Message::HideSender`, `Undo::Hidden` im
+  Fenster (der Request `inbox.hide_sender` bleibt für API/MCP). Demo-Zustand `--open mute-mail`. Sichtprüfung nicht
+  möglich: macOS ohne Hyprland, die Ansichten aller Größen rendern im Test)
+- **Modell:** Opus · **Braucht:** E8.6b, E8.19 · **Dateien:** `crates/torroinbox/src/{app,mail,list,detail,keys}.rs`,
+  `crates/torro-inbox/src/{rules,demo}.rs`, `crates/torroworkplace/src/{core,inbox}.rs`,
+  `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torro-ipc/src/{lib,api}.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/{api,eingang}.md`
+- **Oberfläche:** Mail-Fenster (Zeilen, Karten, Leser, Paneel; auch Mail-Einträge der Zentrale). **API:** vorhanden
+  `Request::ListMuteOptions` · `inbox.list_mute_options` · Read und `Request::MuteItem` · `inbox.mute_item` · Write
+  (Regel Admin); neu: `id` darf eine Mail-Kennung `m:…` sein (kein neuer Befehl, Katalogbeschreibung ergänzt).
+  **MCP:** `inbox_list_mute_options`, `inbox_mute_item` (dieselben Tools).
+- **Abnahme:** Tests: Mute im Mail-Fenster sendet `inbox.mute_item` (Unterhaltung, Domain, Absender, 1 Woche);
+  eine Unterhaltung für eine Weile hält weitere Mails aus „For me“ (Kern); Ordnernachricht ohne Eintrag nur mit
+  Merkmalen, für Clients nur mit Konto, Freigabe nennt den Absender aus dem Speicher.
+
+### E8.26 Fenster unterscheidbar: Notification Hub, Mail, App Feed (Issue #127)
+- [x] erledigt (2026-10-14: Entscheidung 21 in [eingang.md](../eingang.md). Zentrale „Notification Hub“
+  (de „Mitteilungszentrale“), Mail-Fenster „Mail“, Benachrichtigungen-Fenster „App Feed“ (de „App-Feed“), weil
+  „Notification Hub“ und „Notifications“ sich ähnelten. Lange Namen „Torro Notification Hub“, „Torro Workplace
+  Mail“ (nicht „Torro Mail“: TorroMail ist ein eigenes Produkt), „Torro App Feed“. Umbenannt in Tray-Menü,
+  App-Umschalter, Titeln, Steuerzentrale (Abschnitt, Konten, Agenten, Assistent), Freigaben, CLI, Desktop-Hinweisen,
+  Assistent und API-Beschreibungen; „Inbox“ heißt nur noch der Mail-Ordner. Erkennungszeichen `shell::app_mark`:
+  Icon des Fensters in eigener Farbe (Standardfarben der Listen: Zentrale orange, Mail blau, App Feed pink) auf
+  getönter Kachel statt des Logos im Umschalter und in der Leiste, ohne Seitenleiste und Leiste (Schmal) vorn in der
+  Kopfleiste. „For me“ im Mail-Fenster mit `UserCheck`. Aktive Seitenleistenzeile bleibt neutral (Design-Regel
+  „Auswahl neutral“). Unverändert: Fensterklassen, `AppId`, `--view`, API-Bereich `inbox`)
+- **Modell:** Opus · **Braucht:** E8.1 · **Dateien:** `crates/torro-core/src/{app.rs,i18n/de.rs}`,
+  `crates/torro-gui/src/shell.rs`, `crates/torroinbox/src/{app,overview,list,detail,mail,keys}.rs`,
+  `crates/torroworkplace/src/{tray/*,ui/*,approvals,cli,core,inbox_notify,mcp}.rs`, `crates/torro-ipc/src/api.rs`,
+  `crates/torro-inbox/src/source.rs`, `crates/torroassistant/src/{chat,view}.rs`, `docs/{eingang,app-catalog}.md`
+- **Oberfläche:** alle drei Fenster, Tray, Steuerzentrale. **API/MCP:** keine neuen Befehle, nur Beschreibungen
+  (`apps.open_app`, `inbox.list_items`, `inbox.open_item`, Fehlertexte der Sicherheitsregel 1, MCP-Anleitung).
+- **Abnahme:** Tests: die drei Namen teilen kein Wort (beide Sprachen), jedes Fenster eigenes Icon und eigene Farbe,
+  Titel „Notification Hub · …“ / „Mail · …“ / „App Feed · …“, „For me“ ohne `Icon::Inbox`.
+
+### E8.27 Gesperrte Icon-Knöpfe gedimmt, KI-Knöpfe an Zeilen und Karten (Issue #168)
+- [x] erledigt (2026-10-14: `torro-gui`: Knöpfe ohne Nachricht (`icon_button`, `boxed_button`, `compact_button`,
+  `text_button`) blenden ihr Icon auf 40 % ab (`Svg::opacity`, weil Iced beim Tönen des Icons die Deckkraft
+  verwirft); `busy_button` bleibt voll. `RowAction` bekommt `blocked(grund)`, `press()` und `tip()`: gesperrt
+  steht der Knopf gedimmt in der Leiste, nimmt keinen Klick und nennt den Grund im Tooltip; ohne Taste kein
+  `kbd`. Eingang: „AI task“ steht gleich nach „Task“, „AI event“ gleich nach „Event“ – in den Aktionsleisten der
+  Zeilen (Zentrale, Mail, App Feed), auf den Karten von Mail-Einträgen, App Feed und Zentrale; ohne KI gesperrt mit
+  „Set up an AI first“. Auf Karten sind sie Begleiter (immer nur Icon, zählen nicht beim Wählen zwischen Wörtern
+  und Icons), damit die Karten ihre Wörter behalten; in den einzeiligen Karten von „To sort“ treten sie zurück, wo
+  die Wörter nur ohne sie passen. Ordnernachrichten ohne Eintrag bekommen keine KI-Knöpfe (der Vorschlag braucht
+  einen Eintrag). `suggest::off_button` entfällt)
+- **Modell:** Opus · **Braucht:** E8.24 · **Dateien:** `crates/torro-gui/src/widgets.rs`,
+  `crates/torroinbox/src/{suggest,list,notifications,hub,overview,mail,app}.rs`
+- **Oberfläche:** Icon-Knöpfe überall; Zeilen und Karten des Eingangs. **API/MCP:** keine Änderung
+  (`inbox.suggest_task_from_item`, `inbox.suggest_event_from_item` gibt es seit E8.24).
+- **Abnahme:** Tests: gesperrte Knöpfe blenden das Icon ab; `RowAction::blocked` ohne Klick, mit Grund; KI-Knöpfe
+  an Zeilen und Karten, ohne KI gesperrt mit Tooltip, mit KI schicken sie den Vorschlag; „To sort“ behält die Wörter.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,

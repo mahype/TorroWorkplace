@@ -99,9 +99,12 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
         // Muting by trait and the statistics name senders, domains and lists of mail (tasks E8.6a,
         // E8.8a); a task made of a mail takes its subject as title (task E8.7a), and so does an
         // event made of an entry, with the line naming the mail in its description (task E8.5b).
+        // An AI's suggestion of a task or event retells the entry, a mail too (issue #120).
         Request::HideSender { .. }
         | Request::CreateTaskFromItem { .. }
         | Request::CreateEventFromItem { .. }
+        | Request::SuggestTaskFromItem { .. }
+        | Request::SuggestEventFromItem { .. }
         | Request::ListMuteOptions { .. }
         | Request::MuteItem { .. }
         | Request::GetStats { .. }
@@ -160,8 +163,9 @@ pub fn reads_mail(name: &str) -> bool {
 
 /// An inbox entry from a mail account is mail content; one of Nextcloud or Talk (task E5.2) is held
 /// back the same way, messages and notifications of people the person works with. GitHub and ntfy
-/// go through (module docs).
-fn held_back(item: &Item) -> bool {
+/// go through (module docs). The AI's suggestions of a task or event (issue #120, `crate::suggest`)
+/// ask the same: such an entry goes only to a local model.
+pub fn held_back(item: &Item) -> bool {
     matches!(item.source.kind, SourceKind::Mail | SourceKind::Nextcloud | SourceKind::Talk)
 }
 
@@ -507,6 +511,27 @@ mod tests {
         };
         let asked = for_model(&Request::GetQuiet, &quiet, Place::Remote);
         assert!(!asked.withheld && asked.value.to_string().contains("Customer call"), "{}", asked.value);
+    }
+
+    /// Issue #120: an AI's suggestion retells the entry, a mail too: a model elsewhere reads that
+    /// it was withheld, or the error.
+    #[test]
+    fn a_suggestion_of_an_entry_is_withheld_from_remote_models() {
+        let asked = Request::SuggestTaskFromItem { id: "a1".into() };
+        let suggestion = torro_ipc::TaskSuggestion {
+            title: "Reply to the secret offer".into(),
+            notes: None,
+            due: None,
+            engine: "ai:ollama@localhost:11434".into(),
+            model: "qwen3:8b".into(),
+        };
+        let answer = Response::TaskSuggestion { suggestion };
+        let remote = for_model(&asked, &answer, Place::Remote);
+        assert!(remote.withheld && !remote.value.to_string().contains("secret"), "{}", remote.value);
+        assert!(for_model(&asked, &answer, Place::Local).value.to_string().contains("secret offer"));
+        let none = Response::Error { code: "not-connected".into(), message: "Set up an AI first.".into() };
+        let event = Request::SuggestEventFromItem { id: "a1".into() };
+        assert_eq!(for_model(&event, &none, Place::Remote).value["result"], "error");
     }
 
     /// Task C.10: notes a local model kept after reading mail stay with local models.

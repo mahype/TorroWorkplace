@@ -9,7 +9,7 @@ Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerz
 
 | App | Frage | Datenquelle | Status |
 |---|---|---|---|
-| **Inbox** (`torroinbox`) | Was ist reingekommen, und braucht es mich? | Der Eingang im Kern: wartende Agenten (Hooks), Freigaben, Kontoprobleme, Meldungen von Skripten; später Mail, Nextcloud, GitHub, ntfy, Slack. Konzept: [eingang.md](eingang.md) | **nächste**, in Arbeit ([tasks/eingang.md](tasks/eingang.md)); Fenster je Ausschnitt mit `--lane for-me\|info` oder `--source <quelle>` |
+| **Inbox** (`torroinbox`; Fenster „Notification Hub“, „Mail“, „App Feed“, siehe [eingang.md](eingang.md), Entscheidung 21) | Was ist reingekommen, und braucht es mich? | Der Eingang im Kern: wartende Agenten (Hooks), Freigaben, Kontoprobleme, Meldungen von Skripten; später Mail, Nextcloud, GitHub, ntfy, Slack. Konzept: [eingang.md](eingang.md) | **nächste**, in Arbeit ([tasks/eingang.md](tasks/eingang.md)); Fenster je Ausschnitt mit `--lane for-me\|info` oder `--source <quelle>` |
 
 ## Planen
 

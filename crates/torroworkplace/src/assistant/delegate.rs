@@ -100,7 +100,7 @@ impl Assistant {
     /// other than the one kept for `main`, and what [`Assistant::refusal`] refuses (`busy`, an engine
     /// that does not answer). The core calls it after it checked the assistant's client.
     pub async fn delegate(self: &Arc<Self>, ai: &AiAccounts, from: &Asking<'_>, request: Request) -> Response {
-        let Asking { conversation: main, assistant, without, read_mail } = *from;
+        let Asking { conversation: main, assistant, without, read_mail, mode } = *from;
         if let Some(refused) = torro_ipc::bots::limit_refusal(&request) {
             return refused;
         }
@@ -117,6 +117,7 @@ impl Assistant {
             client: bot.client.clone(),
             assistant: assistant.to_string(),
             without: without.to_vec(),
+            mode,
         };
         let asking = Request::AskBot { bot: bot.id.clone(), text: text.clone(), conversation: kept.clone() };
         if let Some(refused) = self.refusal(ai, &asking).await {
@@ -145,6 +146,8 @@ impl Assistant {
             effort: None,
             text,
             without: without.to_vec(),
+            // The bot's client is narrowed through the delegation already (its mode included).
+            mode: torro_ipc::assistant::Mode::Default,
             bot: Some(bot.clone()),
             on_behalf: Some(delegation),
             person: false,
@@ -194,6 +197,8 @@ pub struct Asking<'a> {
     /// The assistant's model read mail in this conversation: a bot whose model runs elsewhere is
     /// not asked (the data rule).
     pub read_mail: bool,
+    /// The permission mode of the assistant's answer (issue #132): the bot runs in it as well.
+    pub mode: torro_ipc::assistant::Mode,
 }
 
 /// What a bot's run for the assistant brought (task B.2), from the entries of the run.

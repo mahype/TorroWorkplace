@@ -107,7 +107,7 @@ fn notifications<'a>(data: &Data) -> Element<'a, Message> {
         tr("Notifications"),
         vec![wrapping_row(lines, switch)],
         Some(
-            tr("Approvals and waiting agents always come through. Events marked as free and all-day events keep the inbox as it is.")
+            tr("Approvals and waiting agents always come through. Events marked as free and all-day events keep the Notification Hub as it is.")
                 .to_string(),
         ),
     )
@@ -119,7 +119,7 @@ fn rules<'a>(state: &State, rules: &'a [Rule], hits: &[RuleHits], now: DateTime<
     let rows: Vec<Element<'a, Message>> = if rules.is_empty() {
         let hint = typo::text(
             typo::body(),
-            tr("Rules appear here when you mute something with the bell, move notices to a lane for good or hide a sender in the Inbox."),
+            tr("Rules appear here when you mute something with the bell, move notices to a lane for good or hide a sender in the Notification Hub."),
         )
         .style(theme::text_2);
         vec![container(hint).width(Fill).padding([space::m(), space::l()]).into()]
@@ -130,7 +130,10 @@ fn rules<'a>(state: &State, rules: &'a [Rule], hits: &[RuleHits], now: DateTime<
     widgets::group(
         tr("Rules"),
         rows,
-        Some(tr("Rules apply to new notices. Removing one leaves the entries in the Inbox as they are.").to_string()),
+        Some(
+            tr("Rules apply to new notices. Removing one leaves the entries in the Notification Hub as they are.")
+                .to_string(),
+        ),
     )
 }
 
@@ -328,7 +331,7 @@ fn app<'a>(data: &Data) -> Element<'a, Message> {
         tr("App"),
         vec![setting_row(None, AppId::INBOX.display_name, None, open)],
         Some(
-            tr("Entries are handled in the Inbox: mark them done, put them off for later, move them or mute them.")
+            tr("Entries are handled in the Notification Hub: mark them done, put them off for later, move them or mute them.")
                 .to_string(),
         ),
     )

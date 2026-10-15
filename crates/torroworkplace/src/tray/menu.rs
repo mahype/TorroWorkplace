@@ -5,11 +5,10 @@
 //!
 //! What waits for the person ([`Waiting`], task E3.3b) is **one** number: the open inbox entries
 //! "for me". Open approvals are such entries since E2.1, so the "Approvals (n)" of task A.8 went
-//! into it; the approvals page stays in the control centre ("Settings…"). While something waits,
-//! the menu starts with "Inbox (n)" and the five newest entries, all opening the Inbox app (it
-//! cannot be told yet which entry to show: that needs a channel into the running app). Titles of
-//! foreign sources are `untrusted`, so they reach the menu as [`plain`] text; what a front end
-//! must escape on top (DBusMenu's `_`, muda's `&`) it does itself.
+//! into it; the approvals page stays in the control centre ("Settings…"). The number stands only
+//! next to "Inbox" among the apps ("Inbox (3)"): single mails or notices never show in the menu,
+//! a tray that lists them gets in the way. What a front end must escape in a label (DBusMenu's
+//! `_`, muda's `&`) it does itself.
 //!
 //! The counts are part of the [`Snapshot`]; the daemon hands over a new one whenever something
 //! is written to the inbox or an approval changes, so the tray never asks the socket itself and
@@ -24,10 +23,9 @@
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{Request, SettingKey, VoiceState};
-use torro_pim::AccountState;
 use torro_setups::{LoadMode, TemplateSummary};
 
-use crate::core::{InboxLine, Snapshot};
+use crate::core::Snapshot;
 use crate::daemon::Daemon;
 
 /// What a click on an entry does.
@@ -93,57 +91,52 @@ pub fn waiting_line(waiting: Waiting) -> String {
     }
 }
 
-/// The longest title of an entry in the menu, in characters, before it ends in "…"; with the
-/// source after it, that is about what Omarchy's bar shows of a line.
-const TITLE_IN_MENU: usize = 28;
-
-/// The longest source name of an entry in the menu, in characters.
-const SOURCE_IN_MENU: usize = 16;
-
-/// The menu from docs/core.md for one snapshot, with the inbox on top while something waits
-/// ([`inbox_section`]).
+/// The menu from docs/core.md for one snapshot: the apps first, then the workspace templates,
+/// then "Settings…" and "Quit". Which workspace is active and which Nextcloud is signed in are
+/// left out: they say nothing the person needs here. Only work in progress or a problem with the
+/// templates gets a line ([`status_line`]).
 ///
 /// Labels stay short: Omarchy's bar draws tray menus about 232 px wide and cuts longer
 /// text off with an ellipsis.
 pub fn build(snapshot: &Snapshot) -> Vec<Item> {
     let mut menu = voice_section(snapshot.voice, snapshot.voice_enabled);
-    menu.extend(inbox_section(snapshot));
-    if let Some(name) = &snapshot.unsupported {
-        menu.push(info(trf("{name} not supported yet", &[("name", name)])));
-        menu.push(Item::Separator);
-    } else {
-        let load = per_template(snapshot, |t| {
-            let id = &t.id;
-            vec![
-                entry_if(
-                    tr("Load here"),
-                    snapshot.workspace_windows == 0,
-                    Request::LoadTemplate { id: id.clone(), mode: LoadMode::Empty },
-                ),
-                entry(tr("Add"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Add }),
-                entry(tr("Replace"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Replace }),
-            ]
-        });
-        menu.push(submenu(tr("Load template"), load));
-        menu.push(entry(tr("Save workspace"), Request::SaveTemplate { name: None }));
-        let update = per_template_entry(snapshot, |id| Request::UpdateTemplate { id });
-        menu.push(submenu(tr("Update"), update));
-        let delete = per_template_entry(snapshot, |id| Request::DeleteTemplate { id });
-        menu.push(submenu(tr("Delete"), delete));
-        menu.push(Item::Separator);
-    }
-    menu.push(open(tr("Inbox"), AppId::INBOX));
-    menu.push(open(tr("Calendar"), AppId::CALENDAR));
-    menu.push(open(tr("Tasks"), AppId::TASKS));
+    menu.extend(apps_section(Waiting::of(snapshot)));
     menu.push(Item::Separator);
-    menu.push(info(info_line(snapshot)));
-    if let Some(line) = account_line(snapshot) {
+    menu.extend(templates_section(snapshot));
+    if let Some(line) = status_line(snapshot) {
         menu.push(info(line));
     }
     menu.push(Item::Separator);
     menu.push(entry(tr("Settings…"), Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None }));
     menu.push(entry(tr("Quit"), Request::Quit));
     menu
+}
+
+/// Load, save, update and delete workspace templates, or why the window manager is not supported.
+fn templates_section(snapshot: &Snapshot) -> Vec<Item> {
+    if let Some(name) = &snapshot.unsupported {
+        return vec![info(trf("{name} not supported yet", &[("name", name)]))];
+    }
+    let load = per_template(snapshot, |t| {
+        let id = &t.id;
+        vec![
+            entry_if(
+                tr("Load here"),
+                snapshot.workspace_windows == 0,
+                Request::LoadTemplate { id: id.clone(), mode: LoadMode::Empty },
+            ),
+            entry(tr("Add"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Add }),
+            entry(tr("Replace"), Request::LoadTemplate { id: id.clone(), mode: LoadMode::Replace }),
+        ]
+    });
+    let update = per_template_entry(snapshot, |id| Request::UpdateTemplate { id });
+    let delete = per_template_entry(snapshot, |id| Request::DeleteTemplate { id });
+    vec![
+        submenu(tr("Load template"), load),
+        entry(tr("Save workspace"), Request::SaveTemplate { name: None }),
+        submenu(tr("Update"), update),
+        submenu(tr("Delete"), delete),
+    ]
 }
 
 /// What the voice listener does, for the tooltip and the menu; empty while voice is off.
@@ -172,67 +165,30 @@ fn voice_section(state: VoiceState, enabled: bool) -> Vec<Item> {
     vec![info(line.into()), entry(tr("Mute microphone"), mute), Item::Separator]
 }
 
-/// While something waits: "Inbox (n)" and the newest entries ("title · source"), then a
-/// separator. Empty when nothing waits; the Inbox app is still among the apps below.
-/// Every entry opens the Inbox app; jumping to one entry needs a channel into the app.
-fn inbox_section(snapshot: &Snapshot) -> Vec<Item> {
-    let waiting = Waiting::of(snapshot);
-    if waiting.total() == 0 {
-        return Vec::new();
-    }
-    let mut section = vec![open(&trf("Inbox ({n})", &[("n", &waiting.total())]), AppId::INBOX)];
-    section.extend(snapshot.inbox_newest.iter().map(|line| open(&entry_label(line), AppId::INBOX)));
-    section.push(Item::Separator);
-    section
+/// One entry per app of the suite; the control centre is "Settings…". Only the Inbox carries a
+/// number, what waits for the person ("Inbox (3)").
+fn apps_section(waiting: Waiting) -> Vec<Item> {
+    let inbox = match waiting.total() {
+        0 => tr("Notification Hub").to_string(),
+        n => trf("Notification Hub ({n})", &[("n", &n)]),
+    };
+    vec![
+        open(&inbox, AppId::INBOX),
+        open(tr("Mail"), AppId::INBOX_MAIL),
+        open(tr("App Feed"), AppId::INBOX_NOTIFICATIONS),
+        open(tr("Calendar"), AppId::CALENDAR),
+        open(tr("Tasks"), AppId::TASKS),
+        open(tr("Assistant"), AppId::ASSISTANT),
+    ]
 }
 
-/// "Title · Source" for one entry, both as [`plain`] text.
-fn entry_label(line: &InboxLine) -> String {
-    format!("{} · {}", plain(&line.title, TITLE_IN_MENU), plain(&line.source, SOURCE_IN_MENU))
-}
-
-/// `text` from outside the suite, cut to `max` characters, so that it shows exactly as written in
-/// a menu label: control characters (line breaks, tabs) become spaces, and the invisible marks
-/// that turn the direction of text are dropped, so a title cannot make the line read differently.
-/// Mnemonic marks are left to the front ends, which know their own (`linux.rs`, `desktop.rs`).
-fn plain(text: &str, max: usize) -> String {
-    let flat: String =
-        text.chars().filter(|c| !turns_direction(*c)).map(|c| if c.is_control() { ' ' } else { c }).collect();
-    crate::inbox::cap(flat.trim(), max)
-}
-
-/// The Unicode marks that embed, override or isolate a direction of text, and the plain marks.
-fn turns_direction(c: char) -> bool {
-    matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
-}
-
-/// `Workspace 3 · hyprland`, or what is going on instead.
-fn info_line(snapshot: &Snapshot) -> String {
+/// "Busy …" while a template is loaded or saved, or the problem the core ran into (the window
+/// manager not reachable, templates not readable); nothing while all is well.
+fn status_line(snapshot: &Snapshot) -> Option<String> {
     if snapshot.busy {
-        return tr("Busy …").into();
+        return Some(tr("Busy …").into());
     }
-    if let Some(problem) = &snapshot.problem {
-        return problem.clone();
-    }
-    match &snapshot.workspace {
-        Some(workspace) => {
-            trf("Workspace {workspace} · {backend}", &[("workspace", workspace), ("backend", &snapshot.backend)])
-        }
-        None => snapshot.backend.clone(),
-    }
-}
-
-/// The Nextcloud status: who is connected, a sign-in in progress, or a sync problem.
-fn account_line(snapshot: &Snapshot) -> Option<String> {
-    Some(match snapshot.account.as_ref()? {
-        AccountState::NotConnected => tr("Not connected to Nextcloud").to_string(),
-        AccountState::SigningIn { .. } => tr("Signing in to Nextcloud …").to_string(),
-        AccountState::Connected { problem: Some(problem), .. } => trf("Nextcloud: {problem}", &[("problem", problem)]),
-        AccountState::Connected { login_name, server, .. } => {
-            let host = server.split("://").nth(1).unwrap_or(server);
-            trf("Nextcloud: {account}", &[("account", &format!("{login_name}@{host}"))])
-        }
-    })
+    snapshot.problem.clone()
 }
 
 /// An entry that opens or focuses one of the suite's apps.
@@ -277,6 +233,11 @@ fn info(label: String) -> Item {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::InboxLine;
+    use torro_pim::AccountState;
+
+    /// Where the template entries start: after the six apps and a separator.
+    const TEMPLATES: usize = 7;
 
     /// The menu as text: `▸` marks a submenu, parentheses a greyed-out entry, `-` a separator.
     fn labels(menu: &[Item]) -> Vec<String> {
@@ -319,19 +280,17 @@ mod tests {
         assert_eq!(
             labels(&build(&snapshot())),
             [
+                tr("Notification Hub").to_string(),
+                tr("Mail").to_string(),
+                tr("App Feed").to_string(),
+                tr("Calendar").to_string(),
+                tr("Tasks").to_string(),
+                tr("Assistant").to_string(),
+                "-".to_string(),
                 sub(tr("Load template")),
                 tr("Save workspace").to_string(),
                 sub(tr("Update")),
                 sub(tr("Delete")),
-                "-".to_string(),
-                tr("Inbox").to_string(),
-                tr("Calendar").to_string(),
-                tr("Tasks").to_string(),
-                "-".to_string(),
-                format!(
-                    "({})",
-                    trf("Workspace {workspace} · {backend}", &[("workspace", &"3"), ("backend", &"hyprland")])
-                ),
                 "-".to_string(),
                 tr("Settings…").to_string(),
                 tr("Quit").to_string(),
@@ -346,9 +305,12 @@ mod tests {
             action_of(&menu, tr("Save workspace")),
             Some(Action::Run(Box::new(Request::SaveTemplate { name: None })))
         );
-        assert_eq!(action_of(&menu, tr("Inbox")), Some(Action::OpenApp(AppId::INBOX)));
+        assert_eq!(action_of(&menu, tr("Notification Hub")), Some(Action::OpenApp(AppId::INBOX)));
+        assert_eq!(action_of(&menu, tr("Mail")), Some(Action::OpenApp(AppId::INBOX_MAIL)));
+        assert_eq!(action_of(&menu, tr("App Feed")), Some(Action::OpenApp(AppId::INBOX_NOTIFICATIONS)));
         assert_eq!(action_of(&menu, tr("Calendar")), Some(Action::OpenApp(AppId::CALENDAR)));
         assert_eq!(action_of(&menu, tr("Tasks")), Some(Action::OpenApp(AppId::TASKS)));
+        assert_eq!(action_of(&menu, tr("Assistant")), Some(Action::OpenApp(AppId::ASSISTANT)));
         assert_eq!(
             action_of(&menu, tr("Settings…")),
             Some(Action::Run(Box::new(Request::OpenApp { app: AppId::WORKPLACE.binary.to_string(), target: None })))
@@ -359,7 +321,7 @@ mod tests {
     #[test]
     fn template_submenus_name_the_template() {
         let menu = build(&snapshot());
-        let Item::Submenu { items: update, .. } = &menu[2] else { panic!("update submenu") };
+        let Item::Submenu { items: update, .. } = &menu[TEMPLATES + 2] else { panic!("update submenu") };
         assert_eq!(
             update,
             &[Item::Entry {
@@ -367,7 +329,7 @@ mod tests {
                 action: Some(Action::Run(Box::new(Request::UpdateTemplate { id: "dev".into() })))
             }]
         );
-        let Item::Submenu { items: delete, .. } = &menu[3] else { panic!("delete submenu") };
+        let Item::Submenu { items: delete, .. } = &menu[TEMPLATES + 3] else { panic!("delete submenu") };
         assert_eq!(labels(delete), ["Entwicklung"]);
     }
 
@@ -375,7 +337,7 @@ mod tests {
     fn load_here_only_on_an_empty_workspace() {
         let load_items = |snapshot: &Snapshot| {
             let menu = build(snapshot);
-            let Item::Submenu { items: load, .. } = &menu[0] else { panic!("load submenu") };
+            let Item::Submenu { items: load, .. } = &menu[TEMPLATES] else { panic!("load submenu") };
             let Item::Submenu { items: template, .. } = &load[0] else { panic!("template submenu") };
             labels(template)
         };
@@ -389,7 +351,7 @@ mod tests {
     fn no_templates_shows_a_hint() {
         let menu = build(&Snapshot { templates: Vec::new(), ..snapshot() });
         let hint = format!("({})", tr("No templates yet"));
-        for index in [0, 2, 3] {
+        for index in [TEMPLATES, TEMPLATES + 2, TEMPLATES + 3] {
             let Item::Submenu { items, .. } = &menu[index] else { panic!("submenu {index}") };
             assert_eq!(labels(items), std::slice::from_ref(&hint));
         }
@@ -399,69 +361,61 @@ mod tests {
     fn unsupported_system_shows_why() {
         let snapshot = Snapshot { unsupported: Some("AeroSpace (macOS)".into()), ..Snapshot::default() };
         let menu = labels(&build(&snapshot));
-        assert_eq!(menu[0], format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")])));
-        assert_eq!(menu[1], "-");
+        assert_eq!(
+            menu[TEMPLATES],
+            format!("({})", trf("{name} not supported yet", &[("name", &"AeroSpace (macOS)")]))
+        );
+        assert_eq!(menu[TEMPLATES + 1], "-");
         assert_eq!(menu.last().map(String::as_str), Some(tr("Quit")));
     }
 
     #[test]
-    fn status_lines_show_busy_and_the_account() {
-        let busy = Snapshot { busy: true, account: Some(AccountState::NotConnected), ..snapshot() };
-        let menu = labels(&build(&busy));
-        assert!(menu.contains(&format!("({})", tr("Busy …"))));
-        assert!(menu.contains(&format!("({})", tr("Not connected to Nextcloud"))));
+    fn only_work_in_progress_or_a_problem_gets_a_line() {
+        let quiet = labels(&build(&Snapshot { account: Some(AccountState::NotConnected), ..snapshot() }));
+        assert_eq!(quiet[TEMPLATES + 4], "-", "no workspace, no Nextcloud line");
+        assert!(!quiet.contains(&format!("({})", tr("Not connected to Nextcloud"))));
+
+        let busy = labels(&build(&Snapshot { busy: true, ..snapshot() }));
+        assert_eq!(busy[TEMPLATES + 4], format!("({})", tr("Busy …")), "below the templates");
+        let broken = labels(&build(&Snapshot { problem: Some("Hyprland not reachable".into()), ..snapshot() }));
+        assert_eq!(broken[TEMPLATES + 4], "(Hyprland not reachable)");
     }
 
-    fn line(title: &str, source: &str) -> InboxLine {
-        InboxLine { id: format!("id-{title}"), title: title.into(), source: source.into() }
-    }
-
-    /// Task E3.3b: one number for everything "for me", approvals included.
+    /// Task E3.3b: one number for everything "for me", approvals included, next to "Inbox" only;
+    /// single entries never show in the menu.
     #[test]
-    fn the_inbox_leads_the_menu_with_one_number() {
+    fn the_inbox_carries_one_number_and_no_entries() {
         let none = Waiting::of(&snapshot());
         assert_eq!(none, Waiting::default());
         assert_eq!(waiting_line(none), String::new());
-        assert_eq!(labels(&build(&snapshot()))[0], format!("{} ▸", tr("Load template")));
 
         // An approval and two notices; the snapshot still knows the approval apart, the tray not.
         let waiting = Snapshot {
             approvals_waiting: 1,
             inbox_for_me: 3,
             inbox_urgent: 1,
-            inbox_newest: vec![line("Delete event", "Suite"), line("Backup failed", "backup")],
+            inbox_newest: vec![InboxLine { id: "a".into(), title: "Backup failed".into(), source: "backup".into() }],
             ..snapshot()
         };
         let three = Waiting::of(&waiting);
         assert_eq!((three, three.total()), (Waiting { for_me: 3, urgent: 1 }, 3), "approvals are not counted twice");
         let menu = build(&waiting);
-        assert_eq!(
-            labels(&menu)[..4],
-            [
-                trf("Inbox ({n})", &[("n", &3)]),
-                "Delete event · Suite".to_string(),
-                "Backup failed · backup".to_string(),
-                "-".to_string(),
-            ]
-        );
-        assert!(
-            menu[..3]
-                .iter()
-                .all(|item| matches!(item, Item::Entry { action: Some(Action::OpenApp(AppId::INBOX)), .. })),
-            "every inbox line opens the Inbox app"
-        );
-        assert_eq!(labels(&menu)[4], format!("{} ▸", tr("Load template")), "the rest of the menu follows unchanged");
+        let inbox = trf("Notification Hub ({n})", &[("n", &3)]);
+        assert_eq!(action_of(&menu, &inbox), Some(Action::OpenApp(AppId::INBOX)));
+        let quiet = labels(&build(&snapshot()));
+        let counted: Vec<String> =
+            quiet.iter().map(|l| if l == tr("Notification Hub") { inbox.clone() } else { l.clone() }).collect();
+        assert_eq!(labels(&menu), counted, "only the Inbox label changes, nothing is added");
+        assert!(!labels(&menu).iter().any(|l| l.contains("Backup failed")), "no single entry in the menu");
         assert!(!labels(&menu).contains(&trf("Approvals ({n})", &[("n", &1)])), "no second number for approvals");
         assert_eq!(waiting_line(three), trf("{n} for you", &[("n", &3)]));
     }
 
-    /// Titles come from agents and scripts: shown as written, never as a line break or turned
-    /// text, and short enough for the bar.
     /// Task C.9: while the listener runs the menu starts with what it does and "Mute microphone";
     /// voice off, there is nothing about it.
     #[test]
     fn the_menu_shows_listening_and_mutes_the_microphone() {
-        assert_eq!(labels(&build(&snapshot()))[0], format!("{} ▸", tr("Load template")), "off: nothing");
+        assert_eq!(labels(&build(&snapshot()))[0], tr("Notification Hub"), "off: nothing");
         for state in [VoiceState::Listening, VoiceState::Recording, VoiceState::Answering] {
             let menu = build(&Snapshot { voice: state, ..snapshot() });
             assert_eq!(
@@ -500,17 +454,5 @@ mod tests {
         );
         let off = Snapshot { voice: VoiceState::Off, voice_enabled: false, ..snapshot() };
         assert!(!labels(&build(&off)).contains(&tr("Mute microphone").to_string()), "voice off: nothing");
-    }
-
-    #[test]
-    fn foreign_titles_show_as_plain_text() {
-        let label = |title: &str, source: &str| entry_label(&line(title, source));
-        assert_eq!(label("fix_build", "my_script"), "fix_build · my_script", "mnemonics are the front ends' job");
-        assert_eq!(label("two\nlines\there", "x"), "two lines here · x");
-        assert_eq!(label("\u{202E}gnp.exe", "x"), "gnp.exe · x", "no turned text");
-        assert_eq!(label("<b>bold</b> &amp;", "x"), "<b>bold</b> &amp; · x", "markup stays text");
-        let long = "A very long title from an agent that goes on";
-        let cut: String = long.chars().take(TITLE_IN_MENU - 1).collect();
-        assert_eq!(label(long, "x"), format!("{cut}… · x"));
     }
 }

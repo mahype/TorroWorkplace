@@ -544,7 +544,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Links in der Fußzeile der Website repariert. 3 Dateien geändert.",
     ),
     ("Nightly build is flaky", "Nächtlicher Build ist unzuverlässig"),
-    ("Only you can change this entry, in the Inbox app.", "Nur du kannst diesen Eintrag ändern, in der App Inbox."),
+    (
+        "Only you can change this entry, in the Notification Hub.",
+        "Nur du kannst diesen Eintrag ändern, in der Mitteilungszentrale.",
+    ),
     ("Refactored the settings module.", "Modul für Einstellungen umgebaut."),
     (
         "Requested by Claude Desktop over MCP. Deleting cannot be undone.",
@@ -561,7 +564,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("3 of the last 10 runs failed in the same test.", "3 der letzten 10 Läufe sind am selben Test gescheitert."),
     // Inbox app (torroinbox, E3.1)
     ("Inbox", "Eingang"),
-    ("Inbox · {view}", "Eingang · {view}"),
+    ("Notification Hub · {view}", "Mitteilungszentrale · {view}"),
     // Remote sources in the core (E5.2)
     (
         "{what}, mark its GitHub notification done and any mail about it read",
@@ -636,7 +639,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Change a topic of the ntfy account {account}", "Ein Thema des ntfy-Kontos {account} ändern"),
     // Control centre: ntfy and inbox per account (E5.14)
-    ("Show notifications in the Inbox", "Benachrichtigungen im Eingang zeigen"),
+    ("Show notifications in the Notification Hub", "Benachrichtigungen in der Mitteilungszentrale zeigen"),
     ("From Nextcloud and its apps", "Von Nextcloud und seinen Apps"),
     ("Talk", "Talk"),
     ("Unread conversations and mentions", "Ungelesene Unterhaltungen und Erwähnungen"),
@@ -672,19 +675,22 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Unsubscribe…", "Abbestellen…"),
     ("Unsubscribe from this topic?", "Dieses Thema abbestellen?"),
     (
-        "{label} no longer comes to the Inbox. Its entries stay there.",
-        "{label} kommt nicht mehr in den Eingang. Seine Einträge bleiben dort.",
+        "{label} no longer comes to the Notification Hub. Its entries stay there.",
+        "{label} kommt nicht mehr in die Mitteilungszentrale. Seine Einträge bleiben dort.",
     ),
     ("Subscribe {account} to another topic.", "Ein weiteres Thema für {account} abonnieren."),
-    ("The Inbox shows the topic by its label.", "Der Eingang zeigt das Thema mit seinem Etikett."),
-    ("Shown in the Inbox instead of the name.", "Steht im Eingang statt des Namens."),
     (
-        "The Inbox shows each topic by its label. On a public server a topic name works like a password.",
-        "Der Eingang zeigt jedes Thema mit seinem Etikett. Auf einem öffentlichen Server wirkt ein Themenname wie ein Passwort.",
+        "The Notification Hub shows the topic by its label.",
+        "Die Mitteilungszentrale zeigt das Thema mit seinem Etikett.",
+    ),
+    ("Shown in the Notification Hub instead of the name.", "Steht in der Mitteilungszentrale statt des Namens."),
+    (
+        "The Notification Hub shows each topic by its label. On a public server a topic name works like a password.",
+        "Die Mitteilungszentrale zeigt jedes Thema mit seinem Etikett. Auf einem öffentlichen Server wirkt ein Themenname wie ein Passwort.",
     ),
     (
-        "The Inbox shows the label. On a public server a topic name works like a password.",
-        "Der Eingang zeigt das Etikett. Auf einem öffentlichen Server wirkt ein Themenname wie ein Passwort.",
+        "The Notification Hub shows the label. On a public server a topic name works like a password.",
+        "Die Mitteilungszentrale zeigt das Etikett. Auf einem öffentlichen Server wirkt ein Themenname wie ein Passwort.",
     ),
     ("Login", "Anmeldung"),
     ("Change login", "Anmeldung ändern"),
@@ -711,7 +717,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{account} · Braucht auch Lesezugriff auf GitHub und das Repository",
     ),
     ("Enter the address of your ntfy server.", "Gib die Adresse deines ntfy-Servers ein."),
-    ("Choose the topics to show in the Inbox.", "Wähle die Themen, die der Eingang zeigt."),
+    ("Choose the topics to show in the Notification Hub.", "Wähle die Themen, die die Mitteilungszentrale zeigt."),
     ("This server needs a login for these topics.", "Dieser Server braucht für diese Themen eine Anmeldung."),
     ("Checking the topics with the ntfy server.", "Die Themen werden beim ntfy-Server geprüft."),
     ("ntfy is connected.", "ntfy ist verbunden."),
@@ -903,6 +909,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("What happens", "Was passiert"),
     ("1 hour", "1 Stunde"),
     ("Until tomorrow", "Bis morgen"),
+    ("1 week", "1 Woche"),
     ("No popup", "Kein Popup"),
     ("Only Info", "Nur Info"),
     ("All rules", "Alle Regeln"),
@@ -925,12 +932,12 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Nothing caught since {day}", "Nichts erfasst seit {day}"),
     ("today", "heute"),
     (
-        "Rules appear here when you mute something with the bell, move notices to a lane for good or hide a sender in the Inbox.",
-        "Regeln erscheinen hier, wenn du in der Inbox etwas mit der Glocke stummschaltest, Hinweise dauerhaft einer Spur zuordnest oder einen Absender ausblendest.",
+        "Rules appear here when you mute something with the bell, move notices to a lane for good or hide a sender in the Notification Hub.",
+        "Regeln erscheinen hier, wenn du in der Mitteilungszentrale etwas mit der Glocke stummschaltest, Hinweise dauerhaft einer Spur zuordnest oder einen Absender ausblendest.",
     ),
     (
-        "Entries are handled in the Inbox: mark them done, put them off for later, move them or mute them.",
-        "Einträge bearbeitest du in der Inbox: erledigen, auf später legen, verschieben oder stummschalten.",
+        "Entries are handled in the Notification Hub: mark them done, put them off for later, move them or mute them.",
+        "Einträge bearbeitest du in der Mitteilungszentrale: erledigen, auf später legen, verschieben oder stummschalten.",
     ),
     // Window kinds everywhere, one word for later (E8.1b)
     ("Later until {time}", "Später bis {time}"),
@@ -953,7 +960,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Tasks you make of entries show up here until they are done.",
         "Aufgaben aus Einträgen stehen hier, bis sie erledigt sind.",
     ),
-    ("The mail is no longer in the inbox.", "Die Mail ist nicht mehr im Eingang."),
+    ("The mail is no longer in the Notification Hub.", "Die Mail ist nicht mehr in der Mitteilungszentrale."),
     ("Couldn't open the mail.", "Die Mail konnte nicht geöffnet werden."),
     ("Its folder is not listed.", "Ihr Ordner ist nicht aufgeführt."),
     ("Activity", "Verlauf"),
@@ -1027,7 +1034,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("a trait of {entry}", "ein Merkmal von {entry}"),
     ("Mute {what} until {when} ({effect})", "{what} bis {when} stummschalten ({effect})"),
     ("Mute {what} for good ({effect})", "{what} dauerhaft stummschalten ({effect})"),
-    ("Stop muting {what} in the inbox", "{what} im Eingang nicht mehr stummschalten"),
+    ("Stop muting {what} in the Notification Hub", "{what} in der Mitteilungszentrale nicht mehr stummschalten"),
     ("{what} in every mail account", "{what} in allen Mail-Konten"),
     ("{what} for every agent", "{what} für alle Agenten"),
     ("no popup", "kein Popup"),
@@ -1041,7 +1048,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Oldest first", "Älteste zuerst"),
     // Window kinds of torroinbox (E8.1)
     ("Mail · {view}", "E-Mail · {view}"),
-    ("Notifications · {view}", "Benachrichtigungen · {view}"),
+    ("App Feed · {view}", "App-Feed · {view}"),
+    // Window names, told apart (issue #127)
+    ("Notification Hub", "Mitteilungszentrale"),
+    ("App Feed", "App-Feed"),
     ("For me", "Für mich"),
     ("Info", "Zur Info"),
     ("Snoozed", "Vertagt"),
@@ -1102,7 +1112,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("An approval closes once it is decided.", "Eine Freigabe schließt sich, sobald sie entschieden ist."),
     // Inbox app: polish (torroinbox, E3.2b)
     ("Other", "Weitere"),
-    ("Couldn't load the inbox.", "Der Eingang ließ sich nicht laden."),
+    ("Couldn't load the entries.", "Die Einträge ließen sich nicht laden."),
     ("Couldn't change the entry.", "Der Eintrag ließ sich nicht ändern."),
     ("Couldn't change the source.", "Die Quelle ließ sich nicht ändern."),
     ("Couldn't open the app.", "Die App ließ sich nicht öffnen."),
@@ -1223,11 +1233,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Less than a minute left", "Noch weniger als eine Minute"),
     ("{n} min left", "noch {n} Min."),
     // Command line: notify (E1.3)
-    ("Posted to the inbox ({id}).", "In den Eingang gestellt ({id})."),
-    ("Not posted: this source is muted in the inbox.", "Nicht gestellt: Diese Quelle ist im Eingang stummgeschaltet."),
+    ("Posted to the Notification Hub ({id}).", "In die Mitteilungszentrale gestellt ({id})."),
     (
-        "Torro Workplace isn't running, so nothing reached the inbox. Start it with `torroworkplace daemon`.",
-        "Torro Workplace läuft nicht, darum ist nichts im Eingang angekommen. Starte es mit `torroworkplace daemon`.",
+        "Not posted: this source is muted in the Notification Hub.",
+        "Nicht gestellt: Diese Quelle ist in der Mitteilungszentrale stummgeschaltet.",
+    ),
+    (
+        "Torro Workplace isn't running, so nothing reached the Notification Hub. Start it with `torroworkplace daemon`.",
+        "Torro Workplace läuft nicht, darum ist nichts in der Mitteilungszentrale angekommen. Starte es mit `torroworkplace daemon`.",
     ),
     ("notify needs a title: --title \"Backup finished\"", "notify braucht einen Titel: --title \"Backup finished\""),
     (
@@ -1252,11 +1265,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "der Hook braucht genau einen Agenten: torroworkplace hook claude-code|codex|gemini [--key-file <datei>]",
     ),
     // Approvals: inbox summaries (E1.2b)
-    ("Report \"{title}\" to the inbox", "„{title}“ in den Eingang melden"),
-    ("Report the state of a coding agent to the inbox", "Den Zustand eines Coding-Agenten in den Eingang melden"),
+    ("Report \"{title}\" to the Notification Hub", "„{title}“ an die Mitteilungszentrale melden"),
     (
-        "Mark its own inbox entries of thread {thread} as done",
-        "Eigene Eingangseinträge des Vorgangs {thread} erledigen",
+        "Report the state of a coding agent to the Notification Hub",
+        "Den Zustand eines Coding-Agenten an die Mitteilungszentrale melden",
+    ),
+    (
+        "Mark its own Notification Hub entries of thread {thread} as done",
+        "Eigene Einträge des Vorgangs {thread} in der Mitteilungszentrale erledigen",
     ),
     ("Mark {entry} as done", "{entry} als erledigt markieren"),
     ("Open {entry} again", "{entry} wieder öffnen"),
@@ -1267,11 +1283,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Move {entry} to {lane} and send later notices of {source} there too",
         "{entry} nach „{lane}“ verschieben und spätere Meldungen von {source} auch dorthin",
     ),
-    ("Mute {source} in the inbox", "{source} im Eingang stummschalten"),
-    ("Unmute {source} in the inbox", "{source} im Eingang wieder laut schalten"),
+    ("Mute {source} in the Notification Hub", "{source} in der Mitteilungszentrale stummschalten"),
+    ("Unmute {source} in the Notification Hub", "{source} in der Mitteilungszentrale wieder laut schalten"),
     ("Stop sending notices of {source} to {lane}", "Meldungen von {source} nicht mehr nach „{lane}“ schicken"),
-    ("Remove an unknown inbox rule", "Eine unbekannte Eingangsregel entfernen"),
-    ("an unknown inbox entry", "einen unbekannten Eingangseintrag"),
+    ("Remove an unknown rule of the Notification Hub", "Eine unbekannte Regel der Mitteilungszentrale entfernen"),
+    ("an unknown entry of the Notification Hub", "einen unbekannten Eintrag der Mitteilungszentrale"),
     ("its source", "seiner Quelle"),
     // Inbox: account problems (E2.1)
     ("Sign-in to {account} was refused", "Anmeldung bei {account} wurde abgelehnt"),
@@ -1297,7 +1313,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Couldn't open the entry.", "Der Eintrag ließ sich nicht öffnen."),
     // Tray: inbox count (E3.3b)
-    ("Inbox ({n})", "Eingang ({n})"),
+    ("Notification Hub ({n})", "Mitteilungszentrale ({n})"),
     // Control centre: agents & API (A.6)
     ("Agents & API", "Agenten & API"),
     ("Agents", "Agenten"),
@@ -1339,7 +1355,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Task lists", "Aufgabenlisten"),
     ("GitHub repositories", "GitHub-Repositorys"),
-    ("Inbox sources", "Eingangsquellen"),
+    ("Notification Hub sources", "Quellen der Mitteilungszentrale"),
     ("Includes calendars added later.", "Auch später hinzugefügte Kalender."),
     (
         "Includes lists added later, GitHub filter lists too.",
@@ -1361,7 +1377,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Custom: {areas}", "Eigene: {areas}"),
     ("Custom: {areas} +{n}", "Eigene: {areas} +{n}"),
     ("No access", "Kein Zugriff"),
-    ("Reports to the inbox", "Meldet an den Eingang"),
+    ("Reports to the Notification Hub", "Meldet an die Mitteilungszentrale"),
     ("Used {when}", "Benutzt {when}"),
     ("Never used", "Nie benutzt"),
     (
@@ -1369,8 +1385,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Coding-Agenten und Apps, die Torro Workplace über MCP nutzen, jeder mit eigenem Schlüssel.",
     ),
     (
-        "Hooks report to the inbox what an agent waits for or has finished. They see nothing.",
-        "Hooks melden dem Eingang, worauf ein Agent wartet oder was er fertig hat. Sie sehen nichts.",
+        "Hooks report to the Notification Hub what an agent waits for or has finished. They see nothing.",
+        "Hooks melden der Mitteilungszentrale, worauf ein Agent wartet oder was er fertig hat. Sie sehen nichts.",
     ),
     (
         "Scripts and other programs that use the API with their own key.",
@@ -1380,8 +1396,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("No agent", "Kein Agent"),
     ("Reports and resolves its own entries, sees none", "Meldet und löst eigene Einträge auf, sieht keine"),
     (
-        "A hook's key sits in files the agent can read itself, so it may only report to the inbox and sees nothing else. These rights can't be changed.",
-        "Der Schlüssel eines Hooks steht in Dateien, die der Agent selbst lesen kann. Darum darf er nur an den Eingang melden und sieht sonst nichts. Diese Rechte lassen sich nicht ändern.",
+        "A hook's key sits in files the agent can read itself, so it may only report to the Notification Hub and sees nothing else. These rights can't be changed.",
+        "Der Schlüssel eines Hooks steht in Dateien, die der Agent selbst lesen kann. Darum darf er nur an die Mitteilungszentrale melden und sieht sonst nichts. Diese Rechte lassen sich nicht ändern.",
     ),
     ("Recent activity", "Letzte Aktionen"),
     ("No requests yet.", "Noch keine Anfragen."),
@@ -1452,15 +1468,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Found · set up with the {command} command", "Gefunden · wird mit dem Befehl {command} eingerichtet"),
     ("Found · writes {file}", "Gefunden · schreibt {file}"),
-    ("Its reports in the inbox appear under this name.", "Seine Meldungen erscheinen im Eingang unter diesem Namen."),
+    (
+        "Its reports in the Notification Hub appear under this name.",
+        "Seine Meldungen erscheinen in der Mitteilungszentrale unter diesem Namen.",
+    ),
     ("Enter a name.", "Gib einen Namen ein."),
     (
         "Another script has this name. Choose another one.",
         "Ein anderes Skript heißt schon so. Wähle einen anderen Namen.",
     ),
     (
-        "Areas, calendars, lists, inbox sources, mail accounts and what needs your approval can be narrowed on its page later.",
-        "Bereiche, Kalender, Listen, Eingangsquellen, E-Mail-Konten und was deine Freigabe braucht, kannst du später auf seiner Seite einschränken.",
+        "Areas, calendars, lists, Notification Hub sources, mail accounts and what needs your approval can be narrowed on its page later.",
+        "Bereiche, Kalender, Listen, Quellen der Mitteilungszentrale, E-Mail-Konten und was deine Freigabe braucht, kannst du später auf seiner Seite einschränken.",
     ),
     ("Restart {name} to use Torro Workplace.", "Starte {name} neu, um Torro Workplace zu nutzen."),
     ("The configuration could not be written: {error}", "Die Konfiguration ließ sich nicht schreiben: {error}"),
@@ -1482,7 +1501,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The {command} command reported an error.", "Der Befehl {command} hat einen Fehler gemeldet."),
     ("The {command} command did not finish.", "Der Befehl {command} ist nicht fertig geworden."),
     // Control centre: hooks in connect agent (E2.3)
-    ("Report to Inbox when waiting or done", "Im Eingang melden, wenn er wartet oder fertig ist"),
+    (
+        "Report to the Notification Hub when waiting or done",
+        "An die Mitteilungszentrale melden, wenn er wartet oder fertig ist",
+    ),
     ("Source", "Quelle"),
     ("Account", "Konto"),
     ("Assignees", "Zuständig"),
@@ -1534,8 +1556,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Wähle „Agent verbinden“, um Claude Code, Codex, Gemini CLI, Claude Desktop oder Cursor einzurichten oder einen Schlüssel für ein Skript zu erstellen.",
     ),
     (
-        "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its inbox hooks are removed too.",
-        "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Wo „Agent verbinden“ sie eingerichtet hat, werden auch sein Konfigurationseintrag und seine Eingangs-Hooks entfernt.",
+        "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its Notification Hub hooks are removed too.",
+        "{name} verliert sofort den Zugriff: Sein Schlüssel funktioniert nicht mehr. Wo „Agent verbinden“ sie eingerichtet hat, werden auch sein Konfigurationseintrag und seine Hooks für die Mitteilungszentrale entfernt.",
     ),
     ("Disconnect these hooks?", "Diese Hooks trennen?"),
     (
@@ -1562,7 +1584,10 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Codex runs them only after you trust them: type /hooks in Codex",
         "Codex führt sie erst aus, wenn du ihnen vertraust: Gib in Codex /hooks ein",
     ),
-    ("Inbox reports could not be set up", "Meldungen an den Eingang ließen sich nicht einrichten"),
+    (
+        "Notification Hub reports could not be set up",
+        "Meldungen an die Mitteilungszentrale ließen sich nicht einrichten",
+    ),
     ("To undo, choose Disconnect on its page.", "Zum Rückgängigmachen wähle „Trennen“ auf seiner Seite."),
     ("Entries of agents and scripts", "Einträge von Agenten und Skripten"),
     (
@@ -1590,11 +1615,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Unpin failed: {error}", "Anheften aufheben fehlgeschlagen: {error}"),
     // Notifications: inbox popups and quiet (E3.4)
     ("Snooze 1 h", "1 Std. vertagen"),
-    ("Open inbox", "Eingang öffnen"),
+    ("Open Notification Hub", "Mitteilungszentrale öffnen"),
     ("{n} new for you", "{n} neu für dich"),
     ("While you were in “{event}”: {n} for you", "Während „{event}“: {n} für dich"),
     ("While you were in busy events: {n} for you", "Während deiner Termine: {n} für dich"),
-    ("Open the inbox to see them.", "Im Eingang ansehen."),
+    ("Open the Notification Hub to see them.", "In der Mitteilungszentrale ansehen."),
     // Control centre: inbox page (E3.7)
     ("Quiet during busy events", "Ruhe während belegter Termine"),
     (
@@ -1603,24 +1628,24 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Notifications", "Benachrichtigungen"),
     (
-        "Approvals and waiting agents always come through. Events marked as free and all-day events keep the inbox as it is.",
+        "Approvals and waiting agents always come through. Events marked as free and all-day events keep the Notification Hub as it is.",
         "Freigaben und wartende Agenten kommen immer durch. Als frei markierte und ganztägige Termine ändern nichts.",
     ),
     ("Rules", "Regeln"),
     (
-        "Rules appear here when you move notices to a lane for good, mute a source or hide a sender in the Inbox.",
-        "Regeln erscheinen hier, wenn du im Eingang Meldungen dauerhaft in eine Spur verschiebst, eine Quelle stummschaltest oder einen Absender ausblendest.",
+        "Rules appear here when you move notices to a lane for good, mute a source or hide a sender in the Notification Hub.",
+        "Regeln erscheinen hier, wenn du in der Mitteilungszentrale Meldungen dauerhaft in eine Spur verschiebst, eine Quelle stummschaltest oder einen Absender ausblendest.",
     ),
     (
-        "Rules apply to new notices. Removing one leaves the entries in the Inbox as they are.",
-        "Regeln gelten für neue Meldungen. Entfernen ändert nichts an den Einträgen im Eingang.",
+        "Rules apply to new notices. Removing one leaves the entries in the Notification Hub as they are.",
+        "Regeln gelten für neue Meldungen. Entfernen ändert nichts an den Einträgen in der Mitteilungszentrale.",
     ),
     ("Notices of {source} go to “{lane}”", "Meldungen von {source} landen in „{lane}“"),
     ("Remove", "Entfernen"),
     ("App", "App"),
     (
-        "Entries are handled in the Inbox: mark them done, snooze them, move them or mute their source.",
-        "Einträge bearbeitest du im Eingang: erledigen, vertagen, verschieben oder ihre Quelle stummschalten.",
+        "Entries are handled in the Notification Hub: mark them done, snooze them, move them or mute their source.",
+        "Einträge bearbeitest du in der Mitteilungszentrale: erledigen, vertagen, verschieben oder ihre Quelle stummschalten.",
     ),
     // Approvals: agents ask for permission (E2.5)
     (
@@ -1904,7 +1929,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Sent", "Gesendet"),
     ("Trash", "Papierkorb"),
     ("calendars", "Kalender"),
-    ("inbox notifications", "Hinweise im Eingang"),
+    ("new mail in the Notification Hub", "neue Mails in der Mitteilungszentrale"),
     ("mail", "E-Mail"),
     ("no sender name", "kein Absendername"),
     ("no signature", "keine Signatur"),
@@ -2123,7 +2148,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Server settings", "Servereinstellungen"),
     ("Server settings…", "Servereinstellungen …"),
-    ("Show new mail in Inbox", "Neue E-Mails im Eingang anzeigen"),
+    ("Show new mail in the Notification Hub", "Neue E-Mails in der Mitteilungszentrale anzeigen"),
     ("Signature", "Signatur"),
     (
         "The draft changed after the approval was asked for. Nothing was sent; ask again.",
@@ -2175,6 +2200,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Attachments", "Anhänge"),
     ("Clear search", "Suche leeren"),
     ("Connect one in Settings, under Accounts.", "Verbinde eines in den Einstellungen unter Konten."),
+    ("Copy text", "Text kopieren"),
     ("Couldn't change the mail.", "Die Mail konnte nicht geändert werden."),
     ("Couldn't load more messages.", "Weitere Nachrichten konnten nicht geladen werden."),
     ("Couldn't load the message.", "Die Nachricht konnte nicht geladen werden."),
@@ -2198,6 +2224,44 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Reply", "Antworten"),
     ("Reply all", "Allen antworten"),
     ("Search {folder}", "{folder} durchsuchen"),
+    // The search field over the mail (issue #136)
+    ("1 result", "1 Treffer"),
+    ("{n} results", "{n} Treffer"),
+    ("At least 1 result", "Mindestens 1 Treffer"),
+    ("At least {n} results", "Mindestens {n} Treffer"),
+    ("More than {n} results", "Mehr als {n} Treffer"),
+    ("From a date on, such as 2026-03", "Ab einem Datum, etwa 2026-03"),
+    ("All mail", "Alle Mails"),
+    ("Before a date, such as 2026-03", "Vor einem Datum, etwa 2026-03"),
+    ("Clear", "Leeren"),
+    ("Folder", "Ordner"),
+    ("Forget recent searches", "Letzte Suchen vergessen"),
+    ("Name of an attachment", "Name eines Anhangs"),
+    ("Recipient", "Empfänger"),
+    ("Relevance", "Relevanz"),
+    ("Search all mail", "Alle Mails durchsuchen"),
+    ("Search all your mail", "Alle Mails durchsuchen"),
+    ("Search {account}", "{account} durchsuchen"),
+    ("Sender", "Absender"),
+    (
+        "Some matches may be missing: older mail is being indexed, {indexed} of {total} messages.",
+        "Es können Treffer fehlen: Ältere Mails werden noch indiziert, {indexed} von {total} Nachrichten.",
+    ),
+    (
+        "Some matches may be missing: older mail is still being indexed.",
+        "Es können Treffer fehlen: Ältere Mails werden noch indiziert.",
+    ),
+    (
+        "Some matches may be missing: {indexed} of {total} messages indexed. Indexing goes on once the server is reached.",
+        "Es können Treffer fehlen: {indexed} von {total} Nachrichten indiziert. Es geht weiter, sobald der Server erreichbar ist.",
+    ),
+    ("This account", "Dieses Konto"),
+    ("This folder", "Dieser Ordner"),
+    ("Unread", "Ungelesen"),
+    (
+        "Words, \"phrases\", -word, OR, from:, to:, subject:, has:attachment, in:, before:, after:, is:unread.",
+        "Wörter, \"Phrasen\", -wort, OR, from:, to:, subject:, has:attachment, in:, before:, after:, is:unread.",
+    ),
     ("This message is in the trash already.", "Diese Nachricht liegt schon im Papierkorb."),
     ("Try other words.", "Versuche es mit anderen Wörtern."),
     ("Unflag", "Markierung entfernen"),
@@ -2416,13 +2480,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Kept for this sender", "Für diesen Absender gemerkt"),
     ("Muted to Info", "Stummgeschaltet nach Info"),
     // Hide from the inbox in steps (E3.10)
-    ("Always to Info", "Immer nach Info"),
-    ("Couldn't hide the sender.", "Der Absender ließ sich nicht ausblenden."),
     ("Everything from {domain}", "Alles von {domain}"),
-    ("Everything from {sender}", "Alles von {sender}"),
-    ("Hidden: everything from {domain}", "Ausgeblendet: alles von {domain}"),
-    ("Hidden: {sender}", "Ausgeblendet: {sender}"),
-    ("Hide from inbox", "Im Eingang ausblenden"),
+    ("Hide from Notification Hub", "In der Mitteilungszentrale ausblenden"),
     (
         "Hide mail from everyone at {domain} in every mail account; the mail stays unread",
         "Mails von allen unter {domain} in allen Mail-Konten ausblenden; die Mails bleiben ungelesen",
@@ -2431,22 +2490,31 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Hide mail from {sender} in every mail account; the mail stays unread",
         "Mails von {sender} in allen Mail-Konten ausblenden; die Mails bleiben ungelesen",
     ),
-    ("Hide the sender of {entry} in the inbox", "Den Absender von {entry} im Eingang ausblenden"),
+    (
+        "Hide the sender of {entry} in the Notification Hub",
+        "Den Absender von {entry} in der Mitteilungszentrale ausblenden",
+    ),
     ("Mail from {sender} goes to “{lane}”", "Mails von {sender} landen in „{lane}“"),
     ("Move to junk", "In den Spam verschieben"),
     ("Moved to junk", "In den Spam verschoben"),
     (
-        "Show mail from everyone at {domain} in the inbox again",
-        "Mails von allen unter {domain} wieder im Eingang zeigen",
+        "Show mail from everyone at {domain} in the Notification Hub again",
+        "Mails von allen unter {domain} wieder in der Mitteilungszentrale zeigen",
     ),
-    ("Show mail from {sender} in the inbox again", "Mails von {sender} wieder im Eingang zeigen"),
+    (
+        "Show mail from {sender} in the Notification Hub again",
+        "Mails von {sender} wieder in der Mitteilungszentrale zeigen",
+    ),
     ("This conversation", "Diese Unterhaltung"),
     ("This entry", "Dieser Eintrag"),
     // Hide without marking read, rules for all accounts, undo (E3.11)
     ("All mail accounts", "Alle Mail-Konten"),
     ("Conversation hidden", "Unterhaltung ausgeblendet"),
     ("Couldn't undo the change.", "Die Änderung ließ sich nicht rückgängig machen."),
-    ("Hide {entry} from the inbox; the mail stays unread", "{entry} im Eingang ausblenden; die Mail bleibt ungelesen"),
+    (
+        "Hide {entry} from the Notification Hub; the mail stays unread",
+        "{entry} in der Mitteilungszentrale ausblenden; die Mail bleibt ungelesen",
+    ),
     ("2 invoices could not be matched to a customer.", "2 Rechnungen ließen sich keinem Kunden zuordnen."),
     ("Invoice run needs a check", "Rechnungslauf muss geprüft werden"),
     // AI accounts (KI.1a)
@@ -2663,12 +2731,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Keep conversations", "Unterhaltungen behalten"),
     ("No AI account yet", "Noch kein KI-Konto"),
-    ("Reads calendars, tasks and the inbox", "Liest Kalender, Aufgaben und den Eingang"),
+    ("Reads calendars, tasks and the Notification Hub", "Liest Kalender, Aufgaben und die Mitteilungszentrale"),
     ("Suggested", "Empfohlen"),
     (
         "The assistant answers with the models of these accounts. Each chat picks one; a new chat starts with the one set below.",
         "Der Assistent antwortet mit den Modellen dieser Konten. Jeder Chat wählt eines; ein neuer Chat beginnt mit dem unten eingestellten.",
     ),
+    // Assistant: tool lines in a read-only conversation (issue #132)
+    ("Read only in this conversation", "In dieser Unterhaltung nur lesend"),
     // Assistant: new chats, model and effort (issue #131)
     ("Effort", "Aufwand"),
     (
@@ -2708,8 +2778,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Answering", "Antwortet"),
     ("Approval needed", "Freigabe nötig"),
     (
-        "Ask about your calendar, tasks, inbox or mail. The assistant uses only what you allowed.",
-        "Frag nach Kalender, Aufgaben, Eingang oder Mail. Der Assistent nutzt nur, was du erlaubt hast.",
+        "Ask about your calendar, tasks, Notification Hub or mail. The assistant uses only what you allowed.",
+        "Frag nach Kalender, Aufgaben, Mitteilungszentrale oder Mail. Der Assistent nutzt nur, was du erlaubt hast.",
     ),
     ("Ask anything – the answer shows here.", "Frag etwas – die Antwort erscheint hier."),
     ("Ask the assistant…", "Frag den Assistenten …"),
@@ -2718,6 +2788,20 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Effort: {level}", "Aufwand: {level}"),
     ("How hard the model thinks", "Wie gründlich das Modell nachdenkt"),
     ("Show all models", "Alle Modelle zeigen"),
+    // Assistant app: permission mode (issue #132)
+    ("Ask before changes", "Vor Änderungen fragen"),
+    ("Default access", "Standardzugriff"),
+    ("No access to your data", "Kein Zugriff auf deine Daten"),
+    (
+        "This conversation is read only. Pick another mode under the message field to let it change things.",
+        "Diese Unterhaltung ist nur lesend. Wähle unter dem Eingabefeld einen anderen Modus, damit er etwas ändern darf.",
+    ),
+    ("What the assistant may do here", "Was der Assistent hier darf"),
+    ("asks before changes", "fragt vor Änderungen"),
+    ("asks before deleting", "fragt vor dem Löschen"),
+    ("asks only for settings", "fragt nur bei Einstellungen"),
+    ("changes nothing", "ändert nichts"),
+    ("{area}: {level}", "{area}: {level}"),
     ("Block the afternoon", "Nachmittag blocken"),
     ("Change access", "Zugriff ändern"),
     ("Choose what the assistant may use", "Wähle, was der Assistent nutzen darf"),
@@ -2762,7 +2846,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Lade die Vorlage Schreiben und blockier mir den Nachmittag im Kalender.",
     ),
     ("Loaded template", "Vorlage geladen"),
-    ("Looked at the inbox", "Eingang angesehen"),
+    ("Looked at the Notification Hub", "Mitteilungszentrale angesehen"),
     ("Looked for tools", "Werkzeuge gesucht"),
     ("Looked up calendars", "Kalender nachgesehen"),
     ("Looked up events", "Termine nachgesehen"),
@@ -2788,9 +2872,9 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Pin", "Anheften"),
     ("Pinned", "Angeheftet"),
     ("Plan for tomorrow", "Plan für morgen"),
-    ("Posted to the inbox", "In den Eingang gestellt"),
+    ("Posted to the Notification Hub", "In die Mitteilungszentrale gestellt"),
     ("Read conversation", "Konversation gelesen"),
-    ("Read inbox entry", "Eintrag im Eingang gelesen"),
+    ("Read a Notification Hub entry", "Eintrag in der Mitteilungszentrale gelesen"),
     ("Read mail", "Mail gelesen"),
     ("Recent", "Zuletzt"),
     ("Release checklist", "Release-Checkliste"),
@@ -2819,8 +2903,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ),
     ("Trip to Lisbon", "Reise nach Lissabon"),
     (
-        "Until then it answers without your calendar, tasks, inbox or mail. You decide area by area, and you can change it any time.",
-        "Bis dahin antwortet er ohne deinen Kalender, deine Aufgaben, deinen Eingang und deine Mail. Du entscheidest Bereich für Bereich und kannst es jederzeit ändern.",
+        "Until then it answers without your calendar, tasks, Notification Hub or mail. You decide area by area, and you can change it any time.",
+        "Bis dahin antwortet er ohne deinen Kalender, deine Aufgaben, deine Mitteilungszentrale und deine Mail. Du entscheidest Bereich für Bereich und kannst es jederzeit ändern.",
     ),
     ("What can I do for you?", "Was kann ich für dich tun?"),
     (
@@ -2835,8 +2919,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{tool} · {outcome}", "{tool} · {outcome}"),
     ("“{title}” and everything in it will be deleted for good.", "„{title}“ und alles darin wird endgültig gelöscht."),
     (
-        "This is the demo, so nothing was looked up. With an AI account the assistant reads your calendar, tasks, inbox and mail – as far as you allowed it – and answers here.",
-        "Das ist die Demo, darum wurde nichts nachgesehen. Mit einem KI-Konto liest der Assistent deinen Kalender, deine Aufgaben, deinen Eingang und deine Mail – soweit du es erlaubt hast – und antwortet hier.",
+        "This is the demo, so nothing was looked up. With an AI account the assistant reads your calendar, tasks, Notification Hub and mail – as far as you allowed it – and answers here.",
+        "Das ist die Demo, darum wurde nichts nachgesehen. Mit einem KI-Konto liest der Assistent deinen Kalender, deine Aufgaben, deine Mitteilungszentrale und deine Mail – soweit du es erlaubt hast – und antwortet hier.",
     ),
     // Agents as engines (C.7)
     ("The agent gave no answer. Try again.", "Der Agent hat nicht geantwortet. Versuch es noch einmal."),
@@ -3284,4 +3368,56 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Actual size", "Originalgröße"),
     ("Window", "Fenster"),
     ("Close window", "Fenster schließen"),
+    // Formatted mail (issue #125)
+    ("Bold", "Fett"),
+    ("Bulleted list", "Aufzählung"),
+    (
+        "Formatted mail can hold bold text, lists, links and quotes; a plain text copy goes along.",
+        "Formatierte E-Mails können fetten Text, Listen, Links und Zitate enthalten; eine Fassung als reiner Text geht mit.",
+    ),
+    ("Formatted (HTML)", "Formatiert (HTML)"),
+    ("Italic", "Kursiv"),
+    ("Numbered list", "Nummerierte Liste"),
+    ("Plain text", "Nur Text"),
+    ("Quote", "Zitat"),
+    ("Underline", "Unterstrichen"),
+    ("Write new mail as", "Neue E-Mails schreiben als"),
+    ("write formatted mail", "formatierte E-Mails schreiben"),
+    ("write plain text mail", "E-Mails als reinen Text schreiben"),
+    ("{name} ({keys})", "{name} ({keys})"),
+    // Inbox: AI task and AI event (issue #120)
+    ("AI event", "KI-Termin"),
+    ("AI task", "KI-Aufgabe"),
+    (
+        "Ask your AI for a task from {entry}; nothing is saved",
+        "Deine KI um eine Aufgabe aus {entry} bitten; nichts wird gespeichert",
+    ),
+    (
+        "Ask your AI for an event from {entry}; nothing is saved",
+        "Deine KI um einen Termin aus {entry} bitten; nichts wird gespeichert",
+    ),
+    ("Asking your AI…", "Deine KI wird gefragt …"),
+    (
+        "Mail, Nextcloud and Talk go only to an AI on this computer. Connect a local AI such as Ollama.",
+        "Mail, Nextcloud und Talk gehen nur an eine KI auf diesem Computer. Verbinde eine lokale KI wie Ollama.",
+    ),
+    ("No suggestion: {why}", "Kein Vorschlag: {why}"),
+    ("Set up an AI first", "Richte zuerst eine KI ein"),
+    (
+        "Set up an AI first: connect an AI account in the control centre.",
+        "Richte zuerst eine KI ein: Verbinde ein KI-Konto in der Steuerzentrale.",
+    ),
+    (
+        "Suggested by your AI. Check it before you create it.",
+        "Von deiner KI vorgeschlagen. Prüfe es, bevor du es anlegst.",
+    ),
+    ("The AI account offers no model.", "Das KI-Konto bietet kein Modell an."),
+    (
+        "The AI's answer held no suggestion. Try again or pick another model.",
+        "Die Antwort der KI enthielt keinen Vorschlag. Versuche es noch einmal oder wähle ein anderes Modell.",
+    ),
+    ("With:", "Mit:"),
+    ("{n} minutes", "{n} Minuten"),
+    ("{what}, at \"{place}\"", "{what}, Ort „{place}“"),
+    ("{what}, with the note \"{note}\"", "{what}, mit der Notiz „{note}“"),
 ];

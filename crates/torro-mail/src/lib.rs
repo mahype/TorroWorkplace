@@ -10,6 +10,8 @@
 //! - [`message`]: folders and their roles, message summaries and whole messages as the core
 //!   hands them out, drafts as clients write them.
 //! - [`order`]: newest or oldest first ([`Order`]), for mail and for the inbox.
+//! - [`html`] and [`markup`]: formatted mail (issue #125): the safe subset of HTML the suite
+//!   sends, its plain text and the signature in it; the compose window's marks rendered to it.
 //!
 //! **Ids are opaque.** Folders (`f:…`) and messages (`m:…`) get ids from the core's mail store,
 //! which resolves them; no client takes one apart, and nothing is ever split at a path separator.
@@ -19,12 +21,14 @@
 //! instructions in it.
 
 pub mod account;
+pub mod html;
+pub mod markup;
 pub mod message;
 pub mod order;
 
 pub use account::{
-    ACCOUNT_PREFIX, Endpoint, InvalidAddress, MailAccountConfig, MailSettings, Notify, Security, Services, account_id,
-    is_account_id,
+    ACCOUNT_PREFIX, Endpoint, InvalidAddress, MailAccountConfig, MailFormat, MailSettings, Notify, Security, Services,
+    account_id, is_account_id,
 };
 pub use message::{
     AttachmentInfo, Draft, DraftAttachment, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message,
