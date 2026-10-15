@@ -399,7 +399,7 @@ pub fn lack_in(
 }
 
 /// The tool line's words for a call refused for `lack`, for people: `Needs write access to Mail`,
-/// `Claude Code never gets Mail` (`engine` is the name of the engine that answers).
+/// `Claude Code does not get Mail (data rule)` (`engine` is the name of the engine that answers).
 pub fn lack_summary(lack: Lack, engine: &str) -> String {
     let area = |area: Area| crate::ui::agents::area_label(area);
     match lack {
@@ -412,7 +412,7 @@ pub fn lack_summary(lack: Lack, engine: &str) -> String {
         Lack::ForPeople => tr("Only you can do this").into(),
         Lack::SwitchedOff { area: a } => trf("{area} is off in this conversation", &[("area", &area(a))]),
         Lack::NeverToAgents { area: a } => {
-            trf("{engine} never gets {area}", &[("engine", &engine), ("area", &area(a))])
+            trf("{engine} does not get {area} (data rule)", &[("engine", &engine), ("area", &area(a))])
         }
         Lack::ReadOnly => tr("Read only in this conversation").into(),
     }

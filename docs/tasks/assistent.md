@@ -314,6 +314,37 @@ C.10 (Persönlichkeit, Gedächtnis) nach C.3
   Argumente); Ask before changes erzeugt Freigaben, auch mit geliehenem Schlüssel; kein Modus öffnet, was die Rechte
   schließen (Tabellentest über den Katalog, Kern-Test); die Freigabe behält den Modus.
 
+### C.17 Datenregel für Mail als Schalter (vorgezogener Teil von KI.1)
+- [x] erledigt (Antworten aus Einträgen jeder Quelle bleiben auch mit Schalter lokal, weil der Kern ihre Quelle nicht
+  nennt; Claude Code sah Talk- und Nextcloud-Einträge seiner Quellen schon vorher)
+- **Modell:** Opus · **Braucht:** C.14, C.16 · **Dateien:** `crates/torro-core/src/{settings,i18n/de}.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/{core,clients,settings_service}.rs`,
+  `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/ui/{assistant,agents,bots,general}.rs`,
+  `docs/{api,ki,assistent}.md`
+- **Anlass:** Die Person gab dem Assistenten Mail auf alle Konten, er antwortete mit Claude Code aber immer
+  „forbidden“: Die feste Datenregel (Mail nur an Modelle auf den eigenen Rechnern) war stärker als die Rechte und
+  ließ sich nirgends ändern.
+- **Schalter:** Einstellung `mail_to_cloud` (`true`/`false`, Standard `false` = nur lokal). An: Mail darf auch an
+  Claude Code und an Modelle außerhalb der eigenen Rechner (OpenRouter, Server eines Anbieters). Dann bekommt
+  Claude Code den Bereich Mail (soweit die Rechte ihn geben), und Modelle anderswo lesen Mail-Antworten,
+  Mail-Einträge und Regeln von Mail-Konten im Eingang, Aufgaben aus Mails und Mail-Verweise in Aufgaben. Für
+  Cloud-Modelle bleiben lokal: Einträge und Regeln von Nextcloud und Talk, Antworten aus Einträgen jeder Quelle
+  (Stummschalten, Statistik, Aufgabe/Termin aus Eintrag) und Notizen, die nach Mail entstanden (`local_only`).
+- **Nur die Person schaltet ein** (wie das Mikrofon, Punkt 6 in „Was nie nach außen geht“): `true` nur mit dem
+  App-Schlüssel (`Request::kept_for_people`, auch über `settings.update_settings`); ausschalten darf jeder, der
+  Einstellungen ändern darf. Ein Agent kann sich so nie selbst Mail verschaffen.
+- **Sichtbar bei den Rechten:** In den Rechten des Assistenten (Steuerzentrale › Assistant, dorthin führt auch seine
+  Zeile in Agents & API) und jedes Bots steht direkt unter Mail der Schalter „Mail to Claude Code and cloud models“
+  mit dem, was er bedeutet. Der Grund eines `forbidden` (`Lack::NeverToAgents`) und der Systemtext des Assistenten
+  nennen den Schalter, die Werkzeugzeile im Chat sagt „(Datenregel)“.
+- **Oberfläche:** Rechte des Assistenten und der Bots. **API:** `settings.set_setting
+  mail_to_cloud` · Admin (einschalten nur App-Schlüssel). **MCP:** `settings_set_setting` erbt den Schlüssel, `true`
+  ist für jeden Client `forbidden`.
+- **Abnahme:** Tests: Einstellung gelesen/geprüft; Client darf nicht einschalten, aber ausschalten (auch über
+  `update_settings`); mit Schalter an bekommt Claude Code Mail (kein Abzug beim geliehenen Schlüssel, Prompt ohne
+  „never given“); Modell anderswo liest Mail, aber keine Talk-Einträge; Verlauf und Bots folgen dem Schalter;
+  `torro-api-review` ohne Muss-Punkt.
+
 ## Stufe 2: Bots (B.1–B.5)
 
 Konzept: Abschnitt „Bots“ in [assistent.md](../assistent.md). Geplant am 2026-10-14 nach Stufe 1.

@@ -722,6 +722,7 @@ mod tests {
                 assistant_default: None,
                 mail_view: MailFormat::Text,
                 mail_appearance: MailAppearance::Dark,
+                mail_to_cloud: false,
             },
             ..Data::default()
         };

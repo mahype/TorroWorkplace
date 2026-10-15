@@ -93,6 +93,13 @@ pub struct Settings {
     /// the rest of the window. Read leniently, like [`Settings::mail_view`].
     #[serde(default, deserialize_with = "lenient")]
     pub mail_appearance: MailAppearance,
+    /// The data rule for mail (task C.17, `docs/ki.md` principle 4): `false` (the default) keeps
+    /// mail with models on the person's own computers; `true` lets it go to Claude Code and to
+    /// models elsewhere (OpenRouter, a provider's server) as well. Only a person switches it on
+    /// (`settings.set_setting mail_to_cloud`, app key only); any client allowed to change settings
+    /// may switch it off.
+    #[serde(default)]
+    pub mail_to_cloud: bool,
 }
 
 /// How a mail that has HTML first shows in the reader (`settings.set_setting mail_view`, task
@@ -209,6 +216,7 @@ impl Default for Settings {
             assistant_default: None,
             mail_view: MailFormat::default(),
             mail_appearance: MailAppearance::default(),
+            mail_to_cloud: false,
         }
     }
 }
@@ -964,8 +972,21 @@ mod tests {
             assistant_default: None,
             mail_view: MailFormat::Html,
             mail_appearance: MailAppearance::App,
+            mail_to_cloud: false,
         };
         assert_eq!(load_from(&path), expected);
+    }
+
+    /// Task C.17: mail stays with local models unless a person switched it on.
+    #[test]
+    fn mail_stays_local_unless_switched_on() {
+        let dir = TempDir::new("mail-to-cloud");
+        let path = dir.file("settings.json");
+        assert!(!Settings::default().mail_to_cloud);
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        assert!(!load_from(&path).mail_to_cloud, "a file from before the setting keeps mail local");
+        fs::write(&path, r#"{"mailToCloud":true}"#).expect("write");
+        assert!(load_from(&path).mail_to_cloud);
     }
 
     #[test]
@@ -1046,6 +1067,7 @@ mod tests {
             assistant_default: None,
             mail_view: MailFormat::Text,
             mail_appearance: MailAppearance::Dark,
+            mail_to_cloud: true,
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

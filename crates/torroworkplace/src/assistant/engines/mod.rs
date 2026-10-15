@@ -26,9 +26,10 @@
 //! - **Rights**: requests with that key run as the assistant's client with its rights of now
 //!   minus the areas switched off in the conversation and minus `mail`: an agent sends what it
 //!   reads to its provider, and the data rule (`super::data_rule`, `docs/ki.md`: mail only to
-//!   models on the person's computers) keeps mail from it. Without mail rights the inbox hides
-//!   the entries of mail accounts too (`Rights::reaches_source`). The core checks this, not the
-//!   agent.
+//!   models on the person's computers) keeps mail from it, unless the person lets mail go to
+//!   Claude Code and cloud models (setting `mail_to_cloud`, task C.17; read when the run starts).
+//!   Without mail rights the inbox hides the entries of mail accounts too
+//!   (`Rights::reaches_source`). The core checks this, not the agent.
 //! - **History**: the agent keeps no session (`--no-session-persistence`); every message carries
 //!   the conversation so far as text ([`message`]), with the answers the data rule keeps from a
 //!   model elsewhere replaced by a note (`super::model::history`). So the conversation lives only
@@ -78,7 +79,7 @@ use torro_ipc::api::Area;
 use torro_ipc::assistant::{Engine, EngineKind, EntryContent, Mode};
 use torro_ipc::{Key, Response};
 
-use super::data_rule::Place;
+use super::data_rule::{DataRule, Place, Reader};
 use super::model::{Host, Job, command_name, history};
 use super::{Assistant, Partial, prompt, store, tools};
 use crate::client_setup::{Env, Method, TOKEN_VARIABLE, Target};
@@ -96,14 +97,25 @@ const STDERR_BYTES: usize = 16 * 1024;
 /// At most this many characters of the agent's own words go into an error entry.
 const DETAIL_CHARS: usize = 300;
 
-/// The areas an agent never gets, whatever the assistant's rights say: its answers go to its
-/// provider, and the data rule keeps mail on the person's computers.
+/// The areas an agent never gets under the default data rule, whatever the assistant's rights say:
+/// its answers go to its provider, and the data rule keeps mail on the person's computers. The
+/// person can let mail go to agents (task C.17, [`withheld_from_agents`]).
 const NEVER_TO_AGENTS: &[Area] = &[Area::Mail];
 
-/// The areas the engine `engine` never gets, whatever the assistant's rights say: [`NEVER_TO_AGENTS`]
-/// for a coding agent (`claude-code`), none for an AI account or the test engine. The gate names
-/// them as the reason of a `forbidden` (issue #133), apart from the areas switched off in a
-/// conversation.
+/// The areas a run of an agent goes without under `rule`: [`NEVER_TO_AGENTS`], or none once the
+/// person let mail go to Claude Code and cloud models.
+fn withheld_from_agents(rule: DataRule) -> &'static [Area] {
+    match rule.mail_to_cloud {
+        true => &[],
+        false => NEVER_TO_AGENTS,
+    }
+}
+
+/// The areas the engine `engine` does not get under the default data rule, whatever the
+/// assistant's rights say: [`NEVER_TO_AGENTS`] for a coding agent (`claude-code`), none for an AI
+/// account or the test engine. The gate names those of them a key was lent without as the reason of
+/// a `forbidden` (issue #133), apart from the areas switched off in a conversation; with mail let out
+/// (task C.17) a run is lent with mail, so none of them counts.
 pub fn never_given(engine: &str) -> &'static [Area] {
     match Agent::of(engine) {
         Some(_) => NEVER_TO_AGENTS,
@@ -219,7 +231,16 @@ impl Agents {
 /// with a key of the assistant's client lent by `host`, until the agent is done, fails, takes
 /// too long or the run is stopped. Its last entry ends the run.
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job, agent: Agent) {
-    let mut run = Running { assistant, job, agent, model: None, calls: HashMap::new(), answered: false, rights: None };
+    let mut run = Running {
+        assistant,
+        job,
+        agent,
+        model: None,
+        calls: HashMap::new(),
+        answered: false,
+        rights: None,
+        withheld: NEVER_TO_AGENTS,
+    };
     let ended = run.go(host.as_ref()).await;
     match ended {
         Ok(Ended::Stopped) => {}
@@ -306,6 +327,9 @@ struct Running {
     /// The rights of the client the run uses, as stored when it started: why a tool was
     /// `forbidden` is told from them (issue #133).
     rights: Option<torro_ipc::api::Rights>,
+    /// The areas the run goes without whatever the rights say ([`withheld_from_agents`]), as the
+    /// data rule was when it started.
+    withheld: &'static [Area],
 }
 
 impl Running {
@@ -320,8 +344,10 @@ impl Running {
         let actor = self.job.actor.clone();
         let no_client = || if self.job.bot.is_some() { Failed::NoBotClient } else { Failed::NoClient };
         let Some(client) = host.client_of(&actor) else { return Err(no_client()) };
+        let rule = host.data_rule();
+        self.withheld = withheld_from_agents(rule);
         let mut without = self.job.without.clone();
-        for area in NEVER_TO_AGENTS {
+        for area in self.withheld {
             if !without.contains(area) {
                 without.push(*area);
             }
@@ -349,10 +375,11 @@ impl Running {
             areas: &areas,
             without: &self.job.without,
             rights: Some(&rights),
-            withheld: NEVER_TO_AGENTS,
+            withheld: self.withheld,
             engine: self.agent.name(),
             model: "",
             place: Place::Remote,
+            mail_to_cloud: rule.mail_to_cloud,
             memory: &memory,
         };
         let system = match &self.job.bot {
@@ -370,7 +397,7 @@ impl Running {
         let mut child = start(&command, &arguments, folder.path(), lent.key())
             .await
             .map_err(|err| Failed::Start(detail(&err.to_string(), lent.key(), &[folder.path(), &home])))?;
-        let input = claude::input(&message(&self.job));
+        let input = claude::input(&message(&self.job, rule));
         let stderr = collect(child.stderr.take());
         if let Some(mut stdin) = child.stdin.take() {
             // An agent that does not read is caught by the timeouts; its error is in its output.
@@ -465,7 +492,8 @@ impl Running {
     }
 
     /// Why the tool `tool` (Claude Code's name of it) was refused with the error `text` (issue #133):
-    /// for `forbidden`, what the rights, the conversation's switches and [`NEVER_TO_AGENTS`] say.
+    /// for `forbidden`, what the rights, the conversation's switches and the areas the run goes
+    /// without ([`Running::withheld`]) say.
     fn lack(&self, tool: &str, text: &str) -> Option<torro_ipc::api::Lack> {
         if error_code(text) != "forbidden" {
             return None;
@@ -473,7 +501,7 @@ impl Running {
         let tool = tools::callable(tool.strip_prefix(claude::TOOL_PREFIX).unwrap_or(tool))?;
         let operation = torro_ipc::api::Operation { command: tool.command, access: tool.command.access };
         let kind = self.job.actor.kind();
-        tools::lack_in(kind, self.rights.as_ref(), operation, &self.job.without, NEVER_TO_AGENTS, self.job.mode)
+        tools::lack_in(kind, self.rights.as_ref(), operation, &self.job.without, self.withheld, self.job.mode)
     }
 
     /// Adds `content` while this run is the conversation's running answer; `last` ends it.
@@ -502,10 +530,11 @@ fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area], 
     areas
 }
 
-/// The text the agent reads: the conversation so far (the agent keeps no session) and the
-/// person's new message, which is the last entry of the job.
-fn message(job: &Job) -> String {
-    let mut messages = history(&job.history, &job.engine, Place::Remote);
+/// The text the agent reads: the conversation so far (the agent keeps no session), as the data
+/// `rule` lets it go to a model elsewhere, and the person's new message, which is the last entry of
+/// the job.
+fn message(job: &Job, rule: DataRule) -> String {
+    let mut messages = history(&job.history, &job.engine, Reader { place: Place::Remote, rule });
     let new = match messages.pop() {
         Some(message) if message.role == Role::User => message.content,
         Some(message) => {

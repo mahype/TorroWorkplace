@@ -91,6 +91,9 @@ pub struct Context<'a> {
     pub model: &'a str,
     /// Where the model runs, for the data rule's note and the notes it may read.
     pub place: Place,
+    /// The person lets mail go to Claude Code and cloud models (task C.17): the note on the data
+    /// rule says so.
+    pub mail_to_cloud: bool,
     /// The notes of the assistant's memory, oldest first, as the core keeps them; the prompt leaves
     /// out those marked `local_only` for a model elsewhere ([`Place::Remote`]).
     pub memory: &'a [Note],
@@ -232,18 +235,23 @@ fn generated(context: &Context<'_>) -> String {
         ));
     }
     lines.push(match context.model.trim().is_empty() {
-        true => format!(
+        true if context.withheld.contains(&Area::Mail) => format!(
             "- You answer as the agent {0}, outside the person's computers (remote). The person's data rule keeps \
-             mail on their own computers, so mail is not among your areas here: it is never given to {0}, whatever \
-             the rights say. If the person asks for mail, say so instead of trying, and that an AI account on their \
-             own computer can read it.",
+             mail on their own computers, so mail is not among your areas here: it is not given to {0}, whatever \
+             the rights say. If the person asks for mail, say so instead of trying: they can let mail go to Claude \
+             Code and cloud models in Torro Workplace › Assistant, or use an AI account on their own computer.",
+            one_line(context.engine)
+        ),
+        true => format!(
+            "- You answer as the agent {}, outside the person's computers (remote). The person lets mail go to \
+             Claude Code and cloud models, so you read mail as far as the rights above allow.",
             one_line(context.engine)
         ),
         false => format!(
             "- You answer with the model {} of the AI account {}. {}",
             one_line(context.model),
             one_line(context.engine),
-            data_rule_note(context.place)
+            data_rule_note(context.place, context.mail_to_cloud)
         ),
     });
     lines.extend(memory(context.memory, context.place));
@@ -274,7 +282,10 @@ fn access(context: &Context<'_>) -> Vec<String> {
         lines.push(format!("  - {}: {}", area.name(), area_access(rights, area)));
     }
     for area in withheld {
-        lines.push(format!("  - {}: granted, but never given to you here (the person's data rule)", area.name()));
+        lines.push(format!(
+            "  - {}: granted, but not given to you here (the person's data rule keeps it on their computers)",
+            area.name()
+        ));
     }
     lines.push(format!(
         "- Waits for the person's approval: {}.",
@@ -383,16 +394,21 @@ fn language(lang: Lang) -> &'static str {
 }
 
 /// What the data rule means for a model at `place` (`super::data_rule`: mail content reaches only
-/// models on the person's own computers).
-fn data_rule_note(place: Place) -> String {
-    match place {
-        Place::Local => format!(
+/// models on the person's own computers, unless the person let it out with `mail_to_cloud`).
+fn data_rule_note(place: Place, mail_to_cloud: bool) -> String {
+    match (place, mail_to_cloud) {
+        (Place::Local, _) => format!(
             "It runs on the person's own computer (local). Content the person's data rule keeps from this model \
              reads \"{WITHHELD}\"."
         ),
-        Place::Remote => format!(
+        (Place::Remote, false) => format!(
             "It runs outside the person's computers (remote), so the person's data rule keeps mail content from \
-             it: such results read \"{WITHHELD}\"."
+             it: such results read \"{WITHHELD}\". The person can let mail go to cloud models in Torro Workplace \
+             › Assistant."
+        ),
+        (Place::Remote, true) => format!(
+            "It runs outside the person's computers (remote). The person lets mail go to cloud models, so it reads \
+             mail; messages of Nextcloud and Talk in the inbox still read \"{WITHHELD}\"."
         ),
     }
 }
@@ -445,6 +461,7 @@ mod tests {
             engine: "ai:ollama@localhost:11434",
             model: "qwen3:8b",
             place: Place::Local,
+            mail_to_cloud: false,
             memory: &[],
         }
     }
@@ -475,12 +492,12 @@ mod tests {
             assert!(prompt.lines().any(|line| line == wanted || line.starts_with(wanted)), "{wanted}\n{prompt}");
         }
 
-        // An agent: mail is granted, but never given to it.
+        // An agent: mail is granted, but the data rule keeps it from the agent.
         let areas = [Area::Calendar];
         let mut agent = context(&areas, &[]);
         (agent.rights, agent.withheld, agent.engine, agent.model) = (Some(&rights), &[Area::Mail], "Claude Code", "");
         let prompt = system(None, &agent);
-        assert!(prompt.contains("  - mail: granted, but never given to you here"), "{prompt}");
+        assert!(prompt.contains("  - mail: granted, but not given to you here"), "{prompt}");
         assert!(!prompt.contains("  - tasks:"), "only the areas it uses: {prompt}");
         // Without rights, no summary.
         assert!(!system(None, &context(&areas, &[])).contains("What you may do"));
@@ -546,13 +563,33 @@ mod tests {
     #[test]
     fn an_agent_is_named_without_a_model_and_told_that_mail_stays_local() {
         let mut context = context(&[Area::Calendar], &[]);
-        (context.engine, context.model, context.place) = ("Claude Code", "", Place::Remote);
+        (context.engine, context.model, context.place, context.withheld) =
+            ("Claude Code", "", Place::Remote, &[Area::Mail]);
         let prompt = system(None, &context);
         let answer = line(&prompt, "- You answer").expect("the engine's line");
         assert!(answer.starts_with("- You answer as the agent Claude Code, outside"), "{answer}");
         assert!(answer.contains("mail is not among your areas"), "{answer}");
-        assert!(answer.contains("never given to Claude Code"), "issue #133: {answer}");
-        assert!(!answer.contains("model"), "{answer}");
+        assert!(answer.contains("not given to Claude Code"), "issue #133: {answer}");
+        assert!(answer.contains("Torro Workplace › Assistant"), "task C.17: the person can change it: {answer}");
+        assert!(!answer.contains(" model "), "{answer}");
+    }
+
+    /// Task C.17: with mail let out, the agent and a model elsewhere are told they read mail.
+    #[test]
+    fn the_prompt_says_when_mail_is_let_out() {
+        let mut context = context(&[Area::Calendar, Area::Mail], &[]);
+        (context.engine, context.model, context.place, context.mail_to_cloud) =
+            ("Claude Code", "", Place::Remote, true);
+        let agent = system(None, &context);
+        let answer = line(&agent, "- You answer").expect("the engine's line");
+        assert!(answer.contains("lets mail go to Claude Code and cloud models"), "{answer}");
+        assert!(!answer.contains("not among your areas"), "{answer}");
+
+        (context.engine, context.model) = ("ai:openrouter@openrouter.ai", "qwen/qwen3-14b");
+        let model = system(None, &context);
+        let answer = line(&model, "- You answer").expect("the engine's line");
+        assert!(answer.contains("(remote)") && answer.contains("so it reads mail"), "{answer}");
+        assert!(!answer.contains("keeps mail content from it"), "{answer}");
     }
 
     #[test]
