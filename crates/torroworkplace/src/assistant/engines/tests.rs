@@ -91,8 +91,7 @@ async fn set_up(transcript: &[Value], tail: &str, idle: Duration, client: bool) 
     let lines: Vec<String> = transcript.iter().map(Value::to_string).collect();
     std::fs::write(root.join("transcript.jsonl"), lines.join("\n") + "\n").expect("transcript");
     let script = format!(
-        r#"#!/bin/sh
-d='{dir}'
+        r#"d='{dir}'
 printf '%s\n' "$@" > "$d/args"
 printf '%s' "$TORRO_TOKEN" > "$d/token"
 echo $$ > "$d/pid"
@@ -106,12 +105,7 @@ cat "$d/transcript.jsonl"
 "#,
         dir = root.display()
     );
-    let claude = root.join("bin").join("claude");
-    std::fs::write(&claude, script).expect("script");
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-    }
+    crate::apps::tests::fake_at(&root.join("bin").join("claude"), &script);
     install(dir, idle, client).await
 }
 

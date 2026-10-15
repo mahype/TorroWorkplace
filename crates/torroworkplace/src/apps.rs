@@ -346,14 +346,28 @@ pub mod tests {
         format!("{name}{}", std::env::consts::EXE_SUFFIX)
     }
 
-    /// A fake `torroassistant` in `dir`: a shell script with `body`, executable.
+    /// A fake `torroassistant` in `dir` that runs the shell code `body` ([`fake_at`]).
     #[cfg(unix)]
     pub fn fake_program(dir: &Path, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let path = dir.join("torroassistant");
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).expect("write the program");
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).expect("make it executable");
+        fake_at(&path, body);
         path
+    }
+
+    /// Makes `path` a program that runs the shell code `body`: a link to
+    /// `tests/fixtures/fake-program`, which runs `<path>.sh`. A new executable file each time
+    /// would wait for macOS to check it before its first start, one file after another and at
+    /// times longer than a test waits; the fixture is checked once. Again on the same `path`, the
+    /// code is replaced.
+    #[cfg(unix)]
+    pub fn fake_at(path: &Path, body: &str) {
+        let mut code = path.as_os_str().to_owned();
+        code.push(".sh");
+        fs::write(&code, format!("{body}\n")).expect("write the program's code");
+        if fs::symlink_metadata(path).is_err() {
+            let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fake-program");
+            std::os::unix::fs::symlink(fixture, path).expect("link the fake program");
+        }
     }
 
     /// Waits up to five seconds until `listener` reports `state`.
