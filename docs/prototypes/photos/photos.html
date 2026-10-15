@@ -1,0 +1,548 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Photos – Entwurf</title>
+<!-- Entwurf der Foto-App (torrophotos) im Linear-Stil, auf Nextcloud Photos (+ Recognize, Memories optional).
+     Version 1: ansehen und ordnen, Metadaten bearbeiten (Datum, Ort, Favorit, Tags), kein Hochladen, keine Pixel-Bearbeitung.
+     ?open=timeline|select|photo|edit|thisday|albums|album|people|people-missing|places|map|empty|loading|rights
+     ?size=l|m|s|mini|bar erzwingt eine Größenklasse, ?theme=light hell.
+     Bilder: Platzhalter von picsum.photos (fester Seed), Karte: OpenStreetMap-Kacheln. -->
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script>
+// Mini und Leiste wie torro_gui::layout::of: vor den Breitenklassen geprüft.
+(function(){const q=new URLSearchParams(location.search),d=document.documentElement,w=innerWidth,h=innerHeight;
+  if(!q.get('size')){ if(h<280&&w>=600)d.dataset.size='bar'; else if(w<360||h<280)d.dataset.size='mini'; }
+  d.dataset.open=q.get('open')||'timeline';})();
+</script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+.screen{display:none;flex:1;min-height:0;flex-direction:column}
+.screen.on{display:flex}
+.body{flex:1;display:flex;min-height:0}
+.scroll{flex:1;min-width:0;overflow:hidden;position:relative}
+.ph{background:var(--raised) center/cover no-repeat;display:block}
+
+/* Zeitleiste: Tage als Gruppen, Raster quadratischer Kacheln mit 2 px Fuge (wie Photos/Memories), Jahres-Scrubber rechts. */
+.day{padding:0 56px 0 16px}
+.dayhead{display:flex;align-items:baseline;gap:8px;height:44px;padding-top:16px}
+.dayhead b{font-weight:500}
+.dayhead .faint{font-size:12px}
+.dayhead .pick{margin-left:auto;align-self:center;opacity:0}
+.day:hover .pick{opacity:1}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:2px}
+.tile{position:relative;aspect-ratio:1;border-radius:2px;overflow:hidden}
+.tile .ph{position:absolute;inset:0}
+.tile .badge{position:absolute;right:6px;bottom:6px;display:flex;align-items:center;gap:4px;font:500 11px/14px "Inter Tabular",Inter,sans-serif;color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.6)}
+.tile .badge svg{width:12px;height:12px}
+.tile .fav{position:absolute;left:6px;bottom:6px;color:#fff;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}
+.tile .fav svg{width:14px;height:14px;fill:#fff}
+.tile .check{position:absolute;left:6px;top:6px;width:20px;height:20px;border-radius:50%;border:1.5px solid rgba(255,255,255,.85);background:rgba(0,0,0,.2);display:grid;place-items:center;opacity:0}
+.tile:hover .check{opacity:1}
+.tile:hover .ph{filter:brightness(.92)}
+html[data-open="select"] .tile .check{opacity:1}
+.tile.sel{box-shadow:inset 0 0 0 2px var(--text)}
+.tile.sel .ph{inset:6px;border-radius:2px}
+.tile.sel .check{background:var(--text);border-color:var(--text);color:var(--panel)}
+.tile.sel .check svg{width:12px;height:12px;stroke-width:3}
+.scrub{position:absolute;right:0;top:0;bottom:0;width:48px;display:flex;flex-direction:column;align-items:flex-end;padding:20px 12px 0 0;gap:18px;font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.scrub .now{color:var(--text);font-weight:500;position:relative}
+.scrub .now::before{content:"";position:absolute;right:calc(100% + 6px);top:6px;width:10px;height:1px;background:var(--text)}
+.scrub .dash{width:6px;height:1px;background:var(--line-strong)}
+
+/* Auswahlleiste ersetzt die Kopfleiste (Auswahl ist ein Zustand, kein Dialog). */
+.selbar .count{font-weight:500}
+.btn.danger{border-color:transparent;background:none;color:#F0605A}
+:root[data-theme="light"] .btn.danger{color:#C42B23}
+
+/* Betrachter: Bühne auf Grund, Filmstreifen unten, Eigenschaften rechts. */
+.stage{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+.stage .pic{flex:1;min-height:0;position:relative}
+.stage .pic .ph{position:absolute;inset:24px 56px;background-size:contain;background-color:transparent}
+.stage .nav-arrow{position:absolute;top:50%;transform:translateY(-50%);width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:var(--menu);border:1px solid var(--line-strong);color:var(--text2)}
+.strip{height:64px;flex:none;display:flex;gap:2px;padding:8px 16px;justify-content:center;border-top:1px solid var(--line);overflow:hidden}
+.strip .ph{width:48px;height:48px;flex:none;border-radius:2px;opacity:.55}
+.strip .ph.cur{opacity:1;box-shadow:0 0 0 2px var(--text)}
+.prop .edit{margin-left:auto;color:var(--text3);opacity:0}
+.prop:hover .edit{opacity:1}
+.prop .stack{display:flex;flex-direction:column;min-width:0;padding:6px 0}
+.prop .stack .faint{margin:0;font-size:12px;line-height:16px}
+.minimap{height:120px;border-radius:6px;margin:4px 0 4px;position:relative;overflow:hidden;border:1px solid var(--line)}
+.minimap img{position:absolute;width:256px;height:256px}
+.pin{position:absolute;width:12px;height:12px;border-radius:50%;background:var(--text);box-shadow:0 0 0 3px rgba(0,0,0,.35)}
+.face{width:22px;height:22px;border-radius:50%;flex:none}
+.auto{color:var(--text3)}
+.tag{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:11px;border:1px solid var(--line-strong);font-size:12px;color:var(--text2)}
+.tag svg{width:12px;height:12px;color:var(--text3)}
+
+/* Alben, Personen, Orte: Karten im Raster. */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:24px 16px;padding:24px}
+.card .cover{aspect-ratio:4/3;border-radius:8px;overflow:hidden;position:relative}
+.card .cover .ph{position:absolute;inset:0}
+.card .name{display:flex;align-items:center;gap:6px;margin-top:8px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .meta{font-size:12px;line-height:16px;color:var(--text3);display:flex;align-items:center;gap:6px}
+.card .meta svg{width:12px;height:12px}
+.avs{display:flex;margin-left:auto}
+.avs .avatar{width:20px;height:20px;font-size:9px}
+.cover .shared{position:absolute;right:8px;top:8px;height:22px;padding:0 8px;border-radius:11px;background:rgba(0,0,0,.55);color:#fff;font-size:11px;font-weight:500;display:flex;align-items:center;gap:4px}
+.cover .shared svg{width:12px;height:12px}
+.hero{padding:24px 24px 8px;display:flex;flex-direction:column;gap:8px;max-width:900px}
+.hero h1{margin:0;font-size:22px;line-height:28px;font-weight:600;letter-spacing:-.01em}
+.hero .meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 16px;color:var(--text2)}
+.hero .meta span{display:inline-flex;align-items:center;gap:6px}
+.hero .meta svg{color:var(--text3)}
+.album-grid{padding:8px 24px 24px}
+
+.people{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:20px 12px;padding:24px}
+.person{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
+.person .ph{width:88px;height:88px;border-radius:50%}
+.person b{font-weight:500;display:block}
+.person .faint{display:block;font-size:12px;line-height:16px}
+.person.unnamed .ph{width:64px;height:64px}
+.secthead{display:flex;align-items:center;gap:8px;padding:8px 24px 0;font-size:12px;font-weight:500;color:var(--text3)}
+.secthead .grow{flex:1}
+
+.map{flex:1;position:relative;overflow:hidden;background:#AAD3DF}
+.map .tiles{position:absolute;display:grid;grid-template-columns:repeat(5,256px)}
+.map .tiles img{width:256px;height:256px;display:block}
+:root:not([data-theme="light"]) .map .tiles,:root:not([data-theme="light"]) .minimap img{filter:invert(1) hue-rotate(180deg) brightness(.75) contrast(.9) saturate(.4)}
+.cluster{position:absolute;transform:translate(-50%,-50%);width:56px;height:56px;border-radius:8px;border:2px solid #fff;box-shadow:0 4px 12px rgba(0,0,0,.4);background:var(--raised) center/cover}
+.cluster span{position:absolute;right:-8px;top:-8px;min-width:22px;height:20px;padding:0 6px;border-radius:10px;background:var(--menu);border:1px solid var(--line-strong);font:500 11px/18px "Inter Tabular",Inter,sans-serif;color:var(--text);text-align:center}
+.cluster.sm{width:40px;height:40px}
+.mapnote{position:absolute;left:16px;bottom:16px;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);padding:8px 12px;font-size:12px;color:var(--text2);display:flex;align-items:center;gap:8px}
+.attr{position:absolute;right:8px;bottom:6px;font-size:11px;color:var(--text3)}
+
+/* An diesem Tag: je Jahr ein Streifen. */
+.years{padding:8px 24px 24px;display:flex;flex-direction:column;gap:24px}
+.year h3{margin:0 0 8px;font-size:13px;font-weight:500;display:flex;gap:8px;align-items:baseline}
+.year h3 .faint{font-weight:400;font-size:12px}
+.year .row{display:grid;grid-template-columns:2fr 1fr 1fr 1fr;grid-template-rows:96px 96px;gap:2px;border-radius:8px;overflow:hidden}
+.year .row .ph:first-child{grid-row:span 2}
+
+/* Leer, Laden, fehlende App */
+.empty{flex:1;display:flex;align-items:center;justify-content:center;padding:48px 24px}
+.empty .box{max-width:400px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center}
+.empty .box .ic{width:40px;height:40px;border-radius:10px;background:var(--raised);border:1px solid var(--line-strong);display:grid;place-items:center;color:var(--text2);margin-bottom:8px}
+.empty h2{margin:0;font-size:16px;line-height:22px;font-weight:600}
+.empty p{margin:0;color:var(--text2)}
+.empty .acts{display:flex;gap:8px;margin-top:12px}
+.skel{background:var(--raised)}
+.skel-line{height:12px;width:140px;border-radius:4px;background:var(--raised);margin:28px 0 12px}
+
+/* Dialog über Abdunklung */
+.scrim{position:fixed;inset:0;background:rgba(0,0,0,.62);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+:root[data-theme="light"] .scrim{background:rgba(0,0,0,.3)}
+html[data-open="edit"] #dlg-edit,html[data-open="rights"] #dlg-rights{display:flex}
+.dialog{width:440px;max-width:100%;background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);display:flex;flex-direction:column}
+.dialog.wide{width:560px}
+.dialog .dh{display:flex;align-items:center;gap:8px;padding:16px 16px 0}
+.dialog .dh b{font-size:16px;line-height:22px;font-weight:600;flex:1}
+.dialog .db{padding:16px;display:flex;flex-direction:column;gap:16px}
+.dialog .df{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:12px;font-weight:500;color:var(--text3)}
+.input{height:32px;display:flex;align-items:center;gap:8px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--panel);color:var(--text)}
+.input svg{color:var(--text3)}
+.input.focus{box-shadow:0 0 0 2px var(--focus)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sugg{background:var(--panel);border:1px solid var(--line-strong);border-radius:6px;padding:4px;margin-top:4px}
+.sugg .item{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:5px}
+.sugg .item.hl{background:var(--hover)}
+.sugg .item span.faint{margin-left:auto;font-size:12px}
+.hint{font-size:12px;line-height:16px;color:var(--text2);display:flex;gap:8px}
+.hint svg{width:14px;height:14px;color:var(--text3);margin-top:1px}
+.btn.primary.lg{height:36px}
+.grp{border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.grp .r{display:flex;align-items:center;gap:12px;min-height:56px;padding:8px 16px;border-bottom:1px solid var(--line)}
+.grp .r:last-child{border-bottom:0}
+.grp .r .t{flex:1;min-width:0}
+.grp .r .t b{display:block;font-weight:500}
+.grp .r .t span{display:block;font-size:12px;line-height:16px;color:var(--text2)}
+.toggle{width:32px;height:18px;border-radius:9px;background:var(--line-strong);position:relative;flex:none}
+.toggle::after{content:"";position:absolute;left:2px;top:2px;width:14px;height:14px;border-radius:50%;background:var(--text2)}
+.toggle.on{background:var(--text)}
+.toggle.on::after{left:16px;background:var(--panel)}
+.pill{height:24px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:12px;border:1px solid var(--line-strong);font-size:12px;font-weight:500;color:var(--text2)}
+.pill svg{width:12px;height:12px}
+.pill.att svg{color:#E8A33D}
+.sub-opt{display:flex;gap:6px;margin-top:8px}
+
+/* Größenklassen */
+html[data-size="m"] .grid{grid-template-columns:repeat(auto-fill,minmax(112px,1fr))}
+html[data-size="s"] .grid{grid-template-columns:repeat(4,1fr)}
+html[data-size="s"] .day{padding:0 8px}
+html[data-size="s"] .scrub{display:none}
+html[data-size="s"] .cards{grid-template-columns:repeat(2,1fr);padding:16px;gap:16px 8px}
+html[data-size="s"] .people{grid-template-columns:repeat(3,1fr);padding:16px}
+html[data-size="s"] .person .ph{width:72px;height:72px}
+html[data-size="s"] .stage .pic .ph{inset:8px}
+html[data-size="s"] .stage .nav-arrow{display:none}
+html[data-size="s"] .hero,html[data-size="s"] .years{padding-left:16px;padding-right:16px}
+html[data-size="s"] .album-grid{padding:8px 8px 16px}
+html[data-size="s"] .year .row{grid-template-columns:2fr 1fr 1fr;grid-template-rows:72px 72px}
+html[data-size="s"] .year .row .ph:nth-child(n+6){display:none}
+.infochips{display:flex;flex-wrap:wrap;gap:6px;padding:8px 16px 12px;border-top:1px solid var(--line);background:var(--panel)}
+
+/* Mini und Leiste: Anzeigen, keine App. Zweck: „An diesem Tag“. */
+.tilemode{display:none}
+html[data-size="mini"] .app,html[data-size="bar"] .app{display:none}
+html[data-size="mini"] .tilemode.mini,html[data-size="bar"] .tilemode.bar{display:flex}
+.tilemode.mini{height:100vh;padding:12px;flex-direction:column;gap:8px}
+.tilemode.mini .ph{flex:1;border-radius:8px;position:relative}
+.tilemode.mini .cap{display:flex;align-items:baseline;gap:6px;white-space:nowrap;overflow:hidden}
+.tilemode.mini .cap b{font-weight:500}
+.tilemode.mini .cap .faint{font-size:12px;overflow:hidden;text-overflow:ellipsis}
+.tilemode.mini .dots{position:absolute;bottom:8px;left:0;right:0;display:flex;justify-content:center;gap:4px}
+.tilemode.mini .dots i{width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.5)}
+.tilemode.mini .dots i:first-child{background:#fff}
+.tilemode.bar{height:100vh;padding:8px 12px;align-items:center;gap:12px}
+.tilemode.bar .lbl{display:flex;flex-direction:column;flex:none;width:120px}
+.tilemode.bar .lbl b{font-weight:500}
+.tilemode.bar .lbl .faint{font-size:12px;line-height:16px}
+.tilemode.bar .strip2{flex:1;display:flex;gap:2px;height:100%;overflow:hidden;border-radius:6px}
+.tilemode.bar .strip2 .ph{height:100%;aspect-ratio:1;flex:none}
+</style></head>
+<body>
+
+<!-- Mini: ein Bild von „An diesem Tag“, wechselt ruhig im Minutentakt. -->
+<div class="tilemode mini">
+  <div class="ph" data-seed="lake-1" data-w="480" data-h="480"><div class="dots"><i></i><i></i><i></i><i></i></div></div>
+  <div class="cap"><b>3 years ago</b><span class="faint">Lake Garda · Oct 14, 2023</span></div>
+</div>
+<!-- Leiste: Streifen von heute vor x Jahren. -->
+<div class="tilemode bar">
+  <div class="lbl"><b>On this day</b><span class="faint">24 photos · 4 years</span></div>
+  <div class="strip2" id="barstrip"></div>
+</div>
+
+<div class="app">
+  <aside class="sidebar">
+    <div style="display:flex;align-items:center;gap:2px">
+      <div class="switcher" style="flex:1"><div class="logo">T</div><b>Photos</b><i data-lucide="chevron-down" class="s14 faint"></i><span class="grow"></span></div>
+      <button class="iconbtn"><i data-lucide="search"></i></button>
+      <button class="iconbtn boxed" title="New album"><i data-lucide="square-pen"></i></button>
+    </div>
+    <div style="height:8px"></div>
+    <a class="nav" data-nav="timeline"><i data-lucide="images"></i><span class="grow">Timeline</span><span class="count">13,292</span></a>
+    <a class="nav" data-nav="favorites"><i data-lucide="heart"></i><span class="grow">Favorites</span><span class="count">318</span></a>
+    <a class="nav" data-nav="videos"><i data-lucide="video"></i><span class="grow">Videos</span><span class="count">812</span></a>
+    <a class="nav" data-nav="thisday"><i data-lucide="history"></i><span class="grow">On this day</span><span class="count">24</span></a>
+    <div class="group">Library <i data-lucide="chevron-down"></i></div>
+    <a class="nav" data-nav="albums"><i data-lucide="book-image"></i><span class="grow">Albums</span><span class="count">12</span></a>
+    <a class="nav" data-nav="people"><i data-lucide="scan-face"></i><span class="grow">People</span><span class="count">24</span></a>
+    <a class="nav" data-nav="places"><i data-lucide="map-pin"></i><span class="grow">Places</span><span class="count">57</span></a>
+    <a class="nav" data-nav="tags"><i data-lucide="tag"></i><span class="grow">Tags</span></a>
+    <div class="group">Albums <i data-lucide="chevron-down"></i></div>
+    <a class="nav" data-nav="album"><i data-lucide="book-image" class="faint"></i><span class="grow">Tuscany 2024</span><span class="count">214</span></a>
+    <a class="nav"><i data-lucide="book-image" class="faint"></i><span class="grow">Grandma's 80th</span><span class="count">96</span></a>
+    <a class="nav"><i data-lucide="users" class="faint"></i><span class="grow">Climbing group</span><span class="count">41</span></a>
+    <a class="nav"><i data-lucide="book-image" class="faint"></i><span class="grow">Garden</span><span class="count">63</span></a>
+    <div class="group">Accounts <i data-lucide="chevron-down"></i></div>
+    <a class="nav"><i data-lucide="cloud"></i><span class="grow">cloud.example.org</span><span class="dot" style="--c:var(--c-personal);width:6px;height:6px"></span></a>
+    <span class="spacer"></span>
+    <a class="nav"><i data-lucide="calendar"></i><span class="grow">Open Calendar</span><i data-lucide="arrow-up-right" class="s14 faint"></i></a>
+    <a class="nav"><i data-lucide="settings"></i><span class="grow">Settings</span></a>
+  </aside>
+
+  <main class="panel">
+
+    <!-- ZEITLEISTE -->
+    <section class="screen" data-screen="timeline">
+      <div class="header not-sel">
+        <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+        <div class="crumbs only-l"><i data-lucide="images"></i><b>Timeline</b><span class="faint tab">13,292 items</span></div>
+        <div class="dd not-l"><button class="btn ghost" style="font-size:13px;color:var(--text)"><i data-lucide="images" class="s14"></i>Timeline<i data-lucide="chevron-down" class="s14 chev"></i></button></div>
+        <span class="grow"></span>
+        <div class="seg not-s"><span>Years</span><span>Months</span><span class="on">Days</span></div>
+        <button class="btn ghost only-l"><i data-lucide="list-filter" class="s14"></i>Filter</button>
+        <button class="iconbtn not-l"><i data-lucide="list-filter"></i></button>
+        <button class="btn primary"><i data-lucide="plus" class="s14"></i><span class="not-s">New album</span></button>
+      </div>
+      <div class="header selbar only-sel">
+        <button class="iconbtn" title="Clear selection (Esc)"><i data-lucide="x"></i></button>
+        <span class="count tab">3 selected</span>
+        <span class="faint not-s">· Sat, Oct 4</span>
+        <span class="grow"></span>
+        <button class="btn ghost"><i data-lucide="book-image" class="s14"></i><span class="not-s">Add to album</span></button>
+        <button class="btn ghost"><i data-lucide="heart" class="s14"></i><span class="only-l">Favorite</span></button>
+        <button class="btn ghost"><i data-lucide="tag" class="s14"></i><span class="only-l">Tags</span></button>
+        <button class="btn ghost"><i data-lucide="calendar-cog" class="s14"></i><span class="only-l">Date & place</span></button>
+        <button class="btn danger"><i data-lucide="trash-2" class="s14"></i><span class="not-s">Delete</span></button>
+      </div>
+      <div class="body"><div class="scroll" id="timeline"></div></div>
+    </section>
+
+    <!-- BETRACHTER -->
+    <section class="screen" data-screen="photo">
+      <div class="header">
+        <button class="btn ghost" style="padding-left:4px"><i data-lucide="chevron-left" class="s14"></i>Timeline</button>
+        <span class="faint tab not-s">14 of 312 · Sat, Oct 4</span>
+        <span class="grow"></span>
+        <button class="iconbtn" title="Favorite (F)"><i data-lucide="heart" style="fill:var(--text);color:var(--text)"></i></button>
+        <button class="btn ghost not-s"><i data-lucide="book-image" class="s14"></i>Add to album</button>
+        <button class="iconbtn" title="Open in Nextcloud"><i data-lucide="external-link"></i></button>
+        <button class="iconbtn"><i data-lucide="ellipsis"></i></button>
+        <button class="iconbtn only-l" title="Hide details (I)"><i data-lucide="panel-right"></i></button>
+      </div>
+      <div class="body">
+        <div class="stage">
+          <div class="pic">
+            <div class="ph" data-seed="lake-7" data-w="1600" data-h="1066"></div>
+            <span class="nav-arrow" style="left:12px"><i data-lucide="chevron-left"></i></span>
+            <span class="nav-arrow" style="right:12px"><i data-lucide="chevron-right"></i></span>
+          </div>
+          <div class="infochips not-l">
+            <span class="pchip"><i data-lucide="calendar"></i><span class="tab">Oct 4, 2025, 17:42</span></span>
+            <span class="pchip"><i data-lucide="map-pin"></i>Konstanz</span>
+            <span class="pchip"><i data-lucide="camera"></i>X-T5 · f/2.8</span>
+            <span class="pchip"><span class="face ph" data-seed="anna" data-w="60" data-h="60" style="width:16px;height:16px"></span>Anna</span>
+            <span class="pchip"><i data-lucide="ellipsis"></i></span>
+          </div>
+          <div class="strip not-s" id="strip"></div>
+        </div>
+        <aside class="props only-l">
+          <h4>Details</h4>
+          <div class="prop"><i data-lucide="calendar"></i><div class="stack"><span class="tab">Sat, Oct 4, 2025, 17:42</span><span class="faint">Taken · CEST</span></div><i data-lucide="pencil" class="s14 edit"></i></div>
+          <div class="prop"><i data-lucide="map-pin"></i><div class="stack"><span>Konstanz, Germany</span><span class="faint">Lake Constance</span></div><i data-lucide="pencil" class="s14 edit"></i></div>
+          <div class="minimap"><img alt="" src="https://tile.openstreetmap.org/9/268/178.png" style="left:-97px;top:-119px"><img alt="" src="https://tile.openstreetmap.org/9/269/178.png" style="left:159px;top:-119px"><span class="pin" style="left:127px;top:54px"></span></div>
+          <div class="prop"><i data-lucide="camera"></i><div class="stack"><span>Fujifilm X-T5</span><span class="faint tab">XF 33mm F1.4 · f/2.8 · 1/250 s · ISO 200</span></div></div>
+          <div class="prop"><i data-lucide="file-image"></i><div class="stack"><span>DSCF4021.JPG</span><span class="faint tab">6240 × 4160 · 24.1 MB</span></div></div>
+          <div class="prop"><i data-lucide="folder"></i><span class="muted">Photos / 2025 / Bodensee</span></div>
+          <h4>People</h4>
+          <div class="prop"><span class="face ph" data-seed="anna" data-w="60" data-h="60"></span><span>Anna</span></div>
+          <div class="prop"><span class="face ph" data-seed="ben" data-w="60" data-h="60"></span><span>Ben</span></div>
+          <div class="prop"><i data-lucide="user-plus"></i><span class="muted">Name 1 more face</span></div>
+          <h4>Albums</h4>
+          <div class="prop"><i data-lucide="book-image"></i><span>Lake Constance 2025</span></div>
+          <div class="prop"><i data-lucide="plus"></i><span class="muted">Add to album</span></div>
+          <h4>Tags</h4>
+          <div class="prop" style="flex-wrap:wrap;gap:6px;padding:6px 8px"><span class="tag">sunset</span><span class="tag"><i data-lucide="sparkles"></i>lake</span><span class="tag"><i data-lucide="sparkles"></i>boat</span><span class="tag faint" style="border-style:dashed"><i data-lucide="plus"></i>Add</span></div>
+          <h4>Account</h4>
+          <div class="prop"><i data-lucide="cloud"></i><span class="muted">Nextcloud · Photos</span></div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- AN DIESEM TAG -->
+    <section class="screen" data-screen="thisday">
+      <div class="header">
+        <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+        <div class="crumbs"><i data-lucide="history"></i><b>On this day</b><span class="faint tab not-s">October 14 · ±3 days</span></div>
+        <span class="grow"></span>
+        <button class="btn ghost not-s"><i data-lucide="play" class="s14"></i>Slideshow</button>
+        <button class="btn primary"><i data-lucide="plus" class="s14"></i><span class="not-s">New album</span></button>
+      </div>
+      <div class="body"><div class="scroll"><div class="years" id="years"></div></div></div>
+    </section>
+
+    <!-- ALBEN -->
+    <section class="screen" data-screen="albums">
+      <div class="header">
+        <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+        <div class="crumbs"><i data-lucide="book-image"></i><b>Albums</b><span class="faint tab not-s">12 albums</span></div>
+        <span class="grow"></span>
+        <div class="seg"><span class="on">All</span><span>Mine</span><span>Shared</span></div>
+        <button class="btn ghost only-l"><i data-lucide="arrow-down-wide-narrow" class="s14"></i>Newest</button>
+        <button class="btn primary"><i data-lucide="plus" class="s14"></i><span class="not-s">New album</span></button>
+      </div>
+      <div class="body"><div class="scroll"><div class="cards" id="albums"></div></div></div>
+    </section>
+
+    <!-- ALBUM -->
+    <section class="screen" data-screen="album">
+      <div class="header">
+        <button class="btn ghost" style="padding-left:4px"><i data-lucide="chevron-left" class="s14"></i>Albums</button>
+        <span class="grow"></span>
+        <button class="btn ghost not-s"><i data-lucide="play" class="s14"></i>Slideshow</button>
+        <button class="btn"><i data-lucide="share-2" class="s14"></i><span class="not-s">Share</span></button>
+        <button class="iconbtn"><i data-lucide="ellipsis"></i></button>
+        <button class="btn primary"><i data-lucide="plus" class="s14"></i><span class="not-s">Add photos</span></button>
+      </div>
+      <div class="body"><div class="scroll">
+        <div class="hero">
+          <h1>Tuscany 2024</h1>
+          <div class="meta">
+            <span class="tab"><i data-lucide="calendar" class="s14"></i>Aug 3 – Aug 17, 2024</span>
+            <span><i data-lucide="map-pin" class="s14"></i>Tuscany, Italy</span>
+            <span class="tab"><i data-lucide="images" class="s14"></i>214 photos · 9 videos</span>
+          </div>
+          <div class="meta">
+            <span><span class="avs" style="margin:0"><span class="avatar" style="background:#5B8CFF">AB</span><span class="avatar" style="background:#3FB984">BK</span><span class="avatar" style="background:#D96CA8">LM</span></span>Shared with Anna and 2 others</span>
+            <span><i data-lucide="link" class="s14"></i>Public link on</span>
+          </div>
+        </div>
+        <div class="album-grid"><div class="grid" id="albumgrid"></div></div>
+      </div></div>
+    </section>
+
+    <!-- PERSONEN -->
+    <section class="screen" data-screen="people">
+      <div class="header">
+        <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+        <div class="crumbs"><i data-lucide="scan-face"></i><b>People</b><span class="faint tab not-s only-recog">24 people · 9 not named</span></div>
+        <span class="grow"></span>
+        <button class="btn ghost only-l only-recog"><i data-lucide="eye-off" class="s14"></i>Hidden</button>
+      </div>
+      <div class="body"><div class="scroll only-recog" id="people"></div>
+        <div class="empty no-recog"><div class="box">
+          <div class="ic"><i data-lucide="scan-face"></i></div>
+          <h2>People needs Recognize</h2>
+          <p>Ask the admin of cloud.example.org to install the Nextcloud app Recognize. Faces are found on your server; no photo leaves it.</p>
+          <div class="acts"><button class="btn">Learn more<i data-lucide="arrow-up-right" class="s14"></i></button><button class="btn ghost"><i data-lucide="refresh-cw" class="s14"></i>Check again</button></div>
+        </div></div>
+      </div>
+    </section>
+
+    <!-- ORTE -->
+    <section class="screen" data-screen="places">
+      <div class="header">
+        <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+        <div class="crumbs"><i data-lucide="map-pin"></i><b>Places</b><span class="faint tab not-s">57 places · 9,804 photos with location</span></div>
+        <span class="grow"></span>
+        <div class="seg"><span class="g-on">Grid</span><span class="m-on">Map</span></div>
+      </div>
+      <div class="body">
+        <div class="scroll only-grid"><div class="cards" id="places"></div></div>
+        <div class="map only-map">
+          <div class="tiles" id="tiles"></div>
+          <div class="mapnote"><i data-lucide="info" class="s14"></i>Map by Memories on your Nextcloud</div>
+          <div class="attr">© OpenStreetMap</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- LEER -->
+    <section class="screen" data-screen="empty">
+      <div class="header">
+        <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+        <div class="crumbs"><i data-lucide="images"></i><b>Timeline</b></div>
+        <span class="grow"></span>
+      </div>
+      <div class="empty"><div class="box">
+        <div class="ic"><i data-lucide="images"></i></div>
+        <h2>No photos yet</h2>
+        <p>Photos and videos from your Nextcloud appear here, sorted by the day they were taken. Add them with the Nextcloud app on your phone or in Files.</p>
+        <div class="acts"><button class="btn">Choose photo folders</button><button class="btn ghost">Open Files<i data-lucide="arrow-up-right" class="s14"></i></button></div>
+      </div></div>
+    </section>
+
+    <!-- LÄDT -->
+    <section class="screen" data-screen="loading">
+      <div class="header">
+        <button class="iconbtn not-l"><i data-lucide="panel-left"></i></button>
+        <div class="crumbs"><i data-lucide="images"></i><b>Timeline</b><span class="faint">Indexing 2,140 of 13,292…</span></div>
+        <span class="grow"></span>
+      </div>
+      <div class="body"><div class="scroll"><div class="day" id="skeleton"></div></div></div>
+    </section>
+  </main>
+</div>
+
+<!-- Dialog: Datum und Ort ändern (nur Metadaten, die Datei bleibt) -->
+<div class="scrim" id="dlg-edit"><div class="dialog">
+  <div class="dh"><b>Date and place</b><button class="iconbtn"><i data-lucide="x"></i></button></div>
+  <div class="db">
+    <div class="field"><label>Taken</label>
+      <div class="two"><div class="input"><i data-lucide="calendar" class="s14"></i><span class="tab">Oct 4, 2025</span></div><div class="input"><i data-lucide="clock" class="s14"></i><span class="tab">17:42</span></div></div>
+    </div>
+    <div class="field"><label>Place</label>
+      <div class="input focus"><i data-lucide="map-pin" class="s14"></i><span>Konst</span><span style="width:1px;height:16px;background:var(--text)"></span></div>
+      <div class="sugg">
+        <div class="item hl"><i data-lucide="map-pin" class="s14 faint"></i>Konstanz<span class="faint">Baden-Württemberg, Germany</span></div>
+        <div class="item"><i data-lucide="map-pin" class="s14 faint"></i>Konstanz-Litzelstetten<span class="faint">Germany</span></div>
+        <div class="item"><i data-lucide="locate" class="s14 faint"></i>Same place as the photo before</div>
+      </div>
+    </div>
+    <div class="hint"><i data-lucide="info"></i><span>Saved to the photo's details on Nextcloud. The image file is not changed. Applies to 3 selected photos.</span></div>
+  </div>
+  <div class="df"><button class="btn ghost">Cancel</button><button class="btn primary">Save</button></div>
+</div></div>
+
+<!-- Dialog: Rechte eines Agenten für Fotos (gehört in die Steuerzentrale, Agents & API) -->
+<div class="scrim" id="dlg-rights"><div class="dialog wide">
+  <div class="dh"><i data-lucide="bot" class="faint"></i><b>Claude Code · Photos</b><button class="iconbtn"><i data-lucide="x"></i></button></div>
+  <div class="db">
+    <div class="grp">
+      <div class="r"><i data-lucide="eye" class="faint"></i><div class="t"><b>Read</b><span>Dates, places, albums, people, tags and file details.</span></div><span class="toggle on"></span></div>
+      <div class="r"><i data-lucide="pencil" class="faint"></i><div class="t"><b>Organize</b><span>Create albums, add photos, favorites, tags, fix date and place.</span></div><span class="toggle on"></span></div>
+      <div class="r"><i data-lucide="trash-2" class="faint"></i><div class="t"><b>Delete</b><span>Move photos to the trash, delete albums.</span></div><span class="pill att"><i data-lucide="hand"></i>Ask me first</span></div>
+      <div class="r"><i data-lucide="share-2" class="faint"></i><div class="t"><b>Share and folders</b><span>Invite people, create public links, change photo folders. Photos may leave your cloud.</span></div><span class="pill att"><i data-lucide="lock"></i>Always ask</span></div>
+    </div>
+    <div class="grp">
+      <div class="r" style="align-items:flex-start;padding-top:12px;padding-bottom:12px"><i data-lucide="image" class="faint" style="margin-top:2px"></i><div class="t"><b>See image content</b><span>Lets this agent look at previews of your photos, for example to describe or sort them. Off: it only sees the details above.</span>
+        <div class="sub-opt"><span class="pchip" style="opacity:.4"><i data-lucide="check"></i>Only local models</span><span class="pchip" style="opacity:.4">Any model</span></div></div><span class="toggle"></span></div>
+    </div>
+    <div class="hint"><i data-lucide="shield"></i><span>Text in photos and albums written by others reaches the agent as untrusted data, never as instructions.</span></div>
+  </div>
+  <div class="df"><button class="btn ghost">Cancel</button><button class="btn primary">Save</button></div>
+</div></div>
+
+<script>
+const q=new URLSearchParams(location.search), d=document.documentElement, open=d.dataset.open;
+const pic=(s,w,h)=>`https://picsum.photos/seed/torro-${s}/${w}/${h}`;
+const screenOf={timeline:'timeline',select:'timeline',rights:'timeline',photo:'photo',edit:'photo',thisday:'thisday',albums:'albums',album:'album',people:'people','people-missing':'people',places:'places',map:'places',empty:'empty',loading:'loading'};
+const navOf={timeline:'timeline',select:'timeline',rights:'timeline',photo:'timeline',edit:'timeline',empty:'timeline',loading:'timeline',thisday:'thisday',albums:'albums',album:'album',people:'people','people-missing':'people',places:'places',map:'places'};
+const scr=screenOf[open]||'timeline';
+document.querySelector(`[data-screen="${scr}"]`).classList.add('on');
+document.querySelector(`[data-nav="${navOf[open]||'timeline'}"]`)?.classList.add('active');
+// Zustände über Hilfsklassen
+const css=[];
+if(open==='select'){css.push('.not-sel{display:none!important}')}else{css.push('.only-sel{display:none!important}')}
+if(open==='people-missing'){css.push('.only-recog{display:none!important}')}else{css.push('.no-recog{display:none!important}')}
+if(open==='map'){css.push('.only-grid{display:none!important}','.seg .m-on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-strong)}')}
+else{css.push('.only-map{display:none!important}','.seg .g-on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-strong)}')}
+document.head.insertAdjacentHTML('beforeend',`<style>${css.join('')}</style>`);
+
+const tile=(s,o={})=>`<div class="tile${o.sel?' sel':''}"><span class="ph" style="background-image:url(${pic(s,300,300)})"></span>`+
+  `<span class="check">${o.sel?'<i data-lucide="check"></i>':''}</span>`+
+  (o.video?`<span class="badge"><i data-lucide="play"></i>${o.video}</span>`:'')+
+  (o.fav?`<span class="fav"><i data-lucide="heart"></i></span>`:'')+`</div>`;
+
+// Zeitleiste
+const days=[
+  ['Today','Konstanz',['k1','k2','k3','k4','k5'],{2:{video:'0:42'}}],
+  ['Sun, Oct 12','Garden',['g1','g2','g3','g4','g5','g6','g7','g8','g9'],{0:{fav:1}}],
+  ['Sat, Oct 4','Lake Constance',Array.from({length:23},(_,i)=>'lake-'+i),{3:{sel:1},4:{sel:1,fav:1},7:{sel:1},11:{video:'2:18'}}],
+  ['Sun, Sep 28','Hamburg',Array.from({length:14},(_,i)=>'hh-'+i),{}],
+];
+document.getElementById('timeline').innerHTML=days.map(([t,p,seeds,o])=>`<div class="day"><div class="dayhead"><b>${t}</b><span class="faint">${p} · ${seeds.length}</span><span class="pick iconbtn" title="Select day"><i data-lucide="circle-check" class="s14"></i></span></div><div class="grid">${seeds.map((s,i)=>tile(s,open==='select'?o[i]||{}:{...(o[i]||{}),sel:0})).join('')}</div></div>`).join('')+
+  `<div class="scrub"><span class="now">Oct</span><span>Sep</span><span>Aug</span><span>2025</span><span class="dash"></span><span>2024</span><span class="dash"></span><span>2023</span><span>2022</span><span>2021</span><span>2019</span><span>2016</span><span>2012</span></div>`;
+
+// Betrachter-Streifen
+document.getElementById('strip').innerHTML=Array.from({length:15},(_,i)=>`<span class="ph${i===7?' cur':''}" style="background-image:url(${pic('lake-'+i,96,96)})"></span>`).join('');
+
+// An diesem Tag
+document.getElementById('years').innerHTML=[['1 year ago','Oct 12, 2025 · Lake Constance','y1'],['3 years ago','Oct 14, 2023 · Lake Garda','lake-1'],['6 years ago','Oct 15, 2020 · Hamburg','y6'],['9 years ago','Oct 11, 2017 · Vienna','y9']]
+  .map(([a,b,s])=>`<div class="year"><h3>${a}<span class="faint">${b}</span></h3><div class="row">${[0,1,2,3,4,5,6].map(i=>`<span class="ph" style="background-image:url(${pic(i?s+'-'+i:s,i?240:600,i?240:600)})"></span>`).join('')}</div></div>`).join('');
+
+// Alben
+const albums=[['Tuscany 2024','tusc-1','214 · Aug 2024',['#5B8CFF','#3FB984','#D96CA8'],1],['Grandma\'s 80th','oma','96 · Jun 2025',['#E8A33D'],0],['Climbing group','climb','41 · shared by Ben',['#3FB984'],2],['Garden','g3','63 · 2023 – 2025',[],0],
+  ['Lake Constance 2025','lake-7','52 · Oct 2025',[],0],['Bikes','bike','27 · 2021 – 2025',[],0],['Kids\' drawings','draw','118 · 2019 – 2025',['#A78BFA'],0],['Wedding Lisa & Tom','wed','304 · shared by Lisa',['#D96CA8'],2]];
+document.getElementById('albums').innerHTML=albums.map(([n,s,m,av,sh])=>`<div class="card"><div class="cover"><span class="ph" style="background-image:url(${pic(s,480,360)})"></span>${sh===1?'<span class="shared"><i data-lucide="link"></i>Public</span>':''}</div><div class="name">${sh===2?'<i data-lucide="users" class="s14 faint"></i>':''}${n}</div><div class="meta tab">${m}${av.length?`<span class="avs">${av.map((c,i)=>`<span class="avatar" style="background:${c}">${'ABLM'[i]}${'BKMT'[i]}</span>`).join('')}</span>`:''}</div></div>`).join('');
+document.getElementById('albumgrid').innerHTML=Array.from({length:30},(_,i)=>tile('tusc-'+i,{fav:i===4,video:i===9?'0:58':0})).join('');
+
+// Personen
+const named=[['Anna','anna',1840],['Ben','ben',1212],['Lisa','lisa',604],['Tom','tom',588],['Grandma','oma-f',341],['Max','max',219],['Mia','mia',187],['Jonas','jonas',96]];
+document.getElementById('people').innerHTML=`<div class="people">${named.map(([n,s,c])=>`<div class="person"><span class="ph" style="background-image:url(${pic(s,200,200)})"></span><div><b>${n}</b><span class="faint tab">${c.toLocaleString('en')} photos</span></div></div>`).join('')}</div>`+
+  `<div class="secthead">Not named yet<span class="faint tab">9</span><span class="grow"></span><span class="btn ghost" style="height:24px">Show all</span></div>`+
+  `<div class="people">${Array.from({length:6},(_,i)=>`<div class="person unnamed"><span class="ph" style="background-image:url(${pic('face-'+i,160,160)})"></span><div><span class="faint" style="color:var(--text2)">Add name</span><span class="faint tab">${[52,31,18,12,9,6][i]} photos</span></div></div>`).join('')}</div>`;
+
+// Orte
+const places=[['Hamburg','Germany','1,204','hamburg'],['Konstanz','Germany','412','lake-3'],['Florence','Italy','138','tusc-2'],['Siena','Italy','76','tusc-5'],['Lake Garda','Italy','71','lake-1'],['Paris','France','61','paris'],['Barcelona','Spain','73','spain'],['Vienna','Austria','38','vienna']];
+document.getElementById('places').innerHTML=places.map(([n,c,k,s])=>`<div class="card"><div class="cover"><span class="ph" style="background-image:url(${pic(s,480,360)})"></span></div><div class="name">${n}</div><div class="meta tab">${c} · ${k}</div></div>`).join('');
+document.getElementById('tiles').innerHTML=[9,10,11,12].flatMap(y=>[14,15,16,17,18].map(x=>`<img alt="" src="https://tile.openstreetmap.org/5/${x}/${y}.png">`)).join('');
+(function(){const m=document.querySelector('.map'),t=document.getElementById('tiles');const fit=()=>{t.style.left=(m.clientWidth-1280)/2+'px';t.style.top=(m.clientHeight-1024)/2+'px'};fit();addEventListener('resize',fit)})();
+// Haufen an echten Koordinaten (Zoom 5, Kacheln x 14–18, y 9–12)
+const merc=(lat,lon)=>{const r=lat*Math.PI/180;return[(lon+180)/360*8192-14*256,(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*8192-9*256]};
+document.getElementById('tiles').insertAdjacentHTML('beforeend',[[53.55,10.0,'hamburg','1,204',0],[47.66,9.17,'lake-3','412',0],[43.77,11.25,'tusc-2','214',0],[48.21,16.37,'vienna','38',1],[48.86,2.35,'paris','61',1],[41.39,2.17,'spain','73',1]]
+  .map(([la,lo,s,n,sm])=>{const[x,y]=merc(la,lo);return`<div class="cluster${sm?' sm':''}" style="left:${x}px;top:${y}px;background-image:url(${pic(s,120,120)})"><span class="tab">${n}</span></div>`}).join(''));
+
+// Laden
+document.getElementById('skeleton').innerHTML=[0,1].map(()=>`<div class="skel-line"></div><div class="grid">${Array.from({length:14},()=>'<div class="tile skel"></div>').join('')}</div>`).join('');
+
+// Leiste
+document.getElementById('barstrip').innerHTML=Array.from({length:14},(_,i)=>`<span class="ph" style="background-image:url(${pic('y'+i,200,200)})"></span>`).join('');
+// Einzelbilder mit data-seed
+document.querySelectorAll('.ph[data-seed]').forEach(e=>e.style.backgroundImage=`url(${pic(e.dataset.seed,e.dataset.w,e.dataset.h)})`);
+lucide.createIcons();
+</script>
+</body></html>
