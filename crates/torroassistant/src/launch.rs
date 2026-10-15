@@ -83,6 +83,8 @@ pub enum Open {
     BotMenu,
     /// The editor of the bot "Travel planner": profile, personality, instructions, skills.
     BotEditor,
+    /// The editor of the bot "Travel planner" scrolled to its section "Access" (task B.5).
+    BotAccess,
     /// The editor of a new bot, after a first "Save" without a name: the problem shows.
     BotNew,
     /// The question before deleting the bot "Travel planner".
@@ -97,7 +99,7 @@ pub enum Open {
 
 impl Open {
     /// Every state by the word `--open` takes.
-    pub const ALL: [(&'static str, Open); 27] = [
+    pub const ALL: [(&'static str, Open); 28] = [
         ("new", Open::New),
         ("tools", Open::Tools),
         ("approval", Open::Approval),
@@ -120,6 +122,7 @@ impl Open {
         ("bot-welcome", Open::BotWelcome),
         ("bot-menu", Open::BotMenu),
         ("bot-editor", Open::BotEditor),
+        ("bot-access", Open::BotAccess),
         ("bot-new", Open::BotNew),
         ("bot-delete", Open::BotDelete),
         ("bot-asked", Open::BotAsked),

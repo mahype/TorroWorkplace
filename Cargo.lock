@@ -6539,7 +6539,9 @@ dependencies = [
  "tokio",
  "torro-core",
  "torro-gui",
+ "torro-inbox",
  "torro-ipc",
+ "torro-pim",
  "unicode-segmentation",
  "webbrowser",
 ]

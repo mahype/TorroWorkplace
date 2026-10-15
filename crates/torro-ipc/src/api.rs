@@ -20,11 +20,12 @@ use std::sync::OnceLock;
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, Schema};
 use serde::{Deserialize, Serialize};
-use torro_inbox::{AgentInfo, HideScope, Item, Kind, Poster, SourceKind, SourceRef, rules};
+use torro_core::account::AccountKind;
+use torro_inbox::{AgentInfo, HideScope, Item, Kind, Poster, SourceInfo, SourceKind, SourceRef, rules};
 use torro_setups::LoadMode;
 
 use crate::mail::{MoveRole, MoveTarget};
-use crate::{ClientInfo, Request, Response};
+use crate::{AccountInfo, ClientInfo, Request, Response};
 
 /// The part of the suite a person grants rights for.
 ///
@@ -586,6 +587,52 @@ impl Rights {
     pub fn template(&self) -> Option<RightsTemplate> {
         RightsTemplate::ALL.into_iter().find(|template| template.rights() == *self)
     }
+
+    /// The selection that narrows `area`: the calendars of `calendar`, the task lists of `tasks`,
+    /// the repositories of `github`, the sources of `inbox`, the accounts of `mail`; `None` for an
+    /// area without one.
+    pub fn selection(&self, area: Area) -> Option<&Selection> {
+        match area {
+            Area::Calendar => Some(&self.calendars),
+            Area::Tasks => Some(&self.task_lists),
+            Area::Github => Some(&self.github_repos),
+            Area::Inbox => Some(&self.inbox_sources),
+            Area::Mail => Some(&self.mail_accounts),
+            _ => None,
+        }
+    }
+
+    /// Sets the level of `area` to `level` and keeps its admin switch: the one rule of a person's
+    /// click on a level, shared by the control centre (`change_rights`) and the bot editor of the
+    /// assistant (task B.5).
+    ///
+    /// Switching the area on – from [`Level::NoAccess`] to any other level – while its selection
+    /// is empty (`Only([])`, as for every new bot, [`Rights::none`]) gives the selection what
+    /// exists now: `present()`, the ids of the calendars, task lists, inbox sources or signed-in
+    /// mail accounts there are (issue #133, widened to every selection). A person who grants an
+    /// area means to grant something; an empty selection would grant nothing. Never
+    /// [`Selection::All`]: what is added later stays off until the person ticks it. `github` has
+    /// no list of what exists, so its selection stays empty (the person names repositories in
+    /// the control centre); a selection that names something, or `All`, stays as it is; an area
+    /// without a selection only changes its level. `present` is called only when the rule
+    /// applies.
+    pub fn set_level(&mut self, area: Area, level: Level, present: impl FnOnce() -> Vec<String>) {
+        let held = self.area(area);
+        self.areas.insert(area, AreaRights { level, admin: held.admin });
+        let switched_on = held.level == Level::NoAccess && level != Level::NoAccess;
+        let empty = self.selection(area) == Some(&Selection::Only(Vec::new()));
+        if !switched_on || !empty || area == Area::Github {
+            return;
+        }
+        let ids = present();
+        match area {
+            Area::Calendar => self.calendars = Selection::Only(ids),
+            Area::Tasks => self.task_lists = Selection::Only(ids),
+            Area::Inbox => self.inbox_sources = Selection::Only(ids),
+            Area::Mail => self.mail_accounts = Selection::Only(ids),
+            _ => {}
+        }
+    }
 }
 
 /// The repositories both selections reach: each name of one that the other reaches whole (a
@@ -906,6 +953,87 @@ pub fn allowed_by_kind(kind: &str, operation: Operation) -> bool {
 /// [`Rights::allows`] wherever it checks a client's rights.
 pub fn own_memory(kind: &str, operation: Operation) -> bool {
     kind == ASSISTANT_CLIENT && ASSISTANT_OWN.contains(&operation.name())
+}
+
+/// Whether a rights view (the control centre's, the bot editor's) offers `area` for a client of
+/// `kind`: every grantable area ([`Area::grantable`]), except `assistant` and `bots` for the
+/// assistant's own client and for a bot's (task B.3). The core refuses them those areas whatever
+/// their rights say ([`loops_back`]; the assistant uses the bots it may by its kind, never by a
+/// right), so a switch there would promise what never happens.
+pub fn shows_area(area: Area, kind: &str) -> bool {
+    let closed = matches!(kind, ASSISTANT_CLIENT | BOT_CLIENT) && matches!(area, Area::Assistant | Area::Bots);
+    area.grantable() && !closed
+}
+
+/// Whether `area` has a command agents may use ([`Mcp::Tool`]) that needs `access`. Commands kept
+/// from agents ([`Mcp::Never`]) are refused whatever the rights say, so they count for nothing.
+pub fn has_command(area: Area, access: Access) -> bool {
+    CATALOGUE.iter().any(|command| command.area == area && command.mcp == Mcp::Tool && command.access == access)
+}
+
+/// The levels worth offering in `area`, least first: always "None" and "Read", "Write" when the
+/// area has commands that change something, "Full" when it has some that delete or overwrite.
+/// So "Settings", whose changes are all admin commands, offers just "None" and "Read".
+pub fn levels(area: Area) -> Vec<Level> {
+    let mut levels = vec![Level::NoAccess, Level::Read];
+    if has_command(area, Access::Write) {
+        levels.push(Level::Write);
+    }
+    if has_command(area, Access::Delete) {
+        levels.push(Level::Full);
+    }
+    levels
+}
+
+/// The segment that shows `stored` among the `offered` levels ([`levels`]): the highest offered
+/// level it reaches. A template gives "Full" everywhere, which in an area without deleting
+/// commands allows what "Write" allows.
+pub fn active_level(offered: &[Level], stored: Level) -> usize {
+    offered.iter().rposition(|&level| level <= stored).unwrap_or(0)
+}
+
+/// The mail accounts signed in now among `accounts` (`accounts.list_accounts`): the accounts of
+/// the kind `mail` with an id. A sign-in that still runs has no id and no mail yet. Their ids are
+/// what [`Rights::mail_accounts`] names.
+pub fn signed_in_mail(accounts: &[AccountInfo]) -> impl Iterator<Item = &AccountInfo> {
+    accounts.iter().filter(|account| account.kind == AccountKind::Mail.name() && !account.id.is_empty())
+}
+
+/// The inbox sources there are now, which a client can be allowed ([`Rights::inbox_sources`]), each
+/// once, in the order of [`SourceKind`]: the sources with entries or muted (`listed`,
+/// `inbox.list_sources`), the source of every client in `clients` (where its reports would land,
+/// [`post_source`]), every signed-in mail account ([`signed_in_mail`]; its new mail, task E4.1) and
+/// the sources of every GitHub, Nextcloud and ntfy account among `accounts` (task E5.14: GitHub,
+/// Nextcloud, Talk, ntfy). Never the suite: its entries (approvals, account problems) are only for
+/// the person, no client sees them whatever its selection says (task E1.2c).
+pub fn present_sources(listed: &[SourceInfo], clients: &[ClientInfo], accounts: &[AccountInfo]) -> Vec<SourceRef> {
+    let mut sources: Vec<SourceRef> = listed.iter().map(|info| info.source.clone()).collect();
+    sources.extend(clients.iter().filter_map(|client| post_source(Some(client), None).ok()));
+    sources.extend(signed_in_mail(accounts).filter_map(|account| account.id.parse::<SourceRef>().ok()));
+    sources.extend(remote_sources(accounts));
+    sources.retain(|source| source.kind != SourceKind::Suite);
+    sources.sort();
+    sources.dedup();
+    sources
+}
+
+/// The inbox sources of the remote accounts among `accounts`, whether or not they have entries
+/// yet: a GitHub account's notifications, a Nextcloud account's notifications and its Talk, an
+/// ntfy account's topics. Each account's id is the key of its source; Talk's is the Nextcloud
+/// account's with `talk` in front. A sign-in that still runs has no id and no source.
+fn remote_sources(accounts: &[AccountInfo]) -> Vec<SourceRef> {
+    let mut sources = Vec::new();
+    for source in accounts.iter().filter_map(|account| account.id.parse::<SourceRef>().ok()) {
+        match source.kind {
+            SourceKind::Nextcloud => {
+                sources.push(SourceRef::talk(source.name.clone()));
+                sources.push(source);
+            }
+            SourceKind::Github | SourceKind::Ntfy => sources.push(source),
+            _ => {}
+        }
+    }
+    sources
 }
 
 /// Who posts, as [`rules::admitted_kind`] sees the caller: a hook client is [`Poster::Hook`],
@@ -4823,6 +4951,97 @@ mod tests {
         for field in ["id", "account", "to", "cc", "bcc", "subject", "body", "html", "in_reply_to", "attachments"] {
             assert!(fields.get(field).is_some(), "save_draft lacks {field}");
         }
+    }
+
+    fn account(id: &str, kind: &str) -> AccountInfo {
+        AccountInfo {
+            id: id.into(),
+            kind: kind.into(),
+            label: id.into(),
+            state: torro_pim::AccountState::NotConnected,
+            collections: Vec::new(),
+            scopes: None,
+            mail: None,
+            ntfy: None,
+        }
+    }
+
+    /// Task B.5: switching an area on with an empty selection gives it what exists now, never `All`;
+    /// GitHub, a selection that names something and a level that was on already stay as they are.
+    #[test]
+    fn switching_an_area_on_gives_it_what_exists_now() {
+        let present = || vec!["acc/work".to_string(), "acc/home".to_string()];
+        let mut rights = Rights::none();
+        rights.areas.insert(Area::Inbox, AreaRights { level: Level::NoAccess, admin: true });
+        rights.set_level(Area::Calendar, Level::Read, present);
+        assert_eq!(rights.area(Area::Calendar), AreaRights { level: Level::Read, admin: false });
+        assert_eq!(rights.calendars, Selection::Only(present()), "the calendars there are, not All");
+
+        rights.set_level(Area::Inbox, Level::Write, || vec!["agent:codex".into()]);
+        assert_eq!(rights.area(Area::Inbox), AreaRights { level: Level::Write, admin: true }, "admin stays");
+        assert_eq!(rights.inbox_sources, Selection::Only(vec!["agent:codex".into()]));
+
+        rights.set_level(Area::Mail, Level::Read, Vec::new);
+        assert_eq!(rights.mail_accounts, Selection::Only(Vec::new()), "no mail account: nothing to tick");
+
+        let untouched = |_: &str| -> Vec<String> { panic!("present asked although the rule does not apply") };
+        rights.set_level(Area::Github, Level::Read, || untouched("github"));
+        assert_eq!(rights.github_repos, Selection::Only(Vec::new()), "GitHub has no list of what exists");
+
+        rights.task_lists = Selection::Only(vec!["acc/todo".into()]);
+        rights.set_level(Area::Tasks, Level::Read, || untouched("chosen"));
+        assert_eq!(rights.task_lists, Selection::Only(vec!["acc/todo".into()]), "a choice stays");
+
+        rights.calendars = Selection::Only(Vec::new());
+        rights.set_level(Area::Calendar, Level::Write, || untouched("on already"));
+        assert_eq!(rights.calendars, Selection::Only(Vec::new()), "only switching on fills");
+
+        rights.set_level(Area::Settings, Level::Read, || untouched("no selection"));
+        assert_eq!(rights.area(Area::Settings).level, Level::Read);
+        assert_eq!(rights.selection(Area::Settings), None);
+        assert_eq!(rights.selection(Area::Mail), Some(&rights.mail_accounts));
+    }
+
+    #[test]
+    fn present_sources_are_every_source_but_the_suite() {
+        let client = ClientInfo {
+            id: "c1".into(),
+            name: "Claude Code".into(),
+            kind: "claude-code".into(),
+            created: Utc::now(),
+            last_used: None,
+            rights: Rights::none(),
+            agent: None,
+        };
+        let listed = [
+            SourceInfo { source: SourceRef::script("nightly"), open: 1, muted: false, health: None },
+            SourceInfo { source: SourceRef::suite(), open: 2, muted: false, health: None },
+        ];
+        let accounts = [
+            account("mail:anna@mailbox.org", "mail"),
+            account("", "mail"),
+            account("nextcloud:anna@cloud.example.org", "nextcloud"),
+            account("caldav:anna@example.org", "caldav"),
+        ];
+        let keys: Vec<String> = present_sources(&listed, &[client], &accounts).iter().map(SourceRef::key).collect();
+        for key in ["script:nightly", "agent:claude-code", "mail:anna@mailbox.org", "nextcloud:anna@cloud.example.org"]
+        {
+            assert!(keys.contains(&key.to_string()), "{key} in {keys:?}");
+        }
+        assert!(keys.iter().any(|key| key.starts_with("talk:")), "{keys:?}");
+        assert!(!keys.contains(&"suite".to_string()) && !keys.iter().any(|key| key.starts_with("caldav")));
+        let mail: Vec<&str> = signed_in_mail(&accounts).map(|account| account.id.as_str()).collect();
+        assert_eq!(mail, ["mail:anna@mailbox.org"], "a sign-in that runs has no id");
+    }
+
+    #[test]
+    fn levels_offer_what_makes_a_difference() {
+        assert!(shows_area(Area::Calendar, BOT_CLIENT) && !shows_area(Area::Bots, BOT_CLIENT));
+        assert!(!shows_area(Area::Assistant, ASSISTANT_CLIENT) && shows_area(Area::Assistant, "codex"));
+        assert!(!shows_area(Area::Clients, "codex"), "not grantable");
+        assert_eq!(levels(Area::Settings), [Level::NoAccess, Level::Read]);
+        assert_eq!(active_level(&levels(Area::Settings), Level::Full), 1);
+        assert!(has_command(Area::Calendar, Access::Delete) && !has_command(Area::Calendar, Access::Admin));
     }
 }
 
