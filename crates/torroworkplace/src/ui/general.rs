@@ -622,6 +622,8 @@ mod tests {
                 assistant_retention: Default::default(),
                 voice: Default::default(),
                 assistant_default: None,
+                mail_view: Default::default(),
+                mail_appearance: Default::default(),
             },
             ..Data::default()
         };

@@ -298,9 +298,10 @@ fn the_html_part_is_kept_cleaned_beside_the_text_part() {
     let html = read.html.clone().expect("the HTML part");
     for kept in [
         "<style>p { color: #333; }</style>",
-        "style=\"padding: 8px\"",
+        // The cell's own style after the table's cellpadding, which became CSS (task M9.5).
+        "style=\"padding:4px;padding: 8px\"",
         "colspan=\"2\"",
-        "bgcolor=\"#ffffff\"",
+        "background-color:#ffffff;",
         "class=\"lead\"",
         "<b>Anna</b>",
         "src=\"cid:logo@example.com\"",

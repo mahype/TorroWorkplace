@@ -82,6 +82,45 @@ pub struct Settings {
     /// leniently: a value that does not read is `None`, never a settings file that fails.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_default")]
     pub assistant_default: Option<AssistantDefault>,
+    /// How a mail that has HTML first shows in the reader (task M9.5, decision 9 in
+    /// `docs/mail.md`): formatted ([`MailFormat::Html`], the default) or as plain text. The reader
+    /// can switch a mail it shows; this is where it starts. Read leniently: a value that does not
+    /// read is the default.
+    #[serde(default, deserialize_with = "lenient")]
+    pub mail_view: MailFormat,
+    /// The colours of a mail's content in the reader (task M9.5): like the suite
+    /// ([`MailAppearance::App`], the default), or always light or dark. Only the mail itself, never
+    /// the rest of the window. Read leniently, like [`Settings::mail_view`].
+    #[serde(default, deserialize_with = "lenient")]
+    pub mail_appearance: MailAppearance,
+}
+
+/// How a mail that has HTML first shows in the reader (`settings.set_setting mail_view`, task
+/// M9.5). A mail without HTML always shows its text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MailFormat {
+    /// `"html"`: formatted, as the sender wrote it (the cleaned HTML part).
+    #[default]
+    Html,
+    /// `"text"`: the plain text of the mail.
+    Text,
+}
+
+/// The colours of a mail's content in the reader (`settings.set_setting mail_appearance`, task
+/// M9.5). Dark recolours the mail's HTML for a dark background; pictures stay as they are. It
+/// can be switched off because recoloured newsletters often look worse.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MailAppearance {
+    /// `"app"`: light or dark as the suite draws now ([`Settings::appearance`], so `System`
+    /// follows the desktop).
+    #[default]
+    App,
+    /// `"light"`: always the mail's own colours.
+    Light,
+    /// `"dark"`: always recoloured for a dark background.
+    Dark,
 }
 
 /// What a new chat of the assistant starts with (issue #131, `settings.set_setting
@@ -134,6 +173,15 @@ fn lenient_default<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<
     Ok(AssistantDefault::from_value(&value).ok().flatten())
 }
 
+/// The value as written, or the default when it does not read: one damaged setting must not cost
+/// the others.
+fn lenient<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned + Default>(
+    deserializer: D,
+) -> Result<T, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 /// The id of the standard design, for settings from before design packs.
 fn standard_design() -> String {
     crate::design::STANDARD_ID.to_string()
@@ -159,6 +207,8 @@ impl Default for Settings {
             assistant_retention: Retention::default(),
             voice: Voice::default(),
             assistant_default: None,
+            mail_view: MailFormat::default(),
+            mail_appearance: MailAppearance::default(),
         }
     }
 }
@@ -846,6 +896,36 @@ mod tests {
         }
     }
 
+    /// Task M9.5: mail shows as HTML in the suite's colours unless set otherwise; the values are
+    /// lowercase words, and a file from before them, or with a value that does not read, keeps
+    /// the defaults and the other settings.
+    #[test]
+    fn mail_shows_as_html_in_the_apps_colours_unless_set() {
+        let defaults = Settings::default();
+        assert_eq!((defaults.mail_view, defaults.mail_appearance), (MailFormat::Html, MailAppearance::App));
+        let written = serde_json::to_value(&defaults).expect("json");
+        assert_eq!(
+            (&written["mailView"], &written["mailAppearance"]),
+            (&serde_json::json!("html"), &serde_json::json!("app"))
+        );
+        for (format, word) in [(MailFormat::Html, "html"), (MailFormat::Text, "text")] {
+            assert_eq!(serde_json::to_value(format).expect("json"), serde_json::json!(word));
+        }
+        for (appearance, word) in
+            [(MailAppearance::App, "app"), (MailAppearance::Light, "light"), (MailAppearance::Dark, "dark")]
+        {
+            assert_eq!(serde_json::to_value(appearance).expect("json"), serde_json::json!(word));
+        }
+        let set: Settings = serde_json::from_str(r#"{"mailView": "text", "mailAppearance": "dark"}"#).expect("reads");
+        assert_eq!((set.mail_view, set.mail_appearance), (MailFormat::Text, MailAppearance::Dark));
+        let old: Settings = serde_json::from_str(r#"{"language": "german"}"#).expect("a file from before");
+        assert_eq!((old.mail_view, old.mail_appearance), (MailFormat::Html, MailAppearance::App));
+        let damaged: Settings =
+            serde_json::from_str(r#"{"mailView": "rich", "mailAppearance": 3, "zoom": 1.1}"#).expect("lenient");
+        assert_eq!((damaged.mail_view, damaged.mail_appearance), (MailFormat::Html, MailAppearance::App));
+        assert_eq!(damaged.zoom.percent(), 110, "the other settings still read");
+    }
+
     #[test]
     fn missing_file_loads_defaults() {
         let dir = TempDir::new("missing");
@@ -882,6 +962,8 @@ mod tests {
             assistant_retention: Retention::DEFAULT,
             voice: Voice::default(),
             assistant_default: None,
+            mail_view: MailFormat::Html,
+            mail_appearance: MailAppearance::App,
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -962,6 +1044,8 @@ mod tests {
                 ..Voice::default()
             },
             assistant_default: None,
+            mail_view: MailFormat::Text,
+            mail_appearance: MailAppearance::Dark,
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);

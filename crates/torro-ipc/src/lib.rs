@@ -2194,6 +2194,15 @@ pub enum SettingKey {
     /// (`torro_core::settings::AssistantDefault`). The engine is not checked here: an engine that is
     /// not offered when a chat starts is passed over.
     AssistantDefault,
+    /// How a mail that has HTML first shows in the reader (task M9.5): `"html"` (formatted, the
+    /// default) or `"text"` (its plain text). The reader can still switch a single mail. Open
+    /// windows follow (`torro_core::settings::MailFormat`).
+    MailView,
+    /// The colours of a mail's content in the reader (task M9.5): `"app"` (like the suite's
+    /// `appearance`, the default), `"light"` (the mail's own colours) or `"dark"` (recoloured for a
+    /// dark background, pictures unchanged). Only the mail, never the rest of the window. Open
+    /// windows follow (`torro_core::settings::MailAppearance`).
+    MailAppearance,
 }
 
 /// The core's answer to one [`Request`].

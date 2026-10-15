@@ -770,7 +770,13 @@ M9.5 ──── M9.8 ─────────┘
   dieser Aufgabe.
 
 ### M9.5 Mail-Darstellung als Einstellung, alte HTML-Attribute als CSS
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `crates/torro-mail-imap/tests/mime_roundtrip.rs` (eine Erwartung von M9.1 nennt jetzt das
+  CSS statt `bgcolor`/`cellpadding`), `crates/torroworkplace/src/ui/general.rs` (Test baut `Settings` vollständig);
+  Typen `torro_core::settings::MailFormat` (`html`/`text`) und `MailAppearance` (`app`/`light`/`dark`). Die Umschreibung
+  läuft auf dem schon bereinigten HTML, danach noch einmal durch die Erlaubt-Liste; über die Aufgabe hinaus: `align` bei
+  `img` (`float`/`vertical-align`) und `hr`, `align=middle` wie `center`, Tabellen in zentrierten Zellen oder `<center>`
+  werden zentriert wie im Browser; `border` außer an `table` und `color` außer an `font` bleiben Attribute;
+  `docs/api.md` zählt die Einstellungen nicht auf, keine Änderung)
 - **Modell:** Opus · **Braucht:** M9.1 · **Dateien:** `crates/torro-core/src/settings.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs`,
   `crates/torro-mail-imap/src/mime.rs`, `docs/api-reference.md`, `docs/api.md` (Tabelle der Einstellungen, falls dort
