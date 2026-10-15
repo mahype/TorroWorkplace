@@ -849,7 +849,9 @@ M9.5 ──── M9.8 ─────────┘
   `--demo` (Newsletter, Outlook-Mail, Textmail) Breit/Mittel/Schmal, App hell und dunkel, Mail hell und dunkel.
 
 ### M9.8 Einstellungsseite: Darstellung von Mails
-- [ ] erledigt
+- [x] erledigt (Gruppe „Mail“ am Ende der Seite Appearance, beide Einstellungen als Auswahlliste wie „Write new mail as“
+  im Mail-Konto; „Mail colors“ in amerikanischer Schreibung wie „Color mode“; Sichtprüfung auf macOS per Screenshot
+  des eigenen Fensters (Breit, Mittel, Schmal, hell/dunkel, Englisch/Deutsch))
 - **Modell:** Sonnet · **Braucht:** M9.5 · **Dateien:** `crates/torroworkplace/src/ui/general.rs` (Seite
   Appearance), `crates/torro-core/src/i18n/de.rs`
 - **Oberfläche:** Auf der Seite **Appearance** der Steuerzentrale eine Gruppe „Mail“: „Show mail as“ – Formatted

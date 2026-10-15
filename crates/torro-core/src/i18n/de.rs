@@ -3369,6 +3369,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Actual size", "Originalgröße"),
     ("Window", "Fenster"),
     ("Close window", "Fenster schließen"),
+    // Control centre: mail on the page Appearance (task M9.8)
+    (
+        "Formatted shows mail the way the sender designed it. Dark recolors mail for a dark background; some newsletters look worse that way.",
+        "Formatiert zeigt E-Mails so, wie der Absender sie gestaltet hat. Dunkel färbt E-Mails für einen dunklen Hintergrund um; manche Newsletter sehen dann schlechter aus.",
+    ),
+    ("Like the app", "Wie die App"),
+    ("Mail colors", "Farben von E-Mails"),
+    ("Show mail as", "E-Mails zeigen als"),
     // Formatted mail (issue #125)
     ("Bold", "Fett"),
     ("Bulleted list", "Aufzählung"),
