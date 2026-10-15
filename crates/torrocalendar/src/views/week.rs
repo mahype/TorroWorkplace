@@ -3,10 +3,11 @@
 //!
 //! Columns for the days in `[start, end)` (one for the day view, seven for the week) under a
 //! header "Mon 5" (today: the number in a red circle), a strip of all-day chips, and the hours
-//! 0–24 down the time axis (scrolled so 07:00 is on top). Timed events are tinted blocks with a
-//! bar in their calendar colour (overlapping ones side by side); past ones are faded; gaps of two
-//! hours or more between the events of today and the days to come say "2 h free"; a red line
-//! with its time in the axis marks now. Weekends are set off a little; in the week, today's
+//! 0–24 down the time axis (scrolled so 07:00 is on top; a view higher than the day stretches the
+//! hours to fill it). Timed events are tinted blocks with a bar in their calendar colour
+//! (overlapping ones side by side); past ones are faded; gaps of two hours or more between the
+//! events of today and the days to come say "2 h free"; a red line with its time in the axis
+//! marks now. Weekends are set off a little; in the week, today's
 //! column (header, all-day strip and hours) is washed with a trace of the accent, so the eye
 //! finds it at once.
 //!
@@ -171,8 +172,11 @@ fn week(plan: Plan, bounds: Size, with_header: bool) -> Element<'static, Message
     let header_height = if with_header { size::header() + size::HAIRLINE } else { 0.0 };
     let strip_height = if strip.is_some() { strip_height + size::HAIRLINE } else { 0.0 };
     let pad_above = header_height + strip_height;
-    let pad = morning_pad(bounds.height - pad_above);
-    let grid = iced::widget::canvas(Grid { plan }).width(Length::Fill).height(Length::Fixed(grid_height()));
+    let viewport = bounds.height - pad_above;
+    let pad = morning_pad(viewport);
+    // A view higher than the day stretches the hours, so the grid fills it down to the bottom.
+    let hour = layout::fitted_hour(viewport);
+    let grid = iced::widget::canvas(Grid { plan, hour }).width(Length::Fill).height(Length::Fixed(24.0 * hour));
     let grid = scrollable(column![grid, Space::new().height(Length::Fixed(pad))])
         .id(SCROLL_ID)
         .direction(Direction::Vertical(style::scrollbar()))
@@ -578,6 +582,8 @@ impl canvas::Program<Message> for Strip {
 /// The hour grid with the timed blocks, the free gaps and the now line.
 struct Grid {
     plan: Plan,
+    /// Height of one hour: [`hour_height`], or more to fill a high view ([`layout::fitted_hour`]).
+    hour: f32,
 }
 
 impl canvas::Program<Message> for Grid {
@@ -592,8 +598,8 @@ impl canvas::Program<Message> for Grid {
     ) -> Option<Action<Message>> {
         let point = left_press(event, bounds, cursor)?;
         let count = self.plan.days.len();
-        let blocks = layout::timed_blocks(&self.plan.timed, count, bounds.width);
-        let message = match layout::grid_hit(&blocks, count, bounds.width, point)? {
+        let blocks = layout::timed_blocks(&self.plan.timed, count, bounds.width, self.hour);
+        let message = match layout::grid_hit(&blocks, count, bounds.width, self.hour, point)? {
             GridHit::Event(id) => Message::OpenEvent(self.plan.entries.get(id)?.index),
             GridHit::Slot { column, time } => {
                 Message::NewEvent { date: *self.plan.days.get(column)?, time: Some(time) }
@@ -604,8 +610,10 @@ impl canvas::Program<Message> for Grid {
 
     fn mouse_interaction(&self, _state: &(), bounds: Rectangle, cursor: mouse::Cursor) -> mouse::Interaction {
         let count = self.plan.days.len();
-        let blocks = layout::timed_blocks(&self.plan.timed, count, bounds.width);
-        let over = cursor.position_in(bounds).and_then(|point| layout::grid_hit(&blocks, count, bounds.width, point));
+        let blocks = layout::timed_blocks(&self.plan.timed, count, bounds.width, self.hour);
+        let over = cursor
+            .position_in(bounds)
+            .and_then(|point| layout::grid_hit(&blocks, count, bounds.width, self.hour, point));
         // The hand only over events; empty slots stay calm although a click there starts a new one.
         pointer_if(matches!(over, Some(layout::GridHit::Event(_))))
     }
@@ -626,23 +634,21 @@ impl canvas::Program<Message> for Grid {
         let (x0, col_w) = layout::columns(width, count);
         let column_x = |column: usize| x0 + column as f32 * col_w;
         let under = |column: usize| plan.ground(theme, column);
-        let now_y = plan.today_column().map(|_| layout::y_of(plan.now.time()));
+        let hour = self.hour;
+        let height = 24.0 * hour;
+        let now_y = plan.today_column().map(|_| layout::y_of(plan.now.time(), hour));
 
-        fill(&mut frame, Rectangle::new(Point::ORIGIN, Size::new(width, grid_height())), p.panel);
+        fill(&mut frame, Rectangle::new(Point::ORIGIN, Size::new(width, height)), p.panel);
         for column in 0..count {
             let ground = under(column);
             if ground != p.panel {
-                fill(
-                    &mut frame,
-                    Rectangle::new(Point::new(column_x(column), 0.0), Size::new(col_w, grid_height())),
-                    ground,
-                );
+                fill(&mut frame, Rectangle::new(Point::new(column_x(column), 0.0), Size::new(col_w, height)), ground);
             }
         }
 
         // Inner lines only: no line at 00:00 and 24:00 (the edges), none right of the last day.
-        for hour in 1..24u32 {
-            let y = hour as f32 * hour_height();
+        for h in 1..24u32 {
+            let y = h as f32 * hour;
             line(&mut frame, Point::new(x0, y), Point::new(width, y), p.line);
             // The now label sits in the axis; an hour label right under it would be unreadable.
             let covered = now_y.is_some_and(|now| (now - y).abs() < line_height(now_label()));
@@ -650,7 +656,7 @@ impl canvas::Program<Message> for Grid {
                 let at = Point::new(x0 - space::s(), y);
                 label(
                     &mut frame,
-                    &format!("{hour:02}:00"),
+                    &format!("{h:02}:00"),
                     at,
                     typo::micro(),
                     p.text_3,
@@ -661,12 +667,12 @@ impl canvas::Program<Message> for Grid {
         }
         for column in 0..count {
             let x = column_x(column);
-            line(&mut frame, Point::new(x, 0.0), Point::new(x, grid_height()), p.line);
+            line(&mut frame, Point::new(x, 0.0), Point::new(x, height), p.line);
         }
 
         for column in 0..count {
             for (start, end) in plan.free_gaps(column) {
-                let (top, bottom) = layout::y_range(start, end);
+                let (top, bottom) = layout::y_range(start, end, hour);
                 let hours = ((end - start) / 60.0).floor() as u32;
                 let at = Point::new(column_x(column) + col_w / 2.0, (top + bottom) / 2.0);
                 let note = trf("{n} h free", &[("n", &hours)]);
@@ -674,7 +680,7 @@ impl canvas::Program<Message> for Grid {
             }
         }
 
-        let blocks = layout::timed_blocks(&plan.timed, count, width);
+        let blocks = layout::timed_blocks(&plan.timed, count, width, hour);
         for block in &blocks {
             let Some(entry) = plan.entries.get(block.id) else { continue };
             let column = layout::column_at(block.rect.x, count, width).unwrap_or_default();
@@ -1177,8 +1183,8 @@ mod tests {
     #[test]
     fn the_grid_shows_the_hand_only_over_events() {
         let plan = week_plan();
-        let grid = Grid { plan: plan.clone() };
-        let blocks = layout::timed_blocks(&plan.timed, plan.days.len(), 700.0);
+        let grid = Grid { plan: plan.clone(), hour: hour_height() };
+        let blocks = layout::timed_blocks(&plan.timed, plan.days.len(), 700.0, hour_height());
         let block = blocks.first().expect("the workshop is drawn").rect;
         assert_eq!(interaction(&grid, block.center()), mouse::Interaction::Pointer, "an event");
         let slot = Point::new(block.x + 1.0, 3.0 * hour_height());
@@ -1191,7 +1197,7 @@ mod tests {
 
     #[test]
     fn the_grid_shows_no_hand_with_the_cursor_elsewhere() {
-        let grid = Grid { plan: week_plan() };
+        let grid = Grid { plan: week_plan(), hour: hour_height() };
         let bounds = Rectangle::new(Point::ORIGIN, Size::new(700.0, 400.0));
         let outside = mouse::Cursor::Available(Point::new(900.0, 100.0));
         assert_eq!(grid.mouse_interaction(&(), bounds, outside), mouse::Interaction::Idle);

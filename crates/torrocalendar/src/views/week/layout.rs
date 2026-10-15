@@ -11,13 +11,19 @@ use iced::{Point, Rectangle, Size};
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{size, space};
 
-/// Height of one hour in the time grid.
+/// Height of one hour in the time grid, at least: a higher view stretches the hours
+/// ([`fitted_hour`]).
 pub fn hour_height() -> f32 {
     size::hour()
 }
-/// Height of the whole time grid, 24 hours.
+/// Height of the whole time grid, 24 hours, at least.
 pub fn grid_height() -> f32 {
     24.0 * hour_height()
+}
+/// Height of one hour for a grid `viewport` high: [`hour_height`], or more when the 24 hours
+/// would leave empty space below 24:00, so that the grid always fills the view.
+pub fn fitted_hour(viewport: f32) -> f32 {
+    hour_height().max(viewport / 24.0)
 }
 /// Shortest timed block, so that a zero-length entry stays visible and clickable: one line of
 /// `MICRO` text with a little air.
@@ -98,19 +104,19 @@ pub fn minutes_of(time: NaiveTime) -> f32 {
     time.num_seconds_from_midnight() as f32 / 60.0
 }
 
-fn minutes_to_y(minutes: f32) -> f32 {
-    minutes / 60.0 * hour_height()
+fn minutes_to_y(minutes: f32, hour: f32) -> f32 {
+    minutes / 60.0 * hour
 }
 
-/// The y coordinate of a time of day in the grid.
-pub fn y_of(time: NaiveTime) -> f32 {
-    minutes_to_y(minutes_of(time))
+/// The y coordinate of a time of day in a grid with hours `hour` high.
+pub fn y_of(time: NaiveTime, hour: f32) -> f32 {
+    minutes_to_y(minutes_of(time), hour)
 }
 
 /// The time of day at a y coordinate, rounded down to [`SLOT_MINUTES`] and kept inside the
-/// day (`23:30` at most).
-pub fn slot_at(y: f32) -> NaiveTime {
-    let minutes = (y / hour_height() * 60.0).clamp(0.0, MINUTES_PER_DAY);
+/// day (`23:30` at most). Hours are `hour` high.
+pub fn slot_at(y: f32, hour: f32) -> NaiveTime {
+    let minutes = (y / hour * 60.0).clamp(0.0, MINUTES_PER_DAY);
     let step = SLOT_MINUTES as f32;
     let slot = ((minutes / step).floor() * step).min(MINUTES_PER_DAY - step) as u32;
     NaiveTime::from_hms_opt(slot / 60, slot % 60, 0).unwrap_or(NaiveTime::MIN)
@@ -233,8 +239,8 @@ pub struct TimedBlock {
 
 /// Places the timed segments: each day column is split into lanes for its overlapping
 /// segments. A block ends [`GAP`] above its end time, so back-to-back entries stay apart;
-/// blocks shorter than [`MIN_EVENT_HEIGHT`] are drawn that tall.
-pub fn timed_blocks(segments: &[TimedSegment], count: usize, total_width: f32) -> Vec<TimedBlock> {
+/// blocks shorter than [`MIN_EVENT_HEIGHT`] are drawn that tall. Hours are `hour` high.
+pub fn timed_blocks(segments: &[TimedSegment], count: usize, total_width: f32, hour: f32) -> Vec<TimedBlock> {
     let (x0, col_w) = columns(total_width, count);
     let mut blocks = Vec::with_capacity(segments.len());
     for column in 0..count {
@@ -243,8 +249,8 @@ pub fn timed_blocks(segments: &[TimedSegment], count: usize, total_width: f32) -
         for (segment, lane) in members.iter().zip(assign_lanes(&intervals)) {
             let lane_width = (col_w - 2.0 * GAP) / lane.lanes as f32;
             let x = x0 + column as f32 * col_w + GAP + lane.lane as f32 * lane_width;
-            let y = minutes_to_y(segment.start);
-            let height = (minutes_to_y(segment.end) - y - GAP).max(MIN_EVENT_HEIGHT);
+            let y = minutes_to_y(segment.start, hour);
+            let height = (minutes_to_y(segment.end, hour) - y - GAP).max(MIN_EVENT_HEIGHT);
             blocks.push(TimedBlock {
                 id: segment.id,
                 rect: Rectangle::new(Point::new(x, y), Size::new(lane_width - GAP, height)),
@@ -320,9 +326,9 @@ pub fn free_gaps(segments: &[TimedSegment], column: usize, from: f32, min_minute
     gaps
 }
 
-/// The y range of a span in minutes, for drawing something in a gap.
-pub fn y_range(start: f32, end: f32) -> (f32, f32) {
-    (minutes_to_y(start), minutes_to_y(end))
+/// The y range of a span in minutes, for drawing something in a gap. Hours are `hour` high.
+pub fn y_range(start: f32, end: f32, hour: f32) -> (f32, f32) {
+    (minutes_to_y(start, hour), minutes_to_y(end, hour))
 }
 
 /// The day column at `x`, `None` in the gutter or outside the columns.
@@ -345,16 +351,16 @@ pub enum GridHit {
 }
 
 /// Hit-tests a point in the time grid. Blocks win over the empty space behind them; later
-/// blocks are drawn on top and win over earlier ones.
-pub fn grid_hit(blocks: &[TimedBlock], count: usize, total_width: f32, point: Point) -> Option<GridHit> {
+/// blocks are drawn on top and win over earlier ones. Hours are `hour` high.
+pub fn grid_hit(blocks: &[TimedBlock], count: usize, total_width: f32, hour: f32, point: Point) -> Option<GridHit> {
     if let Some(block) = blocks.iter().rev().find(|b| b.rect.contains(point)) {
         return Some(GridHit::Event(block.id));
     }
     let column = column_at(point.x, count, total_width)?;
-    if !(0.0..grid_height()).contains(&point.y) {
+    if !(0.0..24.0 * hour).contains(&point.y) {
         return None;
     }
-    Some(GridHit::Slot { column, time: slot_at(point.y) })
+    Some(GridHit::Slot { column, time: slot_at(point.y, hour) })
 }
 
 /// What a click in the all-day strip means.
@@ -424,14 +430,25 @@ mod tests {
 
     #[test]
     fn time_maps_to_y_and_back() {
-        assert!(close(y_of(t(7, 0)), 336.0));
-        assert!(close(y_of(t(12, 30)), 600.0));
-        assert_eq!(slot_at(0.0), t(0, 0));
-        assert_eq!(slot_at(23.9), t(0, 0));
-        assert_eq!(slot_at(24.0), t(0, 30));
-        assert_eq!(slot_at(336.0), t(7, 0));
-        assert_eq!(slot_at(-10.0), t(0, 0));
-        assert_eq!(slot_at(grid_height() * 2.0), t(23, 30));
+        let hour = hour_height();
+        assert!(close(y_of(t(7, 0), hour), 336.0));
+        assert!(close(y_of(t(12, 30), hour), 600.0));
+        assert_eq!(slot_at(0.0, hour), t(0, 0));
+        assert_eq!(slot_at(23.9, hour), t(0, 0));
+        assert_eq!(slot_at(24.0, hour), t(0, 30));
+        assert_eq!(slot_at(336.0, hour), t(7, 0));
+        assert_eq!(slot_at(-10.0, hour), t(0, 0));
+        assert_eq!(slot_at(grid_height() * 2.0, hour), t(23, 30));
+        // Stretched hours: twice as high, the same times at twice the y.
+        assert!(close(y_of(t(7, 0), 2.0 * hour), 672.0));
+        assert_eq!(slot_at(672.0, 2.0 * hour), t(7, 0));
+    }
+
+    #[test]
+    fn hours_stretch_to_fill_a_high_view_only() {
+        assert!(close(fitted_hour(400.0), hour_height()), "a low view scrolls");
+        assert!(close(fitted_hour(grid_height()), hour_height()));
+        assert!(close(24.0 * fitted_hour(grid_height() + 240.0), grid_height() + 240.0), "a high one is filled");
     }
 
     #[test]
@@ -485,7 +502,7 @@ mod tests {
             TimedSegment { id: 0, column: 0, start: 600.0, end: 660.0 },
             TimedSegment { id: 1, column: 0, start: 630.0, end: 690.0 },
         ];
-        let blocks = timed_blocks(&segments, 7, 500.0);
+        let blocks = timed_blocks(&segments, 7, 500.0, hour_height());
         let (a, b) = (&blocks[0].rect, &blocks[1].rect);
         assert!(close(a.width, b.width));
         assert!(a.x < b.x);
@@ -499,28 +516,28 @@ mod tests {
             TimedSegment { id: 0, column: 0, start: 600.0, end: 660.0 },
             TimedSegment { id: 1, column: 0, start: 660.0, end: 720.0 },
         ];
-        let blocks = timed_blocks(&segments, 1, 500.0);
+        let blocks = timed_blocks(&segments, 1, 500.0, hour_height());
         assert!(blocks[0].rect.y + blocks[0].rect.height < blocks[1].rect.y);
     }
 
     #[test]
     fn short_timed_block_gets_minimum_height() {
         let segments = [TimedSegment { id: 0, column: 2, start: 600.0, end: 600.0 }];
-        let blocks = timed_blocks(&segments, 7, 500.0);
+        let blocks = timed_blocks(&segments, 7, 500.0, hour_height());
         assert!(close(blocks[0].rect.height, MIN_EVENT_HEIGHT));
     }
 
     #[test]
     fn grid_hit_finds_events_and_rounded_slots() {
         let segments = [TimedSegment { id: 7, column: 0, start: 600.0, end: 660.0 }];
-        let blocks = timed_blocks(&segments, 7, 500.0);
+        let blocks = timed_blocks(&segments, 7, 500.0, hour_height());
         let inside = Point::new(60.0, 500.0);
-        assert_eq!(grid_hit(&blocks, 7, 500.0, inside), Some(GridHit::Event(7)));
+        assert_eq!(grid_hit(&blocks, 7, 500.0, hour_height(), inside), Some(GridHit::Event(7)));
         // y = 50 is 01:02, rounded down to 01:00, in column 1 (narrow axis 44, columns 65 wide).
         let empty = Point::new(44.0 + 65.0 + 10.0, 50.0);
-        assert_eq!(grid_hit(&blocks, 7, 500.0, empty), Some(GridHit::Slot { column: 1, time: t(1, 0) }));
-        assert_eq!(grid_hit(&blocks, 7, 500.0, Point::new(10.0, 50.0)), None);
-        assert_eq!(grid_hit(&blocks, 7, 500.0, Point::new(100.0, grid_height() + 5.0)), None);
+        assert_eq!(grid_hit(&blocks, 7, 500.0, hour_height(), empty), Some(GridHit::Slot { column: 1, time: t(1, 0) }));
+        assert_eq!(grid_hit(&blocks, 7, 500.0, hour_height(), Point::new(10.0, 50.0)), None);
+        assert_eq!(grid_hit(&blocks, 7, 500.0, hour_height(), Point::new(100.0, grid_height() + 5.0)), None);
     }
 
     #[test]
