@@ -23,7 +23,7 @@ use torro_gui::shell;
 use torro_gui::theme::{self, size, space};
 use torro_gui::widgets::{self, Mark, MenuItem, MenuSection};
 use torro_gui::{layout, style, typo};
-use torro_ipc::api::{self, Confirm, Level};
+use torro_ipc::api;
 use torro_ipc::assistant::AVATARS;
 use torro_ipc::bots::{BotSummary, MAX_INSTRUCTIONS_CHARS, MAX_PERSONALITY_CHARS, MAX_SKILL_CHARS, MAX_SKILLS};
 
@@ -540,43 +540,12 @@ struct AccessRow {
 
 impl AccessRow {
     /// The row with its segmented control in the slot `column` at the right, or without one under
-    /// its name (a narrow form, [`control_column`]).
+    /// its name (a narrow form, [`control_column`]) – the control centre's row
+    /// (`widgets::segment_row`).
     fn view<'a>(&self, column: Option<f32>) -> Element<'a, Message> {
         let control = widgets::segmented(self.options.clone(), self.active);
-        match column {
-            Some(slot) => widgets::group_row(self.label, self.detail.clone(), container(control).width(slot)),
-            None => {
-                let mut lines = column![typo::text(typo::body(), self.label)];
-                if let Some(detail) = &self.detail {
-                    let detail = typo::text(typo::meta(), detail.clone()).style(theme::text_2);
-                    lines = lines.push(detail.wrapping(Wrapping::WordOrGlyph));
-                }
-                container(column![lines, control].spacing(space::s()))
-                    .width(Fill)
-                    .padding([space::m(), space::l()])
-                    .into()
-            }
-        }
+        widgets::segment_row(self.label, self.detail.clone(), control, column)
     }
-}
-
-/// The level's word on its segment, the control centre's.
-fn level_label(level: Level) -> &'static str {
-    match level {
-        Level::NoAccess => tr("None"),
-        Level::Read => tr("Read"),
-        Level::Write => tr("Write"),
-        Level::Full => tr("Full"),
-    }
-}
-
-/// The options of "Ask first", in the control centre's order and words.
-fn confirm_options() -> [(&'static str, Confirm); 3] {
-    [
-        (tr("Never"), Confirm::Never),
-        (tr("On delete"), Confirm::OnDelete),
-        (tr("On every change"), Confirm::OnEveryChange),
-    ]
 }
 
 /// The rows of the section: an area per row ([`BotAccess::areas`]) with the levels it offers
@@ -592,13 +561,13 @@ fn access_rows(access: &BotAccess, present: &bots::Present) -> (Vec<AccessRow>, 
                 detail: Some(bots::detail(area, &rights, present)),
                 options: offered
                     .into_iter()
-                    .map(|level| (level_label(level), Message::Draft(DraftEdit::Level(area, level))))
+                    .map(|level| (widgets::level_label(level), Message::Draft(DraftEdit::Level(area, level))))
                     .collect(),
                 active,
             }
         })
         .collect();
-    let options = confirm_options();
+    let options = widgets::confirm_options();
     let confirm = AccessRow {
         label: tr("Ask first"),
         detail: None,
@@ -608,32 +577,16 @@ fn access_rows(access: &BotAccess, present: &bots::Present) -> (Vec<AccessRow>, 
     (rows, confirm)
 }
 
-/// The estimated width of a segmented control with `labels` (`widgets::segmented`): each label in
-/// `caption` with the button padding, plus the frame's inset and border. `typo::text_width`
-/// estimates generously, so the control fits.
-fn segmented_width(labels: &[&str]) -> f32 {
-    let padding = style::button_padding().left + style::button_padding().right;
-    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding).sum();
-    segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
-}
-
-/// Where the section puts its segmented controls in a group `width` wide: `Some(slot)`, a slot as
-/// wide as the widest control at the right of every row, while the longest name and line fit
-/// beside it; `None` when they would not (a narrow window), then each control stands under its
-/// name. Decided by what fits, so longer translations hold too.
+/// Where the section puts its segmented controls in a group `width` wide
+/// (`widgets::segment_column`): a slot as wide as the widest control of the section at the right of
+/// every row while the longest name and line fit beside it, else `None` – each control under its
+/// name.
 fn control_column<'r>(rows: impl Iterator<Item = &'r AccessRow> + Clone, width: f32) -> Option<f32> {
     let slot = rows
         .clone()
-        .map(|line| segmented_width(&line.options.iter().map(|(label, _)| *label).collect::<Vec<_>>()))
+        .map(|line| widgets::segmented_width(&line.options.iter().map(|(label, _)| *label).collect::<Vec<_>>()))
         .fold(0.0, f32::max);
-    let text = rows
-        .flat_map(|line| {
-            let detail = line.detail.as_deref().map_or(0.0, |detail| typo::text_width(detail, typo::meta()));
-            [typo::text_width(line.label, typo::body()), detail]
-        })
-        .fold(0.0, f32::max);
-    // A row of a group: 16 at both sides and 16 between the text and the control.
-    (width >= 3.0 * space::l() + text + slot).then_some(slot)
+    widgets::segment_column(slot, rows.map(|line| (line.label, line.detail.as_deref())), width)
 }
 
 /// The bot is saved, its access not: the line at the top of the form, with "Access…" to set it in
