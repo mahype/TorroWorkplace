@@ -796,7 +796,12 @@ M9.5 ──── M9.8 ─────────┘
   bösartige Werte wie `red;background:url(x)` fallen weg); Tests von M9.1 laufen weiter. API-Referenz neu erzeugt.
 
 ### M9.6 Bibliothek `torro-htmlview`: HTML mit Blitz in Iced zeichnen
-- [ ] erledigt
+- [x] erledigt (zusätzlich: `Cargo.lock`; in `[workspace.dependencies]` außer Blitz/anyrender auch `peniko`, `parley`
+  (gemeinsamer Schrift-Kontext), `cursor-icon`, `image` (Blitz schaltet selbst keinen Decoder ein: PNG, JPEG, GIF,
+  WebP) und `png` (nur das Beispiel); Lizenzliste gibt es nicht (kein `deny.toml`). Abweichend: eine Mail, die breiter
+  ist als der Platz (fester 600-px-Newsletter), wird bis 0,5 verkleinert statt abgeschnitten; Linien folgen beim
+  Umfärben der Fläche unter ihnen. Beispiel: `cargo run -p torro-htmlview --example fixtures [-- --shoot <ordner>]`.
+  Linux nicht gebaut, Windows per `cargo xwin clippy` ohne Fehler)
 - **Modell:** Opus · **Braucht:** nichts (eigene Beispiele; nutzt das Wissen aus M9.4) · **Dateien:** `Cargo.toml`
   (Blitz-Crates, `anyrender`, `anyrender_vello_cpu` in `[workspace.dependencies]`, Mitglied), neu
   `crates/torro-htmlview/` (`Cargo.toml`, `src/lib.rs` und Module, `tests/fixtures/`), `deny.toml` bzw.
