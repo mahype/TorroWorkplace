@@ -49,6 +49,7 @@ use torro_mail::{
     AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message, MessageSummary, MessageTraits, Order,
     Role,
 };
+use torro_mail_imap::mime::ReadMessage;
 
 use super::fold::{Needle, fold, head};
 use super::query::{Field, Query, Test};
@@ -58,7 +59,7 @@ use super::{MailDirs, MailStoreError, create_private, make_private, random_hex};
 pub const BODY_RETENTION_DAYS: i64 = 90;
 
 /// The newest layout this version writes (`PRAGMA user_version`).
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// At most this many bytes of a message's text go into the word index: a log of megabytes is
 /// found by its first half megabyte, and the index stays small.
@@ -119,6 +120,11 @@ CREATE TRIGGER messages_gone AFTER DELETE ON messages BEGIN
     DELETE FROM mail_tri WHERE rowid = old.seq;
 END;
 CREATE INDEX IF NOT EXISTS messages_unindexed ON messages (indexed, date);";
+
+/// Version 6 (task M8.1): the cleaned HTML part beside the text ([`Body::html`]). `NULL` in rows
+/// from before: not read yet, so `mail.get_message` with `include_html` fetches the message once
+/// more; an empty text: the message has no HTML part to show (or it was too large).
+const SCHEMA_V6: &str = "ALTER TABLE bodies ADD COLUMN html TEXT;";
 
 /// `indexed` of a message whose text is not in the index yet.
 const NOT_INDEXED: i64 = 0;
@@ -295,12 +301,23 @@ pub struct Body {
     pub text: String,
     /// `text` was made from HTML.
     pub from_html: bool,
+    /// The cleaned HTML part (`mime::read`, task M8.1); `None` when the message has none to show.
+    /// Kept and pruned with the text; [`MailStore::html`] hands it out.
+    pub html: Option<String>,
     /// All attachments, inline parts included; their names go into the search index.
     pub attachments: Vec<AttachmentInfo>,
     /// What the message invites to (`mail::read::invite_of`); `None` for a message without an
     /// invitation that can be answered. Kept in the message's row, so it outlives the text; an
     /// answer given before stays ([`MailStore::set_invite_answer`]).
     pub invite: Option<Invite>,
+}
+
+impl Body {
+    /// The body of a message read whole: its text, cleaned HTML and attachments as `read` has them,
+    /// and what it invites to (`invite`, read from its calendar part by the caller).
+    pub fn of(read: ReadMessage, invite: Option<Invite>) -> Body {
+        Body { text: read.text, from_html: read.from_html, html: read.html, attachments: read.attachments, invite }
+    }
 }
 
 /// A search over the cache; every field but `order` and `relevance` narrows the result
@@ -602,18 +619,23 @@ impl MailStore {
         Ok(self.db.execute(sql, params![folder, uid, flag_bits(flags)])? > 0)
     }
 
-    /// Stores (or replaces) the text of a message and puts it into the search index (the message
-    /// counts as indexed from now on). `false`: no such message.
+    /// Stores (or replaces) the text of a message, its cleaned HTML, and puts the text into the
+    /// search index (the message counts as indexed from now on). `false`: no such message.
     pub fn set_body(&self, id: &str, body: &Body) -> Result<bool, MailStoreError> {
         let tx = self.db.unchecked_transaction()?;
         let seq: Option<i64> =
             tx.query_row("SELECT seq FROM messages WHERE id = ?1", [id], |row| row.get(0)).optional()?;
         let Some(seq) = seq else { return Ok(false) };
         let names: Vec<&str> = body.attachments.iter().filter_map(|a| a.filename.as_deref()).collect();
+        // An empty text, not `NULL`, for a message without HTML: it was read and has none
+        // (`SCHEMA_V6`).
+        let html = body.html.as_deref().unwrap_or_default();
         tx.execute(
-            "INSERT INTO bodies (seq, text, from_html, attachments_json, filenames) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT (seq) DO UPDATE SET text = ?2, from_html = ?3, attachments_json = ?4, filenames = ?5",
-            params![seq, body.text, body.from_html, serde_json::to_string(&body.attachments)?, names.join(" ")],
+            "INSERT INTO bodies (seq, text, from_html, attachments_json, filenames, html)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT (seq) DO UPDATE SET text = ?2, from_html = ?3, attachments_json = ?4, filenames = ?5,
+                 html = ?6",
+            params![seq, body.text, body.from_html, serde_json::to_string(&body.attachments)?, names.join(" "), html],
         )?;
         // The answer has its own column: reading the text again keeps it.
         let invite = body.invite.as_ref().map(|invite| Invite { answered: None, ..invite.clone() });
@@ -795,7 +817,8 @@ impl MailStore {
 
     /// A whole message. `text` is `None` while the text is not stored (never fetched, or older
     /// than [`BODY_RETENTION_DAYS`]): the caller fetches it from the server with `BODY.PEEK` and
-    /// stores it with [`set_body`](Self::set_body).
+    /// stores it with [`set_body`](Self::set_body). `html` is always `None`: [`html`](Self::html)
+    /// hands it out, only to who asks for it.
     pub fn message(&self, id: &str) -> Result<Option<Message>, MailStoreError> {
         let sql = format!(
             "SELECT {SUMMARY_COLUMNS}, m.cc_json, m.reply_to_json, m.list_id, m.list_unsubscribe, m.precedence,
@@ -811,6 +834,7 @@ impl MailStore {
                 reply_to: json_column(row, 13)?,
                 text: row.get(19)?,
                 from_html: row.get::<_, Option<bool>>(20)?.unwrap_or(false),
+                html: None,
                 attachments: match attachments_json {
                     Some(json) => parse_json(&json, 21)?,
                     None => Vec::new(),
@@ -826,6 +850,23 @@ impl MailStore {
             })
         });
         Ok(row.optional()?)
+    }
+
+    /// The cleaned HTML of the message `id` (task M8.1): `None` while it is not stored (no such
+    /// message, its text not fetched or pruned, or kept before the store knew HTML), so the caller
+    /// fetches the message; `Some(None)` when the message has no HTML to show; else the HTML.
+    pub fn html(&self, id: &str) -> Result<Option<Option<String>>, MailStoreError> {
+        let sql = "SELECT b.html FROM bodies b JOIN messages m ON m.seq = b.seq WHERE m.id = ?1";
+        let html: Option<Option<String>> = self.db.query_row(sql, [id], |row| row.get(0)).optional()?;
+        Ok(html.flatten().map(|html| (!html.is_empty()).then_some(html)))
+    }
+
+    /// Forgets the HTML kept with the text of the message `id`, as a store from before version 6
+    /// has it: for the tests of fetching it again.
+    #[cfg(test)]
+    pub(crate) fn forget_html(&self, id: &str) -> Result<bool, MailStoreError> {
+        let sql = "UPDATE bodies SET html = NULL WHERE seq = (SELECT seq FROM messages WHERE id = ?1)";
+        Ok(self.db.execute(sql, [id])? > 0)
     }
 
     /// The messages of a folder, newest first; `limit` and `offset` page through them.
@@ -1145,6 +1186,9 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
     if version < 5 {
         migrate_v5(&tx)?;
     }
+    if version < 6 && !has_column(&tx, "bodies", "html")? {
+        tx.execute_batch(SCHEMA_V6)?;
+    }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
     Ok(())
@@ -1155,11 +1199,7 @@ fn migrate(db: &Connection) -> Result<(), MailStoreError> {
 /// sync fetches them again in the background. Runs once per store, on the first open after the
 /// update; a large store takes a few seconds.
 fn migrate_v5(db: &Connection) -> Result<(), MailStoreError> {
-    let has_indexed = {
-        let mut statement = db.prepare("SELECT 1 FROM pragma_table_info('messages') WHERE name = 'indexed'")?;
-        statement.exists([])?
-    };
-    if !has_indexed {
+    if !has_column(db, "messages", "indexed")? {
         db.execute_batch("ALTER TABLE messages ADD COLUMN indexed INTEGER NOT NULL DEFAULT 0;")?;
     }
     db.execute_batch(SCHEMA_V5)?;
@@ -1174,6 +1214,13 @@ fn migrate_v5(db: &Connection) -> Result<(), MailStoreError> {
         refresh_index(db, seq, body)?;
     }
     Ok(())
+}
+
+/// The table `table` has the column `column` (a store that a later version wrote and an earlier
+/// one marked as its own may have it already).
+fn has_column(db: &Connection, table: &str, column: &str) -> Result<bool, MailStoreError> {
+    let mut statement = db.prepare("SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2")?;
+    Ok(statement.exists([table, column])?)
 }
 
 // ----- SQL pieces -----
@@ -1602,7 +1649,13 @@ mod tests {
         assert_eq!(store.summary(&id).expect("summary").expect("there").invite, None);
         let invite =
             Invite { title: "Planning".into(), start: day(15), end: Some(day(16)), all_day: false, answered: None };
-        let body = Body { text: "Join us".into(), from_html: false, attachments: vec![], invite: Some(invite.clone()) };
+        let body = Body {
+            text: "Join us".into(),
+            from_html: false,
+            html: None,
+            attachments: vec![],
+            invite: Some(invite.clone()),
+        };
         assert!(store.set_body(&id, &body).expect("body"));
         assert!(store.set_invite_answer(&id, Some(InvitationAnswer::Accept)).expect("answer"));
         let summary = store.summary(&id).expect("summary").expect("there");
@@ -1655,7 +1708,8 @@ mod tests {
         let (_tmp, dirs, store) = open();
         let inbox = folder(&store, "INBOX", Some(Role::Inbox));
         let with_text = add(&store, &inbox, &message(1, "Grüße"));
-        let body = Body { text: "Ihre Stromrechnung".into(), from_html: false, attachments: vec![], invite: None };
+        let body =
+            Body { text: "Ihre Stromrechnung".into(), from_html: false, html: None, attachments: vec![], invite: None };
         store.set_body(&with_text, &body).expect("body");
         let without = add(&store, &inbox, &message(2, "Kein Text"));
         store
@@ -1681,6 +1735,41 @@ mod tests {
         assert!(store.mark_unindexable(&without).expect("marked"));
         assert!(store.unindexed(10).expect("next").is_empty() && store.fully_indexed().expect("asked"));
         assert_eq!(search_ids(&store, "kein"), [without], "its headers are searchable");
+    }
+
+    /// Task M8.1: the cleaned HTML is kept beside the text and handed out on its own; a message
+    /// without HTML says so, and a text kept before the store knew HTML (version 5) is not stored
+    /// HTML, so it is fetched once more. Pruning the text drops the HTML too.
+    #[test]
+    fn html_is_kept_beside_the_text_and_rows_from_before_have_none_stored() {
+        let (_tmp, dirs, store) = open();
+        let inbox = folder(&store, "INBOX", None);
+        let html = add(&store, &inbox, &message(1, "Newsletter"));
+        let plain = add(&store, &inbox, &message(2, "Plain"));
+        let body = |html: Option<&str>| Body {
+            text: "Hello".into(),
+            from_html: false,
+            html: html.map(str::to_owned),
+            attachments: vec![],
+            invite: None,
+        };
+        assert_eq!(store.html(&html).expect("asked"), None, "no text read yet");
+        store.set_body(&html, &body(Some("<p>Hello</p>"))).expect("body");
+        store.set_body(&plain, &body(None)).expect("body");
+        assert_eq!(store.html(&html).expect("asked"), Some(Some("<p>Hello</p>".into())));
+        assert_eq!(store.html(&plain).expect("asked"), Some(None), "read, and it has none");
+        assert_eq!(store.html("m:nope").expect("asked"), None);
+        assert_eq!(store.message(&html).expect("read").expect("there").html, None, "only through html()");
+
+        store.db.execute_batch("ALTER TABLE bodies DROP COLUMN html; PRAGMA user_version = 5").expect("v5");
+        drop(store);
+        let store = MailStore::open(&dirs, ACCOUNT).expect("migrated");
+        assert_eq!(store.html(&html).expect("asked"), None, "kept before: fetch it again");
+        assert_eq!(store.message(&html).expect("read").expect("there").text.as_deref(), Some("Hello"), "text stays");
+        store.set_body(&html, &body(Some("<p>Hello</p>"))).expect("read again");
+        assert_eq!(store.html(&html).expect("asked"), Some(Some("<p>Hello</p>".into())));
+        assert_eq!(store.prune_bodies(day(3) + Duration::days(BODY_RETENTION_DAYS)).expect("pruned"), 2);
+        assert_eq!(store.html(&html).expect("asked"), None, "pruned with the text");
     }
 
     #[test]
@@ -1741,7 +1830,10 @@ mod tests {
         let inbox = folder(&store, "INBOX", None);
         let id = add(&store, &inbox, &message(1, "First"));
         store
-            .set_body(&id, &Body { text: "the text".into(), from_html: true, attachments: vec![], invite: None })
+            .set_body(
+                &id,
+                &Body { text: "the text".into(), from_html: true, html: None, attachments: vec![], invite: None },
+            )
             .expect("body");
         let mut changed = message(1, "Second");
         changed.flags = vec![Flag::Flagged];
@@ -1778,12 +1870,14 @@ mod tests {
                 &Body {
                     text: "Bitte überweisen Sie die Rechnung".into(),
                     from_html: false,
+                    html: None,
                     attachments: vec![AttachmentInfo {
                         part: "2".into(),
                         filename: Some("Übersicht Q3.pdf".into()),
                         content_type: "application/pdf".into(),
                         size: 10,
                         inline: false,
+                        content_id: None,
                     }],
                     invite: None,
                 },
@@ -1897,7 +1991,10 @@ mod tests {
         let archive = folder(&store, "Archive", None);
         let gone = add(&store, &inbox, &message(1, "Grüße"));
         store
-            .set_body(&gone, &Body { text: "secret words".into(), from_html: false, attachments: vec![], invite: None })
+            .set_body(
+                &gone,
+                &Body { text: "secret words".into(), from_html: false, html: None, attachments: vec![], invite: None },
+            )
             .expect("body");
         let kept = add(&store, &archive, &message(1, "Grüße"));
         store.set_highest_modseq(&inbox, Some(42)).expect("modseq");
@@ -1987,7 +2084,10 @@ mod tests {
         let two = add(&store, &inbox, &message(2, "beta"));
         let three = add(&store, &inbox, &message(3, "gamma"));
         store
-            .set_body(&one, &Body { text: "alpha text".into(), from_html: false, attachments: vec![], invite: None })
+            .set_body(
+                &one,
+                &Body { text: "alpha text".into(), from_html: false, html: None, attachments: vec![], invite: None },
+            )
             .expect("body");
         let uids = store.folder_uids(&inbox).expect("uids");
         assert_eq!(uids.iter().map(|(uid, _)| *uid).collect::<Vec<_>>(), [1, 2, 3]);
@@ -2014,7 +2114,10 @@ mod tests {
         let (old, recent) = (add(&store, &inbox, &old), add(&store, &inbox, &recent));
         for id in [&old, &recent] {
             store
-                .set_body(id, &Body { text: "zebra".into(), from_html: false, attachments: vec![], invite: None })
+                .set_body(
+                    id,
+                    &Body { text: "zebra".into(), from_html: false, html: None, attachments: vec![], invite: None },
+                )
                 .expect("body");
         }
         assert_eq!(search_ids(&store, "zebra").len(), 2);
@@ -2044,19 +2147,29 @@ mod tests {
             content_type: "application/pdf".into(),
             size: 5,
             inline: false,
+            content_id: Some("a@example.org".into()),
         }];
         assert!(
             store
                 .set_body(
                     &id,
-                    &Body { text: "t".into(), from_html: false, attachments: attachments.clone(), invite: None }
+                    &Body {
+                        text: "t".into(),
+                        from_html: false,
+                        html: None,
+                        attachments: attachments.clone(),
+                        invite: None
+                    }
                 )
                 .expect("body")
         );
         assert_eq!(store.message(&id).expect("read").expect("there").attachments, attachments);
         assert!(
             !store
-                .set_body("m:nope", &Body { text: "t".into(), from_html: false, attachments: vec![], invite: None })
+                .set_body(
+                    "m:nope",
+                    &Body { text: "t".into(), from_html: false, html: None, attachments: vec![], invite: None }
+                )
                 .expect("body")
         );
     }

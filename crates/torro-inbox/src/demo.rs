@@ -556,6 +556,8 @@ struct Letter {
     /// `(file name, MIME type, size)`.
     attachments: &'static [(&'static str, &'static str, u64)],
     from_html: bool,
+    /// The cleaned HTML part (task M9.3: the panel offers "View as HTML"); `None`: text only.
+    html: Option<&'static str>,
     /// Sent to a list or by a machine (`List-Id`): the inbox files it under "Info".
     bulk: bool,
 }
@@ -574,6 +576,7 @@ impl Letter {
             text: "",
             attachments: &[],
             from_html: false,
+            html: None,
             bulk: false,
         }
     }
@@ -605,6 +608,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             content_type: kind.into(),
             size,
             inline: false,
+            content_id: None,
         })
         .collect();
     Message {
@@ -627,6 +631,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
         reply_to: Vec::new(),
         text: Some(letter.text.into()),
         from_html: letter.from_html,
+        html: letter.html.map(str::to_owned),
         attachments,
         traits: MessageTraits {
             list_id: letter.bulk.then(|| "<news.example>".to_owned()),
@@ -636,6 +641,25 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
         invitation: false,
     }
 }
+
+/// The HTML of the demo's newsletter made from HTML (`m:p2`), as the core keeps it cleaned.
+const AUTUMN_SALE_HTML: &str = "<div style=\"font-family:Arial,sans-serif;max-width:600px;margin:0 auto\">\
+<h1 style=\"color:#b5502a\">Autumn sale</h1>\
+<p>20% off all jackets until Sunday.</p>\
+<table width=\"100%\" cellpadding=\"8\"><tr>\
+<td bgcolor=\"#f4ece4\"><b>Rain jacket</b><br>89 € <s>111 €</s></td>\
+<td bgcolor=\"#f4ece4\"><b>Down jacket</b><br>159 € <s>199 €</s></td>\
+</tr></table>\
+<p><a href=\"https://shop.example/sale\">Shop now</a></p>\
+<p style=\"font-size:12px;color:#777\"><a href=\"https://shop.example/unsubscribe\">Unsubscribe</a></p>\
+</div>";
+
+/// The HTML part of the demo's newsletter with text and HTML (`m:w14`).
+const WINTER_JACKETS_HTML: &str = "<div style=\"font-family:Arial,sans-serif;max-width:600px;margin:0 auto\">\
+<h1>Winter jackets are here</h1>\
+<p>Members get <b>free shipping</b> until Friday.</p>\
+<p><a href=\"https://shop.example/winter\">See the collection</a></p>\
+</div>";
 
 const READ: &[Flag] = &[Flag::Seen];
 const READ_FLAGGED: &[Flag] = &[Flag::Seen, Flag::Flagged];
@@ -750,6 +774,7 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             minutes: 5 * 60,
             bulk: true,
             from_html: true,
+            html: Some(AUTUMN_SALE_HTML),
             text: "Autumn sale: 20% off all jackets until Sunday.\n\nShop now: https://shop.example/sale\n\n\
                    Unsubscribe: https://shop.example/unsubscribe",
             ..Letter::new("m:p2", PRIVATE, "inbox", "Autumn sale: 20% off")
@@ -795,6 +820,8 @@ pub fn mail_sample(now: DateTime<Utc>) -> Vec<Message> {
             from: ("Shop", "news@shop.example"),
             minutes: 30 * 60,
             bulk: true,
+            // A text part and an HTML part, as most newsletters send: `from_html` stays false.
+            html: Some(WINTER_JACKETS_HTML),
             text: "Winter jackets are here. Members get free shipping until Friday.",
             ..Letter::new("m:w14", WORK, "inbox", "Winter jackets are here")
         },
@@ -938,8 +965,9 @@ impl DemoSource {
         Ok((page, next))
     }
 
-    /// `mail.get_message` with its text; reading does not mark it read. [`InboxError::NotFound`]
-    /// for an unknown id.
+    /// `mail.get_message` with its text and its HTML, as asked with `include_html` (the inbox's
+    /// panel asks so, task M9.3); reading does not mark it read. [`InboxError::NotFound`] for an
+    /// unknown id.
     pub fn get_mail(&self, id: &str) -> Result<Message, InboxError> {
         self.lock().mail.iter().find(|m| m.summary.id == id).cloned().ok_or(InboxError::NotFound)
     }
@@ -1807,7 +1835,9 @@ mod tests {
         let mail = mail_sample(now());
         assert!(mail.iter().all(|m| m.summary.untrusted), "mail is foreign text");
         assert!(mail.iter().any(|m| m.summary.flags.contains(&Flag::Flagged)));
-        assert!(mail.iter().any(|m| m.from_html), "a mail made from HTML");
+        assert!(mail.iter().any(|m| m.from_html && m.html.is_some()), "a newsletter made from HTML, with it");
+        assert!(mail.iter().any(|m| !m.from_html && m.html.is_some()), "a mail with a text and an HTML part");
+        assert!(mail.iter().any(|m| m.html.is_none()), "mail without HTML");
         assert!(mail.iter().any(|m| !m.attachments.is_empty()));
         let ids: HashSet<&str> = mail.iter().map(|m| m.summary.id.as_str()).collect();
         assert_eq!(ids.len(), mail.len(), "ids are unique");

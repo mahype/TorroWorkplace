@@ -413,7 +413,7 @@ impl ComposeSource for InboxClient {
     }
 
     async fn get_mail(&self, id: String) -> Result<Mail, ComposeError> {
-        match ask(self, Request::GetMail { id, include_body: true }).await? {
+        match ask(self, Request::GetMail { id, include_body: true, include_html: false }).await? {
             Response::MailMessage { message } => Ok(message),
             other => Err(unexpected(other)),
         }

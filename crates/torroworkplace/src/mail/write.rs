@@ -709,13 +709,7 @@ async fn save(mail: &MailService, reach: Reach<'_>, draft: Draft, author: DraftA
             let mut message = draft_message(&id_kept, &folder, uidvalidity, uid, &read);
             message.flags = vec![Flag::Seen];
             put(store, &folder, uidvalidity, &message)?;
-            let body = Body {
-                text: read.text.clone(),
-                from_html: read.from_html,
-                attachments: read.attachments.clone(),
-                invite: None,
-            };
-            store.set_body(&id_kept, &body)?;
+            store.set_body(&id_kept, &Body::of(read, None))?;
             Ok(())
         })
         .await?;

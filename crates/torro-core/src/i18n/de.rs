@@ -2206,16 +2206,13 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't load the message.", "Die Nachricht konnte nicht geladen werden."),
     ("Couldn't open the attachment.", "Der Anhang konnte nicht geöffnet werden."),
     ("Couldn't open the compose window.", "Das Schreibfenster konnte nicht geöffnet werden."),
+    ("Couldn't open the mail window.", "Das Mail-Fenster konnte nicht geöffnet werden."),
     ("Flag", "Markieren"),
     ("Flagged", "Markiert"),
     ("Forward", "Weiterleiten"),
     ("Has attachments", "Mit Anhängen"),
     ("Load more", "Mehr laden"),
     ("Loading the message…", "Nachricht wird geladen …"),
-    (
-        "Made from HTML. Pictures and other content from the web are not loaded.",
-        "Aus HTML umgewandelt. Bilder und andere Inhalte aus dem Netz werden nicht geladen.",
-    ),
     ("Mail in this folder shows up here.", "Mails in diesem Ordner erscheinen hier."),
     ("Mark read", "Als gelesen markieren"),
     ("Mark unread", "Als ungelesen markieren"),
@@ -2275,6 +2272,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{file} can run programs, so only its folder was opened.",
         "{file} kann Programme ausführen, deshalb wurde nur sein Ordner geöffnet.",
     ),
+    // HTML mail in the inbox (M9.3)
+    ("View as HTML", "Als HTML ansehen"),
     // Take accounts over from TorroMail (M7.4)
     ("Connecting…", "Verbinde …"),
     (
@@ -3359,6 +3358,16 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{area} geht nie an Coding-Agenten wie Claude Code: Deine Datenregel hält es auf deinen Computern. Wähle dafür ein KI-Konto auf diesem Computer.",
     ),
     ("Never gets your mail", "Bekommt nie deine Mails"),
+    // Mail window (torromailview, M9.2)
+    (
+        "The mail is no longer there. It may have been moved or deleted.",
+        "Die Mail ist nicht mehr da. Vielleicht wurde sie verschoben oder gelöscht.",
+    ),
+    ("Try again from the inbox.", "Versuche es im Eingang noch einmal."),
+    ("Select all", "Alles auswählen"),
+    ("Actual size", "Originalgröße"),
+    ("Window", "Fenster"),
+    ("Close window", "Fenster schließen"),
     // Formatted mail (issue #125)
     ("Bold", "Fett"),
     ("Bulleted list", "Aufzählung"),
