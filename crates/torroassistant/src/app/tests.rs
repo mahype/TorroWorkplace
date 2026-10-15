@@ -1,6 +1,8 @@
 //! Tests of the assistant window: what clicks and answers do, and that every demo state builds in
 //! every size. The window's tasks do not run in tests; [`settle`] plays the core's part: it answers
-//! every request the window sent with the demo and hands the answer back as the task would.
+//! every request the window sent with the demo and hands the answer back as the task would, with
+//! the map the window gave it ([`App::replies`]). [`answer_of`] does the same for a request a test
+//! took and answers itself.
 
 use std::sync::Arc;
 
@@ -109,21 +111,12 @@ fn answer_of(request: &Request, result: Result<Response, Refusal>) -> Message {
 
 /// Answers the requests the window sent until it sends none: the core's part.
 fn settle(app: &mut App) {
-    for _ in 0..50 {
-        let requests = std::mem::take(&mut app.sent);
-        if requests.is_empty() {
-            return;
-        }
-        for request in requests {
-            let result = block_on(app.backend.ask(request.clone()));
-            let _ = app.update(answer_of(&request, result));
-        }
-    }
-    panic!("the window keeps asking");
+    settled(app, |_| None);
 }
 
-/// The requests sent since the last look, taken.
+/// The requests sent since the last look, taken; their answers are left to the test.
 fn sent(app: &mut App) -> Vec<Request> {
+    app.replies.clear();
     std::mem::take(&mut app.sent)
 }
 
@@ -672,6 +665,7 @@ fn a_new_bot_needs_a_name_and_opens_its_chat_once_saved() {
     let mut app = started(&[]);
     sent(&mut app);
     let _ = app.update(Message::NewBot);
+    settle(&mut app);
     let _ = app.update(Message::SaveBot);
     assert!(sent(&mut app).is_empty());
     assert_eq!(app.bot_draft.as_ref().and_then(BotDraft::problem), Some(tr("Give the bot a name.").to_owned()));
@@ -684,6 +678,178 @@ fn a_new_bot_needs_a_name_and_opens_its_chat_once_saved() {
     let _ = app.update(answer_of(&requests[0], result));
     let new = app.bots.iter().find(|bot| bot.name == "Gardener").map(|bot| bot.id.clone()).expect("listed");
     assert_eq!((app.chat_bot(), app.current.as_ref()), (Some(new.as_str()), None), "a new chat with the new bot");
+}
+
+/// The requests of saving a bot's access among `requests`: `bots.save_bot`, `clients.list_clients`
+/// and `clients.update_client`.
+fn access_requests(requests: &[Request]) -> Vec<Request> {
+    requests
+        .iter()
+        .filter(|request| {
+            matches!(request, Request::SaveBot { .. } | Request::ListClients | Request::UpdateClient { .. })
+        })
+        .cloned()
+        .collect()
+}
+
+/// [`settle`], with `refuse` answering a request in the core's place where it gives a refusal;
+/// returns every request it answered.
+fn settled(app: &mut App, refuse: impl Fn(&Request) -> Option<Refusal>) -> Vec<Request> {
+    let mut all = Vec::new();
+    for _ in 0..50 {
+        let requests = app.sent.clone();
+        if requests.is_empty() {
+            return all;
+        }
+        all.extend(requests);
+        let replies = std::mem::take(&mut app.replies);
+        let requests = std::mem::take(&mut app.sent);
+        for (request, reply) in requests.into_iter().zip(replies) {
+            let result = match refuse(&request) {
+                Some(refusal) => Err(refusal),
+                None => block_on(app.backend.ask(request)),
+            };
+            let _ = app.update(reply(result));
+        }
+    }
+    panic!("the window keeps asking");
+}
+
+/// The rights of the client `id` as the demo core holds them.
+fn rights_of(app: &App, id: &str) -> torro_ipc::api::Rights {
+    match block_on(app.backend.ask(Request::ListClients)) {
+        Ok(Response::Clients { clients }) => {
+            clients.into_iter().find(|client| client.id == id).map(|client| client.rights).expect("listed")
+        }
+        other => panic!("clients: {other:?}"),
+    }
+}
+
+/// A demo window with the editor of a new bot named `name` open and its rights read.
+fn new_bot_named(name: &str) -> App {
+    let mut app = started(&[]);
+    sent(&mut app);
+    let _ = app.update(Message::NewBot);
+    settle(&mut app);
+    let _ = app.update(Message::Draft(DraftEdit::Name(name.into())));
+    app
+}
+
+#[test]
+fn a_bots_access_is_saved_after_the_bot_and_only_when_it_changed() {
+    use torro_ipc::api::{Area, Level, Selection};
+
+    // Without a change: bots.save_bot alone.
+    let mut app = new_bot_named("Gardener");
+    let _ = app.update(Message::SaveBot);
+    let requests = access_requests(&settled(&mut app, |_| None));
+    assert!(matches!(&requests[..], [Request::SaveBot { id: None, .. }]), "{requests:?}");
+    assert!(app.bot_draft.is_none(), "saved: the editor closes");
+
+    // With one: save, read the clients again, then update the bot's client.
+    let mut app = new_bot_named("Archivist");
+    let _ = app.update(Message::Draft(DraftEdit::Level(Area::Calendar, Level::Read)));
+    let _ = app.update(Message::Draft(DraftEdit::Level(Area::Github, Level::Read)));
+    let _ = app.update(Message::Draft(DraftEdit::Level(Area::Bots, Level::Full)));
+    let _ = app.update(Message::SaveBot);
+    let requests = access_requests(&settled(&mut app, |_| None));
+    let [Request::SaveBot { id: None, .. }, Request::ListClients, Request::UpdateClient { id: client, rights }] =
+        &requests[..]
+    else {
+        panic!("save, read, update: {requests:?}");
+    };
+    assert_eq!(rights.area(Area::Calendar).level, Level::Read);
+    assert_eq!(rights.calendars.clone(), Selection::Only(app.known.present().calendars), "what exists, not All");
+    assert_eq!(rights.github_repos, Selection::Only(Vec::new()));
+    assert_eq!(rights.area(Area::Bots).level, Level::NoAccess, "never offered to a bot");
+    assert_eq!(&rights_of(&app, client), rights, "the core holds them");
+    let new = app.bots.iter().find(|bot| bot.name == "Archivist").map(|bot| bot.id.clone()).expect("listed");
+    assert_eq!((app.bot_draft.is_none(), app.chat_bot()), (true, Some(new.as_str())), "then its chat opens");
+}
+
+#[test]
+fn a_bot_saved_without_its_access_keeps_the_editor_and_a_second_save_makes_no_second_bot() {
+    use torro_ipc::api::{Area, Level};
+
+    let mut app = new_bot_named("Archivist");
+    let _ = app.update(Message::Draft(DraftEdit::Level(Area::Tasks, Level::Write)));
+    let _ = app.update(Message::SaveBot);
+    let refuse = |request: &Request| {
+        matches!(request, Request::UpdateClient { .. }).then(|| Refusal::new("error", "the disk is full"))
+    };
+    let _ = settled(&mut app, refuse);
+    let draft = app.bot_draft.as_ref().expect("the editor stays open");
+    assert_eq!(draft.access_note, Some(crate::bots::AccessNote::NotSet));
+    assert!(!draft.saving && draft.id.is_some() && draft.client.is_some(), "the bot is saved");
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+
+    let _ = app.update(Message::SaveBot);
+    let requests = access_requests(&settled(&mut app, |_| None));
+    assert!(
+        matches!(
+            &requests[..],
+            [Request::SaveBot { id: Some(_), .. }, Request::ListClients, Request::UpdateClient { .. }]
+        ),
+        "again with its id: {requests:?}"
+    );
+    assert_eq!(app.bots.iter().filter(|bot| bot.name == "Archivist").count(), 1, "one bot");
+    assert!(app.bot_draft.is_none());
+}
+
+#[test]
+fn a_bot_the_assistant_proposed_shows_no_access_anywhere() {
+    use torro_ipc::api::{Confirm, Level};
+
+    let mut app = started(&[]);
+    // As the assistant proposes a bot (bots.save_bot over MCP, approved): never with rights.
+    let proposed = Request::SaveBot {
+        id: None,
+        name: "Proposed".into(),
+        description: String::new(),
+        avatar: None,
+        engine: OLLAMA.into(),
+        model: None,
+        personality: String::new(),
+        instructions: String::new(),
+        skills: Vec::new(),
+    };
+    let Ok(Response::Bot { bot }) = block_on(app.backend.ask(proposed)) else { panic!("saved") };
+    sent(&mut app);
+    let _ = app.update(Message::EditBot(bot.id.clone()));
+    settle(&mut app);
+    let draft = app.bot_draft.as_ref().expect("the editor is open");
+    let shown = draft.access.as_ref().expect("its rights were read").shown(&app.known.present());
+    assert!(crate::bots::BotAccess::areas().all(|area| shown.area(area).level == Level::NoAccess));
+    assert_eq!(shown.confirm, Confirm::OnDelete);
+}
+
+#[test]
+fn the_editor_reads_the_access_each_time_it_opens() {
+    use torro_ipc::api::{Area, Level};
+
+    let mut app = started(&["--open", "bot-access"]);
+    let draft = app.bot_draft.as_ref().expect("the travel planner's editor");
+    let shown = draft.access.as_ref().expect("read").shown(&app.known.present());
+    assert_eq!(shown.area(Area::Calendar).level, Level::Read);
+    assert_eq!(app.known.present().calendars.len(), 3);
+    let _ = app.update(Message::CloseEditor);
+    sent(&mut app);
+    let _ = app.update(Message::EditBot(TRAVEL.into()));
+    settle(&mut app);
+    let _ = app.update(Message::CloseEditor);
+    let _ = app.update(Message::EditBot(TRAVEL.into()));
+    let requests = sent(&mut app);
+    assert_eq!(requests, [Request::GetBot { id: TRAVEL.into() }]);
+    let result = block_on(app.backend.ask(requests[0].clone()));
+    let _ = app.update(answer_of(&requests[0], result));
+    let reads = sent(&mut app);
+    for read in [Request::ListClients, Request::CalendarCollections, Request::TaskCollections, Request::ListSources] {
+        assert!(reads.contains(&read), "{read:?} in {reads:?}");
+    }
+    assert!(app.bot_draft.as_ref().is_some_and(|draft| draft.access.is_none()), "until the clients came");
 }
 
 #[test]
@@ -760,10 +926,20 @@ fn the_card_of_a_proposal_confirms_with_the_app_request_and_says_yes() {
 
 #[test]
 fn every_bot_state_builds_in_every_size() {
-    for words in [["--open", "bot-editor"], ["--open", "bot-new"], ["--open", "bot-delete"], ["--open", "bot-menu"]] {
+    let states = [
+        ["--open", "bot-editor"],
+        ["--open", "bot-access"],
+        ["--open", "bot-new"],
+        ["--open", "bot-delete"],
+        ["--open", "bot-menu"],
+    ];
+    for words in states {
         let app = started(&words);
         match words[1] {
-            "bot-editor" => assert!(app.bot_draft.as_ref().is_some_and(|draft| draft.id.is_some())),
+            "bot-editor" | "bot-access" => assert!(
+                app.bot_draft.as_ref().is_some_and(|draft| draft.id.is_some() && draft.access.is_some()),
+                "{words:?}"
+            ),
             "bot-new" => assert!(app.bot_draft.as_ref().is_some_and(|draft| draft.tried && draft.problem().is_some())),
             "bot-delete" => assert!(matches!(app.dialog, Some(Dialog::DeleteBot { .. }))),
             _ => assert_eq!(app.menu, Some(Menu::Bot { id: TRAVEL.into() })),

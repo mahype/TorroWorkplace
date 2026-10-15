@@ -40,7 +40,12 @@
 //! (`assistant.send_message { bot }`) and the picker starts at the bot's engine and model. The bot
 //! editor (profile, personality, instructions, skills, engine) takes the chat's place and saves with
 //! `bots.save_bot`; deleting asks first (`bots.delete_bot`). "Access…" opens the control centre at
-//! the bot's rights (`--section bot:<id>`). `--bot <id>` is a chat window with one bot
+//! the bot's rights (`--section bot:<id>`). The editor's section "Access" (task B.5) sets a level per
+//! area and "Ask first" for the bot's own client: it reads `clients.list_clients` and what exists
+//! (`calendar.list_calendars`, `tasks.list_lists`, `inbox.list_sources`, `accounts.list_accounts`)
+//! each time it opens, and a save sends `bots.save_bot`, then – only when a row changed –
+//! `clients.list_clients` again and `clients.update_client` with the changed rows laid onto what
+//! the core holds then. `--bot <id>` is a chat window with one bot
 //! ([`Window::Bot`]), titled "{bot} · {title}"; "Open in new window" of a bot starts it through
 //! `assistant.open_window`. Its methods live in `app/bots.rs`.
 //!
@@ -71,10 +76,10 @@ use torro_ipc::api::{Area, Rights};
 use torro_ipc::assistant::Mode as PermissionMode;
 use torro_ipc::assistant::{ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, Profile};
 use torro_ipc::bots::{Bot, BotSummary};
-use torro_ipc::{ApprovalInfo, Request, Response};
+use torro_ipc::{ApprovalInfo, ClientInfo, Request, Response};
 
 use crate::backend::{Backend, Refusal};
-use crate::bots::{BotDraft, DraftEdit, Proposal};
+use crate::bots::{BotDraft, DraftEdit, Known, Listed, Proposal};
 use crate::chat::{self, Choice, Transcript};
 use crate::demo;
 use crate::launch::{Launch, Open, Window};
@@ -128,6 +133,9 @@ pub const SEARCH: &str = "assistant-search";
 pub const BOT_NAME: &str = "assistant-bot-name";
 /// The id of the bot editor's scrolling form: a "Save" that finds a problem goes to its top.
 pub const BOT_FORM: &str = "assistant-bot-form";
+/// The id of the bot editor's section "Access" (task B.5): the demo state `--open bot-access`
+/// scrolls the form to it.
+pub const BOT_ACCESS: &str = "assistant-bot-access";
 /// The id of the title field in the rename dialog.
 pub const RENAME: &str = "assistant-rename";
 /// The control centre's page "Assistant" (task C.6): what the assistant may use.
@@ -141,6 +149,11 @@ pub const HISTORY: &str = "assistant-history";
 /// What a test can see of the requests the window sent (tasks do not run in tests).
 #[cfg(test)]
 pub type Sent = Vec<Request>;
+
+/// How the window takes the answer to a request: the map its task would run, kept in tests next to
+/// [`Sent`] so a test answers each request as the window asked for it.
+#[cfg(test)]
+pub type Reply = Box<dyn Fn(Result<Response, Refusal>) -> Message + Send>;
 
 /// An open menu.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,11 +278,19 @@ pub enum Message {
     /// "Edit bot": asks the core for the whole bot, then opens the editor.
     EditBot(String),
     BotLoaded(Result<Bot, Refusal>),
+    /// The clients as the editor read them when it opened (task B.5): the bot's rights.
+    BotClients(Result<Vec<ClientInfo>, Refusal>),
+    /// What exists, read when the editor opened: calendars, task lists, inbox sources, accounts.
+    Known(Result<Listed, Refusal>),
     /// A field of the bot editor changed.
     Draft(DraftEdit),
     /// "Save" in the bot editor.
     SaveBot,
     BotSaved(Result<Bot, Refusal>),
+    /// The clients read again after `bots.save_bot`, because a row of "Access" changed.
+    AccessNow(Result<Vec<ClientInfo>, Refusal>),
+    /// The core's answer to `clients.update_client` for the bot.
+    AccessSet(Result<(), Refusal>),
     /// "Cancel" in the bot editor: back to the chat, nothing saved.
     CloseEditor,
     /// "Delete bot…": asks first.
@@ -412,6 +433,8 @@ pub struct App {
     pub(crate) bot: Option<String>,
     /// The bot editor, while it is open: it takes the chat's place.
     pub(crate) bot_draft: Option<BotDraft>,
+    /// What exists, read when the editor opened, for its section "Access" (task B.5).
+    pub(crate) known: Known,
     /// A `--bot` window has looked for the bot's newest conversation.
     pub(crate) bot_resolved: bool,
     /// The one-time states of `--open` that need the bots are done.
@@ -474,6 +497,9 @@ pub struct App {
     pub(crate) design: Follow,
     #[cfg(test)]
     pub(crate) sent: Sent,
+    /// How the window takes the answer to each request in [`App::sent`], in the same order.
+    #[cfg(test)]
+    pub(crate) replies: Vec<Reply>,
     /// The control centre's pages the window opened, for the tests.
     #[cfg(test)]
     pub(crate) sections: Vec<String>,
@@ -515,6 +541,7 @@ impl App {
             bots_loaded: false,
             bot,
             bot_draft: None,
+            known: Known::default(),
             bot_resolved: false,
             opened_bots: false,
             confirming: None,
@@ -558,6 +585,8 @@ impl App {
             launch,
             #[cfg(test)]
             sent: Vec::new(),
+            #[cfg(test)]
+            replies: Vec::new(),
             #[cfg(test)]
             sections: Vec::new(),
         };
@@ -660,7 +689,13 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
-            Message::Resized(size) => self.size = size,
+            Message::Resized(size) => {
+                self.size = size;
+                // The demo state for screenshots keeps the editor at its section "Access" in every size.
+                if self.launch.open == Some(Open::BotAccess) && self.bot_draft.is_some() {
+                    return bots::scroll_to_access();
+                }
+            }
             Message::Tick => {
                 let mut tasks = vec![self.load_all(), self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)];
                 tasks.push(self.follow());
@@ -697,9 +732,15 @@ impl App {
             Message::Bots(result) => return self.bots_listed(result),
             Message::OpenBot(id) => return self.open_bot(id),
             Message::NewBotChat(id) => return self.new_bot_chat(id),
-            Message::NewBot => self.new_bot(),
+            Message::NewBot => return self.new_bot(),
             Message::EditBot(id) => return self.edit_bot(id),
-            Message::BotLoaded(result) => self.bot_loaded(result),
+            Message::BotLoaded(result) => return self.bot_loaded(result),
+            Message::BotClients(result) => self.bot_clients(result),
+            Message::Known(Ok(listed)) => self.known.take(listed),
+            // Without it the section offers what it knows; switching an area on gives less.
+            Message::Known(Err(refusal)) => eprintln!("cannot read what the bot may be given: {}", refusal.message),
+            Message::AccessNow(result) => return self.access_now(result),
+            Message::AccessSet(result) => return self.access_set(result),
             Message::Draft(edit) => {
                 let pick = matches!(edit, DraftEdit::Engine(_));
                 if let Some(draft) = self.bot_draft.as_mut() {
@@ -893,16 +934,24 @@ impl App {
     // -- Asking the core ------------------------------------------------------------------------
 
     /// Sends `request` and maps the answer to a message. Every request of the window goes through
-    /// here, so the tests see them in [`App::sent`].
+    /// here, so the tests see them in [`App::sent`] and answer them with [`App::replies`] (tasks do
+    /// not run in tests).
     fn ask(
         &mut self,
         request: Request,
         map: impl Fn(Result<Response, Refusal>) -> Message + Send + 'static,
     ) -> Task<Message> {
         #[cfg(test)]
-        self.sent.push(request.clone());
-        let backend = self.backend.clone();
-        Task::perform(async move { backend.ask(request).await }, map)
+        {
+            self.sent.push(request);
+            self.replies.push(Box::new(map));
+            Task::none()
+        }
+        #[cfg(not(test))]
+        {
+            let backend = self.backend.clone();
+            Task::perform(async move { backend.ask(request).await }, map)
+        }
     }
 
     /// The conversations, the engines and the client – what the window shows besides the chat.

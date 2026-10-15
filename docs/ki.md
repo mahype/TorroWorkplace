@@ -28,7 +28,13 @@ benutzt nie den Schlüssel eines Agenten.
    Modell und ein Aufwand gewählt.
 4. **Daten nur dahin, wo du es erlaubt hast.** Je Quelle des Eingangs lässt sich festlegen, dass ihre
    Inhalte nur an **lokale** Modelle gehen (z. B. Mail und Messenger ja nur lokal, GitHub darf in die
-   Cloud). Standard für Mail: nur lokal.
+   Cloud). Standard für Mail: nur lokal. Bis die Regeln je Quelle kommen (KI.1), gibt es dafür einen
+   Schalter (Aufgabe C.17, Einstellung `mail_to_cloud`): „Mail an Claude Code und Cloud-Modelle“ unter
+   Mail in den Rechten des Assistenten und seiner Bots. Einschalten kann nur die Person selbst in der
+   Steuerzentrale; dann lesen auch Claude Code und Modelle außerhalb der eigenen Rechner Mail, soweit
+   die Rechte sie geben. Für Cloud-Modelle bleiben Einträge von Nextcloud und Talk weiter lokal (Claude
+   Code sieht über seinen Schlüssel die Quellen des Eingangs, die ihm die Rechte geben, wie schon vorher).
+   Die Regel gilt ab der nächsten Antwort; eine laufende Antwort behält, was beim Start galt.
 5. **Vorschlag, nie Urteil.** KI-Ergebnisse sind gekennzeichnet, das Original bleibt sichtbar,
    nichts wird von einer KI versteckt, gelöscht oder verschickt.
 6. **Schlüssel bleiben im Dienst** (Regel 1 und 5 in „Was nie nach außen geht“): API-Schlüssel im

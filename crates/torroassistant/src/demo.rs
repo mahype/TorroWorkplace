@@ -11,19 +11,25 @@
 //! Bots (task B.3): "Travel planner" ([`TRAVEL`]) with a conversation of its own ([`BOT_CHAT`]),
 //! which the assistant asked in "Weekend in Porto" ([`ASKED`]), and "Release helper"; a
 //! conversation of a bot that was deleted ([`GONE`]). They are made, changed and deleted in memory,
-//! so `torroassistant --demo --bot b0000001` opens the travel planner's chat.
+//! so `torroassistant --demo --bot b0000001` opens the travel planner's chat. Each bot has a client
+//! with rights (task B.5): the travel planner reads two of the three calendars and one of the two
+//! mail accounts, the release helper has none, as the assistant's proposal would leave it; the
+//! demo lists calendars, task lists, inbox sources and accounts for the editor's section "Access"
+//! and takes `clients.update_client`.
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Duration, Utc};
 use torro_core::ai::{AiModel, Effort};
 use torro_core::i18n::{tr, trf};
-use torro_ipc::api::{Access, Area, AreaRights, Lack, Level, Rights};
+use torro_inbox::{SourceInfo, SourceRef};
+use torro_ipc::api::{Access, Area, AreaRights, BOT_CLIENT, Lack, Level, Rights, Selection};
 use torro_ipc::assistant::{
     ChatWindow, ConversationSummary, Engine, EngineKind, Entry, EntryContent, LETTER_AVATAR, Profile,
 };
 use torro_ipc::bots::{Bot, Skill};
-use torro_ipc::{ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
+use torro_ipc::{AccountInfo, ApprovalInfo, ApprovalState, ClientInfo, Request, Response};
+use torro_pim::{AccountState, Collection, CollectionKind};
 
 /// "Plan for tomorrow": messages, tool lines and an answer in Markdown. Pinned.
 pub const TOOLS: &str = "d000000000000001";
@@ -94,6 +100,8 @@ struct State {
     approvals: Vec<ApprovalInfo>,
     /// The bots, by name.
     bots: Vec<Bot>,
+    /// The clients of the bots, with their rights.
+    clients: Vec<ClientInfo>,
     /// The number of the next conversation (and bot) made in the demo.
     next: u64,
 }
@@ -120,7 +128,8 @@ impl Demo {
         let conversations = if setup.conversations { samples(now) } else { Vec::new() };
         let approvals = if setup.conversations { vec![approval(now)] } else { Vec::new() };
         let bots = if setup.conversations { sample_bots() } else { Vec::new() };
-        Demo { state: Mutex::new(State { setup, now, conversations, approvals, bots, next: 100 }) }
+        let clients = if setup.conversations { bot_clients(now) } else { Vec::new() };
+        Demo { state: Mutex::new(State { setup, now, conversations, approvals, bots, clients, next: 100 }) }
     }
 
     fn lock(&self) -> MutexGuard<'_, State> {
@@ -136,7 +145,22 @@ impl Demo {
                 Some(models) if state.setup.engines => Response::AiModels { models },
                 _ => refused("not-found", "no such AI account"),
             },
-            Request::ListClients => Response::Clients { clients: state.client().into_iter().collect() },
+            Request::ListClients => {
+                Response::Clients { clients: state.client().into_iter().chain(state.clients.iter().cloned()).collect() }
+            }
+            // A bot's rights (task B.5), as the core keeps them: never more than its kind may hold.
+            Request::UpdateClient { id, rights } => match state.clients.iter_mut().find(|client| client.id == id) {
+                Some(client) => {
+                    client.rights = rights.for_kind(&client.kind);
+                    Response::Ok
+                }
+                None => refused("not-found", &format!("no client {id:?}")),
+            },
+            // What exists, for the bot editor's section "Access".
+            Request::CalendarCollections => Response::Collections { collections: calendars() },
+            Request::TaskCollections => Response::Collections { collections: task_lists() },
+            Request::ListSources => Response::Sources { sources: sources() },
+            Request::Accounts => Response::Accounts { accounts: accounts() },
             Request::ListConversations => Response::Conversations { conversations: state.summaries() },
             Request::GetConversation { id, after } => state.get(&id, after.unwrap_or(0)),
             Request::SendMessage { conversation, engine, model, effort, text, without, mode, bot } => {
@@ -183,7 +207,9 @@ impl Demo {
             }
             Request::DeleteBot { id } => {
                 let before = state.bots.len();
+                let client = state.bots.iter().find(|bot| bot.id == id).map(|bot| bot.client.clone());
                 state.bots.retain(|bot| bot.id != id);
+                state.clients.retain(|known| Some(&known.id) != client.as_ref());
                 if state.bots.len() < before { Response::Ok } else { no_bot(&id) }
             }
             other => refused("unsupported", &format!("{} is not in the demo", other.operation().name())),
@@ -343,6 +369,10 @@ impl State {
         };
         let client =
             self.bots.iter().find(|bot| bot.id == id).map_or_else(|| format!("c{}", &id[1..]), |b| b.client.clone());
+        // A new bot's client starts without rights, as the core makes it.
+        if !self.clients.iter().any(|known| known.id == client) {
+            self.clients.push(bot_client(&client, &name, Rights::none(), self.now));
+        }
         let bot = Bot {
             id: id.clone(),
             name,
@@ -694,6 +724,102 @@ fn sample_bots() -> Vec<Bot> {
             }],
             client: "c0000001".into(),
         },
+    ]
+}
+
+/// The demo's Nextcloud account, whose calendars and task lists the bots can be given.
+const CLOUD: &str = "nextcloud:anna@cloud.example.org";
+/// The demo's two mail accounts.
+const MAIL: &str = "mail:anna@mailbox.org";
+const WORK_MAIL: &str = "mail:anna@work.example.net";
+
+/// A collection of the demo's Nextcloud account. Its name shows nowhere in the window (the editor
+/// counts collections), so it stays untranslated.
+fn collection(path: &str, name: &str, kind: CollectionKind, color: &str) -> Collection {
+    Collection {
+        id: format!("{CLOUD}/{path}"),
+        name: name.into(),
+        kind,
+        color: Some(color.into()),
+        writable: true,
+        source: None,
+    }
+}
+
+/// The demo's calendars: Work, Private, Family.
+fn calendars() -> Vec<Collection> {
+    vec![
+        collection("work", "Work", CollectionKind::Events, "#5B8CFF"),
+        collection("private", "Private", CollectionKind::Events, "#3FB984"),
+        collection("family", "Family", CollectionKind::Events, "#E8A33D"),
+    ]
+}
+
+/// The demo's task lists.
+fn task_lists() -> Vec<Collection> {
+    vec![
+        collection("todo", "Todo", CollectionKind::Todos, "#D96CA8"),
+        collection("errands", "Errands", CollectionKind::Todos, "#A78BFA"),
+    ]
+}
+
+/// The demo's inbox sources with entries.
+fn sources() -> Vec<SourceInfo> {
+    vec![SourceInfo { source: SourceRef::script("backup"), open: 1, muted: false, health: None }]
+}
+
+/// The demo's accounts: the Nextcloud account and two mail accounts.
+fn accounts() -> Vec<AccountInfo> {
+    let account = |id: &str, kind: &str, label: &str| AccountInfo {
+        id: id.into(),
+        kind: kind.into(),
+        label: label.into(),
+        state: AccountState::Connected {
+            server: label.split_once('@').map_or(label, |(_, host)| host).into(),
+            login_name: label.into(),
+            last_sync: None,
+            problem: None,
+        },
+        collections: Vec::new(),
+        scopes: None,
+        mail: None,
+        ntfy: None,
+        services: None,
+    };
+    vec![
+        account(CLOUD, "nextcloud", "anna@cloud.example.org"),
+        account(MAIL, "mail", "anna@mailbox.org"),
+        account(WORK_MAIL, "mail", "anna@work.example.net"),
+    ]
+}
+
+/// A bot's client `id` named `name` with `rights`.
+fn bot_client(id: &str, name: &str, rights: Rights, now: DateTime<Utc>) -> ClientInfo {
+    ClientInfo {
+        id: id.into(),
+        name: name.into(),
+        kind: BOT_CLIENT.into(),
+        created: now - Duration::days(3),
+        last_used: None,
+        rights: rights.for_kind(BOT_CLIENT),
+        agent: None,
+    }
+}
+
+/// The clients of the demo's bots: the travel planner reads two calendars and one mail account
+/// and may mute sources (the admin switch of the inbox, which is off), the release helper has no
+/// rights at all, as a bot the assistant proposed starts.
+fn bot_clients(now: DateTime<Utc>) -> Vec<ClientInfo> {
+    let mut travel = Rights::none();
+    let read = AreaRights { level: Level::Read, admin: false };
+    travel.areas.insert(Area::Calendar, read);
+    travel.areas.insert(Area::Mail, read);
+    travel.areas.insert(Area::Inbox, AreaRights { level: Level::NoAccess, admin: true });
+    travel.calendars = Selection::Only(vec![format!("{CLOUD}/work"), format!("{CLOUD}/family")]);
+    travel.mail_accounts = Selection::Only(vec![MAIL.into()]);
+    vec![
+        bot_client("c0000001", tr("Travel planner"), travel, now),
+        bot_client("c0000002", tr("Release helper"), Rights::none(), now),
     ]
 }
 

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Photos – Entwürfe</title>
+<!-- Übersicht der Entwürfe für die Foto-App und den Bilderrahmen. Jede Karte ist ein echter, verkleinerter Entwurf
+     (iframe in Originalgröße, skaliert); ein Klick öffnet ihn in voller Größe. -->
+<style>
+@font-face{font-family:Inter;font-weight:400;src:url(../../../crates/torro-gui/assets/fonts/Inter-Regular.ttf)}
+@font-face{font-family:Inter;font-weight:500;src:url(../../../crates/torro-gui/assets/fonts/Inter-Medium.ttf)}
+@font-face{font-family:Inter;font-weight:600;src:url(../../../crates/torro-gui/assets/fonts/Inter-SemiBold.ttf)}
+:root{--bg:#08090A;--panel:#0F1011;--card:#141518;--line:rgba(255,255,255,.08);--text:#EDEEF0;--text2:#B4B8BF;--text3:#8A8F98;--accent:#D50C0C;color-scheme:dark}
+:root[data-theme="light"]{--bg:#F4F5F6;--panel:#FFFFFF;--card:#FFFFFF;--line:rgba(0,0,0,.09);--text:#18191B;--text2:#4F535A;--text3:#62666D;color-scheme:light}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:400 15px/1.55 Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 16px 64px;display:grid;gap:48px}
+header{display:grid;gap:12px;max-width:72ch}
+.brand{display:flex;align-items:center;gap:10px;font-size:13px;font-weight:500;color:var(--text2)}
+.logo{width:22px;height:22px;border-radius:6px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:12px;font-weight:600}
+h1{margin:0;font-size:clamp(26px,4vw,34px);line-height:1.15;font-weight:600;letter-spacing:-.015em}
+h2{margin:0;font-size:20px;line-height:1.3;font-weight:600}
+p{margin:0}.lead{color:var(--text2)}
+section{display:grid;gap:16px}
+section>p{color:var(--text2);max-width:76ch}
+.row{display:flex;flex-wrap:wrap;gap:16px;align-items:flex-start}
+figure{margin:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;display:flex;flex-direction:column;max-width:100%}
+.shot{position:relative;overflow:hidden;background:#000}
+.shot iframe{position:absolute;left:0;top:0;border:0;transform-origin:0 0;pointer-events:none}
+.shot a{position:absolute;inset:0;z-index:1}
+figcaption{display:grid;gap:2px;padding:10px 14px 12px;font-size:13px;line-height:1.45;color:var(--text2);max-width:100%}
+figcaption b{color:var(--text);font-weight:600;font-size:14px}
+figcaption .tag{font-size:12px;color:var(--text3);font-variant-numeric:tabular-nums}
+.ws{background:#1a1b1e;border:1px solid var(--line);border-radius:12px;padding:8px;display:grid;gap:8px;overflow:hidden}
+.ws .tiles{display:flex;gap:8px;height:300px}
+.ws .tile{position:relative;overflow:hidden;border-radius:6px;flex:none;background:#000}
+.ws .tile iframe{position:absolute;left:0;top:0;border:0;transform-origin:0 0;pointer-events:none}
+.ws .lbl{font-size:12px;color:var(--text3)}
+ul.notes{margin:0;padding-left:20px;display:grid;gap:8px;max-width:80ch;color:var(--text2)}
+ul.notes b{color:var(--text);font-weight:500}
+code{font:500 13px/1 ui-monospace,Menlo,monospace;color:var(--text)}
+footer{color:var(--text3);font-size:13px}
+</style></head>
+<body><div class="wrap">
+<header>
+  <div class="brand"><span class="logo">T</span>Torro Workplace · Design-Entwurf</div>
+  <h1>Fotos und Bilderrahmen</h1>
+  <p class="lead">Die Foto-App baut auf Nextcloud Photos auf. Recognize (Personen) und Memories (Karte) kommen dazu, wenn sie auf dem Server laufen. In Version 1 kann man ansehen und ordnen: Zeitleiste, Alben, Personen, Orte und Favoriten. Bearbeitet werden nur Datum, Ort und Tags; hochgeladen wird noch nichts. Dazu kommt der Bilderrahmen, eine Kachel mit einem Foto oder einer Diashow. Ein Klick auf eine Karte öffnet den Entwurf in voller Größe.</p>
+  <p class="lead" style="font-size:13px">Die Bilder sind Platzhalter von picsum.photos, die Karte zeigt OpenStreetMap. Hell: <a href="?theme=light" style="color:inherit">?theme=light</a></p>
+</header>
+
+<section>
+  <h2>Foto-App · breit</h2>
+  <div class="row" id="wide"></div>
+</section>
+
+<section>
+  <h2>Foto-App · kleinere Kacheln</h2>
+  <p>Mittel und Schmal zeigen die Seitenleiste als Menü. Im Betrachter wandern die Eigenschaften als Chips unter das Bild. Mini und Leiste sind reine Anzeigen und zeigen „An diesem Tag“.</p>
+  <div class="row" id="small"></div>
+</section>
+
+<section>
+  <h2>Bilderrahmen</h2>
+  <p>Eine kleine Nebenanwendung für Kacheln im Workspace. Sie zeigt ein Foto oder eine Diashow aus einem Album, einer Person, einem Ort, den Favoriten oder „An diesem Tag“. Im Ruhezustand ist nur das Bild zu sehen. Beim Überfahren erscheinen Quelle, Vor/Pause/Zurück und die Einstellungen. Die Wahl gehört zum Fenster, so bringt eine Workspace-Vorlage den Rahmen mit demselben Album zurück.</p>
+  <div class="ws">
+    <div class="lbl">So könnte ein Workspace aussehen: mehrere Rahmen neben anderen Kacheln (32:9, verkleinert)</div>
+    <div class="tiles" id="ws"></div>
+  </div>
+  <div class="row" id="frames"></div>
+</section>
+
+<section>
+  <h2>Wie der Rahmen zu API und MCP passt</h2>
+  <ul class="notes">
+    <li><b>Oberfläche:</b> Rahmen-Fenster mit Einstellungskarte. Aus der Foto-App heraus: „Show in frame“ an einem Album, einer Person oder einem Ort.</li>
+    <li><b>API:</b> Der Rahmen holt seine Bilder mit den Lese-Befehlen der Foto-App (<code>photos.list_photos</code>, <code>photos.get_preview</code>). Ein Fenster öffnet <code>apps.open_app</code> mit Startparametern, z. B. <code>torroframe --album "Tuscany 2024" --every 1m --shuffle</code>. Vorher gecachte Vorschaubilder machen den Rahmen offline-fest.</li>
+    <li><b>MCP:</b> Das gibt es schon: <code>apps_open_app</code> mit Parametern („Zeig mir die Toskana-Fotos als Diashow rechts“). Der Assistent sieht dabei nur, welches Album läuft, nicht die Bilder. Das Recht „Bildinhalte“ bleibt davon getrennt.</li>
+    <li><b>Dauerbetrieb:</b> Nur alle n Sekunden ein Bildwechsel mit kurzem Überblenden. Kein Ken-Burns-Zoom (er verbraucht die GPU ständig) und keine Bedienelemente ohne Mauszeiger. Bilder werden in Kachelgröße geladen, nicht als Original.</li>
+  </ul>
+</section>
+
+<footer>docs/prototypes/photos · photos.html und frame.html, Zustände über ?open=…</footer>
+</div>
+<script>
+const q=new URLSearchParams(location.search);const th=q.get('theme')==='light'?'&theme=light':'';
+if(th)document.documentElement.dataset.theme='light';
+const fig=(src,W,H,s,title,tag)=>`<figure style="width:${Math.round(W*s)+2}px"><div class="shot" style="width:${Math.round(W*s)}px;height:${Math.round(H*s)}px"><iframe loading="lazy" src="${src}${th}" style="width:${W}px;height:${H}px;transform:scale(${s})"></iframe><a href="${src}${th}" target="_blank" aria-label="${title}"></a></div><figcaption><b>${title}</b><span class="tag">${tag}</span></figcaption></figure>`;
+const P='photos.html?',F='frame.html?';
+document.getElementById('wide').innerHTML=[
+ ['open=timeline','Zeitleiste','Tage nach Aufnahmedatum, Sprung über Jahre rechts'],
+ ['open=select','Auswahl','3 gewählt: Album, Favorit, Tags, Datum und Ort, Löschen'],
+ ['open=photo','Betrachter','Bild, Filmstreifen, Eigenschaften mit Karte, Personen, Alben, Tags'],
+ ['open=edit','Datum und Ort ändern','nur Metadaten auf Nextcloud, die Datei bleibt'],
+ ['open=thisday','An diesem Tag','je Jahr ein Streifen'],
+ ['open=albums','Alben','eigene und geteilte, öffentlicher Link sichtbar'],
+ ['open=album','Album','Zeitraum, Ort, geteilt mit, Teilen, Fotos hinzufügen'],
+ ['open=people','Personen','aus Recognize, Unbenannte zum Benennen'],
+ ['open=people-missing','Personen ohne Recognize','freundlicher Hinweis statt Fehler'],
+ ['open=places','Orte','Raster der Orte (Photos)'],
+ ['open=map','Karte','Haufen auf der Karte (Memories)'],
+ ['open=rights','Rechte eines Agenten','Steuerzentrale: Lesen, Ordnen, Löschen, Teilen, Bildinhalte (aus)'],
+ ['open=empty','Leer','noch keine Fotos'],
+ ['open=loading','Lädt','erster Index läuft'],
+].map(([o,t,g])=>fig(P+o,1440,900,.4,t,g)).join('');
+document.getElementById('small').innerHTML=[
+ ['size=m',800,600,.6,'Mittel · Zeitleiste','800 × 600'],
+ ['size=m&open=photo',800,600,.6,'Mittel · Betrachter','Eigenschaften als Chips'],
+ ['size=s',420,860,.5,'Schmal · Zeitleiste','420 × 860'],
+ ['size=s&open=albums',420,860,.5,'Schmal · Alben','zwei Spalten'],
+ ['size=mini',240,160,1,'Mini','An diesem Tag, ein Bild'],
+ ['size=bar',1200,200,.6,'Leiste','An diesem Tag als Streifen'],
+].map(([o,W,H,s,t,g])=>fig(P+o,W,H,s,t,g)).join('');
+// Workspace-Streifen: 3840 × 1080 logisch, auf 300 px Höhe
+const k=300/1080, tiles=[['../linear/calendar.html?size=l',1240,1080],[F+'seed=tusc-1',1100,1080],[F+'seed=oma&cap='+encodeURIComponent("<b>Grandma's 80th</b><span>Jun 14, 2025</span>"),700,520],[F+'open=hover&seed=lake-1',700,552],[F+'seed=hh-3&caption=off',760,1080]];
+document.getElementById('ws').innerHTML=[0,1].map(i=>{const [s,W,H]=tiles[i];return`<div class="tile" style="width:${Math.round(W*k)}px;height:${Math.round(H*k)}px"><iframe loading="lazy" src="${s}${th}" style="width:${W}px;height:${H}px;transform:scale(${k})"></iframe></div>`}).join('')+
+ `<div style="display:flex;flex-direction:column;gap:8px">${[2,3].map(i=>{const [s,W,H]=tiles[i];return`<div class="tile" style="width:${Math.round(W*k)}px;height:${Math.round(H*k)}px"><iframe loading="lazy" src="${s}${th}" style="width:${W}px;height:${H}px;transform:scale(${k})"></iframe></div>`}).join('')}</div>`+
+ (()=>{const [s,W,H]=tiles[4];return`<div class="tile" style="width:${Math.round(W*k)}px;height:${Math.round(H*k)}px"><iframe loading="lazy" src="${s}${th}" style="width:${W}px;height:${H}px;transform:scale(${k})"></iframe></div>`})();
+document.getElementById('frames').innerHTML=[
+ ['seed=tusc-1',900,600,.5,'Diashow','nur das Bild und eine leise Bildunterschrift'],
+ ['open=hover',900,600,.5,'Beim Überfahren','Quelle, Öffnen in Photos, Einstellungen, Vor/Pause/Zurück, Fortschritt'],
+ ['open=setup',900,700,.5,'Einstellungen','ein Foto oder eine Diashow · Quelle · Takt · Reihenfolge · Einpassen · Bildunterschrift'],
+ ['open=contain&seed=oma',900,500,.5,'Ganzes Foto','Hochformat in breiter Kachel, Rand aus unscharfer Kopie'],
+ ['seed=hh-3&caption=off',320,480,.5,'Hochkant, ohne Text','320 × 480'],
+ ['open=hover&seed=lake-1',240,160,1,'Mini','beim Überfahren nur Icons'],
+ ['seed=lake-1',1200,200,.6,'Leiste','Panorama-Ausschnitt'],
+ ['open=empty',600,400,.5,'Noch nicht eingerichtet','erster Start'],
+ ['open=offline&seed=tusc-5',600,400,.5,'Offline','zeigt gespeicherte Bilder weiter'],
+].map(([o,W,H,s,t,g])=>fig(F+o,W,H,s,t,g)).join('');
+</script>
+</body></html>

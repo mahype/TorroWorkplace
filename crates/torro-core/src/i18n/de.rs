@@ -1721,6 +1721,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("The {command} command could not be started.", "Der Befehl {command} ließ sich nicht starten."),
     ("The {command} command reported an error.", "Der Befehl {command} hat einen Fehler gemeldet."),
     ("The {command} command did not finish.", "Der Befehl {command} ist nicht fertig geworden."),
+    ("Something went wrong. Try again.", "Etwas ist schiefgegangen. Versuch es noch einmal."),
     // Control centre: hooks in connect agent (E2.3)
     (
         "Report to the Notification Hub when waiting or done",
@@ -2433,10 +2434,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Has attachments", "Mit Anhängen"),
     ("Load more", "Mehr laden"),
     ("Loading the message…", "Nachricht wird geladen …"),
-    (
-        "Made from HTML. Pictures and other content from the web are not loaded.",
-        "Aus HTML umgewandelt. Bilder und andere Inhalte aus dem Netz werden nicht geladen.",
-    ),
     ("Mail in this folder shows up here.", "Mails in diesem Ordner erscheinen hier."),
     ("Mark read", "Als gelesen markieren"),
     ("Mark unread", "Als ungelesen markieren"),
@@ -2495,6 +2492,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     (
         "{file} can run programs, so only its folder was opened.",
         "{file} kann Programme ausführen, deshalb wurde nur sein Ordner geöffnet.",
+    ),
+    // HTML mail in the reader of the inbox (M9.7); "HTML" and "Text" read the same in German
+    (
+        "Mail from outside the suite: no scripts run, pictures from the web are loaded.",
+        "Mail von außerhalb der Suite: Es laufen keine Skripte, Bilder aus dem Netz werden geladen.",
     ),
     // Take accounts over from TorroMail (M7.4)
     ("Connecting…", "Verbinde …"),
@@ -3380,10 +3382,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Asked {bot} · {steps} steps", "{bot} gefragt · {steps} Schritte"),
     // Bots in the app and the control centre (B.3)
     (
-        "A bot starts with access to nothing. You choose what it may use in the control centre.",
-        "Ein Bot hat anfangs keinen Zugriff. Was er nutzen darf, wählst du in der Steuerzentrale.",
-    ),
-    (
         "A skill's name is at most {max} characters: “{name}”.",
         "Der Name einer Fähigkeit hat höchstens {max} Zeichen: „{name}“.",
     ),
@@ -3560,7 +3558,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Sending mail is switched off", "Mail senden ist ausgeschaltet"),
     ("Only you can do this", "Das kannst nur du"),
     ("{area} is off in this conversation", "{area} ist in dieser Unterhaltung aus"),
-    ("{engine} never gets {area}", "{engine} bekommt nie {area}"),
+    ("{engine} does not get {area} (data rule)", "{engine} bekommt {area} nicht (Datenregel)"),
+    // Task C.17: the data rule for mail under Mail of the assistant and its bots.
+    ("Mail to Claude Code and cloud models", "Mail an Claude Code und Cloud-Modelle"),
+    (
+        "Off: only AI accounts on your own computers read mail",
+        "Aus: Nur KI-Konten auf deinen eigenen Rechnern lesen Mail",
+    ),
+    (
+        "Mail goes to the model's provider and can't be taken back",
+        "Mail geht an den Anbieter des Modells und lässt sich nicht zurückholen",
+    ),
     ("The assistant needs full access to {area} for this.", "Der Assistent braucht dafür vollen Zugriff auf {area}."),
     ("The assistant needs write access to {area} for this.", "Der Assistent braucht dafür Schreibzugriff auf {area}."),
     ("The assistant needs admin rights for {area}.", "Der Assistent braucht Admin-Rechte für {area}."),
@@ -3575,6 +3583,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{area} geht nie an Coding-Agenten wie Claude Code: Deine Datenregel hält es auf deinen Computern. Wähle dafür ein KI-Konto auf diesem Computer.",
     ),
     ("Never gets your mail", "Bekommt nie deine Mails"),
+    // Control centre: mail on the page Appearance (task M9.8)
+    (
+        "Formatted shows mail the way the sender designed it. Dark recolors mail for a dark background; some newsletters look worse that way.",
+        "Formatiert zeigt E-Mails so, wie der Absender sie gestaltet hat. Dunkel färbt E-Mails für einen dunklen Hintergrund um; manche Newsletter sehen dann schlechter aus.",
+    ),
+    ("Like the app", "Wie die App"),
+    ("Mail colors", "Farben von E-Mails"),
+    ("Show mail as", "E-Mails zeigen als"),
     // Formatted mail (issue #125)
     ("Bold", "Fett"),
     ("Bulleted list", "Aufzählung"),
@@ -3592,6 +3608,40 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("write formatted mail", "formatierte E-Mails schreiben"),
     ("write plain text mail", "E-Mails als reinen Text schreiben"),
     ("{name} ({keys})", "{name} ({keys})"),
+    // A bot's access in the bot editor (B.5)
+    ("All calendars", "Alle Kalender"),
+    ("No calendar", "Kein Kalender"),
+    ("{n} of {m} calendars", "{n} von {m} Kalendern"),
+    ("All task lists", "Alle Aufgabenlisten"),
+    ("No task list", "Keine Aufgabenliste"),
+    ("{n} of {m} task lists", "{n} von {m} Aufgabenlisten"),
+    ("No source", "Keine Quelle"),
+    ("{n} of {m} sources", "{n} von {m} Quellen"),
+    ("No mail account", "Kein E-Mail-Konto"),
+    ("{n} of {m} mail accounts", "{n} von {m} E-Mail-Konten"),
+    ("No repositories · choose in Torro Workplace", "Keine Repositorys · in Torro Workplace wählen"),
+    ("1 repository", "1 Repository"),
+    ("{n} repositories", "{n} Repositorys"),
+    ("sending: never", "Senden: nie"),
+    ("sending: asks each time", "Senden: fragt jedes Mal"),
+    ("sending: always", "Senden: immer"),
+    (
+        "Couldn't read the bot's access. You can set it in Torro Workplace.",
+        "Der Zugriff des Bots konnte nicht gelesen werden. Du kannst ihn in Torro Workplace festlegen.",
+    ),
+    ("More in Torro Workplace…", "Mehr in Torro Workplace…"),
+    ("mutes sources", "schaltet Quellen stumm"),
+    ("connects accounts", "verbindet Konten"),
+    ("changes settings", "ändert Einstellungen"),
+    ("admin commands", "Verwaltungsbefehle"),
+    (
+        "Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen in Torro Workplace.",
+        "Kalender, Listen, Repositorys, Quellen, E-Mail-Konten, Senden und Verwaltungsbefehle wählst du in Torro Workplace.",
+    ),
+    (
+        "Bot saved, but its access couldn't be set.",
+        "Bot gespeichert, aber sein Zugriff konnte nicht festgelegt werden.",
+    ),
     // Inbox: AI task and AI event (issue #120)
     ("AI event", "KI-Termin"),
     ("AI task", "KI-Aufgabe"),

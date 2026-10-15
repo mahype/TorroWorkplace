@@ -8,7 +8,10 @@
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance): "Appearance" (System, Light, Dark) as a list of choices like the language; "Design"
 //!   lists the design packs (task L.4, below); "Interface" has the zoom of the suite with −, the
-//!   value, + and "Reset" (task Z.1).
+//!   value, + and "Reset" (task Z.1); "Mail" (task M9.8 in `docs/tasks/mail.md`) has "Show mail as"
+//!   (formatted or plain text) and "Mail colors" (like the app, light, dark) for the content of a
+//!   mail in the reader, each a pick list like "Write new mail as" of a mail account. It moves to
+//!   the inbox's own settings later (task S.20).
 //!
 //! Both pages share one state and one message type. There is no Save button: every change sends
 //! `Request::SetSetting` with the one key that changed, and the shell reloads `Data` afterwards.
@@ -30,13 +33,14 @@
 //! folder, read here the way every window reads the design it draws with
 //! (`torro_core::design::load`): [`Pack::new`].
 
+use std::fmt;
 use std::sync::Arc;
 
 use iced::widget::{column, container, pick_list, row, space as blank, svg, text, toggler};
 use iced::{Alignment, Background, Border, ContentFit, Element, Fill, Padding, Theme};
 use torro_core::design::{Design, FontRole, Mode, STANDARD_ID, Weight};
 use torro_core::i18n::tr;
-use torro_core::settings::{Language, Night, Quarter, Zoom};
+use torro_core::settings::{Language, MailAppearance, MailFormat, Night, Quarter, Zoom};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{Palette, palette, radius, size, space};
@@ -113,6 +117,10 @@ pub enum Message {
     OpenDesignsFolder,
     /// "Run setup again" (task W.9).
     RunSetup,
+    /// "Show mail as": how a mail with HTML first shows in the reader.
+    MailView(MailFormat),
+    /// "Mail colors": the colours of a mail's content in the reader.
+    MailAppearance(MailAppearance),
 }
 
 pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
@@ -133,6 +141,10 @@ pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
         Message::Design(id) => return Action::Design(id),
         Message::ReloadDesigns => return Action::ListDesigns,
         Message::OpenDesignsFolder => return Action::OpenDesignsFolder,
+        Message::MailView(format) => (SettingKey::MailView, serde_json::to_value(format).unwrap_or_default()),
+        Message::MailAppearance(colors) => {
+            (SettingKey::MailAppearance, serde_json::to_value(colors).unwrap_or_default())
+        }
         Message::RunSetup => return Action::OpenSetup,
     };
     Action::Send(Request::SetSetting { key, value })
@@ -191,7 +203,7 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
     column![language, calendar, startup, setup].spacing(layout::section_gap()).into()
 }
 
-/// The page Appearance: light or dark, the design pack, the zoom.
+/// The page Appearance: light or dark, the design pack, the zoom, how mail shows.
 pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings;
     // The control centre itself follows at once: it reloads the settings after every change.
@@ -218,7 +230,59 @@ pub fn appearance<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> 
     );
 
     let design = designs(state, data);
-    column![appearance, design, interface].spacing(layout::section_gap()).into()
+    column![appearance, design, interface, mail(data)].spacing(layout::section_gap()).into()
+}
+
+/// The group "Mail": how a mail shows in the reader and its colours there (task M9.8). Only the
+/// mail's content follows "Mail colors", never the rest of the window.
+fn mail<'a>(data: &'a Data) -> Element<'a, Message> {
+    let settings = &data.settings;
+    let view = picker(MAIL_VIEWS, MailViewChoice(settings.mail_view), |choice| Message::MailView(choice.0));
+    let colors =
+        picker(MAIL_COLORS, MailColorChoice(settings.mail_appearance), |choice| Message::MailAppearance(choice.0));
+    widgets::group(
+        tr("Mail"),
+        vec![setting_row(None, tr("Show mail as"), None, view), setting_row(None, tr("Mail colors"), None, colors)],
+        Some(
+            tr("Formatted shows mail the way the sender designed it. Dark recolors mail for a dark background; some newsletters look worse that way.")
+                .to_string(),
+        ),
+    )
+}
+
+/// "Show mail as" as a choice of a pick list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MailViewChoice(MailFormat);
+
+const MAIL_VIEWS: [MailViewChoice; 2] = [MailViewChoice(MailFormat::Html), MailViewChoice(MailFormat::Text)];
+
+impl fmt::Display for MailViewChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            MailFormat::Html => tr("Formatted (HTML)"),
+            MailFormat::Text => tr("Plain text"),
+        })
+    }
+}
+
+/// "Mail colors" as a choice of a pick list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MailColorChoice(MailAppearance);
+
+const MAIL_COLORS: [MailColorChoice; 3] = [
+    MailColorChoice(MailAppearance::App),
+    MailColorChoice(MailAppearance::Light),
+    MailColorChoice(MailAppearance::Dark),
+];
+
+impl fmt::Display for MailColorChoice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.0 {
+            MailAppearance::App => tr("Like the app"),
+            MailAppearance::Light => tr("Light"),
+            MailAppearance::Dark => tr("Dark"),
+        })
+    }
 }
 
 /// The group "Design": a row per pack, then the row of the designs folder.
@@ -442,7 +506,16 @@ fn night_control<'a>(night: Night) -> Element<'a, Message> {
 
 /// A time on the quarter hour as a pick list in the look of a secondary button.
 fn time_field<'a>(time: Quarter, on_pick: fn(Quarter) -> Message) -> Element<'a, Message> {
-    pick_list(Quarter::all().collect::<Vec<_>>(), Some(time), on_pick)
+    picker(Quarter::all().collect::<Vec<_>>(), time, on_pick)
+}
+
+/// A pick list of `options` with `chosen` shown, in the look of a secondary button.
+fn picker<'a, T, L>(options: L, chosen: T, on_pick: impl Fn(T) -> Message + 'a) -> Element<'a, Message>
+where
+    T: fmt::Display + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+{
+    pick_list(options, Some(chosen), on_pick)
         .padding(style::pick_list_padding())
         .text_size(typo::caption().size)
         .text_line_height(typo::caption().line_height)
@@ -511,6 +584,31 @@ mod tests {
             let action = update(&mut State::default(), Message::Appearance(appearance), &Data::default());
             assert_eq!(sent(action), (SettingKey::Appearance, serde_json::json!(name)), "choice {appearance:?}");
         }
+    }
+
+    #[test]
+    fn each_mail_view_choice_sets_only_the_mail_view() {
+        for (choice, name) in [(MailFormat::Html, "html"), (MailFormat::Text, "text")] {
+            let action = update(&mut State::default(), Message::MailView(choice), &Data::default());
+            assert_eq!(sent(action), (SettingKey::MailView, serde_json::json!(name)), "choice {choice:?}");
+        }
+    }
+
+    #[test]
+    fn each_mail_color_choice_sets_only_the_mail_appearance() {
+        let cases = [(MailAppearance::App, "app"), (MailAppearance::Light, "light"), (MailAppearance::Dark, "dark")];
+        for (choice, name) in cases {
+            let action = update(&mut State::default(), Message::MailAppearance(choice), &Data::default());
+            assert_eq!(sent(action), (SettingKey::MailAppearance, serde_json::json!(name)), "choice {choice:?}");
+        }
+    }
+
+    #[test]
+    fn the_mail_choices_read_as_the_task_says() {
+        let views: Vec<String> = MAIL_VIEWS.iter().map(ToString::to_string).collect();
+        assert_eq!(views, [tr("Formatted (HTML)"), tr("Plain text")]);
+        let colors: Vec<String> = MAIL_COLORS.iter().map(ToString::to_string).collect();
+        assert_eq!(colors, [tr("Like the app"), tr("Light"), tr("Dark")]);
     }
 
     #[test]
@@ -639,11 +737,16 @@ mod tests {
                 assistant_default: None,
                 setup: Default::default(),
                 components_off: Default::default(),
+                mail_view: MailFormat::Text,
+                mail_appearance: MailAppearance::Dark,
+                mail_to_cloud: false,
             },
             ..Data::default()
         };
         let (state, default) = (State::default(), Data::default());
         let _default: Element<'_, Message> = view(&state, &default);
         let _stored: Element<'_, Message> = view(&state, &stored);
+        let _default: Element<'_, Message> = appearance(&state, &default);
+        let _stored: Element<'_, Message> = appearance(&state, &stored);
     }
 }

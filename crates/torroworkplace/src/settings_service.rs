@@ -27,8 +27,8 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design;
 use torro_core::settings::{
-    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, Night, Retention, Settings, SetupState, Voice,
-    Zoom,
+    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, Retention,
+    Settings, SetupState, Voice, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -108,14 +108,16 @@ impl SettingsStore {
     /// Nor does a client switch the microphone on (point 6 of "Was nie nach außen geht",
     /// task C.9): voice stays off when it is off as stored now, whatever `new` says. The core
     /// refuses such a request before (`forbidden`); this keeps it so when a person switched voice
-    /// off between that check and the write.
+    /// off between that check and the write. The same holds for letting mail go to Claude Code and
+    /// cloud models (`mail_to_cloud`, task C.17): a client may keep it local, never let it out.
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
             let list_orders = std::mem::take(&mut settings.list_orders);
             let enabled = settings.voice.enabled && new.voice.enabled;
             let voice = Voice { enabled, ..new.voice.clone() };
-            *settings = Settings { hidden_collections: hidden, list_orders, voice, ..new };
+            let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
+            *settings = Settings { hidden_collections: hidden, list_orders, voice, mail_to_cloud, ..new };
         })
     }
 
@@ -271,6 +273,13 @@ enum Change {
     Setup(SetupState),
     /// One component on or off (task W.1).
     Component(ComponentSwitch),
+    /// How a mail with HTML first shows in the reader (task M9.5).
+    MailView(MailFormat),
+    /// The colours of a mail's content (task M9.5).
+    MailAppearance(MailAppearance),
+    /// The data rule for mail (task C.17). Who may switch it on is the core's check
+    /// (`Request::kept_for_people`).
+    MailToCloud(bool),
 }
 
 impl Change {
@@ -305,6 +314,12 @@ impl Change {
             SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
             SettingKey::Setup => Change::Setup(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::Component => Change::Component(serde_json::from_value(value.clone()).map_err(invalid)?),
+            // Strict: only the file's reading falls back to the default.
+            SettingKey::MailView => Change::MailView(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::MailAppearance => {
+                Change::MailAppearance(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
+            SettingKey::MailToCloud => Change::MailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?),
         })
     }
 
@@ -329,6 +344,9 @@ impl Change {
             Change::AssistantDefault(default) => settings.assistant_default = default,
             Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
             Change::Component(switch) => settings.set_component(switch.component, switch.enabled),
+            Change::MailView(format) => settings.mail_view = format,
+            Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
+            Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
         }
     }
 }
@@ -959,8 +977,14 @@ mod tests {
                 assistant_default: AssistantDefault::from_value(&default).expect("a default"),
                 setup: Setup { state: SetupState::Skipped, version: Setup::VERSION },
                 components_off: BTreeSet::from([Component::Mail]),
+                mail_view: MailFormat::Html,
+                mail_appearance: MailAppearance::App,
+                mail_to_cloud: false,
             }
         );
+        Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);
+        assert!(settings.mail_to_cloud);
+        assert!(Change::parse(SettingKey::MailToCloud, &json!("yes")).is_err(), "only true or false");
         Change::parse(SettingKey::AssistantDefault, &json!(null)).expect("none").apply(&mut settings);
         assert_eq!(settings.assistant_default, None, "null goes back to the one used last");
         assert!(Change::parse(SettingKey::AssistantDefault, &json!({"engine": " "})).is_err(), "an engine");
@@ -982,6 +1006,35 @@ mod tests {
         assert!(store.current().component_on(Component::Inbox));
         store.set(SettingKey::Setup, &json!("done")).expect("done");
         assert_eq!(store.current().setup.state, SetupState::Done);
+    }
+
+    /// Task M9.5: how mail shows is set and read back by its key; a value that does not fit is
+    /// refused and changes nothing.
+    #[test]
+    fn mail_view_and_appearance_are_set_and_checked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        let current = store.current();
+        assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Html, MailAppearance::App));
+        store.set(SettingKey::MailView, &json!("text")).expect("text");
+        store.set(SettingKey::MailAppearance, &json!("dark")).expect("dark");
+        let current = store.current();
+        assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Text, MailAppearance::Dark));
+        for (key, value) in [
+            (SettingKey::MailView, json!("rich")),
+            (SettingKey::MailView, json!("HTML")),
+            (SettingKey::MailView, json!(true)),
+            (SettingKey::MailAppearance, json!("system")),
+            (SettingKey::MailAppearance, json!(null)),
+        ] {
+            assert!(store.set(key, &value).is_err(), "{key:?} {value}");
+        }
+        let current = store.current();
+        assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Text, MailAppearance::Dark));
+        store.set(SettingKey::MailView, &json!("html")).expect("html");
+        store.set(SettingKey::MailAppearance, &json!("light")).expect("light");
+        let current = store.current();
+        assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Html, MailAppearance::Light));
     }
 
     /// Task C.9: the voice settings are set one by one and checked; a client's whole settings
@@ -1033,6 +1086,22 @@ mod tests {
         sent.voice.enabled = false;
         store.update_keeping_hidden(sent).expect("written");
         assert!(!store.current().voice.enabled);
+    }
+
+    /// Task C.17: a client's whole settings never let mail go to the cloud, but may keep it local.
+    #[test]
+    fn a_client_never_lets_mail_out_but_may_keep_it_local() {
+        let (_dir, store) = store();
+        let mut sent = store.current();
+        sent.mail_to_cloud = true;
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert!(!store.current().mail_to_cloud);
+        store.set(SettingKey::MailToCloud, &json!(true)).expect("the person");
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        assert!(store.current().mail_to_cloud, "on stays on");
+        sent.mail_to_cloud = false;
+        store.update_keeping_hidden(sent).expect("written");
+        assert!(!store.current().mail_to_cloud);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 //! Reading and building messages (task M2.4): a built message reads back as written (umlauts,
-//! attachment, reply headers), HTML becomes text without anything being fetched, list and
-//! automatic mail is marked, invitations and attachments are found. No network.
+//! attachment, reply headers), HTML becomes text without anything being fetched and is kept cleaned
+//! (task M8.1), list and automatic mail is marked, invitations and attachments are found. No
+//! network.
 
 use std::io::ErrorKind;
 use std::net::TcpListener;
@@ -257,4 +258,132 @@ fn a_read_message_becomes_the_core_s_untrusted_message() {
     let headless = mime::read(b"From: a@example.org\r\nSubject: x\r\n\r\n").expect("headers only");
     assert_eq!(headless.into_message(place(), true).summary.date, when(), "no Date: falls back to received");
     assert_eq!(mime::read(b""), Err(MimeError::Unreadable));
+}
+
+/// A mail with a text and an HTML form of the same content, the HTML naming an inline image by
+/// its `Content-ID` and carrying everything a cleaned mail must not keep.
+fn text_and_html(html: &str) -> String {
+    format!(
+        "From: news@example.com\r\nTo: anna@example.org\r\nSubject: News\r\nMIME-Version: 1.0\r\n\
+         Content-Type: multipart/related; boundary=\"rel\"\r\n\r\n--rel\r\n\
+         Content-Type: multipart/alternative; boundary=\"alt\"\r\n\r\n--alt\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\r\nHello Anna, plain.\r\n--alt\r\n\
+         Content-Type: text/html; charset=utf-8\r\n\r\n{html}\r\n--alt--\r\n--rel\r\n\
+         Content-Type: image/png\r\nContent-ID: <logo@example.com>\r\nContent-Disposition: inline\r\n\
+         Content-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n--rel--\r\n"
+    )
+}
+
+const DIRTY: &str = "<html><head><title>Secret title</title><meta http-equiv=\"refresh\" content=\"0;url=https://evil.example\">\
+    <base href=\"https://evil.example/\"><link rel=\"stylesheet\" href=\"https://evil.example/s.css\">\
+    <style>p { color: #333; }</style><script>track()</script></head>\
+    <body onload=\"track()\"><!--[if mso]><p>Outlook only</p><![endif]-->\
+    <table width=\"600\" cellpadding=\"4\" bgcolor=\"#ffffff\"><tr><td colspan=\"2\" style=\"padding: 8px\">\
+    <p class=\"lead\" onclick=\"track()\">Hello <b>Anna</b></p>\
+    <img src=\"cid:logo@example.com\" alt=\"Logo\" width=\"120\">\
+    <img src=\"https://cdn.example.com/banner.png\" alt=\"Banner\">\
+    <img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"Dot\">\
+    <img src=\"data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=\" alt=\"Svg\">\
+    <a href=\"https://example.com/read\">Read on</a> <a href=\"mailto:help@example.com\">Write</a>\
+    <a href=\"javascript:track()\">Click</a> <a href=\" JaVaScRiPt:track()\">Again</a> <a href=\"/relative\">Here</a>\
+    <form action=\"https://evil.example/login\"><input name=\"password\"><button>Sign in</button></form>\
+    <iframe src=\"https://evil.example/frame\">Frame text</iframe><object data=\"x.swf\"></object>\
+    <embed src=\"x.swf\"><svg><script>track()</script><circle r=\"4\"/></svg>\
+    </td></tr></table></body></html>";
+
+#[test]
+fn the_html_part_is_kept_cleaned_beside_the_text_part() {
+    let read = mime::read(text_and_html(DIRTY).as_bytes()).expect("read");
+    assert_eq!((read.text.trim(), read.from_html), ("Hello Anna, plain.", false), "the text part is the text");
+    let html = read.html.clone().expect("the HTML part");
+    for kept in [
+        "<style>p { color: #333; }</style>",
+        // The cell's own style after the table's cellpadding, which became CSS (task M9.5).
+        "style=\"padding:4px;padding: 8px\"",
+        "colspan=\"2\"",
+        "background-color:#ffffff;",
+        "class=\"lead\"",
+        "<b>Anna</b>",
+        "src=\"cid:logo@example.com\"",
+        "src=\"https://cdn.example.com/banner.png\"",
+        "src=\"data:image/png;base64,iVBORw0KGgo=\"",
+        "href=\"https://example.com/read\"",
+        "href=\"mailto:help@example.com\"",
+        "Sign in",
+    ] {
+        assert!(html.contains(kept), "{kept} is kept in {html}");
+    }
+    for gone in [
+        "<script",
+        "track()",
+        "onclick",
+        "onload",
+        "<form",
+        "<input",
+        "<button",
+        "password",
+        "<iframe",
+        "Frame text",
+        "<object",
+        "<embed",
+        "<svg",
+        "<circle",
+        "svg+xml",
+        "javascript",
+        "JaVaScRiPt",
+        "/relative",
+        "<meta",
+        "refresh",
+        "<base",
+        "<link",
+        "evil.example",
+        "Secret title",
+        "Outlook only",
+        "<!--",
+    ] {
+        assert!(!html.contains(gone), "{gone} is gone from {html}");
+    }
+    let logo = read.attachments.iter().find(|attachment| attachment.inline).expect("the inline image");
+    assert_eq!(logo.content_id.as_deref(), Some("logo@example.com"), "without angle brackets");
+
+    let message = read.into_message(place(), true);
+    assert_eq!(message.html, None, "the core adds the HTML only when it is asked for");
+    assert_eq!(message.attachments[0].content_id.as_deref(), Some("logo@example.com"));
+}
+
+#[test]
+fn plain_mail_has_no_html_and_html_only_mail_keeps_both() {
+    let plain = mime::read(&fixture("attachments.eml")).expect("read");
+    assert_eq!(plain.html, None, "a text part is no HTML part");
+    let pdf = plain.attachments.iter().find(|attachment| !attachment.inline).expect("the pdf");
+    assert_eq!(pdf.content_id, None);
+
+    let news = mime::read(&fixture("newsletter_html.eml")).expect("read");
+    assert!(news.from_html && news.text.contains("Weiterlesen"));
+    let html = news.html.expect("its HTML");
+    assert!(html.contains("<p>Hallo Anna,</p>") && html.contains("<style>p { color: red; }</style>"), "{html}");
+    assert!(html.contains("https://tracker.example.net/pixel.gif"), "pictures on the web stay named: {html}");
+    assert!(!html.contains("track()"), "{html}");
+}
+
+#[test]
+fn html_larger_than_two_mebibytes_is_left_out_and_the_text_stays() {
+    let paragraph = "<p>".to_owned() + &"x".repeat(1023) + "</p>";
+    let large = paragraph.repeat(mime::HTML_MAX / 1024 + 1);
+    let read = mime::read(text_and_html(&large).as_bytes()).expect("read");
+    assert_eq!((read.html, read.text.trim()), (None, "Hello Anna, plain."));
+
+    let small = mime::read(text_and_html(&paragraph).as_bytes()).expect("read");
+    assert_eq!(small.html.as_deref(), Some(paragraph.as_str()));
+}
+
+#[test]
+fn cleaning_keeps_only_allowed_links_and_pictures() {
+    let cleaned = mime::clean_html(
+        "<a href=\"HTTPS://example.com\">ok</a><a href=\"data:text/html,hi\">x</a>\
+         <img src=\"ftp://example.com/a.png\"><img src=\"cid:a\"><img src=\"DATA:image/GIF;base64,R0lG\">",
+    );
+    assert!(cleaned.contains("<a href=\"HTTPS://example.com\" rel=\"noopener noreferrer\">ok</a>"), "{cleaned}");
+    assert!(!cleaned.contains("data:text") && !cleaned.contains("ftp:"), "{cleaned}");
+    assert!(cleaned.contains("<img src=\"cid:a\">") && cleaned.contains("DATA:image/GIF;base64,R0lG"), "{cleaned}");
 }

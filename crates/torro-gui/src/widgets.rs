@@ -5,7 +5,8 @@
 //! [`card_head`]), source tiles ([`source_tile`]) and the switch between the densities
 //! ([`density_switch`]). For figures and charts (task E8.8b, the hub's "Insights"): a figure tile
 //! ([`stat_tile`]), a stacked column chart with its legend ([`column_chart`], [`chart_legend`]), a
-//! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]).
+//! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
+//! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -59,6 +60,7 @@ use iced::{
 use iced::{border, keyboard, mouse};
 
 use torro_core::i18n::tr;
+use torro_ipc::api::{Confirm, Level};
 
 use crate::icon::{self, Icon, icon};
 use crate::layout;
@@ -268,8 +270,18 @@ fn line_label<'a, M: 'a>(level: typo::Level, label: impl IntoFragment<'a>) -> El
 // ---------------------------------------------------------------------------------------------
 
 /// The colour an icon inside a button of `style` takes: the button's text colour at rest.
-fn button_icon<'a, M: 'a>(which: Icon, edge: f32, style: ButtonStyle) -> Element<'a, M> {
-    icon(which, edge).style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) }).into()
+fn button_icon<'a, M: 'a>(which: Icon, edge: f32, style: ButtonStyle, on: bool) -> Element<'a, M> {
+    icon(which, edge)
+        .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
+        .opacity(icon_opacity(on))
+        .into()
+}
+
+/// The opacity of the icon in a button that is `on` or off (issue #168): an icon's tint keeps no
+/// alpha (Iced takes only its colour), so a button that is off fades its icon through the opacity
+/// of the image instead – to [`style::DISABLED_ALPHA`], like its word and frame.
+fn icon_opacity(on: bool) -> f32 {
+    if on { 1.0 } else { style::DISABLED_ALPHA }
 }
 
 /// A text button, 28 high ([`size::control_sm()`]), label in `CAPTION`, optional icon (14) in front.
@@ -288,7 +300,7 @@ pub fn text_button<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
     if let Some(which) = icon {
-        content = content.push(button_icon(which, icon::SIZE_SM, style));
+        content = content.push(button_icon(which, icon::SIZE_SM, style, on_press.is_some()));
     }
     content = content.push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
     button(container(content).center_y(Fill))
@@ -318,7 +330,7 @@ pub fn text_button<'a, M: Clone + 'a>(
 /// ```
 pub fn busy_button<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, style: ButtonStyle) -> Element<'a, M> {
     let content = row![
-        button_icon(Icon::RefreshCw, icon::SIZE_SM, style),
+        button_icon(Icon::RefreshCw, icon::SIZE_SM, style, true),
         typo::text(typo::caption(), label).wrapping(Wrapping::None)
     ]
     .spacing(ICON_GAP)
@@ -370,7 +382,7 @@ fn icon_only<'a, M: Clone + 'a>(
     style: ButtonStyle,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let b = button(center(button_icon(which, icon::SIZE, style)))
+    let b = button(center(button_icon(which, icon::SIZE, style, on_press.is_some())))
         .width(size::control_sm())
         .height(size::control_sm())
         .padding(0)
@@ -688,12 +700,44 @@ pub struct RowAction<'a, M> {
     /// itself (issue #122), not at the whole row. Only the row under the cursor sets it, so one
     /// anchor is never registered by two rows.
     pub anchor: Option<Anchor>,
+    /// Why the button is off, if it is (issue #168): "Set up an AI first". Set with
+    /// [`RowAction::blocked`]. An action that is off still stands in its bar, at the disabled
+    /// opacity, takes no press and says in its tooltip why ([`RowAction::tip`]). Whoever draws an
+    /// action asks [`RowAction::press`] for the message, never `on_press` directly.
+    pub blocked: Option<iced::widget::text::Fragment<'a>>,
 }
 
 impl<'a, M> RowAction<'a, M> {
     /// A button with `icon`, `label` and the key hint `key` that sends `on_press`; no anchor.
     pub fn new(icon: Icon, label: impl IntoFragment<'a>, key: &'static str, on_press: M) -> Self {
-        Self { icon, label: label.into_fragment(), key, on_press, anchor: None }
+        Self { icon, label: label.into_fragment(), key, on_press, anchor: None, blocked: None }
+    }
+
+    /// The same button, off for `reason` ([`RowAction::blocked`]): "AI task" without an AI.
+    ///
+    /// ```ignore
+    /// let ai = RowAction::new(Icon::Sparkles, tr("AI task"), "", Message::SuggestTask(id.clone()));
+    /// if !ready { ai.blocked(tr("Set up an AI first")) } else { ai }
+    /// ```
+    pub fn blocked(self, reason: impl IntoFragment<'a>) -> Self {
+        Self { blocked: Some(reason.into_fragment()), ..self }
+    }
+
+    /// What a press sends: `on_press`, `None` while the button is off ([`RowAction::blocked`]).
+    pub fn press(&self) -> Option<M>
+    where
+        M: Clone,
+    {
+        self.blocked.is_none().then(|| self.on_press.clone())
+    }
+
+    /// The words of the button's tooltip: its label, and while it is off why – "AI task · Set up an
+    /// AI first".
+    pub fn tip(&self) -> String {
+        match &self.blocked {
+            Some(reason) => format!("{} · {}", self.label, reason),
+            None => self.label.to_string(),
+        }
     }
 
     /// The same button registering `anchor`, for the menu it opens.
@@ -832,14 +876,10 @@ pub fn card_line<'a, M: Clone + 'a>(
         let gap = space::m();
         let (spoken, words_room) = card_line_split(room.width, lead_width, action.label.as_ref());
         let button = if spoken {
-            text_button(
-                Some(action.icon),
-                action.label.clone(),
-                style::button::secondary,
-                Some(action.on_press.clone()),
-            )
+            let button = text_button(Some(action.icon), action.label.clone(), style::button::secondary, action.press());
+            if action.blocked.is_some() { with_tooltip(button, action.tip()) } else { button }
         } else {
-            icon_button(action.icon, action.label.clone(), Some(action.on_press.clone()))
+            icon_button(action.icon, action.tip(), action.press())
         };
         let whole = meta.iter().filter(|part| !part.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
         let fitted = meta_fit(&meta, &drop, typo::meta(), words_room);
@@ -1013,27 +1053,35 @@ fn with_actions<'a, M: Clone + 'a>(
 
 /// One button of [`row_actions`]: on the `menu` surface, so hover and press are `selected` (as in
 /// menus, where `hover` would vanish); the tooltip names it with its key.
+///
+/// An action that is off ([`RowAction::blocked`]) stands there faded – word, icon and all – takes no
+/// press and says why in its tooltip. An action without a key (`""`) shows no key hint.
 fn row_action_button<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -> Element<'a, M> {
     let style = style::button::menu_item(false);
-    let tooltip = row![typo::text(typo::caption(), action.label.clone()).style(theme::text_2), kbd(action.key)]
+    let press = action.press();
+    let on = press.is_some();
+    let mut tooltip = row![typo::text(typo::caption(), action.tip()).style(theme::text_2)]
         .spacing(space::s())
         .align_y(Alignment::Center);
+    if !action.key.is_empty() {
+        tooltip = tooltip.push(kbd(action.key));
+    }
+    // `text`, the colour of a menu item's label; faded with the button when it is off.
+    let mark = |edge| -> Element<'a, M> {
+        icon(action.icon, edge)
+            .style(|t, _| svg::Style { color: Some(Tone::Text.of(&palette(t))) })
+            .opacity(icon_opacity(on))
+            .into()
+    };
     let button = if words {
-        // `text`, the colour of a menu item's label.
-        let content = row![
-            toned(action.icon, icon::SIZE_SM, Tone::Text),
-            typo::text(typo::caption(), action.label).wrapping(Wrapping::None)
-        ]
-        .spacing(ICON_GAP)
-        .align_y(Alignment::Center);
+        let content = row![mark(icon::SIZE_SM), typo::text(typo::caption(), action.label).wrapping(Wrapping::None)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
         button(container(content).center_y(Fill)).height(size::control_sm()).padding(style::button_padding())
     } else {
-        button(center(toned(action.icon, icon::SIZE, Tone::Text)))
-            .width(size::control_sm())
-            .height(size::control_sm())
-            .padding(0)
+        button(center(mark(icon::SIZE))).width(size::control_sm()).height(size::control_sm()).padding(0)
     };
-    let button = tip(button.style(style).on_press(action.on_press), tooltip, tooltip::Position::Bottom);
+    let button = tip(button.style(style).on_press_maybe(press), tooltip, tooltip::Position::Bottom);
     anchored_if(action.anchor.as_ref(), button)
 }
 
@@ -2403,6 +2451,106 @@ pub fn group_row<'a, M: 'a>(
 }
 
 // ---------------------------------------------------------------------------------------------
+// Rows with a segmented control (rights)
+// ---------------------------------------------------------------------------------------------
+//
+// The rights of an agent or a bot (task U.13): the control centre's "Agents & API" and the bot
+// editor of the assistant show them alike – a row per area with a [`segmented`] control of the
+// levels, all controls starting in one column at the right ([`segment_column`]), or, where a name
+// would not fit beside that column, each control on a line of its own under its name.
+
+/// The estimated width of a [`segmented`] control with `labels`: each label in `CAPTION` with the
+/// button padding, plus the frame's inset and border. `typo::text_width` estimates generously, so
+/// the control fits.
+pub fn segmented_width(labels: &[&str]) -> f32 {
+    let padding = style::button_padding().left + style::button_padding().right;
+    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding).sum();
+    segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
+}
+
+/// Where the rows put their segmented controls in a group `width` wide: `Some(slot)`, a column `slot`
+/// wide at the right of every row, while the longest name (`BODY`) and line (`META`) of `texts`
+/// fit beside it; `None` when they would not (a narrow window), then each control stands under its
+/// name ([`segment_row`]). Decided by what fits rather than by the size class, so longer
+/// translations hold too.
+pub fn segment_column<'t>(
+    slot: f32,
+    texts: impl IntoIterator<Item = (&'t str, Option<&'t str>)>,
+    width: f32,
+) -> Option<f32> {
+    let text = texts
+        .into_iter()
+        .flat_map(|(label, detail)| {
+            let detail = detail.map_or(0.0, |detail| typo::text_width(detail, typo::meta()));
+            [typo::text_width(label, typo::body()), detail]
+        })
+        .fold(0.0, f32::max);
+    // A row of a group: 16 at both sides and 16 between the text and the control.
+    (width >= 3.0 * space::l() + text + slot).then_some(slot)
+}
+
+/// A row of a settings [`group`] with a segmented `control`. With a `column` ([`segment_column`])
+/// the row is 44 high (56 with a `detail`), 16 at the sides, name and line on one line each, the
+/// control at the left of the column at the right. Without one the name, the line below it
+/// (wrapping) and the control on a line of its own under both; 12 above and below, 16 at the sides.
+/// The sides stay 16 in every design, the width [`segment_column`] reckons with.
+pub fn segment_row<'a, M: 'a>(
+    label: impl IntoFragment<'a>,
+    detail: Option<String>,
+    control: impl Into<Element<'a, M>>,
+    column: Option<f32>,
+) -> Element<'a, M> {
+    match column {
+        Some(slot) => {
+            let height = if detail.is_some() { size::header() + space::m() } else { size::header() };
+            let mut text = column![single_line(typo::text(typo::body(), label))];
+            if let Some(detail) = detail {
+                text = text.push(single_line(typo::text(typo::meta(), detail).style(theme::text_2)));
+            }
+            let row = row![text.width(Fill), container(control).width(slot)].spacing(space::l());
+            container(row.align_y(Alignment::Center)).width(Fill).center_y(height).padding([0.0, space::l()]).into()
+        }
+        None => {
+            let mut lines = column![typo::text(typo::body(), label)];
+            if let Some(detail) = detail {
+                lines =
+                    lines.push(typo::text(typo::meta(), detail).style(theme::text_2).wrapping(Wrapping::WordOrGlyph));
+            }
+            container(column![lines, control.into()].spacing(space::s()))
+                .width(Fill)
+                .padding([space::m(), space::l()])
+                .into()
+        }
+    }
+}
+
+/// `text` on one line, as wide as there is room, clipped rather than wrapped: a name or line of a
+/// [`segment_row`] beside the column, where [`segment_column`] made sure it fits – so an estimate
+/// a little short never makes the row taller.
+fn single_line<'a, M: 'a>(text: iced::widget::Text<'a>) -> Element<'a, M> {
+    container(text.wrapping(Wrapping::None)).width(Fill).clip(true).into()
+}
+
+/// The word of a rights level on its segment.
+pub fn level_label(level: Level) -> &'static str {
+    match level {
+        Level::NoAccess => tr("None"),
+        Level::Read => tr("Read"),
+        Level::Write => tr("Write"),
+        Level::Full => tr("Full"),
+    }
+}
+
+/// The options of "Ask first", in the order the control shows them.
+pub fn confirm_options() -> [(&'static str, Confirm); 3] {
+    [
+        (tr("Never"), Confirm::Never),
+        (tr("On delete"), Confirm::OnDelete),
+        (tr("On every change"), Confirm::OnEveryChange),
+    ]
+}
+
+// ---------------------------------------------------------------------------------------------
 // Page width and view states
 // ---------------------------------------------------------------------------------------------
 
@@ -2960,6 +3108,36 @@ mod tests {
         Rectangle { x, y, width, height }
     }
 
+    /// Task U.13: a segmented control is as wide as its words with their padding and the frame.
+    #[test]
+    fn a_segmented_control_grows_with_its_words() {
+        let one = segmented_width(&[tr("Read")]);
+        let two = segmented_width(&[tr("Read"), tr("Write")]);
+        assert!(one > typo::text_width(tr("Read"), typo::caption()));
+        assert!(two > one);
+        let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(level_label);
+        let confirm = confirm_options().map(|(label, _)| label);
+        assert!(segmented_width(&levels) < size::content_max() / 2.0, "leaves room for a name");
+        assert!(segmented_width(&confirm) < size::content_max() / 2.0, "leaves room for a name");
+    }
+
+    /// Task U.13: the controls stand in a column while the longest name and line fit beside it, and
+    /// on lines of their own once they would not – a long line alone decides it too.
+    #[test]
+    fn the_column_holds_while_the_texts_fit_beside_it() {
+        let slot = segmented_width(&[tr("None"), tr("Read"), tr("Write"), tr("Full")]);
+        let texts = [(tr("Calendar"), Some(tr("Events and calendars"))), (tr("Ask first"), None)];
+        let text = typo::text_width(tr("Events and calendars"), typo::meta())
+            .max(typo::text_width(tr("Calendar"), typo::body()))
+            .max(typo::text_width(tr("Ask first"), typo::body()));
+        let room = 3.0 * space::l() + text + slot;
+        assert_eq!(segment_column(slot, texts, room), Some(slot));
+        assert_eq!(segment_column(slot, texts, room - 1.0), None);
+        assert_eq!(segment_column(slot, texts, size::content_max()), Some(slot));
+        let long = "A line much longer than any name, as a translation might make it, so that it cannot fit";
+        assert_eq!(segment_column(slot, [(tr("Calendar"), Some(long))], size::form_max()), None);
+    }
+
     /// Task E8.8b: the y-axis ends at or above the largest column in at most four round steps.
     #[test]
     fn axis_ticks_are_round_and_cover_the_largest_column() {
@@ -3232,6 +3410,33 @@ mod tests {
         let action = action.at(&anchor);
         action.anchor.as_ref().expect("set").set(rect(1.0, 2.0, 3.0, 4.0));
         assert_eq!(anchor.get(), Some(rect(1.0, 2.0, 3.0, 4.0)), "shares the cell");
+    }
+
+    /// Issue #168: an action that is off takes no press, says why in its tooltip and still draws in
+    /// the bar, with words and as icon, with and without a key.
+    #[test]
+    fn a_blocked_row_action_takes_no_press_and_says_why() {
+        let on = RowAction::new(Icon::Sparkles, "AI task", "", Msg::Go);
+        assert_eq!((on.press(), on.tip()), (Some(Msg::Go), "AI task".to_string()));
+        let off = on.clone().blocked("Set up an AI first");
+        assert_eq!(off.press(), None);
+        assert_eq!(off.tip(), "AI task · Set up an AI first");
+        assert_eq!(off.on_press, Msg::Go, "the message stays for when it is on again");
+        for words in [true, false] {
+            let bar = vec![off.clone(), RowAction::new(Icon::Clock, "Later", "S", Msg::Go)];
+            let _: Element<'_, Msg> = row_actions(blank(), bar, true, words);
+        }
+        let _: Element<'_, Msg> = card_line(|| blank().into(), 28.0, "Title".into(), vec![], vec![], off);
+    }
+
+    /// Issue #168: a button that is off fades its icon with its word and frame. The icon's tint
+    /// drops alpha, so the image's opacity does it.
+    #[test]
+    fn icons_of_buttons_that_are_off_fade() {
+        assert_eq!(icon_opacity(true), 1.0);
+        assert_eq!(icon_opacity(false), style::DISABLED_ALPHA);
+        let _: Element<'_, Msg> = icon_button(Icon::Sparkles, "AI task", None);
+        let _: Element<'_, Msg> = text_button(Some(Icon::Sparkles), "AI task", style::button::secondary, None);
     }
 
     #[test]

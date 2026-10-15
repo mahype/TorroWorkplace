@@ -537,8 +537,10 @@ impl Clients {
             None => (&[][..], Vec::new(), Mode::Default),
         };
         drop(state);
+        // Only what the key was lent without: with mail let out (task C.17) an agent's key keeps mail.
+        let never: Vec<Area> = never.iter().filter(|area| without.contains(area)).copied().collect();
         let switched_off: Vec<Area> = without.into_iter().filter(|area| !never.contains(area)).collect();
-        Lack::of_in(&kind, &rights, operation, &switched_off, never, mode)
+        Lack::of_in(&kind, &rights, operation, &switched_off, &never, mode)
     }
 
     /// Who `key` belongs to. A known client's last use is noted.
@@ -2234,7 +2236,7 @@ pub(crate) mod tests {
             never,
             Refused::Lacks { command: "mail.list_folders", lack: Lack::NeverToAgents { area: Area::Mail } }
         );
-        assert!(message(never).contains("never given"));
+        assert!(message(never).contains("not given to a coding agent"));
         // 2. Switched off for this conversation, with an agent and with an AI account alike.
         let tasks = refused(agent.key(), &Request::TaskCollections);
         assert_eq!(

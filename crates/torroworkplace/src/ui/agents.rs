@@ -64,7 +64,6 @@ use iced::widget::space as blank;
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, center, column, container, responsive, row, svg, text_input, toggler};
 use iced::{Alignment, Color, Element, Fill, Length, Subscription, Theme};
-use torro_core::account::AccountKind;
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -73,10 +72,13 @@ use torro_gui::widgets::{self, Status, color_dot};
 use torro_gui::{style, typo};
 use torro_inbox::{AgentKind, SourceKind, SourceRef};
 use torro_ipc::api::{
-    self, ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, CATALOGUE, Confirm, HOOK_CLIENT, Level, Mcp, Rights,
+    self, ASSISTANT_CLIENT, Access, Area, AreaRights, BOT_CLIENT, Confirm, HOOK_CLIENT, Level, Rights,
 };
-use torro_ipc::api::{Outbound, RightsTemplate, Selection};
-use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response};
+use torro_ipc::api::{Outbound, RightsTemplate, Selection, has_command};
+// Shared with the bot editor of the assistant (task B.5); `ui/bots.rs` and `ui/assistant.rs` reach
+// them here as before.
+pub(super) use torro_ipc::api::{active_level, levels, shows_area};
+use torro_ipc::{ActivityEntry, ClientInfo, IssuedKey, Request, Response, SettingKey};
 use torro_pim::Collection;
 
 use super::accounts::relative_time;
@@ -257,6 +259,9 @@ pub enum Message {
     Confirm(Confirm),
     /// A segment of "Send on my behalf".
     Outbound(Outbound),
+    /// "Mail to Claude Code and cloud models" under Mail of the assistant and its bots (task C.17):
+    /// the data rule, a setting of the suite (`settings.set_setting mail_to_cloud`), not a right.
+    MailToCloud(bool),
     /// "All" (`true`) or "Selected" of a selection.
     All(Pick, bool),
     /// A switch of a selection: the id and whether it is on now.
@@ -307,6 +312,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             save_now(state)
         }
         Message::ShowAssistant => Action::Select(Section::Assistant),
+        // The app key's: only a person lets mail out (task C.17, `Request::kept_for_people`).
+        Message::MailToCloud(on) => {
+            Action::Send(Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::Value::Bool(on) })
+        }
         Message::ShowBot(client) => match data.bots.iter().find(|bot| bot.client == client) {
             Some(bot) => Action::OpenBot(bot.id.clone()),
             // A bot's client without its bot (the bots could not be listed): its own page here.
@@ -450,9 +459,10 @@ fn edit(state: &mut State, data: &Data, message: Message) -> Action {
 /// level already set, "Selected" while already selected, a name that is no repository) and an area
 /// the client's kind does not show ([`shows_area`]) leave `rights` as they are and return `false`.
 /// "Selected" starts with every known candidate ticked ([`candidates`]): the client keeps what it
-/// reaches until the person unticks something. Switching mail on while no mail account is ticked
-/// ticks every account signed in now (issue #133): mail without an account grants nothing, and the
-/// person meant to grant something. Accounts added later stay off until ticked.
+/// reaches until the person unticks something. A level goes through [`Rights::set_level`], the rule
+/// the bot editor shares (task B.5): switching an area on while nothing of it is ticked ticks
+/// everything of it there is now – calendars, task lists, inbox sources, signed-in mail accounts
+/// (issue #133, widened) –, GitHub stays empty; what is added later stays off until ticked.
 pub(super) fn change_rights(
     rights: &mut Rights,
     kind: &str,
@@ -463,13 +473,11 @@ pub(super) fn change_rights(
     let before = rights.clone();
     match message {
         Message::Level(area, level) if shows_area(area, kind) => {
-            let held = rights.area(area);
-            rights.areas.insert(area, AreaRights { level, admin: held.admin });
-            let switched_on = held.level == Level::NoAccess && level != Level::NoAccess;
-            if area == Area::Mail && switched_on && rights.mail_accounts == Selection::Only(Vec::new()) {
-                let accounts = candidates(Pick::MailAccounts, data, &rights.mail_accounts);
-                rights.mail_accounts = Selection::Only(accounts.into_iter().map(|candidate| candidate.id).collect());
-            }
+            let present = || match Pick::ALL.into_iter().find(|pick| pick.area() == area) {
+                Some(pick) => candidates(pick, data, &Selection::Only(Vec::new())).into_iter().map(|c| c.id).collect(),
+                None => Vec::new(),
+            };
+            rights.set_level(area, level, present);
         }
         Message::Admin(area, admin) if shows_area(area, kind) => {
             let level = rights.area(area).level;
@@ -491,16 +499,6 @@ pub(super) fn change_rights(
         _ => {}
     }
     *rights != before
-}
-
-/// Whether the rights view offers `area` for a client of `kind`: every grantable area
-/// ([`Area::grantable`]), except `assistant` and `bots` for the assistant's own client and for a
-/// bot's (task B.3). The core refuses them those areas whatever their rights say
-/// ([`api::loops_back`]; the assistant uses the bots it may by its kind, never by a right), so a
-/// switch there would promise what never happens.
-pub(super) fn shows_area(area: Area, kind: &str) -> bool {
-    let closed = matches!(kind, ASSISTANT_CLIENT | BOT_CLIENT) && matches!(area, Area::Assistant | Area::Bots);
-    area.grantable() && !closed
 }
 
 /// The warning under an area's row of a client of `kind` with `rights`, while that area reaches the
@@ -697,44 +695,9 @@ pub(super) fn shown_rights<'a>(state: &'a State, client: &'a ClientInfo) -> &'a 
     }
 }
 
-/// Whether `area` has a command agents may use ([`Mcp::Tool`]) that needs `access`. Commands kept
-/// from agents ([`Mcp::Never`]) are refused whatever the rights say, so they count for nothing.
-fn has_command(area: Area, access: Access) -> bool {
-    CATALOGUE.iter().any(|command| command.area == area && command.mcp == Mcp::Tool && command.access == access)
-}
-
-/// The levels worth offering in `area`, least first: always "None" and "Read", "Write" when the
-/// area has commands that change something, "Full" when it has some that delete or overwrite.
-/// So "Settings", whose changes are all admin commands, offers just "None" and "Read".
-pub fn levels(area: Area) -> Vec<Level> {
-    let mut levels = vec![Level::NoAccess, Level::Read];
-    if has_command(area, Access::Write) {
-        levels.push(Level::Write);
-    }
-    if has_command(area, Access::Delete) {
-        levels.push(Level::Full);
-    }
-    levels
-}
-
 /// Whether `area` has admin commands agents may be allowed, so its admin switch is shown.
 pub fn has_admin(area: Area) -> bool {
     has_command(area, Access::Admin)
-}
-
-/// The segment that shows `stored`: the highest offered level it reaches. A template gives "Full"
-/// everywhere, which in an area without deleting commands allows what "Write" allows.
-pub fn active_level(offered: &[Level], stored: Level) -> usize {
-    offered.iter().rposition(|&level| level <= stored).unwrap_or(0)
-}
-
-/// The options of "Ask first", in the order the control shows them.
-fn confirm_options() -> [(&'static str, Confirm); 3] {
-    [
-        (tr("Never"), Confirm::Never),
-        (tr("On delete"), Confirm::OnDelete),
-        (tr("On every change"), Confirm::OnEveryChange),
-    ]
 }
 
 /// The options of "Send on my behalf", least allowed first.
@@ -754,101 +717,44 @@ pub fn sends_freely(rights: &Rights) -> bool {
     can_send(rights.area(Area::Mail).level) && rights.outbound == Outbound::Free
 }
 
-/// The estimated width of a segmented control (`widgets::segmented`) with `labels`: each label in
-/// `CAPTION` with the button padding, plus the frame's inset and border. `typo::text_width`
-/// estimates generously, so the control fits.
-fn segmented_width(labels: &[&str]) -> f32 {
-    let padding = style::button_padding().left + style::button_padding().right;
-    let segments: f32 = labels.iter().map(|label| typo::text_width(label, typo::caption()) + padding).sum();
-    segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
-}
-
 /// The width of the slot every segmented control of the detail page starts in, left-aligned: as
 /// wide as the widest of them (all four levels, "Ask first", "Send on my behalf", "All · Selected")
-/// in the language
-/// shown. So "None" stands under "None" whether an area offers two levels or four, and the page
-/// lines up in every size class without a width of its own.
+/// in the language shown. So "None" stands under "None" whether an area offers two levels or four,
+/// and the page lines up in every size class without a width of its own.
 pub fn segment_slot() -> f32 {
-    let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(level_label);
-    let confirm = confirm_options().map(|(label, _)| label);
+    let levels = [Level::NoAccess, Level::Read, Level::Write, Level::Full].map(widgets::level_label);
+    let confirm = widgets::confirm_options().map(|(label, _)| label);
     let outbound = outbound_options().map(|(label, _)| label);
     let pick = [tr("All"), tr("Selected")];
-    [segmented_width(&levels), segmented_width(&confirm), segmented_width(&outbound), segmented_width(&pick)]
-        .into_iter()
-        .fold(0.0, f32::max)
-}
-
-/// `control` at the left of a slot `slot` wide ([`segment_slot`]).
-fn in_slot<'a, M: 'a>(control: Element<'a, M>, slot: f32) -> Element<'a, M> {
-    container(control).width(slot).into()
+    [&levels[..], &confirm, &outbound, &pick].into_iter().map(widgets::segmented_width).fold(0.0, f32::max)
 }
 
 /// Where the controls of the detail page go on a page `width` wide: `Some(slot)`, a column
 /// [`segment_slot`] wide at the right of every row, when the longest name and line of an area or
 /// admin switch fit next to it in a `setting_row`; `None` when they would be cut off (a narrow
 /// window, the narrow end of the medium one), then every segmented control stands on a line of its
-/// own under its name ([`stacked_row`]) and the other controls go to the right edge. Decided by
-/// what fits rather than by the size class, which the page does not know; it also holds for longer
-/// translations.
+/// own under its name (`widgets::segment_row`) and the other controls go to the right edge.
+/// Decided by what fits (`widgets::segment_column`) rather than by the size class, which the page
+/// does not know; it also holds for longer translations.
 pub fn control_column(width: f32) -> Option<f32> {
-    let slot = segment_slot();
-    let sending =
-        [typo::text_width(tr("Send on my behalf"), typo::body()), typo::text_width(outbound_detail(), typo::meta())];
-    let texts = Area::ALL.into_iter().filter(|area| area.grantable()).flat_map(|area| {
-        let admin = has_admin(area).then(|| {
-            [typo::text_width(admin_label(area), typo::body()), typo::text_width(&admin_detail(area), typo::meta())]
-        });
-        [typo::text_width(area_label(area), typo::body()), typo::text_width(area_detail(area), typo::meta())]
-            .into_iter()
-            .chain(admin.into_iter().flatten())
-    });
-    let text = texts.chain(sending).fold(0.0, f32::max);
-    // A setting row: 16 at both sides and 16 between the text and the control.
-    let row = 3.0 * space::l() + text + slot;
-    (width >= row).then_some(slot)
+    let admins: Vec<(&str, String)> = Area::ALL
+        .into_iter()
+        .filter(|&area| area.grantable() && has_admin(area))
+        .map(|area| (admin_label(area), admin_detail(area)))
+        .collect();
+    let areas =
+        Area::ALL.into_iter().filter(|area| area.grantable()).map(|area| (area_label(area), Some(area_detail(area))));
+    let admins = admins.iter().map(|(label, detail)| (*label, Some(detail.as_str())));
+    let sending = (tr("Send on my behalf"), Some(outbound_detail()));
+    widgets::segment_column(segment_slot(), areas.chain(admins).chain([sending]), width)
 }
 
 /// `control` where the page puts its controls: at the left of the column, or as it is (at the
 /// right edge of its row) without one ([`control_column`]).
 pub(super) fn in_column<'a, M: 'a>(control: impl Into<Element<'a, M>>, column: Option<f32>) -> Element<'a, M> {
     match column {
-        Some(slot) => in_slot(control.into(), slot),
+        Some(slot) => container(control).width(slot).into(),
         None => control.into(),
-    }
-}
-
-/// A row with a segmented `control`: a `setting_row` with the control in the column, or without a
-/// column the control on a line of its own ([`stacked_row`]).
-fn segment_row<'a>(
-    label: &'a str,
-    detail: Option<String>,
-    control: Element<'a, Message>,
-    column: Option<f32>,
-) -> Element<'a, Message> {
-    match column {
-        Some(slot) => setting_row(None, label, detail, in_slot(control, slot)),
-        None => stacked_row(label, detail, control),
-    }
-}
-
-/// `label`, `detail` below it and the segmented `control` on a line of its own under both, for a
-/// page too narrow to put them side by side. The texts wrap rather than being cut off; 16 at the
-/// sides as in every row of a group, 12 above and below.
-fn stacked_row<'a>(label: &'a str, detail: Option<String>, control: Element<'a, Message>) -> Element<'a, Message> {
-    let mut lines = column![typo::text(typo::body(), label)];
-    if let Some(detail) = detail {
-        lines = lines.push(typo::text(typo::meta(), detail).style(theme::text_2));
-    }
-    let content = column![lines, control].spacing(space::s());
-    container(content).width(Fill).padding([space::m(), space::l()]).into()
-}
-
-fn level_label(level: Level) -> &'static str {
-    match level {
-        Level::NoAccess => tr("None"),
-        Level::Read => tr("Read"),
-        Level::Write => tr("Write"),
-        Level::Full => tr("Full"),
     }
 }
 
@@ -1195,10 +1101,7 @@ pub fn valid_repo(input: &str) -> Option<String> {
 /// shows them to no client whatever the selection says (task E1.2c). A selection that still names
 /// it shows it as no longer available ([`candidates`]), so it can be unticked.
 fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
-    let mut sources: Vec<SourceRef> = data.sources.iter().map(|info| info.source.clone()).collect();
-    sources.extend(data.clients.iter().filter_map(|client| api::post_source(Some(client), None).ok()));
-    sources.extend(mail_candidates(data).iter().filter_map(|account| account.id.parse::<SourceRef>().ok()));
-    sources.extend(remote_sources(data));
+    let mut sources = api::present_sources(&data.sources, &data.clients, &data.accounts);
     if let Selection::Only(keys) = selection {
         sources.extend(keys.iter().filter_map(|key| key.parse::<SourceRef>().ok()));
     }
@@ -1222,32 +1125,11 @@ fn source_candidates(data: &Data, selection: &Selection) -> Vec<Candidate> {
         .collect()
 }
 
-/// The inbox sources of the remote accounts, whether or not they have entries yet: a GitHub
-/// account's notifications, a Nextcloud account's notifications and its Talk, an ntfy account's
-/// topics. Each account's id is the key of its source; Talk's is the Nextcloud account's with
-/// `talk` in front. A sign-in that still runs has no id and no source.
-fn remote_sources(data: &Data) -> Vec<SourceRef> {
-    let mut sources = Vec::new();
-    for source in data.accounts.iter().filter_map(|account| account.id.parse::<SourceRef>().ok()) {
-        match source.kind {
-            SourceKind::Nextcloud => {
-                sources.push(SourceRef::talk(source.name.clone()));
-                sources.push(source);
-            }
-            SourceKind::Github | SourceKind::Ntfy => sources.push(source),
-            _ => {}
-        }
-    }
-    sources
-}
-
 /// The mail accounts an agent can be allowed (`accounts.list_accounts`, kind `mail`): the id is
 /// what the core checks a call against ([`Rights::reaches_mail_account`]), the address is what the
 /// person knows it by. A sign-in that is still running has no id and no mail yet.
 fn mail_candidates(data: &Data) -> Vec<Candidate> {
-    data.accounts
-        .iter()
-        .filter(|account| account.kind == AccountKind::Mail.name() && !account.id.is_empty())
+    api::signed_in_mail(&data.accounts)
         .map(|account| Candidate::plain(account.id.clone(), account.label.clone(), None))
         .collect()
 }
@@ -1398,7 +1280,10 @@ pub(super) fn rights_groups<'a>(
     kind: &str,
     title: &'a str,
 ) -> Vec<Element<'a, Message>> {
-    let mut groups = vec![access_group(rights, column, kind, title), confirm_group(rights.confirm, column)];
+    let mut groups = vec![
+        access_group(rights, column, kind, title, data.settings.mail_to_cloud),
+        confirm_group(rights.confirm, column),
+    ];
     for pick in Pick::ALL.into_iter().filter(|pick| rights.area(pick.area()).level != Level::NoAccess) {
         groups.push(selection_group(repo_input, pick, rights, data, column));
     }
@@ -1408,21 +1293,31 @@ pub(super) fn rights_groups<'a>(
 /// The level of every area a client of `kind` can be given ([`shows_area`]), each followed by its
 /// admin switch where it has one. The switch is a row of its own, not indented: admin commands are
 /// allowed per area whatever the level (`docs/api.md`, "Rechte"), so its line names the area
-/// instead.
-fn access_group<'a>(rights: &Rights, column: Option<f32>, kind: &str, title: &'a str) -> Element<'a, Message> {
+/// instead. Under Mail of the assistant and its bots, the data rule ([`data_rule_row`]): it decides
+/// whether Claude Code and cloud models get the mail the rights grant (`mail_to_cloud`).
+fn access_group<'a>(
+    rights: &Rights,
+    column: Option<f32>,
+    kind: &str,
+    title: &'a str,
+    mail_to_cloud: bool,
+) -> Element<'a, Message> {
     let mut rows = Vec::new();
     for area in Area::ALL.into_iter().filter(|&area| shows_area(area, kind)) {
         let granted = rights.area(area);
         let offered = levels(area);
         let active = active_level(&offered, granted.level);
         let control = widgets::segmented(
-            offered.into_iter().map(|level| (level_label(level), Message::Level(area, level))),
+            offered.into_iter().map(|level| (widgets::level_label(level), Message::Level(area, level))),
             active,
         );
-        rows.push(segment_row(area_label(area), Some(area_detail(area).to_string()), control, column));
+        rows.push(widgets::segment_row(area_label(area), Some(area_detail(area).to_string()), control, column));
         rows.extend(bot_warning(area, rights, kind).map(warning_row));
         if area == Area::Mail && can_send(granted.level) {
             rows.extend(outbound_rows(rights, column));
+        }
+        if area == Area::Mail && granted.level != Level::NoAccess && shows_data_rule(kind) {
+            rows.push(data_rule_row(mail_to_cloud, column));
         }
         if has_admin(area) {
             let switch = toggler(granted.admin)
@@ -1436,6 +1331,24 @@ fn access_group<'a>(rights: &Rights, column: Option<f32>, kind: &str, title: &'a
     widgets::group(title, rows, Some(footer.to_string()))
 }
 
+/// Whether the rights of a client of `kind` meet the data rule (task C.17): the assistant's and its
+/// bots', which may answer with Claude Code or a cloud model. Other agents read through their own
+/// key whatever their rights grant.
+fn shows_data_rule(kind: &str) -> bool {
+    kind == ASSISTANT_CLIENT || kind == BOT_CLIENT
+}
+
+/// "Mail to Claude Code and cloud models" (task C.17): off, only AI accounts on the person's
+/// computers read the mail granted above; on, Claude Code and models elsewhere too.
+fn data_rule_row<'a>(mail_to_cloud: bool, column: Option<f32>) -> Element<'a, Message> {
+    let switch = toggler(mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
+    let detail = match mail_to_cloud {
+        false => tr("Off: only AI accounts on your own computers read mail"),
+        true => tr("Mail goes to the model's provider and can't be taken back"),
+    };
+    setting_row(None, tr("Mail to Claude Code and cloud models"), Some(detail.to_string()), in_column(switch, column))
+}
+
 /// The line under "Send on my behalf": what sending means, so "Never" reads as a real choice.
 fn outbound_detail() -> &'static str {
     tr("Messages leave your computer and can't be taken back")
@@ -1447,7 +1360,8 @@ fn outbound_rows<'a>(rights: &Rights, column: Option<f32>) -> Vec<Element<'a, Me
     let options = outbound_options();
     let active = options.iter().position(|(_, outbound)| *outbound == rights.outbound).unwrap_or(1);
     let control = widgets::segmented(options.map(|(label, outbound)| (label, Message::Outbound(outbound))), active);
-    let mut rows = vec![segment_row(tr("Send on my behalf"), Some(outbound_detail().to_string()), control, column)];
+    let mut rows =
+        vec![widgets::segment_row(tr("Send on my behalf"), Some(outbound_detail().to_string()), control, column)];
     if sends_freely(rights) {
         rows.push(warning_row(tr(
             "Mail can contain instructions aimed at agents. With Always, this agent sends without asking you first.",
@@ -1458,11 +1372,11 @@ fn outbound_rows<'a>(rights: &Rights, column: Option<f32>) -> Vec<Element<'a, Me
 
 /// "Ask first": never, on delete, on every change.
 fn confirm_group<'a>(current: Confirm, column: Option<f32>) -> Element<'a, Message> {
-    let options = confirm_options();
+    let options = widgets::confirm_options();
     let active = options.iter().position(|(_, confirm)| *confirm == current).unwrap_or(0);
     let control = widgets::segmented(options.map(|(label, confirm)| (label, Message::Confirm(confirm))), active);
     let footer = tr("The agent waits until you allow it in Approvals. Admin commands always wait.");
-    let row = segment_row(tr("Ask first"), None, control, column);
+    let row = widgets::segment_row(tr("Ask first"), None, control, column);
     widgets::group(tr("Approval"), vec![row], Some(footer.to_string()))
 }
 
@@ -1481,7 +1395,7 @@ fn selection_group<'a>(
         [(tr("All"), Message::All(pick, true)), (tr("Selected"), Message::All(pick, false))],
         usize::from(!all),
     );
-    let mut rows = vec![segment_row(tr("Access to"), None, switch, column)];
+    let mut rows = vec![widgets::segment_row(tr("Access to"), None, switch, column)];
     if !all {
         let offered = candidates(pick, data, selection);
         if offered.is_empty() && pick != Pick::GithubRepos {
@@ -1547,7 +1461,7 @@ fn hook_group<'a>(client: &'a ClientInfo, column: Option<f32>) -> Element<'a, Me
             None,
             area_label(Area::Inbox),
             Some(tr("Reports and resolves its own entries, sees none").to_string()),
-            value(level_label(Level::Write)),
+            value(widgets::level_label(Level::Write)),
         ),
     ];
     let footer = tr(
@@ -1845,6 +1759,60 @@ mod tests {
             let (id, rights) = saved(&mut state, &data);
             assert_eq!(id, "c1", "{text}");
             assert!(check(&rights), "{text}: {rights:?}");
+        }
+    }
+
+    /// Task B.5: the rule of issue #133 holds for every selection. Switching an area on while
+    /// nothing of it is ticked ticks what there is now (never "All"); GitHub stays empty, a choice
+    /// stays.
+    #[test]
+    fn switching_an_area_on_ticks_what_there_is_now() {
+        let data = data();
+        let mut repo_input = String::new();
+        let mut rights = Rights::none();
+        let mut level = |rights: &mut Rights, area: Area, level: Level| {
+            change_rights(rights, BOT_CLIENT, Message::Level(area, level), &data, &mut repo_input)
+        };
+        for area in [Area::Calendar, Area::Tasks, Area::Github, Area::Inbox, Area::Mail] {
+            assert!(level(&mut rights, area, Level::Read), "{area:?}");
+        }
+        assert_eq!(rights.calendars, Selection::Only(vec!["acc/work".into(), "acc/home".into()]));
+        assert_eq!(rights.task_lists, Selection::Only(vec!["acc/todo".into(), "github:anna/1".into()]));
+        assert_eq!(rights.github_repos, Selection::Only(Vec::new()), "no list of every repository");
+        assert_eq!(
+            rights.mail_accounts,
+            Selection::Only(vec!["mail:anna@mailbox.org".into(), "mail:anna@work.example.net".into()])
+        );
+        let Selection::Only(sources) = &rights.inbox_sources else { panic!("never All") };
+        assert!(sources.contains(&"script:nightly".to_string()) && sources.contains(&"agent:claude-code".to_string()));
+        assert!(!sources.contains(&"suite".to_string()));
+
+        // Off and on again keeps what was ticked meanwhile.
+        rights.calendars = Selection::Only(vec!["acc/home".into()]);
+        assert!(level(&mut rights, Area::Calendar, Level::NoAccess));
+        assert!(level(&mut rights, Area::Calendar, Level::Write));
+        assert_eq!(rights.calendars, Selection::Only(vec!["acc/home".into()]));
+        assert!(!level(&mut rights, Area::Bots, Level::Read), "a bot never gets the row");
+    }
+
+    /// Task C.17: the data rule stands under Mail of the assistant and its bots only, and its switch
+    /// sends the setting, never a change of rights.
+    #[test]
+    fn the_data_rule_is_shown_for_the_assistant_and_bots_and_sends_the_setting() {
+        assert!(shows_data_rule(ASSISTANT_CLIENT) && shows_data_rule(BOT_CLIENT));
+        assert!(!shows_data_rule("claude-code") && !shows_data_rule(HOOK_CLIENT));
+        let data = data();
+        let mut state = opened("c1", &data);
+        for on in [true, false] {
+            let action = update(&mut state, Message::MailToCloud(on), &data);
+            let Action::Send(Request::SetSetting { key, value }) = action else { panic!("a setting") };
+            assert_eq!((key, value), (SettingKey::MailToCloud, serde_json::json!(on)));
+        }
+        assert!(state.draft.is_none(), "no change of rights");
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
+        for on in [false, true] {
+            let _ = access_group(&rights, None, ASSISTANT_CLIENT, "Access", on);
         }
     }
 
@@ -2233,12 +2201,12 @@ mod tests {
     fn every_segmented_control_fits_the_common_slot() {
         let slot = segment_slot();
         for area in Area::ALL.into_iter().filter(|area| area.grantable()) {
-            let labels: Vec<&str> = levels(area).into_iter().map(level_label).collect();
-            assert!(segmented_width(&labels) <= slot, "{area:?}");
+            let labels: Vec<&str> = levels(area).into_iter().map(widgets::level_label).collect();
+            assert!(widgets::segmented_width(&labels) <= slot, "{area:?}");
         }
-        assert!(segmented_width(&confirm_options().map(|(label, _)| label)) <= slot);
-        assert!(segmented_width(&outbound_options().map(|(label, _)| label)) <= slot);
-        assert!(segmented_width(&[tr("All"), tr("Selected")]) <= slot);
+        assert!(widgets::segmented_width(&widgets::confirm_options().map(|(label, _)| label)) <= slot);
+        assert!(widgets::segmented_width(&outbound_options().map(|(label, _)| label)) <= slot);
+        assert!(widgets::segmented_width(&[tr("All"), tr("Selected")]) <= slot);
         assert!(slot < size::content_max() / 2.0, "leaves room for the area's name");
     }
 

@@ -186,9 +186,7 @@ pub(crate) async fn backfill(mailbox: &Mailbox, limit: u32, now: DateTime<Utc>) 
                 let Ok(read) = mime::read(&raw) else { return store.mark_unindexable(&id).map(drop) };
                 if keep {
                     let invite = super::read::invite_of(&raw, &read);
-                    let body =
-                        Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite };
-                    return store.set_body(&id, &body).map(drop);
+                    return store.set_body(&id, &Body::of(read, invite)).map(drop);
                 }
                 let names: Vec<&str> = read.attachments.iter().filter_map(|part| part.filename.as_deref()).collect();
                 store.index_text(&id, &read.text, &names).map(drop)
@@ -345,8 +343,7 @@ async fn sync_folder(
                 let mut message = new_message(&folder, uidvalidity, &header, &read, now);
                 message.flags = flags;
                 store.upsert_message(&folder, uidvalidity, &message)?;
-                let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite };
-                store.set_body(&id, &body)?;
+                store.set_body(&id, &Body::of(read, invite))?;
                 Ok(())
             })
             .await?;
@@ -448,6 +445,7 @@ fn unreadable() -> ReadMessage {
         text: String::new(),
         from_html: false,
         html: None,
+        html_source: None,
         attachments: Vec::new(),
         traits: torro_mail::MessageTraits::default(),
         invitation: false,

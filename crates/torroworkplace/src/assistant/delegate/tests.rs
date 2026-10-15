@@ -92,6 +92,19 @@ fn an_answer_after_mail_stays_from_a_remote_model_and_outside_data_stays_marked(
     assert!(ended.for_model(Place::Local).contains("The server is not reachable."));
 }
 
+/// Task C.17: with mail let out, a model elsewhere reads a bot's answer after mail, never one after
+/// the inbox (it may retell entries of Nextcloud or Talk).
+#[test]
+fn an_answer_after_mail_reaches_a_remote_model_once_mail_is_let_out() {
+    let out = Reader { place: Place::Remote, rule: DataRule { mail_to_cloud: true } };
+    let after_mail = Asked::of(&run(vec![tool("mail.get_message", None), answer("ACME owes 400 €.")])).expect("run");
+    assert!(!after_mail.kept(out.rule) && after_mail.kept(DataRule::default()));
+    assert!(after_mail.for_model(out).contains("ACME"));
+    let after_inbox = Asked::of(&run(vec![tool("inbox.list_items", None), answer("Lena asks.")])).expect("run");
+    assert!(after_inbox.kept(out.rule));
+    assert!(!after_inbox.for_model(out).contains("Lena"));
+}
+
 #[test]
 fn the_tool_line_refers_to_the_bots_conversation() {
     let input = json!({"bot": "1a2b3c4d", "text": "Plan Lisbon"});

@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Frame – Entwurf</title>
+<!-- Entwurf: Bilderrahmen-Kachel (Nebenanwendung der Foto-App). Zeigt ein Foto oder eine Diashow aus einem Album,
+     einer Person, einem Ort, den Favoriten oder „An diesem Tag“. Gedacht als dauerhafte Kachel in Workspace-Vorlagen;
+     die Wahl gehört zum Fenster (Startparameter), nicht zur App.
+     ?open=show|hover|setup|contain|empty|offline   ?theme=light   Größe ergibt sich aus dem Fenster (iframe). -->
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<script>
+(function(){const q=new URLSearchParams(location.search),d=document.documentElement,w=innerWidth,h=innerHeight;
+  if(q.get('theme')==='light')d.dataset.theme='light';
+  d.dataset.open=q.get('open')||'show';
+  // Größenklassen wie torro_gui::layout::of; der Rahmen braucht nur drei Stufen für seine Bedienung.
+  d.dataset.size=(h<280&&w>=600)?'bar':(w<360||h<280)?'mini':w<600?'s':'l';})();
+</script>
+<style>
+body{background:#000}
+.frame{position:fixed;inset:0;overflow:hidden;background:#000}
+.photo{position:absolute;inset:0;background:center/cover no-repeat}
+/* „Ganzes Foto“: Bild vollständig, Rand mit unscharfer Kopie statt Schwarz. */
+.blur{position:absolute;inset:-40px;background:center/cover no-repeat;filter:blur(40px) brightness(.55);transform:scale(1.1)}
+.photo.contain{background-size:contain}
+/* Bildunterschrift: ruhig, unten links, auf leichtem Verlauf. */
+.caption{position:absolute;left:0;right:0;bottom:0;padding:32px 16px 12px;background:linear-gradient(transparent,rgba(0,0,0,.55));color:#fff;display:flex;align-items:baseline;gap:8px;white-space:nowrap;overflow:hidden}
+.caption b{font-weight:500}
+.caption span{font-size:12px;color:rgba(255,255,255,.75);overflow:hidden;text-overflow:ellipsis}
+/* Bedienung erscheint nur beim Überfahren (Dauerbetrieb: sonst nichts außer dem Bild). */
+.ctl{position:absolute;inset:0;display:none;background:linear-gradient(rgba(0,0,0,.45),transparent 30%,transparent 65%,rgba(0,0,0,.55))}
+html[data-open="hover"] .ctl,html[data-open="setup"] .ctl{display:block}
+html[data-open="hover"] .caption,html[data-open="setup"] .caption{display:none}
+.top{position:absolute;left:12px;right:12px;top:12px;display:flex;align-items:center;gap:6px}
+.top .grow{flex:1}
+.glass{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;background:rgba(20,21,24,.72);border:1px solid rgba(255,255,255,.12);color:#fff;font:500 12px/1 Inter,sans-serif;white-space:nowrap;backdrop-filter:blur(8px)}
+.glass.icon{width:28px;padding:0;justify-content:center}
+.glass svg{width:14px;height:14px}
+.glass .chev{opacity:.6}
+.bottom{position:absolute;left:12px;right:12px;bottom:12px;display:flex;align-items:center;gap:8px;color:#fff}
+.bottom .grow{flex:1}
+.player{display:flex;align-items:center;gap:2px;padding:2px;border-radius:8px;background:rgba(20,21,24,.72);border:1px solid rgba(255,255,255,.12);backdrop-filter:blur(8px)}
+.player span{width:28px;height:28px;display:grid;place-items:center;border-radius:6px}
+.player span.on{background:rgba(255,255,255,.12)}
+.player svg{width:16px;height:16px}
+.pos{font:400 12px/16px "Inter Tabular",Inter,sans-serif;color:rgba(255,255,255,.8)}
+.meta{display:flex;flex-direction:column;min-width:0}
+.meta b{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.meta span{font-size:12px;line-height:16px;color:rgba(255,255,255,.75);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.progress{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(255,255,255,.15)}
+.progress i{display:block;height:100%;width:38%;background:rgba(255,255,255,.7)}
+
+/* Einstellungen: schwebende Karte (Linear-Popover), gespeichert mit dem Fenster. */
+.pop{position:absolute;top:48px;left:12px;width:340px;max-height:calc(100% - 60px);overflow:hidden;background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);display:none;flex-direction:column}
+html[data-open="setup"] .pop{display:flex}
+.pop .ph{padding:16px 16px 0;font-size:16px;line-height:22px;font-weight:600}
+.pop .pb{flex:1;min-height:0;overflow:auto;padding:12px 16px 16px;display:flex;flex-direction:column;gap:16px}
+.pop .lbl{font-size:12px;font-weight:500;color:var(--text3);margin-bottom:6px}
+.seg2{display:flex;height:28px;padding:2px;border-radius:6px;background:var(--bg);border:1px solid var(--line)}
+.seg2 span{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;border-radius:4px;font-size:12px;font-weight:500;color:var(--text3)}
+.seg2 span svg{width:14px;height:14px}
+.seg2 span.on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-strong)}
+.src{display:flex;flex-direction:column;gap:2px}
+.src .it{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:6px;color:var(--text2)}
+.src .it:hover{background:var(--hover)}
+.src .it.on{background:var(--selected);color:var(--text)}
+.src .it .v{margin-left:auto;display:flex;align-items:center;gap:4px;color:var(--text3);font-size:12px}
+.src .it svg{width:16px;height:16px}
+.src .it .v svg{width:14px;height:14px}
+.chiprow{display:flex;flex-wrap:wrap;gap:6px}
+.ch{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500;color:var(--text2)}
+.ch.on{background:var(--selected);border-color:rgba(255,255,255,.28);color:var(--text)}
+:root[data-theme="light"] .ch.on{border-color:rgba(0,0,0,.32)}
+.ch svg{width:14px;height:14px}
+.pop .note{font-size:12px;line-height:16px;color:var(--text2);display:flex;gap:8px}
+.pop .note svg{width:14px;height:14px;flex:none;color:var(--text3);margin-top:1px}
+.pop .pf{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+
+/* Leer und offline */
+.empty{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:var(--bg);padding:16px}
+html[data-open="empty"] .empty{display:flex}
+.empty .box{max-width:320px;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;color:var(--text)}
+.empty .ic{width:40px;height:40px;border-radius:10px;background:var(--raised);border:1px solid var(--line-strong);display:grid;place-items:center;color:var(--text2);margin-bottom:4px}
+.empty h2{margin:0;font-size:16px;line-height:22px;font-weight:600}
+.empty p{margin:0;color:var(--text2)}
+.empty .btn{margin-top:8px}
+.offline{position:absolute;right:12px;top:12px;display:none}
+html[data-open="offline"] .offline{display:inline-flex}
+
+/* Kleine Kacheln: keine Leiste mit Wörtern, nur Icons; Mini ohne Bildunterschrift. */
+html[data-size="mini"] .caption{display:none}
+html[data-size="mini"] .src-label,html[data-size="mini"] .meta,html[data-size="bar"] .meta{display:none}
+html[data-size="mini"] .top{left:8px;right:8px;top:8px}
+html[data-size="mini"] .bottom{left:8px;right:8px;bottom:8px;justify-content:center}
+html[data-size="mini"] .bottom .grow,html[data-size="mini"] .pos{display:none}
+html[data-size="mini"] .pop,html[data-size="bar"] .pop{display:none!important}
+html[data-size="bar"] .caption{padding:0 12px 8px;background:linear-gradient(transparent,rgba(0,0,0,.5))}
+html[data-size="s"] .pop{left:8px;right:8px;width:auto}
+</style></head>
+<body>
+<div class="frame">
+  <div class="blur" id="blur" style="display:none"></div>
+  <div class="photo" id="photo"></div>
+  <div class="caption"><b>Tuscany 2024</b><span>Fri, Aug 9, 2024 · Val d'Orcia</span></div>
+  <span class="glass offline"><i data-lucide="cloud-off"></i>Offline · showing saved photos</span>
+
+  <div class="ctl">
+    <div class="top">
+      <span class="glass"><i data-lucide="book-image"></i><span class="src-label">Tuscany 2024</span><i data-lucide="chevron-down" class="chev"></i></span>
+      <span class="grow"></span>
+      <span class="glass icon" title="Open in Photos"><i data-lucide="arrow-up-right"></i></span>
+      <span class="glass icon" title="Frame settings"><i data-lucide="sliders-horizontal"></i></span>
+    </div>
+    <div class="bottom">
+      <div class="meta"><b>Fri, Aug 9, 2024</b><span>Val d'Orcia, Italy</span></div>
+      <span class="grow"></span>
+      <span class="pos">38 / 214</span>
+      <div class="player"><span title="Previous (←)"><i data-lucide="chevron-left"></i></span><span class="on" title="Pause (Space)"><i data-lucide="pause"></i></span><span title="Next (→)"><i data-lucide="chevron-right"></i></span></div>
+    </div>
+    <div class="progress"><i></i></div>
+  </div>
+
+  <div class="pop">
+    <div class="ph">Frame</div>
+    <div class="pb">
+      <div><div class="lbl">Show</div>
+        <div class="seg2"><span><i data-lucide="image"></i>One photo</span><span class="on"><i data-lucide="gallery-horizontal-end"></i>Slideshow</span></div></div>
+      <div><div class="lbl">From</div>
+        <div class="src">
+          <div class="it on"><i data-lucide="book-image"></i>Album<span class="v">Tuscany 2024<i data-lucide="chevron-down"></i></span></div>
+          <div class="it"><i data-lucide="scan-face"></i>Person<span class="v">Choose…</span></div>
+          <div class="it"><i data-lucide="map-pin"></i>Place<span class="v">Choose…</span></div>
+          <div class="it"><i data-lucide="heart"></i>Favorites</div>
+          <div class="it"><i data-lucide="history"></i>On this day</div>
+          <div class="it"><i data-lucide="images"></i>All photos</div>
+        </div></div>
+      <div><div class="lbl">Next photo every</div>
+        <div class="chiprow"><span class="ch">10 s</span><span class="ch on"><i data-lucide="check"></i>1 min</span><span class="ch">5 min</span><span class="ch">1 h</span><span class="ch">Daily</span></div></div>
+      <div><div class="lbl">Order</div>
+        <div class="seg2"><span>By date</span><span class="on">Shuffle</span></div></div>
+      <div><div class="lbl">Fit</div>
+        <div class="seg2"><span class="on">Fill tile</span><span>Whole photo</span></div></div>
+      <div><div class="lbl">Caption</div>
+        <div class="seg2"><span>Off</span><span>Date</span><span class="on">Date and place</span></div></div>
+      <div class="note"><i data-lucide="layout-template"></i><span>Saved with this window. A workspace template brings the frame back with the same album.</span></div>
+    </div>
+    <div class="pf"><button class="btn ghost">Cancel</button><button class="btn primary">Save</button></div>
+  </div>
+
+  <div class="empty"><div class="box">
+    <div class="ic"><i data-lucide="frame"></i></div>
+    <h2>Choose what to show</h2>
+    <p>One photo or a slideshow from an album, a person, a place or your favorites.</p>
+    <button class="btn primary"><i data-lucide="sliders-horizontal" class="s14"></i>Set up frame</button>
+  </div></div>
+</div>
+<script>
+const q=new URLSearchParams(location.search),d=document.documentElement;
+const seed=q.get('seed')||'tusc-1', w=Math.ceil(innerWidth*1.5), h=Math.ceil(innerHeight*1.5);
+const pic=(s,a,b)=>`https://picsum.photos/seed/torro-${s}/${a}/${b}`;
+const ph=document.getElementById('photo');
+if(d.dataset.open==='contain'||q.get('fit')==='contain'){
+  // Hochformat in breiter Kachel
+  const url=pic(seed,800,1200);
+  ph.classList.add('contain');ph.style.backgroundImage=`url(${url})`;
+  const b=document.getElementById('blur');b.style.display='block';b.style.backgroundImage=`url(${url})`;
+}else ph.style.backgroundImage=`url(${pic(seed,Math.min(w,2400),Math.min(h,2400))})`;
+if(q.get('caption')==='off')document.querySelector('.caption').style.display='none';
+if(q.get('cap'))document.querySelector('.caption').innerHTML=q.get('cap');
+lucide.createIcons();
+</script>
+</body></html>

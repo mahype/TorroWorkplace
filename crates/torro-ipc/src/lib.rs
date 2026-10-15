@@ -1616,14 +1616,21 @@ pub enum Request {
         account: Option<String>,
     },
     /// One message with its headers, attachments (without content) and, with `include_body`, its
-    /// text ([`Response::MailMessage`]). Reading it does not mark it read. `not-found` for an id
-    /// the caller does not reach.
+    /// text, with `include_html` its cleaned HTML ([`Response::MailMessage`]). Reading it does not
+    /// mark it read. `not-found` for an id the caller does not reach; `offline` and the account's
+    /// other errors when the text or HTML is not kept and the server cannot be asked.
     #[serde(rename = "mail.get_message")]
     GetMail {
         /// The message's id (`m:…`).
         id: String,
         /// Also the text: the plain text part, or the HTML part made text.
         include_body: bool,
+        /// Also the HTML part, cleaned by the core (no scripts, forms or frames), for showing the
+        /// mail to a person; left out when the message has none or it is larger than 2 MiB. Fetched
+        /// from the server without marking the message read when the core does not keep it, so it
+        /// may fail with `offline`. Agents rarely need it: the text is enough.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_html: bool,
     },
     /// The conversation the message belongs to, oldest first, each message with its text
     /// ([`Response::MailThread`]); only messages in accounts the caller reaches.
@@ -2201,6 +2208,21 @@ pub enum SettingKey {
     /// requests keep answering. Calendars and task lists stop syncing only when both are off; an
     /// ntfy subscription that runs ends at its next renewal.
     Component,
+    /// How a mail that has HTML first shows in the reader (task M9.5): `"html"` (formatted, the
+    /// default) or `"text"` (its plain text). The reader can still switch a single mail. Open
+    /// windows follow (`torro_core::settings::MailFormat`).
+    MailView,
+    /// The colours of a mail's content in the reader (task M9.5): `"app"` (like the suite's
+    /// `appearance`, the default), `"light"` (the mail's own colours) or `"dark"` (recoloured for a
+    /// dark background, pictures unchanged). Only the mail, never the rest of the window. Open
+    /// windows follow (`torro_core::settings::MailAppearance`).
+    MailAppearance,
+    /// The data rule for mail (task C.17): `false` (the default) keeps mail with models on the
+    /// person's own computers; `true` lets it go to Claude Code and to models elsewhere as well.
+    /// Only the app key may send `true` – a person in the control centre (point 6 of "Was nie nach
+    /// außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights, so no agent
+    /// can let mail out to itself. Any client allowed to change settings may send `false`.
+    MailToCloud,
 }
 
 /// The core's answer to one [`Request`].

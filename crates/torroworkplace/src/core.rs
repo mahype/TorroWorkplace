@@ -921,6 +921,12 @@ pub struct Core {
     /// What the keys lent for runs of engine B are for (task B.2, [`LentScope`]): the assistant's
     /// conversation, or a bot's run for the assistant. In memory only, as the leases are.
     lent_scopes: std::sync::Mutex<Vec<LentScope>>,
+    /// Whether the calendar, GitHub and mail services have read their stored accounts. False from
+    /// [`Core::start`] until they have (or [`ACCOUNTS_WAIT`] passed): meanwhile
+    /// `accounts.list_accounts` waits, because an app takes an empty list for "no account yet" and
+    /// shows its setup screen although accounts exist. True from the start for a core that is
+    /// never started, as in tests.
+    accounts_read: tokio::sync::watch::Sender<bool>,
 }
 
 impl Core {
@@ -959,6 +965,7 @@ impl Core {
             assistant: Arc::new(Assistant::system()),
             voice: if cfg!(test) { Listener::none() } else { Listener::system() },
             lent_scopes: std::sync::Mutex::new(Vec::new()),
+            accounts_read: tokio::sync::watch::Sender::new(true),
         }
     }
 
@@ -1070,6 +1077,7 @@ impl Core {
     /// with (task C.2, [`Core::attach_assistant`]). The daemon calls it once, next to
     /// `PimService::start`.
     pub fn start(self: &Arc<Self>) {
+        self.await_stored_accounts();
         self.attach_assistant();
         // Voice switched on before the core stopped listens again (task C.9).
         self.follow_voice();
@@ -1127,6 +1135,24 @@ impl Core {
                 refresh_filter_lists(&pim, &github).await;
                 tokio::time::sleep(FILTER_LISTS_EVERY).await;
             }
+        });
+    }
+
+    /// Holds `accounts.list_accounts` back until the calendar, GitHub and mail services have read
+    /// their stored accounts from the keychain ([`Core::accounts_read`]), [`ACCOUNTS_WAIT`] at
+    /// most, so a keychain that never answers does not keep the apps waiting forever. Part of
+    /// [`Core::start`], before the services start loading.
+    fn await_stored_accounts(self: &Arc<Self>) {
+        self.accounts_read.send_replace(false);
+        let core = Arc::clone(self);
+        tokio::spawn(async move {
+            let started = tokio::time::Instant::now();
+            while started.elapsed() < ACCOUNTS_WAIT
+                && !(core.pim.accounts_loaded().await && core.github.loaded() && core.mail.loaded())
+            {
+                tokio::time::sleep(ACCOUNTS_STEP).await;
+            }
+            core.accounts_read.send_replace(true);
         });
     }
 
@@ -1436,10 +1462,11 @@ impl Core {
             return Ok(refused);
         }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
-        // Point 6 (task C.9): switching the microphone on is a person's, also with every right. The
-        // assistant's own memory is its own whatever its rights in `assistant` say (task C.10).
+        // Point 6 (task C.9): switching the microphone on is a person's, also with every right, and
+        // so is letting mail go to the cloud (task C.17). The assistant's own memory is its own
+        // whatever its rights in `assistant` say (task C.10).
         let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
-        if !allowed || self.switches_microphone_on(&request) {
+        if !allowed || self.switches_on_for_people(&request) {
             let (command, operation) = (request.operation().name(), request.operation());
             // Issue #133: the answer says what is missing. The microphone is the person's whatever
             // the rights say.
@@ -2142,7 +2169,7 @@ impl Core {
         let allowed =
             rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
         if !allowed
-            || self.switches_microphone_on(&request)
+            || self.switches_on_for_people(&request)
             || torro_ipc::api::loops_back(&info.kind, request.operation())
             || self.bots_refusal(client, rights, &request).is_some()
         {
@@ -2871,7 +2898,7 @@ impl Core {
         if entry.source.kind != torro_inbox::SourceKind::Mail {
             return body();
         }
-        let asked = Request::GetMail { id: message.clone(), include_body: true };
+        let asked = Request::GetMail { id: message.clone(), include_body: true, include_html: false };
         match crate::mail::read::answer(&self.mail, reach, asked).await {
             Response::MailMessage { message } => {
                 message.text.filter(|text| !text.trim().is_empty()).unwrap_or_else(body)
@@ -3459,6 +3486,9 @@ impl Core {
     /// does not reach the mail account sees its calendar part only while its rights show it some
     /// of that part's calendars or task lists, and then without the mail view (task M2.8).
     async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
+        // While the core starts, the lists are still empty ([`Core::await_stored_accounts`]).
+        // An error means the sender is gone, which it never is while `self` lives.
+        let _ = self.accounts_read.subscribe().wait_for(|read| *read).await;
         let mut accounts = self.pim.accounts_within(reach).await;
         let mut github = self.github.infos().await;
         for account in &mut github {
@@ -4294,13 +4324,15 @@ impl Core {
         self.voice.changes()
     }
 
-    /// Whether `request` from a client switches the microphone on through the whole settings
-    /// (`settings.update_settings` with voice on while it is off): point 6, refused like
-    /// `settings.set_setting voice_enabled true` ([`torro_ipc::api::Rights::allows_request`]),
-    /// which carries the value itself.
-    fn switches_microphone_on(&self, request: &Request) -> bool {
-        matches!(request, Request::UpdateSettings { settings } if settings.voice.enabled)
-            && !self.settings.current().voice.enabled
+    /// Whether `request` from a client switches on through the whole settings what only a person
+    /// switches on (`settings.update_settings` with it on while it is off): the microphone (point
+    /// 6) and mail to Claude Code and cloud models (`mail_to_cloud`, task C.17), refused like
+    /// `settings.set_setting` with `true` ([`torro_ipc::api::Rights::allows_request`]), which
+    /// carries the value itself.
+    fn switches_on_for_people(&self, request: &Request) -> bool {
+        let Request::UpdateSettings { settings } = request else { return false };
+        let now = self.settings.current();
+        (settings.voice.enabled && !now.voice.enabled) || (settings.mail_to_cloud && !now.mail_to_cloud)
     }
 
     /// `settings.voice_status` (task C.9): what the listener does, and what the assistant app
@@ -4416,6 +4448,11 @@ impl Core {
 
 /// How often the filter lists are fetched anew (`docs/github.md`, "Technik").
 const FILTER_LISTS_EVERY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// At start, how long `accounts.list_accounts` waits at most for the stored accounts
+/// ([`Core::await_stored_accounts`]): long enough for the person to allow the keychain access.
+const ACCOUNTS_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+/// How often the core looks whether the stored accounts are read meanwhile.
+const ACCOUNTS_STEP: std::time::Duration = std::time::Duration::from_millis(50);
 /// At start, how long to wait for the tokens of the accounts with filter lists: 30 × 1 s.
 const TOKEN_WAIT_ROUNDS: u32 = 30;
 const TOKEN_WAIT_STEP: std::time::Duration = std::time::Duration::from_secs(1);
@@ -4440,6 +4477,11 @@ impl crate::assistant::Host for Core {
             };
             Ok(crate::assistant::ModelAccess { provider, place })
         })
+    }
+
+    /// The setting `mail_to_cloud` as it is now (task C.17).
+    fn data_rule(&self) -> crate::assistant::DataRule {
+        crate::assistant::DataRule { mail_to_cloud: self.settings.current().mail_to_cloud }
     }
 
     fn run<'a>(
@@ -4790,9 +4832,12 @@ fn decided_ids(request: &Request, origin: &crate::approvals::Origin) -> Vec<Stri
 /// `assistant.my_access` (issue #134) for a client admitted with `rights` (already narrowed as the
 /// core checks its commands: by the areas of a lent key, and for a bot that runs for the assistant to
 /// what both may), the request coming as `origin` says: the engine, and its areas split into those the
-/// engine never gets ([`crate::assistant::never_given`]) and those switched off in the conversation.
+/// engine never gets ([`crate::assistant::never_given`]) – as far as the run went without them, which
+/// it does not with mail let out (task C.17) – and those switched off in the conversation.
 fn my_access(rights: &torro_ipc::api::Rights, origin: &crate::approvals::Origin) -> Response {
-    let never = origin.engine.as_deref().map_or(&[][..], crate::assistant::never_given);
+    let never_given = origin.engine.as_deref().map_or(&[][..], crate::assistant::never_given);
+    let never: Vec<Area> = never_given.iter().filter(|area| origin.without.contains(area)).copied().collect();
+    let never = never.as_slice();
     let switched_off: Vec<Area> = origin.without.iter().filter(|area| !never.contains(area)).copied().collect();
     let access = torro_ipc::assistant::MyAccess::of(rights.clone(), origin.engine.clone());
     Response::MyAccess { access: access.withholding(never).switching_off(&switched_off).in_mode(origin.mode) }
@@ -5088,6 +5133,25 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&key), Request::SaveTemplate { name: None }).await), "forbidden");
         core.clients.remove(&id).await.expect("removed");
         assert_eq!(code(&ask(&core, Some(&key), Request::Accounts).await), "unauthorized");
+    }
+
+    /// While the core starts, `accounts.list_accounts` waits for the stored accounts instead of
+    /// answering with an empty list, which an app would take for "no account yet" and show its
+    /// setup screen.
+    #[tokio::test]
+    async fn the_account_list_waits_until_the_stored_accounts_are_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = Arc::new(core(dir.path()));
+        core.accounts_read.send_replace(false);
+        let asking = tokio::spawn({
+            let core = Arc::clone(&core);
+            async move { core.handle(Request::Accounts).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!asking.is_finished(), "answered before the stored accounts were read");
+
+        core.accounts_read.send_replace(true);
+        assert_eq!(asking.await.expect("answered"), Response::Accounts { accounts: vec![] });
     }
 
     /// `settings.list_designs` (task L.3): the standard first, then the packs of the designs
@@ -5476,6 +5540,44 @@ mod tests {
         let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(!settings(&core).await.voice.enabled, "off once the person allowed it");
+    }
+
+    /// Task C.17: no client lets mail go to Claude Code and cloud models, not with every right,
+    /// neither one setting at a time nor with the whole settings; keeping it local again is an
+    /// admin change like any other, after approval. Only the app key switches it on.
+    #[tokio::test]
+    async fn only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local() {
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let rule = |on: bool| Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::json!(on) };
+
+        let refused = ask(&core, Some(&key), rule(true)).await;
+        assert_eq!(code(&refused), "forbidden");
+        let mut whole = settings(&core).await;
+        whole.mail_to_cloud = true;
+        assert_eq!(
+            code(&ask(&core, Some(&key), Request::UpdateSettings { settings: whole.clone() }).await),
+            "forbidden"
+        );
+        assert!(!settings(&core).await.mail_to_cloud, "still local");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        assert_eq!(ask(&core, Some(&app_key), rule(true)).await, Response::Ok);
+        assert!(settings(&core).await.mail_to_cloud);
+        let asked = waits(ask(&core, Some(&key), Request::UpdateSettings { settings: whole }).await);
+        assert_eq!(asked.command, "settings.update_settings", "with mail out, the settings as read change nothing");
+
+        let asked = waits(ask(&core, Some(&key), rule(false)).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert!(!settings(&core).await.mail_to_cloud, "local again once the person allowed it");
     }
 
     /// Task C.9: the voice status and test come from the assistant app; without it the status says
@@ -10092,7 +10194,8 @@ mod tests {
     }
 
     /// Task M3.1: a client reads the mail of its account; the audit log names the account and
-    /// hashed ids, never the words searched, a folder's name or an attachment's file name.
+    /// hashed ids, never the words searched, a folder's name or an attachment's file name. Task
+    /// M8.1: nor the HTML, a link or picture it names, or a part's content id.
     #[tokio::test]
     async fn reading_mail_logs_no_words_folder_names_or_file_names() {
         use crate::mail::service::tests::{mail_account, service_in, store_accounts};
@@ -10102,7 +10205,13 @@ mod tests {
         let raw = format!(
             "From: Bernd <bernd@example.com>\r\nTo: anna@example.org\r\nSubject: Bonus\r\nDate: {date}\r\n\
              Message-ID: <bonus@example.org>\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n\
-             --b\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n--b\r\nContent-Type: application/pdf\r\n\
+             --b\r\nContent-Type: multipart/related; boundary=\"r\"\r\n\r\n\
+             --r\r\nContent-Type: multipart/alternative; boundary=\"a\"\r\n\r\n\
+             --a\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n\
+             --a\r\nContent-Type: text/html\r\n\r\n<p class=\"lead\">See attached.</p><img src=\"cid:chart@example.org\">\
+             <a href=\"https://payroll.example.com/x\">Payroll</a>\r\n--a--\r\n\
+             --r\r\nContent-Type: image/png\r\nContent-ID: <chart@example.org>\r\n\r\nPNG\r\n--r--\r\n\
+             --b\r\nContent-Type: application/pdf\r\n\
              Content-Disposition: attachment; filename=\"salary-2026.pdf\"\r\n\r\n%PDF\r\n--b--\r\n"
         );
         server.add("Archive", &raw, &[]);
@@ -10137,16 +10246,21 @@ mod tests {
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
         let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");
         let Response::MailMessage { message } =
-            ask(&core, Some(&key), Request::GetMail { id: id.clone(), include_body: true }).await
+            ask(&core, Some(&key), Request::GetMail { id: id.clone(), include_body: true, include_html: true }).await
         else {
             panic!("a message")
         };
-        let part = message.attachments.first().map(|attachment| attachment.part.clone()).expect("an attachment");
-        let fetched = ask(&core, Some(&key), Request::GetMailAttachment { id, attachment: part }).await;
+        assert!(message.html.as_deref().is_some_and(|html| html.contains("payroll.example.com")), "{message:?}");
+        let chart = message.attachments.iter().find(|attachment| attachment.inline).expect("the inline picture");
+        assert_eq!(chart.content_id.as_deref(), Some("chart@example.org"));
+        let part = message.attachments.iter().find(|attachment| !attachment.inline).expect("an attachment");
+        let request = Request::GetMailAttachment { id, attachment: part.part.clone() };
+        let fetched = ask(&core, Some(&key), request).await;
         assert!(matches!(&fetched, Response::MailAttachment { path, .. } if path.ends_with("salary-2026.pdf")));
 
         let text = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
-        for content in ["salary", "Archive", "Bonus", ".pdf", "See attached"] {
+        for content in ["salary", "Archive", "Bonus", ".pdf", "See attached", "lead", "<p", "cid:", "chart@", "payroll"]
+        {
             assert!(!text.contains(content), "{content:?} in the audit log:\n{text}");
         }
         let shown: Vec<(String, String)> =
@@ -10162,7 +10276,7 @@ mod tests {
         let message = messages[0].id.clone();
         let fetches = server.lines().iter().filter(|line| line.contains("UID FETCH")).count();
         for request in [
-            Request::GetMail { id: message.clone(), include_body: true },
+            Request::GetMail { id: message.clone(), include_body: true, include_html: true },
             Request::GetMailThread { id: message.clone() },
             Request::GetMailAttachment { id: message, attachment: "1".into() },
         ] {
@@ -12645,7 +12759,7 @@ mod tests {
     }
 
     /// Issue #134 for an agent (engine B): with the lent key the access is the assistant's rights
-    /// without mail (never given to an agent) and without what the conversation switched off; with
+    /// without mail (not given to an agent under the default data rule) and without what the conversation switched off; with
     /// its own key exactly what the person set; the app key may do everything and gets `unsupported`.
     #[tokio::test]
     async fn a_lent_key_tells_its_access_without_what_it_never_gets() {
