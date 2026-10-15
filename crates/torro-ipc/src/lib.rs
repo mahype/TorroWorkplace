@@ -477,13 +477,16 @@ pub enum Request {
     /// (`kind: "ai"`), never with the key. Error codes: `auth` when the server refuses the key or
     /// wants one, `offline` when it cannot be reached, `not-found` when nothing answers at the
     /// address, `error` for an address that is none, a key over plain `http` to another computer,
-    /// OpenRouter without a key, an unexpected answer or a keychain that refuses. Only the app key
+    /// a cloud provider without a key, an unexpected answer or a keychain that refuses. Only the app key
     /// may send it: every client key gets `forbidden`, whatever its rights, because it hands the
     /// core a secret (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval
     /// either.
     #[serde(rename = "accounts.connect_ai")]
     ConnectAi {
-        /// Which kind of server: `ollama`, `lm_studio`, `openrouter` or `openai_compatible`.
+        /// Which kind of server: `ollama`, `lm_studio`, `openrouter`, `openai_compatible`, or a cloud
+        /// provider with a key of its own (task W.3): `openai`, `gemini`, `mistral`, `deepseek`,
+        /// `qwen`, `kimi`, `glm`, `minimax`. A cloud provider's usual address is its international
+        /// API; for its platform for mainland China pass that address as `server`.
         provider: AiProvider,
         /// The base address of the server's OpenAI-compatible API (`http://localhost:11434/v1`;
         /// `localhost:11434` is completed). Leave out for the provider's usual address; needed for

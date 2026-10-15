@@ -50,12 +50,86 @@ pub enum AiProvider {
     /// your own. Its address is always given. Written `openai_compatible`.
     #[serde(rename = "openai_compatible")]
     OpenAiCompatible,
+    /// OpenAI's API (task W.3). Written `openai`.
+    #[serde(rename = "openai")]
+    OpenAi,
+    /// Google Gemini through its OpenAI-compatible endpoint.
+    Gemini,
+    /// Mistral AI, a provider in the EU.
+    Mistral,
+    /// DeepSeek. Written `deepseek`.
+    #[serde(rename = "deepseek")]
+    DeepSeek,
+    /// Qwen on Alibaba Cloud Model Studio, its international endpoint.
+    Qwen,
+    /// Kimi by Moonshot AI, its international endpoint.
+    Kimi,
+    /// GLM by Z.ai (Zhipu), its international endpoint.
+    Glm,
+    /// MiniMax, its international endpoint. Written `minimax`.
+    #[serde(rename = "minimax")]
+    MiniMax,
+}
+
+/// Where a provider's servers are (task W.3, `docs/einrichtung.md`): shown with each provider, so
+/// the choice where data goes is made knowingly. Neutral, never a warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Seat {
+    /// On this computer or a machine of the person's own (Ollama, LM Studio).
+    ThisComputer,
+    /// Wherever the person's own server is.
+    OwnServer,
+    /// A cloud service in the United States.
+    Us,
+    /// A cloud service in the European Union.
+    Eu,
+    /// A cloud service run from China.
+    China,
+}
+
+impl Seat {
+    /// The words shown with a provider: "This computer", "Your server", "Cloud · US" …
+    pub fn label(self) -> &'static str {
+        match self {
+            Seat::ThisComputer => tr("This computer"),
+            Seat::OwnServer => tr("Your server"),
+            Seat::Us => tr("Cloud · US"),
+            Seat::Eu => tr("Cloud · EU"),
+            Seat::China => tr("Cloud · China"),
+        }
+    }
 }
 
 impl AiProvider {
-    /// Every provider, local ones first (Open First), as the add-account dialog lists them.
-    pub const ALL: [AiProvider; 4] =
-        [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::OpenRouter, AiProvider::OpenAiCompatible];
+    /// Every provider in the order the suite lists them (Open First): this computer, open models in
+    /// the cloud, the providers, those run from China, and any other server last.
+    pub const ALL: [AiProvider; 12] = [
+        AiProvider::Ollama,
+        AiProvider::LmStudio,
+        AiProvider::OpenRouter,
+        AiProvider::OpenAi,
+        AiProvider::Gemini,
+        AiProvider::Mistral,
+        AiProvider::DeepSeek,
+        AiProvider::Qwen,
+        AiProvider::Kimi,
+        AiProvider::Glm,
+        AiProvider::MiniMax,
+        AiProvider::OpenAiCompatible,
+    ];
+
+    /// The cloud providers with an API key of their own (task W.3), in the order of [`AiProvider::ALL`].
+    pub const CLOUD: [AiProvider; 9] = [
+        AiProvider::OpenRouter,
+        AiProvider::OpenAi,
+        AiProvider::Gemini,
+        AiProvider::Mistral,
+        AiProvider::DeepSeek,
+        AiProvider::Qwen,
+        AiProvider::Kimi,
+        AiProvider::Glm,
+        AiProvider::MiniMax,
+    ];
 
     /// The product's name, not translated: `Ollama`, `LM Studio`, `OpenRouter`; the protocol's name
     /// `OpenAI-compatible` for any other server.
@@ -65,6 +139,14 @@ impl AiProvider {
             AiProvider::LmStudio => "LM Studio",
             AiProvider::OpenRouter => "OpenRouter",
             AiProvider::OpenAiCompatible => "OpenAI-compatible",
+            AiProvider::OpenAi => "OpenAI",
+            AiProvider::Gemini => "Google Gemini",
+            AiProvider::Mistral => "Mistral",
+            AiProvider::DeepSeek => "DeepSeek",
+            AiProvider::Qwen => "Qwen",
+            AiProvider::Kimi => "Kimi",
+            AiProvider::Glm => "GLM",
+            AiProvider::MiniMax => "MiniMax",
         }
     }
 
@@ -76,6 +158,14 @@ impl AiProvider {
             AiProvider::LmStudio => "lm_studio",
             AiProvider::OpenRouter => "openrouter",
             AiProvider::OpenAiCompatible => "openai_compatible",
+            AiProvider::OpenAi => "openai",
+            AiProvider::Gemini => "gemini",
+            AiProvider::Mistral => "mistral",
+            AiProvider::DeepSeek => "deepseek",
+            AiProvider::Qwen => "qwen",
+            AiProvider::Kimi => "kimi",
+            AiProvider::Glm => "glm",
+            AiProvider::MiniMax => "minimax",
         }
     }
 
@@ -87,13 +177,75 @@ impl AiProvider {
             AiProvider::LmStudio => Some("http://localhost:1234/v1"),
             AiProvider::OpenRouter => Some("https://openrouter.ai/api/v1"),
             AiProvider::OpenAiCompatible => None,
+            // The addresses of the OpenAI-compatible APIs, checked against the providers' own
+            // documentation on 2026-10-15 (task W.3). Outside China the international ones.
+            AiProvider::OpenAi => Some("https://api.openai.com/v1"),
+            AiProvider::Gemini => Some("https://generativelanguage.googleapis.com/v1beta/openai"),
+            AiProvider::Mistral => Some("https://api.mistral.ai/v1"),
+            AiProvider::DeepSeek => Some("https://api.deepseek.com/v1"),
+            AiProvider::Qwen => Some("https://dashscope-intl.aliyuncs.com/compatible-mode/v1"),
+            AiProvider::Kimi => Some("https://api.moonshot.ai/v1"),
+            AiProvider::Glm => Some("https://api.z.ai/api/paas/v4"),
+            AiProvider::MiniMax => Some("https://api.minimax.io/v1"),
         }
     }
 
-    /// The provider cannot be used without an API key (OpenRouter). The others take one when the
-    /// server asks for it.
+    /// The address of the provider's platform for mainland China, where it has one of its own
+    /// (decision 3 in `docs/einrichtung.md`: offered under "Advanced"). Keys of one platform do not
+    /// work on the other.
+    pub fn china_url(self) -> Option<&'static str> {
+        match self {
+            AiProvider::Qwen => Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+            AiProvider::Kimi => Some("https://api.moonshot.cn/v1"),
+            AiProvider::Glm => Some("https://open.bigmodel.cn/api/paas/v4"),
+            AiProvider::MiniMax => Some("https://api.minimaxi.com/v1"),
+            _ => None,
+        }
+    }
+
+    /// The provider cannot be used without an API key: every cloud provider. The others take one
+    /// when the server asks for it.
     pub fn needs_key(self) -> bool {
-        self == AiProvider::OpenRouter
+        AiProvider::CLOUD.contains(&self)
+    }
+
+    /// The provider's page for creating an API key, for the "Create a key" link.
+    pub fn key_url(self) -> Option<&'static str> {
+        match self {
+            AiProvider::OpenRouter => Some("https://openrouter.ai/settings/keys"),
+            AiProvider::OpenAi => Some("https://platform.openai.com/api-keys"),
+            AiProvider::Gemini => Some("https://aistudio.google.com/apikey"),
+            AiProvider::Mistral => Some("https://console.mistral.ai/api-keys"),
+            AiProvider::DeepSeek => Some("https://platform.deepseek.com/api_keys"),
+            AiProvider::Qwen => Some("https://modelstudio.console.alibabacloud.com/"),
+            AiProvider::Kimi => Some("https://platform.moonshot.ai/console/api-keys"),
+            AiProvider::Glm => Some("https://z.ai/manage-apikey/apikey-list"),
+            AiProvider::MiniMax => Some("https://platform.minimax.io/user-center/basic-information/interface-key"),
+            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::OpenAiCompatible => None,
+        }
+    }
+
+    /// Where the provider's servers are ([`Seat`]).
+    pub fn seat(self) -> Seat {
+        match self {
+            AiProvider::Ollama | AiProvider::LmStudio => Seat::ThisComputer,
+            AiProvider::OpenAiCompatible => Seat::OwnServer,
+            AiProvider::OpenRouter | AiProvider::OpenAi | AiProvider::Gemini => Seat::Us,
+            AiProvider::Mistral => Seat::Eu,
+            AiProvider::DeepSeek | AiProvider::Qwen | AiProvider::Kimi | AiProvider::Glm | AiProvider::MiniMax => {
+                Seat::China
+            }
+        }
+    }
+
+    /// The provider's own models have open weights (DeepSeek, Qwen, Kimi, GLM, MiniMax; Mistral in
+    /// part), so the same model could also run on a server of one's own. OpenRouter lists open
+    /// models of many makers and says so per model ([`AiModel::open_weights`]).
+    pub fn open_weights(self) -> bool {
+        matches!(
+            self,
+            AiProvider::DeepSeek | AiProvider::Qwen | AiProvider::Kimi | AiProvider::Glm | AiProvider::MiniMax
+        )
     }
 }
 
@@ -444,6 +596,27 @@ mod tests {
 
     fn model(id: &str, open_weights: Option<bool>) -> AiModel {
         AiModel { id: id.into(), name: id.into(), tools: None, open_weights, context: None, reasoning: None }
+    }
+
+    #[test]
+    fn every_provider_is_written_by_its_id_and_every_cloud_one_has_an_address_a_key_page_and_a_seat() {
+        for provider in AiProvider::ALL {
+            let json = serde_json::to_value(provider).expect("json");
+            assert_eq!(json, serde_json::json!(provider.id()), "{provider:?}");
+            assert_eq!(serde_json::from_value::<AiProvider>(json).expect("back"), provider);
+        }
+        for provider in AiProvider::CLOUD {
+            assert!(provider.needs_key() && provider.key_url().is_some(), "{provider:?}");
+            let url = provider.default_url().expect("an address");
+            assert!(url.starts_with("https://") && !url.ends_with('/'), "{provider:?}: {url}");
+            assert!(!matches!(provider.seat(), Seat::ThisComputer | Seat::OwnServer), "{provider:?}");
+        }
+        for local in [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::OpenAiCompatible] {
+            assert!(!local.needs_key() && local.china_url().is_none(), "{local:?}");
+        }
+        assert_eq!(AiProvider::Mistral.seat(), Seat::Eu);
+        assert_eq!(AiProvider::Kimi.china_url(), Some("https://api.moonshot.cn/v1"));
+        assert_eq!(serde_json::to_value(AiProvider::MiniMax).expect("json"), "minimax");
     }
 
     #[test]

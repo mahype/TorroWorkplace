@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, Provider, openai};
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiServer};
 use torro_pim::AccountState;
 
@@ -416,7 +416,9 @@ impl AiAccounts {
         };
         let key = Some(Secret::new(key.expose().trim())).filter(|key| !key.is_blank());
         if key.is_none() && provider.needs_key() {
-            return Err(AiError::Invalid(tr("OpenRouter needs an API key. Create one on openrouter.ai.").into()));
+            let needs =
+                trf("{provider} needs an API key. Create one on its website.", &[("provider", &provider.name())]);
+            return Err(AiError::Invalid(needs));
         }
         if key.is_some() && !ai::key_may_travel(&base) {
             return Err(AiError::Invalid(
@@ -676,6 +678,35 @@ pub(crate) mod tests {
         assert_eq!(open[0].context, Some(40960));
         let all = ai.models(&info.id, true).await.expect("models");
         assert_eq!(all.len(), 3, "closed ones too");
+    }
+
+    /// Task W.3: a cloud provider of its own is checked by its model list with the key, and named
+    /// by the provider.
+    #[tokio::test]
+    async fn a_cloud_provider_is_checked_by_its_models_with_the_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let mistral = MockServer::start_async().await;
+        mistral
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models").header("authorization", format!("Bearer {KEY}"));
+                then.status(200).json_body(json!({"object": "list", "data": [{"id": "mistral-small-latest"}]}));
+            })
+            .await;
+        mistral
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(401).json_body(json!({"message": "Unauthorized"}));
+            })
+            .await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let refused = ai.connect(AiProvider::Mistral, Some(&mistral.url("/v1")), Secret::new("wrong")).await;
+        assert_eq!(refused, Err(AiError::Auth));
+        let info =
+            ai.connect(AiProvider::Mistral, Some(&mistral.url("/v1")), Secret::new(KEY)).await.expect("connected");
+        assert_eq!(info.label, format!("Mistral (127.0.0.1:{})", mistral.port()));
+        let keyless = ai.connect(AiProvider::DeepSeek, None, Secret::default()).await;
+        assert!(matches!(keyless, Err(AiError::Invalid(ref why)) if why.contains("DeepSeek")), "{keyless:?}");
     }
 
     #[tokio::test]

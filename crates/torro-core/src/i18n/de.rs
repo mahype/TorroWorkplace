@@ -315,6 +315,27 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Take over from TorroMail", "Aus TorroMail übernehmen"),
     ("Uses the accounts of the TorroMail app", "Nutzt die Konten der App TorroMail"),
     ("{n} sources on", "{n} Quellen an"),
+    // AI providers of their own (W.3)
+    ("Cloud · China", "Cloud · China"),
+    ("Cloud · EU", "Cloud · EU"),
+    ("Cloud · US", "Cloud · USA"),
+    ("Create a key on {provider}", "Schlüssel bei {provider} anlegen"),
+    (
+        "Keys of the platform for mainland China only work there, and the other way round.",
+        "Schlüssel der Plattform für Festlandchina gelten nur dort, und umgekehrt.",
+    ),
+    ("Paste an API key from the provider.", "Füge einen API-Schlüssel des Anbieters ein."),
+    ("This computer", "Dieser Rechner"),
+    ("Use the platform for mainland China", "Plattform für Festlandchina nutzen"),
+    ("Your server", "Dein Server"),
+    (
+        "{provider} needs an API key. Create one on its website.",
+        "{provider} braucht einen API-Schlüssel. Lege einen auf der Website an.",
+    ),
+    (
+        "{provider} runs its models in its own cloud ({seat}). What you send them goes there.",
+        "{provider} betreibt seine Modelle in der eigenen Cloud ({seat}). Was du ihnen schickst, geht dorthin.",
+    ),
     // Command line (torroworkplace ctl clients)
     (
         "--kind, --agent and --template only apply to ctl clients add",
@@ -2702,7 +2723,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Connect again: the server does not accept the API key",
         "Erneut verbinden: Der Server nimmt den API-Schlüssel nicht an",
     ),
-    ("Create a key on OpenRouter", "Schlüssel bei OpenRouter anlegen"),
     (
         "Enter the address of the server, like http://localhost:11434.",
         "Gib die Adresse des Servers ein, etwa http://localhost:11434.",
@@ -2728,10 +2748,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "Nur wenn der Server einen verlangt. Er bleibt im Schlüsselbund des Systems; Agenten sehen ihn nie.",
     ),
     ("Open models from many makers, with one API key", "Offene Modelle vieler Hersteller mit einem API-Schlüssel"),
-    (
-        "OpenRouter needs an API key. Create one on openrouter.ai.",
-        "OpenRouter braucht einen API-Schlüssel. Lege einen auf openrouter.ai an.",
-    ),
     (
         "OpenRouter offers open models such as Qwen, Llama and Mistral through one API key. Torro Workplace lists the models with open weights.",
         "OpenRouter bietet offene Modelle wie Qwen, Llama und Mistral über einen API-Schlüssel an. Torro Workplace listet die Modelle mit offenen Gewichten.",

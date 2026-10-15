@@ -78,7 +78,7 @@
 //! puts it on the dialog surface over the whole window (`super::dialog`).
 
 use iced::widget::space as blank;
-use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
+use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input, toggler};
 use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::account::{NtfyTopic, Secret};
 use torro_core::ai::AiProvider;
@@ -97,9 +97,6 @@ use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
-
-/// OpenRouter's page for API keys (task KI.1a).
-pub const OPENROUTER_KEYS_URL: &str = "https://openrouter.ai/settings/keys";
 
 /// The AI servers "On this computer" lists, in this order (Open First).
 const LOCAL_AI: [AiProvider; 2] = [AiProvider::Ollama, AiProvider::LmStudio];
@@ -383,6 +380,10 @@ struct AiSetup {
     key: Secret,
     /// The address of the local server being connected, for its row.
     connecting: Option<String>,
+    /// The cloud provider whose key is asked for (task W.3); OpenRouter unless another was chosen.
+    cloud: Option<AiProvider>,
+    /// Use the provider's platform for mainland China ([`AiProvider::china_url`]).
+    china: bool,
     /// The connected account's name, for Done.
     connected: Option<String>,
 }
@@ -717,8 +718,10 @@ pub enum Message {
     AiServerChanged(String),
     /// The API key field changed. A [`Secret`] like the token.
     AiKeyChanged(Secret),
-    /// "Create a key on OpenRouter".
+    /// "Create a key on <provider>".
     OpenAiKeyPage,
+    /// "Use the platform for mainland China" on the key step of a provider that has one.
+    AiChina(bool),
     /// The ntfy server's address changed (task E5.14).
     NtfyServerChanged(String),
     /// The name of the topic in row `.0` changed. A [`TopicName`], so `Debug` shows no name.
@@ -1069,11 +1072,14 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::ConnectLocalAi(..) => Action::None,
         Message::ChooseAi(provider) if state.step == Step::AiChoose => {
-            state.step = match provider {
-                AiProvider::OpenRouter => Step::AiKey,
-                _ => Step::AiServer,
-            };
+            state.step = if provider.needs_key() { Step::AiKey } else { Step::AiServer };
+            state.ai.cloud = provider.needs_key().then_some(provider);
+            state.ai.china = false;
             state.error = None;
+            Action::None
+        }
+        Message::AiChina(china) => {
+            state.ai.china = china;
             Action::None
         }
         Message::ChooseAi(_) => Action::None,
@@ -1085,7 +1091,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.ai.key = key;
             Action::None
         }
-        Message::OpenAiKeyPage => Action::OpenUrl(OPENROUTER_KEYS_URL.to_string()),
+        Message::OpenAiKeyPage => match cloud(state).key_url() {
+            Some(url) => Action::OpenUrl(url.to_string()),
+            None => Action::None,
+        },
         Message::AddressChanged(address) if state.step == Step::MailAddress => {
             // What was found belonged to the old address.
             state.mail = Mail { address, ..Mail::default() };
@@ -1157,7 +1166,12 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
                 state.github.send_token()
             }
             step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => continue_mail(state, step),
-            Step::AiKey if ai_can_connect(state) => connect_ai(state, AiProvider::OpenRouter, None),
+            Step::AiKey if ai_can_connect(state) => {
+                let provider = cloud(state);
+                // The China platform is another address; the international one is the usual.
+                let server = state.ai.china.then(|| provider.china_url()).flatten().map(str::to_string);
+                connect_ai(state, provider, server)
+            }
             Step::AiServer if ai_can_connect(state) => {
                 let server = state.ai.server.trim().to_string();
                 connect_ai(state, AiProvider::OpenAiCompatible, Some(server))
@@ -1408,7 +1422,8 @@ fn subtitle(state: &State) -> &'static str {
         (Step::MailServices, _) => tr("Choose what to use from this account."),
         (Step::MailConnecting, _) => tr("Signing in to your provider."),
         (Step::AiChoose, _) => tr("Choose where your AI models run."),
-        (Step::AiKey, _) => tr("Paste an API key from OpenRouter."),
+        (Step::AiKey, _) if cloud(state) == AiProvider::OpenRouter => tr("Paste an API key from OpenRouter."),
+        (Step::AiKey, _) => tr("Paste an API key from the provider."),
         (Step::AiServer, _) => tr("Enter the address of your AI server."),
         (Step::AiConnecting, _) => tr("Checking the connection with the AI server."),
         (Step::NtfyServer, _) => tr("Enter the address of your ntfy server."),
@@ -1615,14 +1630,21 @@ fn ai_step(state: &State) -> Element<'_, Message> {
     let way = |provider, name: &'static str, summary: &'static str| {
         pressable(setting_row(None, name, Some(summary.to_string()), chevron()), Some(Message::ChooseAi(provider)))
     };
-    let others = vec![
-        way(AiProvider::OpenRouter, "OpenRouter", tr("Open models from many makers, with one API key")),
-        way(
-            AiProvider::OpenAiCompatible,
-            tr("Other OpenAI-compatible server"),
-            tr("vLLM, llama.cpp or a server of your own"),
-        ),
-    ];
+    let mut others: Vec<Element<'_, Message>> = AiProvider::CLOUD
+        .into_iter()
+        .map(|provider| {
+            let summary = match provider {
+                AiProvider::OpenRouter => tr("Open models from many makers, with one API key"),
+                _ => provider.seat().label(),
+            };
+            way(provider, provider.name(), summary)
+        })
+        .collect();
+    others.push(way(
+        AiProvider::OpenAiCompatible,
+        tr("Other OpenAI-compatible server"),
+        tr("vLLM, llama.cpp or a server of your own"),
+    ));
     column![
         widgets::group(tr("On this computer"), local, Some(footer.to_string())),
         widgets::group(tr("More providers"), others, None),
@@ -1669,29 +1691,46 @@ fn local_ai_detail(server: &AiServer) -> String {
     }
 }
 
-/// OpenRouter: what it is, the way to its key page and the masked key field.
+/// The cloud provider whose key the key step asks for.
+fn cloud(state: &State) -> AiProvider {
+    state.ai.cloud.unwrap_or(AiProvider::OpenRouter)
+}
+
+/// A cloud provider (OpenRouter and those of task W.3): what it is and where it runs, the way to its
+/// key page, the masked key field and, where the provider has one, its platform for mainland China.
 fn ai_key_step(state: &State) -> Element<'_, Message> {
+    let provider = cloud(state);
     let create = widgets::text_button(
         Some(Icon::ArrowUpRight),
-        tr("Create a key on OpenRouter"),
+        trf("Create a key on {provider}", &[("provider", &provider.name())]),
         style::button::secondary,
-        Some(Message::OpenAiKeyPage),
+        provider.key_url().map(|_| Message::OpenAiKeyPage),
     );
-    let input = field("sk-or-v1-…", state.ai.key.expose())
+    let placeholder = if provider == AiProvider::OpenRouter { "sk-or-v1-…" } else { "" };
+    let input = field(placeholder, state.ai.key.expose())
         .secure(true)
         .on_input(|key| Message::AiKeyChanged(Secret::new(key)))
         .on_submit_maybe(ai_can_connect(state).then_some(Message::Continue));
-    column![
-        typo::text(
-            typo::body(),
-            tr("OpenRouter offers open models such as Qwen, Llama and Mistral through one API key. Torro Workplace lists the models with open weights.")
-        )
-        .style(theme::text_2),
+    let about = match provider {
+        AiProvider::OpenRouter => tr("OpenRouter offers open models such as Qwen, Llama and Mistral through one API key. Torro Workplace lists the models with open weights.").to_string(),
+        _ => trf(
+            "{provider} runs its models in its own cloud ({seat}). What you send them goes there.",
+            &[("provider", &provider.name()), ("seat", &provider.seat().label())],
+        ),
+    };
+    let mut parts = column![
+        typo::text(typo::body(), about).style(theme::text_2),
         row![create],
         field_group(tr("API key"), input, Some(tr("The key stays in the system keychain. Agents never see it."))),
     ]
-    .spacing(space::m())
-    .into()
+    .spacing(space::m());
+    if provider.china_url().is_some() {
+        let switch = toggler(state.ai.china).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::AiChina);
+        let note = tr("Keys of the platform for mainland China only work there, and the other way round.");
+        parts =
+            parts.push(setting_row(None, tr("Use the platform for mainland China"), Some(note.to_string()), switch));
+    }
+    parts.into()
 }
 
 /// Another OpenAI-compatible server: its address and, when it asks for one, a key.
@@ -3359,6 +3398,34 @@ mod tests {
     }
 
     /// The AI providers, opened from the catalog: the search went out.
+    #[test]
+    fn a_cloud_provider_asks_for_its_key_and_may_use_its_china_platform() {
+        let mut state = at_ai();
+        drop(view(&state, &Data::default()));
+        update(&mut state, Message::ChooseAi(AiProvider::Kimi), &Data::default());
+        assert_eq!(state.step, Step::AiKey);
+        drop(view(&state, &Data::default()));
+        let page = send(&mut state, Message::OpenAiKeyPage);
+        assert!(matches!(page, Action::OpenUrl(url) if Some(url.as_str()) == AiProvider::Kimi.key_url()));
+        update(&mut state, Message::AiKeyChanged(Secret::new("sk-kimi")), &Data::default());
+        update(&mut state, Message::AiChina(true), &Data::default());
+        let Action::Send(Request::ConnectAi { provider, server, key }) = send(&mut state, Message::Continue) else {
+            panic!("connect")
+        };
+        assert_eq!(
+            (provider, server.as_deref(), key.expose()),
+            (AiProvider::Kimi, Some("https://api.moonshot.cn/v1"), "sk-kimi")
+        );
+
+        let mut usual = at_ai();
+        update(&mut usual, Message::ChooseAi(AiProvider::Mistral), &Data::default());
+        update(&mut usual, Message::AiKeyChanged(Secret::new("key")), &Data::default());
+        let Action::Send(Request::ConnectAi { server, .. }) = send(&mut usual, Message::Continue) else {
+            panic!("connect")
+        };
+        assert_eq!(server, None, "the international address is the usual one");
+    }
+
     fn at_ai() -> State {
         let mut state = at_catalog();
         let action = update(&mut state, Message::ChooseProvider(Provider::Ai), &Data::default());
@@ -3433,7 +3500,9 @@ mod tests {
         assert_eq!(state.step, Step::AiChoose);
         update(&mut state, Message::Back, &Data::default());
         assert_eq!(state.step, Step::Provider);
-        assert!(matches!(send(&mut state, Message::OpenAiKeyPage), Action::OpenUrl(url) if url == OPENROUTER_KEYS_URL));
+        assert!(
+            matches!(send(&mut state, Message::OpenAiKeyPage), Action::OpenUrl(url) if Some(url.as_str()) == AiProvider::OpenRouter.key_url())
+        );
     }
 
     #[test]

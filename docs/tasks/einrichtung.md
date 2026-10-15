@@ -46,15 +46,21 @@ W.10 Sichtprüfung und API-Prüfung am Ende
 - **Oberfläche:** Apps (Schalter) · **API/MCP:** wie W.1
 
 ### W.3 KI-Anbieter-Katalog
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** – (Entscheidung 2: Varianten je Anbieter) · **Dateien:** `crates/torro-core/src/ai/**`,
-  `crates/torroworkplace/src/account/ai*.rs`, `crates/torroworkplace/src/ui/wizard.rs`
-- Katalog mit Name, Adresse, Protokoll, Schlüsselseite, Sitz, offenen Gewichten: OpenAI, Google Gemini, Mistral,
-  DeepSeek, Qwen, Kimi, GLM, MiniMax (alle OpenAI-kompatibel). Anthropic kommt mit **KI.1** (eigenes Protokoll).
-  Adressen bei der Umsetzung prüfen; internationale Endpunkte als Standard.
-- **Oberfläche:** Accounts › Add › AI und Schritt AI · **API:** `ConnectAi` mit neuen Anbietern · Admin, nur
-  App-Schlüssel · **MCP:** Never (Schlüssel)
-- **Abnahme:** `httpmock`-Test je Protokoll; Schlüssel in keiner Antwort und keinem Protokoll.
+- [x] erledigt (offen: Z.ai soll laut einer fremden Quelle keine Modell-Liste haben; dann scheitert das Verbinden
+  von GLM an der Prüfung über `/models` – mit einem echten Schlüssel nachprüfen)
+- **Modell:** Opus · **Braucht:** – (Entscheidung 2: Varianten je Anbieter) · **Dateien:** `crates/torro-core/src/ai/{mod,openai}.rs`,
+  `crates/torroworkplace/src/account/ai.rs`, `crates/torroworkplace/src/assistant/data_rule.rs`,
+  `crates/torroworkplace/src/ui/wizard.rs`, `crates/torro-ipc/src/{lib,api}.rs`, `crates/torro-core/src/i18n/de.rs`
+- `AiProvider` mit OpenAI, Gemini, Mistral, DeepSeek, Qwen, Kimi, GLM, MiniMax (alle OpenAI-kompatibel; Anthropic kommt
+  mit **KI.1**). Je Anbieter: Adresse (international, geprüft am 2026-10-15), China-Adresse wo vorhanden, Schlüsselseite,
+  Sitz (`Seat`: dieser Rechner, eigener Server, Cloud USA/EU/China), offene Gewichte. Den Denkaufwand bekommen nur
+  OpenAI und Gemini (`reasoning_effort`); die anderen Cloud-Anbieter bekommen kein unbekanntes Feld.
+- Dialog „Add account“ › AI: alle Cloud-Anbieter mit Sitz; ein Schlüssel-Schritt für jeden, mit „Use the platform for
+  mainland China“ wo es eine gibt. Datenregel: jeder Cloud-Anbieter zählt als entfernt.
+- **Oberfläche:** Accounts › Add › AI (die Einrichtung folgt in W.8) · **API:** `ConnectAi` mit neuen Anbietern · Admin,
+  nur App-Schlüssel · **MCP:** Never (Schlüssel)
+- **Abnahme:** `httpmock`-Test für einen Cloud-Anbieter (Prüfung über die Modelle mit Schlüssel, falscher Schlüssel,
+  fehlender Schlüssel); Schlüssel in keiner Antwort.
 
 ### W.4 Hülle der Einrichtung
 - [x] erledigt (Komponenten als Gruppe mit Schaltern statt Karten, wie die Design-Regel für Einstellungsseiten

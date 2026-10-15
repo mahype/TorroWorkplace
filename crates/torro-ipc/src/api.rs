@@ -3978,7 +3978,20 @@ mod tests {
         let provider = schema.as_value().pointer("/properties/provider").expect("provider");
         assert_eq!(
             serde_json::Value::Array(enum_values(provider)),
-            serde_json::json!(["ollama", "lm_studio", "openrouter", "openai_compatible"])
+            serde_json::json!([
+                "ollama",
+                "lm_studio",
+                "openrouter",
+                "openai_compatible",
+                "openai",
+                "gemini",
+                "mistral",
+                "deepseek",
+                "qwen",
+                "kimi",
+                "glm",
+                "minimax"
+            ])
         );
         // A local server without a key: the key is left out on the wire and in `Debug`.
         let local = Request::ConnectAi {
