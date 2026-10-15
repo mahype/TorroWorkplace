@@ -14,7 +14,8 @@ use torro_gui::widgets::{self, TileFace, TileSize};
 use torro_gui::{style, typo};
 
 use torro_core::account::Secret;
-use torro_ipc::AccountInfo;
+use torro_inbox::{SourceKind, SourceRef};
+use torro_ipc::{AccountInfo, ServerService};
 use torro_pim::{AccountState, Collection};
 
 use super::{Data, Message, State, Step, app_of};
@@ -30,7 +31,9 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         // Not listed until their tasks build them ([`Step::built`]).
         Step::Calendar => collections(state, data, Kind::Calendars),
         Step::Tasks => collections(state, data, Kind::Lists),
-        Step::Mail | Step::Inbox | Step::Ai => Space::new().into(),
+        Step::Mail => mail(data),
+        Step::Inbox => inbox(state, data),
+        Step::Ai => Space::new().into(),
     }
 }
 
@@ -56,6 +59,14 @@ pub fn status(state: &State, data: &Data) -> Option<String> {
         Step::Tasks => {
             let n = shown_count(state, data, Kind::Lists);
             Some(trf("{n} lists shown", &[("n", &n)]))
+        }
+        Step::Mail => {
+            let n = data.accounts.iter().filter(|account| account.kind == "mail").count();
+            Some(if n == 1 { tr("1 account").to_string() } else { trf("{n} accounts", &[("n", &n)]) })
+        }
+        Step::Inbox => {
+            let on = inbox_sources(data).iter().filter(|(source, ..)| !state.is_muted(data, source)).count();
+            Some(trf("{n} sources on", &[("n", &on)]))
         }
         Step::Components => {
             let on = Component::ALL.len() - state.off.len();
@@ -378,6 +389,128 @@ fn github_part<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         .into();
     }
     connect::github::ways("GitHub", Message::UseGithubCli, Message::PasteToken)
+}
+
+// ----- Mail and the Notification Hub (task W.7) -------------------------------------------------------
+
+/// A row that opens something: symbol, name, one line under it and the chevron.
+fn opener<'a>(symbol: Icon, name: &'a str, detail: &'a str, message: Message) -> Element<'a, Message> {
+    let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
+    pressable(setting_row(Some(tile), name, Some(detail.to_string()), chevron()), Some(message))
+}
+
+/// The mail accounts there are, and the two ways to add one; both open the add-account dialog.
+fn mail(data: &Data) -> Element<'_, Message> {
+    let accounts: Vec<Element<'_, Message>> = data
+        .accounts
+        .iter()
+        .filter(|account| account.kind == "mail")
+        .map(|account| {
+            let tile = widgets::source_tile(TileFace::Icon(Icon::Mail), TileSize::Medium, None);
+            let (detail, pill) = match &account.state {
+                AccountState::Connected { problem: Some(problem), .. } => {
+                    (problem.clone(), widgets::state_pill(Icon::CircleAlert, tr("Problem")))
+                }
+                _ => (
+                    tr("Mail, and calendars where the provider has them").to_string(),
+                    widgets::state_pill(Icon::CircleCheck, tr("Connected")),
+                ),
+            };
+            setting_row(Some(tile), account.label.as_str(), Some(detail), pill)
+        })
+        .collect();
+    let mut parts =
+        vec![title(tr("Mail"), tr("Add your mail accounts. Calendars that come with them show up under Calendar."))];
+    if accounts.is_empty() {
+        parts.push(typo::text(typo::body(), tr("No mail account yet.")).style(theme::text_2).into());
+    } else {
+        parts.push(widgets::group(tr("Mail accounts"), accounts, None));
+    }
+    let add = vec![
+        opener(Icon::Plus, tr("Add mail account"), tr("Finds the servers from your address"), Message::AddMail),
+        opener(
+            Icon::MailOpen,
+            tr("Take over from TorroMail"),
+            tr("Uses the accounts of the TorroMail app"),
+            Message::TakeOverTorroMail,
+        ),
+    ];
+    parts.push(widgets::group(
+        tr("Add"),
+        add,
+        Some(tr("Passwords stay in the system keychain; agents never see them.").to_string()),
+    ));
+    page(parts)
+}
+
+/// The inbox sources the connected accounts bring: the source, its symbol, its name and the
+/// account it belongs to.
+fn inbox_sources(data: &Data) -> Vec<(SourceRef, Icon, &'static str, &str)> {
+    let mut sources = Vec::new();
+    for account in data.accounts.iter().filter(|account| !account.id.is_empty()) {
+        // The account's id is `<kind>:<name>`; the source of the account has that name.
+        let Some((_, name)) = account.id.split_once(':') else { continue };
+        let source = |kind| SourceRef { kind, name: name.to_string() };
+        let label = account.label.as_str();
+        match account.kind.as_str() {
+            "nextcloud" => {
+                sources.push((source(SourceKind::Nextcloud), Icon::Bell, tr("Nextcloud notifications"), label));
+                let talk = account.services.as_ref().is_none_or(|services| services.contains(&ServerService::Talk));
+                if talk {
+                    sources.push((source(SourceKind::Talk), Icon::MessageCircle, "Talk", label));
+                }
+            }
+            "github" => sources.push((source(SourceKind::Github), Icon::Github, "GitHub", label)),
+            "mail" => sources.push((source(SourceKind::Mail), Icon::Mail, tr("Mail"), label)),
+            "ntfy" => sources.push((source(SourceKind::Ntfy), Icon::RadioTower, "ntfy", label)),
+            _ => {}
+        }
+    }
+    sources
+}
+
+/// The Notification Hub: a switch per source the accounts bring, ntfy's topics to subscribe, and
+/// quiet during busy events.
+fn inbox<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let rows: Vec<Element<'a, Message>> = inbox_sources(data)
+        .into_iter()
+        .map(|(source, symbol, name, account)| {
+            let on = !state.is_muted(data, &source);
+            let switch = toggler(on)
+                .size(style::CHECK_SIZE)
+                .style(style::toggler)
+                .on_toggle(move |on| Message::Source(source.clone(), on));
+            let tile = widgets::source_tile(TileFace::Icon(symbol), TileSize::Medium, None);
+            setting_row(Some(tile), name, Some(account.to_string()), switch)
+        })
+        .collect();
+    let mut parts = vec![title(tr("Notification Hub"), tr("One place for what needs you. Choose what comes in."))];
+    if rows.is_empty() {
+        let none = tr("No sources yet. They come with the accounts you connect.");
+        parts.push(typo::text(typo::body(), none).style(theme::text_2).into());
+    } else {
+        let footer = tr("A source turned off brings nothing new; what is there stays.");
+        parts.push(widgets::group(tr("Sources"), rows, Some(footer.to_string())));
+    }
+    let ntfy = opener(
+        Icon::RadioTower,
+        tr("Subscribe to ntfy topics"),
+        tr("CI, uptime checks and your own scripts"),
+        Message::AddNtfy,
+    );
+    parts.push(widgets::group(tr("More sources"), vec![ntfy], None));
+    let quiet = toggler(state.quiet.unwrap_or(data.settings.quiet_when_busy))
+        .size(style::CHECK_SIZE)
+        .style(style::toggler)
+        .on_toggle(Message::Quiet);
+    let quiet = setting_row(
+        None,
+        tr("Quiet during busy events"),
+        Some(tr("Only urgent entries pop up while a busy event runs; a summary follows.").to_string()),
+        quiet,
+    );
+    parts.push(widgets::group(tr("Notifications"), vec![quiet], None));
+    page(parts)
 }
 
 /// What a component is for, one line on its card.

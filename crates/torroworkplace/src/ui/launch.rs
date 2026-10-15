@@ -155,10 +155,12 @@ pub enum Open {
     SetupCalDav,
     /// The setup's tasks step without the demo's GitHub account: GitHub's two ways.
     SetupGithub,
+    /// The setup's mail step with the add-account dialog over it, on its mail path (task W.7).
+    SetupMailAdd,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 81] = [
+    pub const ALL: [(&'static str, Open); 84] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -239,6 +241,9 @@ impl Open {
         ("setup-calendar-caldav", Open::SetupCalDav),
         ("setup-tasks", Open::Setup(super::setup::Step::Tasks)),
         ("setup-tasks-github", Open::SetupGithub),
+        ("setup-mail", Open::Setup(super::setup::Step::Mail)),
+        ("setup-mail-add", Open::SetupMailAdd),
+        ("setup-inbox", Open::Setup(super::setup::Step::Inbox)),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
@@ -1502,9 +1507,10 @@ mod tests {
         let launch = Launch::parse(&args(&["--setup", "--step=components"])).expect("a built step");
         assert_eq!(launch.setup, Some(Step::Components));
         assert_eq!(Launch::parse(&args(&["--step", "done"])), Err(LaunchError::NeedsSetup("--step")));
-        let err = Launch::parse(&args(&["--setup", "--step", "mail"])).expect_err("not built yet");
+        let err = Launch::parse(&args(&["--setup", "--step", "ai"])).expect_err("not built yet");
         assert!(
-            err.to_string().ends_with("valid values: welcome, nextcloud, components, calendar, tasks, done"),
+            err.to_string()
+                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, done"),
             "{err}"
         );
     }

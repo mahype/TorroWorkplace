@@ -46,7 +46,8 @@ use torro_ipc::{Request, Response, SettingKey};
 use super::connect::caldav::{self, CalDavSignIn};
 use super::connect::github::{self, GithubSignIn};
 use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
-use super::{Action, Data, page_margin};
+use super::{Action, Data, page_margin, wizard};
+use torro_inbox::SourceRef;
 
 /// A step of the setup, in the order it is walked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -141,10 +142,10 @@ impl Step {
     }
 
     /// Whether the step's page exists yet: W.4 built Welcome, Components and Done, W.5 Nextcloud,
-    /// W.6 Calendar and Tasks; tasks W.7 and W.8 the others. A step that is not built is not
-    /// listed, so the setup never shows an empty page.
+    /// W.6 Calendar and Tasks, W.7 Mail and Inbox; task W.8 the AI. A step that is not built is
+    /// not listed, so the setup never shows an empty page.
     fn built(self) -> bool {
-        matches!(self, Step::Welcome | Step::Nextcloud | Step::Components | Step::Calendar | Step::Tasks | Step::Done)
+        !matches!(self, Step::Ai)
     }
 }
 
@@ -193,6 +194,13 @@ pub struct State {
     github_token: bool,
     /// The GitHub login signed in to in this setup.
     github_login: Option<String>,
+    /// The add-account dialog over the setup (task W.7): the mail path, TorroMail's accounts or
+    /// ntfy, exactly as Accounts › Add account has them.
+    dialog: Option<wizard::State>,
+    /// Inbox sources switched in this setup, by their key: shown at once, the core follows.
+    muted: BTreeMap<String, bool>,
+    /// "Quiet during busy events" as switched here.
+    quiet: Option<bool>,
 }
 
 impl State {
@@ -216,6 +224,9 @@ impl State {
             github: GithubSignIn::default(),
             github_token: false,
             github_login: None,
+            dialog: None,
+            muted: BTreeMap::new(),
+            quiet: None,
         }
     }
 
@@ -231,7 +242,23 @@ impl State {
 
     /// A sign-in runs; the shell reloads more often, so the end is seen soon.
     pub fn busy(&self) -> bool {
-        self.nextcloud.running() || self.github.checking() || self.caldav.as_ref().is_some_and(CalDavSignIn::connecting)
+        self.nextcloud.running()
+            || self.github.checking()
+            || self.caldav.as_ref().is_some_and(CalDavSignIn::connecting)
+            || self.dialog.as_ref().is_some_and(wizard::State::busy)
+    }
+
+    /// The add-account dialog lies over the setup; keys and the footer belong to it.
+    pub fn dialog_open(&self) -> bool {
+        self.dialog.is_some()
+    }
+
+    /// Whether the inbox source `source` is muted: as switched here, else as the core lists it.
+    fn is_muted(&self, data: &Data, source: &SourceRef) -> bool {
+        self.muted
+            .get(&source_key(source))
+            .copied()
+            .unwrap_or_else(|| data.sources.iter().any(|info| info.source == *source && info.muted))
     }
 
     /// Whether the apps show the calendar or task list `id`: as switched here, else as stored.
@@ -357,6 +384,18 @@ pub enum Message {
     TokenChanged(Secret),
     /// "Create a token on GitHub".
     OpenTokenPage,
+    /// "Add mail account": the add-account dialog on its mail path.
+    AddMail,
+    /// "Take over from TorroMail": the add-account dialog with TorroMail's accounts on top.
+    TakeOverTorroMail,
+    /// "Subscribe to ntfy topics": the add-account dialog on its ntfy path.
+    AddNtfy,
+    /// The add-account dialog over the setup.
+    Dialog(wizard::Message),
+    /// An inbox source's switch: `true` lets it in, `false` mutes it.
+    Source(SourceRef, bool),
+    /// "Quiet during busy events".
+    Quiet(bool),
 }
 
 /// What the setup wants the shell to do.
@@ -492,7 +531,51 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
         }
         Message::OpenTokenPage => stay(Action::OpenUrl(github::NEW_TOKEN_URL.to_string())),
         Message::UseGithubCli => stay(Action::None),
+        Message::AddMail => stay(open_dialog(state, Some(wizard::Provider::Mail), data)),
+        Message::TakeOverTorroMail => stay(open_dialog(state, None, data)),
+        Message::AddNtfy => stay(open_dialog(state, Some(wizard::Provider::Ntfy), data)),
+        Message::Dialog(wizard::Message::Close) => {
+            state.dialog = None;
+            stay(Action::None)
+        }
+        Message::Dialog(message) => match state.dialog.as_mut() {
+            Some(dialog) => stay(wizard::update(dialog, message, data)),
+            None => stay(Action::None),
+        },
+        Message::Source(source, on) => {
+            state.muted.insert(source_key(&source), !on);
+            stay(Action::Send(Request::MuteSource { source, muted: !on }))
+        }
+        Message::Quiet(quiet) => {
+            state.quiet = Some(quiet);
+            stay(set(SettingKey::QuietWhenBusy, serde_json::Value::Bool(quiet)))
+        }
     }
+}
+
+/// Opens the add-account dialog over the setup: on the path of `provider`, or on the catalog with
+/// TorroMail's accounts on top (it asks for them as it opens).
+fn open_dialog(state: &mut State, provider: Option<wizard::Provider>, data: &Data) -> Action {
+    state.close_forms();
+    state.error = None;
+    match provider {
+        Some(provider) => {
+            let mut dialog = wizard::State::new();
+            let action = wizard::update(&mut dialog, wizard::Message::ChooseProvider(provider), data);
+            state.dialog = Some(dialog);
+            action
+        }
+        None => {
+            let (dialog, ask) = wizard::State::open();
+            state.dialog = Some(dialog);
+            ask
+        }
+    }
+}
+
+/// A source's key for the switches kept here: kind and name.
+fn source_key(source: &SourceRef) -> String {
+    format!("{:?}:{}", source.kind, source.name)
 }
 
 /// Sends the open form of the calendar or tasks step: the CalDAV account, showing what the
@@ -518,6 +601,10 @@ fn submit_form(state: &mut State) -> Action {
 /// the setup is open): signed in, the step shows the account's services; failed, it asks for the
 /// address again and says so. While waiting the footer shows the shell's error, if any.
 pub fn observe(state: &mut State, data: &Data) {
+    // The dialog follows its own Nextcloud sign-in the same way.
+    if let Some(dialog) = state.dialog.as_mut() {
+        wizard::observe(dialog, data);
+    }
     if !state.nextcloud.running() {
         return;
     }
@@ -535,6 +622,9 @@ pub fn observe(state: &mut State, data: &Data) {
 /// The answer to a request the setup sent; `true` when the setup shows it itself (then the shell
 /// shows no notice): a sign-in that could not start shows its reason in the footer.
 pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
+    if let Some(dialog) = state.dialog.as_mut() {
+        return wizard::answered(dialog, result);
+    }
     if let Some(answer) = state.caldav.as_mut().and_then(|form| form.answered(result)) {
         match answer {
             Ok(account) => {
@@ -580,6 +670,9 @@ fn set_setup(state: SetupState) -> Action {
 /// Escape: stop waiting for the browser or adding another Nextcloud, else one step back; nothing
 /// on the first step.
 pub fn escape(state: &State) -> Option<Message> {
+    if state.dialog.is_some() {
+        return Some(Message::Dialog(wizard::Message::Close));
+    }
     if (state.step == Step::Nextcloud && (state.nextcloud.running() || state.adding)) || state.in_form() {
         return Some(Message::Cancel);
     }
@@ -675,6 +768,13 @@ pub fn header(state: &State, class: SizeClass) -> Element<'_, Message> {
     shell::header_bar([], title, later)
 }
 
+/// The add-account dialog over the whole window, while it is open.
+pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    let dialog = state.dialog.as_ref()?;
+    let content = wizard::view(dialog, data).map(Message::Dialog);
+    Some(super::dialog(content, size::form_max(), Message::Dialog(wizard::Message::Close)))
+}
+
 /// The page of the current step over the fixed footer.
 pub fn body<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Element<'a, Message> {
     let page = pages::view(state, data);
@@ -745,13 +845,22 @@ mod tests {
     #[test]
     fn the_walk_goes_through_the_built_steps_and_ends_done() {
         let mut setup = state(Step::Welcome);
-        let walk = [Step::Welcome, Step::Nextcloud, Step::Components, Step::Calendar, Step::Tasks, Step::Done];
+        let walk = [
+            Step::Welcome,
+            Step::Nextcloud,
+            Step::Components,
+            Step::Calendar,
+            Step::Tasks,
+            Step::Mail,
+            Step::Inbox,
+            Step::Done,
+        ];
         assert_eq!(setup.steps(), walk);
         assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
-        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 6)));
+        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 8)));
         update(&mut setup, Message::Next, &data());
         assert_eq!(setup.step, Step::Components, "a Nextcloud is connected: the step goes on");
-        for _ in 0..3 {
+        for _ in 0..5 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -774,7 +883,7 @@ mod tests {
     #[test]
     fn passed_steps_are_checked_and_clicked_ones_can_be_gone_back_to() {
         let mut setup = state(Step::Welcome);
-        for _ in 0..5 {
+        for _ in 0..7 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -782,7 +891,7 @@ mod tests {
         update(&mut setup, Message::Go(Step::Welcome), &data());
         assert_eq!(setup.step, Step::Welcome);
         assert_eq!(setup.mark(Step::Components), Mark::Passed, "reached before, still passed");
-        update(&mut setup, Message::Go(Step::Mail), &data());
+        update(&mut setup, Message::Go(Step::Ai), &data());
         assert_eq!(setup.step, Step::Welcome, "a step that is not walked cannot be gone to");
     }
 
@@ -969,11 +1078,46 @@ mod tests {
     }
 
     #[test]
+    fn mail_is_added_in_the_dialog_over_the_setup() {
+        let mut setup = state(Step::Mail);
+        update(&mut setup, Message::AddMail, &data());
+        assert!(setup.dialog_open());
+        assert_eq!(escape(&setup).map(|m| format!("{m:?}")), Some("Dialog(Close)".into()));
+        // The dialog's search runs and its answer goes to the dialog, not to the setup's footer.
+        let address = wizard::Message::AddressChanged("anna@mailbox.org".into());
+        update(&mut setup, Message::Dialog(address), &data());
+        let search = update(&mut setup, Message::Dialog(wizard::Message::Continue), &data());
+        assert!(matches!(search, Outcome::Stay(Action::Send(Request::DiscoverServices { .. }))));
+        assert!(answered(&mut setup, &Err("offline".into())));
+        assert!(setup.error.is_none());
+        update(&mut setup, Message::Dialog(wizard::Message::Close), &data());
+        assert!(!setup.dialog_open());
+
+        let torromail = update(&mut setup, Message::TakeOverTorroMail, &data());
+        assert!(matches!(torromail, Outcome::Stay(Action::Send(Request::TorroMailAccounts))));
+    }
+
+    #[test]
+    fn inbox_sources_are_muted_by_their_switch() {
+        let data = data();
+        let mut setup = state(Step::Inbox);
+        let github = data.accounts.iter().find(|a| a.kind == "github").expect("the demo's GitHub");
+        let login = github.id.split_once(':').map(|(_, name)| name.to_string()).expect("an id with a kind");
+        let source = SourceRef { kind: torro_inbox::SourceKind::Github, name: login };
+        assert!(!setup.is_muted(&data, &source));
+        let off = update(&mut setup, Message::Source(source.clone(), false), &data);
+        assert!(matches!(off, Outcome::Stay(Action::Send(Request::MuteSource { muted: true, .. }))));
+        assert!(setup.is_muted(&data, &source), "at once");
+        let quiet = update(&mut setup, Message::Quiet(false), &data);
+        assert_eq!(sent(&quiet), Some((SettingKey::QuietWhenBusy, serde_json::json!(false))));
+    }
+
+    #[test]
     fn steps_are_named_by_their_word() {
         for step in Step::ALL.into_iter().filter(|step| step.built()) {
             assert_eq!(Step::from_arg(step.arg()), Some(step));
         }
-        assert_eq!(Step::from_arg("mail"), None, "not built yet");
-        assert_eq!(Step::args(), ["welcome", "nextcloud", "components", "calendar", "tasks", "done"]);
+        assert_eq!(Step::from_arg("ai"), None, "not built yet");
+        assert_eq!(Step::args(), ["welcome", "nextcloud", "components", "calendar", "tasks", "mail", "inbox", "done"]);
     }
 }

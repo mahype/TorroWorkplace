@@ -16,8 +16,10 @@ selbst wissen, wo er anfängt. Die Einrichtung führt einmal durch alles, was di
    und landet beim nächsten Öffnen beim ersten offenen Schritt.
 3. **Eine Komponente nach der anderen.** Feste Reihenfolge: Kalender, Aufgaben, Mail, Eingang, KI.
    Abgewählte Komponenten verschwinden aus der Schrittliste.
-4. **Keine zweite Umsetzung.** Die Verbindungswege (Nextcloud, CalDAV, Mail, GitHub, KI) gibt es im
-   Dialog „Add account“ (`ui/wizard.rs`). Sie werden zu Bausteinen, die beide benutzen.
+4. **Keine zweite Umsetzung.** Die Verbindungswege gibt es im Dialog „Add account“ (`ui/wizard.rs`).
+   Nextcloud und GitHub sind Bausteine in `ui/connect/`, die beide benutzen; CalDAV hat dort einen kurzen
+   Weg nur für Kalender und Aufgaben. Für Mail, TorroMail und ntfy öffnet die Einrichtung den Dialog selbst
+   über sich, auf dem passenden Weg (W.7).
 5. **Open First.** Lokale KI steht oben und wird von selbst gesucht. Cloud-Anbieter folgen, mit dem
    Sitz des Anbieters in jeder Zeile, damit die Wahl bewusst fällt ([ki.md](ki.md), Grundsatz 4).
 6. **Geheimnisse nur in der Oberfläche.** Passwörter und Schlüssel werden nur in Felder der

@@ -646,6 +646,10 @@ impl Ui {
                 let address = setup::Message::CalDav(connect::caldav::Message::Address("anna@mailbox.org".into()));
                 vec![Message::Setup(setup::Message::OpenCalDav), Message::Setup(address)]
             }
+            Open::SetupMailAdd => {
+                self.setup = Some(setup::State::new(setup::Step::Mail, &self.data.settings));
+                vec![Message::Setup(setup::Message::AddMail)]
+            }
             Open::SetupGithub => {
                 self.data.accounts.retain(|account| account.kind != "github");
                 self.setup = Some(setup::State::new(setup::Step::Tasks, &self.data.settings));
@@ -947,10 +951,12 @@ impl Ui {
                     None => Task::none(),
                 };
             }
-            Message::Enter => match self.setup.is_some() && self.menu.is_none() {
-                true => return self.update(Message::Setup(setup::Message::Next)),
-                false => Action::None,
-            },
+            Message::Enter => {
+                match self.setup.as_ref().is_some_and(|setup| !setup.dialog_open()) && self.menu.is_none() {
+                    true => return self.update(Message::Setup(setup::Message::Next)),
+                    false => Action::None,
+                }
+            }
             Message::Setup(m) => {
                 let Some(state) = self.setup.as_mut() else { return Task::none() };
                 match setup::update(state, m, &self.data) {
@@ -1132,7 +1138,11 @@ impl Ui {
         if matches!(class, SizeClass::Mini | SizeClass::Strip) {
             return Cover::Nothing;
         }
-        Cover::dialog(self.page_overlay().is_some()).or(Cover::drawer(class, self.drawer))
+        let dialog = match &self.setup {
+            Some(setup) => setup.dialog_open(),
+            None => self.page_overlay().is_some(),
+        };
+        Cover::dialog(dialog).or(Cover::drawer(class, self.drawer))
     }
 
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
@@ -1186,6 +1196,7 @@ impl Ui {
             None,
         )
         .rail(rail)
+        .overlay(setup::overlay(setup, &self.data).map(wrap))
         .into()
     }
 

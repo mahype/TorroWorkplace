@@ -96,10 +96,19 @@ W.10 Sichtprüfung und API-Prüfung am Ende
   Admin · **MCP:** `settings_set_collection_shown`, `accounts_connect_github`; CalDAV und Token Never (Geheimnis)
 
 ### W.7 Schritte Mail und Eingang
-- [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/{mail,inbox}.rs`
-- TorroMail-Übernahme, Mail-Konto; Eingangsquellen mit Schalter, ntfy, „Quiet during busy events“. Die Wege Mail
-  und ntfy ziehen dazu als Bausteine nach `ui/connect/` um.
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/**`,
+  `crates/torroworkplace/src/ui/{mod,launch}.rs`, `crates/torro-core/src/i18n/de.rs`
+- Mail: die Mail-Konten mit Zustand, „Add mail account“ und „Take over from TorroMail“. Eingang: je Quelle der
+  verbundenen Konten (Nextcloud-Benachrichtigungen, Talk, GitHub, Mail, ntfy) ein Schalter (`inbox.mute_source`,
+  sofort sichtbar), „Subscribe to ntfy topics“, „Quiet during busy events“.
+- Entschieden beim Umsetzen: Mail-Weg, TorroMail-Übernahme und ntfy werden **nicht** herausgelöst. Die Einrichtung
+  öffnet dafür den Dialog „Add account“ über sich, direkt auf dem passenden Weg. Der Mail-Weg (Suche, Passwort,
+  Server, Dienste, TorroMail mit Rückfall aufs Passwort) ist zu groß, um ihn doppelt zu pflegen; so gibt es ihn
+  einmal. Demo: `--open setup-mail`, `setup-mail-add`, `setup-inbox`.
+- **API:** `ConnectMail`, `ImportTorroMailAccount`, `ConnectNtfy` · Admin, nur App-Schlüssel; `inbox.mute_source` ·
+  Write; `SetSetting { QuietWhenBusy }` · Admin · **MCP:** `inbox_mute_source`, `settings_set_setting`; Mail und ntfy
+  mit Geheimnis Never
 
 ### W.8 Schritt KI
 - [ ] erledigt

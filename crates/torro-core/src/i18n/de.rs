@@ -283,6 +283,38 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{account} is connected", "{account} ist verbunden"),
     ("{n} calendars shown", "{n} Kalender sichtbar"),
     ("{n} lists shown", "{n} Listen sichtbar"),
+    // Control centre: first-run setup, mail and Notification Hub (W.7)
+    (
+        "A source turned off brings nothing new; what is there stays.",
+        "Eine ausgeschaltete Quelle bringt nichts Neues; was da ist, bleibt.",
+    ),
+    ("Add mail account", "Mail-Konto hinzufügen"),
+    (
+        "Add your mail accounts. Calendars that come with them show up under Calendar.",
+        "Füge deine Mail-Konten hinzu. Kalender, die dazugehören, erscheinen unter Kalender.",
+    ),
+    ("CI, uptime checks and your own scripts", "CI, Uptime-Prüfungen und eigene Skripte"),
+    ("Finds the servers from your address", "Findet die Server über deine Adresse"),
+    ("Mail, and calendars where the provider has them", "Mail, und Kalender, wo der Anbieter sie hat"),
+    ("More sources", "Weitere Quellen"),
+    ("Nextcloud notifications", "Nextcloud-Benachrichtigungen"),
+    (
+        "No sources yet. They come with the accounts you connect.",
+        "Noch keine Quellen. Sie kommen mit den Konten, die du verbindest.",
+    ),
+    (
+        "One place for what needs you. Choose what comes in.",
+        "Ein Ort für alles, was dich braucht. Wähle, was hereinkommt.",
+    ),
+    (
+        "Passwords stay in the system keychain; agents never see them.",
+        "Passwörter bleiben im Schlüsselbund des Systems; Agenten sehen sie nie.",
+    ),
+    ("Problem", "Problem"),
+    ("Subscribe to ntfy topics", "ntfy-Themen abonnieren"),
+    ("Take over from TorroMail", "Aus TorroMail übernehmen"),
+    ("Uses the accounts of the TorroMail app", "Nutzt die Konten der App TorroMail"),
+    ("{n} sources on", "{n} Quellen an"),
     // Command line (torroworkplace ctl clients)
     (
         "--kind, --agent and --template only apply to ctl clients add",
