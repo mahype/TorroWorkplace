@@ -157,10 +157,12 @@ pub enum Open {
     SetupGithub,
     /// The setup's mail step with the add-account dialog over it, on its mail path (task W.7).
     SetupMailAdd,
+    /// The setup's AI step after its search (task W.8): the demo finds Ollama, not LM Studio.
+    SetupAi,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 84] = [
+    pub const ALL: [(&'static str, Open); 85] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -244,6 +246,7 @@ impl Open {
         ("setup-mail", Open::Setup(super::setup::Step::Mail)),
         ("setup-mail-add", Open::SetupMailAdd),
         ("setup-inbox", Open::Setup(super::setup::Step::Inbox)),
+        ("setup-ai", Open::SetupAi),
         ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
@@ -1507,10 +1510,10 @@ mod tests {
         let launch = Launch::parse(&args(&["--setup", "--step=components"])).expect("a built step");
         assert_eq!(launch.setup, Some(Step::Components));
         assert_eq!(Launch::parse(&args(&["--step", "done"])), Err(LaunchError::NeedsSetup("--step")));
-        let err = Launch::parse(&args(&["--setup", "--step", "ai"])).expect_err("not built yet");
+        let err = Launch::parse(&args(&["--setup", "--step", "later"])).expect_err("no such step");
         assert!(
             err.to_string()
-                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, done"),
+                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, done"),
             "{err}"
         );
     }

@@ -646,6 +646,11 @@ impl Ui {
                 let address = setup::Message::CalDav(connect::caldav::Message::Address("anna@mailbox.org".into()));
                 vec![Message::Setup(setup::Message::OpenCalDav), Message::Setup(address)]
             }
+            // Entering the step sends the search, which the demo answers itself.
+            Open::SetupAi => {
+                self.setup = Some(setup::State::new(setup::Step::Inbox, &self.data.settings));
+                vec![Message::Setup(setup::Message::Next)]
+            }
             Open::SetupMailAdd => {
                 self.setup = Some(setup::State::new(setup::Step::Mail, &self.data.settings));
                 vec![Message::Setup(setup::Message::AddMail)]

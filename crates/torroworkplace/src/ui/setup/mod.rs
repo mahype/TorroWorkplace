@@ -33,6 +33,7 @@ use iced::widget::{column, container, row, rule, scrollable, svg};
 use iced::{Alignment, Element, Fill, Theme};
 use torro_core::AppId;
 use torro_core::account::Secret;
+use torro_core::ai::AiProvider;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, ComponentSwitch, Language, Settings, SetupState};
 use torro_gui::icon::{self, Icon};
@@ -41,7 +42,7 @@ use torro_gui::shell::{self, SidebarMode};
 use torro_gui::theme::{self, Appearance, palette, size, space};
 use torro_gui::widgets::{self, Trail};
 use torro_gui::{style, typo};
-use torro_ipc::{Request, Response, SettingKey};
+use torro_ipc::{AiServer, Request, Response, SettingKey};
 
 use super::connect::caldav::{self, CalDavSignIn};
 use super::connect::github::{self, GithubSignIn};
@@ -142,10 +143,10 @@ impl Step {
     }
 
     /// Whether the step's page exists yet: W.4 built Welcome, Components and Done, W.5 Nextcloud,
-    /// W.6 Calendar and Tasks, W.7 Mail and Inbox; task W.8 the AI. A step that is not built is
-    /// not listed, so the setup never shows an empty page.
+    /// W.6 Calendar and Tasks, W.7 Mail and Inbox, W.8 the AI: all of them now. A step that is not
+    /// built is not listed, so the setup never shows an empty page.
     fn built(self) -> bool {
-        !matches!(self, Step::Ai)
+        true
     }
 }
 
@@ -201,6 +202,16 @@ pub struct State {
     muted: BTreeMap<String, bool>,
     /// "Quiet during busy events" as switched here.
     quiet: Option<bool>,
+    /// The AI step (task W.8): the servers found on this computer; `None` before the answer.
+    ai_found: Option<Vec<AiServer>>,
+    /// `FindAiServers` was sent and has not answered.
+    ai_searching: bool,
+    /// The address of the local server being connected.
+    ai_connecting: Option<String>,
+    /// The addresses of local servers connected in this setup.
+    ai_connected: BTreeSet<String>,
+    /// The engine chosen here for the assistant's new chats, by id.
+    engine: Option<String>,
 }
 
 impl State {
@@ -227,6 +238,11 @@ impl State {
             dialog: None,
             muted: BTreeMap::new(),
             quiet: None,
+            ai_found: None,
+            ai_searching: false,
+            ai_connecting: None,
+            ai_connected: BTreeSet::new(),
+            engine: None,
         }
     }
 
@@ -246,6 +262,8 @@ impl State {
             || self.github.checking()
             || self.caldav.as_ref().is_some_and(CalDavSignIn::connecting)
             || self.dialog.as_ref().is_some_and(wizard::State::busy)
+            || self.ai_searching
+            || self.ai_connecting.is_some()
     }
 
     /// The add-account dialog lies over the setup; keys and the footer belong to it.
@@ -396,6 +414,14 @@ pub enum Message {
     Source(SourceRef, bool),
     /// "Quiet during busy events".
     Quiet(bool),
+    /// "Connect" on a server found on this computer: its provider and address.
+    ConnectLocalAi(AiProvider, String),
+    /// "Add key" on a cloud provider: the add-account dialog at its key.
+    AddAiKey(AiProvider),
+    /// "Other server": the add-account dialog at the address of an OpenAI-compatible server.
+    OtherAiServer,
+    /// The AI account a new chat of the assistant starts with, by engine id.
+    Engine(String),
 }
 
 /// What the setup wants the shell to do.
@@ -408,6 +434,18 @@ pub enum Outcome {
 }
 
 pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
+    let outcome = handle(state, message, data);
+    // The AI step looks for servers on this computer the first time it is shown.
+    match outcome {
+        Outcome::Stay(Action::None) if state.step == Step::Ai && state.ai_found.is_none() && !state.ai_searching => {
+            state.ai_searching = true;
+            Outcome::Stay(Action::Send(Request::FindAiServers))
+        }
+        outcome => outcome,
+    }
+}
+
+fn handle(state: &mut State, message: Message, data: &Data) -> Outcome {
     let stay = Outcome::Stay;
     // A finished sign-in is noticed before the message counts.
     observe(state, data);
@@ -550,7 +588,30 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Outcome {
             state.quiet = Some(quiet);
             stay(set(SettingKey::QuietWhenBusy, serde_json::Value::Bool(quiet)))
         }
+        Message::ConnectLocalAi(provider, server) if state.ai_connecting.is_none() => {
+            state.ai_connecting = Some(server.clone());
+            state.error = None;
+            stay(Action::Send(Request::ConnectAi { provider, server: Some(server), key: Secret::default() }))
+        }
+        Message::ConnectLocalAi(..) => stay(Action::None),
+        Message::AddAiKey(provider) => stay(open_ai_dialog(state, provider, data)),
+        Message::OtherAiServer => stay(open_ai_dialog(state, AiProvider::OpenAiCompatible, data)),
+        Message::Engine(engine) => {
+            state.engine = Some(engine.clone());
+            let default = torro_core::settings::AssistantDefault { engine, model: None, effort: None };
+            stay(set(SettingKey::AssistantDefault, torro_core::settings::AssistantDefault::to_value(Some(&default))))
+        }
     }
+}
+
+/// Opens the add-account dialog at the AI provider `provider`: its key, or the address of another
+/// server. The dialog looks for local servers as it opens, like Accounts › Add account.
+fn open_ai_dialog(state: &mut State, provider: AiProvider, data: &Data) -> Action {
+    let search = open_dialog(state, Some(wizard::Provider::Ai), data);
+    if let Some(dialog) = state.dialog.as_mut() {
+        wizard::update(dialog, wizard::Message::ChooseAi(provider), data);
+    }
+    search
 }
 
 /// Opens the add-account dialog over the setup: on the path of `provider`, or on the catalog with
@@ -647,6 +708,9 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         }
         return true;
     }
+    if let Some(taken) = ai_answered(state, result) {
+        return taken;
+    }
     match state.nextcloud.answered(result) {
         Some(Err(message)) => {
             state.error = Some(message);
@@ -655,6 +719,30 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
         Some(Ok(())) => true,
         None => false,
     }
+}
+
+/// The answers of the AI step: the servers found on this computer (without an answer every one
+/// shows as not running), and a local server connected from its row. `None` when the answer is
+/// not the AI step's.
+fn ai_answered(state: &mut State, result: &Result<Response, String>) -> Option<bool> {
+    if state.ai_searching {
+        state.ai_searching = false;
+        state.ai_found = Some(match result {
+            Ok(Response::AiServers { servers }) => servers.clone(),
+            _ => Vec::new(),
+        });
+        return Some(true);
+    }
+    let server = state.ai_connecting.take()?;
+    match result {
+        Ok(Response::Account { .. }) => {
+            state.ai_connected.insert(server);
+            state.error = None;
+        }
+        Ok(Response::Error { message, .. }) | Err(message) => state.error = Some(message.clone()),
+        Ok(_) => state.error = Some(tr("Torro Workplace did not answer as expected. Try again.").to_string()),
+    }
+    Some(true)
 }
 
 /// The request that changes one setting.
@@ -853,14 +941,15 @@ mod tests {
             Step::Tasks,
             Step::Mail,
             Step::Inbox,
+            Step::Ai,
             Step::Done,
         ];
         assert_eq!(setup.steps(), walk);
         assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)));
-        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 8)));
+        assert_eq!((setup.step, setup.position()), (Step::Nextcloud, (2, 9)));
         update(&mut setup, Message::Next, &data());
         assert_eq!(setup.step, Step::Components, "a Nextcloud is connected: the step goes on");
-        for _ in 0..5 {
+        for _ in 0..6 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -883,7 +972,7 @@ mod tests {
     #[test]
     fn passed_steps_are_checked_and_clicked_ones_can_be_gone_back_to() {
         let mut setup = state(Step::Welcome);
-        for _ in 0..7 {
+        for _ in 0..8 {
             update(&mut setup, Message::Next, &data());
         }
         assert_eq!(setup.step, Step::Done);
@@ -891,7 +980,8 @@ mod tests {
         update(&mut setup, Message::Go(Step::Welcome), &data());
         assert_eq!(setup.step, Step::Welcome);
         assert_eq!(setup.mark(Step::Components), Mark::Passed, "reached before, still passed");
-        update(&mut setup, Message::Go(Step::Ai), &data());
+        update(&mut setup, Message::Component(Component::Mail, false), &data());
+        update(&mut setup, Message::Go(Step::Mail), &data());
         assert_eq!(setup.step, Step::Welcome, "a step that is not walked cannot be gone to");
     }
 
@@ -1113,11 +1203,39 @@ mod tests {
     }
 
     #[test]
+    fn the_ai_step_looks_on_this_computer_once_and_connects_from_the_row() {
+        let mut setup = state(Step::Inbox);
+        let entered = update(&mut setup, Message::Next, &data());
+        assert_eq!(setup.step, Step::Ai);
+        assert!(matches!(entered, Outcome::Stay(Action::Send(Request::FindAiServers))), "{entered:?}");
+        let found = super::super::launch::demo_answer(&Request::FindAiServers, &data()).ok_or("the demo answers");
+        assert!(answered(&mut setup, &found.map_err(String::from)));
+        assert_eq!(setup.ai_found.as_ref().map(Vec::len), Some(1));
+        assert!(matches!(update(&mut setup, Message::Back, &data()), Outcome::Stay(Action::None)));
+        assert!(matches!(update(&mut setup, Message::Next, &data()), Outcome::Stay(Action::None)), "looked once");
+
+        let press = Message::ConnectLocalAi(AiProvider::Ollama, "http://localhost:11434/v1".into());
+        assert!(matches!(update(&mut setup, press, &data()), Outcome::Stay(Action::Send(Request::ConnectAi { .. }))));
+        assert!(setup.busy());
+        assert!(answered(&mut setup, &Err("The AI server could not be reached.".into())));
+        assert_eq!(setup.error.as_deref(), Some("The AI server could not be reached."));
+
+        let key = update(&mut setup, Message::AddAiKey(AiProvider::DeepSeek), &data());
+        assert!(matches!(key, Outcome::Stay(Action::Send(Request::FindAiServers))), "the dialog looks too");
+        assert!(setup.dialog_open());
+        let engine = update(&mut setup, Message::Engine("ai:ollama@localhost:11434".into()), &data());
+        assert!(matches!(sent(&engine), Some((SettingKey::AssistantDefault, _))));
+    }
+
+    #[test]
     fn steps_are_named_by_their_word() {
         for step in Step::ALL.into_iter().filter(|step| step.built()) {
             assert_eq!(Step::from_arg(step.arg()), Some(step));
         }
-        assert_eq!(Step::from_arg("ai"), None, "not built yet");
-        assert_eq!(Step::args(), ["welcome", "nextcloud", "components", "calendar", "tasks", "mail", "inbox", "done"]);
+        assert_eq!(Step::from_arg("later"), None, "no such step");
+        assert_eq!(
+            Step::args(),
+            ["welcome", "nextcloud", "components", "calendar", "tasks", "mail", "inbox", "ai", "done"]
+        );
     }
 }

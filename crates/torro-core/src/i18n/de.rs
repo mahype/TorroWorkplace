@@ -336,6 +336,30 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{provider} runs its models in its own cloud ({seat}). What you send them goes there.",
         "{provider} betreibt seine Modelle in der eigenen Cloud ({seat}). Was du ihnen schickst, geht dorthin.",
     ),
+    // Control centre: first-run setup, AI (W.8)
+    ("Add key", "Schlüssel hinzufügen"),
+    ("Choose", "Wählen"),
+    (
+        "Choose the model and how hard it thinks later under Assistant.",
+        "Modell und Denkaufwand wählst du später unter Assistent.",
+    ),
+    (
+        "Cloud providers receive what you send them. Mail goes to local models only unless you change it.",
+        "Cloud-Anbieter bekommen, was du ihnen schickst. Mail geht nur an lokale Modelle, solange du das nicht änderst.",
+    ),
+    (
+        "Local models first: they keep your data on this computer. Add cloud providers if you want more.",
+        "Lokale Modelle zuerst: Sie lassen deine Daten auf diesem Rechner. Füge Cloud-Anbieter hinzu, wenn du mehr willst.",
+    ),
+    ("Open models", "Offene Modelle"),
+    ("Other server", "Anderer Server"),
+    ("Providers", "Anbieter"),
+    ("Providers in China", "Anbieter in China"),
+    ("Use for", "Nutzen für"),
+    ("What a new chat starts with", "Womit ein neuer Chat beginnt"),
+    ("vLLM, llama.cpp, LocalAI or a server of your own", "vLLM, llama.cpp, LocalAI oder ein eigener Server"),
+    ("{seat} · open models from many makers", "{seat} · offene Modelle vieler Hersteller"),
+    ("{seat} · open weights", "{seat} · offene Gewichte"),
     // Command line (torroworkplace ctl clients)
     (
         "--kind, --agent and --template only apply to ctl clients add",

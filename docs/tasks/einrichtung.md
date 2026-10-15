@@ -117,10 +117,16 @@ W.10 Sichtprüfung und API-Prüfung am Ende
   mit Geheimnis Never
 
 ### W.8 Schritt KI
-- [ ] erledigt
-- **Modell:** Sonnet · **Braucht:** W.3, W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/ai.rs`
-- Lokale Suche beim Öffnen, Cloud-Anbieter mit Sitz und Schlüssel in der Zeile, „Use for: Assistant“ mit Modell.
-  Der KI-Weg zieht dazu als Baustein nach `ui/connect/` um.
+- [x] erledigt
+- **Modell:** Sonnet · **Braucht:** W.3, W.5 · **Dateien:** `crates/torroworkplace/src/ui/setup/**`,
+  `crates/torroworkplace/src/ui/{mod,launch}.rs`, `crates/torro-core/src/i18n/de.rs`
+- Beim ersten Öffnen sucht der Schritt Ollama und LM Studio (`FindAiServers`), gefundene mit „Connect“ ohne Schlüssel;
+  „Other server“. Cloud-Anbieter in drei Gruppen (offene Modelle, Anbieter, Anbieter in China) mit Sitz und „Add
+  key“, das den Dialog „Add account“ beim Schlüssel des Anbieters öffnet (wie Mail in W.7, ein Weg statt zwei).
+  „Use for · Assistant“: das KI-Konto, mit dem ein neuer Chat beginnt (`SetSetting { AssistantDefault }`); Modell und
+  Aufwand unter Assistant. Demo: `--open setup-ai`.
+- **API:** `FindAiServers` · Read, `ConnectAi` · Admin, nur App-Schlüssel, `SetSetting { AssistantDefault }` · Admin ·
+  **MCP:** `ai_find_local_servers`, `settings_set_setting`; `ConnectAi` Never (Schlüssel)
 
 ### W.9 Auslöser
 - [ ] erledigt

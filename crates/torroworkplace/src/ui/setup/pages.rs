@@ -2,9 +2,10 @@
 //! W.5–W.8 follow here): each with a headline, one sentence in `text_2` and settings groups, plus
 //! what the footer says and what its primary button is called.
 
-use iced::widget::{Space, column, toggler};
+use iced::widget::{Space, column, pick_list, toggler};
 use iced::{Element, Fill};
 use torro_core::AppId;
+use torro_core::ai::AiProvider;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, Language};
 use torro_gui::icon::Icon;
@@ -33,7 +34,7 @@ pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
         Step::Tasks => collections(state, data, Kind::Lists),
         Step::Mail => mail(data),
         Step::Inbox => inbox(state, data),
-        Step::Ai => Space::new().into(),
+        Step::Ai => ai(state, data),
     }
 }
 
@@ -67,6 +68,12 @@ pub fn status(state: &State, data: &Data) -> Option<String> {
         Step::Inbox => {
             let on = inbox_sources(data).iter().filter(|(source, ..)| !state.is_muted(data, source)).count();
             Some(trf("{n} sources on", &[("n", &on)]))
+        }
+        Step::Ai if state.ai_searching => Some(tr("Looking on this computer…").to_string()),
+        Step::Ai if state.ai_connecting.is_some() => Some(tr("Connecting…").to_string()),
+        Step::Ai => {
+            let n = data.accounts.iter().filter(|account| account.kind == "ai").count() + state.ai_connected.len();
+            Some(if n == 1 { tr("1 account").to_string() } else { trf("{n} accounts", &[("n", &n)]) })
         }
         Step::Components => {
             let on = Component::ALL.len() - state.off.len();
@@ -511,6 +518,157 @@ fn inbox<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     );
     parts.push(widgets::group(tr("Notifications"), vec![quiet], None));
     page(parts)
+}
+
+// ----- AI (task W.8) ----------------------------------------------------------------------------------
+
+/// Whether an AI account of `provider` is connected (its id is `ai:<provider>@<host>`).
+fn has_ai_account(data: &Data, provider: AiProvider) -> bool {
+    let prefix = format!("ai:{}@", provider.id());
+    data.accounts.iter().any(|account| account.kind == "ai" && account.id.starts_with(&prefix))
+}
+
+/// Open First: the servers on this computer, then the cloud providers by where they are, then what
+/// a new chat of the assistant starts with.
+fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    let local = [AiProvider::Ollama, AiProvider::LmStudio].into_iter().map(|provider| local_row(state, data, provider));
+    let mut local: Vec<Element<'a, Message>> = local.collect();
+    local.push(opener(
+        Icon::Plus,
+        tr("Other server"),
+        tr("vLLM, llama.cpp, LocalAI or a server of your own"),
+        Message::OtherAiServer,
+    ));
+    let mut parts = vec![
+        title(
+            tr("AI"),
+            tr("Local models first: they keep your data on this computer. Add cloud providers if you want more."),
+        ),
+        widgets::group(
+            tr("On this computer"),
+            local,
+            Some(tr("Models on this computer run here. Nothing you ask them leaves it.").to_string()),
+        ),
+    ];
+    let groups = [
+        (tr("Open models"), vec![AiProvider::OpenRouter]),
+        (tr("Providers"), vec![AiProvider::OpenAi, AiProvider::Gemini, AiProvider::Mistral]),
+        (
+            tr("Providers in China"),
+            vec![AiProvider::DeepSeek, AiProvider::Qwen, AiProvider::Kimi, AiProvider::Glm, AiProvider::MiniMax],
+        ),
+    ];
+    let count = groups.len();
+    for (index, (name, providers)) in groups.into_iter().enumerate() {
+        let rows = providers.into_iter().map(|provider| cloud_row(data, provider)).collect();
+        let footer = (index + 1 == count).then(|| {
+            tr("Cloud providers receive what you send them. Mail goes to local models only unless you change it.")
+                .to_string()
+        });
+        parts.push(widgets::group(name, rows, footer));
+    }
+    if let Some(choice) = engine_choice(state, data) {
+        parts.push(choice);
+    }
+    page(parts)
+}
+
+/// A server on this computer: looking, found with "Connect" (or "Connected"), or not running.
+fn local_row<'a>(state: &'a State, data: &'a Data, provider: AiProvider) -> Element<'a, Message> {
+    let tile = widgets::source_tile(TileFace::Icon(Icon::AppWindow), TileSize::Medium, None);
+    let Some(found) = &state.ai_found else {
+        return setting_row(
+            Some(tile),
+            provider.name(),
+            Some(tr("Looking on this computer…").to_string()),
+            Space::new(),
+        );
+    };
+    let Some(server) = found.iter().find(|server| server.provider == provider) else {
+        return setting_row(
+            Some(tile),
+            provider.name(),
+            Some(tr("Not running on this computer").to_string()),
+            Space::new(),
+        );
+    };
+    let rest = server.url.split_once("://").map_or(server.url.as_str(), |(_, rest)| rest);
+    let host = rest.split('/').next().unwrap_or(rest);
+    let detail = match server.models {
+        1 => trf("{host} · 1 model", &[("host", &host)]),
+        n => trf("{host} · {n} models", &[("host", &host), ("n", &n)]),
+    };
+    let connected =
+        server.account.is_some() || state.ai_connected.contains(&server.url) || has_ai_account(data, provider);
+    let control: Element<'a, Message> = if connected {
+        widgets::state_pill(Icon::CircleCheck, tr("Connected"))
+    } else if state.ai_connecting.as_deref() == Some(server.url.as_str()) {
+        typo::text(typo::meta(), tr("Connecting…")).style(theme::text_2).into()
+    } else {
+        let press = state.ai_connecting.is_none().then(|| Message::ConnectLocalAi(provider, server.url.clone()));
+        widgets::text_button(None, tr("Connect"), style::button::secondary, press)
+    };
+    setting_row(Some(tile), provider.name(), Some(detail), control)
+}
+
+/// A cloud provider: its first letter, its name, where it is (and open weights), and "Add key" or
+/// "Connected".
+fn cloud_row(data: &Data, provider: AiProvider) -> Element<'_, Message> {
+    let tile = widgets::source_tile(TileFace::letter(provider.name()), TileSize::Medium, None);
+    let seat = provider.seat().label();
+    let detail = match provider {
+        AiProvider::OpenRouter => trf("{seat} · open models from many makers", &[("seat", &seat)]),
+        _ if provider.open_weights() => trf("{seat} · open weights", &[("seat", &seat)]),
+        _ => seat.to_string(),
+    };
+    let control: Element<'_, Message> = match has_ai_account(data, provider) {
+        true => widgets::state_pill(Icon::CircleCheck, tr("Connected")),
+        false => widgets::text_button(None, tr("Add key"), style::button::secondary, Some(Message::AddAiKey(provider))),
+    };
+    setting_row(Some(tile), provider.name(), Some(detail), control)
+}
+
+/// "Use for": the AI account a new chat of the assistant starts with, once there is one.
+fn engine_choice<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
+    let engines: Vec<Choice> = data
+        .engines
+        .iter()
+        .filter(|engine| engine.kind == torro_ipc::assistant::EngineKind::Ai)
+        .map(|engine| Choice { id: engine.id.clone(), name: engine.name.clone() })
+        .collect();
+    if engines.is_empty() {
+        return None;
+    }
+    let current =
+        state.engine.clone().or_else(|| data.settings.assistant_default.as_ref().map(|default| default.engine.clone()));
+    let selected = current.and_then(|id| engines.iter().find(|choice| choice.id == id).cloned());
+    let pick = pick_list(engines, selected, |choice: Choice| Message::Engine(choice.id))
+        .placeholder(tr("Choose"))
+        .padding(style::pick_list_padding())
+        .text_size(typo::caption().size)
+        .text_line_height(typo::caption().line_height)
+        .font(typo::caption().font)
+        .style(style::pick_list)
+        .menu_style(style::pick_list_menu);
+    let row = setting_row(None, tr("Assistant"), Some(tr("What a new chat starts with").to_string()), pick);
+    Some(widgets::group(
+        tr("Use for"),
+        vec![row],
+        Some(tr("Choose the model and how hard it thinks later under Assistant.").to_string()),
+    ))
+}
+
+/// An AI account in the "Use for" list: shown by its name, chosen by its engine id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Choice {
+    id: String,
+    name: String,
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
 }
 
 /// What a component is for, one line on its card.
