@@ -440,7 +440,7 @@ fn run_notify(command: &Command, socket: &Path, token: Option<&Key>) -> ExitCode
             eprintln!(
                 "{}",
                 tr(
-                    "Torro Workplace isn't running, so nothing reached the inbox. Start it with `torroworkplace daemon`."
+                    "Torro Workplace isn't running, so nothing reached the Notification Hub. Start it with `torroworkplace daemon`."
                 )
             );
             ExitCode::FAILURE
@@ -505,8 +505,8 @@ pub fn render(response: &Response) -> String {
             approvals.iter().map(approval_line).collect::<Vec<_>>().join("\n")
         }
         Response::Approval { approval } => approval_line(approval),
-        Response::Posted { id: Some(id) } => trf("Posted to the inbox ({id}).", &[("id", id)]),
-        Response::Posted { id: None } => tr("Not posted: this source is muted in the inbox.").to_string(),
+        Response::Posted { id: Some(id) } => trf("Posted to the Notification Hub ({id}).", &[("id", id)]),
+        Response::Posted { id: None } => tr("Not posted: this source is muted in the Notification Hub.").to_string(),
         Response::Ok => "ok".to_string(),
         Response::Error { message, .. } => message.clone(),
         // Calendar and task answers are for the apps; show them as JSON.
@@ -1006,9 +1006,12 @@ mod tests {
     fn posted_answers_render() {
         assert_eq!(
             render(&Response::Posted { id: Some("i1".into()) }),
-            trf("Posted to the inbox ({id}).", &[("id", &"i1")])
+            trf("Posted to the Notification Hub ({id}).", &[("id", &"i1")])
         );
-        assert_eq!(render(&Response::Posted { id: None }), tr("Not posted: this source is muted in the inbox."));
+        assert_eq!(
+            render(&Response::Posted { id: None }),
+            tr("Not posted: this source is muted in the Notification Hub.")
+        );
     }
 
     #[test]

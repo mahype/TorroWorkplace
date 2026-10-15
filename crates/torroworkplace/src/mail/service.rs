@@ -1145,6 +1145,12 @@ impl MailService {
         self.events.subscribe()
     }
 
+    /// The stored accounts were read ([`MailService::start`]), or could not be: until then
+    /// [`MailService::infos`] is empty although accounts may exist.
+    pub fn loaded(&self) -> bool {
+        self.loaded.load(Ordering::Acquire)
+    }
+
     /// The mail accounts as `accounts.list_accounts` lists them, never with their passwords: for
     /// a client only those its rights reach (`Rights::reaches_mail_account`); the others behave as
     /// if they did not exist. Mail accounts have no collections here; each has its [`MailView`]

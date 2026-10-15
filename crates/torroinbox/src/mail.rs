@@ -1638,8 +1638,6 @@ impl ReaderButton {
             (true, Some(tip)) => {
                 widgets::with_tooltip(widgets::text_button(Some(self.icon), self.label, style, self.message), tip)
             }
-            // An AI button that is off (issue #120) shows so in its icon too.
-            (false, Some(tip)) if self.message.is_none() => crate::suggest::off_button(self.icon, tip),
             (false, tip) => widgets::icon_button(self.icon, tip.unwrap_or(self.label), self.message),
         };
         match self.anchor {
@@ -1718,7 +1716,7 @@ fn reader_actions<'a>(
             let move_to =
                 ReaderButton::new(crate::app::lane_icon(lane), lane_word(lane), Some(Message::AskLane(item_id())));
             tools.push(move_to.at(&anchors.lane));
-            // The bell (issue #123): mail's one menu to mute, "Hide from inbox" went into it.
+            // The bell (issue #123): mail's one menu to mute, "Hide from Notification Hub" went into it.
             if hide {
                 let bell = ReaderButton::new(Icon::BellOff, tr("Mute…"), Some(Message::AskHide(item_id())));
                 tools.push(bell.at(&anchors.hide));

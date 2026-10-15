@@ -8,9 +8,10 @@
 //!   with the note and place the dialog holds (`inbox.create_task_from_item`,
 //!   `inbox.create_event_from_item`). The core picks the AI, keeps mail with local models and reads the
 //!   answer; the window only shows it.
-//! - **The buttons** ([`ai_buttons`]): beside "Make task" / "Task" in the panel and the reader, where
-//!   the entry has been read – like Reply, they are no buttons of rows and cards. Without an AI they are
-//!   off, their tooltip says "Set up an AI first".
+//! - **The buttons** ([`ai_buttons`]): beside "Make task" / "Task" in the panel and the reader. Since
+//!   issue #168 also on rows and cards ([`row_action`]): "AI task" right after "Task", "AI event" right
+//!   after "Event" wherever those stand, so each AI button has its plain one beside it. Without an AI
+//!   they are off and faded, their tooltip says "Set up an AI first".
 //! - **Into the dialog** ([`due_of`], [`event_times`]): the due day of a task (a time of day is
 //!   dropped: the dialog makes tasks due on a day), the start and length of an event in local time.
 //!   A whole-day event becomes that day at 09:00 for an hour: the dialog makes timed events only.
@@ -18,12 +19,11 @@
 use std::future::Future;
 
 use chrono::{NaiveDate, NaiveTime, TimeDelta, Utc};
-use iced::widget::{button, center, svg};
-use iced::{Element, Padding, Theme};
+use iced::Element;
 use torro_core::i18n::tr;
-use torro_gui::icon::{self, Icon};
-use torro_gui::theme::{self, palette, size};
-use torro_gui::{datetime, style, widgets};
+use torro_gui::datetime;
+use torro_gui::icon::Icon;
+use torro_gui::widgets::{self, RowAction};
 use torro_inbox::demo::DemoSource;
 use torro_inbox::{InboxError, InboxSource, ItemFilter};
 use torro_ipc::inbox::{EventFields, InboxClient};
@@ -222,27 +222,22 @@ pub fn tooltip(wanted: Wanted, ready: bool) -> String {
 /// The AI button for `wanted` on the entry `id` as an icon (the panel's footer): [`Icon::Sparkles`],
 /// off with its [`tooltip`] while no AI is set up.
 pub fn icon_button<'a>(wanted: Wanted, id: &str, ready: bool) -> Element<'a, Message> {
-    match ready {
-        true => widgets::icon_button(Icon::Sparkles, tooltip(wanted, ready), Some(wanted.message(id))),
-        false => off_button(Icon::Sparkles, tooltip(wanted, ready)),
-    }
+    widgets::icon_button(Icon::Sparkles, tooltip(wanted, ready), ready.then(|| wanted.message(id)))
 }
 
-/// An icon button that is off, with `tip` as tooltip: `widgets::icon_button` without a message, its
-/// icon at [`style::DISABLED_ALPHA`] as well – the shared one keeps its icon at full strength (the
-/// tint of an icon drops alpha), which would not read as off.
-pub fn off_button<'a>(which: Icon, tip: String) -> Element<'a, Message> {
-    // Opaque: the icon's tint keeps no alpha, so the faded colour is mixed over the panel.
-    let mark = icon::icon(which, icon::SIZE).style(|t: &Theme, _| {
-        let p = palette(t);
-        svg::Style { color: Some(theme::over(p.text_2.scale_alpha(style::DISABLED_ALPHA), p.panel)) }
-    });
-    let off = button(center(mark))
-        .width(size::control_sm())
-        .height(size::control_sm())
-        .padding(Padding::ZERO)
-        .style(style::button::icon);
-    widgets::with_tooltip(off, tip)
+/// Whether `message` is what an AI button sends (issue #168): on a card such a button is the
+/// companion of its plain one – always its icon alone, never weighed when the card's buttons choose
+/// between words and icons (`widgets::bar_words`), so a card keeps its words as before.
+pub fn is_ai(message: &Message) -> bool {
+    matches!(message, Message::SuggestTask(_) | Message::SuggestEvent(_))
+}
+
+/// The AI button for `wanted` on the entry `id` in a row's action bar or a card's buttons (issue
+/// #168): [`Icon::Sparkles`] with "AI task" or "AI event", no key of its own; while no AI is set up
+/// (`ready` false) off with the reason "Set up an AI first" (`widgets::RowAction::blocked`).
+pub fn row_action<'a>(wanted: Wanted, id: &str, ready: bool) -> RowAction<'a, Message> {
+    let action = RowAction::new(Icon::Sparkles, wanted.label(), "", wanted.message(id));
+    if ready { action } else { action.blocked(tr("Set up an AI first")) }
 }
 
 /// The AI buttons of an entry in the order they stand beside "Make task" and "Make event": task, then
@@ -334,5 +329,19 @@ mod tests {
         assert!(matches!(&on[0].1, Some(Message::SuggestTask(id)) if id == "e1"));
         assert!(matches!(&on[1].1, Some(Message::SuggestEvent(id)) if id == "e1"));
         assert_eq!((on[0].2.as_str(), on[1].2.as_str()), (tr("AI task"), tr("AI event")));
+    }
+
+    /// Issue #168: on rows and cards the AI buttons are there with or without an AI; without one they
+    /// send nothing and say why.
+    #[test]
+    fn row_actions_of_the_ai_are_off_without_one() {
+        let off = row_action(Wanted::Task, "e1", false);
+        assert!(off.press().is_none());
+        assert_eq!(off.tip(), tooltip(Wanted::Task, false));
+        let on = row_action(Wanted::Event, "e1", true);
+        assert!(matches!(on.press(), Some(Message::SuggestEvent(id)) if id == "e1"));
+        assert_eq!((on.icon, on.key), (Icon::Sparkles, ""));
+        assert!(is_ai(&off.on_press) && is_ai(&on.on_press));
+        assert!(!is_ai(&Message::Refresh), "only the AI buttons");
     }
 }

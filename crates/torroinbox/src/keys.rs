@@ -141,7 +141,7 @@ pub enum Command {
     /// Move the entry to the other lane (asking whether always for its source).
     Lane,
     /// Open the menu of `m`: the bell's menu (task E8.6b) for mail and in the notifications window
-    /// (issue #123), else "Hide from inbox" (task E3.10): the entry, its source.
+    /// (issue #123), else "Hide from Notification Hub" (task E3.10): the entry, its source.
     Hide,
     /// Open the dialog that makes a task of the entry (task E3.5).
     MakeTask,

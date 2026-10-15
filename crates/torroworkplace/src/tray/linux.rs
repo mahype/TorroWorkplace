@@ -192,9 +192,9 @@ mod tests {
         assert_eq!(
             labels(&build_menu(&snapshot())),
             [
-                tr("Inbox").to_string(),
+                tr("Notification Hub").to_string(),
                 tr("Mail").to_string(),
-                tr("Notifications").to_string(),
+                tr("App Feed").to_string(),
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
                 tr("Assistant").to_string(),
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn the_inbox_count_reaches_the_ksni_menu_and_underscores_show() {
         let waiting = Snapshot { inbox_for_me: 2, inbox_urgent: 1, ..snapshot() };
-        assert!(labels(&build_menu(&waiting)).contains(&trf("Inbox ({n})", &[("n", &2)])));
+        assert!(labels(&build_menu(&waiting)).contains(&trf("Notification Hub ({n})", &[("n", &2)])));
         assert_eq!(label_text("fix_build"), "fix__build");
         assert_eq!(label_text("Mail_Chat"), "Mail__Chat");
     }

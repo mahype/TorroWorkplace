@@ -169,13 +169,13 @@ fn voice_section(state: VoiceState, enabled: bool) -> Vec<Item> {
 /// number, what waits for the person ("Inbox (3)").
 fn apps_section(waiting: Waiting) -> Vec<Item> {
     let inbox = match waiting.total() {
-        0 => tr("Inbox").to_string(),
-        n => trf("Inbox ({n})", &[("n", &n)]),
+        0 => tr("Notification Hub").to_string(),
+        n => trf("Notification Hub ({n})", &[("n", &n)]),
     };
     vec![
         open(&inbox, AppId::INBOX),
         open(tr("Mail"), AppId::INBOX_MAIL),
-        open(tr("Notifications"), AppId::INBOX_NOTIFICATIONS),
+        open(tr("App Feed"), AppId::INBOX_NOTIFICATIONS),
         open(tr("Calendar"), AppId::CALENDAR),
         open(tr("Tasks"), AppId::TASKS),
         open(tr("Assistant"), AppId::ASSISTANT),
@@ -280,9 +280,9 @@ mod tests {
         assert_eq!(
             labels(&build(&snapshot())),
             [
-                tr("Inbox").to_string(),
+                tr("Notification Hub").to_string(),
                 tr("Mail").to_string(),
-                tr("Notifications").to_string(),
+                tr("App Feed").to_string(),
                 tr("Calendar").to_string(),
                 tr("Tasks").to_string(),
                 tr("Assistant").to_string(),
@@ -305,9 +305,9 @@ mod tests {
             action_of(&menu, tr("Save workspace")),
             Some(Action::Run(Box::new(Request::SaveTemplate { name: None })))
         );
-        assert_eq!(action_of(&menu, tr("Inbox")), Some(Action::OpenApp(AppId::INBOX)));
+        assert_eq!(action_of(&menu, tr("Notification Hub")), Some(Action::OpenApp(AppId::INBOX)));
         assert_eq!(action_of(&menu, tr("Mail")), Some(Action::OpenApp(AppId::INBOX_MAIL)));
-        assert_eq!(action_of(&menu, tr("Notifications")), Some(Action::OpenApp(AppId::INBOX_NOTIFICATIONS)));
+        assert_eq!(action_of(&menu, tr("App Feed")), Some(Action::OpenApp(AppId::INBOX_NOTIFICATIONS)));
         assert_eq!(action_of(&menu, tr("Calendar")), Some(Action::OpenApp(AppId::CALENDAR)));
         assert_eq!(action_of(&menu, tr("Tasks")), Some(Action::OpenApp(AppId::TASKS)));
         assert_eq!(action_of(&menu, tr("Assistant")), Some(Action::OpenApp(AppId::ASSISTANT)));
@@ -400,11 +400,11 @@ mod tests {
         let three = Waiting::of(&waiting);
         assert_eq!((three, three.total()), (Waiting { for_me: 3, urgent: 1 }, 3), "approvals are not counted twice");
         let menu = build(&waiting);
-        let inbox = trf("Inbox ({n})", &[("n", &3)]);
+        let inbox = trf("Notification Hub ({n})", &[("n", &3)]);
         assert_eq!(action_of(&menu, &inbox), Some(Action::OpenApp(AppId::INBOX)));
         let quiet = labels(&build(&snapshot()));
         let counted: Vec<String> =
-            quiet.iter().map(|l| if l == tr("Inbox") { inbox.clone() } else { l.clone() }).collect();
+            quiet.iter().map(|l| if l == tr("Notification Hub") { inbox.clone() } else { l.clone() }).collect();
         assert_eq!(labels(&menu), counted, "only the Inbox label changes, nothing is added");
         assert!(!labels(&menu).iter().any(|l| l.contains("Backup failed")), "no single entry in the menu");
         assert!(!labels(&menu).contains(&trf("Approvals ({n})", &[("n", &1)])), "no second number for approvals");
@@ -415,7 +415,7 @@ mod tests {
     /// voice off, there is nothing about it.
     #[test]
     fn the_menu_shows_listening_and_mutes_the_microphone() {
-        assert_eq!(labels(&build(&snapshot()))[0], tr("Inbox"), "off: nothing");
+        assert_eq!(labels(&build(&snapshot()))[0], tr("Notification Hub"), "off: nothing");
         for state in [VoiceState::Listening, VoiceState::Recording, VoiceState::Answering] {
             let menu = build(&Snapshot { voice: state, ..snapshot() });
             assert_eq!(

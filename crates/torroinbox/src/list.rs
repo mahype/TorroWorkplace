@@ -47,7 +47,7 @@
 //! flag) and its buttons, always shown in a row of their own – Reply · Task · Done · Later in every
 //! size (task E8.11), with all their words where the card's width has room for them, else only the
 //! first's (Reply; Accept for an invitation), else none ([`spoken`], `widgets::bar_words`, task
-//! E8.13), and the bell "Mute…" (issue #123; "…" for "Hide from inbox" of other sources). Every
+//! E8.13), and the bell "Mute…" (issue #123; "…" for "Hide from Notification Hub" of other sources). Every
 //! button does what its key does on the entry ([`Message::Act`]).
 //! Cards have no close button: mail is not dismissed in the mail window. A card is as high as what
 //! it shows at its width – a preview of one line takes one line ([`mail_card_height`],
@@ -82,6 +82,7 @@ use torro_mail::Folder;
 
 use crate::app::{Message, View};
 use crate::keys::Command;
+use crate::suggest::{self, Wanted};
 use crate::{detail, mail, notifications};
 
 /// What the rows of entries need besides the entries (task E3.9): the same for the list of a view
@@ -108,6 +109,9 @@ pub struct Rows<'a> {
     /// Every folder of every mail account: a mail entry offers Archive and Delete only where its
     /// account has such a folder ([`filing`], issue #118).
     pub folders: &'a [Folder],
+    /// Whether an AI is set up (`App::ai_ready`, issue #120): the AI buttons beside Task and Event on
+    /// rows and cards (issue #168, `suggest::row_action`) are on; without, they are off and say why.
+    pub ai: bool,
 }
 
 /// How a list draws mail (task E8.3): one row per mail, or a card per mail.
@@ -327,7 +331,7 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
     };
     let height = row_height_of(item);
     let row = sized_row(content, selected, Message::Select(item.id.clone()), height);
-    let actions = entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.folders, rows.now);
+    let actions = entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.ai, rows.folders, rows.now);
     let actions = rows.anchors.mark(selected, actions);
     let words = widgets::row_actions_words(&actions, width);
     // On the first line, over the time: the preview and the account below stay readable.
@@ -337,8 +341,9 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
 
 /// What the action bar of `item` offers, in its order (task E3.9), as the panel does:
 ///
-/// - "Task" (`t`) and "Done" (`e`, "Reopen" for a done entry) – not for an approval, which closes
-///   once it is decided and becomes no task;
+/// - "Task" (`t`), "AI task" (no key; off without an AI, `ai`, issue #168) and "Done" (`e`,
+///   "Reopen" for a done entry) – not for an approval, which closes once it is decided and becomes
+///   no task;
 /// - "Later" (`s`) for every entry that is not done – not for an approval either (task E8.1b, as
 ///   the hub's cards): it waits for yes or no and must not vanish by accident;
 /// - "Hide" (`m`) when `m` opens a menu for it (`hidable`, from `App::hidable`: never for an
@@ -346,13 +351,14 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
 /// - the ✕ "Dismiss" (`x`, issue #117) last, for every entry that may simply go
 ///   ([`notifications::dismissable`]: no mail, no approval, nothing done) – as in the hub's "Act now"
 ///   and the notifications window; the toast takes it back.
-pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
+pub fn actions<'a>(item: &Item, hidable: bool, ai: bool) -> Vec<RowAction<'a, Message>> {
     let act = |command| Message::Act(item.id.clone(), command);
     let approval = detail::is_approval(item);
     let done = matches!(item.state, State::Done { .. });
     let mut actions = Vec::new();
     if !approval {
         actions.push(RowAction::new(Icon::ListTodo, tr("Task"), "T", act(Command::MakeTask)));
+        actions.push(suggest::row_action(Wanted::Task, &item.id, ai));
         let (mark, word) = if done { (Icon::Inbox, tr("Reopen")) } else { (Icon::Check, tr("Done")) };
         actions.push(RowAction::new(mark, word, "E", act(Command::Done)));
     }
@@ -369,16 +375,17 @@ pub fn actions<'a>(item: &Item, hidable: bool) -> Vec<RowAction<'a, Message>> {
 }
 
 /// The action bar of `item`'s row at `now`: a mail entry's Archive · Delete first ([`filing`] in
-/// `folders`, issue #118), then [`actions`]; for a mail entry with an invitation to answer (task
+/// `folders`, issue #118), then [`actions`] (with the AI's while `ai`); for a mail entry with an invitation to answer (task
 /// E8.3c, [`invite_actions`]) Accept · Maybe · Decline · Task · Later (· Hide) – the answer is what
 /// makes the entry done, so "Done" gives way; `e` still marks it done.
 pub fn entry_actions<'a>(
     item: &Item,
     hidable: bool,
+    ai: bool,
     folders: &[Folder],
     now: DateTime<Utc>,
 ) -> Vec<RowAction<'a, Message>> {
-    let mut actions = actions(item, hidable);
+    let mut actions = actions(item, hidable, ai);
     let answers = invite_actions(item, now);
     if answers.is_empty() {
         actions.splice(0..0, filing(item, folders));
@@ -495,7 +502,7 @@ pub(crate) struct MailCard<'a> {
     pub chips: Vec<Element<'a, Message>>,
     /// The card's buttons, always shown, in their order.
     pub buttons: Vec<RowAction<'a, Message>>,
-    /// "…" at the far right ("Hide from inbox"), when there is a menu to open.
+    /// "…" at the far right ("Hide from Notification Hub"), when there is a menu to open.
     pub more: Option<RowAction<'a, Message>>,
     /// Under the cursor (and in the reader): the `selected` card.
     pub selected: bool,
@@ -548,7 +555,7 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
     }
     tail.extend(more.map(|more| {
         let anchor = more.anchor.clone();
-        widgets::anchored_if(anchor.as_ref(), widgets::icon_button(more.icon, more.label, Some(more.on_press)))
+        widgets::anchored_if(anchor.as_ref(), widgets::icon_button(more.icon, more.tip(), more.press()))
     }));
     parts.push(row(tail).spacing(space::s()).align_y(Alignment::Center).into());
     widgets::card(parts, selected, Some(on_press))
@@ -559,20 +566,31 @@ pub(crate) fn mail_card<'a>(card: MailCard<'a>, width: f32) -> Element<'a, Messa
 /// where they fit, else only the first when it is the card's lead – Accept of an invitation –, else
 /// none. A mail's card has no lead since Reply left it (issue #118): Archive is no action the mail
 /// is about. A card never shows some words among icons otherwise.
+///
+/// The AI buttons (issue #168) are companions of Task: icons always, counted as such beside "…".
 fn spoken(buttons: &[RowAction<'_, Message>], more: bool, room: f32) -> BarWords {
-    let labels: Vec<&str> = buttons.iter().map(|button| button.label.as_ref()).collect();
+    let plain = |button: &&RowAction<'_, Message>| !suggest::is_ai(&button.on_press);
+    let labels: Vec<&str> = buttons.iter().filter(plain).map(|button| button.label.as_ref()).collect();
+    let companions = buttons.len() - labels.len();
     let lead = matches!(buttons.first().map(|button| &button.on_press), Some(Message::AnswerInvitation(..)));
-    widgets::bar_words(&labels, lead, usize::from(more), room)
+    widgets::bar_words(&labels, lead, usize::from(more) + companions, room)
 }
 
 /// A button of a card: with its icon and word (`secondary`), or – without `words` – the icon alone
-/// with the word as tooltip. Registers the button's anchor when it has one (issue #122).
+/// with the word as tooltip. Registers the button's anchor when it has one (issue #122). A button
+/// that is off (`RowAction::blocked`, issue #168) is faded and says why in its tooltip.
 fn card_button<'a>(action: RowAction<'a, Message>, words: bool) -> Element<'a, Message> {
+    // An AI button is the companion of Task: its icon alone, always ([`spoken`]).
+    let words = words && !suggest::is_ai(&action.on_press);
     let anchor = action.anchor.clone();
-    let button = if words {
-        widgets::text_button(Some(action.icon), action.label, style::button::secondary, Some(action.on_press))
-    } else {
-        widgets::icon_button(action.icon, action.label, Some(action.on_press))
+    let (press, tip) = (action.press(), action.tip());
+    let button = match (words, action.blocked.is_some()) {
+        (true, false) => widgets::text_button(Some(action.icon), action.label, style::button::secondary, press),
+        (true, true) => widgets::with_tooltip(
+            widgets::text_button(Some(action.icon), action.label, style::button::secondary, press),
+            tip,
+        ),
+        (false, _) => widgets::icon_button(action.icon, tip, press),
     };
     widgets::anchored_if(anchor.as_ref(), button)
 }
@@ -595,27 +613,33 @@ pub(crate) fn mail_card_height(preview: usize, chips: bool) -> f32 {
 
 /// The buttons of the card of `item` (task E8.3), each doing what its key does at the entry
 /// ([`Message::Act`]): Task · Done · Later in every size (task E8.11, `docs/eingang.md` "Knöpfe je
-/// Eintrag"); "Reopen" for a done entry, which has no "Later". No Reply (issue #118): from a list the
-/// mail is not read yet – Reply stands in the reader. The second is "…" for "Hide from inbox", when
+/// Eintrag"); "Reopen" for a done entry, which has no "Later"; "AI task" after "Task" (issue #168,
+/// off without an AI, `ai`). No Reply (issue #118): from a list the mail is not read yet – Reply
+/// stands in the reader. The second is "…" for "Hide from Notification Hub", when
 /// its menu has entries (`hidable`) – for mail the bell "Mute…" ([`hide_action`], issue #123).
-pub fn card_buttons<'a>(item: &Item, hidable: bool) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
+pub fn card_buttons<'a>(
+    item: &Item,
+    hidable: bool,
+    ai: bool,
+) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
     let act = |command| Message::Act(item.id.clone(), command);
     let done = matches!(item.state, State::Done { .. });
     let task = RowAction::new(Icon::ListTodo, tr("Task"), "T", act(Command::MakeTask));
+    let ai_task = suggest::row_action(Wanted::Task, &item.id, ai);
     let finish = if done {
         RowAction::new(Icon::Inbox, tr("Reopen"), "E", act(Command::Done))
     } else {
         RowAction::new(Icon::Check, tr("Done"), "E", act(Command::Done))
     };
     let later = (!done).then(|| RowAction::new(Icon::Clock, tr("Later"), "S", act(Command::Snooze)));
-    let buttons = [Some(task), Some(finish), later].into_iter().flatten().collect();
-    let more = hidable.then(|| hide_action(item, tr("Hide from inbox")));
+    let buttons = [Some(task), Some(ai_task), Some(finish), later].into_iter().flatten().collect();
+    let more = hidable.then(|| hide_action(item, tr("Hide from Notification Hub")));
     (buttons, more)
 }
 
 /// The button of `m` for `item` ([`Command::Hide`]): for mail the bell "Mute…" – mail's "Hide from
 /// inbox" went into the bell's menu (issue #123) –, else "…" with `word` ("Hide" in the action
-/// bar, "Hide from inbox" on a card).
+/// bar, "Hide from Notification Hub" on a card).
 pub fn hide_action<'a>(item: &Item, word: &'static str) -> RowAction<'a, Message> {
     let act = Message::Act(item.id.clone(), Command::Hide);
     if item.source.kind == SourceKind::Mail {
@@ -628,14 +652,15 @@ pub fn hide_action<'a>(item: &Item, word: &'static str) -> RowAction<'a, Message
 /// The buttons of the card of `item` at `now` (task E8.3c): an invitation to answer
 /// ([`invite_actions`]) has Accept · Maybe · Decline · Later · Task – the answer is what makes the
 /// entry done –, every other entry Archive · Delete ([`filing`] in `folders`, issue #118) and then
-/// [`card_buttons`]. The second is "…" for "Hide from inbox".
+/// [`card_buttons`]. The second is "…" for "Hide from Notification Hub".
 pub fn entry_card_buttons<'a>(
     item: &Item,
     hidable: bool,
+    ai: bool,
     folders: &[Folder],
     now: DateTime<Utc>,
 ) -> (Vec<RowAction<'a, Message>>, Option<RowAction<'a, Message>>) {
-    let (buttons, more) = card_buttons(item, hidable);
+    let (buttons, more) = card_buttons(item, hidable, ai);
     let mut answers = invite_actions(item, now);
     if answers.is_empty() {
         let mut filed = filing(item, folders);
@@ -679,7 +704,8 @@ pub fn entry_card<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a
         return entry_row(item, rows, width);
     }
     let selected = rows.selected == Some(item.id.as_str());
-    let (buttons, more) = entry_card_buttons(item, rows.hidable.contains(&item.id.as_str()), rows.folders, rows.now);
+    let hidable = rows.hidable.contains(&item.id.as_str());
+    let (buttons, more) = entry_card_buttons(item, hidable, rows.ai, rows.folders, rows.now);
     let lines = MailLines { preview: card_preview(item), ..MailLines::of(item, rows) };
     let card = MailCard {
         lines,
@@ -1548,20 +1574,25 @@ mod tests {
     #[test]
     fn the_action_bar_offers_what_works_for_the_entry() {
         let by_id = |id: &str| demo::sample(now()).into_iter().find(|i| i.id == id).expect("in the sample");
-        let all = [tr("Task"), tr("Done"), tr("Later"), tr("Hide"), tr("Dismiss")];
-        assert_eq!(labels(&actions(&by_id("demo-1"), true)), all, "a waiting agent");
-        assert!(actions(&by_id("demo-3"), false).is_empty(), "an approval: no task, no done, no later, no hide");
-        assert_eq!(labels(&actions(&by_id("demo-5"), true)), all, "the suite's account problem: its own done");
-        assert_eq!(labels(&actions(&by_id("demo-11"), true)), [tr("Task"), tr("Reopen"), tr("Hide")], "done: no later");
-        let keys: Vec<&str> = actions(&by_id("demo-1"), true).iter().map(|action| action.key).collect();
-        assert_eq!(keys, ["T", "E", "S", "M", "X"], "the keys of the list");
-        let sent = actions(&by_id("demo-1"), true).pop().map(|action| action.on_press);
+        let all = [tr("Task"), tr("AI task"), tr("Done"), tr("Later"), tr("Hide"), tr("Dismiss")];
+        assert_eq!(labels(&actions(&by_id("demo-1"), true, false)), all, "a waiting agent");
+        assert!(actions(&by_id("demo-3"), false, false).is_empty(), "an approval: no task, no done, no later, no hide");
+        assert_eq!(labels(&actions(&by_id("demo-5"), true, false)), all, "the suite's account problem: its own done");
+        let done = [tr("Task"), tr("AI task"), tr("Reopen"), tr("Hide")];
+        assert_eq!(labels(&actions(&by_id("demo-11"), true, false)), done, "done: no later");
+        let keys: Vec<&str> = actions(&by_id("demo-1"), true, false).iter().map(|action| action.key).collect();
+        assert_eq!(keys, ["T", "", "E", "S", "M", "X"], "the keys of the list; the AI's has none");
+        let sent = actions(&by_id("demo-1"), true, false).pop().map(|action| action.on_press);
         assert!(matches!(&sent, Some(Message::Act(id, Command::Dismiss)) if id == "demo-1"), "{sent:?}");
         let mail = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
-        let sent: Vec<Message> = actions(&mail, true).into_iter().map(|action| action.on_press).collect();
+        let sent: Vec<Message> = actions(&mail, true, false).into_iter().map(|action| action.on_press).collect();
         assert!(matches!(&sent[0], Message::Act(id, Command::MakeTask) if *id == mail.id));
-        assert!(matches!(&sent[3], Message::Act(_, Command::Hide)));
-        assert_eq!(sent.len(), 4, "mail is done or hidden, never dismissed");
+        assert!(matches!(&sent[1], Message::SuggestTask(id) if *id == mail.id), "AI task beside Task");
+        assert!(matches!(&sent[4], Message::Act(_, Command::Hide)));
+        assert_eq!(sent.len(), 5, "mail is done or hidden, never dismissed");
+        let off = actions(&mail, true, false);
+        assert!(off[1].press().is_none() && off[1].tip().contains(tr("Set up an AI first")), "off without an AI");
+        assert!(actions(&mail, true, true)[1].press().is_some(), "on with one");
     }
 
     #[test]
@@ -1580,6 +1611,7 @@ mod tests {
                 hidable: vec!["demo-1"],
                 look: Look::Rows,
                 folders: &[],
+                ai: false,
             };
             for width in [0.0, 240.0, 480.0, 720.0] {
                 for item in &items {
@@ -1684,13 +1716,15 @@ mod tests {
     fn a_mail_card_offers_archive_delete_task_done_later() {
         let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
         let folders = demo_folders();
-        let (buttons, more) = entry_card_buttons(&item, true, &folders, now());
-        assert_eq!(labels(&buttons), [trc("action", "Archive"), tr("Delete"), tr("Task"), tr("Done"), tr("Later")]);
-        assert_eq!(buttons.iter().map(|action| action.key).collect::<Vec<_>>(), ["", "#", "T", "E", "S"]);
+        let (buttons, more) = entry_card_buttons(&item, true, false, &folders, now());
+        let filed = [trc("action", "Archive"), tr("Delete"), tr("Task"), tr("AI task"), tr("Done"), tr("Later")];
+        assert_eq!(labels(&buttons), filed);
+        assert_eq!(buttons.iter().map(|action| action.key).collect::<Vec<_>>(), ["", "#", "T", "", "E", "S"]);
         assert_eq!(more.map(|more| more.key), Some("M"));
         let done = Item { state: State::Done { at: now() }, ..item.clone() };
-        assert_eq!(labels(&entry_card_buttons(&done, false, &folders, now()).0), [tr("Task"), tr("Reopen")]);
-        assert!(card_buttons(&item, false).1.is_none(), "nothing to hide, no \"…\"");
+        let reopen = [tr("Task"), tr("AI task"), tr("Reopen")];
+        assert_eq!(labels(&entry_card_buttons(&done, false, false, &folders, now()).0), reopen);
+        assert!(card_buttons(&item, false, false).1.is_none(), "nothing to hide, no \"…\"");
         assert!(!labels(&buttons).contains(&tr("Dismiss").to_owned()), "mail is not dismissed");
         assert!(!labels(&buttons).contains(&tr("Reply").to_owned()), "Reply stands in the reader");
     }
@@ -1703,11 +1737,11 @@ mod tests {
         let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
         let Some(Link::Mail { message }) = item.link.clone() else { panic!("a mail entry links its mail") };
         let folders = demo_folders();
-        let row = entry_actions(&item, true, &folders, now());
+        let row = entry_actions(&item, true, false, &folders, now());
         assert_eq!(labels(&row[..2]), [trc("action", "Archive"), tr("Delete")]);
         assert!(matches!(&row[0].on_press, Message::Mail(MailAction::Archive, id) if *id == message));
         assert!(matches!(&row[1].on_press, Message::Mail(MailAction::Delete, id) if *id == message));
-        let card = entry_card_buttons(&item, true, &folders, now()).0;
+        let card = entry_card_buttons(&item, true, false, &folders, now()).0;
         assert_eq!(labels(&card[..2]), labels(&row[..2]), "the card's buttons are the row's");
         let no_archive: Vec<Folder> = folders.iter().filter(|f| f.role != Some(Role::Archive)).cloned().collect();
         assert_eq!(labels(&filing(&item, &no_archive)), [tr("Delete")]);
@@ -1721,12 +1755,12 @@ mod tests {
     #[test]
     fn card_buttons_carry_their_words_where_there_is_room() {
         let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
-        let (buttons, more) = card_buttons(&item, true);
+        let (buttons, more) = card_buttons(&item, true, false);
         let medium = card_inner(size::content_max() - cards_side());
         assert_eq!(spoken(&buttons, more.is_some(), medium), BarWords::All, "Task · Done · Later in words");
-        let (filed, more) = entry_card_buttons(&item, true, &demo_folders(), now());
+        let (filed, more) = entry_card_buttons(&item, true, false, &demo_folders(), now());
         assert_eq!(spoken(&filed, more.is_some(), medium), BarWords::All, "Archive · Delete · … in words");
-        let (answers, more) = entry_card_buttons(&invitation(), true, &[], now());
+        let (answers, more) = entry_card_buttons(&invitation(), true, false, &[], now());
         assert_eq!(spoken(&answers, more.is_some(), medium), BarWords::All, "Accept · Maybe · Decline · Later · Task");
     }
 
@@ -1782,6 +1816,7 @@ mod tests {
             hidable: vec!["demo-1"],
             look: Look::Cards,
             folders: &[],
+            ai: false,
         };
         for width in [0.0, 240.0, 480.0, 720.0] {
             for item in &items {
@@ -1811,7 +1846,7 @@ mod tests {
     fn an_invitation_in_for_me_offers_its_answers() {
         let item = invitation();
         let answers = [tr("Accept"), tr("Maybe"), tr("Decline")];
-        let (buttons, more) = entry_card_buttons(&item, true, &demo_folders(), now());
+        let (buttons, more) = entry_card_buttons(&item, true, false, &demo_folders(), now());
         assert_eq!(labels(&buttons), [&answers[..], &[tr("Later"), tr("Task")]].concat());
         assert!(more.is_some(), "\"…\" for hiding stays");
         let sent: Vec<Message> = buttons.iter().take(3).map(|button| button.on_press.clone()).collect();
@@ -1819,15 +1854,15 @@ mod tests {
         let Message::AnswerInvitation(to, about, InvitationAnswer::Accept) = &sent[0] else { panic!("{:?}", sent[0]) };
         assert_eq!((to, about.as_str()), (&account, "m:invite"));
         assert!(matches!(&sent[2], Message::AnswerInvitation(_, _, InvitationAnswer::Decline)));
-        let row = labels(&entry_actions(&item, false, &demo_folders(), now()));
-        assert_eq!(row, [&answers[..], &[tr("Task"), tr("Later")]].concat());
+        let row = labels(&entry_actions(&item, false, false, &demo_folders(), now()));
+        assert_eq!(row, [&answers[..], &[tr("Task"), tr("AI task"), tr("Later")]].concat());
         let bare = Item { invite: None, ..item.clone() };
         assert!(entry_card_height(&item, 480.0) > entry_card_height(&bare, 480.0), "the chips get a row of their own");
 
         let over = now() + TimeDelta::days(2);
         assert!(invite_actions(&item, over).is_empty(), "over: no answers");
-        let filed = [labels(&filing(&item, &demo_folders())), labels(&card_buttons(&item, false).0)].concat();
-        assert_eq!(labels(&entry_card_buttons(&item, false, &demo_folders(), over).0), filed);
+        let filed = [labels(&filing(&item, &demo_folders())), labels(&card_buttons(&item, false, false).0)].concat();
+        assert_eq!(labels(&entry_card_buttons(&item, false, false, &demo_folders(), over).0), filed);
         let done = Item { state: State::Done { at: now() }, ..item.clone() };
         assert!(invite_actions(&done, now()).is_empty(), "done: answered or put aside");
         let unlinked = Item { link: None, ..item.clone() };
@@ -1844,6 +1879,7 @@ mod tests {
                 hidable: Vec::new(),
                 look,
                 folders: &[],
+                ai: true,
             };
             for width in [0.0, 240.0, 360.0, 480.0, 720.0] {
                 let _ = entry_card(&item, &rows, width);
@@ -1857,7 +1893,7 @@ mod tests {
     /// Decline in words beside Later and Task as icons. A mail's Reply leads the same way.
     #[test]
     fn card_buttons_show_all_words_or_only_the_leads() {
-        let (buttons, _) = entry_card_buttons(&invitation(), false, &[], now());
+        let (buttons, _) = entry_card_buttons(&invitation(), false, false, &[], now());
         let words = labels(&buttons);
         assert_eq!(words[0], tr("Accept"), "the answer leads");
         let words: Vec<&str> = words.iter().map(String::as_str).collect();
@@ -1877,10 +1913,11 @@ mod tests {
 
         // Issue #118: a mail's card has no lead without Reply – all words or none.
         let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
-        let (buttons, more) = entry_card_buttons(&item, true, &demo_folders(), now());
+        let (buttons, more) = entry_card_buttons(&item, true, false, &demo_folders(), now());
         let words = labels(&buttons);
-        let words: Vec<&str> = words.iter().map(String::as_str).collect();
-        let all = widgets::bar_width(&words, BarWords::All, 1);
+        // "AI task" is Task's companion (issue #168): an icon beside "…", never a word.
+        let words: Vec<&str> = words.iter().map(String::as_str).filter(|word| *word != tr("AI task")).collect();
+        let all = widgets::bar_width(&words, BarWords::All, 2);
         assert_eq!(spoken(&buttons, more.is_some(), all), BarWords::All);
         assert_eq!(spoken(&buttons, more.is_some(), all - 1.0), BarWords::None, "no word alone for Archive");
     }

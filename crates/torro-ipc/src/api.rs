@@ -965,7 +965,7 @@ pub fn post_source(client: Option<&ClientInfo>, agent: Option<&AgentInfo>) -> Re
 pub fn check_item_change(item: &Item, client: Option<&ClientInfo>) -> Result<(), InboxForbidden> {
     match client {
         Some(_) if rules::human_only(item) => {
-            Err(InboxForbidden("only the person changes this entry, in the Inbox app"))
+            Err(InboxForbidden("only the person changes this entry, in the Notification Hub"))
         }
         _ => Ok(()),
     }
@@ -977,7 +977,7 @@ pub fn check_item_change(item: &Item, client: Option<&ClientInfo>) -> Result<(),
 pub fn check_source_change(source: &SourceRef, client: Option<&ClientInfo>) -> Result<(), InboxForbidden> {
     match client {
         Some(_) if source.kind == SourceKind::Suite => {
-            Err(InboxForbidden("only the person mutes the suite's entries, in the Inbox app"))
+            Err(InboxForbidden("only the person mutes the suite's entries, in the Notification Hub"))
         }
         _ => Ok(()),
     }
@@ -2074,10 +2074,10 @@ static OPEN_APP: Command = Command {
     mcp: Mcp::Tool,
     description: "Opens an app of the suite by binary name or window class (from list_apps), or brings its window \
                   to the front when it already runs. Apps with several windows share a binary: open the inbox's \
-                  windows by class (`torro-inbox-mail`, `torro-inbox-notifications`, `torro-inbox`); the binary \
-                  `torroinbox` opens the hub. `torroworkplace` opens the control centre, which list_apps does not \
+                  windows by class (`torro-inbox-mail` Mail, `torro-inbox-notifications` App Feed, `torro-inbox` \
+                  Notification Hub); the binary `torroinbox` opens the Notification Hub. `torroworkplace` opens the control centre, which list_apps does not \
                   list. With `target` a new window always starts and shows one thing: `mail:<address>:<Message-ID>` (a task's \
-                  `link.id`) a mail in the inbox's mail window, `task:<uid>` a task in the tasks app; `app` must \
+                  `link.id`) a mail in the inbox's Mail window, `task:<uid>` a task in the tasks app; `app` must \
                   be that app. A mail or task this key may not read is `not-found`.",
 };
 
@@ -2196,7 +2196,7 @@ static LIST_ITEMS: Command = Command {
     area: Area::Inbox,
     access: Access::Read,
     mcp: Mcp::Tool,
-    description: "Lists inbox entries, urgent first, then the most recently updated (`order: oldest_first` for the \
+    description: "Lists inbox entries (the person sees them in the Notification Hub), urgent first, then the most recently updated (`order: oldest_first` for the \
                   oldest first, urgent still on top), filtered by lane (`for_me`, `info`), source, state (`open`, \
                   `snoozed`, `done`), `since` and `limit`; `dismissed: false` leaves out the entries dismissed without \
                   doing anything, `true` lists only those; only sources this key \
@@ -2233,7 +2233,7 @@ static OPEN_ITEM: Command = Command {
     mcp: Mcp::Tool,
     description: "Opens an inbox entry on the person's screen: brings the window of the coding agent behind a \
                   hook's entry to the front, opens the entry's http(s) link in the browser, or starts the app of \
-                  the suite it names; for a mail entry, starts the Inbox app, which shows the message. A new \
+                  the suite it names; for a mail entry, starts the Notification Hub, which shows the message. A new \
                   entry counts as seen then. It only steers what the person looks at \
                   and reads or runs nothing else. Opening a web link always waits for the person's approval \
                   (`pending`, the summary names the host), whatever the key's rights; `conflict` when the entry \

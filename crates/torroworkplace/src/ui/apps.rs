@@ -97,9 +97,9 @@ fn app_name(app: &AppInfo) -> String {
     match app.window_class.as_str() {
         "torro-calendar" => tr("Calendar").to_string(),
         "torro-tasks" => tr("Tasks").to_string(),
-        "torro-inbox" => tr("Inbox").to_string(),
+        "torro-inbox" => tr("Notification Hub").to_string(),
         "torro-inbox-mail" => tr("Mail").to_string(),
-        "torro-inbox-notifications" => tr("Notifications").to_string(),
+        "torro-inbox-notifications" => tr("App Feed").to_string(),
         _ => app.name.clone(),
     }
 }
@@ -148,7 +148,7 @@ mod tests {
     fn open_names_the_window_class() {
         let mail = AppInfo {
             binary: "torroinbox".into(),
-            name: "Torro Inbox Mail".into(),
+            name: "Torro Workplace Mail".into(),
             window_class: "torro-inbox-mail".into(),
             installed: true,
         };
@@ -174,12 +174,12 @@ mod tests {
     #[test]
     fn the_inbox_windows_have_their_own_name_and_description() {
         let rows = [
-            inbox("torro-inbox-mail", "Torro Inbox Mail"),
-            inbox("torro-inbox-notifications", "Torro Inbox Notifications"),
-            inbox("torro-inbox", "Torro Inbox"),
+            inbox("torro-inbox-mail", "Torro Workplace Mail"),
+            inbox("torro-inbox-notifications", "Torro App Feed"),
+            inbox("torro-inbox", "Torro Notification Hub"),
         ];
         let names: Vec<String> = rows.iter().map(app_name).collect();
-        assert_eq!(names, [tr("Mail"), tr("Notifications"), tr("Inbox")]);
+        assert_eq!(names, [tr("Mail"), tr("App Feed"), tr("Notification Hub")]);
         let lines: Vec<&str> = rows.iter().map(|row| app_description(&row.window_class)).collect();
         assert_eq!(
             lines,

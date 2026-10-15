@@ -71,7 +71,7 @@ impl Column {
     pub fn name(self) -> &'static str {
         match self {
             Column::Mail => tr("Mail"),
-            Column::Notices => tr("Notifications"),
+            Column::Notices => tr("App Feed"),
         }
     }
 
@@ -626,7 +626,7 @@ fn card<'a>(item: &'a Item, rows: &Rows<'a>, deciding: bool, width: f32) -> Elem
         .padding(space::m())
         .style(card_style(selected))
         .on_press(Message::Select(item.id.clone()));
-    let actions = rows.anchors.mark(selected, list::actions(item, rows.hidable.contains(&item.id.as_str())));
+    let actions = rows.anchors.mark(selected, list::actions(item, rows.hidable.contains(&item.id.as_str()), rows.ai));
     let words = widgets::row_actions_words(&actions, inner);
     // Beside the card's own buttons, not over its text.
     let card = if has_buttons(item) {
@@ -827,7 +827,7 @@ mod tests {
     #[test]
     fn the_columns_are_named_and_change() {
         assert_eq!(Column::Mail.name(), tr("Mail"));
-        assert_eq!(Column::Notices.name(), tr("Notifications"));
+        assert_eq!(Column::Notices.name(), tr("App Feed"));
         assert_eq!((Column::Mail.index(), Column::Notices.index()), (0, 1));
         assert_eq!(Column::default(), Column::Mail, "mail first");
         assert_ne!(Column::Mail.scroll_id(), Column::Notices.scroll_id());
@@ -881,6 +881,7 @@ mod tests {
             hidable: Vec::new(),
             look: Look::Rows,
             folders: &[],
+            ai: false,
         };
         for look in [Look::Rows, Look::Cards] {
             let data = ColumnData {

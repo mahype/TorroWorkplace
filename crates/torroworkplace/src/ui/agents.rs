@@ -210,7 +210,7 @@ impl Pick {
             Pick::Calendars => tr("Calendars"),
             Pick::TaskLists => tr("Task lists"),
             Pick::GithubRepos => tr("GitHub repositories"),
-            Pick::InboxSources => tr("Inbox sources"),
+            Pick::InboxSources => tr("Notification Hub sources"),
             Pick::MailAccounts => tr("Mail accounts"),
         }
     }
@@ -861,7 +861,7 @@ pub(crate) fn area_label(area: Area) -> &'static str {
         Area::Calendar => tr("Calendar"),
         Area::Tasks => tr("Tasks"),
         Area::Github => tr("GitHub"),
-        Area::Inbox => tr("Inbox"),
+        Area::Inbox => tr("Notification Hub"),
         Area::Mail => tr("Mail"),
         Area::Accounts => tr("Accounts"),
         Area::Ai => tr("AI"),
@@ -922,7 +922,7 @@ pub(super) fn template_label(template: RightsTemplate) -> &'static str {
 /// any area; for a hook what it can do at all.
 pub fn rights_summary(rights: &Rights, kind: &str) -> String {
     if kind == HOOK_CLIENT {
-        return tr("Reports to the inbox").to_string();
+        return tr("Reports to the Notification Hub").to_string();
     }
     if let Some(template) = rights.template() {
         return template_label(template).to_string();
@@ -990,7 +990,7 @@ fn disconnect_text(client: &ClientInfo) -> (&'static str, String) {
         Category::Agent => (
             tr("Disconnect this agent?"),
             trf(
-                "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its inbox hooks are removed too.",
+                "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its Notification Hub hooks are removed too.",
                 &[("name", name)],
             ),
         ),
@@ -1066,7 +1066,7 @@ impl Category {
             }
             Category::Bot => tr("The assistant's bots, each with rights of its own. Open one to set what it may use."),
             Category::Hook => {
-                tr("Hooks report to the inbox what an agent waits for or has finished. They see nothing.")
+                tr("Hooks report to the Notification Hub what an agent waits for or has finished. They see nothing.")
             }
             Category::Script => tr("Scripts and other programs that use the API with their own key."),
         }
@@ -1551,7 +1551,7 @@ fn hook_group<'a>(client: &'a ClientInfo, column: Option<f32>) -> Element<'a, Me
         ),
     ];
     let footer = tr(
-        "A hook's key sits in files the agent can read itself, so it may only report to the inbox and sees nothing else. These rights can't be changed.",
+        "A hook's key sits in files the agent can read itself, so it may only report to the Notification Hub and sees nothing else. These rights can't be changed.",
     );
     widgets::group(tr("Access"), rows, Some(footer.to_string()))
 }
@@ -2083,13 +2083,13 @@ mod tests {
     fn the_summary_names_the_template_or_the_areas() {
         assert_eq!(rights_summary(&RightsTemplate::ReadOnly.rights(), "codex"), tr("Read only"));
         assert_eq!(rights_summary(&RightsTemplate::FullAccess.rights(), "script"), tr("Full access"));
-        assert_eq!(rights_summary(&Rights::hook(), HOOK_CLIENT), tr("Reports to the inbox"));
+        assert_eq!(rights_summary(&Rights::hook(), HOOK_CLIENT), tr("Reports to the Notification Hub"));
         let mut rights = Rights::hook();
         rights.areas = BTreeMap::new();
         assert_eq!(rights_summary(&rights, "script"), tr("No access"));
         rights.areas.insert(Area::Calendar, AreaRights { level: Level::Read, admin: false });
         rights.areas.insert(Area::Inbox, AreaRights { level: Level::Write, admin: false });
-        let areas = format!("{}, {}", tr("Calendar"), tr("Inbox"));
+        let areas = format!("{}, {}", tr("Calendar"), tr("Notification Hub"));
         assert_eq!(rights_summary(&rights, "codex"), trf("Custom: {areas}", &[("areas", &areas)]));
         let mut wide = RightsTemplate::ReadOnly.rights();
         wide.confirm = Confirm::Never;
@@ -2273,7 +2273,7 @@ mod tests {
         );
         let name: &dyn std::fmt::Display = &"Claude Code";
         let agent = trf(
-            "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its inbox hooks are removed too.",
+            "{name} loses access at once: its key stops working. Where Connect agent set them up, its configuration entry and its Notification Hub hooks are removed too.",
             &[("name", name)],
         );
         assert_eq!(disconnect_text(&data.clients[0]).1, agent);

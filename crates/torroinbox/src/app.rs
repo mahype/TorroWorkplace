@@ -43,7 +43,7 @@
 //! exactly ([`Undo::Muted`]). "For" and "What happens" stay as chosen while the window runs. The
 //! panel's bell opens the same menu.
 //!
-//! Mail has one menu to mute (issue #123, [`App::mutes_by_bell`]): its "Hide from inbox" went into
+//! Mail has one menu to mute (issue #123, [`App::mutes_by_bell`]): its "Hide from Notification Hub" went into
 //! the bell's menu, in every window. Rows and cards of mail show the bell "Mute…" where "…" was, the
 //! reader and the panel too, and `m` opens it: "This conversation" with "Hide" and "Always" is what
 //! "This conversation" was (done, the mail stays unread), sender and domain are traits, "Always to
@@ -1055,7 +1055,7 @@ pub enum Menu {
     Task,
     /// The dialog that makes an event of `App::subject` (task E8.5b).
     Event,
-    /// "Hide from inbox" for `App::subject` (task E3.10): the ways to hide it, by `m` or the
+    /// "Hide from Notification Hub" for `App::subject` (task E3.10): the ways to hide it, by `m` or the
     /// panel's "…" ([`App::hide_choices`]).
     Hide,
     /// The bell's menu for `App::subject` (task E8.6b): the ways to mute it from
@@ -1363,11 +1363,12 @@ impl Kind {
         }
     }
 
-    /// The icon of `view` in this window: "For me" of the mail window has the inbox's, "New" of the
-    /// notifications window the bell.
+    /// The icon of `view` in this window: "For me" of the mail window is `UserCheck` – never the
+    /// inbox tray, which is the mail folder "Inbox" there and so must not stand for the window's first
+    /// view (issue #127) –, "New" of the notifications window the bell.
     pub fn view_icon(self, view: &View) -> Icon {
         match (self, view) {
-            (Kind::Mail, View::Overview) => Icon::Inbox,
+            (Kind::Mail, View::Overview) => Icon::UserCheck,
             (Kind::Notifications, View::Overview) => Icon::Bell,
             _ => view.icon(),
         }
@@ -1380,8 +1381,8 @@ impl Kind {
         let pairs: [(&str, &dyn fmt::Display); 1] = [("view", &name)];
         match self {
             Kind::Mail => trf("Mail · {view}", &pairs),
-            Kind::Notifications => trf("Notifications · {view}", &pairs),
-            Kind::Hub => trf("Inbox · {view}", &pairs),
+            Kind::Notifications => trf("App Feed · {view}", &pairs),
+            Kind::Hub => trf("Notification Hub · {view}", &pairs),
         }
     }
 
@@ -1903,7 +1904,7 @@ pub enum Message {
     /// From the hide menu: mute the source of the entry with this id, or unmute it – at once,
     /// with an undo.
     AskMute(String),
-    /// From the panel's "…": the menu "Hide from inbox" for the entry with this id (task E3.10); the
+    /// From the panel's "…": the menu "Hide from Notification Hub" for the entry with this id (task E3.10); the
     /// bell's menu for mail and in the notifications window (task E8.6b, issue #123).
     AskHide(String),
     /// From the bell of a folder's message in the reader or the panel (issue #123): the bell's menu
@@ -2051,6 +2052,8 @@ pub enum Message {
     AppOpened(Result<(), String>),
     /// Open the control centre.
     OpenSettings,
+    /// Open the control centre on the Inbox page, where the rules are ("All rules" in the bell's menu).
+    OpenRules,
     /// From a folder's list: the message with this id under the cursor and in the panel.
     SelectMail(String),
     /// The whole mail for the panel, or why it could not be read.
@@ -2473,7 +2476,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// hub's To sort alone is "Inbox · To sort", its Insights "Inbox · Insights".
     pub fn title(&self) -> String {
         if self.is_hub() && (self.sorting || self.insights.shown) {
-            return trf("Inbox · {view}", &[("view", &self.view_label())]);
+            return trf("Notification Hub · {view}", &[("view", &self.view_label())]);
         }
         self.launch.kind.title(&self.view)
     }
@@ -2911,6 +2914,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::OpenSettings => {
                 self.close_menus();
                 connect::open_settings();
+            }
+            Message::OpenRules => {
+                self.close_menus();
+                connect::open_section("inbox");
             }
             Message::SelectMail(id) => {
                 self.close_menus();
@@ -4064,7 +4071,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Command::Lane => cursor.map_or_else(Task::none, |id| self.ask_lane(&id)),
             // In the notifications window and for mail `m` is the bell (task E8.6b, issue #123): its
-            // menu; "This entry" of the hide menu is the ✕ there. Else "Hide from inbox".
+            // menu; "This entry" of the hide menu is the ✕ there. Else "Hide from Notification Hub".
             Command::Hide => cursor.map_or_else(Task::none, |id| self.ask_hide_or_mute(&id)),
             // In a folder the message under the cursor becomes a task (task E8.7b).
             Command::MakeTask if self.view.is_mail() => {
@@ -4250,7 +4257,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// Whether the menu of `m`, "…" and the bell is the bell's menu for `item` (task E8.6b): in the
-    /// notifications window, and for mail in every window – mail's "Hide from inbox" went into the
+    /// notifications window, and for mail in every window – mail's "Hide from Notification Hub" went into the
     /// bell's menu (issue #123), so mail has one menu to mute it.
     fn mutes_by_bell(&self, item: &Item) -> bool {
         self.launch.kind == Kind::Notifications || item.source.kind == SourceKind::Mail
@@ -4258,7 +4265,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// Whether `item` shows the button of `m` – the bell or "…" – and `m` opens a menu for it: in the
     /// notifications window where it has a bell ([`notifications::bell`]); for every mail entry (a
-    /// done one too: its sender can still be muted); else while "Hide from inbox" has entries for it
+    /// done one too: its sender can still be muted); else while "Hide from Notification Hub" has entries for it
     /// ([`App::hide_choices`]).
     pub fn hidable(&self, item: &Item) -> bool {
         match self.launch.kind {
@@ -4269,7 +4276,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// `m`, "…" or the bell for the entry `id`: the bell's menu where [`App::mutes_by_bell`] says
-    /// so, else "Hide from inbox".
+    /// so, else "Hide from Notification Hub".
     fn ask_hide_or_mute(&mut self, id: &str) -> Task<Message> {
         if self.find(id).is_some_and(|item| self.mutes_by_bell(item)) {
             return self.ask_mute_menu(id);
@@ -4342,7 +4349,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// offered, each with its icon, then after a line – while the entry's whole source is muted
     /// (`inbox.mute_source`) – "Unmute <source>", which takes that back at once, and for a mail
     /// entry "Move to junk" (`mail.move_messages`, where its account has a junk folder), which was
-    /// in mail's "Hide from inbox" before (issue #123).
+    /// in mail's "Hide from Notification Hub" before (issue #123).
     fn mute_choices(&self, item: &Item) -> Vec<Choice> {
         let options = match &self.mute_options {
             Some(Ok(options)) => options.as_slice(),
@@ -4372,7 +4379,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         choices
     }
 
-    /// Opens the menu "Hide from inbox" for the entry with `id` (task E3.10). An entry with no way
+    /// Opens the menu "Hide from Notification Hub" for the entry with `id` (task E3.10). An entry with no way
     /// to hide it – an approval, which closes once decided and whose source is never muted – gets
     /// a note instead.
     fn ask_hide(&mut self, id: &str) {
@@ -4909,7 +4916,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             return self.mail_action(MailAction::Reply, message);
         }
         if task.link.is_empty() || self.launch.demo {
-            self.note(tr("The mail is no longer in the inbox.").to_owned());
+            self.note(tr("The mail is no longer in the Notification Hub.").to_owned());
             return Task::none();
         }
         #[cfg(test)]
@@ -5448,9 +5455,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Pick) => Some(widgets::floating(&snooze_at, below, self.picker(), Message::CloseMenu)),
             Some(Menu::Task) => Some(widgets::floating(&task_at, dialog, self.task_dialog(), Message::CloseMenu)),
             Some(Menu::Event) => Some(widgets::floating(&event_at, dialog, self.event_dialog(), Message::CloseMenu)),
-            Some(Menu::Hide) => {
-                Some(widgets::floating(&hide_at, below, self.choice_menu(tr("Hide from inbox")), Message::CloseMenu))
-            }
+            Some(Menu::Hide) => Some(widgets::floating(
+                &hide_at,
+                below,
+                self.choice_menu(tr("Hide from Notification Hub")),
+                Message::CloseMenu,
+            )),
             Some(Menu::Mute) => Some(widgets::floating(&hide_at, below, self.mute_menu(), Message::CloseMenu)),
         };
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
@@ -5573,7 +5583,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let Some(note) = note {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                // The rail at the left has the panel button.
+                // The rail at the left has the panel button and the window's mark (issue #127).
                 shell::header_bar([], title, trailing)
             }
             // Where the band has the panel button (macOS), the header leaves it out.
@@ -5585,11 +5595,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 if let Some(note) = note.filter(|_| narrow_count(self.launch.kind)) {
                     title = title.push(typo::text(typo::body(), note).style(theme::text_3).wrapping(Wrapping::None));
                 }
-                shell::header_bar(
-                    (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
-                    title,
-                    trailing,
-                )
+                shell::header_bar(self.narrow_leading(), title, trailing)
             }
         }
     }
@@ -5621,11 +5627,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 shell::header_bar([], title, trailing)
             }
             SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => shell::header_bar(
-                (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer)),
+                self.narrow_leading(),
                 widgets::menu_button(nav, icon, name, Message::ToggleNav),
                 trailing,
             ),
         }
+    }
+
+    /// The start of the narrow header: the drawer button where the window has no band (the band has
+    /// it on macOS), then the window's mark (issue #127, [`shell::app_mark`]): without sidebar or rail
+    /// nothing else says whether this is the hub, mail or the app feed.
+    fn narrow_leading<'a>(&self) -> Vec<Element<'a, Message>> {
+        let toggle = (!shell::has_band()).then(|| shell::sidebar_toggle(Message::ShowDrawer));
+        toggle.into_iter().chain([shell::app_mark(self.launch.kind.app())]).collect()
     }
 
     /// The quiet number after the title: how many entries the view lists. The title already says
@@ -5810,7 +5824,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// What the rows of entries need (`list::Rows`): the cursor, the time, the mail accounts in the
-    /// sidebar's order (their colours) and which entries have a menu "Hide from inbox".
+    /// sidebar's order (their colours) and which entries have a menu "Hide from Notification Hub".
     fn rows_data<'a>(&'a self, anchors: &detail::Anchors) -> list::Rows<'a> {
         list::Rows {
             view: &self.view,
@@ -5821,6 +5835,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             hidable: self.items.iter().filter(|item| self.hidable(item)).map(|item| item.id.as_str()).collect(),
             look: self.look(),
             folders: &self.folders,
+            ai: self.ai_ready,
         }
     }
 
@@ -6129,7 +6144,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// its entries end in one trail only, and these need the time quietly before the key hint.
     ///
     /// The menu is as wide as its longest entry needs ([`choice_menu_width`]), so the addresses and
-    /// domains of "Hide from inbox" show whole.
+    /// domains of "Hide from Notification Hub" show whole.
     fn choice_menu<'a>(&self, title: impl Into<String>) -> Element<'a, Message> {
         let choices = self.choices();
         let width = choice_menu_width(&choices);
@@ -6179,8 +6194,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let segment = |control: Element<'a, Message>| {
             container(control).padding(Padding::ZERO.left(space::s()).right(space::s()).bottom(space::xs()))
         };
-        let rules = MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenSettings)
-            .trail(Trail::Icon(Icon::ArrowUpRight));
+        let rules = rules_entry();
         list = list
             .push(menu_line())
             .push(menu_caption(tr("For")))
@@ -6627,6 +6641,12 @@ fn segmented_width(labels: &[&str]) -> f32 {
     segments + 2.0 * (style::SEGMENT_INSET + size::HAIRLINE)
 }
 
+/// "All rules ↗" at the foot of the bell's menu. It opens the Inbox page of the control centre, not
+/// the accounts page the gear opens ([`Message::OpenSettings`]), because the rules are listed there.
+fn rules_entry<'a>() -> MenuItem<'a, Message> {
+    MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenRules).trail(Trail::Icon(Icon::ArrowUpRight))
+}
+
 /// The width of the bell's menu with `choices`: as a menu of choices ([`choice_menu_width`]), and
 /// at least what its segments need beside the menu's and their insets – "Until tomorrow" and
 /// "Only Info" are long in some languages.
@@ -6664,7 +6684,7 @@ fn narrow_count(kind: Kind) -> bool {
 /// How the digit that picks a choice shows at its end.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KeyLook {
-    /// As a key hint (`widgets::kbd`), as in "Later until" and "Hide from inbox".
+    /// As a key hint (`widgets::kbd`), as in "Later until" and "Hide from Notification Hub".
     Kbd,
     /// Quietly in `META`, tabular, `text_3` – the bell's menu (task E8.12), where boxed digits beside
     /// "This conversation" and "Everything from deploy" read like counts.
@@ -6752,7 +6772,7 @@ fn choice_frame(when: Option<&str>, key: &str) -> f32 {
 }
 
 /// The width of a menu of `choices`: [`widgets::menu_width`], wider as far as its longest label
-/// needs to show whole – the address or domain of "Hide from inbox" (task E3.10) –, at most
+/// needs to show whole – the address or domain of "Hide from Notification Hub" (task E3.10) –, at most
 /// [`size::panel()`], beyond which a label ends in "…".
 fn choice_menu_width(choices: &[Choice]) -> f32 {
     let needed = choices.iter().enumerate().map(|(i, choice)| {
@@ -6878,7 +6898,7 @@ pub fn demo_task(item: &mut Item, now: DateTime<Utc>) {
 }
 
 fn load_failed(err: &str) -> Failure {
-    Failure::new(tr("Couldn't load the inbox."), err)
+    Failure::new(tr("Couldn't load the entries."), err)
 }
 
 /// The error state of a first load: the alert icon, the sentence (`BODY_STRONG`, like the title of
@@ -7192,7 +7212,7 @@ mod tests {
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
         let app = App::new(Arc::new(EmptySource), Source::from_args(args(&["--demo"])), launch).0;
         assert_eq!(app.view, View::Info);
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Info"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Info"))]));
 
         let stored = args(&["/usr/bin/torroinbox", "--source", "agent:claude-code"]);
         let launch = Launch::parse(&stored[1..]).expect("valid parameters");
@@ -7239,7 +7259,7 @@ mod tests {
             14,
             "suite, two agents, five scripts, two mail accounts, GitHub, Nextcloud, Talk, ntfy"
         );
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("For me"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("For me"))]));
     }
 
     #[test]
@@ -7483,7 +7503,7 @@ mod tests {
         assert!(!app.loaded, "loading stays");
         let mut app = demo(&["--demo", "--open", "error"]);
         let _ = app.update(Message::Loaded(app.view.clone(), Err(DEMO_ERROR.into())));
-        assert_eq!(app.error, Some(Failure { what: tr("Couldn't load the inbox."), why: DEMO_ERROR.into() }));
+        assert_eq!(app.error, Some(Failure { what: tr("Couldn't load the entries."), why: DEMO_ERROR.into() }));
         assert_eq!(demo(&["--demo", "--open", "menu"]).menu, Some(Menu::Nav));
         assert!(demo(&["--demo", "--open", "drawer"]).drawer);
         // The triage states of E3.2.
@@ -8134,7 +8154,7 @@ mod tests {
 
     /// Issue #123 (acceptance): "This conversation" for a week keeps a rule, so further mail of the
     /// conversation stays out of "For me"; hidden for good it is done without marking the mail read,
-    /// as "Hide from inbox" did, and the undo of the suite takes it back.
+    /// as "Hide from Notification Hub" did, and the undo of the suite takes it back.
     #[test]
     fn this_conversation_is_muted_without_marking_the_mail_read_and_undoes() {
         let mut app = loaded(&[]);
@@ -8909,7 +8929,7 @@ mod tests {
         let newest_first = ["m:w1", "m:w2", "m:w3", "m:w13", "m:w4", "m:w14", "m:w5", "m:w6"];
         assert_eq!(message_ids(&app), newest_first, "newest first");
         assert_eq!(app.count_note(), "8");
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Inbox"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Inbox"))]));
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
         let _ = app.update(Message::UiState(UiState { sidebar: SidebarMode::Rail }));
@@ -9390,7 +9410,7 @@ mod tests {
         assert_eq!((app.for_me.len(), app.info), (18, 6), "the sidebar's numbers from the same answer");
         assert_eq!(app.count_note(), hub::summary(&hub::Sections::of(&app.items, None)));
         assert!(app.nav_entries().0[0].active, "the first entry of the sidebar");
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("Act now"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("Act now"))]));
         let rows = rows_of(&app);
         assert_eq!(rows[..4], ["demo-3", "demo-9", "demo-1", "demo-2"], "Decide, Follow up, then Agents …");
         // Everything for the user, and of Info only the question after a finished task (task E8.7b).
@@ -9411,7 +9431,7 @@ mod tests {
         let _ = press(&mut notices, Key::H);
         let _ = notices.update(Message::ShowColumn(Column::Mail));
         assert_eq!(notices.column, Column::Notices, "there is no mail column to go to");
-        assert_eq!(notices.title(), trf("Notifications · {view}", &[("view", &tr("New"))]));
+        assert_eq!(notices.title(), trf("App Feed · {view}", &[("view", &tr("New"))]));
 
         let mail = overview_at(&["--view", "mail"]);
         assert_eq!(mail.column, Column::Mail);
@@ -9456,7 +9476,7 @@ mod tests {
         assert!(app.sorting && app.view == View::Overview);
         assert_eq!(rows_of(&app).len(), 14);
         assert!(rows_of(&app).iter().all(|id| *id != "demo-3"), "no approval to sort");
-        assert_eq!(app.title(), trf("Inbox · {view}", &[("view", &tr("To sort"))]));
+        assert_eq!(app.title(), trf("Notification Hub · {view}", &[("view", &tr("To sort"))]));
         assert_eq!(app.count_note(), "14");
         assert!(app.nav_entries().0[1].active && !app.nav_entries().0[0].active);
         let _ = app.update(Message::Show(View::Overview));
@@ -9491,7 +9511,7 @@ mod tests {
         assert!(ids(&early).is_empty(), "done yesterday 12:30");
         let late = loaded_late(&["--open", "done"]);
         assert_eq!(ids(&late), ["demo-11"], "done today 01:30");
-        assert_eq!(late.title(), trf("Inbox · {view}", &[("view", &tr("Done today"))]));
+        assert_eq!(late.title(), trf("Notification Hub · {view}", &[("view", &tr("Done today"))]));
         let mut notices =
             demo(&["--demo", "--now", "2026-10-13T10:30", "--view", "notifications", "--source", "agent:codex"]);
         let _ = notices.update(Message::Show(View::Done));
@@ -10324,6 +10344,15 @@ mod tests {
         assert!(last.line && matches!(last.message, Message::AskMute(ref id) if id == "demo-6"));
     }
 
+    /// Task S.15: "All rules" sends its own message, which opens the control centre's Inbox page;
+    /// it is not the gear's `OpenSettings`, which opens the accounts page.
+    #[test]
+    fn all_rules_opens_the_inbox_page_not_the_accounts_page() {
+        let rules = rules_entry();
+        assert!(matches!(rules.on_press, Message::OpenRules));
+        assert!(!matches!(rules.on_press, Message::OpenSettings));
+    }
+
     /// Task E8.6b: the rule's words – effect, end and what it mutes – and when a muting ends.
     #[test]
     fn muting_reads_as_the_rules_of_the_control_centre() {
@@ -10358,6 +10387,21 @@ mod tests {
         assert_eq!(MuteFor::OneHour.until(now), Some(now + TimeDelta::hours(1)));
         assert_eq!(MuteFor::Always.until(now), None);
         assert_eq!(until_text(now + TimeDelta::hours(1), now).len(), 5, "today: the time alone");
+    }
+
+    /// Issue #127: the three windows say which one they are – "Notification Hub", "Mail" and "App
+    /// Feed" in the title –, and the mail window's first view is not the tray of the folder "Inbox".
+    #[test]
+    fn the_windows_name_themselves_apart() {
+        let view = View::Overview;
+        assert_eq!(Kind::Hub.title(&view), trf("Notification Hub · {view}", &[("view", &tr("Act now"))]));
+        assert_eq!(Kind::Mail.title(&view), trf("Mail · {view}", &[("view", &tr("For me"))]));
+        assert_eq!(Kind::Notifications.title(&view), trf("App Feed · {view}", &[("view", &tr("New"))]));
+        assert_ne!(Kind::Mail.view_icon(&view), Icon::Inbox, "the tray is the folder \"Inbox\"");
+        assert_eq!(Kind::Mail.view_icon(&view), Icon::UserCheck);
+        for kind in [Kind::Hub, Kind::Mail, Kind::Notifications] {
+            assert!(!kind.app().display_name.contains("Inbox"), "{kind:?}");
+        }
     }
 
     /// Task E8.6b: the bell's menu opens at the card or row, and at the panel's bell; it draws in
@@ -10534,7 +10578,8 @@ mod tests {
         let mut app = notifications_window(&["--source", "suite", "--source", "script:uptime"]);
         let question = app.find("demo-9").cloned().expect("the suite's question");
         assert!(hub::is_follow_up(&question));
-        let words: Vec<String> = notifications::card_buttons(&question, false).into_iter().map(|b| b.label).collect();
+        let words: Vec<String> =
+            notifications::card_buttons(&question, false, false).into_iter().map(|b| b.label).collect();
         assert_eq!(words, [tr("Reply"), tr("Mark mail done"), tr("Not now")]);
         draw_everywhere(&mut app);
         let _ = app.update(Message::Resized(WIDE));
@@ -10634,7 +10679,7 @@ mod tests {
         let mut hub = overview_at(&["--view", "hub"]);
         let _ = hub.update(Message::ShowInsights);
         assert!(hub.is_insights() && hub.view == View::Overview);
-        assert_eq!(hub.title(), trf("Inbox · {view}", &[("view", &tr("Insights"))]));
+        assert_eq!(hub.title(), trf("Notification Hub · {view}", &[("view", &tr("Insights"))]));
         assert_eq!(hub.focus(), Focus::Elsewhere, "j, e and the others act on no hidden row");
         let active: Vec<String> =
             hub.nav_entries().0.into_iter().filter(|entry| entry.active).map(|entry| entry.label).collect();

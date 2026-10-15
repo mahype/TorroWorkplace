@@ -1510,7 +1510,7 @@ E8.9   unabhängig (torro-wm, core.rs)
   den vorhandenen Dialog sofort, eine leise Zeile sagt „Asking your AI…“, dann füllt der Vorschlag Titel,
   Fälligkeit (`Due::On` für andere Tage), Notiz bzw. Tag, Beginn, Dauer (`Length::Minutes`), Ort und Teilnehmer
   („With: …“ als Notiz). Entscheidungen: Knöpfe nur in Paneel und Leser – dort, wo der Inhalt gelesen wurde, wie
-  „Reply“; Zeilen und Karten behalten ihre Leisten (`RowAction` kennt keinen ausgegrauten Zustand). Ganztägige
+  „Reply“; Zeilen und Karten behalten ihre Leisten (`RowAction` kennt keinen ausgegrauten Zustand; nachgeholt in E8.27). Ganztägige
   Vorschläge werden 09:00 für eine Stunde, weil der Dialog nur Termine mit Uhrzeit anlegt. Teilnehmer landen in der
   Notiz, weil ein Termin der Suite keine Teilnehmer hat. Kein Tastenkürzel)
 - **Modell:** Opus · **Braucht:** E3.5, E8.5b, C.15 · **Dateien:** `crates/torro-ipc/src/{lib,api,inbox}.rs`,
@@ -1549,6 +1549,44 @@ E8.9   unabhängig (torro-wm, core.rs)
 - **Abnahme:** Tests: Mute im Mail-Fenster sendet `inbox.mute_item` (Unterhaltung, Domain, Absender, 1 Woche);
   eine Unterhaltung für eine Weile hält weitere Mails aus „For me“ (Kern); Ordnernachricht ohne Eintrag nur mit
   Merkmalen, für Clients nur mit Konto, Freigabe nennt den Absender aus dem Speicher.
+
+### E8.26 Fenster unterscheidbar: Notification Hub, Mail, App Feed (Issue #127)
+- [x] erledigt (2026-10-14: Entscheidung 21 in [eingang.md](../eingang.md). Zentrale „Notification Hub“
+  (de „Mitteilungszentrale“), Mail-Fenster „Mail“, Benachrichtigungen-Fenster „App Feed“ (de „App-Feed“), weil
+  „Notification Hub“ und „Notifications“ sich ähnelten. Lange Namen „Torro Notification Hub“, „Torro Workplace
+  Mail“ (nicht „Torro Mail“: TorroMail ist ein eigenes Produkt), „Torro App Feed“. Umbenannt in Tray-Menü,
+  App-Umschalter, Titeln, Steuerzentrale (Abschnitt, Konten, Agenten, Assistent), Freigaben, CLI, Desktop-Hinweisen,
+  Assistent und API-Beschreibungen; „Inbox“ heißt nur noch der Mail-Ordner. Erkennungszeichen `shell::app_mark`:
+  Icon des Fensters in eigener Farbe (Standardfarben der Listen: Zentrale orange, Mail blau, App Feed pink) auf
+  getönter Kachel statt des Logos im Umschalter und in der Leiste, ohne Seitenleiste und Leiste (Schmal) vorn in der
+  Kopfleiste. „For me“ im Mail-Fenster mit `UserCheck`. Aktive Seitenleistenzeile bleibt neutral (Design-Regel
+  „Auswahl neutral“). Unverändert: Fensterklassen, `AppId`, `--view`, API-Bereich `inbox`)
+- **Modell:** Opus · **Braucht:** E8.1 · **Dateien:** `crates/torro-core/src/{app.rs,i18n/de.rs}`,
+  `crates/torro-gui/src/shell.rs`, `crates/torroinbox/src/{app,overview,list,detail,mail,keys}.rs`,
+  `crates/torroworkplace/src/{tray/*,ui/*,approvals,cli,core,inbox_notify,mcp}.rs`, `crates/torro-ipc/src/api.rs`,
+  `crates/torro-inbox/src/source.rs`, `crates/torroassistant/src/{chat,view}.rs`, `docs/{eingang,app-catalog}.md`
+- **Oberfläche:** alle drei Fenster, Tray, Steuerzentrale. **API/MCP:** keine neuen Befehle, nur Beschreibungen
+  (`apps.open_app`, `inbox.list_items`, `inbox.open_item`, Fehlertexte der Sicherheitsregel 1, MCP-Anleitung).
+- **Abnahme:** Tests: die drei Namen teilen kein Wort (beide Sprachen), jedes Fenster eigenes Icon und eigene Farbe,
+  Titel „Notification Hub · …“ / „Mail · …“ / „App Feed · …“, „For me“ ohne `Icon::Inbox`.
+
+### E8.27 Gesperrte Icon-Knöpfe gedimmt, KI-Knöpfe an Zeilen und Karten (Issue #168)
+- [x] erledigt (2026-10-14: `torro-gui`: Knöpfe ohne Nachricht (`icon_button`, `boxed_button`, `compact_button`,
+  `text_button`) blenden ihr Icon auf 40 % ab (`Svg::opacity`, weil Iced beim Tönen des Icons die Deckkraft
+  verwirft); `busy_button` bleibt voll. `RowAction` bekommt `blocked(grund)`, `press()` und `tip()`: gesperrt
+  steht der Knopf gedimmt in der Leiste, nimmt keinen Klick und nennt den Grund im Tooltip; ohne Taste kein
+  `kbd`. Eingang: „AI task“ steht gleich nach „Task“, „AI event“ gleich nach „Event“ – in den Aktionsleisten der
+  Zeilen (Zentrale, Mail, App Feed), auf den Karten von Mail-Einträgen, App Feed und Zentrale; ohne KI gesperrt mit
+  „Set up an AI first“. Auf Karten sind sie Begleiter (immer nur Icon, zählen nicht beim Wählen zwischen Wörtern
+  und Icons), damit die Karten ihre Wörter behalten; in den einzeiligen Karten von „To sort“ treten sie zurück, wo
+  die Wörter nur ohne sie passen. Ordnernachrichten ohne Eintrag bekommen keine KI-Knöpfe (der Vorschlag braucht
+  einen Eintrag). `suggest::off_button` entfällt)
+- **Modell:** Opus · **Braucht:** E8.24 · **Dateien:** `crates/torro-gui/src/widgets.rs`,
+  `crates/torroinbox/src/{suggest,list,notifications,hub,overview,mail,app}.rs`
+- **Oberfläche:** Icon-Knöpfe überall; Zeilen und Karten des Eingangs. **API/MCP:** keine Änderung
+  (`inbox.suggest_task_from_item`, `inbox.suggest_event_from_item` gibt es seit E8.24).
+- **Abnahme:** Tests: gesperrte Knöpfe blenden das Icon ab; `RowAction::blocked` ohne Klick, mit Grund; KI-Knöpfe
+  an Zeilen und Karten, ohne KI gesperrt mit Tooltip, mit KI schicken sie den Vorschlag; „To sort“ behält die Wörter.
 
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
