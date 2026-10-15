@@ -16,6 +16,11 @@
 //! [`BODY_RETENTION_DAYS`] days. A message without its text is fetched from the server with
 //! `BODY.PEEK[]` (never marked read) and its text kept with `MailStore::set_body`.
 //!
+//! **HTML** (task M8.1): the store keeps the cleaned HTML part beside the text (`mime::read`
+//! cleans it). `mail.get_message` hands it out only with `include_html`; when the store has the
+//! text but no HTML for it (kept before the core knew HTML, or pruned), the message is fetched once
+//! more the same way, without marking it read.
+//!
 //! **Search** ([`search_messages`], issue #136) runs on the stores alone, so it works offline and
 //! the same everywhere: the query language of [`query`] (words, phrases, `-`, `OR`, operators),
 //! folded as [`fold`] says, over subject, sender, recipients, text and attachment names of every
@@ -109,7 +114,9 @@ pub async fn answer(mail: &MailService, reach: Reach<'_>, request: Request) -> R
             search_messages(mail, reach, search, Utc::now()).await
         }
         Request::MailIndexStatus { account } => index_status(mail, reach, account.as_deref()).await,
-        Request::GetMail { id, include_body } => get_message(mail, reach, &id, include_body).await,
+        Request::GetMail { id, include_body, include_html } => {
+            get_message(mail, reach, &id, include_body, include_html).await
+        }
         Request::GetMailThread { id } => get_thread(mail, reach, &id).await,
         Request::GetMailAttachment { id, attachment } => get_attachment(mail, reach, &id, &attachment).await,
         other => {
@@ -390,18 +397,39 @@ async fn locate(stores: &[(String, SharedStore)], id: &str) -> Answer<Located> {
 
 /// `mail.get_message`: the message from the store. Its text (and so its attachments) is fetched
 /// from the server when the store lacks it and it is asked for, or the message has attachments
-/// to list; never marked read.
-async fn get_message(mail: &MailService, reach: Reach<'_>, id: &str, include_body: bool) -> Answer<Response> {
+/// to list; so is its HTML when it is asked for (`include_html`) and the store has none stored.
+/// Never marked read.
+async fn get_message(
+    mail: &MailService,
+    reach: Reach<'_>,
+    id: &str,
+    include_body: bool,
+    include_html: bool,
+) -> Answer<Response> {
     let stores = mail.stores(reach).await;
     let located = locate(&stores, id).await?;
     let mut message = stored_message(&located).await?;
-    if message.text.is_none() && (include_body || message.summary.has_attachments) {
-        message = fetch_body(mail, &located).await?;
-    }
+    // `None`: not stored, so it must be fetched; `Some(None)`: the message has none.
+    let stored_html = if include_html { stored_html(&located).await? } else { Some(None) };
+    let needs_text = message.text.is_none() && (include_body || message.summary.has_attachments);
+    let html = match stored_html {
+        Some(html) if !needs_text => html,
+        _ => {
+            message = fetch_body(mail, &located).await?;
+            message.html.take()
+        }
+    };
     if !include_body {
         message.text = None;
     }
+    message.html = if include_html { html } else { None };
     Ok(Response::MailMessage { message })
+}
+
+/// The cleaned HTML of the message as the store has it ([`MailStore::html`](super::store::MailStore::html)).
+async fn stored_html(located: &Located) -> Answer<Option<Option<String>>> {
+    let id = located.place.id.clone();
+    located.store.run(move |store| store.html(&id)).await.map_err(store_failed)
 }
 
 /// `mail.get_thread`: the conversation of the message `id` in every account `reach` sees, oldest
@@ -468,7 +496,7 @@ async fn fill_texts(
         };
         let Ok(read) = mime::read(&raw) else { continue };
         let invite = invite_of(&raw, &read);
-        let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite };
+        let body = Body::of(read, invite);
         let kept = store.run(move |store| {
             store.set_body(&id, &body)?;
             store.message(&id)
@@ -486,15 +514,17 @@ async fn stored_message(located: &Located) -> Answer<Message> {
     located.store.run(move |store| store.message(&id)).await.map_err(store_failed)?.ok_or_else(no_message)
 }
 
-/// Fetches the whole message from the server (`BODY.PEEK[]`, so it stays unread), keeps its text
-/// and attachment list in the store and returns the message as the store has it then.
+/// Fetches the whole message from the server (`BODY.PEEK[]`, so it stays unread), keeps its text,
+/// cleaned HTML and attachment list in the store and returns the message as the store has it then,
+/// with its `html` set (the caller decides whether it hands it out).
 async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
     let raw = fetch_raw(mail, located).await?;
     let read = mime::read(&raw).map_err(|_| unreadable())?;
     let id = located.place.id.clone();
     let invite = invite_of(&raw, &read);
-    let body = Body { text: read.text, from_html: read.from_html, attachments: read.attachments, invite };
-    located
+    let body = Body::of(read, invite);
+    let html = body.html.clone();
+    let message = located
         .store
         .run(move |store| {
             store.set_body(&id, &body)?;
@@ -502,7 +532,8 @@ async fn fetch_body(mail: &MailService, located: &Located) -> Answer<Message> {
         })
         .await
         .map_err(store_failed)?
-        .ok_or_else(no_message)
+        .ok_or_else(no_message)?;
+    Ok(Message { html, ..message })
 }
 
 /// The raw message from the account's command connection. `not-found` when it is gone from the
@@ -669,12 +700,7 @@ pub(crate) async fn fetch_invitation(mail: &MailService, account: &str, id: &str
     let raw = fetch_raw(mail, &located).await?;
     let read = mime::read(&raw).map_err(|_| unreadable())?;
     let invitation = invitation_in(&raw, &read);
-    let body = Body {
-        text: read.text.clone(),
-        from_html: read.from_html,
-        attachments: read.attachments.clone(),
-        invite: invitation.as_ref().and_then(Invitation::invite),
-    };
+    let body = Body::of(read.clone(), invitation.as_ref().and_then(Invitation::invite));
     let kept = id.to_string();
     located.store.run(move |store| store.set_body(&kept, &body)).await.map_err(store_failed)?;
     Ok(Invited { place: located.place, read, invitation })
@@ -986,7 +1012,12 @@ pub(crate) mod tests {
     }
 
     fn get(id: &str, include_body: bool) -> Request {
-        Request::GetMail { id: id.into(), include_body }
+        Request::GetMail { id: id.into(), include_body, include_html: false }
+    }
+
+    /// `mail.get_message` with text and HTML, as the mail window asks (task M8.1).
+    fn get_html(id: &str) -> Request {
+        Request::GetMail { id: id.into(), include_body: true, include_html: true }
     }
 
     async fn id_of(service: &MailService, subject: &str) -> String {
@@ -1137,6 +1168,7 @@ pub(crate) mod tests {
         let in_folder = find(None, Some(all[0].id.clone()), None);
         for request in [
             get(&id, true),
+            get_html(&id),
             Request::GetMailThread { id: id.clone() },
             Request::GetMailAttachment { id: id.clone(), attachment: "2".into() },
             in_folder,
@@ -1174,6 +1206,63 @@ pub(crate) mod tests {
         let before = peeks(server.lines());
         message(answer(&service, Reach::Suite, get(&id, true)).await);
         assert_eq!(peeks(server.lines()), before, "the text is kept now");
+    }
+
+    /// A recent mail with a text and an HTML part; the HTML names an inline picture by its
+    /// `Content-ID` and carries a script (task M8.1).
+    fn mail_with_html() -> String {
+        let date = Utc::now().to_rfc2822();
+        format!(
+            "From: News <news@example.com>\r\nTo: anna@example.org\r\nSubject: Weekly\r\nDate: {date}\r\n\
+             Message-ID: <weekly@example.org>\r\nMIME-Version: 1.0\r\n\
+             Content-Type: multipart/related; boundary=\"r\"\r\n\r\n--r\r\n\
+             Content-Type: multipart/alternative; boundary=\"a\"\r\n\r\n--a\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\r\nThe week in short.\r\n--a\r\n\
+             Content-Type: text/html; charset=utf-8\r\n\r\n<p onclick=\"x()\">The <b>week</b></p>\
+             <img src=\"cid:logo@example.com\"><script>x()</script>\r\n--a--\r\n--r\r\n\
+             Content-Type: image/png\r\nContent-ID: <logo@example.com>\r\nContent-Disposition: inline\r\n\r\nPNG\r\n--r--\r\n"
+        )
+    }
+
+    /// Task M8.1: the HTML comes only with `include_html`, cleaned, from the store; a text kept
+    /// without HTML (from before) is fetched once more without marking the mail read.
+    #[tokio::test]
+    async fn html_comes_only_when_asked_and_is_fetched_once_when_the_store_lacks_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &mail_with_html(), &[]);
+        let service = synced(dir.path(), &server).await;
+        let id = id_of(&service, "Weekly").await;
+        let peeks = |lines: Vec<String>| lines.iter().filter(|line| line.contains("BODY.PEEK[]")).count();
+        let synced_peeks = peeks(server.lines());
+
+        let plain = message(answer(&service, Reach::Suite, get(&id, true)).await);
+        assert_eq!((plain.text.as_deref(), plain.html), (Some("The week in short."), None), "not asked for");
+        let shown = message(answer(&service, Reach::Suite, get_html(&id)).await);
+        let html = shown.html.expect("the HTML");
+        assert!(html.contains("<b>week</b>") && html.contains("src=\"cid:logo@example.com\""), "{html}");
+        assert!(!html.contains("script") && !html.contains("onclick"), "{html}");
+        assert_eq!(shown.text.as_deref(), Some("The week in short."), "the text stays the text part");
+        let logo = shown.attachments.iter().find(|attachment| attachment.inline).expect("the inline picture");
+        assert_eq!(logo.content_id.as_deref(), Some("logo@example.com"));
+        assert_eq!(peeks(server.lines()), synced_peeks, "kept by the sync, nothing fetched");
+        let without_text = Request::GetMail { id: id.clone(), include_body: false, include_html: true };
+        let only_html = message(answer(&service, Reach::Suite, without_text).await);
+        assert_eq!((only_html.text, only_html.html.is_some()), (None, true));
+
+        let stores = service.stores(Reach::Suite).await;
+        let lookup = id.clone();
+        stores[0].1.run(move |store| store.forget_html(&lookup)).await.expect("forgotten");
+        let again = message(answer(&service, Reach::Suite, get(&id, true)).await);
+        assert_eq!((again.html, peeks(server.lines())), (None, synced_peeks), "the text alone needs no fetch");
+        let fetched = message(answer(&service, Reach::Suite, get_html(&id)).await);
+        assert!(fetched.html.is_some_and(|html| html.contains("<b>week</b>")));
+        assert!(!fetched.summary.flags.contains(&Flag::Seen));
+        assert_eq!(peeks(server.lines()), synced_peeks + 1, "fetched once more");
+        let lines = server.lines();
+        assert!(!lines.iter().any(|line| line.contains(" BODY[") || line.contains("UID STORE")), "{lines:?}");
+        message(answer(&service, Reach::Suite, get_html(&id)).await);
+        assert_eq!(peeks(server.lines()), synced_peeks + 1, "kept now");
     }
 
     #[tokio::test]

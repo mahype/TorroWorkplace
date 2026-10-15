@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<!-- Self-made sample for task M9.4: the invoice of an invented shop ("Example Store"), with an item
+     table, totals, borders and a right-aligned address block. Not a real mail. -->
+<html>
+<head><meta charset="utf-8"><title>Your invoice</title></head>
+<body style="font-family:Arial, Helvetica, sans-serif; font-size:14px; color:#222; margin:0; padding:16px;">
+<div style="max-width:640px; margin:0 auto; border:1px solid #ddd; padding:24px;">
+  <table width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+      <td><span style="font-size:22px; font-weight:bold; color:#0a7b5a;">Example Store</span><br><small style="color:#777;">Parcel street 1 &middot; 12345 Sampletown</small></td>
+      <td align="right" valign="top" style="color:#555;">Invoice <b>2026-10481</b><br>Date: 12 Oct 2026<br>Customer no. 77812</td>
+    </tr>
+  </table>
+  <hr style="border:0; border-top:2px solid #0a7b5a; margin:16px 0;">
+  <p>Hello Alex Sample,</p>
+  <p>thank you for your order. Your parcel left our warehouse today. Here is your invoice:</p>
+  <table width="100%" cellpadding="8" cellspacing="0" border="1" style="border-collapse:collapse; border-color:#ccc; font-size:13px;">
+    <thead>
+      <tr bgcolor="#f2f2f2"><th align="left">Item</th><th align="right">Qty</th><th align="right">Price</th><th align="right">Total</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>USB-C cable, 2 m, braided</td><td align="right">2</td><td align="right">9.90 &euro;</td><td align="right">19.80 &euro;</td></tr>
+      <tr><td>Mechanical keyboard &ldquo;Quiet 75&rdquo;, German layout (ISO), with a rather long product name that wraps</td><td align="right">1</td><td align="right">129.00 &euro;</td><td align="right">129.00 &euro;</td></tr>
+      <tr><td>Desk mat, felt, 90 &times; 40 cm</td><td align="right">1</td><td align="right">24.50 &euro;</td><td align="right">24.50 &euro;</td></tr>
+      <tr><td colspan="3" align="right">Shipping</td><td align="right">4.95 &euro;</td></tr>
+      <tr><td colspan="3" align="right">Subtotal (net)</td><td align="right">149.37 &euro;</td></tr>
+      <tr><td colspan="3" align="right">VAT 19 %</td><td align="right">28.88 &euro;</td></tr>
+      <tr bgcolor="#e8f5ef"><td colspan="3" align="right"><strong>Total</strong></td><td align="right"><strong>178.25 &euro;</strong></td></tr>
+    </tbody>
+  </table>
+  <p style="margin-top:16px;">Paid with: card ending in 0000 (sample). Track your parcel: <a href="https://example.com/track/ABC123">ABC123</a></p>
+  <table width="100%" cellpadding="0" cellspacing="0" style="margin-top:24px; font-size:12px; color:#666;">
+    <tr>
+      <td valign="top" width="50%">Delivery address<br><b>Alex Sample</b><br>Example road 5<br>54321 Exampleville</td>
+      <td valign="top" width="50%" align="right">Questions? <a href="mailto:help@example.com">help@example.com</a><br>Mon&ndash;Fri 9&ndash;17</td>
+    </tr>
+  </table>
+  <p style="font-size:11px; color:#999; margin-top:24px; text-align:center;">Example Store GmbH &middot; Register court Sampletown HRB 0000 &middot; VAT ID DE000000000</p>
+</div>
+</body>
+</html>
