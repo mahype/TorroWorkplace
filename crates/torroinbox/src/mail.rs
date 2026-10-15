@@ -1093,14 +1093,19 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
     };
     let selected = data.selected == Some(message.id.as_str());
     let on_press = Message::SelectMail(message.id.clone());
-    let height = list::message_height();
-    let row = list::sized_row(list::mail_content(lines, width), selected, on_press, height);
-    let (mut actions, more) = message_buttons(message, data.entries, data.folders, data.now);
-    actions.extend(more);
-    let actions = data.anchors.mark(selected, actions);
-    let words = widgets::row_actions_words(&actions, width);
-    // On the first line, over the time, as the rows of entries: subject and preview stay readable.
-    let row = widgets::row_actions_at(row, actions, selected, words, list::first_line_middle(height, 3));
+    let mut height = list::message_height();
+    let mut actions = Vec::new();
+    if selected {
+        let (buttons, more) = message_buttons(message, data.entries, data.folders, data.now);
+        actions = data.anchors.mark(true, buttons);
+        actions.extend(data.anchors.mark(true, more.into_iter().collect()));
+    }
+    // Below the lines, as the rows of entries (`list::with_strip`): nothing covers the row.
+    if !actions.is_empty() {
+        height += list::strip_height();
+    }
+    let content = list::with_strip(list::mail_content(lines, width), actions, width);
+    let row = list::sized_row(content, selected, on_press, height);
     if selected { widgets::anchored(&data.anchors.row, row) } else { row }
 }
 
