@@ -32,7 +32,7 @@ impl Host for FakeHost {
         self.clients.list().into_iter().find(|info| info.kind == ASSISTANT_CLIENT)
     }
 
-    fn model<'a>(&'a self, _engine: &'a str) -> BoxFuture<'a, Result<ModelAccess, AiError>> {
+    fn model<'a>(&'a self, _engine: &'a str, _model: Option<&'a str>) -> BoxFuture<'a, Result<ModelAccess, AiError>> {
         Box::pin(async { Err(AiError::NotFound("no AI accounts here".into())) })
     }
 

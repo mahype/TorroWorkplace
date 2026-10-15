@@ -117,5 +117,10 @@ fn the_tool_line_refers_to_the_bots_conversation() {
 fn asking_a_bot_counts_as_reading_mail_and_outside_data_later() {
     assert!(data_rule::reads_mail("bots.ask_bot"));
     assert!(tools::may_have_read_untrusted("bots.ask_bot"));
-    assert!(!data_rule::history_allowed(&["bots.ask_bot"], "ai:ollama@localhost:11434", "claude-code", Place::Remote));
+    assert!(!data_rule::history_allowed(
+        &["bots.ask_bot"],
+        ("ai:ollama@localhost:11434", Some("qwen3:8b")),
+        ("claude-code", None),
+        Place::Remote
+    ));
 }

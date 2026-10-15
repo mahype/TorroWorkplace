@@ -534,7 +534,8 @@ fn allowed_areas(kind: &str, rights: &torro_ipc::api::Rights, without: &[Area], 
 /// `rule` lets it go to a model elsewhere, and the person's new message, which is the last entry of
 /// the job.
 fn message(job: &Job, rule: DataRule) -> String {
-    let mut messages = history(&job.history, &job.engine, Reader { place: Place::Remote, rule });
+    // An agent names its model only once it runs, and every model of it runs elsewhere (task S.23).
+    let mut messages = history(&job.history, &job.engine, None, Reader { place: Place::Remote, rule });
     let new = match messages.pop() {
         Some(message) if message.role == Role::User => message.content,
         Some(message) => {

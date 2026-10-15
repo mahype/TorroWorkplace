@@ -748,6 +748,7 @@ fn demo_engines() -> Vec<torro_ipc::assistant::Engine> {
         open_weights: Some(false),
         context: None,
         reasoning: Some(reasoning),
+        remote: None,
     };
     vec![
         Engine {
