@@ -141,6 +141,12 @@ W.10 Sichtprüfung und API-Prüfung am Ende
 - **API/MCP:** nichts Neues (Stand über `settings.get_settings`)
 
 ### W.10 Prüfen
-- [ ] erledigt
-- **Modell:** Sonnet · Sichtprüfung aller Schritte in allen Größen, hell und dunkel (`torro-design-review`),
-  `torro-api-review` über W.1–W.9.
+- [x] erledigt
+- **Modell:** Sonnet · `torro-api-review` über W.1–W.9: freigegeben, ohne Fehler. Die drei Hinweise sind umgesetzt
+  (eine offene Steuerzentrale kommt nach vorn statt eines zweiten Fensters; im Konzept steht, dass die Einrichtung bei
+  jedem Start wiederkommt, bis sie abgeschlossen oder verschoben ist; die Beschreibung von `component` sagt, dass
+  Umschalter und Tray erst mit W.2 folgen).
+- Sichtprüfung auf macOS statt mit `shoot.sh` (braucht Hyprland): jeder Schritt mit `--demo --open setup-…` als
+  Bildschirmfoto des eigenen Fensters, breit, mittel und schmal, hell und dunkel, dazu Deutsch. macOS stellt die
+  Fenstergröße einer App wieder her; nicht jede Größe ließ sich für jeden Schritt erzwingen. Mit Hyprland nachholen:
+  `torro-design-review` über alle `setup-*`-Zustände.

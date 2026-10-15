@@ -80,6 +80,13 @@ pub(crate) fn offers_setup(settings: &torro_core::settings::Settings, accounts: 
     settings.setup.state == torro_core::settings::SetupState::Pending && accounts == 0
 }
 
+/// Starts a new control centre in the first-run setup (task W.9); `_section` is for the signature
+/// [`show_control_centre`] takes.
+fn start_setup(_section: Section) -> Result<(), String> {
+    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+    SystemLauncher.spawn(&setup_command(program)).map(|_| ()).map_err(|err| err.to_string())
+}
+
 /// Starts a new control centre on `section`: the accounts page, where a person finishes what a
 /// client asked for (`accounts.connect_github`).
 fn start_control_centre(section: Section) -> Result<(), String> {
@@ -1043,11 +1050,11 @@ impl Core {
             .await
             .ok()
             .and_then(Result::ok);
-        if accounts.is_some_and(|accounts| offers_setup(&settings, accounts)) {
-            let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
-            if let Err(err) = SystemLauncher.spawn(&setup_command(program)) {
-                eprintln!("torroworkplace: cannot open the setup: {err}");
-            }
+        // A control centre that is open already comes to the front instead of a second window.
+        if accounts.is_some_and(|accounts| offers_setup(&settings, accounts))
+            && let Err(err) = show_control_centre(&self.backend, Section::Overview, start_setup).await
+        {
+            eprintln!("torroworkplace: cannot open the setup: {err}");
         }
     }
 
