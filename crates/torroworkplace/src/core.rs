@@ -65,6 +65,28 @@ fn control_centre_command(program: String, section: Section) -> Vec<String> {
     command
 }
 
+/// The command line that starts the first-run setup (task W.9): `torroworkplace ui --setup`.
+fn setup_command(program: String) -> Vec<String> {
+    let mut command = AppId::WORKPLACE.command(program);
+    command.push("--setup".to_string());
+    command
+}
+
+/// Whether the core opens the first-run setup as it starts (task W.9, `docs/einrichtung.md`, "Wann
+/// sie erscheint"): while it was never finished or put off and there is no account yet. An
+/// installation from before the setup has accounts, so it is left alone; the overview offers the
+/// setup there instead.
+pub(crate) fn offers_setup(settings: &torro_core::settings::Settings, accounts: usize) -> bool {
+    settings.setup.state == torro_core::settings::SetupState::Pending && accounts == 0
+}
+
+/// Starts a new control centre in the first-run setup (task W.9); `_section` is for the signature
+/// [`show_control_centre`] takes.
+fn start_setup(_section: Section) -> Result<(), String> {
+    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+    SystemLauncher.spawn(&setup_command(program)).map(|_| ()).map_err(|err| err.to_string())
+}
+
 /// Starts a new control centre on `section`: the accounts page, where a person finishes what a
 /// client asked for (`accounts.connect_github`).
 fn start_control_centre(section: Section) -> Result<(), String> {
@@ -810,6 +832,9 @@ pub struct Snapshot {
     /// The setting `voice_enabled` (task C.11): while it is on, the tray offers to mute the
     /// microphone even when the listener does not run (it crashed, or could not start).
     pub voice_enabled: bool,
+    /// The components a person turned off (task W.2): the tray leaves out their apps, and the
+    /// templates without workspaces.
+    pub components_off: std::collections::BTreeSet<torro_core::settings::Component>,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -1026,6 +1051,23 @@ impl Core {
         &self.inbox
     }
 
+    /// Opens the first-run setup when [`offers_setup`] says so (task W.9): the daemon calls it once
+    /// as it starts with a tray, never headless. Reading the accounts or starting the window may
+    /// fail; then nothing opens and the overview still offers the setup.
+    pub async fn offer_setup(&self) {
+        let settings = self.settings.current();
+        let accounts = tokio::task::spawn_blocking(|| torro_core::account::load().map(|accounts| accounts.len()))
+            .await
+            .ok()
+            .and_then(Result::ok);
+        // A control centre that is open already comes to the front instead of a second window.
+        if accounts.is_some_and(|accounts| offers_setup(&settings, accounts))
+            && let Err(err) = show_control_centre(&self.backend, Section::Overview, start_setup).await
+        {
+            eprintln!("torroworkplace: cannot open the setup: {err}");
+        }
+    }
+
     /// Starts the background work [`Core::new`] leaves out: asks the person again about the
     /// approvals still open (their notifications went with the core before, task A.3b), loads the
     /// GitHub accounts and checks their tokens, then refreshes their filter lists now and every
@@ -1057,6 +1099,8 @@ impl Core {
         self.ai.start();
         self.ntfy.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
+        let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
+        self.mail.pause_from_start(mail_off);
         self.mail.start();
         // GitHub, Nextcloud, Talk and ntfy in the inbox (task E5.2).
         crate::sources::start(self.sources());
@@ -1128,6 +1172,7 @@ impl Core {
             github: Arc::clone(&self.github),
             pim: Arc::clone(&self.pim),
             ntfy: Arc::clone(&self.ntfy),
+            settings: self.settings.clone(),
         }
     }
 
@@ -2351,7 +2396,7 @@ impl Core {
                     true => self.settings.update_keeping_hidden(settings),
                     false => self.settings.update(settings),
                 };
-                self.follow_voice();
+                self.follow_components();
                 match updated {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -2359,7 +2404,7 @@ impl Core {
             }
             Request::SetSetting { key, value } => {
                 let set = self.settings.set(key, &value);
-                self.follow_voice();
+                self.follow_components();
                 match set {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -4208,6 +4253,7 @@ impl Core {
         let settings = self.settings.current();
         snapshot.voice = self.voice.state();
         snapshot.voice_enabled = settings.voice.enabled;
+        snapshot.components_off = settings.components_off.clone();
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
         let for_me = self.inbox.for_me(Utc::now(), TRAY_NEWEST).unwrap_or_default();
         snapshot.inbox_for_me = for_me.open;
@@ -4255,8 +4301,22 @@ impl Core {
     }
 
     /// Starts or stops the voice listener as the setting `voice.enabled` says now (task C.9).
+    /// After the settings changed: the voice listener and the mail workers follow the components
+    /// (task W.2). Stopping or starting the workers runs in the background.
+    fn follow_components(&self) {
+        self.follow_voice();
+        let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let mail = Arc::clone(&self.mail);
+            runtime.spawn(async move { mail.set_paused(mail_off).await });
+        }
+    }
+
     fn follow_voice(&self) {
-        self.voice.follow(self.settings.current().voice.enabled);
+        // Listening is part of the assistant: turned off (task W.2), the microphone stays closed.
+        let settings = self.settings.current();
+        let assistant = settings.component_on(torro_core::settings::Component::Assistant);
+        self.voice.follow(settings.voice.enabled && assistant);
     }
 
     /// Wakes whenever what the voice listener does may have changed, for the tray.
@@ -6419,6 +6479,20 @@ mod tests {
 
     fn started(section: Section) -> usize {
         STARTED.lock().expect("lock").iter().filter(|s| **s == section).count()
+    }
+
+    /// Task W.9: the setup opens by itself only on a first start without accounts.
+    #[test]
+    fn the_setup_opens_on_a_first_start_without_accounts_only() {
+        use torro_core::settings::{Settings, Setup, SetupState};
+        let fresh = Settings::default();
+        assert!(offers_setup(&fresh, 0));
+        assert!(!offers_setup(&fresh, 1), "an installation from before the setup");
+        for state in [SetupState::Skipped, SetupState::Done] {
+            let settings = Settings { setup: Setup { state, version: Setup::VERSION }, ..Settings::default() };
+            assert!(!offers_setup(&settings, 0), "{state:?}");
+        }
+        assert_eq!(setup_command("/bin/torroworkplace".into()), ["/bin/torroworkplace", "ui", "--setup"]);
     }
 
     #[tokio::test]
@@ -10844,6 +10918,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         };
         let work = torro_pim::Collection {
             id: format!("{ANNA_MAIL}/https://dav.example.org/work/"),

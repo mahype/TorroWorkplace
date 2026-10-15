@@ -22,8 +22,8 @@ use torro_ipc::api::{
 };
 use torro_ipc::{
     AccountInfo, ActivityEntry, AiServer, AppInfo, ApprovalInfo, ApprovalState, ClientInfo, DesignInfo, FolderChoice,
-    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, RuleHits, ServiceState, Status,
-    TorroMailAccount,
+    IssuedKey, Key, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, RuleHits, ServerService,
+    ServiceState, Status, TorroMailAccount,
 };
 use torro_mail::{Endpoint, MailSettings, Notify, Role, Security, Services};
 use torro_mail_imap::discover::MailUnsupported;
@@ -145,10 +145,24 @@ pub enum Open {
     AssistantNote,
     /// The "Forget this note?" confirmation.
     AssistantForget,
+    /// The first-run setup at this step (task W.4), with the demo's sample data.
+    Setup(super::setup::Step),
+    /// The setup's Nextcloud step without a Nextcloud account: the address form (task W.5).
+    SetupNextcloudAddress,
+    /// The setup's Nextcloud step while the browser signs in, with the link to copy.
+    SetupNextcloudWaiting,
+    /// The setup's calendar step with the CalDAV form open, an address typed (task W.6).
+    SetupCalDav,
+    /// The setup's tasks step without the demo's GitHub account: GitHub's two ways.
+    SetupGithub,
+    /// The setup's mail step with the add-account dialog over it, on its mail path (task W.7).
+    SetupMailAdd,
+    /// The setup's AI step after its search (task W.8): the demo finds Ollama, not LM Studio.
+    SetupAi,
 }
 
 impl Open {
-    pub const ALL: [(&'static str, Open); 71] = [
+    pub const ALL: [(&'static str, Open); 85] = [
         ("wizard", Open::Wizard),
         ("wizard-ways", Open::WizardGithub),
         ("wizard-token", Open::WizardToken),
@@ -220,6 +234,20 @@ impl Open {
         ("assistant-memory-empty", Open::AssistantMemoryEmpty),
         ("assistant-note", Open::AssistantNote),
         ("assistant-forget", Open::AssistantForget),
+        ("setup", Open::Setup(super::setup::Step::Welcome)),
+        ("setup-nextcloud", Open::Setup(super::setup::Step::Nextcloud)),
+        ("setup-nextcloud-address", Open::SetupNextcloudAddress),
+        ("setup-nextcloud-waiting", Open::SetupNextcloudWaiting),
+        ("setup-components", Open::Setup(super::setup::Step::Components)),
+        ("setup-calendar", Open::Setup(super::setup::Step::Calendar)),
+        ("setup-calendar-caldav", Open::SetupCalDav),
+        ("setup-tasks", Open::Setup(super::setup::Step::Tasks)),
+        ("setup-tasks-github", Open::SetupGithub),
+        ("setup-mail", Open::Setup(super::setup::Step::Mail)),
+        ("setup-mail-add", Open::SetupMailAdd),
+        ("setup-inbox", Open::Setup(super::setup::Step::Inbox)),
+        ("setup-ai", Open::SetupAi),
+        ("setup-done", Open::Setup(super::setup::Step::Done)),
     ];
 }
 
@@ -239,6 +267,11 @@ impl Open {
 ///   one. Nothing is stored.
 /// - `--design <id>`: draw with this design pack instead of the stored one (task L.3); needs
 ///   `--demo`. An id that is not a valid pack is refused with the valid ones.
+/// - `--setup`: open the first-run setup (task W.4, `docs/einrichtung.md`) instead of a section;
+///   `--step <step>` starts it at that step (needs `--setup` or `--setup-if-open`). The core opens
+///   it so on a first start without accounts.
+/// - `--setup-if-open`: open the setup as long as it is not done, else the `--section` (task W.9):
+///   what an app's "Open Settings" sends, with the app's step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
@@ -248,11 +281,24 @@ pub struct Launch {
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
     pub design: Option<String>,
+    /// `--setup`: the step the setup starts at; `None` without the setup.
+    pub setup: Option<super::setup::Step>,
+    /// `--setup-if-open`: [`Launch::setup`] only while the setup is not done (task W.9).
+    pub setup_if_open: bool,
 }
 
 impl Default for Launch {
     fn default() -> Self {
-        Launch { section: Section::Overview, bot: None, demo: false, open: None, appearance: None, design: None }
+        Launch {
+            section: Section::Overview,
+            bot: None,
+            demo: false,
+            open: None,
+            appearance: None,
+            design: None,
+            setup: None,
+            setup_if_open: false,
+        }
     }
 }
 
@@ -265,6 +311,8 @@ pub enum LaunchError {
     UnknownValue { flag: &'static str, value: String, valid: String },
     /// `--open` without `--demo`: the states need sample data.
     NeedsDemo(&'static str),
+    /// `--step` without `--setup`.
+    NeedsSetup(&'static str),
 }
 
 impl fmt::Display for LaunchError {
@@ -275,6 +323,7 @@ impl fmt::Display for LaunchError {
                 write!(f, "unknown value {value:?} for {flag}; valid values: {valid}")
             }
             LaunchError::NeedsDemo(flag) => write!(f, "{flag} only works together with --demo"),
+            LaunchError::NeedsSetup(flag) => write!(f, "{flag} only works together with --setup or --setup-if-open"),
         }
     }
 }
@@ -339,7 +388,18 @@ impl Launch {
                 return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
             }
         };
-        Ok(Launch { section, bot, demo, open, appearance, design })
+        let setup_if_open = args.iter().any(|arg| arg == "--setup-if-open");
+        let asked = args.iter().any(|arg| arg == "--setup") || setup_if_open;
+        let setup = match (asked, flag_value(args, "--step")?) {
+            (false, None) => None,
+            (false, Some(_)) => return Err(LaunchError::NeedsSetup("--step")),
+            (true, None) => Some(super::setup::Step::Welcome),
+            (true, Some(word)) => Some(
+                super::setup::Step::from_arg(word)
+                    .ok_or_else(|| unknown("--step", word, super::setup::Step::args()))?,
+            ),
+        };
+        Ok(Launch { section, bot, demo, open, appearance, design, setup, setup_if_open })
     }
 }
 
@@ -413,6 +473,25 @@ pub fn demo_designs() -> Vec<Pack> {
     packs
 }
 
+/// The entry the core lists while a Nextcloud sign-in runs (empty id, the login link), for the
+/// setup's waiting state (`--open setup-nextcloud-waiting`).
+pub fn demo_signing_in() -> AccountInfo {
+    AccountInfo {
+        id: String::new(),
+        kind: "nextcloud".into(),
+        label: "cloud.example.org".into(),
+        state: AccountState::SigningIn {
+            server: "https://cloud.example.org".into(),
+            login_url: "https://cloud.example.org/login/v2/flow/demo".into(),
+        },
+        collections: Vec::new(),
+        scopes: None,
+        mail: None,
+        ntfy: None,
+        services: None,
+    }
+}
+
 /// The sample content of `--demo`: a healthy Nextcloud account with a shared read-only calendar,
 /// a second one that cannot reach its server (so the problem rows show), a GitHub account, three
 /// templates, the suite's apps, settings with one list hidden, approvals: two open, one done,
@@ -456,6 +535,14 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
+            // What the server offers (task W.1): calendars, tasks, notifications, Talk and push; no Deck.
+            services: Some(vec![
+                ServerService::Calendars,
+                ServerService::Tasks,
+                ServerService::Notifications,
+                ServerService::Talk,
+                ServerService::Push,
+            ]),
         },
         AccountInfo {
             id: "nextcloud:anna@work.example.net".into(),
@@ -474,6 +561,7 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         },
         // A GitHub account whose token reads private repositories but has no projects scope, so
         // the detail page shows what is allowed and what is missing.
@@ -491,6 +579,7 @@ pub fn demo_data() -> Data {
             scopes: Some(vec!["repo".into(), "read:org".into(), "workflow".into()]),
             mail: None,
             ntfy: None,
+            services: None,
         },
         // A mail provider's calendars and tasks (task M7.2). Another sign-in than the mail accounts
         // below: the core never lists a CalDAV account beside the mail account of the same
@@ -512,6 +601,7 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         },
         // Two mail accounts (tasks M3.4, M5.2), so the agents' "Mail accounts" have something to
         // choose from and the account page shows both kinds: one with calendars and tasks, a
@@ -537,6 +627,7 @@ pub fn demo_data() -> Data {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         },
     ];
     let template = |id: &str, name: &str, windows, age: Duration| TemplateSummary {
@@ -698,6 +789,7 @@ fn ntfy_account(topics: &[(&str, &str)], now: DateTime<Utc>) -> AccountInfo {
         scopes: None,
         mail: None,
         ntfy: Some(NtfyView { server: server.into(), topics, user: Some("anna".into()), login: true }),
+        services: None,
     }
 }
 
@@ -789,6 +881,7 @@ fn mail_account(address: &str, server: &str, last_sync: DateTime<Utc>) -> Accoun
         scopes: None,
         mail: Some(view),
         ntfy: None,
+        services: None,
     }
 }
 
@@ -1026,6 +1119,7 @@ pub fn demo_answer(request: &Request, data: &Data) -> Option<Response> {
                     scopes: None,
                     mail: None,
                     ntfy: None,
+                    services: None,
                 },
             })
         }
@@ -1413,6 +1507,25 @@ mod tests {
             let launch = Launch::parse(&args(&["--appearance", word])).expect("works without --demo");
             assert_eq!(launch.appearance, Some(appearance));
         }
+    }
+
+    #[test]
+    fn the_setup_starts_at_its_first_step_or_the_one_named() {
+        use super::super::setup::Step;
+        assert_eq!(Launch::parse(&args(&[])).map(|l| l.setup), Ok(None));
+        assert_eq!(Launch::parse(&args(&["--setup"])).map(|l| l.setup), Ok(Some(Step::Welcome)), "no demo needed");
+        let launch = Launch::parse(&args(&["--setup", "--step=components"])).expect("a built step");
+        assert_eq!(launch.setup, Some(Step::Components));
+        assert_eq!(Launch::parse(&args(&["--step", "done"])), Err(LaunchError::NeedsSetup("--step")));
+        let app = Launch::parse(&args(&["--section", "accounts", "--setup-if-open", "--step", "calendar"]))
+            .expect("an app's");
+        assert_eq!((app.section, app.setup, app.setup_if_open), (Section::Accounts, Some(Step::Calendar), true));
+        let err = Launch::parse(&args(&["--setup", "--step", "later"])).expect_err("no such step");
+        assert!(
+            err.to_string()
+                .ends_with("valid values: welcome, nextcloud, components, calendar, tasks, mail, inbox, ai, done"),
+            "{err}"
+        );
     }
 
     #[test]

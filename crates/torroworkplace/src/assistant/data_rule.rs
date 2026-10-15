@@ -80,7 +80,8 @@ pub fn place_of(provider: AiProvider, server: &str) -> Place {
     match provider {
         AiProvider::Ollama | AiProvider::LmStudio => Place::Local,
         AiProvider::OpenAiCompatible if is_this_computer(server) => Place::Local,
-        AiProvider::OpenRouter | AiProvider::OpenAiCompatible => Place::Remote,
+        // Every cloud provider (task W.3), and any other server elsewhere.
+        _ => Place::Remote,
     }
 }
 
@@ -354,6 +355,9 @@ mod tests {
         assert_eq!(place_of(AiProvider::OpenAiCompatible, "https://ai.example.org/v1"), Place::Remote);
         assert_eq!(place_of(AiProvider::OpenRouter, "https://openrouter.ai/api/v1"), Place::Remote);
         assert_eq!(place_of(AiProvider::OpenRouter, "http://localhost:8080/api/v1"), Place::Remote, "a proxy");
+        for cloud in AiProvider::CLOUD {
+            assert_eq!(place_of(cloud, cloud.default_url().unwrap_or_default()), Place::Remote, "{cloud:?}");
+        }
     }
 
     #[test]

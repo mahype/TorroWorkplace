@@ -205,7 +205,11 @@ fn stored_now(socket: &Path) -> Option<String> {
         let _ = answer.send(response);
     });
     match answered.recv_timeout(START_WAIT) {
-        Ok(Ok(Response::Settings { settings })) => Some(settings.design),
+        Ok(Ok(Response::Settings { settings })) => {
+            // The same answer tells which components are on (task W.2).
+            crate::components::set_off(&settings.components_off);
+            Some(settings.design)
+        }
         _ => None,
     }
 }
@@ -358,7 +362,10 @@ pub const POLL: Duration = Duration::from_secs(2);
 /// The design the settings name, asked from the core on `socket`.
 async fn stored(socket: &Path) -> Result<String, String> {
     match torro_ipc::client::call(socket, &Request::Settings).await {
-        Ok(Response::Settings { settings }) => Ok(settings.design),
+        Ok(Response::Settings { settings }) => {
+            crate::components::set_off(&settings.components_off);
+            Ok(settings.design)
+        }
         Ok(other) => Err(format!("unexpected answer: {other:?}")),
         Err(err) => Err(err.to_string()),
     }

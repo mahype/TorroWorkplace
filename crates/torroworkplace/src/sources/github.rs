@@ -114,7 +114,10 @@ pub(super) fn start(sources: Sources) {
     tokio::spawn(async move {
         let mut poller = Poller::default();
         loop {
-            poller.round(&sources, Utc::now()).await;
+            // While the inbox is off (task W.2) GitHub is not asked.
+            if sources.inbox_on() {
+                poller.round(&sources, Utc::now()).await;
+            }
             tokio::time::sleep(TICK).await;
         }
     });
@@ -609,10 +612,10 @@ mod tests {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             let settings = SettingsStore::at(dir.path().join("config").join("settings.json"));
-            let pim = PimService::with_filter_file(settings, dir.path().join("config").join("filters.json"));
+            let pim = PimService::with_filter_file(settings.clone(), dir.path().join("config").join("filters.json"));
             let inbox = Arc::new(crate::inbox::tests::inbox_in(dir.path()));
             let ntfy = Arc::new(crate::account::ntfy::NtfyAccounts::new(None, Arc::new(MemoryTokens::default())));
-            let sources = Sources { inbox, github, pim: Arc::new(pim), ntfy };
+            let sources = Sources { inbox, github, pim: Arc::new(pim), ntfy, settings };
             World { _dir: dir, server, sources, poller: tokio::sync::Mutex::new(Poller::default()) }
         }
 

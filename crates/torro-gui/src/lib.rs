@@ -30,6 +30,7 @@
 //! - [`zoom`]: zoom like a browser (Ctrl + Plus / Minus / 0) for the whole suite, with the short
 //!   badge that shows the new level.
 
+pub mod components;
 pub mod connect;
 pub mod datetime;
 pub mod design;

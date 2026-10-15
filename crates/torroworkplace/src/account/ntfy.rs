@@ -212,6 +212,7 @@ impl Slot {
                 user: config.user,
                 login: self.secret.is_some(),
             }),
+            services: None,
         }
     }
 }

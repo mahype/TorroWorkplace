@@ -5,7 +5,7 @@
 //! contract: add fields with `#[serde(default)]` so older files keep loading.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -82,6 +82,16 @@ pub struct Settings {
     /// leniently: a value that does not read is `None`, never a settings file that fails.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_default")]
     pub assistant_default: Option<AssistantDefault>,
+    /// Where the first-run setup stands (task W.1, `docs/einrichtung.md`): not finished yet,
+    /// put off or done, and the version of the setup last finished or put off. Read leniently: a
+    /// value that does not read is the default, never a settings file that fails.
+    #[serde(default, deserialize_with = "lenient")]
+    pub setup: Setup,
+    /// The components a person turned off (task W.1); every other one is on. Only the ones turned
+    /// off are stored, so a component added later starts on, and so do installations from before.
+    /// A name this version does not know is dropped when the file is read.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty", deserialize_with = "known_components")]
+    pub components_off: BTreeSet<Component>,
     /// How a mail that has HTML first shows in the reader (task M9.5, decision 9 in
     /// `docs/mail.md`): formatted ([`MailFormat::Html`], the default) or as plain text. The reader
     /// can switch a mail it shows; this is where it starts. Read leniently: a value that does not
@@ -189,6 +199,14 @@ fn lenient<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned + Default>(
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
+/// The components in a list as written, without the names this version does not know (a file
+/// written by a newer one) and without anything that is not a name.
+fn known_components<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BTreeSet<Component>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let names = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    Ok(names.iter().filter_map(|name| serde_json::from_value(name.clone()).ok()).collect())
+}
+
 /// The id of the standard design, for settings from before design packs.
 fn standard_design() -> String {
     crate::design::STANDARD_ID.to_string()
@@ -214,11 +232,103 @@ impl Default for Settings {
             assistant_retention: Retention::default(),
             voice: Voice::default(),
             assistant_default: None,
+            setup: Setup::default(),
+            components_off: BTreeSet::new(),
             mail_view: MailFormat::default(),
             mail_appearance: MailAppearance::default(),
             mail_to_cloud: false,
         }
     }
+}
+
+/// A part of the suite a person can turn off (task W.1, `docs/einrichtung.md`, "Komponenten an
+/// und aus"). Off means: not in the app switcher, the tray and the overview, and nothing runs in
+/// the background only for it. Its accounts and data stay, and its requests keep answering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Component {
+    /// The calendar app and the calendars of the accounts.
+    Calendar,
+    /// The tasks app and the task lists of the accounts.
+    Tasks,
+    /// Mail: the mail accounts and their fetching.
+    Mail,
+    /// The inbox and its sources.
+    Inbox,
+    /// The assistant, its chat window and listening by voice.
+    Assistant,
+    /// Saving and loading workspace templates of the tiling manager.
+    Workspaces,
+}
+
+impl Component {
+    /// Every component, in the order the setup and the Apps page show them.
+    pub const ALL: [Component; 6] = [
+        Component::Calendar,
+        Component::Tasks,
+        Component::Mail,
+        Component::Inbox,
+        Component::Assistant,
+        Component::Workspaces,
+    ];
+}
+
+/// The `value` of the setting `component` (`settings.set_setting`, task W.1): one component and
+/// whether it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentSwitch {
+    /// The component: `calendar`, `tasks`, `mail`, `inbox`, `assistant` or `workspaces`.
+    pub component: Component,
+    /// `true` turns it on, `false` off.
+    pub enabled: bool,
+}
+
+/// Where the first-run setup stands (task W.1, `docs/einrichtung.md`, "Wann sie erscheint").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Setup {
+    /// Not finished yet, put off or done.
+    #[serde(default)]
+    pub state: SetupState,
+    /// The version of the setup ([`Setup::VERSION`]) that was last finished or put off; 0 before.
+    /// When it is lower than the current one, the setup has steps the person has not seen.
+    #[serde(default)]
+    pub version: u32,
+}
+
+impl Setup {
+    /// The version of the setup this build brings. Raised when a release adds a step the person
+    /// should be told about ("New in setup: AI").
+    pub const VERSION: u32 = 1;
+
+    /// The setup after a person moved it to `state`: finishing or putting it off records this
+    /// build's version; starting it again keeps the version of the last run.
+    pub fn moved_to(self, state: SetupState) -> Setup {
+        let version = match state {
+            SetupState::Pending => self.version,
+            SetupState::Skipped | SetupState::Done => Setup::VERSION,
+        };
+        Setup { state, version }
+    }
+
+    /// The setup was finished or put off with an older version, so it has steps the person has not
+    /// seen. Never while it is still pending: then all of it is new anyway.
+    pub fn has_new_steps(self) -> bool {
+        self.state != SetupState::Pending && self.version < Setup::VERSION
+    }
+}
+
+/// How far the first-run setup got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupState {
+    /// Not finished: on a first start without accounts the core opens it.
+    #[default]
+    Pending,
+    /// Put off with "Set up later": the overview offers to continue it.
+    Skipped,
+    /// Finished.
+    Done,
 }
 
 /// A time of day on the quarter hour, `00:00` to `23:45`, the grid of [`Night`]. Kept as minutes
@@ -576,6 +686,20 @@ impl Voice {
 }
 
 impl Settings {
+    /// Whether `component` is on (task W.1): every component is, unless a person turned it off.
+    pub fn component_on(&self, component: Component) -> bool {
+        !self.components_off.contains(&component)
+    }
+
+    /// Turns `component` on or off.
+    pub fn set_component(&mut self, component: Component, on: bool) {
+        if on {
+            self.components_off.remove(&component);
+        } else {
+            self.components_off.insert(component);
+        }
+    }
+
     /// How the task list `list` (an id) is ordered: as stored, else grouped by due date.
     pub fn list_order(&self, list: &str) -> ListOrder {
         self.list_orders.get(list).copied().unwrap_or_default()
@@ -970,6 +1094,8 @@ mod tests {
             assistant_retention: Retention::DEFAULT,
             voice: Voice::default(),
             assistant_default: None,
+            setup: Setup::default(),
+            components_off: BTreeSet::new(),
             mail_view: MailFormat::Html,
             mail_appearance: MailAppearance::App,
             mail_to_cloud: false,
@@ -998,6 +1124,51 @@ mod tests {
         assert!(load_from(&path).quiet_when_busy, "a file from before the setting keeps quiet on");
         fs::write(&path, r#"{"quietWhenBusy":false}"#).expect("write");
         assert!(!load_from(&path).quiet_when_busy);
+    }
+
+    #[test]
+    fn components_are_on_unless_turned_off() {
+        let dir = TempDir::new("components");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        let before = load_from(&path);
+        assert!(Component::ALL.iter().all(|c| before.component_on(*c)), "a file from before has all on");
+
+        let mut settings = Settings::default();
+        settings.set_component(Component::Mail, false);
+        settings.set_component(Component::Mail, false);
+        assert!(!settings.component_on(Component::Mail) && settings.component_on(Component::Tasks));
+        let json = serde_json::to_value(&settings).expect("json");
+        assert_eq!(json["componentsOff"], serde_json::json!(["mail"]), "only the ones off, once");
+        settings.set_component(Component::Mail, true);
+        assert!(serde_json::to_value(&settings).expect("json").get("componentsOff").is_none());
+    }
+
+    #[test]
+    fn unknown_components_and_a_damaged_setup_do_not_cost_the_file() {
+        let dir = TempDir::new("setup-lenient");
+        let path = dir.file("settings.json");
+        let written = r#"{"language":"german","componentsOff":["mail","whiteboard",3],"setup":{"state":"later"}}"#;
+        fs::write(&path, written).expect("write");
+        let settings = load_from(&path);
+        assert_eq!(settings.language, Language::German, "the rest of the file is kept");
+        assert_eq!(settings.components_off, BTreeSet::from([Component::Mail]));
+        assert_eq!(settings.setup, Setup::default());
+    }
+
+    #[test]
+    fn setup_records_the_version_it_was_finished_or_put_off_with() {
+        let pending = Setup::default();
+        assert_eq!((pending.state, pending.version), (SetupState::Pending, 0));
+        assert!(!pending.has_new_steps(), "a setup never run is new as a whole");
+        let done = pending.moved_to(SetupState::Done);
+        assert_eq!(done, Setup { state: SetupState::Done, version: Setup::VERSION });
+        assert!(!done.has_new_steps());
+        let again = done.moved_to(SetupState::Pending);
+        assert_eq!(again.version, Setup::VERSION, "running it again keeps the version of the last run");
+        let old = Setup { state: SetupState::Skipped, version: 0 };
+        assert!(old.has_new_steps());
+        assert_eq!(old.moved_to(SetupState::Skipped).version, Setup::VERSION);
     }
 
     #[test]
@@ -1065,6 +1236,8 @@ mod tests {
                 ..Voice::default()
             },
             assistant_default: None,
+            setup: Setup { state: SetupState::Skipped, version: 1 },
+            components_off: BTreeSet::from([Component::Mail, Component::Assistant]),
             mail_view: MailFormat::Text,
             mail_appearance: MailAppearance::Dark,
             mail_to_cloud: true,

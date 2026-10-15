@@ -2105,6 +2105,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         }
     }
 

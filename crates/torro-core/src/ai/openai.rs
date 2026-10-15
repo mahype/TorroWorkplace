@@ -44,17 +44,31 @@ pub fn chat_body(request: &ChatRequest, stream: bool) -> Value {
 }
 
 /// [`chat_body`] as the server of `provider` takes it: with the request's [`ChatRequest::effort`]
-/// where each one reads it (issue #131) – OpenRouter as `"reasoning": {"effort": "high"}`, every
-/// other server (Ollama, LM Studio, vLLM …) as OpenAI's `"reasoning_effort": "high"`, which Ollama's
-/// `/v1` maps onto its thinking. Without an effort the body is [`chat_body`]'s.
+/// where each one reads it (issue #131) – OpenRouter as `"reasoning": {"effort": "high"}`, OpenAI,
+/// Gemini and the servers of one's own (Ollama, LM Studio, vLLM …) as OpenAI's `"reasoning_effort":
+/// "high"`, which Ollama's `/v1` maps onto its thinking; the other cloud providers (task W.3) get
+/// none. Without an effort the body is [`chat_body`]'s.
 pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) -> Value {
     let mut body = chat_body(request, stream);
     if let Some(effort) = request.effort {
         match provider {
             AiProvider::OpenRouter => body["reasoning"] = json!({ "effort": effort.id() }),
-            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::OpenAiCompatible => {
+            // Gemini maps OpenAI's `reasoning_effort` onto its thinking budget.
+            AiProvider::Ollama
+            | AiProvider::LmStudio
+            | AiProvider::OpenAiCompatible
+            | AiProvider::OpenAi
+            | AiProvider::Gemini => {
                 body["reasoning_effort"] = json!(effort.id());
             }
+            // Not documented for their OpenAI-compatible APIs, and an unknown field may be refused:
+            // these think as their models do.
+            AiProvider::Mistral
+            | AiProvider::DeepSeek
+            | AiProvider::Qwen
+            | AiProvider::Kimi
+            | AiProvider::Glm
+            | AiProvider::MiniMax => {}
         }
     }
     body
@@ -473,10 +487,20 @@ mod tests {
         let openrouter = chat_body_for(AiProvider::OpenRouter, &asked, true);
         assert_eq!(openrouter["reasoning"], json!({"effort": "high"}));
         assert!(openrouter.get("reasoning_effort").is_none());
-        for provider in [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::OpenAiCompatible] {
+        let reads = [
+            AiProvider::Ollama,
+            AiProvider::LmStudio,
+            AiProvider::OpenAiCompatible,
+            AiProvider::OpenAi,
+            AiProvider::Gemini,
+        ];
+        for provider in reads {
             let body = chat_body_for(provider, &asked, true);
             assert_eq!(body["reasoning_effort"], "high", "{provider:?}");
             assert!(body.get("reasoning").is_none(), "{provider:?}");
+        }
+        for provider in [AiProvider::Mistral, AiProvider::DeepSeek, AiProvider::Kimi] {
+            assert_eq!(chat_body_for(provider, &asked, true), chat_body(&asked, true), "{provider:?}: nothing extra");
         }
         for provider in AiProvider::ALL {
             assert_eq!(chat_body_for(provider, &request(), true), chat_body(&request(), true), "{provider:?}");

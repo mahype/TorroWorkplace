@@ -2109,8 +2109,10 @@ static GET_SETTINGS: Command = Command {
                   calendar, the hidden calendars and task lists, the task lists ordered by hand \
                   (`listOrders`), whether inbox popups stay quiet during busy events (`quietWhenBusy`), the \
                   chosen design pack (`design`), how long the assistant keeps conversations \
-                  (`assistantRetention`), talking to the assistant by voice (`voice`) and how mail shows in \
-                  the inbox's reader (`mailView`, `mailAppearance`).",
+                  (`assistantRetention`), talking to the assistant by voice (`voice`), how mail shows in the \
+                  inbox's reader (`mailView`, `mailAppearance`), where the first-run setup stands (`setup`: \
+                  state pending, skipped or done, and its version) and the components a person turned off \
+                  (`componentsOff`; all others are on).",
 };
 
 static SET_SETTING: Command = Command {
@@ -2142,7 +2144,11 @@ static SET_SETTING: Command = Command {
                   starts) or `mail_appearance` (\"app\" like the suite, the default, \"light\" or \"dark\"; only \
                   the colours of the mail's content) or `mail_to_cloud` (only false: keeps mail with models on the \
                   person's own computers again; letting mail go to Claude Code and cloud models is for a person, \
-                  true is forbidden).",
+                  true is forbidden) or `setup` (\"pending\" to run the first-run setup again, \"skipped\" to put \
+                  it off, \"done\" when finished) or `component` ({\"component\": \"calendar\"|\"tasks\"|\"mail\"| \
+                  \"inbox\"|\"assistant\"|\"workspaces\", \"enabled\": false} turns a part of the suite off: it leaves \
+                  the app switcher, the tray and the overview and nothing runs in the background for it; accounts \
+                  and data stay).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -4141,7 +4147,20 @@ mod tests {
         let provider = schema.as_value().pointer("/properties/provider").expect("provider");
         assert_eq!(
             serde_json::Value::Array(enum_values(provider)),
-            serde_json::json!(["ollama", "lm_studio", "openrouter", "openai_compatible"])
+            serde_json::json!([
+                "ollama",
+                "lm_studio",
+                "openrouter",
+                "openai_compatible",
+                "openai",
+                "gemini",
+                "mistral",
+                "deepseek",
+                "qwen",
+                "kimi",
+                "glm",
+                "minimax"
+            ])
         );
         // A local server without a key: the key is left out on the wire and in `Debug`.
         let local = Request::ConnectAi {
@@ -4387,6 +4406,8 @@ mod tests {
                 "stt_model",
                 "voice",
                 "assistant_default",
+                "setup",
+                "component",
                 "mail_view",
                 "mail_appearance",
                 "mail_to_cloud"
@@ -5007,6 +5028,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         }
     }
 

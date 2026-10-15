@@ -784,6 +784,7 @@ fn accounts() -> Vec<AccountInfo> {
         scopes: None,
         mail: None,
         ntfy: None,
+        services: None,
     };
     vec![
         account(CLOUD, "nextcloud", "anna@cloud.example.org"),

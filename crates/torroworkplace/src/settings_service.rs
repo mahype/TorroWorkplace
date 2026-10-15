@@ -27,8 +27,8 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design;
 use torro_core::settings::{
-    self, AssistantDefault, Language, ListOrderEntry, MailAppearance, MailFormat, Night, Retention, Settings, Voice,
-    Zoom,
+    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, Retention,
+    Settings, SetupState, Voice, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -269,6 +269,10 @@ enum Change {
     Voice(Option<String>),
     /// What a new chat of the assistant starts with (issue #131); `None` for the one used last.
     AssistantDefault(Option<AssistantDefault>),
+    /// Where the first-run setup stands (task W.1); the version is recorded on the way in.
+    Setup(SetupState),
+    /// One component on or off (task W.1).
+    Component(ComponentSwitch),
     /// How a mail with HTML first shows in the reader (task M9.5).
     MailView(MailFormat),
     /// The colours of a mail's content (task M9.5).
@@ -308,6 +312,8 @@ impl Change {
             SettingKey::SttModel => Change::SttModel(Voice::file_from(value, "bin")?),
             SettingKey::Voice => Change::Voice(Voice::file_from(value, "onnx")?),
             SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
+            SettingKey::Setup => Change::Setup(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::Component => Change::Component(serde_json::from_value(value.clone()).map_err(invalid)?),
             // Strict: only the file's reading falls back to the default.
             SettingKey::MailView => Change::MailView(serde_json::from_value(value.clone()).map_err(invalid)?),
             SettingKey::MailAppearance => {
@@ -336,6 +342,8 @@ impl Change {
             Change::SttModel(path) => settings.voice.stt_model = path,
             Change::Voice(path) => settings.voice.voice = path,
             Change::AssistantDefault(default) => settings.assistant_default = default,
+            Change::Setup(state) => settings.setup = settings.setup.moved_to(state),
+            Change::Component(switch) => settings.set_component(switch.component, switch.enabled),
             Change::MailView(format) => settings.mail_view = format,
             Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
@@ -864,7 +872,10 @@ mod run_key {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::json;
+    use torro_core::settings::{Component, Setup};
 
     use super::*;
 
@@ -946,6 +957,9 @@ mod tests {
         Change::parse(SettingKey::AssistantRetention, &json!("forever")).expect("forever").apply(&mut settings);
         let default = json!({"engine": "claude-code", "model": "opus", "effort": "medium"});
         Change::parse(SettingKey::AssistantDefault, &default).expect("a default").apply(&mut settings);
+        Change::parse(SettingKey::Setup, &json!("skipped")).expect("a state").apply(&mut settings);
+        let mail_off = json!({"component": "mail", "enabled": false});
+        Change::parse(SettingKey::Component, &mail_off).expect("a switch").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -961,6 +975,8 @@ mod tests {
                 assistant_retention: Retention::Forever,
                 voice: Voice::default(),
                 assistant_default: AssistantDefault::from_value(&default).expect("a default"),
+                setup: Setup { state: SetupState::Skipped, version: Setup::VERSION },
+                components_off: BTreeSet::from([Component::Mail]),
                 mail_view: MailFormat::Html,
                 mail_appearance: MailAppearance::App,
                 mail_to_cloud: false,
@@ -974,6 +990,22 @@ mod tests {
         assert!(Change::parse(SettingKey::AssistantDefault, &json!({"engine": " "})).is_err(), "an engine");
         assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
         assert!(Change::parse(SettingKey::AssistantRetention, &json!(0)).is_err(), "at least a day");
+        assert!(Change::parse(SettingKey::Setup, &json!("later")).is_err(), "pending, skipped or done");
+        let unknown = json!({"component": "whiteboard", "enabled": false});
+        assert!(Change::parse(SettingKey::Component, &unknown).is_err(), "a component this version knows");
+        let extra = json!({"component": "mail", "enabled": true, "why": "x"});
+        assert!(Change::parse(SettingKey::Component, &extra).is_err(), "nothing else in the switch");
+    }
+
+    #[test]
+    fn components_go_off_and_on_again_through_the_store() {
+        let (_dir, store) = store();
+        store.set(SettingKey::Component, &json!({"component": "inbox", "enabled": false})).expect("off");
+        assert!(!store.current().component_on(Component::Inbox));
+        store.set(SettingKey::Component, &json!({"component": "inbox", "enabled": true})).expect("on");
+        assert!(store.current().component_on(Component::Inbox));
+        store.set(SettingKey::Setup, &json!("done")).expect("done");
+        assert_eq!(store.current().setup.state, SetupState::Done);
     }
 
     /// Task M9.5: how mail shows is set and read back by its key; a value that does not fit is
