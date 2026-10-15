@@ -290,19 +290,18 @@ freigegeben ist. M1 steht in [tasks/github.md](tasks/github.md), M7a schon in
    abstürzen.
 8. **Mail wird als HTML gezeigt** (entschieden 2026-10-14, ersetzt „HTML nur als Text“ aus M2.4/E4.2).
    Der Kern hebt den HTML-Teil bereinigt auf (ohne Skripte, Formulare, Frames, Objekte und
-   Ereignis-Attribute; Stile bleiben) und gibt ihn mit `include_html` heraus. Gezeigt wird er in einem
-   **eigenen Fenster mit System-Webview** (`torromailview`, wry: WebKitGTK unter Linux, WKWebView unter
-   macOS, WebView2 unter Windows), weil Iced kein HTML zeichnet und sich unter Wayland keine Webview in
-   ein Iced-Fenster einbetten lässt. Im Fenster laufen keine Skripte (Content-Security-Policy
-   `script-src 'none'` und Bereinigung im Kern), Links öffnen im Standard-Browser.
+   Ereignis-Attribute; Stile bleiben) und gibt ihn mit `include_html` heraus. Gezeigt wurde er zuerst in einem
+   **eigenen Fenster mit System-Webview** (M9.2, wry: WebKitGTK unter Linux, WKWebView unter macOS, WebView2
+   unter Windows), weil Iced kein HTML zeichnet und sich unter Wayland keine Webview in ein Iced-Fenster
+   einbetten lässt. *Geschichte:* Das Fenster gilt nicht mehr, Entscheidung 9 ersetzt es; mit M9.9 ist es
+   samt WebKitGTK entfernt. Es bleibt: keine Skripte (Bereinigung im Kern), Links öffnen im Standard-Browser.
    **Externe Bilder werden immer geladen**, wie bei Gmail oder Apple Mail; dem Absender verrät das, dass
    und wann die Mail geöffnet wurde. Eingebettete Bilder (`cid:`) liefert der Kern über
    `mail.get_attachment`. Agenten bekommen weiter den Text und das HTML nur, wenn sie es ausdrücklich
    anfordern; es bleibt `untrusted`.
-
 9. **HTML steht im Lesebereich, nicht in einem eigenen Fenster** (entschieden 2026-10-15, ändert das Fenster
    aus Entscheidung 8). Blitz zeichnet die Mail direkt in Iced (Weg 2 aus dem Versuch M9.4), überall gleich und
-   ohne Systempakete; `torromailview` und damit WebKitGTK fallen weg. Damit Blitz typisches Mail-HTML richtig
+   ohne Systempakete; das eigene Fenster und damit WebKitGTK sind entfernt (M9.9). Damit Blitz typisches Mail-HTML richtig
    zeichnet, schreibt die Bereinigung im Kern alte Attribute (`cellpadding`, `border`, `<font>` …) in CSS um.
    Bilder lädt die Bibliothek über rustls (`reqwest`), nicht über `blitz-net` (OpenSSL). Zwei Einstellungen:
    **Ansicht** HTML (Voreinstellung) oder Text, im Lesebereich jederzeit umschaltbar; **Farben der Mail** wie

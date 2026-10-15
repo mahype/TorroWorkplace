@@ -874,7 +874,7 @@ M9.5 ──── M9.8 ─────────┘
   (Breit, Schmal, hell/dunkel).
 
 ### M9.9 Mail-Fenster `torromailview` zurückbauen
-- [ ] erledigt
+- [x] erledigt (`base64` bleibt, torro-htmlview nutzt es; `muda` bleibt im Lock über tray-icon; `docs/mail.md`: Entscheidungen 8/9, Funktionstabelle war schon richtig)
 - **Modell:** Sonnet · **Braucht:** M9.7 · **Dateien:** `Cargo.toml` (Mitglied und `wry`, `tao`, `muda`, `gtk`,
   ggf. `base64` entfernen, wenn sonst ungenutzt), `crates/torromailview/` (löschen), `Cargo.lock`,
   `dist-workspace.toml` (`[dist.dependencies.apt]` entfernen), `.github/workflows/ci.yml` und `scripts/ci-local.sh`
