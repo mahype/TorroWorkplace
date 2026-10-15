@@ -628,6 +628,10 @@ M9.1 ─┬─ M9.2
       └─ M9.3   (M9.3 braucht das Fenster aus M9.2 zum Öffnen, die Demo-Daten nicht)
 
 M9.4            (Versuch, unabhängig; ersetzt M9.2 nur, wenn er trägt und es entschieden ist)
+
+M9.5 ─┬────────── M9.7 ─┬─ M9.9   (entschieden 2026-10-15: HTML im Lesebereich mit Blitz, Entscheidung 9)
+M9.6 ─┘                 │
+M9.5 ──── M9.8 ─────────┘
 ```
 
 ### M9.1 HTML im Kern: aufheben, bereinigen, herausgeben
@@ -764,6 +768,103 @@ M9.4            (Versuch, unabhängig; ersetzt M9.2 nur, wenn er trägt und es e
   Empfehlung: **Blitz statt `torromailview`**, **erst später** oder **nicht**. Läuft der Versuch auf macOS und
   Linux (Hyprland)? Windows nur, wenn es ohne Umwege geht. Entschieden wird danach mit dem Menschen, nicht in
   dieser Aufgabe.
+
+### M9.5 Mail-Darstellung als Einstellung, alte HTML-Attribute als CSS
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M9.1 · **Dateien:** `crates/torro-core/src/settings.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/settings_service.rs`,
+  `crates/torro-mail-imap/src/mime.rs`, `docs/api-reference.md`, `docs/api.md` (Tabelle der Einstellungen, falls dort
+  aufgezählt)
+- Zwei neue Einstellungen in `Settings` (lesend nachsichtig wie `assistant_default`):
+  - `mail_view`: `html` (Voreinstellung) oder `text` – wie eine Mail im Lesebereich zuerst erscheint.
+  - `mail_appearance`: `app` (Voreinstellung: wie die Darstellung der Suite, also System/Hell/Dunkel aus
+    `appearance`), `light` oder `dark` – nur für den **Inhalt** der Mail, nie für die übrige Oberfläche.
+- `SettingKey::MailView` und `SettingKey::MailAppearance` (neue Werte, verträglich), Doc-Kommentar mit den Werten;
+  offene Fenster folgen (wie bei `appearance`).
+- **Bereinigung schreibt alte Attribute in CSS um** (`clean_html`, M9.1), weil Blitz sie nicht kennt (Versuch M9.4)
+  und weil es die Darstellung überall vereinheitlicht: `cellpadding` → `padding` der Zellen, `cellspacing` →
+  `border-spacing`, `border` an `table` → Rahmen von Tabelle und Zellen, `bgcolor` → `background-color`,
+  `width`/`height` (Zahl → px, Prozent bleibt), `align`/`valign` → `text-align`/`vertical-align` (bei `table` mit
+  `align=center` → `margin: auto`), `<center>` → `div` mit `text-align:center`, `<font face size color>` → `span`
+  mit `font-family`, `font-size` (1–7 nach HTML-Tabelle) und `color`. Bestehendes `style` gewinnt (es wird hinten
+  angehängt). Werte werden geprüft (Farben, Zahlen, Schriftnamen ohne `;{}()`), Unpassendes fällt weg.
+- **API:** `settings.set_setting` mit `mail_view` / `mail_appearance` · Admin (wie die übrigen Einstellungen) ·
+  **MCP:** `settings_set_setting` (vorhanden, nimmt die neuen Schlüssel ohne eigenen Code). **Oberfläche:** M9.7
+  (Schalter im Lesebereich), M9.8 (Einstellungsseite).
+- **Abnahme:** Tests: Voreinstellungen `html`/`app`; Setzen und Lesen beider Schlüssel, falsche Werte → `error`;
+  alte Einstellungsdatei ohne die Felder liest sich; Umschreibung je Attribut (auch: vorhandenes `style` gewinnt,
+  bösartige Werte wie `red;background:url(x)` fallen weg); Tests von M9.1 laufen weiter. API-Referenz neu erzeugt.
+
+### M9.6 Bibliothek `torro-htmlview`: HTML mit Blitz in Iced zeichnen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** nichts (eigene Beispiele; nutzt das Wissen aus M9.4) · **Dateien:** `Cargo.toml`
+  (Blitz-Crates, `anyrender`, `anyrender_vello_cpu` in `[workspace.dependencies]`, Mitglied), neu
+  `crates/torro-htmlview/` (`Cargo.toml`, `src/lib.rs` und Module, `tests/fixtures/`), `deny.toml` bzw.
+  Lizenzliste, falls vorhanden (MPL-2.0 für Stylo)
+- Ein Iced-Widget `HtmlView`, das bereinigtes HTML (aus M9.1/M9.5) mit Blitz per CPU zeichnet (Weg 2 aus M9.4:
+  Blitz → Pixelbild → Iced `image`), mit gemeinsamem Schrift-Kontext für alle Mails. Breite folgt dem Platz
+  (Neu-Layout beim Ziehen), Höhe = Inhaltshöhe, damit der Lesebereich wie bisher scrollt; Mauszeiger über Links,
+  Text markieren und kopieren.
+- **Kein `blitz-net`** (bringt OpenSSL): Bilder holt die Bibliothek selbst über das `reqwest` des Workspace (rustls),
+  nur `http`/`https`, nur Bildtypen (an den ersten Bytes erkannt, kein SVG), höchstens 10 MiB je Bild und 50 MiB
+  je Mail, Zeitlimit, keine Cookies, kein `Referer`. Externe Bilder werden immer geladen (Entscheidung 8). Bilder
+  hinter einer Weiterleitung müssen erscheinen (Fehler aus M9.4). `cid:`-Bilder liefert die App über einen
+  Rückruf (Trait), die Bibliothek fragt nie selbst den Kern.
+- **Hell/Dunkel nur für den Inhalt:** `light` zeichnet das Original. `dark` färbt beim Zeichnen um (Hülle um die
+  Zeichenfläche von `anyrender`): helle Hintergründe werden dunkel, dunkle Schrift hell, Farbton bleibt, Kontrast
+  mindestens 4,5:1 für Text; **Bilder bleiben unverändert**. Hintergrund der Fläche aus dem Design.
+- Ausgaben als Nachrichten: Klick auf Link (`http`, `https`, `mailto`) → `LinkClicked(url)`, die App öffnet ihn;
+  sonst nichts. Kein JavaScript (Blitz hat keins). Protokoll ohne Inhalte, URLs und Mailtext.
+- **API/MCP:** keine (reine Darstellung, kein Request). Oberfläche: M9.7.
+- **Abnahme:** Tests ohne Fenster: Fixtures (Newsletter mit Tabellen, Rechnung, Outlook-Mail nach M9.5-Umschreibung,
+  `<style>` mit Media Query, lange Mail) zeichnen ohne Fehler in ein Bild fester Breite; Breite 360/700 px ändert
+  das Layout; Dunkel-Umfärbung: Weiß → dunkel, Schwarz → hell, Bildpixel unverändert, Kontrast eingehalten;
+  Bildabruf: SVG/HTML abgewiesen, Größengrenze, Weiterleitung folgt (lokaler Testserver wie `httpmock`, kein
+  Netz); Link-Treffer an Koordinaten. `cargo build` auf macOS; Linux/Windows ohne Systempakete (kein GTK).
+
+### M9.7 TorroInbox: HTML im Lesebereich, Schalter HTML/Text und Hell/Dunkel
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** M9.5, M9.6 · **Dateien:** `crates/torroinbox/{Cargo.toml,src/mail.rs,src/app.rs,
+  src/keys.rs}`, `crates/torro-inbox/src/demo.rs`, `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Der Lesebereich (Leser neben der Liste und Paneel) zeigt eine Mail mit HTML gleich als HTML
+  (`HtmlView`), wenn `mail_view = html`; sonst den Text wie bisher. Über dem Inhalt zwei kleine Schalter:
+  „HTML | Text“ (nur bei Mails mit HTML; Taste `v` schaltet um) und „Light | Dark“ für den Mail-Inhalt (nur in
+  der HTML-Ansicht; Voreinstellung aus `mail_appearance`, bei `app` die aktuelle Darstellung der Suite). Die
+  Schalter gelten für diese Ansicht, bis die Einstellung geändert wird; dauerhaft stellt man es in M9.8 ein.
+- Links öffnen im Standard-Browser (`webbrowser`), `cid:`-Bilder über `mail.get_attachment` (nur Teile mit
+  `content_id` dieser Mail). Markieren und „Copy text“ funktionieren in beiden Ansichten.
+- Knopf „View as HTML“ und das Starten von `torromailview` (M9.3) fallen weg; `Enter`/Doppelklick tun wieder nur,
+  was sie vor M9.3 taten.
+- **API/MCP:** nutzt `mail.get_message` (`include_html`), `mail.get_attachment`, `settings.get_settings`; keine
+  neuen Befehle.
+- **Abnahme:** Tests der Nachrichten: Voreinstellung `html` zeigt HTML, `text` zeigt Text; `v` schaltet nur bei
+  Mails mit HTML; Hell/Dunkel-Schalter ändert nur den Mail-Inhalt; `app` folgt der Darstellung; Link-Klick ruft
+  den Browser (Test über eine austauschbare Funktion); kein Start von `torromailview` mehr. Sichtprüfung mit
+  `--demo` (Newsletter, Outlook-Mail, Textmail) Breit/Mittel/Schmal, App hell und dunkel, Mail hell und dunkel.
+
+### M9.8 Einstellungsseite: Darstellung von Mails
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** M9.5 · **Dateien:** `crates/torroworkplace/src/ui/general.rs` (Seite
+  Appearance), `crates/torro-core/src/i18n/de.rs`
+- **Oberfläche:** Auf der Seite **Appearance** der Steuerzentrale eine Gruppe „Mail“: „Show mail as“ – Formatted
+  (HTML) / Plain text, und „Mail colours“ – Like the app / Light / Dark, mit dem Hinweis, dass dunkel
+  umgefärbte Newsletter manchmal schlechter aussehen. Gespeichert über `settings.set_setting`. Zieht mit S.20
+  später in die Einstellungen der Inbox um.
+- **API/MCP:** nutzt M9.5.
+- **Abnahme:** Tests: Auswahl schickt `SetSetting` mit `mail_view` bzw. `mail_appearance`; Sichtprüfung der Seite
+  (Breit, Schmal, hell/dunkel).
+
+### M9.9 Mail-Fenster `torromailview` zurückbauen
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** M9.7 · **Dateien:** `Cargo.toml` (Mitglied und `wry`, `tao`, `muda`, `gtk`,
+  ggf. `base64` entfernen, wenn sonst ungenutzt), `crates/torromailview/` (löschen), `Cargo.lock`,
+  `dist-workspace.toml` (`[dist.dependencies.apt]` entfernen), `.github/workflows/ci.yml` und `scripts/ci-local.sh`
+  (Linux-Pakete entfernen), `crates/torro-core/src/i18n/de.rs` (Einträge nur des Fensters entfernen),
+  `docs/mail.md` (Funktionstabelle)
+- Nach M9.7 zeigt niemand mehr das Fenster an. Mit ihm fällt die einzige Systemabhängigkeit (WebKitGTK) weg.
+- **API/MCP:** keine Änderung (`include_html` und `mail.get_attachment` bleiben, TorroInbox nutzt sie).
+- **Abnahme:** Workspace baut ohne `wry`/`tao`; `cargo tree` enthält kein `webkit2gtk`/`gtk`; `scripts/ci-local.sh`
+  grün; keine Verweise mehr auf `torromailview` außerhalb von `docs/tasks/` und `docs/research.md`.
 
 ### Später zu M9
 - Antworten und Weiterleiten mit dem HTML der Vorlage (zitiert als HTML), Schreiben mit einfacher Formatierung.

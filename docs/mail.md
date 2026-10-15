@@ -223,7 +223,7 @@ Namen nach dem Muster `bereich.verb_objekt`, MCP-Tool gleich mit `_`.
 | Nachricht lesen | Lesebereich | `mail.get_message` · Read | `mail_get_message` |
 | Unterhaltung | Lesebereich | `mail.get_thread` · Read | `mail_get_thread` |
 | Anhang holen | Lesebereich | `mail.get_attachment` · Read | `mail_get_attachment` |
-| Mail als HTML (M9) | Mail-Fenster `torromailview`, TorroInbox (`v`, `Enter`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
+| Mail als HTML (M9) | Lesebereich der Inbox (Schalter HTML/Text, Taste `v`) | `mail.get_message` mit `include_html` · Read | `mail_get_message` mit `include_html` |
 | Flags setzen | Liste, Lesebereich | `mail.set_flags` · Write | `mail_set_flags` |
 | Entwurf speichern | Schreibfenster | `mail.save_draft` · Write | `mail_save_draft` |
 | Verschieben / Archiv | Liste, Lesebereich | `mail.move_messages` · Write (nach Trash: Delete) | `mail_move_messages` |
@@ -299,5 +299,14 @@ freigegeben ist. M1 steht in [tasks/github.md](tasks/github.md), M7a schon in
    und wann die Mail geöffnet wurde. Eingebettete Bilder (`cid:`) liefert der Kern über
    `mail.get_attachment`. Agenten bekommen weiter den Text und das HTML nur, wenn sie es ausdrücklich
    anfordern; es bleibt `untrusted`.
+
+9. **HTML steht im Lesebereich, nicht in einem eigenen Fenster** (entschieden 2026-10-15, ändert das Fenster
+   aus Entscheidung 8). Blitz zeichnet die Mail direkt in Iced (Weg 2 aus dem Versuch M9.4), überall gleich und
+   ohne Systempakete; `torromailview` und damit WebKitGTK fallen weg. Damit Blitz typisches Mail-HTML richtig
+   zeichnet, schreibt die Bereinigung im Kern alte Attribute (`cellpadding`, `border`, `<font>` …) in CSS um.
+   Bilder lädt die Bibliothek über rustls (`reqwest`), nicht über `blitz-net` (OpenSSL). Zwei Einstellungen:
+   **Ansicht** HTML (Voreinstellung) oder Text, im Lesebereich jederzeit umschaltbar; **Farben der Mail** wie
+   die App (Voreinstellung, also System/Hell/Dunkel), hell oder dunkel – nur für den Inhalt der Mail, weil
+   dunkel umgefärbte Newsletter oft schlechter aussehen und man das abschalten können muss.
 
 Aufgaben: [tasks/mail.md](tasks/mail.md) (M2–M5, E4, M9).
