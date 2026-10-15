@@ -70,7 +70,7 @@ ER3.1 (braucht ER1.4)       ER4 später
 - `Settings.reminders` (`#[serde(default)]`): `enabled` (an), `default_lead` (1 min, `None` möglich),
   `calendars` (Kalender-Id → `Off | Notification | FullScreen`, ohne Eintrag `Notification`), `only_accepted`
   (an), `all_day` (aus), `free_events` (aus), `outside_work_hours` (an, wirkt erst mit K.33),
-  `all_displays` (an), `never_during_call` (an), `sound` (`System | None`, eigener Ton noch offen). Schlüssel `reminders` für `settings.set_setting`.
+  `all_displays` (an), `never_during_call` (an), `sound` (`System | None`, Systemton). Schlüssel `reminders` für `settings.set_setting`.
 - Requests mit Katalogeintrag (Bereich `calendar`):
   - `Request::ListReminders { due_only: bool }` · `calendar.list_reminders` · Read ·
     MCP `calendar_list_reminders` – fällige und die der nächsten 36 Stunden: Kennung, Termin, Auslösezeit,
@@ -141,10 +141,26 @@ ER3.1 (braucht ER1.4)       ER4 später
 
 ### ER2.2 Ein Fenster je Bildschirm
 - [ ] erledigt
-- **Modell:** Opus · **Braucht:** ER2.1, ER0.1 · **Dateien:** nach dem Ergebnis von ER0.1 (nennen)
+- **Modell:** Opus · **Braucht:** ER2.1, ER0.1 · **Dateien:** `crates/torrocalendar/src/{main,reminder}.rs`,
+  `crates/torro-appkit/src/lib.rs`, Wurzel-`Cargo.toml` (Features `NSApplication`, `NSScreen` bei
+  `objc2-app-kit`), `packaging/macos/` (Bundle „Torro Reminder.app“), `crates/torro-wm/src/hyprland/`,
+  `crates/torro-wm/src/lib.rs` (neue Funktion, freigegeben), `crates/torroworkplace/src/reminders.rs`,
+  `integrations/hyprland/`, `integrations/glazewm/` (neu, Regel `ignore`)
+- Weg je System nach „Vollbild je System“ im Konzept (Entscheidungen 6–8): Fenster unsichtbar öffnen, je
+  Bildschirm einrichten, dann zeigen.
+  - **macOS:** in `torro-appkit` Ebene 101, `CanJoinAllSpaces | FullScreenAuxiliary | Stationary |
+    IgnoresCycle`, Rahmen des Bildschirms; Hauptbildschirm mit Fokus, die anderen ohne. Kein neues `unsafe`.
+    Gestartet aus „Torro Reminder.app“ (`LSUIElement`); ohne Bundle (Entwicklung) nur auf dem Schreibtisch.
+  - **Hyprland:** `torro-wm` meldet je Bildschirm eine benannte Regel an (Klasse `torro-reminder`, Titel
+    `Reminder · <Monitor>`, `monitor`, `fullscreen`, `no_initial_focus` für die anderen), vor jedem Start;
+    der Kern zieht die Fenster beim Wechsel der Arbeitsfläche nach.
+  - **Windows:** nur Iced (`AlwaysOnTop`, randlos, `skip_taskbar`, `Fullscreen`); ohne GlazeWM nur der
+    Hauptbildschirm, mit GlazeWM alle aus `torro-wm`.
 - Hauptbildschirm volle Fassung, die anderen die ruhige (nur mit `all_displays`). Ein Klick irgendwo
   wirkt überall.
-- **Abnahme:** auf zwei Bildschirmen geprüft, je System, das zur Hand ist; was fehlt, im Bericht.
+- **API/MCP:** keine neuen Requests; die neue Funktion in `torro-wm` ist intern.
+- **Abnahme:** auf zwei Bildschirmen geprüft, je System, das zur Hand ist (Hyprland und Windows sind bis
+  hier nur recherchiert); über einer Vollbild-App (macOS) und mit gesperrtem Bildschirm; was fehlt, im Bericht.
 
 ### ER2.3 Termin-Editor: Erinnerungen
 - [ ] erledigt

@@ -26,7 +26,7 @@ TidBITS):
 | Filter | Kalender wählen, „nur zugesagte“, ganztägige aus, Arbeitszeit, Ausnahmeregeln, Pause | übernehmen; Arbeitszeit sobald K.33 da ist |
 | Reisezeit | Hinweis rückt nach vorn, wenn der Termin eine Reisezeit hat | später (Apple-Feld `X-APPLE-TRAVEL-DURATION`) |
 | Menüleiste | Übersicht der nächsten Termine, verworfene fehlen dort | Tray: „Next: … in 12 min“ und „Pause reminders“ |
-| Töne | Auswahl, auch ohne Ton | übernehmen, Standard leiser Ton |
+| Töne | Auswahl, auch ohne Ton | Systemton oder ohne Ton (Entscheidung 5) |
 | Eigene Erinnerungen | ohne Kalendertermin, nur in der App gespeichert | bei uns sind das Aufgaben mit Fälligkeit (später, ER4) |
 | Kritik | Kalenderliste bei vielen Kalendern unhandlich; beim Bildschirm-Teilen sehen andere den Hinweis | Kalender in der Steuerzentrale als Gruppe; beim Teilen leise (offene Frage 3) |
 
@@ -283,8 +283,15 @@ samt Taskleiste, ohne Wechsel der Bildschirmauflösung und ohne neuen virtuellen
 4. **Schnittstellen freigegeben:** `Event.alarms`, `Settings.reminders` und die fünf Requests
    `calendar.list_reminders`, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder`.
 
-Noch offen: **Ton** – eigenen leisen Ton mitliefern (Lizenz klären) oder den Systemton nehmen? Bis zur
-Entscheidung nimmt ER1.4 den Systemton.
+5. **Systemton.** Erinnerungen klingen mit dem Ton des Systems (oder ohne Ton); die Suite liefert keinen
+   eigenen mit.
+6. **Hyprland: neue Funktion in `torro-wm` freigegeben.** Das Hyprland-Backend darf Fensterregeln zur
+   Laufzeit anmelden (`eval hl.window_rule(…)`) und Vollbild setzen, damit der Hinweis auf dem richtigen
+   Bildschirm erscheint (ER2.2).
+7. **macOS: eigenes Bundle „Torro Reminder.app“** mit `LSUIElement`, damit der Hinweis auch über
+   Vollbild-Apps erscheint; kein Dock-Symbol, kein Eintrag im App-Umschalter.
+8. **Windows: ohne GlazeWM nur der Hauptbildschirm.** Kein `unsafe` für `EnumDisplayMonitors`; mit GlazeWM
+   kommen alle Bildschirme aus `torro-wm`.
 
 ## Später
 
