@@ -129,7 +129,7 @@ In dieser Reihenfolge, die erste passende Regel gewinnt:
    eine Zeile Zusammenfassung. Nur als Vorschlag, mit Kennzeichnung; ohne KI-Konto fehlt die Funktion
    einfach, nichts anderes ändert sich.
 
-**Ausblenden in Stufen (E3.10, E3.11):** „Hide“ ist kein Spam. Das Menü „Hide from inbox“ (`m`, „…“
+**Ausblenden in Stufen (E3.10, E3.11):** „Hide“ ist kein Spam. Das Menü „Hide from Notification Hub“ (`m`, „…“
 im Paneel, „Hide“ in der Aktionsleiste) bietet für Mail „This conversation“ (`inbox.hide_sender` mit
 `conversation`: erledigt, aber anders als `e` bleibt die Mail ungelesen; eine neue Antwort bringt
 sie zurück), „Everything from <Adresse>“, „Everything from <Domain>“, dann „Always to Info“ und – nur
@@ -139,7 +139,7 @@ Mail davon wird kein Eintrag, offene und vertagte passende Einträge werden erle
 bleibt **unverändert** im Postfach, nicht gelesen, nicht verschoben – anders als „erledigt“, das
 die Mail als gelesen markiert. Domain heißt der Teil nach `@`, klein, genau (keine Subdomains); die
 Regel gilt für **alle** Mail-Konten (E3.11), auch Regeln, die vorher für ein Konto angelegt wurden.
-Die Regeln stehen in der Steuerzentrale › Inbox › Rules („Hidden: news@shop.example“, „Hidden:
+Die Regeln stehen in der Steuerzentrale › Notification Hub › Rules („Hidden: news@shop.example“, „Hidden:
 everything from shop.example“, darunter „All mail accounts“) mit „Remove“.
 
 **Rückgängig (E3.11):** Nach Done, Later und Hide erscheint unten mittig ein Hinweis
@@ -260,13 +260,13 @@ weder Mail noch Slack).
 | Spur ändern, Absender einordnen | Menü, Screener | `inbox.set_item_lane` · Write (mit „merken“ Admin) | `inbox_set_item_lane` |
 | Zu Aufgabe machen | Taste `t` | `inbox.create_task_from_item` · Write (braucht auch Tasks-Rechte) | `inbox_create_task_from_item` |
 | Antworten (Mail, Slack, Talk) | Paneel | `inbox.reply` · Write + Schalter „Nach außen“ | `inbox_reply` (ggf. `pending`) |
-| Quelle stummschalten | Menü „Hide from inbox“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
-| Gespräch ausblenden, Mail bleibt ungelesen (E3.11) | Menü „Hide from inbox“ › „This conversation“ | `inbox.hide_sender` mit `conversation` · Write | `inbox_hide_sender` |
-| Absender oder Domain ausblenden, alle Konten (E3.10, E3.11) | Menü „Hide from inbox“ (`m`, „…“ im Paneel), Steuerzentrale › Inbox › Rules | `inbox.hide_sender` mit `sender`/`domain` · Admin | `inbox_hide_sender` |
+| Quelle stummschalten | Menü „Hide from Notification Hub“ (`m`) | `inbox.mute_source` · Admin | `inbox_mute_source` |
+| Gespräch ausblenden, Mail bleibt ungelesen (E3.11) | Menü „Hide from Notification Hub“ › „This conversation“ | `inbox.hide_sender` mit `conversation` · Write | `inbox_hide_sender` |
+| Absender oder Domain ausblenden, alle Konten (E3.10, E3.11) | Menü „Hide from Notification Hub“ (`m`, „…“ im Paneel), Steuerzentrale › Notification Hub › Rules | `inbox.hide_sender` mit `sender`/`domain` · Admin | `inbox_hide_sender` |
 | Rückgängig nach Done, Later, Hide (E3.11) | Hinweis unten mit „Undo“, `u`, `Ctrl+Z` | vorhandene: `set_item_done`, `snooze_item`, `remove_rule` | dieselben Tools |
 | Verwerfen, nur Benachrichtigungen (E8.4) | ✕ oben rechts auf der Karte | vorhandenes `inbox.set_item_done` · Write | `inbox_set_item_done` |
 | Was sich an einem Eintrag stummschalten lässt (E8.6a) | Glocke auf der Karte öffnet das Menü | `inbox.list_mute_options` · Read | `inbox_list_mute_options` |
-| Stummschalten nach Merkmal, für eine Zeit (E8.6a) | Menü der Glocke, Steuerzentrale › Inbox › Rules | `inbox.mute_item` · Write nur für die Unterhaltung, sonst Admin | `inbox_mute_item` |
+| Stummschalten nach Merkmal, für eine Zeit (E8.6a) | Menü der Glocke, Steuerzentrale › Notification Hub › Rules | `inbox.mute_item` · Write nur für die Unterhaltung, sonst Admin | `inbox_mute_item` |
 | Aufgabe aus einer Mail in einem Ordner (E8.7a) | „Task“ im Mail-Fenster | `tasks.create_todo_from_mail` · Write (prüft auch Leserecht auf das Konto) | `tasks_create_todo_from_mail` |
 | Mail bzw. Aufgabe des Rückbezugs öffnen (E8.7a) | „Open mail“, „Open task“ | `apps.open_app` mit `target` · wie bisher | `apps_open_app` |
 | Statistik (E8.8a) | Zentrale › Insights | `inbox.get_stats` · Read | `inbox_get_stats` |
@@ -344,7 +344,7 @@ Arbeitsname `torroinbox`, Fensterklasse `torro-inbox`. Aufbau nach den Größenk
 | **Mini / Leiste** | Anzeige: „3 for you“, die drei obersten mit Quellen-Symbol; dringend sichtbar hervorgehoben (nicht in Torro-Rot) |
 
 - **Tastatur zuerst** wie Linear oder Superhuman: `j/k` bewegen, `e` erledigt, `s` später,
-  `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` ausblenden (Menü „Hide from inbox“, siehe unten).
+  `t` Aufgabe, `r` antworten, `Enter` öffnen, `m` ausblenden (Menü „Hide from Notification Hub“, siehe unten).
 - **Schreiben** (Mail, längere Antworten) in einem eigenen Fenster, siehe [mail.md](mail.md).
 - **Fenster je Ausschnitt** mit `--source mail` oder `--lane info`, gemerkt in der
   Workspace-Vorlage. So bekommt, wer will, eine reine Mail-Kachel neben einer Agenten-Kachel.
@@ -363,13 +363,13 @@ im Eingang, nur die Oberfläche teilt sich auf.
 | Fenster | Frage | Inhalt |
 |---|---|---|
 | **Mail** | Was ist reingekommen? | Nur Mail. Je größer das Fenster, desto mehr Desktop-Client (Konten, Ordner, Leser); je kleiner, desto mehr nur das Neue als Karten |
-| **Benachrichtigungen** | Was melden meine Apps? | Alles außer Mail, immer mit dem Icon der App: Slack, WhatsApp, GitHub, Nextcloud, Kalender, ntfy, Skripte. Breit als Spalten je App oder nach Zeit. Jedes Fenster hat seinen eigenen Quellen-Filter (eins nur Slack, eins nur WhatsApp) |
-| **Inbox, die Zentrale** | Was muss ich entscheiden oder weitergeben? | Kein Lesen, sondern Handeln: Freigaben, wartende Agenten, Sortieren (→ Aufgabe, → Termin, Later, Erledigt). Daneben, was weitergegeben wurde und was wiederkommt. Dazu **Insights** |
+| **App Feed** („App-Feed“, bis #127 „Benachrichtigungen“) | Was melden meine Apps? | Alles außer Mail, immer mit dem Icon der App: Slack, WhatsApp, GitHub, Nextcloud, Kalender, ntfy, Skripte. Breit als Spalten je App oder nach Zeit. Jedes Fenster hat seinen eigenen Quellen-Filter (eins nur Slack, eins nur WhatsApp) |
+| **Notification Hub** („Mitteilungszentrale“, bis #127 „Inbox“), die Zentrale | Was muss ich entscheiden oder weitergeben? | Kein Lesen, sondern Handeln: Freigaben, wartende Agenten, Sortieren (→ Aufgabe, → Termin, Later, Erledigt). Daneben, was weitergegeben wurde und was wiederkommt. Dazu **Insights** |
 
 - **Ein Programm, drei Einträge.** Ein Code, ein Binary (`torroinbox --view mail|notifications|hub`), aber drei
   Einträge im App-Umschalter, in `apps.list_apps` und in den Workspace-Vorlagen, jeder mit eigener Fensterklasse,
   damit Kachel-Regeln sie auseinanderhalten. Die Filter `--source` und `--lane` aus E3.6 bleiben.
-- **Agenten und Freigaben** zeigt die Zentrale. Im Benachrichtigungen-Fenster lassen sie sich als Quelle zuschalten.
+- **Agenten und Freigaben** zeigt die Zentrale. Im App Feed lassen sie sich als Quelle zuschalten.
 - **Keine Links zu anderen Apps unten in der Seitenleiste.** Die anderen Fenster erreicht man über den
   App-Umschalter, das Tray und die Tastatur. Weniger zeigen, damit das Wichtige übersichtlich bleibt.
 
@@ -389,7 +389,7 @@ wiederhergestellt (`--density`).
 
 | Eintrag | Sichtbar | Im Menü |
 |---|---|---|
-| Mail (Mail-Fenster) | Reply · Task · Done · Later | Forward, Event, Hide from inbox |
+| Mail (Mail-Fenster) | Reply · Task · Done · Later | Forward, Event, Hide from Notification Hub |
 | Einladung | Accept · Maybe · Decline · Later · Task | – |
 | Chat (Slack, WhatsApp, Talk) | ✕ · Reply · Task · Later · Glocke | Open in app |
 | GitHub, Nextcloud, ntfy, Skripte | ✕ · Open · Task · Later · Glocke | – |
@@ -428,7 +428,7 @@ Welche Merkmale eine Quelle mitbringt, und damit, wonach sich verlässlich stumm
 | Mitgelesene Desktop-Benachrichtigungen (WhatsApp und andere) | **nur** App, Titel (Chat oder Person) und Text, also grober |
 
 Freigaben und Einträge der Suite lassen sich nie stummschalten (Sicherheitsregel 1). Alle Regeln stehen in der
-Steuerzentrale › Inbox › Rules mit „Remove“; zeitlich begrenzte laufen von selbst ab.
+Steuerzentrale › Notification Hub › Rules mit „Remove“; zeitlich begrenzte laufen von selbst ab.
 
 **Kern (E8.6a, umgesetzt):** Der Dienst setzt die Merkmale beim Melden (`Item.facets`, nie vom Absender): Mail
 Konto, Absender, Domain, Liste (`List-Id`), Massenmail; Agenten Agent, Projekt (nur von Hooks), Art; Skripte der
@@ -437,6 +437,14 @@ Merkmal am Eintrag, sondern der eigene Umfang `conversation`. Eine Regel mit Mer
 Art (ein Absender in allen Mail-Konten, ein Projekt für alle Agenten), eine für die Unterhaltung nur in ihrer
 Quelle. „Hide“ und „Only Info“ für die Unterhaltung ohne Ablauf legen keine Regel an, sondern erledigen bzw.
 verschieben nur diesen Eintrag. Befehle: [api.md](api.md), Fußnote 11.
+
+**Mail-Fenster (Issue #123, E8.25):** Mail hat **ein** Menü, die Glocke „Mute…“ – „Hide from inbox“ ist darin
+aufgegangen. Die Glocke steht in Zeilen und Karten (statt „…“), im Leser und im Paneel, `m` öffnet sie; für Mail-Einträge
+in jedem Fenster. Dauer: 1 Stunde, bis morgen, 1 Woche, immer. Was „Hide from inbox“ bot, steht so darin: „This
+conversation“ mit „Hide“ und „Always“ erledigt den Eintrag (die Mail bleibt ungelesen), Absender und Domain sind
+Merkmale, „Always to Info“ ist Absender mit „Only Info“; „Move to junk“ bleibt als letzter Punkt. Auch Nachrichten
+eines Ordners ohne Eintrag haben die Glocke: `inbox.mute_item` mit der Kennung der Mail (`m:…`), angeboten werden
+nur ihre Merkmale (Absender, Domain, Liste, Konto, Massenmail), nicht die Unterhaltung.
 
 ### Aufgabe mit Rückbezug
 
@@ -572,7 +580,8 @@ dazukommt.
 | 17 | Seitenleiste | **Keine Links zu anderen Apps** unten in der Seitenleiste |
 | 18 | Insights | **Statistik in der Zentrale**, um gezielt zu optimieren |
 | 19 | Später | **An einen Agenten geben** und **Fokus-Profile** werden eigens ausgearbeitet |
-| 20 | Namen | **„Torro Inbox“, „Torro Inbox Mail“, „Torro Inbox Notifications“.** TorroMail bleibt ein eigenes Produkt (eigene Konten, eigener MCP-Server); damit niemand das Mail-Fenster der Suite für TorroMail hält, trägt es „Inbox“ im Namen |
+| 20 | Namen | ~~„Torro Inbox“, „Torro Inbox Mail“, „Torro Inbox Notifications“~~, abgelöst durch Nr. 21. TorroMail bleibt ein eigenes Produkt (eigene Konten, eigener MCP-Server); damit niemand das Mail-Fenster der Suite für TorroMail hält, heißt es lang „Torro Workplace Mail“ |
+| 21 | Namen und Erkennung (2026-10-14, Issue #127) | „Inbox“ und „Mail“ verwechselte man. Die Fenster heißen jetzt **„Notification Hub“** (de „Mitteilungszentrale“, lang „Torro Notification Hub“), **„Mail“** (de „E-Mail“, lang „Torro Workplace Mail“) und **„App Feed“** (de „App-Feed“, lang „Torro App Feed“). Das Benachrichtigungen-Fenster bekam einen neuen Namen, weil „Notification Hub“ und „Notifications“ sich wieder ähnelten; die drei Namen teilen kein Wort. Wo die Oberfläche den ganzen Eingang meint (Steuerzentrale, Rechte, Freigaben, Assistent), steht „Notification Hub“; „Inbox“ heißt nur noch der Mail-Ordner. Jedes Fenster trägt oben links statt des Suite-Logos sein Zeichen: sein Icon (Tray, Brief, Glocke) in eigener Farbe auf getönter Kachel (`shell::app_mark`; Zentrale orange, Mail blau, App Feed pink), in Schmal (ohne Seitenleiste und Leiste) vorn in der Kopfleiste. Die erste Ansicht des Mail-Fensters („For me“) hat `UserCheck` statt des Trays. Auswahl in der Seitenleiste bleibt neutral (Design-Regel). Unverändert: Fensterklassen, `AppId`-Kennungen, `--view`-Werte und der API-Bereich `inbox` |
 
 ### Belege: was die dritte Spur wäre
 

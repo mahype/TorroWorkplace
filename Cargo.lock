@@ -5405,6 +5405,7 @@ dependencies = [
  "torro-inbox",
  "torro-ipc",
  "torro-mail",
+ "torro-pim",
  "webbrowser",
 ]
 

@@ -85,6 +85,10 @@ pub enum Key {
     Delete,
     /// `/`.
     Slash,
+    /// ⌘F on macOS, Ctrl + F elsewhere: the search field, as `/` (issue #136).
+    Find,
+    /// Tab: the first suggestion under the search field (issue #136).
+    Tab,
     /// `1` … `9`.
     Digit(u8),
     /// `[` ([`shell::is_sidebar_key`]).
@@ -136,7 +140,8 @@ pub enum Command {
     Snooze,
     /// Move the entry to the other lane (asking whether always for its source).
     Lane,
-    /// Open the menu "Hide from inbox" (task E3.10): the entry, its sender or domain, its source.
+    /// Open the menu of `m`: the bell's menu (task E8.6b) for mail and in the notifications window
+    /// (issue #123), else "Hide from Notification Hub" (task E3.10): the entry, its source.
     Hide,
     /// Open the dialog that makes a task of the entry (task E3.5).
     MakeTask,
@@ -150,8 +155,10 @@ pub enum Command {
     Forward,
     /// Move the mail under the cursor to the trash.
     Delete,
-    /// Put the keyboard into the folder's search field.
+    /// Put the keyboard into the search field over the list (issue #136).
     Search,
+    /// Take the first suggestion under the search field (issue #136).
+    Complete,
     /// Pick the n-th entry (from 1) of the open menu of choices.
     Choose(usize),
     /// The bell's menu: "For" one step longer (→, `true`) or shorter (←).
@@ -182,6 +189,18 @@ pub fn listen(event: iced::Event, status: iced::event::Status, _window: iced::wi
     key_of(&key, modifiers).map(Message::Key)
 }
 
+/// ⌘F on macOS, Ctrl + F elsewhere, on any layout (the key in F's place, `to_latin`): the search
+/// field, as in every mail app (issue #136). Subscribe with `iced::event::listen_with(find_key)`: it
+/// hears the key also when a text field or the window's `widgets::ctrl_guard` took it – the guard
+/// does on macOS, so the field does not type an "f".
+pub fn find_key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
+        return None;
+    };
+    let find = modifiers.command() && !modifiers.shift() && !modifiers.alt() && key.to_latin(physical_key) == Some('f');
+    find.then_some(Message::Key(Key::Find))
+}
+
 /// The [`Key`] for `key` held with `modifiers`.
 pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
     if shell::is_sidebar_key(key, modifiers) {
@@ -196,6 +215,7 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Named(Named::ArrowLeft) => Key::Left,
         Name::Named(Named::ArrowRight) => Key::Right,
         Name::Named(Named::Enter) => Key::Enter,
+        Name::Named(Named::Tab) if !modifiers.shift() => Key::Tab,
         Name::Character("e") => Key::E,
         Name::Character("u") => Key::U,
         Name::Character("s") => Key::S,
@@ -241,7 +261,8 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::A) => Some(Command::ReplyAll),
         (Focus::List, Key::F) => Some(Command::Forward),
         (Focus::List, Key::Hash | Key::Delete) => Some(Command::Delete),
-        (Focus::List, Key::Slash) => Some(Command::Search),
+        (Focus::List, Key::Slash | Key::Find) => Some(Command::Search),
+        (Focus::List, Key::Tab) => Some(Command::Complete),
         (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
         (Focus::Mute, Key::Left) => Some(Command::MuteFor { longer: false }),
         (Focus::Mute, Key::Right) => Some(Command::MuteFor { longer: true }),

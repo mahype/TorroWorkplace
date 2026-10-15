@@ -620,10 +620,68 @@ impl Inbox {
                 check_mute(&changeable(db, id, Some(client))?.item, *scope, *until, Utc::now()).map(drop)
             }
             Request::RemoveRule { id } => removable_rule(db, id, Some(client)).map(drop),
-            Request::OpenItem { id } => visible_item(db, id, Some(client)).map(drop),
+            // Nobody is asked to let the AI read an entry the client may not see (issue #120).
+            Request::OpenItem { id } | Request::SuggestTaskFromItem { id } | Request::SuggestEventFromItem { id } => {
+                visible_item(db, id, Some(client)).map(drop)
+            }
             _ => Ok(()),
         });
         checked.err().map(Failure::response)
+    }
+
+    /// The entry the mail message `message` of the mail account `account` (`mail:<address>`) was
+    /// filed in (issue #123, `mail_messages`), open or done; `None` when it never became one, or
+    /// when the file cannot be read (logged). `inbox.list_mute_options` and `inbox.mute_item` with
+    /// a message's id mute by that entry, conversation and all.
+    pub fn entry_of_message(&self, account: &str, message: &str) -> Option<String> {
+        let found = self.work(false, |db| {
+            let query = "SELECT item FROM mail_messages WHERE account = ?1 AND message = ?2";
+            Ok(db.query_row(query, params![account, message], |row| row.get(0)).optional()?)
+        });
+        found.unwrap_or_else(|failure| {
+            eprintln!("torroworkplace: inbox: cannot look up the entry of a mail: {failure}");
+            None
+        })
+    }
+
+    /// What `inbox.list_mute_options` or `inbox.mute_item` with the id of a mail message without
+    /// an entry (issue #123) would refuse `client`, before anyone is asked to approve it; `None`
+    /// when it may run. `stand_in` is the message as an entry would hold it
+    /// (`crate::mail::inbox_feed::message_stand_in`, looked up in the stores the client reaches).
+    /// The same checks [`Inbox::handle_message`] makes ([`check_message`]).
+    pub fn message_refusal(&self, request: &Request, stand_in: &Item, client: Option<&ClientInfo>) -> Option<Response> {
+        check_message(request, stand_in, client, Utc::now()).err().map(Failure::response)
+    }
+
+    /// `inbox.list_mute_options` and `inbox.mute_item` for a mail message without an entry (issue
+    /// #123): `stand_in` as [`Inbox::message_refusal`] takes it. The options are the message's
+    /// traits ([`rules::message_mute_options`]); muting keeps a rule as for an entry's trait and
+    /// changes the open entries it holds for at once ([`mute_by`]). `not-found` for a message the
+    /// client may not see, `error` for its conversation (there is no entry to close; a reply would
+    /// come all the same) or a trait it lacks; any other request is no business of a message.
+    pub fn handle_message(
+        &self,
+        request: Request,
+        stand_in: &Item,
+        client: Option<&ClientInfo>,
+        now: DateTime<Utc>,
+    ) -> Response {
+        let answered = self.with(|db| {
+            check_message(&request, stand_in, client, now)?;
+            match request {
+                Request::ListMuteOptions { .. } => {
+                    Ok(Response::MuteOptions { options: rules::message_mute_options(stand_in) })
+                }
+                Request::MuteItem { scope, until, effect, .. } => {
+                    let tx = db.transaction()?;
+                    let muted = mute_by(&tx, stand_in, Muting { scope, until, effect }, client, now)?;
+                    tx.commit()?;
+                    Ok(Response::Muted(muted))
+                }
+                _ => Err(Failure::Invalid("only muting takes the id of a mail".into())),
+            }
+        });
+        answered.unwrap_or_else(Failure::response)
     }
 
     /// What the inbox holds about the entry or rule `request` names, for the summary of its
@@ -641,7 +699,9 @@ impl Inbox {
                 | Request::HideSender { id, .. }
                 | Request::MuteItem { id, .. }
                 | Request::CreateTaskFromItem { id, .. }
-                | Request::CreateEventFromItem { id, .. } => {
+                | Request::CreateEventFromItem { id, .. }
+                | Request::SuggestTaskFromItem { id }
+                | Request::SuggestEventFromItem { id } => {
                     let item = read_items(db, &Scope::All, "id = ?", by_id(id), "")?.pop().map(|stored| stored.item);
                     InboxFacts { item, ..InboxFacts::default() }
                 }
@@ -2504,6 +2564,32 @@ fn check_mute(
     })
 }
 
+/// `request` may run for `client` on the mail message `stand_in` without an entry (issue #123):
+/// the client sees it (`not-found`, as for an entry of its account), and for `inbox.mute_item` may
+/// change it (`forbidden`), names one of its traits (`error` for the conversation: no entry to
+/// close) and an end still to come ([`check_mute`]). `error` for every other request.
+fn check_message(
+    request: &Request,
+    stand_in: &Item,
+    client: Option<&ClientInfo>,
+    now: DateTime<Utc>,
+) -> Result<(), Failure> {
+    if !Scope::of(client).sees_item(stand_in) {
+        return Err(no_item(&stand_in.id));
+    }
+    match request {
+        Request::ListMuteOptions { .. } => Ok(()),
+        Request::MuteItem { scope: MuteScope::Conversation, .. } => Err(Failure::Invalid(
+            "a mail without an entry is muted by its traits; inbox.list_mute_options lists them".into(),
+        )),
+        Request::MuteItem { scope, until, .. } => {
+            api::check_item_change(stand_in, client).map_err(Failure::Forbidden)?;
+            check_mute(stand_in, *scope, *until, now).map(drop)
+        }
+        _ => Err(Failure::Invalid("only muting takes the id of a mail".into())),
+    }
+}
+
 /// `inbox.mute_item` (task E8.6a) for `client` on `db`, a transaction: the entry `id` the client may
 /// change ([`changeable`]) and the trait it mutes by ([`check_mute`]), then
 ///
@@ -2522,9 +2608,23 @@ fn mute_item(
     client: Option<&ClientInfo>,
     now: DateTime<Utc>,
 ) -> Result<Muted, Failure> {
-    let Muting { scope, until, effect } = muting;
     let item = changeable(db, id, client)?.item;
-    let target = check_mute(&item, scope, until, now)?;
+    mute_by(db, &item, muting, client, now)
+}
+
+/// The work of `inbox.mute_item` once the entry is known and `client` may change it: `item` is a
+/// stored entry ([`mute_item`]) or a mail message's stand-in (issue #123,
+/// [`Inbox::handle_message`]), whose conversation never comes this far.
+fn mute_by(
+    db: &Connection,
+    item: &Item,
+    muting: Muting,
+    client: Option<&ClientInfo>,
+    now: DateTime<Utc>,
+) -> Result<Muted, Failure> {
+    let Muting { scope, until, effect } = muting;
+    let id = item.id.as_str();
+    let target = check_mute(item, scope, until, now)?;
     let (rule, new_rule) = if scope.keeps_rule(effect, until.is_some()) {
         let (rule, new_rule) = muting_rule(db, &item.source, target, effect.rule_effect(), until, client, now)?;
         (Some(rule), new_rule)
@@ -4767,7 +4867,13 @@ pub(crate) mod tests {
             }
             for request in [
                 Request::OpenItem { id: id.clone() },
-                Request::CreateTaskFromItem { id: id.clone(), collection: "l".into(), title: None, due: None },
+                Request::CreateTaskFromItem {
+                    id: id.clone(),
+                    collection: "l".into(),
+                    title: None,
+                    due: None,
+                    notes: None,
+                },
             ] {
                 assert_eq!(inbox.refusal(&request, Some(&client)).as_ref().map(code), Some("not-found"));
             }
@@ -6160,7 +6266,13 @@ pub(crate) mod tests {
         for request in [
             done(&id, false),
             done(&id, true),
-            Request::CreateTaskFromItem { id: id.clone(), collection: "a/list".into(), title: None, due: None },
+            Request::CreateTaskFromItem {
+                id: id.clone(),
+                collection: "a/list".into(),
+                title: None,
+                due: None,
+                notes: None,
+            },
         ] {
             assert_eq!(inbox.refusal(&request, Some(&reader)).as_ref().map(code), Some("forbidden"), "{request:?}");
         }
@@ -6282,8 +6394,13 @@ pub(crate) mod tests {
         let other_account = with_rights(|rights| {
             rights.mail_accounts = Selection::Only(vec!["mail:bernd@example.com".into()]);
         });
-        let task =
-            Request::CreateTaskFromItem { id: entry_id.clone(), collection: "a/list".into(), title: None, due: None };
+        let task = Request::CreateTaskFromItem {
+            id: entry_id.clone(),
+            collection: "a/list".into(),
+            title: None,
+            due: None,
+            notes: None,
+        };
         for client in [&reading_mail, &other_account] {
             for request in [done(&entry_id, false), done(&entry_id, true), task.clone()] {
                 assert_eq!(inbox.refusal(&request, Some(client)).as_ref().map(code), Some("forbidden"), "{request:?}");
@@ -6466,7 +6583,13 @@ pub(crate) mod tests {
         let done = || Request::SetItemDone { id: id.clone(), done: true, dismissed: false };
         assert_eq!(inbox.refusal(&done(), Some(&reader)).as_ref().map(code), Some("forbidden"), "before an approval");
         assert_eq!(code(&inbox.handle(done(), Some(&reader), at(9, 1))), "forbidden", "when it runs");
-        let task = Request::CreateTaskFromItem { id: id.clone(), collection: "a/list".into(), title: None, due: None };
+        let task = Request::CreateTaskFromItem {
+            id: id.clone(),
+            collection: "a/list".into(),
+            title: None,
+            due: None,
+            notes: None,
+        };
         assert_eq!(inbox.refusal(&task, Some(&reader)).as_ref().map(code), Some("forbidden"));
         let refused = inbox.entry_for_task(&id, Some(&reader), at(9, 1)).expect_err("refused");
         assert_eq!(code(&refused), "forbidden");
@@ -7121,6 +7244,83 @@ pub(crate) mod tests {
         inbox.handle(mute(&person, MuteScope::Conversation, None, MuteEffect::Hide), None, at(8, 7));
         filed(&inbox, &reply, at(8, 8));
         assert!(entry(&inbox, &person).state.is_open(), "a new reply brings it back, as after done");
+    }
+
+    /// Issue #123 (acceptance): muting a conversation from the mail window for a while keeps its
+    /// further mail out of "For me" – hidden or in "Info" – until the end.
+    #[test]
+    fn a_conversation_muted_for_a_while_keeps_its_replies_out_of_for_me() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let for_me = |now| {
+            let list = Request::ListItems {
+                lane: Some(Lane::ForMe),
+                source: None,
+                state: Some(StateFilter::Open),
+                since: None,
+                limit: None,
+                order: None,
+                dismissed: None,
+            };
+            items(inbox.handle(list, None, now)).into_iter().map(|item| item.id).collect::<Vec<_>>()
+        };
+        let person = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        let week = Some(at(8, 2) + TimeDelta::days(7));
+        let hidden =
+            muted(inbox.handle(mute(&person, MuteScope::Conversation, week, MuteEffect::Hide), None, at(8, 2)));
+        assert!(hidden.rule.is_some() && hidden.done == [person.clone()], "{hidden:?}");
+        assert_eq!(inbox.file_mail(&personal("m:2", "t:1", at(9, 0)), Notify::All, at(9, 1)), Ok(None), "held back");
+        assert!(for_me(at(9, 2)).is_empty());
+        let other = filed(&inbox, &personal("m:3", "t:2", at(9, 3)), at(9, 4));
+        assert_eq!(for_me(at(9, 5)), std::slice::from_ref(&other), "another conversation comes as ever");
+        let moved = muted(inbox.handle(mute(&other, MuteScope::Conversation, week, MuteEffect::Info), None, at(9, 6)));
+        assert_eq!(moved.moved, std::slice::from_ref(&other));
+        filed(&inbox, &personal("m:4", "t:2", at(10, 0)), at(10, 1));
+        assert!(for_me(at(10, 2)).is_empty(), "the reply comes in Info");
+        assert_eq!(entry(&inbox, &other).lane, Lane::Info);
+    }
+
+    /// Issue #123: a folder's message without an entry is muted by its traits, as the core found
+    /// them in the mail store (`Inbox::handle_message`); its conversation is not offered.
+    #[test]
+    fn a_message_without_an_entry_is_muted_by_its_traits() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let summary = torro_mail::MessageSummary {
+            id: "m:9".into(),
+            account: ANNA.into(),
+            folder: "f:archive".into(),
+            thread_id: "t:9".into(),
+            from: Some(torro_mail::MailAddress { name: None, address: "news@shop.example".into() }),
+            to: Vec::new(),
+            subject: "Sale".into(),
+            date: at(7, 0),
+            snippet: String::new(),
+            flags: Vec::new(),
+            has_attachments: false,
+            invite: None,
+            untrusted: true,
+        };
+        let stand_in = rules::message_stand_in(&summary, None, true).expect("a mail account");
+        assert_eq!(inbox.entry_of_message(ANNA, "m:9"), None, "never filed");
+        let menu =
+            options(inbox.handle_message(Request::ListMuteOptions { id: "m:9".into() }, &stand_in, None, at(8, 0)));
+        assert!(menu.iter().all(|option| option.scope != MuteScope::Conversation), "{menu:?}");
+        let conversation = mute("m:9", MuteScope::Conversation, Some(at(9, 0)), MuteEffect::Hide);
+        assert_eq!(code(&inbox.handle_message(conversation.clone(), &stand_in, None, at(8, 0))), "error");
+        assert!(inbox.message_refusal(&conversation, &stand_in, None).is_some());
+        let open = filed(&inbox, &mail("m:1", "t:1", "Sale", "news@shop.example", false, at(8, 0)), at(8, 1));
+        let by_sender = mute("m:9", by(FacetKey::Sender), None, MuteEffect::Hide);
+        assert!(inbox.message_refusal(&by_sender, &stand_in, None).is_none());
+        let hidden = muted(inbox.handle_message(by_sender.clone(), &stand_in, None, at(8, 2)));
+        let facet = hidden.rule.as_ref().and_then(|rule| rule.facet.clone()).expect("a rule");
+        assert_eq!((facet.key, facet.value.as_str()), (FacetKey::Sender, "news@shop.example"));
+        assert_eq!(hidden.done, [open], "the sender's open entry is done at once");
+        let elsewhere = with_mail(Some(Level::Read), Selection::Only(vec![WORK.into()]));
+        assert_eq!(code(&inbox.handle_message(by_sender.clone(), &stand_in, Some(&elsewhere), at(8, 3))), "not-found");
+        let other = inbox.handle_message(Request::GetItem { id: "m:9".into() }, &stand_in, None, at(8, 3));
+        assert_eq!(code(&other), "error", "only muting takes a mail's id");
+        assert_eq!(inbox.entry_of_message(ANNA, "m:1").as_deref(), Some(hidden.done[0].as_str()));
     }
 
     #[test]

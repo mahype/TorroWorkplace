@@ -268,8 +268,18 @@ fn line_label<'a, M: 'a>(level: typo::Level, label: impl IntoFragment<'a>) -> El
 // ---------------------------------------------------------------------------------------------
 
 /// The colour an icon inside a button of `style` takes: the button's text colour at rest.
-fn button_icon<'a, M: 'a>(which: Icon, edge: f32, style: ButtonStyle) -> Element<'a, M> {
-    icon(which, edge).style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) }).into()
+fn button_icon<'a, M: 'a>(which: Icon, edge: f32, style: ButtonStyle, on: bool) -> Element<'a, M> {
+    icon(which, edge)
+        .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
+        .opacity(icon_opacity(on))
+        .into()
+}
+
+/// The opacity of the icon in a button that is `on` or off (issue #168): an icon's tint keeps no
+/// alpha (Iced takes only its colour), so a button that is off fades its icon through the opacity
+/// of the image instead – to [`style::DISABLED_ALPHA`], like its word and frame.
+fn icon_opacity(on: bool) -> f32 {
+    if on { 1.0 } else { style::DISABLED_ALPHA }
 }
 
 /// A text button, 28 high ([`size::control_sm()`]), label in `CAPTION`, optional icon (14) in front.
@@ -288,7 +298,7 @@ pub fn text_button<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let mut content = row![].spacing(ICON_GAP).align_y(Alignment::Center);
     if let Some(which) = icon {
-        content = content.push(button_icon(which, icon::SIZE_SM, style));
+        content = content.push(button_icon(which, icon::SIZE_SM, style, on_press.is_some()));
     }
     content = content.push(typo::text(typo::caption(), label).wrapping(Wrapping::None));
     button(container(content).center_y(Fill))
@@ -318,7 +328,7 @@ pub fn text_button<'a, M: Clone + 'a>(
 /// ```
 pub fn busy_button<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, style: ButtonStyle) -> Element<'a, M> {
     let content = row![
-        button_icon(Icon::RefreshCw, icon::SIZE_SM, style),
+        button_icon(Icon::RefreshCw, icon::SIZE_SM, style, true),
         typo::text(typo::caption(), label).wrapping(Wrapping::None)
     ]
     .spacing(ICON_GAP)
@@ -370,7 +380,7 @@ fn icon_only<'a, M: Clone + 'a>(
     style: ButtonStyle,
     on_press: Option<M>,
 ) -> Element<'a, M> {
-    let b = button(center(button_icon(which, icon::SIZE, style)))
+    let b = button(center(button_icon(which, icon::SIZE, style, on_press.is_some())))
         .width(size::control_sm())
         .height(size::control_sm())
         .padding(0)
@@ -688,12 +698,44 @@ pub struct RowAction<'a, M> {
     /// itself (issue #122), not at the whole row. Only the row under the cursor sets it, so one
     /// anchor is never registered by two rows.
     pub anchor: Option<Anchor>,
+    /// Why the button is off, if it is (issue #168): "Set up an AI first". Set with
+    /// [`RowAction::blocked`]. An action that is off still stands in its bar, at the disabled
+    /// opacity, takes no press and says in its tooltip why ([`RowAction::tip`]). Whoever draws an
+    /// action asks [`RowAction::press`] for the message, never `on_press` directly.
+    pub blocked: Option<iced::widget::text::Fragment<'a>>,
 }
 
 impl<'a, M> RowAction<'a, M> {
     /// A button with `icon`, `label` and the key hint `key` that sends `on_press`; no anchor.
     pub fn new(icon: Icon, label: impl IntoFragment<'a>, key: &'static str, on_press: M) -> Self {
-        Self { icon, label: label.into_fragment(), key, on_press, anchor: None }
+        Self { icon, label: label.into_fragment(), key, on_press, anchor: None, blocked: None }
+    }
+
+    /// The same button, off for `reason` ([`RowAction::blocked`]): "AI task" without an AI.
+    ///
+    /// ```ignore
+    /// let ai = RowAction::new(Icon::Sparkles, tr("AI task"), "", Message::SuggestTask(id.clone()));
+    /// if !ready { ai.blocked(tr("Set up an AI first")) } else { ai }
+    /// ```
+    pub fn blocked(self, reason: impl IntoFragment<'a>) -> Self {
+        Self { blocked: Some(reason.into_fragment()), ..self }
+    }
+
+    /// What a press sends: `on_press`, `None` while the button is off ([`RowAction::blocked`]).
+    pub fn press(&self) -> Option<M>
+    where
+        M: Clone,
+    {
+        self.blocked.is_none().then(|| self.on_press.clone())
+    }
+
+    /// The words of the button's tooltip: its label, and while it is off why – "AI task · Set up an
+    /// AI first".
+    pub fn tip(&self) -> String {
+        match &self.blocked {
+            Some(reason) => format!("{} · {}", self.label, reason),
+            None => self.label.to_string(),
+        }
     }
 
     /// The same button registering `anchor`, for the menu it opens.
@@ -832,14 +874,10 @@ pub fn card_line<'a, M: Clone + 'a>(
         let gap = space::m();
         let (spoken, words_room) = card_line_split(room.width, lead_width, action.label.as_ref());
         let button = if spoken {
-            text_button(
-                Some(action.icon),
-                action.label.clone(),
-                style::button::secondary,
-                Some(action.on_press.clone()),
-            )
+            let button = text_button(Some(action.icon), action.label.clone(), style::button::secondary, action.press());
+            if action.blocked.is_some() { with_tooltip(button, action.tip()) } else { button }
         } else {
-            icon_button(action.icon, action.label.clone(), Some(action.on_press.clone()))
+            icon_button(action.icon, action.tip(), action.press())
         };
         let whole = meta.iter().filter(|part| !part.is_empty()).cloned().collect::<Vec<_>>().join(" · ");
         let fitted = meta_fit(&meta, &drop, typo::meta(), words_room);
@@ -1013,27 +1051,35 @@ fn with_actions<'a, M: Clone + 'a>(
 
 /// One button of [`row_actions`]: on the `menu` surface, so hover and press are `selected` (as in
 /// menus, where `hover` would vanish); the tooltip names it with its key.
+///
+/// An action that is off ([`RowAction::blocked`]) stands there faded – word, icon and all – takes no
+/// press and says why in its tooltip. An action without a key (`""`) shows no key hint.
 fn row_action_button<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -> Element<'a, M> {
     let style = style::button::menu_item(false);
-    let tooltip = row![typo::text(typo::caption(), action.label.clone()).style(theme::text_2), kbd(action.key)]
+    let press = action.press();
+    let on = press.is_some();
+    let mut tooltip = row![typo::text(typo::caption(), action.tip()).style(theme::text_2)]
         .spacing(space::s())
         .align_y(Alignment::Center);
+    if !action.key.is_empty() {
+        tooltip = tooltip.push(kbd(action.key));
+    }
+    // `text`, the colour of a menu item's label; faded with the button when it is off.
+    let mark = |edge| -> Element<'a, M> {
+        icon(action.icon, edge)
+            .style(|t, _| svg::Style { color: Some(Tone::Text.of(&palette(t))) })
+            .opacity(icon_opacity(on))
+            .into()
+    };
     let button = if words {
-        // `text`, the colour of a menu item's label.
-        let content = row![
-            toned(action.icon, icon::SIZE_SM, Tone::Text),
-            typo::text(typo::caption(), action.label).wrapping(Wrapping::None)
-        ]
-        .spacing(ICON_GAP)
-        .align_y(Alignment::Center);
+        let content = row![mark(icon::SIZE_SM), typo::text(typo::caption(), action.label).wrapping(Wrapping::None)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
         button(container(content).center_y(Fill)).height(size::control_sm()).padding(style::button_padding())
     } else {
-        button(center(toned(action.icon, icon::SIZE, Tone::Text)))
-            .width(size::control_sm())
-            .height(size::control_sm())
-            .padding(0)
+        button(center(mark(icon::SIZE))).width(size::control_sm()).height(size::control_sm()).padding(0)
     };
-    let button = tip(button.style(style).on_press(action.on_press), tooltip, tooltip::Position::Bottom);
+    let button = tip(button.style(style).on_press_maybe(press), tooltip, tooltip::Position::Bottom);
     anchored_if(action.anchor.as_ref(), button)
 }
 
@@ -3232,6 +3278,33 @@ mod tests {
         let action = action.at(&anchor);
         action.anchor.as_ref().expect("set").set(rect(1.0, 2.0, 3.0, 4.0));
         assert_eq!(anchor.get(), Some(rect(1.0, 2.0, 3.0, 4.0)), "shares the cell");
+    }
+
+    /// Issue #168: an action that is off takes no press, says why in its tooltip and still draws in
+    /// the bar, with words and as icon, with and without a key.
+    #[test]
+    fn a_blocked_row_action_takes_no_press_and_says_why() {
+        let on = RowAction::new(Icon::Sparkles, "AI task", "", Msg::Go);
+        assert_eq!((on.press(), on.tip()), (Some(Msg::Go), "AI task".to_string()));
+        let off = on.clone().blocked("Set up an AI first");
+        assert_eq!(off.press(), None);
+        assert_eq!(off.tip(), "AI task · Set up an AI first");
+        assert_eq!(off.on_press, Msg::Go, "the message stays for when it is on again");
+        for words in [true, false] {
+            let bar = vec![off.clone(), RowAction::new(Icon::Clock, "Later", "S", Msg::Go)];
+            let _: Element<'_, Msg> = row_actions(blank(), bar, true, words);
+        }
+        let _: Element<'_, Msg> = card_line(|| blank().into(), 28.0, "Title".into(), vec![], vec![], off);
+    }
+
+    /// Issue #168: a button that is off fades its icon with its word and frame. The icon's tint
+    /// drops alpha, so the image's opacity does it.
+    #[test]
+    fn icons_of_buttons_that_are_off_fade() {
+        assert_eq!(icon_opacity(true), 1.0);
+        assert_eq!(icon_opacity(false), style::DISABLED_ALPHA);
+        let _: Element<'_, Msg> = icon_button(Icon::Sparkles, "AI task", None);
+        let _: Element<'_, Msg> = text_button(Some(Icon::Sparkles), "AI task", style::button::secondary, None);
     }
 
     #[test]

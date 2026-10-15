@@ -190,7 +190,7 @@ impl Preset {
 
     fn detail(self) -> &'static str {
         match self {
-            Preset::Suggested => tr("Reads calendars, tasks and the inbox"),
+            Preset::Suggested => tr("Reads calendars, tasks and the Notification Hub"),
             Preset::Template(template) => agent_wizard::template_detail(template),
         }
     }

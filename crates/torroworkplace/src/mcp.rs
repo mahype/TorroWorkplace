@@ -107,7 +107,7 @@ const NO_DESKTOP: &str = "cannot reach the Torro Workplace core: start Torro Wor
 const INBOX_LIMIT: u32 = 50;
 
 /// What agents read when they connect.
-const INSTRUCTIONS: &str = "Torro Workplace: workspace templates, calendar, tasks, the inbox, accounts, the models of \
+const INSTRUCTIONS: &str = "Torro Workplace: workspace templates, calendar, tasks, the inbox (the person's Notification Hub), accounts, the models of \
                             its AI accounts, settings and apps of this desktop. Every tool is checked against the rights a person granted this agent's \
                             key: `forbidden` means the rights do not cover it, and its message says what is missing (ask the person to change them in \
                             Torro Workplace, Agents & API), `not-found` also stands for calendars and task lists \
@@ -481,7 +481,9 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 /// - Closed world for the areas that stay on this computer (`system`, `workspaces`, `settings`,
 ///   `apps`, `approvals`, `inbox`); calendar, tasks and accounts talk to servers, so their hint is
 ///   left open, and so is it for `inbox.create_task_from_item` and `inbox.create_event_from_item`
-///   (task E8.5b), which write a task or an event to the server.
+///   (task E8.5b), which write a task or an event to the server, and for
+///   `inbox.suggest_task_from_item` and `inbox.suggest_event_from_item` (issue #120), which ask an
+///   AI server – one elsewhere, as the person set it up.
 pub fn annotations(command: &Command) -> ToolAnnotations {
     let read_only = command.access == Access::Read;
     let destructive = matches!(command.access, Access::Delete | Access::Admin)
@@ -510,8 +512,14 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
     }
 }
 
-/// The inbox commands that write to a calendar server: their open-world hint stays open.
-const WRITES_TO_A_SERVER: &[&str] = &["inbox.create_task_from_item", "inbox.create_event_from_item"];
+/// The inbox commands that reach a server: a calendar server (a task or an event of an entry) or an
+/// AI server (a suggestion, issue #120). Their open-world hint stays open.
+const WRITES_TO_A_SERVER: &[&str] = &[
+    "inbox.create_task_from_item",
+    "inbox.create_event_from_item",
+    "inbox.suggest_task_from_item",
+    "inbox.suggest_event_from_item",
+];
 
 /// Commands that change something, but nothing more when repeated with the same input.
 const IDEMPOTENT: &[&str] = &[
@@ -1821,12 +1829,19 @@ mod tests {
             collection: "work".into(),
             title: Some("Fix it".into()),
             due,
+            notes: None,
         };
         assert_eq!(request, Ok(wanted));
         let short = request_for("inbox_create_task_from_item", args(json!({"id": "i1", "collection": "work"})), &Utc);
         assert_eq!(
             short,
-            Ok(Request::CreateTaskFromItem { id: "i1".into(), collection: "work".into(), title: None, due: None })
+            Ok(Request::CreateTaskFromItem {
+                id: "i1".into(),
+                collection: "work".into(),
+                title: None,
+                due: None,
+                notes: None
+            })
         );
         let refused = request_for("inbox_create_task_from_item", args(json!({"id": "i1"})), &Utc);
         assert!(matches!(refused, Err(ToolError::Input(_))), "the list is needed: {refused:?}");
@@ -1847,6 +1862,8 @@ mod tests {
             title: Some("Call Kim".into()),
             start: EventTime::DateTime(utc("2026-10-14T13:00:00Z")),
             end: EventTime::DateTime(utc("2026-10-14T13:30:00Z")),
+            location: None,
+            notes: None,
         };
         assert_eq!(request, Ok(wanted));
         let without_end = json!({"id": "i1", "collection": "work", "start": {"date": "2026-10-14"}});
@@ -1861,6 +1878,42 @@ mod tests {
         assert_eq!(request_for("inbox_get_quiet", args(json!({})), &Utc), Ok(Request::GetQuiet));
         let quiet = tools().iter().find(|tool| tool.name == "inbox_get_quiet").expect("tool");
         assert_eq!(quiet.annotations.clone().expect("hints").read_only_hint, Some(true));
+    }
+
+    /// Issue #120: the suggestions take the entry only; they ask an AI server (open world), save
+    /// nothing and answer anew each time. Making the task takes the note, the event the place too.
+    #[test]
+    fn the_suggestions_take_the_entry_and_the_makers_take_note_and_place() {
+        for (tool, wanted) in [
+            ("inbox_suggest_task_from_item", Request::SuggestTaskFromItem { id: "i1".into() }),
+            ("inbox_suggest_event_from_item", Request::SuggestEventFromItem { id: "i1".into() }),
+        ] {
+            assert_eq!(request_for(tool, args(json!({"id": "i1"})), &Utc), Ok(wanted));
+            let hints = tools().iter().find(|listed| listed.name == tool).expect("tool").annotations.clone();
+            let hints = hints.expect("hints");
+            assert_eq!(
+                (hints.read_only_hint, hints.destructive_hint, hints.idempotent_hint, hints.open_world_hint),
+                (Some(false), Some(false), Some(false), None),
+                "{tool}"
+            );
+        }
+        let noted = json!({"id": "i1", "collection": "work", "notes": "Bring the slides"});
+        let Ok(Request::CreateTaskFromItem { notes, .. }) =
+            request_for("inbox_create_task_from_item", args(noted), &Utc)
+        else {
+            panic!("a task");
+        };
+        assert_eq!(notes.as_deref(), Some("Bring the slides"));
+        let placed = json!({
+            "id": "i1", "collection": "work", "location": "Room 2",
+            "start": {"date": "2026-10-14"}, "end": {"date": "2026-10-15"}
+        });
+        let Ok(Request::CreateEventFromItem { location, .. }) =
+            request_for("inbox_create_event_from_item", args(placed), &Utc)
+        else {
+            panic!("an event");
+        };
+        assert_eq!(location.as_deref(), Some("Room 2"));
     }
 
     /// Task E8.7a: the tool takes account, mail and list, optionally title and due day; it writes a

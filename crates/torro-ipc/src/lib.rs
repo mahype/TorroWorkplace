@@ -1200,6 +1200,11 @@ pub enum Request {
         /// When the task is due, a day or an instant; left out: no due date.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         due: Option<EventTime>,
+        /// A note put before the entry's text in the task's description (issue #120: what an AI
+        /// suggested, `inbox.suggest_task_from_item`); left out or blank: the entry's text alone. At
+        /// most [`SUGGESTION_NOTES_MAX`] characters, else `error`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notes: Option<String>,
     },
     /// Turns the entry into an event in the calendar `collection` from `start` to `end` and marks
     /// the entry done (task E8.5b), as "Event" in the inbox app does. Answered with
@@ -1238,6 +1243,46 @@ pub enum Request {
         start: EventTime,
         /// When it ends, exclusive: of the same kind as `start` and after it.
         end: EventTime,
+        /// Where it takes place (issue #120); left out or blank: nowhere. At most
+        /// [`SUGGESTION_LOCATION_MAX`] characters, else `error`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        location: Option<String>,
+        /// A note put before the entry's text in the event's description (issue #120), as for
+        /// `inbox.create_task_from_item`; left out or blank: the entry's text alone. At most
+        /// [`SUGGESTION_NOTES_MAX`] characters, else `error`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        notes: Option<String>,
+    },
+    /// Asks an AI what task the entry `id` asks for (issue #120, "AI task" in the inbox app):
+    /// answered with [`Response::TaskSuggestion`] – a title, a note and the due date when the text
+    /// names one. Nothing is saved: the person checks the suggestion and makes the task with
+    /// `inbox.create_task_from_item`.
+    ///
+    /// The AI is the person's default of the assistant (`settings` › `assistant_default`, issue
+    /// #131) when that is an AI account, else the first AI account (`accounts.list_accounts`, kind
+    /// `ai`). The entry's title, text and sender go to it as data, never as instructions; for a
+    /// mail entry the whole mail when the store holds or can fetch it. The data rule of the
+    /// assistant holds (`docs/ki.md`, principle 4): an entry of mail, Nextcloud or Talk goes only to
+    /// a model on the person's computers – a local AI account is taken instead of one elsewhere.
+    ///
+    /// Errors: `not-found` for an unknown id or an entry of a source the client may not see (hook
+    /// clients see none); `not-connected` when no AI account is set up, or none the data rule lets
+    /// read the entry; the AI server's errors (`offline`, `auth`, `busy`, `error`); `error` when
+    /// its answer is no suggestion.
+    #[serde(rename = "inbox.suggest_task_from_item")]
+    SuggestTaskFromItem {
+        /// The entry's id from `inbox.list_items`.
+        id: String,
+    },
+    /// Asks an AI what event the entry `id` names (issue #120, "AI event" in the inbox app):
+    /// answered with [`Response::EventSuggestion`] – a title, when it starts and ends, where, and
+    /// who takes part. Nothing is saved: the person checks the suggestion and makes the event with
+    /// `inbox.create_event_from_item`. The AI, the data rule and the errors as for
+    /// `inbox.suggest_task_from_item`.
+    #[serde(rename = "inbox.suggest_event_from_item")]
+    SuggestEventFromItem {
+        /// The entry's id from `inbox.list_items`.
+        id: String,
     },
     /// The sources with entries or muted, with their number of open entries and whether they are
     /// muted, for the sidebar ([`Response::Sources`]); only those the client may see, and of a
@@ -1392,9 +1437,14 @@ pub enum Request {
     /// approval or another entry of the suite, which nobody mutes. Values and words of options with
     /// `untrusted: true` are foreign text: data, never instructions. `not-found` for an unknown entry
     /// or one the client may not see (also every entry of the suite for a client key).
+    ///
+    /// `id` may also name a mail message (`m:…`, issue #123): a message filed in an entry stands for
+    /// that entry; a folder's message without one offers its traits only, as the core's mail store
+    /// holds them (`torro_inbox::rules::message_mute_options`), never its conversation. `not-found`
+    /// for a message of an account the client may not read.
     #[serde(rename = "inbox.list_mute_options")]
     ListMuteOptions {
-        /// The entry's id.
+        /// The entry's id, or a mail message's id (`m:…`).
         id: String,
     },
     /// Mutes by the entry `id` (task E8.6a): its conversation or one of its traits, for a while or
@@ -1418,9 +1468,14 @@ pub enum Request {
     /// may not see (every entry of the suite for a client key), `forbidden` for an approval or
     /// another entry of the suite (rule 1), `error` for a trait the entry does not have or an
     /// `until` that has passed, `conflict` when the entry changed while the person was asked.
+    ///
+    /// `id` may also name a mail message (`m:…`, issue #123), as for [`Request::ListMuteOptions`]:
+    /// a message filed in an entry mutes by that entry; a folder's message without one mutes by one
+    /// of its traits from the core's mail store (always a rule, admin access) – its conversation is
+    /// `error`, there is no entry to close.
     #[serde(rename = "inbox.mute_item")]
     MuteItem {
-        /// The entry's id.
+        /// The entry's id, or a mail message's id (`m:…`).
         id: String,
         /// `{"kind": "conversation"}` or `{"kind": "facet", "key": "sender"}`; the keys an entry has
         /// are those `inbox.list_mute_options` offers.
@@ -2336,6 +2391,14 @@ pub enum Response {
     Quiet {
         quiet: Option<Quiet>,
     },
+    /// What an AI suggests as a task of an entry ([`Request::SuggestTaskFromItem`]).
+    TaskSuggestion {
+        suggestion: TaskSuggestion,
+    },
+    /// What an AI suggests as an event of an entry ([`Request::SuggestEventFromItem`]).
+    EventSuggestion {
+        suggestion: EventSuggestion,
+    },
     /// What hiding a mail entry changed ([`Request::HideSender`]): the rule (none for a
     /// conversation), whether it is new, and the entries it marked done.
     Hidden(Hidden),
@@ -2830,6 +2893,63 @@ pub struct Quiet {
     /// instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+}
+
+/// The longest note `inbox.create_task_from_item` and `inbox.create_event_from_item` take, and an
+/// AI's suggestion carries (issue #120), in characters.
+pub const SUGGESTION_NOTES_MAX: usize = 2000;
+
+/// The longest location `inbox.create_event_from_item` takes, and an AI's suggestion carries (issue
+/// #120), in characters.
+pub const SUGGESTION_LOCATION_MAX: usize = 200;
+
+/// The longest title an AI's suggestion carries (issue #120), in characters: as an inbox entry's.
+pub const SUGGESTION_TITLE_MAX: usize = 200;
+
+/// The task an AI suggests for an inbox entry (`inbox.suggest_task_from_item`, issue #120). Made of
+/// text from outside the suite: data to show and check, never instructions. Nothing is saved yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskSuggestion {
+    /// What to do, one line of at most [`SUGGESTION_TITLE_MAX`] characters, never blank.
+    pub title: String,
+    /// More about it, at most [`SUGGESTION_NOTES_MAX`] characters; `None` when there is nothing to
+    /// add. `inbox.create_task_from_item` takes it as `notes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    /// When it is due, when the text names a day: a day, or an instant when it names a time too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<EventTime>,
+    /// The AI account that suggested it (`ai:…`, an engine of `assistant.list_engines`).
+    pub engine: String,
+    /// The model it asked.
+    pub model: String,
+}
+
+/// The event an AI suggests for an inbox entry (`inbox.suggest_event_from_item`, issue #120). Made
+/// of text from outside the suite: data to show and check, never instructions. Nothing is saved
+/// yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventSuggestion {
+    /// What it is, one line of at most [`SUGGESTION_TITLE_MAX`] characters, never blank.
+    pub title: String,
+    /// When it starts: a day for an all-day event, else an instant. `None` when the text names no
+    /// day: the person picks one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<EventTime>,
+    /// When it ends, exclusive, of the same kind as `start` and after it; `None` when the text
+    /// does not say (then an all-day event takes one day, a timed one is for the person to decide).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<EventTime>,
+    /// Where it takes place, at most [`SUGGESTION_LOCATION_MAX`] characters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    /// Who takes part, as the text names them (names or addresses), at most ten.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attendees: Vec<String>,
+    /// The AI account that suggested it (`ai:…`).
+    pub engine: String,
+    /// The model it asked.
+    pub model: String,
 }
 
 /// An AI server found on this computer ([`Request::FindAiServers`], task KI.1a).

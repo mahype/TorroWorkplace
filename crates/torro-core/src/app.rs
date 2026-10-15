@@ -51,33 +51,36 @@ impl AppId {
         args: &[],
     };
 
-    /// The inbox's hub (task E8.1): what to decide or hand on. `torroinbox` without `--view` starts
-    /// it, so it comes first of the inbox's entries in [`AppId::ALL`] and the binary alone names it.
+    /// The inbox's hub (task E8.1), shown as "Notification Hub" (issue #127): what to decide or hand
+    /// on. `torroinbox` without `--view` starts it, so it comes first of the inbox's entries in
+    /// [`AppId::ALL`] and the binary alone names it.
     pub const INBOX: AppId = AppId {
         window_class: "torro-inbox",
         binary: "torroinbox",
         dir: "torroinbox",
-        display_name: "Torro Inbox",
+        display_name: "Torro Notification Hub",
         args: &[],
     };
 
-    /// The inbox's mail window (task E8.1): `torroinbox --view mail`. Same binary and state directory
-    /// as [`AppId::INBOX`].
+    /// The inbox's mail window (task E8.1), shown as "Mail": `torroinbox --view mail`. Same binary and
+    /// state directory as [`AppId::INBOX`]. Its long name says "Workplace" so nobody takes it for the
+    /// separate product TorroMail (decision 20 in `docs/eingang.md`).
     pub const INBOX_MAIL: AppId = AppId {
         window_class: "torro-inbox-mail",
         binary: "torroinbox",
         dir: "torroinbox",
-        display_name: "Torro Inbox Mail",
+        display_name: "Torro Workplace Mail",
         args: &["--view", "mail"],
     };
 
-    /// The inbox's notifications window (task E8.1): `torroinbox --view notifications`, every source
-    /// but mail. Same binary and state directory as [`AppId::INBOX`].
+    /// The inbox's notifications window (task E8.1), shown as "App Feed" (issue #127: a name unlike
+    /// "Notification Hub"): `torroinbox --view notifications`, every source but mail. Same binary and
+    /// state directory as [`AppId::INBOX`].
     pub const INBOX_NOTIFICATIONS: AppId = AppId {
         window_class: "torro-inbox-notifications",
         binary: "torroinbox",
         dir: "torroinbox",
-        display_name: "Torro Inbox Notifications",
+        display_name: "Torro App Feed",
         args: &["--view", "notifications"],
     };
 

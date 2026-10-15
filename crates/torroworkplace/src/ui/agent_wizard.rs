@@ -14,7 +14,7 @@
 //!    ([`Outbound::WithApproval`] in all of them). A script also needs a name: it is its inbox source (`script:<name>`), so it must
 //!    differ from every other script and from `cli` – checked here first (the message shows after
 //!    the first "Create key", `torro-design` 5) and by the core. For Claude Code, Codex and Gemini
-//!    CLI a check box "Report to Inbox when waiting or done", ticked at first (task E2.3).
+//!    CLI a check box "Report to the Notification Hub when waiting or done", ticked at first (task E2.3).
 //! 3. **Connecting:** `clients.create_client`, then for an agent the shell writes its MCP entry with
 //!    the key ([`client_setup::Job::Connect`]). With the check box ticked a second client follows,
 //!    of the kind `hook` for this agent ("Claude Code hooks", `clients.create_client` with the
@@ -100,7 +100,7 @@ pub struct State {
     key: Option<IssuedKey>,
     /// "Copy" was pressed.
     copied: bool,
-    /// The check box "Report to Inbox when waiting or done" was unticked.
+    /// The check box "Report to the Notification Hub when waiting or done" was unticked.
     no_hooks: bool,
     /// The agent client just created: its hooks are noted with it, so disconnecting it takes them.
     agent_client: Option<String>,
@@ -128,7 +128,7 @@ pub enum Message {
     Choose(Choice),
     Template(RightsTemplate),
     Name(String),
-    /// The check box "Report to Inbox when waiting or done".
+    /// The check box "Report to the Notification Hub when waiting or done".
     Hooks(bool),
     /// "Connect" / "Create key", or Enter in the name field.
     Connect,
@@ -473,7 +473,7 @@ fn rights_step<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
             .on_submit(Message::Connect);
         let footer = match state.tried.then(|| name_problem(&state.name, data)).flatten() {
             Some(problem) => problem,
-            None => tr("Its reports in the inbox appear under this name."),
+            None => tr("Its reports in the Notification Hub appear under this name."),
         };
         page = page.push(widgets::group(tr("Name"), vec![row_frame(field, false)], Some(footer.to_string())));
     }
@@ -505,13 +505,13 @@ fn rights_footer() -> String {
     format!(
         "{} {}",
         tr(
-            "Areas, calendars, lists, inbox sources, mail accounts and what needs your approval can be narrowed on its page later."
+            "Areas, calendars, lists, Notification Hub sources, mail accounts and what needs your approval can be narrowed on its page later."
         ),
         tr("Sending mail always asks you first.")
     )
 }
 
-/// The check box "Report to Inbox when waiting or done"; the whole row ticks it.
+/// The check box "Report to the Notification Hub when waiting or done"; the whole row ticks it.
 fn inbox_group(state: &State) -> Element<'_, Message> {
     let on = !state.no_hooks;
     let check = checkbox(on)
@@ -519,10 +519,10 @@ fn inbox_group(state: &State) -> Element<'_, Message> {
         // `text_2`, not `text`: a black box would be the heaviest mark of the light dialog.
         .style(|t: &Theme, status| style::checkbox(palette(t).text_2)(t, status))
         .on_toggle(Message::Hooks);
-    let label = tr("Report to Inbox when waiting or done");
+    let label = tr("Report to the Notification Hub when waiting or done");
     let detail = tr("A separate key that can only report");
     let row = wrap_row(Some(check.into()), label, Some(detail.to_string()), Space::new());
-    widgets::group(tr("Inbox"), vec![pressable(row, Some(Message::Hooks(!on)))], None)
+    widgets::group(tr("Notification Hub"), vec![pressable(row, Some(Message::Hooks(!on)))], None)
 }
 
 fn template_label(template: RightsTemplate) -> &'static str {
@@ -566,7 +566,7 @@ fn done_step(state: &State) -> Element<'_, Message> {
             rows.push(wrap_row(Some(status_mark(Icon::CircleCheck, |p| p.ok)), added, trust, Space::new()));
         }
         Some(Err(error)) => {
-            let failed = tr("Inbox reports could not be set up");
+            let failed = tr("Notification Hub reports could not be set up");
             rows.push(wrap_row(
                 Some(status_mark(Icon::CircleX, |p| p.error)),
                 failed,

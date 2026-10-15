@@ -490,6 +490,9 @@ fn describe(request: &Request) -> String {
         Request::CreateEventFromItem { id, collection, .. } => {
             format!("make an event in {collection} of inbox item {id}")
         }
+        // Never what the AI suggested (issue #120).
+        Request::SuggestTaskFromItem { id } => format!("suggest a task of inbox item {id}"),
+        Request::SuggestEventFromItem { id } => format!("suggest an event of inbox item {id}"),
         Request::ListSources => "inbox sources".into(),
         Request::PostItem { .. } => "post to inbox".into(),
         Request::ResolveItems { .. } => "resolve inbox items".into(),
@@ -615,6 +618,8 @@ mod tests {
             title: Some("Secret".into()),
             start: at,
             end: at,
+            location: None,
+            notes: None,
         };
         assert_eq!(describe(&event), "make an event in work of inbox item e1");
         // Task E8.3b: an answer to an invitation names nothing of the mail.
