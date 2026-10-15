@@ -183,7 +183,7 @@ pub const FILE: &str = "inbox.sqlite";
 /// The layout of the tables, kept in SQLite's `user_version`. A file with a higher number was
 /// written by a newer version and is left alone; an older one is brought up to date
 /// ([`migrate`]).
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 /// The longest title, in characters; longer ones are cut and end in "…".
 pub const TITLE_MAX: usize = 200;
@@ -442,6 +442,19 @@ ALTER TABLE mail_messages ADD COLUMN github TEXT NOT NULL DEFAULT '';
 CREATE INDEX mail_messages_by_github ON mail_messages (github);
 ";
 
+/// From schema version 9 to 10 (task E9.1, "Later" for any mail): `woken` notes when an entry came
+/// back from "Later" – it was snoozed and woke ([`wake_due`]), or new mail opened its snoozed
+/// conversation ([`rules::merge_mail`]). The mail window puts its mail on top of "All" by that time
+/// ([`Inbox::mail_later`]). A row goes when the entry is done or snoozed again ([`update_item`]) or
+/// its mail is read in the mail window ([`Inbox::mail_read`]); one of an entry that is open again
+/// without coming back is never read, since only open entries count.
+const SCHEMA_V10: &str = "
+CREATE TABLE woken (
+    item TEXT PRIMARY KEY,
+    at TEXT NOT NULL
+);
+";
+
 /// How many months the statistics keep the day sums of a source (task E8.8a).
 pub const KEEP_STATS_MONTHS: u32 = 13;
 
@@ -658,6 +671,45 @@ impl Inbox {
         })
     }
 
+    /// "Later" for the mail of `accounts` (`mail:<address>`) at `now` (task E9.1): the messages
+    /// filed into entries snoozed now, and those of open entries that came back, with when. Wakes
+    /// the snoozed entries that are due first, so a message is never in both. For
+    /// `mail.search_messages`, which reads only stores the caller reaches and so asks only for
+    /// their accounts. `Err` holds the message for the log.
+    pub fn mail_later(&self, accounts: &[String], now: DateTime<Utc>) -> Result<MailLater, String> {
+        let later = self.with(|db| {
+            wake_due(db, now)?;
+            let mut later = MailLater::default();
+            let mut statement = db.prepare(
+                "SELECT m.account, m.message FROM mail_messages m JOIN items i ON i.id = m.item
+                 WHERE i.state = 'snoozed'",
+            )?;
+            let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (account, message) = row?;
+                if accounts.contains(&account) {
+                    later.snoozed.entry(account).or_default().insert(message);
+                }
+            }
+            let mut statement = db.prepare(
+                "SELECT m.account, m.message, w.at FROM mail_messages m JOIN items i ON i.id = m.item
+                 JOIN woken w ON w.item = i.id WHERE i.state IN ('new', 'seen')",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            })?;
+            for row in rows {
+                let (account, message, at) = row?;
+                let Ok(at) = DateTime::parse_from_rfc3339(&at) else { continue };
+                if accounts.contains(&account) {
+                    later.back.entry(account).or_default().insert(message, at.with_timezone(&Utc));
+                }
+            }
+            Ok(later)
+        });
+        later.map_err(|failure| failure.to_string())
+    }
+
     /// What `inbox.list_mute_options` or `inbox.mute_item` with the id of a mail message without
     /// an entry (issue #123) would refuse `client`, before anyone is asked to approve it; `None`
     /// when it may run. `stand_in` is the message as an entry would hold it
@@ -667,7 +719,8 @@ impl Inbox {
         check_message(request, stand_in, client, Utc::now()).err().map(Failure::response)
     }
 
-    /// `inbox.list_mute_options` and `inbox.mute_item` for a mail message without an entry (issue
+    /// `inbox.list_mute_options`, `inbox.mute_item` and `inbox.snooze_item` without `until` (task
+    /// E9.1: the mail as it is, nothing to take back) for a mail message without an entry (issue
     /// #123): `stand_in` as [`Inbox::message_refusal`] takes it. The options are the message's
     /// traits ([`rules::message_mute_options`]); muting keeps a rule as for an entry's trait and
     /// changes the open entries it holds for at once ([`mute_by`]). `not-found` for a message the
@@ -692,7 +745,15 @@ impl Inbox {
                     tx.commit()?;
                     Ok(Response::Muted(muted))
                 }
-                _ => Err(Failure::Invalid("only muting takes the id of a mail".into())),
+                // Taking back what was never put off (task E9.1): the mail as an entry would hold
+                // it, nothing stored.
+                Request::SnoozeItem { until: None, .. } => {
+                    let stored = Stored { owner: stand_in.source.key(), item: stand_in.clone() };
+                    Ok(Response::Item { item: stored.shown_to(client) })
+                }
+                // Snoozing files the mail first: the core does it ([`Inbox::file_mail`]) and snoozes
+                // the entry it gets.
+                _ => Err(Failure::Invalid("only muting and taking back from later take the id of a mail".into())),
             }
         });
         answered.unwrap_or_else(Failure::response)
@@ -815,9 +876,10 @@ impl Inbox {
     /// at `now`, in the mail window (`mail.get_message` with the app key, task E8.8b): when the mail
     /// is filed into an open entry (new or seen, not snoozed or done; a GitHub entry too, for the
     /// GitHub mail filed with it, task E5.6), the entry counts as opened,
-    /// once per entry and local day – also when `inbox.open_item` opened it that day already. Nothing
-    /// else changes: the entry keeps its state, as reading a mail does not mark it read either. A
-    /// failure is only logged: the mail was read anyway.
+    /// once per entry and local day – also when `inbox.open_item` opened it that day already. An
+    /// entry back from "Later" is no longer back (task E9.1): its mail sorts by its date again in
+    /// "All". Nothing else changes: the entry keeps its state, as reading a mail does not mark it
+    /// read either. A failure is only logged: the mail was read anyway.
     pub fn mail_read(&self, account: &str, message: &str, now: DateTime<Utc>) {
         let counted = self.with(|db| {
             let condition = "state IN ('new', 'seen') AND id IN
@@ -828,6 +890,11 @@ impl Inbox {
                     count(db, &item, Count::Opened, now)?;
                 }
             }
+            // Read, it is no longer "back from later" (task E9.1): it sorts by its date again.
+            db.execute(
+                "DELETE FROM woken WHERE item IN (SELECT item FROM mail_messages WHERE account = ?1 AND message = ?2)",
+                params![account, message],
+            )?;
             Ok(())
         });
         if let Err(failure) = counted {
@@ -1019,18 +1086,19 @@ impl Inbox {
     pub fn open_mail_entries(&self, account: &str, touching: Option<&[String]>) -> Result<Vec<MailEntry>, String> {
         let entries = self.with(|db| {
             let mut statement = db.prepare(
-                "SELECT m.item, m.message FROM mail_messages m JOIN items i ON i.id = m.item
+                "SELECT m.item, m.message, i.state = 'snoozed' FROM mail_messages m JOIN items i ON i.id = m.item
                  WHERE m.account = ?1 AND i.owner = ?1 AND i.state IN ('new', 'seen', 'snoozed')
                  ORDER BY i.received, m.item, m.message",
             )?;
-            let rows =
-                statement.query_map([account], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+            let rows = statement.query_map([account], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?))
+            })?;
             let mut entries: Vec<MailEntry> = Vec::new();
             for row in rows {
-                let (item, message) = row?;
+                let (item, message, snoozed) = row?;
                 match entries.last_mut() {
                     Some(entry) if entry.id == item => entry.messages.push(message),
-                    _ => entries.push(MailEntry { id: item, messages: vec![message] }),
+                    _ => entries.push(MailEntry { id: item, messages: vec![message], snoozed }),
                 }
             }
             Ok(entries)
@@ -2619,7 +2687,8 @@ fn check_mute(
 /// `request` may run for `client` on the mail message `stand_in` without an entry (issue #123):
 /// the client sees it (`not-found`, as for an entry of its account), and for `inbox.mute_item` may
 /// change it (`forbidden`), names one of its traits (`error` for the conversation: no entry to
-/// close) and an end still to come ([`check_mute`]). `error` for every other request.
+/// close) and an end still to come ([`check_mute`]); for `inbox.snooze_item` (task E9.1) may change
+/// it. `error` for every other request.
 fn check_message(
     request: &Request,
     stand_in: &Item,
@@ -2638,7 +2707,9 @@ fn check_message(
             api::check_item_change(stand_in, client).map_err(Failure::Forbidden)?;
             check_mute(stand_in, *scope, *until, now).map(drop)
         }
-        _ => Err(Failure::Invalid("only muting takes the id of a mail".into())),
+        // "Later" for any mail (task E9.1): as for an entry of the account.
+        Request::SnoozeItem { .. } => api::check_item_change(stand_in, client).map_err(Failure::Forbidden),
+        _ => Err(Failure::Invalid("only muting and snoozing take the id of a mail".into())),
     }
 }
 
@@ -2868,6 +2939,10 @@ fn update_item(db: &Connection, item: &Item) -> Result<(), StoreError> {
     if !matches!(item.state, State::Done { .. }) {
         db.execute("UPDATE items SET dismissed = 0 WHERE id = ?1 AND dismissed = 1", params![item.id])?;
     }
+    // Done or put off again, it is no longer back from "Later" (task E9.1).
+    if matches!(item.state, State::Done { .. } | State::Snoozed { .. }) {
+        db.execute("DELETE FROM woken WHERE item = ?1", params![item.id])?;
+    }
     Ok(())
 }
 
@@ -2901,11 +2976,18 @@ fn wake_due(db: &mut Connection, now: DateTime<Utc>) -> Result<usize, Failure> {
     for Stored { mut item, .. } in due {
         if rules::wake(&mut item, now) {
             update_item(&tx, &item)?;
+            came_back(&tx, &item.id, item.updated)?;
             woken += 1;
         }
     }
     tx.commit()?;
     Ok(woken)
+}
+
+/// Notes that the entry `id` came back from "Later" at `at` (task E9.1, [`SCHEMA_V10`]).
+fn came_back(db: &Connection, id: &str, at: DateTime<Utc>) -> Result<(), StoreError> {
+    db.execute("INSERT OR REPLACE INTO woken (item, at) VALUES (?1, ?2)", params![id, stamp(at)])?;
+    Ok(())
 }
 
 /// Removes the entries done [`KEEP_DONE_DAYS`] or more before `now` ([`rules::expired`]);
@@ -2917,6 +2999,7 @@ fn remove_expired(db: &Connection, now: DateTime<Utc>) -> Result<usize, Failure>
     // (task E5.2).
     db.execute("DELETE FROM mail_messages WHERE item NOT IN (SELECT id FROM items)", [])?;
     db.execute("DELETE FROM remote_ids WHERE item NOT IN (SELECT id FROM items)", [])?;
+    db.execute("DELETE FROM woken WHERE item NOT IN (SELECT id FROM items)", [])?;
     Ok(removed)
 }
 
@@ -3006,6 +3089,9 @@ fn migrate(db: &mut Connection) -> Result<(), StoreError> {
     }
     if version < 9 {
         tx.execute_batch(SCHEMA_V9)?;
+    }
+    if version < 10 {
+        tx.execute_batch(SCHEMA_V10)?;
     }
     tx.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     tx.commit()?;
@@ -3574,6 +3660,38 @@ pub struct MailEntry {
     pub id: String,
     /// The messages filed into it (`m:…`), oldest first.
     pub messages: Vec<String>,
+    /// The person put it off ("Later", task E9.1): the feed settles it only once its mail left the
+    /// inbox folder, not because it was read – mail the person put off may well be read already.
+    pub snoozed: bool,
+}
+
+/// What "Later" means for the mail of some accounts now ([`Inbox::mail_later`], task E9.1): which
+/// messages wait there, and which came back and when. Keyed by account (`mail:<address>`), then by
+/// message (`m:…`). For `mail.search_messages`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MailLater {
+    /// The messages filed into an entry that is snoozed now: its whole conversation as filed.
+    pub snoozed: BTreeMap<String, BTreeSet<String>>,
+    /// The messages filed into an open entry that came back from "Later", with the time it came
+    /// back ([`SCHEMA_V10`]).
+    pub back: BTreeMap<String, BTreeMap<String, DateTime<Utc>>>,
+}
+
+impl MailLater {
+    /// The messages of `account` that wait in "Later" (none for an account without).
+    pub fn snoozed_of(&self, account: &str) -> Vec<String> {
+        self.snoozed.get(account).map(|ids| ids.iter().cloned().collect()).unwrap_or_default()
+    }
+
+    /// The messages of `account` back from "Later" (none for an account without).
+    pub fn back_of(&self, account: &str) -> Vec<String> {
+        self.back.get(account).map(|ids| ids.keys().cloned().collect()).unwrap_or_default()
+    }
+
+    /// When the message `message` of `account` came back from "Later", `None` when it did not.
+    pub fn back_at(&self, account: &str, message: &str) -> Option<DateTime<Utc>> {
+        self.back.get(account)?.get(message).copied()
+    }
 }
 
 /// [`Inbox::file_mail`] on the open database, for `source`, the account's.
@@ -3692,6 +3810,10 @@ fn file_mail(
     let counted = incoming.clone();
     match existing {
         Some(existing) => {
+            // New mail brings a conversation back from "Later" (task E9.1, decision 8), on top of
+            // "All" from the time it came; an older one filed late leaves it put off.
+            let newer = date >= existing.updated;
+            let back = newer && matches!(existing.state, State::Snoozed { .. });
             // An older mail of the conversation, filed late, does not take the place of the newest.
             if date < existing.updated {
                 incoming.updated = existing.updated;
@@ -3704,7 +3826,12 @@ fn file_mail(
                     incoming.facets = existing.facets.clone();
                 }
             }
-            update_item(&tx, &rules::merge(existing, incoming))?;
+            if back {
+                update_item(&tx, &rules::merge_mail(existing, incoming))?;
+                came_back(&tx, &id, date)?;
+            } else {
+                update_item(&tx, &rules::merge(existing, incoming))?;
+            }
         }
         None => insert_item(&tx, &mail.account, &incoming)?,
     }
@@ -6601,7 +6728,7 @@ pub(crate) mod tests {
             .with(|db| {
                 db.execute_batch(
                     "DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
-                     PRAGMA user_version = 8;",
+                     DROP TABLE woken; PRAGMA user_version = 8;",
                 )?;
                 Ok(())
             })
@@ -6629,7 +6756,7 @@ pub(crate) mod tests {
                 db.execute_batch(
                     "DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
                      DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
-                     PRAGMA user_version = 7;",
+                     DROP TABLE woken; PRAGMA user_version = 7;",
                 )?;
                 Ok(())
             })
@@ -6778,6 +6905,56 @@ pub(crate) mod tests {
         );
     }
 
+    /// Task E9.1: "Later" for mail – what waits, what came back and when – and decision 8: new mail
+    /// in a conversation put off brings it back, in the hub too; an older mail filed late does not.
+    #[test]
+    fn new_mail_brings_a_conversation_back_from_later_also_in_the_hub() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let accounts = [ANNA.to_string()];
+        // What the hub lists: the open entries.
+        let open = || Request::ListItems {
+            lane: None,
+            source: None,
+            state: Some(StateFilter::Open),
+            since: None,
+            limit: None,
+            order: None,
+            dismissed: None,
+        };
+        let id = filed(&inbox, &personal("m:1", "t:1", at(8, 0)), at(8, 1));
+        filed(&inbox, &personal("m:2", "t:2", at(8, 30)), at(8, 31));
+        let snooze = |until| Request::SnoozeItem { id: id.clone(), until };
+        item(inbox.handle(snooze(Some(at(18, 0))), None, at(9, 0)));
+        let later = inbox.mail_later(&accounts, at(9, 1)).expect("read");
+        assert_eq!((later.snoozed_of(ANNA), later.back_of(ANNA)), (vec!["m:1".to_string()], Vec::new()));
+        assert_eq!(inbox.mail_later(&["mail:bob@example.org".into()], at(9, 1)), Ok(MailLater::default()));
+        assert!(items(inbox.handle(open(), None, at(9, 2))).iter().all(|listed| listed.id != id), "not in the hub");
+
+        // An older mail of the conversation, filed late, leaves it put off.
+        filed(&inbox, &personal("m:0", "t:1", at(7, 0)), at(9, 3));
+        assert!(matches!(item(get(&inbox, &id, None)).state, State::Snoozed { .. }));
+        // A new one brings it back, on top of the hub and of "All" from the time it came.
+        filed(&inbox, &personal("m:3", "t:1", at(10, 0)), at(10, 1));
+        assert_eq!(item(get(&inbox, &id, None)).state, State::New);
+        let later = inbox.mail_later(&accounts, at(10, 2)).expect("read");
+        assert!(later.snoozed_of(ANNA).is_empty());
+        assert_eq!(later.back_of(ANNA), ["m:0", "m:1", "m:3"], "the whole conversation");
+        assert_eq!(later.back_at(ANNA, "m:1"), Some(at(10, 0)));
+        assert_eq!(items(inbox.handle(open(), None, at(10, 3)))[0].id, id, "on top of the hub");
+
+        // Read in the mail window, it is no longer back; put off and woken, it is back again.
+        inbox.mail_read(ANNA, "m:3", at(10, 4));
+        assert!(inbox.mail_later(&accounts, at(10, 5)).expect("read").back.is_empty());
+        item(inbox.handle(snooze(Some(at(11, 0))), None, at(10, 6)));
+        let later = inbox.mail_later(&accounts, at(11, 0)).expect("read");
+        assert_eq!((later.snoozed_of(ANNA), later.back_at(ANNA, "m:1")), (Vec::new(), Some(at(11, 0))));
+        // Done, it is no longer back, also when it opens again.
+        inbox.handle(Request::SetItemDone { id: id.clone(), done: true, dismissed: false }, None, at(11, 1));
+        inbox.handle(Request::SetItemDone { id: id.clone(), done: false, dismissed: false }, None, at(11, 2));
+        assert!(inbox.mail_later(&accounts, at(11, 3)).expect("read").back.is_empty());
+    }
+
     #[test]
     fn mail_entries_are_done_when_their_mail_went_elsewhere() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -6789,8 +6966,8 @@ pub(crate) mod tests {
         assert_eq!(
             open,
             [
-                MailEntry { id: one.clone(), messages: vec!["m:1".into(), "m:3".into()] },
-                MailEntry { id: two.clone(), messages: vec!["m:2".into()] },
+                MailEntry { id: one.clone(), messages: vec!["m:1".into(), "m:3".into()], snoozed: false },
+                MailEntry { id: two.clone(), messages: vec!["m:2".into()], snoozed: false },
             ]
         );
         let touching = inbox.open_mail_entries(ANNA, Some(&["m:3".to_string()])).expect("read");
@@ -7469,6 +7646,7 @@ pub(crate) mod tests {
             flags: Vec::new(),
             has_attachments: false,
             invite: None,
+            back: None,
             untrusted: true,
         };
         let stand_in = rules::message_stand_in(&summary, None, true).expect("a mail account");
@@ -7869,7 +8047,7 @@ pub(crate) mod tests {
                      ALTER TABLE rules DROP COLUMN counted_since;
                      DROP TABLE remote_ids; DROP TABLE cursors; ALTER TABLE items DROP COLUMN repo;
                      DROP INDEX mail_messages_by_github; ALTER TABLE mail_messages DROP COLUMN github;
-                     PRAGMA user_version = 5;",
+                     DROP TABLE woken; PRAGMA user_version = 5;",
                 )?;
                 Ok(())
             })

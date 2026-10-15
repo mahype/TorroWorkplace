@@ -355,6 +355,14 @@ Statt der Kennung eines Eintrags darf `id` die einer Mail sein (`m:…`, Issue #
 Eintrag abgelegt, gilt dessen Kennung; eine Ordnernachricht ohne Eintrag bietet nur ihre Merkmale an,
 wie der Mail-Speicher des Dienstes sie hält (keine Unterhaltung: es gibt keinen Eintrag zu schließen,
 `error`), und nur für Schlüssel, die Konto und Mail lesen dürfen (sonst `not-found`).
+Auch `snooze_item` nimmt eine Mail-Kennung (E9.1, „Später“ für jede Mail): Ist die Mail in einem Eintrag abgelegt,
+wird dieser Eintrag mit der ganzen Unterhaltung zurückgestellt; sonst legt der Kern zuerst einen an, wie der Abgleich
+neue Mail ablegt (Spur nach den Regeln, unabhängig von `notify` des Kontos), und stellt ihn zurück. Verbirgt eine
+Regel des Menschen die Mail, gibt es keinen Eintrag: `unsupported`. Ohne `until` und ohne Eintrag wird nichts
+gespeichert; die Antwort ist der Eintrag, der es wäre. Rechte wie bei `mute_item` mit Mail-Kennung. Dazu
+`mail.search_messages` mit dem optionalen Feld `snoozed`: `false` lässt zurückgestellte Mails weg und stellt
+zurückgekommene nach dem Zeitpunkt ihrer Rückkehr ein, `true` liefert nur die zurückgestellten; gefiltert wird vor dem
+Blättern. Jede Mail einer Suche trägt `back`, wenn sie aus „Später“ zurückkam (verträglich, kein `v: 2`).
 `set_item_done` bekommt das optionale Feld `dismissed` (nur mit `done: true`): Verwerfen („✕“) ist
 Erledigt, wird aber getrennt gezählt (Statistik, E8.8).
 

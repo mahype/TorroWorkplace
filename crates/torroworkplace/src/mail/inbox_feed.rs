@@ -282,6 +282,22 @@ pub async fn message_stand_in(mail: &MailService, reach: Reach<'_>, id: &str) ->
     None
 }
 
+/// The mail message `id` (`m:…`) as the feed would file it ([`Inbox::file_mail`]), for "Later" on a
+/// mail without an entry (task E9.1): `inbox.snooze_item` files it first, then puts the entry off.
+/// Any folder, read or not. Looked up only in the stores `reach` sees, as [`message_stand_in`];
+/// `None` when none of them holds it, or a store fails (logged with the account, never the id).
+pub async fn mail_to_snooze(mail: &MailService, reach: Reach<'_>, id: &str) -> Option<NewMail> {
+    for (account, store) in mail.stores(reach).await {
+        let (lookup, owner) = (id.to_string(), account.clone());
+        match store.run(move |store| mail_to_file(store, &owner, &lookup)).await {
+            Ok(Some(found)) => return Some(found),
+            Ok(None) => {}
+            Err(err) => eprintln!("torroworkplace: inbox: cannot look up a mail to snooze in {account}: {err}"),
+        }
+    }
+    None
+}
+
 /// The newest mail of `account` with the `Message-ID` `message_id` (any folder), `None` when its
 /// store holds none, the account has no mail on or the store fails (that goes to the log, without
 /// the id).
@@ -509,7 +525,9 @@ impl Feed {
 
     /// Marks done the open entries of `account` (with `touching`, only those holding one of these
     /// messages) none of whose messages is still unread in the account's inbox folder: the mail was
-    /// read, moved or deleted elsewhere.
+    /// read, moved or deleted elsewhere. A snoozed entry only once none of its messages is in the
+    /// inbox folder at all (task E9.1): reading mail the person put off does not take it out of
+    /// "Later".
     async fn settle(&self, store: &SharedStore, account: &str, touching: Option<&[String]>, now: DateTime<Utc>) {
         let entries = match self.inbox.open_mail_entries(account, touching) {
             Ok(entries) if !entries.is_empty() => entries,
@@ -527,9 +545,11 @@ impl Feed {
                 for entry in entries {
                     let mut waiting = false;
                     for message in &entry.messages {
-                        waiting |= store
-                            .summary(message)?
-                            .is_some_and(|summary| summary.folder == inbox.id && !summary.flags.contains(&Flag::Seen));
+                        // Put off by the person (task E9.1), it waits as long as its mail is in the
+                        // inbox folder, read or not.
+                        waiting |= store.summary(message)?.is_some_and(|summary| {
+                            summary.folder == inbox.id && (entry.snoozed || !summary.flags.contains(&Flag::Seen))
+                        });
                     }
                     if !waiting {
                         settled.push(entry.id);
@@ -583,34 +603,49 @@ fn unread_mail(
     let mut mails = Vec::new();
     for id in ids {
         let Some(message) = store.message(id)? else { continue };
-        let summary = message.summary;
+        let summary = &message.summary;
         let old = since.is_some_and(|since| summary.date < since);
         if summary.folder != folder || summary.flags.contains(&Flag::Seen) || old {
             continue;
         }
-        // Only a mail with `X-GitHub-Reason` can be a GitHub mail: the others need no lookup.
-        let github = match &message.traits.github {
-            Some(_) => {
-                let rfc = store.resolve_message(id)?.and_then(|found| found.rfc_message_id);
-                github_thread(summary.from.as_ref(), &message.traits, rfc.as_deref())
-            }
-            None => None,
-        };
-        mails.push(NewMail {
-            account: account.to_string(),
-            message: summary.id,
-            thread: summary.thread_id,
-            subject: summary.subject,
-            snippet: summary.snippet,
-            from: summary.from.as_ref().map(sender),
-            bulk: bulk_reason(&message.traits),
-            list: message.traits.list_id.clone(),
-            date: summary.date,
-            github,
-        });
+        mails.push(as_new_mail(store, account, message)?);
     }
     mails.sort_by_key(|mail| mail.date);
     Ok(mails)
+}
+
+/// The message `id` of `account` as [`Inbox::file_mail`] files it, wherever it is and read or
+/// not; `None` when the store does not hold it.
+fn mail_to_file(store: &MailStore, account: &str, id: &str) -> Result<Option<NewMail>, MailStoreError> {
+    match store.message(id)? {
+        Some(message) => Ok(Some(as_new_mail(store, account, message)?)),
+        None => Ok(None),
+    }
+}
+
+/// `message` of `account`, read from `store`, as [`Inbox::file_mail`] files it.
+fn as_new_mail(store: &MailStore, account: &str, message: torro_mail::Message) -> Result<NewMail, MailStoreError> {
+    let summary = message.summary;
+    // Only a mail with `X-GitHub-Reason` can be a GitHub mail: the others need no lookup.
+    let github = match &message.traits.github {
+        Some(_) => {
+            let rfc = store.resolve_message(&summary.id)?.and_then(|found| found.rfc_message_id);
+            github_thread(summary.from.as_ref(), &message.traits, rfc.as_deref())
+        }
+        None => None,
+    };
+    Ok(NewMail {
+        account: account.to_string(),
+        message: summary.id,
+        thread: summary.thread_id,
+        subject: summary.subject,
+        snippet: summary.snippet,
+        from: summary.from.as_ref().map(sender),
+        bulk: bulk_reason(&message.traits),
+        list: message.traits.list_id.clone(),
+        date: summary.date,
+        github,
+    })
 }
 
 /// The sender of a mail as an inbox entry names it: the display name, else the address.
@@ -904,8 +939,10 @@ pub(crate) mod tests {
             cursor: None,
             order: None,
             sort: None,
+            snoozed: None,
         };
-        let Response::MailMessages { messages, .. } = crate::mail::read::answer(&mail, Reach::Suite, search).await
+        let Response::MailMessages { messages, .. } =
+            crate::mail::read::answer(&mail, &inbox, Reach::Suite, search).await
         else {
             panic!("a page of messages")
         };
@@ -920,6 +957,62 @@ pub(crate) mod tests {
         rights.mail_accounts = torro_ipc::api::Selection::Only(vec!["mail:bernd@example.com".into()]);
         assert_eq!(message_stand_in(&mail, Reach::Client(&rights), &id).await, None, "another account only");
         assert_eq!(message_stand_in(&mail, Reach::Suite, "m:nope").await, None);
+    }
+
+    /// Task E9.1: a read mail goes to "Later" as the feed would file it, and stays there when the
+    /// feed looks at the account's mail again – read mail of an entry not put off is done.
+    #[tokio::test]
+    async fn read_mail_put_off_stays_in_later() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        server.add("INBOX", &bernd("Put off", 0), &["\\Seen"]);
+        server.add("INBOX", &bernd("Left as it is", 0), &["\\Seen"]);
+        let secrets = anna(dir.path(), &server, Notify::All);
+        let (inbox, mail) = fed(dir.path(), &secrets).await;
+        eventually("synced", || synced(&mail)).await;
+        assert!(entries(&inbox).is_empty(), "read mail is not filed by itself");
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+        };
+        let Response::MailMessages { messages, .. } =
+            crate::mail::read::answer(&mail, &inbox, Reach::Suite, search).await
+        else {
+            panic!("a page of messages")
+        };
+        let id_of =
+            |subject: &str| messages.iter().find(|m| m.subject == subject).map(|m| m.id.clone()).expect("synced");
+        let (put_off, left) = (id_of("Put off"), id_of("Left as it is"));
+
+        let mut rights = torro_ipc::api::RightsTemplate::FullAccess.rights();
+        rights.mail_accounts = torro_ipc::api::Selection::Only(vec!["mail:bernd@example.com".into()]);
+        assert_eq!(mail_to_snooze(&mail, Reach::Client(&rights), &put_off).await, None, "another account only");
+        assert_eq!(mail_to_snooze(&mail, Reach::Suite, "m:nope").await, None);
+        let mut filed = Vec::new();
+        for id in [&put_off, &left] {
+            let found = mail_to_snooze(&mail, Reach::Suite, id).await.expect("the mail");
+            assert_eq!((found.account.as_str(), found.message.as_str()), (ANNA, id.as_str()));
+            filed.push(inbox.file_mail(&found, Notify::All, Utc::now()).expect("filed").expect("an entry"));
+        }
+        let until = Utc::now() + TimeDelta::hours(1);
+        inbox.handle(Request::SnoozeItem { id: filed[0].clone(), until: Some(until) }, None, Utc::now());
+
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None };
+        let store = mail.store(ANNA).await.expect("the store");
+        feed.settle(&store, ANNA, None, Utc::now()).await;
+        let items = entries(&inbox);
+        assert_eq!(entry(&items, "Put off").state, State::Snoozed { until }, "read, but put off");
+        assert!(matches!(entry(&items, "Left as it is").state, State::Done { .. }), "read and not put off");
     }
 
     #[tokio::test]

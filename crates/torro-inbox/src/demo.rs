@@ -640,6 +640,7 @@ fn letter(now: DateTime<Utc>, letter: Letter) -> Message {
             flags: letter.flags.to_vec(),
             has_attachments: files > 0,
             invite: None,
+            back: None,
             untrusted: true,
         },
         cc: Vec::new(),

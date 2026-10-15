@@ -31,6 +31,14 @@
 //! the words matched ([`MailHighlight`], found in the message's own text, not in the folded
 //! index) and the first one how many match in all.
 //!
+//! **Later** (task E9.1, `snoozed`): the inbox says which messages wait in "Later" (filed into a
+//! snoozed entry) and which came back and when ([`Inbox::mail_later`]). They are picked by id in
+//! each store's query (`SearchQuery::only`, `except`), so they are left out or kept *before* the
+//! page is cut and the offsets of the cursor hold. With `snoozed: false` a message back from Later
+//! is fetched apart, whatever its date, and the merge puts it by the time it came back
+//! (`MessageSummary::back`), so it stands on top of "All" as if it had just arrived; every search
+//! fills `back`.
+//!
 //! **Attachments** go to the managed folder (`AttachmentCache`), at most
 //! [`ATTACHMENT_MAX_BYTES`], under a cleaned file name, so a name from outside never picks the
 //! path.
@@ -52,7 +60,9 @@
 
 use chrono::{DateTime, Utc};
 use torro_core::i18n::tr;
+use torro_inbox::SourceRef;
 use torro_ipc::Response;
+use torro_ipc::api::{Access, Area};
 use torro_ipc::mail::{IncompleteReason, MailHighlight, MailSort, MailSource};
 use torro_ipc::{Request, mail::limit_refusal};
 use torro_mail::{Invite, MailAddress, Message, MessageSummary, Order};
@@ -66,7 +76,7 @@ use super::service::{MailError, MailService, SharedStore};
 #[cfg(doc)]
 use super::store::BODY_RETENTION_DAYS;
 use super::store::{Body, FolderRef, MessageRef, SearchQuery};
-use crate::inbox::Inbox;
+use crate::inbox::{Inbox, MailLater};
 use crate::pim::Reach;
 
 /// The largest attachment `mail.get_attachment` hands out: 50 MiB.
@@ -92,7 +102,7 @@ pub async fn answer_counting(mail: &MailService, inbox: &Inbox, reach: Reach<'_>
         (Request::GetMail { id, .. }, Reach::Suite) => Some(id.clone()),
         _ => None,
     };
-    let response = answer(mail, reach, request).await;
+    let response = answer(mail, inbox, reach, request).await;
     if let (Some(id), Response::MailMessage { message }) = (read, &response) {
         inbox.mail_read(&message.summary.account, &id, Utc::now());
     }
@@ -101,17 +111,33 @@ pub async fn answer_counting(mail: &MailService, inbox: &Inbox, reach: Reach<'_>
 
 /// Answers a reading mail request for `reach` (`mail.list_folders`, `mail.search_messages`,
 /// `mail.index_status`, `mail.get_message`, `mail.get_thread`, `mail.get_attachment`). The limits are checked first
-/// ([`limit_refusal`]), also for the app key. Any other request is `unsupported`.
-pub async fn answer(mail: &MailService, reach: Reach<'_>, request: Request) -> Response {
+/// ([`limit_refusal`]), also for the app key. Any other request is `unsupported`. `inbox` says
+/// which mail waits in "Later" for a search (task E9.1); nothing here changes it.
+pub async fn answer(mail: &MailService, inbox: &Inbox, reach: Reach<'_>, request: Request) -> Response {
     if let Some(refused) = limit_refusal(&request) {
         return refused;
     }
     let answered = match request {
         Request::MailFolders { account } => list_folders(mail, reach, account.as_deref()).await,
-        Request::SearchMail { account, folder, query, unread, flagged, since, before, limit, cursor, order, sort } => {
+        Request::SearchMail {
+            account,
+            folder,
+            query,
+            unread,
+            flagged,
+            since,
+            before,
+            limit,
+            cursor,
+            order,
+            sort,
+            snoozed,
+        } => {
             let (order, sort) = (order.unwrap_or_default(), sort.unwrap_or_default());
-            let search = Search { account, folder, query, unread, flagged, since, before, limit, cursor, order, sort };
-            search_messages(mail, reach, search, Utc::now()).await
+            let search =
+                Search { account, folder, query, unread, flagged, since, before, limit, cursor, order, sort, snoozed };
+            // Boxed: the core's request match awaits this deep in the stack already.
+            Box::pin(search_messages(mail, inbox, reach, search, Utc::now())).await
         }
         Request::MailIndexStatus { account } => index_status(mail, reach, account.as_deref()).await,
         Request::GetMail { id, include_body, include_html } => {
@@ -185,6 +211,56 @@ pub struct Search {
     pub order: Order,
     /// By date or by relevance (issue #136).
     pub sort: MailSort,
+    /// "Later" (task E9.1): `false` without the snoozed mail and with mail back from it on top,
+    /// `true` the snoozed mail only, `None` all of it by date.
+    pub snoozed: Option<bool>,
+}
+
+/// What a search makes of "Later" (task E9.1): the inbox's word on the stores in scope and the
+/// search's `snoozed`.
+struct LaterView {
+    later: MailLater,
+    snoozed: Option<bool>,
+}
+
+impl LaterView {
+    /// The queries for the store of `account`: the page is merged from all of them. One query
+    /// except with `snoozed: false`, which fetches the mail back from Later apart (none when
+    /// there is none), so it is found whatever its date.
+    fn queries(&self, account: &str, query: &SearchQuery) -> Vec<SearchQuery> {
+        match self.snoozed {
+            None => vec![query.clone()],
+            Some(true) => vec![SearchQuery { only: Some(self.later.snoozed_of(account)), ..query.clone() }],
+            Some(false) => {
+                let back = self.later.back_of(account);
+                let mut except = self.later.snoozed_of(account);
+                except.extend(back.iter().cloned());
+                let mut queries = vec![SearchQuery { except, ..query.clone() }];
+                if !back.is_empty() {
+                    queries.push(SearchQuery { only: Some(back), ..query.clone() });
+                }
+                queries
+            }
+        }
+    }
+
+    /// The query that counts the matches in the store of `account`.
+    fn counting(&self, account: &str, query: &SearchQuery) -> SearchQuery {
+        match self.snoozed {
+            None => query.clone(),
+            Some(true) => SearchQuery { only: Some(self.later.snoozed_of(account)), ..query.clone() },
+            Some(false) => SearchQuery { except: self.later.snoozed_of(account), ..query.clone() },
+        }
+    }
+
+    /// Where `summary` sorts by date: when it came back from Later with `snoozed: false`, else its
+    /// date.
+    fn sorts_at(&self, summary: &MessageSummary) -> DateTime<Utc> {
+        match (self.snoozed, summary.back) {
+            (Some(false), Some(back)) => back,
+            _ => summary.date,
+        }
+    }
 }
 
 /// How deep a search pages: a page starts at most at the 10 000th match. Paging deeper would
@@ -212,6 +288,7 @@ fn cursor_offset(text: Option<&str>) -> Option<u32> {
 /// cursor this search did not hand out and for a query that cannot be read ([`query::parse`]).
 pub async fn search_messages(
     mail: &MailService,
+    inbox: &Inbox,
     reach: Reach<'_>,
     search: Search,
     now: DateTime<Utc>,
@@ -236,16 +313,31 @@ pub async fn search_messages(
         before: search.before,
         order: search.order,
         relevance,
+        only: None,
+        except: Vec::new(),
     };
+    let later = match inbox.mail_later(&later_accounts(&stores, reach), now) {
+        Ok(later) => later,
+        // Without `snoozed` the page needs only `back`: it comes without, as before task E9.1.
+        Err(err) if search.snoozed.is_none() => {
+            eprintln!("torroworkplace: mail: cannot read what waits in later: {err}");
+            MailLater::default()
+        }
+        Err(err) => {
+            eprintln!("torroworkplace: mail: cannot read what waits in later: {err}");
+            return Err(failed("cannot read which mail waits for later"));
+        }
+    };
+    let view = LaterView { later, snoozed: search.snoozed };
     let limit = search.limit as usize;
-    let mut page = ranked_page(&stores, &query, offset, limit + 1).await?;
+    let mut page = ranked_page(&stores, &query, &view, offset, limit + 1).await?;
     let more = page.len() > limit;
     page.truncate(limit);
     let deeper = offset.saturating_add(search.limit);
     let cursor = (more && deeper <= CURSOR_MAX).then(|| format!("c:{deeper}"));
     let complete = !query.query.needs_texts() || all_indexed(&stores).await?;
     let total_estimate = match search.cursor {
-        None => Some(count(&stores, &query).await?),
+        None => Some(count(&stores, &query, &view).await?),
         Some(_) => None,
     };
     let highlights = if query.query.has_words() { highlights(&stores, &page, &query.query).await? } else { Vec::new() };
@@ -260,25 +352,50 @@ pub async fn search_messages(
     })
 }
 
-/// The matches `offset` to `offset + count` over all `stores`: by date in `query.order`, or by
-/// rank for a search by relevance. Each store gives its first `offset + count`, so pages of
-/// several accounts interleave.
+/// The accounts of `stores` whose "Later" `reach` may learn (task E9.1): every one for the suite; for
+/// a client only those whose mail entries it sees in the inbox – read access to `inbox` and the
+/// account as one of its sources ([`torro_ipc::api::Rights::reaches_source`]), as
+/// `inbox.list_items` shows them. For the others the search knows nothing of "Later": nothing is
+/// left out, nothing is `back`.
+fn later_accounts(stores: &[(String, SharedStore)], reach: Reach<'_>) -> Vec<String> {
+    let sees = |account: &str| match reach {
+        Reach::Suite => true,
+        Reach::Client(rights) => {
+            rights.area(Area::Inbox).allows(Access::Read)
+                && account.parse::<SourceRef>().is_ok_and(|source| rights.reaches_source(&source))
+        }
+    };
+    stores.iter().map(|(account, _)| account.clone()).filter(|account| sees(account)).collect()
+}
+
+/// The matches `offset` to `offset + count` over all `stores`: by date in `query.order` (with
+/// `snoozed: false` mail back from Later by the time it came back, [`LaterView::sorts_at`]), or
+/// by rank for a search by relevance. Each store gives its first `offset + count` (and all its
+/// mail back from Later that matches), so pages of several accounts interleave. Every message
+/// carries `back` when it came back from Later.
 async fn ranked_page(
     stores: &[(String, SharedStore)],
     query: &SearchQuery,
+    view: &LaterView,
     offset: u32,
     count: usize,
 ) -> Answer<Vec<MessageSummary>> {
     let wanted = offset.saturating_add(u32::try_from(count).unwrap_or(u32::MAX));
     let mut all: Vec<(MessageSummary, f64)> = Vec::new();
-    for (_, store) in stores {
-        let query = query.clone();
-        all.extend(store.run(move |store| store.search_ranked(&query, wanted, 0)).await.map_err(store_failed)?);
+    for (account, store) in stores {
+        for query in view.queries(account, query) {
+            // Mail picked by id is all fetched: there is little of it, and its place is not its date.
+            let wanted = query.only.as_ref().map_or(wanted, |ids| u32::try_from(ids.len()).unwrap_or(u32::MAX));
+            all.extend(store.run(move |store| store.search_ranked(&query, wanted, 0)).await.map_err(store_failed)?);
+        }
+    }
+    for (summary, _) in &mut all {
+        summary.back = view.later.back_at(&summary.account, &summary.id);
     }
     match query.relevance {
         // Stable: the same rank keeps each store's own order (newest first among equals).
         Some(_) => all.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| b.0.date.cmp(&a.0.date))),
-        None => all.sort_by(|a, b| query.order.apply(b.0.date.cmp(&a.0.date))),
+        None => all.sort_by(|a, b| query.order.apply(view.sorts_at(&b.0).cmp(&view.sorts_at(&a.0)))),
     }
     Ok(all.into_iter().skip(offset as usize).take(count).map(|(summary, _)| summary).collect())
 }
@@ -293,11 +410,11 @@ async fn all_indexed(stores: &[(String, SharedStore)]) -> Answer<bool> {
     Ok(true)
 }
 
-/// How many messages match `query` in all `stores`.
-async fn count(stores: &[(String, SharedStore)], query: &SearchQuery) -> Answer<u64> {
+/// How many messages match `query` in all `stores`, as `view` leaves or keeps the mail in Later.
+async fn count(stores: &[(String, SharedStore)], query: &SearchQuery, view: &LaterView) -> Answer<u64> {
     let mut total = 0u64;
-    for (_, store) in stores {
-        let query = query.clone();
+    for (account, store) in stores {
+        let query = view.counting(account, query);
         total += store.run(move |store| store.count(&query)).await.map_err(store_failed)?;
     }
     Ok(total)
@@ -858,6 +975,14 @@ pub(crate) mod tests {
 
     const ANNA: &str = "mail:anna@example.org";
 
+    /// [`super::answer`] with an inbox of its own that holds nothing for later (task E9.1): what
+    /// every test but those of "Later" reads with.
+    async fn answer(service: &MailService, reach: Reach<'_>, request: Request) -> Response {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = crate::inbox::tests::inbox_in(dir.path());
+        super::answer(service, &inbox, reach, request).await
+    }
+
     /// The service with Anna's account on `server`, synced once.
     async fn synced(dir: &Path, server: &FakeImap) -> MailService {
         let secrets = MemoryTokens::default();
@@ -905,6 +1030,7 @@ pub(crate) mod tests {
             cursor,
             order: None,
             sort: None,
+            snoozed: None,
         }
     }
 
@@ -924,67 +1050,26 @@ pub(crate) mod tests {
             cursor,
             order: None,
             sort: None,
+            snoozed: None,
         }
     }
 
     /// [`search`] oldest first (task E8.15).
     fn oldest(query: Option<&str>, limit: u32, cursor: Option<String>) -> Request {
-        match search(query, limit, cursor) {
-            Request::SearchMail {
-                account, folder, query, unread, flagged, since, before, limit, cursor, sort, ..
-            } => {
-                let order = Some(Order::OldestFirst);
-                Request::SearchMail {
-                    account,
-                    folder,
-                    query,
-                    unread,
-                    flagged,
-                    since,
-                    before,
-                    limit,
-                    cursor,
-                    order,
-                    sort,
-                }
-            }
-            other => other,
+        let mut request = search(query, limit, cursor);
+        if let Request::SearchMail { order, .. } = &mut request {
+            *order = Some(Order::OldestFirst);
         }
+        request
     }
 
     /// [`search`] best match first (issue #136).
     fn relevant(query: &str, limit: u32) -> Request {
-        match search(Some(query), limit, None) {
-            Request::SearchMail {
-                account,
-                folder,
-                query,
-                unread,
-                flagged,
-                since,
-                before,
-                limit,
-                cursor,
-                order,
-                ..
-            } => {
-                let sort = Some(MailSort::Relevance);
-                Request::SearchMail {
-                    account,
-                    folder,
-                    query,
-                    unread,
-                    flagged,
-                    since,
-                    before,
-                    limit,
-                    cursor,
-                    order,
-                    sort,
-                }
-            }
-            other => other,
+        let mut request = search(Some(query), limit, None);
+        if let Request::SearchMail { sort, .. } = &mut request {
+            *sort = Some(MailSort::Relevance);
         }
+        request
     }
 
     fn page(response: Response) -> (Vec<String>, Option<String>, MailSource) {

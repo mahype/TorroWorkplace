@@ -733,6 +733,18 @@ pub fn merge(existing: Item, incoming: Item) -> Item {
     }
 }
 
+/// [`merge`] for a new mail of the conversation `existing` holds (task E9.1, decision 8 of
+/// `docs/tasks/eingang.md`, E9): as [`merge`], but a snoozed conversation opens again
+/// ([`State::New`]), as a reply brings a conversation back from "Later" in mail programs. Other
+/// sources keep [`merge`]: a report again of a matter the person put off stays put off.
+pub fn merge_mail(existing: Item, incoming: Item) -> Item {
+    let mut merged = merge(existing, incoming);
+    if matches!(merged.state, State::Snoozed { .. }) {
+        merged.state = State::New;
+    }
+    merged
+}
+
 /// Marks the entry done at `now`, or open again: a done entry becomes [`State::Seen`] (the
 /// user has seen it), any other stays as it is. `updated` does not change, so undoing puts the
 /// entry back where it was in the list.
@@ -1026,6 +1038,7 @@ mod tests {
             flags: Vec::new(),
             has_attachments: false,
             invite: None,
+            back: None,
             untrusted: true,
         }
     }
@@ -1486,6 +1499,15 @@ mod tests {
         // A session renamed meanwhile shows its new name (task E2.6).
         assert_eq!(merged.agent, incoming.agent);
         assert_eq!(merged.agent, incoming.agent);
+    }
+
+    #[test]
+    fn new_mail_brings_a_snoozed_conversation_back() {
+        let snoozed = Item { state: State::Snoozed { until: at(20) }, ..item("1", Kind::Message) };
+        let merged = merge_mail(snoozed, item("2", Kind::Message));
+        assert_eq!((merged.state, merged.count), (State::New, 2));
+        let done = Item { state: State::Done { at: at(9) }, ..item("1", Kind::Message) };
+        assert_eq!(merge_mail(done.clone(), item("2", Kind::Message)), merge(done, item("2", Kind::Message)));
     }
 
     #[test]
