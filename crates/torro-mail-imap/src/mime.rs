@@ -1340,6 +1340,29 @@ mod tests {
         assert_eq!(style_of(&quoted, "span"), "font-family:'Times New Roman',serif;", "{quoted}");
     }
 
+    /// Review of M9.5: `<` and `>` inside a quoted value of an element that is rewritten end
+    /// neither the tag nor the value early. The cleaning escapes them in values, the rewrite keeps
+    /// the values as written, and a second cleaning changes nothing.
+    #[test]
+    fn angle_brackets_in_values_stay_inside_their_attribute() {
+        let html = clean_html(
+            "<table title=\"a<b>\" bgcolor=\"#fff\"><tr><td align=\"center\" title=\"<script>x</script>\">\
+             <img src=\"cid:a\" alt=\"x>y\" align=\"left\" width=\"10\"></td></tr></table>",
+        );
+        assert_eq!(
+            html,
+            "<table title=\"a&lt;b&gt;\" style=\"background-color:#fff;\"><tbody><tr>\
+             <td title=\"&lt;script&gt;x&lt;/script&gt;\" style=\"text-align:center;\">\
+             <img src=\"cid:a\" alt=\"x&gt;y\" style=\"float:left;width:10px;\"></td></tr></tbody></table>"
+        );
+        assert_eq!(clean_html(&html), html, "stable");
+        assert_eq!(legacy::to_css(&html).as_deref(), Some(html.as_str()), "nothing old is left to rewrite");
+        // Raw brackets in a value, as a writer other than html5ever might leave them: the tag still
+        // ends at its own `>`, not at the one in the value.
+        let raw = "<td title=\"a>b\" align=\"right\">x</td>";
+        assert_eq!(legacy::to_css(raw).as_deref(), Some("<td title=\"a>b\" style=\"text-align:right;\">x</td>"));
+    }
+
     #[test]
     fn long_reference_chains_keep_the_first_and_the_latest() {
         let read = ReadMessage {

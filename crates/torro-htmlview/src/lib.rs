@@ -3,7 +3,10 @@
 //! Blitz parses the HTML, Stylo resolves the CSS, Taffy lays it out and Vello paints it on the CPU into a
 //! picture that Iced shows (way 2 of the trial M9.4, `docs/research.md` section 8). There is no JavaScript:
 //! Blitz has none. The HTML is expected to be cleaned by the core already (`mail.get_message` with
-//! `include_html`, M9.1/M9.5); this library adds a second line: it only ever fetches pictures.
+//! `include_html`, M9.1/M9.5); this library adds a second line: it only ever hands pictures to Blitz. Blitz
+//! also asks for style sheets (`@import`), fonts (`@font-face`) and pictures in CSS `url()`, and its request
+//! does not say which kind it wants, so these go out like a picture's; their answer is refused unless it is a
+//! picture.
 //!
 //! Two pieces, like Iced's `text_editor`:
 //!
@@ -25,8 +28,9 @@
 //!
 //! Pictures: `http`/`https` through the workspace's `reqwest` (rustls, no cookies, no `Referer`, redirects
 //! followed), `data:` decoded here, `cid:` from the app through [`CidSource`]. Only PNG, JPEG, GIF and WebP
-//! (recognised by their first bytes, never SVG), at most 10 MiB per picture and 50 MiB per mail. Nothing is
-//! logged about a mail: no URL, no text, no content id.
+//! (recognised by their first bytes, never SVG), at most [`MAX_PICTURE_BYTES`] (10 MiB) per picture and 50 MiB
+//! per mail. Only public hosts: no loopback, no local network, no link-local, neither directly nor through a
+//! redirect or a host name that resolves there. Nothing is logged about a mail: no URL, no text, no content id.
 
 mod content;
 mod fetch;
@@ -34,7 +38,7 @@ mod recolor;
 mod widget;
 
 pub use content::{Content, Snapshot};
-pub use fetch::CidSource;
+pub use fetch::{CidSource, MAX_PICTURE_BYTES};
 pub use widget::HtmlView;
 
 /// The colours a mail is drawn in. Only the mail's content follows it, never the rest of the window.

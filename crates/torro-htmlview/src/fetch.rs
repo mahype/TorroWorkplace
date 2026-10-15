@@ -1,5 +1,16 @@
-//! Fetches the pictures of a mail for Blitz: `http`/`https` over the workspace's `reqwest` (rustls), `data:`
-//! decoded here, `cid:` from the app ([`CidSource`]). Nothing else, and only picture types.
+//! Answers what Blitz asks for while drawing a mail: `http`/`https` over the workspace's `reqwest` (rustls),
+//! `data:` decoded here, `cid:` from the app ([`CidSource`]); every other scheme is refused. Only pictures go
+//! back to Blitz (PNG, JPEG, GIF, WebP by their first bytes).
+//!
+//! Blitz asks for more than the pictures of `<img>`: style sheets (`<link>`, `@import`), fonts (`@font-face`)
+//! and pictures in CSS `url()`. Its [`Request`] carries only the URL, not what kind of resource it wants, so
+//! such a request cannot be told from a picture's and goes out like one; only its answer is refused. The
+//! core's cleaning already drops `<link>`, a `<style>` of the mail may still name the others.
+//!
+//! Web requests reach only public hosts (review of M9.6): an IP literal or `localhost` that is not public is
+//! refused before the request, every redirect is checked the same way ([`Guard`]), and host names resolve
+//! through [`PublicResolver`], which drops every address that is not public – so neither a redirect nor DNS
+//! rebinding brings a mail to the loopback, the local network or a cloud's metadata service.
 //!
 //! Why not `blitz-net`: it brings native-tls (OpenSSL on Linux), and it hands a picture behind a redirect to
 //! Blitz under the final URL, while Blitz waits under the URL in `src` – such a picture never shows (trial
@@ -13,12 +24,20 @@
 //! picture is decoded there too (Blitz decodes in the handler).
 
 use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use base64::Engine as _;
 use blitz_traits::net::{Bytes, NetHandler, NetProvider, Request, Url};
+
+/// Bytes of one picture at most, from the web, a `data:` URL or a part of the mail (task M9.6). An app that
+/// reads a part for [`CidSource`] checks the size against it before reading.
+pub const MAX_PICTURE_BYTES: u64 = 10 * 1024 * 1024;
+
+/// Redirects one web request follows at most.
+const MAX_REDIRECTS: usize = 5;
 
 /// Supplies the pictures a mail carries with it (`cid:` URLs, RFC 2392).
 ///
@@ -29,8 +48,9 @@ pub trait CidSource: Send + Sync + 'static {
     /// when the mail has no such part or it cannot be read.
     ///
     /// Runs on a worker thread, never on the UI thread, so it may block (a request to the core, a file
-    /// read). The library checks type and size itself: SVG, HTML and anything over 10 MiB are refused even
-    /// when returned here.
+    /// read). The library checks type and size itself: SVG, HTML and anything over [`MAX_PICTURE_BYTES`]
+    /// are refused even when returned here; check the size before reading a file, though, so a huge part is
+    /// never read only to be refused.
     fn picture(&self, content_id: &str) -> Option<Vec<u8>>;
 }
 
@@ -48,7 +68,7 @@ pub(crate) struct Limits {
 impl Default for Limits {
     /// 10 MiB per picture, 50 MiB per mail, 20 s per request (task M9.6).
     fn default() -> Self {
-        Self { picture: 10 * 1024 * 1024, mail: 50 * 1024 * 1024, timeout: Duration::from_secs(20) }
+        Self { picture: MAX_PICTURE_BYTES, mail: 50 * 1024 * 1024, timeout: Duration::from_secs(20) }
     }
 }
 
@@ -57,6 +77,9 @@ impl Default for Limits {
 pub(crate) enum FetchError {
     /// Not `http`, `https`, `data` or `cid`, or a web URL while web pictures are off (tests).
     Scheme,
+    /// The host, a redirect's host or every address a host name resolves to is not public (loopback, the
+    /// local network, link-local …).
+    Private,
     /// The bytes are no PNG, JPEG, GIF or WebP (SVG, HTML, a style sheet, a font …).
     NotAPicture,
     /// Over the limit of one picture.
@@ -81,6 +104,7 @@ impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Scheme => write!(f, "scheme not allowed"),
+            Self::Private => write!(f, "host not public"),
             Self::NotAPicture => write!(f, "not a picture"),
             Self::TooLarge => write!(f, "picture too large"),
             Self::Budget => write!(f, "mail fetched too much"),
@@ -105,6 +129,10 @@ pub(crate) struct Fetcher {
 struct Shared {
     /// `false` only in tests: web URLs are refused without touching the network.
     web: bool,
+    /// The client web requests go through; `None` while web pictures are off or when it cannot be built.
+    client: Option<reqwest::Client>,
+    /// Which hosts web requests may reach; the client's redirect policy holds the same one.
+    guard: Guard,
     cid: Option<Arc<dyn CidSource>>,
     limits: Limits,
     /// Bytes fetched for this mail so far (the budget).
@@ -119,8 +147,31 @@ struct Shared {
 
 impl Fetcher {
     pub(crate) fn new(web: bool, cid: Option<Arc<dyn CidSource>>, limits: Limits) -> Self {
+        // Built only for a mail that may fetch from the web: the demo and the tests never need it.
+        let client = if web { client().cloned() } else { None };
+        Self::build(web, client, Guard::default(), cid, limits)
+    }
+
+    /// A fetcher that may also reach `local` – the tests' mock servers on 127.0.0.1 – with a client of its
+    /// own whose redirect policy knows the same exception. Only tests can build one, so the app's guard is
+    /// never weakened.
+    #[cfg(test)]
+    pub(crate) fn reaching(local: Vec<SocketAddr>, limits: Limits) -> Self {
+        let guard = Guard { local };
+        Self::build(true, build_client(guard.clone()), guard, None, limits)
+    }
+
+    fn build(
+        web: bool,
+        client: Option<reqwest::Client>,
+        guard: Guard,
+        cid: Option<Arc<dyn CidSource>>,
+        limits: Limits,
+    ) -> Self {
         let shared = Shared {
             web,
+            client,
+            guard,
             cid,
             limits,
             used: AtomicU64::new(0),
@@ -217,11 +268,12 @@ fn reserve(shared: &Shared, bytes: u64) -> Result<(), FetchError> {
     if before.saturating_add(bytes) > shared.limits.mail { Err(FetchError::Budget) } else { Ok(()) }
 }
 
-/// A picture from the web: redirects followed, the size limit kept while streaming.
+/// A picture from the web: only from a public host, redirects followed and checked, the size limit kept while
+/// streaming.
 async fn web(shared: &Shared, url: &Url) -> Result<Vec<u8>, FetchError> {
-    let client = client().ok_or(FetchError::NoRuntime)?;
-    let mut response =
-        client.get(url.as_str()).timeout(shared.limits.timeout).send().await.map_err(|_| FetchError::Network)?;
+    shared.guard.check(url).map_err(|Blocked| FetchError::Private)?;
+    let client = shared.client.as_ref().ok_or(FetchError::NoRuntime)?;
+    let mut response = client.get(url.as_str()).timeout(shared.limits.timeout).send().await.map_err(failed)?;
     let status = response.status();
     if !status.is_success() {
         return Err(FetchError::Status(status.as_u16()));
@@ -230,7 +282,7 @@ async fn web(shared: &Shared, url: &Url) -> Result<Vec<u8>, FetchError> {
         return Err(FetchError::TooLarge);
     }
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|_| FetchError::Network)? {
+    while let Some(chunk) = response.chunk().await.map_err(failed)? {
         if shared.closed.load(Ordering::Acquire) {
             return Err(FetchError::Closed);
         }
@@ -241,6 +293,133 @@ async fn web(shared: &Shared, url: &Url) -> Result<Vec<u8>, FetchError> {
         body.extend_from_slice(&chunk);
     }
     Ok(body)
+}
+
+/// What a failed request was: [`FetchError::Private`] when the redirect policy or the resolver refused a host
+/// ([`Blocked`] somewhere in the chain of sources), else [`FetchError::Network`].
+fn failed(err: reqwest::Error) -> FetchError {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&err);
+    while let Some(err) = source {
+        if err.is::<Blocked>() {
+            return FetchError::Private;
+        }
+        source = err.source();
+    }
+    FetchError::Network
+}
+
+/// A host a mail may not reach. Travels inside reqwest's errors from the redirect policy and the resolver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Blocked;
+
+impl fmt::Display for Blocked {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "host not public")
+    }
+}
+
+impl std::error::Error for Blocked {}
+
+/// Decides which hosts web requests may reach: public ones only. Checks the URL before the request and every
+/// redirect; host names are left to [`PublicResolver`], which sees the addresses they resolve to.
+#[derive(Debug, Clone, Default)]
+struct Guard {
+    /// Addresses reachable although they are not public: the tests' mock servers. Only
+    /// [`Fetcher::reaching`] fills it, and that exists only in tests; in the app it is always empty.
+    local: Vec<SocketAddr>,
+}
+
+impl Guard {
+    /// `Ok` for a host name other than `localhost`/`*.localhost` and for a public IP literal (IPv4-mapped
+    /// IPv6 counts as its IPv4 address); `Blocked` for the rest and for a URL without host.
+    fn check(&self, url: &Url) -> Result<(), Blocked> {
+        let host = url.host_str().ok_or(Blocked)?;
+        let literal = host.strip_prefix('[').and_then(|host| host.strip_suffix(']')).unwrap_or(host);
+        let Ok(ip) = literal.parse::<IpAddr>() else {
+            // The URL parser has turned every IPv4 spelling (`0x7f.1`, `2130706433`) into dotted form
+            // already, so what does not parse here is a name.
+            let name = host.trim_end_matches('.');
+            return if name == "localhost" || name.ends_with(".localhost") { Err(Blocked) } else { Ok(()) };
+        };
+        let local = url.port_or_known_default().is_some_and(|port| self.local.contains(&SocketAddr::new(ip, port)));
+        if is_public(ip) || local { Ok(()) } else { Err(Blocked) }
+    }
+}
+
+/// Resolves host names for the web client and keeps only public addresses, so a name that points to the
+/// loopback or the local network – also one that changes its answer after a first look (DNS rebinding) – is
+/// never connected to. Every address filtered out is an error ([`Blocked`]).
+struct PublicResolver;
+
+impl reqwest::dns::Resolve for PublicResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            // Port 0: reqwest puts in the port of the URL.
+            let found = tokio::net::lookup_host((host.as_str(), 0)).await?;
+            let public = public_only(found);
+            if public.is_empty() {
+                return Err(Box::new(Blocked) as Box<dyn std::error::Error + Send + Sync>);
+            }
+            Ok(Box::new(public.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// The public ones of `addresses`, in their order.
+fn public_only(addresses: impl IntoIterator<Item = SocketAddr>) -> Vec<SocketAddr> {
+    addresses.into_iter().filter(|address| is_public(address.ip())).collect()
+}
+
+/// Whether `ip` is an address of the public internet. Not public: unspecified, loopback, private (RFC 1918,
+/// ULA `fc00::/7`), shared (CGNAT `100.64.0.0/10`), link-local (the cloud metadata service at
+/// 169.254.169.254, too), multicast, broadcast, documentation, benchmarking and reserved ranges. IPv6 that
+/// carries an IPv4 address (mapped, compatible, NAT64) counts as that address.
+fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => is_public_v4(ip),
+        IpAddr::V6(ip) => is_public_v6(ip),
+    }
+}
+
+fn is_public_v4(ip: Ipv4Addr) -> bool {
+    let [a, b, c, _] = ip.octets();
+    let this_network = a == 0;
+    let shared = a == 100 && (64..128).contains(&b);
+    let protocol = a == 192 && b == 0 && c == 0;
+    let benchmarking = a == 198 && (b == 18 || b == 19);
+    // 240.0.0.0/4 is reserved, 255.255.255.255 (broadcast) lies in it.
+    let reserved = a >= 240;
+    !(this_network
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || shared
+        || protocol
+        || benchmarking
+        || ip.is_documentation()
+        || ip.is_multicast()
+        || reserved)
+}
+
+fn is_public_v6(ip: Ipv6Addr) -> bool {
+    if let Some(v4) = ip.to_ipv4_mapped() {
+        return is_public_v4(v4);
+    }
+    let segments = ip.segments();
+    let [.., a, b, c, d] = ip.octets();
+    let embedded = Ipv4Addr::new(a, b, c, d);
+    // NAT64 (64:ff9b::/96) reaches the IPv4 address in the last 32 bits.
+    if segments[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+        return is_public_v4(embedded);
+    }
+    // `::/96`: unspecified, loopback and the old IPv4-compatible addresses.
+    let compatible = segments[..6] == [0; 6];
+    let unique_local = segments[0] & 0xfe00 == 0xfc00;
+    let link_local = segments[0] & 0xffc0 == 0xfe80;
+    let site_local = segments[0] & 0xffc0 == 0xfec0;
+    let documentation = segments[0] == 0x2001 && segments[1] == 0x0db8;
+    !(compatible || ip.is_multicast() || unique_local || link_local || site_local || documentation)
 }
 
 /// A `data:` picture. Only base64: pictures in mail are never percent-encoded text.
@@ -316,28 +495,36 @@ fn runtime() -> Option<&'static tokio::runtime::Runtime> {
         .as_ref()
 }
 
-/// The HTTP client of all mails: no cookies (no cookie store), no `Referer`, at most five redirects, a
-/// generic user agent that tells the sender nothing about the app.
+/// The HTTP client of all mails, built on the first mail that may fetch from the web ([`build_client`]).
 fn client() -> Option<&'static reqwest::Client> {
     static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            let mut headers = reqwest::header::HeaderMap::new();
-            headers.insert(
-                reqwest::header::ACCEPT,
-                reqwest::header::HeaderValue::from_static("image/webp,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.5"),
-            );
-            reqwest::Client::builder()
-                .user_agent("Mozilla/5.0")
-                .default_headers(headers)
-                .referer(false)
-                .redirect(reqwest::redirect::Policy::limited(5))
-                .connect_timeout(Duration::from_secs(10))
-                .build()
-                .inspect_err(|err| eprintln!("htmlview: cannot build the picture client: {err}"))
-                .ok()
-        })
-        .as_ref()
+    CLIENT.get_or_init(|| build_client(Guard::default())).as_ref()
+}
+
+/// A client with no cookies (no cookie store), no `Referer`, a generic user agent that tells the sender nothing
+/// about the app, at most [`MAX_REDIRECTS`] redirects each checked by `guard`, and names resolved through
+/// [`PublicResolver`].
+fn build_client(guard: Guard) -> Option<reqwest::Client> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::ACCEPT,
+        reqwest::header::HeaderValue::from_static("image/webp,image/png,image/jpeg,image/gif;q=0.9,*/*;q=0.5"),
+    );
+    let limit = reqwest::redirect::Policy::limited(MAX_REDIRECTS);
+    let redirect = reqwest::redirect::Policy::custom(move |attempt| match guard.check(attempt.url()) {
+        Ok(()) => limit.redirect(attempt),
+        Err(blocked) => attempt.error(blocked),
+    });
+    reqwest::Client::builder()
+        .user_agent("Mozilla/5.0")
+        .default_headers(headers)
+        .referer(false)
+        .redirect(redirect)
+        .dns_resolver(PublicResolver)
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .inspect_err(|err| eprintln!("htmlview: cannot build the picture client: {err}"))
+        .ok()
 }
 
 #[cfg(test)]
@@ -358,8 +545,14 @@ mod tests {
         0xB4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ];
 
+    /// The fetcher of the app: only public hosts.
     fn fetcher(limits: Limits) -> Fetcher {
         Fetcher::new(true, None, limits)
+    }
+
+    /// A fetcher that may reach `server` (on 127.0.0.1) and nothing else that is not public.
+    fn local(server: &MockServer, limits: Limits) -> Fetcher {
+        Fetcher::reaching(vec![*server.address()], limits)
     }
 
     fn url(text: &str) -> Url {
@@ -416,7 +609,7 @@ mod tests {
             then.status(200).header("Content-Type", "image/png").body(PNG);
         });
         let asked = url(&server.url("/track/1"));
-        let fetcher = fetcher(Limits::default());
+        let fetcher = local(&server, Limits::default());
         let (sender, receiver) = mpsc::channel();
         fetcher.fetch(0, Request::get(asked.clone()), Box::new(Catch(Mutex::new(Some(sender)))));
         let (answered_url, bytes) = receiver.recv_timeout(Duration::from_secs(10)).expect("answer");
@@ -446,7 +639,7 @@ mod tests {
             when.method(GET).path("/b").header_missing("referer").header_missing("cookie");
             then.status(200).body(PNG);
         });
-        let result = block(fetcher(Limits::default()).picture(&url(&server.url("/a"))));
+        let result = block(local(&server, Limits::default()).picture(&url(&server.url("/a"))));
         assert_eq!(result.as_deref(), Ok(PNG));
         target.assert();
     }
@@ -462,7 +655,7 @@ mod tests {
             when.method(GET).path("/page");
             then.status(200).header("Content-Type", "image/gif").body("<!DOCTYPE html><p>hi</p>");
         });
-        let fetcher = fetcher(Limits::default());
+        let fetcher = local(&server, Limits::default());
         assert_eq!(block(fetcher.picture(&url(&server.url("/logo.svg")))), Err(FetchError::NotAPicture));
         assert_eq!(block(fetcher.picture(&url(&server.url("/page")))), Err(FetchError::NotAPicture));
     }
@@ -474,7 +667,7 @@ mod tests {
             when.method(GET).path("/style.css");
             then.status(200).body("body { color: red }");
         });
-        let fetcher = fetcher(Limits::default());
+        let fetcher = local(&server, Limits::default());
         let (sender, receiver) = mpsc::channel();
         fetcher.fetch(0, Request::get(url(&server.url("/style.css"))), Box::new(Catch(Mutex::new(Some(sender)))));
         let (_, bytes) = receiver.recv_timeout(Duration::from_secs(10)).expect("answer");
@@ -495,7 +688,7 @@ mod tests {
             when.method(GET).path("/ok.png");
             then.status(200).body(PNG);
         });
-        let fetcher = fetcher(limits);
+        let fetcher = local(&server, limits);
         assert_eq!(block(fetcher.picture(&url(&server.url("/big.png")))), Err(FetchError::TooLarge));
         assert_eq!(block(fetcher.picture(&url(&server.url("/ok.png")))).as_deref(), Ok(PNG));
     }
@@ -508,7 +701,7 @@ mod tests {
             when.method(GET).path("/p.png");
             then.status(200).body(PNG);
         });
-        let fetcher = fetcher(limits);
+        let fetcher = local(&server, limits);
         let picture = url(&server.url("/p.png"));
         assert!(block(fetcher.picture(&picture)).is_ok());
         assert!(block(fetcher.picture(&picture)).is_ok());
@@ -522,7 +715,7 @@ mod tests {
             when.method(GET).path("/gone.png");
             then.status(404);
         });
-        let result = block(fetcher(Limits::default()).picture(&url(&server.url("/gone.png"))));
+        let result = block(local(&server, Limits::default()).picture(&url(&server.url("/gone.png"))));
         assert_eq!(result, Err(FetchError::Status(404)));
     }
 
@@ -586,7 +779,7 @@ mod tests {
             when.method(GET).path("/p.png");
             then.status(200).delay(Duration::from_millis(200)).body(PNG);
         });
-        let fetcher = fetcher(Limits::default());
+        let fetcher = local(&server, Limits::default());
         let (sender, receiver) = mpsc::channel();
         fetcher.fetch(0, Request::get(url(&server.url("/p.png"))), Box::new(Catch(Mutex::new(Some(sender)))));
         fetcher.close();
@@ -598,6 +791,149 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(fetcher.pending(), 0, "the request still counts as answered");
+    }
+
+    /// Review of M9.6 (SSRF): a mail reaches no host that is not public, written as an IP literal in any
+    /// spelling or as `localhost`; refused before anything goes out.
+    #[test]
+    fn refuses_hosts_that_are_not_public() {
+        let fetcher = fetcher(Limits::default());
+        for private in [
+            "http://127.0.0.1/a.png",
+            "http://127.1.2.3:8080/a.png",
+            "http://localhost/a.png",
+            "http://LOCALHOST./a.png",
+            "http://mail.localhost/a.png",
+            "http://[::1]/a.png",
+            "http://10.0.0.1/a.png",
+            "http://172.16.5.4/a.png",
+            "http://192.168.178.1/a.png",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://[::ffff:127.0.0.1]/a.png",
+            "http://[::ffff:169.254.169.254]/a.png",
+            "http://[64:ff9b::a00:1]/a.png",
+            "http://0x7f.1/a.png",
+            "http://2130706433/a.png",
+            "http://0.0.0.0/a.png",
+            "http://100.64.0.1/a.png",
+            "http://[fd00::1]/a.png",
+            "http://[fe80::1]/a.png",
+            "http://[::]/a.png",
+            "http://224.0.0.1/a.png",
+            "http://255.255.255.255/a.png",
+        ] {
+            assert_eq!(block(fetcher.picture(&url(private))), Err(FetchError::Private), "{private}");
+        }
+    }
+
+    /// The app's fetcher does not reach the tests' mock server either: the exception exists only in
+    /// [`Fetcher::reaching`].
+    #[test]
+    fn the_apps_fetcher_does_not_reach_a_local_server() {
+        let server = MockServer::start();
+        let picture = server.mock(|when, then| {
+            when.method(GET).path("/p.png");
+            then.status(200).body(PNG);
+        });
+        let result = block(fetcher(Limits::default()).picture(&url(&server.url("/p.png"))));
+        assert_eq!(result, Err(FetchError::Private));
+        picture.assert_calls(0);
+    }
+
+    /// The guard as a pure function: names and public addresses pass, the test exception holds only for its
+    /// own address and port.
+    #[test]
+    fn the_guard_lets_names_and_public_addresses_pass() {
+        let open = Guard::default();
+        for public in ["https://example.com/a.png", "http://93.184.216.34/a.png", "https://[2606:4700::1111]/a.png"] {
+            assert_eq!(open.check(&url(public)), Ok(()), "{public}");
+        }
+        let local = Guard { local: vec!["127.0.0.1:8080".parse().expect("address")] };
+        assert_eq!(local.check(&url("http://127.0.0.1:8080/a.png")), Ok(()));
+        assert_eq!(local.check(&url("http://127.0.0.1:8081/a.png")), Err(Blocked), "another port");
+        assert_eq!(local.check(&url("http://localhost:8080/a.png")), Err(Blocked), "a name is no exception");
+    }
+
+    /// A redirect from a host the test lets through to one that is not public is refused, and the private
+    /// host is never asked.
+    #[test]
+    fn refuses_a_redirect_to_a_host_that_is_not_public() {
+        let public = MockServer::start();
+        let private = MockServer::start();
+        let target = private.mock(|when, then| {
+            when.method(GET).path("/p.png");
+            then.status(200).body(PNG);
+        });
+        let targets = [
+            private.url("/p.png"),
+            "http://169.254.169.254/latest/meta-data/".to_owned(),
+            format!("http://localhost:{}/p.png", public.port()),
+            "http://[::ffff:10.0.0.1]/p.png".to_owned(),
+        ];
+        for (n, location) in targets.iter().enumerate() {
+            public.mock(|when, then| {
+                when.method(GET).path(format!("/moved/{n}"));
+                then.status(302).header("Location", location);
+            });
+        }
+        // Only the first hop is let through.
+        let fetcher = local(&public, Limits::default());
+        for (n, location) in targets.iter().enumerate() {
+            let result = block(fetcher.picture(&url(&public.url(format!("/moved/{n}")))));
+            assert_eq!(result, Err(FetchError::Private), "{location}");
+        }
+        target.assert_calls(0);
+    }
+
+    /// At most five redirects, like before the custom policy.
+    #[test]
+    fn follows_five_redirects_and_no_more() {
+        let server = MockServer::start();
+        for n in 0..6 {
+            server.mock(|when, then| {
+                when.method(GET).path(format!("/r{n}"));
+                then.status(302).header("Location", format!("/r{}", n + 1));
+            });
+        }
+        server.mock(|when, then| {
+            when.method(GET).path("/r6");
+            then.status(200).body(PNG);
+        });
+        let fetcher = local(&server, Limits::default());
+        assert_eq!(block(fetcher.picture(&url(&server.url("/r1")))).as_deref(), Ok(PNG), "five redirects");
+        assert_eq!(block(fetcher.picture(&url(&server.url("/r0")))), Err(FetchError::Network), "six redirects");
+    }
+
+    /// The resolver's filter as a pure function: only public addresses stay, in their order.
+    #[test]
+    fn the_resolver_keeps_only_public_addresses() {
+        let address = |text: &str| text.parse::<SocketAddr>().expect("address");
+        let found = [
+            "127.0.0.1:0",
+            "93.184.216.34:0",
+            "10.1.2.3:0",
+            "192.168.0.10:0",
+            "169.254.169.254:0",
+            "100.100.100.100:0",
+            "[::1]:0",
+            "[::ffff:192.168.0.1]:0",
+            "[fc00::1]:0",
+            "[2606:4700::1111]:0",
+        ]
+        .map(address);
+        assert_eq!(public_only(found), vec![address("93.184.216.34:0"), address("[2606:4700::1111]:0")]);
+        assert!(public_only([address("127.0.0.1:0"), address("[::1]:0")]).is_empty());
+    }
+
+    /// A name that resolves only to the loopback is an error, not an empty list (the hosts file answers
+    /// `localhost`, no network is asked).
+    #[test]
+    fn the_resolver_refuses_a_name_with_only_private_addresses() {
+        use reqwest::dns::Resolve as _;
+        let name: reqwest::dns::Name = "localhost".parse().expect("name");
+        let result = block(PublicResolver.resolve(name));
+        let err = result.err().expect("refused");
+        assert!(err.is::<Blocked>(), "{err}");
     }
 
     #[test]

@@ -55,7 +55,7 @@ use torro_gui::source;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Anchor, Mark, RowAction};
 use torro_gui::{datetime, style, typo};
-use torro_htmlview::{CidSource, Content, HtmlView, Scheme};
+use torro_htmlview::{CidSource, Content, HtmlView, MAX_PICTURE_BYTES, Scheme};
 use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
 use torro_inbox::item::{ItemTask, TaskDue};
@@ -736,8 +736,23 @@ impl<S: MailSource + 'static> CidSource for MailPictures<S> {
     fn picture(&self, content_id: &str) -> Option<Vec<u8>> {
         let part = self.parts.iter().find(|(id, _)| id == content_id).map(|(_, part)| part.clone())?;
         let path = wait_for(self.inbox.mail_attachment(self.id.clone(), part))?.ok()?;
-        std::fs::read(path).ok()
+        read_picture(&path)
     }
+}
+
+/// The bytes of the file at `path`, or `None` when it cannot be read or is larger than a picture
+/// may be ([`MAX_PICTURE_BYTES`], the library's own limit): a huge part is never read into memory
+/// only to be refused afterwards. The read stops one byte past the limit, so a file that grows
+/// between the check and the read is refused too.
+fn read_picture(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_PICTURE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PICTURE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_PICTURE_BYTES).then_some(bytes)
 }
 
 /// Waits for `future` on this (blocking) thread: on the runtime it was started from when there is
@@ -2805,6 +2820,22 @@ mod tests {
         let parsed = HtmlMail::new(&sale, &demo, true).expect("parsed");
         assert_eq!(parsed.id, "m:p2");
         assert!(parsed.content.height(480.0, 1.0, Scheme::Light) > 0.0, "it lays out");
+    }
+
+    /// Review of M9.7: a part larger than a picture may be is not read at all.
+    #[test]
+    fn a_picture_file_over_the_limit_is_not_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let small = dir.path().join("small.png");
+        std::fs::write(&small, b"\x89PNG").expect("write");
+        assert_eq!(read_picture(&small).as_deref(), Some(b"\x89PNG".as_slice()));
+        let edge = dir.path().join("edge.png");
+        std::fs::File::create(&edge).and_then(|file| file.set_len(MAX_PICTURE_BYTES)).expect("sparse file");
+        assert_eq!(read_picture(&edge).map(|bytes| bytes.len() as u64), Some(MAX_PICTURE_BYTES), "the limit itself");
+        let big = dir.path().join("big.png");
+        std::fs::File::create(&big).and_then(|file| file.set_len(MAX_PICTURE_BYTES + 1)).expect("sparse file");
+        assert_eq!(read_picture(&big), None);
+        assert_eq!(read_picture(&dir.path().join("missing.png")), None);
     }
 
     #[test]
