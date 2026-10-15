@@ -21,6 +21,7 @@ Alle Apps bauen auf dem Kern `torroworkplace` auf (Dienst mit Tray-Icon, Steuerz
 | Fokus / Pomodoro / Zeiterfassung | Woran arbeite ich gerade und wie lange schon? | lokal; Export nach CalDAV | Idee |
 | **Notizen** (`torronotes`) | Wo lege ich schnell etwas ab, auch für Agenten? | Nextcloud Notes (Markdown-Dateien), später auch ein Ordner per WebDAV oder lokal. Konzept: [notizen.md](notizen.md) | **Entwurf** ([tasks/notizen.md](tasks/notizen.md)) |
 | **Kontakte** (`torrocontacts`) | Wer ist das, wie erreiche ich ihn, und wo ist das? | CardDAV (Nextcloud zuerst, dann iCloud, Fastmail, Radicale …), Karte mit OpenStreetMap ohne Schlüssel. Konzept: [kontakte.md](kontakte.md) | **Entwurf** ([tasks/kontakte.md](tasks/kontakte.md)) |
+| Präsenz / Kontaktliste mit Status | Wer ist gerade da, und wie erreiche ich ihn sofort? | Nextcloud User status (Status, Nachricht, Heartbeat), Systemadressbuch, Talk für den Chat. Konzept mit Recherche: [praesenz.md](praesenz.md) | Idee |
 
 ## Arbeiten mit KI
 
