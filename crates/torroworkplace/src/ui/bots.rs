@@ -84,8 +84,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
 /// autosave. Other agents page messages are not the rights view's and change nothing here.
 fn rights(state: &mut State, message: agents::Message, data: &Data) -> Action {
     use agents::Message as M;
-    if let M::Clock(now) = message {
-        return agents::update(&mut state.editor, M::Clock(now), data);
+    if let M::Clock(_) | M::MailToCloud(_) = message {
+        // The clock saves the draft; the data rule (task C.17) is a setting, sent at once.
+        return agents::update(&mut state.editor, message, data);
     }
     let control = matches!(
         message,

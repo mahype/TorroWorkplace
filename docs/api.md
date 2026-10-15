@@ -621,6 +621,13 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    `only_people_switch_the_microphone_on_and_agents_may_switch_it_off` im Kern). `voice_enabled:
    false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest der Steuerzentrale
    (`settings.test_voice`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`).
+
+   Ebenso **Mail an Claude Code und Cloud-Modelle geben** (Datenregel, Aufgabe C.17): `settings.set_setting`
+   mit `mail_to_cloud: true` und ein `settings.update_settings`, das es einschalten würde, bekommen
+   von jedem Client `forbidden`, auch mit Admin-Rechten; sonst könnte sich ein Agent selbst Mail
+   verschaffen. `mail_to_cloud: false` ist eine gewöhnliche Admin-Änderung (Tests
+   `only_people_let_mail_go_to_the_cloud` in `torro-ipc` und
+   `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
 7. **Einen Bot für den Assistenten bestätigen** (`assistant.confirm_bot`, B.2): nur mit dem
    App-Schlüssel. Der Assistent fragt einen Bot nur, wenn die Person ihn in ihrer letzten Nachricht
    nennt oder seinen Vorschlag bestätigt; diese Bestätigung gibt nie ein Agent oder Modell. Das

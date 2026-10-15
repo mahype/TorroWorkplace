@@ -2203,6 +2203,12 @@ pub enum SettingKey {
     /// dark background, pictures unchanged). Only the mail, never the rest of the window. Open
     /// windows follow (`torro_core::settings::MailAppearance`).
     MailAppearance,
+    /// The data rule for mail (task C.17): `false` (the default) keeps mail with models on the
+    /// person's own computers; `true` lets it go to Claude Code and to models elsewhere as well.
+    /// Only the app key may send `true` – a person in the control centre (point 6 of "Was nie nach
+    /// außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights, so no agent
+    /// can let mail out to itself. Any client allowed to change settings may send `false`.
+    MailToCloud,
 }
 
 /// The core's answer to one [`Request`].

@@ -35,7 +35,7 @@ use torro_ipc::assistant::{EngineKind, Entry, EntryContent};
 use torro_ipc::bots::Bot;
 use torro_ipc::{Request, Response};
 
-use super::data_rule::{self, Place, WITHHELD};
+use super::data_rule::{self, DataRule, Place, Reader, WITHHELD};
 use super::model::{Actor, Delegation};
 use super::{Assistant, Message, bot_refusal, failure, tools, unknown};
 use crate::account::ai::AiAccounts;
@@ -127,12 +127,13 @@ impl Assistant {
             Ok(kind) => kind,
             Err(refused) => return refused,
         };
-        // The data rule: what the assistant's model read of mail may be in the message, and mail
-        // stays on the person's computers.
+        // The data rule: what the assistant's model read may be in the message, and what the rule
+        // keeps home stays on the person's computers (`read_mail` is what it keeps, task C.17).
         if read_mail && self.place_of(kind, &bot.engine).await == Place::Remote {
             return forbidden(
-                "this conversation read mail, and the bot answers with a model outside this computer, which the \
-                 person's data rule keeps mail from; do not ask it now, tell the person instead",
+                "this conversation read what the person's data rule keeps from models outside this computer (mail \
+                 unless the person let it out, or messages in the inbox), and the bot answers with such a model; do \
+                 not ask it now, tell the person instead",
             );
         }
         // Last, as it uses up a confirmation: nothing else refuses the ask after this.
@@ -216,6 +217,9 @@ pub struct Asked {
     message: Option<String>,
     /// A tool of the run read mail ([`data_rule::reads_mail`]): the answer may retell it.
     pub read_mail: bool,
+    /// A tool of the run read the inbox or asked a bot: the answer may retell entries of Nextcloud
+    /// or Talk, which stay home even with mail let out (task C.17, [`Asked::kept`]).
+    pub read_messages: bool,
     /// A tool of the run may have read data from outside the suite ([`tools::may_have_read_untrusted`]).
     pub untrusted: bool,
 }
@@ -236,6 +240,7 @@ impl Asked {
             error: None,
             message: None,
             read_mail: false,
+            read_messages: false,
             untrusted: false,
         };
         let mut answers = Vec::new();
@@ -246,6 +251,7 @@ impl Asked {
                     // What failed read nothing.
                     if error.is_none() {
                         asked.read_mail |= data_rule::reads_mail(name);
+                        asked.read_messages |= data_rule::kept_from(name, DataRule { mail_to_cloud: true });
                         asked.untrusted |= tools::may_have_read_untrusted(name);
                     }
                 }
@@ -270,12 +276,20 @@ impl Asked {
         }
     }
 
-    /// What the assistant's model at `place` reads: the bot's conversation, its steps and its
+    /// Whether the run read what `rule` keeps from models elsewhere: mail unless it is let out, the
+    /// inbox and other bots always.
+    pub fn kept(&self, rule: DataRule) -> bool {
+        self.read_messages || (self.read_mail && !rule.mail_to_cloud)
+    }
+
+    /// What the assistant's model read as `reader` reads: the bot's conversation, its steps and its
     /// answer (or why it ended), shortened. A model elsewhere reads [`WITHHELD`] for an answer after
-    /// mail; an answer after data from outside the suite is marked so.
-    pub fn for_model(&self, place: Place) -> String {
+    /// what the rule keeps home ([`Asked::kept`]); an answer after data from outside the suite is
+    /// marked so.
+    pub fn for_model(&self, reader: impl Into<Reader>) -> String {
+        let reader = reader.into();
         let mut value = json!({"result": "bot-answer", "conversation": self.conversation, "steps": self.steps});
-        let withheld = self.read_mail && place == Place::Remote;
+        let withheld = reader.place == Place::Remote && self.kept(reader.rule);
         if withheld {
             value["answer"] = json!(WITHHELD);
         } else if let Some(answer) = &self.answer {

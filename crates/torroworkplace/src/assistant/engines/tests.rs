@@ -23,6 +23,8 @@ struct FakeHost {
     clients: Clients,
     /// The areas every key was lent without.
     lent: Mutex<Vec<Vec<Area>>>,
+    /// The person let mail go to Claude Code and cloud models (task C.17).
+    mail_to_cloud: std::sync::atomic::AtomicBool,
 }
 
 impl Host for FakeHost {
@@ -40,6 +42,10 @@ impl Host for FakeHost {
 
     fn approval<'a>(&'a self, _id: &'a str) -> BoxFuture<'a, Response> {
         Box::pin(async { Response::Error { code: "not-found".into(), message: "none".into() } })
+    }
+
+    fn data_rule(&self) -> DataRule {
+        DataRule { mail_to_cloud: self.mail_to_cloud.load(std::sync::atomic::Ordering::SeqCst) }
     }
 
     fn lend(&self, engine: &str, without: &[Area]) -> Option<crate::clients::LentKey> {
@@ -127,7 +133,7 @@ async fn install(dir: tempfile::TempDir, idle: Duration, client: bool) -> Setup 
         rights.areas.insert(Area::Mail, AreaRights { level: Level::Read, admin: false });
         clients.add("Assistant", ASSISTANT_CLIENT, rights).await.expect("the assistant's client");
     }
-    let host = Arc::new(FakeHost { clients, lent: Mutex::new(Vec::new()) });
+    let host = Arc::new(FakeHost { clients, lent: Mutex::new(Vec::new()), mail_to_cloud: Default::default() });
     let weak = Arc::downgrade(&host);
     let weak: std::sync::Weak<dyn Host> = weak;
     assistant.attach(weak);
@@ -297,7 +303,10 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
                 name: "mail.list_folders".into(),
                 input: json!({"account": "mail:anna@example.org"}),
                 // Issue #133: the line says why, and that no change of rights helps.
-                summary: trf("{engine} never gets {area}", &[("engine", &"Claude Code"), ("area", &tr("Mail"))]),
+                summary: trf(
+                    "{engine} does not get {area} (data rule)",
+                    &[("engine", &"Claude Code"), ("area", &tr("Mail"))]
+                ),
                 error: Some("forbidden".into()),
                 lack: Some(Lack::NeverToAgents { area: Area::Mail }),
             },
@@ -347,6 +356,22 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
     let text = input["message"]["content"][0]["text"].as_str().expect("text");
     assert!(text.contains("Which calendars do I have?") && text.contains("You have no calendars."), "{text}");
     assert!(text.ends_with("And tomorrow?"), "{text}");
+}
+
+/// Task C.17: once the person lets mail go to Claude Code and cloud models, the run's key is lent
+/// with mail, the agent's tools include it, and the prompt no longer says it is kept from it.
+#[tokio::test]
+async fn with_mail_let_out_the_agent_gets_mail_as_the_rights_give_it() {
+    let setup = set_up(&[init(), says("Two folders."), done("Two folders.")], "", Duration::from_secs(10), true).await;
+    setup.host.mail_to_cloud.store(true, std::sync::atomic::Ordering::SeqCst);
+    let id = ask(&setup, None, "Which mail folders do I have?", Vec::new()).await;
+    finished(&setup.assistant, &id).await;
+    assert_eq!(*setup.host.lent.lock().expect("lock"), [Vec::<Area>::new()], "lent with mail");
+    let arguments = setup.read("args");
+    let prompt = arguments.split_once("--append-system-prompt=").map(|(_, rest)| rest).expect("the prompt");
+    assert!(prompt.contains("  - mail: read"), "{prompt}");
+    assert!(!prompt.contains("not given to you"), "{prompt}");
+    assert!(prompt.contains("lets mail go to Claude Code and cloud models"), "{prompt}");
 }
 
 #[tokio::test]

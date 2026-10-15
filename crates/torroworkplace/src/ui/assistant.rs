@@ -337,6 +337,8 @@ fn rights(state: &mut State, message: agents::Message, data: &Data) -> Action {
     );
     match (assistant_client(data), message) {
         (_, M::Clock(now)) => agents::update(&mut state.editor, M::Clock(now), data),
+        // The data rule (task C.17) is a setting, so it is sent at once, also on the first start.
+        (_, M::MailToCloud(on)) => agents::update(&mut state.editor, M::MailToCloud(on), data),
         (Some(client), message) if control || matches!(message, M::RepoInput(_)) => {
             state.editor.selected = Some(client.id.clone());
             agents::update(&mut state.editor, message, data)

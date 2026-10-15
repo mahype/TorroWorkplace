@@ -3342,7 +3342,17 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Sending mail is switched off", "Mail senden ist ausgeschaltet"),
     ("Only you can do this", "Das kannst nur du"),
     ("{area} is off in this conversation", "{area} ist in dieser Unterhaltung aus"),
-    ("{engine} never gets {area}", "{engine} bekommt nie {area}"),
+    ("{engine} does not get {area} (data rule)", "{engine} bekommt {area} nicht (Datenregel)"),
+    // Task C.17: the data rule for mail under Mail of the assistant and its bots.
+    ("Mail to Claude Code and cloud models", "Mail an Claude Code und Cloud-Modelle"),
+    (
+        "Off: only AI accounts on your own computers read mail",
+        "Aus: Nur KI-Konten auf deinen eigenen Rechnern lesen Mail",
+    ),
+    (
+        "Mail goes to the model's provider and can't be taken back",
+        "Mail geht an den Anbieter des Modells und lässt sich nicht zurückholen",
+    ),
     ("The assistant needs full access to {area} for this.", "Der Assistent braucht dafür vollen Zugriff auf {area}."),
     ("The assistant needs write access to {area} for this.", "Der Assistent braucht dafür Schreibzugriff auf {area}."),
     ("The assistant needs admin rights for {area}.", "Der Assistent braucht Admin-Rechte für {area}."),

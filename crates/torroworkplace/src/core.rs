@@ -1417,10 +1417,11 @@ impl Core {
             return Ok(refused);
         }
         let request = crate::mail::write::with_trash_role(&self.mail, Reach::Client(&rights), request).await;
-        // Point 6 (task C.9): switching the microphone on is a person's, also with every right. The
-        // assistant's own memory is its own whatever its rights in `assistant` say (task C.10).
+        // Point 6 (task C.9): switching the microphone on is a person's, also with every right, and
+        // so is letting mail go to the cloud (task C.17). The assistant's own memory is its own
+        // whatever its rights in `assistant` say (task C.10).
         let allowed = rights.allows_request(&request) || self.allowed_by_kind(&id, request.operation());
-        if !allowed || self.switches_microphone_on(&request) {
+        if !allowed || self.switches_on_for_people(&request) {
             let (command, operation) = (request.operation().name(), request.operation());
             // Issue #133: the answer says what is missing. The microphone is the person's whatever
             // the rights say.
@@ -2123,7 +2124,7 @@ impl Core {
         let allowed =
             rights.allows_request(&request) || torro_ipc::api::allowed_by_kind(&info.kind, request.operation());
         if !allowed
-            || self.switches_microphone_on(&request)
+            || self.switches_on_for_people(&request)
             || torro_ipc::api::loops_back(&info.kind, request.operation())
             || self.bots_refusal(client, rights, &request).is_some()
         {
@@ -4263,13 +4264,15 @@ impl Core {
         self.voice.changes()
     }
 
-    /// Whether `request` from a client switches the microphone on through the whole settings
-    /// (`settings.update_settings` with voice on while it is off): point 6, refused like
-    /// `settings.set_setting voice_enabled true` ([`torro_ipc::api::Rights::allows_request`]),
-    /// which carries the value itself.
-    fn switches_microphone_on(&self, request: &Request) -> bool {
-        matches!(request, Request::UpdateSettings { settings } if settings.voice.enabled)
-            && !self.settings.current().voice.enabled
+    /// Whether `request` from a client switches on through the whole settings what only a person
+    /// switches on (`settings.update_settings` with it on while it is off): the microphone (point
+    /// 6) and mail to Claude Code and cloud models (`mail_to_cloud`, task C.17), refused like
+    /// `settings.set_setting` with `true` ([`torro_ipc::api::Rights::allows_request`]), which
+    /// carries the value itself.
+    fn switches_on_for_people(&self, request: &Request) -> bool {
+        let Request::UpdateSettings { settings } = request else { return false };
+        let now = self.settings.current();
+        (settings.voice.enabled && !now.voice.enabled) || (settings.mail_to_cloud && !now.mail_to_cloud)
     }
 
     /// `settings.voice_status` (task C.9): what the listener does, and what the assistant app
@@ -4414,6 +4417,11 @@ impl crate::assistant::Host for Core {
             };
             Ok(crate::assistant::ModelAccess { provider, place })
         })
+    }
+
+    /// The setting `mail_to_cloud` as it is now (task C.17).
+    fn data_rule(&self) -> crate::assistant::DataRule {
+        crate::assistant::DataRule { mail_to_cloud: self.settings.current().mail_to_cloud }
     }
 
     fn run<'a>(
@@ -4764,9 +4772,12 @@ fn decided_ids(request: &Request, origin: &crate::approvals::Origin) -> Vec<Stri
 /// `assistant.my_access` (issue #134) for a client admitted with `rights` (already narrowed as the
 /// core checks its commands: by the areas of a lent key, and for a bot that runs for the assistant to
 /// what both may), the request coming as `origin` says: the engine, and its areas split into those the
-/// engine never gets ([`crate::assistant::never_given`]) and those switched off in the conversation.
+/// engine never gets ([`crate::assistant::never_given`]) – as far as the run went without them, which
+/// it does not with mail let out (task C.17) – and those switched off in the conversation.
 fn my_access(rights: &torro_ipc::api::Rights, origin: &crate::approvals::Origin) -> Response {
-    let never = origin.engine.as_deref().map_or(&[][..], crate::assistant::never_given);
+    let never_given = origin.engine.as_deref().map_or(&[][..], crate::assistant::never_given);
+    let never: Vec<Area> = never_given.iter().filter(|area| origin.without.contains(area)).copied().collect();
+    let never = never.as_slice();
     let switched_off: Vec<Area> = origin.without.iter().filter(|area| !never.contains(area)).copied().collect();
     let access = torro_ipc::assistant::MyAccess::of(rights.clone(), origin.engine.clone());
     Response::MyAccess { access: access.withholding(never).switching_off(&switched_off).in_mode(origin.mode) }
@@ -5469,6 +5480,44 @@ mod tests {
         let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(!settings(&core).await.voice.enabled, "off once the person allowed it");
+    }
+
+    /// Task C.17: no client lets mail go to Claude Code and cloud models, not with every right,
+    /// neither one setting at a time nor with the whole settings; keeping it local again is an
+    /// admin change like any other, after approval. Only the app key switches it on.
+    #[tokio::test]
+    async fn only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local() {
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let rule = |on: bool| Request::SetSetting { key: SettingKey::MailToCloud, value: serde_json::json!(on) };
+
+        let refused = ask(&core, Some(&key), rule(true)).await;
+        assert_eq!(code(&refused), "forbidden");
+        let mut whole = settings(&core).await;
+        whole.mail_to_cloud = true;
+        assert_eq!(
+            code(&ask(&core, Some(&key), Request::UpdateSettings { settings: whole.clone() }).await),
+            "forbidden"
+        );
+        assert!(!settings(&core).await.mail_to_cloud, "still local");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        assert_eq!(ask(&core, Some(&app_key), rule(true)).await, Response::Ok);
+        assert!(settings(&core).await.mail_to_cloud);
+        let asked = waits(ask(&core, Some(&key), Request::UpdateSettings { settings: whole }).await);
+        assert_eq!(asked.command, "settings.update_settings", "with mail out, the settings as read change nothing");
+
+        let asked = waits(ask(&core, Some(&key), rule(false)).await);
+        let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+        assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        assert!(!settings(&core).await.mail_to_cloud, "local again once the person allowed it");
     }
 
     /// Task C.9: the voice status and test come from the assistant app; without it the status says
@@ -12635,7 +12684,7 @@ mod tests {
     }
 
     /// Issue #134 for an agent (engine B): with the lent key the access is the assistant's rights
-    /// without mail (never given to an agent) and without what the conversation switched off; with
+    /// without mail (not given to an agent under the default data rule) and without what the conversation switched off; with
     /// its own key exactly what the person set; the app key may do everything and gets `unsupported`.
     #[tokio::test]
     async fn a_lent_key_tells_its_access_without_what_it_never_gets() {

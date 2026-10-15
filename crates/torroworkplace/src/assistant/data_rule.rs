@@ -1,14 +1,27 @@
 //! The data rule of the assistant (task C.2, `docs/ki.md` principle 4): which results of its tools
-//! a model may read. Mail stays with models on the person's own computers unless a rule says
-//! otherwise; a model elsewhere reads "withheld by your data rule" instead.
+//! a model may read. Mail stays with models on the person's own computers unless the person lets it
+//! go to Claude Code and cloud models (setting `mail_to_cloud`, task C.17, [`DataRule`]); a model
+//! elsewhere reads "withheld by your data rule" instead.
 //!
 //! Per-source rules ("GitHub may go to the cloud, Messenger only local") are task KI.1. Until then
-//! the fixed default holds, and every decision goes through the functions here, so KI.1 replaces
-//! them and nothing else:
+//! the default holds with the one switch for mail, and every decision goes through the functions
+//! here, so KI.1 replaces them and nothing else:
 //!
 //! - [`place_of`]: where an AI account's model runs ([`Place`]);
-//! - [`for_model`]: a tool's answer as a model at a place may read it;
-//! - [`history_allowed`]: whether an earlier answer of the conversation may go to the model.
+//! - [`for_model`]: a tool's answer as a model at a place under the person's rule ([`Reader`]) may
+//!   read it;
+//! - [`history_allowed`]: whether an earlier answer of the conversation may go to the model;
+//! - [`kept_from`]: whether a command reads what the rule keeps from models elsewhere.
+//!
+//! With mail let out ([`DataRule::mail_to_cloud`]), a model elsewhere reads mail as a local one does:
+//! the answers of `mail.*`, the inbox entries of mail accounts, the senders in the inbox rules of
+//! mail accounts, a task made of a mail in a folder and the mail in a task's link. What stays home:
+//! the entries and rules of Nextcloud and Talk, the answers made of an inbox entry of any source
+//! (hiding a sender, muting, the statistics, a task or event made of an entry: the core does not
+//! tell which source the entry had, see below), the notes of the memory marked `local_only` (they
+//! may retell those too), and an earlier answer after `inbox.*` or a bot. The rule is read when an
+//! answer starts: switched off meanwhile, it holds from the next answer on; a note a model elsewhere
+//! kept while mail was let out is not marked and stays readable for it.
 //!
 //! What counts as mail content: every answer of a `mail.*` command but those that carry only what
 //! the assistant wrote or the folders' names ([`MAIL_ANSWERS_ALLOWED`]), the inbox entries whose
@@ -71,6 +84,35 @@ pub fn place_of(provider: AiProvider, server: &str) -> Place {
     }
 }
 
+/// What the person lets go to models outside their computers (task C.17): the setting
+/// `mail_to_cloud` as it is when a run starts. The default keeps mail local.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DataRule {
+    /// Mail may go to Claude Code and to models elsewhere as well.
+    pub mail_to_cloud: bool,
+}
+
+/// Who reads a tool's answer: a model at `place` under the person's `rule`. A [`Place`] alone is
+/// read under the default rule (mail local).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Reader {
+    pub place: Place,
+    pub rule: DataRule,
+}
+
+impl From<Place> for Reader {
+    fn from(place: Place) -> Reader {
+        Reader { place, rule: DataRule::default() }
+    }
+}
+
+impl Reader {
+    /// Whether this reader reads mail content: a local model, or any once mail is let out.
+    fn reads_mail(self) -> bool {
+        self.place == Place::Local || self.rule.mail_to_cloud
+    }
+}
+
 /// The answers of `mail.*` commands that hold no mail content: what the assistant wrote itself
 /// (a draft, that it was sent), the folders' names, `ok` and errors.
 const MAIL_ANSWERS_ALLOWED: &[&str] = &["ok", "mail-draft", "mail-sent", "mail-folders", "error"];
@@ -84,22 +126,28 @@ pub struct Screened {
     pub withheld: bool,
 }
 
-/// `response` of `request` as a model at `place` may read it ([`Place`]): unchanged for a local
-/// model; for one elsewhere without mail content (see the module's documentation). A whole answer
-/// withheld becomes `{"withheld": WITHHELD}`, an inbox entry of a mail account
-/// `{"id": …, "source": …, "withheld": WITHHELD}`, so the model can still name it.
-pub fn for_model(request: &Request, response: &Response, place: Place) -> Screened {
+/// `response` of `request` as `reader` may read it ([`Reader`], or a [`Place`] under the default
+/// rule): unchanged for a local model; for one elsewhere without what the rule keeps home (see the
+/// module's documentation). A whole answer withheld becomes `{"withheld": WITHHELD}`, an inbox
+/// entry of a mail account `{"id": …, "source": …, "withheld": WITHHELD}`, so the model can still
+/// name it.
+pub fn for_model(request: &Request, response: &Response, reader: impl Into<Reader>) -> Screened {
+    let reader = reader.into();
     let value = serde_json::to_value(response).unwrap_or_else(|err| json!({"error": err.to_string()}));
-    if place == Place::Local {
+    if reader.place == Place::Local {
         return Screened { value, withheld: false };
     }
+    let mail = reader.reads_mail();
     let result = value.get("result").and_then(Value::as_str).unwrap_or_default();
     let whole = match request {
-        request if request.operation().area() == Area::Mail => !MAIL_ANSWERS_ALLOWED.contains(&result),
+        request if request.operation().area() == Area::Mail => !mail && !MAIL_ANSWERS_ALLOWED.contains(&result),
+        // A task made of a mail in a folder (task E8.7a) holds that mail only.
+        Request::CreateTodoFromMail { .. } => !mail && result != "error",
         // Muting by trait and the statistics name senders, domains and lists of mail (tasks E8.6a,
-        // E8.8a); a task made of a mail takes its subject as title (task E8.7a), and so does an
-        // event made of an entry, with the line naming the mail in its description (task E8.5b).
-        // An AI's suggestion of a task or event retells the entry, a mail too (issue #120).
+        // E8.8a); a task made of an entry takes its title (task E8.7a), and so does an event made of
+        // one, with the line naming the mail in its description (task E8.5b); an AI's suggestion of a task or
+        // event retells the entry (issue #120). They work on entries of
+        // every source, Talk and Nextcloud too, so they stay home also with mail let out.
         Request::HideSender { .. }
         | Request::CreateTaskFromItem { .. }
         | Request::CreateEventFromItem { .. }
@@ -107,8 +155,7 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
         | Request::SuggestEventFromItem { .. }
         | Request::ListMuteOptions { .. }
         | Request::MuteItem { .. }
-        | Request::GetStats { .. }
-        | Request::CreateTodoFromMail { .. } => result != "error",
+        | Request::GetStats { .. } => result != "error",
         _ => false,
     };
     if whole {
@@ -116,22 +163,23 @@ pub fn for_model(request: &Request, response: &Response, place: Place) -> Screen
     }
     match response {
         Response::Items { items } => {
-            let shown: Vec<Value> = items.iter().map(item_for_remote).collect();
-            let withheld = items.iter().any(held_back);
+            let shown: Vec<Value> = items.iter().map(|item| item_for_remote(item, mail)).collect();
+            let withheld = items.iter().any(|item| held_back_under(item, mail));
             Screened { value: json!({ "result": result, "items": shown }), withheld }
         }
-        Response::Item { item } => {
-            Screened { value: json!({ "result": result, "item": item_for_remote(item) }), withheld: held_back(item) }
-        }
+        Response::Item { item } => Screened {
+            value: json!({ "result": result, "item": item_for_remote(item, mail) }),
+            withheld: held_back_under(item, mail),
+        },
         // The hits per rule (task E8.8a) stay home: counts of what a rule caught say nothing a model
         // needs. A rule by trait (task E8.6a) can name a mail's sender, domain or list in `facet`.
         Response::Rules { rules, .. } => {
-            let shown: Vec<Value> = rules.iter().map(rule_for_remote).collect();
-            let withheld =
-                rules.iter().any(|rule| rule.sender.is_some() || rule.domain.is_some() || rule.facet.is_some());
+            let shown: Vec<Value> = rules.iter().map(|rule| rule_for_remote(rule, mail)).collect();
+            let withheld = rules.iter().any(|rule| rule_held_back(rule, mail));
             Screened { value: json!({ "result": result, "rules": shown }), withheld }
         }
         // A task made of a mail carries the mail's subject and sender in `link.mail` (task E8.7a).
+        Response::Todos { .. } | Response::Todo { .. } if mail => Screened { value, withheld: false },
         Response::Todos { todos } => {
             let shown: Vec<Value> = todos.iter().map(todo_for_remote).collect();
             let withheld = todos.iter().any(names_a_mail);
@@ -161,18 +209,36 @@ pub fn reads_mail(name: &str) -> bool {
     name.starts_with("mail.") || name.starts_with("inbox.") || name == "bots.ask_bot"
 }
 
+/// Whether the command `name` reads what `rule` keeps from models elsewhere ([`reads_mail`]): with
+/// mail let out ([`DataRule::mail_to_cloud`]) only `inbox.*` and asking a bot, which may still have read
+/// entries of Nextcloud and Talk.
+pub fn kept_from(name: &str, rule: DataRule) -> bool {
+    reads_mail(name) && !(rule.mail_to_cloud && name.starts_with("mail."))
+}
+
 /// An inbox entry from a mail account is mail content; one of Nextcloud or Talk (task E5.2) is held
 /// back the same way, messages and notifications of people the person works with. GitHub and ntfy
 /// go through (module docs). The AI's suggestions of a task or event (issue #120, `crate::suggest`)
-/// ask the same: such an entry goes only to a local model.
+/// ask the same: such an entry goes only to a local model. The default rule; the assistant asks
+/// [`held_back_under`] with the person's switch for mail.
 pub fn held_back(item: &Item) -> bool {
-    matches!(item.source.kind, SourceKind::Mail | SourceKind::Nextcloud | SourceKind::Talk)
+    held_back_under(item, false)
 }
 
-/// `item` for a model elsewhere: as it is, or for an entry of a mail account, Nextcloud or Talk
-/// only its id and source.
-fn item_for_remote(item: &Item) -> Value {
-    if held_back(item) {
+/// [`held_back`] with `mail` let out or not (task C.17): an entry of a mail account only while it is
+/// not, one of Nextcloud or Talk whatever the switch says.
+fn held_back_under(item: &Item, mail: bool) -> bool {
+    match item.source.kind {
+        SourceKind::Mail => !mail,
+        SourceKind::Nextcloud | SourceKind::Talk => true,
+        _ => false,
+    }
+}
+
+/// `item` for a model elsewhere: as it is, or for an entry held back ([`held_back`]) only its id
+/// and source.
+fn item_for_remote(item: &Item, mail: bool) -> Value {
+    if held_back_under(item, mail) {
         return json!({ "id": item.id, "source": item.source.key(), "withheld": WITHHELD });
     }
     serde_json::to_value(item).unwrap_or(Value::Null)
@@ -195,11 +261,21 @@ fn todo_for_remote(todo: &torro_pim::Todo) -> Value {
     value
 }
 
+/// Whether a rule of the inbox names what stays home: a sender, a domain or a trait's value
+/// (`facet`, task E8.6a: a sender, a domain, a list), unless it is a rule of a mail account and
+/// `mail` is let out.
+fn rule_held_back(rule: &Rule, mail: bool) -> bool {
+    let names = rule.sender.is_some() || rule.domain.is_some() || rule.facet.is_some();
+    names && !(mail && rule.source.kind == SourceKind::Mail)
+}
+
 /// A rule of the inbox for a model elsewhere: the sender and domain it names are a mail's, and so
-/// can be the value of its trait (`facet`, task E8.6a: a sender, a domain, a list), so all three are
-/// withheld.
-fn rule_for_remote(rule: &Rule) -> Value {
+/// can be the value of its trait, so all three are withheld ([`rule_held_back`]).
+fn rule_for_remote(rule: &Rule, mail: bool) -> Value {
     let mut value = serde_json::to_value(rule).unwrap_or(Value::Null);
+    if !rule_held_back(rule, mail) {
+        return value;
+    }
     if let Some(object) = value.as_object_mut() {
         for field in ["sender", "domain", "facet"] {
             if let Some(named) = object.get_mut(field) {
@@ -211,15 +287,17 @@ fn rule_for_remote(rule: &Rule) -> Value {
 }
 
 /// Whether an earlier answer of the conversation, written by `answered_by` in a turn that used the
-/// commands `commands` (catalogue names), may go to the model of `engine` at `place`.
+/// commands `commands` (catalogue names), may go to the model of `engine` read as `reader`.
 ///
 /// A local model reads everything. A model elsewhere reads earlier answers unless that turn read
-/// mail or the inbox and another engine wrote the answer: a local model may have retold a mail
-/// there. Its own answers never held mail content (it read [`WITHHELD`] instead), and of another
-/// engine the core may no longer know where it ran, so those are withheld.
-pub fn history_allowed(commands: &[&str], answered_by: &str, engine: &str, place: Place) -> bool {
-    let read_mail = commands.iter().any(|name| reads_mail(name));
-    place == Place::Local || !read_mail || answered_by == engine
+/// what the rule keeps home ([`kept_from`]: mail unless it is let out, the inbox, a bot) and another
+/// engine wrote the answer: a local model may have retold it there. Its own answers never held such
+/// content (it read [`WITHHELD`] instead), and of another engine the core may no longer know where
+/// it ran, so those are withheld.
+pub fn history_allowed(commands: &[&str], answered_by: &str, engine: &str, reader: impl Into<Reader>) -> bool {
+    let reader = reader.into();
+    let read_kept = commands.iter().any(|name| kept_from(name, reader.rule));
+    reader.place == Place::Local || !read_kept || answered_by == engine
 }
 
 #[cfg(test)]
@@ -553,6 +631,80 @@ mod tests {
         let screened = for_model(&remember, &kept, Place::Remote);
         assert!(screened.withheld && !screened.value.to_string().contains("ACME"));
         assert!(reads_mail("mail.get_message") && reads_mail("inbox.list_items") && !reads_mail("tasks.list_todos"));
+    }
+
+    /// Task C.17: with mail let out, a model elsewhere reads mail, the mail entries of the inbox,
+    /// the senders in its rules and the mail of a task; the entries of Nextcloud and Talk and the
+    /// notes kept after mail stay home.
+    #[test]
+    fn mail_let_out_reaches_remote_models_and_messages_stay_home() {
+        let out = Reader { place: Place::Remote, rule: DataRule { mail_to_cloud: true } };
+        let search: Request =
+            serde_json::from_value(json!({"method": "mail.search_messages", "limit": 10})).expect("a search");
+        let page = Response::MailMessages {
+            messages: Vec::<MessageSummary>::new(),
+            cursor: None,
+            source: MailSource::Cache,
+            complete: true,
+            incomplete_reason: None,
+            highlights: Vec::new(),
+            total_estimate: None,
+        };
+        assert!(for_model(&search, &page, Place::Remote).withheld, "under the default rule");
+        let screened = for_model(&search, &page, out);
+        assert!(!screened.withheld);
+        assert_eq!(screened.value["result"], "mail-messages");
+
+        let list: Request = serde_json::from_value(json!({"method": "inbox.list_items"})).expect("a list");
+        let cloud = "anna@cloud.example.org";
+        let items = Response::Items {
+            items: vec![
+                item("a1", mail_source(), "Invoice 42"),
+                item("t1", SourceRef::talk(cloud), "Lena: are you coming?"),
+                item("n1", SourceRef::nextcloud(cloud), "Jonas shared Budget.ods"),
+            ],
+        };
+        let screened = for_model(&list, &items, out);
+        let text = screened.value.to_string();
+        assert!(screened.withheld && text.contains("Invoice 42"), "{text}");
+        assert!(!text.contains("Lena") && !text.contains("Budget"), "{text}");
+
+        let created = Utc.with_ymd_and_hms(2026, 10, 14, 9, 0, 0).single().expect("valid time");
+        let kept = Note { id: "5e6f7a8b".into(), text: "ACME owes 400 €.".into(), created, local_only: true };
+        let notes = Response::Memories { notes: vec![kept] };
+        assert!(!for_model(&Request::ListMemories, &notes, out).value.to_string().contains("ACME"));
+
+        let rule = Rule {
+            id: "r1".into(),
+            source: mail_source(),
+            sender: Some("boss@acme.example".into()),
+            domain: None,
+            effect: torro_inbox::RuleEffect::Muted,
+            created,
+            facet: None,
+            until: None,
+        };
+        let talk_rule =
+            Rule { id: "r2".into(), source: SourceRef::talk(cloud), sender: Some("lena".into()), ..rule.clone() };
+        let rules: Request = serde_json::from_value(json!({"method": "inbox.list_rules"})).expect("rules");
+        let screened = for_model(&rules, &Response::Rules { rules: vec![rule, talk_rule], hits: Vec::new() }, out);
+        let text = screened.value.to_string();
+        assert!(screened.withheld && text.contains("acme") && !text.contains("lena"), "{text}");
+
+        // Answers made of an entry of any source stay home: it may be one of Talk.
+        for method in [
+            json!({"method": "inbox.list_mute_options", "id": "t1"}),
+            json!({"method": "inbox.get_stats", "range": "week"}),
+        ] {
+            let request: Request = serde_json::from_value(method).expect("a request");
+            assert!(for_model(&request, &Response::Ok, out).withheld, "{request:?}");
+        }
+
+        let (ollama, openrouter) = ("ai:ollama@localhost:11434", "ai:openrouter@openrouter.ai");
+        assert!(history_allowed(&["mail.get_message"], ollama, openrouter, out));
+        assert!(!history_allowed(&["inbox.list_items"], ollama, openrouter, out), "Talk may be in it");
+        assert!(!kept_from("mail.get_message", out.rule) && kept_from("mail.get_message", DataRule::default()));
+        assert!(kept_from("inbox.list_items", out.rule) && kept_from("bots.ask_bot", out.rule));
     }
 
     #[test]

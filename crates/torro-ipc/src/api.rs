@@ -682,7 +682,8 @@ pub enum Lack {
     SwitchedOff { area: Area },
     /// The engine that runs never gets the area, whatever the rights say: a coding agent answers
     /// outside the person's computers, and the data rule keeps mail on them
-    /// (`NEVER_TO_AGENTS` in the core, task C.7).
+    /// (`NEVER_TO_AGENTS` in the core, task C.7) unless the person lets mail go to Claude Code and
+    /// cloud models (setting `mail_to_cloud`, task C.17).
     NeverToAgents { area: Area },
     /// The person set the conversation to read only (issue #132,
     /// [`crate::assistant::Mode::ReadOnly`]): nothing that changes something runs there.
@@ -779,8 +780,10 @@ impl Lack {
                 format!("the person switched off {} for this conversation; do not try it again here", area.name())
             }
             Lack::NeverToAgents { area } => format!(
-                "{} is never given to a coding agent that drives the assistant: the person's data rule keeps it on \
-                 their own computers. Changing the rights does not change this; say so instead of trying",
+                "{} is not given to a coding agent that drives the assistant: the person's data rule keeps it on \
+                 their own computers. Changing the rights does not change this; only the person can let it go to \
+                 Claude Code and cloud models, with \"Mail to Claude Code and cloud models\" in Torro Workplace, \
+                 Assistant. Say so instead of trying",
                 area.name()
             ),
             Lack::ReadOnly => {
@@ -889,13 +892,18 @@ pub const BOT_CLIENT: &str = "bot";
 impl Request {
     /// Whether this request may come from the app key only because of a value it carries, while
     /// its command is open to clients with the right rights ([`Rights::allows_request`]): setting
-    /// `voice_enabled` to anything but `false` (point 6, the microphone). A value that is no
-    /// boolean counts as switching on: it is refused, not tried.
+    /// `voice_enabled` (point 6, the microphone) or `mail_to_cloud` (task C.17, mail to models
+    /// outside the person's computers) to anything but `false`. A value that is no boolean counts
+    /// as switching on: it is refused, not tried.
     ///
-    /// `settings.update_settings` carries the whole settings, so whether it switches the
-    /// microphone on depends on what is stored; the core checks that itself.
+    /// `settings.update_settings` carries the whole settings, so whether it switches one of them
+    /// on depends on what is stored; the core checks that itself.
     pub fn kept_for_people(&self) -> bool {
-        matches!(self, Request::SetSetting { key: crate::SettingKey::VoiceEnabled, value } if value != &serde_json::Value::Bool(false))
+        matches!(
+            self,
+            Request::SetSetting { key: crate::SettingKey::VoiceEnabled | crate::SettingKey::MailToCloud, value }
+                if value != &serde_json::Value::Bool(false)
+        )
     }
 }
 
@@ -2132,7 +2140,9 @@ static SET_SETTING: Command = Command {
                   model and effort optional, or null for the one used last) or how mail shows in the inbox's \
                   reader: `mail_view` (\"html\" formatted, the default, or \"text\"; where a mail with HTML \
                   starts) or `mail_appearance` (\"app\" like the suite, the default, \"light\" or \"dark\"; only \
-                  the colours of the mail's content).",
+                  the colours of the mail's content) or `mail_to_cloud` (only false: keeps mail with models on the \
+                  person's own computers again; letting mail go to Claude Code and cloud models is for a person, \
+                  true is forbidden).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -3118,7 +3128,10 @@ mod tests {
             assert_eq!(lack.in_rights(), lifted, "{lack:?}");
             assert!(!lack.message().is_empty());
         }
-        assert!(Lack::NeverToAgents { area: Area::Mail }.message().contains("never given"));
+        assert!(
+            Lack::NeverToAgents { area: Area::Mail }.message().contains("not given to a coding agent")
+                && Lack::NeverToAgents { area: Area::Mail }.message().contains("Mail to Claude Code and cloud models")
+        );
         assert!(Lack::SwitchedOff { area: Area::Mail }.message().contains("this conversation"));
         assert!(Lack::Level { area: Area::Mail, needs: Access::Delete }.message().contains("full access to mail"));
         let wire = serde_json::to_value(Lack::Level { area: Area::Mail, needs: Access::Write }).expect("serializes");
@@ -3737,6 +3750,28 @@ mod tests {
         assert_eq!(Request::VoiceStatus.operation().access, Access::Read);
     }
 
+    /// Task C.17: no client lets mail go to Claude Code and cloud models, not even with every
+    /// right, so no agent gets mail by its own command; keeping mail local again is an ordinary
+    /// admin change.
+    #[test]
+    fn only_people_let_mail_go_to_the_cloud() {
+        use crate::SettingKey;
+        let rule = |value| Request::SetSetting { key: SettingKey::MailToCloud, value };
+        let (on, off) = (rule(serde_json::json!(true)), rule(serde_json::json!(false)));
+        assert!(on.kept_for_people() && !off.kept_for_people());
+        assert!(rule(serde_json::json!(1)).kept_for_people(), "anything but false counts as on");
+        for level in LEVELS {
+            for admin in [false, true] {
+                let mut rights = RightsTemplate::FullAccess.rights();
+                for area in Area::ALL {
+                    rights.areas.insert(area, AreaRights { level, admin });
+                }
+                assert!(!rights.allows_request(&on), "{level:?} admin {admin}");
+                assert_eq!(rights.allows_request(&off), admin, "{level:?} admin {admin}");
+            }
+        }
+    }
+
     /// Decision 3: on its first start the assistant is offered reading calendars, tasks and the
     /// inbox, nothing else.
     #[test]
@@ -4353,7 +4388,8 @@ mod tests {
                 "voice",
                 "assistant_default",
                 "mail_view",
-                "mail_appearance"
+                "mail_appearance",
+                "mail_to_cloud"
             ]
         );
 

@@ -40,7 +40,7 @@ Der Assistent hat dafür zwei **Antriebe**; Oberfläche, Befehle und Rechte sind
 | Anbieter, in dieser Reihenfolge | 1. **Ollama** und andere lokale Server (OpenAI-kompatibel, ohne Schlüssel) · 2. **OpenRouter** (OpenAI-kompatibel, ein Schlüssel, Filter „open weights“) · 3. eigener Server · 4. Mistral, Anthropic, OpenAI, Google | Claude Code, Codex, Gemini CLI |
 | Werkzeuge | der Kern gibt dem Modell die Befehle aus dem Katalog als Werkzeuge (Function Calling) und führt sie selbst aus | der Agent spricht mit `torroworkplace mcp`, wie heute |
 | Kontext | Skill als Systemprompt | Skill als zusätzlicher Systemprompt (`--append-system-prompt`) |
-| Daten | lokal bleiben lokal; Datenregel je Quelle aus [ki.md](ki.md) gilt (Mail standardmäßig nur an lokale Modelle) | gehen an den Anbieter des Agenten |
+| Daten | lokal bleiben lokal; Datenregel je Quelle aus [ki.md](ki.md) gilt (Mail standardmäßig nur an lokale Modelle, Schalter `mail_to_cloud` aus C.17) | gehen an den Anbieter des Agenten; Mail nur mit dem Schalter `mail_to_cloud` (C.17) |
 | Voraussetzung | KI.1 aus [ki.md](ki.md) (KI-Konten im Kern) | Agent installiert und verbunden |
 
 **Vorschlag:** C beginnt mit **A**: KI.1 wird dafür vorgezogen, zuerst mit dem OpenAI-kompatiblen

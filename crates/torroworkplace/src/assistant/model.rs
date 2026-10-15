@@ -38,7 +38,7 @@ use torro_ipc::assistant::{Entry, EntryContent, Mode, Note};
 use torro_ipc::bots::Bot;
 use torro_ipc::{ApprovalState, ClientInfo, Request, Response};
 
-use super::data_rule::{self, Place};
+use super::data_rule::{self, DataRule, Place, Reader};
 use super::tools::{self, FIND_TOOLS};
 use super::{Assistant, Partial, prompt};
 
@@ -54,6 +54,13 @@ pub trait Host: Send + Sync {
     /// ([`data_rule::place_of`]). Errors as [`AiError`] says (`NotFound` for no such account,
     /// `NoKey` …).
     fn model<'a>(&'a self, engine: &'a str) -> BoxFuture<'a, Result<ModelAccess, AiError>>;
+
+    /// What the person lets go to models outside their computers (task C.17, the setting
+    /// `mail_to_cloud`), read when an answer starts. The default keeps mail local, so a host that
+    /// cannot tell fails closed.
+    fn data_rule(&self) -> DataRule {
+        DataRule::default()
+    }
 
     /// Runs `request` as the assistant's own client, exactly as a request with its key would run
     /// (`Core::handle_from`): its rights of now (`forbidden` when they do not cover it, and always
@@ -216,8 +223,8 @@ pub trait Host: Send + Sync {
     /// assistant checks that the person named the bot or confirmed it there
     /// ([`crate::bots::assistant_may_ask`]) and runs the bot for it with what both clients may and
     /// without the areas `without` (the conversation's switched-off ones); `read_mail`: the
-    /// conversation read mail, so a bot whose model runs elsewhere is not asked (the data rule).
-    /// Answers when the bot's
+    /// conversation read what the data rule keeps from models elsewhere (mail unless the person let
+    /// it out, task C.17), so a bot whose model runs elsewhere is not asked. Answers when the bot's
     /// run is done: [`Response::Conversation`] of the bot's conversation with the entries of this
     /// run, or the error answer (`forbidden` with a word for the model when the person did not ask
     /// for the bot). Never waits for an approval of the ask itself: the person's words are the yes.
@@ -370,6 +377,11 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         EntryContent::Tool { name, .. } => data_rule::reads_mail(name),
         _ => false,
     });
+    let rule = host.data_rule();
+    let read_kept = job.history.iter().any(|entry| match &entry.content {
+        EntryContent::Tool { name, .. } => data_rule::kept_from(name, rule),
+        _ => false,
+    });
     let untrusted = job.history.iter().any(|entry| match &entry.content {
         EntryContent::Tool { name, .. } => tools::may_have_read_untrusted(name),
         _ => false,
@@ -382,7 +394,9 @@ pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: 
         loaded: BTreeSet::new(),
         persona,
         memory,
+        rule,
         read_mail,
+        read_kept,
         untrusted,
     };
     if let Err(error) = run.go().await {
@@ -403,10 +417,17 @@ struct Answering {
     persona: String,
     /// The notes of the memory, read when the answer started.
     memory: Vec<Note>,
+    /// What the person lets go to models elsewhere, read when the answer started (task C.17).
+    rule: DataRule,
     /// The conversation read mail content: a tool of an earlier turn read mail or the inbox, or a
     /// tool of this answer gave what the data rule keeps from models elsewhere. A note a local
     /// model keeps from then on is marked `local_only` ([`Answering::kept_local`]).
     read_mail: bool,
+    /// The conversation read what [`Answering::rule`] keeps from models elsewhere: an earlier turn's
+    /// tool ([`data_rule::kept_from`]), or this answer's that the rule screened. Then no bot whose
+    /// model runs elsewhere is asked ([`Host::ask_bot`]). Under the default rule the same as
+    /// [`Answering::read_mail`].
+    read_kept: bool,
     /// The conversation read data from outside the suite: a tool of an earlier turn that may have
     /// ([`tools::may_have_read_untrusted`]; its answer is not kept, so counted when it might), or an
     /// answer of this one the tools marked `untrusted`. From then on every note waits for a person
@@ -455,8 +476,9 @@ impl Answering {
         };
         let small = tools::is_small(&model, access.place == Place::Local);
         lock(&self.job.partial).model = Some(model.clone());
+        let reader = Reader { place: access.place, rule: self.rule };
         let mut messages = vec![ChatMessage::system(String::new())];
-        messages.extend(history(&self.job.history, &self.job.engine, access.place));
+        messages.extend(history(&self.job.history, &self.job.engine, reader));
         for _ in 0..self.limits.max_steps {
             let rights = self.rights();
             let allowed = tools::allowed_in(self.job.actor.kind(), rights.as_ref(), &self.job.without, self.job.mode);
@@ -479,6 +501,7 @@ impl Answering {
                 engine: &self.job.engine,
                 model: &model,
                 place: access.place,
+                mail_to_cloud: self.rule.mail_to_cloud,
                 memory: &self.memory,
             };
             let system = match &self.job.bot {
@@ -510,7 +533,7 @@ impl Answering {
             }
             messages.push(ChatMessage::assistant(reply.text, reply.tool_calls.clone()));
             for call in &reply.tool_calls {
-                let Some(result) = self.call(call, access.place).await else { return Ok(()) };
+                let Some(result) = self.call(call, reader).await else { return Ok(()) };
                 messages.push(ChatMessage::tool(call.id.clone(), result));
             }
         }
@@ -547,7 +570,7 @@ impl Answering {
 
     /// Runs the tool call `call` and answers what the model reads of it; `None` when the run was
     /// stopped meanwhile.
-    async fn call(&mut self, call: &ToolCall, place: Place) -> Option<String> {
+    async fn call(&mut self, call: &ToolCall, reader: Reader) -> Option<String> {
         if call.name == FIND_TOOLS {
             return Some(self.find_tools(call));
         }
@@ -574,7 +597,7 @@ impl Answering {
             return self.refused(name, input, "forbidden", &lack.message(), Some(lack)).await;
         }
         let request = match tools::request_for(&call.name, &call.arguments) {
-            Ok(request) => self.kept_local(request, place),
+            Ok(request) => self.kept_local(request, reader.place),
             Err(message) => return self.refused(name, input, "error", &message, None).await,
         };
         let area = request.operation().area();
@@ -587,11 +610,12 @@ impl Answering {
                         let input = super::delegate::with_conversation(input, &asked.conversation);
                         let bot = self.bot_name_of(&request).await;
                         self.read_mail |= asked.read_mail;
+                        self.read_kept |= asked.kept(self.rule);
                         self.untrusted |= asked.untrusted;
                         let summary = asked.summary(&bot);
                         let error = asked.error.clone();
                         let line = EntryContent::Tool { name, input, summary, error, lack: None };
-                        return self.add(line, false).await.then(|| asked.for_model(place).to_string());
+                        return self.add(line, false).await.then(|| asked.for_model(reader).to_string());
                     }
                     // Refused: the core's message tells the model what to do (propose the bot).
                     None => {
@@ -620,7 +644,9 @@ impl Answering {
                 // What a model elsewhere could not read is mail content: from now on a note a
                 // local model keeps may retell it.
                 self.read_mail |= data_rule::for_model(&request, &response, Place::Remote).withheld;
-                let screened = data_rule::for_model(&request, &response, place);
+                let elsewhere = Reader { place: Place::Remote, rule: self.rule };
+                self.read_kept |= data_rule::for_model(&request, &response, elsewhere).withheld;
+                let screened = data_rule::for_model(&request, &response, reader);
                 // Data from outside the suite (task C.11), judged on the whole answer: also what the
                 // data rule kept from this model counts, so no screening can hide it.
                 let whole = serde_json::to_value(response.as_ref()).unwrap_or(Value::Null);
@@ -720,7 +746,9 @@ impl Answering {
     async fn run(&self, request: Request) -> Option<Outcome> {
         let (host, engine, untrusted) = (Arc::clone(&self.host), self.job.engine.clone(), self.untrusted);
         let (actor, mode) = (self.job.actor.clone(), self.job.mode);
-        let (main, without, read_mail) = (self.job.conversation.clone(), self.job.without.clone(), self.read_mail);
+        // What the rule keeps home, not all mail: with mail let out (task C.17) a bot elsewhere may
+        // be asked after mail, never after entries of Nextcloud or Talk.
+        let (main, without, read_mail) = (self.job.conversation.clone(), self.job.without.clone(), self.read_kept);
         // Asking a bot (task B.2) needs the conversation: the person must have asked for the bot here.
         let ran = tokio::spawn(async move {
             match (&actor, &request) {
@@ -764,19 +792,20 @@ async fn default_model(provider: &dyn Provider) -> Result<String, AiError> {
         .ok_or_else(|| AiError::NotFound(tr("The AI account offers no model that can use tools.").into()))
 }
 
-/// The conversation's entries as messages for the model of `engine` at `place`: the person's
+/// The conversation's entries as messages for the model of `engine` read as `reader`: the person's
 /// messages and the answers, one answer message per turn (several servers want the two to take
 /// turns), tool lines left out (their results are not kept). An answer the data rule keeps from
 /// the model ([`data_rule::history_allowed`]) is replaced by a note; a turn without an answer gets
 /// one too.
-pub(super) fn history(entries: &[Entry], engine: &str, place: Place) -> Vec<ChatMessage> {
+pub(super) fn history(entries: &[Entry], engine: &str, reader: impl Into<Reader>) -> Vec<ChatMessage> {
+    let reader = reader.into();
     let mut messages = Vec::new();
     let mut turn: Option<Turn> = None;
     for entry in entries {
         match &entry.content {
             EntryContent::Message { text, .. } => {
                 if let Some(done) = turn.take() {
-                    messages.push(done.answer(engine, place));
+                    messages.push(done.answer(engine, reader));
                 }
                 messages.push(ChatMessage::user(text.clone()));
                 turn = Some(Turn::default());
@@ -805,12 +834,12 @@ struct Turn {
 }
 
 impl Turn {
-    fn answer(self, engine: &str, place: Place) -> ChatMessage {
+    fn answer(self, engine: &str, reader: Reader) -> ChatMessage {
         let commands: Vec<&str> = self.commands.iter().map(String::as_str).collect();
         let texts: Vec<String> = self
             .answers
             .into_iter()
-            .map(|(text, by)| match data_rule::history_allowed(&commands, &by, engine, place) {
+            .map(|(text, by)| match data_rule::history_allowed(&commands, &by, engine, reader) {
                 true => text,
                 false => format!("[An earlier answer, {}.]", data_rule::WITHHELD),
             })
