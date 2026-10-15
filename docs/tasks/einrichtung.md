@@ -129,11 +129,16 @@ W.10 Sichtprüfung und API-Prüfung am Ende
   **MCP:** `ai_find_local_servers`, `settings_set_setting`; `ConnectAi` Never (Schlüssel)
 
 ### W.9 Auslöser
-- [ ] erledigt
+- [x] erledigt (die Overview-Kachel in Mini und Leiste zeigt die offene Einrichtung noch nicht)
 - **Modell:** Haiku · **Braucht:** W.4 · **Dateien:** `crates/torroworkplace/src/{core,daemon}.rs`,
-  `crates/torroworkplace/src/ui/{overview,general}.rs`, `crates/torro-gui/src/connect.rs`
-- Dienst öffnet die Einrichtung beim ersten Start ohne Konto; Overview-Karte „Finish setup“; General
-  „Run setup again“; „Open Settings“ der Apps führt in den passenden Schritt, solange die Einrichtung offen ist.
+  `crates/torroworkplace/src/ui/{mod,launch,overview,general}.rs`, `crates/torro-gui/src/connect.rs`,
+  `crates/{torrocalendar,torrotasks}/src/app.rs`, `crates/torro-core/src/i18n/de.rs`
+- Der Dienst öffnet `torroworkplace ui --setup` beim Start mit Tray, solange die Einrichtung nie abgeschlossen oder
+  verschoben wurde und kein Konto da ist (`offers_setup`); kopflos nie. Overview: „Finish setup“ (verschoben) bzw.
+  „New in setup“ (neue Schritte seit dem letzten Durchlauf). General: „Run setup again“. Die Apps ohne Konto
+  (Kalender, Aufgaben) öffnen mit „Open Settings“ `--setup-if-open --step <app>`: die Einrichtung bei ihrem Schritt,
+  solange sie nicht fertig ist, sonst die Konten.
+- **API/MCP:** nichts Neues (Stand über `settings.get_settings`)
 
 ### W.10 Prüfen
 - [ ] erledigt

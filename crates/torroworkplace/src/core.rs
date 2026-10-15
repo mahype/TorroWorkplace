@@ -65,6 +65,21 @@ fn control_centre_command(program: String, section: Section) -> Vec<String> {
     command
 }
 
+/// The command line that starts the first-run setup (task W.9): `torroworkplace ui --setup`.
+fn setup_command(program: String) -> Vec<String> {
+    let mut command = AppId::WORKPLACE.command(program);
+    command.push("--setup".to_string());
+    command
+}
+
+/// Whether the core opens the first-run setup as it starts (task W.9, `docs/einrichtung.md`, "Wann
+/// sie erscheint"): while it was never finished or put off and there is no account yet. An
+/// installation from before the setup has accounts, so it is left alone; the overview offers the
+/// setup there instead.
+pub(crate) fn offers_setup(settings: &torro_core::settings::Settings, accounts: usize) -> bool {
+    settings.setup.state == torro_core::settings::SetupState::Pending && accounts == 0
+}
+
 /// Starts a new control centre on `section`: the accounts page, where a person finishes what a
 /// client asked for (`accounts.connect_github`).
 fn start_control_centre(section: Section) -> Result<(), String> {
@@ -1017,6 +1032,23 @@ impl Core {
     /// The inbox, for the daemon's routine (waking snoozed entries, cleaning up).
     pub fn inbox(&self) -> &Inbox {
         &self.inbox
+    }
+
+    /// Opens the first-run setup when [`offers_setup`] says so (task W.9): the daemon calls it once
+    /// as it starts with a tray, never headless. Reading the accounts or starting the window may
+    /// fail; then nothing opens and the overview still offers the setup.
+    pub async fn offer_setup(&self) {
+        let settings = self.settings.current();
+        let accounts = tokio::task::spawn_blocking(|| torro_core::account::load().map(|accounts| accounts.len()))
+            .await
+            .ok()
+            .and_then(Result::ok);
+        if accounts.is_some_and(|accounts| offers_setup(&settings, accounts)) {
+            let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+            if let Err(err) = SystemLauncher.spawn(&setup_command(program)) {
+                eprintln!("torroworkplace: cannot open the setup: {err}");
+            }
+        }
     }
 
     /// Starts the background work [`Core::new`] leaves out: asks the person again about the
@@ -6317,6 +6349,20 @@ mod tests {
 
     fn started(section: Section) -> usize {
         STARTED.lock().expect("lock").iter().filter(|s| **s == section).count()
+    }
+
+    /// Task W.9: the setup opens by itself only on a first start without accounts.
+    #[test]
+    fn the_setup_opens_on_a_first_start_without_accounts_only() {
+        use torro_core::settings::{Settings, Setup, SetupState};
+        let fresh = Settings::default();
+        assert!(offers_setup(&fresh, 0));
+        assert!(!offers_setup(&fresh, 1), "an installation from before the setup");
+        for state in [SetupState::Skipped, SetupState::Done] {
+            let settings = Settings { setup: Setup { state, version: Setup::VERSION }, ..Settings::default() };
+            assert!(!offers_setup(&settings, 0), "{state:?}");
+        }
+        assert_eq!(setup_command("/bin/torroworkplace".into()), ["/bin/torroworkplace", "ui", "--setup"]);
     }
 
     #[tokio::test]

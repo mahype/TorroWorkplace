@@ -258,6 +258,11 @@ async fn serve(shows: Shows) -> Result<(), String> {
     // The tray shows whether the voice listener listens or records (task C.9).
     let voice_changes = core.voice_changes();
     let front = Front::start(&daemon, shows, core.snapshot().await).await?;
+    // A first start without accounts opens the setup (task W.9); a headless core opens no window.
+    if !matches!(front, Front::None) {
+        let core = Arc::clone(&core);
+        tokio::spawn(async move { core.offer_setup().await });
+    }
     tokio::spawn(refresher(Arc::clone(&core), refresh_rx, front.clone()));
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(inbox_changes, refresh_tx.clone()));

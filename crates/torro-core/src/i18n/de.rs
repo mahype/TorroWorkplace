@@ -360,6 +360,23 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("vLLM, llama.cpp, LocalAI or a server of your own", "vLLM, llama.cpp, LocalAI oder ein eigener Server"),
     ("{seat} · open models from many makers", "{seat} · offene Modelle vieler Hersteller"),
     ("{seat} · open weights", "{seat} · offene Gewichte"),
+    // Control centre: when the setup shows (W.9)
+    ("Continue setup", "Einrichtung fortsetzen"),
+    ("Finish setup", "Einrichtung abschließen"),
+    ("First-run setup", "Ersteinrichtung"),
+    ("New in setup", "Neu in der Einrichtung"),
+    (
+        "Nextcloud, components, accounts and AI, step by step",
+        "Nextcloud, Komponenten, Konten und KI, Schritt für Schritt",
+    ),
+    ("Open setup", "Einrichtung öffnen"),
+    ("Run setup again", "Einrichtung erneut starten"),
+    ("The setup has steps you have not seen yet.", "Die Einrichtung hat Schritte, die du noch nicht kennst."),
+    ("What is connected stays; the steps show it.", "Was verbunden ist, bleibt; die Schritte zeigen es."),
+    (
+        "You put the setup off. Continue where you like; everything connected is kept.",
+        "Du hast die Einrichtung verschoben. Mach weiter, wo du willst; alles Verbundene bleibt.",
+    ),
     // Command line (torroworkplace ctl clients)
     (
         "--kind, --agent and --template only apply to ctl clients add",

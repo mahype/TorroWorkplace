@@ -111,6 +111,8 @@ pub enum Message {
     ReloadDesigns,
     /// "Open designs folder".
     OpenDesignsFolder,
+    /// "Run setup again" (task W.9).
+    RunSetup,
 }
 
 pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
@@ -131,6 +133,7 @@ pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
         Message::Design(id) => return Action::Design(id),
         Message::ReloadDesigns => return Action::ListDesigns,
         Message::OpenDesignsFolder => return Action::OpenDesignsFolder,
+        Message::RunSetup => return Action::OpenSetup,
     };
     Action::Send(Request::SetSetting { key, value })
 }
@@ -164,6 +167,18 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
     );
 
+    let run = widgets::text_button(None, tr("Run setup again"), style::button::secondary, Some(Message::RunSetup));
+    let setup = widgets::group(
+        tr("Setup"),
+        vec![setting_row(
+            None,
+            tr("First-run setup"),
+            Some(tr("Nextcloud, components, accounts and AI, step by step").to_string()),
+            run,
+        )],
+        Some(tr("What is connected stays; the steps show it.").to_string()),
+    );
+
     let calendar = widgets::group(
         tr("Calendar"),
         vec![setting_row(None, tr("Night"), None, night_control(settings.night))],
@@ -173,7 +188,7 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
     );
 
-    column![language, calendar, startup].spacing(layout::section_gap()).into()
+    column![language, calendar, startup, setup].spacing(layout::section_gap()).into()
 }
 
 /// The page Appearance: light or dark, the design pack, the zoom.

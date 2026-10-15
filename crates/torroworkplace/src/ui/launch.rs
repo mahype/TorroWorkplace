@@ -268,8 +268,10 @@ impl Open {
 /// - `--design <id>`: draw with this design pack instead of the stored one (task L.3); needs
 ///   `--demo`. An id that is not a valid pack is refused with the valid ones.
 /// - `--setup`: open the first-run setup (task W.4, `docs/einrichtung.md`) instead of a section;
-///   `--step <step>` starts it at that step (needs `--setup`). The core opens it so on a first
-///   start without accounts.
+///   `--step <step>` starts it at that step (needs `--setup` or `--setup-if-open`). The core opens
+///   it so on a first start without accounts.
+/// - `--setup-if-open`: open the setup as long as it is not done, else the `--section` (task W.9):
+///   what an app's "Open Settings" sends, with the app's step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub section: Section,
@@ -281,6 +283,8 @@ pub struct Launch {
     pub design: Option<String>,
     /// `--setup`: the step the setup starts at; `None` without the setup.
     pub setup: Option<super::setup::Step>,
+    /// `--setup-if-open`: [`Launch::setup`] only while the setup is not done (task W.9).
+    pub setup_if_open: bool,
 }
 
 impl Default for Launch {
@@ -293,6 +297,7 @@ impl Default for Launch {
             appearance: None,
             design: None,
             setup: None,
+            setup_if_open: false,
         }
     }
 }
@@ -318,7 +323,7 @@ impl fmt::Display for LaunchError {
                 write!(f, "unknown value {value:?} for {flag}; valid values: {valid}")
             }
             LaunchError::NeedsDemo(flag) => write!(f, "{flag} only works together with --demo"),
-            LaunchError::NeedsSetup(flag) => write!(f, "{flag} only works together with --setup"),
+            LaunchError::NeedsSetup(flag) => write!(f, "{flag} only works together with --setup or --setup-if-open"),
         }
     }
 }
@@ -383,7 +388,9 @@ impl Launch {
                 return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
             }
         };
-        let setup = match (args.iter().any(|arg| arg == "--setup"), flag_value(args, "--step")?) {
+        let setup_if_open = args.iter().any(|arg| arg == "--setup-if-open");
+        let asked = args.iter().any(|arg| arg == "--setup") || setup_if_open;
+        let setup = match (asked, flag_value(args, "--step")?) {
             (false, None) => None,
             (false, Some(_)) => return Err(LaunchError::NeedsSetup("--step")),
             (true, None) => Some(super::setup::Step::Welcome),
@@ -392,7 +399,7 @@ impl Launch {
                     .ok_or_else(|| unknown("--step", word, super::setup::Step::args()))?,
             ),
         };
-        Ok(Launch { section, bot, demo, open, appearance, design, setup })
+        Ok(Launch { section, bot, demo, open, appearance, design, setup, setup_if_open })
     }
 }
 
@@ -1510,6 +1517,9 @@ mod tests {
         let launch = Launch::parse(&args(&["--setup", "--step=components"])).expect("a built step");
         assert_eq!(launch.setup, Some(Step::Components));
         assert_eq!(Launch::parse(&args(&["--step", "done"])), Err(LaunchError::NeedsSetup("--step")));
+        let app = Launch::parse(&args(&["--section", "accounts", "--setup-if-open", "--step", "calendar"]))
+            .expect("an app's");
+        assert_eq!((app.section, app.setup, app.setup_if_open), (Section::Accounts, Some(Step::Calendar), true));
         let err = Launch::parse(&args(&["--setup", "--step", "later"])).expect_err("no such step");
         assert!(
             err.to_string()

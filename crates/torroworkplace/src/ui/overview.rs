@@ -12,6 +12,7 @@
 use iced::widget::{Row, column, container, responsive, row, space as blank};
 use iced::{Alignment, Element, Length};
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::{Setup, SetupState};
 use torro_gui::theme::{self, space};
 use torro_gui::widgets::{self, Status as Dot};
 use torro_gui::{layout, style, typo};
@@ -30,17 +31,45 @@ pub struct State {}
 pub enum Message {
     /// The "Open accounts" button of an attention row.
     OpenAccounts,
+    /// "Continue setup" or "Open setup" (task W.9).
+    OpenSetup,
 }
 
 pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
     match message {
         Message::OpenAccounts => Action::Select(Section::Accounts),
+        Message::OpenSetup => Action::OpenSetup,
     }
 }
 
 pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let items = attention(&data.accounts);
-    column![at_a_glance(data), needs_attention(&items, data.status.is_some())].spacing(layout::section_gap()).into()
+    let mut parts = column![].spacing(layout::section_gap());
+    // Only once the core answered: before that the settings are the defaults, not the person's.
+    if data.status.is_some() {
+        parts = parts.push(setup_offer(&data.settings.setup));
+    }
+    parts.push(at_a_glance(data)).push(needs_attention(&items, data.status.is_some())).into()
+}
+
+/// The setup, where it waits (task W.9, `docs/einrichtung.md`): put off, or with steps that are new
+/// since the person last finished it. Nothing while it is done and nothing is new, or still
+/// pending (a first start opens it by itself; an installation from before has its accounts).
+fn setup_offer<'a>(setup: &Setup) -> Option<Element<'a, Message>> {
+    let (title, detail, label) = if setup.state == SetupState::Skipped {
+        (
+            tr("Finish setup"),
+            tr("You put the setup off. Continue where you like; everything connected is kept."),
+            tr("Continue setup"),
+        )
+    } else if setup.has_new_steps() {
+        (tr("New in setup"), tr("The setup has steps you have not seen yet."), tr("Open setup"))
+    } else {
+        return None;
+    };
+    let open = widgets::text_button(None, label, style::button::secondary, Some(Message::OpenSetup));
+    let row = setting_row(Some(widgets::status_dot(Dot::Attention)), title, Some(detail.to_string()), open);
+    Some(widgets::group(tr("Setup"), vec![row], None))
 }
 
 /// How a status is shown: a dot in its colour next to the word.
@@ -282,6 +311,16 @@ fn attention_row<'a>(item: &Attention) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_setup_is_offered_when_put_off_or_with_new_steps_only() {
+        let at = |state, version| setup_offer(&Setup { state, version }).is_some();
+        assert!(at(SetupState::Skipped, Setup::VERSION), "put off");
+        assert!(at(SetupState::Done, 0), "new steps since");
+        assert!(!at(SetupState::Done, Setup::VERSION), "done and nothing new");
+        assert!(!at(SetupState::Pending, 0), "pending: a first start opens it by itself");
+        assert!(matches!(update(&mut State::default(), Message::OpenSetup, &Data::default()), Action::OpenSetup));
+    }
 
     fn connected(problem: Option<&str>) -> AccountState {
         AccountState::Connected {

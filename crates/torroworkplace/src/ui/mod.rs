@@ -66,7 +66,7 @@ use iced::widget::{Text, button, column, container, responsive, row, scrollable,
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
-use torro_core::settings::Settings;
+use torro_core::settings::{Settings, SetupState};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -263,6 +263,9 @@ pub enum Action {
     /// Show the page of the bot with this id under Assistant › Bots (task B.3): from a bot's row on
     /// the agents page.
     OpenBot(String),
+    /// Open the first-run setup at its first step (task W.9): "Continue setup" on the overview,
+    /// "Run setup again" under General.
+    OpenSetup,
 }
 
 /// What a page puts into the header bar next to the section title. A page module builds it in an
@@ -470,8 +473,12 @@ impl Ui {
             }
             ui.loaded = true;
         }
-        if let Some(step) = ui.launch.setup {
-            ui.setup = Some(setup::State::new(step, &ui.data.settings));
+        if let Some(step) = ui.launch.setup.filter(|_| !ui.launch.setup_if_open || demo) {
+            // The demo knows its settings at once; `--setup-if-open` without it waits for them.
+            let open = !ui.launch.setup_if_open || ui.data.settings.setup.state != SetupState::Done;
+            if open {
+                ui.setup = Some(setup::State::new(step, &ui.data.settings));
+            }
         }
         if let Some(open) = open {
             ui.open(open);
@@ -848,7 +855,16 @@ impl Ui {
             }
             Message::Switcher(switcher) => self.switcher(switcher),
             Message::Loaded(data) => {
+                // `--setup-if-open` (an app's "Open Settings", task W.9): the setup, at the app's step,
+                // as long as it is not done; decided once, with the first settings that came.
+                let first = !self.loaded;
                 self.data = *data;
+                if first && self.launch.setup_if_open && !self.launch.demo && self.data.error.is_none() {
+                    let step = self.launch.setup.unwrap_or(setup::Step::Welcome);
+                    if self.data.settings.setup.state != SetupState::Done {
+                        self.setup = Some(setup::State::new(step, &self.data.settings));
+                    }
+                }
                 self.loaded = true;
                 if self.data.error.is_none() {
                     self.appearance = self.data.settings.appearance;
@@ -1069,6 +1085,11 @@ impl Ui {
                 self.perform(next)
             }
             Action::Zoom(step) => self.zoom(zoom::Message::Step(step)),
+            Action::OpenSetup => {
+                self.close_menus();
+                self.setup = Some(setup::State::new(setup::Step::Welcome, &self.data.settings));
+                Task::none()
+            }
             Action::Copy(text) => iced::clipboard::write(text),
             Action::Setup(job) => Task::perform(crate::client_setup::perform(job), |outcome| {
                 Message::Agents(agents::Message::Setup(outcome))
@@ -1853,6 +1874,37 @@ mod tests {
         assert!(!ui.loaded);
         let _ = ui.update(loaded(Appearance::System, Some("core is not running")));
         assert!(ui.loaded, "a failed answer ends the loading state too");
+    }
+
+    /// Task W.9: an app's "Open Settings" opens the setup at its step while the setup is not done,
+    /// else the section; the overview and General open it at its first step.
+    #[test]
+    fn the_setup_opens_from_an_app_only_while_it_is_not_done() {
+        let pending = started(&["--section", "accounts", "--setup-if-open", "--step", "calendar"]);
+        assert!(pending.setup.is_none(), "without the demo it waits for the settings");
+        let mut ui = pending;
+        let mut data = launch::demo_data();
+        data.status = Some(Status {
+            version: String::new(),
+            backend: "hyprland".into(),
+            workspace: None,
+            templates: 0,
+            busy: false,
+        });
+        let _ = ui.update(Message::Loaded(Box::new(data.clone())));
+        assert!(ui.setup.is_some(), "the setup is pending");
+
+        let mut done = started(&["--section", "accounts", "--setup-if-open", "--step", "calendar"]);
+        data.settings.setup = torro_core::settings::Setup { state: SetupState::Done, version: 1 };
+        let _ = done.update(Message::Loaded(Box::new(data)));
+        assert!(done.setup.is_none() && done.section == Section::Accounts, "done: the accounts page");
+
+        let mut overview = started(&["--demo"]);
+        let _ = overview.update(Message::Overview(overview::Message::OpenSetup));
+        assert!(overview.setup.is_some());
+        let mut general = started(&["--demo", "--section", "general"]);
+        let _ = general.update(Message::General(general::Message::RunSetup));
+        assert!(general.setup.is_some());
     }
 
     #[test]

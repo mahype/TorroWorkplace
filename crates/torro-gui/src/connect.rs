@@ -88,13 +88,26 @@ pub fn open_settings() {
     open_section("accounts");
 }
 
+/// Opens the first-run setup at `step` (`calendar`, `tasks`, `inbox` …) as long as it is not done,
+/// else the accounts page (task W.9): what an app without an account offers as "Open Settings".
+/// Not waited for, failures only logged, like [`open_settings`].
+pub fn open_setup_or_settings(step: &str) {
+    spawn_ui(&["ui", "--section", "accounts", "--setup-if-open", "--step", step]);
+}
+
 /// Opens the control centre on the page `section`, what `torroworkplace ui --section` takes
 /// (`accounts`, `assistant` …), like [`open_settings`]: not waited for, failures only logged.
 pub fn open_section(section: &str) {
+    spawn_ui(&["ui", "--section", section]);
+}
+
+/// Starts the control centre with `args`: not waited for, in a process group of its own, failures
+/// only logged.
+fn spawn_ui(args: &[&str]) {
     let program = sibling(torro_core::AppId::WORKPLACE.binary);
     let mut command = Command::new(&program);
     command
-        .args(["ui", "--section", section])
+        .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
