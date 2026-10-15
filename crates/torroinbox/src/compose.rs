@@ -25,8 +25,9 @@
 //!   quietly and quotes in the secondary colour ([`markup::looks`]). Saved, the text becomes
 //!   the draft's HTML ([`markup::to_html`]); the quoted history of an answer stays someone else's
 //!   text (only its quote marks count), and the core puts the signature above it.
-//! - **Keys:** `Ctrl+Enter` (`Cmd+Enter` on macOS) sends, `Esc` closes (asking when something is
-//!   unsaved), `Tab` moves between the fields.
+//! - **Keys:** `Ctrl+Enter` (on macOS `Cmd+Enter` or `Ctrl+Enter`, the shortcut "send" of
+//!   `torro_core::shortcuts`, task E9.1) sends, also from a field; `Esc` closes (asking when
+//!   something is unsaved), `Tab` moves between the fields.
 //! - **Sizes** ([`torro_gui::layout`]): wide and medium show the form with a header bar, narrow
 //!   the same with a compact "Send" button; mini and strip are displays, not editors: subject,
 //!   recipient and the state of the draft, no keys.
@@ -53,6 +54,7 @@ use iced::widget::{Space, column, container, row, text_input};
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::shortcuts::{self, Preset, System};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -70,7 +72,7 @@ use torro_ipc::{AccountInfo, IpcError, Request, Response};
 use torro_mail::{AttachmentInfo, Draft, DraftAttachment, MailAddress, MailFormat, Message as Mail, html, markup};
 
 use crate::app::{Launch, LaunchError, flag_value};
-use crate::{list, mail};
+use crate::{keys, list, mail};
 
 /// The compose window's identity: window class `torro-compose` (rules of a tiling manager match
 /// on it), the binary and state directory of the inbox.
@@ -1548,13 +1550,17 @@ fn unsure_reason() -> &'static str {
     tr("The connection broke after the message was handed over. Look into the Sent folder before sending it again.")
 }
 
-/// Keys, also while a field has the focus: Esc, `Ctrl+Enter` and Tab. (Only plain Enter and the
-/// letters are the fields'.)
+/// Keys, also while a field has the focus: Esc, the shortcut "send" ([`is_send`]) and Tab. (Only
+/// plain Enter and the letters are the fields'.)
 fn key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
-    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, modifiers, .. }) = event else { return None };
+    let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
+        return None;
+    };
+    if is_send(System::current(), &key, physical_key, modifiers) {
+        return Some(Message::Send);
+    }
     match key {
         Key::Named(Named::Escape) => Some(Message::Escape),
-        Key::Named(Named::Enter) if modifiers.command() => Some(Message::Send),
         Key::Named(Named::Tab) if !modifiers.command() && !modifiers.alt() => Some(Message::Focus(!modifiers.shift())),
         _ => None,
     }
@@ -1876,15 +1882,22 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 }
 
-/// The keys of the shortcut shown in the tooltip of "Send".
-fn send_keys() -> &'static str {
-    if cfg!(target_os = "macos") { "Cmd+Enter" } else { "Ctrl+Enter" }
+/// The keys of the shortcut "send" shown in the tooltip of "Send": "Ctrl+Enter", "Cmd+Enter" on
+/// macOS (`torro_core::shortcuts`, task E9.1).
+fn send_keys() -> String {
+    Preset::Torro.hint(shortcuts::Command::Send, System::current()).unwrap_or_default()
 }
 
-/// The text's key bindings: the editor's own, except that `Ctrl+Enter` sends instead of starting a
-/// new line.
+/// Whether `key` held with `modifiers` is the shortcut "send" on `system` (task E9.1): Ctrl + Enter,
+/// on macOS ⌘ + Enter or Ctrl + Enter.
+fn is_send(system: System, key: &Key, physical_key: keyboard::key::Physical, modifiers: keyboard::Modifiers) -> bool {
+    keys::shortcut_on(system, key, physical_key, modifiers) == Some(shortcuts::Command::Send)
+}
+
+/// The text's key bindings: the editor's own, except that the shortcut "send" ([`is_send`]) sends
+/// instead of starting a new line.
 fn editor_binding(press: text_editor::KeyPress) -> Option<Binding<Message>> {
-    if matches!(press.key.as_ref(), Key::Named(Named::Enter)) && press.modifiers.command() {
+    if is_send(System::current(), &press.key, press.physical_key, press.modifiers) {
         return Some(Binding::Custom(Message::Send));
     }
     if let Some(format) = format_key(&press.key, press.modifiers) {
@@ -2984,6 +2997,21 @@ mod tests {
         assert!(matches!(map(press(Key::Named(Named::Tab), none)), Some(Message::Focus(true))));
         assert!(matches!(map(press(Key::Named(Named::Tab), keyboard::Modifiers::SHIFT)), Some(Message::Focus(false))));
         assert!(map(press(Key::Character("a".into()), none)).is_none());
+    }
+
+    /// Task E9.1: on macOS Ctrl + Enter sends as ⌘ + Enter does; elsewhere only Ctrl + Enter.
+    #[test]
+    fn send_is_ctrl_enter_and_on_a_mac_also_cmd_enter() {
+        let enter = Key::Named(Named::Enter);
+        let physical = keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified);
+        let (ctrl, logo) = (keyboard::Modifiers::CTRL, keyboard::Modifiers::LOGO);
+        assert!(is_send(System::Mac, &enter, physical, logo) && is_send(System::Mac, &enter, physical, ctrl));
+        assert!(is_send(System::Other, &enter, physical, ctrl));
+        assert!(!is_send(System::Other, &enter, physical, logo), "the logo key is no Ctrl");
+        assert!(!is_send(System::Other, &enter, physical, keyboard::Modifiers::empty()), "Enter is the text's");
+        assert!(!is_send(System::Mac, &enter, physical, ctrl | keyboard::Modifiers::SHIFT));
+        let wanted = if cfg!(target_os = "macos") { "Cmd+Enter" } else { "Ctrl+Enter" };
+        assert_eq!(send_keys(), wanted);
     }
 
     // ----- formatted mail (issue #125) -----

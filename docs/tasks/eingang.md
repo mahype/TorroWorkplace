@@ -2146,18 +2146,29 @@ eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`
 „Replace“. Nicht belegbar: Esc, `[`, Zoom, Rückgängig, Kopieren, Ausschneiden, Einfügen, Alles auswählen.
 
 ### E9.1 Kürzel-Tabelle und Vorlage „Torro“
-- [ ] offen
+- [x] erledigt (2026-10-15: `torro_core::shortcuts` hält Befehle (snake_case-Namen für E9.2), Schreibweise
+  (`Mod`/`Ctrl`/`Cmd`/`Alt`/`Shift`, Parsen, Ausgeben, Hinweise je System) und die Vorlage „Torro“ nach der Tabelle.
+  `keys::shortcut` hört Strg/⌘-Kürzel auch, wenn ein Widget sie fing; ob das Suchfeld den Fokus hat, fragt die App bei
+  Iced nach (`operation::is_focused`), weil `ctrl_guard` und Textfelder den Status unbrauchbar machen – nur Suchen und
+  Senden wirken dort. Entf/⌫ und ⇧+Entf (Mac auch ⇧+⌫) laufen weiter als Einzeltasten über die Tabelle. Neu: Archivieren
+  überall, Gelesen/ungelesen und Markieren nach Zustand, Spam und „Move to folder“ (Auswahlmenü mit Ziffern) mit Undo,
+  endgültig löschen hinter der Rückfrage „Delete permanently?“ (Client: erst in den Papierkorb, dann `permanent: true`),
+  neue Mail, abrufen (`accounts.sync`, dann neu laden). Auf dem Mac gelten ⌘ und Strg gleich, auch für Rückgängig und
+  Senden. Die Hinweise in den Aktionsleisten bleiben die Einzeltasten; „Send“ nimmt seinen Hinweis aus der Tabelle.
+  `--open move-mail|delete-mail` für die Sichtprüfung.)
 - **Modell:** Opus · **Braucht:** E8.18 · **Dateien:** neu `crates/torro-core/src/shortcuts.rs` (Befehle, Tasten,
   Vorlage „Torro“; ohne Iced, damit der Kern in E9.2 dieselbe Tabelle prüft), `crates/torro-core/src/lib.rs`,
   `crates/torroinbox/src/{keys,app,mail,compose}.rs`, `crates/torro-gui/src/widgets.rs` (Rückgängig auf dem Mac auch
-  mit Strg+Z)
+  mit Strg+Z), `crates/torro-ipc/src/inbox.rs` (Client-Aufrufe für `Sync` und `DeleteMail` mit `permanent`)
 - `keys` liest die Kürzel aus der Tabelle; die Einzeltasten bleiben. Neue Befehle: Archivieren in jedem Fenster,
-  Gelesen/ungelesen, Markieren, Spam, Verschieben (öffnet die Ordnerwahl), endgültig löschen, neue Mail, abrufen.
+  Gelesen/ungelesen, Markieren, Spam, Verschieben (öffnet die Ordnerwahl als Auswahlmenü, wie „Later“), endgültig
+  löschen, neue Mail, abrufen.
   Tastenhinweise an Knöpfen und in Menüs kommen aus derselben Tabelle.
 - **Oberfläche:** Mail-Fenster (Liste, Leser), Schreibfenster. **API:** vorhandene Requests, kein neuer:
   `mail.move_messages` · Write (Archivieren mit Rolle `archive`, Spam mit Rolle `junk`, Verschieben),
   `mail.delete_messages` · Delete (ohne und mit `permanent: true`), `mail.set_flags` · Write, `mail.search_messages` ·
-  Read, `mail.save_draft` und `mail.send_draft` · Write, `accounts.sync`. **MCP:** keine neuen Tools – Tasten sind Oberfläche, die Befehle dahinter haben ihre Tools.
+  Read, `mail.save_draft` und `mail.send_draft` · Write, `accounts.sync` · Write (gleicht alle Konten ab, nicht nur
+  Mail). **MCP:** keine neuen Tools – Tasten sind Oberfläche, die Befehle dahinter haben ihre Tools.
 - **Abnahme:** Tests je Kürzel für beide Systeme (macOS: ⌘ und Strg), Strg+A archiviert nicht, ⇧+Entf fragt erst,
   Textfeld behält seine Tasten, Einzeltasten wie bisher; beide Sprachen.
 

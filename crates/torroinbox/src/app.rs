@@ -164,6 +164,7 @@ use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{MailAppearance, MailFormat};
+use torro_core::shortcuts;
 use torro_gui::connect;
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
@@ -924,6 +925,8 @@ pub enum Sent {
     MuteItem(String, MuteScope, Option<DateTime<Utc>>, MuteEffect),
     /// The undo of muting: the rule removed, if any, the entries opened again and moved back.
     Unmute(Option<String>, Vec<String>, Vec<String>),
+    /// `accounts.sync` (task E9.1, the shortcut "fetch").
+    Fetch,
 }
 
 /// What the list shows. Each view is one [`ItemFilter`] ([`View::filter`]), so the app asks the
@@ -1071,6 +1074,12 @@ pub enum Menu {
     /// `inbox.list_mute_options`, "For" and "What happens"; the bell and `m` of the notifications
     /// window ([`App::ask_mute_menu`]).
     Mute,
+    /// "Move to folder" for [`App::mail_subject`] (task E9.1, the shortcut "move_to_folder"): the
+    /// folders of its account but the one it lies in, picked by click or digit ([`App::move_choices`]).
+    Move,
+    /// The question "Delete permanently?" for [`App::mail_subject`] (task E9.1): a dialog over the
+    /// window ([`App::question_layer`]), `Enter` or "Delete" removes the message for good.
+    DeleteForGood,
 }
 
 /// Which buttons a menu for an entry hangs at (issue #122): the button clicked, else where the
@@ -1187,10 +1196,15 @@ pub enum Open {
     AiEvent,
     /// That entry in the panel without an AI: the AI buttons are off (issue #120).
     NoAi,
+    /// The first account's inbox with its newest message in the reader and "Move to folder" open for
+    /// it (task E9.1).
+    MoveMail,
+    /// That message with the question "Delete permanently?" over the window (task E9.1).
+    DeleteMail,
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 42] = [
+    const ALL: [(&'static str, Open); 44] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
@@ -1233,6 +1247,8 @@ impl Open {
         ("ai-task", Open::AiTask),
         ("ai-event", Open::AiEvent),
         ("no-ai", Open::NoAi),
+        ("move-mail", Open::MoveMail),
+        ("delete-mail", Open::DeleteMail),
     ];
 }
 
@@ -1754,6 +1770,8 @@ pub struct App<S> {
     column_scroll: [Option<(f32, f32)>; 2],
     /// The entry the open snooze menu, picker or lane question is for, as it was when opened.
     subject: Option<Item>,
+    /// The message "Move to folder" or the question "Delete permanently?" is for (task E9.1).
+    mail_subject: Option<String>,
     /// The day and time in the picker of "Pick…".
     pick: Pick,
     /// The dialog of "Make task" while [`Menu::Task`] is open.
@@ -1957,6 +1975,11 @@ pub enum Message {
     HintTick(Instant),
     /// A key from [`keys::listen`]; what it does depends on what is open ([`keys::command`]).
     Key(Key),
+    /// A shortcut with Ctrl or ⌘ from [`keys::shortcut`] (task E9.1); it acts once the window knows
+    /// that no text field holds the keyboard ([`App::shortcut`]).
+    Shortcut(shortcuts::Command),
+    /// That shortcut, and whether the search field held the keyboard when it came.
+    ShortcutChecked(shortcuts::Command, bool),
     /// The list scrolled (or was laid out): its offset and visible height.
     Scrolled(f32, f32),
     /// From the panel: the snooze menu for the entry with this id.
@@ -1995,6 +2018,12 @@ pub enum Message {
     Unfolded(Vec<String>),
     /// From the hide menu: move the mail of the entry with this id to its account's junk folder.
     Junk(String),
+    /// A folder of "Move to folder" (task E9.1): move the message (first id) to the folder (second).
+    MoveMail(String, String),
+    /// "Delete" in the question "Delete permanently?" (task E9.1): remove its message for good.
+    DeleteForGood,
+    /// The answer to fetching mail now (task E9.1, `accounts.sync`).
+    Fetched(Result<(), String>),
     /// "Pick…" in the snooze menu: the date and time picker.
     ShowPicker,
     /// The picker's day.
@@ -2409,7 +2438,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(Open::Done) => View::Done,
                 // The first inbox, once the folders are in.
                 // The search starts there too, so the bar offers the folder and its account.
-                Some(Open::Folder | Open::Mail | Open::Search | Open::MuteMail) => View::Mail,
+                Some(Open::Folder | Open::Mail | Open::Search | Open::MuteMail | Open::MoveMail | Open::DeleteMail) => {
+                    View::Mail
+                }
                 // The mail window's "For me" is its overview (task E8.3).
                 Some(Open::MailEntry) if launch.kind == Kind::Mail => View::Overview,
                 Some(Open::MailEntry) => View::ForMe,
@@ -2441,6 +2472,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             unfolded_names: Vec::new(),
             column_scroll: [None; 2],
             subject: None,
+            mail_subject: None,
             pick: Pick::start(Utc::now() + offset),
             task: TaskDraft::default(),
             lists: None,
@@ -2581,9 +2613,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
             subscriptions.push(iced::event::listen_with(keys::listen));
-            // ⌘F / Ctrl + F, also when the search field or the window's guard took it (issue #136).
+            // The shortcuts with Ctrl or ⌘ (task E9.1; ⌘F / Ctrl + F searches, issue #136), also when
+            // the search field or the window's guard took them; they all act on mail.
             if !self.folders.is_empty() {
-                subscriptions.push(iced::event::listen_with(keys::find_key));
+                subscriptions.push(iced::event::listen_with(keys::shortcut));
             }
             // Escape closes an open menu, drawer, the toast or the panel; nothing listens while none is
             // open.
@@ -2597,7 +2630,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             // Ctrl + Z (⌘ + Z) undoes while the toast offers it – not while the dialog of "Make task"
             // or the picker has the keys.
-            if self.can_undo() && !matches!(self.menu, Some(Menu::Task | Menu::Event | Menu::Pick)) {
+            if self.can_undo()
+                && !matches!(self.menu, Some(Menu::Task | Menu::Event | Menu::Pick | Menu::DeleteForGood))
+            {
                 subscriptions.push(widgets::undo_key().map(|()| Message::Undo));
             }
         }
@@ -2773,6 +2808,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return self.run(command);
                 }
             }
+            Message::Shortcut(command) => return self.shortcut(command),
+            Message::ShortcutChecked(command, typing) => return self.shortcut_checked(command, typing),
             Message::Scrolled(offset, height) => self.scroll = Some((offset, height)),
             Message::AskSnooze(id) => {
                 self.menu_at = MenuAt::Panel;
@@ -2842,6 +2879,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.unfolded_names = names;
             }
             Message::Junk(id) => return self.move_to_junk(&id),
+            Message::MoveMail(id, folder) => return self.move_mail(id, folder),
+            Message::DeleteForGood => return self.delete_for_good(),
+            Message::Fetched(Ok(())) => return self.load(),
+            Message::Fetched(Err(err)) => {
+                self.error = Some(Failure::new(tr("Couldn't fetch mail."), err));
+                return self.load();
+            }
             Message::ShowPicker => {
                 self.pick = Pick::start(self.now);
                 self.menu = Some(Menu::Pick);
@@ -3507,8 +3551,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     }
 
     /// Carries out a mail button or key for the message `id`: Reply, Reply all and Forward open the
-    /// compose window; Archive and Delete move it and offer to move it back; Flag and read change
-    /// its flags.
+    /// compose window; Archive, Delete and Junk move it and offer to move it back; Flag and read
+    /// change its flags.
     fn mail_action(&mut self, action: MailAction, id: String) -> Task<Message> {
         self.close_menus();
         if let Some(kind) = Compose::of(action) {
@@ -3516,7 +3560,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         let Some(edit) = mail::edit_of(action, &id) else { return Task::none() };
         let delete = action == MailAction::Delete;
-        if !matches!(action, MailAction::Archive | MailAction::Delete) {
+        if !matches!(action, MailAction::Archive | MailAction::Delete | MailAction::Junk) {
             return self.mail_edit(Some(edit), None);
         }
         if delete && self.in_trash(&id) {
@@ -3525,11 +3569,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
         let reopen = self.entry_of(&id);
-        let hint = Hint {
-            text: mail::moved_text(delete).to_owned(),
-            undo: Some(Undo::Mail { edit: back, reopen }),
-            shown: Instant::now(),
-        };
+        let text = if action == MailAction::Junk { tr("Moved to junk") } else { mail::moved_text(delete) };
+        let hint = Hint { text: text.to_owned(), undo: Some(Undo::Mail { edit: back, reopen }), shown: Instant::now() };
         self.take_out(&id);
         self.mail_edit(Some(edit), Some(hint))
     }
@@ -3670,6 +3711,158 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(id) => self.mail_action(action, id),
             None => Task::none(),
         }
+    }
+
+    /// A shortcut with Ctrl or ⌘ ([`keys::shortcut`], task E9.1). It acts only where the keys of the
+    /// list act (nothing open in front of it), and – but searching – only while no text field holds
+    /// the keyboard: the field keeps its own keys there (copy, paste, select all).
+    ///
+    /// The key event cannot tell where the keyboard is: the window's `widgets::ctrl_guard` captures
+    /// `⌘ + letter` on macOS whatever has the focus, and a text field does not capture
+    /// `Ctrl + Shift + letter`. So the window asks Iced whether its one field beside the list, the
+    /// search field, has the focus (`operation::is_focused`), and acts on the answer
+    /// ([`Message::ShortcutChecked`]). The dialogs with fields ("Make task", "Make event") take no
+    /// shortcut at all ([`Focus::Task`]). Without a search field there is nothing to ask.
+    fn shortcut(&mut self, command: shortcuts::Command) -> Task<Message> {
+        if !matches!(self.focus(), Focus::List | Focus::Overview) {
+            return Task::none();
+        }
+        if command.works_in_text_field() || !self.shows_search() {
+            return self.shortcut_checked(command, false);
+        }
+        // A field that is not laid out (a narrow reader over the list) answers nothing: no focus.
+        operation::is_focused(search::FIELD)
+            .collect()
+            .map(move |focused| Message::ShortcutChecked(command, focused.contains(&true)))
+    }
+
+    /// The shortcut `command`, `typing` when the search field held the keyboard: what its single key
+    /// or button does ([`keys::of_shortcut`]) – unless the field keeps the key, or something opened
+    /// in front of the list meanwhile.
+    fn shortcut_checked(&mut self, command: shortcuts::Command, typing: bool) -> Task<Message> {
+        if typing && !command.works_in_text_field() {
+            return Task::none();
+        }
+        let Some(command) = keys::of_shortcut(command) else { return Task::none() };
+        if !matches!(self.focus(), Focus::List | Focus::Overview) {
+            return Task::none();
+        }
+        self.menu_at = MenuAt::Keys;
+        self.run(command)
+    }
+
+    /// Whether the message `id` carries `flag`, as listed or loaded. A mail the window holds neither
+    /// way (an entry's, not opened yet) counts as without: the shortcut then reads or flags it.
+    fn mail_has(&self, id: &str, flag: Flag) -> bool {
+        let listed = self.messages.iter().find(|message| message.id == id).map(|message| message.flags.contains(&flag));
+        let loaded = || match &self.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => {
+                Some(mail.summary.flags.contains(&flag))
+            }
+            _ => None,
+        };
+        listed.or_else(loaded).unwrap_or(false)
+    }
+
+    /// The account (`mail:<address>`) and folder of the message `id`, as listed or loaded; an entry's
+    /// mail lies in its account's inbox.
+    fn mail_home(&self, id: &str) -> Option<(String, Option<String>)> {
+        if let Some(message) = self.messages.iter().find(|message| message.id == id) {
+            return Some((message.account.clone(), Some(message.folder.clone())));
+        }
+        if let Some(Letter { loaded: Some(Ok(mail)), .. }) = &self.letter
+            && mail.summary.id == id
+        {
+            return Some((mail.summary.account.clone(), Some(mail.summary.folder.clone())));
+        }
+        let holds = |item: &&Item| matches!(&item.link, Some(Link::Mail { message }) if message == id);
+        let item = self.items.iter().chain(&self.for_me).chain(self.detail.as_ref()).find(holds)?;
+        let account = item.source.key();
+        let inbox = self.folders.iter().find(|folder| folder.account == account && folder.role == Some(Role::Inbox));
+        Some((account, inbox.map(|folder| folder.id.clone())))
+    }
+
+    /// Opens "Move to folder" for the message `id` (task E9.1, as Outlook moves): the folders of its
+    /// account but its own, as a menu of choices with digits ([`App::move_choices`]); a note when
+    /// there is no other folder.
+    fn ask_move(&mut self, id: String) -> Task<Message> {
+        self.close_menus();
+        self.mail_subject = Some(id);
+        if self.move_choices().is_empty() {
+            self.mail_subject = None;
+            self.note(tr("There is no other folder to move it to.").to_owned());
+            return Task::none();
+        }
+        self.menu = Some(Menu::Move);
+        Task::none()
+    }
+
+    /// The entries of "Move to folder": the folders of [`App::mail_subject`]'s account in the
+    /// sidebar's order ([`mail::folder_order`]), without the one it lies in.
+    fn move_choices(&self) -> Vec<Choice> {
+        let Some(id) = &self.mail_subject else { return Vec::new() };
+        let Some((account, here)) = self.mail_home(id) else { return Vec::new() };
+        let mut folders: Vec<&Folder> = self
+            .folders
+            .iter()
+            .filter(|folder| folder.account == account && Some(&folder.id) != here.as_ref())
+            .collect();
+        folders.sort_by_key(|folder| mail::folder_order(folder));
+        folders
+            .into_iter()
+            .map(|folder| {
+                let to = Message::MoveMail(id.clone(), folder.id.clone());
+                Choice::new(mail::folder_icon(folder.role), mail::folder_name(folder), to)
+            })
+            .collect()
+    }
+
+    /// Moves the message `id` to `folder` (task E9.1, "Move to folder", `mail.move_messages`): off the
+    /// list at once, with a toast whose undo moves it back, as archiving does.
+    fn move_mail(&mut self, id: String, folder: String) -> Task<Message> {
+        self.close_menus();
+        let name = self.folders.iter().find(|f| f.id == folder).map(mail::folder_name).unwrap_or_default();
+        let back = MailEdit::Move { ids: vec![id.clone()], to: self.home_of(&id) };
+        let hint = Hint {
+            text: trf("Moved to {folder}", &[("folder", &name)]),
+            undo: Some(Undo::Mail { edit: back, reopen: self.entry_of(&id) }),
+            shown: Instant::now(),
+        };
+        self.take_out(&id);
+        self.mail_edit(Some(MailEdit::Move { ids: vec![id], to: MoveTarget::Folder(folder) }), Some(hint))
+    }
+
+    /// Asks "Delete permanently?" for the message `id` (task E9.1) in a dialog over the window,
+    /// because nothing brings the message back. The question belongs to the command, not to its
+    /// keys: every way to delete for good comes here.
+    fn ask_delete_for_good(&mut self, id: String) -> Task<Message> {
+        self.close_menus();
+        self.mail_subject = Some(id);
+        self.menu = Some(Menu::DeleteForGood);
+        Task::none()
+    }
+
+    /// "Delete" (or `Enter`) in the question: removes [`App::mail_subject`] for good
+    /// (`mail.delete_messages` with `permanent`), off the list at once; the toast says so, without
+    /// an undo.
+    fn delete_for_good(&mut self) -> Task<Message> {
+        let Some(id) = self.mail_subject.clone() else { return Task::none() };
+        self.close_menus();
+        let hint = Hint { text: tr("Deleted permanently").to_owned(), undo: None, shown: Instant::now() };
+        self.take_out(&id);
+        self.mail_edit(Some(MailEdit::DeleteForGood { ids: vec![id] }), Some(hint))
+    }
+
+    /// Fetches mail from the servers now (task E9.1, the shortcut "fetch", `accounts.sync`) and lists
+    /// anew once it is through; nothing without a mail account.
+    fn fetch_mail(&mut self) -> Task<Message> {
+        if self.folders.is_empty() {
+            return Task::none();
+        }
+        #[cfg(test)]
+        self.sent.push(Sent::Fetch);
+        let inbox = self.inbox.clone();
+        Task::perform(async move { inbox.sync_mail().await.map_err(|err| err.to_string()) }, Message::Fetched)
     }
 
     /// Whether the field of the search stands over the list (issue #136): in every view of the mail
@@ -4179,7 +4372,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Where the keys go: a menu of choices, the picker, another menu or the drawer, else the list.
     fn focus(&self) -> Focus {
         match self.menu {
-            Some(Menu::Snooze | Menu::Lane | Menu::Hide) => Focus::Choices,
+            Some(Menu::Snooze | Menu::Lane | Menu::Hide | Menu::Move) => Focus::Choices,
+            Some(Menu::DeleteForGood) => Focus::Question,
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task | Menu::Event) => Focus::Task,
@@ -4212,6 +4406,31 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::ReplyAll => self.key_mail(MailAction::ReplyAll),
             Command::Forward => self.key_mail(MailAction::Forward),
             Command::Delete => self.key_mail(MailAction::Delete),
+            // The shortcuts of task E9.1 that have no single key.
+            Command::DeleteForGood => self.mail_target().map_or_else(Task::none, |id| self.ask_delete_for_good(id)),
+            Command::Archive => self.key_mail(MailAction::Archive),
+            Command::Junk => self.key_mail(MailAction::Junk),
+            Command::ToggleRead => match self.mail_target() {
+                Some(id) => {
+                    let read = self.mail_has(&id, Flag::Seen);
+                    self.mail_action(MailAction::Read(!read), id)
+                }
+                None => Task::none(),
+            },
+            Command::Flag => match self.mail_target() {
+                Some(id) => {
+                    let flagged = self.mail_has(&id, Flag::Flagged);
+                    self.mail_action(MailAction::Flag(!flagged), id)
+                }
+                None => Task::none(),
+            },
+            Command::MoveToFolder => self.mail_target().map_or_else(Task::none, |id| self.ask_move(id)),
+            Command::NewMail if !self.folders.is_empty() => {
+                self.close_menus();
+                self.compose_new()
+            }
+            Command::NewMail => Task::none(),
+            Command::Fetch => self.fetch_mail(),
             Command::Search => self.focus_search(),
             Command::SwitchView => self.switch_view(),
             Command::Complete => self.take_suggestion(),
@@ -4283,6 +4502,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::LaterTime => self.update(Message::PickHour(self.pick.hour + 1)),
             Command::Confirm if self.menu == Some(Menu::Task) => self.create_task(),
             Command::Confirm if self.menu == Some(Menu::Event) => self.create_event(),
+            Command::Confirm if self.menu == Some(Menu::DeleteForGood) => self.delete_for_good(),
             Command::Confirm => self.update(Message::PickConfirm),
             Command::Sidebar => self.toggle_sidebar(),
         }
@@ -5311,6 +5531,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// The entries of the open menu of choices, in order; their digits are their place from 1.
     pub fn choices(&self) -> Vec<Choice> {
+        if self.menu == Some(Menu::Move) {
+            return self.move_choices();
+        }
         let Some(item) = &self.subject else { return Vec::new() };
         let id = || item.id.clone();
         let choice = |icon, label: String, message| Choice::new(icon, label, message);
@@ -5533,8 +5756,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Message::DragWindow,
             ));
         }
-        // Always two layers, so the window keeps its state when the hint comes and goes.
-        let window = stack![self.window(class), self.hint_layer()].width(Fill).height(Fill);
+        // Always three layers, so the window keeps its state when the hint or the question comes and
+        // goes.
+        let window = stack![self.window(class), self.hint_layer(), self.question_layer()].width(Fill).height(Fill);
         let (surface, cover) = (Surface::of(class), self.cover());
         let content = self.zoom.view(window);
         // The panel button and "Settings" in the band above the window (U.10).
@@ -5550,7 +5774,32 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         if self.is_glance() {
             return Cover::Nothing;
         }
-        Cover::panel(class, self.panel_open()).or(Cover::drawer(class, self.drawer))
+        let question = self.menu == Some(Menu::DeleteForGood);
+        Cover::dialog(question).or(Cover::panel(class, self.panel_open())).or(Cover::drawer(class, self.drawer))
+    }
+
+    /// The question "Delete permanently?" (task E9.1) as a dialog over the window – dimmed, "Cancel"
+    /// and "Delete" (danger), a click beside it cancels, as the other questions of the suite do;
+    /// empty while it is not asked.
+    fn question_layer(&self) -> Element<'_, Message> {
+        if self.menu != Some(Menu::DeleteForGood) {
+            return Space::new().into();
+        }
+        let actions = row![
+            Space::new().width(Fill),
+            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CloseMenu)),
+            widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::DeleteForGood)),
+        ]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+        let content = column![
+            typo::text(typo::title(), tr("Delete permanently?")),
+            typo::text(typo::body(), tr("The message is removed for good. This can't be undone.")).style(theme::text_2),
+            actions,
+        ]
+        .spacing(space::l());
+        let card = container(content).padding(space::xl()).width(Fill).style(style::container::popover);
+        widgets::modal(Space::new().width(Fill).height(Fill), card, widgets::POPOVER_WIDTH, Message::CloseMenu)
     }
 
     /// The toast at the bottom centre (`widgets::toast`, task E3.11), over everything but the zoom
@@ -5643,6 +5892,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Message::CloseMenu,
             )),
             Some(Menu::Mute) => Some(widgets::floating(&hide_at, below, self.mute_menu(), Message::CloseMenu)),
+            // At the bell, beside Delete and Flag in the reader's tools, else at the cursor's row.
+            Some(Menu::Move) => {
+                Some(widgets::floating(&hide_at, below, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
+            }
+            // A question over the whole window ([`App::question_layer`]), not at a button.
+            Some(Menu::DeleteForGood) => None,
         };
         // The wide mail window reads beside the list (task E8.3), without the panel; while nothing is
         // open the reader's column says what shows up there (task E8.11).
@@ -6575,6 +6830,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.menu = None;
         self.drawer = false;
         self.subject = None;
+        self.mail_subject = None;
         self.ai_suggesting = None;
     }
 
@@ -6676,6 +6932,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Some(Open::MailEntry) => {
                 self.detail = self.items.iter().find(|item| matches!(item.link, Some(Link::Mail { .. }))).cloned();
+            }
+            Some(open @ (Open::MoveMail | Open::DeleteMail)) => {
+                if let Some(id) = self.messages.first().map(|message| message.id.clone()) {
+                    self.cursor = Some(id.clone());
+                    self.reading = true;
+                    return if open == Open::MoveMail { self.ask_move(id) } else { self.ask_delete_for_good(id) };
+                }
             }
             Some(open @ (Open::Overview | Open::OverviewNotices)) => {
                 let column = if open == Open::Overview { Column::Mail } else { Column::Notices };
@@ -9278,6 +9541,161 @@ mod tests {
         assert!(message_ids(&app).contains(&"m:w1"), "back in the inbox, with the same id");
     }
 
+    // Shortcuts (task E9.1).
+
+    /// A shortcut as it arrives once the window knows whether the search field held the keyboard.
+    fn shortcut(app: &mut App<DemoSource>, command: shortcuts::Command, typing: bool) -> Task<Message> {
+        app.update(Message::ShortcutChecked(command, typing))
+    }
+
+    /// Archive, junk, read, flag, reply, new mail and fetch run what their keys and buttons run, on
+    /// the message under the cursor; archiving works at an entry too, where `e` is Done.
+    #[test]
+    fn shortcuts_act_on_the_mail_under_the_cursor() {
+        use shortcuts::Command as S;
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        assert_eq!(cursor(&app), Some("m:w1"));
+        let _ = shortcut(&mut app, S::ToggleRead, false);
+        let read = MailEdit::Flags { ids: vec!["m:w1".into()], add: vec![Flag::Seen], remove: Vec::new() };
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(read, None)), "unread: marked read");
+        let _ = shortcut(&mut app, S::ToggleRead, false);
+        let unread = MailEdit::Flags { ids: vec!["m:w1".into()], add: Vec::new(), remove: vec![Flag::Seen] };
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(unread, None)), "then unread again");
+        let _ = shortcut(&mut app, S::Flag, false);
+        let flag = MailEdit::Flags { ids: vec!["m:w1".into()], add: vec![Flag::Flagged], remove: Vec::new() };
+        assert_eq!(app.sent.last(), Some(&Sent::Mail(flag, None)));
+        let _ = shortcut(&mut app, S::Reply, false);
+        assert_eq!(app.sent.last(), Some(&Sent::Compose(mail::compose_args(Compose::Reply, "m:w1", true))));
+        let _ = shortcut(&mut app, S::NewMail, false);
+        assert_eq!(app.sent.last(), Some(&Sent::Compose(compose::new_args(true))));
+        let _ = shortcut(&mut app, S::Fetch, false);
+        assert_eq!(app.sent.last(), Some(&Sent::Fetch));
+        let _ = app.update(Message::Fetched(Err("offline".into())));
+        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't fetch mail.")));
+
+        let _ = shortcut(&mut app, S::Junk, false);
+        let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("junk with a hint") };
+        assert_eq!(edit, MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Junk) });
+        assert_eq!(hint.text, tr("Moved to junk"));
+        let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder("f:work-inbox".into()) };
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: None }));
+        assert_eq!(cursor(&app), Some("m:w2"), "the next row takes its place");
+        let _ = shortcut(&mut app, S::Archive, false);
+        let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("archive with a hint") };
+        assert_eq!(edit, MailEdit::Move { ids: vec!["m:w2".into()], to: MoveTarget::Role(MoveRole::Archive) });
+        assert_eq!(hint.text, tr("Archived"));
+
+        // At a mail entry, where `e` marks done, the shortcut archives its mail.
+        let mut app = at("demo-mail-1");
+        let _ = shortcut(&mut app, S::Archive, false);
+        let Some(Sent::Mail(edit, Some(_))) = app.sent.last().cloned() else { panic!("archive at an entry") };
+        assert_eq!(edit, MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Archive) });
+        let _ = press(&mut app, Key::E);
+        assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { .. }, _))), "e stays Done there");
+    }
+
+    /// While the search field holds the keyboard it keeps its keys: no shortcut acts but searching;
+    /// behind a menu or a dialog none does.
+    #[test]
+    fn a_text_field_keeps_its_keys() {
+        use shortcuts::Command as S;
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let before = app.sent.len();
+        for command in [S::Archive, S::Junk, S::ToggleRead, S::Flag, S::Reply, S::MoveToFolder, S::DeletePermanently] {
+            let _ = shortcut(&mut app, command, true);
+            assert_eq!((app.sent.len(), app.menu), (before, None), "{command:?} while typing");
+        }
+        let _ = shortcut(&mut app, S::Search, true);
+        assert_eq!(app.sent.len(), before, "search only moves the keyboard");
+        // Behind the dialog of "Make task" (its title field) and a menu, nothing.
+        let _ = press(&mut app, Key::T);
+        assert_eq!(app.menu, Some(Menu::Task));
+        let _ = app.update(Message::Shortcut(S::Archive));
+        let _ = shortcut(&mut app, S::Archive, false);
+        assert_eq!(app.menu, Some(Menu::Task), "the dialog stays");
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mail(MailEdit::Move { .. }, _))));
+    }
+
+    /// Shift + Delete asks first; Escape leaves the mail, `Enter` (or "Delete") removes it for good,
+    /// without an undo.
+    #[test]
+    fn shift_delete_asks_before_it_deletes_for_good() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::DeleteForGood);
+        assert_eq!((app.menu, app.mail_subject.as_deref()), (Some(Menu::DeleteForGood), Some("m:w1")));
+        assert!(!app.sent.iter().any(|sent| matches!(sent, Sent::Mail(..))), "nothing before the answer");
+        assert_eq!(app.cover(), Cover::Dialog);
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::Resized(WIDE));
+        for key in [Key::Down, Key::E, Key::Delete, Key::Hash] {
+            let _ = press(&mut app, key);
+            assert_eq!(app.menu, Some(Menu::DeleteForGood), "{key:?} waits for the answer");
+        }
+        let _ = app.update(Message::Escape);
+        assert_eq!((app.menu, app.mail_subject.as_deref()), (None, None));
+        assert!(message_ids(&app).contains(&"m:w1"), "cancelled");
+
+        // The shortcut asks as well: the question belongs to the command.
+        let _ = shortcut(&mut app, shortcuts::Command::DeletePermanently, false);
+        assert_eq!(app.menu, Some(Menu::DeleteForGood));
+        let _ = press(&mut app, Key::Enter);
+        let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("deleted with a hint") };
+        assert_eq!(edit, MailEdit::DeleteForGood { ids: vec!["m:w1".into()] });
+        assert_eq!((hint.text.as_str(), hint.undo), (tr("Deleted permanently"), None));
+        assert_eq!((app.menu, cursor(&app)), (None, Some("m:w2")));
+        deliver_mail(&mut app);
+        assert!(!message_ids(&app).contains(&"m:w1"));
+
+        // The dialog's button does the same.
+        let _ = press(&mut app, Key::DeleteForGood);
+        let _ = app.update(Message::DeleteForGood);
+        assert!(matches!(app.sent.last(), Some(Sent::Mail(MailEdit::DeleteForGood { ids }, _)) if ids == &["m:w2"]));
+    }
+
+    /// "Move to folder" lists the other folders of the mail's account, picked by digit, and the
+    /// toast's undo moves the mail back.
+    #[test]
+    fn move_to_folder_offers_the_accounts_other_folders() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let _ = shortcut(&mut app, shortcuts::Command::MoveToFolder, false);
+        assert_eq!(app.menu, Some(Menu::Move));
+        let work: Vec<&Folder> = app
+            .folders
+            .iter()
+            .filter(|f| f.account == "mail:anna@work.example.org" && f.id != "f:work-inbox")
+            .collect();
+        let choices = app.choices();
+        assert_eq!(choices.len(), work.len(), "every other folder of the account");
+        assert!(!choices.iter().any(|choice| choice.label == tr("Inbox")), "not the one it lies in");
+        let Message::MoveMail(id, first) = choices[0].message.clone() else { panic!("a move") };
+        assert_eq!(id, "m:w1");
+        draw_everywhere(&mut app);
+        let _ = press(&mut app, Key::Digit(1));
+        let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("moved with a hint") };
+        assert_eq!(edit, MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder(first.clone()) });
+        let name = app.folders.iter().find(|f| f.id == first).map(mail::folder_name).expect("the folder");
+        assert_eq!(hint.text, trf("Moved to {folder}", &[("folder", &name)]));
+        let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder("f:work-inbox".into()) };
+        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: None }));
+        assert_eq!(app.menu, None);
+    }
+
+    #[test]
+    fn the_states_of_the_shortcuts_open_their_menu_and_question() {
+        let mut app = loaded(&["--open", "move-mail"]);
+        load(&mut app);
+        assert_eq!(app.menu, Some(Menu::Move));
+        draw_everywhere(&mut app);
+        let mut app = loaded(&["--open", "delete-mail"]);
+        load(&mut app);
+        assert_eq!(app.menu, Some(Menu::DeleteForGood));
+        draw_everywhere(&mut app);
+    }
+
     // HTML mail in the reader (task M9.7).
 
     /// A window of the folder `folder` with its mail `id` open and loaded.
@@ -9613,11 +10031,11 @@ mod tests {
             })
         };
         let captured = iced::event::Status::Captured;
-        let heard = keys::find_key(press(command), captured, iced::window::Id::unique());
-        assert!(matches!(heard, Some(Message::Key(Key::Find))), "also when the guard took it");
-        let plain = keys::find_key(press(iced::keyboard::Modifiers::empty()), captured, iced::window::Id::unique());
+        let heard = keys::shortcut(press(command), captured, iced::window::Id::unique());
+        assert!(matches!(heard, Some(Message::Shortcut(shortcuts::Command::Search))), "also when the guard took it");
+        let plain = keys::shortcut(press(iced::keyboard::Modifiers::empty()), captured, iced::window::Id::unique());
         assert!(plain.is_none(), "a plain f is no search");
-        assert_eq!(keys::command(Focus::List, Key::Find), Some(Command::Search));
+        assert_eq!(keys::of_shortcut(shortcuts::Command::Search), Some(Command::Search));
         // In the hub, which lists no mail, the button opens an empty search with the searches last made.
         let mut hub = overview_at(&["--view", "hub"]);
         let _ = hub.update(Message::RecentSearches(vec!["budget review".into()]));

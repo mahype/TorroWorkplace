@@ -3461,4 +3461,15 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} minutes", "{n} Minuten"),
     ("{what}, at \"{place}\"", "{what}, Ort „{place}“"),
     ("{what}, with the note \"{note}\"", "{what}, mit der Notiz „{note}“"),
+    // Mail window: keyboard shortcuts (E9.1)
+    ("Couldn't fetch mail.", "Mails konnten nicht abgerufen werden."),
+    ("Delete permanently?", "Endgültig löschen?"),
+    ("Deleted permanently", "Endgültig gelöscht"),
+    ("Move to folder", "In Ordner verschieben"),
+    ("Moved to {folder}", "Verschoben nach {folder}"),
+    (
+        "The message is removed for good. This can't be undone.",
+        "Die Nachricht wird endgültig entfernt. Das lässt sich nicht rückgängig machen.",
+    ),
+    ("There is no other folder to move it to.", "Es gibt keinen anderen Ordner zum Verschieben."),
 ];
