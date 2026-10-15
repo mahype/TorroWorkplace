@@ -217,7 +217,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         // The span only, never what was counted (task E8.8a).
         | Request::GetStats { .. }
         // Never the event's title or times (task E8.5b).
-        | Request::GetQuiet => Vec::new(),
+        | Request::GetQuiet
+        // Nor those of a reminder; a pause only by its command (task ER1.2).
+        | Request::ListReminders { .. }
+        | Request::PauseReminders { .. } => Vec::new(),
+        Request::SnoozeReminder { id: reminder, .. } | Request::DismissReminder { id: reminder } => {
+            vec![random("reminder", reminder)]
+        }
+        Request::PreviewReminder { href } => item(&Some(href.clone())).into_iter().collect(),
         Request::UpdateTemplate { id: template }
         | Request::DeleteTemplate { id: template }
         | Request::LoadTemplate { id: template, .. }

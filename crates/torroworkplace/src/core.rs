@@ -2251,6 +2251,15 @@ impl Core {
                 let list = list_of(value)?;
                 (!self.pim.sees_task_list(reach, &list).await).then_some(list)
             }
+            // Only the calendars it sees (task ER1.2): others look unknown, as in its settings.
+            (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::Reminders, value }) => {
+                for calendar in reminder_calendars(value) {
+                    if !self.pim.sees_calendar(reach, &calendar).await {
+                        return Some(calendar);
+                    }
+                }
+                None
+            }
             (reach, request) => self.pim.out_of_reach(reach, request).await,
         }
     }
@@ -2380,16 +2389,29 @@ impl Core {
             | Request::DeleteEvent { .. }
             | Request::DeleteTodo { .. }
             | Request::MoveTodo { .. }) => self.pim.handle_within(pim, reach).await,
+            // Reminders (task ER1.2): the commands exist so the UI, API and MCP can be built on
+            // them; the planner that answers them comes with task ER1.3.
+            Request::ListReminders { .. }
+            | Request::SnoozeReminder { .. }
+            | Request::DismissReminder { .. }
+            | Request::PauseReminders { .. }
+            | Request::PreviewReminder { .. } => {
+                Response::Error { code: "unsupported".into(), message: "reminders are not planned yet".into() }
+            }
             Request::Settings => {
                 let mut settings = self.settings.current();
                 if let Reach::Client(rights) = reach {
                     // Not even the ids of lists it may not see (task P.3a).
                     let hidden = std::mem::take(&mut settings.hidden_collections);
                     settings.list_orders.retain(|list, _| rights.task_lists.contains(list) && !hidden.contains(list));
+                    // Nor of calendars outside its selection (task ER1.2).
+                    let seen = |id: &String| rights.calendars.contains(id) && !hidden.contains(id);
+                    settings.reminders.calendars.retain(|id, _| seen(id));
                 }
                 Response::Settings { settings }
             }
             Request::SetSetting { key: SettingKey::ListOrder, value } => self.set_list_order(&value).await,
+            Request::SetSetting { key: SettingKey::Reminders, value } => self.set_reminders(&value).await,
             Request::UpdateSettings { settings } => {
                 // A client never sees the hidden collections, so what it sends back says nothing
                 // about them; they change only through `set_collection_shown`. Kept under the
@@ -4216,6 +4238,21 @@ impl Core {
         }
     }
 
+    /// `settings.set_setting` with `reminders` (task ER1.2): like every setting, but each calendar it
+    /// names must be a calendar (not a task list) of a connected account, else `not-found` and
+    /// nothing is written.
+    async fn set_reminders(&self, value: &serde_json::Value) -> Response {
+        for calendar in reminder_calendars(value) {
+            if !self.pim.knows_calendar(&calendar).await {
+                return no_collection(&calendar);
+            }
+        }
+        match self.settings.set(SettingKey::Reminders, value) {
+            Ok(()) => Response::Ok,
+            Err(message) => Response::Error { code: "error".into(), message },
+        }
+    }
+
     /// `settings.set_setting` with `list_order` (task P.3a): like every setting, but the list must
     /// be a task list (not a calendar) of a connected account, else `not-found` and nothing is written.
     async fn set_list_order(&self, value: &serde_json::Value) -> Response {
@@ -5063,6 +5100,15 @@ fn joined_info(mut mail: AccountInfo, calendars: AccountInfo) -> AccountInfo {
 /// settings refuse with `error`.
 fn list_of(value: &serde_json::Value) -> Option<String> {
     serde_json::from_value::<ListOrderEntry>(value.clone()).ok().map(|entry| entry.list)
+}
+
+/// The calendars a `set_setting reminders` value names in `calendars`.
+fn reminder_calendars(value: &serde_json::Value) -> Vec<String> {
+    value
+        .get("calendars")
+        .and_then(serde_json::Value::as_object)
+        .map(|named| named.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// The answer to a new client or key: the key, this once.
@@ -6128,6 +6174,46 @@ mod tests {
         waits(ask(&core, Some(&key), manual("/tasks/work/")).await);
         let moved = Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None };
         assert_eq!(code(&ask(&core, Some(&key), moved).await), "not-found", "no such task, or not its list");
+    }
+
+    #[tokio::test]
+    async fn reminder_styles_are_set_for_known_calendars_and_clients_see_only_theirs() {
+        use torro_core::settings::CalendarReminders;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/home/"))]).await;
+        let full_screen = |path: &str| Request::SetSetting {
+            key: SettingKey::Reminders,
+            value: serde_json::json!({"calendars": {id(path): "full_screen"}}),
+        };
+        assert_eq!(core.handle(full_screen("/cal/work/")).await, Response::Ok);
+        assert_eq!(core.handle(full_screen("/cal/home/")).await, Response::Ok, "the work calendar stays");
+        let stored = settings(&core).await.reminders;
+        assert_eq!(stored.calendar(&id("/cal/work/")), CalendarReminders::FullScreen);
+        assert_eq!(stored.calendar(&id("/cal/home/")), CalendarReminders::FullScreen);
+        assert_eq!(code(&core.handle(full_screen("/cal/nope/")).await), "not-found");
+        let list = torro_pim::Collection { kind: torro_pim::CollectionKind::Todos, ..calendar(&id("/tasks/work/")) };
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/home/")), list]).await;
+        assert_eq!(code(&core.handle(full_screen("/tasks/work/")).await), "not-found", "a task list has no reminders");
+        let wrong = Request::SetSetting { key: SettingKey::Reminders, value: serde_json::json!({"defaultLead": "x"}) };
+        assert_eq!(code(&core.handle(wrong).await), "error");
+
+        // limited to /cal/work/: the style of home is neither shown nor reachable, nor lost.
+        let key = limited_client(&core).await;
+        let Response::Settings { settings: seen } = ask(&core, Some(&key), Request::Settings).await else {
+            panic!("settings")
+        };
+        assert_eq!(seen.reminders.calendars.keys().cloned().collect::<Vec<_>>(), [id("/cal/work/")]);
+        assert_eq!(code(&ask(&core, Some(&key), full_screen("/cal/home/")).await), "not-found");
+        waits(ask(&core, Some(&key), full_screen("/cal/work/")).await);
+        let rights = RightsTemplate::FullAccess.rights();
+        let mut sent = seen;
+        sent.reminders.all_day = true;
+        let answer = core.handle_within(Request::UpdateSettings { settings: sent }, Reach::Client(&rights)).await;
+        assert_eq!(answer, Response::Ok);
+        let after = settings(&core).await.reminders;
+        assert!(after.all_day, "its change");
+        assert_eq!(after.calendar(&id("/cal/home/")), CalendarReminders::FullScreen, "kept as stored");
     }
 
     #[tokio::test]

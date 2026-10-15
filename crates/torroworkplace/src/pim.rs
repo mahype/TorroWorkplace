@@ -1092,6 +1092,13 @@ impl PimService {
                 let repo = repo.trim();
                 return (!reach.reaches_repo(repo)).then(|| repo.to_string());
             }
+            // The reminder handlers (task ER1.3) list only reminders of calendars the client reads
+            // and look an id or `href` up among those, so one out of reach is `not-found` there.
+            Request::ListReminders { .. }
+            | Request::SnoozeReminder { .. }
+            | Request::DismissReminder { .. }
+            | Request::PauseReminders { .. }
+            | Request::PreviewReminder { .. } => return None,
             // Nothing exists yet that could be out of reach. Searches outside the client's
             // repositories are `forbidden`, not `not-found`: the handlers check them before GitHub
             // is asked ([`Reach::confines`]). A new task list goes to an account, which every
@@ -1243,6 +1250,11 @@ impl PimService {
     /// `id` is a collection of a connected account, hidden or not.
     pub async fn knows_collection(&self, id: &str) -> bool {
         self.state.read().await.collections().any(|c| c.id == id)
+    }
+
+    /// `id` is a calendar (a collection with events) of a connected account, hidden or not.
+    pub async fn knows_calendar(&self, id: &str) -> bool {
+        self.state.read().await.collections().any(|c| c.id == id && c.kind.has_events())
     }
 
     /// `id` is a task list (a collection with todos) of a connected account, hidden or not.

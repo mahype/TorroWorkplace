@@ -77,7 +77,7 @@ Die Quelle für alle drei Wege ist der `Request`-Typ, ergänzt um einen **Katalo
 |---|---|---|---|---|
 | `system` | `ping`, `status` | | | |
 | `workspaces` | `list_templates` | `save_template`, `rename_template`, `load_template` ¹ | `update_template`, `delete_template` | |
-| `calendar` | `list_calendars`, `list_events` ¹⁹ | `save_event` ¹⁹ | `delete_event` | |
+| `calendar` | `list_calendars`, `list_events` ¹⁹, `list_reminders` ²⁰ | `save_event` ¹⁹, `snooze_reminder`, `dismiss_reminder`, `pause_reminders`, `preview_reminder` ²⁰ | `delete_event` | |
 | `tasks` | `list_lists`, `list_todos` ¹² | `save_todo`, `create_todo_from_mail` ¹² | `delete_todo` | |
 | `inbox` ⁸ ¹⁷ | `list_items`, `get_item`, `list_sources` ¹⁷, `list_rules` ¹⁴, `list_mute_options` ¹¹, `get_stats` ¹⁴, `get_quiet` ¹⁵ | `post_item`, `resolve_items`, `set_item_done` ⁸ ¹¹ ¹⁷, `snooze_item`, `set_item_lane` ², `open_item` ³, `create_task_from_item` ⁴ ¹⁷, `create_event_from_item` ¹⁵ ¹⁷, `hide_sender` mit `conversation` ¹⁰, `mute_item` mit `conversation`, `hide`/`info`, ohne `until` ¹¹ | | `mute_source`, `hide_sender` mit `sender`/`domain` ¹⁰, `mute_item` sonst ¹¹, `remove_rule`, `set_item_lane` mit `remember` ² |
 | `mail` ⁷ | `list_folders`, `search_messages`, `index_status`, `get_message`, `get_thread`, `get_attachment` | `set_flags`, `move_messages` ⁷, `save_draft` ⁷, `send_draft` ⁷, `respond_to_invitation` ⁷ ¹⁶ | `delete_messages` | |
@@ -528,6 +528,21 @@ Etiketten; Protokoll nur mit der Konto-Kennung.
 `notification`, `full_screen`; gespeichert als Torros `X-TORRO-STYLE`). Kein neuer Befehl und kein neues Recht:
 `list_events` liefert sie mit, `save_event` schreibt sie. Wer `alarms` so zurückschickt, wie er sie gelesen hat,
 ändert keine Erinnerung; nur eine geänderte Liste ersetzt die Erinnerungen, Mail-Erinnerungen des Servers bleiben.
+
+²⁰ **Erinnerungen** (ER1.2, [erinnerungen.md](erinnerungen.md)): `list_reminders` nennt die fälligen (mit
+`due_only`) bzw. die der nächsten 36 Stunden, je mit Kennung, Termin, Auslösezeit, Art (`notification`,
+`full_screen`), Zustand und Videocall, dazu `paused_until`; nur aus Kalendern, die der Client lesen darf (sonst
+`not-found` für eine Kennung oder ein `href`). Schlummern (1 bis 120 Minuten oder bis zum Beginn) und Verwerfen
+gehen nur für ausgelöste Erinnerungen (`due`, `snoozed`), sonst `conflict`: Wie in der Oberfläche lässt sich
+nichts im Voraus verwerfen. `pause_reminders` gilt für alle Kalender, höchstens 24 Stunden (sonst `error`), und
+braucht darum alle Kalender in der Auswahl des Clients (sonst `forbidden`). Schlummern, Verwerfen und Pause
+bleiben auf diesem Rechner (MCP: `openWorld` false), nichts davon geht an den Server. `preview_reminder` zeigt
+die Erinnerung eines Termins jetzt, mit „Preview · sent by {client}“, höchstens einmal je Minute und Client
+(sonst `busy`), damit niemand den Bildschirm zuspammt. Die Einstellungen stehen unter `settings.set_setting
+reminders` (Admin): Ein Wert ändert nur die Felder und Kalender, die er nennt; ein Client sieht und setzt nur
+Kalender seiner Auswahl (andere `not-found`), `update_settings` lässt die Kalender-Arten unberührt. Protokoll: nur
+Befehl und Kennung, ein `href` als Prüfsumme, nie Titel oder Zeiten. Bis ER1.3 antworten die fünf Befehle
+`unsupported`.
 
 **Statistik ist Metadatum.** Gezählt wird nur im Dienst, in Tagessummen in `inbox.sqlite` (0600):
 keine Titel, keine Texte, kein Suchbegriff. Absender, Domains, Listen und Projekte stehen nur als

@@ -483,7 +483,8 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 ///   left open, and so is it for `inbox.create_task_from_item` and `inbox.create_event_from_item`
 ///   (task E8.5b), which write a task or an event to the server, and for
 ///   `inbox.suggest_task_from_item` and `inbox.suggest_event_from_item` (issue #120), which ask an
-///   AI server – one elsewhere, as the person set it up.
+///   AI server – one elsewhere, as the person set it up. The reminders of the calendar
+///   ([`STAYS_HERE`], task ER1.2) never reach a server: closed.
 pub fn annotations(command: &Command) -> ToolAnnotations {
     let read_only = command.access == Access::Read;
     let destructive = matches!(command.access, Access::Delete | Access::Admin)
@@ -508,9 +509,20 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
         Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox => {
             hints.open_world(false)
         }
+        _ if STAYS_HERE.contains(&command.name) => hints.open_world(false),
         _ => hints,
     }
 }
+
+/// Commands of server areas that stay on this computer: the core keeps reminders, snoozing and
+/// dismissing locally and never writes them to the calendar server (task ER1.2).
+const STAYS_HERE: &[&str] = &[
+    "calendar.list_reminders",
+    "calendar.snooze_reminder",
+    "calendar.dismiss_reminder",
+    "calendar.pause_reminders",
+    "calendar.preview_reminder",
+];
 
 /// The inbox commands that reach a server: a calendar server (a task or an event of an entry) or an
 /// AI server (a suggestion, issue #120). Their open-world hint stays open.
@@ -527,6 +539,9 @@ const IDEMPOTENT: &[&str] = &[
     "workspaces.delete_template",
     "workspaces.rename_template",
     "calendar.delete_event",
+    // Dismissed stays dismissed; the same pause again ends when it did (task ER1.2).
+    "calendar.dismiss_reminder",
+    "calendar.pause_reminders",
     "tasks.delete_todo",
     "tasks.delete_filter_list",
     "tasks.unpin_issue",
@@ -1138,7 +1153,8 @@ mod tests {
             let local = matches!(
                 command.area,
                 Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox
-            ) && !WRITES_TO_A_SERVER.contains(&command.name);
+            ) && !WRITES_TO_A_SERVER.contains(&command.name)
+                || STAYS_HERE.contains(&command.name);
             assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);
         }
         let schema = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").input_schema.clone();
@@ -2891,5 +2907,39 @@ mod tests {
             let unknown = session.request("prompts/get", json!({"name": "no_such_prompt"})).await;
             assert!(unknown.get("error").is_some(), "an unknown prompt is a protocol error: {unknown}");
         }
+    }
+
+    /// Task ER1.2: the reminder tools are the catalogue's, with the request's own fields.
+    #[test]
+    fn the_reminder_tools_build_their_requests() {
+        let request = |tool: &str, arguments: Value| {
+            let Value::Object(arguments) = arguments else { panic!("an object") };
+            request_for(tool, arguments, &Utc)
+        };
+        assert_eq!(request("calendar_list_reminders", json!({})), Ok(Request::ListReminders { due_only: false }));
+        assert_eq!(
+            request("calendar_snooze_reminder", json!({"id": "r1", "until": {"minutes": 5}})),
+            Ok(Request::SnoozeReminder { id: "r1".into(), until: torro_ipc::Snooze::Minutes(5) })
+        );
+        assert_eq!(
+            request("calendar_snooze_reminder", json!({"id": "r1", "until": "until_start"})),
+            Ok(Request::SnoozeReminder { id: "r1".into(), until: torro_ipc::Snooze::UntilStart })
+        );
+        assert_eq!(
+            request("calendar_dismiss_reminder", json!({"id": "r1"})),
+            Ok(Request::DismissReminder { id: "r1".into() })
+        );
+        assert_eq!(request("calendar_pause_reminders", json!({})), Ok(Request::PauseReminders { until: None }));
+        assert_eq!(
+            request("calendar_preview_reminder", json!({"href": "/cal/work/e.ics"})),
+            Ok(Request::PreviewReminder { href: "/cal/work/e.ics".into() })
+        );
+        assert!(request("calendar_snooze_reminder", json!({"id": "r1", "until": "later"})).is_err());
+        let snooze = tools().iter().find(|t| t.name == "calendar_snooze_reminder").expect("tool").input_schema.clone();
+        let snooze = serde_json::to_string(&snooze).expect("json");
+        assert!(snooze.contains("\"minimum\":1") && snooze.contains("\"maximum\":120"), "1 to 120 minutes: {snooze}");
+        let hints = |name: &str| tools().iter().find(|t| t.name == name).and_then(|t| t.annotations.clone());
+        assert_eq!(hints("calendar_list_reminders").and_then(|h| h.open_world_hint), Some(false), "stays here");
+        assert_eq!(hints("calendar_list_events").and_then(|h| h.open_world_hint), None, "the server's");
     }
 }

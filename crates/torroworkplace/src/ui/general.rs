@@ -740,6 +740,7 @@ mod tests {
                 mail_view: MailFormat::Text,
                 mail_appearance: MailAppearance::Dark,
                 mail_to_cloud: false,
+                reminders: Default::default(),
             },
             ..Data::default()
         };

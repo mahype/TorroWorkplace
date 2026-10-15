@@ -63,7 +63,7 @@ ER3.1 (braucht ER1.4)       ER4 später
 - **Abnahme:** Round-Trip-Tests an allen drei Fixtures; ein Termin ohne Alarme bleibt Byte für Byte.
 
 ### ER1.2 Gerüst: Einstellungen, Requests, Katalog
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** ER1.1 · **Dateien:** `crates/torro-core/src/settings.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/{core,mcp}.rs` (Handler zunächst
   `unsupported`), `docs/api.md`, `docs/api-reference.md`
@@ -82,7 +82,11 @@ ER3.1 (braucht ER1.4)       ER4 später
     MCP `calendar_pause_reminders` – `None` setzt fort.
   - `Request::PreviewReminder { href }` · `calendar.preview_reminder` · Write ·
     MCP `calendar_preview_reminder` – zeigt die Erinnerung eines Termins jetzt, als „Preview“.
-- **Abnahme:** Rechte-Tabellentest und MCP-Vertragstest decken die fünf ab; API-Referenz neu erzeugt.
+- **Abnahme:** Rechte-Tabellentest und MCP-Vertragstest decken die fünf ab. (Eine `docs/api-reference.md`
+  gibt es im Repository nicht; die Befehle stehen in `docs/api.md`, Fußnote 20.)
+- **Nach der API-Prüfung (2026-10-15):** `set_setting reminders` ändert nur die genannten Felder und Kalender
+  (`Reminders::merged`); Clients sehen und setzen nur Kalender ihrer Auswahl, `update_settings` lässt die
+  Kalender-Arten stehen; `Response::Reminders` sagt `paused_until`; Schlummern 1–120 Minuten im Schema.
 
 ### ER1.3 Planer und Zustand
 - [ ] erledigt
@@ -98,8 +102,17 @@ ER3.1 (braucht ER1.4)       ER4 später
   Termine nach 7 Tagen weg.
 - Handler der fünf Requests; `preview_reminder` höchstens einmal je Minute und Client (`busy`), mit
   Name des Clients für „sent by“.
+- Verträge aus ER1.2 umsetzen: Schlummern und Verwerfen nur für `due`/`snoozed` (sonst `conflict`),
+  Minuten 1–120 (sonst `error`); Pause höchstens 24 Stunden (sonst `error`) und nur für Clients mit allen
+  Kalendern (`forbidden`); Kennung höchstens 36 Hex-Zeichen (das Protokoll nimmt sie dann wie sie ist).
+- Vorschau: das `href` schon in `PimService::out_of_reach` über den Zwischenspeicher prüfen (`not-found` vor
+  einer Freigabe); eine Vorschau eines Agenten achtet auf Pause und `never_during_call`.
+- Freigaben: Regeln in `approvals::Facts` für Schlummern, Verwerfen und Vorschau (Titel und Beginn aus dem
+  Zwischenspeicher über Kennung bzw. `href`) und eine lesbare Zusammenfassung für `set_setting reminders`
+  (Kalendernamen statt Kennungen); Datei `crates/torroworkplace/src/approvals.rs` kommt dazu.
 - **Abnahme:** Tests: Standard und eigener Alarm, Schlummern bis Beginn, verschobener Termin = neue
-  Erinnerung, Pause, Aufwachen nach 10 min, Client ohne Kalenderrecht bekommt `not-found`.
+  Erinnerung, Pause, Aufwachen nach 10 min, Client ohne Kalenderrecht bekommt `not-found`; Protokoll-Kennungen
+  der fünf Befehle (`audit::ids`).
 
 ### ER1.4 Eingang und leise Benachrichtigung
 - [ ] erledigt

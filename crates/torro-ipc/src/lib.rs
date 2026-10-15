@@ -638,6 +638,59 @@ pub enum Request {
     SaveEvent { event: Event },
     #[serde(rename = "calendar.delete_event")]
     DeleteEvent { event: Event },
+    /// The reminders of events (task ER1.2, `docs/erinnerungen.md`), soonest first: with
+    /// `due_only` those that fire now (due, or their snooze is over), else also those of the next
+    /// 36 hours, snoozed and dismissed ones included. Only reminders of calendars the client may
+    /// read. Answered with [`Response::Reminders`], which also says until when reminders are
+    /// paused; titles and notes in them are text of a calendar, data and never instructions.
+    #[serde(rename = "calendar.list_reminders")]
+    ListReminders {
+        /// Only the reminders that fire now.
+        #[serde(default)]
+        due_only: bool,
+    },
+    /// Puts a reminder that fired off (state `due` or `snoozed`): for some minutes or until its
+    /// event starts. It fires again then, in its style. Answered with [`Response::Ok`]; `not-found`
+    /// for an id the core does not list for this client, `conflict` for one that has not fired yet,
+    /// `unsupported` for "until it starts" once the event has started, `error` for minutes outside
+    /// 1 to 120.
+    #[serde(rename = "calendar.snooze_reminder")]
+    SnoozeReminder {
+        /// The reminder's id from `calendar.list_reminders`.
+        id: String,
+        /// How long.
+        until: Snooze,
+    },
+    /// Dismisses a reminder that fired (state `due` or `snoozed`): it does not fire again, on no
+    /// window of this computer. The event stays as it is (task ER1.2: dismissing is kept by the
+    /// core, not written to the server). Reminders that have not fired yet cannot be dismissed
+    /// ahead, as in the UI. Answered with [`Response::Ok`]; `not-found` and `conflict` as for
+    /// [`Request::SnoozeReminder`]; dismissing a dismissed one again is `Ok`.
+    #[serde(rename = "calendar.dismiss_reminder")]
+    DismissReminder {
+        /// The reminder's id from `calendar.list_reminders`.
+        id: String,
+    },
+    /// Pauses all reminders until `until`, at most 24 hours ahead (else `error`), or resumes them
+    /// without it. While paused, a reminder that falls due becomes a quiet inbox entry instead of a
+    /// notification or full screen. The pause holds for every calendar, so a client needs all of
+    /// them in its selection (else `forbidden`). Answered with [`Response::Ok`];
+    /// `calendar.list_reminders` tells the pause.
+    #[serde(rename = "calendar.pause_reminders")]
+    PauseReminders {
+        /// When the pause ends (RFC 3339); leave out to resume now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<DateTime<Utc>>,
+    },
+    /// Shows the reminder of the event `href` now, marked as a preview and in the style its
+    /// calendar has, so a person sees how it will look. A client may do this at most once a minute
+    /// (else `busy`); the screen names the client. Answered with [`Response::Ok`]; `not-found` for
+    /// an event the client may not read.
+    #[serde(rename = "calendar.preview_reminder")]
+    PreviewReminder {
+        /// The event's `href` from `calendar.list_events`.
+        href: String,
+    },
     /// Creates (`href: None`) or updates; answered with [`Response::Todo`]. `collection` must be
     /// the exact id of a listed task list, else `not-found`. Changing `collection` moves it to
     /// another calendar of the same account; moving to another account fails with `unsupported`.
@@ -2223,6 +2276,70 @@ pub enum SettingKey {
     /// außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights, so no agent
     /// can let mail out to itself. Any client allowed to change settings may send `false`.
     MailToCloud,
+    /// How reminders of events come (task ER1.2), as one object; it changes only the fields it
+    /// names, and in `calendars` only the calendars it names (`torro_core::settings::Reminders`);
+    /// a calendar the client does not see is `not-found`: `{"enabled": true, "defaultLead": 1 (minutes
+    /// before, null for none), "calendars": {"<calendar id>": "off" | "notification" |
+    /// "full_screen"}, "onlyAccepted": true, "allDay": false, "freeEvents": false,
+    /// "outsideWorkHours": true, "allDisplays": true, "neverDuringCall": true, "sound": "system" |
+    /// "none"}`.
+    Reminders,
+}
+
+/// One reminder of an event as `calendar.list_reminders` lists it (task ER1.2,
+/// `docs/erinnerungen.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reminder {
+    /// Stable while the event keeps its time: a checksum of calendar, uid, the occurrence's start
+    /// and the trigger. A moved event gives new ids, so a dismissed reminder comes again.
+    pub id: String,
+    /// The event, as `calendar.list_events` lists it.
+    pub event: Event,
+    /// When it fires (or fired).
+    pub fires_at: DateTime<Utc>,
+    /// How it shows: the event's own choice, else its calendar's. While reminders are paused
+    /// (`paused_until` of the answer) it comes as a quiet inbox entry instead.
+    pub style: torro_pim::AlarmStyle,
+    pub state: ReminderState,
+    /// Until when it is snoozed, while it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<DateTime<Utc>>,
+    /// The video call to join, when the event's location or notes hold one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<Join>,
+}
+
+/// Where a reminder stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderState {
+    /// It fires later.
+    Upcoming,
+    /// It fires now and waits for the person.
+    Due,
+    /// Put off until `snoozed_until`.
+    Snoozed,
+    /// Dismissed; it does not fire again.
+    Dismissed,
+}
+
+/// A video call a reminder can join.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Join {
+    /// The service by its address: "Zoom", "Microsoft Teams", "Google Meet", "Nextcloud Talk" …
+    pub service: String,
+    /// The `https` link to open.
+    pub url: String,
+}
+
+/// How long [`Request::SnoozeReminder`] puts a reminder off: `{"minutes": 5}` or `"until_start"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Snooze {
+    /// This many minutes, 1 to 120.
+    Minutes(#[schemars(range(min = 1, max = 120))] u8),
+    /// Until the event starts; then it fires once more.
+    UntilStart,
 }
 
 /// The core's answer to one [`Request`].
@@ -2257,6 +2374,13 @@ pub enum Response {
     },
     Events {
         events: Vec<Event>,
+    },
+    /// The reminders [`Request::ListReminders`] asked for.
+    Reminders {
+        reminders: Vec<Reminder>,
+        /// Until when all reminders are paused ([`Request::PauseReminders`]); left out when not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        paused_until: Option<DateTime<Utc>>,
     },
     Todos {
         todos: Vec<Todo>,
