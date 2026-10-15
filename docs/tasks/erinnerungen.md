@@ -29,7 +29,7 @@ ER3.1 (braucht ER1.4)       ER4 später
 ## ER0 Klären
 
 ### ER0.1 Versuch: Vollbild auf allen Bildschirmen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Dateien:** nur `docs/erinnerungen.md` (Ergebnis) und ein Wegwerf-Beispiel unter
   `crates/torro-gui/examples/fullscreen_probe.rs`, das nicht committet wird
 - Herausfinden und aufschreiben, wie ein Iced-Fenster je System **randlos über dem ganzen Bildschirm, über

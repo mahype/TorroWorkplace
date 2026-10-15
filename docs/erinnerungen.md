@@ -130,10 +130,128 @@ während eines Termins will man den nächsten nicht verpassen.
   schickt `calendar.snooze_reminder` / `calendar.dismiss_reminder`; ist nichts mehr fällig, schließt es
   sich. Je Bildschirm ein Fenster: Hyprland über `torro-wm` (Regeln `fullscreen`, `pin`, Monitor), macOS
   über `torro-appkit` (Fenster über allen Spaces, auch über Vollbild-Apps), Windows randlos und oben.
-  Wie das je System sicher geht, klärt zuerst ein Versuch (ER0.1).
+  Wie das je System geht und wo die Grenzen liegen, steht unter [Vollbild je System](#vollbild-je-system).
 - **Doppelte Hinweise von Nextcloud**: Die Nextcloud-App `dav` schickt eigene Erinnerungen als
   Benachrichtigung (Quelle Nextcloud im Eingang, Regel `dav` → „Für mich“). Sind Torro-Erinnerungen an,
   gehen diese im Torro-Eintrag desselben Termins auf, statt ein zweites Mal zu kommen.
+
+## Vollbild je System
+
+Ergebnis des Versuchs ER0.1 (2026-10-15). Gesucht: ein Iced-Fenster randlos über dem ganzen Bildschirm, über
+allen anderen Fenstern, auf einem bestimmten Bildschirm, ohne die Arbeitsfläche zu wechseln; Fokus nur beim
+Erscheinen; nie über dem gesperrten Bildschirm. Probiert mit einem Wegwerf-Beispiel (`fullscreen_probe`, nicht
+im Repository) auf macOS 26 mit einem Bildschirm (5120×1440) und AeroSpace. Hyprland und Windows waren nicht
+zur Hand; dort stammt der Weg aus der Hyprland-Wiki 0.56 und den Quellen von Iced 0.14 / winit 0.30 und ist
+**ungeprüft**.
+
+**Was Iced allein kann** (gilt für alle Systeme): `decorations: false`, `level: AlwaysOnTop`, `visible`,
+`position: Specific(…)` (absolute logische Koordinaten), `fullscreen` bzw. `set_mode(Fullscreen)` (winit
+„Borderless“ auf dem Bildschirm, auf dem das Fenster gerade ist), `window::raw_id` und `window::run` für den
+nativen Griff. Iced listet **keine Bildschirme**; Größe und Lage der Bildschirme kommen von außen (torro-wm,
+AppKit).
+
+### macOS
+
+| Weg | Gemessen |
+|---|---|
+| Nur Iced: `AlwaysOnTop`, randlos, Größe des Bildschirms | Ebene 3 („floating“): über normalen Fenstern, aber **unter der Menüleiste** (macOS schiebt das Fenster auf y = 30) und nur im aktuellen Space. Reicht nicht. |
+| Iced `fullscreen` | Echtes macOS-Vollbild: **eigener Space mit Animation**, der Nutzer wird dorthin geschoben. Unbrauchbar. |
+| AppKit: Ebene, Space-Verhalten, Rahmen des Bildschirms | Deckt den ganzen Bildschirm samt Menüleiste, Dock und Leisten-Symbolen (Ebene 101 liegt über Menüleiste 24, Bartender 26). Erscheint im aktuellen Space ohne Wechsel. |
+| … über einer Vollbild-App (eigener Space; geprüft mit einem zweiten Probe-Prozess im macOS-Vollbild) | Nur, wenn der Prozess als **Agent-App** startet (`LSUIElement` in der `Info.plist` des Bundles). Als normale App (Dock-Symbol) bleibt das Fenster dort unsichtbar, nimmt aber trotzdem den Fokus; mit `MoveToActiveSpace` springt macOS auf den Schreibtisch. Umschalten auf „Accessory“ zur Laufzeit (`setActivationPolicy`, auch mit 700 ms Wartezeit) hilft nicht. |
+
+Der Weg:
+1. Fenster mit Iced **unsichtbar** öffnen (`visible: false`, `decorations: false`). Sonst blitzt es kurz in
+   Normalgröße auf, und über einer Vollbild-App holt das erste normale Fenster den Nutzer auf den Schreibtisch.
+2. Über `window::raw_id` und `window::run` (Hauptthread) in `torro-appkit` das `NSWindow` einrichten:
+   `setLevel(NSPopUpMenuWindowLevel)` (101), `setCollectionBehavior(CanJoinAllSpaces | FullScreenAuxiliary |
+   Stationary | IgnoresCycle)`, `setFrame(NSScreen::screens()[n].frame())`, dann `makeKeyAndOrderFront` für den
+   Hauptbildschirm, `orderFrontRegardless` (ohne Fokus) für die anderen.
+3. Der Prozess läuft aus einem eigenen kleinen Bundle mit `LSUIElement = true` (z. B. „Torro Reminder.app“ mit
+   dem Programm `torrocalendar`, gestartet mit `--reminders`). Kein Dock-Symbol, kein Eintrag im App-Umschalter.
+
+**Kein neues `unsafe` nötig:** `setLevel`, `setCollectionBehavior`, `setFrame_display`, `NSScreen::screens`,
+`NSApplication::windows` sind in objc2-app-kit 0.3 sicher. Das Fenster findet man ohne Zeiger-Dereferenz: winit
+0.30 nimmt die Adresse des `NSWindow` als Fenster-Kennung, `window::raw_id` liefert sie, und man vergleicht sie
+mit `Retained::as_ptr` der Fenster aus `NSApplication::windows()`. Das hängt an einem Detail von winit und ist
+bei jedem winit-Update zu prüfen; die Alternative wäre ein weiterer markierter Aufruf wie in
+`place_traffic_lights` (dann vorher nachfragen). Die Wurzel-`Cargo.toml` braucht bei `objc2-app-kit` die
+Features `NSApplication` und `NSScreen`.
+
+Grenzen:
+- **Ebene 101 statt 1000:** `NSScreenSaverWindowLevel` (1000) liegt gleichauf mit dem Bildschirmschoner und
+  könnte über ihm erscheinen. 101 reicht für Menüleiste und Dock.
+- **Ohne Bundle** (`cargo run`, Entwicklung) setzt winit die App auf „normal“: kein Vollbild über fremden
+  Vollbild-Spaces, dafür ein Dock-Symbol. Für die Sichtprüfung reicht der normale Schreibtisch.
+- **Fokus:** winit aktiviert die App beim Start (`activateIgnoringOtherApps`, in Iced nicht abschaltbar). Gemessen:
+  nach rund 0,25 s ist der Erinnerungs-Prozess vorn, das Fenster hat die Tastatur. Wer gerade tippt, tippt ab
+  dann in den Hinweis; deshalb die Sperre von 600 ms für Tasten (siehe Bedienung). Nach dem Schließen ist die
+  vorige App wieder vorn.
+- **AeroSpace** führt das randlose Fenster als „floating“ (gemessen, keine Kachel). Weil AeroSpace Arbeitsflächen
+  durch Verschieben der Fenster nachbildet, kann ein Wechsel der AeroSpace-Arbeitsfläche den Hinweis aus dem
+  Bild schieben; der Kern holt ihn dann wie unter Hyprland nach (`WmEvent` → `move_to_workspace`). Ungeprüft.
+- **Mehrere Bildschirme:** Auswahl über `NSScreen::screens()[n]`; nur mit einem Bildschirm geprüft. Mit
+  „Monitore verwenden verschiedene Spaces“ (Standard) gilt `CanJoinAllSpaces` je Bildschirm.
+- **Gesperrter Bildschirm:** nicht durch Sperren geprüft. Der Sperrbildschirm liegt über allen App-Ebenen
+  (Schild-Ebene), Ebene 101 kommt nicht darüber. Ein Hinweis, der während der Sperre fällig wird, liegt danach
+  sichtbar bereit („Started 3 min ago“).
+
+### Hyprland (ungeprüft)
+
+Fensterregeln in Lua (`hl.window_rule`, Hyprland 0.56). Das Fenster setzt die App-ID `torro-reminder`
+(`PlatformSpecific::application_id`) und je Bildschirm den Titel `Reminder · <Monitor>`; Regeln greifen auf den
+ersten Titel. Der Kern meldet vor dem Start je Bildschirm eine benannte Regel über den Befehls-Socket an
+(`eval hl.window_rule({ … })`, wie `hyprctl eval`), weil die Monitornamen erst zur Laufzeit bekannt sind:
+
+```lua
+hl.window_rule({
+  name = "torro-reminder-DP-1",
+  match = { class = "^torro-reminder$", title = "^Reminder · DP-1$" },
+  monitor = "DP-1", fullscreen = true, no_initial_focus = false, -- true für die anderen Bildschirme
+})
+```
+
+- `monitor` öffnet das Fenster auf der **sichtbaren Arbeitsfläche** dieses Bildschirms, ohne Wechsel.
+  `fullscreen` deckt die Leiste (Waybar liegt auf der Ebene „top“, unter Vollbild-Fenstern).
+- **Nicht `pin`:** `pin` gilt nur für schwebende Fenster, ein schwebendes Fenster in Bildschirmgröße bliebe
+  unter der Leiste. Wechselt der Nutzer die Arbeitsfläche, zieht der Kern das Fenster nach (`WmEvent` →
+  `move_to_workspace`, gibt es schon).
+- Zur Laufzeit angemeldete Regeln verfallen beim Neuladen der Konfiguration; deshalb vor jedem Start anmelden.
+  Alternative: feste Regeln in `integrations/hyprland/windowrules.lua`, dann ohne Monitorwahl.
+- **Grenzen:** Je Arbeitsfläche gibt es ein Vollbild-Fenster; läuft dort schon eines (Video), verliert es sein
+  Vollbild und bekommt es danach nicht von selbst zurück. Fokus: Das Hauptfenster bekommt ihn (Mauszeiger kann
+  auf den Bildschirm springen, `cursor:no_warps`), die anderen nicht (`no_initial_focus`).
+- **Gesperrter Bildschirm:** hyprlock nutzt `ext-session-lock-v1`; solange gesperrt ist, zeigt Hyprland nur die
+  Sperrfläche. Kein Fenster kommt darüber.
+- torro-wm kann heute weder `eval` noch Vollbild; ER2.2 braucht dafür eine neue Funktion im Hyprland-Backend
+  (Schnittstelle, vorher fragen).
+
+### Windows (ungeprüft)
+
+Iced allein: `decorations: false`, `level: AlwaysOnTop` (`WS_EX_TOPMOST`), `skip_taskbar: true`, Position im
+Zielbildschirm, dann `set_mode(Fullscreen)`. winit macht daraus ein randloses Fenster über dem ganzen Bildschirm
+samt Taskleiste, ohne Wechsel der Bildschirmauflösung und ohne neuen virtuellen Desktop. Kein `unsafe`.
+
+- **Bildschirme:** Iced listet sie nicht. Mit GlazeWM kommen sie aus `torro-wm` (`monitors`); ohne GlazeWM geht
+  nur der Hauptbildschirm (`fullscreen: true` beim Öffnen). Alle Bildschirme ohne GlazeWM bräuchten
+  `EnumDisplayMonitors` (FFI, `unsafe`): erst fragen.
+- **GlazeWM** kachelt neue Fenster; eine Regel `ignore` auf Titel `^Reminder` und Prozess `torrocalendar` nimmt
+  das Fenster aus der Verwaltung.
+- **Fokus:** Windows gibt einem Prozess, den der Kern im Hintergrund startet, meist **keinen** Vordergrund
+  (Foreground-Lock): Das Fenster liegt oben, die Taskleiste blinkt, die Tastatur bleibt bei der laufenden
+  Eingabe. Kein gestohlener Tastendruck, aber `Enter`/`Esc` wirken erst nach einem Klick.
+- **Grenzen:** Andere Fenster mit `TOPMOST` (PowerPoint-Präsentation) liegen gleichauf, das neuere gewinnt;
+  Spiele im exklusiven Vollbild werden minimiert. Das Fenster bleibt auf seinem virtuellen Desktop.
+- **Gesperrter Bildschirm:** Die Sperre läuft auf dem abgesicherten Desktop von Winlogon; Fenster des Nutzers
+  erscheinen dort nie.
+
+### Was ER2.2 daraus braucht
+
+| System | Dateien |
+|---|---|
+| alle | `crates/torrocalendar` (Modus `--reminders`: Fenster unsichtbar öffnen, je Bildschirm einrichten, dann zeigen) |
+| macOS | `crates/torro-appkit/src/lib.rs` (neue Funktion, Bildschirm abdecken, ohne neues `unsafe`), Wurzel-`Cargo.toml` (Features `NSApplication`, `NSScreen`), `packaging/macos/` (zweites Bundle mit `LSUIElement`) |
+| Hyprland | `crates/torro-wm/src/hyprland/` (Regel per `eval` anmelden; neue Schnittstelle, vorher fragen), `crates/torroworkplace` (Regeln vor dem Start, Fenster beim Wechsel der Arbeitsfläche nachziehen) |
+| Windows | nur Iced; GlazeWM-Regel in `integrations/` |
 
 ## Oberfläche, API, MCP
 
