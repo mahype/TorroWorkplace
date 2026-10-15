@@ -13,10 +13,13 @@
 //! - Reply, reply all and forward open the compose window (task E4.3) as its own process
 //!   ([`compose_command`]): `torroinbox --compose --reply <id>`, `--reply-all <id>` or
 //!   `--forward <id>`, started like the suite starts its programs ([`source::sibling`]).
-//! - "View as HTML" (task M9.3) opens the mail as it was written in the mail window, its own
-//!   program ([`view_command`]: `torromailview <id>`, `torromailview --demo` on the demo). The
-//!   panel learns whether a mail has HTML from the same `mail.get_message` that brings its text
-//!   ([`MailSource::get_mail`] asks with `include_html`); only then the button shows.
+//! - A mail with HTML (task M9.7, decision 9 in `docs/mail.md`) shows as it was written right in
+//!   the panel and the reader: [`HtmlMail`] holds its HTML parsed by `torro_htmlview` while it is
+//!   open, its `cid:` pictures come from the core ([`MailPictures`], `mail.get_attachment`). The
+//!   switches over it ([`HtmlReading`]: "HTML | Text", "Light | Dark") start from the settings
+//!   `mail_view` and `mail_appearance` ([`MailLook`], [`stored_look`]). The panel learns whether a
+//!   mail has HTML from the same `mail.get_message` that brings its text ([`MailSource::get_mail`]
+//!   asks with `include_html`).
 //! - [`list`] draws a folder's messages – rows, or cards in the comfortable density of the mail
 //!   window (task E8.3, [`message_card`]) – and the smart view "With attachments" ([`attachments`]:
 //!   the messages with attachments of every account's inbox). [`body`] is the whole mail for the
@@ -26,8 +29,9 @@
 //! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
 //!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
 //!
-//! **Mail is foreign text** (`untrusted`). The panel draws only its text – a preview; the HTML
-//! (cleaned by the core) is shown by the mail window alone, never here. The text is drawn as it is;
+//! **Mail is foreign text** (`untrusted`). Its HTML comes cleaned by the core (no scripts, no
+//! forms, legacy attributes as CSS) and is drawn without JavaScript; a click on one of its links
+//! only reports the address, the app opens `http`, `https` and `mailto` in the browser. The text is drawn as it is;
 //! the text can be selected and copied (issue #119, `torro_gui::selectable`, "Copy text"), and the web
 //! addresses in it are listed under it as "Links" that open only on a click. An attachment is fetched by the core into its attachment folder and opened with the
 //! system, except files that could run programs ([`runs_programs`]): their folder opens instead.
@@ -42,6 +46,7 @@ use iced::widget::text::Wrapping;
 use iced::widget::{column, container, responsive, row, rule, scrollable, svg};
 use iced::{Alignment, Color, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trc, trf};
+use torro_core::settings::{MailAppearance, MailFormat};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout;
 use torro_gui::panel;
@@ -50,6 +55,7 @@ use torro_gui::source;
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Anchor, Mark, RowAction};
 use torro_gui::{datetime, style, typo};
+use torro_htmlview::{CidSource, Content, HtmlView, MAX_PICTURE_BYTES, Scheme};
 use torro_inbox::InboxError;
 use torro_inbox::demo::DemoSource;
 use torro_inbox::item::{ItemTask, TaskDue};
@@ -59,6 +65,7 @@ use torro_ipc::inbox::{CalendarEvent, InboxClient, MailFind, MailFound};
 #[cfg(test)]
 use torro_ipc::mail::MailSort;
 use torro_ipc::mail::{Delivery, MailHighlight, MailIndexProgress, MoveRole, MoveTarget};
+use torro_ipc::{Request, Response};
 use torro_mail::{
     AttachmentInfo, Flag, Folder, InvitationAnswer, Invite, MailAddress, Message as Mail, MessageSummary, Order, Role,
 };
@@ -92,10 +99,9 @@ pub trait MailSource: Send + Sync {
     ) -> impl Future<Output = Result<MailPage, InboxError>> + Send;
 
     /// `mail.get_message` with its text and – asked with `include_html` (task M9.3) – its cleaned
-    /// HTML, so the panel knows whether to offer "View as HTML" ([`shows_html`]). Its text only
-    /// when the HTML cannot be had (the core must fetch it for an old cached mail and the server is
-    /// out of reach): the panel then works as before, without the button. Reading does not mark it
-    /// read.
+    /// HTML, which the panel and the reader draw (task M9.7, [`shows_html`]). Its text only when
+    /// the HTML cannot be had (the core must fetch it for an old cached mail and the server is out
+    /// of reach): the mail then shows as text. Reading does not mark it read.
     fn get_mail(&self, id: String) -> impl Future<Output = Result<Mail, InboxError>> + Send;
 
     /// `mail.get_attachment`: the attachment `part` of the message `id` as a file in the core's
@@ -630,27 +636,136 @@ pub fn compose_command(kind: Compose, id: &str, demo: bool) -> Command {
     command
 }
 
-/// The program of the mail window (task M9.2), next to this one.
-pub const MAIL_VIEW: &str = "torromailview";
-
-/// Whether the panel offers "View as HTML" for `mail` (task M9.3): it came with cleaned HTML. A
-/// mail with a text part and an HTML part has it as well as one made from HTML (`from_html`).
+/// Whether `mail` can show as HTML (task M9.7): it came with cleaned HTML. A mail with a text part
+/// and an HTML part has it as well as one made from HTML (`from_html`).
 pub fn shows_html(mail: &Mail) -> bool {
     mail.html.as_deref().is_some_and(|html| !html.trim().is_empty())
 }
 
-/// The arguments of the mail window for the message `id`: just the id (`torromailview <id>`); on
-/// the demo `--demo` instead, as the mail window knows no demo mail by id and shows its sample.
-pub fn view_args(id: &str, demo: bool) -> Vec<String> {
-    vec![if demo { "--demo".to_owned() } else { id.to_owned() }]
+/// Whether a link clicked in a mail's HTML (task M9.7) opens in the browser: `http`, `https` and
+/// `mailto` only (the widget reports no other; checked again here all the same).
+pub fn opens_in_browser(url: &str) -> bool {
+    let scheme = url.split_once(':').map(|(scheme, _)| scheme.to_ascii_lowercase());
+    matches!(scheme.as_deref(), Some("http" | "https" | "mailto"))
 }
 
-/// The command that opens the mail window (task M9.3): [`MAIL_VIEW`] next to the running binary
-/// (as [`compose_command`] finds its own, [`source::sibling`]) with [`view_args`].
-pub fn view_command(id: &str, demo: bool) -> Command {
-    let mut command = Command::new(source::sibling(MAIL_VIEW));
-    command.args(view_args(id, demo));
-    command
+/// How the window shows mail, as the settings `mail_view` and `mail_appearance` say (task M9.5).
+/// The switches over a mail start from it and go back to it whenever the setting changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MailLook {
+    /// HTML or text first (`mail_view`); a mail without HTML always shows its text.
+    pub format: MailFormat,
+    /// The colours of the mail's content (`mail_appearance`); [`scheme_for`] resolves `app`.
+    pub colors: MailAppearance,
+}
+
+/// Reads [`MailLook`] from the settings of the core (`settings.get_settings`), on every tick like
+/// the appearance, so a change in the control centre reaches the open window. The demo has no core
+/// and keeps the defaults (HTML, like the app).
+pub async fn stored_look(suite: &source::Source) -> Result<MailLook, String> {
+    let source::Source::Core(client) = suite else {
+        return Ok(MailLook::default());
+    };
+    match torro_ipc::client::call(&client.socket, &Request::Settings).await {
+        Ok(Response::Settings { settings }) => {
+            Ok(MailLook { format: settings.mail_view, colors: settings.mail_appearance })
+        }
+        Ok(_) => Err("unexpected answer to settings.get_settings".to_owned()),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+/// The colours a mail's content is drawn in for `colors`: light and dark as they say, `app` like
+/// the window (`dark`: the window's theme is dark – "System" already resolved by the theme).
+pub fn scheme_for(colors: MailAppearance, dark: bool) -> Scheme {
+    match colors {
+        MailAppearance::Light => Scheme::Light,
+        MailAppearance::Dark => Scheme::Dark,
+        MailAppearance::App if dark => Scheme::Dark,
+        MailAppearance::App => Scheme::Light,
+    }
+}
+
+/// The HTML of the mail held by the window, parsed for drawing (task M9.7). Lives as long as the
+/// mail is open: dropping it stops the pictures still loading. Not `Send`: it stays with the window.
+#[derive(Debug)]
+pub struct HtmlMail {
+    /// The message it belongs to.
+    pub id: String,
+    pub content: Content,
+}
+
+impl HtmlMail {
+    /// Parses the HTML of `mail` (`None` without HTML, [`shows_html`]) and starts loading its
+    /// pictures: `cid:` ones from `inbox` ([`MailPictures`]) when the mail has parts with a
+    /// Content-ID, web ones unless `offline`. The demo and the tests are offline: they never touch
+    /// the network.
+    pub fn new<S: MailSource + 'static>(mail: &Mail, inbox: &Arc<S>, offline: bool) -> Option<HtmlMail> {
+        let html = mail.html.as_deref().filter(|_| shows_html(mail))?;
+        let pictures = MailPictures::of(mail, inbox).map(|pictures| Arc::new(pictures) as Arc<dyn CidSource>);
+        let content = match (offline, pictures) {
+            (true, pictures) => Content::offline(html, pictures),
+            (false, Some(pictures)) => Content::with_cid(html, pictures),
+            (false, None) => Content::new(html),
+        };
+        Some(HtmlMail { id: mail.summary.id.clone(), content })
+    }
+}
+
+/// The pictures a mail carries with it (`cid:`), from the core: `mail.get_attachment` places the
+/// part whose Content-ID matches, then its file is read. Only the parts of this one mail.
+pub struct MailPictures<S> {
+    inbox: Arc<S>,
+    /// The message.
+    id: String,
+    /// `(content id, part)` of every part of the mail that has a Content-ID.
+    parts: Vec<(String, String)>,
+}
+
+impl<S: MailSource + 'static> MailPictures<S> {
+    /// The pictures of `mail` from `inbox`; `None` when no part of it has a Content-ID.
+    pub fn of(mail: &Mail, inbox: &Arc<S>) -> Option<MailPictures<S>> {
+        let parts: Vec<(String, String)> =
+            mail.attachments.iter().filter_map(|file| Some((file.content_id.clone()?, file.part.clone()))).collect();
+        (!parts.is_empty()).then(|| MailPictures { inbox: Arc::clone(inbox), id: mail.summary.id.clone(), parts })
+    }
+}
+
+impl<S: MailSource + 'static> CidSource for MailPictures<S> {
+    /// Runs on the picture fetcher's worker thread: it may wait for the core and the disk.
+    fn picture(&self, content_id: &str) -> Option<Vec<u8>> {
+        let part = self.parts.iter().find(|(id, _)| id == content_id).map(|(_, part)| part.clone())?;
+        let path = wait_for(self.inbox.mail_attachment(self.id.clone(), part))?.ok()?;
+        read_picture(&path)
+    }
+}
+
+/// The bytes of the file at `path`, or `None` when it cannot be read or is larger than a picture
+/// may be ([`MAX_PICTURE_BYTES`], the library's own limit): a huge part is never read into memory
+/// only to be refused afterwards. The read stops one byte past the limit, so a file that grows
+/// between the check and the read is refused too.
+fn read_picture(path: &std::path::Path) -> Option<Vec<u8>> {
+    use std::io::Read as _;
+    let file = std::fs::File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_PICTURE_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_PICTURE_BYTES + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= MAX_PICTURE_BYTES).then_some(bytes)
+}
+
+/// Waits for `future` on this (blocking) thread: on the runtime it was started from when there is
+/// one – the fetcher's, whose reactor serves the core's socket –, else on a small one of its own.
+/// `None` when no runtime can be had.
+fn wait_for<F: Future>(future: F) -> Option<F::Output> {
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => Some(handle.block_on(future)),
+        Err(_) => {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+            Some(runtime.block_on(future))
+        }
+    }
 }
 
 /// Starts `command` and lets it run on its own; a thread waits for it, so it leaves no zombie.
@@ -1436,6 +1551,30 @@ pub struct Reading<'a> {
     pub answering: bool,
     /// The calendars and events beside the mail's invitation (task E8.3c, [`InviteSide`]).
     pub invite: InviteSide<'a>,
+    /// The mail's HTML and how it shows (task M9.7); `None` for a mail without HTML, which shows
+    /// its text without switches.
+    pub html: Option<HtmlReading<'a>>,
+}
+
+/// How the mail's HTML shows in the panel or the reader (task M9.7): as HTML or its text, in light
+/// or dark colours, sharp at the window's scale. The switches over the mail show what is chosen.
+#[derive(Debug, Clone, Copy)]
+pub struct HtmlReading<'a> {
+    /// The mail's HTML, parsed ([`HtmlMail`]).
+    pub content: &'a Content,
+    /// HTML or text, as the switch "HTML | Text" (or `v`) stands.
+    pub format: MailFormat,
+    /// The colours of the mail's content, as the switch "Light | Dark" stands.
+    pub scheme: Scheme,
+    /// Device pixels per logical pixel: the window's scale factor times the zoom.
+    pub scale: f32,
+}
+
+impl HtmlReading<'_> {
+    /// Whether the HTML shows (else the mail's text).
+    pub fn shown(&self) -> bool {
+        self.format == MailFormat::Html
+    }
 }
 
 impl<'a> Reading<'a> {
@@ -1468,8 +1607,9 @@ pub fn panel<'a>(
 }
 
 /// The mail in the panel: who wrote it to whom and when, the actions (reply, reply all, forward,
-/// archive, delete, flag, read), the attachments, "View as HTML" when it has HTML (task M9.3), the
-/// text with its links, and the note that the text comes from outside. `anchors` of a folder's
+/// archive, delete, flag, read), the attachments, for a mail with HTML the switches "HTML | Text"
+/// and "Light | Dark" (task M9.7) over the HTML or the text with its links, and the note that the
+/// mail comes from outside. `anchors` of a folder's
 /// panel take the menus of its buttons ([`panel`]); an entry's panel has them in its footer.
 pub fn body<'a>(reading: &Reading<'a>, anchors: Option<&detail::Anchors>) -> Element<'a, Message> {
     let mut body = column![].spacing(space::l());
@@ -1499,8 +1639,11 @@ pub fn body<'a>(reading: &Reading<'a>, anchors: Option<&detail::Anchors>) -> Ele
                 let rows = files.into_iter().map(|file| attachment_row(reading.id, file)).collect();
                 body = body.push(widgets::prop_section(tr("Attachments"), rows));
             }
-            body = body.push(panel::inset(text_block(mail, reading.text, text_level(reading.read), true)));
-            if let Some(links) = text_links(reading.text) {
+            if let Some(html) = reading.html {
+                body = body.push(panel::inset(view_switches(html)));
+            }
+            body = body.push(panel::inset(content_block(reading, true)));
+            if let Some(links) = text_links(reading.text).filter(|_| !html_shown(reading)) {
                 body = body.push(links);
             }
         }
@@ -1598,8 +1741,11 @@ fn reader_content<'a>(
             body = body.push(column![what, why].spacing(space::xs()));
         }
         Some(Ok(mail)) => {
-            body = body.push(text_block(mail, reading.text, text_level(reading.read), false));
-            if let Some(links) = text_links(reading.text) {
+            if let Some(html) = reading.html {
+                body = body.push(view_switches(html));
+            }
+            body = body.push(content_block(reading, false));
+            if let Some(links) = text_links(reading.text).filter(|_| !html_shown(reading)) {
                 body = body.push(links);
             }
             let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
@@ -1968,33 +2114,63 @@ pub fn text_of(mail: &Mail) -> String {
     mail.text.as_deref().map(list::plain).unwrap_or_default()
 }
 
+/// Whether the mail in `reading` shows as HTML (task M9.7), not as text.
+fn html_shown(reading: &Reading<'_>) -> bool {
+    reading.html.is_some_and(|html| html.shown())
+}
+
+/// The switches over a mail with HTML (task M9.7): "HTML | Text" (`v`), and in the HTML view
+/// "Light | Dark" for the colours of the mail's content – never of the window. They hold for this
+/// window until the settings change ([`MailLook`]).
+fn view_switches<'a>(html: HtmlReading<'a>) -> Element<'a, Message> {
+    let formats =
+        [(tr("HTML"), Message::ShowMailAs(MailFormat::Html)), (tr("Text"), Message::ShowMailAs(MailFormat::Text))];
+    let mut bar = row![widgets::segmented(formats, usize::from(!html.shown()))].spacing(space::s());
+    if html.shown() {
+        let schemes =
+            [(tr("Light"), Message::MailColors(Scheme::Light)), (tr("Dark"), Message::MailColors(Scheme::Dark))];
+        bar = bar.push(widgets::segmented(schemes, usize::from(html.scheme == Scheme::Dark)));
+    }
+    bar.into()
+}
+
+/// The mail's content: its HTML when it shows ([`HtmlReading`], links reported as
+/// [`Message::HtmlLink`]), else its text ([`text_block`]); then the note that it comes from
+/// outside, with "Copy text" where `copy` (the panel).
+fn content_block<'a>(reading: &Reading<'a>, copy: bool) -> Element<'a, Message> {
+    match reading.html.filter(HtmlReading::shown) {
+        Some(html) => {
+            let view = HtmlView::new(html.content).scheme(html.scheme).scale(html.scale).on_link(Message::HtmlLink);
+            let note = note(tr("Mail from outside the suite: no scripts run, pictures from the web are loaded."));
+            let notes = foot(note, copy && !reading.text.text().trim().is_empty());
+            column![view, notes].spacing(space::m()).into()
+        }
+        None => text_block(reading.text, text_level(reading.read), copy),
+    }
+}
+
+/// The note under the mail, with "Copy text" at its right when `copy`.
+fn foot<'a>(note: Element<'a, Message>, copy: bool) -> Element<'a, Message> {
+    if copy {
+        row![container(note).width(Fill), copy_button()].spacing(space::s()).align_y(Alignment::Center).into()
+    } else {
+        note
+    }
+}
+
 /// The text in `level`, to select with the mouse and copy (issue #119, [`Selectable`]), then the
 /// note on foreign text – with "Copy text" at its right where no row of actions carries it
 /// (`copy`: the panel; the reader has it among its actions). The web addresses in the text follow
-/// as "Links" ([`text_links`]), which the caller places. A mail with HTML ([`shows_html`]) has
-/// "View as HTML" over it (task M9.3, `v`): the text is only its preview.
-fn text_block<'a>(mail: &'a Mail, text: &'a Selectable, level: typo::Level, copy: bool) -> Element<'a, Message> {
-    let mut block = column![].spacing(space::s());
-    if shows_html(mail) {
-        let open = Some(Message::ViewHtml(mail.summary.id.clone()));
-        let button = widgets::text_button(Some(Icon::ArrowUpRight), tr("View as HTML"), style::button::secondary, open);
-        // Below the button the text keeps its gap to the actions (`space::l()` between the parts).
-        block = block.push(container(button).padding(Padding::new(0.0).bottom(space::s())));
-    }
+/// as "Links" ([`text_links`]), which the caller places.
+fn text_block<'a>(text: &'a Selectable, level: typo::Level, copy: bool) -> Element<'a, Message> {
     let has_text = !text.text().trim().is_empty();
+    let mut block = column![].spacing(space::s());
     if has_text {
         block = block.push(text.view(level, theme::text_2, Message::Text));
     }
-    let notes = column![note(detail::foreign_note())].spacing(space::s());
     // No title over the text: the headers above already say whose mail it is (and "Message" reads
     // as a notice in German, the entries' word).
-    if copy && has_text {
-        block
-            .push(row![container(notes).width(Fill), copy_button()].spacing(space::s()).align_y(Alignment::Center))
-            .into()
-    } else {
-        block.push(notes).into()
-    }
+    block.push(foot(note(detail::foreign_note()), copy && has_text)).into()
 }
 
 /// "Links": the web addresses in the mail's text (`torro_gui::selectable::web_links`), each a row
@@ -2300,8 +2476,17 @@ mod tests {
         for (message, task) in mail.iter().zip([None, Some(&open), Some(&done)].into_iter().cycle()) {
             let loaded = Ok(message.clone());
             let text = Selectable::new(&text_of(message));
+            // The HTML of a mail that has it (task M9.7), as HTML once and as text once.
+            let html = HtmlMail::new(message, &Arc::new(DemoSource::new(now())), true);
             for loaded in [None, Some(&loaded)] {
                 for read in [false, true] {
+                    let format = if read { MailFormat::Text } else { MailFormat::Html };
+                    let html = html.as_ref().map(|html| HtmlReading {
+                        content: &html.content,
+                        format,
+                        scheme: Scheme::Dark,
+                        scale: 1.0,
+                    });
                     let reading = Reading {
                         task,
                         id: &message.summary.id,
@@ -2316,6 +2501,7 @@ mod tests {
                         account: Some(0),
                         answering: false,
                         invite: InviteSide::default(),
+                        html,
                     };
                     let _ = panel(&reading, Some(&folder), &detail::Anchors::default());
                     for entry in [None, Some(ReaderEntry { item: &entry, hide: true, ai: false })] {
@@ -2616,5 +2802,54 @@ mod tests {
         message.has_attachments = false;
         message.snippet.clear();
         assert!(message_card_height(&message, 480.0) < plain, "no preview, no preview lines");
+    }
+
+    /// A mail's `cid:` pictures come from its own parts with that Content-ID, through
+    /// `mail.get_attachment` (task M9.7); other ids and other mails give nothing.
+    #[test]
+    fn pictures_come_from_the_parts_of_this_mail() {
+        let demo = Arc::new(DemoSource::new(now()));
+        let sale = DemoSource::get_mail(&demo, "m:p2").expect("the newsletter");
+        let pictures = MailPictures::of(&sale, &demo).expect("parts with a Content-ID");
+        let logo = pictures.picture("logo@shop.example").expect("the logo");
+        assert!(logo.starts_with(b"\x89PNG"), "the part's bytes");
+        assert_eq!(pictures.picture("logo@other.example"), None, "not a part of this mail");
+        let plain = DemoSource::get_mail(&demo, "m:w1").expect("a text mail");
+        assert!(MailPictures::of(&plain, &demo).is_none(), "no part with a Content-ID");
+        assert!(HtmlMail::new(&plain, &demo, true).is_none(), "no HTML, nothing to parse");
+        let parsed = HtmlMail::new(&sale, &demo, true).expect("parsed");
+        assert_eq!(parsed.id, "m:p2");
+        assert!(parsed.content.height(480.0, 1.0, Scheme::Light) > 0.0, "it lays out");
+    }
+
+    /// Review of M9.7: a part larger than a picture may be is not read at all.
+    #[test]
+    fn a_picture_file_over_the_limit_is_not_read() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let small = dir.path().join("small.png");
+        std::fs::write(&small, b"\x89PNG").expect("write");
+        assert_eq!(read_picture(&small).as_deref(), Some(b"\x89PNG".as_slice()));
+        let edge = dir.path().join("edge.png");
+        std::fs::File::create(&edge).and_then(|file| file.set_len(MAX_PICTURE_BYTES)).expect("sparse file");
+        assert_eq!(read_picture(&edge).map(|bytes| bytes.len() as u64), Some(MAX_PICTURE_BYTES), "the limit itself");
+        let big = dir.path().join("big.png");
+        std::fs::File::create(&big).and_then(|file| file.set_len(MAX_PICTURE_BYTES + 1)).expect("sparse file");
+        assert_eq!(read_picture(&big), None);
+        assert_eq!(read_picture(&dir.path().join("missing.png")), None);
+    }
+
+    #[test]
+    fn only_web_and_mail_links_open_and_like_the_app_follows_the_window() {
+        for url in ["https://shop.example", "http://shop.example", "HTTPS://shop.example", "mailto:a@b.example"] {
+            assert!(opens_in_browser(url), "{url}");
+        }
+        for url in ["javascript:alert(1)", "file:///etc/passwd", "cid:logo@shop.example", "shop.example", ""] {
+            assert!(!opens_in_browser(url), "{url}");
+        }
+        assert_eq!(scheme_for(MailAppearance::App, true), Scheme::Dark);
+        assert_eq!(scheme_for(MailAppearance::App, false), Scheme::Light);
+        assert_eq!(scheme_for(MailAppearance::Light, true), Scheme::Light);
+        assert_eq!(scheme_for(MailAppearance::Dark, false), Scheme::Dark);
+        assert_eq!(MailLook::default(), MailLook { format: MailFormat::Html, colors: MailAppearance::App });
     }
 }

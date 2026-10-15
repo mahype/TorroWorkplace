@@ -2207,7 +2207,6 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't load the message.", "Die Nachricht konnte nicht geladen werden."),
     ("Couldn't open the attachment.", "Der Anhang konnte nicht geöffnet werden."),
     ("Couldn't open the compose window.", "Das Schreibfenster konnte nicht geöffnet werden."),
-    ("Couldn't open the mail window.", "Das Mail-Fenster konnte nicht geöffnet werden."),
     ("Flag", "Markieren"),
     ("Flagged", "Markiert"),
     ("Forward", "Weiterleiten"),
@@ -2273,8 +2272,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{file} can run programs, so only its folder was opened.",
         "{file} kann Programme ausführen, deshalb wurde nur sein Ordner geöffnet.",
     ),
-    // HTML mail in the inbox (M9.3)
-    ("View as HTML", "Als HTML ansehen"),
+    // HTML mail in the reader of the inbox (M9.7); "HTML" and "Text" read the same in German
+    (
+        "Mail from outside the suite: no scripts run, pictures from the web are loaded.",
+        "Mail von außerhalb der Suite: Es laufen keine Skripte, Bilder aus dem Netz werden geladen.",
+    ),
     // Take accounts over from TorroMail (M7.4)
     ("Connecting…", "Verbinde …"),
     (
@@ -3355,16 +3357,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
         "{area} geht nie an Coding-Agenten wie Claude Code: Deine Datenregel hält es auf deinen Computern. Wähle dafür ein KI-Konto auf diesem Computer.",
     ),
     ("Never gets your mail", "Bekommt nie deine Mails"),
-    // Mail window (torromailview, M9.2)
+    // Control centre: mail on the page Appearance (task M9.8)
     (
-        "The mail is no longer there. It may have been moved or deleted.",
-        "Die Mail ist nicht mehr da. Vielleicht wurde sie verschoben oder gelöscht.",
+        "Formatted shows mail the way the sender designed it. Dark recolors mail for a dark background; some newsletters look worse that way.",
+        "Formatiert zeigt E-Mails so, wie der Absender sie gestaltet hat. Dunkel färbt E-Mails für einen dunklen Hintergrund um; manche Newsletter sehen dann schlechter aus.",
     ),
-    ("Try again from the inbox.", "Versuche es im Eingang noch einmal."),
-    ("Select all", "Alles auswählen"),
-    ("Actual size", "Originalgröße"),
-    ("Window", "Fenster"),
-    ("Close window", "Fenster schließen"),
+    ("Like the app", "Wie die App"),
+    ("Mail colors", "Farben von E-Mails"),
+    ("Show mail as", "E-Mails zeigen als"),
     // Formatted mail (issue #125)
     ("Bold", "Fett"),
     ("Bulleted list", "Aufzählung"),

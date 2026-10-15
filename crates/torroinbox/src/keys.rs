@@ -11,8 +11,8 @@
 //!    window while the toast offers it – `widgets::undo_key`, task E3.11, not a key of this map:
 //!    `ctrl_guard` takes ⌘ + Z before any widget, only a subscription still hears it), `s` snooze, `l` lane, `m` hide from the inbox
 //!    (task E3.10: its menu, which also mutes), `t` make a task; for mail (task E4.2) `r` reply, `a` reply all, `f` forward, `#` or Delete (⌫ on a Mac keyboard, issue #118) delete and `/` search
-//!    the folder (in a folder `e` archives: the app decides), `v` shows the mail in the panel as
-//!    HTML in the mail window (task M9.3; the app decides whether it has HTML); in a menu of choices the digits pick
+//!    the folder (in a folder `e` archives: the app decides), `v` switches the mail in the panel or
+//!    reader between HTML and text (task M9.7; the app decides whether it has HTML); in a menu of choices the digits pick
 //!    its entries; in the date picker the arrows change
 //!    day and time and `Enter` snoozes; in the dialog of "Make task" `Enter` creates the task.
 //!    Behind the navigation menu, the app switcher or the drawer no key reaches the list. Escape
@@ -160,9 +160,9 @@ pub enum Command {
     Delete,
     /// Put the keyboard into the search field over the list (issue #136).
     Search,
-    /// Show the mail in the panel as HTML in the mail window (task M9.3, "View as HTML"); nothing
-    /// for a mail without HTML.
-    ViewHtml,
+    /// Switch the mail in the panel or reader between HTML and text (task M9.7, the switch
+    /// "HTML | Text"); nothing for a mail without HTML.
+    SwitchView,
     /// Take the first suggestion under the search field (issue #136).
     Complete,
     /// Pick the n-th entry (from 1) of the open menu of choices.
@@ -270,7 +270,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::Hash | Key::Delete) => Some(Command::Delete),
         (Focus::List, Key::Slash | Key::Find) => Some(Command::Search),
         (Focus::List, Key::Tab) => Some(Command::Complete),
-        (Focus::List, Key::V) => Some(Command::ViewHtml),
+        (Focus::List, Key::V) => Some(Command::SwitchView),
         (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
         (Focus::Mute, Key::Left) => Some(Command::MuteFor { longer: false }),
         (Focus::Mute, Key::Right) => Some(Command::MuteFor { longer: true }),
@@ -345,7 +345,7 @@ mod tests {
             (Name::Named(Named::Delete), Command::Delete),
             (Name::Named(Named::Backspace), Command::Delete),
             (char("/"), Command::Search),
-            (char("v"), Command::ViewHtml),
+            (char("v"), Command::SwitchView),
             (char("["), Command::Sidebar),
         ] {
             let key = heard(key, none, Status::Ignored).expect("a key of the inbox");

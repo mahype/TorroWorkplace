@@ -83,12 +83,12 @@
 //! ([`Message::Act`], [`Message::Mail`]). Reply is no button of rows and cards: it stands in the
 //! reader, where the mail has been read.
 //!
-//! HTML mail (task M9.3): a mail that came with HTML (`mail::shows_html`) shows "View as HTML" over
-//! its text, and `v`, `Enter` and a double click on its row open it in the mail window
-//! ([`App::view_html`], `torromailview <id>`). Whether it has HTML is known once its whole mail is
-//! loaded; `Enter` and a double click on a row not loaded yet open the panel as before and the
-//! window as soon as the mail turns out to have HTML ([`App::want_html`]). Without HTML nothing
-//! changes.
+//! HTML mail (task M9.7, decision 9 in `docs/mail.md`): a mail that came with HTML
+//! (`mail::shows_html`) shows as HTML right in the panel and the reader ([`App::html`], drawn by
+//! `torro_htmlview`). Two switches over it – "HTML | Text" (`v`) and "Light | Dark" for the mail's
+//! content only – start from the settings `mail_view` and `mail_appearance` and hold until those
+//! change ([`App::take_look`]); `app` follows the window's appearance. Links in the HTML open in
+//! the browser ([`Message::HtmlLink`]).
 //!
 //! The panel is `torro_gui::panel`: beside the list in the wide layout, over it in the medium and
 //! narrow ones (full width in narrow). Mini and strip show the glance instead (`glance.rs`, E3.3a):
@@ -163,6 +163,7 @@ use iced::widget::{Space, column, container, pick_list, row, rule, stack, text_e
 use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::{MailAppearance, MailFormat};
 use torro_gui::connect;
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
@@ -177,6 +178,7 @@ use torro_gui::ui_state::{self, Density, UiState};
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, ToastAction, Trail};
 use torro_gui::zoom::{self, Zoom};
 use torro_gui::{datetime, style, typo};
+use torro_htmlview::{Content, Scheme};
 use torro_inbox::item::{FacetKey, MuteEffect, MuteOption, MuteScope, Muted};
 use torro_inbox::source::TaskList;
 use torro_inbox::{
@@ -195,7 +197,7 @@ use crate::hub::{self, HubSource, Origin};
 use crate::insights::{self, Insights, InsightsData, StatsSource};
 use crate::keys::{self, Command, Focus, Key};
 use crate::list::Look;
-use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailPage, MailSource, Opened, Reading};
+use crate::mail::{self, Compose, FolderView, MailAction, MailEdit, MailLook, MailPage, MailSource, Opened, Reading};
 use crate::notifications::{self, Arrange, Board, Shown};
 use crate::overview::{self, Column, Sections};
 use crate::search::{self, Found, Scope, ScopeChoice, SearchView, Sort, Suggestion};
@@ -225,10 +227,6 @@ const REFRESH: Duration = Duration::from_secs(10);
 /// How long the toast after a change shows, and with it "Undo" (`u`, Ctrl + Z): the suite's
 /// [`widgets::TOAST_FOR`].
 pub const UNDO_FOR: Duration = widgets::TOAST_FOR;
-
-/// Two presses on the same row within this time are a double click (task M9.3): the usual default
-/// of the desktops. Rows are buttons, which take every press themselves, so the app counts them.
-const DOUBLE_PRESS: Duration = Duration::from_millis(500);
 
 /// How often a shown hint checks whether its time is up. Only while a hint shows.
 const HINT_TICK: Duration = Duration::from_secs(1);
@@ -880,8 +878,6 @@ pub enum Sent {
     Letter(String),
     /// The compose window, started with these arguments ([`mail::compose_args`]).
     Compose(Vec<String>),
-    /// The mail window (task M9.3), started with these arguments ([`mail::view_args`]).
-    MailView(Vec<String>),
     /// `mail.get_attachment`: message and part, to open it.
     Attachment(String, String),
     /// The next page of the folder, from this cursor.
@@ -1246,6 +1242,9 @@ impl Open {
 /// - `--open <state>`: start in this [`Open`] state; needs `--demo`.
 /// - `--appearance light|dark|system`: use this appearance in this process instead of the stored
 ///   one. Nothing is stored.
+/// - `--mail-view html|text` and `--mail-colors app|light|dark`: show mail this way in this process
+///   instead of the settings `mail_view` and `mail_appearance` (task M9.7, [`Launch::look`]), as the
+///   switches over a mail start. Nothing is stored.
 /// - `--design <id>`: draw with this design pack instead of the standard (task L.3); needs `--demo`.
 ///   An id that is not a valid pack is refused with the valid ones.
 /// - `--now <YYYY-MM-DDTHH:MM>` (local time): a fixed "now" and demo data around it, for pictures
@@ -1276,6 +1275,10 @@ pub struct Launch {
     pub demo: bool,
     pub open: Option<Open>,
     pub appearance: Option<Appearance>,
+    /// `--mail-view`: HTML or text instead of the setting `mail_view`.
+    pub mail_view: Option<MailFormat>,
+    /// `--mail-colors`: the mail's colours instead of the setting `mail_appearance`.
+    pub mail_colors: Option<MailAppearance>,
     pub now: Option<NaiveDateTime>,
     pub design: Option<String>,
     /// The window of `--view`; the hub without it.
@@ -1505,6 +1508,19 @@ impl Launch {
             Some("system") => Some(Appearance::System),
             Some(other) => return Err(unknown("--appearance", other, vec!["light", "dark", "system"])),
         };
+        let mail_view = match flag_value(args, "--mail-view")? {
+            None => None,
+            Some("html") => Some(MailFormat::Html),
+            Some("text") => Some(MailFormat::Text),
+            Some(other) => return Err(unknown("--mail-view", other, vec!["html", "text"])),
+        };
+        let mail_colors = match flag_value(args, "--mail-colors")? {
+            None => None,
+            Some("app") => Some(MailAppearance::App),
+            Some("light") => Some(MailAppearance::Light),
+            Some("dark") => Some(MailAppearance::Dark),
+            Some(other) => return Err(unknown("--mail-colors", other, vec!["app", "light", "dark"])),
+        };
         let now = match flag_value(args, "--now")? {
             None => None,
             Some(_) if !demo => return Err(LaunchError::NeedsDemo("--now")),
@@ -1530,7 +1546,26 @@ impl Launch {
             },
         };
         let (view, shown) = start_view(args, kind)?;
-        Ok(Launch { demo, open, appearance, now, design, kind, density, view, shown, compose, message: None })
+        Ok(Launch {
+            demo,
+            open,
+            appearance,
+            mail_view,
+            mail_colors,
+            now,
+            design,
+            kind,
+            density,
+            view,
+            shown,
+            compose,
+            message: None,
+        })
+    }
+
+    /// The mail settings `stored` with `--mail-view` and `--mail-colors` over them (task M9.7).
+    pub fn look(&self, stored: MailLook) -> MailLook {
+        MailLook { format: self.mail_view.unwrap_or(stored.format), colors: self.mail_colors.unwrap_or(stored.colors) }
     }
 
     /// The name of this window's density in `ui.json` (task E8.2, `ui_state::density_from`): the
@@ -1828,12 +1863,21 @@ pub struct App<S> {
     /// The mail of `--message` shown in its folder: it stays readable there though it may not be on
     /// the folder's first page ([`App::wanted_letter`]).
     pinned_mail: Option<String>,
-    /// The message `Enter` or a double click asked to see as HTML (task M9.3) while its whole mail
-    /// still loads: the mail window opens when it has HTML ([`App::want_html`]). Dropped when the
-    /// panel turns to another mail.
-    html_wanted: Option<String>,
-    /// The row pressed last and when (`Select`, `SelectMail`), to tell a double click (task M9.3).
-    pressed: Option<(String, Instant)>,
+    /// The HTML of the mail held ([`App::letter`]), parsed for the panel and the reader (task
+    /// M9.7, [`App::follow_html`]); `None` while no mail with HTML is held.
+    html: Option<mail::HtmlMail>,
+    /// The settings `mail_view` and `mail_appearance` as last read, with `--mail-view` and
+    /// `--mail-colors` over them ([`App::take_look`]).
+    look: MailLook,
+    /// HTML or text, as the switch "HTML | Text" (or `v`) stands: [`App::look`] until it is used,
+    /// and again whenever the setting changes.
+    mail_format: MailFormat,
+    /// Light or dark, as the switch "Light | Dark" set it for the mail's content; `None` takes
+    /// [`App::look`] (with `app` the window's appearance). Reset when the setting changes.
+    mail_scheme: Option<Scheme>,
+    /// The window's scale factor (device pixels per logical pixel, without the zoom), so the HTML
+    /// is drawn sharp ([`App::html_scale`]).
+    window_scale: f32,
     /// The tile of "Act now" clicked (task E8.5): its origin's entries alone show. Window state.
     filter: Option<Origin>,
     /// The hub shows To sort alone (its sidebar entry "To sort"), on the entries of its overview.
@@ -2120,11 +2164,17 @@ pub enum Message {
     ToggleSources,
     /// The compose window could not be started.
     ComposeStarted(Result<(), String>),
-    /// "View as HTML" in the panel or reader (task M9.3): open the message with this id in the mail
-    /// window. Only offered for a mail with HTML.
-    ViewHtml(String),
-    /// The mail window could not be started.
-    MailViewStarted(Result<(), String>),
+    /// The switch "HTML | Text" over a mail with HTML (task M9.7), as `v` does.
+    ShowMailAs(MailFormat),
+    /// The switch "Light | Dark" (task M9.7): the colours of the mail's content, not the window's.
+    MailColors(Scheme),
+    /// A link in a mail's HTML was clicked (task M9.7): `http`, `https` and `mailto` open in the
+    /// browser, anything else is dropped.
+    HtmlLink(String),
+    /// The settings `mail_view` and `mail_appearance`; an error keeps what the window has.
+    MailLook(Result<MailLook, String>),
+    /// The window's scale factor, at start and when it changes (another screen).
+    WindowScale(f32),
     /// "This window shows" in the sidebar, or a chip (task E8.4): switch this source on or off.
     ToggleSource(SourceRef),
     /// "By app | By time" in the header bar of the notifications window.
@@ -2435,8 +2485,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             made: Vec::new(),
             start_mail: launch.message.clone(),
             pinned_mail: None,
-            html_wanted: None,
-            pressed: None,
+            html: None,
+            look: launch.look(MailLook::default()),
+            mail_format: launch.look(MailLook::default()).format,
+            mail_scheme: None,
+            window_scale: 1.0,
             filter: None,
             sorting: open == Some(Open::ToSort),
             // Insights is the hub's (task E8.8b).
@@ -2489,6 +2542,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             split,
             app.load(),
             app.fetch_appearance(),
+            app.fetch_look(),
+            iced::window::latest().and_then(iced::window::scale_factor).map(Message::WindowScale),
             app.fetch_ai_ready(),
             app.zoom.fetch().map(Message::Zoom),
             app.design.fetch().map(Message::Design),
@@ -2512,6 +2567,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             iced::time::every(REFRESH).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
+            // Another screen, another scale: the HTML of a mail is drawn for it (task M9.7).
+            iced::event::listen_with(|event, _, _| match event {
+                iced::Event::Window(iced::window::Event::Rescaled(scale)) => Some(Message::WindowScale(scale)),
+                _ => None,
+            }),
             // Zoom keys work everywhere, the glance included.
             self.zoom.subscription().map(Message::Zoom),
             // The design pack polls the core every 2 s itself and wakes the window only for a change.
@@ -2571,7 +2631,62 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // Whatever changed, the panel's mail follows the cursor and the entry in the panel.
         let letter = self.follow_letter();
         self.follow_text();
+        self.follow_html();
         Task::batch([task, letter])
+    }
+
+    /// The parsed HTML of the mail held (task M9.7, [`App::html`]): made when a mail with HTML is
+    /// in, kept while it stays, dropped with it – which stops its pictures still loading. The demo
+    /// loads nothing from the web.
+    fn follow_html(&mut self) {
+        let mail = match &self.letter {
+            Some(Letter { loaded: Some(Ok(mail)), .. }) if mail::shows_html(mail) => mail,
+            _ => {
+                self.html = None;
+                return;
+            }
+        };
+        if self.html.as_ref().is_some_and(|html| html.id == mail.summary.id) {
+            return;
+        }
+        self.html = mail::HtmlMail::new(mail, &self.inbox, self.launch.demo);
+    }
+
+    /// The parsed HTML of the mail in the panel or reader, if it has HTML (task M9.7).
+    fn html_for_letter(&self) -> Option<&Content> {
+        let letter = self.letter.as_ref()?;
+        self.html.as_ref().filter(|html| html.id == letter.id).map(|html| &html.content)
+    }
+
+    /// The colours of the mail's content (task M9.7): the switch's, else the setting's – with `app`
+    /// those of the window, so "System" follows the desktop as the window does.
+    fn mail_scheme(&self) -> Scheme {
+        let dark = self.theme().extended_palette().is_dark;
+        self.mail_scheme.unwrap_or_else(|| mail::scheme_for(self.look.colors, dark))
+    }
+
+    /// Device pixels per logical pixel for the HTML: the window's scale factor times the zoom, so
+    /// its text is as sharp as the rest of the window.
+    fn html_scale(&self) -> f32 {
+        self.window_scale * self.zoom.factor()
+    }
+
+    /// Takes the settings `mail_view` and `mail_appearance` (task M9.7), with `--mail-view` and
+    /// `--mail-colors` over them. When they changed, both switches go back to them; the same answer
+    /// again (every tick) leaves the switches as the person set them.
+    fn take_look(&mut self, stored: MailLook) {
+        let look = self.launch.look(stored);
+        if look != self.look {
+            self.look = look;
+            self.mail_format = look.format;
+            self.mail_scheme = None;
+        }
+    }
+
+    /// Asks the core for the mail settings (task M9.7), on every tick like the appearance.
+    fn fetch_look(&self) -> Task<Message> {
+        let suite = self.suite.clone();
+        Task::perform(async move { mail::stored_look(&suite).await }, Message::MailLook)
     }
 
     /// The text shown in the panel or the reader ([`App::text`]): the loaded mail's, else the
@@ -2622,17 +2737,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     return self.load();
                 }
             }
-            Message::Select(id) => {
-                let twice = self.pressed_again(&id);
-                self.select(id);
-                let mail = match self.detail.as_ref().and_then(|item| item.link.as_ref()) {
-                    Some(Link::Mail { message }) if twice => Some(message.clone()),
-                    _ => None,
-                };
-                if let Some(message) = mail {
-                    return self.want_html(&message);
-                }
-            }
+            Message::Select(id) => self.select(id),
             Message::Act(id, command) => return self.act(&id, command),
             Message::ToggleInfo(column) => return self.toggle_info(column),
             Message::ShowColumn(column) => return self.switch_column(column),
@@ -2840,6 +2945,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 self.now = Utc::now() + self.offset;
                 return Task::batch([
                     self.fetch_appearance(),
+                    self.fetch_look(),
                     self.fetch_ai_ready(),
                     self.zoom.fetch().map(Message::Zoom),
                     self.load(),
@@ -2948,13 +3054,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 connect::open_section("inbox");
             }
             Message::SelectMail(id) => {
-                let twice = self.pressed_again(&id);
-                if self.select_mail(id.clone()) {
-                    let kept = self.keep_opened_search();
-                    if twice {
-                        return Task::batch([kept, self.want_html(&id)]);
-                    }
-                    return kept;
+                if self.select_mail(id) {
+                    return self.keep_opened_search();
                 }
             }
             Message::LetterLoaded(id, result) => {
@@ -2964,15 +3065,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 }
                 let invite = result.as_ref().ok().and_then(|mail| mail.summary.invite.clone());
                 if let Some(letter) = self.letter.as_mut().filter(|letter| letter.id == id) {
-                    // `Enter` or a double click asked for the window before the mail was in (task M9.3).
-                    let window =
-                        self.html_wanted.as_deref() == Some(id.as_str()) && result.as_ref().is_ok_and(mail::shows_html);
                     letter.loaded = Some(result);
-                    if self.html_wanted.as_deref() == Some(id.as_str()) {
-                        self.html_wanted = None;
-                    }
-                    let side = self.ask_invite_side(&id, invite.as_ref());
-                    return if window { Task::batch([side, self.view_html(&id)]) } else { side };
+                    return self.ask_invite_side(&id, invite.as_ref());
                 }
             }
             Message::Mail(action, id) => return self.mail_action(action, id),
@@ -3076,11 +3170,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::ComposeStarted(Err(err)) => {
                 self.error = Some(Failure::new(tr("Couldn't open the compose window."), err));
             }
-            Message::ViewHtml(id) => return self.view_html(&id),
-            Message::MailViewStarted(Ok(())) => {}
-            Message::MailViewStarted(Err(err)) => {
-                self.error = Some(Failure::new(tr("Couldn't open the mail window."), err));
-            }
+            Message::ShowMailAs(format) => self.mail_format = format,
+            Message::MailColors(scheme) => self.mail_scheme = Some(scheme),
+            Message::HtmlLink(url) if mail::opens_in_browser(&url) => return self.open_url(url),
+            Message::HtmlLink(_) => {}
+            Message::MailLook(Ok(look)) => self.take_look(look),
+            // The core may be starting up; keep what the window shows.
+            Message::MailLook(Err(_)) => {}
+            Message::WindowScale(scale) => self.window_scale = scale,
             Message::ToggleSource(source) => return self.toggle_source(&source),
             Message::Arrange(arrange) => self.arrange = arrange,
             Message::DismissAll => return self.dismiss_all(),
@@ -3381,10 +3478,6 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// marked read, as mail apps do; an entry's mail is read once the entry is done (the core).
     fn follow_letter(&mut self) -> Task<Message> {
         let wanted = self.wanted_letter();
-        // The window asked for by `Enter` or a double click belongs to that mail only (task M9.3).
-        if self.html_wanted.is_some() && self.html_wanted != wanted {
-            self.html_wanted = None;
-        }
         if wanted.as_deref() == self.letter.as_ref().map(|letter| letter.id.as_str()) {
             return Task::none();
         }
@@ -3515,57 +3608,16 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Task::perform(async move { mail::start(command) }, Message::ComposeStarted)
     }
 
-    /// Opens the message `id` in the mail window (task M9.3, [`mail::view_command`]):
-    /// `torromailview <id>`, on the demo `torromailview --demo`. The window asks the core for the
-    /// mail itself; opening it there counts as opening its entry, as the panel's reading does.
-    fn view_html(&mut self, id: &str) -> Task<Message> {
-        self.close_menus();
-        #[cfg(test)]
-        self.sent.push(Sent::MailView(mail::view_args(id, self.launch.demo)));
-        let command = mail::view_command(id, self.launch.demo);
-        Task::perform(async move { mail::start(command) }, Message::MailViewStarted)
-    }
-
-    /// `Enter` or a double click on the message `id` (task M9.3): the mail window when its whole
-    /// mail has HTML, nothing when it has none or could not be read; while it still loads (or is
-    /// not asked for yet – the panel opening with the same press asks for it) the window opens
-    /// once it is in and has HTML ([`App::html_wanted`]).
-    fn want_html(&mut self, id: &str) -> Task<Message> {
-        match &self.letter {
-            Some(Letter { id: held, loaded: Some(Ok(mail)) }) if held == id => {
-                if mail::shows_html(mail) {
-                    return self.view_html(id);
-                }
-                Task::none()
-            }
-            Some(Letter { id: held, loaded: Some(Err(_)) }) if held == id => Task::none(),
-            _ => {
-                self.html_wanted = Some(id.to_owned());
-                Task::none()
-            }
+    /// `v` (task M9.7): the mail in the panel or reader switches between HTML and text – only a
+    /// mail with HTML; nothing otherwise.
+    fn switch_view(&mut self) -> Task<Message> {
+        if self.html_for_letter().is_some() {
+            self.mail_format = match self.mail_format {
+                MailFormat::Html => MailFormat::Text,
+                MailFormat::Text => MailFormat::Html,
+            };
         }
-    }
-
-    /// `v` (task M9.3): the mail the panel or reader shows in the mail window, when it has HTML
-    /// – what its button "View as HTML" does; nothing otherwise.
-    fn key_view_html(&mut self) -> Task<Message> {
-        let id = match &self.letter {
-            Some(Letter { id, loaded: Some(Ok(mail)) }) if mail::shows_html(mail) => id.clone(),
-            _ => return Task::none(),
-        };
-        self.view_html(&id)
-    }
-
-    /// Whether this press on the row `id` follows one on the same row within [`DOUBLE_PRESS`]: a
-    /// double click. A third press starts counting anew.
-    fn pressed_again(&mut self, id: &str) -> bool {
-        let now = Instant::now();
-        let twice = self
-            .pressed
-            .as_ref()
-            .is_some_and(|(last, at)| last == id && now.saturating_duration_since(*at) <= DOUBLE_PRESS);
-        self.pressed = if twice { None } else { Some((id.to_owned(), now)) };
-        twice
+        Task::none()
     }
 
     /// The entry `id` under the cursor and in the panel; "Coming back" opens snoozed entries, which
@@ -4161,7 +4213,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::Forward => self.key_mail(MailAction::Forward),
             Command::Delete => self.key_mail(MailAction::Delete),
             Command::Search => self.focus_search(),
-            Command::ViewHtml => self.key_view_html(),
+            Command::SwitchView => self.switch_view(),
             Command::Complete => self.take_suggestion(),
             Command::Done => match self.cursor_item().cloned() {
                 Some(item) if detail::is_approval(&item) => {
@@ -4328,31 +4380,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
 
     /// Enter: opens what the entry under the cursor links to – its page, its app, the agent's
     /// window – as [`App::open_entry`] does; an entry without such a link, and a mail (task E4.2),
-    /// opens in the panel. In a folder Enter opens the message under the cursor in the panel. A
-    /// mail with HTML opens in the mail window as well (task M9.3, [`App::want_html`]). The keys go
-    /// past the presses of [`App::pressed_again`]: two quick `Enter`s are no double click.
+    /// opens in the panel. In a folder Enter opens the message under the cursor in the panel.
     fn open_cursor(&mut self) -> Task<Message> {
         if self.view.is_mail() {
-            let Some(id) = self.cursor.clone() else { return Task::none() };
-            if !self.select_mail(id.clone()) {
-                return Task::none();
-            }
-            let letter = self.follow_letter();
-            let kept = self.keep_opened_search();
-            return Task::batch([letter, kept, self.want_html(&id)]);
+            return match self.cursor.clone() {
+                Some(id) => self.update(Message::SelectMail(id)),
+                None => Task::none(),
+            };
         }
         let Some(item) = self.cursor_item().cloned() else { return Task::none() };
-        if let Some(Link::Url { .. } | Link::App { .. } | Link::Window) = detail::openable(&item) {
-            return self.open_entry(&item);
+        match detail::openable(&item) {
+            Some(Link::Mail { .. }) | None => self.update(Message::Select(item.id)),
+            Some(_) => self.open_entry(&item),
         }
-        let mail = match &item.link {
-            Some(Link::Mail { message }) => Some(message.clone()),
-            _ => None,
-        };
-        self.select(item.id);
-        let Some(message) = mail else { return Task::none() };
-        let letter = self.follow_letter();
-        Task::batch([letter, self.want_html(&message)])
     }
 
     /// Opens the snooze menu for the entry with `id`. Done entries are not snoozed, and an approval is
@@ -5859,6 +5899,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     _ => None,
                 },
             },
+            html: self.html_for_letter().map(|content| mail::HtmlReading {
+                content,
+                format: self.mail_format,
+                scheme: self.mail_scheme(),
+                scale: self.html_scale(),
+            }),
         })
     }
 
@@ -9232,114 +9278,159 @@ mod tests {
         assert!(message_ids(&app).contains(&"m:w1"), "back in the inbox, with the same id");
     }
 
-    // HTML mail (task M9.3).
+    // HTML mail in the reader (task M9.7).
 
-    /// How often the mail window was started.
-    fn windows(app: &App<DemoSource>) -> usize {
-        app.sent.iter().filter(|sent| matches!(sent, Sent::MailView(_))).count()
+    /// A window of the folder `folder` with its mail `id` open and loaded.
+    fn reading_mail(folder: &str, id: &str) -> App<DemoSource> {
+        let mut app = in_folder(folder);
+        let _ = app.update(Message::SelectMail(id.into()));
+        deliver_letter(&mut app, id);
+        app
     }
 
-    #[test]
-    fn the_mail_window_gets_the_id_or_the_demo() {
-        assert_eq!(mail::view_args("m:7", false), ["m:7"]);
-        assert_eq!(mail::view_args("m:7", true), ["--demo"], "the mail window shows its own sample");
-        let command = mail::view_command("m:7", false);
-        assert!(command.get_program().to_string_lossy().contains(mail::MAIL_VIEW), "next to this binary");
-        assert_eq!(command.get_args().collect::<Vec<_>>(), ["m:7"]);
+    /// How the mail open shows: HTML or text and its colours; `None` without HTML (only its text).
+    fn shown(app: &App<DemoSource>) -> Option<(MailFormat, Scheme)> {
+        app.reading().and_then(|reading| reading.html).map(|html| (html.format, html.scheme))
     }
 
-    /// `v` and Enter start the mail window for a mail with HTML – one with a text and an HTML part as
-    /// well (`from_html` false) – and do nothing new for one without.
+    fn look(format: MailFormat, colors: MailAppearance) -> Message {
+        Message::MailLook(Ok(MailLook { format, colors }))
+    }
+
+    /// `mail_view = html` (the default) shows a mail's HTML, `text` its text; a mail without HTML
+    /// always shows its text, and the parsed HTML goes with the mail.
     #[test]
-    fn v_and_enter_open_a_mail_with_html_in_the_mail_window() {
-        let mut app = in_folder("f:work-inbox");
-        let _ = app.update(Message::SelectMail("m:w14".into()));
-        deliver_letter(&mut app, "m:w14");
-        let Some(Letter { loaded: Some(Ok(mail)), .. }) = &app.letter else { panic!("the mail is in") };
-        assert!(!mail.from_html && mail::shows_html(mail), "text and HTML: the button shows");
+    fn the_setting_html_shows_the_html_and_text_the_text() {
+        let mut app = reading_mail("f:private-inbox", "m:p2");
+        assert!(app.html.as_ref().is_some_and(|html| html.id == "m:p2"), "parsed while it is open");
+        assert_eq!(shown(&app).map(|(format, _)| format), Some(MailFormat::Html));
+        draw_everywhere(&mut app);
+        let _ = app.update(look(MailFormat::Text, MailAppearance::App));
+        assert_eq!(shown(&app).map(|(format, _)| format), Some(MailFormat::Text));
+        draw_everywhere(&mut app);
+
+        let _ = app.update(Message::SelectMail("m:p1".into()));
+        deliver_letter(&mut app, "m:p1");
+        assert!(app.html.is_none() && shown(&app).is_none(), "another mail without HTML: dropped, its text");
+
+        let outlook = reading_mail("f:work-inbox", "m:w2");
+        assert_eq!(shown(&outlook).map(|(format, _)| format), Some(MailFormat::Html), "text and HTML part");
+        let plain = reading_mail("f:work-inbox", "m:w1");
+        assert!(plain.html.is_none() && shown(&plain).is_none(), "a text mail: its text, no switches");
+    }
+
+    /// `v` and the switch "HTML | Text" turn a mail with HTML to its text and back; a mail without
+    /// HTML has nothing to switch.
+    #[test]
+    fn v_switches_only_a_mail_with_html() {
+        let mut app = reading_mail("f:work-inbox", "m:w2");
         draw_everywhere(&mut app);
         let _ = press(&mut app, Key::V);
-        assert_eq!(app.sent.last(), Some(&Sent::MailView(mail::view_args("m:w14", true))));
-        let _ = press(&mut app, Key::Enter);
-        assert_eq!(windows(&app), 2, "Enter opens it too");
-        let _ = app.update(Message::ViewHtml("m:w14".into()));
-        assert_eq!(windows(&app), 3, "the button");
+        assert_eq!(shown(&app).map(|(format, _)| format), Some(MailFormat::Text));
+        let _ = press(&mut app, Key::V);
+        assert_eq!(shown(&app).map(|(format, _)| format), Some(MailFormat::Html));
+        let _ = app.update(Message::ShowMailAs(MailFormat::Text));
+        assert_eq!(shown(&app).map(|(format, _)| format), Some(MailFormat::Text), "the switch");
 
-        let mut plain = in_folder("f:work-inbox");
-        let _ = plain.update(Message::SelectMail("m:w1".into()));
-        deliver_letter(&mut plain, "m:w1");
+        let mut plain = reading_mail("f:work-inbox", "m:w1");
+        draw_everywhere(&mut plain);
         let _ = press(&mut plain, Key::V);
-        let _ = press(&mut plain, Key::Enter);
-        assert_eq!(windows(&plain), 0, "no HTML, no window");
-        assert!(
-            plain.reading && plain.letter.as_ref().is_some_and(|letter| letter.id == "m:w1"),
-            "the panel as before"
-        );
+        assert_eq!(plain.mail_format, MailFormat::Html, "no HTML: nothing switched");
     }
 
-    /// Enter on a row whose mail is not loaded yet opens the panel and – once the mail turns out to
-    /// have HTML – the mail window; a mail without HTML only the panel, and moving on forgets it.
+    /// "Light | Dark" changes the colours of the mail's content, never those of the window.
     #[test]
-    fn enter_before_the_mail_is_in_opens_the_window_once_it_has_html() {
+    fn light_and_dark_change_only_the_mail() {
+        let mut app = reading_mail("f:private-inbox", "m:p2");
+        let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
+        let window = app.theme();
+        assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Light));
+        let _ = app.update(Message::MailColors(Scheme::Dark));
+        assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Dark));
+        assert_eq!(app.theme(), window, "the window keeps its colours");
+        draw_everywhere(&mut app);
+        let _ = app.update(Message::MailColors(Scheme::Light));
+        assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Light));
+    }
+
+    /// `mail_appearance = app` takes the window's colours as they change; `light` and `dark` hold.
+    #[test]
+    fn like_the_app_follows_the_appearance() {
+        let mut app = reading_mail("f:private-inbox", "m:p2");
+        let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
+        assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Light));
+        let _ = app.update(Message::Appearance(Ok(Appearance::Dark)));
+        assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Dark));
+        let _ = app.update(look(MailFormat::Html, MailAppearance::Light));
+        assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Light), "light though the app is dark");
+        let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
+        let _ = app.update(look(MailFormat::Html, MailAppearance::Dark));
+        assert_eq!(shown(&app).map(|(_, scheme)| scheme), Some(Scheme::Dark), "dark though the app is light");
+    }
+
+    /// The switches hold for the window while the setting stays as it was (it is read every tick);
+    /// a changed setting sets both back to it. `--mail-view` and `--mail-colors` win over it.
+    #[test]
+    fn the_switches_hold_until_the_setting_changes() {
+        let mut app = reading_mail("f:private-inbox", "m:p2");
+        let _ = app.update(Message::Appearance(Ok(Appearance::Light)));
+        let _ = app.update(Message::ShowMailAs(MailFormat::Text));
+        let _ = app.update(Message::MailColors(Scheme::Dark));
+        let _ = app.update(look(MailFormat::Html, MailAppearance::App));
+        let _ = app.update(Message::MailLook(Err("core is not running".into())));
+        assert_eq!(shown(&app), Some((MailFormat::Text, Scheme::Dark)), "the same setting: the switches hold");
+        let _ = app.update(look(MailFormat::Html, MailAppearance::Light));
+        assert_eq!(shown(&app), Some((MailFormat::Html, Scheme::Light)), "a new setting: back to it");
+
+        let launch = Launch::parse(&args(&["--mail-view", "text", "--mail-colors", "dark"])).expect("valid");
+        assert_eq!((launch.mail_view, launch.mail_colors), (Some(MailFormat::Text), Some(MailAppearance::Dark)));
+        let stored = MailLook { format: MailFormat::Html, colors: MailAppearance::Light };
+        assert_eq!(launch.look(stored), MailLook { format: MailFormat::Text, colors: MailAppearance::Dark });
+        let mut forced = in_folder("f:private-inbox");
+        forced.launch = launch;
+        let _ = forced.update(look(MailFormat::Html, MailAppearance::Light));
+        let _ = forced.update(Message::SelectMail("m:p2".into()));
+        deliver_letter(&mut forced, "m:p2");
+        assert_eq!(shown(&forced), Some((MailFormat::Text, Scheme::Dark)), "the start parameters win");
+        assert!(matches!(
+            Launch::parse(&args(&["--mail-view", "pdf"])),
+            Err(LaunchError::UnknownValue { flag: "--mail-view", .. })
+        ));
+        assert!(matches!(
+            Launch::parse(&args(&["--mail-colors", "system"])),
+            Err(LaunchError::UnknownValue { flag: "--mail-colors", .. })
+        ));
+    }
+
+    /// A link clicked in the HTML opens in the browser (`open_url`, which the tests record instead of
+    /// starting it) – web and mail addresses only.
+    #[test]
+    fn a_link_in_the_html_opens_in_the_browser() {
+        let mut app = reading_mail("f:private-inbox", "m:p2");
+        let _ = app.update(Message::HtmlLink("https://shop.example/sale".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Link("https://shop.example/sale".into())));
+        let _ = app.update(Message::HtmlLink("mailto:service@shop.example".into()));
+        assert_eq!(app.sent.last(), Some(&Sent::Link("mailto:service@shop.example".into())));
+        let before = app.sent.len();
+        for url in ["javascript:alert(1)", "file:///etc/passwd", "cid:logo@shop.example", "shop.example"] {
+            let _ = app.update(Message::HtmlLink(url.into()));
+        }
+        assert_eq!(app.sent.len(), before, "nothing else opens");
+    }
+
+    /// No mail window any more (task M9.7): Enter and two quick presses on a row of a mail with HTML
+    /// open it in the reader, as for any mail, and start nothing.
+    #[test]
+    fn enter_and_a_double_click_only_open_the_reader() {
         let mut app = in_folder("f:private-inbox");
         app.cursor = Some("m:p2".into());
         let _ = press(&mut app, Key::Enter);
-        assert!(app.reading, "the panel opens as before");
-        assert_eq!(windows(&app), 0, "not known yet");
         deliver_letter(&mut app, "m:p2");
-        assert_eq!(app.sent.last(), Some(&Sent::MailView(mail::view_args("m:p2", true))), "made from HTML");
-        assert_eq!(app.html_wanted, None);
-
-        let mut plain = in_folder("f:work-inbox");
-        plain.cursor = Some("m:w1".into());
-        let _ = press(&mut plain, Key::Enter);
-        deliver_letter(&mut plain, "m:w1");
-        assert_eq!((windows(&plain), plain.html_wanted.as_deref()), (0, None));
-
-        let mut left = in_folder("f:work-inbox");
-        left.cursor = Some("m:w14".into());
-        let _ = press(&mut left, Key::Enter);
-        let _ = left.update(Message::SelectMail("m:w1".into()));
-        assert_eq!(left.html_wanted, None, "another mail in the panel: forgotten");
-        deliver_letter(&mut left, "m:w14");
-        assert_eq!(windows(&left), 0);
-    }
-
-    /// A double click on a row (two presses on it in a short time) opens a mail with HTML in the mail
-    /// window; one press only shows it in the panel.
-    #[test]
-    fn a_double_click_on_a_row_opens_the_mail_window() {
-        let mut app = in_folder("f:work-inbox");
-        let _ = app.update(Message::SelectMail("m:w14".into()));
-        deliver_letter(&mut app, "m:w14");
-        assert_eq!(windows(&app), 0, "one press: the panel");
-        let _ = app.update(Message::SelectMail("m:w14".into()));
-        assert_eq!(windows(&app), 1, "the second press: the window");
-
-        let mut early = in_folder("f:work-inbox");
-        let _ = early.update(Message::SelectMail("m:w14".into()));
-        let _ = early.update(Message::SelectMail("m:w14".into()));
-        deliver_letter(&mut early, "m:w14");
-        assert_eq!(windows(&early), 1, "pressed twice before the mail was in");
-
-        let mut plain = in_folder("f:work-inbox");
-        let _ = plain.update(Message::SelectMail("m:w1".into()));
-        let _ = plain.update(Message::SelectMail("m:w1".into()));
-        deliver_letter(&mut plain, "m:w1");
-        assert_eq!(windows(&plain), 0, "no HTML, no window");
-
-        // The newsletter's entry under "Info" (sent to a list), clicked twice.
-        let mut entries = loaded(&["--lane", "info"]);
-        let entry = entries
-            .items
-            .iter()
-            .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == "m:w14"))
-            .map(|item| item.id.clone())
-            .expect("the newsletter's entry");
-        let _ = entries.update(Message::Select(entry.clone()));
-        let _ = entries.update(Message::Select(entry));
-        deliver_letter(&mut entries, "m:w14");
-        assert_eq!(windows(&entries), 1);
+        let _ = app.update(Message::SelectMail("m:p2".into()));
+        let _ = app.update(Message::SelectMail("m:p2".into()));
+        assert!(app.reading && shown(&app).is_some(), "the reader shows the HTML");
+        let started = app.sent.iter().filter(|sent| matches!(sent, Sent::Compose(_) | Sent::Link(_))).count();
+        assert_eq!(started, 0, "{:?}", app.sent);
     }
 
     /// Issue #118: Delete (the key, or the row's button, which sends the same) moves a folder's

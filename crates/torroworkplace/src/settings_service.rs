@@ -26,7 +26,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
 use torro_core::design;
-use torro_core::settings::{self, AssistantDefault, Language, ListOrderEntry, Night, Retention, Settings, Voice, Zoom};
+use torro_core::settings::{
+    self, AssistantDefault, Language, ListOrderEntry, MailAppearance, MailFormat, Night, Retention, Settings, Voice,
+    Zoom,
+};
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
 
@@ -264,6 +267,10 @@ enum Change {
     Voice(Option<String>),
     /// What a new chat of the assistant starts with (issue #131); `None` for the one used last.
     AssistantDefault(Option<AssistantDefault>),
+    /// How a mail with HTML first shows in the reader (task M9.5).
+    MailView(MailFormat),
+    /// The colours of a mail's content (task M9.5).
+    MailAppearance(MailAppearance),
 }
 
 impl Change {
@@ -296,6 +303,11 @@ impl Change {
             SettingKey::SttModel => Change::SttModel(Voice::file_from(value, "bin")?),
             SettingKey::Voice => Change::Voice(Voice::file_from(value, "onnx")?),
             SettingKey::AssistantDefault => Change::AssistantDefault(AssistantDefault::from_value(value)?),
+            // Strict: only the file's reading falls back to the default.
+            SettingKey::MailView => Change::MailView(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::MailAppearance => {
+                Change::MailAppearance(serde_json::from_value(value.clone()).map_err(invalid)?)
+            }
         })
     }
 
@@ -318,6 +330,8 @@ impl Change {
             Change::SttModel(path) => settings.voice.stt_model = path,
             Change::Voice(path) => settings.voice.voice = path,
             Change::AssistantDefault(default) => settings.assistant_default = default,
+            Change::MailView(format) => settings.mail_view = format,
+            Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
         }
     }
 }
@@ -940,6 +954,8 @@ mod tests {
                 assistant_retention: Retention::Forever,
                 voice: Voice::default(),
                 assistant_default: AssistantDefault::from_value(&default).expect("a default"),
+                mail_view: MailFormat::Html,
+                mail_appearance: MailAppearance::App,
             }
         );
         Change::parse(SettingKey::AssistantDefault, &json!(null)).expect("none").apply(&mut settings);
@@ -947,6 +963,35 @@ mod tests {
         assert!(Change::parse(SettingKey::AssistantDefault, &json!({"engine": " "})).is_err(), "an engine");
         assert!(Change::parse(SettingKey::QuietWhenBusy, &json!("off")).is_err(), "only true or false");
         assert!(Change::parse(SettingKey::AssistantRetention, &json!(0)).is_err(), "at least a day");
+    }
+
+    /// Task M9.5: how mail shows is set and read back by its key; a value that does not fit is
+    /// refused and changes nothing.
+    #[test]
+    fn mail_view_and_appearance_are_set_and_checked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = SettingsStore::at(dir.path().join("settings.json"));
+        let current = store.current();
+        assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Html, MailAppearance::App));
+        store.set(SettingKey::MailView, &json!("text")).expect("text");
+        store.set(SettingKey::MailAppearance, &json!("dark")).expect("dark");
+        let current = store.current();
+        assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Text, MailAppearance::Dark));
+        for (key, value) in [
+            (SettingKey::MailView, json!("rich")),
+            (SettingKey::MailView, json!("HTML")),
+            (SettingKey::MailView, json!(true)),
+            (SettingKey::MailAppearance, json!("system")),
+            (SettingKey::MailAppearance, json!(null)),
+        ] {
+            assert!(store.set(key, &value).is_err(), "{key:?} {value}");
+        }
+        let current = store.current();
+        assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Text, MailAppearance::Dark));
+        store.set(SettingKey::MailView, &json!("html")).expect("html");
+        store.set(SettingKey::MailAppearance, &json!("light")).expect("light");
+        let current = store.current();
+        assert_eq!((current.mail_view, current.mail_appearance), (MailFormat::Html, MailAppearance::Light));
     }
 
     /// Task C.9: the voice settings are set one by one and checked; a client's whole settings

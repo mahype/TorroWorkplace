@@ -2101,7 +2101,8 @@ static GET_SETTINGS: Command = Command {
                   calendar, the hidden calendars and task lists, the task lists ordered by hand \
                   (`listOrders`), whether inbox popups stay quiet during busy events (`quietWhenBusy`), the \
                   chosen design pack (`design`), how long the assistant keeps conversations \
-                  (`assistantRetention`) and talking to the assistant by voice (`voice`).",
+                  (`assistantRetention`), talking to the assistant by voice (`voice`) and how mail shows in \
+                  the inbox's reader (`mailView`, `mailAppearance`).",
 };
 
 static SET_SETTING: Command = Command {
@@ -2128,7 +2129,10 @@ static SET_SETTING: Command = Command {
                   the first in the voice folder) or `voice` (absolute path of a Piper .onnx voice, or \"\") or \
                   `assistant_default` (what a new chat of the assistant starts with: {\"engine\": \"<id from \
                   assistant_list_engines>\", \"model\": \"<model id>\", \"effort\": \"low\"|\"medium\"|\"high\"}, \
-                  model and effort optional, or null for the one used last).",
+                  model and effort optional, or null for the one used last) or how mail shows in the inbox's \
+                  reader: `mail_view` (\"html\" formatted, the default, or \"text\"; where a mail with HTML \
+                  starts) or `mail_appearance` (\"app\" like the suite, the default, \"light\" or \"dark\"; only \
+                  the colours of the mail's content).",
 };
 
 static SET_COLLECTION_SHOWN: Command = Command {
@@ -4347,7 +4351,9 @@ mod tests {
                 "speak_answers",
                 "stt_model",
                 "voice",
-                "assistant_default"
+                "assistant_default",
+                "mail_view",
+                "mail_appearance"
             ]
         );
 
@@ -4409,6 +4415,8 @@ mod tests {
             "night",
             "listOrders",
             "quietWhenBusy",
+            "mailView",
+            "mailAppearance",
         ] {
             assert!(settings.get(field).is_some(), "update_settings lacks {field}");
         }

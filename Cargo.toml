@@ -20,7 +20,7 @@ members = [
     "crates/torrocalendar",
     "crates/torroinbox",
     "crates/torroassistant",
-    "crates/torromailview",
+    "crates/torro-htmlview",
 ]
 # Spikes are their own Cargo projects (task M9.4): their dependencies touch neither the workspace nor CI.
 exclude = ["spikes"]
@@ -50,6 +50,7 @@ torro-wm = { path = "crates/torro-wm" }
 torro-setups = { path = "crates/torro-setups" }
 torro-gui = { path = "crates/torro-gui" }
 torro-appkit = { path = "crates/torro-appkit" }
+torro-htmlview = { path = "crates/torro-htmlview" }
 
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "serde", "std"] }
 getrandom = "0.4.3"
@@ -84,20 +85,29 @@ roxmltree = "0.21.1"
 rusqlite = { version = "0.40.2", default-features = false, features = ["bundled"] }
 schemars = { version = "1.2.2", features = ["chrono04"] }
 webbrowser = "1.2.4"
-# The mail window (torromailview, task M9.2): a native window (tao) with the system's web view (wry: WebKitGTK on
-# Linux, WKWebView on macOS, WebView2 on Windows) for HTML mail, which Iced cannot draw. Default features: on Linux
-# the GTK web view and X11 next to Wayland.
-tao = "0.37.1"
-wry = "0.57.0"
-# The mail window's menu on macOS (Copy, Select All, Close, zoom), where key equivalents only reach the web view through
-# the menu bar. The version tray-icon already brings.
-muda = { version = "0.21.2", default-features = false }
-# Linux only: the program name GTK gives the window (Wayland app id, X11 class) of the mail window. The version wry
-# and tao already bring.
-gtk = { version = "0.18.2", default-features = false }
-# The fonts of the design in the mail window's page, as `data:` URLs (the page loads nothing else of ours). The
-# version other crates already bring.
+# `data:` pictures in HTML mail (torro-htmlview, task M9.6).
 base64 = "0.22.1"
+# HTML mail drawn inside Iced (torro-htmlview, task M9.6, decision 9 in docs/mail.md): Blitz parses the HTML,
+# Stylo resolves CSS, Taffy lays out, Parley sets text, Vello on the CPU (anyrender_vello_cpu) paints a picture Iced
+# shows. Beta, so the versions are pinned exactly (docs/research.md, section 8). No default features: no SVG (the
+# library refuses SVG pictures), no accessibility tree, no form widgets; blitz-net is left out on purpose (it brings
+# native-tls), pictures come through the workspace's reqwest (rustls). Stylo and a few of its crates are MPL-2.0.
+blitz-dom = { version = "=0.3.0-beta.3", default-features = false, features = ["floats", "system-fonts", "text-transform-icu"] }
+blitz-html = { version = "=0.3.0-beta.3", default-features = false }
+blitz-paint = { version = "=0.3.0-beta.3", default-features = false }
+blitz-traits = { version = "=0.3.0-beta.3", default-features = false }
+anyrender = "0.14.0"
+anyrender_vello_cpu = { version = "0.18.0", features = ["multithreading"] }
+# Colours, brushes and shapes of the paint calls (the versions Blitz uses): the dark recolouring wraps them.
+peniko = "0.6.1"
+# Only for one font context shared by all mails (the version Blitz uses).
+parley = { version = "0.12.0", default-features = false, features = ["std"] }
+# The mouse cursor Blitz asks for (pointer over links, text over text); the version Blitz and winit bring.
+cursor-icon = "1.2.0"
+# Blitz decodes pictures with `image` but turns on no decoder itself: these four, nothing else (no SVG, no TIFF).
+image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# Writes PNG files in the example of torro-htmlview; the version `image` brings.
+png = "0.18.0"
 winreg = "0.56.0"
 # Only used by the build scripts of the three executables (icon and version info). Without the `toml` feature:
 # the values are set in `build.rs`, not read from `Cargo.toml`.

@@ -10,7 +10,8 @@
 //! through an allow list ([`clean_html`]), so the person can see the mail as it was written: text
 //! markup, tables, links, images and styles stay; scripts, forms, frames, objects, `svg`, `base`,
 //! `meta`, `link` and event attributes go. The cleaned HTML is the only HTML the core hands out; it
-//! is kept up to [`HTML_MAX`] bytes. The part as it is ([`ReadMessage::html_source`]) serves the
+//! is kept up to [`HTML_MAX`] bytes. Old layout attributes (`cellpadding`, `bgcolor`, `<font>` …)
+//! become inline CSS while cleaning (task M9.5, [`legacy`]). The part as it is ([`ReadMessage::html_source`]) serves the
 //! core only to send a stored draft as it was written (issue #125). Cleaning fetches nothing either.
 //! [`ReadMessage::into_message`] makes the `torro_mail::Message` the core hands out, once the core
 //! knows the message's id and place. [`attachment`] fetches one attachment's bytes.
@@ -544,7 +545,22 @@ const HTML_DROPPED_WITH_CONTENT: &[&str] = &[
 /// links and images, comments (Outlook's conditional ones too), every other tag and attribute
 /// (`script`, `iframe`, `object`, `embed`, `form`, `input`, `button`, `base`, `meta`, `link`, `svg`,
 /// `on…`) go; links get `rel="noopener noreferrer"`. Fetches nothing.
+///
+/// Then the old layout attributes become inline CSS (task M9.5, [`legacy::to_css`]): `cellpadding`,
+/// `cellspacing`, `border` on tables, `bgcolor`, `width`, `height`, `align`, `valign`, `<center>` and
+/// `<font>`, because a renderer that only knows CSS (Blitz) ignores them. The result passes the
+/// allow list a second time, so the rewrite can add nothing it does not allow.
 pub fn clean_html(markup: &str) -> String {
+    let builder = html_cleaner();
+    let cleaned = builder.clean(markup).to_string();
+    match legacy::to_css(&cleaned) {
+        Some(styled) => builder.clean(&styled).to_string(),
+        None => cleaned,
+    }
+}
+
+/// The allow list of [`clean_html`] as an `ammonia` cleaner.
+fn html_cleaner() -> ammonia::Builder<'static> {
     let mut builder = ammonia::Builder::empty();
     builder
         .add_tags(HTML_TAGS)
@@ -562,7 +578,7 @@ pub fn clean_html(markup: &str) -> String {
             ("img", "src") => allowed_url(value, IMAGE_SOURCES),
             _ => Some(value.into()),
         });
-    builder.clean(markup).to_string()
+    builder
 }
 
 /// Where a mail's image may come from: the web, an inline part (`cid:`) or the image itself in
@@ -764,6 +780,355 @@ fn is_invisible(c: char) -> bool {
         | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206F}' | '\u{FEFF}')
 }
 
+/// Old layout attributes as inline CSS (task M9.5, decision 9 in `docs/mail.md`).
+///
+/// Blitz, which draws mail in the reader, knows CSS but not the layout attributes of old HTML that
+/// mail still uses everywhere (`<td bgcolor>`, `<table cellpadding>`, `<font>` …). They are rewritten
+/// on HTML that [`clean_html`] has cleaned once: html5ever wrote it, so every element is closed, every
+/// attribute value is in double quotes with `"`, `<`, `>` and `&` escaped, and only `style` holds raw
+/// text. A small scanner is enough for that; anything else leaves the HTML as it is ([`to_css`] gives
+/// `None`).
+///
+/// The CSS goes in front of an element's own `style`, so what the sender wrote there wins. Every
+/// value is checked (colours, numbers, font names); one that does not fit goes with its attribute,
+/// so nothing of it reaches the CSS. Like the old attributes in a browser, `cellpadding` and
+/// `border` reach the cells of their own table only, and a table inside an element centred with
+/// `align` (or `<center>`) is centred as well.
+mod legacy {
+    /// Elements without an end tag among those the cleaning keeps.
+    const VOID: &[&str] = &["br", "hr", "img", "col"];
+    /// Elements whose `width` old HTML honours.
+    const WIDTH: &[&str] = &["table", "td", "th", "col", "colgroup", "img", "hr"];
+    /// Elements whose `height` old HTML honours.
+    const HEIGHT: &[&str] = &["table", "td", "th", "tr", "img"];
+    /// Elements whose `valign` old HTML honours.
+    const VALIGN: &[&str] = &["td", "th", "tr", "thead", "tbody", "tfoot", "col", "colgroup"];
+    /// Elements whose `align` old HTML honours: tables, images and rules have their own meaning
+    /// ([`Element::align`]), the rest aligns its text.
+    const ALIGNED: &[&str] = &[
+        "table", "img", "hr", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6", "td", "th", "tr", "thead", "tbody",
+        "tfoot", "caption",
+    ];
+    /// The keywords of `<font size>` 1 to 7, as HTML's table of legacy font sizes has them.
+    const FONT_SIZES: [&str; 7] = ["x-small", "small", "medium", "large", "x-large", "xx-large", "xxx-large"];
+    /// Attributes of a tag by name, the values as written (still escaped).
+    type Attributes<'a> = Vec<(&'a str, &'a str)>;
+
+    /// Centres a block element (a table) in its line.
+    const CENTRED: &str = "margin-left:auto;margin-right:auto;";
+
+    /// `cleaned` with its old layout attributes written as inline CSS; `None` when the HTML is not
+    /// as html5ever writes it.
+    pub(super) fn to_css(cleaned: &str) -> Option<String> {
+        let mut out = String::with_capacity(cleaned.len() + cleaned.len() / 8);
+        let mut open: Vec<Open<'_>> = Vec::new();
+        let mut rest = cleaned;
+        while let Some(at) = rest.find('<') {
+            out.push_str(&rest[..at]);
+            rest = &rest[at..];
+            if let Some(after) = rest.strip_prefix("</") {
+                let end = after.find('>')?;
+                let name = &after[..end];
+                if let Some(at) = open.iter().rposition(|element| element.name == name) {
+                    open.truncate(at);
+                }
+                out.push_str("</");
+                out.push_str(renamed(name));
+                out.push('>');
+                rest = &after[end + 1..];
+                continue;
+            }
+            let (name, attributes, after) = start_tag(&rest[1..])?;
+            let element = Element::new(name, &attributes, &open);
+            element.write(&mut out);
+            rest = after;
+            if name == "style" {
+                // Raw text up to its end tag, which the loop then reads like any other.
+                let end = rest.find("</style>")?;
+                out.push_str(&rest[..end]);
+                rest = &rest[end..];
+            }
+            if !VOID.contains(&name) {
+                open.push(Open { name, centred: element.centred, table: element.table });
+            }
+        }
+        out.push_str(rest);
+        Some(out)
+    }
+
+    /// The name and attributes (values as written, still escaped) of the start tag at the front of
+    /// `text`, which begins after its `<`, and the text after its `>`.
+    fn start_tag(text: &str) -> Option<(&str, Attributes<'_>, &str)> {
+        let name_end = text.find(|c: char| !c.is_ascii_alphanumeric())?;
+        let name = &text[..name_end];
+        if name.is_empty() {
+            return None;
+        }
+        let mut rest = &text[name_end..];
+        let mut attributes = Vec::new();
+        loop {
+            rest = rest.trim_start_matches(|c: char| c.is_ascii_whitespace());
+            if let Some(after) = rest.strip_prefix('>') {
+                return Some((name, attributes, after));
+            }
+            let key_end = rest.find(|c: char| c.is_ascii_whitespace() || matches!(c, '=' | '>' | '/' | '"'))?;
+            if key_end == 0 {
+                return None;
+            }
+            let key = &rest[..key_end];
+            rest = &rest[key_end..];
+            let value = match rest.strip_prefix("=\"") {
+                Some(quoted) => {
+                    let end = quoted.find('"')?;
+                    rest = &quoted[end + 1..];
+                    &quoted[..end]
+                }
+                None => "",
+            };
+            attributes.push((key, value));
+        }
+    }
+
+    /// What `<center>` and `<font>` become; every other element keeps its name.
+    fn renamed(name: &str) -> &str {
+        match name {
+            "center" => "div",
+            "font" => "span",
+            other => other,
+        }
+    }
+
+    /// An element still open, with what its content inherits.
+    struct Open<'a> {
+        name: &'a str,
+        /// A table in it is centred: it is centred with `align` or `<center>`.
+        centred: bool,
+        /// Set for a table: what its cells get.
+        table: Option<Table>,
+    }
+
+    /// What a table's `cellpadding` and `border` give its own cells.
+    #[derive(Debug, Clone, Copy, Default)]
+    struct Table {
+        padding: Option<u32>,
+        border: bool,
+    }
+
+    /// One start tag being rewritten.
+    struct Element<'a> {
+        name: &'a str,
+        /// The declarations made from old attributes, each ending in `;`.
+        css: String,
+        /// The attributes that stay, as written.
+        kept: Attributes<'a>,
+        /// Whether a table in this element is centred ([`Open::centred`]).
+        centred: bool,
+        /// Set for a table.
+        table: Option<Table>,
+        /// The element has an `align` of its own that fits.
+        aligned: bool,
+    }
+
+    impl<'a> Element<'a> {
+        /// The start tag `name` with `attributes`, inside the elements `open`.
+        fn new(name: &'a str, attributes: &[(&'a str, &'a str)], open: &[Open<'_>]) -> Element<'a> {
+            let inside_centred = open.last().is_some_and(|parent| parent.centred);
+            let mut element = Element {
+                name,
+                css: String::new(),
+                kept: Vec::new(),
+                // A table starts afresh: its cells centre nothing unless they say so.
+                centred: inside_centred && name != "table",
+                table: (name == "table").then(Table::default),
+                aligned: false,
+            };
+            if matches!(name, "td" | "th")
+                && let Some(table) = open.iter().rev().find_map(|parent| parent.table)
+            {
+                if let Some(padding) = table.padding {
+                    element.css.push_str(&format!("padding:{padding}px;"));
+                }
+                if table.border {
+                    element.css.push_str("border:1px solid gray;");
+                }
+            }
+            if name == "center" {
+                element.css.push_str("text-align:center;");
+                element.centred = true;
+            }
+            for &(key, value) in attributes {
+                element.attribute(key, value);
+            }
+            if name == "table" && inside_centred && !element.aligned {
+                element.css.insert_str(0, CENTRED);
+            }
+            element
+        }
+
+        /// Takes one attribute: an old one becomes CSS (or goes, when its value does not fit),
+        /// every other stays.
+        fn attribute(&mut self, key: &'a str, value: &'a str) {
+            let name = self.name;
+            let css = match key {
+                "bgcolor" => color(value).map(|color| format!("background-color:{color};")),
+                "width" if WIDTH.contains(&name) => length(value).map(|length| format!("width:{length};")),
+                "height" if HEIGHT.contains(&name) => length(value).map(|length| format!("height:{length};")),
+                "valign" if VALIGN.contains(&name) => vertical(value).map(|align| format!("vertical-align:{align};")),
+                "align" if ALIGNED.contains(&name) => self.align(value),
+                "cellspacing" if name == "table" => pixels(value).map(|n| format!("border-spacing:{n}px;")),
+                "cellpadding" if name == "table" => {
+                    self.table = Some(Table { padding: pixels(value), ..self.table.unwrap_or_default() });
+                    None
+                }
+                "border" if name == "table" => {
+                    let width = pixels(value).filter(|&width| width > 0);
+                    self.table = Some(Table { border: width.is_some(), ..self.table.unwrap_or_default() });
+                    width.map(|width| format!("border:{width}px solid gray;"))
+                }
+                "face" if name == "font" => families(value).map(|families| format!("font-family:{families};")),
+                "size" if name == "font" => font_size(value).map(|size| format!("font-size:{size};")),
+                "color" if name == "font" => color(value).map(|color| format!("color:{color};")),
+                _ => {
+                    self.kept.push((key, value));
+                    return;
+                }
+            };
+            if let Some(css) = css {
+                self.css.push_str(&css);
+            }
+        }
+
+        /// The CSS of `align="value"` on this element: a table is centred or floats, an image
+        /// floats or sits on the line, a rule moves; any other element aligns its text, and a
+        /// table inside follows a centred one.
+        fn align(&mut self, value: &str) -> Option<String> {
+            let value = value.trim().to_ascii_lowercase();
+            let css = match (self.name, value.as_str()) {
+                ("table", "center") => CENTRED.to_owned(),
+                ("table" | "img", "left" | "right") => format!("float:{value};"),
+                ("img", "top" | "bottom" | "baseline") => format!("vertical-align:{value};"),
+                ("img", "middle" | "absmiddle" | "center") => "vertical-align:middle;".to_owned(),
+                ("hr", "left") => "margin-left:0;margin-right:auto;".to_owned(),
+                ("hr", "right") => "margin-left:auto;margin-right:0;".to_owned(),
+                ("hr", "center") => CENTRED.to_owned(),
+                ("table" | "img" | "hr", _) => return None,
+                (_, "center" | "middle") => {
+                    self.centred = true;
+                    "text-align:center;".to_owned()
+                }
+                (_, "left" | "right" | "justify") => {
+                    self.centred = false;
+                    format!("text-align:{value};")
+                }
+                _ => return None,
+            };
+            self.aligned = true;
+            Some(css)
+        }
+
+        /// Writes the start tag: the new name, the kept attributes, the CSS in front of the
+        /// element's own `style`.
+        fn write(&self, out: &mut String) {
+            out.push('<');
+            out.push_str(renamed(self.name));
+            let mut styled = false;
+            for &(key, value) in &self.kept {
+                out.push(' ');
+                out.push_str(key);
+                out.push_str("=\"");
+                if key == "style" {
+                    out.push_str(&self.css);
+                    styled = true;
+                }
+                out.push_str(value);
+                out.push('"');
+            }
+            if !styled && !self.css.is_empty() {
+                out.push_str(" style=\"");
+                out.push_str(&self.css);
+                out.push('"');
+            }
+            out.push('>');
+        }
+    }
+
+    /// A colour as old HTML writes it: `#rgb` or `#rrggbb` (also without `#`, as old mail often
+    /// has it), or a name of letters only. Lowercase.
+    fn color(value: &str) -> Option<String> {
+        let value = value.trim();
+        let hex = value.strip_prefix('#').unwrap_or(value);
+        if matches!(hex.len(), 3 | 6) && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Some(format!("#{}", hex.to_ascii_lowercase()));
+        }
+        let named = (3..=24).contains(&value.len()) && value.bytes().all(|b| b.is_ascii_alphabetic());
+        named.then(|| value.to_ascii_lowercase())
+    }
+
+    /// Whole pixels as in `cellpadding="4"`, `px` allowed after the number.
+    fn pixels(value: &str) -> Option<u32> {
+        let value = value.trim();
+        let digits = value.strip_suffix("px").unwrap_or(value);
+        let fits = (1..=4).contains(&digits.len()) && digits.bytes().all(|b| b.is_ascii_digit());
+        fits.then(|| digits.parse().ok()).flatten()
+    }
+
+    /// A width or height: a number is pixels, a percentage stays one.
+    fn length(value: &str) -> Option<String> {
+        let value = value.trim();
+        let Some(number) = value.strip_suffix('%') else {
+            return pixels(value).map(|n| format!("{n}px"));
+        };
+        let (whole, part) = number.split_once('.').unwrap_or((number, "0"));
+        let digits = |text: &str| (1..=3).contains(&text.len()) && text.bytes().all(|b| b.is_ascii_digit());
+        (digits(whole) && digits(part)).then(|| format!("{number}%"))
+    }
+
+    /// `valign`: top, middle, bottom or baseline (`center` is middle).
+    fn vertical(value: &str) -> Option<&'static str> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "top" => Some("top"),
+            "middle" | "center" => Some("middle"),
+            "bottom" => Some("bottom"),
+            "baseline" => Some("baseline"),
+            _ => None,
+        }
+    }
+
+    /// `<font size>`: 1 to 7, or with a sign relative to 3, as the keyword of HTML's table;
+    /// beyond the ends it stops at 1 or 7.
+    fn font_size(value: &str) -> Option<&'static str> {
+        let value = value.trim();
+        let (sign, digits) = match value.strip_prefix('+') {
+            Some(digits) => (1, digits),
+            None => value.strip_prefix('-').map_or((0, value), |digits| (-1, digits)),
+        };
+        if !(1..=2).contains(&digits.len()) || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let number: i32 = digits.parse().ok()?;
+        let size = if sign == 0 { number } else { 3 + sign * number };
+        FONT_SIZES.get(usize::try_from(size.clamp(1, 7) - 1).ok()?).copied()
+    }
+
+    /// `<font face>`: font names of letters, digits, spaces, `-`, `_` and `.`, separated by
+    /// commas; quotes around a name are taken off, a name with a space is quoted again. A name
+    /// that does not fit (`;`, `{`, `(` …) is left out.
+    fn families(value: &str) -> Option<String> {
+        let value = value.replace("&quot;", "\"");
+        let names: Vec<String> = value
+            .split(',')
+            .filter_map(|name| {
+                let name = name.trim().trim_matches(['"', '\'']).trim();
+                let fits = (1..=64).contains(&name.len())
+                    && name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.'));
+                let quoted = name.contains(' ') || name.starts_with(|c: char| c.is_ascii_digit());
+                fits.then(|| if quoted { format!("'{name}'") } else { name.to_owned() })
+            })
+            .collect();
+        (!names.is_empty()).then(|| names.join(","))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -856,6 +1221,146 @@ mod tests {
         assert_eq!(odd("review requested"), None);
         assert_eq!(odd(&"a".repeat(GITHUB_REASON_MAX + 1)), None);
         assert_eq!(super::read(b"Subject: x\r\n\r\nText\r\n").expect("read").traits.github, None);
+    }
+
+    /// The `style` of the first element `tag` in `html`.
+    fn style_of<'a>(html: &'a str, tag: &str) -> &'a str {
+        let start = html.find(&format!("<{tag}")).unwrap_or_else(|| panic!("no <{tag} in {html}"));
+        let element = &html[start..];
+        let element = &element[..element.find('>').expect("a start tag")];
+        element.split_once("style=\"").map_or("", |(_, style)| style.split('"').next().unwrap_or(""))
+    }
+
+    /// Task M9.5: table attributes become CSS, cellpadding and border reach only their own cells.
+    #[test]
+    fn table_attributes_become_css_for_their_own_cells() {
+        let html = clean_html(
+            "<table cellpadding=\"4\" cellspacing=\"2\" border=\"1\" width=\"600\" bgcolor=\"#FFFFFF\">\
+             <tr><td width=\"50%\" height=\"20\" valign=\"top\" align=\"right\">a\
+             <table><tr><th>inner</th></tr></table></td></tr></table>",
+        );
+        assert_eq!(
+            style_of(&html, "table"),
+            "border-spacing:2px;border:1px solid gray;width:600px;background-color:#ffffff;",
+            "{html}"
+        );
+        assert_eq!(
+            style_of(&html, "td"),
+            "padding:4px;border:1px solid gray;width:50%;height:20px;vertical-align:top;text-align:right;",
+            "{html}"
+        );
+        assert_eq!(style_of(&html, "th"), "", "a nested table's cells keep nothing of the outer table: {html}");
+        for gone in ["cellpadding", "cellspacing", "border=", "bgcolor", "width=", "height=", "valign", "align="] {
+            assert!(!html.contains(gone), "{gone} is CSS now: {html}");
+        }
+        let plain = clean_html("<table border=\"0\" cellpadding=\"0\"><tr><td>a</td></tr></table>");
+        assert_eq!(plain, "<table><tbody><tr><td style=\"padding:0px;\">a</td></tr></tbody></table>");
+    }
+
+    /// Task M9.5: align centres a table, floats it or aligns text; a table inside a centred cell
+    /// or `<center>` is centred too, unless it aligns itself.
+    #[test]
+    fn align_centres_tables_and_aligns_text() {
+        let html = clean_html(
+            "<table width=\"100%\"><tr><td align=\"center\"><table width=\"600\"><tr><td>x</td></tr></table>\
+             </td></tr></table>",
+        );
+        assert!(html.contains("<td style=\"text-align:center;\">"), "{html}");
+        assert!(
+            html.contains("<table style=\"margin-left:auto;margin-right:auto;width:600px;\">"),
+            "the inner table is centred like in a browser: {html}"
+        );
+        assert!(html.contains("<td>x</td>"), "its cells centre nothing: {html}");
+
+        let html = clean_html("<center><table align=\"left\"><tr><td>x</td></tr></table><p>t</p></center>");
+        assert!(html.starts_with("<div style=\"text-align:center;\"><table style=\"float:left;\">"), "{html}");
+        assert!(html.ends_with("</div>") && !html.contains("center>"), "{html}");
+
+        let html = clean_html(
+            "<table align=\"center\"><tr><td>x</td></tr></table><img src=\"cid:a\" align=\"middle\">\
+             <hr align=\"left\" width=\"50%\"><p align=\"justify\">t</p><td align=\"middle\">",
+        );
+        assert_eq!(style_of(&html, "table"), "margin-left:auto;margin-right:auto;", "{html}");
+        assert_eq!(style_of(&html, "img"), "vertical-align:middle;", "{html}");
+        assert_eq!(style_of(&html, "hr"), "margin-left:0;margin-right:auto;width:50%;", "{html}");
+        assert_eq!(style_of(&html, "p"), "text-align:justify;", "{html}");
+    }
+
+    /// Task M9.5: `<font>` becomes a `span` with font, size (HTML's table) and colour.
+    #[test]
+    fn font_becomes_a_span_with_its_family_size_and_colour() {
+        let html = clean_html("<font face=\"'Segoe UI', Arial, sans-serif\" size=\"2\" color=\"336699\">Hi</font>");
+        assert_eq!(
+            html,
+            "<span style=\"font-family:'Segoe UI',Arial,sans-serif;font-size:small;color:#336699;\">Hi</span>"
+        );
+        let size = |size: &str| style_of(&clean_html(&format!("<font size=\"{size}\">x</font>")), "span").to_owned();
+        assert_eq!(size("1"), "font-size:x-small;");
+        assert_eq!(size("7"), "font-size:xxx-large;");
+        assert_eq!(size("+1"), "font-size:large;");
+        assert_eq!(size("-2"), "font-size:x-small;");
+        assert_eq!(size("9"), "font-size:xxx-large;", "beyond 7 stops at 7");
+        assert_eq!(size("big"), "");
+        assert_eq!(style_of(&clean_html("<font color=\"Red\">x</font>"), "span"), "color:red;");
+    }
+
+    /// Task M9.5: the sender's own `style` comes after the CSS made from the attributes, so it
+    /// wins; the rest of the element stays as it was.
+    #[test]
+    fn the_senders_own_style_wins() {
+        let html = clean_html(
+            "<table><tr><td bgcolor=\"#fff\" class=\"x\" style=\"background-color: #000\">a</td></tr></table>",
+        );
+        assert!(html.contains("<td class=\"x\" style=\"background-color:#fff;background-color: #000\">"), "{html}");
+        let untouched = "<p class=\"lead\">Hello <b>Anna</b></p><span align=\"center\">x</span>";
+        assert_eq!(clean_html(untouched), untouched, "nothing old, nothing changed");
+        let styled = "<style>td { color: red; } /* <td bgcolor=\"red\"> */</style><p>x</p>";
+        assert_eq!(clean_html(styled), styled, "a style sheet is no attribute");
+    }
+
+    /// Task M9.5: values are checked; one that would smuggle CSS in goes with its attribute.
+    #[test]
+    fn values_that_do_not_fit_are_dropped() {
+        let html = clean_html(
+            "<table bgcolor=\"red;background:url(x)\" width=\"100;position:fixed\" cellspacing=\"-1\" \
+             cellpadding=\"4 ;x\" border=\"1px;color:red\" align=\"center;float:left\"><tr>\
+             <td valign=\"top;x\" height=\"auto\">a</td></tr></table>\
+             <font face=\"Arial;}body{x, Georgia, a(b)\" size=\"7;x\" color=\"#12345\">f</font>",
+        );
+        for gone in
+            ["url(", "position", "fixed", "float", ";x", "}", "body{", "a(b)", "#12345", "bgcolor", "size=", "border"]
+        {
+            assert!(!html.contains(gone), "{gone} is dropped: {html}");
+        }
+        assert!(html.starts_with("<table><tbody><tr><td>a</td>"), "{html}");
+        let border = clean_html("<table border=\"2px\"><tr><td>a</td></tr></table>");
+        assert!(border.starts_with("<table style=\"border:2px solid gray;\">"), "px after the number: {border}");
+        assert!(html.contains("<span style=\"font-family:Georgia;\">f</span>"), "{html}");
+        let quoted = clean_html("<font face=\"&quot;Times New Roman&quot;, serif\">x</font>");
+        assert_eq!(style_of(&quoted, "span"), "font-family:'Times New Roman',serif;", "{quoted}");
+    }
+
+    /// Review of M9.5: `<` and `>` inside a quoted value of an element that is rewritten end
+    /// neither the tag nor the value early. The cleaning escapes them in values, the rewrite keeps
+    /// the values as written, and a second cleaning changes nothing.
+    #[test]
+    fn angle_brackets_in_values_stay_inside_their_attribute() {
+        let html = clean_html(
+            "<table title=\"a<b>\" bgcolor=\"#fff\"><tr><td align=\"center\" title=\"<script>x</script>\">\
+             <img src=\"cid:a\" alt=\"x>y\" align=\"left\" width=\"10\"></td></tr></table>",
+        );
+        assert_eq!(
+            html,
+            "<table title=\"a&lt;b&gt;\" style=\"background-color:#fff;\"><tbody><tr>\
+             <td title=\"&lt;script&gt;x&lt;/script&gt;\" style=\"text-align:center;\">\
+             <img src=\"cid:a\" alt=\"x&gt;y\" style=\"float:left;width:10px;\"></td></tr></tbody></table>"
+        );
+        assert_eq!(clean_html(&html), html, "stable");
+        assert_eq!(legacy::to_css(&html).as_deref(), Some(html.as_str()), "nothing old is left to rewrite");
+        // Raw brackets in a value, as a writer other than html5ever might leave them: the tag still
+        // ends at its own `>`, not at the one in the value.
+        let raw = "<td title=\"a>b\" align=\"right\">x</td>";
+        assert_eq!(legacy::to_css(raw).as_deref(), Some("<td title=\"a>b\" style=\"text-align:right;\">x</td>"));
     }
 
     #[test]

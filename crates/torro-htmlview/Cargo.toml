@@ -1,0 +1,38 @@
+[package]
+name = "torro-htmlview"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "An Iced widget that draws cleaned HTML mail with Blitz on the CPU, light or recoloured dark."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-gui.workspace = true
+# `image-without-codecs`: the raster pipeline for the RGBA picture Blitz paints (no decoders of Iced's own).
+iced = { workspace = true, features = ["advanced", "image-without-codecs"] }
+blitz-dom.workspace = true
+blitz-html.workspace = true
+blitz-paint.workspace = true
+blitz-traits.workspace = true
+anyrender.workspace = true
+anyrender_vello_cpu.workspace = true
+peniko.workspace = true
+parley.workspace = true
+cursor-icon.workspace = true
+# Not used in code: turns on the PNG, JPEG, GIF and WebP decoders for the `image` Blitz decodes pictures with.
+image.workspace = true
+# Pictures from the web over rustls; `Response::chunk()` keeps the size limit without the `stream` feature.
+reqwest.workspace = true
+# The fetches of all mails run on one small runtime of this library, never on the UI thread.
+tokio.workspace = true
+# `data:` pictures.
+base64.workspace = true
+
+[dev-dependencies]
+# A local HTTP server for the picture tests (redirects, types, size): no test talks to the network.
+httpmock.workspace = true
+png.workspace = true
