@@ -250,7 +250,7 @@ ER3.1 (braucht ER1.4)       ER4 später
   `watch_reminders` in `daemon.rs`.
 
 ### ER2.6 MCP-Tools und bequeme Eingabe
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** ER1.3 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
 - Die fünf Tools aus ER1.2; `calendar_save_event` kurz mit `reminder_minutes` (eine Erinnerung, Art des
   Kalenders). Test, dass die bequeme Eingabe den richtigen Request baut.
