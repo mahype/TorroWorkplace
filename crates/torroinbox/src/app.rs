@@ -3601,6 +3601,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// Takes the message `id` off a folder's list at once (archived, deleted): the cursor – and
     /// the panel – move to the row that took its place, so `e`, `e`, `e` works through a folder.
     fn take_out(&mut self, id: &str) {
+        // A mail the reader shows beyond the folder's first page (`--message`) is in no row: the
+        // reader closes, so the next key does not act on it again.
+        if self.pinned_mail.as_deref() == Some(id) {
+            self.pinned_mail = None;
+            if self.cursor.as_deref() == Some(id) {
+                self.cursor = self.messages.first().map(|message| message.id.clone());
+                self.reading = false;
+            }
+        }
         let Some(place) = self.messages.iter().position(|message| message.id == id) else { return };
         self.messages.remove(place);
         if self.cursor.as_deref() == Some(id) {
@@ -9644,6 +9653,8 @@ mod tests {
         // The window then asks for the letter it shows; the edit came before.
         let archived = MailEdit::Move { ids: vec!["m:far".into()], to: MoveTarget::Role(MoveRole::Archive) };
         assert!(app.sent.iter().any(|sent| matches!(sent, Sent::Mail(edit, Some(_)) if *edit == archived)));
+        assert!(!app.reading, "the reader closes: the mail is gone from the folder");
+        assert_ne!(cursor(&app), Some("m:far"), "the next key does not archive it again");
     }
 
     /// While the search field holds the keyboard it keeps its keys: no shortcut acts but searching;
