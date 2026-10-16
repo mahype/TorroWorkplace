@@ -37,12 +37,16 @@
 //! `c` makes an event of the entry (task E8.5b, "Event" in To sort and the panel): its dialog takes
 //! the keys as the one of "Make task" does ([`Focus::Task`]), `Enter` creates the event.
 //!
-//! **Shortcuts** (task E10.1, section E10 of `docs/tasks/eingang.md`) come from the table in
-//! `torro_core::shortcuts` (the preset "Torro"), on top of the single keys, which stay as they are:
+//! **Shortcuts** (tasks E10.1 and E10.1b, section E10 of `docs/tasks/eingang.md`) come from the
+//! table in `torro_core::shortcuts`, in the preset of the system (`Preset::standard`: Apple Mail on
+//! macOS, Thunderbird on Linux, Outlook on Windows), on top of the single keys, which stay as they
+//! are:
 //!
-//! - With Ctrl or ⌘ held, [`shortcut`] reads the table – Ctrl + R reply, Ctrl + Shift + A archive,
-//!   Ctrl + Shift + V move to a folder, Ctrl + F search … (on macOS ⌘ or Ctrl, archive ⌃⌘A) – and
-//!   sends [`Message::Shortcut`]. It hears the key also when a widget took it: the window's
+//! - With Ctrl or ⌘ held, and for the function keys and Insert also without, [`shortcut`] reads
+//!   the table – Ctrl + R reply, Ctrl + Shift + A archive, Ctrl + Shift + V move to a folder, Ctrl +
+//!   K search and F5 fetch in Thunderbird … (on macOS ⌘ or Ctrl, archive ⌃⌘A) – and sends
+//!   [`Message::Shortcut`]. F5 (F9 in Outlook) fetches with `accounts.sync`, which brings in every
+//!   account, not only mail. It hears the key also when a widget took it: the window's
 //!   `widgets::ctrl_guard` captures ⌘ + letter on macOS, while a text field does not capture Ctrl +
 //!   Shift + letter. So the status says nothing about where the keyboard is, and the app asks Iced
 //!   whether the search field has the focus before it acts (`App::shortcut`); only search and send
@@ -245,19 +249,22 @@ pub fn shortcut(event: iced::Event, _status: iced::event::Status, _window: iced:
     shortcut_on(System::current(), &key, physical_key, modifiers).map(Message::Shortcut)
 }
 
-/// The command of the preset "Torro" that `key` held with `modifiers` runs on `system`, for presses
-/// with Ctrl or ⌘ (the logo key) only: the others are single keys ([`key_on`]), which a text field
-/// takes first. On any layout: the key in a letter's place on a non-Latin one (`to_latin`).
+/// The command of the system's preset (`Preset::standard`) that `key` held with `modifiers` runs on
+/// `system`, for presses with Ctrl or ⌘ (the logo key), and for the function keys and Insert, which
+/// no single key and no text field uses: the others are single keys ([`key_on`]), which a text
+/// field takes first. On any layout: the key in a letter's place on a non-Latin one (`to_latin`).
 pub fn shortcut_on(
     system: System,
     key: &Name,
     physical_key: keyboard::key::Physical,
     modifiers: keyboard::Modifiers,
 ) -> Option<shortcuts::Command> {
-    if !modifiers.control() && !modifiers.logo() {
+    let key = table_key(key, physical_key)?;
+    let free = matches!(key, shortcuts::Key::F(_) | shortcuts::Key::Insert);
+    if !modifiers.control() && !modifiers.logo() && !free {
         return None;
     }
-    Preset::Torro.command(system, widgets::held(modifiers), table_key(key, physical_key)?)
+    Preset::standard(system).command(system, widgets::held(modifiers), key)
 }
 
 /// The key of the shortcut table for a key press: the named keys it knows, else the character
@@ -274,6 +281,19 @@ pub fn table_key(key: &Name, physical_key: keyboard::key::Physical) -> Option<sh
         Name::Named(Named::ArrowDown) => shortcuts::Key::Down,
         Name::Named(Named::ArrowLeft) => shortcuts::Key::Left,
         Name::Named(Named::ArrowRight) => shortcuts::Key::Right,
+        Name::Named(Named::Insert) => shortcuts::Key::Insert,
+        Name::Named(Named::F1) => shortcuts::Key::F(1),
+        Name::Named(Named::F2) => shortcuts::Key::F(2),
+        Name::Named(Named::F3) => shortcuts::Key::F(3),
+        Name::Named(Named::F4) => shortcuts::Key::F(4),
+        Name::Named(Named::F5) => shortcuts::Key::F(5),
+        Name::Named(Named::F6) => shortcuts::Key::F(6),
+        Name::Named(Named::F7) => shortcuts::Key::F(7),
+        Name::Named(Named::F8) => shortcuts::Key::F(8),
+        Name::Named(Named::F9) => shortcuts::Key::F(9),
+        Name::Named(Named::F10) => shortcuts::Key::F(10),
+        Name::Named(Named::F11) => shortcuts::Key::F(11),
+        Name::Named(Named::F12) => shortcuts::Key::F(12),
         Name::Character(_) => shortcuts::Key::of_char(key.to_latin(physical_key)?)?,
         _ => return None,
     })
@@ -307,8 +327,8 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
 }
 
 /// The [`Key`] for `key` held with `modifiers` on `system`. Delete and Backspace are what the
-/// shortcut table says for them there (task E10.1): plain [`Key::Delete`], with Shift
-/// [`Key::DeleteForGood`] where the table has it, else nothing.
+/// shortcut table of the system's preset says for them there (tasks E10.1, E10.1b): plain
+/// [`Key::Delete`], with Shift [`Key::DeleteForGood`] where the table has it, else nothing.
 pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Option<Key> {
     if shell::is_sidebar_key(key, modifiers) {
         return Some(Key::Sidebar);
@@ -339,7 +359,7 @@ pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Opt
         Name::Character("#") => Key::Hash,
         Name::Named(named @ (Named::Delete | Named::Backspace)) => {
             let pressed = if named == Named::Delete { shortcuts::Key::Delete } else { shortcuts::Key::Backspace };
-            match Preset::Torro.command(system, widgets::held(modifiers), pressed) {
+            match Preset::standard(system).command(system, widgets::held(modifiers), pressed) {
                 Some(shortcuts::Command::Delete) => Key::Delete,
                 Some(shortcuts::Command::DeletePermanently) => Key::DeleteForGood,
                 _ => return None,
@@ -549,54 +569,125 @@ mod tests {
         assert_eq!(command(Focus::Elsewhere, Key::Sidebar), Some(Command::Sidebar), "[ still closes the drawer");
     }
 
-    /// The shortcuts of the preset "Torro" (task E10.1) for both systems: Ctrl on Windows and Linux,
-    /// ⌘ and Ctrl alike on macOS; each runs what its single key or button runs in the window.
+    /// The shortcuts of each system's preset (tasks E10.1, E10.1b): Apple Mail on macOS (⌘ and Ctrl
+    /// alike), Thunderbird on Linux, Outlook on Windows (Ctrl); each runs what its single key or
+    /// button runs in the window.
     #[test]
-    fn every_shortcut_runs_its_command_on_both_systems() {
+    fn every_shortcut_runs_its_command_on_every_system() {
         use Modifiers as M;
         use shortcuts::Command as Shortcut;
-        let mods = [
-            (Shortcut::NewMail, M::empty(), "n", Some(Command::NewMail)),
-            (Shortcut::Reply, M::empty(), "r", Some(Command::Reply)),
-            (Shortcut::ReplyAll, M::SHIFT, "r", Some(Command::ReplyAll)),
-            (Shortcut::Forward, M::SHIFT, "f", Some(Command::Forward)),
-            (Shortcut::Send, M::empty(), "", None),
-            (Shortcut::ToggleRead, M::SHIFT, "u", Some(Command::ToggleRead)),
-            (Shortcut::Flag, M::SHIFT, "l", Some(Command::Flag)),
-            (Shortcut::Junk, M::SHIFT, "j", Some(Command::Junk)),
-            (Shortcut::MoveToFolder, M::SHIFT, "v", Some(Command::MoveToFolder)),
-            (Shortcut::Search, M::empty(), "f", Some(Command::Search)),
-            (Shortcut::Fetch, M::SHIFT, "n", Some(Command::Fetch)),
+        let enter = || Name::Named(Named::Enter);
+        let mac = [
+            (M::empty(), char("n"), Shortcut::NewMail),
+            (M::empty(), char("r"), Shortcut::Reply),
+            (M::SHIFT, char("r"), Shortcut::ReplyAll),
+            (M::SHIFT, char("f"), Shortcut::Forward),
+            (M::SHIFT, char("d"), Shortcut::Send),
+            (M::empty(), enter(), Shortcut::Send),
+            (M::SHIFT, char("u"), Shortcut::ToggleRead),
+            (M::SHIFT, char("l"), Shortcut::Flag),
+            (M::SHIFT, char("j"), Shortcut::Junk),
+            (M::SHIFT, char("v"), Shortcut::MoveToFolder),
+            (M::empty(), char("f"), Shortcut::Search),
+            (M::SHIFT, char("n"), Shortcut::Fetch),
+        ];
+        let linux = [
+            (M::empty(), char("n"), Shortcut::NewMail),
+            (M::empty(), char("m"), Shortcut::NewMail),
+            (M::empty(), char("r"), Shortcut::Reply),
+            (M::SHIFT, char("r"), Shortcut::ReplyAll),
+            (M::empty(), char("l"), Shortcut::Forward),
+            (M::empty(), enter(), Shortcut::Send),
+            (M::SHIFT, char("a"), Shortcut::Archive),
+            (M::empty(), char("u"), Shortcut::ToggleRead),
+            (M::SHIFT, char("l"), Shortcut::Flag),
+            (M::SHIFT, char("j"), Shortcut::Junk),
+            (M::SHIFT, char("v"), Shortcut::MoveToFolder),
+            (M::empty(), char("k"), Shortcut::Search),
+            (M::SHIFT, char("k"), Shortcut::Search),
+            (M::empty(), char("f"), Shortcut::Search),
+        ];
+        let windows = [
+            (M::empty(), char("n"), Shortcut::NewMail),
+            (M::empty(), char("r"), Shortcut::Reply),
+            (M::SHIFT, char("r"), Shortcut::ReplyAll),
+            (M::empty(), char("f"), Shortcut::Forward),
+            (M::empty(), enter(), Shortcut::Send),
+            (M::SHIFT, char("a"), Shortcut::Archive),
+            (M::empty(), char("u"), Shortcut::ToggleRead),
+            (M::empty(), char("q"), Shortcut::ToggleRead),
+            (M::SHIFT, char("j"), Shortcut::Junk),
+            (M::SHIFT, char("v"), Shortcut::MoveToFolder),
+            (M::empty(), char("e"), Shortcut::Search),
+            (M::empty(), char("m"), Shortcut::Fetch),
         ];
         let physical = Physical::Unidentified(NativeCode::Unidentified);
-        for (shortcut, extra, letter, wanted) in mods {
-            let key = if letter.is_empty() { Name::Named(Named::Enter) } else { char(letter) };
-            let on = |system, modifiers: M| shortcut_on(system, &key, physical, modifiers | extra);
-            assert_eq!(on(System::Other, M::CTRL), Some(shortcut), "Ctrl: {shortcut:?}");
-            assert_eq!(on(System::Other, M::LOGO), None, "the logo key is no Ctrl: {shortcut:?}");
-            assert_eq!(on(System::Mac, M::LOGO), Some(shortcut), "⌘: {shortcut:?}");
-            assert_eq!(on(System::Mac, M::CTRL), Some(shortcut), "Ctrl on a Mac: {shortcut:?}");
-            assert_eq!(on(System::Other, M::empty()), None, "a plain key stays a single key: {shortcut:?}");
+        let on = |system, key: &Name, modifiers| shortcut_on(system, key, physical, modifiers);
+        for (extra, key, shortcut) in mac {
+            assert_eq!(on(System::Mac, &key, M::LOGO | extra), Some(shortcut), "⌘: {shortcut:?} {key:?}");
+            assert_eq!(on(System::Mac, &key, M::CTRL | extra), Some(shortcut), "Ctrl on a Mac: {shortcut:?} {key:?}");
+            assert_eq!(on(System::Mac, &key, extra), None, "a plain key stays a single key: {shortcut:?}");
+        }
+        for (system, table) in [(System::Linux, &linux[..]), (System::Windows, &windows[..])] {
+            for (extra, key, shortcut) in table {
+                assert_eq!(on(system, key, M::CTRL | *extra), Some(*shortcut), "Ctrl: {system:?} {shortcut:?} {key:?}");
+                assert_eq!(on(system, key, M::LOGO | *extra), None, "the logo key is no Ctrl: {system:?} {key:?}");
+                assert_eq!(on(system, key, *extra), None, "a plain key stays a single key: {system:?} {key:?}");
+            }
+        }
+        // The function keys and Insert need no Ctrl: F5 in Thunderbird, F9, F3 and Insert in Outlook.
+        let f = |n| Name::Named(n);
+        assert_eq!(on(System::Linux, &f(Named::F5), M::empty()), Some(Shortcut::Fetch));
+        assert_eq!(on(System::Linux, &f(Named::F5), M::SHIFT), Some(Shortcut::Fetch), "all accounts");
+        assert_eq!(on(System::Windows, &f(Named::F9), M::empty()), Some(Shortcut::Fetch));
+        assert_eq!(on(System::Windows, &f(Named::F3), M::empty()), Some(Shortcut::Search));
+        assert_eq!(on(System::Windows, &f(Named::Insert), M::empty()), Some(Shortcut::Flag));
+        assert_eq!(on(System::Linux, &f(Named::Insert), M::empty()), None, "Thunderbird has no Insert");
+        assert_eq!(on(System::Mac, &f(Named::F5), M::empty()), None, "Apple Mail has no F5");
+        assert_eq!(on(System::Linux, &f(Named::F6), M::empty()), None, "a free function key does nothing");
+        // Archive on a Mac is ⌃⌘A, as in Apple Mail.
+        assert_eq!(on(System::Mac, &char("a"), M::CTRL | M::LOGO), Some(Shortcut::Archive), "⌃⌘A");
+        for (shortcut, wanted) in [
+            (Shortcut::NewMail, Some(Command::NewMail)),
+            (Shortcut::Reply, Some(Command::Reply)),
+            (Shortcut::ReplyAll, Some(Command::ReplyAll)),
+            (Shortcut::Forward, Some(Command::Forward)),
+            (Shortcut::Send, None),
+            (Shortcut::ToggleRead, Some(Command::ToggleRead)),
+            (Shortcut::Flag, Some(Command::Flag)),
+            (Shortcut::Junk, Some(Command::Junk)),
+            (Shortcut::MoveToFolder, Some(Command::MoveToFolder)),
+            (Shortcut::Search, Some(Command::Search)),
+            (Shortcut::Fetch, Some(Command::Fetch)),
+            (Shortcut::Archive, Some(Command::Archive)),
+            (Shortcut::Delete, Some(Command::Delete)),
+            (Shortcut::DeletePermanently, Some(Command::DeleteForGood)),
+        ] {
             assert_eq!(of_shortcut(shortcut), wanted, "{shortcut:?}");
         }
-        let a = char("a");
-        let archive = |system, modifiers| shortcut_on(system, &a, physical, modifiers);
-        assert_eq!(archive(System::Other, M::CTRL | M::SHIFT), Some(Shortcut::Archive));
-        assert_eq!(archive(System::Mac, M::CTRL | M::LOGO), Some(Shortcut::Archive), "⌃⌘A");
-        assert_eq!(of_shortcut(Shortcut::Archive), Some(Command::Archive));
-        assert_eq!(of_shortcut(Shortcut::Delete), Some(Command::Delete));
-        assert_eq!(of_shortcut(Shortcut::DeletePermanently), Some(Command::DeleteForGood));
         // Shift turns the letter upper case, and a non-Latin layout types another one: the key counts.
-        let upper = shortcut_on(System::Other, &char("R"), physical, M::CTRL | M::SHIFT);
-        assert_eq!(upper, Some(Shortcut::ReplyAll));
-        let cyrillic = shortcut_on(System::Other, &char("к"), Physical::Code(keyboard::key::Code::KeyR), M::CTRL);
-        assert_eq!(cyrillic, Some(Shortcut::Reply));
+        for system in [System::Linux, System::Windows] {
+            assert_eq!(on(system, &char("R"), M::CTRL | M::SHIFT), Some(Shortcut::ReplyAll), "{system:?}");
+            let cyrillic = shortcut_on(system, &char("к"), Physical::Code(keyboard::key::Code::KeyR), M::CTRL);
+            assert_eq!(cyrillic, Some(Shortcut::Reply), "{system:?}");
+        }
+    }
+
+    /// Thunderbird's single letters (A archive, J junk, M read, S star) stay the inbox's single keys
+    /// on Linux (task E10.1b): `a` answers all, `j` moves down, `m` mutes, `s` snoozes.
+    #[test]
+    fn the_single_keys_stay_with_thunderbird() {
+        let physical = Physical::Unidentified(NativeCode::Unidentified);
+        for (letter, key) in [("a", Key::A), ("j", Key::Down), ("m", Key::M), ("s", Key::S)] {
+            assert_eq!(key_on(&char(letter), Modifiers::empty(), System::Linux), Some(key), "{letter}");
+            assert_eq!(shortcut_on(System::Linux, &char(letter), physical, Modifiers::empty()), None, "{letter}");
+        }
     }
 
     #[test]
     fn ctrl_a_selects_all_and_archives_nothing() {
         let physical = Physical::Unidentified(NativeCode::Unidentified);
-        for system in [System::Other, System::Mac] {
+        for system in System::ALL {
             for modifiers in [Modifiers::CTRL, Modifiers::LOGO] {
                 assert_eq!(shortcut_on(system, &char("a"), physical, modifiers), None, "{system:?} {modifiers:?}");
             }
@@ -620,14 +711,16 @@ mod tests {
     #[test]
     fn shift_delete_deletes_for_good_and_delete_as_before() {
         let (delete, backspace) = (Name::Named(Named::Delete), Name::Named(Named::Backspace));
-        for system in [System::Other, System::Mac] {
+        for system in System::ALL {
             assert_eq!(key_on(&delete, Modifiers::empty(), system), Some(Key::Delete), "{system:?}");
             assert_eq!(key_on(&backspace, Modifiers::empty(), system), Some(Key::Delete), "{system:?}");
             assert_eq!(key_on(&delete, Modifiers::SHIFT, system), Some(Key::DeleteForGood), "{system:?}");
             assert_eq!(key_on(&delete, Modifiers::CTRL, system), None, "{system:?}");
         }
         assert_eq!(key_on(&backspace, Modifiers::SHIFT, System::Mac), Some(Key::DeleteForGood), "⇧⌫ on a Mac");
-        assert_eq!(key_on(&backspace, Modifiers::SHIFT, System::Other), None, "only Shift + Delete elsewhere");
+        for other in [System::Windows, System::Linux] {
+            assert_eq!(key_on(&backspace, Modifiers::SHIFT, other), None, "only Shift + Delete elsewhere: {other:?}");
+        }
         assert_eq!(command(Focus::List, Key::DeleteForGood), Some(Command::DeleteForGood));
         assert_eq!(command(Focus::Overview, Key::DeleteForGood), Some(Command::DeleteForGood));
         for focus in [Focus::Choices, Focus::Task, Focus::Elsewhere, Focus::Question] {

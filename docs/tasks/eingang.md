@@ -2488,6 +2488,31 @@ Suite (`widgets::is_undo_key`) und ist nicht frei belegbar.
 werden je System übersetzt. Die Belegungen vor der Umsetzung gegen die aktuelle Hilfe des Herstellers prüfen; die Übersicht im Gespräch
 war nicht nachgeschlagen. Was das Vorbild nicht kennt (Später, Aufgabe, Spur …), bleibt bei den Einzeltasten.
 
+Stand E10.1b (gegen die Hilfe von Apple, Mozilla und Microsoft geprüft am 2026-10-16; Quellen und Gründe im Doc-Kommentar
+der Tabellen in `torro_core::shortcuts`). Erste Taste je Befehl, weitere in Klammern; „wie Torro“ heißt: Das Vorbild kennt
+keine Taste dafür oder seine kollidiert, Löschen und endgültig Löschen sind überall wie in „Torro“:
+
+| Befehl | Apple Mail (macOS) | Thunderbird (Linux, Windows) | Outlook (Windows, Linux) |
+|---|---|---|---|
+| Neue Mail | ⌘N | Strg+N (Strg+M) | Strg+N |
+| Antworten | ⌘R | Strg+R | Strg+R |
+| Allen antworten | ⇧⌘R | Strg+⇧+R | Strg+⇧+R |
+| Weiterleiten | ⇧⌘F | Strg+L | Strg+F |
+| Senden | ⇧⌘D (⌘Enter) | Strg+Enter | Strg+Enter |
+| Archivieren | ⌃⌘A | Strg+⇧+A, wie Torro (Vorbild: A) | Strg+⇧+A, wie Torro |
+| Gelesen/ungelesen | ⇧⌘U | Strg+⇧+U, Linux Strg+U (Vorbild: M) | Strg+U (Strg+Q) |
+| Markieren | ⇧⌘L, wie Torro | Strg+⇧+L, wie Torro (Vorbild: S) | Einfg |
+| Spam | ⇧⌘J | Strg+⇧+J, wie Torro (Vorbild: J) | Strg+⇧+J, wie Torro |
+| In Ordner verschieben | ⇧⌘V, wie Torro | Strg+⇧+V, wie Torro | Strg+⇧+V |
+| Suchen | ⌘F, wie Torro | Strg+K (Strg+⇧+K, Strg+F) | Strg+E (F3) |
+| Mails abrufen | ⇧⌘N | F5 (⇧+F5) | F9 (Strg+M) |
+
+Auf den anderen Systemen: Apple Mail unter Windows und Linux mit Strg statt ⌘, Archivieren Strg+⇧+A (⌃⌘A wäre Strg+A),
+unter Linux Gelesen/ungelesen Strg+U (IBus). Thunderbird auf dem Mac mit ⌘ nach der Mac-Spalte der Hilfe, Abrufen ⌘Y
+(⇧⌘Y), Archivieren ⌃⌘A wie Torro. Outlook auf dem Mac ist Outlook für Windows mit ⌘, aber Gelesen ⌃Q und Abrufen ⌃M
+(⌘Q beendet, ⌘M minimiert), Markieren ⇧⌘L wie Torro (kein Einfg), ohne F3 und F9. Gesperrt für alle Vorlagen und für
+eigene Tasten (E10.2): `torro_core::shortcuts::reserved`.
+
 **Frei belegen:** Eigene Tasten liegen über der gewählten Vorlage. Ein Wechsel der Vorlage behält sie, „Reset“ löscht
 eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`/`k` …), kommt ein Hinweis mit
 „Replace“. Nicht belegbar: Esc, `[`, Zoom, Rückgängig, Kopieren, Ausschneiden, Einfügen, Alles auswählen.
@@ -2521,9 +2546,13 @@ eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`
   Textfeld behält seine Tasten, Einzeltasten wie bisher; beide Sprachen.
 
 ### E10.1b Vorlagen Apple Mail, Thunderbird und Outlook als Vorgabe je System
-- [ ] offen
+- [x] erledigt (2026-10-16, #209: Vorlagen nach der Tabelle unter „Weitere Vorlagen“, `Preset::standard` je System,
+  `Preset::default()` folgt `System::current()`. `Key` kennt F1–F12 und Einfg; diese wirken ohne Strg. In Outlook
+  schalten Strg+Q und Strg+U beide um. Suchen und Senden behalten Strg+F und Strg+Enter, wo die Vorlage sie nicht
+  anders belegt, in Outlook leitet Strg+F weiter. Gesperrte Tasten als `shortcuts::reserved` für E10.2. Apple Mails
+  Hilfe nennt keine Suchtaste: ⌘F wie Torro statt ⌥⌘F. Thunderbird auf dem Mac nach der Mac-Spalte seiner Hilfe.)
 - **Modell:** Opus · **Braucht:** E10.1 · **Dateien:** `crates/torro-core/src/shortcuts.rs`,
-  `crates/torroinbox/src/{keys,app,compose}.rs`
+  `crates/torroinbox/src/{keys,app,compose}.rs`, `crates/torro-gui/src/widgets.rs` (Rückgängig unterscheidet `System`)
 - Drei neue Vorlagen in `torro_core::shortcuts`, jede gegen die aktuelle Hilfe des Herstellers geprüft (Quelle und Datum
   im Doc-Kommentar der Vorlage). Die Vorgabe richtet sich nach dem System: macOS Apple Mail, Linux Thunderbird, Windows
   Outlook. Dafür unterscheidet `System` Windows und Linux, nicht mehr nur `Mac` und `Other`; das ändert eine

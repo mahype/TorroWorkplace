@@ -2152,7 +2152,7 @@ pub fn held(modifiers: keyboard::Modifiers) -> Held {
 /// – one of them – on macOS (`torro_core::shortcuts::Shortcut::matches`).
 fn is_mod(system: System, held: Held) -> bool {
     match system {
-        System::Other => held.ctrl && !held.cmd,
+        System::Windows | System::Linux => held.ctrl && !held.cmd,
         System::Mac => held.ctrl != held.cmd,
     }
 }
@@ -4196,7 +4196,9 @@ mod tests {
         let (ctrl, logo) = (keyboard::Modifiers::CTRL, keyboard::Modifiers::LOGO);
         assert!(z(System::Mac, logo) && z(System::Mac, ctrl), "⌘ Z and Ctrl Z");
         assert!(!z(System::Mac, ctrl | logo), "⌃⌘Z is another combination");
-        assert!(z(System::Other, ctrl) && !z(System::Other, logo), "Ctrl Z, not the logo key");
+        for other in [System::Windows, System::Linux] {
+            assert!(z(other, ctrl) && !z(other, logo), "Ctrl Z, not the logo key: {other:?}");
+        }
         assert!(!z(System::Mac, ctrl | keyboard::Modifiers::SHIFT), "redo");
         let held = held(ctrl | keyboard::Modifiers::SHIFT);
         assert_eq!(held, Held { ctrl: true, cmd: false, alt: false, shift: true });

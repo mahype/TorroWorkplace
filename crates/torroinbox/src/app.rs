@@ -9951,7 +9951,10 @@ mod tests {
         let mut app = in_folder("f:work-inbox");
         let _ = press(&mut app, Key::Down);
         let before = app.sent.len();
-        for command in [S::Archive, S::Junk, S::ToggleRead, S::Flag, S::Reply, S::MoveToFolder, S::DeletePermanently] {
+        // Fetch too: F5 (Thunderbird) and F9 (Outlook) need no Ctrl, and the field does not take them.
+        let commands =
+            [S::Archive, S::Junk, S::ToggleRead, S::Flag, S::Reply, S::MoveToFolder, S::DeletePermanently, S::Fetch];
+        for command in commands {
             let _ = shortcut(&mut app, command, true);
             assert_eq!((app.sent.len(), app.menu), (before, None), "{command:?} while typing");
         }
@@ -10488,16 +10491,19 @@ mod tests {
         let _ = app.update(Message::Escape);
         let command =
             if cfg!(target_os = "macos") { iced::keyboard::Modifiers::LOGO } else { iced::keyboard::Modifiers::CTRL };
+        // The system's preset searches with ⌘F or Ctrl + F – Outlook on Windows with Ctrl + E, its
+        // Ctrl + F forwards (task E10.1b).
+        let letter = if cfg!(target_os = "windows") { "e" } else { "f" };
         let press = |modifiers| {
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                key: iced::keyboard::Key::Character("f".into()),
-                modified_key: iced::keyboard::Key::Character("f".into()),
+                key: iced::keyboard::Key::Character(letter.into()),
+                modified_key: iced::keyboard::Key::Character(letter.into()),
                 physical_key: iced::keyboard::key::Physical::Unidentified(
                     iced::keyboard::key::NativeCode::Unidentified,
                 ),
                 location: iced::keyboard::Location::Standard,
                 modifiers,
-                text: Some("f".into()),
+                text: Some(letter.into()),
                 repeat: false,
             })
         };

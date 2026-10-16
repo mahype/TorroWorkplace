@@ -1888,14 +1888,14 @@ impl<S: ComposeSource + 'static> Window<S> {
     }
 }
 
-/// The keys of the shortcut "send" shown in the tooltip of "Send": "Ctrl+Enter", "Cmd+Enter" on
-/// macOS (`torro_core::shortcuts`, task E10.1).
+/// The keys of the shortcut "send" shown in the tooltip of "Send", in the system's preset
+/// (`torro_core::shortcuts`, tasks E10.1, E10.1b): "Ctrl+Enter", "Shift+Cmd+D" on macOS.
 fn send_keys() -> String {
-    Preset::Torro.hint(shortcuts::Command::Send, System::current()).unwrap_or_default()
+    Preset::default().hint(shortcuts::Command::Send, System::current()).unwrap_or_default()
 }
 
-/// Whether `key` held with `modifiers` is the shortcut "send" on `system` (task E10.1): Ctrl + Enter,
-/// on macOS ⌘ + Enter or Ctrl + Enter.
+/// Whether `key` held with `modifiers` is the shortcut "send" on `system` (tasks E10.1, E10.1b):
+/// Ctrl + Enter, on macOS also ⇧⌘D (Apple Mail), ⌘ + Enter or Ctrl + Enter.
 fn is_send(system: System, key: &Key, physical_key: keyboard::key::Physical, modifiers: keyboard::Modifiers) -> bool {
     keys::shortcut_on(system, key, physical_key, modifiers) == Some(shortcuts::Command::Send)
 }
@@ -3005,18 +3005,24 @@ mod tests {
         assert!(map(press(Key::Character("a".into()), none)).is_none());
     }
 
-    /// Task E10.1: on macOS Ctrl + Enter sends as ⌘ + Enter does; elsewhere only Ctrl + Enter.
+    /// Tasks E10.1, E10.1b: on macOS Ctrl + Enter sends as ⌘ + Enter does, and Apple Mail's ⇧⌘D
+    /// too; elsewhere only Ctrl + Enter.
     #[test]
     fn send_is_ctrl_enter_and_on_a_mac_also_cmd_enter() {
         let enter = Key::Named(Named::Enter);
         let physical = keyboard::key::Physical::Unidentified(keyboard::key::NativeCode::Unidentified);
-        let (ctrl, logo) = (keyboard::Modifiers::CTRL, keyboard::Modifiers::LOGO);
+        let (ctrl, logo, shift) = (keyboard::Modifiers::CTRL, keyboard::Modifiers::LOGO, keyboard::Modifiers::SHIFT);
         assert!(is_send(System::Mac, &enter, physical, logo) && is_send(System::Mac, &enter, physical, ctrl));
-        assert!(is_send(System::Other, &enter, physical, ctrl));
-        assert!(!is_send(System::Other, &enter, physical, logo), "the logo key is no Ctrl");
-        assert!(!is_send(System::Other, &enter, physical, keyboard::Modifiers::empty()), "Enter is the text's");
-        assert!(!is_send(System::Mac, &enter, physical, ctrl | keyboard::Modifiers::SHIFT));
-        let wanted = if cfg!(target_os = "macos") { "Cmd+Enter" } else { "Ctrl+Enter" };
+        assert!(!is_send(System::Mac, &enter, physical, ctrl | shift));
+        let d = Key::Character("D".into());
+        assert!(is_send(System::Mac, &d, physical, logo | shift), "⇧⌘D, as in Apple Mail");
+        for other in [System::Windows, System::Linux] {
+            assert!(is_send(other, &enter, physical, ctrl), "{other:?}");
+            assert!(!is_send(other, &enter, physical, logo), "the logo key is no Ctrl: {other:?}");
+            assert!(!is_send(other, &enter, physical, keyboard::Modifiers::empty()), "Enter is the text's: {other:?}");
+            assert!(!is_send(other, &d, physical, ctrl | shift), "Thunderbird and Outlook have no ⇧D: {other:?}");
+        }
+        let wanted = if cfg!(target_os = "macos") { "Shift+Cmd+D" } else { "Ctrl+Enter" };
         assert_eq!(send_keys(), wanted);
     }
 
