@@ -1721,15 +1721,19 @@ pub fn panel<'a>(
         Bars::Command { width, .. } => panel_foot(reading, width),
     };
     let body = body(reading, bars, anchors);
-    panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail).footer(footer)
+    let panel = panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail);
+    match bars {
+        Bars::Split => panel.footer(footer),
+        Bars::Command { entry, width } => panel.bar(panel_bar(reading, entry, anchors, width)).footer(footer),
+    }
 }
 
 /// The panel of a mail entry in the mail window's medium and narrow layouts (task E11.4): the
 /// entry's head as `detail::panel` draws it – source and `view_name` as path, the entry's title, ✕
 /// – and its whole mail with the reader's bars ([`Bars::Command`] with `entry`, the panel `width`
-/// wide), the attachments and the view's switches in the fixed footer ([`panel_foot`]). The entry's
-/// properties stay out, as in the reader: the head says who wrote it and when, and why a rule put it
-/// in its lane. The hub and the App Feed keep `detail::panel` with [`Bars::Split`].
+/// wide) – the command bar fixed under the head ([`panel_bar`]) –, the entry's properties under the
+/// sender ([`command_body`]), the attachments and the view's switches in the fixed footer
+/// ([`panel_foot`]). The hub and the App Feed keep `detail::panel` with [`Bars::Split`].
 pub fn entry_panel<'a>(
     reading: &Reading<'a>,
     entry: ReaderEntry<'a>,
@@ -1739,7 +1743,22 @@ pub fn entry_panel<'a>(
 ) -> panel::Panel<'a, Message> {
     let body = body(reading, Bars::Command { entry: Some(entry), width }, anchors);
     let (path, title) = (detail::path(entry.item, view_name), detail::heading(entry.item));
-    panel::panel(path, title, body, Message::CloseDetail).footer(panel_foot(reading, width))
+    panel::panel(path, title, body, Message::CloseDetail)
+        .bar(panel_bar(reading, Some(entry), anchors, width))
+        .footer(panel_foot(reading, width))
+}
+
+/// The command bar of the mail window's panel (task E11.4, [`commands`], whose "…" has no Close in
+/// the panel), fixed under the panel's head from edge to edge (`Panel::bar`): it does not scroll
+/// away with the mail. A line above it parts it from the head; the bar draws the one below.
+fn panel_bar<'a>(
+    reading: &Reading<'a>,
+    entry: Option<ReaderEntry<'a>>,
+    anchors: &detail::Anchors,
+    width: f32,
+) -> Element<'a, Message> {
+    let line = rule::horizontal(size::HAIRLINE).style(style::rule);
+    column![line, commands(reading, entry.map(|entry| entry.item), anchors, width)].into()
 }
 
 /// The fixed footer of a mail's panel with the reader's bars (task E11.4, [`Bars::Command`]): the
@@ -1838,9 +1857,9 @@ fn schemes() -> [(String, Message); 2] {
 ///   the HTML or the text with its links, and the note that the mail comes from outside. The Torro
 ///   functions, the switches "HTML | Text" and "Light | Dark" (task M9.7) and "Copy text" stand in
 ///   the panel's footer: an entry's (`detail::Footer`) or a folder's message's ([`panel()`]).
-/// - [`Bars::Command`] (task E11.4, [`command_body`]): the reader's command bar from edge to edge,
-///   the sender, the pills, invitation and task, a line, the mail. Attachments and the view's
-///   switches stand in the footer ([`panel_foot`]).
+/// - [`Bars::Command`] (task E11.4, [`command_body`]): the sender, the pills, invitation and task,
+///   an entry's properties, a line, the mail. The command bar stands fixed above it (`Panel::bar`,
+///   [`panel_bar`]); attachments and the view's switches in the footer ([`panel_foot`]).
 pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors) -> Element<'a, Message> {
     match bars {
         Bars::Split => split_body(reading),
@@ -1849,10 +1868,10 @@ pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors
 }
 
 /// The body of the mail window's panel (task E11.4, [`Bars::Command`]), `width` wide, in the order
-/// of the reader (task E11.3): between two lines from edge to edge the command bar ([`commands`],
-/// whose "…" has no Close in the panel), the head without the subject – the panel's title says it
-/// – ([`head_with`]: sender, why a rule put the entry in its lane, the pills, invitation and task)
-/// lined up with the title, a line from edge to edge and the mail ([`panel_letter`]).
+/// of the reader (task E11.3) under the command bar, which stands fixed above it ([`panel_bar`]):
+/// the head without the subject – the panel's title says it – ([`head_with`]: sender, why a rule put
+/// the entry in its lane, the pills, invitation and task) lined up with the title, an entry's
+/// properties, a line from edge to edge and the mail ([`panel_letter`]).
 fn command_body<'a>(
     reading: &Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
@@ -1860,15 +1879,15 @@ fn command_body<'a>(
     width: f32,
 ) -> Element<'a, Message> {
     let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
-    // A line above as well: in the panel the bar stands under the title, not under the header bar.
-    let bar = column![line(), commands(reading, entry.map(|entry| entry.item), anchors, width)];
     // The head lines up with the title: 16 from the panel's edges (`panel::inset`).
     let room = (width - 2.0 * space::l()).max(0.0);
     let head = head_with(reading, entry, anchors, room, false);
-    column![panel::bleed(bar), panel::inset(head), panel::bleed(line())]
-        .extend(panel_letter(reading))
-        .spacing(space::l())
-        .into()
+    let mut body = column![panel::inset(head)];
+    // An entry keeps its properties (status, lane, source, time), as `detail::panel` shows them.
+    if let Some(entry) = entry {
+        body = body.push(widgets::prop_section(tr("Properties"), detail::properties(entry.item, reading.now)));
+    }
+    body.push(panel::bleed(line())).extend(panel_letter(reading)).spacing(space::l()).into()
 }
 
 /// The body of the panel with the split of task E9.4 ([`Bars::Split`], see [`body`]).
@@ -3044,9 +3063,12 @@ mod tests {
     fn the_mail_windows_panel_takes_the_readers_parts() {
         let source = include_str!("mail.rs");
         let command = function_source(source, "command_body");
-        for part in ["commands(", "head_with(", "panel_letter("] {
+        for part in ["head_with(", "detail::properties(", "panel_letter("] {
             assert!(command.contains(part), "{part}");
         }
+        // The command bar stands fixed above the body (`Panel::bar`), not in what scrolls.
+        assert!(!command.contains("commands("), "the bar does not scroll with the mail");
+        assert!(function_source(source, "panel_bar").contains("commands("));
         assert!(command.contains("room, false)"), "the head without the subject");
         assert!(!command.contains("panel_standards") && !command.contains("header("), "none of the split");
         let split = function_source(source, "split_body");
@@ -3055,6 +3077,7 @@ mod tests {
         assert!(foot.contains("attachment_chips(") && foot.contains("foot_controls("), "the reader's foot");
         for name in ["panel", "entry_panel"] {
             assert!(function_source(source, name).contains("panel_foot("), "{name}: the reader's foot");
+            assert!(function_source(source, name).contains(".bar(panel_bar("), "{name}: the fixed bar");
         }
         let width = size::panel();
         reading_of("m:w1", MailFormat::Html, true, |reading| {

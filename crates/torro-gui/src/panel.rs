@@ -139,6 +139,8 @@ pub struct Panel<'a, M> {
     title: Element<'a, M>,
     body: Element<'a, M>,
     footer: Vec<Element<'a, M>>,
+    /// A bar fixed under the head, edge to edge ([`Panel::bar`]).
+    bar: Option<Element<'a, M>>,
     on_close: M,
 }
 
@@ -167,6 +169,7 @@ pub fn panel<'a, M: Clone + 'a>(
         title: title.into(),
         body: body.into(),
         footer: Vec::new(),
+        bar: None,
         on_close,
     }
 }
@@ -188,10 +191,17 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
         self
     }
 
+    /// A bar fixed under the head, from edge to edge, that does not scroll (task E11.4: the mail
+    /// window's command bar, `widgets::command_bar`): it brings its own lines, the panel adds none.
+    pub fn bar(mut self, bar: impl Into<Element<'a, M>>) -> Self {
+        self.bar = Some(bar.into());
+        self
+    }
+
     /// The panel as a column for `class`: the head, the scrolling title and body, the footer, on
     /// the `panel` surface; with the left line unless it fills the window (narrow).
     fn view(self, class: SizeClass) -> Element<'a, M> {
-        let Panel { path, actions, title, body, footer, on_close } = self;
+        let Panel { path, actions, title, body, footer, bar, on_close } = self;
         let close = widgets::icon_button(Icon::X, tr("Close"), Some(on_close));
         // The head pads like the header bar (16 left, 12 right), so ✕ lines up with its buttons.
         let head = container(
@@ -213,7 +223,7 @@ impl<'a, M: Clone + 'a> Panel<'a, M> {
             .style(style::scrollable)
             .width(Fill)
             .height(Fill);
-        let mut inner = column![head, scroll];
+        let mut inner = column![head].push(bar).push(scroll);
         if !footer.is_empty() {
             let actions = row(footer).spacing(space::s()).align_y(Alignment::Center);
             inner = inner
@@ -415,6 +425,18 @@ mod tests {
         assert_eq!(bleed::spread(384.0, by), (384.0 + 2.0 * by, -by));
         assert_eq!(bleed::spread(f32::INFINITY, by), (f32::INFINITY, 0.0));
         let _: Element<'_, Msg> = bleed(typo::text(typo::body(), "Mail"));
+    }
+
+    /// Task E11.4: a fixed bar under the head is kept, and a panel without one has none.
+    #[test]
+    fn a_bar_stands_under_the_head() {
+        let plain = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go);
+        assert!(plain.bar.is_none());
+        let barred = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go).bar(blank());
+        assert!(barred.bar.is_some());
+        for class in CLASSES {
+            let _ = panel(blank(), title::<Msg>("Mail"), blank(), Msg::Go).bar(blank()).view(class);
+        }
     }
 
     #[test]

@@ -264,7 +264,7 @@ pub(crate) fn heading<'a>(item: &Item) -> Element<'a, Message> {
 /// Status, lane, source, what a service's traits say (task E5.15, `list::facet_words`: repository
 /// and reason, app and person, kind of conversation, topic and priority – each a row with its
 /// icon, foreign values as plain text), time and – from two on – the number of merged reports.
-fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
+pub(crate) fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
     let (status, word) = status(item, now);
     let dot = container(widgets::status_dot(status)).center_x(icon::SIZE);
     let mut rows = vec![
