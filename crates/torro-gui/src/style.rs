@@ -297,7 +297,13 @@ pub mod button {
     pub fn cell(theme: &Theme, status: Status) -> Style {
         let p = palette(theme);
         let rest = Rest { background: p.raised, text: p.text, border: Color::TRANSPARENT, radius: 0.0 };
-        neutral(&p, status, rest, p.text)
+        // `hover` lies too close to `raised` in dark packs to be seen on a cell: hover takes
+        // `selected`, pressed a step towards the text beyond it.
+        match status {
+            Status::Hovered => Rest { background: p.selected, ..rest }.style(),
+            Status::Pressed => Rest { background: mix(p.selected, p.text, 0.06), ..rest }.style(),
+            _ => neutral(&p, status, rest, p.text),
+        }
     }
 
     /// A Torro pill (task E11.1, `widgets::pill_button`: Task, Event, Mute… in the mail reader):
@@ -908,7 +914,8 @@ mod tests {
     fn hover_and_press_use_the_neutral_tokens() {
         for (mode, theme, p) in modes() {
             for (name, style) in buttons() {
-                if name == "primary" || name.contains('(') || name == "menu_item" {
+                // A cell's hover is `selected` (`button::cell`): `hover` would not show on `raised`.
+                if name == "primary" || name.contains('(') || name == "menu_item" || name == "cell" {
                     continue;
                 }
                 assert!(same(bg(&style(&theme, Status::Hovered)), p.hover), "{mode}: {name} hover");
@@ -980,8 +987,8 @@ mod tests {
         for (mode, theme, p) in modes() {
             let cell = |status| button::cell(&theme, status);
             assert!(same(bg(&cell(Status::Active)), p.raised), "{mode}: cell at rest");
-            assert!(same(bg(&cell(Status::Hovered)), p.hover), "{mode}: cell hovered");
-            assert!(same(bg(&cell(Status::Pressed)), p.selected), "{mode}: cell pressed");
+            assert!(same(bg(&cell(Status::Hovered)), p.selected), "{mode}: cell hovered");
+            assert!(same(bg(&cell(Status::Pressed)), mix(p.selected, p.text, 0.06)), "{mode}: cell pressed");
             assert!(same(bg(&cell(Status::Disabled)), faded(p.raised)), "{mode}: cell off");
             for status in BUTTON_STATES {
                 let c = cell(status);
