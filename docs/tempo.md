@@ -109,4 +109,23 @@ Befunde:
 Von außen gemessen steht das Mail-Fenster samt Liste jetzt nach ~0,18 s auf dem Schirm (vorher ~0,8 s). Ein
 voller Debug-Build dauert einmal länger (hier knapp 2 Minuten), danach baut Cargo nur den eigenen Code neu.
 
+**Apps warten beim Start auf den Dienst (TP.3), kalt, Release:**
+
+| App | erstes Bild | erste Daten |
+|---|---|---|
+| Mail-Fenster | 165 | 256 |
+| Kalender | 117 | 203 |
+| Aufgaben | 99 | 174 |
+| Assistent | 93 | 163 |
+| Steuerzentrale | 100 | 436 |
+
+Startet der Dienst spät (Versuch: Dienst erst 1,5 s nach dem Mail-Fenster gestartet), zeigt das Fenster
+„Loading …“ und die Liste 1,59 s nach dem Start, wenige Millisekunden nach dem Dienst; vorher zeigte es einen
+Fehler bis zum nächsten Timer (10 s).
+
+Schlüsselbund: Ein Dienst, den `cargo build` gebaut hat, ist unter macOS nur ad hoc signiert. Er bekommt beim
+ersten Zugriff auf den Schlüsselbund einen Dialog und wartet darauf: `accounts.list_accounts` antwortete im
+Versuch erst nach 30 s, mit leerer Liste. Daher signiert `measure-start.sh` vorher (wie `cargo run`). Der
+Ausreißer von 16,5 s beim Kalender in TP.1 war sehr wahrscheinlich derselbe Dialog.
+
 Nachher: trägt TP.4 ein.

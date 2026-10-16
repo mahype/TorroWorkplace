@@ -649,6 +649,9 @@ pub enum Message {
     DragWindow,
     /// The window has this size (at start and after every resize).
     Resized(Size),
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     AccountLoaded(Result<Vec<PimAccount>, String>),
     /// An account's title in the sidebar: fold or unfold its lists.
     ToggleAccount(String),
@@ -907,7 +910,11 @@ impl App {
         let task = Task::batch([
             ui_state::load_task(AppId::TASKS).map(Message::UiState),
             last_repo,
-            app.fetch_account(),
+            // The first load waits for a core that is still starting (issue #206).
+            {
+                let source = app.source.clone();
+                Task::perform(async move { source.ready().await }, |_| Message::CoreReady)
+            },
             app.fetch_appearance(),
             app.fetch_list_orders(),
             app.zoom.fetch().map(Message::Zoom),
@@ -994,6 +1001,7 @@ impl App {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
+            Message::CoreReady => return self.fetch_account(),
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
                 // Every account that can hold task lists, GitHub (filter lists) included.

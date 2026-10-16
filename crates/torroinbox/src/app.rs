@@ -1945,6 +1945,9 @@ pub enum Message {
     Resized(Size),
     /// The source's answer for the view it was asked for; answers for another view are dropped.
     Loaded(View, Result<Loaded, String>),
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     /// From the sidebar or the navigation menu.
     Show(View),
     /// From the list: open the entry with this id in the panel.
@@ -2576,7 +2579,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             density,
             order,
             split,
-            app.load(),
+            // The first load waits for a core that is still starting (issue #206).
+            {
+                let suite = app.suite.clone();
+                Task::perform(async move { suite.ready().await }, |_| Message::CoreReady)
+            },
             app.fetch_appearance(),
             app.fetch_look(),
             iced::window::latest().and_then(iced::window::scale_factor).map(Message::WindowScale),
@@ -2990,7 +2997,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::Decide { approval, allow } => return self.decide(approval, allow),
             Message::Decided(result, allow) => return self.decided(result, allow),
-            Message::Refresh => return self.load(),
+            Message::Refresh | Message::CoreReady => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
                 return Task::batch([

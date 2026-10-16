@@ -248,6 +248,9 @@ pub enum Message {
     Resized(Size),
     /// Every [`REFRESH`]: ask for everything again.
     Tick,
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     /// Every [`FOLLOW`] while an answer runs: ask for the open conversation.
     Follow,
     /// A frame of the window, while an answer appears letter by letter.
@@ -594,8 +597,10 @@ impl App {
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
             torro_gui::place_traffic_lights(),
         ]);
+        // The first load waits for a core that is still starting (issue #206).
+        let suite = app.suite.clone();
         let mut tasks = vec![
-            app.load_all(),
+            Task::perform(async move { suite.ready().await }, |_| Message::CoreReady),
             app.fetch_appearance(),
             app.zoom.fetch().map(Message::Zoom),
             app.design.fetch().map(Message::Design),
@@ -696,6 +701,7 @@ impl App {
                     return bots::scroll_to_access();
                 }
             }
+            Message::CoreReady => return self.load_all(),
             Message::Tick => {
                 let mut tasks = vec![self.load_all(), self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)];
                 tasks.push(self.follow());

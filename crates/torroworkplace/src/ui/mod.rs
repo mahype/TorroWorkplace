@@ -369,6 +369,9 @@ pub struct Ui {
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     Select(Section),
     /// Open or close a menu.
     ToggleMenu(Menu),
@@ -524,7 +527,7 @@ impl Ui {
             torro_gui::place_traffic_lights(),
         ]);
         let task = Task::batch([
-            ui.reload(),
+            ui.first_load(),
             ui.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
@@ -811,6 +814,18 @@ impl Ui {
         if self.launch.demo { Task::none() } else { load() }
     }
 
+    /// The first [`Ui::reload`], after the core answers: one started just now does not listen yet
+    /// (issue #206).
+    fn first_load(&self) -> Task<Message> {
+        match torro_ipc::socket_path().filter(|_| !self.launch.demo) {
+            Some(socket) => Task::perform(
+                async move { torro_gui::source::wait_for_core(&socket, torro_gui::source::CORE_START_WAIT).await },
+                |_| Message::CoreReady,
+            ),
+            None => self.reload(),
+        }
+    }
+
     /// The Iced theme: the appearance of `--appearance`, else the stored one (the page reloads it
     /// with every `Data`), with "System" following the desktop.
     fn theme(&self) -> Theme {
@@ -840,6 +855,7 @@ impl Ui {
     fn update(&mut self, message: Message) -> Task<Message> {
         let action = match message {
             Message::DragWindow => return torro_gui::drag_window(),
+            Message::CoreReady => return self.reload(),
             Message::Select(section) => {
                 self.select(section);
                 self.notice = None;

@@ -22,6 +22,10 @@
 #
 # Prints one line per run with the marks in milliseconds since the program started ("-" when a
 # mark did not come within 15 s), then the median. Builds nothing: run `cargo build` first.
+#
+# On macOS the programs are signed first with the development identity (scripts/macos-dev-sign.sh,
+# as `cargo run` does): a core built by `cargo build` is signed ad hoc, macOS asks for its keychain
+# access, and the core waits on that dialog instead of starting – which measures the dialog.
 
 set -euo pipefail
 
@@ -53,6 +57,10 @@ if ! $core; then
     app="$1"; shift
     [ -x "$bin/$app" ] || { echo "$bin/$app is missing; build it first" >&2; exit 1; }
 fi
+
+programs=("$workplace")
+$core || programs+=("$bin/$app")
+scripts/macos-dev-sign.sh "${programs[@]}"
 
 # How long a run waits for its last mark, in steps of WAIT_STEP seconds.
 WAIT_STEP=0.02

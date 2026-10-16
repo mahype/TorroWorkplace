@@ -41,7 +41,21 @@ fn start(words: &[&str]) -> App {
         _ => demo::Setup::default(),
     };
     let backend = Backend::Demo(Arc::new(demo::Demo::new(chrono::Utc::now(), setup)));
-    App::new(backend, Source::from_args(args(&["--demo"])), launch).0
+    let mut app = App::new(backend, Source::from_args(args(&["--demo"])), launch).0;
+    // The first load follows once the core answers (issue #206); the demo's at once.
+    let _ = app.update(Message::CoreReady);
+    app
+}
+
+/// Issue #206: a window asks the core nothing until it answers, then lists the conversations.
+#[test]
+fn the_first_load_waits_for_the_core() {
+    let launch = Launch::parse(&args(&["--demo"])).expect("valid parameters");
+    let backend = Backend::Demo(Arc::new(demo::Demo::new(chrono::Utc::now(), demo::Setup::default())));
+    let mut app = App::new(backend, Source::from_args(args(&["--demo"])), launch).0;
+    assert!(app.sent.is_empty(), "{:?}", app.sent);
+    let _ = app.update(Message::CoreReady);
+    assert!(app.sent.iter().any(|request| matches!(request, Request::ListConversations)), "{:?}", app.sent);
 }
 
 /// A demo window with every answer in.

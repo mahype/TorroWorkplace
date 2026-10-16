@@ -58,7 +58,7 @@ TP.1 (Zeitmarken, Messskript, Messung vorher) ─┬─ TP.2 (Dev-Profil)  ─�
 - Abnahme: `cargo build --workspace` und die Prüfbefehle laufen; Debug-Werte warm erreichen die Zielwerte.
 
 ### TP.3 Apps warten beim Start kurz auf den Dienst
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (alle Apps, Startablauf) · **Braucht:** TP.1 · **Dateien:** `crates/torro-gui/src/source.rs`,
   `crates/torroinbox/src/{app,compose}.rs`, `crates/torrocalendar/src/app.rs`, `crates/torrotasks/src/app.rs`,
   `crates/torroassistant/src/app.rs`, `crates/torroworkplace/src/ui/mod.rs`, `docs/tempo.md`
