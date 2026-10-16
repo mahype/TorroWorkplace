@@ -211,13 +211,18 @@ ER3.1 (braucht ER1.4)       ER4 später
   Bildschirm, Hyprland und Windows (nur Tests der erzeugten Befehle) – hier nicht zur Hand.
 
 ### ER2.3 Termin-Editor: Erinnerungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.1 · **Dateien:** `crates/torrocalendar/src/editor.rs`
 - Eigenschaftszeile „Reminders“: je Alarm ein Chip „15 min before · Full screen“ mit ✕, „Add reminder“
   öffnet ein Menü (At start, 1, 5, 10, 15, 30 min, 1 h, 1 day; dann Art: Calendar default, Notification,
   Full screen). Ohne eigene Alarme leise „Default: 1 min before“.
 - Im „…“-Menü des Paneels: „Preview reminder“ (`calendar.preview_reminder`).
 - **Abnahme:** Speichern über `calendar.save_event`, Tests für Chip-Texte.
+- **Umgesetzt (2026-10-16):** Abschnitt „Reminders“ mit Zeilen je Erinnerung (✕), „Add reminder“ als Menü mit
+  „When“ und „Style“ (die gewählte Art gilt für die nächste Zeit, ein Klick auf eine Zeit fügt hinzu und speichert).
+  Ohne eigene leise „The default reminder of the settings“ (der Editor kennt die Minuten nicht). „Preview
+  reminder“ steht im Fuß des Paneels neben „Delete event“, da das Paneel kein „…“-Menü hat; in `app.rs` geht es als
+  `calendar.preview_reminder` an den Kern.
 
 ### ER2.4 Steuerzentrale: Calendar › Reminders
 - [ ] erledigt
