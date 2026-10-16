@@ -156,3 +156,20 @@ fn the_links_of_an_event_list_the_call_first_once() {
     call.description = Some("Board: https://example.org/board then https://zoom.us/j/1 and https://zoom.us/j/1".into());
     assert_eq!(event_links(&call), ["https://zoom.us/j/1", "https://example.org/board"]);
 }
+
+#[test]
+fn every_screen_gets_a_window_with_the_setting_main_first() {
+    let launch = |words: &[&str]| Launch::parse(&args(words)).expect("valid");
+    let one = displays(&launch(&["--reminders"]), 3);
+    assert_eq!(one, [Display { index: 0, monitor: None }], "without the setting only the main screen");
+    let all = displays(&launch(&["--reminders", "--all-displays"]), 3);
+    assert_eq!(all.iter().map(|d| d.index).collect::<Vec<_>>(), [0, 1, 2]);
+    assert!(all[0].is_main() && !all[1].is_main());
+    let named = displays(&launch(&["--reminders", "--all-displays", "--monitors", "DP-1, HDMI-A-1"]), 1);
+    assert_eq!(named.iter().map(|d| d.monitor.as_deref()).collect::<Vec<_>>(), [Some("DP-1"), Some("HDMI-A-1")]);
+    assert_eq!(window_title(&named[1]), "Reminder · HDMI-A-1", "what the window manager's rule matches");
+    let main_only = displays(&launch(&["--reminders", "--monitors", "DP-1,HDMI-A-1"]), 1);
+    assert_eq!(main_only.len(), 1);
+    let second = displays(&launch(&["--demo", "--open", "reminder-second"]), 1);
+    assert!(!second[0].is_main(), "the demo of the calm version");
+}

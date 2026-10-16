@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "macOS window details Iced and winit cannot set: where the traffic lights sit."
+description = "macOS window details Iced and winit cannot set: where the traffic lights sit, a window over a whole screen."
 
 # The workspace lints, except `unsafe_code`: `deny` instead of `forbid`, so the four marked calls
 # into AppKit (see src/lib.rs) may allow it. Nothing else in the suite needs `unsafe`.

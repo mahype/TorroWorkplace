@@ -178,7 +178,7 @@ ER3.1 (braucht ER1.4)       ER4 später
   bis ER2.2 nur maximiert, ohne die Menüleiste.
 
 ### ER2.2 Ein Fenster je Bildschirm
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** ER2.1, ER0.1 · **Dateien:** `crates/torrocalendar/src/{main,reminder}.rs`,
   `crates/torro-appkit/src/lib.rs`, Wurzel-`Cargo.toml` (Features `NSApplication`, `NSScreen` bei
   `objc2-app-kit`), `packaging/macos/` (Bundle „Torro Reminder.app“), `crates/torro-wm/src/hyprland/`,
@@ -199,6 +199,16 @@ ER3.1 (braucht ER1.4)       ER4 später
 - **API/MCP:** keine neuen Requests; die neue Funktion in `torro-wm` ist intern.
 - **Abnahme:** auf zwei Bildschirmen geprüft, je System, das zur Hand ist (Hyprland und Windows sind bis
   hier nur recherchiert); über einer Vollbild-App (macOS) und mit gesperrtem Bildschirm; was fehlt, im Bericht.
+- **Umgesetzt (2026-10-16):** Das Fenster ist ein `iced::daemon` mit einem Fenster je Bildschirm (`--all-displays`
+  aus der Einstellung, Hyprland-Monitore mit `--monitors`); die anderen zeigen die ruhige Fassung (Demo
+  `reminder-second`). macOS: `torro_appkit::cover_screen` / `screen_count` (kein neues `unsafe`, der vorhandene
+  Aufruf steckt jetzt in `ns_window`), Bundle „Torro Reminder.app“ über `AGENT_APP=1 make-app.sh` und den
+  Release-Workflow, der Kern startet es bevorzugt (`reminders::reminder_program`). Hyprland:
+  `WindowManager::cover_monitors` mit `hl.window_rule` je Monitor, `Core::keep_reminder_windows_in_view` zieht die
+  Fenster beim Wechsel der Arbeitsfläche nach. GlazeWM-Regel in `integrations/glazewm/`.
+  **Geprüft:** macOS mit einem Bildschirm (5120×1440): Fenster auf Ebene 101 über Menüleiste und Dock; das Bundle
+  startet als Erinnerungsfenster. **Nicht geprüft:** zwei Bildschirme, über einer Vollbild-App, gesperrter
+  Bildschirm, Hyprland und Windows (nur Tests der erzeugten Befehle) – hier nicht zur Hand.
 
 ### ER2.3 Termin-Editor: Erinnerungen
 - [ ] erledigt

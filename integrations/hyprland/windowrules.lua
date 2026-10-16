@@ -16,3 +16,8 @@
 -- later rule wins, so the opacity "1 1" set here overrides Omarchy's value.
 
 o.window("^torro-.*$", { tag = "-default-opacity", opacity = "1 1" })
+
+-- The reminder over the whole screen (class torro-reminder, task ER2.2) needs no rule here: before
+-- it opens, the core registers a rule per monitor through Hyprland's socket
+-- (`hl.window_rule({ name = "torro-reminder-<monitor>", … fullscreen = true })`) and the window's
+-- title names its monitor. The opacity rule above covers it too.

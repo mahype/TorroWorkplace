@@ -699,43 +699,23 @@ pub trait Sink: Send + Sync {
     fn fire(&self, due: &[Reminder], paused: bool, settings: &Settings);
 }
 
-/// The desktop's sink (tasks ER1.4, ER2.1): a reminder in the style "notification" becomes a
+/// The desktop's sink (tasks ER1.4, ER2.1, ER2.2): a reminder in the style "notification" becomes a
 /// notification of the system with Join (when there is a call), In 5 min and Dismiss, sent back to
 /// `core` as the suite itself; one in the style "full screen" starts the reminder window
-/// (`torrocalendar --reminders`), once while it runs, and gets no notification besides. Should the
-/// window not start, its reminders come as notifications. Quiet during busy events holds nothing
-/// back: a reminder is what the person waits for during a meeting.
+/// (`torrocalendar --reminders`, on every screen with the setting `allDisplays`), once while it
+/// runs, and gets no notification besides. On Hyprland the window manager learns the window's
+/// place first, and the windows follow a change of workspace. Should the window not start, its
+/// reminders come as notifications. Quiet during busy events holds nothing back: a reminder is what
+/// the person waits for during a meeting.
 pub struct Desktop {
     core: std::sync::Weak<crate::core::Core>,
-    /// The reminder window while it runs.
-    window: Mutex<Option<std::process::Child>>,
+    /// The reminder window while it runs, shared with the task that starts it.
+    window: Arc<Mutex<Option<std::process::Child>>>,
 }
 
 impl Desktop {
     pub fn new(core: &Arc<crate::core::Core>) -> Desktop {
-        Desktop { core: Arc::downgrade(core), window: Mutex::new(None) }
-    }
-
-    /// Starts the reminder window unless it runs; `false` when it cannot be started.
-    fn show_window(&self) -> bool {
-        let mut window = lock(&self.window);
-        if let Some(child) = window.as_mut()
-            && matches!(child.try_wait(), Ok(None))
-        {
-            return true;
-        }
-        let program = crate::core::sibling(AppId::CALENDAR.binary);
-        match std::process::Command::new(&program).arg("--reminders").spawn() {
-            Ok(child) => {
-                *window = Some(child);
-                true
-            }
-            Err(err) => {
-                eprintln!("torroworkplace: cannot start the reminder window {}: {err}", program.display());
-                *window = None;
-                false
-            }
-        }
+        Desktop { core: Arc::downgrade(core), window: Arc::new(Mutex::new(None)) }
     }
 }
 
@@ -746,29 +726,106 @@ pub fn route(due: &[Reminder]) -> (Vec<&Reminder>, bool) {
     (notify, !full.is_empty())
 }
 
+/// The arguments of the reminder window: every screen or the main one, and the monitors the window
+/// manager prepared (main first).
+pub fn window_arguments(all_displays: bool, monitors: &[String]) -> Vec<String> {
+    let mut arguments = vec!["--reminders".to_string()];
+    if all_displays {
+        arguments.push("--all-displays".into());
+    }
+    if !monitors.is_empty() {
+        arguments.push("--monitors".into());
+        arguments.push(monitors.join(","));
+    }
+    arguments
+}
+
+/// Whether the window in `slot` runs.
+fn runs(slot: &Mutex<Option<std::process::Child>>) -> bool {
+    lock(slot).as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None)))
+}
+
+/// The program of the reminder window: on macOS the agent app "Torro Reminder.app" (task ER2.2),
+/// beside the core's own bundle or in an Applications folder, so it shows over apps in full screen;
+/// else, and without that bundle, the calendar next to the core (`torrocalendar --reminders`).
+pub fn reminder_program(core: Option<&Path>, home: Option<&Path>, exists: impl Fn(&Path) -> bool) -> PathBuf {
+    if cfg!(target_os = "macos") {
+        let inside = Path::new("Torro Reminder.app/Contents/MacOS/torro-reminder");
+        // The core runs as …/Torro Workplace.app/Contents/MacOS/torroworkplace.
+        let beside = core.and_then(|exe| exe.ancestors().nth(4)).map(|folder| folder.join(inside));
+        let applications = [Some(PathBuf::from("/Applications")), home.map(|home| home.join("Applications"))];
+        let candidates = beside.into_iter().chain(applications.into_iter().flatten().map(|folder| folder.join(inside)));
+        if let Some(found) = candidates.into_iter().find(|candidate| exists(candidate)) {
+            return found;
+        }
+    }
+    crate::core::sibling(AppId::CALENDAR.binary)
+}
+
+/// Starts the reminder window with `arguments` into `slot`; `false` when it cannot be started.
+fn start_window(slot: &Mutex<Option<std::process::Child>>, arguments: &[String]) -> bool {
+    let core = std::env::current_exe().ok();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let program = reminder_program(core.as_deref(), home.as_deref(), Path::is_file);
+    let mut window = lock(slot);
+    match std::process::Command::new(&program).args(arguments).spawn() {
+        Ok(child) => {
+            *window = Some(child);
+            true
+        }
+        Err(err) => {
+            eprintln!("torroworkplace: cannot start the reminder window {}: {err}", program.display());
+            *window = None;
+            false
+        }
+    }
+}
+
 impl Sink for Desktop {
     fn fire(&self, due: &[Reminder], paused: bool, settings: &Settings) {
         if paused {
             return;
         }
         let sound = settings.sound == torro_core::settings::ReminderSound::System;
-        let (mut notify, full) = route(due);
-        if full && !self.show_window() {
-            notify = due.iter().collect();
-        }
+        let (notify, full) = route(due);
         for reminder in notify {
-            let core = self.core.clone();
-            let (id, join) = (reminder.id.clone(), reminder.join.clone());
-            crate::inbox_notify::show_reminder(
-                reminder,
-                sound,
-                Box::new(move |answer| {
-                    let Some(core) = core.upgrade() else { return };
-                    answer_notification(core, id, join, answer);
-                }),
-            );
+            show_notification(self.core.clone(), reminder, sound);
         }
+        // A running window reads the new reminder itself.
+        if !full || runs(&self.window) {
+            return;
+        }
+        let Some(core) = self.core.upgrade() else { return };
+        let full: Vec<Reminder> =
+            due.iter().filter(|reminder| reminder.style == AlarmStyle::FullScreen).cloned().collect();
+        let (slot, all_displays, weak) = (Arc::clone(&self.window), settings.all_displays, self.core.clone());
+        tokio::spawn(async move {
+            // The window manager learns the place first, so the window never shows elsewhere.
+            let monitors = core.cover_monitors_for_reminders(all_displays).await;
+            if !start_window(&slot, &window_arguments(all_displays, &monitors)) {
+                for reminder in &full {
+                    show_notification(weak.clone(), reminder, sound);
+                }
+                return;
+            }
+            if !monitors.is_empty() {
+                core.keep_reminder_windows_in_view().await;
+            }
+        });
     }
+}
+
+/// Shows the notification of `reminder`; its buttons act through `core`.
+fn show_notification(core: std::sync::Weak<crate::core::Core>, reminder: &Reminder, sound: bool) {
+    let (id, join) = (reminder.id.clone(), reminder.join.clone());
+    crate::inbox_notify::show_reminder(
+        reminder,
+        sound,
+        Box::new(move |answer| {
+            let Some(core) = core.upgrade() else { return };
+            answer_notification(core, id, join, answer);
+        }),
+    );
 }
 
 /// What a button of a reminder's notification does: Join opens the call, In 5 min and Dismiss send

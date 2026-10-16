@@ -3699,6 +3699,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("1 min", "1 Min."),
     ("10 min", "10 Min."),
     ("5 min", "5 Min."),
+    ("Details on your main display", "Details auf deinem Hauptbildschirm"),
     ("Hide notes", "Notizen ausblenden"),
     ("In person", "Vor Ort"),
     ("Join now", "Jetzt beitreten"),

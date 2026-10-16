@@ -18,6 +18,13 @@
 //!   else Dismiss is the main button; Snooze (S, then 1 / 5 / 0 / B for 1, 5, 10 minutes and until
 //!   it starts), Dismiss (Esc). Keys count only from [`KEY_LOCK`] after the window opened, so
 //!   someone typing elsewhere does not dismiss it by accident.
+//! - **Every screen** (task ER2.2): one process, one window per screen (with `--all-displays`, the
+//!   setting `allDisplays`). The main screen shows all of it, the others a calm version (calendar,
+//!   title, countdown, Join / In 5 min / Dismiss); a click in any of them acts on all. On macOS each
+//!   window is laid over its screen by `torro-appkit` (`torro_gui::cover_screen`), opened hidden so
+//!   nothing flashes; on Hyprland the core registers a rule per monitor first and names them with
+//!   `--monitors`, the windows' titles (`Reminder · <monitor>`) match the rules; on Windows the
+//!   window is full screen on the main screen.
 //! - **Demo** (`--demo --open reminder…`, with `--size WIDTHxHEIGHT`): sample reminders of the demo
 //!   calendar at a fixed time, for the visual check; nothing is sent.
 
@@ -56,6 +63,10 @@ fn next_ahead() -> TimeDelta {
 /// Failed asks in a row after which the window gives up (the core is gone).
 const GIVE_UP_AFTER: u32 = 5;
 
+/// The name of the binary in the agent app "Torro Reminder.app" (macOS, task ER2.2): the calendar's
+/// binary under this name starts as the reminder window.
+pub const BINARY: &str = "torro-reminder";
+
 /// The window class (Linux app id) of the reminder window.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub const WINDOW_CLASS: &str = "torro-reminder";
@@ -79,6 +90,8 @@ pub enum Demo {
     Onsite,
     /// The snooze menu open.
     Snooze,
+    /// The calm version of another screen.
+    Second,
 }
 
 impl Demo {
@@ -92,6 +105,7 @@ impl Demo {
         ("reminder-preview", Demo::Preview),
         ("reminder-onsite", Demo::Onsite),
         ("reminder-snooze", Demo::Snooze),
+        ("reminder-second", Demo::Second),
     ];
 
     /// The state `--open` names, if it is one of the reminder window's.
@@ -109,6 +123,13 @@ pub struct Launch {
     pub size: Option<Size>,
     pub appearance: Option<Appearance>,
     pub design: Option<String>,
+    /// A window on every screen, not only the main one (`--all-displays`, from the setting).
+    pub all_displays: bool,
+    /// The monitors by name, main first, as the window manager names them (`--monitors DP-1,HDMI-A-1`;
+    /// Hyprland, whose rules the core registered for them).
+    pub monitors: Vec<String>,
+    /// In a demo: cover the screen as the real window does (`--cover`), to check the platform's way.
+    pub cover: bool,
 }
 
 impl Launch {
@@ -156,7 +177,12 @@ impl Launch {
             }
         };
         let appearance = appearance.or((demo == Some(Demo::Light)).then_some(Appearance::Light));
-        Ok(Launch { demo, size, appearance, design: value("--design") })
+        let all_displays = args.iter().any(|arg| arg == "--all-displays");
+        let monitors = value("--monitors")
+            .map(|names| names.split(',').map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).collect())
+            .unwrap_or_default();
+        let cover = demo.is_some() && args.iter().any(|arg| arg == "--cover");
+        Ok(Launch { demo, size, appearance, design: value("--design"), all_displays, monitors, cover })
     }
 }
 
@@ -167,29 +193,76 @@ fn parse_size(text: &str) -> Option<Size> {
     (width >= 200.0 && height >= 120.0).then(|| Size::new(width, height))
 }
 
-/// The window's settings: full screen over every window, or the demo's size in a normal window.
-pub fn window(launch: &Launch) -> iced::window::Settings {
+/// One screen the window shows on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Display {
+    /// 0 for the main screen, else its place in the system's order.
+    pub index: usize,
+    /// The monitor's name, when the window manager gave one (Hyprland).
+    pub monitor: Option<String>,
+}
+
+impl Display {
+    /// The main screen shows everything, the others the calm version.
+    pub fn is_main(&self) -> bool {
+        self.index == 0
+    }
+}
+
+/// The screens to show on: the demo's one, the named monitors, every screen with `all_displays`
+/// (`screens` of them), else the main one.
+pub fn displays(launch: &Launch, screens: usize) -> Vec<Display> {
+    if launch.demo.is_some() && !launch.cover {
+        return vec![Display { index: usize::from(launch.demo == Some(Demo::Second)), monitor: None }];
+    }
+    if !launch.monitors.is_empty() {
+        let shown = if launch.all_displays { launch.monitors.len() } else { 1 };
+        return launch
+            .monitors
+            .iter()
+            .take(shown)
+            .enumerate()
+            .map(|(index, name)| Display { index, monitor: Some(name.clone()) })
+            .collect();
+    }
+    let shown = if launch.all_displays { screens.max(1) } else { 1 };
+    (0..shown).map(|index| Display { index, monitor: None }).collect()
+}
+
+/// The title of the window on `display`: the rules of a window manager find it by it, so it is
+/// the same in every language (`Reminder · DP-1`).
+pub fn window_title(display: &Display) -> String {
+    match &display.monitor {
+        Some(monitor) => format!("Reminder · {monitor}"),
+        None => "Reminder".to_string(),
+    }
+}
+
+/// The settings of the window on `display`: borderless over every window, or the demo's size.
+pub fn window(launch: &Launch, display: &Display) -> iced::window::Settings {
     let mut settings = torro_gui::window(AppId::CALENDAR);
     #[cfg(target_os = "linux")]
     {
         settings.platform_specific.application_id = WINDOW_CLASS.to_string();
     }
-    match launch.size {
-        Some(size) => {
-            settings.size = size;
-            settings.decorations = false;
-        }
-        None => {
-            settings.decorations = false;
-            settings.level = iced::window::Level::AlwaysOnTop;
-            // macOS makes a window "full screen" in a space of its own and moves the person there
-            // (task ER0.1); there it covers the screen as a borderless window until ER2.2.
-            if cfg!(target_os = "macos") {
-                settings.maximized = true;
-            } else {
-                settings.fullscreen = true;
-            }
-        }
+    settings.decorations = false;
+    if let Some(size) = launch.size.filter(|_| !launch.cover) {
+        settings.size = size;
+        return settings;
+    }
+    let _ = display;
+    settings.level = iced::window::Level::AlwaysOnTop;
+    if cfg!(target_os = "macos") {
+        // macOS "full screen" is a space of its own and moves the person there (task ER0.1): the
+        // window opens hidden and `torro-appkit` lays it over its screen.
+        settings.visible = false;
+    } else {
+        // Hyprland's rule puts it on its monitor; Windows covers the main screen.
+        settings.fullscreen = true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        settings.platform_specific.skip_taskbar = true;
     }
     settings
 }
@@ -278,6 +351,8 @@ pub enum Message {
     Poll,
     Loaded(Result<Snapshot, String>),
     Resized(Size),
+    /// A window opened; on macOS it is now laid over its screen.
+    Opened(iced::window::Id),
     SystemMode(Mode),
     Appearance(Result<Appearance, String>),
     Key(Pressed),
@@ -315,6 +390,8 @@ pub struct App {
     loaded: bool,
     failures: u32,
     snooze_anchor: Anchor,
+    /// The open windows and the screen each shows.
+    windows: Vec<(iced::window::Id, Display)>,
 }
 
 impl App {
@@ -341,23 +418,39 @@ impl App {
             loaded: false,
             failures: 0,
             snooze_anchor: Anchor::new(),
+            windows: Vec::new(),
         };
+        let mut app = app;
+        let mut opening = Vec::new();
+        for display in displays(&app.launch, torro_gui::screen_count()) {
+            let (id, opened) = iced::window::open(window(&app.launch, &display));
+            app.windows.push((id, display));
+            opening.push(opened.map(Message::Opened));
+        }
         let appearance = {
             let source = source.clone();
             Task::perform(async move { theme::stored_appearance(&source).await }, Message::Appearance)
         };
         let tasks = [app.load(), iced::system::theme().map(Message::SystemMode), appearance];
-        (app, Task::batch(tasks))
+        (app, Task::batch(opening.into_iter().chain(tasks)))
     }
 
-    pub fn title(&self) -> String {
-        match self.current() {
-            Some(reminder) => trf("Reminder · {title}", &[("title", &reminder.event.summary)]),
-            None => tr("Reminder").to_string(),
+    pub fn title(&self, id: iced::window::Id) -> String {
+        match self.display(id) {
+            Some(Display { monitor: Some(_), .. }) => self.display(id).map(window_title).unwrap_or_default(),
+            _ => match self.current() {
+                Some(reminder) => trf("Reminder · {title}", &[("title", &reminder.event.summary)]),
+                None => tr("Reminder").to_string(),
+            },
         }
     }
 
-    pub fn theme(&self) -> Theme {
+    /// The screen the window `id` shows on.
+    fn display(&self, id: iced::window::Id) -> Option<&Display> {
+        self.windows.iter().find(|(window, _)| *window == id).map(|(_, display)| display)
+    }
+
+    pub fn theme(&self, _id: iced::window::Id) -> Theme {
         theme::for_appearance(self.launch.appearance.unwrap_or(self.appearance), self.system_mode)
     }
 
@@ -463,6 +556,12 @@ impl App {
                 }
             }
             Message::Resized(size) => self.size = size,
+            Message::Opened(id) => {
+                let real = matches!(self.feed, Feed::Core(_)) || self.launch.cover;
+                if let (true, Some(display)) = (real, self.display(id)) {
+                    return torro_gui::cover_screen(id, display.index, display.is_main());
+                }
+            }
             Message::SystemMode(mode) => self.system_mode = mode,
             Message::Appearance(Ok(appearance)) => self.appearance = appearance,
             Message::Appearance(Err(_)) => {}
@@ -558,8 +657,12 @@ impl App {
         }
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn view(&self, id: iced::window::Id) -> Element<'_, Message> {
         let color = self.current().map_or(Color::TRANSPARENT, |reminder| self.calendar_color(&reminder.event));
+        if self.display(id).is_some_and(|display| !display.is_main()) {
+            let calm = container(self.calm()).center(Fill).padding([0.0, space::xxl()]);
+            return container(calm).width(Fill).height(Fill).style(style::container::reminder_screen(color)).into();
+        }
         let content = responsive(move |size| self.screen(Screen::of(size)));
         let screen = container(content).width(Fill).height(Fill).style(style::container::reminder_screen(color));
         match self.snooze_menu() {
@@ -592,6 +695,54 @@ impl App {
         };
         let middle = container(body).center(Fill).padding([0.0, space::xxl()]);
         column![self.head(reminder), middle, self.foot()].width(Fill).height(Fill).into()
+    }
+
+    /// The calm version of another screen: what and when, and the three buttons; the details stay
+    /// on the main screen.
+    fn calm(&self) -> Element<'_, Message> {
+        let Some(reminder) = self.current() else { return Space::new().into() };
+        let title = match reminder.event.summary.trim() {
+            "" => tr("(no title)").to_string(),
+            summary => summary.to_string(),
+        };
+        let mut buttons = row![].spacing(space::m()).align_y(Alignment::Center);
+        if let Some(join) = &reminder.join {
+            let label = trf("Join {service}", &[("service", &join.service)]);
+            buttons = buttons.push(widgets::big_button(
+                Some(Icon::Video),
+                label,
+                None,
+                style::button::primary,
+                Some(Message::Join),
+            ));
+        }
+        let style = if reminder.join.is_some() { style::button::secondary } else { style::button::primary };
+        buttons = buttons
+            .push(widgets::big_button(
+                Some(Icon::Clock),
+                tr("In 5 min"),
+                None,
+                style,
+                Some(Message::Snooze(Snooze::Minutes(5))),
+            ))
+            .push(widgets::big_button(
+                Some(Icon::X),
+                tr("Dismiss"),
+                None,
+                style::button::ghost,
+                Some(Message::Dismiss),
+            ));
+        column![
+            self.kind(reminder),
+            typo::text(typo::hero(), title).style(theme::text),
+            self.countdown_line(&reminder.event),
+            container(buttons).padding([space::l(), 0.0]),
+            typo::text(typo::meta(), tr("Details on your main display")).style(theme::text_3),
+        ]
+        .spacing(space::m())
+        .align_x(Alignment::Center)
+        .max_width(size::content_max())
+        .into()
     }
 
     /// Top: what this is, a preview's sender, the clock.
@@ -1122,13 +1273,11 @@ pub fn run(args: &[String]) -> Result<(), String> {
         None => Source::from_args(args.iter().cloned()),
     };
     torro_gui::design::start_for(&source, launch.design.as_deref());
-    let settings = window(&launch);
-    iced::application(move || App::new(source.clone(), launch.clone()), App::update, App::view)
+    iced::daemon(move || App::new(source.clone(), launch.clone()), App::update, App::view)
         .settings(torro_gui::settings())
         .title(App::title)
         .theme(App::theme)
         .subscription(App::subscription)
-        .window(settings)
         .run()
         .map_err(|err| err.to_string())
 }

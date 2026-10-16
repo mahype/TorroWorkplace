@@ -7,8 +7,14 @@
 //! title bar again after a resize, a change of focus or the end of full screen, sets them again after
 //! each of these.
 //!
+//! And the reminder over the whole screen (task ER2.2, `docs/erinnerungen.md`, "Vollbild je
+//! System"): [`cover_screen`] puts a window over one whole screen – menu bar and Dock included, on
+//! every space and over apps in full screen – without moving the person to another space;
+//! [`screen_count`] says how many screens there are.
+//!
 //! This crate is the only place in the suite with `unsafe`: four calls into AppKit, each marked
-//! with why it is sound. On other systems [`place_traffic_lights`] does nothing.
+//! with why it is sound (the reminder's functions add none). On other systems the functions do
+//! nothing.
 
 use raw_window_handle::HasWindowHandle;
 
@@ -61,25 +67,55 @@ pub fn place_traffic_lights<W: HasWindowHandle + ?Sized>(window: &W, at: Positio
     }
 }
 
+/// How many screens the system has; 1 off the main thread and on other systems.
+pub fn screen_count() -> usize {
+    #[cfg(target_os = "macos")]
+    {
+        mac::screen_count()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        1
+    }
+}
+
+/// Puts `window` over the whole of screen `screen` (0 is the main screen; the system's order) and
+/// in front: at the level of pop-up menus (101, over the menu bar and the Dock, under the screen
+/// saver and the lock screen), on every space and over apps in full screen, out of the window
+/// cycle. With `key` it takes the keyboard, the others are only shown. Call it on the main thread,
+/// as Iced's `window::run` does. Does nothing on other systems.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+pub fn cover_screen<W: HasWindowHandle + ?Sized>(window: &W, screen: usize, key: bool) -> Result<(), Error> {
+    #[cfg(target_os = "macos")]
+    {
+        mac::cover_screen(window, screen, key)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "macos")]
 mod mac {
     use std::ptr::NonNull;
 
     use block2::RcBlock;
     use objc2::MainThreadMarker;
-    use objc2::rc::Weak;
+    use objc2::rc::{Retained, Weak};
     use objc2::runtime::AnyObject;
     use objc2_app_kit::{
-        NSView, NSWindow, NSWindowButton, NSWindowDidBecomeKeyNotification, NSWindowDidEndLiveResizeNotification,
-        NSWindowDidExitFullScreenNotification, NSWindowDidResignKeyNotification, NSWindowDidResizeNotification,
-        NSWindowStyleMask,
+        NSPopUpMenuWindowLevel, NSScreen, NSView, NSWindow, NSWindowButton, NSWindowCollectionBehavior,
+        NSWindowDidBecomeKeyNotification, NSWindowDidEndLiveResizeNotification, NSWindowDidExitFullScreenNotification,
+        NSWindowDidResignKeyNotification, NSWindowDidResizeNotification, NSWindowStyleMask,
     };
     use objc2_foundation::{NSNotification, NSNotificationCenter, NSNotificationName, NSPoint};
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     use super::{Error, Position};
 
-    pub(super) fn place_traffic_lights<W: HasWindowHandle + ?Sized>(window: &W, at: Position) -> Result<(), Error> {
+    /// The `NSWindow` behind `window`; on the main thread only.
+    fn ns_window<W: HasWindowHandle + ?Sized>(window: &W) -> Result<Retained<NSWindow>, Error> {
         MainThreadMarker::new().ok_or(Error::NotMainThread)?;
         let handle = window.window_handle().map_err(|_| Error::NoHandle)?;
         let RawWindowHandle::AppKit(appkit) = handle.as_raw() else { return Err(Error::NotAppKit) };
@@ -88,7 +124,40 @@ mod mac {
         // thread AppKit views may be used on.
         #[allow(unsafe_code)]
         let view: &NSView = unsafe { appkit.ns_view.cast::<NSView>().as_ref() };
-        let ns_window = view.window().ok_or(Error::NoWindow)?;
+        view.window().ok_or(Error::NoWindow)
+    }
+
+    pub(super) fn screen_count() -> usize {
+        MainThreadMarker::new().map_or(1, |main| NSScreen::screens(main).count().max(1))
+    }
+
+    pub(super) fn cover_screen<W: HasWindowHandle + ?Sized>(window: &W, screen: usize, key: bool) -> Result<(), Error> {
+        let ns_window = ns_window(window)?;
+        let main = MainThreadMarker::new().ok_or(Error::NotMainThread)?;
+        let screens = NSScreen::screens(main);
+        let screen = match screens.count() {
+            0 => return Err(Error::NoWindow),
+            count => screens.objectAtIndex(screen.min(count - 1)),
+        };
+        // Pop-up menus' level: over the menu bar (24) and the Dock, under the screen saver (1000).
+        ns_window.setLevel(NSPopUpMenuWindowLevel);
+        ns_window.setCollectionBehavior(
+            NSWindowCollectionBehavior::CanJoinAllSpaces
+                | NSWindowCollectionBehavior::FullScreenAuxiliary
+                | NSWindowCollectionBehavior::Stationary
+                | NSWindowCollectionBehavior::IgnoresCycle,
+        );
+        ns_window.setFrame_display(screen.frame(), true);
+        if key {
+            ns_window.makeKeyAndOrderFront(None);
+        } else {
+            ns_window.orderFrontRegardless();
+        }
+        Ok(())
+    }
+
+    pub(super) fn place_traffic_lights<W: HasWindowHandle + ?Sized>(window: &W, at: Position) -> Result<(), Error> {
+        let ns_window = ns_window(window)?;
         place(&ns_window, at);
 
         // AppKit puts the buttons back where it wants them whenever it lays out the title bar.

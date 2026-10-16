@@ -114,6 +114,15 @@ async fn show_control_centre(
     }
 }
 
+/// The window class of the reminder window (`torrocalendar --reminders`, task ER2.2).
+pub const REMINDER_WINDOW_CLASS: &str = "torro-reminder";
+
+/// The title of the reminder window on `monitor`, which the window manager's rule matches; the
+/// same in every language (`crates/torrocalendar/src/reminder.rs`, `window_title`).
+pub fn reminder_window_title(monitor: &str) -> String {
+    format!("Reminder · {monitor}")
+}
+
 /// Opens `url` in the system browser, for `inbox.open_item`. The inbox let only `http`/`https`
 /// through ([`Inbox::opening`]).
 fn open_in_browser(url: &str) -> Result<(), String> {
@@ -973,6 +982,68 @@ impl Core {
             lent_scopes: std::sync::Mutex::new(Vec::new()),
             accounts_read: tokio::sync::watch::Sender::new(true),
             reminders: Arc::new(Reminders::system()),
+        }
+    }
+
+    /// Prepares the window manager for the reminder window (task ER2.2) and names the monitors it
+    /// goes on, the one with the focus first (only that one without `all`): on Hyprland a rule per
+    /// monitor ([`torro_wm::WindowManager::cover_monitors`]) that the window's titles match
+    /// ([`reminder_window_title`]). Empty where the window manager has no monitors to name or no
+    /// such rules; the window then finds its screens itself.
+    pub async fn cover_monitors_for_reminders(&self, all: bool) -> Vec<String> {
+        if !matches!(self.backend, Backend::Hyprland(_)) {
+            return Vec::new();
+        }
+        let Ok(mut monitors) = self.backend.monitors().await else { return Vec::new() };
+        let focused = self.backend.active_workspace().await.ok();
+        monitors.sort_by_key(|monitor| monitor.active_workspace != focused);
+        if !all {
+            monitors.truncate(1);
+        }
+        let covers: Vec<torro_wm::Cover> = monitors
+            .iter()
+            .enumerate()
+            .map(|(index, monitor)| torro_wm::Cover {
+                class: REMINDER_WINDOW_CLASS.to_string(),
+                title: reminder_window_title(&monitor.name),
+                monitor: monitor.name.clone(),
+                focus: index == 0,
+            })
+            .collect();
+        if let Err(err) = self.backend.cover_monitors(&covers).await {
+            eprintln!("torroworkplace: cannot prepare the reminder windows: {err}");
+            return Vec::new();
+        }
+        monitors.into_iter().map(|monitor| monitor.name).collect()
+    }
+
+    /// Keeps the reminder windows on the visible workspace of their monitor while they are open
+    /// (task ER2.2, Hyprland): a full-screen window stays on its workspace, so switching to another
+    /// one would hide it. Ends once no reminder window is left after a change of workspace.
+    pub async fn keep_reminder_windows_in_view(&self) {
+        let Ok(mut events) = self.backend.events().await else { return };
+        while let Some(event) = events.recv().await {
+            if !matches!(event, torro_wm::WmEvent::WorkspaceFocused { .. }) {
+                continue;
+            }
+            let Ok(windows) = self.backend.windows(None).await else { continue };
+            let reminders: Vec<_> =
+                windows.into_iter().filter(|window| window.class == REMINDER_WINDOW_CLASS).collect();
+            if reminders.is_empty() {
+                return;
+            }
+            let Ok(monitors) = self.backend.monitors().await else { continue };
+            for window in reminders {
+                let shown = monitors
+                    .iter()
+                    .find(|monitor| window.monitor.as_deref() == Some(monitor.name.as_str()))
+                    .and_then(|monitor| monitor.active_workspace.clone());
+                if let Some(workspace) = shown.filter(|workspace| *workspace != window.workspace)
+                    && let Err(err) = self.backend.move_to_workspace(&window.id, &workspace).await
+                {
+                    eprintln!("torroworkplace: cannot keep a reminder window in view: {err}");
+                }
+            }
         }
     }
 

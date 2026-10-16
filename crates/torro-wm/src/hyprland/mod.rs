@@ -74,6 +74,17 @@ impl WindowManager for Hyprland {
         json::parse_monitors(&answer)
     }
 
+    /// Task ER2.2: one rule per monitor, sent as `eval <expression>` (what `hyprctl eval` does).
+    /// Rules registered at run time go with a reload of the configuration, so the core registers
+    /// them before every start of the window.
+    async fn cover_monitors(&self, covers: &[crate::Cover]) -> Result<(), WmError> {
+        for cover in covers {
+            let answer = socket::request(&self.socket_dir, &format!("eval {}", dispatch::cover_rule(cover))).await?;
+            dispatch::check_answer(&answer)?;
+        }
+        Ok(())
+    }
+
     /// Task 1.6.
     async fn focus_window(&self, window: &WindowId) -> Result<(), WmError> {
         self.dispatch(&dispatch::focus_window(window)?).await

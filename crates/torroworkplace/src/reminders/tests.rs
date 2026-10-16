@@ -333,3 +333,24 @@ fn a_full_screen_reminder_gets_no_notification_besides() {
     let (notify, full) = route(&quiet);
     assert!(!full && notify.len() == 1);
 }
+
+#[test]
+fn the_window_starts_on_the_screens_the_setting_and_the_window_manager_name() {
+    assert_eq!(window_arguments(false, &[]), ["--reminders"]);
+    assert_eq!(window_arguments(true, &[]), ["--reminders", "--all-displays"]);
+    let monitors = ["DP-1".to_string(), "HDMI-A-1".to_string()];
+    assert_eq!(window_arguments(true, &monitors), ["--reminders", "--all-displays", "--monitors", "DP-1,HDMI-A-1"]);
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn on_macos_the_agent_app_beside_the_core_comes_first() {
+    use std::path::{Path, PathBuf};
+    let core = Path::new("/Volumes/Apps/Torro Workplace.app/Contents/MacOS/torroworkplace");
+    let beside = PathBuf::from("/Volumes/Apps/Torro Reminder.app/Contents/MacOS/torro-reminder");
+    let installed = PathBuf::from("/Applications/Torro Reminder.app/Contents/MacOS/torro-reminder");
+    assert_eq!(reminder_program(Some(core), None, |p| p == beside || p == installed), beside);
+    assert_eq!(reminder_program(Some(core), None, |p| p == installed), installed);
+    let fallback = reminder_program(Some(core), None, |_| false);
+    assert!(fallback.ends_with("torrocalendar"), "{fallback:?}");
+}

@@ -75,6 +75,37 @@ pub(super) fn check_answer(answer: &str) -> Result<(), WmError> {
     }
 }
 
+/// `hl.window_rule({ … })` for `cover` (task ER2.2, Hyprland 0.56): a named rule (named after the
+/// monitor, so a second registration replaces the first) that puts the window of that class and
+/// exact title full screen on that monitor's visible workspace, without switching to it; windows
+/// on other monitors do not take the focus. Not `pin`: pinning only works for floating windows,
+/// and a floating one would stay under the bar. Class and title are matched as whole regexes,
+/// with their characters escaped.
+pub fn cover_rule(cover: &crate::Cover) -> String {
+    let exact = |text: &str| format!("^{}$", regex_escape(text));
+    format!(
+        "hl.window_rule({{ name = {}, match = {{ class = {}, title = {} }}, monitor = {}, fullscreen = true, \
+         no_initial_focus = {} }})",
+        lua_string(&format!("{}-{}", cover.class, cover.monitor)),
+        lua_string(&exact(&cover.class)),
+        lua_string(&exact(&cover.title)),
+        lua_string(&cover.monitor),
+        !cover.focus,
+    )
+}
+
+/// `text` with every regex metacharacter escaped, so a monitor name like `DP-1.2` matches itself.
+fn regex_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for character in text.chars() {
+        if "\\.+*?()|[]{}^$".contains(character) {
+            out.push('\\');
+        }
+        out.push(character);
+    }
+    out
+}
+
 /// `hl.dsp.layout("preselect r")` for `LeftRight`, `"preselect d"` for `TopBottom`: the next
 /// window opens right of / below the focused one.
 pub fn preselect(direction: SplitDirection) -> String {
@@ -215,5 +246,23 @@ mod tests {
         assert_eq!(check_answer(""), Err(WmError::Protocol(String::new())));
         assert_eq!(check_answer("  Invalid dispatcher \n"), Err(WmError::Protocol("Invalid dispatcher".into())));
         assert_eq!(check_answer("okay"), Err(WmError::Protocol("okay".into())));
+    }
+
+    #[test]
+    fn a_cover_rule_names_the_monitor_and_matches_the_exact_title() {
+        let cover = crate::Cover {
+            class: "torro-reminder".into(),
+            title: "Reminder · DP-1.2".into(),
+            monitor: "DP-1.2".into(),
+            focus: false,
+        };
+        assert_eq!(
+            cover_rule(&cover),
+            r#"hl.window_rule({ name = "torro-reminder-DP-1.2", match = { class = "^torro-reminder$", title = "^Reminder · DP-1\\.2$" }, monitor = "DP-1.2", fullscreen = true, no_initial_focus = true })"#
+        );
+        let main = crate::Cover { focus: true, ..cover };
+        assert!(cover_rule(&main).ends_with("no_initial_focus = false })"));
+        let sneaky = crate::Cover { title: "x\" }) os.exit()".into(), ..main };
+        assert!(!cover_rule(&sneaky).contains("\" })"), "a title cannot end the Lua string");
     }
 }
