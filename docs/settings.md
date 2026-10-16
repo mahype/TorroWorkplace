@@ -296,6 +296,174 @@ Der heutige Anmeldebildschirm in Kalender und Aufgaben entfällt. Stattdessen:
 „No calendar account yet.“ + „Open Settings“ (öffnet `torroworkplace ui --section accounts`).
 Die App wartet und lädt von selbst, sobald ein Konto da ist.
 
+## Bestand (Stand 2026-10-16)
+
+Aufgabe S.27 (#210): jede Einstellung der Suite, am Code nachgesehen. Die Spalte **Urteil** ist ein Vorschlag;
+entschieden wird mit der Wahl der neuen Struktur (S.28, S.29). Abkürzungen: **Seite** heißt Steuerzentrale,
+`set_setting x` heißt `settings.set_setting` mit `SettingKey::X` (MCP `settings_set_setting`), MCP-Tools heißen wie
+der Befehl mit `_` statt `.`. Ablage: `settings.json` mit JSON-Schlüssel, sonst Datei oder Modul.
+
+### Steuerzentrale: Seitenleiste und Einstieg
+
+Reihenfolge heute (`Section::ALL`): Overview, Accounts, Workspaces, Apps, Assistant, Agents & API, Approvals,
+Notification Hub (`inbox`), Appearance; General am Fuß. Das Zahnrad der Steuerzentrale öffnet General. Overview,
+Approvals und die Kurzansicht (`glance.rs`) haben keine Einstellungen, nur Anzeigen und Aktionen.
+
+### General
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| Language (System, English, Deutsch) | Sprache der Suite für danach gestartete Programme | General › Language; Einrichtung › Welcome | `language` | `set_setting language` | alle | bleibt, Suite |
+| Start at login | Kern beim Anmelden starten | General › Startup | `startAtLogin` + Autostart-Eintrag | `set_setting start_at_login` | alle | bleibt, Suite |
+| Run setup again | Einrichtung öffnen (Aktion) | General › Setup; Overview „Open setup“ | `setup` | `set_setting setup` | alle | bleibt, Suite |
+| Night (From, Until) | Nacht für Zeitleiste und Radar des Kalenders | General › Calendar; Kalender › Karte am Mond | `night` | `set_setting night` | Kalender | umziehen nach Kalender, doppelt |
+| Show reminders | Erinnerungen an Termine an oder aus | General › Reminders | `reminders.enabled` | `set_setting reminders` | Kalender | umziehen nach Kalender |
+| Default reminder | Vorlauf für Termine ohne eigene Erinnerung | General › Reminders | `reminders.defaultLead` | `set_setting reminders` | Kalender | umziehen nach Kalender |
+| On all displays | Vollbild-Erinnerung auf allen Bildschirmen | General › Reminders | `reminders.allDisplays` | `set_setting reminders` | Kalender | umziehen nach Kalender |
+| Sound | Systemton oder still | General › Reminders | `reminders.sound` | `set_setting reminders` | Kalender | umziehen nach Kalender |
+| Only events I accepted · All-day events · Events marked free · Outside work hours · Never full screen during a video call | welche Termine erinnern | General › Which events (ohne Erklärungssatz) | `reminders.*` | `set_setting reminders` | Kalender | umziehen nach Kalender, Satz ergänzen |
+| je Kalender: Off, Notification, Full screen | Art der Erinnerung je Kalender | General › Calendars | `reminders.calendars` | `set_setting reminders` | Kalender | umziehen nach Kalender, zu „Calendars“ legen |
+| Pause reminders (1 h, bis morgen), Resume | Erinnerungen für eine Zeit aus | Tray; Erinnerungsfenster „Pause for 1 hour“ | `<state>/reminders.json` | `calendar.pause_reminders` | Kalender | bleibt (Aktion, kein Ort in den Einstellungen) |
+
+### Appearance
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| Color mode (System, Light, Dark) | hell oder dunkel, alle Apps | Appearance › Color mode; Einrichtung › Welcome („Appearance“) | `appearance` | `set_setting appearance` | alle | bleibt, Suite; ein Name für beide Orte |
+| Design (Pakete), Reload, Open designs folder | Design-Paket aller Fenster | Appearance › Design | `design`; `<data>/designs/` | `set_setting design`, `settings.list_designs` | alle | bleibt, Suite; #189 teilt es auf |
+| Zoom (Zoom out, Zoom in, Reset) | Größe aller Fenster | Appearance › Interface; Strg/⌘ +, −, 0 in jeder App | `zoom` | `set_setting zoom` | alle | bleibt, Suite |
+| Show mail as (Formatted, Plain text) | wie eine HTML-Mail im Leser zuerst erscheint | Appearance › Mail | `mailView` | `set_setting mail_view` | Mail | umziehen nach Mail |
+| Mail colors (Like the app, Light, Dark) | Farben des Mail-Inhalts im Leser | Appearance › Mail | `mailAppearance` | `set_setting mail_appearance` | Mail | umziehen nach Mail |
+
+### Apps
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| je Komponente an/aus (Calendar, Tasks, Mail, Notification Hub, Assistant, Workspaces) | Komponente aus Umschalter, Tray und Übersicht nehmen, nichts im Hintergrund | Apps › Components; Einrichtung › Components | `componentsOff` | `set_setting component` | alle | bleibt, Suite (General oder Kopf jedes App-Eintrags) |
+| Open | App starten (Aktion) | Apps › Suite apps | – | `apps.open_app` | – | bleibt als Aktion |
+
+### Accounts
+
+Liste der Konten und „Add account“ (Assistent mit Katalog: Nextcloud, Mail, GitHub, ntfy, Slack bald, AI providers).
+Was der Assistent beim Einrichten abfragt (Adresse, Passwort, Server, Schlüssel), ist Eingabe, keine Einstellung, und
+steht hier nicht einzeln; Geheimnisse gehen nur über die Oberfläche (`api.md` Punkt 5).
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| Calendars and lists (Schalter je Sammlung) | welche Kalender und Listen die Suite zeigt | Nextcloud/CalDAV-Konto › Calendars and lists; Einrichtung › Calendar, Tasks | `hiddenCollections` | `settings.set_collection_shown` | Kalender, Aufgaben | umziehen nach Kalender bzw. Aufgaben |
+| Notifications, Talk | Quellen des Eingangs stumm oder an | Nextcloud-Konto › Notification Hub (ohne Satz); Einrichtung › Sources | Regeln in `<state>/inbox.sqlite` | `inbox.mute_source` | Eingang | umziehen nach Eingang › Sources |
+| Show notifications in the Notification Hub | GitHub-Quelle stumm oder an | GitHub-Konto › Notification Hub; Einrichtung | wie oben | `inbox.mute_source` | Eingang | umziehen nach Eingang › Sources |
+| Topics (Label, Add topic…, Unsubscribe…) | ntfy-Themen und ihre Etiketten | ntfy-Konto › Topics | `accounts.json` | `accounts.set_ntfy_topic` | Eingang | umziehen nach Eingang › Sources oder bleibt am Konto (offen) |
+| Login (Change login…) | Benutzer/Token für ntfy | ntfy-Konto › Connection | Schlüsselbund | `accounts.set_ntfy_login`, MCP bewusst nie | – | bleibt am Konto |
+| Sender name, Signature | Absendername und Signatur je Mail-Konto | Mail-Konto › Sender name, Signature | `accounts.json` (`MailSettings`) | `accounts.update_mail_account` | Mail | umziehen nach Mail |
+| Write new mail as (Formatted, Plain text) | Format beim Schreiben je Konto | Mail-Konto › Writing | `accounts.json` | `accounts.update_mail_account` | Mail | umziehen nach Mail; leicht mit „Show mail as“ zu verwechseln |
+| Show new mail in the Notification Hub (All, Only „For me“, Off) | welche neue Mail im Eingang erscheint | Mail-Konto › Notification Hub; Einrichtung › Sources schaltet „Mail“ über `mute_source` | `accounts.json` bzw. Regeln | `accounts.update_mail_account`; `inbox.mute_source` | Eingang | zusammenlegen: ein Weg, Ort Eingang › Sources |
+| Which folder holds sent mail? … (Use this folder) | offene Ordnerrollen klären | Mail-Konto › Folders (nur wenn offen) | `accounts.json` | `accounts.update_mail_account` | Mail | umziehen nach Mail |
+| Services (Mail, Calendars, Tasks) | Dienste eines Mail-Kontos an/aus | Mail-Konto › Services | `accounts.json` | `accounts.update_mail_account` | alle | bleibt am Konto |
+| Server settings…, Change password… | Server und Passwort ändern | Mail- und CalDAV-Konto › Connection | `accounts.json`, Schlüsselbund | `accounts.connect_mail`, `accounts.connect_caldav`, MCP bewusst nie | – | bleibt am Konto |
+| Sync now, Remove account… | Aktionen | jedes Konto | – | `accounts.sync`, `accounts.remove_account` | – | bleibt am Konto |
+| KI-Konto | nur Status, Server, Entfernen; keine Einstellung | Accounts | `accounts.json` | `accounts.connect_ai` (nie), `ai.list_models` | Assistent | umziehen nach AI (S.25) |
+
+### Assistant (Seite und Unterseiten)
+
+Bis zu 18 Gruppen untereinander: Status, Profile, Bots, Engines, New chats, Model, Effort, What the assistant may use,
+Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this computer, Keep conversations.
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| Turn on assistant (mit „Start from“), Turn off assistant… | Client des Assistenten anlegen bzw. entfernen | Assistant › Status | `clients.json` | `clients.create_client`, `clients.remove_client`, MCP bewusst nie (Punkt 2) | Assistent | bleibt, Assistent |
+| New chats (The one used last, Engine), Model, Effort | womit ein neuer Chat beginnt | Assistant › New chats, Model, Effort; Einrichtung › AI › Use for (nur Engine) | `assistantDefault` | `set_setting assistant_default` | Assistent | bleibt, Assistent |
+| Engines (Zeile je KI-Konto) | nur Anzeige, führt zu Accounts | Assistant › Engines | – | `assistant.list_engines` | – | streichen, ersetzt durch Verweis auf AI |
+| What the assistant may use (Stufe je Bereich), Approval (Ask first), Auswahl (All/Selected je Kalender, Liste, Repo, Quelle, Mail-Konto), Send on my behalf, Admin-Schalter | Rechte des Assistenten | Assistant › Rechte-Gruppen (`agents::rights_groups`) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | bleibt, Assistent › Access (Offene Frage 2) |
+| Mail to Claude Code and cloud models | Datenregel für Mail, **gilt für die ganze Suite** | Assistant; jede Bot-Seite | `mailToCloud` | `set_setting mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort |
+| Profile: Name, Description, Picture, Personality | wer der Assistent ist und wie er spricht | Assistant › Profile (Unterseite) | `<config>/assistant/profile.json`, `persona.md` | `assistant.update_profile` | Assistent | bleibt, Assistent |
+| Memory: Add note, Edit, Forget | Gedächtnis | Assistant › Profile › Memory | `memory.md` | `assistant.remember`, `assistant.forget` | Assistent | bleibt, Assistent |
+| Bots (Zeile je Bot) › What the bot may use … | Rechte eines Bots | Assistant › Bots › Bot; Assistent-App › Bot-Editor › Access (nur Stufen und Ask first) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | bleibt, Assistent; zwei Editoren zusammenlegen |
+| Talk to the assistant | Sprache an/aus | Assistant › Voice; Tray „Mute microphone“ (nur aus) | `voice.enabled` | `set_setting voice_enabled` (an nur Menschen) | Assistent | bleibt, Assistent |
+| Wake word | nur Anzeige („Hey Torro“) | Assistant › Voice | `voice.wakeWord` | `set_setting wake_word` | – | bleibt als Anzeige |
+| Speak answers | Antworten vorlesen | Assistant › Voice | `voice.speakAnswers` | `set_setting speak_answers` | Assistent | bleibt, Assistent |
+| Microphone (System default, Gerät) | welches Mikrofon | Assistant › Microphone (ohne Satz) | `voice.microphone` | `set_setting microphone` | Assistent | bleibt, Assistent |
+| – (Sprachmodell, Stimme) | whisper- und Piper-Datei | keine Oberfläche, erste im Ordner | `voice.sttModel`, `voice.voice` | `set_setting stt_model`, `set_setting voice` | Assistent | bleibt ohne Oberfläche, bis es mehr als eine Datei gibt |
+| Test the microphone, Check again | Prüfen (Aktion) | Assistant › Voice, Programs | – | `settings.test_voice` (nie), `settings.voice_status` | – | bleibt als Aktion |
+| Keep conversations (30, 90 Tage, 1 Jahr, Forever) | wie lange Unterhaltungen bleiben | Assistant › Keep conversations | `assistantRetention` | `set_setting assistant_retention` | Assistent | bleibt, Assistent |
+
+### Notification Hub (Seite)
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| Quiet during busy events | während belegter Termine nur Dringendes | Notification Hub › Notifications; Einrichtung | `quietWhenBusy` | `set_setting quiet_when_busy` | Eingang | umziehen nach Eingang |
+| Rules (Remove je Regel) | dauerhafte Regeln (Spur, stumm, verbergen) entfernen | Notification Hub › Rules; angelegt im Eingang | `<state>/inbox.sqlite` | `inbox.list_rules`, `inbox.remove_rule` | Eingang | umziehen nach Eingang |
+| Open | Eingang starten (Aktion) | Notification Hub › App | – | `apps.open_app` | – | streichen, wenn der Eintrag in der App selbst lebt |
+
+### Agents & API, Workspaces
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| Connect agent (Programm, Name, Read only/Read and write/Full access, Hook) | Client anlegen | Agents & API › Connect agent | `clients.json`, Schlüsselbund | `clients.create_client`, MCP bewusst nie | Entwickler | bleibt, Suite |
+| Rechte je Client (Stufen, Admin-Schalter, Send on my behalf, Ask first, Auswahl) | was ein Programm darf | Agent-Seite | `clients.json` | `clients.update_client`, MCP bewusst nie | Entwickler | bleibt, Suite (Offene Frage 2) |
+| Create new key, Disconnect… | Schlüssel neu, Client entfernen | Agent-Seite › Key | Schlüsselbund | `clients.new_key`, `clients.remove_client`, nie | – | bleibt, Suite |
+| Allow, Deny | Freigaben entscheiden | Approvals | `approvals.json` | `approvals.decide_approval`, nie (Punkt 3) | alle | bleibt, Suite |
+| Rename, Delete, Load | Vorlagen pflegen | Workspaces; Tray (Load, Save, Update, Delete) | `<data>/templates/` | `workspaces.*` | Workspaces | bleibt, Suite (später eigene App?) |
+
+### In den Apps
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| Zahnrad, „Settings“ | öffnet die Steuerzentrale als eigenes Fenster bei Accounts | Kalender, Aufgaben, Assistent, Eingang, Mail-Fenster (`connect::open_settings`) | – | – | alle | ändern: Einstellungen der App im selben Fenster |
+| Night (Karte am Mond) | wie General › Night | Kalender › Zeitleiste, Radar | `night` | `set_setting night` | Kalender | bleibt als schneller Weg |
+| Kalender in der Seitenleiste abhaken | blendet einen Kalender aus, **nur bis zum Neustart** | Kalender › Seitenleiste | nur im Speicher | – | Kalender | klären: mit „Calendars“ zusammenlegen oder als Fensterwahl (pro Fenster, später) kennzeichnen |
+| Order (Due date, Manual) | Reihenfolge einer Liste | Aufgaben › Display | `listOrders` | `set_setting list_order` | Aufgaben | bleibt im Menü der App |
+| Group by, Show completed | Ansicht der Liste | Aufgaben › Display | nur im Speicher | – | Aufgaben | bleibt Ansicht |
+| Modell, Effort, Bereiche, Modus je Chat; Show all models | womit dieser Chat antwortet | Assistent › Eingabe | je Unterhaltung im Kern | `assistant.send_message` | Assistent | bleibt im Chat; „Show all models“ fällt mit S.26 |
+| Bot-Editor (Name, Description, Picture, Personality, Instructions, Skills, Engine, Access) | ein Bot | Assistent › Bot-Editor | `<config>/assistant/bots/` | `bots.save_bot`; Access über `clients.update_client` | Assistent | bleibt in der App; Access mit der Bot-Seite zusammenlegen |
+| Mute (Umfang, For, What happens), Hide from Notification Hub › Mute {source}, Move to {lane} › Always for {source}, Insights › Hide sender, Mute app | legt Regeln an bzw. schaltet Quellen stumm | Eingang (alle Fenster) | `<state>/inbox.sqlite` | `inbox.mute_item`, `inbox.mute_source`, `inbox.set_item_lane` | Eingang | bleibt im Eingang; Liste der Regeln dorthin |
+| All rules ↗ | öffnet Steuerzentrale › Notification Hub | Eingang › Mute-Menü | – | – | Eingang | ändern: Rules im selben Fenster |
+| HTML/Text, Light/Dark am Leser | nur für die offene Mail | Mail-Fenster › Fuß des Lesers | nur im Speicher; Vorgabe `mailView`, `mailAppearance` | – (Vorgabe: `set_setting`) | Mail | bleibt; Vorgabe nach Mail |
+| From, Signatur beim Schreiben | Absender der neuen Mail | Mail › Schreiben | nicht gespeichert; Signatur aus dem Konto | – | Mail | bleibt |
+| Tastenkürzel | fest „Torro“ | Mail-Fenster (`torro_core::shortcuts`) | Code | – | Mail | geplant (E10.1b, E10.2, E10.3) |
+
+### Geplant, nicht gebaut
+
+| Einstellung | bewirkt | geplant in | Ablage | API/MCP | Urteil |
+|---|---|---|---|---|---|
+| Modelle je Anbieter an/aus | welche Modelle die Module anbieten | S.24–S.26 (Steuerzentrale › AI) | `<config>/ai-models.json` (neu) | `ai.set_model_enabled` (neu) | bleibt, Suite › AI |
+| Keyboard shortcuts (Preset, eigene Tasten) | Kürzel des Mail-Fensters | E10.1b, E10.2, E10.3 (#209) | `settings.json` (`mailShortcuts`) | `set_setting mail_shortcut_preset`, `mail_shortcut` (neu) | bleibt, Mail |
+| Design, Schrift, Farbschema getrennt | Aussehen feiner wählen | #189 | `settings.json` | `set_setting` (neu) | bleibt, Suite › Appearance |
+| Fenster-Profil (Kalender, Listen, Ansicht je Fenster) | mehrere Kalenderfenster nebeneinander | „pro Fenster (später)“ oben | State-Verzeichnis | – | bleibt geplant |
+
+### Kein Einstellungs-Ort
+
+Fensterzustand in `ui.json` der App (`torro_gui::ui_state`), geht durch keine API und bleibt in der App: `sidebar`
+(alle Apps), `lastRepo` (Aufgaben), `unfolded`, `density` (Compact/Comfortable), `order` (Newest/Oldest first),
+`split` (Breite der Liste), `recentSearches` (alle im Eingang). Ebenso nur im Speicher: Ansicht des Kalenders
+(Day … Radar), Filter der Aufgaben, Spalten und Kacheln des Eingangs, „By app/By time“, Suchumfang.
+
+### Befunde
+
+1. **Das Zahnrad führt überall zu Accounts.** In allen Apps und im Mail-Fenster öffnet es die Steuerzentrale bei
+   Accounts, auch wo die gesuchte Einstellung woanders steht; in der Steuerzentrale selbst öffnet es General.
+2. **Doppelt:** Night (General und Karte am Mond), Language, Appearance, Components, Calendars and lists, Sources,
+   Quiet und New chats (je Seite und Einrichtung, die Einrichtung ist gewollt), Rechte eines Bots (Bot-Seite und
+   Bot-Editor), neue Mail im Eingang auf zwei Wegen (`notify` am Mail-Konto und die Quelle „Mail“ der Einrichtung).
+3. **Die Datenregel sieht aus wie ein Recht**, gilt aber für die ganze Suite: Wer sie auf einer Bot-Seite ausschaltet,
+   schaltet sie für Assistent und alle Bots aus, ohne dass die Zeile es sagt.
+4. **Was eine App betrifft, steht weit weg:** Erinnerungen (13 Zeilen) unter General; Mail-Ansicht unter Appearance;
+   Quellen des Eingangs verteilt auf Nextcloud-, GitHub-, ntfy- und Mail-Konto, die Seite Notification Hub hat keine
+   Quellen. Absender und Signatur am Konto.
+5. **Kalender abhaken in der App vergisst sich:** Die Haken in der Seitenleiste des Kalenders leben nur im Speicher,
+   während „Calendars and lists“ am Konto dauerhaft für die Suite gilt. Zwei Bedeutungen, ein Aussehen.
+6. **Leicht zu verwechseln:** „Show mail as“ (Leser, Suite) und „Write new mail as“ (Schreiben, je Konto) mit denselben
+   Wahlen; „Color mode“ (Appearance) und „Appearance“ (Einrichtung) für dieselbe Einstellung.
+7. **Ohne Erklärungssatz:** General › Which events; Assistant › Status (an), Model, Microphone; Profile › Name, Picture;
+   Notification Hub-Gruppe am Nextcloud-Konto; Status jedes Kontos.
+8. **API/MCP:** Jede Einstellung hat einen Request und, wo nicht bewusst nie (`api.md` Punkte 2, 3, 5, 6), ein
+   MCP-Tool. Es fehlt kein Weg für eine gebaute Einstellung. Nur die Haken des Kalenders und der Fensterzustand
+   gehen bewusst durch keine API. `inbox.hide_sender` gibt es noch, aber keine Oberfläche ruft ihn mehr.
+9. **Abweichungen Konzept–Code:** S.15 („All rules“) ist gebaut, aber nicht abgehakt. Das Konzept nennt die Seite
+   „Inbox“, die Oberfläche „Notification Hub“. Das Eingangs-Programm hat drei Fensterarten (Notification Hub, App
+   Feed, Mail), das Konzept kennt Eingang und Mail. `ai-models.json` gibt es noch nicht (kommt mit S.24). Im
+   Mail-Fenster wird die Listenbreite (`split`) auch mit `--demo` gespeichert, anders als `density` und `order`.
+
 ## Offene Fragen
 
 1. Slack: welcher Weg (Bot-Token, Benutzer-Token, OAuth) – entscheiden, wenn Slack drankommt.

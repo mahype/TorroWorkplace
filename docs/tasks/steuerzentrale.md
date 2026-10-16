@@ -467,7 +467,7 @@ S.27 (Bestand) ── S.28 (drei Entwürfe) ── Wahl durch einen Menschen ─
 ```
 
 ### S.27 Bestandsaufnahme aller Einstellungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (liest die ganze Oberfläche, Urteil je Einstellung) · **Dateien:** `docs/settings.md`
 - Neuer Abschnitt **„Bestand (Stand <Datum>)“** in `docs/settings.md`, vor „Offene Fragen“. Je Ort eine Tabelle, eine
   Zeile je Einstellung: **Einstellung** (englischer Text der Oberfläche), **bewirkt** (ein Satz), **heute** (Seite ›
