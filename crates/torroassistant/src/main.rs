@@ -15,6 +15,10 @@
 //! Without a window: `--listen` waits for the wake word and talks with the assistant by voice
 //! (task C.9); `--voice-status` and `--voice-test` answer the core's `settings.voice_status` and
 //! `settings.test_voice` ([`voice::cli`]).
+//!
+//! `TORRO_TIMING=1` writes when the window first draws, when the conversations first came and every
+//! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
+//! the hulls [`update`] and [`view`] here.
 
 mod app;
 mod backend;
@@ -28,14 +32,18 @@ mod voice;
 
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
+use iced::{Element, Task};
+use torro_core::timing;
 use torro_gui::source::Source;
 
-use crate::app::{App, CHAT, CHAT_SIZE, MAIN};
+use crate::app::{App, CHAT, CHAT_SIZE, MAIN, Message};
 use crate::backend::Backend;
 use crate::launch::{Launch, Open, Window};
 
 fn main() -> ExitCode {
+    timing::start();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{} {}", MAIN.binary, env!("CARGO_PKG_VERSION"));
@@ -93,7 +101,7 @@ fn run(backend: Backend, suite: Source, launch: Launch) -> iced::Result {
     if let Some((width, height)) = launch.size {
         window.size = iced::Size::new(f32::from(width), f32::from(height));
     }
-    iced::application(move || App::new(backend.clone(), suite.clone(), launch.clone()), App::update, App::view)
+    iced::application(move || App::new(backend.clone(), suite.clone(), launch.clone()), update, view)
         .settings(torro_gui::settings())
         .title(App::title)
         .theme(App::theme)
@@ -101,4 +109,25 @@ fn run(backend: Backend, suite: Source, launch: Launch) -> iced::Result {
         .subscription(App::subscription)
         .window(window)
         .run()
+}
+
+/// [`App::update`], timed: the first list of conversations marks "first data", a slow update is
+/// written.
+fn update(app: &mut App, message: Message) -> Task<Message> {
+    if matches!(message, Message::Listed(Ok(_))) {
+        timing::once("first data");
+    }
+    let started = Instant::now();
+    let task = app.update(message);
+    timing::slow("update", started);
+    task
+}
+
+/// [`App::view`], timed: the first call marks "first frame", a slow one is written.
+fn view(app: &App) -> Element<'_, Message> {
+    let started = Instant::now();
+    let element = app.view();
+    timing::once("first frame");
+    timing::slow("view", started);
+    element
 }

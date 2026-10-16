@@ -12,6 +12,10 @@
 //! `apps.open_app` opens a task (`task:<uid>`); an empty uid is refused (exit 64). The app shows it
 //! in the detail, on its list (task E8.7b).
 //!
+//! `TORRO_TIMING=1` writes when the window first draws, when its first data came and every
+//! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
+//! the hulls [`update`] and [`view`] here.
+//!
 //! On Windows the app is a GUI program without a console window; a failed start is written to
 //! [`START_ERROR_FILE`] in the state directory instead (see [`report_start_error`]).
 
@@ -27,9 +31,12 @@ mod new_list;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
+use iced::{Element, Task};
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
+use torro_core::timing;
 
 const APP: AppId = AppId::TASKS;
 
@@ -37,6 +44,7 @@ const APP: AppId = AppId::TASKS;
 const START_ERROR_FILE: &str = "start-error.log";
 
 fn main() -> ExitCode {
+    timing::start();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{} {}", APP.binary, env!("CARGO_PKG_VERSION"));
@@ -62,15 +70,14 @@ fn main() -> ExitCode {
     let source = launch.source(&args);
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     torro_gui::design::start_for(&source, launch.design.as_deref());
-    let result =
-        iced::application(move || app::App::new(source.clone(), launch.clone()), app::App::update, app::App::view)
-            .settings(torro_gui::settings())
-            .title(app::App::title)
-            .theme(app::App::theme)
-            .scale_factor(app::App::scale_factor)
-            .subscription(app::App::subscription)
-            .window(torro_gui::window(APP))
-            .run();
+    let result = iced::application(move || app::App::new(source.clone(), launch.clone()), update, view)
+        .settings(torro_gui::settings())
+        .title(app::App::title)
+        .theme(app::App::theme)
+        .scale_factor(app::App::scale_factor)
+        .subscription(app::App::subscription)
+        .window(torro_gui::window(APP))
+        .run();
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
@@ -127,6 +134,26 @@ fn write_start_error(dir: &Path, line: &str) -> std::io::Result<PathBuf> {
     let file = dir.join(START_ERROR_FILE);
     std::fs::write(&file, format!("{line}\n"))?;
     Ok(file)
+}
+
+/// [`app::App::update`], timed: the first data marks "first data", a slow update is written.
+fn update(app: &mut app::App, message: app::Message) -> Task<app::Message> {
+    if matches!(message, app::Message::Loaded(Ok(_))) {
+        timing::once("first data");
+    }
+    let started = Instant::now();
+    let task = app.update(message);
+    timing::slow("update", started);
+    task
+}
+
+/// [`app::App::view`], timed: the first call marks "first frame", a slow one is written.
+fn view(app: &app::App) -> Element<'_, app::Message> {
+    let started = Instant::now();
+    let element = app.view();
+    timing::once("first frame");
+    timing::slow("view", started);
+    element
 }
 
 #[cfg(test)]

@@ -87,7 +87,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use iced::theme::Mode;
@@ -97,6 +97,7 @@ use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscript
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrder;
+use torro_core::timing;
 use torro_gui::connect::{self, Connect};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
@@ -570,6 +571,9 @@ pub struct App {
     launch: Launch,
     /// The one-time part of `launch.open` (the detail) has been done.
     opened: bool,
+    /// Until the core answered at the start ([`Message::CoreReady`], issue #206): the timer waits too,
+    /// so it cannot show an error for a core that is still starting.
+    waiting: bool,
     today: NaiveDate,
     /// The window size, for the size class ([`layout::of`]). Kept from the window events rather
     /// than asked of the view, so that subscriptions and tests know the class too.
@@ -648,6 +652,9 @@ pub enum Message {
     DragWindow,
     /// The window has this size (at start and after every resize).
     Resized(Size),
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     AccountLoaded(Result<Vec<PimAccount>, String>),
     /// An account's title in the sidebar: fold or unfold its lists.
     ToggleAccount(String),
@@ -882,6 +889,7 @@ impl App {
             design,
             launch,
             opened: false,
+            waiting: true,
             notice: None,
             filter_dialog: None,
             new_list: None,
@@ -906,7 +914,11 @@ impl App {
         let task = Task::batch([
             ui_state::load_task(AppId::TASKS).map(Message::UiState),
             last_repo,
-            app.fetch_account(),
+            // The first load waits for a core that is still starting (issue #206).
+            {
+                let source = app.source.clone();
+                Task::perform(async move { source.ready().await }, |_| Message::CoreReady)
+            },
             app.fetch_appearance(),
             app.fetch_list_orders(),
             app.zoom.fetch().map(Message::Zoom),
@@ -924,7 +936,6 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let every = if self.connected() { Duration::from_secs(60) } else { Duration::from_secs(2) };
         let mut subscriptions = vec![
-            iced::time::every(every).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             // Zoom keys work everywhere, glance views and the open detail included.
@@ -968,6 +979,9 @@ impl App {
         if self.notice.is_some() || self.created.is_some() {
             subscriptions.push(iced::time::every(Duration::from_secs(1)).map(Message::NoticeTick));
         }
+        if !self.waiting {
+            subscriptions.push(iced::time::every(every).map(|_| Message::Tick));
+        }
         Subscription::batch(subscriptions)
     }
 
@@ -993,6 +1007,10 @@ impl App {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
+            Message::CoreReady => {
+                self.waiting = false;
+                return self.fetch_account();
+            }
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
                 // Every account that can hold task lists, GitHub (filter lists) included.
@@ -2508,6 +2526,7 @@ impl App {
             _ => {}
         }
         let empty = self.launch.open == Some(Open::Empty);
+        let started = Instant::now();
         let source = self.source.clone();
         Task::perform(
             async move {
@@ -2515,7 +2534,11 @@ impl App {
                 let todos = if empty { Vec::new() } else { source.todos().await.map_err(|e| e.to_string())? };
                 Ok((collections, todos))
             },
-            Message::Loaded,
+            // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+            move |result| {
+                timing::took("load", started);
+                Message::Loaded(result)
+            },
         )
     }
 }

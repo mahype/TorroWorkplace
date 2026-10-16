@@ -867,6 +867,9 @@ pub enum Message {
     Tick(Instant),
     /// The accounts and the message to answer, or why not.
     Loaded(Result<Prepared, ComposeError>),
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     /// "Retry" after a failed start.
     Retry,
     To(String),
@@ -1018,7 +1021,9 @@ impl<S: ComposeSource + 'static> Window<S> {
         ];
         // The states "loading" and "failed" stay as they are, for pictures.
         if !matches!(window.start.open, Some(Open::Loading | Open::Failed)) {
-            tasks.push(window.prepare());
+            // The first load waits for a core that is still starting (issue #206).
+            let suite = window.suite.clone();
+            tasks.push(Task::perform(async move { suite.ready().await }, |_| Message::CoreReady));
         }
         (window, Task::batch(tasks))
     }
@@ -1113,6 +1118,7 @@ impl<S: ComposeSource + 'static> Window<S> {
             }
             Message::Tick(now) => return self.tick(now),
             Message::Loaded(result) => return self.loaded(result),
+            Message::CoreReady => return self.prepare(),
             Message::Retry => {
                 self.phase = Phase::Loading;
                 return self.prepare();

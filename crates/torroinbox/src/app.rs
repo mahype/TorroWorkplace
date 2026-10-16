@@ -165,6 +165,7 @@ use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{MailAppearance, MailFormat};
 use torro_core::shortcuts;
+use torro_core::timing;
 use torro_gui::connect;
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
@@ -1977,6 +1978,9 @@ pub enum Message {
     Resized(Size),
     /// The source's answer for the view it was asked for; answers for another view are dropped.
     Loaded(View, Result<Loaded, String>),
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     /// From the sidebar or the navigation menu.
     Show(View),
     /// From the list: open the entry with this id in the panel.
@@ -2610,7 +2614,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             density,
             order,
             split,
-            app.load(),
+            // The first load waits for a core that is still starting (issue #206).
+            {
+                let suite = app.suite.clone();
+                Task::perform(async move { suite.ready().await }, |_| Message::CoreReady)
+            },
             app.fetch_appearance(),
             app.fetch_look(),
             iced::window::latest().and_then(iced::window::scale_factor).map(Message::WindowScale),
@@ -3024,7 +3032,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::Decide { approval, allow } => return self.decide(approval, allow),
             Message::Decided(result, allow) => return self.decided(result, allow),
-            Message::Refresh => return self.load(),
+            Message::Refresh | Message::CoreReady => return self.load(),
             Message::Tick => {
                 self.now = Utc::now() + self.offset;
                 return Task::batch([
@@ -7119,7 +7127,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let window = (self.launch.kind, self.shown.clone());
         let demo = self.launch.demo.then_some(self.now);
         let asked = (limit, self.order);
+        // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+        let started = Instant::now();
         let entries = Task::perform(fetch(inbox, view.clone(), empty, asked, window, demo), move |result| {
+            timing::took("load", started);
             Message::Loaded(view.clone(), result)
         });
         // Insights asks for its numbers with every load (task E8.8b): after muting, after an undo, on

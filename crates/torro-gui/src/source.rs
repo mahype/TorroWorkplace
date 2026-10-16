@@ -1,9 +1,17 @@
 //! The data source an app runs on.
+//!
+//! Without `--demo` an app starts the core when it is not running ([`ensure_core`]) and waits for
+//! it once before its first load ([`Source::ready`], [`wait_for_core`], issue #206): a core started
+//! just now does not listen yet, and asking at once would show an error until the app's next timer.
 
+use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use torro_core::timing;
 use torro_ipc::pim::PimClient;
+use torro_ipc::{Request, Response};
 use torro_pim::demo::DemoSource;
 use torro_pim::source::{FilterDefinition, FilterPreview, GitHubRepo, GitHubRepoDetails};
 use torro_pim::{Collection, Event, PimAccount, PimSource, ProviderError, Todo};
@@ -33,6 +41,17 @@ impl Source {
         matches!(self, Source::Demo(_))
     }
 
+    /// Waits until the core answers, at most [`CORE_START_WAIT`]; `true` once it does, at once for
+    /// demo data. An app awaits it before its first load only (issue #206): a core that runs
+    /// answers within a millisecond, one that is starting within its start, and one that does not
+    /// answer in time leaves the app where it was before, with its error and its timer.
+    pub async fn ready(&self) -> bool {
+        match self {
+            Source::Core(client) => wait_for_core(&client.socket, CORE_START_WAIT).await,
+            Source::Demo(_) => true,
+        }
+    }
+
     /// Opens or raises another app of the suite by its binary name (`torrotasks`), through the
     /// core's `Request::OpenApp`, so the core can focus a window that is already open instead of
     /// starting a second one. Answer of the app switcher and of "Open Tasks ↗".
@@ -48,6 +67,39 @@ impl Source {
             Ok(other) => Err(format!("unexpected answer: {other:?}")),
             Err(err) => Err(err.to_string()),
         }
+    }
+}
+
+/// How long an app waits at its start for the core to answer ([`Source::ready`]): on Unix, where
+/// [`ensure_core`] has just started it.
+#[cfg(unix)]
+pub const CORE_START_WAIT: Duration = Duration::from_secs(10);
+
+/// Elsewhere no app starts the core, so waiting would only hold back the error: one ask.
+#[cfg(not(unix))]
+pub const CORE_START_WAIT: Duration = Duration::ZERO;
+
+/// How often [`wait_for_core`] asks.
+const CORE_POLL: Duration = Duration::from_millis(50);
+
+/// How long one ask of [`wait_for_core`] may take: a program that holds the socket but never
+/// answers must not stretch the wait beyond its limit.
+const PING_WAIT: Duration = Duration::from_millis(200);
+
+/// Asks the core on `socket` for `system.ping` every [`CORE_POLL`] until it answers or `limit` is
+/// up; `true` when it answered. With `TORRO_TIMING` the answer is marked ("core ready").
+pub async fn wait_for_core(socket: &Path, limit: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + limit;
+    loop {
+        let ping = tokio::time::timeout(PING_WAIT, torro_ipc::client::call(socket, &Request::Ping)).await;
+        if matches!(ping, Ok(Ok(Response::Pong { .. }))) {
+            timing::once("core ready");
+            return true;
+        }
+        if tokio::time::Instant::now() + CORE_POLL >= deadline {
+            return false;
+        }
+        tokio::time::sleep(CORE_POLL).await;
     }
 }
 
@@ -219,6 +271,56 @@ mod tests {
     fn demo_data_opens_no_app() {
         let demo = Source::from_args(["--demo".to_string()]);
         assert_eq!(iced::futures::executor::block_on(demo.open_app("torrotasks")), Ok(()));
+    }
+
+    #[test]
+    fn demo_data_is_ready_at_once() {
+        let demo = Source::from_args(["--demo".to_string()]);
+        assert!(iced::futures::executor::block_on(demo.ready()));
+    }
+
+    /// A socket path of its own for each test, short enough for a Unix socket.
+    #[cfg(unix)]
+    fn socket(name: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("torro-gui-{}-{name}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        path
+    }
+
+    /// Issue #206: a core that starts listening a little later is waited for.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn waits_until_a_starting_core_answers() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+        let path = socket("late");
+        let listening = path.clone();
+        let core = tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let listener = tokio::net::UnixListener::bind(&listening).expect("binds");
+            let (stream, _) = listener.accept().await.expect("a client connects");
+            let (read, mut write) = stream.into_split();
+            let mut line = String::new();
+            BufReader::new(read).read_line(&mut line).await.expect("reads the request");
+            let pong = Response::Pong { version: "0.1.0".into(), api: torro_ipc::API_VERSION };
+            let mut answer = serde_json::to_vec(&pong).expect("serializes");
+            answer.push(b'\n');
+            write.write_all(&answer).await.expect("answers");
+        });
+        assert!(wait_for_core(&path, Duration::from_secs(5)).await);
+        core.await.expect("the core task ends");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Issue #206: without a core the wait ends after its limit.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn without_a_core_the_wait_ends_after_its_limit() {
+        let path = socket("none");
+        let started = std::time::Instant::now();
+        assert!(!wait_for_core(&path, Duration::from_millis(200)).await);
+        let waited = started.elapsed();
+        assert!(waited >= Duration::from_millis(150) && waited < Duration::from_secs(2), "{waited:?}");
     }
 
     #[cfg(unix)]

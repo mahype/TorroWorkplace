@@ -27,7 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::theme::Mode;
@@ -37,6 +37,7 @@ use iced::{Alignment, Color, Element, Rectangle, Size, Subscription, Task, Theme
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Night, Quarter};
+use torro_core::timing;
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::design::{self, Follow};
@@ -347,6 +348,9 @@ pub struct App {
     launch: Launch,
     /// The one-time part of `launch.open` (the editor) has been done.
     opened: bool,
+    /// Until the core answered at the start ([`Message::CoreReady`], issue #206): the timer waits too,
+    /// so it cannot show an error for a core that is still starting.
+    waiting: bool,
     now: NaiveDateTime,
     /// The chosen view. The narrow layout may show another one ([`App::shown`]); this one comes
     /// back when the window is wider again.
@@ -413,6 +417,9 @@ pub struct App {
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     AccountLoaded(Result<Vec<PimAccount>, String>),
     /// An account's title in the sidebar: fold or unfold its calendars.
     ToggleAccount(String),
@@ -605,6 +612,7 @@ impl App {
             design,
             launch,
             opened: false,
+            waiting: true,
             timeline: timeline::State::default(),
             night: Night::DEFAULT,
             night_saving: false,
@@ -617,7 +625,11 @@ impl App {
         ]);
         let task = Task::batch([
             ui_state::load_task(AppId::CALENDAR).map(Message::UiState),
-            app.fetch_account(),
+            // The first load waits for a core that is still starting (issue #206).
+            {
+                let source = app.source.clone();
+                Task::perform(async move { source.ready().await }, |_| Message::CoreReady)
+            },
             app.fetch_appearance(),
             app.fetch_night(),
             app.zoom.fetch().map(Message::Zoom),
@@ -641,7 +653,10 @@ impl App {
         // Zoom keys work everywhere, glance views and open panels included.
         // The design pack polls the core every 2 s itself and wakes the window only for a change.
         let design = self.design.subscription().map(Message::Design);
-        let mut all = vec![tick, system, resize, self.zoom.subscription().map(Message::Zoom), design];
+        let mut all = vec![system, resize, self.zoom.subscription().map(Message::Zoom), design];
+        if !self.waiting {
+            all.push(tick);
+        }
         // Mini and strip are displays: no keys, nothing open to close.
         if !is_glance(self.class()) {
             // Over the view the panel is all there is to work with; beside it the view still is.
@@ -722,6 +737,10 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
+            Message::CoreReady => {
+                self.waiting = false;
+                return self.fetch_account();
+            }
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
                 // Only accounts that can hold calendars: GitHub alone is "No calendar account yet".
@@ -1723,6 +1742,7 @@ impl App {
         let empty = self.launch.open == Some(Open::Empty);
         let (start, end) = self.load_range();
         let (start, end) = (to_utc(start.and_time(NaiveTime::MIN)), to_utc(end.and_time(NaiveTime::MIN)));
+        let started = Instant::now();
         let source = self.source.clone();
         Task::perform(
             async move {
@@ -1731,7 +1751,11 @@ impl App {
                     if empty { Vec::new() } else { source.events(start, end).await.map_err(|e| e.to_string())? };
                 Ok((collections, events))
             },
-            Message::Loaded,
+            // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+            move |result| {
+                timing::took("load", started);
+                Message::Loaded(result)
+            },
         )
     }
 }

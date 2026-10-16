@@ -248,6 +248,9 @@ pub enum Message {
     Resized(Size),
     /// Every [`REFRESH`]: ask for everything again.
     Tick,
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     /// Every [`FOLLOW`] while an answer runs: ask for the open conversation.
     Follow,
     /// A frame of the window, while an answer appears letter by letter.
@@ -408,6 +411,9 @@ pub struct App {
     pub(crate) conversations: Vec<ConversationSummary>,
     /// They have come once.
     pub(crate) listed: bool,
+    /// Until the core answered at the start ([`Message::CoreReady`], issue #206): the timer waits too,
+    /// so it cannot show an error for a core that is still starting.
+    waiting: bool,
     /// Why the last listing failed.
     pub(crate) list_error: Option<String>,
     /// The engines in the picker's order ([`chat::ordered`]).
@@ -519,7 +525,7 @@ impl App {
             (Window::Main, Some(Open::BotWelcome)) => Some(demo::TRAVEL.to_owned()),
             _ => None,
         };
-        let mut app = App {
+        let app = App {
             backend,
             zoom: Zoom::for_source(&suite),
             design: Follow::for_source(&suite),
@@ -529,6 +535,7 @@ impl App {
             size: if chat_only { CHAT_SIZE } else { torro_gui::window(MAIN).size },
             conversations: Vec::new(),
             listed: false,
+            waiting: true,
             list_error: None,
             engines: Vec::new(),
             engines_loaded: false,
@@ -594,8 +601,10 @@ impl App {
             iced::window::latest().and_then(iced::window::size).map(Message::Resized),
             torro_gui::place_traffic_lights(),
         ]);
+        // The first load waits for a core that is still starting (issue #206).
+        let suite = app.suite.clone();
         let mut tasks = vec![
-            app.load_all(),
+            Task::perform(async move { suite.ready().await }, |_| Message::CoreReady),
             app.fetch_appearance(),
             app.zoom.fetch().map(Message::Zoom),
             app.design.fetch().map(Message::Design),
@@ -608,8 +617,6 @@ impl App {
         if app.current.is_none() {
             tasks.push(operation::focus(EDITOR));
         }
-        let open_chat = app.open_current();
-        tasks.push(open_chat);
         (app, Task::batch(tasks))
     }
 
@@ -638,7 +645,6 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = vec![
-            iced::time::every(REFRESH).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             self.zoom.subscription().map(Message::Zoom),
@@ -661,6 +667,9 @@ impl App {
         }
         if !self.chat_only && !self.is_glance() {
             subscriptions.push(iced::event::listen_with(window_key));
+        }
+        if !self.waiting {
+            subscriptions.push(iced::time::every(REFRESH).map(|_| Message::Tick));
         }
         Subscription::batch(subscriptions)
     }
@@ -695,6 +704,11 @@ impl App {
                 if self.launch.open == Some(Open::BotAccess) && self.bot_draft.is_some() {
                     return bots::scroll_to_access();
                 }
+            }
+            Message::CoreReady => {
+                self.waiting = false;
+                // The chat window's conversation too: it waited with the rest (issue #206).
+                return Task::batch([self.load_all(), self.open_current()]);
             }
             Message::Tick => {
                 let mut tasks = vec![self.load_all(), self.fetch_appearance(), self.zoom.fetch().map(Message::Zoom)];
@@ -1007,7 +1021,10 @@ impl App {
             }
             _ => {}
         }
-        self.ask(Request::ListConversations, |result| {
+        // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+        let started = std::time::Instant::now();
+        self.ask(Request::ListConversations, move |result| {
+            torro_core::timing::took("load", started);
             Message::Listed(result.and_then(|response| match response {
                 Response::Conversations { conversations } => Ok(conversations),
                 other => Err(Refusal::unexpected(&other)),

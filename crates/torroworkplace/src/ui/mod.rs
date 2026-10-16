@@ -37,6 +37,10 @@
 //!
 //! The pages are settings pages: `widgets::group`s of rows built with [`setting_row`] (design
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
+//!
+//! `TORRO_TIMING=1` writes when the window first draws, when the first data came, how long each
+//! load took and every `update` or `view` that takes a frame or longer ([`torro_core::timing`],
+//! issue #206), measured by [`timed_update`] and [`timed_view`].
 
 mod accounts;
 mod agent_wizard;
@@ -57,7 +61,7 @@ mod setup;
 mod wizard;
 mod workspaces;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iced::theme::Mode;
 use iced::widget::space as blank;
@@ -67,6 +71,7 @@ use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::settings::{Settings, SetupState};
+use torro_core::timing;
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -324,6 +329,9 @@ pub struct Ui {
     /// The core has answered at least once (successfully or not); until then the page shows the
     /// loading state instead of empty lists.
     loaded: bool,
+    /// Until the core answered at the start ([`Message::CoreReady`], issue #206): the timer waits too,
+    /// so it cannot show an error for a core that is still starting.
+    waiting: bool,
     /// The desktop's light/dark preference, for the appearance "System".
     system_mode: Mode,
     /// The stored appearance. Kept apart from `data` so a core that does not answer for a moment
@@ -364,6 +372,9 @@ pub struct Ui {
 pub enum Message {
     /// The band above the content was pressed: drag the window (see [`shell::titlebar`]).
     DragWindow,
+    /// The core answered at the start, or did not within `CORE_START_WAIT` (issue #206): the first
+    /// load follows either way.
+    CoreReady,
     Select(Section),
     /// Open or close a menu.
     ToggleMenu(Menu),
@@ -419,7 +430,7 @@ pub fn run(launch: Launch) -> iced::Result {
     }
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     design::start(socket.as_deref(), launch.design.as_deref());
-    iced::application(move || Ui::new(launch.clone()), Ui::update, Ui::view)
+    iced::application(move || Ui::new(launch.clone()), timed_update, timed_view)
         .settings(torro_gui::settings())
         .title(|ui: &Ui| {
             let page = if ui.setup.is_some() { tr("Setup") } else { ui.section.label() };
@@ -430,6 +441,27 @@ pub fn run(launch: Launch) -> iced::Result {
         .subscription(Ui::subscription)
         .window(torro_gui::window(AppId::WORKPLACE))
         .run()
+}
+
+/// [`Ui::update`], timed: the first data without error marks "first data", a slow update is
+/// written.
+fn timed_update(ui: &mut Ui, message: Message) -> Task<Message> {
+    if matches!(&message, Message::Loaded(data) if data.error.is_none()) {
+        timing::once("first data");
+    }
+    let started = Instant::now();
+    let task = ui.update(message);
+    timing::slow("update", started);
+    task
+}
+
+/// [`Ui::view`], timed: the first call marks "first frame", a slow one is written.
+fn timed_view(ui: &Ui) -> Element<'_, Message> {
+    let started = Instant::now();
+    let element = ui.view();
+    timing::once("first frame");
+    timing::slow("view", started);
+    element
 }
 
 impl Ui {
@@ -443,6 +475,8 @@ impl Ui {
             sidebar: SidebarMode::default(),
             size: torro_gui::window(AppId::WORKPLACE).size,
             loaded: false,
+            // The demo and a start without home directory load at once, nothing to wait for.
+            waiting: !demo && torro_ipc::socket_path().is_some(),
             system_mode: Mode::None,
             appearance: Appearance::System,
             // The demo keeps the zoom in the process, like everything else it changes.
@@ -498,7 +532,7 @@ impl Ui {
             torro_gui::place_traffic_lights(),
         ]);
         let task = Task::batch([
-            ui.reload(),
+            ui.first_load(),
             ui.zoom.fetch().map(Message::Zoom),
             iced::system::theme().map(Message::SystemMode),
             ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
@@ -785,6 +819,18 @@ impl Ui {
         if self.launch.demo { Task::none() } else { load() }
     }
 
+    /// The first [`Ui::reload`], after the core answers: one started just now does not listen yet
+    /// (issue #206).
+    fn first_load(&self) -> Task<Message> {
+        match torro_ipc::socket_path().filter(|_| !self.launch.demo) {
+            Some(socket) => Task::perform(
+                async move { torro_gui::source::wait_for_core(&socket, torro_gui::source::CORE_START_WAIT).await },
+                |_| Message::CoreReady,
+            ),
+            None => self.reload(),
+        }
+    }
+
     /// The Iced theme: the appearance of `--appearance`, else the stored one (the page reloads it
     /// with every `Data`), with "System" following the desktop.
     fn theme(&self) -> Theme {
@@ -805,7 +851,7 @@ impl Ui {
             assistant::subscription(&self.assistant).map(Message::Assistant),
         ];
         // The demo has nothing to reload.
-        if !self.launch.demo {
+        if !self.launch.demo && !self.waiting {
             all.push(iced::time::every(every).map(|_| Message::Tick));
         }
         Subscription::batch(all)
@@ -814,6 +860,10 @@ impl Ui {
     fn update(&mut self, message: Message) -> Task<Message> {
         let action = match message {
             Message::DragWindow => return torro_gui::drag_window(),
+            Message::CoreReady => {
+                self.waiting = false;
+                return self.reload();
+            }
             Message::Select(section) => {
                 self.select(section);
                 self.notice = None;
@@ -1515,6 +1565,8 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
 
 /// Loads everything the pages show.
 fn load() -> Task<Message> {
+    // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+    let started = Instant::now();
     Task::perform(
         async {
             let Some(socket) = torro_ipc::socket_path() else {
@@ -1589,7 +1641,10 @@ fn load() -> Task<Message> {
             }
             data
         },
-        |data| Message::Loaded(Box::new(data)),
+        move |data| {
+            timing::took("load", started);
+            Message::Loaded(Box::new(data))
+        },
     )
 }
 
@@ -2320,7 +2375,10 @@ mod tests {
 
     #[test]
     fn the_demo_does_not_listen_to_a_clock_and_the_appearance_parameter_wins() {
-        let (demo, real) = (started(&["--demo"]), ui(Section::Overview));
+        let (demo, mut real) = (started(&["--demo"]), ui(Section::Overview));
+        // Issue #206: the reload tick waits for the core's first answer, so a starting core shows no error.
+        assert_eq!(demo.subscription().units(), real.subscription().units(), "no reload tick while waiting");
+        let _ = real.update(Message::CoreReady);
         assert_eq!(demo.subscription().units() + 1, real.subscription().units(), "no reload tick in the demo");
 
         let mut light = started(&["--demo", "--appearance", "light"]);
