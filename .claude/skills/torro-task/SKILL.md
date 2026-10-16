@@ -45,7 +45,8 @@ und ansehen (siehe Skill `torro-design`, Abschnitt „Sichtprüfung“) – oder
 
 1. In `docs/tasks/…` die Aufgabe abhaken (`- [x] erledigt`).
 2. `git diff --stat` ansehen: Nur erlaubte Dateien plus die Aufgabenliste dürfen auftauchen.
-3. Ein Commit, Conventional Commits auf Englisch, z. B. `feat(torrocalendar): month view (K.10)`.
+3. Ein Commit, Conventional Commits auf Englisch, z. B. `feat(torrocalendar): month view (K.10) #188`;
+   die Issue-Nummer, wenn die Aufgabe zu einem Issue gehört (`docs/git-workflow.md`).
 4. Kurzer Bericht:
    - Was umgesetzt ist, wie die Abnahme geprüft wurde.
    - Neue Nutzertexte mit Vorschlag für die deutsche Übersetzung (`"Today" → "Heute"`).

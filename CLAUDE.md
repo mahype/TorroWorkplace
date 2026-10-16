@@ -13,6 +13,17 @@ Konzept: `docs/core.md`. Aufgaben: `docs/tasks/`.
 - `apps/workspace-setups/` ist nur **Referenz** (Python). Lies es, um zu verstehen, wie etwas
   funktioniert; übersetze es nicht Zeile für Zeile und ändere dort nichts.
 - Hake die Aufgabe in `docs/tasks/` ab (`- [x]`), wenn ihre Abnahme erfüllt ist.
+- Ausnahmen von „genau eine Aufgabe“: `issue-small` und `quick-fix` (siehe unten); dort ist die
+  Issue- bzw. Kurzbeschreibung die Aufgabe.
+
+## Issue-Workflow
+
+Änderungen laufen über GitHub-Issues, mit denselben Skills wie im Enon-Projekt:
+`issue-create` → `issue-plan` → `issue-approve` (nur Menschen) → `issue-implement` → `pr-review`
+(→ `pr-triage`); Abkürzungen `issue-small` und `quick-fix`, PR mit `pullrequest` (Synonym `pr`).
+Konfiguration (Labels, Board, Worktrees, Herdr): `docs/issue-workflow.md`. Namen von Issues,
+Branches, Commits und PRs: `docs/git-workflow.md`. KI-Agenten setzen nie `approved`, approven und
+mergen nie.
 
 ## Jede Funktion dreimal: Oberfläche, API, MCP
 
@@ -72,5 +83,5 @@ dann prüft `pre-commit` Format und Design, `pre-push` alles. Starte keine Workf
 
 ## Commits
 
-Conventional Commits auf Englisch, z. B. `feat(torro-wm): parse hyprland clients`. Ein Commit pro
-Aufgabe.
+Conventional Commits auf Englisch, z. B. `feat(torro-wm): parse hyprland clients #188`. Ein Commit pro
+Aufgabe, die Issue-Nummer in jeder Message (Ausnahme: `quick-fix`).
