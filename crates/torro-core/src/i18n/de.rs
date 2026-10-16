@@ -3678,7 +3678,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{what}, at \"{place}\"", "{what}, Ort „{place}“"),
     ("{what}, with the note \"{note}\"", "{what}, mit der Notiz „{note}“"),
     // Mail window: keyboard shortcuts (E10.1)
-    ("Couldn't fetch mail.", "Mails konnten nicht abgerufen werden."),
+    ("Couldn't sync every account.", "Nicht alle Konten konnten abgeglichen werden."),
     ("Delete permanently?", "Endgültig löschen?"),
     ("Deleted permanently", "Endgültig gelöscht"),
     ("Move to folder", "In Ordner verschieben"),

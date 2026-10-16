@@ -2886,7 +2886,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::DeleteForGood => return self.delete_for_good(),
             Message::Fetched(Ok(())) => return self.load(),
             Message::Fetched(Err(err)) => {
-                self.error = Some(Failure::new(tr("Couldn't fetch mail."), err));
+                // `accounts.sync` fetches calendars, tasks and GitHub too and answers the first failure of
+                // any of them: the mail may well have arrived.
+                self.error = Some(Failure::new(tr("Couldn't sync every account."), err));
                 return self.load();
             }
             Message::ShowPicker => {
@@ -3700,7 +3702,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     fn mail_target(&self) -> Option<String> {
         if self.view.is_mail() {
             let id = self.cursor.as_ref()?;
-            return self.messages.iter().any(|message| message.id == *id).then(|| id.clone());
+            // The reader may show a mail that is not on the folder's first page (`--message`).
+            let listed = self.messages.iter().any(|message| message.id == *id);
+            return (listed || self.pinned_mail.as_ref() == Some(id)).then(|| id.clone());
         }
         match self.cursor_item()?.link.as_ref()? {
             Link::Mail { message } => Some(message.clone()),
@@ -5799,7 +5803,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         let actions = row![
             Space::new().width(Fill),
-            widgets::text_button(None, tr("Cancel"), style::button::secondary, Some(Message::CloseMenu)),
+            // Weighted as the other dialogs' ("Make task"): a quiet "Cancel", the action stands out.
+            widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseMenu)),
             widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::DeleteForGood)),
         ]
         .spacing(space::s())
@@ -5906,8 +5911,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Mute) => Some(widgets::floating(&hide_at, below, self.mute_menu(), Message::CloseMenu)),
             // At the bell (in the reader's Torro bar, task E9.4; above it when there is no room
             // below), else at the cursor's row.
+            // In the panel it opens to the right of the bell, like "Make task": aligned at its end the
+            // menu ran out of the panel over the list.
             Some(Menu::Move) => {
-                Some(widgets::floating(&hide_at, below, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
+                Some(widgets::floating(&hide_at, dialog, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
             }
             // A question over the whole window ([`App::question_layer`]), not at a button.
             Some(Menu::DeleteForGood) => None,
@@ -9602,7 +9609,7 @@ mod tests {
         let _ = shortcut(&mut app, S::Fetch, false);
         assert_eq!(app.sent.last(), Some(&Sent::Fetch));
         let _ = app.update(Message::Fetched(Err("offline".into())));
-        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't fetch mail.")));
+        assert_eq!(app.error.as_ref().map(|failure| failure.what), Some(tr("Couldn't sync every account.")));
 
         let _ = shortcut(&mut app, S::Junk, false);
         let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("junk with a hint") };
@@ -9623,6 +9630,20 @@ mod tests {
         assert_eq!(edit, MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Archive) });
         let _ = press(&mut app, Key::E);
         assert!(matches!(app.sent.last(), Some(Sent::Edit(Edit::Done { .. }, _))), "e stays Done there");
+    }
+
+    /// A mail opened with `--message` that is not on the folder's first page takes the shortcuts
+    /// as its buttons do (review of #200).
+    #[test]
+    fn shortcuts_act_on_a_pinned_mail_beyond_the_page() {
+        let mut app = in_folder("f:work-inbox");
+        app.cursor = Some("m:far".into());
+        app.pinned_mail = Some("m:far".into());
+        app.reading = true;
+        let _ = shortcut(&mut app, shortcuts::Command::Archive, false);
+        // The window then asks for the letter it shows; the edit came before.
+        let archived = MailEdit::Move { ids: vec!["m:far".into()], to: MoveTarget::Role(MoveRole::Archive) };
+        assert!(app.sent.iter().any(|sent| matches!(sent, Sent::Mail(edit, Some(_)) if *edit == archived)));
     }
 
     /// While the search field holds the keyboard it keeps its keys: no shortcut acts but searching;

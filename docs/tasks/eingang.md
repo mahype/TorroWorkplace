@@ -2348,7 +2348,8 @@ eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`
 - `keys` liest die Kürzel aus der Tabelle; die Einzeltasten bleiben. Neue Befehle: Archivieren in jedem Fenster,
   Gelesen/ungelesen, Markieren, Spam, Verschieben (öffnet die Ordnerwahl als Auswahlmenü, wie „Later“), endgültig
   löschen, neue Mail, abrufen.
-  Tastenhinweise an Knöpfen und in Menüs kommen aus derselben Tabelle.
+  Tastenhinweise an Knöpfen und in Menüs kommen aus derselben Tabelle; in den Aktionsleisten bleiben vorerst die
+  Einzeltasten stehen, nur „Send“ zeigt sein Kürzel (die Hinweise der Tabelle mit E10.2, wenn Tasten frei belegbar sind).
 - **Oberfläche:** Mail-Fenster (Liste, Leser), Schreibfenster. **API:** vorhandene Requests, kein neuer:
   `mail.move_messages` · Write (Archivieren mit Rolle `archive`, Spam mit Rolle `junk`, Verschieben),
   `mail.delete_messages` · Delete (ohne und mit `permanent: true`), `mail.set_flags` · Write, `mail.search_messages` ·

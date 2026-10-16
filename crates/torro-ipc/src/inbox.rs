@@ -309,7 +309,7 @@ impl InboxClient {
     /// core removes only messages that lie in the trash, so the messages `ids` go there first
     /// (`permanent: false`; those in it already stay) and are then removed (`permanent: true`). They
     /// keep their ids when they are moved. Nothing brings them back; when the first step fails,
-    /// nothing is removed.
+    /// nothing is removed, and when the second fails they stay in the trash.
     pub async fn delete_mail_for_good(&self, ids: Vec<String>) -> Result<(), InboxError> {
         self.ask_ok(Request::DeleteMail { ids: ids.clone(), permanent: false }).await?;
         self.ask_ok(Request::DeleteMail { ids, permanent: true }).await
