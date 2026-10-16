@@ -125,6 +125,9 @@ Gemeinsam für alle Seiten-Aufgaben:
 
 ## Stufe 2: Einstellungen in den Apps (S.15–S.22)
 
+> **Wartet auf S.29 (#210):** S.16–S.22 werden gegen die Bestandsaufnahme geprüft und danach übernommen, geändert
+> oder gestrichen. Bis S.29 abgehakt ist, keine dieser Aufgaben beginnen.
+
 Konzept: [settings.md › Einstellungen in den Apps](../settings.md#einstellungen-in-den-apps), entschieden am
 2026-10-14. Das Zahnrad einer App zeigt die Einstellungen dieser App im Inhaltsbereich desselben Fensters; die
 Steuerzentrale behält, was die ganze Suite betrifft, und zeigt unter „Apps“ dieselben Seiten.
@@ -269,6 +272,9 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   ganze Stufe, Fehler beheben.
 
 ## Stufe 3: KI (S.23–S.26)
+
+> **S.25 und S.26 warten auf S.29 (#210):** Ort der Seite AI und der Modell-Auswahlen kann sich mit der neuen
+> Struktur ändern. S.24 (Kern) hängt nicht daran.
 
 Konzept: [settings.md › KI](../settings.md#ki), entschieden am 2026-10-15. Zentral richtet man Anbieter ein und schaltet
 ihre Modelle an und ab (Steuerzentrale › AI); welches Modell ein Modul wofür nimmt, stellt man im Modul ein. Anlass: Ein
@@ -442,3 +448,93 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
 - **MCP:** die gleichnamigen Tools (unverändert)
 - **Abnahme:** Tests: nur angeschaltete Modelle in allen drei Auswahlen, Hinweis ohne Modelle, abgeschaltetes Modell mit
   Hinweis; Sichtprüfung des Assistenten mit `--demo`; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
+
+## Stufe 4: Bestand und neue Struktur (S.27–S.29, #210)
+
+Wunsch vom 2026-10-16 (#210): Die Einstellungen sind nicht klar gegliedert. Erst entsteht eine Bestandsaufnahme jeder
+Einstellung der Suite, dann eine neue Gliederung in drei Entwürfen, aus denen ein Mensch wählt; danach werden Konzept
+und die offenen Aufgaben S.16–S.22 und S.25–S.26 angepasst. Gebaut wird erst mit einem neuen Plan zu #210.
+
+Entschieden (#210): Das Zahnrad einer App öffnet nie ein neues Fenster, die Einstellungen der App erscheinen im selben
+Fenster über dem Inhalt, zurück mit einem Klick. In der Steuerzentrale liegt nur, was die ganze Suite betrifft (Konten,
+AI, Agents & API, Aussehen, Allgemein); Apps verweisen dorthin, ohne dass man suchen muss.
+
+**Oberfläche, API, MCP:** keine neue Funktion in dieser Stufe, nur Dokumente. Wo die Bestandsaufnahme einen fehlenden
+Weg findet, nennt S.29 ihn in der passenden Bau-Aufgabe mit Request, Katalogeintrag und MCP-Tool (Skill `torro-api`).
+
+```
+S.27 (Bestand) ── S.28 (drei Entwürfe) ── Wahl durch einen Menschen ── S.29 (Konzept und Aufgaben)
+```
+
+### S.27 Bestandsaufnahme aller Einstellungen
+- [ ] erledigt
+- **Modell:** Opus (liest die ganze Oberfläche, Urteil je Einstellung) · **Dateien:** `docs/settings.md`
+- Neuer Abschnitt **„Bestand (Stand <Datum>)“** in `docs/settings.md`, vor „Offene Fragen“. Je Ort eine Tabelle, eine
+  Zeile je Einstellung: **Einstellung** (englischer Text der Oberfläche), **bewirkt** (ein Satz), **heute** (Seite ›
+  Gruppe bzw. App › Menü), **Ablage** (`settings.json` mit Schlüssel, `accounts.json`, `ui.json`, Datei des Dienstes),
+  **API/MCP** (Request und Tool aus dem Katalog `crates/torro-ipc/src/api.rs`, oder „fehlt“, oder „bewusst nie“ mit
+  Verweis auf `docs/api.md`), **wer braucht sie**, **Urteil** (bleibt · zusammenlegen mit … · streichen · umziehen
+  nach …, mit Grund in einem Halbsatz).
+- Orte, alle nachsehen, nichts aus `docs/` übernehmen, ohne es im Code zu bestätigen:
+  - Steuerzentrale, jede Seite in `crates/torroworkplace/src/ui/` (`Section::ALL`), auch Unterseiten (Kontodetail je
+    Anbieter, Bot, Agent, Einrichtung, Assistent „Add account“);
+  - die Apps `torroassistant`, `torrocalendar`, `torrotasks`, `torroinbox` (Eingang **und** Mail-Fenster): was dort
+    wie eine Einstellung wirkt (Menüs, Schalter, Karte am Mond, Dichte, Reihenfolge, Ansicht HTML/Text, Tastenkürzel)
+    und wohin Zahnrad und „Settings“ heute führen (`torro_gui::connect::open_settings`/`open_section`);
+  - Tray (`crates/torroworkplace/src/tray/`) und Startargumente (`--section`, `--demo`, `--design` …);
+  - geplant, aber nicht gebaut, als eigene Zeilen mit „geplant (Aufgabe)“: S.24–S.26 (Modelle an/aus), E10.2/E10.3
+    (Tastenkürzel), #189 (Design, Schrift, Farbschema getrennt).
+- Fensterzustand in `ui.json` (`torro_gui::ui_state`) steht in einer eigenen, kurzen Tabelle „Kein Einstellungs-Ort“:
+  er bleibt in der App und geht durch keine API.
+- Darunter **„Befunde“**: Doppeltes (z. B. die Nacht des Kalenders an zwei Stellen), Einstellungen ohne Erklärungssatz,
+  fehlende API/MCP-Wege, Verweise, die an die falsche Stelle führen, und Abweichungen zwischen Konzept und Code.
+- **Abnahme:** jede Variante von `SettingKey` (`crates/torro-ipc/src/lib.rs`) und jedes Feld von
+  `torro_core::settings::Settings` steht in mindestens einer Zeile (im Bericht als Liste abgeglichen); jede Seite aus
+  `Section::ALL` und jede der vier Apps hat ihre Tabelle; die Spalte API/MCP ist überall gefüllt. Nur Doku: `cargo fmt
+  --all` und `scripts/ci-local.sh` laufen trotzdem durch.
+
+### S.28 Drei Entwürfe der neuen Struktur
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** S.27 · **Dateien:** `docs/settings.md` (nur der Link zu den Entwürfen)
+- Skill `torro-design` laden; Maßstab sind die Größenklassen (Mini bis Breit), Abstände und Farben dort und die Skizze
+  in `docs/settings.md` › Einstellungen in den Apps.
+- Zuerst die **Regel**, was in die Steuerzentrale gehört und was in die App, in zwei, drei Sätzen; sie steht über allen
+  drei Entwürfen. Grundlage: die Entscheidungen aus #210 oben und das Prinzip aus `docs/settings.md` › KI.
+- Drei Entwürfe **A, B, C**, die sich in der Gliederung unterscheiden, nicht nur in der Farbe. Achsen, auf denen sie
+  sich unterscheiden dürfen: ob die Steuerzentrale die Seiten der Apps unter „Apps“ noch einmal zeigt oder nur auf
+  sie verweist; wo Erinnerungen, Benachrichtigungen und „still bei Terminen“ liegen (Kalender, Eingang oder Suite);
+  ob Mail eigene Einstellungen hat oder unter Eingang steht; wo Appearance steht (nur Steuerzentrale oder auch in jeder
+  App). Jeder Entwurf zeigt:
+  - die Seitenleiste der Steuerzentrale und je App die Abschnitte hinter dem Zahnrad (Assistent, Kalender, Aufgaben,
+    Eingang, Mail), jeweils mit den Einstellungen aus S.27, die dort landen;
+  - eine App mit offenem Zahnrad in Breit, Mittel und Schmal, mit Kopfleiste, Zurück und dem Verweis in die
+    Steuerzentrale;
+  - eine Liste, was gestrichen oder zusammengelegt wird, und was mit S.16–S.22 und S.25–S.26 geschieht.
+- Eine HTML-Seite als Artifact (wie bei #207): die Regel oben, die drei Entwürfe untereinander, hell und dunkel. Die
+  Texte der Oberfläche englisch, die Erklärungen deutsch.
+- Den Link als Zeile unter dem Abschnitt „Bestand“ in `docs/settings.md` eintragen und als Kommentar
+  `## Entwürfe Einstellungen` an #210 posten, mit einer Frage: welcher Entwurf, oder was aus welchem kombiniert wird.
+- **Halt:** Danach stoppt die Umsetzung. S.29 beginnt erst, wenn ein Mensch gewählt hat (Kommentar
+  `## Entscheidung Struktur` an #210 oder Antwort in der Sitzung, die der Agent dann als solchen Kommentar postet).
+- **Abnahme:** Artifact erreichbar, Kommentar gepostet, jede Zeile aus S.27 mit Urteil „bleibt“ oder „umziehen“
+  findet in jedem Entwurf einen Ort.
+
+### S.29 Konzept und Aufgaben an die gewählte Struktur anpassen
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** S.28 und die Wahl · **Dateien:** `docs/settings.md`,
+  `docs/tasks/steuerzentrale.md`, `docs/tasks/eingang.md` (nur E10.3)
+- `docs/settings.md`: Abschnitte, „Einstellungen in den Apps“, „Was wohin gehört“ und die Skizze nach der Wahl
+  umschreiben; die Regel aus S.28 als eigener Absatz; Kopf mit Stand und „entschieden am <Datum> (#210)“; offene
+  Frage 2 beantworten, wenn die Wahl sie entscheidet, sonst stehen lassen. Der Abschnitt „Bestand“ bleibt, das
+  Urteil jeder Zeile wird auf die Entscheidung gesetzt.
+- `docs/tasks/steuerzentrale.md`: S.16–S.22 und S.25–S.26 je übernehmen, ändern oder streichen. Geänderte tragen
+  „(geändert mit #210)“, gestrichene bleiben mit „gestrichen (#210): <Grund>“ und `- [x] entfällt` stehen, damit die
+  IDs nicht neu vergeben werden. Neue Aufgaben ab S.30. Jede Bau-Aufgabe nennt Oberfläche, API und MCP; ein fehlender
+  Weg aus S.27 bekommt Request und Katalogeintrag in der ersten Aufgabe, die ihn braucht. Die Zahnrad-Aufgaben decken
+  alle fünf (Mail, Eingang, Kalender, Aufgaben, Assistent) und nennen die Sichtprüfung in allen Größen. Die Hinweise
+  „Wartet auf S.29“ in Stufe 2 und 3 entfernen. S.15 abhaken (umgesetzt in `4e23c72`).
+- `docs/tasks/eingang.md`: E10.3 („Braucht: S.20“, Datei `torro-settings-ui/src/mail.rs`) auf die Aufgabe und Datei
+  umstellen, die nach der Wahl die Einstellungen des Mail-Fensters bauen.
+- **Abnahme:** keine Aufgabe in Stufe 2 oder 3 verweist auf einen Abschnitt, den die gewählte Struktur nicht mehr hat
+  (`grep` nach den alten Abschnittsnamen); Abhängigkeitsbaum stimmt mit „Braucht“ überein; `scripts/ci-local.sh` grün.
+  Danach `/issue-plan 210` für den Bau.
