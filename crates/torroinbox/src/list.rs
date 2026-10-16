@@ -25,6 +25,12 @@
 //! [`Message::Act`]: the app puts its cursor on the row and does what the key does, so the menus
 //! open at the row.
 //!
+//! **The mail window's strip** (task E11.2, [`Rows::edge_strip`]): flat cells from edge to edge
+//! under the lines instead (`widgets::row_strip`, [`with_row_strip`], [`strip_row`]) – Archive,
+//! Delete, Later, Task (its icon red), Mute…, then the rest ([`edge_actions`]) –, its words all or
+//! none by the row's width ([`strip_words`]); the selected row grows by [`edge_strip_height`]. The
+//! hub and the app feed keep the strip above.
+//!
 //! **Urgency never by colour alone** (E3.2b): while urgent entries are open, the list of a view is
 //! grouped like torrotasks – a head "Waiting for you" over them and "Other" over the rest
 //! ([`groups`]). Without anything waiting there are no heads.
@@ -83,6 +89,7 @@ use torro_mail::Folder;
 
 use crate::app::{Message, View};
 use crate::keys::Command;
+use crate::mail::MailAction;
 use crate::suggest::{self, Wanted};
 use crate::{detail, mail, notifications};
 
@@ -113,6 +120,11 @@ pub struct Rows<'a> {
     /// Whether an AI is set up (`App::ai_ready`, issue #120): the AI buttons beside Task and Event on
     /// rows and cards (issue #168, `suggest::row_action`) are on; without, they are off and say why.
     pub ai: bool,
+    /// The strip of the selected row (task E11.2): `true` in the mail window – flat cells from edge
+    /// to edge below the row's lines ([`with_row_strip`], in the order of [`edge_actions`]), the row
+    /// [`edge_strip_height`] higher –, `false` in the hub and the app feed, which keep their strip of
+    /// buttons where the text starts ([`with_strip`], [`strip_height`]). Cards ignore it.
+    pub edge_strip: bool,
 }
 
 /// How a list draws mail (task E8.3): one row per mail, or a card per mail.
@@ -262,6 +274,13 @@ pub fn height_of(item: &Item, look: Look, width: f32) -> f32 {
 /// previews take the lines they need at it), stand in a column with [`cards_inset`] around it and
 /// [`size::card_gap()`] between them ([`card_span`]). Rows ignore `width`.
 pub fn row_span(items: &[Item], index: usize, look: Look, width: f32) -> Option<(f32, f32)> {
+    row_span_in(items, index, look, width, false)
+}
+
+/// [`row_span`] for a list whose selected row carries the strip `edge_strip` says ([`Rows::edge_strip`],
+/// task E11.2): the row under the cursor is [`strip_height_in`] higher – the mail window's strip
+/// from edge to edge, else the hub's.
+pub fn row_span_in(items: &[Item], index: usize, look: Look, width: f32, edge_strip: bool) -> Option<(f32, f32)> {
     let item = items.get(index)?;
     if look.cards() {
         let above = items[..index].iter().map(|item| height_of(item, look, width));
@@ -275,7 +294,7 @@ pub fn row_span(items: &[Item], index: usize, look: Look, width: f32) -> Option<
     let top = above + heads * head;
     let first = groups.iter().any(|(_, range)| range.start == index);
     // Row `index` is the cursor's: it carries the strip with its actions ([`entry_row`]).
-    Some((if first { top - head } else { top }, top + row_height_of(item) + strip_height()))
+    Some((if first { top - head } else { top }, top + row_height_of(item) + strip_height_in(edge_strip)))
 }
 
 /// The list, scrolling; the empty state of the view when there are no entries.
@@ -333,16 +352,24 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
         notice_content(item, rows, width)
     };
     let mut height = row_height_of(item);
-    let actions = if selected {
+    let mut actions = if selected {
         entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.ai, rows.folders, rows.now)
     } else {
         Vec::new()
     };
     if !actions.is_empty() {
-        height += strip_height();
+        height += strip_height_in(rows.edge_strip);
     }
-    let content = with_strip(content, rows.anchors.mark(true, actions), width);
-    let row = sized_row(content, selected, Message::Select(item.id.clone()), height);
+    if rows.edge_strip {
+        actions = edge_actions(actions);
+    }
+    let actions = rows.anchors.mark(true, actions);
+    let on_press = Message::Select(item.id.clone());
+    let row = if rows.edge_strip {
+        strip_row(content, with_row_strip(actions, width), selected, on_press, height)
+    } else {
+        sized_row(with_strip(content, actions, width), selected, on_press, height)
+    };
     if selected { widgets::anchored(&rows.anchors.row, row) } else { row }
 }
 
@@ -350,6 +377,62 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
 /// message row).
 pub fn strip_height() -> f32 {
     widgets::row_actions_strip_height()
+}
+
+/// The height the mail window's strip adds to the selected row (task E11.2, [`with_row_strip`]):
+/// `widgets::row_strip_height`, its cells and the line above them. The gap between the row's lines
+/// and the strip is the row's own padding below its lines, so it adds nothing.
+pub fn edge_strip_height() -> f32 {
+    widgets::row_strip_height()
+}
+
+/// The height the strip adds to the selected row of a list whose strip is `edge_strip`
+/// ([`Rows::edge_strip`]): [`edge_strip_height`] in the mail window, else [`strip_height`].
+pub fn strip_height_in(edge_strip: bool) -> f32 {
+    if edge_strip { edge_strip_height() } else { strip_height() }
+}
+
+/// The mail window's strip of `actions` under a row `width` wide (task E11.2): `widgets::row_strip`,
+/// its words as [`strip_words`] says; `None` without actions, so the row stays as it is. Lay it out
+/// below the row's lines with [`strip_row`], which takes the row [`edge_strip_height`] higher.
+pub(crate) fn with_row_strip<'a>(actions: Vec<RowAction<'a, Message>>, width: f32) -> Option<Element<'a, Message>> {
+    if actions.is_empty() {
+        return None;
+    }
+    let words = strip_words(&actions, width);
+    Some(widgets::row_strip(actions, words))
+}
+
+/// Whether the mail window's strip of `actions` under a row `width` wide shows its words: the
+/// strip spans the row beside the selection bar, and `widgets::row_strip_words` decides at that
+/// width – all words or none.
+pub fn strip_words(actions: &[RowAction<'_, Message>], width: f32) -> bool {
+    widgets::row_strip_words(actions, (width - SELECTED_BAR).max(0.0))
+}
+
+/// `actions` of a row in the order of the mail window's strip (task E11.2): what files the mail
+/// (Archive, Delete) or answers its invitation (Accept, Maybe, Decline) first, then Later, Task –
+/// its icon in the accent (`RowAction::accent`), what Torro adds –, the bell "Mute…" (`m`), then
+/// whatever else the row has in its own order (AI task, Done or Reopen, Dismiss). Nothing is left
+/// out or added; the order within each step is kept, so the bell stays the last of a folder's
+/// message ("…" there).
+pub fn edge_actions<'a>(mut actions: Vec<RowAction<'a, Message>>) -> Vec<RowAction<'a, Message>> {
+    fn step(message: &Message) -> u8 {
+        match message {
+            Message::Mail(MailAction::Archive | MailAction::Delete, _) | Message::AnswerInvitation(..) => 0,
+            Message::Act(_, Command::Snooze) => 1,
+            Message::Act(_, Command::MakeTask) => 2,
+            Message::Act(_, Command::Hide) => 3,
+            _ => 4,
+        }
+    }
+    // `sort_by_key` is stable: the order within a step stays.
+    actions.sort_by_key(|action| step(&action.on_press));
+    let accent = |action: RowAction<'a, Message>| {
+        let task = matches!(action.on_press, Message::Act(_, Command::MakeTask));
+        if task { action.accent() } else { action }
+    };
+    actions.into_iter().map(accent).collect()
 }
 
 /// The `content` of a row `width` wide with the strip of `actions` below it
@@ -759,15 +842,36 @@ pub(crate) fn sized_row<'a>(
     on_press: Message,
     height: f32,
 ) -> Element<'a, Message> {
+    strip_row(content, None, selected, on_press, height)
+}
+
+/// [`sized_row`] with the mail window's `strip` ([`with_row_strip`], task E11.2) below the row's
+/// button: the button with the lines takes `height` less the line below and the strip
+/// ([`edge_strip_height`]), `content` centred in it – so the row's padding stays above and below
+/// the lines and is the gap to the strip –, the strip under it from the row's left edge to its right
+/// one, outside the row's padding; the bar of the selected row runs down beside both. Without a
+/// strip it is [`sized_row`].
+pub(crate) fn strip_row<'a>(
+    content: Element<'a, Message>,
+    strip: Option<Element<'a, Message>>,
+    selected: bool,
+    on_press: Message,
+    height: f32,
+) -> Element<'a, Message> {
     let pad = layout::row_padding();
     let left = if selected { pad.left - SELECTED_BAR } else { pad.left };
     let height = height - size::HAIRLINE;
+    let lines = if strip.is_some() { height - edge_strip_height() } else { height };
     let body = button(container(content).center_y(Fill))
         .width(Fill)
-        .height(height)
+        .height(lines)
         .padding(Padding::new(0.0).left(left).right(pad.right))
         .style(style::button::list_row(selected))
         .on_press(on_press);
+    let body: Element<'a, Message> = match strip {
+        Some(strip) => column![body, strip].width(Fill).into(),
+        None => body.into(),
+    };
     let line: Element<'a, Message> = if selected {
         let bar = container(blank()).width(SELECTED_BAR).height(height).style(|t: &Theme| container::Style {
             background: Some(palette(t).text_3.into()),
@@ -775,7 +879,7 @@ pub(crate) fn sized_row<'a>(
         });
         row![bar, body].into()
     } else {
-        body.into()
+        body
     };
     column![line, rule::horizontal(size::HAIRLINE).style(style::rule)].into()
 }
@@ -1398,8 +1502,6 @@ mod tests {
 
     use torro_core::i18n::trc;
 
-    use crate::mail::MailAction;
-
     use super::*;
 
     fn now() -> DateTime<Utc> {
@@ -1638,7 +1740,10 @@ mod tests {
         let mut items = demo::sample(now());
         items.push(mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org"));
         items.push(Item { count: 3, state: State::Seen, ..mail("", "x@y.z", "anna@example.org") });
-        for accounts in [vec!["anna@work.example.org"], vec!["anna@work.example.org", "anna@example.org"]] {
+        let accounts = [vec!["anna@work.example.org"], vec!["anna@work.example.org", "anna@example.org"]];
+        for (accounts, edge_strip) in
+            accounts.into_iter().flat_map(|accounts| [(accounts.clone(), false), (accounts, true)])
+        {
             let rows = Rows {
                 view: &view,
                 selected: Some("demo-1"),
@@ -1649,12 +1754,82 @@ mod tests {
                 look: Look::Rows,
                 folders: &[],
                 ai: false,
+                edge_strip,
             };
             for width in [0.0, 240.0, 480.0, 720.0] {
                 for item in &items {
                     let _ = entry_row(item, &rows, width);
                 }
             }
+        }
+    }
+
+    /// Task E11.2: the mail window's strip leads with Archive · Delete · Later · Task (its icon red) ·
+    /// Mute…, then what the row has besides – AI task, Done –; an invitation's answers stand before
+    /// Later. Nothing is left out or added, every button sends what it sent before.
+    #[test]
+    fn the_mail_windows_strip_leads_with_filing_later_task_and_mute() {
+        let sent = |actions: &[RowAction<'_, Message>]| {
+            let mut sent: Vec<String> = actions.iter().map(|action| format!("{:?}", action.on_press)).collect();
+            sent.sort();
+            sent
+        };
+        let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let before = entry_actions(&item, true, false, &demo_folders(), now());
+        let strip = edge_actions(before.clone());
+        let order =
+            [trc("action", "Archive"), tr("Delete"), tr("Later"), tr("Task"), tr("Mute…"), tr("AI task"), tr("Done")];
+        assert_eq!(labels(&strip), order);
+        assert_eq!(sent(&strip), sent(&before), "the same buttons, the same messages");
+        let red: Vec<String> =
+            strip.iter().filter(|action| action.accent).map(|action| action.label.to_string()).collect();
+        assert_eq!(red, [tr("Task")], "only Task's icon is red");
+        assert!(before.iter().all(|action| !action.accent), "the hub's strip keeps its icons");
+
+        let invitation = invitation();
+        let before = entry_actions(&invitation, true, false, &demo_folders(), now());
+        let strip = edge_actions(before.clone());
+        let order = [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Later"), tr("Task"), tr("Mute…"), tr("AI task")];
+        assert_eq!(labels(&strip), order, "the answers before Later");
+        assert_eq!(sent(&strip), sent(&before));
+    }
+
+    /// Task E11.2: the selected row of the mail window is its row and the strip from edge to edge
+    /// high (`widgets::row_strip_height`: its cells and the line above them), the hub's keeps its
+    /// strip; scrolling to the cursor counts the same heights.
+    #[test]
+    fn the_mail_windows_selected_row_is_as_high_as_row_and_strip() {
+        assert_eq!(edge_strip_height(), widgets::row_strip_height());
+        assert_eq!(edge_strip_height(), size::control_xl() + size::HAIRLINE);
+        assert_eq!(strip_height_in(true), edge_strip_height());
+        assert_eq!(strip_height_in(false), strip_height(), "the hub's strip");
+        let items = vec![
+            mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org"),
+            mail("Lena Hoffmann", "lena@work.example.org", "anna@work.example.org"),
+        ];
+        let message = size::row_message();
+        assert_eq!(
+            row_span_in(&items, 1, Look::Rows, 480.0, true),
+            Some((message, 2.0 * message + edge_strip_height()))
+        );
+        assert_eq!(row_span_in(&items, 1, Look::Rows, 480.0, false), row_span(&items, 1, Look::Rows, 480.0));
+        assert_eq!(row_span(&items, 1, Look::Rows, 480.0), Some((message, 2.0 * message + strip_height())));
+    }
+
+    /// Task E11.2: the strip's cells carry their words all or none, by the row's width. A mail entry's
+    /// seven cells (Archive … Done) are icons alone at 390 – in English and, with its longer words,
+    /// in German alike – and carry their words at 1100, where even the German share (that of
+    /// "Stummschalten…", the widest word) fits seven times; in English from about 600.
+    #[test]
+    fn the_strip_speaks_where_every_cell_has_room() {
+        let item = mail("Jonas Weber", "jonas@work.example.org", "anna@work.example.org");
+        let strip = edge_actions(entry_actions(&item, true, false, &demo_folders(), now()));
+        assert_eq!(strip.len(), 7);
+        assert!(!strip_words(&strip, 390.0), "390: icons alone");
+        assert!(strip_words(&strip, 1100.0), "1100: icons with words");
+        for width in [390.0, 520.0, 800.0, 1100.0] {
+            let beside_bar = widgets::row_strip_words(&strip, width - SELECTED_BAR);
+            assert_eq!(strip_words(&strip, width), beside_bar, "the strip spans the row beside the bar");
         }
     }
 
@@ -1854,6 +2029,7 @@ mod tests {
             look: Look::Cards,
             folders: &[],
             ai: false,
+            edge_strip: false,
         };
         for width in [0.0, 240.0, 480.0, 720.0] {
             for item in &items {
@@ -1917,6 +2093,7 @@ mod tests {
                 look,
                 folders: &[],
                 ai: true,
+                edge_strip: false,
             };
             for width in [0.0, 240.0, 360.0, 480.0, 720.0] {
                 let _ = entry_card(&item, &rows, width);

@@ -887,6 +887,7 @@ mod tests {
             look: Look::Rows,
             folders: &[],
             ai: false,
+            edge_strip: false,
         };
         for look in [Look::Rows, Look::Cards] {
             let data = ColumnData {

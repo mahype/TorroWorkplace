@@ -1044,6 +1044,10 @@ pub struct MailList<'a> {
     pub highlights: &'a [MailHighlight],
     /// The text colour of the theme, for the matches in a passage.
     pub text: Color,
+    /// The strip of the selected row (task E11.2, as `list::Rows::edge_strip`): `true` in the mail
+    /// window – flat cells from edge to edge below the lines (`list::with_row_strip`), Archive ·
+    /// Delete · Task · Mute… (`list::edge_actions`) –, else the strip of buttons where the text starts.
+    pub edge_strip: bool,
 }
 
 impl<'a> MailList<'a> {
@@ -1113,9 +1117,10 @@ fn rows<'a>(data: &MailList<'a>, width: f32) -> Element<'a, Message> {
 /// One message in a row `width` wide: the mail row of the overview (task E3.11,
 /// `list::mail_content`) – avatar with the sender's initials in the account's colour, sender ·
 /// domain · paperclip · flag · time, the subject (medium weight while unread, with the dot at the
-/// avatar), the start of the text –, [`list::message_height`] high. Its action bar (issue #118,
-/// `widgets::row_actions_at` on the first line, as an entry's row) holds what its card offers
-/// ([`message_buttons`]), "…" last.
+/// avatar), the start of the text –, [`list::message_height`] high. Under the cursor its action bar
+/// (issue #118) hangs below its lines, as an entry's row – in the mail window (task E11.2,
+/// [`MailList::edge_strip`]) as the strip from edge to edge (`list::with_row_strip`, in the order of
+/// `list::edge_actions`) – and holds what its card offers ([`message_buttons`]), the bell last.
 fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32) -> Element<'a, Message> {
     let mut marks: Vec<(Element<'a, Message>, f32)> = Vec::new();
     // An invitation (task E8.3b): its time and the answers stand on its card and in the reader.
@@ -1152,12 +1157,17 @@ fn message_row<'a>(data: &MailList<'a>, message: &'a MessageSummary, width: f32)
         actions = data.anchors.mark(true, buttons);
         actions.extend(data.anchors.mark(true, more.into_iter().collect()));
     }
-    // Below the lines, as the rows of entries (`list::with_strip`): nothing covers the row.
+    // Below the lines, as the rows of entries (`list::entry_row`): nothing covers the row.
     if !actions.is_empty() {
-        height += list::strip_height();
+        height += list::strip_height_in(data.edge_strip);
     }
-    let content = list::with_strip(list::mail_content(lines, width), actions, width);
-    let row = list::sized_row(content, selected, on_press, height);
+    let content = list::mail_content(lines, width);
+    let row = if data.edge_strip {
+        let strip = list::with_row_strip(list::edge_actions(actions), width);
+        list::strip_row(content, strip, selected, on_press, height)
+    } else {
+        list::sized_row(list::with_strip(content, actions, width), selected, on_press, height)
+    };
     if selected { widgets::anchored(&data.anchors.row, row) } else { row }
 }
 
@@ -3039,7 +3049,7 @@ mod tests {
         .expect("the demo answers");
         for accounts in [Vec::new(), vec!["anna@work.example.org", "anna@example.org"]] {
             for (view, look) in views.iter().flat_map(|view| looks.map(|look| (view, look))) {
-                for messages in [&summaries[..], &[]] {
+                for (messages, edge_strip) in [(&summaries[..], false), (&summaries[..], true), (&[], true)] {
                     let data = MailList {
                         messages,
                         view,
@@ -3055,6 +3065,7 @@ mod tests {
                         folders: &folders,
                         highlights: &highlights,
                         text: Color::BLACK,
+                        edge_strip,
                     };
                     let _ = list(data);
                 }
@@ -3136,6 +3147,38 @@ mod tests {
         let plain = MessageSummary { invite: None, ..message.clone() };
         let words_of = words(&message_buttons(&plain, &entries, &folders, now()).0);
         assert_eq!(words_of, [trc("action", "Archive"), tr("Delete"), tr("Task")]);
+    }
+
+    /// Task E11.2: a message's strip in the mail window – its buttons and then the bell, in the order
+    /// of `list::edge_actions` – is Archive · Delete · Task (its icon red) · Mute…, an invitation's
+    /// Accept · Maybe · Decline · Later · Task · Mute…: the bell stays last, nothing is lost.
+    #[test]
+    fn a_messages_strip_files_it_then_task_then_the_bell() {
+        let strip = |message: &MessageSummary, entries: &[Item]| {
+            let (mut buttons, more) = message_buttons(message, entries, &folders(), now());
+            buttons.extend(more);
+            let before: Vec<String> = buttons.iter().map(|b| format!("{:?}", b.on_press)).collect();
+            let strip = list::edge_actions(buttons);
+            let after: Vec<String> = strip.iter().map(|b| format!("{:?}", b.on_press)).collect();
+            assert_eq!(after, before, "the order the buttons had already");
+            let red: Vec<String> = strip.iter().filter(|b| b.accent).map(|b| b.label.to_string()).collect();
+            assert_eq!(red, [tr("Task")]);
+            strip.iter().map(|b| b.label.to_string()).collect::<Vec<_>>()
+        };
+        let mut message = demo::mail_sample(now()).remove(0).summary;
+        let plain = MessageSummary { invite: None, ..message.clone() };
+        assert_eq!(strip(&plain, &[]), [trc("action", "Archive"), tr("Delete"), tr("Task"), tr("Mute…")]);
+        let start = now() + chrono::TimeDelta::days(1);
+        message.invite = Some(Invite { title: "Planning".into(), start, end: None, all_day: false, answered: None });
+        let all = iced::futures::executor::block_on(torro_inbox::InboxSource::list_items(
+            &DemoSource::new(now()),
+            Default::default(),
+        ))
+        .expect("the demo answers");
+        let mail = all.iter().find(|item| item.source.kind == SourceKind::Mail).expect("a mail entry");
+        let entry = Item { link: Some(Link::Mail { message: message.id.clone() }), state: State::New, ..mail.clone() };
+        let answers = [tr("Accept"), tr("Maybe"), tr("Decline"), tr("Later"), tr("Task"), tr("Mute…")];
+        assert_eq!(strip(&message, &[entry]), answers);
     }
 
     /// Issue #118: a message's row and card file it – Archive (`e`) and Delete (`#`) send what the

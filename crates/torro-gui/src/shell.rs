@@ -845,7 +845,7 @@ fn switcher_message(app: AppId, current: AppId) -> Switcher {
 /// with a chevron (registers `anchor` and sends [`Switcher::Toggle`]), then search and a framed
 /// "New" button. `on` wraps the switcher's messages in the app's (`Message::Switcher`).
 pub fn app_switcher<'a, M: Clone + 'a>(current: AppId, anchor: &Anchor, on: fn(Switcher) -> M) -> Element<'a, M> {
-    switcher_row(current, anchor, on, None)
+    switcher_row(current, anchor, on, None, true)
 }
 
 /// The top of the sidebar with the panel button that collapses and expands it:
@@ -862,6 +862,8 @@ pub fn app_switcher<'a, M: Clone + 'a>(current: AppId, anchor: &Anchor, on: fn(S
 ///
 /// Where the window has the band of [`titlebar`] ([`has_band`], macOS), the panel button lies there
 /// ([`TitleButtons::sidebar`]) and the head leaves it out.
+///
+/// The same as [`sidebar_head_in`] with the search button.
 pub fn sidebar_head<'a, M: Clone + 'a>(
     mode: SidebarMode,
     current: AppId,
@@ -869,8 +871,28 @@ pub fn sidebar_head<'a, M: Clone + 'a>(
     on: fn(Switcher) -> M,
     on_toggle: M,
 ) -> Element<'a, M> {
+    sidebar_head_in(mode, current, anchor, on, on_toggle, true)
+}
+
+/// [`sidebar_head`] with the search button ([`Icon::Search`], "Search", [`Switcher::Search`]) only
+/// while `search` (task E11.2): a window whose search field always stands over its list – the
+/// inbox's mail window – leaves the magnifier out in both forms, expanded and rail, since a second
+/// way to the same field only takes room; its keys (`/`, ⌘F / Ctrl + F) still focus the field.
+/// Everything else is as in [`sidebar_head`]; which tools the head carries says [`head_tools`].
+///
+/// ```ignore
+/// shell::sidebar_head_in(mode, AppId::INBOX_MAIL, switcher, Message::Switcher, Message::ToggleSidebar, false)
+/// ```
+pub fn sidebar_head_in<'a, M: Clone + 'a>(
+    mode: SidebarMode,
+    current: AppId,
+    anchor: &Anchor,
+    on: fn(Switcher) -> M,
+    on_toggle: M,
+    search: bool,
+) -> Element<'a, M> {
     match mode {
-        SidebarMode::Expanded => switcher_row(current, anchor, on, (!has_band()).then_some(on_toggle)),
+        SidebarMode::Expanded => switcher_row(current, anchor, on, (!has_band()).then_some(on_toggle), search),
         SidebarMode::Rail => {
             // The logo on a full-width row, as the other rows of the rail.
             let logo = button(center_x(app_mark(current)))
@@ -879,17 +901,40 @@ pub fn sidebar_head<'a, M: Clone + 'a>(
                 .padding(0)
                 .style(style::button::sidebar_item(false))
                 .on_press(on(Switcher::Toggle));
-            let mut head = column![
-                widgets::anchored(anchor, widgets::tooltip_right(logo, app_name(current), Trail::None)),
-                widgets::icon_button(Icon::Search, tr("Search"), Some(on(Switcher::Search))),
-                widgets::boxed_button(Icon::SquarePen, tr("New"), Some(on(Switcher::New))),
-            ];
+            let mut head =
+                column![widgets::anchored(anchor, widgets::tooltip_right(logo, app_name(current), Trail::None))];
+            head = head.extend(head_tools(search).into_iter().map(|tool| tool.button(on)));
             if !has_band() {
                 head = head.push(widgets::icon_button(Icon::PanelLeft, tr("Expand sidebar"), Some(on_toggle)));
             }
             head.spacing(SIDEBAR_GAP).align_x(Alignment::Center).into()
         }
     }
+}
+
+/// A tool beside the app switcher in the head of the sidebar ([`sidebar_head_in`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadTool {
+    /// The magnifier, "Search" ([`Switcher::Search`]).
+    Search,
+    /// The framed "New" ([`Switcher::New`]).
+    New,
+}
+
+impl HeadTool {
+    /// The tool's button, sending its [`Switcher`] message wrapped by `on`.
+    fn button<'a, M: Clone + 'a>(self, on: fn(Switcher) -> M) -> Element<'a, M> {
+        match self {
+            HeadTool::Search => widgets::icon_button(Icon::Search, tr("Search"), Some(on(Switcher::Search))),
+            HeadTool::New => widgets::boxed_button(Icon::SquarePen, tr("New"), Some(on(Switcher::New))),
+        }
+    }
+}
+
+/// The tools of the sidebar's head after the switcher, in their order: Search (only while
+/// `search`, [`sidebar_head_in`]), then New.
+pub fn head_tools(search: bool) -> Vec<HeadTool> {
+    [search.then_some(HeadTool::Search), Some(HeadTool::New)].into_iter().flatten().collect()
 }
 
 /// `content` centred across the full width, at its own height.
@@ -915,12 +960,14 @@ fn logo<'a, M: 'a>() -> Element<'a, M> {
     .into()
 }
 
-/// The switcher row of [`app_switcher`], with the panel button at its end when `on_toggle` is given.
+/// The switcher row of [`app_switcher`], with the panel button at its end when `on_toggle` is given
+/// and the search button only while `search` ([`head_tools`]).
 fn switcher_row<'a, M: Clone + 'a>(
     current: AppId,
     anchor: &Anchor,
     on: fn(Switcher) -> M,
     on_toggle: Option<M>,
+    search: bool,
 ) -> Element<'a, M> {
     let name = row![
         app_mark(current),
@@ -936,11 +983,8 @@ fn switcher_row<'a, M: Clone + 'a>(
         .padding(Padding::new(0.0).left(6.0).right(6.0))
         .style(style::button::sidebar_item(false))
         .on_press(on(Switcher::Toggle));
-    let mut top = row![
-        widgets::anchored(anchor, trigger),
-        widgets::icon_button(Icon::Search, tr("Search"), Some(on(Switcher::Search))),
-        widgets::boxed_button(Icon::SquarePen, tr("New"), Some(on(Switcher::New))),
-    ];
+    let mut top = row![widgets::anchored(anchor, trigger)];
+    top = top.extend(head_tools(search).into_iter().map(|tool| tool.button(on)));
     if let Some(on_toggle) = on_toggle {
         top = top.push(widgets::icon_button(Icon::PanelLeft, tr("Collapse sidebar"), Some(on_toggle)));
     }
@@ -1144,6 +1188,22 @@ mod tests {
         assert!(is_sidebar_key(&bracket, Modifiers::CTRL | Modifiers::ALT), "AltGr on Windows");
         assert!(!is_sidebar_key(&bracket, Modifiers::LOGO));
         assert!(!is_sidebar_key(&Key::Character("]".into()), Modifiers::empty()));
+    }
+
+    /// Task E11.2: the head carries Search and New – without `search` (the mail window, whose field
+    /// stands over its list) New alone, in both forms; `sidebar_head` keeps its magnifier.
+    #[test]
+    fn the_head_leaves_search_out_where_the_field_stands_over_the_list() {
+        assert_eq!(head_tools(true), [HeadTool::Search, HeadTool::New]);
+        assert_eq!(head_tools(false), [HeadTool::New]);
+        let anchor = Anchor::new();
+        for mode in [SidebarMode::Expanded, SidebarMode::Rail] {
+            for search in [true, false] {
+                let _: Element<'_, Msg> =
+                    sidebar_head_in(mode, AppId::TASKS, &anchor, Msg::Switcher, Msg::Close, search);
+            }
+            let _: Element<'_, Msg> = sidebar_head(mode, AppId::TASKS, &anchor, Msg::Switcher, Msg::Close);
+        }
     }
 
     #[test]

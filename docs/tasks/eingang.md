@@ -1845,7 +1845,7 @@ Knöpfe in die neue Anordnung (E9.2: Later an Ordnermails in Befehlsleiste und L
   hell und dunkel angesehen (Bilder im Bericht). `scripts/design-check.sh` sauber. Übersetzungen im Bericht.
 
 ### E11.2 Liste: Leiste von Rand zu Rand, Suchfeld über die volle Breite
-- [ ] erledigt
+- [x] erledigt (2026-10-16): `Rows::edge_strip`/`MailList::edge_strip`, `list::{edge_actions, with_row_strip, strip_row, strip_words, edge_strip_height, strip_height_in, row_span_in}`, `search::Bar::full`, `shell::sidebar_head_in`; Mail-Fenster torro und plex, hell und dunkel, breit/mittel/schmal angesehen
 - **Modell:** Opus · **Braucht:** E11.1 · **Dateien:** `crates/torroinbox/src/{list,mail,search,app}.rs`,
   `crates/torro-gui/src/shell.rs`, `crates/torro-core/src/i18n/de.rs` (nur wenn neue Texte)
 - **Leiste unter der gewählten Zeile** (Mail-Fenster, Kind `Mail`; Zeilen von Einträgen `list::entry_row` und von

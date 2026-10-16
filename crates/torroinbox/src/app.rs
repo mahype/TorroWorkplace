@@ -4142,6 +4142,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             scopes: self.search_scopes(),
             suggestions: self.search_suggestions(),
             status,
+            full: self.launch.kind == Kind::Mail,
         })
     }
 
@@ -4678,10 +4679,15 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let sections = Sections::of(&self.items, column, self.now).ordered(self.order);
             let open = self.info_open[column.index()];
             let (look, lead, width) = (self.look(), self.lead().is_some(), self.card_width());
-            let span = sections
-                .order(open)
-                .get(index)
-                .and_then(|item| overview::row_span(&sections, open, &item.id, look, lead, width));
+            // `overview::row_span` counts the hub's strip under the cursor's row; the mail window's
+            // is taller (task E11.2), its bottom lies that much lower. Cards and the waiting cards
+            // carry no strip.
+            let taller = list::strip_height_in(self.edge_strip()) - list::strip_height();
+            let span = sections.order(open).get(index).and_then(|item| {
+                let span = overview::row_span(&sections, open, &item.id, look, lead, width)?;
+                let strip = !look.cards() && !list::is_waiting(item);
+                Some(if strip { (span.0, span.1 + taller) } else { span })
+            });
             (self.column_scroll[column.index()], span, column.scroll_id())
         } else if self.view.is_mail() {
             // A folder's messages have no group heads: every row is as high as the next; a card is
@@ -4696,12 +4702,18 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     // The cursor's row carries the strip with its actions below its lines.
                     let row = list::message_height();
                     let top = index as f32 * row;
-                    (top, top + row + list::strip_height())
+                    (top, top + row + list::strip_height_in(self.edge_strip()))
                 }
             });
             (self.scroll, span, list::SCROLL)
         } else {
-            (self.scroll, list::row_span(&self.items, index, self.look(), self.card_width()), list::SCROLL)
+            let (items, look, width) = (&self.items, self.look(), self.card_width());
+            // The mail window's strip under the cursor's row is its own (task E11.2).
+            let span = match self.edge_strip() {
+                true => list::row_span_in(items, index, look, width, true),
+                false => list::row_span(items, index, look, width),
+            };
+            (self.scroll, span, list::SCROLL)
         };
         let (Some((offset, height)), Some((top, bottom))) = (scroll, span) else { return Task::none() };
         let target = if top < offset {
@@ -6346,6 +6358,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     folders: &self.folders,
                     highlights: &self.highlights,
                     text: palette(&self.theme()).text,
+                    edge_strip: self.edge_strip(),
                 })
             }
         } else if self.is_board() {
@@ -6418,7 +6431,22 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             look: self.look(),
             folders: &self.folders,
             ai: self.ai_ready,
+            edge_strip: self.edge_strip(),
         }
+    }
+
+    /// Whether the selected row of a list carries the mail window's strip from edge to edge (task
+    /// E11.2, `list::Rows::edge_strip`, `mail::MailList::edge_strip`): in the mail window. The hub and
+    /// the app feed keep their strip of buttons.
+    fn edge_strip(&self) -> bool {
+        self.launch.kind == Kind::Mail
+    }
+
+    /// Whether the sidebar's head shows the search button (task E11.2, `shell::sidebar_head_in`):
+    /// not in the mail window, whose search field always stands over its list
+    /// ([`App::shows_search`]); `/` and ⌘F / Ctrl + F still focus it there.
+    fn sidebar_search(&self) -> bool {
+        self.launch.kind != Kind::Mail
     }
 
     /// The overview (task E3.9): both columns side by side in the wide layout, each under its head –
@@ -6677,8 +6705,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             })
             .into_iter()
             .collect();
-        let head =
-            shell::sidebar_head(mode, self.launch.kind.app(), switcher, Message::Switcher, Message::ToggleSidebar);
+        let (app, search) = (self.launch.kind.app(), self.sidebar_search());
+        let head = shell::sidebar_head_in(mode, app, switcher, Message::Switcher, Message::ToggleSidebar, search);
         shell::sidebar(head, items, footer)
     }
 
@@ -10715,6 +10743,27 @@ mod tests {
         let mut words = vec!["--view", "mail", "--density", density];
         words.extend_from_slice(more);
         overview_at(&words)
+    }
+
+    /// Task E11.2: the mail window's rows carry the strip from edge to edge, its search field spans
+    /// the list and its sidebar has no magnifier; the hub keeps its strip of buttons (`with_strip`)
+    /// and its sidebar's search button. Every size draws with a row under the cursor.
+    #[test]
+    fn the_mail_window_has_the_edge_strip_and_the_hub_its_buttons() {
+        let anchors = detail::Anchors::default();
+        let mut mail = mail_window("compact", &[]);
+        assert!(mail.rows_data(&anchors).edge_strip && mail.edge_strip());
+        assert!(!mail.sidebar_search(), "the field over the list is the search");
+        let hub = overview_at(&["--view", "hub"]);
+        assert!(!hub.rows_data(&anchors).edge_strip, "the hub keeps `with_strip`");
+        assert!(hub.sidebar_search());
+        assert!(overview_at(&["--view", "notifications"]).sidebar_search(), "the app feed too");
+        let _ = press(&mut mail, Key::Down);
+        assert!(mail.cursor.is_some());
+        for size in SIZES {
+            let _ = mail.update(Message::Resized(size));
+            let _ = mail.view();
+        }
     }
 
     /// Task E8.3: the mail window lists, counts and walks mail alone, in every view of its sidebar.
