@@ -258,11 +258,15 @@ ER3.1 (braucht ER1.4)       ER4 später
 ## ER3 Zusammen mit Nextcloud
 
 ### ER3.1 Nextcloud-Erinnerungen nicht doppelt
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet (Agent `nextcloud-expert` geeignet) · **Braucht:** ER1.4 · **Dateien:**
   `crates/torro-inbox/src/rules.rs`, `crates/torroworkplace/src/sources/nextcloud.rs`
 - Sind Torro-Erinnerungen an, geht eine `dav`-Benachrichtigung „calendar_reminder“ im Torro-Eintrag
   desselben Termins auf (Zuordnung über Kalender und UID aus `object_id`), sonst bleibt sie wie heute.
+- **Umgesetzt (2026-10-16):** Nextcloud setzt `object_type = dav` und `object_id = SHA-256(UID)`
+  (`PushProvider.php`). Solche Benachrichtigungen werden kein eigener Eintrag, solange Torro an den Termin selbst
+  erinnert (`sources::nextcloud::reminded_here`); sie bleiben auf dem Server (das Handy bekommt sie weiter).
+  `rules.rs` blieb unverändert: Die Zuordnung braucht die Termine, die nur der Kern kennt.
 
 ## ER4 Später
 

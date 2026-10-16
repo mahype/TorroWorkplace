@@ -34,6 +34,12 @@
 //!   chat notifications (`spreed`, object `chat`) are left out here ([`wanted`]): the conversation
 //!   is the entry; calls and invitations stay.
 //!
+//! - **Reminders of events** (task ER3.1): Nextcloud's own reminder (`dav`, object `dav`, its id the
+//!   SHA-256 of the event's UID) is no entry of its own while the suite reminds of that event itself
+//!   (reminders on, the event in a calendar the suite shows and does not keep quiet,
+//!   [`reminded_here`]): the suite's reminder entry stands for it. It stays on the server, so a
+//!   phone still gets it.
+//!
 //! Logs name the account's id and a code ([`code`]), never a title, a text, a person or an app.
 
 use std::collections::{BTreeSet, HashSet};
@@ -245,7 +251,8 @@ impl Poller {
         if !sources.pim.nextcloud_accounts().await.contains(&source.key()) {
             return Ok(None);
         }
-        let filed = file(sources, source, access.client.server(), &notifications, since, has_talk, now);
+        let reminded = reminded_here(sources, now).await;
+        let filed = file(sources, source, access.client.server(), &notifications, since, has_talk, &reminded, now);
         resolve(sources, source, &notifications, now);
         // Only a listing filed in full is not asked for again (a 304 would hide what failed).
         keep_cursor(sources, source, ETAG, etag.as_deref().filter(|_| filed));
@@ -333,6 +340,7 @@ pub(super) fn keep_cursor(sources: &Sources, source: &SourceRef, name: &str, val
 /// Files the notifications of `listed` that are [`wanted`] (with `has_talk`) and not older than
 /// `since`, oldest first, so the newest gives its matter's entry the texts. Whether every one was
 /// filed.
+#[allow(clippy::too_many_arguments)]
 fn file(
     sources: &Sources,
     source: &SourceRef,
@@ -340,10 +348,12 @@ fn file(
     listed: &[Notification],
     since: DateTime<Utc>,
     has_talk: bool,
+    reminded: &HashSet<String>,
     now: DateTime<Utc>,
 ) -> bool {
     let mut filed = true;
-    for notification in listed.iter().rev().filter(|n| n.time >= since && wanted(n, has_talk)) {
+    let fresh = |n: &&Notification| n.time >= since && wanted(n, has_talk) && !is_reminded(n, reminded);
+    for notification in listed.iter().rev().filter(fresh) {
         if let Err(err) = sources.inbox.file_remote(&report(source, server, notification), now) {
             eprintln!("torroworkplace: inbox: cannot file a notification of {source}: {err}");
             filed = false;
@@ -357,6 +367,32 @@ fn file(
 /// as the Talk source files the conversation itself (task E5.9). Calls and invitations stay.
 fn wanted(notification: &Notification, has_talk: bool) -> bool {
     !(has_talk && notification.app == "spreed" && notification.object_type == "chat")
+}
+
+/// The events the suite reminds of itself now (task ER3.1), as Nextcloud names them in its reminders:
+/// the SHA-256 of each UID, in hex. Empty while reminders are off or the calendars cannot be read.
+pub(super) async fn reminded_here(sources: &Sources, now: DateTime<Utc>) -> HashSet<String> {
+    let settings = sources.pim.settings().current().reminders;
+    if !settings.enabled {
+        return HashSet::new();
+    }
+    let (start, end) = crate::reminders::window(now);
+    let events = match sources.pim.handle_within(Request::Events { start, end }, crate::pim::Reach::Suite).await {
+        Response::Events { events } => events,
+        _ => return HashSet::new(),
+    };
+    events
+        .iter()
+        .filter(|event| settings.calendar(&event.collection) != torro_core::settings::CalendarReminders::Off)
+        .map(|event| Sha256::digest(event.uid.as_bytes()).iter().map(|byte| format!("{byte:02x}")).collect())
+        .collect()
+}
+
+/// `notification` is Nextcloud's reminder of an event the suite reminds of itself.
+fn is_reminded(notification: &Notification, reminded: &HashSet<String>) -> bool {
+    notification.app == "dav"
+        && notification.object_type == "dav"
+        && reminded.contains(&notification.object_id.to_ascii_lowercase())
 }
 
 /// The report of `notification` of `source` on `server` (see the module docs).
@@ -692,6 +728,57 @@ pub(super) mod tests {
             &Notification { link: Some(format!("{}/x", fixture.server.base_url())), ..torro_nextcloud_notification() },
         );
         assert_eq!(report.url, None, "a link of another origin than the account's server");
+    }
+
+    /// Task ER3.1: Nextcloud's reminder of an event the suite reminds of itself is no entry of its
+    /// own; with the suite's reminders off it is one as before.
+    #[tokio::test]
+    async fn a_reminder_the_suite_gives_itself_is_no_second_entry() {
+        let fixture = Fixture::new().await;
+        fixture.capabilities(true).await;
+        let url = format!("{}/remote.php/dav/calendars/anna/work/", fixture.server.base_url());
+        let calendar = torro_pim::Collection {
+            id: torro_pim::account::collection_id(&fixture.source.key(), &url),
+            name: "Work".into(),
+            kind: torro_pim::CollectionKind::Events,
+            color: None,
+            writable: true,
+            source: None,
+        };
+        let event = torro_pim::Event {
+            uid: "sync-1".into(),
+            collection: calendar.id.clone(),
+            href: Some(format!("{url}sync-1.ics")),
+            etag: Some("\"1\"".into()),
+            summary: "Weekly sync".into(),
+            start: torro_pim::EventTime::DateTime(now() + TimeDelta::minutes(10)),
+            end: Some(torro_pim::EventTime::DateTime(now() + TimeDelta::minutes(55))),
+            location: None,
+            description: None,
+            recurring: false,
+            transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
+        };
+        fixture.sources.pim.cache_collections(vec![calendar]).await;
+        fixture.sources.pim.cache_events_as_synced(vec![event]).await;
+        let hash: String = Sha256::digest(b"sync-1").iter().map(|byte| format!("{byte:02x}")).collect();
+        let reminder = json!({
+            "notification_id": 2001, "app": "dav", "user": "anna", "datetime": "2026-10-13T08:20:00Z",
+            "object_type": "dav", "object_id": hash, "subject": "Weekly sync (in 10 minutes)", "message": "",
+            "link": "", "subjectRich": "", "subjectRichParameters": [], "messageRich": "", "messageRichParameters": [],
+            "actions": []
+        });
+        assert!(reminded_here(&fixture.sources, now()).await.contains(&hash), "the suite reminds of it");
+        fixture.listing(std::slice::from_ref(&reminder), "\"a\"").await;
+        fixture.tick(&mut Poller::default(), now()).await;
+        assert!(fixture.open().iter().all(|item| !item.thread_key.starts_with("dav:")), "{:?}", fixture.open());
+
+        let off = serde_json::json!({"enabled": false});
+        fixture.sources.pim.settings().set(torro_ipc::SettingKey::Reminders, &off).expect("off");
+        assert!(reminded_here(&fixture.sources, now()).await.is_empty());
+        keep_cursor(&fixture.sources, &fixture.source, ETAG, None);
+        fixture.tick(&mut Poller::default(), now()).await;
+        assert!(fixture.open().iter().any(|item| item.thread_key.starts_with("dav:")), "filed as before");
     }
 
     /// A notification as the crate reads it, for [`report`] and [`matter`].
