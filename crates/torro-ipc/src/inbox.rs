@@ -212,6 +212,7 @@ impl InboxClient {
             cursor,
             order: asked(order),
             sort: None,
+            snoozed: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -239,6 +240,7 @@ impl InboxClient {
             // The order only counts by date; by relevance the core ignores it.
             order: asked(order).filter(|_| sort == MailSort::Date),
             sort: (sort != MailSort::default()).then_some(sort),
+            snoozed: None,
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, complete, highlights, total_estimate, .. } => {
@@ -1380,6 +1382,7 @@ mod tests {
             flags: Vec::new(),
             has_attachments: false,
             invite: None,
+            back: None,
             untrusted: true,
         }
     }
@@ -1412,6 +1415,7 @@ mod tests {
                 cursor,
                 order,
                 sort: None,
+                snoozed: None,
             } => Response::MailMessages {
                 messages: vec![summary(
                     &format!(

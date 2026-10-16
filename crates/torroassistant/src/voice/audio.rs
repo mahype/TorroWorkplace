@@ -157,7 +157,7 @@ pub fn read_wav(bytes: &[u8]) -> Result<Vec<i16>, VoiceError> {
                 }
             }
             b"data" if format_ok => {
-                return Ok(body.chunks_exact(2).map(|pair| i16::from_le_bytes([pair[0], pair[1]])).collect());
+                return Ok(body.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect());
             }
             _ => {}
         }

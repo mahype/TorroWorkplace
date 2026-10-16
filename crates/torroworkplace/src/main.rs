@@ -17,6 +17,9 @@
 
 // Not for the test harness: its output has to reach the console.
 #![cfg_attr(all(windows, not(test)), windows_subsystem = "windows")]
+// `torro_ipc::Response` is the reply the core hands back on every path, an error reply included;
+// it is returned by value throughout, and boxing it would change every handler (clippy 1.98).
+#![allow(clippy::result_large_err)]
 
 use std::process::ExitCode;
 

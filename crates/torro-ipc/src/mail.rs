@@ -305,6 +305,7 @@ mod tests {
             cursor: None,
             order: None,
             sort: None,
+            snoozed: None,
         }
     }
 

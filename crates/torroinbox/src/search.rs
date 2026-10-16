@@ -811,6 +811,7 @@ mod tests {
             flags: Vec::new(),
             has_attachments: false,
             invite: None,
+            back: None,
             untrusted: true,
         };
         let jonas = who("Jonas", "jonas@example.org");

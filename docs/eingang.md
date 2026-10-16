@@ -511,6 +511,34 @@ summiert über alle Quellen derselben Art (wie die Regel wirkt), höchstens fün
 Merkmale. Jede Regel zählt außerdem, was sie gefangen hat, je Quelle; `inbox.list_rules` nennt es als `hits`.
 Befehle: [api.md](api.md), Fußnote 14.
 
+### Später für jede Mail (E9.1, entschieden 2026-10-15)
+
+Im Mail-Fenster kann **jede** Mail auf später gelegt werden, auch eine ohne Eintrag und eine schon gelesene
+(`inbox.snooze_item` mit `m:…`). Der Kern legt dann zuerst einen Eintrag an, wie der Abgleich neue Mail ablegt, und
+stellt ihn zurück; hat die Unterhaltung schon einen Eintrag, kommt die Mail dort hinein. Zurückgestellt ist immer die
+ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
+
+- **Aus „All“ heraus:** `mail.search_messages` mit `snoozed: false` lässt jede Mail weg, die in einem gerade
+  zurückgestellten Eintrag abgelegt ist; `snoozed: true` zeigt nur diese („Later“). Der Kern fragt dafür bei jeder Suche
+  den Eingang (`Inbox::mail_later`) und nimmt die Mails über ihre Kennung schon in die Abfrage jedes Kontos auf
+  (`SearchQuery::only`, `except`). So bleiben die Seiten voll und der Cursor (`c:<n>`, ein Versatz) stimmt.
+- **Zurück und oben:** Wann ein Eintrag zurückkam, hält die Tabelle `woken` in `inbox.sqlite` fest (Schema 10): beim
+  Aufwachen zur gewählten Zeit und wenn neue Mail die Unterhaltung zurückholt. Bei `snoozed: false` holt die Suche diese
+  Mails eigens dazu, egal wie alt sie sind, und sortiert sie nach dem Zeitpunkt der Rückkehr statt nach ihrem Datum. So
+  stehen sie oben in „All“, als wären sie eben angekommen. Jede Mail einer Suche trägt dann `back` (die Oberfläche zeigt
+  „Back from later“). Ohne `snoozed` und bei `sort: relevance` bleibt die Reihenfolge wie bisher, `back` ist trotzdem
+  gesetzt.
+- **Bis wann zurück:** Bis die Mail im Mail-Fenster gelesen wird (`Inbox::mail_read`) oder der Eintrag erledigt bzw.
+  wieder zurückgestellt ist. Danach steht sie wieder nach ihrem Datum.
+- **Gelesen heißt nicht erledigt:** Einen zurückgestellten Eintrag erledigt der Abgleich erst, wenn keine seiner Mails
+  mehr im Posteingang liegt (verschoben oder gelöscht). Dass sie gelesen ist, reicht nicht: Wer eine Mail auf später
+  legt, hat sie oft schon gelesen.
+- **Neue Mail holt zurück (Entscheidung 8 in E9):** Kommt in einer zurückgestellten Unterhaltung neue Mail an, ist sie wieder
+  offen (`rules::merge_mail`), in „All“ oben mit `back` zur Zeit der neuen Mail und ebenso in der Zentrale. Eine ältere
+  Mail, die erst später abgelegt wird, lässt die Unterhaltung zurückgestellt. Andere Quellen bleiben bei `rules::merge`:
+  meldet etwa ein Agent dieselbe Sache noch einmal, bleibt sie zurückgestellt.
+- **Regel verbirgt die Mail:** Dann gibt es keinen Eintrag zum Zurückstellen, die Antwort ist `unsupported`.
+
 ### Später, vorgemerkt
 
 - **An einen Agenten geben:** ein Eintrag (Review, Kundenanfrage) geht als Auftrag an einen Agenten. Die Idee ist
