@@ -464,6 +464,9 @@ Fensterzustand in `ui.json` der App (`torro_gui::ui_state`), geht durch keine AP
    Feed, Mail), das Konzept kennt Eingang und Mail. `ai-models.json` gibt es noch nicht (kommt mit S.24). Im
    Mail-Fenster wird die Listenbreite (`split`) auch mit `--demo` gespeichert, anders als `density` und `order`.
 
+**Entwürfe der neuen Struktur (S.28):** https://claude.ai/artifact/5pp7TeLH386QHgp9aHisMy (A · Gespiegelt, B · Schlanke
+Zentrale, C · Nach Themen). Gewählt wird mit dem Kommentar „Entscheidung Struktur“ an #210.
+
 ## Offene Fragen
 
 1. Slack: welcher Weg (Bot-Token, Benutzer-Token, OAuth) – entscheiden, wenn Slack drankommt.

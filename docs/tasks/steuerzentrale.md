@@ -494,7 +494,7 @@ S.27 (Bestand) ── S.28 (drei Entwürfe) ── Wahl durch einen Menschen ─
   --all` und `scripts/ci-local.sh` laufen trotzdem durch.
 
 ### S.28 Drei Entwürfe der neuen Struktur
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** S.27 · **Dateien:** `docs/settings.md` (nur der Link zu den Entwürfen)
 - Skill `torro-design` laden; Maßstab sind die Größenklassen (Mini bis Breit), Abstände und Farben dort und die Skizze
   in `docs/settings.md` › Einstellungen in den Apps.
