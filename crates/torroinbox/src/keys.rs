@@ -36,9 +36,26 @@
 //!
 //! `c` makes an event of the entry (task E8.5b, "Event" in To sort and the panel): its dialog takes
 //! the keys as the one of "Make task" does ([`Focus::Task`]), `Enter` creates the event.
+//!
+//! **Shortcuts** (task E10.1, section E10 of `docs/tasks/eingang.md`) come from the table in
+//! `torro_core::shortcuts` (the preset "Torro"), on top of the single keys, which stay as they are:
+//!
+//! - With Ctrl or ⌘ held, [`shortcut`] reads the table – Ctrl + R reply, Ctrl + Shift + A archive,
+//!   Ctrl + Shift + V move to a folder, Ctrl + F search … (on macOS ⌘ or Ctrl, archive ⌃⌘A) – and
+//!   sends [`Message::Shortcut`]. It hears the key also when a widget took it: the window's
+//!   `widgets::ctrl_guard` captures ⌘ + letter on macOS, while a text field does not capture Ctrl +
+//!   Shift + letter. So the status says nothing about where the keyboard is, and the app asks Iced
+//!   whether the search field has the focus before it acts (`App::shortcut`); only search and send
+//!   work while it has ([`torro_core::shortcuts::Command::works_in_text_field`]). Ctrl + A is no
+//!   shortcut: it stays "select all".
+//! - Without Ctrl or ⌘, Delete and Backspace ask the table too ([`key_on`]): plain they delete (as
+//!   since issue #118), Shift + Delete (on macOS also Shift + Backspace) deletes for good after a
+//!   question ([`Key::DeleteForGood`], [`Focus::Question`]: `Enter` confirms, Escape cancels). A
+//!   text field takes them first, as any single key.
 
 use iced::keyboard::{self, Key as Name, key::Named};
-use torro_gui::shell;
+use torro_core::shortcuts::{self, Preset, System};
+use torro_gui::{shell, widgets};
 
 use crate::app::Message;
 
@@ -86,10 +103,11 @@ pub enum Key {
     /// Delete or Backspace (the key Mac keyboards call "delete", issue #118). A text field that has
     /// the focus takes it before the list hears it.
     Delete,
+    /// Shift + Delete, on macOS also Shift + Backspace (task E10.1): delete for good, after a
+    /// question. A text field takes it first.
+    DeleteForGood,
     /// `/`.
     Slash,
-    /// ⌘F on macOS, Ctrl + F elsewhere: the search field, as `/` (issue #136).
-    Find,
     /// Tab: the first suggestion under the search field (issue #136).
     Tab,
     /// `1` … `9`.
@@ -117,6 +135,9 @@ pub enum Focus {
     Task,
     /// The navigation menu, the app switcher or the drawer is open; only `[` works.
     Elsewhere,
+    /// A question waits for its answer (task E10.1: "Delete permanently?"): `Enter` confirms, Escape
+    /// (the app's) cancels, nothing of the list.
+    Question,
 }
 
 /// What a key does.
@@ -158,6 +179,23 @@ pub enum Command {
     Forward,
     /// Move the mail under the cursor to the trash.
     Delete,
+    /// Ask whether to remove the mail under the cursor for good (task E10.1), then do it.
+    DeleteForGood,
+    /// Move the mail under the cursor to its account's archive – in every view, also at an entry
+    /// (task E10.1; `e` archives only in the views of mail, at an entry it is Done).
+    Archive,
+    /// Mark the mail under the cursor read when it is unread, else unread (task E10.1).
+    ToggleRead,
+    /// Flag the mail under the cursor, or take its flag away (task E10.1).
+    Flag,
+    /// Move the mail under the cursor to its account's junk folder (task E10.1).
+    Junk,
+    /// Open the choice of folders to move the mail under the cursor to (task E10.1).
+    MoveToFolder,
+    /// Open the compose window for a new message (task E10.1, as "New" does).
+    NewMail,
+    /// Fetch mail from the servers now (task E10.1, `accounts.sync`), then list anew.
+    Fetch,
     /// Put the keyboard into the search field over the list (issue #136).
     Search,
     /// Switch the mail in the panel or reader between HTML and text (task M9.7, the switch
@@ -179,7 +217,8 @@ pub enum Command {
     EarlierTime,
     /// Picker: the next time of the day.
     LaterTime,
-    /// Picker: snooze to the picked time; dialog of "Make task" or "Make event": create it.
+    /// Picker: snooze to the picked time; dialog of "Make task" or "Make event": create it; the
+    /// question "Delete permanently?": delete.
     Confirm,
     /// Collapse or expand the sidebar, open or close the drawer.
     Sidebar,
@@ -195,20 +234,82 @@ pub fn listen(event: iced::Event, status: iced::event::Status, _window: iced::wi
     key_of(&key, modifiers).map(Message::Key)
 }
 
-/// ⌘F on macOS, Ctrl + F elsewhere, on any layout (the key in F's place, `to_latin`): the search
-/// field, as in every mail app (issue #136). Subscribe with `iced::event::listen_with(find_key)`: it
+/// A shortcut with Ctrl or ⌘ ([`shortcut_on`] on this system), for `iced::event::listen_with`: it
 /// hears the key also when a text field or the window's `widgets::ctrl_guard` took it – the guard
-/// does on macOS, so the field does not type an "f".
-pub fn find_key(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
+/// does for ⌘ + letter on macOS, so the field does not type the letter. The app decides whether it
+/// acts while a field has the focus (`App::shortcut`).
+pub fn shortcut(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
         return None;
     };
-    let find = modifiers.command() && !modifiers.shift() && !modifiers.alt() && key.to_latin(physical_key) == Some('f');
-    find.then_some(Message::Key(Key::Find))
+    shortcut_on(System::current(), &key, physical_key, modifiers).map(Message::Shortcut)
 }
 
-/// The [`Key`] for `key` held with `modifiers`.
+/// The command of the preset "Torro" that `key` held with `modifiers` runs on `system`, for presses
+/// with Ctrl or ⌘ (the logo key) only: the others are single keys ([`key_on`]), which a text field
+/// takes first. On any layout: the key in a letter's place on a non-Latin one (`to_latin`).
+pub fn shortcut_on(
+    system: System,
+    key: &Name,
+    physical_key: keyboard::key::Physical,
+    modifiers: keyboard::Modifiers,
+) -> Option<shortcuts::Command> {
+    if !modifiers.control() && !modifiers.logo() {
+        return None;
+    }
+    Preset::Torro.command(system, widgets::held(modifiers), table_key(key, physical_key)?)
+}
+
+/// The key of the shortcut table for a key press: the named keys it knows, else the character
+/// (letters lower case); `None` for keys a shortcut cannot name.
+pub fn table_key(key: &Name, physical_key: keyboard::key::Physical) -> Option<shortcuts::Key> {
+    Some(match key.as_ref() {
+        Name::Named(Named::Enter) => shortcuts::Key::Enter,
+        Name::Named(Named::Delete) => shortcuts::Key::Delete,
+        Name::Named(Named::Backspace) => shortcuts::Key::Backspace,
+        Name::Named(Named::Tab) => shortcuts::Key::Tab,
+        Name::Named(Named::Escape) => shortcuts::Key::Escape,
+        Name::Named(Named::Space) => shortcuts::Key::Space,
+        Name::Named(Named::ArrowUp) => shortcuts::Key::Up,
+        Name::Named(Named::ArrowDown) => shortcuts::Key::Down,
+        Name::Named(Named::ArrowLeft) => shortcuts::Key::Left,
+        Name::Named(Named::ArrowRight) => shortcuts::Key::Right,
+        Name::Character(_) => shortcuts::Key::of_char(key.to_latin(physical_key)?)?,
+        _ => return None,
+    })
+}
+
+/// What a shortcut of the table does in the inbox window: the [`Command`] its single key (or button)
+/// does there. `None` for sending, which belongs to the compose window.
+pub fn of_shortcut(command: shortcuts::Command) -> Option<Command> {
+    use shortcuts::Command as Shortcut;
+    Some(match command {
+        Shortcut::NewMail => Command::NewMail,
+        Shortcut::Reply => Command::Reply,
+        Shortcut::ReplyAll => Command::ReplyAll,
+        Shortcut::Forward => Command::Forward,
+        Shortcut::Delete => Command::Delete,
+        Shortcut::DeletePermanently => Command::DeleteForGood,
+        Shortcut::Archive => Command::Archive,
+        Shortcut::ToggleRead => Command::ToggleRead,
+        Shortcut::Flag => Command::Flag,
+        Shortcut::Junk => Command::Junk,
+        Shortcut::MoveToFolder => Command::MoveToFolder,
+        Shortcut::Search => Command::Search,
+        Shortcut::Fetch => Command::Fetch,
+        Shortcut::Send => return None,
+    })
+}
+
+/// The [`Key`] for `key` held with `modifiers` ([`key_on`] on this system).
 pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
+    key_on(key, modifiers, System::current())
+}
+
+/// The [`Key`] for `key` held with `modifiers` on `system`. Delete and Backspace are what the
+/// shortcut table says for them there (task E10.1): plain [`Key::Delete`], with Shift
+/// [`Key::DeleteForGood`] where the table has it, else nothing.
+pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Option<Key> {
     if shell::is_sidebar_key(key, modifiers) {
         return Some(Key::Sidebar);
     }
@@ -236,7 +337,14 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
         Name::Character("f") => Key::F,
         Name::Character("v") => Key::V,
         Name::Character("#") => Key::Hash,
-        Name::Named(Named::Delete | Named::Backspace) => Key::Delete,
+        Name::Named(named @ (Named::Delete | Named::Backspace)) => {
+            let pressed = if named == Named::Delete { shortcuts::Key::Delete } else { shortcuts::Key::Backspace };
+            match Preset::Torro.command(system, widgets::held(modifiers), pressed) {
+                Some(shortcuts::Command::Delete) => Key::Delete,
+                Some(shortcuts::Command::DeletePermanently) => Key::DeleteForGood,
+                _ => return None,
+            }
+        }
         Name::Character("/") => Key::Slash,
         Name::Character(digit) => match digit.parse::<u8>() {
             Ok(n @ 1..=9) => Key::Digit(n),
@@ -268,7 +376,8 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::List, Key::A) => Some(Command::ReplyAll),
         (Focus::List, Key::F) => Some(Command::Forward),
         (Focus::List, Key::Hash | Key::Delete) => Some(Command::Delete),
-        (Focus::List, Key::Slash | Key::Find) => Some(Command::Search),
+        (Focus::List, Key::DeleteForGood) => Some(Command::DeleteForGood),
+        (Focus::List, Key::Slash) => Some(Command::Search),
         (Focus::List, Key::Tab) => Some(Command::Complete),
         (Focus::List, Key::V) => Some(Command::SwitchView),
         (Focus::Choices | Focus::Mute, Key::Digit(n)) => Some(Command::Choose(usize::from(n))),
@@ -280,7 +389,7 @@ pub fn command(focus: Focus, key: Key) -> Option<Command> {
         (Focus::Picker, Key::Right) => Some(Command::LaterDay),
         (Focus::Picker, Key::Up) => Some(Command::EarlierTime),
         (Focus::Picker, Key::Down) => Some(Command::LaterTime),
-        (Focus::Picker | Focus::Task, Key::Enter) => Some(Command::Confirm),
+        (Focus::Picker | Focus::Task | Focus::Question, Key::Enter) => Some(Command::Confirm),
         _ => None,
     }
 }
@@ -438,6 +547,100 @@ mod tests {
             assert_eq!(command(Focus::Elsewhere, key), None, "{key:?} behind a menu or the drawer");
         }
         assert_eq!(command(Focus::Elsewhere, Key::Sidebar), Some(Command::Sidebar), "[ still closes the drawer");
+    }
+
+    /// The shortcuts of the preset "Torro" (task E10.1) for both systems: Ctrl on Windows and Linux,
+    /// ⌘ and Ctrl alike on macOS; each runs what its single key or button runs in the window.
+    #[test]
+    fn every_shortcut_runs_its_command_on_both_systems() {
+        use Modifiers as M;
+        use shortcuts::Command as Shortcut;
+        let mods = [
+            (Shortcut::NewMail, M::empty(), "n", Some(Command::NewMail)),
+            (Shortcut::Reply, M::empty(), "r", Some(Command::Reply)),
+            (Shortcut::ReplyAll, M::SHIFT, "r", Some(Command::ReplyAll)),
+            (Shortcut::Forward, M::SHIFT, "f", Some(Command::Forward)),
+            (Shortcut::Send, M::empty(), "", None),
+            (Shortcut::ToggleRead, M::SHIFT, "u", Some(Command::ToggleRead)),
+            (Shortcut::Flag, M::SHIFT, "l", Some(Command::Flag)),
+            (Shortcut::Junk, M::SHIFT, "j", Some(Command::Junk)),
+            (Shortcut::MoveToFolder, M::SHIFT, "v", Some(Command::MoveToFolder)),
+            (Shortcut::Search, M::empty(), "f", Some(Command::Search)),
+            (Shortcut::Fetch, M::SHIFT, "n", Some(Command::Fetch)),
+        ];
+        let physical = Physical::Unidentified(NativeCode::Unidentified);
+        for (shortcut, extra, letter, wanted) in mods {
+            let key = if letter.is_empty() { Name::Named(Named::Enter) } else { char(letter) };
+            let on = |system, modifiers: M| shortcut_on(system, &key, physical, modifiers | extra);
+            assert_eq!(on(System::Other, M::CTRL), Some(shortcut), "Ctrl: {shortcut:?}");
+            assert_eq!(on(System::Other, M::LOGO), None, "the logo key is no Ctrl: {shortcut:?}");
+            assert_eq!(on(System::Mac, M::LOGO), Some(shortcut), "⌘: {shortcut:?}");
+            assert_eq!(on(System::Mac, M::CTRL), Some(shortcut), "Ctrl on a Mac: {shortcut:?}");
+            assert_eq!(on(System::Other, M::empty()), None, "a plain key stays a single key: {shortcut:?}");
+            assert_eq!(of_shortcut(shortcut), wanted, "{shortcut:?}");
+        }
+        let a = char("a");
+        let archive = |system, modifiers| shortcut_on(system, &a, physical, modifiers);
+        assert_eq!(archive(System::Other, M::CTRL | M::SHIFT), Some(Shortcut::Archive));
+        assert_eq!(archive(System::Mac, M::CTRL | M::LOGO), Some(Shortcut::Archive), "⌃⌘A");
+        assert_eq!(of_shortcut(Shortcut::Archive), Some(Command::Archive));
+        assert_eq!(of_shortcut(Shortcut::Delete), Some(Command::Delete));
+        assert_eq!(of_shortcut(Shortcut::DeletePermanently), Some(Command::DeleteForGood));
+        // Shift turns the letter upper case, and a non-Latin layout types another one: the key counts.
+        let upper = shortcut_on(System::Other, &char("R"), physical, M::CTRL | M::SHIFT);
+        assert_eq!(upper, Some(Shortcut::ReplyAll));
+        let cyrillic = shortcut_on(System::Other, &char("к"), Physical::Code(keyboard::key::Code::KeyR), M::CTRL);
+        assert_eq!(cyrillic, Some(Shortcut::Reply));
+    }
+
+    #[test]
+    fn ctrl_a_selects_all_and_archives_nothing() {
+        let physical = Physical::Unidentified(NativeCode::Unidentified);
+        for system in [System::Other, System::Mac] {
+            for modifiers in [Modifiers::CTRL, Modifiers::LOGO] {
+                assert_eq!(shortcut_on(system, &char("a"), physical, modifiers), None, "{system:?} {modifiers:?}");
+            }
+        }
+        assert_eq!(shortcut_on(System::Mac, &char("a"), physical, Modifiers::LOGO | Modifiers::SHIFT), None);
+    }
+
+    /// The shortcut is heard also when a widget took the key (the guard captures ⌘ + letter on
+    /// macOS); whether it acts while a field has the focus is the app's decision.
+    #[test]
+    fn shortcuts_are_heard_also_when_a_widget_took_them() {
+        let ctrl = if cfg!(target_os = "macos") { Modifiers::LOGO } else { Modifiers::CTRL };
+        let reply = shortcut(press(char("r"), ctrl), Status::Captured, iced::window::Id::unique());
+        assert!(matches!(reply, Some(Message::Shortcut(shortcuts::Command::Reply))), "{reply:?}");
+        let plain = shortcut(press(char("r"), Modifiers::empty()), Status::Ignored, iced::window::Id::unique());
+        assert!(plain.is_none(), "a plain r is the single key, not a shortcut");
+        // A captured single key stays with its field.
+        assert_eq!(heard(char("r"), Modifiers::empty(), Status::Captured), None);
+    }
+
+    #[test]
+    fn shift_delete_deletes_for_good_and_delete_as_before() {
+        let (delete, backspace) = (Name::Named(Named::Delete), Name::Named(Named::Backspace));
+        for system in [System::Other, System::Mac] {
+            assert_eq!(key_on(&delete, Modifiers::empty(), system), Some(Key::Delete), "{system:?}");
+            assert_eq!(key_on(&backspace, Modifiers::empty(), system), Some(Key::Delete), "{system:?}");
+            assert_eq!(key_on(&delete, Modifiers::SHIFT, system), Some(Key::DeleteForGood), "{system:?}");
+            assert_eq!(key_on(&delete, Modifiers::CTRL, system), None, "{system:?}");
+        }
+        assert_eq!(key_on(&backspace, Modifiers::SHIFT, System::Mac), Some(Key::DeleteForGood), "⇧⌫ on a Mac");
+        assert_eq!(key_on(&backspace, Modifiers::SHIFT, System::Other), None, "only Shift + Delete elsewhere");
+        assert_eq!(command(Focus::List, Key::DeleteForGood), Some(Command::DeleteForGood));
+        assert_eq!(command(Focus::Overview, Key::DeleteForGood), Some(Command::DeleteForGood));
+        for focus in [Focus::Choices, Focus::Task, Focus::Elsewhere, Focus::Question] {
+            assert_eq!(command(focus, Key::DeleteForGood), None, "{focus:?}");
+        }
+    }
+
+    #[test]
+    fn the_question_takes_enter_and_nothing_of_the_list() {
+        assert_eq!(command(Focus::Question, Key::Enter), Some(Command::Confirm));
+        for key in [Key::Down, Key::E, Key::Delete, Key::Hash, Key::R, Key::Digit(1), Key::Sidebar] {
+            assert_eq!(command(Focus::Question, key), None, "{key:?} waits for the answer");
+        }
     }
 
     #[test]

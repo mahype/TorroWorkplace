@@ -2280,6 +2280,157 @@ Schnittstellen nach CLAUDE.md, vom Nutzer alle 16 freigegeben.
 17. **`notify_push` in E5?** Empfehlung: als letzte, optionale Aufgabe (E5.10); Abfrage alle 60 s mit ETag reicht.
 
 
+## E10 Tastenkürzel im Mail-Fenster (vorgemerkt 2026-10-15)
+
+Entschieden im Gespräch am 2026-10-15. Die Kürzel stellt man in den **Einstellungen des Mail-Fensters** ein: Man wählt
+eine Vorlage und kann jeden Befehl darüber hinaus frei belegen. **E10.2 und E10.3 warten auf die Einstellungen im
+Mail-Fenster:** [S.16](steuerzentrale.md#s16-gerüst-bibliothek-torro-settings-ui-und-host-für-den-inhaltsbereich) (Gerüst
+`torro-settings-ui`) und [S.20](steuerzentrale.md#s20-eingang-und-mail-einstellungen-im-inhaltsbereich) (Eingang und Mail).
+E10.1 und E10.1b brauchen sie nicht und können vorher laufen.
+
+Geändert im Gespräch am 2026-10-16 (#200): Jedes System bekommt die Kürzel seines gewohnten Mailprogramms als Vorgabe,
+**macOS Apple Mail, Linux Thunderbird, Windows Outlook** (E10.1b). „Torro“ ist nirgends mehr Vorgabe, bleibt aber
+wählbar. Jede Vorlage geht auf jedem System, etwa die Kürzel von Apple Mail unter Linux für alle, die vom Mac kommen.
+
+**Grundsätze**
+
+- Vorgabe je System: macOS Apple Mail, Linux Thunderbird, Windows Outlook. In den Einstellungen wählt man eine andere
+  Vorlage (auch die eines anderen Systems) und belegt einzelne Befehle selbst (E10.2, E10.3).
+- Unter Windows und Linux gilt Strg, auf dem Mac ⌘ und gleichwertig Strg: beide gehen. Eine Vorlage eines anderen
+  Systems wird übersetzt: ⌘ wird unter Linux und Windows zu Strg (Super gehört unter Hyprland dem Fenstermanager).
+- Entf und ⌫ löschen auf jedem System (gibt es seit E8.18). ⇧+Entf, auf dem Mac auch ⇧+⌫, löscht endgültig. Davor
+  kommt eine Rückfrage, weil es kein Undo gibt. Die Rückfrage gehört zum Befehl, nicht zur Taste: Sie kommt bei jeder
+  Belegung.
+- Die Einzeltasten (`r`, `a`, `f`, `e`, `#`, `/`, `j`/`k` …) bleiben in jeder Vorlage zusätzlich.
+- Kürzel wirken nur, wenn kein Textfeld den Fokus hat; dort gelten dessen Tasten (Kopieren, Einfügen, Alles auswählen).
+  Ausnahme: Senden im Schreibfenster.
+
+**Vorlage „Torro“ (wählbar; Vorgabe nur, bis E10.1b steht)** – gängige Kürzel, sonst die von Apple Mail, Verschieben
+wie in Outlook, auf jedem System gleich:
+
+| Befehl | Windows, Linux | macOS (⌘ oder Strg) |
+|---|---|---|
+| Neue Mail | Strg+N | ⌘N |
+| Antworten | Strg+R | ⌘R |
+| Allen antworten | Strg+⇧+R | ⇧⌘R |
+| Weiterleiten | Strg+⇧+F | ⇧⌘F |
+| Senden (Schreibfenster) | Strg+Enter | ⌘Enter |
+| Löschen | Entf, ⌫ | ⌫, Entf |
+| Endgültig löschen | ⇧+Entf | ⇧⌫, ⇧+Entf |
+| Archivieren | Strg+⇧+A | ⌃⌘A |
+| Gelesen/ungelesen | Strg+⇧+U | ⇧⌘U |
+| Markieren | Strg+⇧+L | ⇧⌘L |
+| Spam | Strg+⇧+J | ⇧⌘J |
+| In Ordner verschieben | Strg+⇧+V | ⇧⌘V |
+| Suchen | Strg+F | ⌘F |
+| Mails abrufen | Strg+⇧+N | ⇧⌘N |
+| Rückgängig | Strg+Z | ⌘Z |
+
+Strg+A bleibt „Alles auswählen“, darum Archivieren mit Strg+⇧+A. Unter Linux fängt IBus Strg+⇧+U ab, solange eine
+Eingabemethode aktiv ist (Unicode-Eingabe); bei der Sichtprüfung unter Hyprland ansehen. Rückgängig gilt in der ganzen
+Suite (`widgets::is_undo_key`) und ist nicht frei belegbar.
+
+**Weitere Vorlagen:** Apple Mail, Outlook, Thunderbird (E10.1b), Gmail (E10.2), jeweils wie beim Vorbild. ⌘ und Strg
+werden je System übersetzt. Die Belegungen vor der Umsetzung gegen die aktuelle Hilfe des Herstellers prüfen; die Übersicht im Gespräch
+war nicht nachgeschlagen. Was das Vorbild nicht kennt (Später, Aufgabe, Spur …), bleibt bei den Einzeltasten.
+
+**Frei belegen:** Eigene Tasten liegen über der gewählten Vorlage. Ein Wechsel der Vorlage behält sie, „Reset“ löscht
+eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`/`k` …), kommt ein Hinweis mit
+„Replace“. Nicht belegbar: Esc, `[`, Zoom, Rückgängig, Kopieren, Ausschneiden, Einfügen, Alles auswählen.
+
+### E10.1 Kürzel-Tabelle und Vorlage „Torro“
+- [x] erledigt (2026-10-15: `torro_core::shortcuts` hält Befehle (snake_case-Namen für E10.2), Schreibweise
+  (`Mod`/`Ctrl`/`Cmd`/`Alt`/`Shift`, Parsen, Ausgeben, Hinweise je System) und die Vorlage „Torro“ nach der Tabelle.
+  `keys::shortcut` hört Strg/⌘-Kürzel auch, wenn ein Widget sie fing; ob das Suchfeld den Fokus hat, fragt die App bei
+  Iced nach (`operation::is_focused`), weil `ctrl_guard` und Textfelder den Status unbrauchbar machen – nur Suchen und
+  Senden wirken dort. Entf/⌫ und ⇧+Entf (Mac auch ⇧+⌫) laufen weiter als Einzeltasten über die Tabelle. Neu: Archivieren
+  überall, Gelesen/ungelesen und Markieren nach Zustand, Spam und „Move to folder“ (Auswahlmenü mit Ziffern) mit Undo,
+  endgültig löschen hinter der Rückfrage „Delete permanently?“ (Client: erst in den Papierkorb, dann `permanent: true`),
+  neue Mail, abrufen (`accounts.sync`, dann neu laden). Auf dem Mac gelten ⌘ und Strg gleich, auch für Rückgängig und
+  Senden. Die Hinweise in den Aktionsleisten bleiben die Einzeltasten; „Send“ nimmt seinen Hinweis aus der Tabelle.
+  `--open move-mail|delete-mail` für die Sichtprüfung. Auf main gebracht 2026-10-16 (#200), ID von E9 auf E10.)
+- **Modell:** Opus · **Braucht:** E8.18 · **Dateien:** neu `crates/torro-core/src/shortcuts.rs` (Befehle, Tasten,
+  Vorlage „Torro“; ohne Iced, damit der Kern in E10.2 dieselbe Tabelle prüft), `crates/torro-core/src/lib.rs`,
+  `crates/torroinbox/src/{keys,app,mail,compose}.rs`, `crates/torro-gui/src/widgets.rs` (Rückgängig auf dem Mac auch
+  mit Strg+Z), `crates/torro-ipc/src/inbox.rs` (Client-Aufrufe für `Sync` und `DeleteMail` mit `permanent`)
+- `keys` liest die Kürzel aus der Tabelle; die Einzeltasten bleiben. Neue Befehle: Archivieren in jedem Fenster,
+  Gelesen/ungelesen, Markieren, Spam, Verschieben (öffnet die Ordnerwahl als Auswahlmenü, wie „Later“), endgültig
+  löschen, neue Mail, abrufen.
+  Tastenhinweise an Knöpfen und in Menüs kommen aus derselben Tabelle; in den Aktionsleisten bleiben vorerst die
+  Einzeltasten stehen, nur „Send“ zeigt sein Kürzel (die Hinweise der Tabelle mit E10.2, wenn Tasten frei belegbar sind).
+- **Oberfläche:** Mail-Fenster (Liste, Leser), Schreibfenster. **API:** vorhandene Requests, kein neuer:
+  `mail.move_messages` · Write (Archivieren mit Rolle `archive`, Spam mit Rolle `junk`, Verschieben),
+  `mail.delete_messages` · Delete (ohne und mit `permanent: true`), `mail.set_flags` · Write, `mail.search_messages` ·
+  Read, `mail.save_draft` und `mail.send_draft` · Write, `accounts.sync` · Write (gleicht alle Konten ab, nicht nur
+  Mail). **MCP:** keine neuen Tools – Tasten sind Oberfläche, die Befehle dahinter haben ihre Tools.
+- **Abnahme:** Tests je Kürzel für beide Systeme (macOS: ⌘ und Strg), Strg+A archiviert nicht, ⇧+Entf fragt erst,
+  Textfeld behält seine Tasten, Einzeltasten wie bisher; beide Sprachen.
+
+### E10.1b Vorlagen Apple Mail, Thunderbird und Outlook als Vorgabe je System
+- [ ] offen
+- **Modell:** Opus · **Braucht:** E10.1 · **Dateien:** `crates/torro-core/src/shortcuts.rs`,
+  `crates/torroinbox/src/{keys,app,compose}.rs`
+- Drei neue Vorlagen in `torro_core::shortcuts`, jede gegen die aktuelle Hilfe des Herstellers geprüft (Quelle und Datum
+  im Doc-Kommentar der Vorlage). Die Vorgabe richtet sich nach dem System: macOS Apple Mail, Linux Thunderbird, Windows
+  Outlook. Dafür unterscheidet `System` Windows und Linux, nicht mehr nur `Mac` und `Other`; das ändert eine
+  festgelegte Schnittstelle und ist hiermit beschlossen. Jede Vorlage hat Tasten für alle Systeme, damit E10.2 sie
+  überall anbieten kann; ⌘ wird unter Linux und Windows zu Strg.
+- Wo die Übersetzung oder das Vorbild mit festen Tasten kollidiert (etwa ⌃⌘A, das unter Linux zu Strg+A, also „Alles
+  auswählen“, würde, oder Strg+⇧+U und IBus), bekommt der Befehl eine freie Ersatztaste; die Wahl steht im Doc-Kommentar.
+  Was das Vorbild nicht kennt (Spam, In Ordner verschieben, Später …), übernimmt die Vorlage von „Torro“, damit jeder
+  Befehl eine Taste hat. Rückfrage vor dem endgültigen Löschen und die Einzeltasten bleiben.
+- **Oberfläche:** Mail-Fenster und Schreibfenster, wie E10.1; ohne Einstellung, die Vorgabe ist fest bis E10.2.
+  **API/MCP:** kein neuer Request (wie E10.1); die Auswahl kommt mit E10.2.
+- **Abnahme:** Tests je Vorlage und System (Tabelle gegen die Hilfe des Herstellers), keine Doppelbelegung in einer
+  Vorlage, auch nicht mit den Einzeltasten und den gesperrten Tasten; die Vorgabe folgt `System::current()`; beide
+  Sprachen.
+
+### E10.2 Vorlagen wählen und eigene Tasten im Kern
+- [ ] offen – wartet auf S.20
+- **Modell:** Opus · **Braucht:** E10.1b, S.20 · **Dateien:** `crates/torro-core/src/{shortcuts,settings}.rs`,
+  `crates/torro-ipc/src/{lib,api}.rs` (`SettingKey`, Beschreibungen von `SET_SETTING` und `GET_SETTINGS`),
+  `crates/torroworkplace/src/{core,approvals,mcp}.rs` (Freigabe-Text; in `mcp.rs` nur der Kommentar zu `narrow_schema`),
+  `crates/torroinbox/src/{keys,app}.rs`, `docs/api.md`, `docs/api-reference.md`
+- Vorlage Gmail (gegen die Hilfe des Herstellers geprüft). Ohne gespeicherte Wahl gilt die Vorgabe des Systems aus
+  E10.1b; wählbar sind alle Vorlagen auf jedem System. Der Kern prüft
+  Schreibweise, gesperrte Tasten und Doppelbelegung, auch mit den Einzeltasten (`conflict` mit dem belegten Befehl).
+  Offene Mail-Fenster folgen sofort, wie beim Design.
+- **Schreibweise:** `Mod` steht für Strg unter Windows und Linux und für ⌘ oder Strg auf dem Mac (`"Mod+Shift+A"`);
+  `Ctrl`, `Cmd`, `Alt`, `Shift` gelten wörtlich. Die gültigen `command`-Namen stehen im Doc-Kommentar von `SettingKey`
+  und in der Katalogbeschreibung, damit Agenten sie kennen.
+- **Freigabe:** Agenten brauchen für Admin immer eine Freigabe. Ihr Text ist lesbar statt rohem JSON, etwa „Bind Shift+J
+  to Delete permanently“ bzw. „Switch mail shortcuts to Outlook“, und nennt bei Lösch-Befehlen ausdrücklich, dass gelöscht
+  wird (`approvals.rs`). Eigener Zweig vor dem allgemeinen `Request::SetSetting { key, value }`, sonst griffe „Change the
+  setting … to {JSON}“ mit dem Text des Clients. Der Text entsteht erst nach der Prüfung im Dienst: Befehls- und
+  Vorlagennamen aus der Tabelle in `torro_core::shortcuts`, Tasten in der Schreibweise, die der Dienst daraus macht, nie
+  der rohe `value`. Bei `"replace": true` nennt er den Befehl, dem die Taste weggenommen wird, aus dem Stand des Dienstes
+  („Bind Shift+J to Delete permanently (taken from Spam)“); bei `{"reset": "all"}` sagt er, wie viele eigene Tasten
+  verloren gehen (aus der API-Prüfung, #200).
+- **Oberfläche:** E10.3. **API:** `Request::SetSetting` · `settings.set_setting` · Admin, neue Schlüssel
+  `mail_shortcut_preset` (`"torro"`, `"apple_mail"`, `"outlook"`, `"thunderbird"`, `"gmail"`) und `mail_shortcut`
+  (`{"command": "archive", "keys": "Mod+Shift+A"}`; `"keys": null` = zurück zur Vorlage; `"replace": true` nimmt die
+  Taste dem anderen Befehl im selben Schritt weg; `{"reset": "all"}` löscht alle eigenen Tasten); klein und gezielt wie
+  `list_order`. Doc-Kommentar und Katalogbeschreibung nennen beide Formen von
+  `mail_shortcut` und die Fehlercodes (`conflict` mit dem belegten Befehl, `error` für gesperrte Tasten und falsche
+  Schreibweise). `settings.get_settings` liefert `mailShortcuts` (Vorlage, eigene Tasten und die daraus wirksame
+  Belegung, damit kein Client sie selbst zusammensetzt) · Read. **MCP:**
+  `settings_set_setting`, `settings_get_settings` (vorhanden, Beschreibungen ergänzen).
+- **Abnahme:** Handler-Tests (gültig, unbekannter Befehl, gesperrte Taste, Doppelbelegung auch mit Einzeltaste,
+  `replace`, `reset`), Vorlagenwechsel behält eigene Tasten, „Endgültig löschen“ auf eigener Taste fragt erst,
+  Freigabe-Text lesbar; Tests je Vorlage in `keys`; API-Referenz neu erzeugt.
+
+### E10.3 Einstellungsseite „Keyboard shortcuts“ des Mail-Fensters
+- [ ] offen – wartet auf S.20
+- **Modell:** Sonnet · **Braucht:** E10.2, S.20 · **Dateien:** `crates/torro-settings-ui/src/mail.rs` (neuer Abschnitt
+  „Keyboard shortcuts“), `crates/torroinbox/src/app.rs`
+- **Oberfläche:** Auswahl „Preset“ (Torro, Apple Mail, Outlook, Thunderbird, Gmail). Darunter die Befehle mit ihren
+  Tasten, eigene hervorgehoben. Klick auf die Taste → „Press keys…“ nimmt das Kürzel auf, Esc bricht ab. Doppelbelegung →
+  Hinweis „Already used by {command}“ mit „Replace“ (`replace: true`). „Reset“ je Zeile und „Reset all“
+  (`reset: "all"`), je ein Request. Skill `torro-design`.
+- **API/MCP:** wie E10.2, kein neuer Request.
+- **Abnahme:** Sichtprüfung Breit/Schmal, hell/dunkel; Tests der Nachrichten.
+
+
 ## Danach (Überblick, Aufgaben folgen)
 
 - **E4 Mail als Quelle**, nach dem Mail-Kern (M2/M3 in [mail.md](../mail.md)); dort entscheiden: Spur

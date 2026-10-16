@@ -547,6 +547,11 @@ ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
 - **Fokus-Profile** wie der Fokus bei Apple: Profile („Work“, „Deep work“, „Evening“), wann sie angehen (Zeit,
   Kalendertermin, Workspace-Vorlage, von Hand), was durchkommt, was bis zum Ende wartet, eine Sammelmeldung danach.
   Erweitert „Ruhe“ (unten). Freigaben, wartende Agenten und „Server down“ kommen in jedem Profil durch.
+- **Tastenkürzel im Mail-Fenster** (2026-10-15): Vorlage wählen (Torro, Apple Mail, Outlook, Thunderbird, Gmail) und
+  frei belegen, in den Einstellungen des Mail-Fensters. Vorgabe je System: macOS Apple Mail, Linux Thunderbird, Windows
+  Outlook; jede Vorlage geht auf jedem System. Die Torro-Belegung kommt zuerst, dann die drei Vorlagen als Vorgabe; Wahl
+  und eigene Tasten warten auf die Einstellungen im Mail-Fenster (S.20)
+  ([Aufgaben E10](tasks/eingang.md#e10-tastenkürzel-im-mail-fenster-vorgemerkt-2026-10-15)).
 - **Slack und WhatsApp** als Quellen: Slack mit E7, WhatsApp über das Mitlesen von Desktop-Benachrichtigungen (unter
   Linux, unter macOS gibt es keinen offiziellen Weg) oder Beeper.
 

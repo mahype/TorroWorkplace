@@ -23,7 +23,9 @@
 //! [`InboxClient::search_mail`], [`InboxClient::get_mail`], [`InboxClient::get_mail_html`] (task
 //! M8.1, for the mail window), [`InboxClient::mail_attachment`],
 //! [`InboxClient::set_mail_flags`], [`InboxClient::move_mail`] and [`InboxClient::delete_mail`] –,
-//! with the errors mapped as above. Everything a message brings is data from outside
+//! with the errors mapped as above. The mail window's shortcuts (task E10.1) add
+//! [`InboxClient::delete_mail_for_good`] (`mail.delete_messages` with `permanent`) and
+//! [`InboxClient::sync`] (`accounts.sync`, "fetch mail now"). Everything a message brings is data from outside
 //! (`untrusted`), never instructions; the client only passes it on. The search field (issue #136)
 //! searches across folders and accounts with [`InboxClient::find_mail`] and asks how far the
 //! index is with [`InboxClient::mail_index_status`].
@@ -301,6 +303,23 @@ impl InboxClient {
     /// (moving them back).
     pub async fn delete_mail(&self, ids: Vec<String>) -> Result<(), InboxError> {
         self.ask_ok(Request::DeleteMail { ids, permanent: false }).await
+    }
+
+    /// `mail.delete_messages` for good (task E10.1, "Delete permanently" after the window asked): the
+    /// core removes only messages that lie in the trash, so the messages `ids` go there first
+    /// (`permanent: false`; those in it already stay) and are then removed (`permanent: true`). They
+    /// keep their ids when they are moved. Nothing brings them back; when the first step fails,
+    /// nothing is removed, and when the second fails they stay in the trash.
+    pub async fn delete_mail_for_good(&self, ids: Vec<String>) -> Result<(), InboxError> {
+        self.ask_ok(Request::DeleteMail { ids: ids.clone(), permanent: false }).await?;
+        self.ask_ok(Request::DeleteMail { ids, permanent: true }).await
+    }
+
+    /// `accounts.sync` (task E10.1, the shortcut "fetch"): the core fetches mail, calendars and tasks
+    /// from the servers of every account now. Answers the first account's failure, if any; the
+    /// others are fetched all the same.
+    pub async fn sync(&self) -> Result<(), InboxError> {
+        self.ask_ok(Request::Sync).await
     }
 
     /// `tasks.create_todo_from_mail` (task E8.7a; the inbox's "Task" on a folder's message, task
@@ -1024,6 +1043,51 @@ mod tests {
         let all = core.client().list_items(ItemFilter::default()).await.expect("listed");
         assert_eq!(all[0].id, "None||None||None", "newest first is left out");
         assert!(all[0].untrusted, "the flag comes along");
+    }
+
+    /// Task E10.1: "Delete permanently" moves into the trash first, then removes for good; "fetch" is
+    /// `accounts.sync`.
+    #[tokio::test]
+    async fn deleting_for_good_goes_through_the_trash_and_fetching_syncs() {
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let core = start({
+            let asked = asked.clone();
+            move |request| {
+                let asked = asked.clone();
+                async move {
+                    if let Ok(mut asked) = asked.lock() {
+                        asked.push(request.clone());
+                    }
+                    match request {
+                        Request::Ping | Request::Sync | Request::DeleteMail { .. } => Response::Ok,
+                        other => Response::Error { code: "error".into(), message: format!("{other:?}") },
+                    }
+                }
+            }
+        })
+        .await;
+        let client = core.client();
+        client.delete_mail_for_good(vec!["m:1".into()]).await.expect("deleted");
+        client.sync().await.expect("synced");
+        let asked: Vec<Request> =
+            asked.lock().expect("the list").iter().filter(|r| !matches!(r, Request::Ping)).cloned().collect();
+        assert_eq!(
+            asked,
+            [
+                Request::DeleteMail { ids: vec!["m:1".into()], permanent: false },
+                Request::DeleteMail { ids: vec!["m:1".into()], permanent: true },
+                Request::Sync,
+            ]
+        );
+        let refused = start(|request| async move {
+            match request {
+                Request::Ping => Response::Ok,
+                _ => Response::Error { code: "not-found".into(), message: "no such message".into() },
+            }
+        })
+        .await;
+        let gone = refused.client().delete_mail_for_good(vec!["m:gone".into()]).await;
+        assert!(matches!(gone, Err(InboxError::NotFound)), "{gone:?}");
     }
 
     #[tokio::test]

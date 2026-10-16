@@ -126,6 +126,16 @@ pub trait MailSource: Send + Sync {
     /// `mail.delete_messages` into the account's trash, never for good.
     fn delete_mail(&self, ids: Vec<String>) -> impl Future<Output = Result<(), InboxError>> + Send;
 
+    /// `mail.delete_messages` with `permanent` (task E10.1, "Delete permanently", only after the
+    /// window asked): removes the messages `ids` for good – through the trash, as the core removes
+    /// only what lies there ([`InboxClient::delete_mail_for_good`]). There is no undo.
+    fn delete_mail_for_good(&self, ids: Vec<String>) -> impl Future<Output = Result<(), InboxError>> + Send;
+
+    /// `accounts.sync` (task E10.1, the shortcut "fetch"): the core fetches from the servers of every
+    /// account now. The one method that is no `mail.*` request: fetching mail is the accounts'
+    /// sync. The window lists anew afterwards.
+    fn sync_mail(&self) -> impl Future<Output = Result<(), InboxError>> + Send;
+
     /// `tasks.create_todo_from_mail` (task E8.7a; "Task" on a folder's message, task E8.7b): makes a
     /// task of the message `id` of the mail account `account` (`mail:<address>`) in the task list
     /// `list` (one of [`torro_inbox::InboxSource::list_task_lists`]), titled `title` (`None`: the
@@ -255,6 +265,14 @@ impl MailSource for InboxClient {
         InboxClient::delete_mail(self, ids).await
     }
 
+    async fn delete_mail_for_good(&self, ids: Vec<String>) -> Result<(), InboxError> {
+        InboxClient::delete_mail_for_good(self, ids).await
+    }
+
+    async fn sync_mail(&self) -> Result<(), InboxError> {
+        InboxClient::sync(self).await
+    }
+
     async fn create_todo_from_mail(
         &self,
         account: String,
@@ -338,6 +356,17 @@ impl MailSource for DemoSource {
 
     async fn delete_mail(&self, ids: Vec<String>) -> Result<(), InboxError> {
         DemoSource::move_mail_to(self, &ids, Role::Trash)
+    }
+
+    /// The demo can remove no mail: the message goes to the trash, where the demo's next list
+    /// finds it.
+    async fn delete_mail_for_good(&self, ids: Vec<String>) -> Result<(), InboxError> {
+        DemoSource::move_mail_to(self, &ids, Role::Trash)
+    }
+
+    /// The demo has no server to fetch from.
+    async fn sync_mail(&self) -> Result<(), InboxError> {
+        Ok(())
     }
 
     /// The demo keeps no tasks of folder mail: it answers the task the core would make – the
@@ -428,6 +457,14 @@ impl MailSource for crate::empty::EmptySource {
 
     async fn delete_mail(&self, _ids: Vec<String>) -> Result<(), InboxError> {
         Err(InboxError::NotFound)
+    }
+
+    async fn delete_mail_for_good(&self, _ids: Vec<String>) -> Result<(), InboxError> {
+        Err(InboxError::NotFound)
+    }
+
+    async fn sync_mail(&self) -> Result<(), InboxError> {
+        Ok(())
     }
 
     async fn create_todo_from_mail(
@@ -586,6 +623,8 @@ pub enum MailAction {
     Archive,
     /// Into the account's trash (`#`).
     Delete,
+    /// Into the account's junk folder (task E10.1, the shortcut "junk").
+    Junk,
     /// Set (`true`) or clear the flag.
     Flag(bool),
     /// Mark read (`true`) or unread.
@@ -607,7 +646,9 @@ impl Compose {
             MailAction::Reply => Some(Compose::Reply),
             MailAction::ReplyAll => Some(Compose::ReplyAll),
             MailAction::Forward => Some(Compose::Forward),
-            MailAction::Archive | MailAction::Delete | MailAction::Flag(_) | MailAction::Read(_) => None,
+            MailAction::Archive | MailAction::Delete | MailAction::Junk | MailAction::Flag(_) | MailAction::Read(_) => {
+                None
+            }
         }
     }
 
@@ -789,13 +830,18 @@ pub enum MailEdit {
     Move { ids: Vec<String>, to: MoveTarget },
     /// Into the trash (`mail.delete_messages`).
     Delete { ids: Vec<String> },
+    /// Removed for good (task E10.1, `mail.delete_messages` with `permanent`), no undo.
+    DeleteForGood { ids: Vec<String> },
 }
 
 impl MailEdit {
     /// The messages it changes.
     pub fn ids(&self) -> &[String] {
         match self {
-            MailEdit::Flags { ids, .. } | MailEdit::Move { ids, .. } | MailEdit::Delete { ids } => ids,
+            MailEdit::Flags { ids, .. }
+            | MailEdit::Move { ids, .. }
+            | MailEdit::Delete { ids }
+            | MailEdit::DeleteForGood { ids } => ids,
         }
     }
 
@@ -805,6 +851,7 @@ impl MailEdit {
             MailEdit::Flags { ids, add, remove } => source.set_mail_flags(ids, add, remove).await,
             MailEdit::Move { ids, to } => source.move_mail(ids, to).await,
             MailEdit::Delete { ids } => source.delete_mail(ids).await,
+            MailEdit::DeleteForGood { ids } => source.delete_mail_for_good(ids).await,
         };
         result.map_err(|err| err.to_string())
     }
@@ -821,6 +868,7 @@ pub fn edit_of(action: MailAction, id: &str) -> Option<MailEdit> {
     match action {
         MailAction::Archive => Some(MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Archive) }),
         MailAction::Delete => Some(MailEdit::Delete { ids: ids.clone() }),
+        MailAction::Junk => Some(MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Junk) }),
         MailAction::Flag(set) => Some(flag(Flag::Flagged, set)),
         MailAction::Read(read) => Some(flag(Flag::Seen, read)),
         MailAction::Reply | MailAction::ReplyAll | MailAction::Forward => None,
