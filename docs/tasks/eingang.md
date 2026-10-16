@@ -1768,6 +1768,164 @@ ihre neuen Knöpfe dann gleich in die passende Leiste. Nicht parallel: zwei Aufg
   Sichtprüfung (`torro-design-review`) im Leser und im Paneel, alle Größen, hell und dunkel, mit HTML-Mail, Textmail
   und langer Mail (letzte Zeile über der Leiste sichtbar). Übersetzungen im Bericht.
 
+## E11 Mail-Fenster: große Knöpfe (issue #207, Plan 2026-10-16)
+
+Maßstab: Entwurf **D · Kombiniert** in [`docs/prototypes/inbox/mail-buttons.html`](../prototypes/inbox/mail-buttons.html#d)
+und der Kommentar „Entscheidung Design (2026-10-16)“ in issue #207. Regeln: Skill `torro-design`. Nur Oberfläche: jeder
+Knopf schickt dieselbe Message wie heute und damit denselben Request; keine neuen Requests, keine MCP-Tools, Tasten
+(`keys.rs`) unverändert.
+
+Entschieden am 2026-10-16 (Planung #207):
+
+1. **Torro-Knöpfe** (Task, AI task, Event, AI event, Mute… im Leser): runde Pillen mit Rand und Icon in Torro-Rot
+   (`Palette::accent`), das Wort in `TEXT`, Fläche neutral. Kein neuer Farb-Token; Ausnahme von „Rot nur
+   Primärknopf“ wie bei den KI-Sparkles. Reply ist nicht mehr primär: das Mail-Fenster hat keinen roten Knopf mehr.
+2. **Was nicht in der Befehlsleiste steht:** Reply all im Menü an Reply (▾); Flag/Unflag, Mark read/unread,
+   Done/Reopen, Move to Info/For me und Close im Menü „…“; AI task und AI event als Pillen neben Task und Event.
+3. **Reichweite:** Liste, Leser und Paneel des **Mail-Fensters** in allen Größen. Zentrale und App Feed behalten ihr
+   Paneel aus E9.4.
+4. **Karten** (Comfortable) bleiben unberührt, bis #208 sie entfernt.
+5. „Mute…“ bleibt das Wort (statt „Mute sender“): der Knopf öffnet wie heute das Menü mit allen Wegen, nicht nur den
+   Absender.
+6. Event steht nur, wo es heute geht (Eintrag mit Mail); eine Ordnermail ohne Eintrag hat keinen Event-Knopf. Later
+   an einer Ordnermail kommt mit E9.2.
+
+```
+E11.1 ─┬─ E11.2 (Liste)
+       └─ E11.3 (Leser) ── E11.4 (Paneel des Mail-Fensters)
+```
+
+Nicht parallel: E11.2–E11.4 und E9.2/E9.3b ändern alle `crates/torroinbox`. Wer nach dem anderen kommt, setzt seine
+Knöpfe in die neue Anordnung (E9.2: Later an Ordnermails in Befehlsleiste und Leiste der Zeile).
+
+### E11.1 Bausteine: Befehlsleiste, Leiste der Zeile, Pille, versenkter Schalter
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`, `crates/torro-core/src/design/rules.rs`,
+  `crates/torro-gui/src/{theme,style,widgets,icon}.rs`, `crates/torro-gui/assets/icons/code.svg`,
+  `crates/torro-gui/examples/gallery.rs`, `.claude/skills/torro-design/SKILL.md`, `docs/design-pakete.md` (Liste der Maße)
+- **Maße** (`torro_core::design::Size`, `Size::entries`, Zuordnung der Schlüssel, `Design::standard()`; in
+  `torro_gui::theme::size` je eine Funktion): `command` = 46 (Befehlsleiste des Lesers), `pill` = 42 (Torro-Pillen und
+  Avatar im Kopf des Lesers). `size::control_xl()` (44) gilt künftig auch für die Leiste unter der gewählten Mail;
+  Doc-Kommentar anpassen. `row_message` 88 → 92 (drei Zeilen 20, oben und unten 16), Doc-Kommentar und Tests
+  nachziehen. Grenzen für Pakete in `design/rules.rs`: `command` 32–64, `pill` 28–64 (Tabelle in
+  `docs/design-pakete.md` ergänzen). Pakete ohne die neuen Schlüssel nehmen die Standardwerte (Test).
+- **Icon:** `Icon::Code` (Lucide 0.469.0 `code`, Strich 1.75) für das Segment „HTML“, mit Eintrag in `Icon::ALL`.
+- **Stile** (`style::button`): `cell` – flache Zelle ohne Radius und Rand, Fläche `raised`, Text `text`, Hover `hover`,
+  gedrückt `selected`, aus 40 % Deckkraft; `pill` – voll rund, Fläche transparent, Rand `accent`, Text `text`, Hover
+  `hover`. `style::container::track` – versenkte Spur: Fläche `bg`, Rand `line_strong`, Radius `radius::sm()`.
+  `style::text_input_flat` – ohne Rand und Radius (Suchfeld über der Liste). Alles über `palette(theme)`, keine Zahlen.
+- **Bausteine** (`widgets`, je mit Doc-Kommentar und Beispiel):
+  - `command_bar(cells)` – Zellen gleich breit (`Fill`) über die ganze Breite, `size::command()` hoch, senkrechte
+    `LINE` zwischen den Zellen, unten `LINE`. Zelle `command_cell(icon, label, words, strong, on_press)` – Icon
+    `icon::SIZE_SM`, Wort `typo::body()` bzw. mit `strong` `typo::body_strong()`; ohne `words` nur das Icon mit Wort als
+    Tooltip. `command_split(icon, label, words, on_press, on_menu)` – wie eine Zelle, rechts ein abgetrennter Teil mit
+    `Icon::ChevronDown` (Tooltip „More replies“), der `on_menu` schickt. `command_more(on_press)` – schmale Zelle
+    (`size::command()` breit) mit `Icon::Ellipsis`, Tooltip „More“. `command_words(labels, room)` – Wörter nur, wenn
+    jede Zelle ihr Icon und Wort in ihrem gleichen Anteil unterbringt, sonst keine.
+  - `row_strip(actions, words)` – Leiste unter der gewählten Zeile: die `RowAction`s als `cell`, gleich breit über die
+    ganze Zeilenbreite, `size::control_xl()` hoch, oben `LINE`, senkrechte `LINE` dazwischen; Tooltip mit Wort und
+    `kbd` wie `row_actions_strip`. `RowAction` bekommt ein Feld `accent` (Icon in `accent`, Methode `.accent()`).
+    `row_strip_words(actions, width)` wie `command_words`. `row_actions_strip` bleibt für die Zentrale.
+  - `pill_button(icon, label, on_press)` – `size::pill()` hoch, Stil `pill`, Icon in `accent` (aus: verblasst),
+    Innenrand waagerecht `space::l()`.
+  - `view_switch(options, active)` – versenkte Spur (`container::track`) mit Segmenten aus Icon (ohne Wort, Wort als
+    Tooltip), aktives Segment `segment(true)`; Höhe `size::control()`. `file_chip(name, size, on_press)` – 32 hoch
+    (`size::control()`), `radius::sm()`, `raised` mit `line_strong`, Büroklammer 14 in `text_3`, Name `typo::body()`,
+    Größe `typo::meta()` in `text_3`; ganzer Chip ein Knopf.
+- **Galerie:** `--mailbar` zeigt alle neuen Bausteine in allen Zuständen (normal, Hover sichtbar beschriftet, aus),
+  Befehlsleiste in drei Breiten, Leiste mit und ohne Wörter. Anschauen mit `--light` und `--design plex`.
+- **Skill `torro-design`:** Tabelle der Maße (`command`, `pill`, `control_xl`, `row_message`), Abschnitt 5: neuer Eintrag
+  „Befehlsleiste und Leiste der Zeile (E11)“ mit den Bausteinen, der Regel „Aktionen sind Zellen bzw. Pillen, Ansicht
+  ist versenkt“ und der Ausnahme für die roten Pillen; der Eintrag „Standard oben, Torro-Leiste unten“ gilt nur noch
+  für Zentrale und App Feed.
+- **Oberfläche:** nur Bausteine. **API/MCP:** keine.
+- **Abnahme:** Tests in `widgets.rs`/`style.rs`: `command_words` und `row_strip_words` an den Grenzen (genau passend,
+  ein Pixel zu wenig); `cell` und `pill` in allen fünf Zuständen hell und dunkel, Text ≥ 4.5:1 auf ihrer Fläche,
+  Rand der Pille ≥ 3:1 auf `panel`; neue Maße im Standardpaket und in einem Paket ohne sie. Galerie in `torro`, `plex`,
+  hell und dunkel angesehen (Bilder im Bericht). `scripts/design-check.sh` sauber. Übersetzungen im Bericht.
+
+### E11.2 Liste: Leiste von Rand zu Rand, Suchfeld über die volle Breite
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E11.1 · **Dateien:** `crates/torroinbox/src/{list,mail,search,app}.rs`,
+  `crates/torro-gui/src/shell.rs`, `crates/torro-core/src/i18n/de.rs` (nur wenn neue Texte)
+- **Leiste unter der gewählten Zeile** (Mail-Fenster, Kind `Mail`; Zeilen von Einträgen `list::entry_row` und von
+  Ordnermails `mail::message_row`): statt `list::with_strip` neu `list::with_row_strip` mit `widgets::row_strip`, außerhalb
+  des Innenrands der Zeile, von der linken bis zur rechten Kante, bündig am unteren Rand; zwischen Zeilen und Leiste
+  `space::l()`. `list::sized_row` so umbauen, dass die Zeile (Knopf mit den Zeilen) und die Leiste untereinander
+  liegen und der Auswahlbalken über beide reicht. Höhe mit Leiste: `row_message() + size::control_xl()`
+  (`list::strip_height` für das Mail-Fenster). Zentrale und App Feed behalten `with_strip`; welche Leiste gilt, sagt
+  ein neues Feld `edge_strip: bool` in `list::Rows` (und `mail::MailList`), das `App` für Kind `Mail` setzt. Die
+  Höhen für das Scrollen zum Cursor (`list::row_span`, `height_of`) rechnen mit derselben Höhe.
+- **Reihenfolge** in der Leiste: Archive, Delete, Later, Task (Icon rot, `RowAction::accent`), Mute…, danach, was die
+  Zeile heute sonst hat (AI task, Done/Reopen, Antworten einer Einladung vor Later). Einträge: `list::entry_actions`
+  neu ordnen; Ordnermails: `mail::message_buttons` (das „…“ bleibt der letzte Knopf). Nichts fällt weg.
+- **Wörter:** `widgets::row_strip_words` mit der Breite der Liste; bei 390 nur Icons, bei 520 Icons mit Wort (D).
+- **Abstände:** Zeilen mit 16 oben, unten und links (`row_message` aus E11.1, `layout::row_padding` passt); die Hinweise
+  Büroklammer, Fahne, Einladung zwischen Name und Zeit gibt es in Ordnerzeilen schon – nachgesehen; Einträge kennen
+  Anhang und Fahne nicht (`Item` hat die Felder nicht) und zeigen weiter nur die Einladung.
+- **Suchfeld** (`search::bar`): im Mail-Fenster das Feld über die volle Breite der Liste, `size::header()` hoch,
+  `style::text_input_flat`, darunter `LINE`, ohne Rand links und rechts; Vorschläge, Bereich und Statuszeile
+  darunter mit dem bisherigen Innenrand.
+- **Lupe in der Seitenleiste entfällt** im Mail-Fenster: neue Funktion `shell::sidebar_head_in(mode, current, anchor, on,
+  on_toggle, search: bool)`, `shell::sidebar_head` ruft sie mit `true` auf (Signatur bleibt); `App` übergibt
+  `false` für Kind `Mail` (Ausklapp- und Leistenform). `/` und ⌘F/Strg+F fokussieren das Feld weiter.
+- **Oberfläche:** Mail-Fenster, Liste. **API/MCP:** keine; dieselben Messages (`Message::Act`, `Message::Mail`).
+- **Abnahme:** Tests: Reihenfolge der Leiste für Eintrag, Ordnermail und Einladung; nichts fehlt gegenüber vorher;
+  Höhe der gewählten Zeile; Wörter bei 390 aus, bei 520 an; Zentrale zeigt weiter `with_strip`; Seitenleiste des
+  Mail-Fensters ohne „Search“, die der Zentrale mit. Sichtprüfung (`torro-design-review`) Mail-Fenster in allen
+  Größen, hell und dunkel, mit `--design plex`. Übersetzungen im Bericht.
+
+### E11.3 Leser: Befehlsleiste, Kopf linksbündig, Pillen, Fuß mit Ansicht
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E11.1 · **Dateien:** `crates/torroinbox/src/{mail,detail,app}.rs`,
+  `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md` (Abschnitt zum Leser, falls er E9.4 beschreibt)
+- **Aufbau von `mail::reader`** von oben nach unten: (1) Befehlsleiste fest, (2) Scrollbereich mit Kopf, Linie über
+  die ganze Breite, Mail; (3) Anhänge fest; (4) Fuß fest. Die schwebende Torro-Leiste entfällt im Leser
+  (`torro_groups`, `torro_fit`, `pack`, `torro_bar`, `page_end` und ihre Tests ersetzen oder entfernen;
+  `widgets::floating_bar` bleibt in `torro-gui`).
+- **Befehlsleiste** (`reader_head` ersetzt): `widgets::command_bar` mit Reply (`command_split`, `strong`, Menü →
+  „Reply all“), Forward, Archive, Delete (aus im Papierkorb), Later (nur Eintrag, `AskSnooze`, Anker `snooze`),
+  `command_more`. Wörter nach `widgets::command_words`. `bar_fit`/`BarFit` entfallen.
+- **Menüs:** `Menu::Reply` und `Menu::More` in `app.rs`, geöffnet von neuen Messages `AskReplyMenu(String)` und
+  `AskMore(String)` (Mail-Kennung, wie `AskMuteMail`); Anker `reply` und `more` in `detail::Anchors` (mit
+  `Anchors::of`). „Reply all“ schickt `Message::Mail(MailAction::ReplyAll, …)`. „…“: Flag/Unflag, Mark read/unread,
+  bei einem Eintrag Done/Reopen (`SetDone`) und Move to Info/For me (`AskLane`, die Frage öffnet am Anker `more`),
+  im Leser Close (`CloseDetail`); jeder Eintrag mit seiner Taste als `kbd`. `Escape` schließt wie bei den anderen Menüs.
+- **Kopf** (`reader_sender`): Betreff `typo::headline()`, darunter Avatar `size::pill()` und Name, darunter „to … ·
+  Datum“ in `typo::meta()`/`text_2`; alles linksbündig an der Kante der Knöpfe, kein Datum rechts. Darunter die
+  Pillen (`widgets::pill_button`): Task, AI task, Event, AI event (nur Eintrag; ohne KI aus mit Tooltip wie heute),
+  Mute… (`AskHide` bzw. `AskMuteMail`); ohne Überschrift, umbrechend mit `space::s()`. Einladung und Aufgabe
+  (`invite_card`, `task_card`) bleiben unter den Pillen. Grund der Spur (issue #128) bleibt unter dem Absender.
+- **Mail:** über die volle Breite des Lesers, kein Rahmen; Text mit dem Innenrand der Seite, HTML von Rand zu Rand
+  wie heute.
+- **Anhänge:** eine Zeile `widgets::file_chip` (umbrechend), bündig über dem Fuß, oben `LINE`, Innenrand
+  `space::s()` × Seitenrand; Klick wie heute `OpenAttachment`. `attachment_card` entfällt im Leser.
+- **Fuß:** oben `LINE`, Fläche `bg`, Innenrand `space::s()` × Seitenrand, linksbündig: `view_switch` HTML/Text
+  (`Icon::Code`, `Icon::AlignLeft`), `view_switch` Light/Dark (`Icon::Sun`, `Icon::Moon`, nur bei HTML), Copy text als
+  `style::button::icon` (ohne Wort, Tooltip) – jeweils nur, wo `Reading::view_tools` es hat.
+- **Oberfläche:** Leser des breiten Mail-Fensters. **API/MCP:** keine; dieselben Messages wie in E9.4.
+- **Abnahme:** Tests: die Befehlsleiste hält genau Reply, Forward, Archive, Delete, Later (Eintrag), „…“; das Menü an
+  Reply genau „Reply all“; „…“ genau Flag, gelesen, Done/Reopen und Move to (Eintrag), Close; die Pillen genau Task,
+  AI task, Event, AI event, Mute… beim Eintrag und Task, Mute… bei der Ordnermail; jede Message wie vorher; kein
+  roter Knopf im Leser (`style::button::primary` kommt nicht vor); Fuß ohne Schalter, solange die Mail lädt.
+  Sichtprüfung (`torro-design-review`) im Leser bei 1320 und 1600 Fensterbreite, hell und dunkel, `--design plex`, mit
+  HTML-Mail, Textmail, Mail mit zwei Anhängen und langer Mail. Übersetzungen im Bericht.
+
+### E11.4 Paneel des Mail-Fensters wie der Leser
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** E11.3 · **Dateien:** `crates/torroinbox/src/{mail,detail,app}.rs`,
+  `crates/torro-core/src/i18n/de.rs` (nur wenn neue Texte)
+- **Mittel und Schmal** im Mail-Fenster (`App::view` ohne `wide_reader`: `mail::panel` für Ordnermails,
+  `detail::panel` mit `mail::body` für Mail-Einträge): neuer Parameter `mail::Bars` (`Split` = E9.4 für Zentrale und App
+  Feed, `Command` = E11) an `mail::body` und `mail::panel`; der Kopf des Paneels (Pfad, Titel, ✕) bleibt. Mit
+  `Command`: oben im Inhalt die Befehlsleiste aus E11.3 (ohne Close, das ✕ steht im Kopf), Absender und Pillen wie im
+  Leser, Linie, Mail, Anhänge als Chips; der Fuß des Paneels (`Panel::footer`) ist der Fuß aus E11.3 statt
+  `detail::Footer`/`folder_footer`. Die Teile aus E11.3 als gemeinsame Funktionen in `mail.rs` nutzen, nicht doppelt bauen.
+- **Oberfläche:** Mail-Fenster in Mittel und Schmal. **API/MCP:** keine.
+- **Abnahme:** Tests: Paneel des Mail-Fensters mit Befehlsleiste, Pillen und Fuß aus E11.3 für Eintrag und Ordnermail;
+  Paneel der Zentrale (`Kind::Hub`) unverändert wie in E9.4. Sichtprüfung (`torro-design-review`) Mail-Fenster in
+  Schmal (480×900) und Mittel (800×600), hell und dunkel, und die Zentrale zum Vergleich. Übersetzungen im Bericht.
+
 ## E5 Nextcloud, GitHub, ntfy als Quellen (Plan 2026-10-14)
 
 Konzept: [eingang.md › Quellen, Stufe 1](../eingang.md#stufe-1-ohne-fremde-anmeldung-oder-schon-vorhanden), „Sortieren“,
