@@ -271,6 +271,8 @@ async fn serve(shows: Shows) -> Result<(), String> {
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(inbox_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(voice_changes, refresh_tx.clone()));
+    // "Next" and the pause of the reminders (task ER2.5).
+    tokio::spawn(watch_reminders(core.reminders().changes(), refresh_tx.clone()));
 
     match core.events().await {
         Ok(mut events) => {
@@ -374,6 +376,15 @@ async fn watch_approvals(
 /// clean-up, the suite's approvals and account problems. So "Inbox (n)" follows without polling;
 /// the refresher collapses bursts into one new menu.
 async fn watch_inbox(mut changes: tokio::sync::watch::Receiver<()>, refresh: mpsc::UnboundedSender<()>) {
+    while changes.changed().await.is_ok() {
+        if refresh.send(()).is_err() {
+            return;
+        }
+    }
+}
+
+/// Refreshes the tray after every change of the reminders: one fired, was dismissed, the pause.
+async fn watch_reminders(mut changes: tokio::sync::watch::Receiver<u64>, refresh: mpsc::UnboundedSender<()>) {
     while changes.changed().await.is_ok() {
         if refresh.send(()).is_err() {
             return;

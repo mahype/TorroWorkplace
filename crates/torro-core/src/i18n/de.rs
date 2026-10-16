@@ -3695,6 +3695,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("notification", "Benachrichtigung"),
     ("off", "aus"),
     ("until it starts", "bis zum Beginn"),
+    // Reminders of events (ER2.5): the tray
+    ("Next: {time} {title}", "Nächster: {time} {title}"),
+    ("Reminders paused until {time}", "Erinnerungen pausiert bis {time}"),
+    ("Pause reminders", "Erinnerungen pausieren"),
+    ("For 1 hour", "Für 1 Stunde"),
     // Reminders of events (ER2.4): the control centre
     ("Show reminders", "Erinnerungen zeigen"),
     ("Default reminder", "Standard-Erinnerung"),

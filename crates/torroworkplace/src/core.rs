@@ -847,6 +847,11 @@ pub struct Snapshot {
     /// The components a person turned off (task W.2): the tray leaves out their apps, and the
     /// templates without workspaces.
     pub components_off: std::collections::BTreeSet<torro_core::settings::Component>,
+    /// The event of the next reminder that has not been dismissed (task ER2.5): when it starts and
+    /// its title (calendar text, shown as plain text).
+    pub next_reminder: Option<(chrono::DateTime<Utc>, String)>,
+    /// Until when all reminders are paused (task ER2.5).
+    pub reminders_paused: Option<chrono::DateTime<Utc>>,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -1062,13 +1067,18 @@ impl Core {
     }
 
     /// What the reminders' run plans with at `now`: the events of the calendars the suite shows
-    /// ([`crate::reminders::window`]; none when the calendars cannot be read) and the setting.
+    /// ([`crate::reminders::window`]; none when the calendars cannot be read, and none while the
+    /// calendar is turned off, task W.1: nothing runs in the background for it) and the setting.
     pub async fn reminder_inputs(
         &self,
         now: chrono::DateTime<Utc>,
     ) -> (Vec<torro_pim::Event>, torro_core::settings::Reminders) {
+        let settings = self.settings.current();
+        if !settings.component_on(torro_core::settings::Component::Calendar) {
+            return (Vec::new(), settings.reminders);
+        }
         let events = self.reminder_events(Reach::Suite, now).await.unwrap_or_default();
-        (events, self.settings.current().reminders)
+        (events, settings.reminders)
     }
 
     /// The events `reach` may read that reminders are planned from at `now`, or the calendar
@@ -4527,6 +4537,16 @@ impl Core {
             .into_iter()
             .map(|item| InboxLine { source: item.source.label(), id: item.id, title: item.title })
             .collect();
+        let now = Utc::now();
+        let (events, reminder_settings) = self.reminder_inputs(now).await;
+        let (reminders, paused) = self.reminders.reminders(&events, &reminder_settings, now);
+        snapshot.next_reminder = reminders
+            .iter()
+            .filter(|reminder| reminder.preview_by.is_none() && reminder.state != torro_ipc::ReminderState::Dismissed)
+            .map(|reminder| (crate::reminders::starts(&reminder.event), reminder.event.summary.clone()))
+            .filter(|(start, _)| *start >= now - crate::reminders::grace())
+            .min_by_key(|(start, _)| *start);
+        snapshot.reminders_paused = paused;
         snapshot
     }
 

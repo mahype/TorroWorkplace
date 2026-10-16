@@ -239,10 +239,15 @@ ER3.1 (braucht ER1.4)       ER4 später
   displays“, der Ton ein Schalter. Die Vorschau steht im Termin (ER2.3), nicht hier: Die Seite kennt keinen Termin.
 
 ### ER2.5 Tray: Nächster Termin und Pause
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.3 · **Dateien:** `crates/torroworkplace/src/tray/{menu,desktop,linux}.rs`
 - „Next: {title} · in {n} min“ (öffnet den Termin), „Pause reminders ▸ For 1 hour · Until tomorrow ·
   Resume“, in der Pause „Reminders paused until {time}“.
+- **Umgesetzt (2026-10-16):** „Next: {time} {title}“ mit der Uhrzeit statt „in {n} min“, weil das Menü nur bei
+  Änderungen neu entsteht (eine Minutenzahl würde veralten); öffnet den Kalender (ein bestimmter Termin lässt sich
+  noch nicht öffnen). Der Abschnitt steht nur da, wenn eine Erinnerung kommt oder pausiert ist. „Until tomorrow“
+  pausiert bis 8 Uhr; die Zeit wird beim Klick berechnet (`menu::Pause`). Zusätzlich `Snapshot` in `core.rs` und
+  `watch_reminders` in `daemon.rs`.
 
 ### ER2.6 MCP-Tools und bequeme Eingabe
 - [ ] erledigt
