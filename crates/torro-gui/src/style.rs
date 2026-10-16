@@ -289,6 +289,28 @@ pub mod button {
         }
     }
 
+    /// A cell of a bar that fills its width (task E11.1: the mail reader's command bar
+    /// `widgets::command_bar` and the strip under the chosen mail `widgets::row_strip`): flat, no
+    /// radius and no frame – the lines between the cells are the bar's –, `raised` with `text`; hover
+    /// `hover`, pressed `selected`, off the normal look at 40 %. An action, so it is raised; a view is
+    /// sunk ([`super::container::track`]).
+    pub fn cell(theme: &Theme, status: Status) -> Style {
+        let p = palette(theme);
+        let rest = Rest { background: p.raised, text: p.text, border: Color::TRANSPARENT, radius: 0.0 };
+        neutral(&p, status, rest, p.text)
+    }
+
+    /// A Torro pill (task E11.1, `widgets::pill_button`: Task, Event, Mute… in the mail reader):
+    /// fully round, no surface, a frame in the accent with the word in `text`; hover `hover`, pressed
+    /// `selected`, off the normal look at 40 %. The red frame (and the icon the widget tints) marks
+    /// what Torro adds to a mail – an exception to "red only for the primary button" like the AI's
+    /// sparkles; the surface and the word stay neutral, so the pill is never a primary button.
+    pub fn pill(theme: &Theme, status: Status) -> Style {
+        let p = palette(theme);
+        let rest = Rest { background: Color::TRANSPARENT, text: p.text, border: p.accent, radius: super::ROUND as f32 };
+        neutral(&p, status, rest, p.text)
+    }
+
     /// `style` while the action it started is running ("Creating…"): the button has no message
     /// (it takes no second press), yet it keeps the full look of `style` at rest instead of the
     /// faded disabled look, so it reads as working, not as unavailable. No hover either.
@@ -464,6 +486,16 @@ pub mod container {
         let p = palette(theme);
         Style { border: outline(p.line, radius::sm()), ..surface(p.bg) }
     }
+
+    /// The sunken track of a view switch (task E11.1, `widgets::view_switch`: HTML | Text,
+    /// Light | Dark in the mail reader's foot): `bg` with a 1-px `line_strong` frame, radius
+    /// [`radius::sm()`], padding [`super::SEGMENT_INSET`]; the segments inside use
+    /// [`super::button::segment`]. Sunk where actions are raised ([`super::button::cell`]), so a
+    /// switch of how the mail looks never reads as something done to the mail.
+    pub fn track(theme: &Theme) -> Style {
+        let p = palette(theme);
+        Style { border: outline(p.line_strong, radius::sm()), ..surface(p.bg) }
+    }
 }
 
 /// A text input (`text_input(…).style(style::text_input)`): no surface, 1-px `line_strong` border,
@@ -497,6 +529,22 @@ pub fn text_input(theme: &Theme, status: widget::text_input::Status) -> widget::
             value: faded(rest.value),
             ..rest
         },
+    }
+}
+
+/// A text input without frame and radius (task E11.1: the search field over the whole width of
+/// the mail window's list, with a line below it that the view draws): no surface, value `text`,
+/// placeholder and icon `text_3`; hover `hover`; focused the 2-px `focus_ring` around it, square –
+/// the field has no frame of its own, yet the focus must stay visible (skill, section 4); disabled
+/// 40 % without hover.
+pub fn text_input_flat(theme: &Theme, status: widget::text_input::Status) -> widget::text_input::Style {
+    let p = palette(theme);
+    let framed = text_input(theme, status);
+    match status {
+        widget::text_input::Status::Focused { .. } => {
+            widget::text_input::Style { border: border::width(FOCUS_RING_WIDTH).color(p.focus_ring), ..framed }
+        }
+        _ => widget::text_input::Style { border: Border::default(), ..framed },
     }
 }
 
@@ -792,6 +840,8 @@ mod tests {
             ("chip", Box::new(button::chip)),
             ("choice_chip", Box::new(button::choice_chip(false))),
             ("choice_chip(on)", Box::new(button::choice_chip(true))),
+            ("cell", Box::new(button::cell)),
+            ("pill", Box::new(button::pill)),
         ]
     }
 
@@ -918,6 +968,67 @@ mod tests {
             assert_eq!(off(&theme, Status::Active).text_color, p.text_2, "{mode}");
             assert_eq!(off(&theme, Status::Hovered).text_color, p.text, "{mode}");
             assert_eq!(button::choice_chip(true)(&theme, Status::Active).border.radius, radius::sm().into());
+        }
+    }
+
+    /// Task E11.1: the mail window's cells and pills in every state, light and dark. Buttons have no
+    /// keyboard focus in Iced 0.14 (module docs), so of the five states four exist for them. At rest,
+    /// hovered and pressed the word keeps 4.5:1 on its surface, and the pill's red frame 3:1 on
+    /// `panel`, the surface of the reader it stands on.
+    #[test]
+    fn cells_and_pills_keep_their_look_and_contrast_in_every_state() {
+        for (mode, theme, p) in modes() {
+            let cell = |status| button::cell(&theme, status);
+            assert!(same(bg(&cell(Status::Active)), p.raised), "{mode}: cell at rest");
+            assert!(same(bg(&cell(Status::Hovered)), p.hover), "{mode}: cell hovered");
+            assert!(same(bg(&cell(Status::Pressed)), p.selected), "{mode}: cell pressed");
+            assert!(same(bg(&cell(Status::Disabled)), faded(p.raised)), "{mode}: cell off");
+            for status in BUTTON_STATES {
+                let c = cell(status);
+                assert_eq!(c.border.radius, border::Radius::default(), "{mode}: a cell has no radius");
+                assert!(c.border.width == 0.0 || c.border.color.a == 0.0, "{mode}: a cell has no frame");
+            }
+            let pill = |status| button::pill(&theme, status);
+            assert_eq!(bg(&pill(Status::Active)), Color::TRANSPARENT, "{mode}: pill at rest");
+            assert!(same(bg(&pill(Status::Hovered)), p.hover), "{mode}: pill hovered");
+            assert!(same(bg(&pill(Status::Pressed)), p.selected), "{mode}: pill pressed");
+            assert!(same(pill(Status::Disabled).border.color, faded(p.accent)), "{mode}: pill off");
+            for status in [Status::Active, Status::Hovered, Status::Pressed] {
+                let c = cell(status);
+                assert_eq!(c.text_color, p.text, "{mode}: cell word {status:?}");
+                let ratio = c.text_color.relative_contrast(over(bg(&c), p.panel));
+                assert!(ratio >= 4.5, "{mode}: cell word {status:?} is {ratio:.2}:1");
+                let s = pill(status);
+                assert_eq!(s.text_color, p.text, "{mode}: pill word {status:?}");
+                assert_eq!(s.border.color, p.accent, "{mode}: pill frame {status:?}");
+                assert!(s.border.radius.top_left >= crate::theme::size::pill() / 2.0, "{mode}: a pill is round");
+                let surface = over(bg(&s), p.panel);
+                let ratio = s.text_color.relative_contrast(surface);
+                assert!(ratio >= 4.5, "{mode}: pill word {status:?} is {ratio:.2}:1");
+                let ratio = s.border.color.relative_contrast(p.panel);
+                assert!(ratio >= 3.0, "{mode}: pill frame on panel is {ratio:.2}:1");
+            }
+        }
+    }
+
+    /// Task E11.1: the sunken track of the view switch and the flat search field.
+    #[test]
+    fn the_track_is_sunk_and_the_flat_input_has_no_frame() {
+        for (mode, theme, p) in modes() {
+            let track = container::track(&theme);
+            assert_eq!(track.background, Some(Background::Color(p.bg)), "{mode}: track");
+            assert_eq!((track.border.color, track.border.radius), (p.line_strong, radius::sm().into()), "{mode}");
+            let flat = |status| text_input_flat(&theme, status);
+            let rest = flat(widget::text_input::Status::Active);
+            assert_eq!((rest.border.width, rest.border.radius), (0.0, border::Radius::default()), "{mode}: flat");
+            assert_eq!((rest.value, rest.placeholder), (p.text, p.text_3), "{mode}");
+            assert_eq!(flat(widget::text_input::Status::Hovered).background, Background::Color(p.hover), "{mode}");
+            let focused = flat(widget::text_input::Status::Focused { is_hovered: false });
+            assert_eq!((focused.border.color, focused.border.width), (p.focus_ring, FOCUS_RING_WIDTH), "{mode}");
+            assert_eq!(focused.border.radius, border::Radius::default(), "{mode}: focus keeps the square edge");
+            let off = flat(widget::text_input::Status::Disabled);
+            assert!(same(off.value, faded(p.text)), "{mode}: flat input off");
+            assert_eq!(off.background, Background::Color(Color::TRANSPARENT), "{mode}: no hover when off");
         }
     }
 

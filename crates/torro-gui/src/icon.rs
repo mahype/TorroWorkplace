@@ -169,6 +169,8 @@ pub enum Icon {
     Underline,
     ListOrdered,
     TextQuote,
+    /// The segment "HTML" of the mail reader's view switch (task E11.1); "Text" is [`Icon::AlignLeft`].
+    Code,
 }
 
 impl Icon {
@@ -270,6 +272,7 @@ impl Icon {
         Icon::Underline,
         Icon::ListOrdered,
         Icon::TextQuote,
+        Icon::Code,
     ];
 
     /// The icon as an SVG handle with its stroke in `color` (opaque), for drawing it on a canvas,
@@ -381,6 +384,7 @@ impl Icon {
             Icon::Underline => include_bytes!("../assets/icons/underline.svg"),
             Icon::ListOrdered => include_bytes!("../assets/icons/list-ordered.svg"),
             Icon::TextQuote => include_bytes!("../assets/icons/text-quote.svg"),
+            Icon::Code => include_bytes!("../assets/icons/code.svg"),
         }
     }
 }

@@ -325,12 +325,13 @@ pub struct Size {
     pub control_sm: f32,
     pub control: f32,
     pub control_lg: f32,
-    /// The buttons of a reminder over the whole screen (task ER1.5): Join, Snooze, Dismiss.
+    /// The buttons of a reminder over the whole screen (task ER1.5): Join, Snooze, Dismiss; and the
+    /// strip of actions under the chosen mail in the mail window's list (task E11.1).
     pub control_xl: f32,
     pub row: f32,
     pub row_two: f32,
     /// A mail entry's row in the inbox (task E3.9): avatar, sender, subject and preview on three
-    /// lines.
+    /// lines of 20 with 16 above and below (task E11.1).
     pub row_message: f32,
     /// Any other entry's row in the inbox (task E3.9): source icon, title and text on two lines.
     pub row_notice: f32,
@@ -361,11 +362,17 @@ pub struct Size {
     pub tile: f32,
     /// The large source tile (task E8.2): an attachment, the head of a card that stands for an app.
     pub tile_lg: f32,
+    /// The command bar at the top of the mail reader (task E11.1): Reply, Forward, Archive … as
+    /// cells side by side over the reader's whole width.
+    pub command: f32,
+    /// A Torro pill in the mail reader (task E11.1: Task, Event, Mute…) and the sender's avatar
+    /// beside them in the reader's head.
+    pub pill: f32,
 }
 
 impl Size {
     /// Every size with its key (`"row"`), for checks and error messages.
-    pub fn entries(&self) -> [(&'static str, f32); 27] {
+    pub fn entries(&self) -> [(&'static str, f32); 29] {
         [
             ("control_sm", self.control_sm),
             ("control", self.control),
@@ -394,6 +401,8 @@ impl Size {
             ("tile_sm", self.tile_sm),
             ("tile", self.tile),
             ("tile_lg", self.tile_lg),
+            ("command", self.command),
+            ("pill", self.pill),
         ]
     }
 
@@ -426,6 +435,8 @@ impl Size {
             "tile_sm" => &mut self.tile_sm,
             "tile" => &mut self.tile,
             "tile_lg" => &mut self.tile_lg,
+            "command" => &mut self.command,
+            "pill" => &mut self.pill,
             _ => return None,
         })
     }
@@ -789,7 +800,7 @@ pub(crate) const STANDARD_SIZE: Size = Size {
     control_xl: 44.0,
     row: 40.0,
     row_two: 52.0,
-    row_message: 88.0,
+    row_message: 92.0,
     row_notice: 64.0,
     row_sidebar: 28.0,
     row_group: 32.0,
@@ -810,6 +821,8 @@ pub(crate) const STANDARD_SIZE: Size = Size {
     tile_sm: 20.0,
     tile: 28.0,
     tile_lg: 36.0,
+    command: 46.0,
+    pill: 42.0,
 };
 
 const STANDARD_DARK: Palette = Palette {
@@ -957,7 +970,7 @@ mod tests {
         assert_eq!(d.fonts.numbers.face(Weight::Semibold), None, "Inter Tabular has 400 and 500 only");
         assert_eq!([d.space.xs, d.space.xxl, d.radius.lg, d.layout.inset], [4.0, 32.0, 10.0, 8.0]);
         assert_eq!([d.size.row, d.size.sidebar, d.size.content_max], [40.0, 232.0, 720.0]);
-        assert_eq!([d.size.row_message, d.size.row_notice], [88.0, 64.0], "the inbox's rows (task E3.9)");
+        assert_eq!([d.size.row_message, d.size.row_notice], [92.0, 64.0], "the inbox's rows (tasks E3.9, E11.1)");
         // The comfortable density of the inbox (task E8.2).
         assert_eq!(d.typo.read, Level { font: FontRole::Text, weight: Weight::Regular, size: 14.0, line: 22.0 });
         // A reminder over the whole screen (task ER1.5).
@@ -966,6 +979,8 @@ mod tests {
         assert_eq!(d.size.control_xl, 44.0);
         assert_eq!([d.size.card_gap, d.size.avatar, d.size.avatar_lg], [12.0, 36.0, 40.0]);
         assert_eq!([d.size.tile_sm, d.size.tile, d.size.tile_lg], [20.0, 28.0, 36.0]);
+        // The mail window's large buttons (task E11.1).
+        assert_eq!([d.size.command, d.size.pill], [46.0, 42.0]);
         assert_eq!(d.logo, Logo::default());
         // The chart colours as the dataviz validator checked them (task E8.8b).
         assert_eq!(d.colors.dark.chart.map(hex), [0x3B78D8, 0xC9701E, 0x2E9E6B, 0xB5509A]);
@@ -989,6 +1004,26 @@ mod tests {
                 assert!(!reserved.contains(colour), "{colour:?}");
             }
         }
+    }
+
+    /// Task E11.1: a pack written before the mail window's large buttons has no `command` and no
+    /// `pill`; it takes them from the standard, while a pack that names them keeps its own.
+    #[test]
+    fn a_pack_without_the_mail_sizes_takes_the_standards() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let pack = |id: &str, size: &str| {
+            std::fs::create_dir_all(tmp.path().join(id)).expect("pack folder");
+            let toml = format!("format = 1\n[about]\nname = \"{id}\"\nversion = \"1.0.0\"\n[size]\n{size}");
+            std::fs::write(tmp.path().join(id).join("design.toml"), toml).expect("design.toml");
+        };
+        pack("older", "row = 44\n");
+        pack("roomier", "command = 52\npill = 40\n");
+        let older = load(tmp.path(), "older").expect("valid");
+        let standard = Design::standard().size;
+        assert_eq!((older.size.command, older.size.pill), (standard.command, standard.pill));
+        assert_eq!(older.size.row, 44.0, "its own sizes stay");
+        let roomier = load(tmp.path(), "roomier").expect("valid");
+        assert_eq!((roomier.size.command, roomier.size.pill), (52.0, 40.0));
     }
 
     #[test]

@@ -1799,7 +1799,7 @@ Nicht parallel: E11.2–E11.4 und E9.2/E9.3b ändern alle `crates/torroinbox`. W
 Knöpfe in die neue Anordnung (E9.2: Later an Ordnermails in Befehlsleiste und Leiste der Zeile).
 
 ### E11.1 Bausteine: Befehlsleiste, Leiste der Zeile, Pille, versenkter Schalter
-- [ ] erledigt
+- [x] erledigt (2026-10-16): Maße `command`/`pill`, `row_message` 92, `Icon::Code`, Stile `cell`/`pill`/`track`/`text_input_flat`, Bausteine `command_bar` … `file_chip`, `RowAction::accent`, Galerie `--mailbar` (torro und plex, hell und dunkel angesehen)
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-core/src/design.rs`, `crates/torro-core/src/design/rules.rs`,
   `crates/torro-gui/src/{theme,style,widgets,icon}.rs`, `crates/torro-gui/assets/icons/code.svg`,
   `crates/torro-gui/examples/gallery.rs`, `.claude/skills/torro-design/SKILL.md`, `docs/design-pakete.md` (Liste der Maße)

@@ -6,7 +6,11 @@
 //! ([`density_switch`]). For figures and charts (task E8.8b, the hub's "Insights"): a figure tile
 //! ([`stat_tile`]), a stacked column chart with its legend ([`column_chart`], [`chart_legend`]), a
 //! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
-//! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]).
+//! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]). For the
+//! mail window's large buttons (task E11.1): the reader's command bar ([`command_bar`] with
+//! [`command_cell`], [`command_split`], [`command_more`]), the strip under the chosen mail
+//! ([`row_strip`]), the Torro pills ([`pill_button`]), the sunken view switch ([`view_switch`]) and
+//! the chips of attachments ([`file_chip`]).
 //!
 //! Each block puts a style from [`crate::style`], the sizes from [`crate::theme`] and a level from
 //! [`crate::typo`] together, so apps write no numbers and no colours (design skill, sections 0 and
@@ -678,6 +682,324 @@ pub fn over_bar<'a, M: 'a>(page: impl Into<Element<'a, M>>, bar: impl Into<Eleme
 }
 
 // ---------------------------------------------------------------------------------------------
+// The mail window's large buttons (task E11.1): command bar, strip under a row, pills, view switch
+// ---------------------------------------------------------------------------------------------
+//
+// Actions are cells or pills, the view is sunk: what is done to the mail stands raised
+// (`style::button::cell` on `raised`, `style::button::pill`), how the mail is shown sits in a
+// sunken track (`style::container::track`). Reference: `docs/prototypes/inbox/mail-buttons.html#d`.
+
+/// The width a cell's word needs beside its icon: the room at both sides ([`space::s()`]), the icon
+/// with words (14), the gap and the word in `level` – estimated like [`typo::ellipsize`], on the
+/// wide side.
+fn cell_need(label: &str, level: typo::Level) -> f32 {
+    2.0 * space::s() + icon::SIZE_SM + ICON_GAP + typo::text_width(label, level)
+}
+
+/// The width of the menu part of a [`command_split`] (its chevron).
+fn command_menu_width() -> f32 {
+    size::control()
+}
+
+/// A bar's surface under its cells: `raised`, so the lines between the cells lie on the cells'
+/// own surface.
+fn raised_surface(theme: &Theme) -> container::Style {
+    container::Style { background: Some(Background::Color(palette(theme).raised)), ..container::Style::default() }
+}
+
+/// Elements side by side with a vertical [`style::rule`] between each two, `height` high, on the
+/// `raised` surface over the whole width.
+fn cells_with_lines<'a, M: 'a>(cells: Vec<Element<'a, M>>, height: f32) -> Element<'a, M> {
+    let mut bar = iced::widget::Row::new().height(height).width(Fill);
+    for (i, cell) in cells.into_iter().enumerate() {
+        if i > 0 {
+            bar = bar.push(rule::vertical(LINE).style(style::rule));
+        }
+        bar = bar.push(cell);
+    }
+    container(bar).width(Fill).style(raised_surface).into()
+}
+
+/// The content of a cell: `mark` and, with `words`, `label` in `level` after it, centred in the
+/// cell and clipped rather than pushed out of it.
+fn cell_content<'a, M: 'a>(
+    mark: Element<'a, M>,
+    label: iced::widget::text::Fragment<'a>,
+    level: typo::Level,
+    words: bool,
+) -> Element<'a, M> {
+    let content: Element<'a, M> = if words {
+        row![mark, typo::text(level, label).wrapping(Wrapping::None)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center)
+            .into()
+    } else {
+        mark
+    };
+    center(content).clip(true).into()
+}
+
+/// The command bar at the top of the mail reader (task E11.1): `cells` side by side over the whole
+/// width, [`size::command()`] high, a vertical `line` between each two and a `line` below the bar.
+/// Fill it with [`command_split`] (the lead, Reply), [`command_cell`]s (Forward, Archive, Delete,
+/// Later) and a [`command_more`] at the end: the cells share the width equally, "…" keeps its own.
+/// Whether the cells show their words, [`command_words`] decides – for all of them alike.
+///
+/// To hang a menu at a cell (Later, "…"), wrap that cell in [`anchored`].
+///
+/// ```ignore
+/// let labels = [tr("Reply"), tr("Forward"), tr("Archive"), tr("Delete")];
+/// let words = widgets::command_words(&labels, width);
+/// widgets::command_bar(vec![
+///     widgets::command_split(Icon::Reply, labels[0], words, Some(Message::Reply), Some(Message::AskReplyMenu(id.clone()))),
+///     widgets::command_cell(Icon::Forward, labels[1], words, false, Some(Message::Forward)),
+///     widgets::command_cell(Icon::Archive, labels[2], words, false, Some(Message::Archive)),
+///     widgets::command_cell(Icon::Trash2, labels[3], words, false, (!in_trash).then_some(Message::Delete)),
+///     widgets::anchored(&anchors.more, widgets::command_more(Some(Message::AskMore(id)))),
+/// ])
+/// ```
+pub fn command_bar<'a, M: 'a>(cells: Vec<Element<'a, M>>) -> Element<'a, M> {
+    column![cells_with_lines(cells, size::command()), rule::horizontal(LINE).style(style::rule)].width(Fill).into()
+}
+
+/// One cell of a [`command_bar`]: a flat button (`style::button::cell`) as wide as its share and as
+/// high as the bar, the icon (14) and `label` in `typo::body()` – with `strong` in
+/// `typo::body_strong()` – centred in it. Without `words` the icon alone (16), with `label` as its
+/// tooltip. `None` for `on_press` shows it off (40 %), as Delete in the trash.
+pub fn command_cell<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    words: bool,
+    strong: bool,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let level = if strong { typo::body_strong() } else { typo::body() };
+    cell_button(which, label.into_fragment(), level, words, on_press, Fill)
+}
+
+/// A cell of `width` with `which` and `label` as [`command_cell`] draws it; without `words` the
+/// label is the tooltip.
+fn cell_button<'a, M: Clone + 'a>(
+    which: Icon,
+    label: iced::widget::text::Fragment<'a>,
+    level: typo::Level,
+    words: bool,
+    on_press: Option<M>,
+    width: impl Into<Length>,
+) -> Element<'a, M> {
+    let edge = if words { icon::SIZE_SM } else { icon::SIZE };
+    let mark = button_icon(which, edge, style::button::cell, on_press.is_some());
+    let cell = button(cell_content(mark, label.clone(), level, words))
+        .width(width)
+        .height(Fill)
+        .padding([0.0, space::s()])
+        .style(style::button::cell)
+        .on_press_maybe(on_press);
+    if words { cell.into() } else { with_tooltip(cell, label) }
+}
+
+/// The lead cell of a [`command_bar`] with a menu of its own (the reader's Reply, whose menu holds
+/// "Reply all"): like a [`command_cell`], always in `typo::body_strong()` – it is the bar's main
+/// action, drawn strong instead of red –, and at its right, behind a short line, a narrow part with
+/// [`Icon::ChevronDown`] (tooltip "More replies") that sends `on_menu`. Both parts are as high as
+/// the bar; together they take one cell's share. To hang the menu at it, wrap it in [`anchored`].
+pub fn command_split<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    words: bool,
+    on_press: Option<M>,
+    on_menu: Option<M>,
+) -> Element<'a, M> {
+    let main = cell_button(which, label.into_fragment(), typo::body_strong(), words, on_press, Fill);
+    let line = container(rule::vertical(LINE).style(style::rule)).height(icon::SIZE);
+    let chevron = button_icon(Icon::ChevronDown, icon::SIZE_SM, style::button::cell, on_menu.is_some());
+    let menu = button(center(chevron))
+        .width(command_menu_width())
+        .height(Fill)
+        .padding(0)
+        .style(style::button::cell)
+        .on_press_maybe(on_menu);
+    let menu = with_tooltip(menu, tr("More replies"));
+    row![main, line, menu].width(Fill).height(Fill).align_y(Alignment::Center).into()
+}
+
+/// The last cell of a [`command_bar`]: [`Icon::Ellipsis`] (16) in a cell as wide as the bar is high
+/// ([`size::command()`]), tooltip "More". It opens the menu of what the bar leaves out (Flag, Mark
+/// read, Done, Move to, Close); wrap it in [`anchored`] for that menu.
+pub fn command_more<'a, M: Clone + 'a>(on_press: Option<M>) -> Element<'a, M> {
+    let mark = button_icon(Icon::Ellipsis, icon::SIZE, style::button::cell, on_press.is_some());
+    let more = button(center(mark))
+        .width(size::command())
+        .height(Fill)
+        .padding(0)
+        .style(style::button::cell)
+        .on_press_maybe(on_press);
+    with_tooltip(more, tr("More"))
+}
+
+/// Whether the cells of a [`command_bar`] `room` wide show their words: only when every cell holds
+/// its icon and word in its equal share – all words or none. `labels` are the words of the bar's
+/// equal cells from the left; the first is reckoned as the bar's [`command_split`] (strong, with
+/// its chevron), and the bar as closed by a [`command_more`], as the mail reader builds it. A bar
+/// without split or "…" gets its words a little later than it could, never cut.
+///
+/// ```ignore
+/// let words = widgets::command_words(&[tr("Reply"), tr("Forward"), tr("Archive"), tr("Delete")], width);
+/// ```
+pub fn command_words(labels: &[&str], room: f32) -> bool {
+    let Some((lead, rest)) = labels.split_first() else {
+        return true;
+    };
+    let split = cell_need(lead, typo::body_strong()) + LINE + command_menu_width();
+    let share = rest.iter().map(|label| cell_need(label, typo::body())).fold(split, f32::max);
+    // The cells, a line after each (the last one before "…") and "…" itself.
+    let cells = labels.len() as f32;
+    cells * (share + LINE) + size::command() <= room
+}
+
+/// The strip of actions under the chosen row of the mail window's list (task E11.1): the `actions`
+/// as flat cells (`style::button::cell`) side by side, equally wide over the row's whole width,
+/// [`size::control_xl()`] high, a `line` above the strip and a vertical `line` between each two
+/// cells. Each cell shows the icon and its word in `typo::body()` – or, without `words`, the icon
+/// alone (16); [`row_strip_words`] chooses. An action marked [`RowAction::accent`] (Task) has its
+/// icon in the accent colour. Every cell's tooltip names the action with its key ([`kbd`]), as in
+/// [`row_actions_strip`]; an action that is off ([`RowAction::blocked`]) stands faded and says why.
+/// The strip is [`row_strip_height`] high; empty without actions. The hub keeps
+/// [`row_actions_strip`].
+///
+/// ```ignore
+/// let words = widgets::row_strip_words(&actions, width);
+/// column![row_lines, widgets::row_strip(actions, words)]
+/// ```
+pub fn row_strip<'a, M: Clone + 'a>(actions: Vec<RowAction<'a, M>>, words: bool) -> Element<'a, M> {
+    if actions.is_empty() {
+        return column![].into();
+    }
+    let cells = actions.into_iter().map(|action| strip_cell(action, words)).collect();
+    column![rule::horizontal(LINE).style(style::rule), cells_with_lines(cells, size::control_xl())].width(Fill).into()
+}
+
+/// The height of a [`row_strip`]: its cells ([`size::control_xl()`]) and the line above them.
+pub fn row_strip_height() -> f32 {
+    size::control_xl() + LINE
+}
+
+/// Whether the cells of the [`row_strip`] of `actions` show their words over a row `width` wide:
+/// only when every cell holds its icon and word in its equal share – all words or none.
+pub fn row_strip_words<M>(actions: &[RowAction<'_, M>], width: f32) -> bool {
+    let share = actions.iter().map(|action| cell_need(action.label.as_ref(), typo::body())).fold(0.0, f32::max);
+    let lines = LINE * actions.len().saturating_sub(1) as f32;
+    actions.len() as f32 * share + lines <= width
+}
+
+/// One cell of [`row_strip`].
+fn strip_cell<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -> Element<'a, M> {
+    let press = action.press();
+    let on = press.is_some();
+    let tooltip = action_tip(&action);
+    let accent = action.accent;
+    let mark: Element<'a, M> = icon(action.icon, if words { icon::SIZE_SM } else { icon::SIZE })
+        .style(move |t, _| {
+            let p = palette(t);
+            svg::Style { color: Some(if accent { p.accent } else { p.text }) }
+        })
+        .opacity(icon_opacity(on))
+        .into();
+    let cell = button(cell_content(mark, action.label, typo::body(), words))
+        .width(Fill)
+        .height(Fill)
+        .padding([0.0, space::s()])
+        .style(style::button::cell)
+        .on_press_maybe(press);
+    let cell = tip(cell, tooltip, tooltip::Position::Bottom);
+    anchored_if(action.anchor.as_ref(), cell)
+}
+
+/// A Torro pill in the mail reader (task E11.1: Task, AI task, Event, AI event, Mute…):
+/// [`size::pill()`] high, fully round with a frame in the accent (`style::button::pill`), the icon
+/// (16) in the accent and `label` in `typo::body()` in `text`, [`space::l()`] in at the sides. The
+/// red marks what Torro adds to a mail – an exception like the AI's sparkles; surface and word stay
+/// neutral. `None` for `on_press` shows it off, the icon faded with frame and word; say why with
+/// [`with_tooltip`] (an AI pill without an AI). Lay several out in a wrapping row, [`space::s()`]
+/// apart.
+///
+/// ```ignore
+/// widgets::pill_button(Icon::ListTodo, tr("Task"), Some(Message::Act(id.clone(), Command::Task)))
+/// ```
+pub fn pill_button<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let mark = icon(which, icon::SIZE)
+        .style(|t, _| svg::Style { color: Some(palette(t).accent) })
+        .opacity(icon_opacity(on_press.is_some()));
+    let content = row![mark, typo::text(typo::body(), label).wrapping(Wrapping::None)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    button(container(content).center_y(Fill))
+        .height(size::pill())
+        .padding([0.0, space::l()])
+        .style(style::button::pill)
+        .on_press_maybe(on_press)
+        .into()
+}
+
+/// A switch of how something is shown (task E11.1, the mail reader's foot: HTML | Text, Light |
+/// Dark): a sunken track (`style::container::track`) [`size::control()`] high with one square
+/// segment per `(icon, label, message)` – the icon (14) alone, `label` as its tooltip. The segment
+/// at `active` is chosen (`style::button::segment(true)`: `selected` with a `line_selected` edge).
+///
+/// ```ignore
+/// widgets::view_switch([(Icon::Code, tr("HTML"), Message::Html), (Icon::AlignLeft, tr("Text"), Message::Text)], 0)
+/// ```
+pub fn view_switch<'a, M: Clone + 'a, L: IntoFragment<'a>>(
+    options: impl IntoIterator<Item = (Icon, L, M)>,
+    active: usize,
+) -> Element<'a, M> {
+    let inner = size::control() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
+    let segments = options.into_iter().enumerate().map(|(i, (which, label, message))| {
+        let style = style::button::segment(i == active);
+        let mark: Element<'a, M> = icon(which, icon::SIZE_SM)
+            .style(move |t, _| svg::Style { color: Some(style(t, button::Status::Active).text_color) })
+            .into();
+        let square = button(center(mark)).width(inner).height(inner).padding(0).style(style).on_press(message);
+        with_tooltip(square, label)
+    });
+    container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::track).into()
+}
+
+/// An attachment as a chip (task E11.1, the line of attachments above the mail reader's foot):
+/// [`size::control()`] high, radius [`radius::sm()`], `raised` with a `line_strong` frame
+/// (`style::button::secondary`, hover and pressed with the `line_selected` frame), the paperclip
+/// (14) in `text_3`, `name` in `typo::body()` and `size_text` ("3 KB", may be empty) in
+/// `typo::meta()`/`text_3`. The whole chip is the button that opens the attachment; `None` shows it
+/// off. Lay several out with a wrapping row, [`space::s()`] apart.
+///
+/// ```ignore
+/// widgets::file_chip(&attachment.name, format_size(attachment.size), Some(Message::OpenAttachment(i)))
+/// ```
+pub fn file_chip<'a, M: Clone + 'a>(
+    name: impl IntoFragment<'a>,
+    size_text: impl IntoFragment<'a>,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let mut content = row![toned(Icon::Paperclip, icon::SIZE_SM, Tone::Text3), typo::text(typo::body(), name)]
+        .spacing(ICON_GAP)
+        .align_y(Alignment::Center);
+    let size_text = size_text.into_fragment();
+    if !size_text.is_empty() {
+        content = content.push(typo::text(typo::meta(), size_text).style(theme::text_3).wrapping(Wrapping::None));
+    }
+    button(container(content).center_y(Fill))
+        .height(size::control())
+        .padding([0.0, space::m()])
+        .style(style::button::secondary)
+        .on_press_maybe(on_press)
+        .into()
+}
+
+// ---------------------------------------------------------------------------------------------
 // Sidebar
 // ---------------------------------------------------------------------------------------------
 
@@ -888,12 +1210,25 @@ pub struct RowAction<'a, M> {
     /// opacity, takes no press and says in its tooltip why ([`RowAction::tip`]). Whoever draws an
     /// action asks [`RowAction::press`] for the message, never `on_press` directly.
     pub blocked: Option<iced::widget::text::Fragment<'a>>,
+    /// The icon in the accent colour (task E11.1: Task in the mail window's strip, what Torro adds
+    /// to a mail), set with [`RowAction::accent`]. Only [`row_strip`] draws it; the floating bar and
+    /// [`row_actions_strip`] of the hub keep their icons in `text`.
+    pub accent: bool,
 }
 
 impl<'a, M> RowAction<'a, M> {
     /// A button with `icon`, `label` and the key hint `key` that sends `on_press`; no anchor.
     pub fn new(icon: Icon, label: impl IntoFragment<'a>, key: &'static str, on_press: M) -> Self {
-        Self { icon, label: label.into_fragment(), key, on_press, anchor: None, blocked: None }
+        Self { icon, label: label.into_fragment(), key, on_press, anchor: None, blocked: None, accent: false }
+    }
+
+    /// The same button with its icon in the accent colour ([`RowAction::accent`]).
+    ///
+    /// ```ignore
+    /// RowAction::new(Icon::ListTodo, tr("Task"), "T", Message::Act(id.clone(), Command::Task)).accent()
+    /// ```
+    pub fn accent(self) -> Self {
+        Self { accent: true, ..self }
     }
 
     /// The same button, off for `reason` ([`RowAction::blocked`]): "AI task" without an AI.
@@ -1263,6 +1598,17 @@ fn with_actions<'a, M: Clone + 'a>(
     if shown { stack![base, layer].into() } else { iced::widget::hover(base, layer) }
 }
 
+/// The tooltip of an action: its words ([`RowAction::tip`]) and its key as [`kbd`], if it has one.
+fn action_tip<'a, M: 'a>(action: &RowAction<'a, M>) -> Element<'a, M> {
+    let mut tooltip = row![typo::text(typo::caption(), action.tip()).style(theme::text_2)]
+        .spacing(space::s())
+        .align_y(Alignment::Center);
+    if !action.key.is_empty() {
+        tooltip = tooltip.push(kbd(action.key));
+    }
+    tooltip.into()
+}
+
 /// One button of [`row_actions`] in `style`: on the `menu` surface `menu_item`, so hover and press
 /// are `selected` (as in menus, where `hover` would vanish); in [`row_actions_strip`] `secondary`.
 /// The tooltip names it with its key.
@@ -1276,12 +1622,7 @@ fn row_action_button<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let press = action.press();
     let on = press.is_some();
-    let mut tooltip = row![typo::text(typo::caption(), action.tip()).style(theme::text_2)]
-        .spacing(space::s())
-        .align_y(Alignment::Center);
-    if !action.key.is_empty() {
-        tooltip = tooltip.push(kbd(action.key));
-    }
+    let tooltip = action_tip(&action);
     // `text`, the colour of a menu item's label; faded with the button when it is off.
     let mark = |edge| -> Element<'a, M> {
         icon(action.icon, edge)
@@ -3876,6 +4217,80 @@ mod tests {
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::SHIFT), "redo");
         assert!(!z("z", Code::KeyZ, command | keyboard::Modifiers::ALT), "AltGr");
         assert!(!z("x", Code::KeyX, command));
+    }
+
+    /// Task E11.1: the command bar shows its words only when every cell holds its icon and word in
+    /// its equal share – the split's chevron and "…" included –, and not a pixel earlier.
+    #[test]
+    fn the_command_bar_shows_words_only_when_every_cell_holds_its_word() {
+        let labels = ["Reply", "Forward", "Archive", "Delete", "Later"];
+        let split = cell_need("Reply", typo::body_strong()) + LINE + command_menu_width();
+        let widest = ["Forward", "Archive", "Delete", "Later"].map(|l| cell_need(l, typo::body())).into_iter();
+        let share = widest.fold(split, f32::max);
+        let exact = 5.0 * (share + LINE) + size::command();
+        assert!(command_words(&labels, exact), "exactly the room");
+        assert!(!command_words(&labels, exact - 1.0), "a pixel too little");
+        // A long lead decides for all: its share is everyone's share.
+        let long = ["Reply to everyone in this thread", "Forward"];
+        let lead = cell_need(long[0], typo::body_strong()) + LINE + command_menu_width();
+        let exact = 2.0 * (lead + LINE) + size::command();
+        assert!(command_words(&long, exact) && !command_words(&long, exact - 1.0));
+        assert!(command_words(&[], 0.0), "an empty bar has nothing to cut");
+    }
+
+    /// Task E11.1: the strip under a row shows its words only when every cell holds its word in its
+    /// equal share, and is a cell high plus its line.
+    #[test]
+    fn the_row_strip_shows_words_only_when_every_cell_holds_its_word() {
+        let actions = actions();
+        let share = actions.iter().map(|a| cell_need(a.label.as_ref(), typo::body())).fold(0.0, f32::max);
+        let exact = 4.0 * share + 3.0 * LINE;
+        assert!(row_strip_words(&actions, exact), "exactly the room");
+        assert!(!row_strip_words(&actions, exact - 1.0), "a pixel too little");
+        assert!(row_strip_words::<Msg>(&[], 0.0));
+        assert_eq!(row_strip_height(), size::control_xl() + LINE);
+        assert_eq!(size::control_xl(), 44.0, "the standard's strip");
+    }
+
+    /// Task E11.1: an action marked accent keeps everything else; only the strip draws it red.
+    #[test]
+    fn an_accent_action_is_the_same_action_with_a_red_icon() {
+        let plain = RowAction::new(Icon::ListTodo, "Task", "T", Msg::Go);
+        assert!(!plain.accent);
+        let red = plain.clone().accent();
+        assert!(red.accent);
+        assert_eq!((red.key, red.press(), red.tip()), (plain.key, plain.press(), plain.tip()));
+        let off = RowAction::new(Icon::Sparkles, "AI task", "", Msg::Go).accent().blocked("Set up an AI first");
+        assert!(off.accent && off.press().is_none(), "blocked keeps the accent");
+    }
+
+    /// Task E11.1: every block of the mail window builds with and without words, on and off.
+    #[test]
+    fn the_mail_blocks_build_in_every_variant() {
+        for words in [true, false] {
+            let cells: Vec<Element<'_, Msg>> = vec![
+                command_split(Icon::Reply, "Reply", words, Some(Msg::Go), Some(Msg::Close)),
+                command_cell(Icon::Forward, "Forward", words, false, Some(Msg::Go)),
+                command_cell(Icon::Trash2, "Delete", words, false, None),
+                command_cell(Icon::Clock, "Later", words, true, Some(Msg::Go)),
+                command_more(Some(Msg::Close)),
+            ];
+            let _: Element<'_, Msg> = command_bar(cells);
+            let mut strip = actions();
+            strip[0] = strip[0].clone().accent();
+            strip[1] = strip[1].clone().blocked("Not now");
+            let _: Element<'_, Msg> = row_strip(strip, words);
+        }
+        let _: Element<'_, Msg> = row_strip(Vec::new(), true);
+        let _: Element<'_, Msg> = command_split(Icon::Reply, "Reply", true, None, None);
+        let _: Element<'_, Msg> = command_more(None);
+        let _: Element<'_, Msg> = pill_button(Icon::ListTodo, "Task", Some(Msg::Go));
+        let _: Element<'_, Msg> = pill_button(Icon::Sparkles, "AI task", None);
+        let views = [(Icon::Code, "HTML", Msg::Go), (Icon::AlignLeft, "Text", Msg::Close)];
+        let _: Element<'_, Msg> = view_switch(views, 1);
+        let _: Element<'_, Msg> = file_chip("budget-q4.csv", "3 KB", Some(Msg::Go));
+        let _: Element<'_, Msg> = file_chip("travel-policy.pdf", "", None);
+        assert_eq!([size::command(), size::pill()], [46.0, 42.0], "the standard's bar and pills");
     }
 
     /// Task E8.2: the blocks of the comfortable density build in every variant, and the tiles take

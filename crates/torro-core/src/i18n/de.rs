@@ -1267,6 +1267,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Comfortable", "Komfortabel"),
     ("Newest first", "Neueste zuerst"),
     ("Oldest first", "Älteste zuerst"),
+    // The mail window's large buttons (E11.1)
+    ("More replies", "Weitere Antworten"),
     // Window kinds of torroinbox (E8.1)
     ("Mail · {view}", "E-Mail · {view}"),
     ("App Feed · {view}", "App-Feed · {view}"),
