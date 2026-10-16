@@ -160,7 +160,15 @@ pub fn place_traffic_lights<T: Send + 'static>() -> iced::Task<T> {
 /// How many screens there are, for one reminder window per screen (task ER2.2); 1 on systems
 /// where the suite cannot tell ([`torro_appkit::screen_count`]).
 pub fn screen_count() -> usize {
-    torro_appkit::screen_count()
+    // `torro-appkit` is a dependency on macOS only.
+    #[cfg(target_os = "macos")]
+    {
+        torro_appkit::screen_count()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        1
+    }
 }
 
 /// The task that puts the window `id` over the whole of screen `screen` and in front (task ER2.2,
