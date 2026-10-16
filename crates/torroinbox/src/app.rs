@@ -3169,7 +3169,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 // message that comes back says why in the hint as well (issue #205).
                 let before = self.leaving.len();
                 self.leaving.retain(|leaving| !ids.contains(&leaving.id));
-                if self.leaving.len() < before {
+                // Not over the undo of another change, which would be lost.
+                if self.leaving.len() < before && !self.can_undo() {
                     self.note(tr("Couldn't change the mail.").to_owned());
                 }
                 self.error = Some(Failure::new(tr("Couldn't change the mail."), err));
@@ -3185,7 +3186,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     Ok(mut page) => {
                         search::with_passages(&mut page.messages, &page.highlights);
                         let known: Vec<String> = self.messages.iter().map(|message| message.id.clone()).collect();
-                        self.messages.extend(page.messages.into_iter().filter(|message| !known.contains(&message.id)));
+                        let leaving = &self.leaving;
+                        let fresh = page.messages.into_iter().filter(|message| {
+                            !known.contains(&message.id) && !leaving.iter().any(|leaving| leaving.hides(message))
+                        });
+                        self.messages.extend(fresh);
                         self.highlights.extend(page.highlights);
                         self.more = page.next;
                     }
@@ -3722,9 +3727,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// The open entry of the message `id` in the list, which the core closes when its mail leaves
     /// the inbox; undo opens it again.
     fn entry_of(&self, id: &str) -> Option<String> {
+        // A folder lists no entries; "For me" holds them there (issue #205: the core now closes
+        // the entry for sure once its mail left the inbox, so undo must open it again).
         self.items
             .iter()
-            .find(|item| matches!(&item.link, Some(Link::Mail { message }) if message == id) && item.state.is_open())
+            .chain(&self.for_me)
+            .find(|item| shows_mail(item, id) && item.state.is_open())
             .map(|item| item.id.clone())
     }
 
@@ -3931,6 +3939,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             undo: Some(Undo::Mail { edit: back, reopen: self.entry_of(&id) }),
             shown: Instant::now(),
         };
+        self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
         self.mail_edit(Some(MailEdit::Move { ids: vec![id], to: MoveTarget::Folder(folder) }), Some(hint))
     }
@@ -9670,7 +9679,11 @@ mod tests {
         assert_eq!(edit, MailEdit::Move { ids: ids.clone(), to: MoveTarget::Role(MoveRole::Archive) });
         assert_eq!(hint.text, tr("Archived"));
         let back = MailEdit::Move { ids, to: MoveTarget::Folder("f:work-inbox".into()) };
-        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: None }));
+        assert_eq!(
+            hint.undo,
+            Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }),
+            "its entry opens again"
+        );
         deliver_mail(&mut app);
         assert!(!message_ids(&app).contains(&"m:w1"));
         assert_eq!(app.hint.as_ref().map(|hint| hint.text.as_str()), Some(tr("Archived")));
@@ -9717,7 +9730,11 @@ mod tests {
         assert_eq!(edit, MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Junk) });
         assert_eq!(hint.text, tr("Moved to junk"));
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder("f:work-inbox".into()) };
-        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: None }));
+        assert_eq!(
+            hint.undo,
+            Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }),
+            "its entry opens again"
+        );
         assert_eq!(cursor(&app), Some("m:w2"), "the next row takes its place");
         let _ = shortcut(&mut app, S::Archive, false);
         let Some(Sent::Mail(edit, Some(hint))) = app.sent.last().cloned() else { panic!("archive with a hint") };
@@ -9834,7 +9851,11 @@ mod tests {
         let name = app.folders.iter().find(|f| f.id == first).map(mail::folder_name).expect("the folder");
         assert_eq!(hint.text, trf("Moved to {folder}", &[("folder", &name)]));
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Folder("f:work-inbox".into()) };
-        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: None }));
+        assert_eq!(
+            hint.undo,
+            Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }),
+            "its entry opens again"
+        );
         assert_eq!(app.menu, None);
     }
 
@@ -10017,7 +10038,11 @@ mod tests {
         assert_eq!(edit, MailEdit::Delete { ids: ids.clone() });
         assert_eq!(hint.text, tr("Moved to Trash"));
         let back = MailEdit::Move { ids, to: MoveTarget::Folder("f:work-inbox".into()) };
-        assert_eq!(hint.undo, Some(Undo::Mail { edit: back, reopen: None }));
+        assert_eq!(
+            hint.undo,
+            Some(Undo::Mail { edit: back, reopen: Some("demo-mail-1".into()) }),
+            "its entry opens again"
+        );
         deliver_mail(&mut app);
         assert!(!message_ids(&app).contains(&"m:w1"));
         let _ = press(&mut app, Key::U);
@@ -10137,6 +10162,20 @@ mod tests {
         load(&mut app);
         assert!(ids(&app).contains(&"demo-mail-1"), "still open in the core: shown again");
         assert!(app.leaving.is_empty());
+    }
+
+    /// Issue #205: a failed move keeps the undo of another change in the hint.
+    #[test]
+    fn a_failed_delete_keeps_the_undo_of_another_change() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::E);
+        deliver_mail(&mut app);
+        let _ = press(&mut app, Key::Hash);
+        let _ = app.update(Message::MailEdited(Err("boom".into()), vec!["m:w2".into()], None));
+        assert!(!app.leaving.iter().any(|leaving| leaving.id == "m:w2"), "not kept out any more");
+        let hint = app.hint.as_ref().expect("the hint of the archive stays");
+        assert_eq!((hint.text.as_str(), hint.undo.is_some()), (tr("Archived"), true));
     }
 
     /// Issue #205: a move that fails brings the message back, with the error line.
