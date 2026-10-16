@@ -12,6 +12,8 @@ pub mod provider;
 pub mod source;
 
 pub use account::{AccountState, PimAccount, combined_state};
-pub use model::{Collection, CollectionKind, Event, EventTime, Todo, Transparency};
+pub use model::{
+    Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime, Todo, Transparency,
+};
 pub use provider::{Change, Provider, ProviderError, SyncToken};
 pub use source::PimSource;

@@ -803,6 +803,7 @@ mod tests {
                         description: notes,
                         recurring: false,
                         transparency: torro_pim::Transparency::Opaque,
+                        alarms: Vec::new(),
                     },
                 }
             }
@@ -1112,6 +1113,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 

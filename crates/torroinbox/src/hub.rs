@@ -234,7 +234,7 @@ impl Section {
         Some(match item.kind {
             Kind::Approval => Section::Decide,
             Kind::AgentWaiting | Kind::AgentDone => Section::Agents,
-            Kind::Notice | Kind::AccountProblem | Kind::Message | Kind::Alert => Section::ToSort,
+            Kind::Notice | Kind::AccountProblem | Kind::Message | Kind::Alert | Kind::Reminder => Section::ToSort,
         })
     }
 

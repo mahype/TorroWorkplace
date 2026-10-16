@@ -46,7 +46,7 @@ ER3.1 (braucht ER1.4)       ER4 später
 ## ER1 Kern: Erinnerungen planen und auslösen
 
 ### ER1.1 Erinnerungen im Termin lesen und schreiben
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (Agent `nextcloud-expert` geeignet) · **Braucht:** – · **Dateien:**
   `crates/torro-pim/src/{model,demo}.rs`, `crates/torro-pim-caldav/src/{ical,write}.rs`,
   `crates/torro-pim-caldav/tests/fixtures/` (neue Fixtures)
@@ -63,7 +63,7 @@ ER3.1 (braucht ER1.4)       ER4 später
 - **Abnahme:** Round-Trip-Tests an allen drei Fixtures; ein Termin ohne Alarme bleibt Byte für Byte.
 
 ### ER1.2 Gerüst: Einstellungen, Requests, Katalog
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** ER1.1 · **Dateien:** `crates/torro-core/src/settings.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/{core,mcp}.rs` (Handler zunächst
   `unsupported`), `docs/api.md`, `docs/api-reference.md`
@@ -82,12 +82,21 @@ ER3.1 (braucht ER1.4)       ER4 später
     MCP `calendar_pause_reminders` – `None` setzt fort.
   - `Request::PreviewReminder { href }` · `calendar.preview_reminder` · Write ·
     MCP `calendar_preview_reminder` – zeigt die Erinnerung eines Termins jetzt, als „Preview“.
-- **Abnahme:** Rechte-Tabellentest und MCP-Vertragstest decken die fünf ab; API-Referenz neu erzeugt.
+- **Abnahme:** Rechte-Tabellentest und MCP-Vertragstest decken die fünf ab. (Eine `docs/api-reference.md`
+  gibt es im Repository nicht; die Befehle stehen in `docs/api.md`, Fußnote 20.)
+- **Nach der API-Prüfung (2026-10-15):** `set_setting reminders` ändert nur die genannten Felder und Kalender
+  (`Reminders::merged`); Clients sehen und setzen nur Kalender ihrer Auswahl, `update_settings` lässt die
+  Kalender-Arten stehen; `Response::Reminders` sagt `paused_until`; Schlummern 1–120 Minuten im Schema.
 
 ### ER1.3 Planer und Zustand
-- [ ] erledigt
-- **Modell:** Opus · **Braucht:** ER1.2 · **Dateien:** `crates/torroworkplace/src/reminders.rs` (neu),
-  `crates/torroworkplace/src/{core,daemon,pim}.rs`
+- [x] erledigt
+- **Modell:** Opus · **Braucht:** ER1.2 · **Dateien:** `crates/torroworkplace/src/reminders.rs` (neu, Tests in
+  `reminders/tests.rs`), `crates/torroworkplace/src/{core,daemon,pim,main,approvals,audit}.rs`, `Reminder.preview_by`
+  in `crates/torro-ipc/src/lib.rs`, Übersetzungen in `crates/torro-core/src/i18n/de.rs`
+- **Umgesetzt (2026-10-15):** „Nur zugesagte“ und „außerhalb der Arbeitszeit“ wirken erst mit K.26 bzw. K.33.
+  Nie gezeigte Erinnerungen kommen höchstens 15 Minuten nach dem späteren von Auslösen und Beginn noch,
+  gezeigte bleiben bis zum Ende des Termins. Der Dienst gibt fällige Erinnerungen an `reminders::Sink`;
+  bis ER1.4 ist das `Silent`.
 - Reine Regeln (`Planner`, „jetzt“ als Argument): aus Terminen, Einstellungen und Zustand die Erinnerungen
   der nächsten 36 Stunden; Kennung = Prüfsumme aus Kalender, UID, Vorkommen, Auslöser. Filter aus dem
   Konzept (zugesagt, ganztägig, frei, ausgeblendete Kalender, Pause); läuft ein Termin mit Videolink und
@@ -98,11 +107,20 @@ ER3.1 (braucht ER1.4)       ER4 später
   Termine nach 7 Tagen weg.
 - Handler der fünf Requests; `preview_reminder` höchstens einmal je Minute und Client (`busy`), mit
   Name des Clients für „sent by“.
+- Verträge aus ER1.2 umsetzen: Schlummern und Verwerfen nur für `due`/`snoozed` (sonst `conflict`),
+  Minuten 1–120 (sonst `error`); Pause höchstens 24 Stunden (sonst `error`) und nur für Clients mit allen
+  Kalendern (`forbidden`); Kennung höchstens 36 Hex-Zeichen (das Protokoll nimmt sie dann wie sie ist).
+- Vorschau: das `href` schon in `PimService::out_of_reach` über den Zwischenspeicher prüfen (`not-found` vor
+  einer Freigabe); eine Vorschau eines Agenten achtet auf Pause und `never_during_call`.
+- Freigaben: Regeln in `approvals::Facts` für Schlummern, Verwerfen und Vorschau (Titel und Beginn aus dem
+  Zwischenspeicher über Kennung bzw. `href`) und eine lesbare Zusammenfassung für `set_setting reminders`
+  (Kalendernamen statt Kennungen); Datei `crates/torroworkplace/src/approvals.rs` kommt dazu.
 - **Abnahme:** Tests: Standard und eigener Alarm, Schlummern bis Beginn, verschobener Termin = neue
-  Erinnerung, Pause, Aufwachen nach 10 min, Client ohne Kalenderrecht bekommt `not-found`.
+  Erinnerung, Pause, Aufwachen nach 10 min, Client ohne Kalenderrecht bekommt `not-found`; Protokoll-Kennungen
+  der fünf Befehle (`audit::ids`).
 
 ### ER1.4 Eingang und leise Benachrichtigung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.3 · **Dateien:** `crates/torroworkplace/src/{inbox,inbox_notify,notify,reminders}.rs`,
   `crates/torroinbox/src/notifications.rs` (Knopf „In 5 min“)
 - Jede ausgelöste Erinnerung ist ein Eintrag `reminder` der Quelle „Suite“, „Für mich“, mit ✕ · Open ·
@@ -111,19 +129,30 @@ ER3.1 (braucht ER1.4)       ER4 später
   Dismiss. Ruhe während belegter Termine hält sie nicht zurück.
 - **Abnahme:** Tests: Eintrag kommt und geht, Knopf schickt den richtigen Request, keine doppelte
   Benachrichtigung bei Vollbild.
+- **Umgesetzt (2026-10-16):** neue Art `Kind::Reminder` in `torro-inbox` (freigegeben), nur vom Kern, für mich.
+  Der Eintrag hat die Knöpfe jeder Meldung der Suite (✕, Öffnen = Kalender, Später); erledigt oder vertagt im
+  Eingang verwirft bzw. schlummert die Erinnerung selbst (`Reminders::follow_inbox`), im Später-Menü steht
+  „In 5 min“ zuerst (`torroinbox/src/app.rs`). Die allgemeinen Popups des Eingangs lassen Erinnerungen aus
+  (`asks_elsewhere`); die eigene Benachrichtigung hat Join, In 5 min, Dismiss (Linux; macOS und Windows ohne
+  Knöpfe). Ein Vollbild zeigt bis ER2.1 ebenfalls diese Benachrichtigung; dass es danach keine doppelte gibt,
+  prüft ER2.1. Dateien zusätzlich: `torro-inbox/src/{item,rules}.rs`, `torroinbox/src/{hub,app}.rs`,
+  `torroworkplace/src/{core,daemon}.rs`, `torro-core/src/i18n/de.rs`.
 
 ### ER1.5 Schriftstufe für das Vollbild
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Dateien:** `crates/torro-core/src/design.rs`, `crates/torro-gui/src/{typo,theme}.rs`,
   `.claude/skills/torro-design/SKILL.md` (Tabelle Typografie)
 - `typo::hero()` 48/56, 600, `typo::countdown()` 28/32, 500, tabellarisch, und `size::control_xl()` 44 für die
-  Knöpfe (Text 14/500) – nur für das Vollbild.
+  Knöpfe (Text `typo::body_strong()`) – nur für das Vollbild.
+- **Umgesetzt (2026-10-15):** auch in `design/pack.rs` (Schlüssel `type.hero`, `type.countdown`; ein Paket ohne
+  sie leitet sie ab: Titel wie `headline`, Countdown Medium, sonst wie `micro`), `design/rules.rs` (hero 32–72,
+  countdown 20–48, `control_xl` ≥ 24) und `docs/design-pakete.md`.
 - **API/MCP:** keine.
 
 ## ER2 Oberflächen
 
 ### ER2.1 Vollbild-Fenster
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** ER1.3, ER1.5 · **Dateien:** `crates/torrocalendar/src/{main,app}.rs`,
   `crates/torrocalendar/src/reminder.rs` (neu), `crates/torroworkplace/src/{reminders,apps}.rs` (starten)
 - `torrocalendar --reminders` (Fensterklasse `torro-reminder`), vom Kern gestartet; liest
@@ -138,9 +167,18 @@ ER3.1 (braucht ER1.4)       ER4 später
   „Preview · sent by {client}“, „Open in calendar“, „Open in Maps“.
 - **API/MCP:** nur Requests aus ER1.2.
 - **Abnahme:** Sichtprüfung 1280×800, 1920×1080, 3840×1080, hell und dunkel; Tests für Tasten und Countdown.
+- **Umgesetzt (2026-10-16):** `crates/torrocalendar/src/reminder.rs` (Tests in `reminder/tests.rs`), Start in
+  `main.rs`; Bausteine `widgets::big_button` und `style::container::reminder_screen` in `torro-gui`. Der Kern
+  startet das Fenster für Erinnerungen im Stil „full screen“ (`reminders::Desktop`, einmal, solange es läuft) und
+  zeigt dann keine Benachrichtigung; startet es nicht, kommen Benachrichtigungen. Demo:
+  `--demo --open reminder|reminder-started|reminder-many|reminder-notes|reminder-light|reminder-preview|
+  reminder-onsite|reminder-snooze` mit `--size 1920x1080`. Sichtprüfung auf macOS bei 1280×720, 1440×900,
+  1920×1080 und 3840×1080, hell und dunkel. Teilnehmer und Organisator fehlen, bis K.26 sie liest; `Tab` geht
+  durch die Knöpfe noch nicht (Iced 0.14 kennt keinen Fokus für Knöpfe). Auf macOS deckt das Fenster den Bildschirm
+  bis ER2.2 nur maximiert, ohne die Menüleiste.
 
 ### ER2.2 Ein Fenster je Bildschirm
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** ER2.1, ER0.1 · **Dateien:** `crates/torrocalendar/src/{main,reminder}.rs`,
   `crates/torro-appkit/src/lib.rs`, Wurzel-`Cargo.toml` (Features `NSApplication`, `NSScreen` bei
   `objc2-app-kit`), `packaging/macos/` (Bundle „Torro Reminder.app“), `crates/torro-wm/src/hyprland/`,
@@ -161,18 +199,33 @@ ER3.1 (braucht ER1.4)       ER4 später
 - **API/MCP:** keine neuen Requests; die neue Funktion in `torro-wm` ist intern.
 - **Abnahme:** auf zwei Bildschirmen geprüft, je System, das zur Hand ist (Hyprland und Windows sind bis
   hier nur recherchiert); über einer Vollbild-App (macOS) und mit gesperrtem Bildschirm; was fehlt, im Bericht.
+- **Umgesetzt (2026-10-16):** Das Fenster ist ein `iced::daemon` mit einem Fenster je Bildschirm (`--all-displays`
+  aus der Einstellung, Hyprland-Monitore mit `--monitors`); die anderen zeigen die ruhige Fassung (Demo
+  `reminder-second`). macOS: `torro_appkit::cover_screen` / `screen_count` (kein neues `unsafe`, der vorhandene
+  Aufruf steckt jetzt in `ns_window`), Bundle „Torro Reminder.app“ über `AGENT_APP=1 make-app.sh` und den
+  Release-Workflow, der Kern startet es bevorzugt (`reminders::reminder_program`). Hyprland:
+  `WindowManager::cover_monitors` mit `hl.window_rule` je Monitor, `Core::keep_reminder_windows_in_view` zieht die
+  Fenster beim Wechsel der Arbeitsfläche nach. GlazeWM-Regel in `integrations/glazewm/`.
+  **Geprüft:** macOS mit einem Bildschirm (5120×1440): Fenster auf Ebene 101 über Menüleiste und Dock; das Bundle
+  startet als Erinnerungsfenster. **Nicht geprüft:** zwei Bildschirme, über einer Vollbild-App, gesperrter
+  Bildschirm, Hyprland und Windows (nur Tests der erzeugten Befehle) – hier nicht zur Hand.
 
 ### ER2.3 Termin-Editor: Erinnerungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.1 · **Dateien:** `crates/torrocalendar/src/editor.rs`
 - Eigenschaftszeile „Reminders“: je Alarm ein Chip „15 min before · Full screen“ mit ✕, „Add reminder“
   öffnet ein Menü (At start, 1, 5, 10, 15, 30 min, 1 h, 1 day; dann Art: Calendar default, Notification,
   Full screen). Ohne eigene Alarme leise „Default: 1 min before“.
 - Im „…“-Menü des Paneels: „Preview reminder“ (`calendar.preview_reminder`).
 - **Abnahme:** Speichern über `calendar.save_event`, Tests für Chip-Texte.
+- **Umgesetzt (2026-10-16):** Abschnitt „Reminders“ mit Zeilen je Erinnerung (✕), „Add reminder“ als Menü mit
+  „When“ und „Style“ (die gewählte Art gilt für die nächste Zeit, ein Klick auf eine Zeit fügt hinzu und speichert).
+  Ohne eigene leise „The default reminder of the settings“ (der Editor kennt die Minuten nicht). „Preview
+  reminder“ steht im Fuß des Paneels neben „Delete event“, da das Paneel kein „…“-Menü hat; in `app.rs` geht es als
+  `calendar.preview_reminder` an den Kern.
 
 ### ER2.4 Steuerzentrale: Calendar › Reminders
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.2 · **Dateien:** `crates/torroworkplace/src/ui/general.rs`
 - **Ort umgeplant (2026-10-15):** Gibt es die Einstellungen im Kalender schon (S.19 in
   [steuerzentrale.md](steuerzentrale.md), Bibliothek `torro-settings-ui`), kommen die Gruppen als
@@ -181,15 +234,23 @@ ER3.1 (braucht ER1.4)       ER4 später
   „Which events“ (Only accepted, All-day, Free, Outside work hours, Never full screen during a video call), „Calendars“ (je Kalender Off ·
   Notification · Full screen).
 - **Abnahme:** Jede Zeile setzt nur ihr Feld (Test wie bei der Nacht).
+- **Umgesetzt (2026-10-16):** drei Gruppen auf der Seite „General“ unter „Calendar“; jede Zeile schickt
+  `settings.set_setting reminders` mit genau ihrem Feld (`ReminderChange::value`). „Show on“ ist ein Schalter „On all
+  displays“, der Ton ein Schalter. Die Vorschau steht im Termin (ER2.3), nicht hier: Die Seite kennt keinen Termin.
 
 ### ER2.5 Tray: Nächster Termin und Pause
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.3 · **Dateien:** `crates/torroworkplace/src/tray/{menu,desktop,linux}.rs`
 - „Next: {title} · in {n} min“ (öffnet den Termin), „Pause reminders ▸ For 1 hour · Until tomorrow ·
   Resume“, in der Pause „Reminders paused until {time}“.
+- **Umgesetzt (2026-10-16):** „Next: {time} {title}“ mit der Uhrzeit statt „in {n} min“, weil das Menü nur bei
+  Änderungen neu entsteht (eine Minutenzahl würde veralten); öffnet den Kalender (ein bestimmter Termin lässt sich
+  noch nicht öffnen). Der Abschnitt steht nur da, wenn eine Erinnerung kommt oder pausiert ist. „Until tomorrow“
+  pausiert bis 8 Uhr; die Zeit wird beim Klick berechnet (`menu::Pause`). Zusätzlich `Snapshot` in `core.rs` und
+  `watch_reminders` in `daemon.rs`.
 
 ### ER2.6 MCP-Tools und bequeme Eingabe
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** ER1.3 · **Dateien:** `crates/torroworkplace/src/mcp.rs`
 - Die fünf Tools aus ER1.2; `calendar_save_event` kurz mit `reminder_minutes` (eine Erinnerung, Art des
   Kalenders). Test, dass die bequeme Eingabe den richtigen Request baut.
@@ -197,11 +258,15 @@ ER3.1 (braucht ER1.4)       ER4 später
 ## ER3 Zusammen mit Nextcloud
 
 ### ER3.1 Nextcloud-Erinnerungen nicht doppelt
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet (Agent `nextcloud-expert` geeignet) · **Braucht:** ER1.4 · **Dateien:**
   `crates/torro-inbox/src/rules.rs`, `crates/torroworkplace/src/sources/nextcloud.rs`
 - Sind Torro-Erinnerungen an, geht eine `dav`-Benachrichtigung „calendar_reminder“ im Torro-Eintrag
   desselben Termins auf (Zuordnung über Kalender und UID aus `object_id`), sonst bleibt sie wie heute.
+- **Umgesetzt (2026-10-16):** Nextcloud setzt `object_type = dav` und `object_id = SHA-256(UID)`
+  (`PushProvider.php`). Solche Benachrichtigungen werden kein eigener Eintrag, solange Torro an den Termin selbst
+  erinnert (`sources::nextcloud::reminded_here`); sie bleiben auf dem Server (das Handy bekommt sie weiter).
+  `rules.rs` blieb unverändert: Die Zuordnung braucht die Termine, die nur der Kern kennt.
 
 ## ER4 Später
 

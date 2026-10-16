@@ -227,6 +227,20 @@ const APPROVAL_THREADS: &str = "approval:";
 /// account, whatever its problem.
 const ACCOUNT_THREADS: &str = "account:";
 
+/// The start of the thread keys of reminders of events, `reminder:<reminder id>` (task ER1.4): one
+/// entry per reminder, opened again each time it fires.
+const REMINDER_THREADS: &str = "reminder:";
+
+/// What the person did with the entry of a fired reminder in the inbox (task ER1.4,
+/// [`Inbox::reminder_answers`]): the reminder follows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReminderAnswer {
+    /// Done or dismissed (✕) at `at`.
+    Done { at: DateTime<Utc> },
+    /// Put off until `until` (Later, In 5 min).
+    Snoozed { until: DateTime<Utc> },
+}
+
 /// How often the core brings the entries of the suite in line ([`tend_suite`]): an approval that
 /// expired or an account that was fixed is done at most this long after.
 pub const SUITE_EVERY: Duration = Duration::from_secs(60);
@@ -932,6 +946,44 @@ impl Inbox {
             None => complete,
         };
         self.with(|db| reconcile(db, ACCOUNT_THREADS, matters, fixed, now)).map_err(|f| f.to_string())
+    }
+
+    /// Files the reminders that stand now (task ER1.4): each fired reminder in `standing`, with when
+    /// it fired, as an entry of the source `suite` (kind `reminder`, for me, not urgent, opening the
+    /// calendar), opened again when it fires anew; the entries of reminders that no longer stand
+    /// (dismissed, snoozed, their event over) are done. Titles and places are calendar text:
+    /// `untrusted`. `Err` holds the message for the log.
+    pub fn file_reminders(
+        &self,
+        standing: &[(torro_ipc::Reminder, DateTime<Utc>)],
+        now: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let matters: Vec<Matter> = standing.iter().map(|(reminder, fired)| reminder_matter(reminder, *fired)).collect();
+        let keys: BTreeSet<String> = matters.iter().map(|matter| matter.thread_key.clone()).collect();
+        self.with(|db| reconcile(db, REMINDER_THREADS, matters, |key| !keys.contains(key), now))
+            .map_err(|failure| failure.to_string())
+    }
+
+    /// The entries of reminders the person put away (done) or put off (snoozed), by reminder id
+    /// (task ER1.4): the run makes the reminders follow. Open ones are not listed. `Err` holds the
+    /// message for the log.
+    pub fn reminder_answers(&self) -> Result<Vec<(String, ReminderAnswer)>, String> {
+        self.with(|db| {
+            let condition = "owner = ? AND instr(thread_key, ?) = 1";
+            let stored = read_items(db, &Scope::All, condition, vec![text(CORE_OWNER), text(REMINDER_THREADS)], "")?;
+            Ok(stored
+                .into_iter()
+                .filter_map(|Stored { item, .. }| {
+                    let id = item.thread_key.strip_prefix(REMINDER_THREADS)?.to_string();
+                    match item.state {
+                        State::Done { at } => Some((id, ReminderAnswer::Done { at })),
+                        State::Snoozed { until } => Some((id, ReminderAnswer::Snoozed { until })),
+                        State::New | State::Seen => None,
+                    }
+                })
+                .collect())
+        })
+        .map_err(|failure| failure.to_string())
     }
 
     /// Files the new mail `mail` at `now` (task E4.1): as a new entry of its conversation, or
@@ -2253,7 +2305,7 @@ fn agent_title(kind: Kind, agent: Option<AgentKind>) -> Option<String> {
     match kind {
         Kind::AgentWaiting => Some(trf("{agent} is waiting for you", &[("agent", &name)])),
         Kind::AgentDone => Some(trf("{agent} finished", &[("agent", &name)])),
-        Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message | Kind::Alert => None,
+        Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message | Kind::Alert | Kind::Reminder => None,
     }
 }
 
@@ -3271,6 +3323,43 @@ fn approval_body(approval: &ApprovalInfo) -> String {
         true if approval.summary.chars().count() > TITLE_MAX => approval.summary.clone(),
         true => trf("{client} asks for permission", &client),
         false => trf("{client} asks for approval", &client),
+    }
+}
+
+/// The entry of a fired reminder (task ER1.4): the event's title, its time and place, opening the
+/// calendar. Fired anew (after a snooze) it opens again, since `since` is when it fired.
+fn reminder_matter(reminder: &torro_ipc::Reminder, fired: DateTime<Utc>) -> Matter {
+    let event = &reminder.event;
+    let title = match event.summary.trim() {
+        "" => tr("(no title)").to_string(),
+        summary => summary.to_string(),
+    };
+    Matter {
+        thread_key: format!("{REMINDER_THREADS}{}", reminder.id),
+        kind: Kind::Reminder,
+        title,
+        body: Some(reminder_body(event)),
+        link: Some(Link::App { app: AppId::CALENDAR.binary.to_string() }),
+        actions: Vec::new(),
+        // The title and the place come from a calendar, possibly from someone else's invitation.
+        untrusted: true,
+        since: fired,
+    }
+}
+
+/// "10:00 – 10:45 · Room 3.12": the event's times in local time and its place; all-day events say so.
+pub fn reminder_body(event: &torro_pim::Event) -> String {
+    let clock = |at: DateTime<Utc>| torro_gui::datetime::format_time(torro_gui::datetime::to_local(at).time());
+    let when = match (event.start, event.end) {
+        (torro_pim::EventTime::Date(_), _) => tr("All day").to_string(),
+        (torro_pim::EventTime::DateTime(start), Some(torro_pim::EventTime::DateTime(end))) => {
+            format!("{} – {}", clock(start), clock(end))
+        }
+        (torro_pim::EventTime::DateTime(start), _) => clock(start),
+    };
+    match event.location.as_deref().map(str::trim).filter(|place| !place.is_empty()) {
+        Some(place) => format!("{when} · {}", cap(place, TITLE_MAX)),
+        None => when,
     }
 }
 
@@ -5487,6 +5576,87 @@ pub(crate) mod tests {
     fn account_entry<'a>(items: &'a [Item], account: &str) -> &'a Item {
         let key = format!("account:{account}");
         items.iter().find(|item| item.thread_key == key).expect("an entry for the account")
+    }
+
+    /// A fired reminder of the event `uid` (task ER1.4).
+    fn reminder(uid: &str) -> torro_ipc::Reminder {
+        let start = at(10, 0);
+        torro_ipc::Reminder {
+            id: format!("r-{uid}"),
+            event: torro_pim::Event {
+                uid: uid.into(),
+                collection: "nextcloud:anna/https://cloud.example.org/cal/work/".into(),
+                href: None,
+                etag: None,
+                summary: "Weekly sync".into(),
+                start: torro_pim::EventTime::DateTime(start),
+                end: Some(torro_pim::EventTime::DateTime(start + TimeDelta::minutes(45))),
+                location: Some("Room 3.12".into()),
+                description: None,
+                recurring: false,
+                transparency: torro_pim::Transparency::Opaque,
+                alarms: Vec::new(),
+            },
+            fires_at: at(9, 59),
+            style: torro_pim::AlarmStyle::Notification,
+            state: torro_ipc::ReminderState::Due,
+            snoozed_until: None,
+            join: None,
+            preview_by: None,
+        }
+    }
+
+    #[test]
+    fn a_fired_reminder_is_an_entry_until_it_no_longer_stands() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        let sync = reminder("sync");
+        inbox.file_reminders(&[(sync.clone(), at(9, 59))], at(9, 59)).expect("filed");
+        inbox.file_reminders(&[(sync.clone(), at(9, 59))], at(10, 0)).expect("filed again");
+        let items = suite(&inbox, at(10, 0));
+        assert_eq!(items.len(), 1, "once: {items:?}");
+        let entry = &items[0];
+        assert_eq!(
+            (entry.kind, entry.lane, entry.urgent, entry.untrusted, entry.thread_key.as_str()),
+            (Kind::Reminder, Lane::ForMe, false, true, "reminder:r-sync")
+        );
+        assert_eq!(entry.title, "Weekly sync");
+        assert!(entry.body.as_deref().is_some_and(|body| body.ends_with("· Room 3.12")), "{:?}", entry.body);
+        assert_eq!(entry.link, Some(Link::App { app: "torrocalendar".into() }));
+        assert!(inbox.reminder_answers().expect("read").is_empty(), "nothing the person did");
+
+        // Dismissed elsewhere (or its event over): done by itself; fired anew after a snooze: open.
+        inbox.file_reminders(&[], at(10, 1)).expect("filed");
+        assert!(matches!(suite(&inbox, at(10, 1))[0].state, State::Done { .. }));
+        inbox.file_reminders(&[(sync, at(10, 5))], at(10, 5)).expect("filed");
+        assert!(suite(&inbox, at(10, 5))[0].state.is_open(), "fired after it was done");
+    }
+
+    #[test]
+    fn what_the_person_does_with_a_reminder_entry_is_read_back() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let inbox = inbox_in(dir.path());
+        inbox.file_reminders(&[(reminder("a"), at(9, 59)), (reminder("b"), at(9, 59))], at(9, 59)).expect("filed");
+        let id_of = |uid: &str| {
+            suite(&inbox, at(10, 0))
+                .into_iter()
+                .find(|item| item.thread_key == format!("reminder:r-{uid}"))
+                .expect("entry")
+                .id
+        };
+        let done = Request::SetItemDone { id: id_of("a"), done: true, dismissed: true };
+        assert!(matches!(inbox.handle(done, None, at(10, 0)), Response::Item { .. }));
+        let snooze = Request::SnoozeItem { id: id_of("b"), until: Some(at(10, 5)) };
+        assert!(matches!(inbox.handle(snooze, None, at(10, 0)), Response::Item { .. }));
+        let mut answers = inbox.reminder_answers().expect("read");
+        answers.sort_by(|x, y| x.0.cmp(&y.0));
+        assert_eq!(
+            answers,
+            [
+                ("r-a".to_string(), ReminderAnswer::Done { at: at(10, 0) }),
+                ("r-b".to_string(), ReminderAnswer::Snoozed { until: at(10, 5) })
+            ]
+        );
     }
 
     #[test]

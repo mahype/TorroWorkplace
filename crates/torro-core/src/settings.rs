@@ -110,6 +110,11 @@ pub struct Settings {
     /// may switch it off.
     #[serde(default)]
     pub mail_to_cloud: bool,
+    /// Reminders of events (task ER1.2, `docs/erinnerungen.md`): whether they come, which events,
+    /// and per calendar as a notification or over the whole screen. Read leniently: a value that
+    /// does not read gives the defaults, never a settings file that fails.
+    #[serde(default, deserialize_with = "lenient_reminders")]
+    pub reminders: Reminders,
 }
 
 /// How a mail that has HTML first shows in the reader (`settings.set_setting mail_view`, task
@@ -138,6 +143,137 @@ pub enum MailAppearance {
     Light,
     /// `"dark"`: always recoloured for a dark background.
     Dark,
+}
+
+/// How reminders of events come (task ER1.2, `settings.set_setting reminders`), as one object:
+/// `{"enabled": true, "defaultLead": 1, "calendars": {"<calendar id>": "full_screen"}, …}`. Read
+/// from a file, fields left out have their defaults; a change ([`Reminders::merged`]) touches only
+/// the fields it names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Reminders {
+    /// Reminders come at all. On unless switched off.
+    pub enabled: bool,
+    /// Minutes before the start for events without a reminder of their own (0 to
+    /// [`Reminders::MAX_LEAD`]); `null` for none. One minute unless changed.
+    pub default_lead: Option<u32>,
+    /// How each calendar shows its reminders, by calendar id from `calendar.list_calendars`. A
+    /// calendar that is not named here shows them as a notification.
+    pub calendars: BTreeMap<String, CalendarReminders>,
+    /// Only events the person accepted (or organises); declined ones never remind. On.
+    pub only_accepted: bool,
+    /// All-day events remind too. Off.
+    pub all_day: bool,
+    /// Events marked free (`TRANSP:TRANSPARENT`) remind too. Off.
+    pub free_events: bool,
+    /// Events outside the work hours remind too. On; it only matters once work hours exist (K.33).
+    pub outside_work_hours: bool,
+    /// A full-screen reminder covers every display, not only the main one. On.
+    pub all_displays: bool,
+    /// While an event with a call link runs, a full-screen reminder comes as a notification. On.
+    pub never_during_call: bool,
+    /// The sound of a reminder. The system's unless changed.
+    pub sound: ReminderSound,
+}
+
+/// How a calendar shows its reminders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CalendarReminders {
+    /// No reminders from this calendar.
+    Off,
+    /// A desktop notification and an inbox entry, the default.
+    #[default]
+    Notification,
+    /// Over the whole screen until the person reacts.
+    FullScreen,
+}
+
+/// The sound of a reminder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderSound {
+    /// The system's notification sound.
+    #[default]
+    System,
+    /// Silent.
+    None,
+}
+
+impl Default for Reminders {
+    fn default() -> Reminders {
+        Reminders {
+            enabled: true,
+            default_lead: Some(1),
+            calendars: BTreeMap::new(),
+            only_accepted: true,
+            all_day: false,
+            free_events: false,
+            outside_work_hours: true,
+            all_displays: true,
+            never_during_call: true,
+            sound: ReminderSound::System,
+        }
+    }
+}
+
+impl Reminders {
+    /// The longest default lead: one week, in minutes.
+    pub const MAX_LEAD: u32 = 7 * 24 * 60;
+
+    /// How the calendar `id` shows its reminders.
+    pub fn calendar(&self, id: &str) -> CalendarReminders {
+        self.calendars.get(id).copied().unwrap_or_default()
+    }
+
+    /// The reminders in `value`, or why they do not fit: an object of the fields above (left-out
+    /// ones keep their defaults), a lead of at most [`Reminders::MAX_LEAD`] minutes. Calendars
+    /// that show notifications, the default, are not stored. For `settings.set_setting`.
+    pub fn from_value(value: &serde_json::Value) -> Result<Reminders, String> {
+        let mut reminders: Reminders = serde_json::from_value(value.clone())
+            .map_err(|err| format!("{value} is not a setting for reminders ({err})"))?;
+        if reminders.default_lead.is_some_and(|lead| lead > Self::MAX_LEAD) {
+            return Err(format!("the default reminder is at most {} minutes before", Self::MAX_LEAD));
+        }
+        reminders.calendars.retain(|_, shown| *shown != CalendarReminders::Notification);
+        Ok(reminders)
+    }
+
+    /// The reminders as `settings.set_setting` takes them.
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// These reminders with the fields `change` names, or why it does not fit: an object whose
+    /// fields replace the ones here (left-out fields stay as they are), and whose `calendars` change
+    /// only the calendars it names (`"notification"` sets one back to the default). Checked like
+    /// [`Reminders::from_value`]. Two clients changing different fields so never undo each other.
+    pub fn merged(&self, change: &serde_json::Value) -> Result<Reminders, String> {
+        let serde_json::Value::Object(change) = change else {
+            return Err(format!("{change} is not a setting for reminders: send an object"));
+        };
+        let mut merged = match self.to_value() {
+            serde_json::Value::Object(current) => current,
+            _ => serde_json::Map::new(),
+        };
+        for (field, value) in change {
+            match (field.as_str(), merged.get_mut(field), value) {
+                ("calendars", Some(serde_json::Value::Object(calendars)), serde_json::Value::Object(named)) => {
+                    calendars.extend(named.iter().map(|(id, shown)| (id.clone(), shown.clone())));
+                }
+                _ => {
+                    merged.insert(field.clone(), value.clone());
+                }
+            }
+        }
+        Reminders::from_value(&serde_json::Value::Object(merged))
+    }
+}
+
+/// `reminders` as written, or the defaults when it does not read.
+fn lenient_reminders<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Reminders, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(Reminders::from_value(&value).unwrap_or_default())
 }
 
 /// What a new chat of the assistant starts with (issue #131, `settings.set_setting
@@ -237,6 +373,7 @@ impl Default for Settings {
             mail_view: MailFormat::default(),
             mail_appearance: MailAppearance::default(),
             mail_to_cloud: false,
+            reminders: Reminders::default(),
         }
     }
 }
@@ -1099,6 +1236,7 @@ mod tests {
             mail_view: MailFormat::Html,
             mail_appearance: MailAppearance::App,
             mail_to_cloud: false,
+            reminders: Reminders::default(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -1241,6 +1379,12 @@ mod tests {
             mail_view: MailFormat::Text,
             mail_appearance: MailAppearance::Dark,
             mail_to_cloud: true,
+            reminders: Reminders {
+                default_lead: None,
+                calendars: BTreeMap::from([("work".to_string(), CalendarReminders::FullScreen)]),
+                sound: ReminderSound::None,
+                ..Reminders::default()
+            },
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);
@@ -1459,5 +1603,67 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<ListOrderEntry>(bad.clone()).is_err(), "{bad}");
         }
+    }
+
+    // Reminders (task ER1.2).
+
+    #[test]
+    fn reminders_come_one_minute_before_as_notifications_by_default() {
+        let reminders = Settings::default().reminders;
+        assert!(reminders.enabled && reminders.only_accepted && reminders.never_during_call && reminders.all_displays);
+        assert!(!reminders.all_day && !reminders.free_events);
+        assert_eq!(reminders.default_lead, Some(1));
+        assert_eq!(reminders.calendar("any"), CalendarReminders::Notification);
+        assert_eq!(reminders.sound, ReminderSound::System);
+        let dir = TempDir::new("no-reminders");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        assert_eq!(load_from(&path).reminders, Reminders::default(), "settings from before ER1.2");
+    }
+
+    #[test]
+    fn reminders_are_set_as_one_object_with_defaults_for_the_rest() {
+        let value = serde_json::json!({
+            "defaultLead": null,
+            "calendars": {"a/work": "full_screen", "a/home": "notification", "a/birthdays": "off"},
+            "allDay": true,
+        });
+        let reminders = Reminders::from_value(&value).expect("valid");
+        assert_eq!(reminders.default_lead, None, "null is no default reminder");
+        assert!(reminders.all_day && reminders.enabled, "set and left-out fields");
+        assert_eq!(reminders.calendar("a/work"), CalendarReminders::FullScreen);
+        assert_eq!(reminders.calendar("a/birthdays"), CalendarReminders::Off);
+        assert!(!reminders.calendars.contains_key("a/home"), "the default is not stored");
+        assert_eq!(Reminders::from_value(&reminders.to_value()), Ok(reminders.clone()));
+
+        // A change touches only what it names, calendar by calendar.
+        let changed = reminders
+            .merged(&serde_json::json!({"freeEvents": true, "calendars": {"a/home": "full_screen", "a/work": "notification"}}))
+            .expect("valid change");
+        assert!(changed.free_events && changed.all_day, "the new field and the one set before");
+        assert_eq!(changed.default_lead, None, "left out, so as it was");
+        assert_eq!(changed.calendar("a/home"), CalendarReminders::FullScreen);
+        assert_eq!(changed.calendar("a/birthdays"), CalendarReminders::Off, "not named, so as it was");
+        assert!(!changed.calendars.contains_key("a/work"), "back to the default, so not stored");
+        assert!(reminders.merged(&serde_json::json!({"defaultLead": "soon"})).is_err());
+        assert!(reminders.merged(&serde_json::json!([1])).is_err(), "an object");
+    }
+
+    #[test]
+    fn reminders_that_do_not_fit_are_refused_and_read_as_defaults() {
+        for wrong in [
+            serde_json::json!({"defaultLead": Reminders::MAX_LEAD + 1}),
+            serde_json::json!({"calendars": {"a/work": "loud"}}),
+            serde_json::json!({"enabled": "yes"}),
+            serde_json::json!("on"),
+        ] {
+            assert!(Reminders::from_value(&wrong).is_err(), "{wrong}");
+        }
+        let dir = TempDir::new("bad-reminders");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german","reminders":{"defaultLead":"soon"}}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.language, Language::German, "the other settings stay");
+        assert_eq!(loaded.reminders, Reminders::default());
     }
 }

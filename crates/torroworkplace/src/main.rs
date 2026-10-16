@@ -41,6 +41,7 @@ mod mail;
 mod mcp;
 mod notify;
 mod pim;
+mod reminders;
 mod settings_service;
 mod sources;
 mod suggest;

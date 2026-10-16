@@ -457,6 +457,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         };
         let answered =
             Response::InvitationAnswered { delivery: torro_ipc::mail::Delivery::Accepted, event: Some(event) };

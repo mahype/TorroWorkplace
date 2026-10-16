@@ -941,6 +941,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
@@ -1130,6 +1131,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         };
         let utc = |day, hour| at(day, hour, 0).and_local_timezone(chrono::Local).single().expect("local").to_utc();
         // Monday 5 (past) and Thursday 8 (to come) both have 10:00 and 16:00.

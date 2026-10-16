@@ -4,10 +4,14 @@
 //! every occurrence arrives as its own VEVENT with times in UTC. Times with a TZID that
 //! slip through anyway are read as local time; a full time zone database comes with the
 //! sync engine.
+//!
+//! An event's reminders (task ER1.1, `docs/erinnerungen.md`) are its `VALARM` components with
+//! `ACTION:DISPLAY` or `AUDIO` ([`alarm`]). Mail alarms, `ACTION:NONE` (Apple's placeholder) and
+//! alarms whose `TRIGGER` cannot be read are not the model's: they are left out, not reported.
 
 use chrono::{DateTime, Duration, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use torro_pim::model::Link;
-use torro_pim::{Event, EventTime, Todo, Transparency};
+use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Event, EventTime, Todo, Transparency};
 
 /// One content line: `NAME;PARAM=VALUE:value`.
 pub(crate) struct Property<'a> {
@@ -25,14 +29,14 @@ impl Property<'_> {
 /// The events in one iCalendar object (one `calendar-data`), skipping cancelled ones.
 pub fn parse_events(ics: &str, collection: &str) -> Vec<Event> {
     let mut events = Vec::new();
-    for_each_component(ics, "VEVENT", |props| events.extend(to_event(props, collection)));
+    for_each_component(ics, "VEVENT", |props, alarms| events.extend(to_event(props, alarms, collection)));
     events
 }
 
 /// The tasks in one iCalendar object (one `calendar-data`), skipping cancelled ones.
 pub fn parse_todos(ics: &str, collection: &str) -> Vec<Todo> {
     let mut todos = Vec::new();
-    for_each_component(ics, "VTODO", |props| todos.extend(to_todo(props, collection)));
+    for_each_component(ics, "VTODO", |props, _| todos.extend(to_todo(props, collection)));
     todos
 }
 
@@ -42,31 +46,51 @@ pub fn parse_todos(ics: &str, collection: &str) -> Vec<Todo> {
 pub fn is_series(ics: &str) -> bool {
     let mut series = false;
     for component in ["VEVENT", "VTODO"] {
-        for_each_component(ics, component, |props| {
+        for_each_component(ics, component, |props, _| {
             series |= ["RRULE", "RDATE", "RECURRENCE-ID"].iter().any(|name| find(props, name).is_some());
         });
     }
     series
 }
 
-/// Calls `visit` with the properties of every top-level `component` in `ics`. Properties of
-/// nested components (VALARM) are left out.
-fn for_each_component(ics: &str, component: &str, mut visit: impl FnMut(&[Property<'_>])) {
+/// Calls `visit` with the own properties of every top-level `component` in `ics` and the
+/// properties of each `VALARM` directly inside it. Properties of other nested components are
+/// left out.
+fn for_each_component(ics: &str, component: &str, mut visit: impl FnMut(&[Property<'_>], &[Vec<Property<'_>>])) {
     let lines = unfold(ics);
-    let mut current: Option<Vec<Property<'_>>> = None;
+    let mut current: Option<(Vec<Property<'_>>, Vec<Vec<Property<'_>>>)> = None;
+    // The VALARM being read, while `depth` is 1 inside one.
+    let mut alarm: Option<Vec<Property<'_>>> = None;
     let mut depth = 0usize;
     for line in &lines {
         let Some(prop) = parse_line(line) else { continue };
         match (prop.name, current.as_mut()) {
-            ("BEGIN", None) if prop.value.eq_ignore_ascii_case(component) => current = Some(Vec::new()),
-            ("BEGIN", Some(_)) => depth += 1, // a nested component, e.g. VALARM
-            ("END", Some(_)) if depth > 0 => depth -= 1,
-            ("END", Some(_)) => {
-                if let Some(props) = current.take() {
-                    visit(&props);
+            ("BEGIN", None) if prop.value.eq_ignore_ascii_case(component) => current = Some((Vec::new(), Vec::new())),
+            ("BEGIN", Some(_)) => {
+                depth += 1;
+                if depth == 1 && prop.value.trim().eq_ignore_ascii_case("VALARM") {
+                    alarm = Some(Vec::new());
                 }
             }
-            (_, Some(props)) if depth == 0 => props.push(prop),
+            ("END", Some((_, alarms))) if depth > 0 => {
+                if depth == 1
+                    && let Some(done) = alarm.take()
+                {
+                    alarms.push(done);
+                }
+                depth -= 1;
+            }
+            ("END", Some(_)) => {
+                if let Some((props, alarms)) = current.take() {
+                    visit(&props, &alarms);
+                }
+            }
+            (_, Some((props, _))) if depth == 0 => props.push(prop),
+            (_, Some(_)) if depth == 1 => {
+                if let Some(alarm) = alarm.as_mut() {
+                    alarm.push(prop);
+                }
+            }
             _ => {}
         }
     }
@@ -149,9 +173,9 @@ fn split_list(value: &str) -> Vec<&str> {
     parts
 }
 
-/// The event one VEVENT's own properties describe; `None` for a cancelled one or one without
-/// a readable `DTSTART`.
-pub(crate) fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event> {
+/// The event one VEVENT's own properties and its `VALARM`s describe; `None` for a cancelled one
+/// or one without a readable `DTSTART`.
+pub(crate) fn to_event(props: &[Property<'_>], alarms: &[Vec<Property<'_>>], collection: &str) -> Option<Event> {
     let get = |name: &str| find(props, name);
     if get("STATUS").is_some_and(|p| p.value.eq_ignore_ascii_case("CANCELLED")) {
         return None;
@@ -173,7 +197,37 @@ pub(crate) fn to_event(props: &[Property<'_>], collection: &str) -> Option<Event
         location: get("LOCATION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
         description: get("DESCRIPTION").map(|p| unescape(p.value)).filter(|s| !s.is_empty()),
         transparency: transparency(get("TRANSP")),
+        alarms: alarms.iter().filter_map(|props| alarm(props)).collect(),
     })
+}
+
+/// The reminder one `VALARM`'s properties describe: `ACTION:DISPLAY` or `AUDIO` with a readable
+/// `TRIGGER`. `None` for any other alarm, which the model does not hold (and a save keeps).
+pub(crate) fn alarm(props: &[Property<'_>]) -> Option<Alarm> {
+    let action = find(props, "ACTION")?.value.trim();
+    if !["DISPLAY", "AUDIO"].iter().any(|known| action.eq_ignore_ascii_case(known)) {
+        return None;
+    }
+    let trigger = find(props, "TRIGGER")?;
+    let absolute = trigger.param("VALUE").is_some_and(|v| v.eq_ignore_ascii_case("DATE-TIME"));
+    let trigger = if absolute {
+        let naive = NaiveDateTime::parse_from_str(trigger.value.trim().strip_suffix('Z')?, "%Y%m%dT%H%M%S").ok()?;
+        AlarmTrigger::At(naive.and_utc())
+    } else {
+        let offset = parse_duration(trigger.value)?;
+        let of = match trigger.param("RELATED") {
+            Some(related) if related.eq_ignore_ascii_case("END") => AlarmAnchor::End,
+            _ => AlarmAnchor::Start,
+        };
+        // A negative offset fires before; whole minutes only, toward zero.
+        AlarmTrigger::Before { minutes: -offset.num_minutes(), of }
+    };
+    let style = find(props, "X-TORRO-STYLE").and_then(|p| match p.value.trim() {
+        v if v.eq_ignore_ascii_case("FULLSCREEN") => Some(AlarmStyle::FullScreen),
+        v if v.eq_ignore_ascii_case("NOTIFICATION") => Some(AlarmStyle::Notification),
+        _ => None,
+    });
+    Some(Alarm { trigger, style })
 }
 
 /// Free or busy from `TRANSP`: only `TRANSPARENT` is free; a missing property or any other value
@@ -432,5 +486,74 @@ RDATE:20261018T080000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n";
         let events = parse_events(ics, "/cal/");
         assert_eq!(events.len(), 1);
         assert!(events[0].recurring);
+    }
+
+    // Reminders (task ER1.1).
+
+    const NEXTCLOUD_ALARMS: &str = include_str!("../tests/fixtures/nextcloud-event-alarms.ics");
+    const APPLE_ALARMS: &str = include_str!("../tests/fixtures/apple-event-alarms.ics");
+    const THUNDERBIRD_EVENT: &str = include_str!("../tests/fixtures/thunderbird-event.ics");
+
+    fn before(minutes: i64, of: AlarmAnchor) -> Alarm {
+        Alarm { trigger: AlarmTrigger::Before { minutes, of }, style: None }
+    }
+
+    fn alarms_of(ics: &str) -> Vec<Alarm> {
+        parse_events(ics, "/cal/").into_iter().next().expect("an event").alarms
+    }
+
+    #[test]
+    fn reads_the_reminders_nextcloud_writes() {
+        let at = NaiveDate::from_ymd_opt(2026, 10, 15).and_then(|d| d.and_hms_opt(7, 0, 0)).expect("time").and_utc();
+        assert_eq!(
+            alarms_of(NEXTCLOUD_ALARMS),
+            [
+                before(15, AlarmAnchor::Start),
+                before(0, AlarmAnchor::End),
+                Alarm { trigger: AlarmTrigger::At(at), style: None },
+            ],
+            "the mail alarm and the broken trigger are not the model's"
+        );
+    }
+
+    #[test]
+    fn reads_the_reminders_apple_and_thunderbird_write() {
+        assert_eq!(
+            alarms_of(APPLE_ALARMS),
+            [before(30, AlarmAnchor::Start), before(24 * 60, AlarmAnchor::Start)],
+            "a sound counts, Apple's ACTION:NONE placeholder does not"
+        );
+        assert_eq!(alarms_of(THUNDERBIRD_EVENT), [before(15, AlarmAnchor::Start)], "TRIGGER;VALUE=DURATION");
+    }
+
+    #[test]
+    fn reads_the_style_and_odd_triggers() {
+        let wrap = |alarms: &str| {
+            format!(
+                "BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:x\r\nDTSTART:20261011T080000Z\r\n{alarms}END:VEVENT\r\nEND:VCALENDAR\r\n"
+            )
+        };
+        let alarm = |body: &str| format!("BEGIN:VALARM\r\n{body}END:VALARM\r\n");
+        let ics = wrap(
+            &[
+                alarm("ACTION:DISPLAY\r\nTRIGGER:-PT10M\r\nX-TORRO-STYLE:FULLSCREEN\r\n"),
+                alarm("action:display\r\nTRIGGER:-PT90S\r\nX-TORRO-STYLE:notification\r\n"),
+                alarm("ACTION:DISPLAY\r\nTRIGGER:PT5M\r\nX-TORRO-STYLE:SOMETHING\r\n"),
+                alarm("TRIGGER:-PT1H\r\n"),
+                alarm("ACTION:DISPLAY\r\nDESCRIPTION:no trigger\r\n"),
+            ]
+            .concat(),
+        );
+        assert_eq!(
+            alarms_of(&ics),
+            [
+                Alarm { style: Some(AlarmStyle::FullScreen), ..before(10, AlarmAnchor::Start) },
+                Alarm { style: Some(AlarmStyle::Notification), ..before(1, AlarmAnchor::Start) },
+                before(-5, AlarmAnchor::Start),
+            ],
+            "seconds are dropped, after the start is negative, unknown styles and alarms without ACTION or TRIGGER are not read"
+        );
+        let event = parse_events(&ics, "/cal/").remove(0);
+        assert_eq!(event.description, None, "an alarm's description is not the event's");
     }
 }

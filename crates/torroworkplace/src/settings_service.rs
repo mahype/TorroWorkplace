@@ -27,8 +27,8 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design;
 use torro_core::settings::{
-    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, Retention,
-    Settings, SetupState, Voice, Zoom,
+    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, Reminders,
+    Retention, Settings, SetupState, Voice, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -99,8 +99,8 @@ impl SettingsStore {
         self.change(|settings| *settings = new)
     }
 
-    /// Like [`SettingsStore::update`], but the hidden collections and the orders of the task
-    /// lists stay as stored, read under the same lock as the write, so a collection hidden
+    /// Like [`SettingsStore::update`], but the hidden collections, the orders of the task lists and
+    /// the reminder styles of calendars (task ER1.2) stay as stored, read under the same lock as the write, so a collection hidden
     /// meanwhile is not shown again. For clients, which never see the hidden collections nor the
     /// orders of lists outside their selection, and so cannot send them back; they change those
     /// with `set_collection_shown` and `set_setting`.
@@ -114,10 +114,14 @@ impl SettingsStore {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
             let list_orders = std::mem::take(&mut settings.list_orders);
+            // Nor the reminder styles of calendars outside its selection (task ER1.2): it changes
+            // them with `set_setting reminders`, which names each calendar.
+            let calendars = std::mem::take(&mut settings.reminders.calendars);
             let enabled = settings.voice.enabled && new.voice.enabled;
             let voice = Voice { enabled, ..new.voice.clone() };
             let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
-            *settings = Settings { hidden_collections: hidden, list_orders, voice, mail_to_cloud, ..new };
+            let reminders = Reminders { calendars, ..new.reminders.clone() };
+            *settings = Settings { hidden_collections: hidden, list_orders, voice, mail_to_cloud, reminders, ..new };
         })
     }
 
@@ -134,13 +138,15 @@ impl SettingsStore {
         self.change(|settings| show_in(settings, collection, shown))
     }
 
-    /// Takes `collections` out of the hidden ones and the list orders, for an account that is
-    /// gone: its ids mean nothing any more, and an account added later must not start with them.
+    /// Takes `collections` out of the hidden ones, the list orders and the reminder styles, for an
+    /// account that is gone: its ids mean nothing any more, and an account added later must not
+    /// start with them.
     /// Writes nothing when none of them was named.
     pub fn forget_collections(&self, collections: &[String]) -> Result<(), String> {
         self.change(|settings| {
             settings.hidden_collections.retain(|id| !collections.contains(id));
             settings.list_orders.retain(|id, _| !collections.contains(id));
+            settings.reminders.calendars.retain(|id, _| !collections.contains(id));
         })
     }
 
@@ -166,6 +172,12 @@ impl SettingsStore {
             for (id, order) in orders {
                 settings.list_orders.entry(id).or_insert(order);
             }
+            // A calendar shown over the whole screen must stay so under its new id (task ER1.2).
+            let styles: Vec<_> =
+                settings.reminders.calendars.iter().filter_map(|(id, shown)| Some((renamed(id)?, *shown))).collect();
+            for (id, shown) in styles {
+                settings.reminders.calendars.entry(id).or_insert(shown);
+            }
         })
     }
 
@@ -176,8 +188,14 @@ impl SettingsStore {
     pub fn forget_account(&self, from: &str) -> Result<(), String> {
         let settings = self.current();
         let of_account = |id: &&String| torro_pim::account::local_id(id, from).is_some();
-        let ids: Vec<String> =
-            settings.hidden_collections.iter().chain(settings.list_orders.keys()).filter(of_account).cloned().collect();
+        let ids: Vec<String> = settings
+            .hidden_collections
+            .iter()
+            .chain(settings.list_orders.keys())
+            .chain(settings.reminders.calendars.keys())
+            .filter(of_account)
+            .cloned()
+            .collect();
         self.forget_collections(&ids)
     }
 
@@ -280,6 +298,9 @@ enum Change {
     /// The data rule for mail (task C.17). Who may switch it on is the core's check
     /// (`Request::kept_for_people`).
     MailToCloud(bool),
+    /// A change of the reminders of events (task ER1.2): the fields it names, checked against the
+    /// defaults when parsed and merged onto the stored ones when applied ([`Reminders::merged`]).
+    Reminders(serde_json::Value),
 }
 
 impl Change {
@@ -320,6 +341,11 @@ impl Change {
                 Change::MailAppearance(serde_json::from_value(value.clone()).map_err(invalid)?)
             }
             SettingKey::MailToCloud => Change::MailToCloud(serde_json::from_value(value.clone()).map_err(invalid)?),
+            // Strict, like the night: the file's reading falls back to the defaults instead.
+            SettingKey::Reminders => {
+                Reminders::default().merged(value)?;
+                Change::Reminders(value.clone())
+            }
         })
     }
 
@@ -347,6 +373,12 @@ impl Change {
             Change::MailView(format) => settings.mail_view = format,
             Change::MailAppearance(appearance) => settings.mail_appearance = appearance,
             Change::MailToCloud(allowed) => settings.mail_to_cloud = allowed,
+            // Checked when parsed: what the stored ones hold cannot make the fields it names unfit.
+            Change::Reminders(change) => {
+                if let Ok(merged) = settings.reminders.merged(&change) {
+                    settings.reminders = merged;
+                }
+            }
         }
     }
 }
@@ -960,6 +992,8 @@ mod tests {
         Change::parse(SettingKey::Setup, &json!("skipped")).expect("a state").apply(&mut settings);
         let mail_off = json!({"component": "mail", "enabled": false});
         Change::parse(SettingKey::Component, &mail_off).expect("a switch").apply(&mut settings);
+        let reminders = json!({"allDay": true, "calendars": {"a/work": "full_screen"}});
+        Change::parse(SettingKey::Reminders, &reminders).expect("valid reminders").apply(&mut settings);
         assert_eq!(
             settings,
             Settings {
@@ -980,11 +1014,17 @@ mod tests {
                 mail_view: MailFormat::Html,
                 mail_appearance: MailAppearance::App,
                 mail_to_cloud: false,
+                reminders: Reminders::from_value(&reminders).expect("valid reminders"),
             }
         );
         Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);
         assert!(settings.mail_to_cloud);
         assert!(Change::parse(SettingKey::MailToCloud, &json!("yes")).is_err(), "only true or false");
+        assert!(settings.reminders.all_day && settings.reminders.enabled, "the rest keeps its defaults");
+        Change::parse(SettingKey::Reminders, &json!({"defaultLead": 5})).expect("valid").apply(&mut settings);
+        assert!(settings.reminders.all_day, "a later change keeps what it does not name");
+        assert_eq!(settings.reminders.default_lead, Some(5));
+        assert!(Change::parse(SettingKey::Reminders, &json!({"defaultLead": -1})).is_err(), "a lead of minutes");
         Change::parse(SettingKey::AssistantDefault, &json!(null)).expect("none").apply(&mut settings);
         assert_eq!(settings.assistant_default, None, "null goes back to the one used last");
         assert!(Change::parse(SettingKey::AssistantDefault, &json!({"engine": " "})).is_err(), "an engine");
@@ -1222,6 +1262,21 @@ mod tests {
         store.qualify_legacy_collections(owner).expect("nothing left to do");
         let again = fs::metadata(store.file.as_deref().expect("file")).expect("still there").modified().ok();
         assert_eq!(written, again, "a second start writes nothing");
+    }
+
+    #[test]
+    fn reminder_styles_move_with_a_takeover_and_go_with_the_account() {
+        use torro_core::settings::CalendarReminders;
+        let (_dir, store) = store();
+        let (from, to) = ("caldav:anna@cloud.example.org", "mail:anna@cloud.example.org");
+        let url = "https://cloud.example.org/dav/calendars/anna/work/";
+        let (old, new) = (format!("{from}/{url}"), format!("{to}/{url}"));
+        store.set(SettingKey::Reminders, &json!({"calendars": {old.clone(): "full_screen"}})).expect("set");
+        store.copy_collections(from, to).expect("copied");
+        assert_eq!(store.current().reminders.calendar(&new), CalendarReminders::FullScreen, "under its new id");
+        store.forget_account(from).expect("forgotten");
+        let calendars = store.current().reminders.calendars;
+        assert_eq!(calendars.keys().cloned().collect::<Vec<_>>(), [new], "the old id is gone");
     }
 
     #[test]

@@ -1092,6 +1092,16 @@ impl PimService {
                 let repo = repo.trim();
                 return (!reach.reaches_repo(repo)).then(|| repo.to_string());
             }
+            // An event to preview must be one the client sees, before anyone is asked (task ER1.3).
+            Request::PreviewReminder { href } => {
+                return self.cached_event_within(reach, href).await.is_none().then(|| href.clone());
+            }
+            // The other reminder handlers list only reminders of calendars the client reads and look
+            // an id up among those, so one out of reach is `not-found` there.
+            Request::ListReminders { .. }
+            | Request::SnoozeReminder { .. }
+            | Request::DismissReminder { .. }
+            | Request::PauseReminders { .. } => return None,
             // Nothing exists yet that could be out of reach. Searches outside the client's
             // repositories are `forbidden`, not `not-found`: the handlers check them before GitHub
             // is asked ([`Reach::confines`]). A new task list goes to an account, which every
@@ -1245,6 +1255,18 @@ impl PimService {
         self.state.read().await.collections().any(|c| c.id == id)
     }
 
+    /// The event stored at `href` as the cache holds it, when `reach` sees its calendar (task
+    /// ER1.3, `calendar.preview_reminder`); `None` otherwise, as if there were none.
+    pub async fn cached_event_within(&self, reach: Reach<'_>, href: &str) -> Option<Event> {
+        let event = cached_event(&*self.state.read().await, href).cloned()?;
+        self.sees_calendar(reach, &event.collection).await.then_some(event)
+    }
+
+    /// `id` is a calendar (a collection with events) of a connected account, hidden or not.
+    pub async fn knows_calendar(&self, id: &str) -> bool {
+        self.state.read().await.collections().any(|c| c.id == id && c.kind.has_events())
+    }
+
     /// `id` is a task list (a collection with todos) of a connected account, hidden or not.
     pub async fn knows_task_list(&self, id: &str) -> bool {
         self.state.read().await.collections().any(|c| c.id == id && c.kind.has_todos())
@@ -1303,6 +1325,17 @@ impl PimService {
         let now = Utc::now();
         if let Some(slot) = self.state.write().await.accounts.first_mut() {
             slot.window = Some((now - Span::days(2), now + Span::days(2)));
+            slot.events = events;
+        }
+    }
+
+    /// [`PimService::cache_events_of_today`] with a cache as wide as a sync makes it, for the
+    /// core's tests of reminders (task ER1.3), which plan days ahead.
+    #[cfg(test)]
+    pub async fn cache_events_as_synced(&self, events: Vec<Event>) {
+        let now = Utc::now();
+        if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.window = Some((now - Span::days(WINDOW_BACK_DAYS), now + Span::days(WINDOW_AHEAD_DAYS)));
             slot.events = events;
         }
     }
@@ -2349,6 +2382,25 @@ impl PimService {
             Facts { item, name: name_of(collection), moved_from, ..Facts::default() }
         };
         match request {
+            // The event as the cache holds it, never the client's text (task ER1.3).
+            Request::PreviewReminder { href } => match cached_event(&state, href) {
+                Some(event) => Facts {
+                    item: Some(Known { title: event.summary.clone(), start: Some(event.start) }),
+                    name: name_of(&event.collection),
+                    ..Facts::default()
+                },
+                None => Facts::default(),
+            },
+            // The calendars a change of the reminder settings names, by their cached names.
+            Request::SetSetting { key: torro_ipc::SettingKey::Reminders, value } => {
+                let named = value.get("calendars").and_then(serde_json::Value::as_object);
+                let calendars = named
+                    .into_iter()
+                    .flat_map(|named| named.keys())
+                    .filter_map(|id| Some((id.clone(), name_of(id)?)))
+                    .collect();
+                Facts { calendars, ..Facts::default() }
+            }
             Request::DeleteEvent { event } => {
                 written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, false)
             }
@@ -3503,6 +3555,12 @@ fn host(server: &str) -> &str {
     server.split_once("://").map_or(server, |(_, rest)| rest).trim_end_matches('/')
 }
 
+/// The cached event stored at `href`, of any account, compared exactly, like [`cached_todo`]. A
+/// recurring event has the same href for every occurrence: the first cached one.
+fn cached_event<'a>(state: &'a State, href: &str) -> Option<&'a Event> {
+    state.accounts.iter().flat_map(|slot| &slot.events).find(|event| event.href.as_deref() == Some(href))
+}
+
 /// The cached task stored at `href`, of any account, compared exactly: hrefs come from
 /// `tasks.list_todos`, which answers from this cache.
 fn cached_todo<'a>(state: &'a State, href: &str) -> Option<&'a Todo> {
@@ -3840,6 +3898,7 @@ pub(crate) mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 

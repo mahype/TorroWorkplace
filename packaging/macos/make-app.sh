@@ -4,6 +4,11 @@
 #   make-app.sh <bin> <app-id> <title> <version> <binary-path> <out-dir> [icon.png]
 #   make-app.sh torrocalendar torro-calendar "Torro Calendar" 0.1.0 ./torrocalendar ./out [icon-1024.png]
 #
+# With AGENT_APP=1 the bundle is an agent app (LSUIElement): no Dock icon, not in the app switcher. The
+# reminder over the whole screen needs it to show over apps in full screen (task ER2.2, docs/erinnerungen.md):
+#   AGENT_APP=1 make-app.sh torro-reminder torro-reminder "Torro Reminder" 0.1.0 ./torrocalendar ./out
+# The calendar binary sees its name `torro-reminder` and starts as the reminder window.
+#
 # Signing and notarisation are separate steps (see .github/workflows/publish-macos-app.yml).
 set -euo pipefail
 
@@ -26,6 +31,9 @@ bundle_version="${version%%-*}"
 
 sed -e "s|@TITLE@|$title|g" -e "s|@BIN@|$bin|g" -e "s|@APPID@|$appid|g" -e "s|@VERSION@|$bundle_version|g" \
   "$here/Info.plist.in" > "$app/Contents/Info.plist"
+if [ "${AGENT_APP:-}" = "1" ]; then
+  plutil -insert LSUIElement -bool true "$app/Contents/Info.plist"
+fi
 
 # Optional icon: a 1024x1024 PNG becomes an .icns through sips + iconutil (both ship with macOS).
 if [ -n "$icon_png" ]; then

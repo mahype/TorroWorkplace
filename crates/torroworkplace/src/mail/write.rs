@@ -1606,6 +1606,7 @@ pub(crate) mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         };
         let organizer = MailAddress { name: Some("Jonas \"Boss\" Weber".into()), address: "jonas@example.com".into() };
         let invitation = Invitation {

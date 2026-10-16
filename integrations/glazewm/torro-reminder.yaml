@@ -1,0 +1,10 @@
+# The reminder over the whole screen of TorroWorkplace on GlazeWM (Windows, task ER2.2).
+#
+# GlazeWM tiles every new window. The reminder window (`torrocalendar --reminders`) is borderless,
+# full screen and always on top by itself, so GlazeWM must leave it alone. Add this rule to the
+# `window_rules` of your GlazeWM config (%USERPROFILE%\.glzr\glazewm\config.yaml):
+window_rules:
+  - commands: ['ignore']
+    match:
+      - window_process: { equals: 'torrocalendar' }
+        window_title: { regex: '^Reminder' }

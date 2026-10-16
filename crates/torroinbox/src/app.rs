@@ -231,6 +231,9 @@ pub const UNDO_FOR: Duration = widgets::TOAST_FOR;
 /// How often a shown hint checks whether its time is up. Only while a hint shows.
 const HINT_TICK: Duration = Duration::from_secs(1);
 
+/// "In 5 min" puts a reminder's entry off for this many minutes (task ER1.4).
+const REMINDER_SNOOZE_MINUTES: i64 = 5;
+
 /// "Later today" snoozes for this many hours.
 const LATER_TODAY_HOURS: i64 = 3;
 
@@ -5328,6 +5331,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     snooze(Icon::CalendarDays, tr("Next week"), next_week),
                     choice(Icon::CalendarClock, tr("Pick…").to_owned(), Message::ShowPicker),
                 ];
+                // A reminder of an event comes back soon (task ER1.4): snoozing its entry snoozes
+                // the reminder, so the event is not missed.
+                if item.kind == torro_inbox::Kind::Reminder {
+                    choices.insert(
+                        0,
+                        snooze(Icon::Clock, tr("In 5 min"), self.now + TimeDelta::minutes(REMINDER_SNOOZE_MINUTES)),
+                    );
+                }
                 if matches!(item.state, State::Snoozed { .. }) {
                     let wake = Message::Edit(Edit::Snooze { id: id(), until: None });
                     choices.push(choice(Icon::Inbox, tr("Bring back now").to_owned(), wake));
@@ -8082,6 +8093,20 @@ mod tests {
         assert!(app.sent.is_empty(), "nothing is sent");
         let hint = app.hint.as_ref().expect("a hint says why");
         assert_eq!((hint.text.as_str(), &hint.undo), (tr("An approval closes once it is decided."), &None));
+    }
+
+    #[test]
+    fn a_reminder_comes_back_in_five_minutes_first() {
+        let mut app = at("demo-2");
+        let _ = press(&mut app, Key::S);
+        if let Some(item) = app.subject.as_mut() {
+            item.kind = torro_inbox::Kind::Reminder;
+        }
+        let choices = app.choices();
+        assert_eq!(choices[0].label, tr("In 5 min"));
+        let soon = Edit::Snooze { id: "demo-2".into(), until: Some(app.now + TimeDelta::minutes(5)) };
+        assert!(matches!(&choices[0].message, Message::Edit(edit) if *edit == soon), "snoozes the entry for 5 min");
+        assert_eq!(choices.len(), 5, "and the usual ones after it");
     }
 
     #[test]

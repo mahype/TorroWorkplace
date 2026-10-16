@@ -217,7 +217,14 @@ pub fn ids(request: &Request) -> Vec<String> {
         // The span only, never what was counted (task E8.8a).
         | Request::GetStats { .. }
         // Never the event's title or times (task E8.5b).
-        | Request::GetQuiet => Vec::new(),
+        | Request::GetQuiet
+        // Nor those of a reminder; a pause only by its command (task ER1.2).
+        | Request::ListReminders { .. }
+        | Request::PauseReminders { .. } => Vec::new(),
+        Request::SnoozeReminder { id: reminder, .. } | Request::DismissReminder { id: reminder } => {
+            vec![random("reminder", reminder)]
+        }
+        Request::PreviewReminder { href } => item(&Some(href.clone())).into_iter().collect(),
         Request::UpdateTemplate { id: template }
         | Request::DeleteTemplate { id: template }
         | Request::LoadTemplate { id: template, .. }
@@ -662,6 +669,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reminder_commands_log_their_id_and_never_a_time_or_an_address() {
+        let id = "0123456789abcdef0123456789abcdef";
+        let snooze = Request::SnoozeReminder { id: id.into(), until: torro_ipc::Snooze::Minutes(5) };
+        assert_eq!(ids(&snooze), vec![format!("reminder:{id}")], "32 hex characters are taken as they are");
+        assert_eq!(ids(&Request::DismissReminder { id: id.into() }), vec![format!("reminder:{id}")]);
+        let odd = ids(&Request::DismissReminder { id: "Dinner with Anna".into() });
+        assert!(odd[0].starts_with("reminder:hash:"), "{odd:?}");
+        assert!(ids(&Request::ListReminders { due_only: true }).is_empty());
+        assert!(ids(&Request::PauseReminders { until: Some(Utc::now()) }).is_empty(), "not even the time");
+        let preview = ids(&Request::PreviewReminder { href: "https://cloud.example.org/cal/work/Dinner.ics".into() });
+        assert!(preview[0].starts_with("item:") && !preview[0].contains("Dinner"), "{preview:?}");
+    }
+
+    #[test]
     fn ids_never_carry_a_name_a_title_or_a_search() {
         let event = torro_pim::Event {
             uid: "u".into(),
@@ -675,6 +696,7 @@ pub(crate) mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         };
         let ids = ids(&Request::DeleteEvent { event });
         assert_eq!(ids[0], format!("collection:nextcloud:anna@cloud.example.org/{}", hashed("cal/work/")));

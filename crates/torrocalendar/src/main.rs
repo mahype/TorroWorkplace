@@ -16,6 +16,7 @@
 
 mod app;
 mod editor;
+mod reminder;
 mod views;
 
 use std::path::{Path, PathBuf};
@@ -34,6 +35,22 @@ fn main() -> ExitCode {
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{} {}", APP.binary, env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
+    }
+    // The reminder over the whole screen (task ER2.1): a window of its own, started by the core,
+    // also as the agent app "Torro Reminder.app", whose binary is this one named `torro-reminder`
+    // (task ER2.2, `packaging/macos/make-app.sh`).
+    let mut args = args;
+    if started_as_reminder() && !args.iter().any(|arg| arg == "--reminders") {
+        args.insert(0, "--reminders".to_string());
+    }
+    if reminder::Launch::wanted(&args) {
+        return match reminder::run(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                report_start_error(&err);
+                ExitCode::from(64)
+            }
+        };
     }
     // Refuse bad parameters before anything starts (the core, a window).
     let launch = match app::Launch::parse(&args) {
@@ -62,6 +79,11 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// The binary runs as `torro-reminder`: the reminder window's agent app on macOS.
+fn started_as_reminder() -> bool {
+    std::env::current_exe().ok().and_then(|exe| exe.file_stem().map(|stem| stem == reminder::BINARY)).unwrap_or(false)
 }
 
 /// Reports why the app could not start: on stderr, and on Windows also in [`START_ERROR_FILE`],

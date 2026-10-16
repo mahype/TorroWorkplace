@@ -246,7 +246,125 @@ pub trait Desktop: Send + Sync {
 /// The kinds that have a popup of their own elsewhere, so the inbox does not show a second one.
 /// Approvals ask with "Allow" and "Deny" in `approvals.rs` (module docs).
 pub fn asks_elsewhere(kind: Kind) -> bool {
-    kind == Kind::Approval
+    // Reminders bring their own notification, with Join and In 5 min (task ER1.4).
+    matches!(kind, Kind::Approval | Kind::Reminder)
+}
+
+/// A button of a reminder's notification (task ER1.4). macOS and Windows show no buttons.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(not(all(unix, not(target_os = "macos"))), allow(dead_code))]
+pub enum ReminderAnswer {
+    /// A click on the notification: the calendar opens.
+    Open,
+    /// "Join": the call link opens.
+    Join,
+    /// "In 5 min".
+    Snooze,
+    /// "Dismiss".
+    Dismiss,
+}
+
+/// The summary and body of a reminder's notification at `now`: "Weekly sync · in 5 min",
+/// "… · now", "… · started 3 min ago", and the event's time and place. The title is calendar text,
+/// put on one line and cut ([`foreign_line`]).
+pub fn reminder_text(reminder: &torro_ipc::Reminder, now: DateTime<Utc>) -> (String, String) {
+    let title = foreign_line(&reminder.event.summary, EVENT_TITLE_MAX);
+    let start = crate::reminders::starts(&reminder.event);
+    let minutes = |delta: TimeDelta| (delta.num_seconds() + 59) / 60;
+    let summary = if start > now + TimeDelta::minutes(1) {
+        let n = minutes(start - now);
+        match n < 60 {
+            true => trf("{title} · in {n} min", &[("title", &title), ("n", &n)]),
+            false => {
+                let time = torro_gui::datetime::format_time(torro_gui::datetime::to_local(start).time());
+                trf("{title} · at {time}", &[("title", &title), ("time", &time)])
+            }
+        }
+    } else if now < start + TimeDelta::minutes(1) {
+        trf("{title} · now", &[("title", &title)])
+    } else {
+        trf("{title} · started {n} min ago", &[("title", &title), ("n", &((now - start).num_minutes()))])
+    };
+    (summary, crate::inbox::reminder_body(&reminder.event))
+}
+
+/// Shows the notification of `reminder` (task ER1.4) and hands the button the person clicks to
+/// `answer`. With `sound`, the system's notification sound plays. Never blocks.
+pub fn show_reminder(reminder: &torro_ipc::Reminder, sound: bool, answer: Box<dyn FnOnce(ReminderAnswer) + Send>) {
+    let (summary, body) = reminder_text(reminder, Utc::now());
+    let join = reminder.join.is_some();
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+        eprintln!("torroworkplace: cannot show reminder: no runtime to wait for the answer on");
+        return;
+    };
+    runtime.spawn(async move {
+        if let Err(err) = show_reminder_popup(summary, body, join, sound, answer).await {
+            eprintln!("torroworkplace: cannot show reminder: {err}");
+        }
+    });
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+async fn show_reminder_popup(
+    summary: String,
+    body: String,
+    join: bool,
+    sound: bool,
+    answer: Box<dyn FnOnce(ReminderAnswer) + Send>,
+) -> notify_rust::error::Result<()> {
+    use notify_rust::{Hint, NotificationResponse, Urgency};
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .appname(crate::notify::APP_NAME)
+        .summary(&summary)
+        .body(&crate::notify::plain(&body))
+        .action("default", tr("Open calendar"))
+        .urgency(Urgency::Normal);
+    if join {
+        notification.action("join", tr("Join"));
+    }
+    notification.action("snooze", tr("In 5 min")).action("dismiss", tr("Dismiss"));
+    if sound {
+        notification.sound_name("alarm-clock-elapsed");
+    } else {
+        notification.hint(Hint::SuppressSound(true));
+    }
+    let handle = notification.show_async().await?;
+    let mut answer = Some(answer);
+    let answered = handle.wait_for_action_async(|response| {
+        let given = match response {
+            NotificationResponse::Default => Some(ReminderAnswer::Open),
+            NotificationResponse::Action(action) => match action.as_str() {
+                "default" => Some(ReminderAnswer::Open),
+                "join" => Some(ReminderAnswer::Join),
+                "snooze" => Some(ReminderAnswer::Snooze),
+                "dismiss" => Some(ReminderAnswer::Dismiss),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let (Some(given), Some(answer)) = (given, answer.take()) {
+            answer(given);
+        }
+    });
+    tokio::select! {
+        () = answered => {}
+        () = tokio::time::sleep(POPUP_LASTS) => handle.close_async().await,
+    }
+    Ok(())
+}
+
+/// macOS and Windows: notify-rust has no buttons there; the inbox entry has them.
+#[cfg(not(all(unix, not(target_os = "macos"))))]
+async fn show_reminder_popup(
+    summary: String,
+    body: String,
+    _join: bool,
+    _sound: bool,
+    _answer: Box<dyn FnOnce(ReminderAnswer) + Send>,
+) -> notify_rust::error::Result<()> {
+    crate::notify::show(summary, body);
+    Ok(())
 }
 
 /// The rules of the popups: what pops up, what waits, what quiet holds back. Pure: the caller
@@ -691,12 +809,12 @@ async fn busy_title(core: &Core, now: DateTime<Utc>) -> Option<String> {
 /// E8.5b). A calendar that cannot be read keeps nothing quiet: better a popup too many than a
 /// missed one.
 pub async fn quiet_now(core: &Core, now: DateTime<Utc>) -> Option<(Event, DateTime<Utc>)> {
-    let Response::Settings { settings } = core.handle(Request::Settings).await else { return None };
+    let Response::Settings { settings } = Box::pin(core.handle(Request::Settings)).await else { return None };
     if !settings.quiet_when_busy {
         return None;
     }
     let window = Request::Events { start: now, end: now + TimeDelta::minutes(1) };
-    let Response::Events { events } = core.handle(window).await else { return None };
+    let Response::Events { events } = Box::pin(core.handle(window)).await else { return None };
     quiet_span(true, &events, now).map(|(event, until)| (event.clone(), until))
 }
 
@@ -982,6 +1100,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
