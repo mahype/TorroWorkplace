@@ -332,7 +332,7 @@ pub struct MailChange {
     /// Messages whose flags changed on the server (read elsewhere, flagged …).
     pub flags: Vec<String>,
     /// Messages gone from the folder: deleted, expunged or moved to another folder (where they
-    /// come back under a new id).
+    /// come back under a new id; a move of the core's own keeps the id, issue #205).
     pub removed: Vec<String>,
     /// The folder is synced for the first time, or anew after the server renumbered it: `new`
     /// holds what was there already, not what just arrived. The inbox (task E4.1) takes only
@@ -1167,6 +1167,15 @@ impl MailService {
     #[allow(dead_code, reason = "used from the inbox's mail source, task E4.1")]
     pub fn subscribe(&self) -> broadcast::Receiver<MailChange> {
         self.events.subscribe()
+    }
+
+    /// Sends `change` to the subscribers, unless it is empty: for what a mail command did itself,
+    /// which no sync reports (issue #205: a message moved out of the inbox, whose store row moved
+    /// with it). Nobody listening is fine.
+    pub(crate) fn announce(&self, change: MailChange) {
+        if !change.is_empty() {
+            let _ = self.events.send(change);
+        }
     }
 
     /// The stored accounts were read ([`MailService::start`]), or could not be: until then
