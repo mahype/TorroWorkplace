@@ -128,7 +128,7 @@ In der Steuerzentrale bleiben: Konten (Status, Verbindung, welche Dienste ein Ko
 Entfernen), AI (Anbieter, Modelle, Datenregel, siehe [KI](#ki)), Agents & API (alle Programme mit Rechten),
 Approvals, Workspaces, Appearance, General (Sprache, Start beim Anmelden, Apps an/aus). Die Kontodetailseiten
 werden dadurch kurz; wo eine Einstellung umzieht, steht dort eine Zeile, die zum neuen Ort führt
-(„Calendars and lists are chosen in Calendar and Tasks.“) mit „Open“ für die App.
+(„Calendars and lists are chosen in Calendar and Tasks.“) mit „Open“ je App.
 
 Zusammengelegt (Befund 2): „Show new mail in the Notification Hub“ gibt es nur noch als Zeile je Mail-Konto
 unter Notification Hub › Sources (`accounts.update_mail_account`, Feld `notify`); die Quelle „Mail“ der
@@ -151,13 +151,14 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
   Echtes.
 - „Open“ unter General › Apps und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
   `torro-inbox-mail`).
-- Die Apps senden keine `clients.*`: Ein- und Ausschalten des Assistenten bleibt in der Steuerzentrale, damit
+- Die Apps senden keine schreibenden `clients.*` (`create_client`, `remove_client`, `update_client`; lesen mit
+  `clients.list_clients` darf der Assistent weiter, um seinen Zugriff zu kennen): Ein- und Ausschalten des Assistenten bleibt in der Steuerzentrale, damit
   der Schlüssel eines neuen Clients nie in einen App-Prozess gelangt.
 - Nur ein Mensch öffnet die Einstellungen. Antworten des Assistenten, Mails und Einträge im Eingang
   können keinen Abschnitt aufschlagen, und Agenten haben kein Ziel `settings:…` für `apps.open_app`.
 - **Oberfläche, API, MCP:** keine neue Funktion. Alle Einstellungen gehen über Requests, die es
   schon gibt (`settings.set_setting`, `settings.set_collection_shown`, `inbox.mute_source`,
-  `inbox.remove_rule`, `accounts.update_mail_account`, `accounts.set_ntfy_topic` …), nur an anderer
+  `inbox.remove_rule`, `accounts.update_mail_account` …), nur an anderer
   Stelle der Oberfläche. Die Rechte von Assistent und Bots (`clients.*`, `Mcp::Never`) ändert weiter nur ein
   Mensch in der Steuerzentrale, nie ein Agent und nie eine App.
 

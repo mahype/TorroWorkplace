@@ -132,16 +132,15 @@ desselben Fensters, und nur dort. Die Steuerzentrale behält, was die ganze Suit
 nicht noch einmal und führt Assistent und Bots unter Agents & API. S.16–S.22 sind mit #210 geändert.
 
 **Oberfläche, API, MCP (gilt für alle Aufgaben dieser Stufe):** keine neue Funktion. Jede Einstellung geht über
-einen Request, den es schon gibt; die Aufgaben verlegen nur, wo die Oberfläche sie zeigt. Neue Startwörter
-(`--settings`, `--section agent:…`) sind Startargumente, keine Requests. Braucht eine Aufgabe doch einen neuen
+einen Request, den es schon gibt; die Aufgaben verlegen nur, wo die Oberfläche sie zeigt. Das neue Startwort
+`--settings` ist ein Startargument, kein Request. Braucht eine Aufgabe doch einen neuen
 Request, hält sie an und fragt nach (Skill `torro-api`). Nach S.17, S.18, S.19, S.20 und S.21 prüft der Agent
 `torro-api-review`, dass keine Oberfläche selbst liest oder schreibt.
 
 ```
 S.15 (Fehler, erledigt)
-S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgaben)
-                                    ├── S.20 (Eingang, Mail)
-                                    └── S.21 (Steuerzentrale: Seiten weg, Agents & API, General › Apps) ── S.22
+S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgaben) ──┬── S.21 (Steuerzentrale: Seiten weg, ── S.22
+                                    └── S.20 (Eingang, Mail) ───────┘          Agents & API, General › Apps)
 ```
 
 ### S.15 „All rules“ öffnet die Seite Inbox
@@ -160,14 +159,15 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
 - **Modell:** Opus (neues Crate, Schnittstelle für alle Apps) · **Dateien:** `Cargo.toml` (Wurzel, Mitglied und
   `[workspace.dependencies]`), `crates/torro-settings-ui/` (neu), `crates/torroworkplace/Cargo.toml`,
   `crates/torroworkplace/src/ui/mod.rs`, `crates/torro-gui/src/shell.rs`
-- Neues Bibliotheks-Crate `torro-settings-ui` (hängt an `torro-core`, `torro-gui`, `torro-ipc`, nicht an
-  `torroworkplace`). Darin:
+- Neues Bibliotheks-Crate `torro-settings-ui` (hängt an `torro-core`, `torro-gui`, `torro-ipc` und `torro-inbox` für
+  `SourceRef` der Quellen in S.20, nicht an `torroworkplace`). Darin:
   - die Zeilen-Bausteine aus `ui/mod.rs`: `setting_row`, `pressable`, `row_frame`, `chevron`, `dialog`,
     `confirm`. Die Steuerzentrale nutzt sie von dort; Verhalten und Aussehen bleiben gleich. Die Steuerzentrale
     nutzt **nur** die Bausteine, nicht den Host.
   - die Form einer Seite (`State`, `Message`, `update(..) -> Action`, `view(..)`, optional `header`, `overlay`)
-    als Doc-Kommentar und die `Action` (`Send(Request)`, `OpenUrl`, `Open(Abschnitt)`, `ControlCentre(section)`
-    für die Verweise in die Steuerzentrale).
+    als Doc-Kommentar und die `Action`: `Send(Vec<Request>)` (ein oder mehrere Requests, der Reihe nach, danach neu
+    laden), `OpenUrl`, `Open(Abschnitt)`, `ControlCentre(section)` für die Verweise in die Steuerzentrale und
+    `App(…)` für das, was nur die App selbst kann (z. B. den Bot-Editor öffnen; der Typ ist ein Parameter des Hosts).
   - der **Host** für den Inhaltsbereich einer App: Abschnittsliste links im Inhalt, Kopfleiste 44 mit
     „← Settings › <Abschnitt> [› Unterseite]“, die Seite rechts; Mittel: Abschnitte als Menü in der Kopfleiste;
     Schmal: Liste, Abschnitt als eigene Seite mit „‹ Back“. Esc und der Pfeil schließen. Unten in der Liste immer
@@ -176,7 +176,8 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   - **Den Weg zum Dienst bekommt der Host von der App** (ein Trait, z. B. `Backend`), nie selbst über
     `torro_ipc::client`: `torro_ipc::client` liest den App-Schlüssel, und eine Sichtprüfung mit `--demo` würde
     sonst echte Rechte und Einstellungen ändern. Im Demo-Betrieb antwortet ein Backend im Speicher, wie heute die
-    Steuerzentrale mit `--demo`.
+    Steuerzentrale mit `--demo`; es liegt in `torro-settings-ui` und kennt Beispieldaten für alle Abschnitte, die Apps
+    reichen es mit `--demo` nur durch.
 - `torro_gui::shell::TitleButtons` bekommt `settings_open(bool)` (nur hinzugefügt): das Zahnrad ist hervorgehoben,
   solange die Einstellungen offen sind.
 - Noch keine App nutzt den Host; ein Beispiel-Abschnitt in den Tests genügt.
@@ -214,10 +215,13 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
 - [ ] erledigt (geändert mit #210)
 - **Modell:** Opus · **Dateien:** `crates/torroassistant/Cargo.toml`, `crates/torroassistant/src/{app,view,bots}.rs`,
   `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/app/bots.rs`, `crates/torroassistant/src/app/tests.rs`,
-  `crates/torroassistant/src/main.rs`, `crates/torroassistant/src/launch.rs`
+  `crates/torroassistant/src/backend.rs` (setzt das Backend des Hosts um), `crates/torroassistant/src/main.rs`,
+  `crates/torroassistant/src/launch.rs`
 - Das Zahnrad schaltet den Inhaltsbereich zwischen Chat und den Einstellungen des Assistenten um (Host aus S.16,
   Abschnitte aus S.17). Die Seitenleiste bleibt; ein Klick auf einen Chat oder Bot dort schließt die Einstellungen.
-- Was heute die Steuerzentrale öffnet: „Set up access“ → General im Fenster; „Change access“ unter einer
+- Was heute die Steuerzentrale öffnet: „Set up access“ (erster Start) und „Change access“ führen beide zur
+  Steuerzentrale `--section assistant`, wo man ihn einschaltet bzw. die Rechte ändert (wie heute `Message::SetUp`);
+  „Change access“ unter einer
   abgelehnten Antwort → Steuerzentrale `--section assistant`; „Access…“ und „More in Torro Workplace…“ eines
   Bots → `--section bot:<id>` (beide Wörter gibt es heute; S.21 lässt sie nach Agents & API führen); „Add an AI account“ → `--section ai`
   (vor S.25 `accounts`).
@@ -291,15 +295,17 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
 - **Agents & API** führt den Assistenten und jeden Bot wie jedes Programm: Detailseite mit `agents::rights_groups`
   statt Weiterleitung zur Seite Assistant (`Action::OpenBot` entfällt). Ist der Assistent aus, zeigt seine Zeile
   „Turn on assistant“ mit „Start from“ wie heute die Seite Assistant (`CreateClient`), seine Detailseite „Turn off
-  assistant…“ (`RemoveClient`). Die Datenregel steht dort nicht mehr (S.25). `--section assistant` und
+  assistant…“ (`RemoveClient`). Die Zeile der Datenregel bleibt in der Rechte-Ansicht, bis S.25 sie nach AI holt. `--section assistant` und
   `bot:<id>` führen zu diesen Detailseiten, `apps` und `inbox` zu General.
 - **Kontoseiten** verlieren „Calendars and lists“, die Gruppe „Notification Hub“ (Nextcloud, GitHub), Absender,
   Signatur, „Write new mail as“, „Show new mail in the Notification Hub“ und offene Ordnerfragen; an ihrer Stelle je
-  eine Zeile mit dem neuen Ort („Calendars and lists are chosen in Calendar, under the gear.“) und „Open“
-  (`apps.open_app`). Abo, Etikett und
+  eine Zeile mit dem neuen Ort („Calendars and lists are chosen in Calendar and Tasks, under the gear.“) und je App
+  ein Knopf „Open Calendar“, „Open Tasks“ bzw. „Open Notification Hub“, „Open Mail“ (`apps.open_app`). Abo, Etikett und
   Login der ntfy-Themen, Dienste und Verbindung bleiben.
-- **Einrichtung:** Die Quelle „Mail“ im Schritt Notification Hub schickt `UpdateMailAccount` mit `notify` statt
-  `MuteSource` (zusammengelegt, settings.md › Was wohin gehört).
+- **Einrichtung:** Die Quelle „Mail“ im Schritt Notification Hub liest ihren Zustand aus `notify` (statt aus den
+  Quellen, `is_muted` in `setup/mod.rs`) und schickt beim Anschalten wie S.20 `UpdateMailAccount` **und**
+  `MuteSource { muted: false }`, beim Ausschalten nur `UpdateMailAccount` (zusammengelegt, settings.md › Was wohin
+  gehört).
 - Ein Ziel `settings:<abschnitt>` für `apps.open_app` gibt es bewusst nicht: Nur ein Mensch öffnet die Einstellungen
   (settings.md › Technik). Die Einstellungen in einem schon laufenden Fenster direkt aufzuschlagen bräuchte einen neuen
   Weg vom Kern zur App; das ist nicht Teil dieser Stufe.
@@ -443,7 +449,8 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
 - **Modell:** Opus (neue Seite, Umzug aus Accounts) · **Braucht:** S.24 · **Dateien:**
   `crates/torroworkplace/src/ui/ai.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`,
   `crates/torroworkplace/src/ui/wizard.rs`, `crates/torroworkplace/src/ui/accounts.rs`,
-  `crates/torroworkplace/src/ui/assistant.rs`, `crates/torroworkplace/src/ui/agents.rs`, `crates/torroworkplace/src/ui/bots.rs`,
+  `crates/torroworkplace/src/ui/assistant.rs` und `crates/torroworkplace/src/ui/bots.rs` (beide nur bis S.21),
+  `crates/torroworkplace/src/ui/agents.rs`,
   `crates/torroworkplace/src/ui/launch.rs`
 - Neuer Abschnitt **AI** in der Seitenleiste nach Accounts (`Section::Ai`, `--section ai`, Symbol nach dem Design-Skill
   aus dem vorhandenen Satz). Aufbau nach settings.md › KI: Karten der Anbieter (Open First, Status, „3 of 10 models
@@ -484,7 +491,8 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
   `crates/torro-settings-ui/src/assistant/` (sobald S.17 da ist), `crates/torroassistant/src/view.rs`, `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/app.rs`
 - Assistant › New chats (heute in der Steuerzentrale, nach S.17 in `torro-settings-ui`), die Auswahl pro Chat und der
   Bot-Editor zeigen nur Modelle mit `enabled`. „Show all models“ im Chat entfällt; an seiner Stelle „Manage models…“,
-  das die Steuerzentrale bei AI öffnet (vorhandener Weg `torro_gui::connect::open_section("ai")`, kein neuer Request).
+  das die Steuerzentrale bei AI öffnet (vorhandener Weg `torro_gui::connect::open_section("ai")`, kein neuer Request;
+  solange S.25 fehlt, `accounts`, weil `--section ai` sonst abgelehnt wird).
 - Ist bei keinem Anbieter ein Modell an: „No model is turned on. Turn on models in Settings › AI.“ mit demselben Knopf.
 - Ein gespeichertes, aber abgeschaltetes Modell (Standard, Bot) steht oben in der Auswahl mit „Turned off in Settings ›
   AI“, damit man sieht, warum „Automatic“ antwortet.
