@@ -20,7 +20,7 @@ TP.1 (Zeitmarken, Messskript, Messung vorher) ─┬─ TP.2 (Dev-Profil)  ─�
 ## Aufgaben
 
 ### TP.1 Zeitmarken und Messskript, Messung vorher
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus (viele Crates, Skript mit Fenstererkennung) · **Braucht:** – · **Dateien:**
   `crates/torro-core/src/{lib,timing}.rs`, `crates/torroinbox/src/{main,app,compose}.rs`,
   `crates/torrocalendar/src/{main,app}.rs`, `crates/torrotasks/src/{main,app}.rs`,

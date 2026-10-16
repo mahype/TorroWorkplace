@@ -165,6 +165,7 @@ use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{MailAppearance, MailFormat};
 use torro_core::shortcuts;
+use torro_core::timing;
 use torro_gui::connect;
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
@@ -7019,7 +7020,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let window = (self.launch.kind, self.shown.clone());
         let demo = self.launch.demo.then_some(self.now);
         let asked = (limit, self.order);
+        // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+        let started = Instant::now();
         let entries = Task::perform(fetch(inbox, view.clone(), empty, asked, window, demo), move |result| {
+            timing::took("load", started);
             Message::Loaded(view.clone(), result)
         });
         // Insights asks for its numbers with every load (task E8.8b): after muting, after an undo, on

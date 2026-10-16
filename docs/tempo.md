@@ -55,4 +55,45 @@ nach 2 s, der Assistent nach 5 s.
 
 ### Vorher und nachher
 
-Tragen die Aufgaben TP.1 (vorher) und TP.4 (nachher) ein.
+Gemessen mit `scripts/measure-start.sh --runs 3` (Median, ms seit Programmstart, erster Lauf verworfen).
+„Erstes Bild“ ist der erste Aufbau der Ansicht (`view`), noch nicht das Zeichnen auf dem Schirm; „Laden“ die
+Antwort des ersten Ladens.
+
+**Vorher (TP.1, 2026-10-16), warm (Dienst läuft):**
+
+| App | Debug: erstes Bild | Debug: erste Daten | Debug: Laden | Release: erstes Bild | Release: erste Daten | Release: Laden |
+|---|---|---|---|---|---|---|
+| Mail-Fenster | 168 | 303 | 191 | 88 | 150 | 104 |
+| Mitteilungen | 170 | 315 | 187 | – | – | – |
+| Kalender | 259 | 414 | 1 | 102 | 139 | 2 |
+| Aufgaben | 225 | 360 | 2 | 82 | 126 | 1 |
+| Assistent | 211 | 344 | – | 92 | 124 | – |
+| Steuerzentrale | 183 | 949 | 917 | 104 | 580 | 548 |
+
+**Vorher (TP.1), kalt (Dienst läuft nicht, die App startet ihn):**
+
+| App | Debug: erstes Bild | Debug: erste Daten | Release: erstes Bild | Release: erste Daten |
+|---|---|---|---|---|
+| Mail-Fenster | 192 | 304 | 109 | 134 |
+| Kalender | 206 | 735 | 183 | 335 |
+| Aufgaben | 267 | 426 | 169 | 285 |
+| Assistent | 204 | 314 | 136 | 189 |
+| Steuerzentrale | 189 | 649 | 144 | 416 |
+
+Dienst allein (`--core`) bis „socket task started“: Debug 41 ms, Release ~80 ms.
+
+Befunde:
+- Der Dienst ist schneller bereit (40–80 ms), als eine App bis zu ihrer ersten Anfrage braucht (~100–270 ms).
+  Darum trifft die erste Anfrage beim Kaltstart meist schon den laufenden Dienst; der Fehler mit 10 s Warten
+  tritt nur auf, wenn der Dienst langsamer startet (z. B. gesperrter Schlüsselbund nach der Anmeldung).
+- Ein Kaltstart des Kalenders brauchte einmal 16,5 s bis zu den ersten Daten; in fünf weiteren Läufen nicht
+  wiederholbar (320–375 ms).
+- Von außen gemessen (Bildfolge per `screencapture`) stand die Mailliste im Debug-Build erst nach ~0,8 s auf dem
+  Schirm, die Marke „erste Daten“ kommt nach 0,3 s: der Rest ist Zeichnen, im Debug-Build unoptimiert.
+- Steuerzentrale: Ihr erstes Laden fragt 16 Requests nacheinander. `system.status` braucht 99 ms (Abfrage des
+  Fenstermanagers), die übrigen bis auf einen unter 1 ms; den Rest der 550 ms braucht vermutlich
+  `ai.list_models` für das Standardmodell, das den KI-Server fragt.
+- Neuladen im Mail-Fenster (Debug, drei Timer-Runden): Laden 44–84 ms im Hintergrund, kein `update` oder
+  `view` über 16 ms beim Neuladen. Drei langsame `update` (44–104 ms) kamen ohne Bezug zum Laden.
+
+Nachher: trägt TP.4 ein.

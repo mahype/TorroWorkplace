@@ -54,6 +54,7 @@ mod ui;
 const APP: AppId = AppId::WORKPLACE;
 
 fn main() -> ExitCode {
+    torro_core::timing::start();
     let command = std::env::args().nth(1);
     if needs_console(command.as_deref()) {
         attach_console();

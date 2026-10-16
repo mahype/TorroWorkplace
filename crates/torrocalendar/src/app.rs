@@ -27,7 +27,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Duration as Days, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::theme::Mode;
@@ -37,6 +37,7 @@ use iced::{Alignment, Color, Element, Rectangle, Size, Subscription, Task, Theme
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Night, Quarter};
+use torro_core::timing;
 use torro_gui::connect::{self, Connect};
 use torro_gui::datetime::{format_long_date, month_name, to_utc, week_start};
 use torro_gui::design::{self, Follow};
@@ -1723,6 +1724,7 @@ impl App {
         let empty = self.launch.open == Some(Open::Empty);
         let (start, end) = self.load_range();
         let (start, end) = (to_utc(start.and_time(NaiveTime::MIN)), to_utc(end.and_time(NaiveTime::MIN)));
+        let started = Instant::now();
         let source = self.source.clone();
         Task::perform(
             async move {
@@ -1731,7 +1733,11 @@ impl App {
                     if empty { Vec::new() } else { source.events(start, end).await.map_err(|e| e.to_string())? };
                 Ok((collections, events))
             },
-            Message::Loaded,
+            // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+            move |result| {
+                timing::took("load", started);
+                Message::Loaded(result)
+            },
         )
     }
 }

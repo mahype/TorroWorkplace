@@ -33,6 +33,10 @@
 //! `--compose` starts the compose window instead of the inbox (task E4.3, [`compose`]): its own
 //! window with the class `torro-compose`, started by the panel's Reply, Reply all and Forward and
 //! by "New" ([`mail::compose_command`]).
+//!
+//! `TORRO_TIMING=1` writes when the window first draws, when its first data came and every
+//! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206): the hulls
+//! [`update`] and [`view`] here measure, so the app's own code stays as it is.
 
 mod app;
 mod compose;
@@ -52,13 +56,16 @@ mod suggest;
 
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
+use iced::{Element, Task};
+use torro_core::timing;
 use torro_gui::source::Source;
 use torro_inbox::InboxSource;
 use torro_inbox::demo::DemoSource;
 use torro_ipc::inbox::InboxClient;
 
-use crate::app::{App, INBOX, Launch};
+use crate::app::{App, INBOX, Launch, Message};
 use crate::compose::{ComposeSource, Window};
 use crate::hub::HubSource;
 use crate::insights::StatsSource;
@@ -66,6 +73,7 @@ use crate::mail::MailSource;
 use crate::suggest::SuggestSource;
 
 fn main() -> ExitCode {
+    timing::start();
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{} {}", INBOX.binary, env!("CARGO_PKG_VERSION"));
@@ -116,7 +124,7 @@ fn run<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + '
     launch: Launch,
 ) -> iced::Result {
     let window = torro_gui::window(launch.kind.app());
-    iced::application(move || App::new(inbox.clone(), suite.clone(), launch.clone()), App::update, App::view)
+    iced::application(move || App::new(inbox.clone(), suite.clone(), launch.clone()), update, view)
         .settings(torro_gui::settings())
         .title(App::title)
         .theme(App::theme)
@@ -124,6 +132,54 @@ fn run<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + '
         .subscription(App::subscription)
         .window(window)
         .run()
+}
+
+/// [`App::update`], timed: the first entries in mark "first data", a slow update is written.
+fn update<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+    app: &mut App<S>,
+    message: Message,
+) -> Task<Message> {
+    if matches!(message, Message::Loaded(_, Ok(_))) {
+        timing::once("first data");
+    }
+    let started = Instant::now();
+    let task = app.update(message);
+    timing::slow("update", started);
+    task
+}
+
+/// [`App::view`], timed: the first call marks "first frame", a slow one is written.
+fn view<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'static>(
+    app: &App<S>,
+) -> Element<'_, Message> {
+    let started = Instant::now();
+    let element = app.view();
+    timing::once("first frame");
+    timing::slow("view", started);
+    element
+}
+
+/// [`Window::update`] of the compose window, timed like [`update`].
+fn compose_update<S: ComposeSource + 'static>(
+    window: &mut Window<S>,
+    message: compose::Message,
+) -> Task<compose::Message> {
+    if matches!(message, compose::Message::Loaded(Ok(_))) {
+        timing::once("first data");
+    }
+    let started = Instant::now();
+    let task = window.update(message);
+    timing::slow("update", started);
+    task
+}
+
+/// [`Window::view`] of the compose window, timed like [`view`].
+fn compose_view<S: ComposeSource + 'static>(window: &Window<S>) -> Element<'_, compose::Message> {
+    let started = Instant::now();
+    let element = window.view();
+    timing::once("first frame");
+    timing::slow("view", started);
+    element
 }
 
 /// The longest mail id `--message` takes, as the core's mail commands.
@@ -157,7 +213,7 @@ fn start_message(args: &[String]) -> Result<Option<String>, String> {
 
 /// The compose window on `source`: the core's client or the demo source.
 fn compose<S: ComposeSource + 'static>(source: Arc<S>, suite: Source, launch: Launch) -> iced::Result {
-    iced::application(move || Window::new(source.clone(), suite.clone(), launch.clone()), Window::update, Window::view)
+    iced::application(move || Window::new(source.clone(), suite.clone(), launch.clone()), compose_update, compose_view)
         .settings(torro_gui::settings())
         .title(Window::title)
         .theme(Window::theme)

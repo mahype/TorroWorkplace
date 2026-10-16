@@ -87,7 +87,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use iced::theme::Mode;
@@ -97,6 +97,7 @@ use iced::{Alignment, Background, Color, Element, Fill, Padding, Size, Subscript
 use torro_core::AppId;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrder;
+use torro_core::timing;
 use torro_gui::connect::{self, Connect};
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
@@ -2508,6 +2509,7 @@ impl App {
             _ => {}
         }
         let empty = self.launch.open == Some(Open::Empty);
+        let started = Instant::now();
         let source = self.source.clone();
         Task::perform(
             async move {
@@ -2515,7 +2517,11 @@ impl App {
                 let todos = if empty { Vec::new() } else { source.todos().await.map_err(|e| e.to_string())? };
                 Ok((collections, todos))
             },
-            Message::Loaded,
+            // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+            move |result| {
+                timing::took("load", started);
+                Message::Loaded(result)
+            },
         )
     }
 }

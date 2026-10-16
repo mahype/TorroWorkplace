@@ -37,6 +37,10 @@
 //!
 //! The pages are settings pages: `widgets::group`s of rows built with [`setting_row`] (design
 //! skill, section 5), rows that open a page through [`pressable`] with a [`chevron`].
+//!
+//! `TORRO_TIMING=1` writes when the window first draws, when the first data came, how long each
+//! load took and every `update` or `view` that takes a frame or longer ([`torro_core::timing`],
+//! issue #206), measured by [`timed_update`] and [`timed_view`].
 
 mod accounts;
 mod agent_wizard;
@@ -57,7 +61,7 @@ mod setup;
 mod wizard;
 mod workspaces;
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use iced::theme::Mode;
 use iced::widget::space as blank;
@@ -67,6 +71,7 @@ use iced::{Alignment, Element, Fill, Padding, Size, Subscription, Task, Theme};
 use torro_core::AppId;
 use torro_core::i18n::tr;
 use torro_core::settings::{Settings, SetupState};
+use torro_core::timing;
 use torro_gui::design::{self, Follow};
 use torro_gui::icon::{self, Icon};
 use torro_gui::layout::{self, SizeClass};
@@ -419,7 +424,7 @@ pub fn run(launch: Launch) -> iced::Result {
     }
     // Before the settings load the fonts: the first frame is drawn with the chosen design.
     design::start(socket.as_deref(), launch.design.as_deref());
-    iced::application(move || Ui::new(launch.clone()), Ui::update, Ui::view)
+    iced::application(move || Ui::new(launch.clone()), timed_update, timed_view)
         .settings(torro_gui::settings())
         .title(|ui: &Ui| {
             let page = if ui.setup.is_some() { tr("Setup") } else { ui.section.label() };
@@ -430,6 +435,27 @@ pub fn run(launch: Launch) -> iced::Result {
         .subscription(Ui::subscription)
         .window(torro_gui::window(AppId::WORKPLACE))
         .run()
+}
+
+/// [`Ui::update`], timed: the first data without error marks "first data", a slow update is
+/// written.
+fn timed_update(ui: &mut Ui, message: Message) -> Task<Message> {
+    if matches!(&message, Message::Loaded(data) if data.error.is_none()) {
+        timing::once("first data");
+    }
+    let started = Instant::now();
+    let task = ui.update(message);
+    timing::slow("update", started);
+    task
+}
+
+/// [`Ui::view`], timed: the first call marks "first frame", a slow one is written.
+fn timed_view(ui: &Ui) -> Element<'_, Message> {
+    let started = Instant::now();
+    let element = ui.view();
+    timing::once("first frame");
+    timing::slow("view", started);
+    element
 }
 
 impl Ui {
@@ -1515,6 +1541,8 @@ fn keys(event: iced::Event, status: iced::event::Status, _window: iced::window::
 
 /// Loads everything the pages show.
 fn load() -> Task<Message> {
+    // How long the core took to answer, with `TORRO_TIMING` (issue #206).
+    let started = Instant::now();
     Task::perform(
         async {
             let Some(socket) = torro_ipc::socket_path() else {
@@ -1589,7 +1617,10 @@ fn load() -> Task<Message> {
             }
             data
         },
-        |data| Message::Loaded(Box::new(data)),
+        move |data| {
+            timing::took("load", started);
+            Message::Loaded(Box::new(data))
+        },
     )
 }
 

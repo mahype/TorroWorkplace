@@ -27,6 +27,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use torro_core::AppId;
 use torro_core::paths::AppPaths;
+use torro_core::timing;
 use torro_ipc::{Request, Response, app_key_path, client, server, socket_path};
 use torro_setups::storage::Store;
 
@@ -194,15 +195,21 @@ async fn serve(shows: Shows) -> Result<(), String> {
     .await
     .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())?;
+    // With `TORRO_TIMING`, each step before the socket listens (issue #206, `docs/tempo.md`).
+    timing::mark("clients");
     let store = Store::open_default().map_err(|err| err.to_string())?;
+    timing::mark("store");
     // The first start of the suite brings the example design packs (task L.5); later starts find
     // the folder and leave it alone.
     let _ = tokio::task::spawn_blocking(crate::designs::install_examples).await;
+    timing::mark("designs");
     let backend = torro_wm::detect(|key| std::env::var(key).ok());
     let pim = Arc::new(crate::pim::PimService::new());
     pim.start();
+    timing::mark("pim");
     let core = Arc::new(Core::new(backend, store, pim, clients));
     core.start();
+    timing::mark("core");
     tokio::spawn(tend_inbox(Arc::clone(&core)));
     // Popups for new entries "for me" (task E3.4), also when headless: they need no tray.
     tokio::spawn(crate::inbox_notify::run(Arc::clone(&core), Arc::new(crate::inbox_notify::SystemDesktop)));
@@ -248,6 +255,7 @@ async fn serve(shows: Shows) -> Result<(), String> {
             .await
         })
     };
+    timing::mark("socket task started");
 
     let daemon = Arc::new(Daemon {
         core: Arc::clone(&core),
