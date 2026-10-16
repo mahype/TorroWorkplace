@@ -29,6 +29,12 @@ if [[ "${1:-}" == "--quick" ]]; then
     exit 0
 fi
 
+# The hook scripts of the issue workflow (docs/issue-workflow.md) are JavaScript, not Rust.
+if command -v node >/dev/null 2>&1; then
+    step "node --test scripts/agent/tests"
+    node --test scripts/agent/tests/*.test.mjs
+fi
+
 step "cargo clippy --workspace --all-targets -- -D warnings"
 cargo clippy --workspace --all-targets -- -D warnings
 
