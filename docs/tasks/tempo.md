@@ -83,7 +83,7 @@ TP.1 (Zeitmarken, Messskript, Messung vorher) ─┬─ TP.2 (Dev-Profil)  ─�
   Mail-Fenster beim Kaltstart (kein Fehlerhinweis).
 
 ### TP.4 Messung nachher und Abnahme
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** TP.2, TP.3 · **Dateien:** `docs/tempo.md`
 - Alle Messungen aus TP.1 wiederholen und die Tabelle „nachher“ neben „vorher“ stellen. Für jeden Zielwert
   aus `docs/tempo.md` vermerken: erreicht oder nicht, mit Wert.

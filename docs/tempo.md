@@ -128,4 +128,37 @@ ersten Zugriff auf den Schlüsselbund einen Dialog und wartet darauf: `accounts.
 Versuch erst nach 30 s, mit leerer Liste. Daher signiert `measure-start.sh` vorher (wie `cargo run`). Der
 Ausreißer von 16,5 s beim Kalender in TP.1 war sehr wahrscheinlich derselbe Dialog.
 
-Nachher: trägt TP.4 ein.
+**Nachher (TP.4, 2026-10-16, mit TP.2 und TP.3), erstes Bild / erste Daten in ms:**
+
+| App | Debug warm | Debug kalt | Release warm | Release kalt |
+|---|---|---|---|---|
+| Mail-Fenster | 90 / 174 | 105 / 148 | 94 / 166 | 88 / 152 |
+| Mitteilungen | 101 / 168 | 118 / 182 | 91 / 164 | 98 / 170 |
+| Kalender | 85 / 154 | 89 / 156 | 95 / 159 | 93 / 152 |
+| Aufgaben | 92 / 161 | 95 / 122 | 94 / 151 | 90 / 149 |
+| Assistent | 91 / 140 | 99 / 150 | 88 / 150 | 91 / 145 |
+| Steuerzentrale | 96 / 574 | 101 / 443 | 90 / 583 | 97 / 417 |
+
+Vorher zum Vergleich (Mail-Fenster): Debug warm 168 / 303, Release warm 88 / 150; von außen stand die Liste im
+Debug-Build nach ~0,8 s, jetzt nach ~0,18 s. Dienst bis zum Socket: Debug 35 ms, Release 33 ms.
+
+Neuladen (Release, Mail-Fenster und Hub, je drei Timer-Runden): Laden 28–39 ms im Hintergrund, kein `update`
+oder `view` über 16 ms beim Neuladen; das längste `update` (26 ms) kam beim Start.
+
+**Zielwerte:**
+
+| Ziel | Ergebnis |
+|---|---|
+| Dienst läuft, Release: Fenster < 0,3 s, Daten < 0,5 s | erreicht (≤ 95 / ≤ 166 ms), außer Steuerzentrale: Daten 583 ms |
+| Dienst läuft, Debug: Fenster < 0,5 s, Daten < 1,0 s | erreicht (≤ 101 / ≤ 574 ms) |
+| Kaltstart, Release: Fenster < 0,5 s, Daten < 1,5 s | erreicht (≤ 98 / ≤ 417 ms) |
+| Kaltstart, Debug: Fenster < 0,5 s, Daten < 3,0 s | erreicht (≤ 118 / ≤ 443 ms) |
+| Neuladen: kein Schritt der Oberfläche über 50 ms | erreicht (kein `update`/`view` über 16 ms) |
+| Dienst bis zum Socket < 300 ms | erreicht (33–35 ms) |
+
+Offen (Folge-Issues):
+- Steuerzentrale: Das erste Laden fragt 16 Requests nacheinander, darunter `system.status` (~100 ms, Abfrage des
+  Fenstermanagers) und `ai.list_models` (fragt den KI-Server). Parallel fragen oder die Modelle nachladen würde
+  das Ziel erreichen.
+- Dienst: Wartet ein Zugriff auf den Schlüsselbund (Dialog, gesperrter Schlüsselbund nach der Anmeldung),
+  blockiert `accounts.list_accounts` bis zu 30 s und liefert dann eine leere Liste.
