@@ -1876,7 +1876,7 @@ Knöpfe in die neue Anordnung (E9.2: Later an Ordnermails in Befehlsleiste und L
   Größen, hell und dunkel, mit `--design plex`. Übersetzungen im Bericht.
 
 ### E11.3 Leser: Befehlsleiste, Kopf linksbündig, Pillen, Fuß mit Ansicht
-- [ ] erledigt
+- [x] erledigt (2026-10-16): `mail::{commands, command_cells, head, pills, pill_row, reply_menu, more_menu, attachment_line, foot}`, `Menu::Reply`/`Menu::More` mit `AskReplyMenu`/`AskMore`, Anker `reply`/`more`, Demo-Zustände `mail-reply`/`mail-more`; Torro-Leiste, `reader_head`, `bar_fit`, `attachment_card` entfernt; Leser bei 1320 und 1600, hell und dunkel, torro und plex angesehen
 - **Modell:** Opus · **Braucht:** E11.1 · **Dateien:** `crates/torroinbox/src/{mail,detail,app}.rs`,
   `crates/torro-core/src/i18n/de.rs`, `docs/eingang.md` (Abschnitt zum Leser, falls er E9.4 beschreibt)
 - **Aufbau von `mail::reader`** von oben nach unten: (1) Befehlsleiste fest, (2) Scrollbereich mit Kopf, Linie über
