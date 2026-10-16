@@ -1672,21 +1672,16 @@ ihre neuen Knöpfe dann gleich in die passende Leiste. Nicht parallel: zwei Aufg
   „Bring back now“ beendet das Zurückstellen (`inbox.snooze_item` ohne `until`).
 - **„Trash“ immer sichtbar:** dritte Zeile oben, „Trash“ (`Icon::Trash`), die Papierkörbe aller Konten in einer Liste
   (`mail.search_messages` ohne Konto, `query: "in:trash"`), wie „All“ mit `cursor`. Kein Zähler.
-- **Gelöscht heißt weg (Fehler vom 2026-10-15):** In „For me“ blieb eine gelöschte Mail stehen. `App::take_out`
-  nimmt nur die Zeile der Ordnerliste heraus, nicht den Eintrag (`self.items`), der die Mail zeigt; der Kern
-  schließt ihn erst nach dem nächsten Abgleich. Beim Archivieren und Löschen verschwinden darum sofort auch die
-  offenen Einträge dieser Mail aus der Liste und dem Paneel (Zentrale, Mail-Fenster), mit „Undo“ wie bisher.
-  Prüfen, dass der Kern den Eintrag nach dem Verschieben in den Papierkorb wirklich erledigt
-  (`inbox_feed`, `MailChange::removed`); wenn nicht, im Bericht melden (Kern-Datei, eigene Aufgabe).
+- **Gelöscht heißt weg (Fehler vom 2026-10-15):** erledigt mit Issue #205 (Mail und Eintrag sofort aus der
+  Liste, der Kern schließt den Eintrag nach dem Verschieben aus dem Posteingang). Hier nichts mehr zu tun.
 - **Demo und Tastatur:** `--open` Zustände für „All“ (mit zwei Konten, einer Mail „Back from later“) und „Later“;
   Zustände für die entfallenen Ansichten im Mail-Fenster führen auf „All“. Tastenkürzel der Ansichten anpassen
   (`keys.rs`), leere Zustände mit Text („Your inboxes are empty.“, „Nothing for later.“).
 - **Oberfläche:** Mail-Fenster. **API/MCP:** keine neuen Befehle, nutzt `mail.search_messages` (Feld `snoozed`) und
   `inbox.snooze_item` mit Mail-Kennung aus E9.1; dieselben MCP-Tools.
 - **Abnahme:** Tests: Seitenleiste des Mail-Fensters hat genau „All“, „Later“ und „Trash“ über den Smart views;
-  Löschen einer Mail aus einem Eintrag nimmt den Eintrag sofort aus der Liste, „Undo“ bringt ihn zurück; „All“ schickt
-  `mail.search_messages` mit `in:inbox`, ohne Konto, mit `snoozed: false`, und blättert mit `cursor`; „Later“ an einer
-  Ordnermail ohne Eintrag schickt `inbox.snooze_item` mit `m:…`; Zentrale und App Feed unverändert. Sichtprüfung
+  „All“ schickt `mail.search_messages` mit `in:inbox`, ohne Konto, mit `snoozed: false`, und blättert mit `cursor`;
+  „Later“ an einer Ordnermail ohne Eintrag schickt `inbox.snooze_item` mit `m:…`; Zentrale und App Feed unverändert. Sichtprüfung
   (`torro-design-review`) in allen Größen, hell und dunkel. Übersetzungen im Bericht.
 
 ### E9.3a Unzustellbare Mails erkennen: Kern

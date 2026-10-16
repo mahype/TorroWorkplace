@@ -1169,6 +1169,15 @@ impl MailService {
         self.events.subscribe()
     }
 
+    /// Sends `change` to the subscribers, unless it is empty: for what a mail command did itself,
+    /// which no sync reports (issue #205: a message moved out of the inbox, whose store row moved
+    /// with it). Nobody listening is fine.
+    pub(crate) fn announce(&self, change: MailChange) {
+        if !change.is_empty() {
+            let _ = self.events.send(change);
+        }
+    }
+
     /// The stored accounts were read ([`MailService::start`]), or could not be: until then
     /// [`MailService::infos`] is empty although accounts may exist.
     pub fn loaded(&self) -> bool {

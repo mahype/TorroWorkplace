@@ -55,7 +55,7 @@ use torro_mail_imap::imap::{FetchedHeader, ImapError, Search, Session};
 use torro_mail_imap::mime::{self, CalendarPart, Outgoing, OutgoingAttachment, ReadMessage, Reply};
 
 use super::read::Invitation;
-use super::service::{MailError, MailService, SharedStore};
+use super::service::{MailChange, MailError, MailService, SharedStore};
 use super::store::{Body, DraftAuthor, FolderRef, MailStore, MessageRef, NewMessage};
 use super::{AttachmentCache, MailStoreError, random_hex, safe_file_name};
 use crate::approvals::{DraftFacts, MailFacts};
@@ -537,7 +537,8 @@ async fn move_into(
         drop(command);
     }
     let target_id = target.id.clone();
-    store
+    let account = target.account.clone();
+    let left_inbox = store
         .run(move |store| {
             let mut kept: Vec<String> = Vec::new();
             if let Some((uidvalidity, found)) = landed {
@@ -561,9 +562,26 @@ async fn move_into(
             for message in moved.iter().filter(|message| !kept.contains(&message.id)) {
                 store.delete_message(&message.id)?;
             }
-            Ok(())
+            let Some(inbox) = store.folder_by_role(Role::Inbox)? else { return Ok(None) };
+            let left: Vec<String> =
+                moved.iter().filter(|message| message.folder == inbox.id).map(|message| message.id.clone()).collect();
+            Ok(Some((inbox.id, left)))
         })
         .await?;
+    // The inbox folder's sync never sees these go (their rows moved with them), so its entries are
+    // settled from here (issue #205). Only mail that left the inbox: one moved back in (undo)
+    // must not close the entry opened again.
+    if let Some((inbox, left)) = left_inbox {
+        mail.announce(MailChange {
+            account,
+            folder: inbox,
+            role: Some(Role::Inbox),
+            new: Vec::new(),
+            flags: Vec::new(),
+            removed: left,
+            initial: false,
+        });
+    }
     failure.map_or(Ok(()), Err)
 }
 
@@ -1356,6 +1374,38 @@ pub(crate) mod tests {
         assert_eq!(on_server(&room.server, "INBOX"), ["Hello"]);
         let nowhere = move_messages(&room.mail, Reach::Suite, &[hello], &MoveTarget::Folder("f:none".into())).await;
         assert_eq!(code(&nowhere), "not-found");
+    }
+
+    #[tokio::test]
+    async fn mail_that_leaves_the_inbox_is_announced_as_removed() {
+        let room = mailroom().await;
+        let (hello, invoice) = (id_of(&room.mail, "Hello").await, id_of(&room.mail, "Invoice").await);
+        let mut events = room.mail.subscribe();
+        // The inbox's own sync (IDLE) may announce as well; what matters is the move's own change.
+        let removed_from_inbox = |events: &mut tokio::sync::broadcast::Receiver<MailChange>| {
+            let mut removed = Vec::new();
+            while let Ok(change) = events.try_recv() {
+                assert_eq!(change.account, ANNA);
+                if change.role == Some(Role::Inbox) {
+                    removed.extend(change.removed);
+                }
+            }
+            removed
+        };
+        let archive = MoveTarget::Role(torro_ipc::mail::MoveRole::Archive);
+        assert_eq!(move_messages(&room.mail, Reach::Suite, std::slice::from_ref(&hello), &archive).await, Response::Ok);
+        assert!(removed_from_inbox(&mut events).contains(&hello), "the archived mail is announced");
+
+        // Into the trash is the same; back into the inbox (undo) does not settle anything.
+        assert_eq!(
+            delete_messages(&room.mail, Reach::Suite, std::slice::from_ref(&invoice), false).await,
+            Response::Ok
+        );
+        assert!(removed_from_inbox(&mut events).contains(&invoice), "the deleted mail is announced");
+        let inbox = MoveTarget::Role(torro_ipc::mail::MoveRole::Inbox);
+        assert_eq!(move_messages(&room.mail, Reach::Suite, std::slice::from_ref(&hello), &inbox).await, Response::Ok);
+        assert_eq!(folder_of(&room.mail, &hello).await.as_deref(), Some("INBOX"));
+        assert!(!removed_from_inbox(&mut events).contains(&hello), "a move into the inbox is no removal");
     }
 
     #[tokio::test]
