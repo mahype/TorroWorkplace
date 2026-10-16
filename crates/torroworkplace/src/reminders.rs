@@ -96,13 +96,22 @@ pub struct Ledger {
     /// Snoozed reminders.
     #[serde(default)]
     pub snoozed: BTreeMap<String, Snoozed>,
-    /// Reminders that fired and went to the sink, with the end of their event. Taken out again by
-    /// a snooze, so the reminder fires once more when the snooze is over.
+    /// Reminders that fired and went to the sink. Taken out again by a snooze, so the reminder
+    /// fires once more when the snooze is over.
     #[serde(default)]
-    pub shown: BTreeMap<String, DateTime<Utc>>,
+    pub shown: BTreeMap<String, Shown>,
     /// Until when all reminders are paused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paused_until: Option<DateTime<Utc>>,
+}
+
+/// A reminder that fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shown {
+    /// When it went to the sink (the last time, after a snooze).
+    pub at: DateTime<Utc>,
+    /// When its event ends (for tidying up).
+    pub ends: DateTime<Utc>,
 }
 
 /// A snoozed reminder.
@@ -124,7 +133,7 @@ impl Ledger {
     fn tidy(&mut self, now: DateTime<Utc>) {
         let fresh = |ends: &DateTime<Utc>| *ends + keep() > now;
         self.dismissed.retain(|_, ends| fresh(ends));
-        self.shown.retain(|_, ends| fresh(ends));
+        self.shown.retain(|_, shown| fresh(&shown.ends));
         self.snoozed.retain(|_, snoozed| fresh(&snoozed.ends));
         if self.paused(now).is_none() {
             self.paused_until = None;
@@ -564,7 +573,7 @@ impl Reminders {
         if !fresh.is_empty() {
             self.with_ledger(now, |ledger| {
                 for reminder in &fresh {
-                    ledger.shown.insert(reminder.id.clone(), ends(&reminder.event));
+                    ledger.shown.insert(reminder.id.clone(), Shown { at: now, ends: ends(&reminder.event) });
                     ledger.snoozed.remove(&reminder.id);
                 }
                 ((), true)
@@ -577,6 +586,71 @@ impl Reminders {
         }
         due.extend(fresh);
         (due, ledger.paused(now).is_some())
+    }
+
+    /// The reminders that fired and stand now, with when they fired: for their inbox entries (task
+    /// ER1.4). Previews have none.
+    pub fn standing(
+        &self,
+        events: &[Event],
+        settings: &Settings,
+        now: DateTime<Utc>,
+    ) -> Vec<(Reminder, DateTime<Utc>)> {
+        let ledger = self.ledger(now);
+        plan(events, settings, &ledger, now)
+            .into_iter()
+            .filter(|reminder| reminder.state == ReminderState::Due)
+            .filter_map(|reminder| {
+                let fired = ledger.shown.get(&reminder.id)?.at;
+                Some((reminder, fired))
+            })
+            .collect()
+    }
+
+    /// Makes the reminders follow what the person did with their inbox entries (task ER1.4): an
+    /// entry done after its reminder fired dismisses it, a snoozed one snoozes it until then (or
+    /// dismisses it when that is after its event). Only reminders that stand are touched, so the
+    /// entries the inbox closes itself change nothing.
+    pub fn follow_inbox(
+        &self,
+        answers: &[(String, crate::inbox::ReminderAnswer)],
+        events: &[Event],
+        settings: &Settings,
+        now: DateTime<Utc>,
+    ) {
+        let standing = self.standing(events, settings, now);
+        let followed: Vec<(String, Option<Snoozed>, DateTime<Utc>)> = answers
+            .iter()
+            .filter_map(|(id, answer)| {
+                let (reminder, fired) = standing.iter().find(|(reminder, _)| reminder.id == *id)?;
+                let ends = ends(&reminder.event);
+                match *answer {
+                    crate::inbox::ReminderAnswer::Done { at } if at >= *fired => Some((id.clone(), None, ends)),
+                    crate::inbox::ReminderAnswer::Done { .. } => None,
+                    crate::inbox::ReminderAnswer::Snoozed { until } if until < ends => {
+                        Some((id.clone(), Some(Snoozed { until, ends }), ends))
+                    }
+                    crate::inbox::ReminderAnswer::Snoozed { .. } => Some((id.clone(), None, ends)),
+                }
+            })
+            .collect();
+        if followed.is_empty() {
+            return;
+        }
+        self.with_ledger(now, |ledger| {
+            for (id, snoozed, ends) in followed {
+                ledger.shown.remove(&id);
+                match snoozed {
+                    Some(snoozed) => {
+                        ledger.snoozed.insert(id, snoozed);
+                    }
+                    None => {
+                        ledger.dismissed.insert(id, ends);
+                    }
+                }
+            }
+            ((), true)
+        });
     }
 
     /// When the run should look again: the next reminder that fires or the next snooze that ends,
@@ -617,17 +691,91 @@ fn write(file: &Path, ledger: &Ledger) -> Result<(), String> {
     crate::clients::write_private(file, &bytes).map_err(|err| err.to_string())
 }
 
-/// Where due reminders go: the inbox, a notification, the full screen (tasks ER1.4, ER2.1).
+/// Where due reminders show: a notification or the full screen (tasks ER1.4, ER2.1). Their inbox
+/// entries are the run's own.
 pub trait Sink: Send + Sync {
-    /// `due` became due now; `paused` while reminders are paused (then only quietly).
-    fn fire(&self, due: &[Reminder], paused: bool);
+    /// `due` became due now; `paused` while reminders are paused (then they show nowhere, their
+    /// inbox entries stay). `settings` say the sound.
+    fn fire(&self, due: &[Reminder], paused: bool, settings: &Settings);
 }
 
-/// A sink that does nothing, until the inbox and the window take reminders.
-pub struct Silent;
+/// The desktop's sink (task ER1.4): a reminder in the style "notification" becomes a notification
+/// of the system with Join (when there is a call), In 5 min and Dismiss, sent back to `core` as the
+/// suite itself. Quiet during busy events holds nothing back: a reminder is what the person
+/// waits for during a meeting.
+pub struct Desktop {
+    core: std::sync::Weak<crate::core::Core>,
+}
 
-impl Sink for Silent {
-    fn fire(&self, _due: &[Reminder], _paused: bool) {}
+impl Desktop {
+    pub fn new(core: &Arc<crate::core::Core>) -> Desktop {
+        Desktop { core: Arc::downgrade(core) }
+    }
+}
+
+impl Sink for Desktop {
+    fn fire(&self, due: &[Reminder], paused: bool, settings: &Settings) {
+        if paused {
+            return;
+        }
+        let sound = settings.sound == torro_core::settings::ReminderSound::System;
+        for reminder in due.iter().filter(|reminder| shows_as_notification(reminder)) {
+            let core = self.core.clone();
+            let (id, join) = (reminder.id.clone(), reminder.join.clone());
+            crate::inbox_notify::show_reminder(
+                reminder,
+                sound,
+                Box::new(move |answer| {
+                    let Some(core) = core.upgrade() else { return };
+                    answer_notification(core, id, join, answer);
+                }),
+            );
+        }
+    }
+}
+
+/// The reminder shows as a notification. Until the full screen exists (task ER2.1), a full-screen
+/// reminder does too.
+fn shows_as_notification(reminder: &Reminder) -> bool {
+    matches!(reminder.style, AlarmStyle::Notification | AlarmStyle::FullScreen)
+}
+
+/// What a button of a reminder's notification does: Join opens the call, In 5 min and Dismiss send
+/// their command as the suite, a click opens the calendar.
+fn answer_notification(
+    core: Arc<crate::core::Core>,
+    id: String,
+    join: Option<Join>,
+    answer: crate::inbox_notify::ReminderAnswer,
+) {
+    let Some(request) = notification_request(id, answer) else {
+        if let Some(join) = join
+            && let Err(err) = core.open_call(&join.url)
+        {
+            eprintln!("torroworkplace: cannot open the call of a reminder: {err}");
+        }
+        return;
+    };
+    tokio::spawn(async move {
+        if let Response::Error { code, message } = core.handle(request).await {
+            eprintln!("torroworkplace: a reminder's button failed ({code}): {message}");
+        }
+    });
+}
+
+/// The command a button of the notification of the reminder `id` sends; `None` for Join, which
+/// opens the call in the browser instead.
+pub(crate) fn notification_request(
+    id: String,
+    answer: crate::inbox_notify::ReminderAnswer,
+) -> Option<torro_ipc::Request> {
+    use crate::inbox_notify::ReminderAnswer;
+    Some(match answer {
+        ReminderAnswer::Join => return None,
+        ReminderAnswer::Snooze => torro_ipc::Request::SnoozeReminder { id, until: Snooze::Minutes(5) },
+        ReminderAnswer::Dismiss => torro_ipc::Request::DismissReminder { id },
+        ReminderAnswer::Open => torro_ipc::Request::OpenApp { app: AppId::CALENDAR.binary.to_string(), target: None },
+    })
 }
 
 /// Plans and fires the reminders of `core` until the core goes away (see the module).
@@ -636,9 +784,18 @@ pub async fn run(core: Arc<crate::core::Core>, sink: Arc<dyn Sink>) {
     loop {
         let now = Utc::now();
         let (events, settings) = core.reminder_inputs(now).await;
+        // What the person did in the inbox first, so a reminder put away there shows no more.
+        match core.inbox().reminder_answers() {
+            Ok(answers) => core.reminders().follow_inbox(&answers, &events, &settings, now),
+            Err(err) => eprintln!("torroworkplace: cannot read the reminders' inbox entries: {err}"),
+        }
         let (due, paused) = core.reminders().take_due(&events, &settings, now);
         if !due.is_empty() {
-            sink.fire(&due, paused);
+            sink.fire(&due, paused, &settings);
+        }
+        let standing = core.reminders().standing(&events, &settings, now);
+        if let Err(err) = core.inbox().file_reminders(&standing, now) {
+            eprintln!("torroworkplace: cannot file the reminders in the inbox: {err}");
         }
         let wake = core.reminders().next_wake(&events, &settings, now);
         let wait = (wake - now).to_std().unwrap_or_default().clamp(std::time::Duration::from_secs(1), MINUTE);

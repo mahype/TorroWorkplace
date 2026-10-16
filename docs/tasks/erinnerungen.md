@@ -120,7 +120,7 @@ ER3.1 (braucht ER1.4)       ER4 später
   der fünf Befehle (`audit::ids`).
 
 ### ER1.4 Eingang und leise Benachrichtigung
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.3 · **Dateien:** `crates/torroworkplace/src/{inbox,inbox_notify,notify,reminders}.rs`,
   `crates/torroinbox/src/notifications.rs` (Knopf „In 5 min“)
 - Jede ausgelöste Erinnerung ist ein Eintrag `reminder` der Quelle „Suite“, „Für mich“, mit ✕ · Open ·
@@ -129,6 +129,14 @@ ER3.1 (braucht ER1.4)       ER4 später
   Dismiss. Ruhe während belegter Termine hält sie nicht zurück.
 - **Abnahme:** Tests: Eintrag kommt und geht, Knopf schickt den richtigen Request, keine doppelte
   Benachrichtigung bei Vollbild.
+- **Umgesetzt (2026-10-16):** neue Art `Kind::Reminder` in `torro-inbox` (freigegeben), nur vom Kern, für mich.
+  Der Eintrag hat die Knöpfe jeder Meldung der Suite (✕, Öffnen = Kalender, Später); erledigt oder vertagt im
+  Eingang verwirft bzw. schlummert die Erinnerung selbst (`Reminders::follow_inbox`), im Später-Menü steht
+  „In 5 min“ zuerst (`torroinbox/src/app.rs`). Die allgemeinen Popups des Eingangs lassen Erinnerungen aus
+  (`asks_elsewhere`); die eigene Benachrichtigung hat Join, In 5 min, Dismiss (Linux; macOS und Windows ohne
+  Knöpfe). Ein Vollbild zeigt bis ER2.1 ebenfalls diese Benachrichtigung; dass es danach keine doppelte gibt,
+  prüft ER2.1. Dateien zusätzlich: `torro-inbox/src/{item,rules}.rs`, `torroinbox/src/{hub,app}.rs`,
+  `torroworkplace/src/{core,daemon}.rs`, `torro-core/src/i18n/de.rs`.
 
 ### ER1.5 Schriftstufe für das Vollbild
 - [x] erledigt

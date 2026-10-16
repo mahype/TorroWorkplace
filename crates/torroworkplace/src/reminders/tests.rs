@@ -102,7 +102,8 @@ fn a_reminder_never_shown_comes_late_only_within_the_grace() {
     assert!(plan(&events, &settings(), &ledger, at(10, 40)).is_empty());
     // One that was shown stays until the event ends, and goes with it.
     let id = plan(&events, &settings(), &ledger, at(9, 59))[0].id.clone();
-    let shown = Ledger { shown: BTreeMap::from([(id, at(11, 0))]), ..Ledger::default() };
+    let fired = Shown { at: at(9, 59), ends: at(11, 0) };
+    let shown = Ledger { shown: BTreeMap::from([(id, fired)]), ..Ledger::default() };
     assert_eq!(states(&plan(&events, &settings(), &shown, at(10, 40))), [("sync", ReminderState::Due)]);
     assert!(plan(&events, &settings(), &shown, at(11, 0)).is_empty(), "past is past");
 }
@@ -258,4 +259,64 @@ fn the_ledger_is_kept_private_and_tidied() {
     assert!(again.ledger(at(10, 0)).dismissed.is_empty(), "a week after the event it is gone");
     std::fs::write(&file, "not json").expect("broken");
     assert_eq!(Reminders::new(Some(file)).ledger(at(10, 0)), Ledger::default(), "a broken file starts over");
+}
+
+#[test]
+fn reminders_follow_their_inbox_entries() {
+    use crate::inbox::ReminderAnswer;
+    let reminders = Reminders::new(None);
+    let events = [event("a", WORK, at(10, 0), 45), event("b", WORK, at(10, 0), 45), event("c", WORK, at(10, 0), 45)];
+    let (due, _) = reminders.take_due(&events, &settings(), at(9, 59));
+    let id = |uid: &str| due.iter().find(|r| r.event.uid == uid).map(|r| r.id.clone()).expect("fired");
+    let standing = reminders.standing(&events, &settings(), at(9, 59));
+    assert_eq!(standing.len(), 3);
+    assert!(standing.iter().all(|(_, fired)| *fired == at(9, 59)));
+    let answers = [
+        (id("a"), ReminderAnswer::Done { at: at(10, 0) }),
+        (id("b"), ReminderAnswer::Snoozed { until: at(10, 5) }),
+        // Done before it fired: an entry the inbox closed itself, from an earlier round.
+        (id("c"), ReminderAnswer::Done { at: at(9, 0) }),
+    ];
+    reminders.follow_inbox(&answers, &events, &settings(), at(10, 0));
+    let ledger = reminders.ledger(at(10, 0));
+    assert!(ledger.dismissed.contains_key(&id("a")));
+    assert_eq!(ledger.snoozed.get(&id("b")).map(|s| s.until), Some(at(10, 5)));
+    assert!(ledger.shown.contains_key(&id("c")) && !ledger.dismissed.contains_key(&id("c")));
+    // Snoozed past its event: as good as dismissed.
+    let late = [(id("c"), ReminderAnswer::Snoozed { until: at(12, 0) })];
+    reminders.follow_inbox(&late, &events, &settings(), at(10, 1));
+    assert!(reminders.ledger(at(10, 1)).dismissed.contains_key(&id("c")));
+}
+
+#[test]
+fn the_buttons_of_a_notification_send_their_commands() {
+    use crate::inbox_notify::ReminderAnswer;
+    assert_eq!(
+        notification_request("r1".into(), ReminderAnswer::Snooze),
+        Some(torro_ipc::Request::SnoozeReminder { id: "r1".into(), until: Snooze::Minutes(5) })
+    );
+    assert_eq!(
+        notification_request("r1".into(), ReminderAnswer::Dismiss),
+        Some(torro_ipc::Request::DismissReminder { id: "r1".into() })
+    );
+    assert_eq!(
+        notification_request("r1".into(), ReminderAnswer::Open),
+        Some(torro_ipc::Request::OpenApp { app: "torrocalendar".into(), target: None })
+    );
+    assert_eq!(notification_request("r1".into(), ReminderAnswer::Join), None, "the browser opens the call");
+}
+
+#[test]
+fn a_notification_says_how_soon() {
+    use crate::inbox_notify::reminder_text;
+    let reminders = plan(&[event("sync", WORK, at(10, 0), 45)], &settings(), &Ledger::default(), at(9, 0));
+    let sync = &reminders[0];
+    let (soon, body) = reminder_text(sync, at(9, 55));
+    assert_eq!(soon, torro_core::i18n::trf("{title} · in {n} min", &[("title", &"Event sync"), ("n", &5)]));
+    assert!(body.contains(" – "), "{body}");
+    let (now, _) = reminder_text(sync, at(10, 0));
+    assert_eq!(now, torro_core::i18n::trf("{title} · now", &[("title", &"Event sync")]));
+    let (late, _) = reminder_text(sync, at(10, 3));
+    assert_eq!(late, torro_core::i18n::trf("{title} · started {n} min ago", &[("title", &"Event sync"), ("n", &3)]));
+    assert!(crate::inbox_notify::asks_elsewhere(torro_inbox::Kind::Reminder), "no second popup from the inbox");
 }

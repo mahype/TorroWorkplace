@@ -976,6 +976,15 @@ impl Core {
         }
     }
 
+    /// Opens the call link of a reminder (task ER1.4) in the browser; only `http` and `https`
+    /// addresses ([`torro_gui::links::openable`]).
+    pub fn open_call(&self, url: &str) -> Result<(), String> {
+        if !torro_gui::links::openable(url) {
+            return Err("only http and https links are opened".into());
+        }
+        (self.open_url)(url)
+    }
+
     /// The reminders, for their run ([`crate::reminders::run`]).
     pub fn reminders(&self) -> &Reminders {
         &self.reminders

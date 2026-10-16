@@ -3695,4 +3695,11 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("notification", "Benachrichtigung"),
     ("off", "aus"),
     ("until it starts", "bis zum Beginn"),
+    // Reminders of events (ER1.4): inbox and notifications
+    ("In 5 min", "In 5 Min."),
+    ("Open calendar", "Kalender öffnen"),
+    ("{title} · at {time}", "{title} · um {time}"),
+    ("{title} · in {n} min", "{title} · in {n} Min."),
+    ("{title} · now", "{title} · jetzt"),
+    ("{title} · started {n} min ago", "{title} · hat vor {n} Min. begonnen"),
 ];
