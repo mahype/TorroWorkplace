@@ -332,7 +332,7 @@ pub struct MailChange {
     /// Messages whose flags changed on the server (read elsewhere, flagged …).
     pub flags: Vec<String>,
     /// Messages gone from the folder: deleted, expunged or moved to another folder (where they
-    /// come back under a new id).
+    /// come back under a new id; a move of the core's own keeps the id, issue #205).
     pub removed: Vec<String>,
     /// The folder is synced for the first time, or anew after the server renumbered it: `new`
     /// holds what was there already, not what just arrived. The inbox (task E4.1) takes only

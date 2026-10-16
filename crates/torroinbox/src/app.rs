@@ -225,6 +225,12 @@ fn account_key(account: &str) -> String {
 /// entry or a time in the list changed.
 const REFRESH: Duration = Duration::from_secs(10);
 
+/// How long a message the core moved stays out of what loads in its old folder, and its entry
+/// out of the lists (issue #205): long enough for a load asked before the answer and for the core
+/// to settle the entry; an entry still open after it (another unread mail of the conversation)
+/// shows again.
+const LEAVING_GRACE: Duration = Duration::from_secs(5);
+
 /// How long the toast after a change shows, and with it "Undo" (`u`, Ctrl + Z): the suite's
 /// [`widgets::TOAST_FOR`].
 pub const UNDO_FOR: Duration = widgets::TOAST_FOR;
@@ -605,8 +611,18 @@ pub struct Hint {
 struct Leaving {
     /// The message's id (`m:…`).
     id: String,
-    /// The core moved it: once a load no longer holds it or its entry, it is forgotten.
-    answered: bool,
+    /// The folder it leaves, if the window knew it: only there is it kept out, so where it lands
+    /// (a search, the archive, the trash) shows it. `None`: kept out wherever it loads.
+    from: Option<String>,
+    /// When the core answered that it moved it; [`LEAVING_GRACE`] later it is forgotten.
+    answered: Option<Instant>,
+}
+
+impl Leaving {
+    /// Whether `message` is this message where it leaves from.
+    fn hides(&self, message: &MessageSummary) -> bool {
+        message.id == self.id && self.from.as_deref().is_none_or(|from| message.folder == from)
+    }
 }
 
 /// Whether `item` is the entry of the message `id`.
@@ -3141,7 +3157,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::MailEdited(Ok(()), ids, hint) => {
                 // Moved: out of the core's lists soon, then they need no hiding any more.
                 for leaving in self.leaving.iter_mut().filter(|leaving| ids.contains(&leaving.id)) {
-                    leaving.answered = true;
+                    leaving.answered = Some(Instant::now());
                 }
                 if let Some(hint) = hint {
                     self.hint = Some(Hint { shown: Instant::now(), ..hint });
@@ -3606,7 +3622,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let reopen = self.entry_of(&id);
         let text = if action == MailAction::Junk { tr("Moved to junk") } else { mail::moved_text(delete) };
         let hint = Hint { text: text.to_owned(), undo: Some(Undo::Mail { edit: back, reopen }), shown: Instant::now() };
-        self.leaving.push(Leaving { id: id.clone(), answered: false });
+        self.leaving.push(Leaving { id: id.clone(), from: self.folder_of(&id), answered: None });
         self.take_out(&id);
         self.mail_edit(Some(edit), Some(hint))
     }
@@ -3626,7 +3642,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         #[cfg(test)]
         self.sent.push(Sent::Mail(edit.clone(), hint.clone()));
         let inbox = self.inbox.clone();
-        let ids = edit.ids().to_vec();
+        // Only a move answers for the messages on their way out: marking one read as it opens must
+        // neither forget nor bring back the delete that follows.
+        let ids = match &edit {
+            MailEdit::Flags { .. } => Vec::new(),
+            MailEdit::Move { ids, .. } | MailEdit::Delete { ids } | MailEdit::DeleteForGood { ids } => ids.clone(),
+        };
         Task::perform(edit.apply(inbox), move |result| Message::MailEdited(result, ids.clone(), hint.clone()))
     }
 
@@ -3657,6 +3678,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let followed = self.detail.as_ref().is_some_and(|detail| self.cursor.as_deref() == Some(detail.id.as_str()));
         self.items.retain(|item| !shows_mail(item, id));
         self.for_me.retain(|item| !shows_mail(item, id));
+        self.snoozed.retain(|item| !shows_mail(item, id));
         if let Some(place) = place {
             let rows = self.rows();
             let last = rows.len().checked_sub(1);
@@ -3667,32 +3689,34 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
-    /// Keeps the messages on their way out ([`App::leaving`]) and their entries out of what just
-    /// loaded; those the core moved and that no longer come back are forgotten.
+    /// Keeps the messages on their way out ([`App::leaving`]) out of their old folder in what just
+    /// loaded, and their entries out of the lists; [`LEAVING_GRACE`] after the core's answer they
+    /// are forgotten.
     fn keep_out_leaving(&mut self) {
-        let (messages, items, for_me) = (&self.messages, &self.items, &self.for_me);
-        let held = |id: &str| {
-            messages.iter().any(|message| message.id == id)
-                || items.iter().chain(for_me).any(|item| shows_mail(item, id) && item.state.is_open())
-        };
-        self.leaving.retain(|leaving| !leaving.answered || held(&leaving.id));
+        self.leaving.retain(|leaving| leaving.answered.is_none_or(|at| at.elapsed() < LEAVING_GRACE));
         for leaving in &self.leaving {
             let id = leaving.id.as_str();
-            self.messages.retain(|message| message.id != id);
+            self.messages.retain(|message| !leaving.hides(message));
             self.items.retain(|item| !shows_mail(item, id));
             self.for_me.retain(|item| !shows_mail(item, id));
+            self.snoozed.retain(|item| !shows_mail(item, id));
         }
     }
 
     /// Where the message `id` goes back to on undo: its folder, as listed or loaded; an entry's
     /// mail lives in its account's inbox.
     fn home_of(&self, id: &str) -> MoveTarget {
+        self.folder_of(id).map_or(MoveTarget::Role(MoveRole::Inbox), MoveTarget::Folder)
+    }
+
+    /// The folder of the message `id`, as listed or loaded.
+    fn folder_of(&self, id: &str) -> Option<String> {
         let listed = self.messages.iter().find(|message| message.id == id).map(|message| message.folder.clone());
         let loaded = || match &self.letter {
             Some(Letter { loaded: Some(Ok(mail)), .. }) if mail.summary.id == id => Some(mail.summary.folder.clone()),
             _ => None,
         };
-        listed.or_else(loaded).map_or(MoveTarget::Role(MoveRole::Inbox), MoveTarget::Folder)
+        listed.or_else(loaded)
     }
 
     /// The open entry of the message `id` in the list, which the core closes when its mail leaves
@@ -10068,13 +10092,51 @@ mod tests {
         assert_eq!(cursor(&app), Some("m:w2"), "the cursor stays on the row that took its place");
         deliver_mail(&mut app);
         assert!(!message_ids(&app).contains(&"m:w1"));
-        assert!(app.leaving.is_empty(), "moved and no longer loaded: forgotten");
+        assert!(app.leaving.iter().all(|leaving| leaving.answered.is_some()), "answered, kept out a while");
 
         // Undo: back once the core moved it back.
         let _ = press(&mut app, Key::U);
         assert!(app.leaving.is_empty());
         deliver_mail(&mut app);
         assert!(message_ids(&app).contains(&"m:w1"), "back in the inbox");
+    }
+
+    /// Makes the answers to the moves on their way out older than [`LEAVING_GRACE`].
+    fn age_leaving<S>(app: &mut App<S>) {
+        for leaving in &mut app.leaving {
+            leaving.answered = leaving.answered.and_then(|at| at.checked_sub(LEAVING_GRACE));
+        }
+    }
+
+    /// Issue #205: a message is kept out of the folder it left only; where it landed it shows at
+    /// once, with its id kept by the core.
+    #[test]
+    fn a_deleted_message_shows_in_the_trash_at_once() {
+        let mut app = in_folder("f:work-inbox");
+        let _ = press(&mut app, Key::Down);
+        let _ = press(&mut app, Key::Hash);
+        deliver_mail(&mut app);
+        assert!(!message_ids(&app).contains(&"m:w1"));
+        let trash = folder_view(&app, "f:work-trash");
+        let _ = app.update(Message::Show(trash));
+        load(&mut app);
+        assert!(message_ids(&app).contains(&"m:w1"), "in the trash, not hidden there");
+    }
+
+    /// Issue #205: an entry the core keeps open after its mail went (another unread mail of the
+    /// conversation) shows again once the grace is over.
+    #[test]
+    fn an_entry_the_core_keeps_open_shows_again_after_the_grace() {
+        let mut app = at("demo-mail-1");
+        let _ = press(&mut app, Key::Hash);
+        // The core answered, but the entry stays open: the move is not applied to the demo.
+        let _ = app.update(Message::MailEdited(Ok(()), vec!["m:w1".into()], None));
+        load(&mut app);
+        assert!(!ids(&app).contains(&"demo-mail-1"), "within the grace still out");
+        age_leaving(&mut app);
+        load(&mut app);
+        assert!(ids(&app).contains(&"demo-mail-1"), "still open in the core: shown again");
+        assert!(app.leaving.is_empty());
     }
 
     /// Issue #205: a move that fails brings the message back, with the error line.
@@ -10108,7 +10170,10 @@ mod tests {
         assert_eq!(app.cursor, next);
         deliver_mail(&mut app);
         assert!(!ids(&app).contains(&"demo-mail-1"), "the core closed it");
-        assert!(app.leaving.is_empty(), "moved and no longer loaded: forgotten");
+        age_leaving(&mut app);
+        load(&mut app);
+        assert!(app.leaving.is_empty(), "forgotten once the grace is over");
+        assert!(!ids(&app).contains(&"demo-mail-1"), "and closed for good");
         let _ = press(&mut app, Key::U);
         let back = MailEdit::Move { ids: vec!["m:w1".into()], to: MoveTarget::Role(MoveRole::Inbox) };
         assert_eq!(app.sent.last(), Some(&Sent::Mail(back, None)), "undo moves it back");
