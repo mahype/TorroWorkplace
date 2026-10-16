@@ -30,8 +30,12 @@
 //!   reader has none of the red (task E11.3): a command bar at the top ([`commands`]: Reply ▾ ·
 //!   Forward · Archive · Delete · Later · "…", the rest in [`reply_menu`] and [`more_menu`]), Torro's
 //!   functions as pills under the sender ([`pills`]: Task · AI task · Event · AI event · Mute…), the
-//!   attachments as chips ([`attachment_line`]) and the view's switches in a foot ([`foot`]) – parts
-//!   the mail window's panel takes over with task E11.4.
+//!   attachments as chips ([`attachment_line`]) and the view's switches in a foot ([`foot`]). Which
+//!   bars a mail in the panel has, [`Bars`] says (task E11.4): the hub and the App Feed keep the
+//!   split of E9.4, the mail window's panel in medium and narrow takes the reader's parts – the
+//!   command bar, the head without the subject (the panel's title says it), the pills, and the
+//!   chips and switches in its fixed footer ([`panel_foot`]); [`entry_panel`] is that panel for a
+//!   mail entry.
 //! - The task made of a mail (task E8.7b) stands over its text as a card ([`task_card`], "Open
 //!   task"); "Task" on a folder's message makes one ([`MailSource::create_todo_from_mail`]).
 //!
@@ -1675,21 +1679,87 @@ impl<'a> Reading<'a> {
     }
 }
 
+/// Which bars a mail in the panel has (task E11.4), chosen by the window: the same mail, the same
+/// messages and keys, laid out as the window's other parts are.
+#[derive(Debug, Clone, Copy)]
+pub enum Bars<'a> {
+    /// Task E9.4, for the hub and the App Feed: the mail standards at the top of the body
+    /// ([`panel_standards`]), Torro's functions and the view's switches in the panel's footer
+    /// ([`folder_footer`], `detail::Footer`).
+    Split,
+    /// Task E11, for the mail window in medium and narrow: the reader's parts in the panel – the
+    /// command bar ([`commands`], without Close: the ✕ stands in the panel's head), the sender and
+    /// the pills ([`head`] without the subject, which the panel's title says), a line, the mail; the
+    /// attachments as chips and the view's switches in the panel's footer ([`panel_foot`]).
+    Command {
+        /// The mail entry the mail belongs to (Later, the entry's pills, Done and "Move to …" in
+        /// "…"); `None` for a folder's message.
+        entry: Option<ReaderEntry<'a>>,
+        /// How wide the panel is: [`size::panel()`] over the medium window, the whole window in a
+        /// narrow one. The command bar's words ([`widgets::command_words`]) and what ends in "…"
+        /// reckon with it.
+        width: f32,
+    },
+}
+
 /// The panel of a folder's message: the account and folder as path, the subject as title, the
-/// mail as body ([`body`]) with the mail standards over it. The Torro functions stand in the
-/// panel's fixed footer (task E9.4, [`folder_footer`]): Task, then the bell "Mute…" and the view's
-/// switches and "Copy text". `anchors` are where the menus of its buttons open (the app's window,
-/// issue #122).
+/// mail as body ([`body`]) with the `bars` it says. With [`Bars::Split`] the mail standards stand
+/// over the mail and the Torro functions in the panel's fixed footer (task E9.4, [`folder_footer`]):
+/// Task, then the bell "Mute…" and the view's switches and "Copy text"; with [`Bars::Command`] the
+/// reader's bars (task E11.4, [`panel_foot`] the footer). `anchors` are where the menus of its
+/// buttons open (the app's window, issue #122).
 pub fn panel<'a>(
     reading: &Reading<'a>,
     folder: Option<&'a FolderView>,
     anchors: &detail::Anchors,
+    bars: Bars<'a>,
 ) -> panel::Panel<'a, Message> {
     let mark = Some(Mark::Icon(folder_icon(folder.and_then(|folder| folder.role))));
     let parts: Vec<String> = folder.map(|f| vec![address(&f.account).to_owned(), f.name.clone()]).unwrap_or_default();
-    let body = body(reading);
-    panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail)
-        .footer(folder_footer(reading, anchors))
+    let footer = match bars {
+        Bars::Split => folder_footer(reading, anchors),
+        Bars::Command { width, .. } => panel_foot(reading, width),
+    };
+    let body = body(reading, bars, anchors);
+    panel::panel(panel::path(mark, parts), panel::title(reading.title()), body, Message::CloseDetail).footer(footer)
+}
+
+/// The panel of a mail entry in the mail window's medium and narrow layouts (task E11.4): the
+/// entry's head as `detail::panel` draws it – source and `view_name` as path, the entry's title, ✕
+/// – and its whole mail with the reader's bars ([`Bars::Command`] with `entry`, the panel `width`
+/// wide), the attachments and the view's switches in the fixed footer ([`panel_foot`]). The entry's
+/// properties stay out, as in the reader: the head says who wrote it and when, and why a rule put it
+/// in its lane. The hub and the App Feed keep `detail::panel` with [`Bars::Split`].
+pub fn entry_panel<'a>(
+    reading: &Reading<'a>,
+    entry: ReaderEntry<'a>,
+    view_name: String,
+    anchors: &detail::Anchors,
+    width: f32,
+) -> panel::Panel<'a, Message> {
+    let body = body(reading, Bars::Command { entry: Some(entry), width }, anchors);
+    let (path, title) = (detail::path(entry.item, view_name), detail::heading(entry.item));
+    panel::panel(path, title, body, Message::CloseDetail).footer(panel_foot(reading, width))
+}
+
+/// The fixed footer of a mail's panel with the reader's bars (task E11.4, [`Bars::Command`]): the
+/// mail's attachments as chips (as [`attachment_line`] has them over the reader's foot), under them
+/// the view's switches and "Copy text" (as the reader's [`foot`] has them), each part only where the
+/// mail has it, in the panel's padding – the panel draws the line above it. Empty – no footer –
+/// while the mail loads and after an error. `width` is the panel's.
+pub fn panel_foot<'a>(reading: &Reading<'_>, width: f32) -> Vec<Element<'a, Message>> {
+    // The panel's footer pads its content by `space::l()` at each side.
+    let room = (width - 2.0 * space::l()).max(0.0);
+    let mut parts: Vec<Element<'a, Message>> = Vec::new();
+    parts.extend(attachment_chips(reading, room));
+    let controls = foot_controls(reading.view_tools());
+    if !controls.is_empty() {
+        parts.push(row(controls).spacing(space::s()).align_y(Alignment::Center).into());
+    }
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    vec![column(parts).spacing(space::s()).width(Fill).into()]
 }
 
 /// The footer of a folder's message in the panel (task E9.4), in the panel's style and in the
@@ -1759,12 +1829,50 @@ fn schemes() -> [(String, Message); 2] {
     ]
 }
 
-/// The mail in the panel: who wrote it to whom and when, the mail standards (task E9.4,
-/// [`panel_standards`]: reply, reply all, forward, archive, delete, flag, read), the attachments,
-/// the HTML or the text with its links, and the note that the mail comes from outside. The Torro
-/// functions, the switches "HTML | Text" and "Light | Dark" (task M9.7) and "Copy text" stand in the
-/// panel's footer: an entry's (`detail::Footer`) or a folder's message's ([`panel()`]).
-pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
+/// The mail in the panel with the `bars` the window chose ([`Bars`]); `anchors` are where the menus
+/// of its buttons open (with [`Bars::Command`]: Reply ▾ `reply`, Later `snooze`, "…" `more`, the
+/// pills `task`, `event`, `hide`).
+///
+/// - [`Bars::Split`] (task E9.4): who wrote it to whom and when, the mail standards
+///   ([`panel_standards`]: reply, reply all, forward, archive, delete, flag, read), the attachments,
+///   the HTML or the text with its links, and the note that the mail comes from outside. The Torro
+///   functions, the switches "HTML | Text" and "Light | Dark" (task M9.7) and "Copy text" stand in
+///   the panel's footer: an entry's (`detail::Footer`) or a folder's message's ([`panel()`]).
+/// - [`Bars::Command`] (task E11.4, [`command_body`]): the reader's command bar from edge to edge,
+///   the sender, the pills, invitation and task, a line, the mail. Attachments and the view's
+///   switches stand in the footer ([`panel_foot`]).
+pub fn body<'a>(reading: &Reading<'a>, bars: Bars<'a>, anchors: &detail::Anchors) -> Element<'a, Message> {
+    match bars {
+        Bars::Split => split_body(reading),
+        Bars::Command { entry, width } => command_body(reading, entry, anchors, width),
+    }
+}
+
+/// The body of the mail window's panel (task E11.4, [`Bars::Command`]), `width` wide, in the order
+/// of the reader (task E11.3): between two lines from edge to edge the command bar ([`commands`],
+/// whose "…" has no Close in the panel), the head without the subject – the panel's title says it
+/// – ([`head_with`]: sender, why a rule put the entry in its lane, the pills, invitation and task)
+/// lined up with the title, a line from edge to edge and the mail ([`panel_letter`]).
+fn command_body<'a>(
+    reading: &Reading<'a>,
+    entry: Option<ReaderEntry<'a>>,
+    anchors: &detail::Anchors,
+    width: f32,
+) -> Element<'a, Message> {
+    let line = || rule::horizontal(size::HAIRLINE).style(style::rule);
+    // A line above as well: in the panel the bar stands under the title, not under the header bar.
+    let bar = column![line(), commands(reading, entry.map(|entry| entry.item), anchors, width)];
+    // The head lines up with the title: 16 from the panel's edges (`panel::inset`).
+    let room = (width - 2.0 * space::l()).max(0.0);
+    let head = head_with(reading, entry, anchors, room, false);
+    column![panel::bleed(bar), panel::inset(head), panel::bleed(line())]
+        .extend(panel_letter(reading))
+        .spacing(space::l())
+        .into()
+}
+
+/// The body of the panel with the split of task E9.4 ([`Bars::Split`], see [`body`]).
+fn split_body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     let mut body = column![].spacing(space::l());
     if let Some(summary) = reading.summary() {
         body = body.push(panel::inset(header(reading, summary)));
@@ -1779,20 +1887,30 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
     if let Some(task) = reading.task {
         body = body.push(panel::inset(task_card(task, reading.now)));
     }
+    // The attachments as rows over the mail; the reader's bars have them as chips in the footer.
+    if let Some(Ok(mail)) = reading.loaded {
+        let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
+        if !files.is_empty() {
+            let rows = files.into_iter().map(|file| attachment_row(reading.id, file)).collect();
+            body = body.push(widgets::prop_section(tr("Attachments"), rows));
+        }
+    }
+    body.extend(panel_letter(reading)).into()
+}
+
+/// The mail itself in the panel's body, both [`Bars`] alike: while it loads or after an error a
+/// quiet line; once in, the HTML from edge to edge of the panel with the note under it, or the text
+/// lined up with the title with the note on foreign text and its "Links".
+fn panel_letter<'a>(reading: &Reading<'a>) -> Vec<Element<'a, Message>> {
     match reading.loaded {
-        None => body = body.push(panel::inset(note(tr("Loading the message…")))),
+        None => vec![panel::inset(note(tr("Loading the message…")))],
         Some(Err(why)) => {
             let what = typo::text(typo::body(), tr("Couldn't load the message.")).style(theme::text_2);
             let why = typo::text(typo::meta(), why.as_str()).style(theme::text_3).wrapping(Wrapping::WordOrGlyph);
-            body = body.push(panel::inset(column![what, why].spacing(space::xs())));
+            vec![panel::inset(column![what, why].spacing(space::xs()))]
         }
-        Some(Ok(mail)) => {
-            let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|a| !a.inline).collect();
-            if !files.is_empty() {
-                let rows = files.into_iter().map(|file| attachment_row(reading.id, file)).collect();
-                body = body.push(widgets::prop_section(tr("Attachments"), rows));
-            }
-            body = body.push(match reading.html.filter(HtmlReading::shown) {
+        Some(Ok(_)) => {
+            let mut parts = vec![match reading.html.filter(HtmlReading::shown) {
                 // The HTML reaches the panel's edges (its background with it), the note keeps the inset.
                 // A mail without a background of its own starts its text in line with the title, 16
                 // from the panel's edge (`panel::inset`).
@@ -1800,13 +1918,11 @@ pub fn body<'a>(reading: &Reading<'a>) -> Element<'a, Message> {
                     .spacing(space::m())
                     .into(),
                 None => panel::inset(text_block(reading.text, text_level(reading.read))),
-            });
-            if let Some(links) = text_links(reading.text).filter(|_| !html_shown(reading)) {
-                body = body.push(links);
-            }
+            }];
+            parts.extend(text_links(reading.text).filter(|_| !html_shown(reading)));
+            parts
         }
     }
-    body.into()
 }
 
 /// The level of a mail's text: the reading level in the comfortable mail window, else `BODY`.
@@ -1934,18 +2050,33 @@ fn reader_mail<'a>(reading: &Reading<'a>, widths: ReaderWidths) -> Element<'a, M
 /// sender ([`sender_block`]), for an entry why a rule put it in its lane (issue #128), the pills
 /// ([`pill_row`] of [`pills`]) and under them the invitation's card (task E8.3b) and the task's
 /// (task E8.7b). Everything stands left-aligned, one under the other; while only the mail's id is
-/// known, just the pills. The panel of the mail window takes the same head with task E11.4.
+/// known, just the pills. The panel of the mail window takes the same head without the subject
+/// (task E11.4, [`head_with`]).
 pub fn head<'a>(
     reading: &Reading<'a>,
     entry: Option<ReaderEntry<'a>>,
     anchors: &detail::Anchors,
     room: f32,
 ) -> Element<'a, Message> {
+    head_with(reading, entry, anchors, room, true)
+}
+
+/// The [`head`], with the subject on top only with `subject`: the panel of the mail window (task
+/// E11.4) has it as its title already and leaves it out here.
+fn head_with<'a>(
+    reading: &Reading<'a>,
+    entry: Option<ReaderEntry<'a>>,
+    anchors: &detail::Anchors,
+    room: f32,
+    subject: bool,
+) -> Element<'a, Message> {
     let mut head = column![].spacing(space::l()).width(Fill);
     let summary = reading.summary();
     if let Some(summary) = summary {
-        head = head
-            .push(typo::text(typo::headline(), subject(summary)).style(theme::text).wrapping(Wrapping::WordOrGlyph));
+        if subject {
+            let line = typo::text(typo::headline(), self::subject(summary));
+            head = head.push(line.style(theme::text).wrapping(Wrapping::WordOrGlyph));
+        }
         let sender = sender_block(reading, summary, room);
         // Why a rule put the mail's entry in its lane (issue #128), quietly right under who sent it.
         head = head.push(match entry.map(|entry| entry.item).filter(|item| item.reason.is_some()) {
@@ -2096,7 +2227,7 @@ pub fn command_cells(reading: &Reading<'_>, entry: Option<&Item>) -> Vec<Command
 /// [`reply_menu`] (`AskReplyMenu`) – and "…" at the end (`AskMore`, [`more_menu`]). All cells show
 /// their words or none ([`widgets::command_words`]). Each cell that opens a menu registers its
 /// anchor in `anchors`: Reply `reply`, Later `snooze`, "…" `more`. The panel of the mail window
-/// takes the same bar with task E11.4.
+/// takes the same bar, as wide as the panel (task E11.4, [`Bars::Command`]).
 pub fn commands<'a>(
     reading: &Reading<'_>,
     entry: Option<&Item>,
@@ -2167,20 +2298,27 @@ pub fn more_menu<'a>(reading: &Reading<'_>, entry: Option<&Item>, close: bool) -
 }
 
 /// The mail's attachments as one wrapping line of chips (task E11.3, `widgets::file_chip`), fixed
-/// over the reader's foot – with task E11.4 also the panel's –: a `line` above, [`space::s()`] above
-/// and below the chips and `side` at the sides, the chips `room` wide in all. A click opens one as
-/// before ([`Message::OpenAttachment`]). `None` while the mail loads, after an error and for a mail
-/// without attachments (inline pictures are none).
+/// over the reader's foot: a `line` above, [`space::s()`] above and below the chips and `side` at
+/// the sides, the chips `room` wide in all ([`attachment_chips`]; the panel of task E11.4 has them
+/// in its footer, [`panel_foot`]). A click opens one as before ([`Message::OpenAttachment`]).
+/// `None` while the mail loads, after an error and for a mail without attachments (inline pictures
+/// are none).
 pub fn attachment_line<'a>(reading: &Reading<'_>, room: f32, side: f32) -> Option<Element<'a, Message>> {
+    let chips = attachment_chips(reading, room)?;
+    let line = container(chips).width(Fill).padding([space::s(), side]);
+    Some(column![rule::horizontal(size::HAIRLINE).style(style::rule), line].into())
+}
+
+/// The chips of the mail's attachments, wrapping on a line `room` wide, [`space::s()`] apart
+/// ([`attachment_chip`]); `None` where [`attachment_line`] has none.
+fn attachment_chips<'a>(reading: &Reading<'_>, room: f32) -> Option<Element<'a, Message>> {
     let Some(Ok(mail)) = reading.loaded else { return None };
     let files: Vec<&AttachmentInfo> = mail.attachments.iter().filter(|file| !file.inline).collect();
     if files.is_empty() {
         return None;
     }
     let chips = files.into_iter().map(|file| attachment_chip(reading.id, file, room));
-    let chips = row(chips).spacing(space::s()).wrap().vertical_spacing(space::s());
-    let line = container(chips).width(Fill).padding([space::s(), side]);
-    Some(column![rule::horizontal(size::HAIRLINE).style(style::rule), line].into())
+    Some(row(chips).spacing(space::s()).wrap().vertical_spacing(space::s()).into())
 }
 
 /// One attachment as a chip of [`attachment_line`] on a line `room` wide: its name – cut with "…"
@@ -2208,7 +2346,8 @@ fn chip_name_room(weight: &str, room: f32) -> f32 {
 /// under it, [`space::s()`] above and below and `side` at the sides; left-aligned "HTML | Text" and
 /// "Light | Dark" as sunken switches (`widgets::view_switch`) and "Copy text" as a quiet icon
 /// ([`foot_controls`]). `None` with nothing to show: while the mail loads, after an error, and for a
-/// mail without text or HTML. The panel of the mail window takes the same foot with task E11.4.
+/// mail without text or HTML. The panel of the mail window has the same controls in its footer
+/// (task E11.4, [`panel_foot`]), where the panel draws the line and the padding.
 pub fn foot<'a>(tools: ViewTools, side: f32) -> Option<Element<'a, Message>> {
     let controls = foot_controls(tools);
     if controls.is_empty() {
@@ -2882,12 +3021,64 @@ mod tests {
             "attachment_chip",
             "foot",
             "foot_controls",
+            // The mail window's panel (task E11.4).
+            "entry_panel",
+            "command_body",
+            "head_with",
+            "panel_letter",
+            "panel_foot",
+            "attachment_chips",
         ];
         for name in parts {
             assert!(!function_source(source, name).contains(concat!("button::", "primary")), "{name}");
         }
         // The check sees the panel's Reply, which stays primary in the hub (task E9.4).
         assert!(function_source(source, "panel_standards").contains(concat!("button::", "primary")));
+    }
+
+    /// Task E11.4: the mail window's panel is built from the reader's parts – command bar, the head
+    /// without the subject (the panel's title has it), the pills, the mail – and none of the split of
+    /// task E9.4, which the hub and the App Feed keep; its footer holds the attachments' chips and the
+    /// foot's switches, nothing while the mail loads.
+    #[test]
+    fn the_mail_windows_panel_takes_the_readers_parts() {
+        let source = include_str!("mail.rs");
+        let command = function_source(source, "command_body");
+        for part in ["commands(", "head_with(", "panel_letter("] {
+            assert!(command.contains(part), "{part}");
+        }
+        assert!(command.contains("room, false)"), "the head without the subject");
+        assert!(!command.contains("panel_standards") && !command.contains("header("), "none of the split");
+        let split = function_source(source, "split_body");
+        assert!(split.contains("panel_standards(") && split.contains("header("), "the hub's panel as in E9.4");
+        let foot = function_source(source, "panel_foot");
+        assert!(foot.contains("attachment_chips(") && foot.contains("foot_controls("), "the reader's foot");
+        for name in ["panel", "entry_panel"] {
+            assert!(function_source(source, name).contains("panel_foot("), "{name}: the reader's foot");
+        }
+        let width = size::panel();
+        reading_of("m:w1", MailFormat::Html, true, |reading| {
+            assert_eq!(panel_foot(reading, width).len(), 1, "the sheet's chip over Copy text, in one column");
+        });
+        reading_of("m:p2", MailFormat::Html, true, |reading| {
+            assert_eq!(panel_foot(reading, width).len(), 1, "the switches of an HTML mail");
+        });
+        reading_of("m:w1", MailFormat::Html, false, |reading| {
+            assert!(panel_foot(reading, width).is_empty(), "no footer while the mail loads");
+            assert!(foot_controls(reading.view_tools()).is_empty());
+        });
+        let item = mail_entry();
+        let entry = ReaderEntry { item: &item, hide: true, ai: true };
+        reading_of("m:w1", MailFormat::Html, true, |reading| {
+            let anchors = detail::Anchors::default();
+            for width in [width, 480.0, 0.0] {
+                let _ = entry_panel(reading, entry, tr("For me").to_owned(), &anchors, width);
+                let _ = panel(reading, None, &anchors, Bars::Command { entry: None, width });
+            }
+            // The panel's "…" leaves Close out: the ✕ stands in its head.
+            let more = more_menu(reading, Some(&item), false);
+            assert!(more.iter().all(|section| section.items.iter().all(|i| i.label != tr("Close"))));
+        });
     }
 
     #[test]
@@ -3011,8 +3202,18 @@ mod tests {
                         html,
                     };
                     let anchors = detail::Anchors::default();
-                    let _ = panel(&reading, Some(&folder), &anchors);
+                    let _ = panel(&reading, Some(&folder), &anchors, Bars::Split);
                     for entry in [None, Some(ReaderEntry { item: &entry, hide: true, ai: false })] {
+                        // The mail window's panel (task E11.4), over the medium window and filling a
+                        // narrow one.
+                        for width in [size::panel(), 480.0] {
+                            let _ = panel(&reading, Some(&folder), &anchors, Bars::Command { entry, width });
+                            let _ = body(&reading, Bars::Command { entry, width }, &anchors);
+                            if let Some(entry) = entry {
+                                let _ = entry_panel(&reading, entry, tr("For me").to_owned(), &anchors, width);
+                            }
+                        }
+                        let _ = body(&reading, Bars::Split, &anchors);
                         let _ = reader(reading, entry, anchors.clone());
                         // The reader's parts, which it lays out only once it knows its width.
                         let _ = commands(&reading, entry.map(|entry| entry.item), &anchors, 900.0);

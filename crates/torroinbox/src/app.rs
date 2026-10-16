@@ -5912,18 +5912,46 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Some(mail::ReaderEntry { item, hide: self.hidable(item), ai: self.ai_ready })
     }
 
-    /// The card of `menu` of the reader's command bar (task E11.3) for [`App::menu_mail`]: "Reply
-    /// all", or "…" with Close – as the reader shows it; `None` once the reader holds another mail.
+    /// Which bars a mail in the panel has in `class` (task E11.4, [`mail::Bars`]): the mail window's
+    /// panel – medium and narrow, the wide one reads beside the list – takes the reader's, with the
+    /// entry of the mail ([`App::reader_entry`]) and the panel's width ([`App::panel_width`]); the hub
+    /// and the App Feed keep the split of task E9.4.
+    fn panel_bars(&self, class: SizeClass) -> mail::Bars<'_> {
+        if self.launch.kind != Kind::Mail {
+            return mail::Bars::Split;
+        }
+        mail::Bars::Command { entry: self.reader_entry(), width: self.panel_width(class) }
+    }
+
+    /// How wide the panel is in `class` (`torro_gui::panel`): [`size::panel()`] beside the content and
+    /// over the medium window, the whole window in a narrow one.
+    fn panel_width(&self, class: SizeClass) -> f32 {
+        match class {
+            SizeClass::Wide | SizeClass::Medium => size::panel(),
+            SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => self.size.width,
+        }
+    }
+
+    /// The card of `menu` of the command bar (task E11.3) for [`App::menu_mail`]: "Reply all", or "…"
+    /// as [`App::mail_menu_sections`] has it; `None` once the reader or the panel holds another mail.
     fn mail_menu(&self, menu: Menu) -> Option<Element<'_, Message>> {
+        self.mail_menu_sections(menu).map(widgets::menu)
+    }
+
+    /// The entries of `menu` of the command bar for [`App::menu_mail`]: "Reply all" (`mail::reply_menu`),
+    /// or "…" (`mail::more_menu`) – with Close in the reader of the wide mail window, without it in the
+    /// panel of the medium and narrow one, whose ✕ stands in its head (task E11.4).
+    fn mail_menu_sections(&self, menu: Menu) -> Option<Vec<MenuSection<'_, Message>>> {
         let id = self.menu_mail.as_deref()?;
-        let sections = match menu {
+        Some(match menu {
             Menu::Reply => mail::reply_menu(id),
             _ => {
                 let reading = self.reading().filter(|reading| reading.id == id)?;
-                mail::more_menu(&reading, self.reader_entry().map(|entry| entry.item), true)
+                // Only the mail window has the command bar: wide its reader, else its panel.
+                let close = self.class() == SizeClass::Wide;
+                mail::more_menu(&reading, self.reader_entry().map(|entry| entry.item), close)
             }
-        };
-        Some(widgets::menu(sections))
+        })
     }
 
     /// The reader's column of the wide mail window while no mail is open (task E8.11,
@@ -6142,9 +6170,17 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
         let detail = if self.view.is_mail() {
             // A folder's message: the mail alone, no entry around it.
-            self.reading().filter(|_| self.reading).map(|reading| mail::panel(&reading, self.view.folder(), &anchors))
+            self.reading()
+                .filter(|_| self.reading)
+                .map(|reading| mail::panel(&reading, self.view.folder(), &anchors, self.panel_bars(class)))
         } else {
             self.detail.as_ref().map(|item| {
+                // The mail window's panel of a mail entry has the reader's bars (task E11.4).
+                if let (Some(reading), mail::Bars::Command { entry: Some(entry), width }) =
+                    (self.reading(), self.panel_bars(class))
+                {
+                    return mail::entry_panel(&reading, entry, self.view_label(), &anchors, width);
+                }
                 // The notifications window's panel and mail have the bell where the others have "…"
                 // (task E8.6b, issue #123).
                 let footer = detail::Footer {
@@ -6160,7 +6196,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     view: self.reading().map(|reading| reading.view_tools()),
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
-                let letter = self.reading().map(|reading| mail::body(&reading));
+                let letter = self.reading().map(|reading| mail::body(&reading, mail::Bars::Split, &anchors));
                 detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };
@@ -11083,6 +11119,63 @@ mod tests {
         load(&mut reply);
         assert_eq!((reply.menu, reply.menu_mail.as_deref()), (Some(Menu::Reply), Some("m:w1")));
         draw_everywhere(&mut reply);
+    }
+
+    /// Task E11.4: the mail window's panel – medium and narrow – takes the reader's bars, for an entry
+    /// with the entry and for a folder's message without, as wide as the panel; its "…" has no Close,
+    /// the ✕ stands in the panel's head. The hub and the App Feed keep the split of task E9.4.
+    #[test]
+    fn the_mail_windows_panel_has_the_readers_bars_and_the_hubs_its_own() {
+        let mut app = mail_window("compact", &["--open", "mail-entry"]);
+        let entry = app.detail.as_ref().expect("a mail entry in the panel").id.clone();
+        let id = app.wanted_letter().expect("its mail");
+        deliver_letter(&mut app, &id);
+        for (size, width) in [(MEDIUM, size::panel()), (NARROW, NARROW.width)] {
+            let _ = app.update(Message::Resized(size));
+            let class = app.class();
+            match app.panel_bars(class) {
+                mail::Bars::Command { entry: Some(shown), width: got } => {
+                    assert_eq!((shown.item.id.as_str(), got), (entry.as_str(), width), "{class:?}");
+                }
+                other => panic!("{class:?}: the reader's bars for the entry, not {other:?}"),
+            }
+            assert!(app.wide_reader(class, &detail::Anchors::default()).is_none(), "{class:?}: the panel");
+            let _ = app.update(Message::AskMore(id.clone()));
+            let words = app.mail_menu_sections(Menu::More).expect("the menu of \"…\"");
+            let words: Vec<String> = words.iter().flat_map(|s| s.items.iter().map(|i| i.label.to_string())).collect();
+            assert!(!words.contains(&tr("Close").to_owned()), "{class:?}: the ✕ is in the panel's head");
+            assert!(words.contains(&tr("Done").to_owned()), "{class:?}: the entry's own");
+            let _ = app.view();
+            let _ = app.update(Message::CloseMenu);
+            let _ = app.update(Message::AskReplyMenu(id.clone()));
+            assert!(app.mail_menu(Menu::Reply).is_some());
+            let _ = app.view();
+            let _ = app.update(Message::CloseMenu);
+        }
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::AskMore(id.clone()));
+        let words = app.mail_menu_sections(Menu::More).expect("the reader's \"…\"");
+        assert!(words.iter().any(|s| s.items.iter().any(|i| i.label == tr("Close"))), "the reader closes from \"…\"");
+        // A folder's message: the reader's bars without an entry.
+        let mut folder = mail_window("compact", &[]);
+        let inbox = folder_view(&folder, "f:work-inbox");
+        let _ = folder.update(Message::Show(inbox));
+        load(&mut folder);
+        let _ = folder.update(Message::SelectMail("m:w1".into()));
+        deliver_letter(&mut folder, "m:w1");
+        assert!(folder.reading().is_some() && folder.panel_open(), "the message in the panel");
+        let _ = folder.update(Message::Resized(MEDIUM));
+        assert!(matches!(folder.panel_bars(SizeClass::Medium), mail::Bars::Command { entry: None, .. }));
+        draw_everywhere(&mut folder);
+        // The hub and the App Feed: the split of task E9.4 in every layout.
+        for kind in ["hub", "notifications"] {
+            let mut other = overview_at(&["--view", kind, "--open", "mail-entry"]);
+            for size in SIZES {
+                let _ = other.update(Message::Resized(size));
+                assert!(matches!(other.panel_bars(other.class()), mail::Bars::Split), "{kind} at {size:?}");
+                let _ = other.view();
+            }
+        }
     }
 
     /// Issue #122: a folder message's "Task" in its row does what `t` does there, so its dialog opens

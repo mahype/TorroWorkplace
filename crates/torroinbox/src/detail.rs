@@ -36,10 +36,13 @@
 //! open the same dialogs, filled in by the person's AI; without an AI they are off and say so. With
 //! them "Move to …" is its icon alone, as the words would no longer fit.
 //!
-//! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, the mail standards,
-//! attachments, text) in place of its short text; the footer stays the entry's and takes a second
-//! row (task E9.4, [`Footer::view`]): "Move to …", the bell and the mail's switches "HTML | Text",
-//! "Light | Dark" and "Copy text", in the order of the reader's former Torro bar (until task E11.3).
+//! A mail entry (task E4.2) shows its whole mail (`mail::body` with `mail::Bars::Split`: headers,
+//! the mail standards, attachments, text) in place of its short text; the footer stays the entry's
+//! and takes a second row (task E9.4, [`Footer::view`]): "Move to …", the bell and the mail's
+//! switches "HTML | Text", "Light | Dark" and "Copy text", in the order of the reader's former Torro
+//! bar (until task E11.3). So in the hub and the App Feed; the mail window's panel of a mail entry
+//! is `mail::entry_panel` with the reader's bars (task E11.4), with this panel's [`path`] and
+//! [`heading`].
 //!
 //! Task with a way back (task E8.7b): an entry made into a task shows it in a section "Task" (the
 //! card of `mail::task_card` with "Open task"; a whole mail carries it over its text instead). The
@@ -173,8 +176,8 @@ pub struct Footer {
 /// The panel for `item`, reached through the view `view_name`; `now` for the times; the footer's
 /// triage buttons register `footer.anchors`.
 ///
-/// `letter` is the whole mail of a mail entry (task E4.2, `mail::body`: headers, actions,
-/// attachments, text). It stands in place of the entry's own short text and brings its own note on
+/// `letter` is the whole mail of a mail entry (task E4.2, `mail::body` with `mail::Bars::Split`:
+/// headers, actions, attachments, text). It stands in place of the entry's own short text and brings its own note on
 /// foreign text; `None` for every other entry.
 ///
 /// `text` is the entry's message as the window keeps it to select and copy (issue #119): made from
@@ -187,7 +190,7 @@ pub fn panel<'a>(
     letter: Option<Element<'a, Message>>,
     text: &'a Selectable,
 ) -> Panel<'a, Message> {
-    let path = panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name]);
+    let path = path(item, view_name);
     let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::l());
     let link = openable(item);
     if let Some(agent) = &item.agent {
@@ -239,10 +242,17 @@ pub fn panel<'a>(
     panel::panel(path, heading(item), body, Message::CloseDetail).footer(buttons(item, &footer))
 }
 
+/// The panel's path: the source's icon, the source and `view_name` ("Mail › For me"). The mail
+/// window's panel of a mail entry has the same head (task E11.4, `mail::entry_panel`).
+pub(crate) fn path<'a>(item: &Item, view_name: String) -> Element<'a, Message> {
+    panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name])
+}
+
 /// The panel's title: the entry's title; for an agent's session with a name
 /// ([`list::session_name`]) the name, and below it what the agent does ("Claude Code is waiting
-/// for you"), so the state is not lost under the name.
-fn heading<'a>(item: &Item) -> Element<'a, Message> {
+/// for you"), so the state is not lost under the name. Also the title of the mail window's panel of
+/// a mail entry (task E11.4, `mail::entry_panel`).
+pub(crate) fn heading<'a>(item: &Item) -> Element<'a, Message> {
     let Some(name) = list::session_name(item) else {
         return panel::title(list::plain(&item.title));
     };
