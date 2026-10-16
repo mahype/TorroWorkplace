@@ -126,12 +126,12 @@ pub trait MailSource: Send + Sync {
     /// `mail.delete_messages` into the account's trash, never for good.
     fn delete_mail(&self, ids: Vec<String>) -> impl Future<Output = Result<(), InboxError>> + Send;
 
-    /// `mail.delete_messages` with `permanent` (task E9.1, "Delete permanently", only after the
+    /// `mail.delete_messages` with `permanent` (task E10.1, "Delete permanently", only after the
     /// window asked): removes the messages `ids` for good – through the trash, as the core removes
     /// only what lies there ([`InboxClient::delete_mail_for_good`]). There is no undo.
     fn delete_mail_for_good(&self, ids: Vec<String>) -> impl Future<Output = Result<(), InboxError>> + Send;
 
-    /// `accounts.sync` (task E9.1, the shortcut "fetch"): the core fetches from the servers of every
+    /// `accounts.sync` (task E10.1, the shortcut "fetch"): the core fetches from the servers of every
     /// account now. The one method that is no `mail.*` request: fetching mail is the accounts'
     /// sync. The window lists anew afterwards.
     fn sync_mail(&self) -> impl Future<Output = Result<(), InboxError>> + Send;
@@ -623,7 +623,7 @@ pub enum MailAction {
     Archive,
     /// Into the account's trash (`#`).
     Delete,
-    /// Into the account's junk folder (task E9.1, the shortcut "junk").
+    /// Into the account's junk folder (task E10.1, the shortcut "junk").
     Junk,
     /// Set (`true`) or clear the flag.
     Flag(bool),
@@ -830,7 +830,7 @@ pub enum MailEdit {
     Move { ids: Vec<String>, to: MoveTarget },
     /// Into the trash (`mail.delete_messages`).
     Delete { ids: Vec<String> },
-    /// Removed for good (task E9.1, `mail.delete_messages` with `permanent`), no undo.
+    /// Removed for good (task E10.1, `mail.delete_messages` with `permanent`), no undo.
     DeleteForGood { ids: Vec<String> },
 }
 

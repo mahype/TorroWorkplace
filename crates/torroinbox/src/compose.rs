@@ -26,7 +26,7 @@
 //!   the draft's HTML ([`markup::to_html`]); the quoted history of an answer stays someone else's
 //!   text (only its quote marks count), and the core puts the signature above it.
 //! - **Keys:** `Ctrl+Enter` (on macOS `Cmd+Enter` or `Ctrl+Enter`, the shortcut "send" of
-//!   `torro_core::shortcuts`, task E9.1) sends, also from a field; `Esc` closes (asking when
+//!   `torro_core::shortcuts`, task E10.1) sends, also from a field; `Esc` closes (asking when
 //!   something is unsaved), `Tab` moves between the fields.
 //! - **Sizes** ([`torro_gui::layout`]): wide and medium show the form with a header bar, narrow
 //!   the same with a compact "Send" button; mini and strip are displays, not editors: subject,
@@ -1883,12 +1883,12 @@ impl<S: ComposeSource + 'static> Window<S> {
 }
 
 /// The keys of the shortcut "send" shown in the tooltip of "Send": "Ctrl+Enter", "Cmd+Enter" on
-/// macOS (`torro_core::shortcuts`, task E9.1).
+/// macOS (`torro_core::shortcuts`, task E10.1).
 fn send_keys() -> String {
     Preset::Torro.hint(shortcuts::Command::Send, System::current()).unwrap_or_default()
 }
 
-/// Whether `key` held with `modifiers` is the shortcut "send" on `system` (task E9.1): Ctrl + Enter,
+/// Whether `key` held with `modifiers` is the shortcut "send" on `system` (task E10.1): Ctrl + Enter,
 /// on macOS ⌘ + Enter or Ctrl + Enter.
 fn is_send(system: System, key: &Key, physical_key: keyboard::key::Physical, modifiers: keyboard::Modifiers) -> bool {
     keys::shortcut_on(system, key, physical_key, modifiers) == Some(shortcuts::Command::Send)
@@ -2999,7 +2999,7 @@ mod tests {
         assert!(map(press(Key::Character("a".into()), none)).is_none());
     }
 
-    /// Task E9.1: on macOS Ctrl + Enter sends as ⌘ + Enter does; elsewhere only Ctrl + Enter.
+    /// Task E10.1: on macOS Ctrl + Enter sends as ⌘ + Enter does; elsewhere only Ctrl + Enter.
     #[test]
     fn send_is_ctrl_enter_and_on_a_mac_also_cmd_enter() {
         let enter = Key::Named(Named::Enter);

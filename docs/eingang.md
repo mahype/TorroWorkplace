@@ -550,7 +550,7 @@ ganze Unterhaltung, so wie sie im Eintrag abgelegt ist.
 - **Tastenkürzel im Mail-Fenster** (2026-10-15): Vorlage wählen (Torro, Apple Mail, Outlook, Thunderbird, Gmail) und
   frei belegen, in den Einstellungen des Mail-Fensters. Die Torro-Belegung kommt zuerst, Vorlagen und eigene Tasten
   warten auf die Einstellungen im Mail-Fenster (S.20)
-  ([Aufgaben E9](tasks/eingang.md#e9-tastenkürzel-im-mail-fenster-vorgemerkt-2026-10-15)).
+  ([Aufgaben E10](tasks/eingang.md#e10-tastenkürzel-im-mail-fenster-vorgemerkt-2026-10-15)).
 - **Slack und WhatsApp** als Quellen: Slack mit E7, WhatsApp über das Mitlesen von Desktop-Benachrichtigungen (unter
   Linux, unter macOS gibt es keinen offiziellen Weg) oder Beeper.
 

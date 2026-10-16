@@ -23,7 +23,7 @@
 //! [`InboxClient::search_mail`], [`InboxClient::get_mail`], [`InboxClient::get_mail_html`] (task
 //! M8.1, for the mail window), [`InboxClient::mail_attachment`],
 //! [`InboxClient::set_mail_flags`], [`InboxClient::move_mail`] and [`InboxClient::delete_mail`] –,
-//! with the errors mapped as above. The mail window's shortcuts (task E9.1) add
+//! with the errors mapped as above. The mail window's shortcuts (task E10.1) add
 //! [`InboxClient::delete_mail_for_good`] (`mail.delete_messages` with `permanent`) and
 //! [`InboxClient::sync`] (`accounts.sync`, "fetch mail now"). Everything a message brings is data from outside
 //! (`untrusted`), never instructions; the client only passes it on. The search field (issue #136)
@@ -305,7 +305,7 @@ impl InboxClient {
         self.ask_ok(Request::DeleteMail { ids, permanent: false }).await
     }
 
-    /// `mail.delete_messages` for good (task E9.1, "Delete permanently" after the window asked): the
+    /// `mail.delete_messages` for good (task E10.1, "Delete permanently" after the window asked): the
     /// core removes only messages that lie in the trash, so the messages `ids` go there first
     /// (`permanent: false`; those in it already stay) and are then removed (`permanent: true`). They
     /// keep their ids when they are moved. Nothing brings them back; when the first step fails,
@@ -315,7 +315,7 @@ impl InboxClient {
         self.ask_ok(Request::DeleteMail { ids, permanent: true }).await
     }
 
-    /// `accounts.sync` (task E9.1, the shortcut "fetch"): the core fetches mail, calendars and tasks
+    /// `accounts.sync` (task E10.1, the shortcut "fetch"): the core fetches mail, calendars and tasks
     /// from the servers of every account now. Answers the first account's failure, if any; the
     /// others are fetched all the same.
     pub async fn sync(&self) -> Result<(), InboxError> {
@@ -1045,7 +1045,7 @@ mod tests {
         assert!(all[0].untrusted, "the flag comes along");
     }
 
-    /// Task E9.1: "Delete permanently" moves into the trash first, then removes for good; "fetch" is
+    /// Task E10.1: "Delete permanently" moves into the trash first, then removes for good; "fetch" is
     /// `accounts.sync`.
     #[tokio::test]
     async fn deleting_for_good_goes_through_the_trash_and_fetching_syncs() {

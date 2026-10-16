@@ -928,7 +928,7 @@ pub enum Sent {
     MuteItem(String, MuteScope, Option<DateTime<Utc>>, MuteEffect),
     /// The undo of muting: the rule removed, if any, the entries opened again and moved back.
     Unmute(Option<String>, Vec<String>, Vec<String>),
-    /// `accounts.sync` (task E9.1, the shortcut "fetch").
+    /// `accounts.sync` (task E10.1, the shortcut "fetch").
     Fetch,
 }
 
@@ -1077,10 +1077,10 @@ pub enum Menu {
     /// `inbox.list_mute_options`, "For" and "What happens"; the bell and `m` of the notifications
     /// window ([`App::ask_mute_menu`]).
     Mute,
-    /// "Move to folder" for [`App::mail_subject`] (task E9.1, the shortcut "move_to_folder"): the
+    /// "Move to folder" for [`App::mail_subject`] (task E10.1, the shortcut "move_to_folder"): the
     /// folders of its account but the one it lies in, picked by click or digit ([`App::move_choices`]).
     Move,
-    /// The question "Delete permanently?" for [`App::mail_subject`] (task E9.1): a dialog over the
+    /// The question "Delete permanently?" for [`App::mail_subject`] (task E10.1): a dialog over the
     /// window ([`App::question_layer`]), `Enter` or "Delete" removes the message for good.
     DeleteForGood,
 }
@@ -1200,9 +1200,9 @@ pub enum Open {
     /// That entry in the panel without an AI: the AI buttons are off (issue #120).
     NoAi,
     /// The first account's inbox with its newest message in the reader and "Move to folder" open for
-    /// it (task E9.1).
+    /// it (task E10.1).
     MoveMail,
-    /// That message with the question "Delete permanently?" over the window (task E9.1).
+    /// That message with the question "Delete permanently?" over the window (task E10.1).
     DeleteMail,
 }
 
@@ -1773,7 +1773,7 @@ pub struct App<S> {
     column_scroll: [Option<(f32, f32)>; 2],
     /// The entry the open snooze menu, picker or lane question is for, as it was when opened.
     subject: Option<Item>,
-    /// The message "Move to folder" or the question "Delete permanently?" is for (task E9.1).
+    /// The message "Move to folder" or the question "Delete permanently?" is for (task E10.1).
     mail_subject: Option<String>,
     /// The day and time in the picker of "Pick…".
     pick: Pick,
@@ -1978,7 +1978,7 @@ pub enum Message {
     HintTick(Instant),
     /// A key from [`keys::listen`]; what it does depends on what is open ([`keys::command`]).
     Key(Key),
-    /// A shortcut with Ctrl or ⌘ from [`keys::shortcut`] (task E9.1); it acts once the window knows
+    /// A shortcut with Ctrl or ⌘ from [`keys::shortcut`] (task E10.1); it acts once the window knows
     /// that no text field holds the keyboard ([`App::shortcut`]).
     Shortcut(shortcuts::Command),
     /// That shortcut, and whether the search field held the keyboard when it came.
@@ -2021,11 +2021,11 @@ pub enum Message {
     Unfolded(Vec<String>),
     /// From the hide menu: move the mail of the entry with this id to its account's junk folder.
     Junk(String),
-    /// A folder of "Move to folder" (task E9.1): move the message (first id) to the folder (second).
+    /// A folder of "Move to folder" (task E10.1): move the message (first id) to the folder (second).
     MoveMail(String, String),
-    /// "Delete" in the question "Delete permanently?" (task E9.1): remove its message for good.
+    /// "Delete" in the question "Delete permanently?" (task E10.1): remove its message for good.
     DeleteForGood,
-    /// The answer to fetching mail now (task E9.1, `accounts.sync`).
+    /// The answer to fetching mail now (task E10.1, `accounts.sync`).
     Fetched(Result<(), String>),
     /// "Pick…" in the snooze menu: the date and time picker.
     ShowPicker,
@@ -2616,7 +2616,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
             subscriptions.push(iced::event::listen_with(keys::listen));
-            // The shortcuts with Ctrl or ⌘ (task E9.1; ⌘F / Ctrl + F searches, issue #136), also when
+            // The shortcuts with Ctrl or ⌘ (task E10.1; ⌘F / Ctrl + F searches, issue #136), also when
             // the search field or the window's guard took them; they all act on mail.
             if !self.folders.is_empty() {
                 subscriptions.push(iced::event::listen_with(keys::shortcut));
@@ -3716,7 +3716,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         }
     }
 
-    /// A shortcut with Ctrl or ⌘ ([`keys::shortcut`], task E9.1). It acts only where the keys of the
+    /// A shortcut with Ctrl or ⌘ ([`keys::shortcut`], task E10.1). It acts only where the keys of the
     /// list act (nothing open in front of it), and – but searching – only while no text field holds
     /// the keyboard: the field keeps its own keys there (copy, paste, select all).
     ///
@@ -3785,7 +3785,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Some((account, inbox.map(|folder| folder.id.clone())))
     }
 
-    /// Opens "Move to folder" for the message `id` (task E9.1, as Outlook moves): the folders of its
+    /// Opens "Move to folder" for the message `id` (task E10.1, as Outlook moves): the folders of its
     /// account but its own, as a menu of choices with digits ([`App::move_choices`]); a note when
     /// there is no other folder.
     fn ask_move(&mut self, id: String) -> Task<Message> {
@@ -3820,7 +3820,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             .collect()
     }
 
-    /// Moves the message `id` to `folder` (task E9.1, "Move to folder", `mail.move_messages`): off the
+    /// Moves the message `id` to `folder` (task E10.1, "Move to folder", `mail.move_messages`): off the
     /// list at once, with a toast whose undo moves it back, as archiving does.
     fn move_mail(&mut self, id: String, folder: String) -> Task<Message> {
         self.close_menus();
@@ -3835,7 +3835,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.mail_edit(Some(MailEdit::Move { ids: vec![id], to: MoveTarget::Folder(folder) }), Some(hint))
     }
 
-    /// Asks "Delete permanently?" for the message `id` (task E9.1) in a dialog over the window,
+    /// Asks "Delete permanently?" for the message `id` (task E10.1) in a dialog over the window,
     /// because nothing brings the message back. The question belongs to the command, not to its
     /// keys: every way to delete for good comes here.
     fn ask_delete_for_good(&mut self, id: String) -> Task<Message> {
@@ -3856,7 +3856,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         self.mail_edit(Some(MailEdit::DeleteForGood { ids: vec![id] }), Some(hint))
     }
 
-    /// Fetches mail from the servers now (task E9.1, the shortcut "fetch", `accounts.sync`) and lists
+    /// Fetches mail from the servers now (task E10.1, the shortcut "fetch", `accounts.sync`) and lists
     /// anew once it is through; nothing without a mail account.
     fn fetch_mail(&mut self) -> Task<Message> {
         if self.folders.is_empty() {
@@ -4409,7 +4409,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Command::ReplyAll => self.key_mail(MailAction::ReplyAll),
             Command::Forward => self.key_mail(MailAction::Forward),
             Command::Delete => self.key_mail(MailAction::Delete),
-            // The shortcuts of task E9.1 that have no single key.
+            // The shortcuts of task E10.1 that have no single key.
             Command::DeleteForGood => self.mail_target().map_or_else(Task::none, |id| self.ask_delete_for_good(id)),
             Command::Archive => self.key_mail(MailAction::Archive),
             Command::Junk => self.key_mail(MailAction::Junk),
@@ -5790,7 +5790,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         Cover::dialog(question).or(Cover::panel(class, self.panel_open())).or(Cover::drawer(class, self.drawer))
     }
 
-    /// The question "Delete permanently?" (task E9.1) as a dialog over the window – dimmed, "Cancel"
+    /// The question "Delete permanently?" (task E10.1) as a dialog over the window – dimmed, "Cancel"
     /// and "Delete" (danger), a click beside it cancels, as the other questions of the suite do;
     /// empty while it is not asked.
     fn question_layer(&self) -> Element<'_, Message> {
@@ -5904,7 +5904,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Message::CloseMenu,
             )),
             Some(Menu::Mute) => Some(widgets::floating(&hide_at, below, self.mute_menu(), Message::CloseMenu)),
-            // At the bell, beside Delete and Flag in the reader's tools, else at the cursor's row.
+            // At the bell (in the reader's Torro bar, task E9.4; above it when there is no room
+            // below), else at the cursor's row.
             Some(Menu::Move) => {
                 Some(widgets::floating(&hide_at, below, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
             }
@@ -9570,7 +9571,7 @@ mod tests {
         assert!(message_ids(&app).contains(&"m:w1"), "back in the inbox, with the same id");
     }
 
-    // Shortcuts (task E9.1).
+    // Shortcuts (task E10.1).
 
     /// A shortcut as it arrives once the window knows whether the search field held the keyboard.
     fn shortcut(app: &mut App<DemoSource>, command: shortcuts::Command, typing: bool) -> Task<Message> {

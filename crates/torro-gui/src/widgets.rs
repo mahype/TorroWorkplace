@@ -1779,7 +1779,7 @@ pub fn undo_hint() -> &'static str {
     if cfg!(target_os = "macos") { "Cmd Z" } else { "Ctrl Z" }
 }
 
-/// Whether a key press is the suite's undo key: Ctrl + Z, on macOS ⌘ + Z or Ctrl + Z (task E9.1:
+/// Whether a key press is the suite's undo key: Ctrl + Z, on macOS ⌘ + Z or Ctrl + Z (task E10.1:
 /// both count the same there, as `Mod` does in `torro_core::shortcuts`), without Shift or Alt
 /// (Ctrl + Shift + Z is redo elsewhere), on any layout: the key that types Z (a German keyboard's Z
 /// sits where the US one has Y), on a non-Latin layout the key in Z's place (`to_latin`).
@@ -1801,7 +1801,7 @@ fn is_undo_key_on(
         && key.to_latin(physical_key).map(|c| c.to_ascii_lowercase()) == Some('z')
 }
 
-/// The modifiers of a key press as `torro_core::shortcuts` reads them (task E9.1): the logo key is
+/// The modifiers of a key press as `torro_core::shortcuts` reads them (task E10.1): the logo key is
 /// `cmd`, ⌘ on macOS.
 pub fn held(modifiers: keyboard::Modifiers) -> Held {
     Held { ctrl: modifiers.control(), cmd: modifiers.logo(), alt: modifiers.alt(), shift: modifiers.shift() }
@@ -3840,7 +3840,7 @@ mod tests {
         assert_eq!(TOAST_FOR, Duration::from_secs(5));
     }
 
-    /// Task E9.1: on macOS Ctrl + Z undoes as ⌘ + Z does; elsewhere only Ctrl + Z.
+    /// Task E10.1: on macOS Ctrl + Z undoes as ⌘ + Z does; elsewhere only Ctrl + Z.
     #[test]
     fn the_undo_key_is_cmd_or_ctrl_z_on_a_mac() {
         use keyboard::key::Code;

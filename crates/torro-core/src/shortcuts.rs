@@ -1,12 +1,12 @@
-//! The keyboard shortcuts of the mail window (task E9.1 in `docs/tasks/eingang.md`, section E9):
+//! The keyboard shortcuts of the mail window (task E10.1 in `docs/tasks/eingang.md`, section E10):
 //! which [`Command`]s there are, how a key combination is written ([`Shortcut`]) and the preset
 //! "Torro" ([`Preset::Torro`]) that binds them.
 //!
 //! Without Iced, so the core can check the same table when a person binds keys of their own (task
-//! E9.2). The window turns a key press into [`Held`] and a [`Key`] and asks
+//! E10.2). The window turns a key press into [`Held`] and a [`Key`] and asks
 //! [`Preset::command`]; hints next to buttons come from [`Preset::hint`].
 //!
-//! **Notation** (what E9.2 stores and agents send): parts joined by `+`, modifiers first, the key
+//! **Notation** (what E10.2 stores and agents send): parts joined by `+`, modifiers first, the key
 //! last – `"Mod+Shift+A"`, `"Ctrl+Cmd+A"`, `"Shift+Delete"`. `Mod` is the command key of the
 //! system: Ctrl on Windows and Linux, ⌘ *or* Ctrl on macOS (both count the same there, so a hand
 //! used to either works). `Ctrl`, `Cmd` (⌘, the logo key elsewhere), `Alt` (⌥) and `Shift` mean
@@ -37,7 +37,7 @@ impl System {
 }
 
 /// What a shortcut of the mail window does. The names ([`Command::name`]) are the `command` of
-/// task E9.2's settings and never change.
+/// task E10.2's settings and never change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Command {
     /// Opens the compose window for a new message (`new_mail`).
@@ -71,7 +71,7 @@ pub enum Command {
 }
 
 impl Command {
-    /// Every command, in the order of the table in `docs/tasks/eingang.md` (E9).
+    /// Every command, in the order of the table in `docs/tasks/eingang.md` (E10).
     pub const ALL: [Command; 14] = [
         Command::NewMail,
         Command::Reply,
@@ -281,7 +281,7 @@ impl fmt::Display for Shortcut {
 }
 
 /// Why a text is no [`Shortcut`]. The messages are English: they are meant for the API (task
-/// E9.2), whose messages agents read.
+/// E10.2), whose messages agents read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// Nothing, or no key after the modifiers (`""`, `"Mod+"`, `"Shift"`).
@@ -348,7 +348,7 @@ impl FromStr for Shortcut {
     }
 }
 
-/// A set of bindings to start from. Task E9.2 adds Apple Mail, Outlook, Thunderbird and Gmail and
+/// A set of bindings to start from. Task E10.2 adds Apple Mail, Outlook, Thunderbird and Gmail and
 /// lets a person bind keys over the chosen one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Preset {
@@ -431,7 +431,7 @@ mod tests {
         Key::Char(c)
     }
 
-    /// The table of E9 key by key: what the command keys of each system run. On macOS ⌘ and Ctrl
+    /// The table of E10 key by key: what the command keys of each system run. On macOS ⌘ and Ctrl
     /// count the same for every `Mod` shortcut.
     #[test]
     fn every_shortcut_of_the_torro_preset_on_both_systems() {

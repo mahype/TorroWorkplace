@@ -3677,7 +3677,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{n} minutes", "{n} Minuten"),
     ("{what}, at \"{place}\"", "{what}, Ort „{place}“"),
     ("{what}, with the note \"{note}\"", "{what}, mit der Notiz „{note}“"),
-    // Mail window: keyboard shortcuts (E9.1)
+    // Mail window: keyboard shortcuts (E10.1)
     ("Couldn't fetch mail.", "Mails konnten nicht abgerufen werden."),
     ("Delete permanently?", "Endgültig löschen?"),
     ("Deleted permanently", "Endgültig gelöscht"),

@@ -37,7 +37,7 @@
 //! `c` makes an event of the entry (task E8.5b, "Event" in To sort and the panel): its dialog takes
 //! the keys as the one of "Make task" does ([`Focus::Task`]), `Enter` creates the event.
 //!
-//! **Shortcuts** (task E9.1, section E9 of `docs/tasks/eingang.md`) come from the table in
+//! **Shortcuts** (task E10.1, section E10 of `docs/tasks/eingang.md`) come from the table in
 //! `torro_core::shortcuts` (the preset "Torro"), on top of the single keys, which stay as they are:
 //!
 //! - With Ctrl or ⌘ held, [`shortcut`] reads the table – Ctrl + R reply, Ctrl + Shift + A archive,
@@ -103,7 +103,7 @@ pub enum Key {
     /// Delete or Backspace (the key Mac keyboards call "delete", issue #118). A text field that has
     /// the focus takes it before the list hears it.
     Delete,
-    /// Shift + Delete, on macOS also Shift + Backspace (task E9.1): delete for good, after a
+    /// Shift + Delete, on macOS also Shift + Backspace (task E10.1): delete for good, after a
     /// question. A text field takes it first.
     DeleteForGood,
     /// `/`.
@@ -135,7 +135,7 @@ pub enum Focus {
     Task,
     /// The navigation menu, the app switcher or the drawer is open; only `[` works.
     Elsewhere,
-    /// A question waits for its answer (task E9.1: "Delete permanently?"): `Enter` confirms, Escape
+    /// A question waits for its answer (task E10.1: "Delete permanently?"): `Enter` confirms, Escape
     /// (the app's) cancels, nothing of the list.
     Question,
 }
@@ -179,22 +179,22 @@ pub enum Command {
     Forward,
     /// Move the mail under the cursor to the trash.
     Delete,
-    /// Ask whether to remove the mail under the cursor for good (task E9.1), then do it.
+    /// Ask whether to remove the mail under the cursor for good (task E10.1), then do it.
     DeleteForGood,
     /// Move the mail under the cursor to its account's archive – in every view, also at an entry
-    /// (task E9.1; `e` archives only in the views of mail, at an entry it is Done).
+    /// (task E10.1; `e` archives only in the views of mail, at an entry it is Done).
     Archive,
-    /// Mark the mail under the cursor read when it is unread, else unread (task E9.1).
+    /// Mark the mail under the cursor read when it is unread, else unread (task E10.1).
     ToggleRead,
-    /// Flag the mail under the cursor, or take its flag away (task E9.1).
+    /// Flag the mail under the cursor, or take its flag away (task E10.1).
     Flag,
-    /// Move the mail under the cursor to its account's junk folder (task E9.1).
+    /// Move the mail under the cursor to its account's junk folder (task E10.1).
     Junk,
-    /// Open the choice of folders to move the mail under the cursor to (task E9.1).
+    /// Open the choice of folders to move the mail under the cursor to (task E10.1).
     MoveToFolder,
-    /// Open the compose window for a new message (task E9.1, as "New" does).
+    /// Open the compose window for a new message (task E10.1, as "New" does).
     NewMail,
-    /// Fetch mail from the servers now (task E9.1, `accounts.sync`), then list anew.
+    /// Fetch mail from the servers now (task E10.1, `accounts.sync`), then list anew.
     Fetch,
     /// Put the keyboard into the search field over the list (issue #136).
     Search,
@@ -307,7 +307,7 @@ pub fn key_of(key: &Name, modifiers: keyboard::Modifiers) -> Option<Key> {
 }
 
 /// The [`Key`] for `key` held with `modifiers` on `system`. Delete and Backspace are what the
-/// shortcut table says for them there (task E9.1): plain [`Key::Delete`], with Shift
+/// shortcut table says for them there (task E10.1): plain [`Key::Delete`], with Shift
 /// [`Key::DeleteForGood`] where the table has it, else nothing.
 pub fn key_on(key: &Name, modifiers: keyboard::Modifiers, system: System) -> Option<Key> {
     if shell::is_sidebar_key(key, modifiers) {
@@ -549,7 +549,7 @@ mod tests {
         assert_eq!(command(Focus::Elsewhere, Key::Sidebar), Some(Command::Sidebar), "[ still closes the drawer");
     }
 
-    /// The shortcuts of the preset "Torro" (task E9.1) for both systems: Ctrl on Windows and Linux,
+    /// The shortcuts of the preset "Torro" (task E10.1) for both systems: Ctrl on Windows and Linux,
     /// ⌘ and Ctrl alike on macOS; each runs what its single key or button runs in the window.
     #[test]
     fn every_shortcut_runs_its_command_on_both_systems() {
