@@ -320,3 +320,16 @@ fn a_notification_says_how_soon() {
     assert_eq!(late, torro_core::i18n::trf("{title} · started {n} min ago", &[("title", &"Event sync"), ("n", &3)]));
     assert!(crate::inbox_notify::asks_elsewhere(torro_inbox::Kind::Reminder), "no second popup from the inbox");
 }
+
+#[test]
+fn a_full_screen_reminder_gets_no_notification_besides() {
+    let mut events = [event("call", WORK, at(10, 0), 30), event("quiet", HOME, at(10, 0), 30)];
+    events[0].alarms = vec![before(1, Some(AlarmStyle::FullScreen))];
+    let due = plan(&events, &settings(), &Ledger::default(), at(9, 59));
+    let (notify, full) = route(&due);
+    assert!(full, "the window is wanted");
+    assert_eq!(notify.iter().map(|r| r.event.uid.as_str()).collect::<Vec<_>>(), ["quiet"]);
+    let quiet: Vec<Reminder> = due.iter().filter(|r| r.event.uid == "quiet").cloned().collect();
+    let (notify, full) = route(&quiet);
+    assert!(!full && notify.len() == 1);
+}

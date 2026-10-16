@@ -114,6 +114,12 @@ const SELECTED_BAR: f32 = 2.0;
 /// Width of the label column of a [`prop_line`] ("Priority", "Due"): the value starts at the same
 /// x in every row of the properties column.
 const PROP_LABEL_WIDTH: f32 = 88.0;
+
+/// How wide the label of a property row is ([`prop_line`]), for views that line up their own rows
+/// with property rows (the facts of the reminder window, task ER2.1).
+pub fn prop_label_width() -> f32 {
+    PROP_LABEL_WIDTH
+}
 /// Top and bottom padding of a [`prop_line`]: with the 20-px line of `BODY` that makes the 32-px
 /// [`size::control()`]; a value of several lines (wrapping label chips) makes the row taller.
 const PROP_PADDING_Y: f32 = 6.0;
@@ -306,6 +312,36 @@ pub fn text_button<'a, M: Clone + 'a>(
     button(container(content).center_y(Fill))
         .height(size::control_sm())
         .padding(style::button_padding())
+        .style(style)
+        .on_press_maybe(on_press)
+        .into()
+}
+
+/// A large button of a reminder over the whole screen (task ER2.1): [`size::control_xl()`] high,
+/// label in `typo::body_strong()`, optional icon (16) in front and the key that presses it as a
+/// [`kbd`] behind ("Enter", "S", "Esc"). `style` as for [`text_button`]; `None` for `on_press`
+/// shows it disabled.
+pub fn big_button<'a, M: Clone + 'a>(
+    icon: Option<Icon>,
+    label: impl IntoFragment<'a>,
+    key: Option<&'a str>,
+    style: ButtonStyle,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
+    if let Some(which) = icon {
+        content = content.push(button_icon(which, icon::SIZE, style));
+    }
+    content = content.push(typo::text(typo::body_strong(), label).wrapping(Wrapping::None));
+    if let Some(key) = key {
+        // In the button's own text colour: `text_3` would be too faint on the primary's red.
+        let hint = typo::text(typo::caption(), key)
+            .style(move |t| iced::widget::text::Style { color: Some(style(t, button::Status::Active).text_color) });
+        content = content.push(container(hint).padding(style::KBD_PADDING).style(style::container::kbd));
+    }
+    button(container(content).center_y(Fill))
+        .height(size::control_xl())
+        .padding([0.0, space::l()])
         .style(style)
         .on_press_maybe(on_press)
         .into()

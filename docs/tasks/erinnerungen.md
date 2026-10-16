@@ -152,7 +152,7 @@ ER3.1 (braucht ER1.4)       ER4 später
 ## ER2 Oberflächen
 
 ### ER2.1 Vollbild-Fenster
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** ER1.3, ER1.5 · **Dateien:** `crates/torrocalendar/src/{main,app}.rs`,
   `crates/torrocalendar/src/reminder.rs` (neu), `crates/torroworkplace/src/{reminders,apps}.rs` (starten)
 - `torrocalendar --reminders` (Fensterklasse `torro-reminder`), vom Kern gestartet; liest
@@ -167,6 +167,15 @@ ER3.1 (braucht ER1.4)       ER4 später
   „Preview · sent by {client}“, „Open in calendar“, „Open in Maps“.
 - **API/MCP:** nur Requests aus ER1.2.
 - **Abnahme:** Sichtprüfung 1280×800, 1920×1080, 3840×1080, hell und dunkel; Tests für Tasten und Countdown.
+- **Umgesetzt (2026-10-16):** `crates/torrocalendar/src/reminder.rs` (Tests in `reminder/tests.rs`), Start in
+  `main.rs`; Bausteine `widgets::big_button` und `style::container::reminder_screen` in `torro-gui`. Der Kern
+  startet das Fenster für Erinnerungen im Stil „full screen“ (`reminders::Desktop`, einmal, solange es läuft) und
+  zeigt dann keine Benachrichtigung; startet es nicht, kommen Benachrichtigungen. Demo:
+  `--demo --open reminder|reminder-started|reminder-many|reminder-notes|reminder-light|reminder-preview|
+  reminder-onsite|reminder-snooze` mit `--size 1920x1080`. Sichtprüfung auf macOS bei 1280×720, 1440×900,
+  1920×1080 und 3840×1080, hell und dunkel. Teilnehmer und Organisator fehlen, bis K.26 sie liest; `Tab` geht
+  durch die Knöpfe noch nicht (Iced 0.14 kennt keinen Fokus für Knöpfe). Auf macOS deckt das Fenster den Bildschirm
+  bis ER2.2 nur maximiert, ohne die Menüleiste.
 
 ### ER2.2 Ein Fenster je Bildschirm
 - [ ] erledigt

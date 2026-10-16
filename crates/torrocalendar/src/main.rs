@@ -16,6 +16,7 @@
 
 mod app;
 mod editor;
+mod reminder;
 mod views;
 
 use std::path::{Path, PathBuf};
@@ -34,6 +35,16 @@ fn main() -> ExitCode {
     if args.iter().any(|arg| arg == "--version" || arg == "-V") {
         println!("{} {}", APP.binary, env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
+    }
+    // The reminder over the whole screen (task ER2.1): a window of its own, started by the core.
+    if reminder::Launch::wanted(&args) {
+        return match reminder::run(&args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                report_start_error(&err);
+                ExitCode::from(64)
+            }
+        };
     }
     // Refuse bad parameters before anything starts (the core, a window).
     let launch = match app::Launch::parse(&args) {

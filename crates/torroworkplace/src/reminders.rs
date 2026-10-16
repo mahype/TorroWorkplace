@@ -699,18 +699,51 @@ pub trait Sink: Send + Sync {
     fn fire(&self, due: &[Reminder], paused: bool, settings: &Settings);
 }
 
-/// The desktop's sink (task ER1.4): a reminder in the style "notification" becomes a notification
-/// of the system with Join (when there is a call), In 5 min and Dismiss, sent back to `core` as the
-/// suite itself. Quiet during busy events holds nothing back: a reminder is what the person
-/// waits for during a meeting.
+/// The desktop's sink (tasks ER1.4, ER2.1): a reminder in the style "notification" becomes a
+/// notification of the system with Join (when there is a call), In 5 min and Dismiss, sent back to
+/// `core` as the suite itself; one in the style "full screen" starts the reminder window
+/// (`torrocalendar --reminders`), once while it runs, and gets no notification besides. Should the
+/// window not start, its reminders come as notifications. Quiet during busy events holds nothing
+/// back: a reminder is what the person waits for during a meeting.
 pub struct Desktop {
     core: std::sync::Weak<crate::core::Core>,
+    /// The reminder window while it runs.
+    window: Mutex<Option<std::process::Child>>,
 }
 
 impl Desktop {
     pub fn new(core: &Arc<crate::core::Core>) -> Desktop {
-        Desktop { core: Arc::downgrade(core) }
+        Desktop { core: Arc::downgrade(core), window: Mutex::new(None) }
     }
+
+    /// Starts the reminder window unless it runs; `false` when it cannot be started.
+    fn show_window(&self) -> bool {
+        let mut window = lock(&self.window);
+        if let Some(child) = window.as_mut()
+            && matches!(child.try_wait(), Ok(None))
+        {
+            return true;
+        }
+        let program = crate::core::sibling(AppId::CALENDAR.binary);
+        match std::process::Command::new(&program).arg("--reminders").spawn() {
+            Ok(child) => {
+                *window = Some(child);
+                true
+            }
+            Err(err) => {
+                eprintln!("torroworkplace: cannot start the reminder window {}: {err}", program.display());
+                *window = None;
+                false
+            }
+        }
+    }
+}
+
+/// Which of `due` show as notifications, and whether the full screen is wanted for the others.
+pub fn route(due: &[Reminder]) -> (Vec<&Reminder>, bool) {
+    let (full, notify): (Vec<&Reminder>, Vec<&Reminder>) =
+        due.iter().partition(|reminder| reminder.style == AlarmStyle::FullScreen);
+    (notify, !full.is_empty())
 }
 
 impl Sink for Desktop {
@@ -719,7 +752,11 @@ impl Sink for Desktop {
             return;
         }
         let sound = settings.sound == torro_core::settings::ReminderSound::System;
-        for reminder in due.iter().filter(|reminder| shows_as_notification(reminder)) {
+        let (mut notify, full) = route(due);
+        if full && !self.show_window() {
+            notify = due.iter().collect();
+        }
+        for reminder in notify {
             let core = self.core.clone();
             let (id, join) = (reminder.id.clone(), reminder.join.clone());
             crate::inbox_notify::show_reminder(
@@ -732,12 +769,6 @@ impl Sink for Desktop {
             );
         }
     }
-}
-
-/// The reminder shows as a notification. Until the full screen exists (task ER2.1), a full-screen
-/// reminder does too.
-fn shows_as_notification(reminder: &Reminder) -> bool {
-    matches!(reminder.style, AlarmStyle::Notification | AlarmStyle::FullScreen)
 }
 
 /// What a button of a reminder's notification does: Join opens the call, In 5 min and Dismiss send
