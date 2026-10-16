@@ -96,4 +96,17 @@ Befunde:
 - Neuladen im Mail-Fenster (Debug, drei Timer-Runden): Laden 44–84 ms im Hintergrund, kein `update` oder
   `view` über 16 ms beim Neuladen. Drei langsame `update` (44–104 ms) kamen ohne Bezug zum Laden.
 
+**Debug, Abhängigkeiten optimiert (TP.2, `[profile.dev.package."*"] opt-level = 2`), warm:**
+
+| App | erstes Bild | erste Daten | Laden |
+|---|---|---|---|
+| Mail-Fenster | 95 | 157 | 88 |
+| Kalender | 84 | 107 | 1 |
+| Aufgaben | 95 | 119 | 1 |
+| Assistent | 92 | 142 | – |
+| Steuerzentrale | 108 | 768 | 735 |
+
+Von außen gemessen steht das Mail-Fenster samt Liste jetzt nach ~0,18 s auf dem Schirm (vorher ~0,8 s). Ein
+voller Debug-Build dauert einmal länger (hier knapp 2 Minuten), danach baut Cargo nur den eigenen Code neu.
+
 Nachher: trägt TP.4 ein.

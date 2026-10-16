@@ -48,7 +48,7 @@ TP.1 (Zeitmarken, Messskript, Messung vorher) ─┬─ TP.2 (Dev-Profil)  ─�
   „vorher“ für alle fünf Apps.
 
 ### TP.2 Dev-Profil: Abhängigkeiten optimiert bauen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Haiku · **Braucht:** TP.1 · **Dateien:** `Cargo.toml`, `docs/tempo.md`
 - In der Wurzel-`Cargo.toml` ein Abschnitt `[profile.dev.package."*"]` mit `opt-level = 2`, mit Kommentar
   warum (Iced, wgpu, Blitz, SQLite im Debug-Build vielfach langsamer). Der eigene Code des Workspaces bleibt

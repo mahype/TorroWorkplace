@@ -162,3 +162,9 @@ todo = "deny"
 inherits = "release"
 lto = "thin"
 strip = "debuginfo"
+
+# Debug builds with the dependencies optimized (issue #206, docs/tempo.md): Iced, wgpu, Blitz and
+# SQLite draw and answer many times slower without it, and the suite runs from target/debug every
+# day. The workspace's own crates stay unoptimized, so they keep full debugging.
+[profile.dev.package."*"]
+opt-level = 2
