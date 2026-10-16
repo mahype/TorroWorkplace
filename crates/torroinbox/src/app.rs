@@ -1250,7 +1250,7 @@ pub enum Open {
 }
 
 impl Open {
-    const ALL: [(&'static str, Open); 44] = [
+    const ALL: [(&'static str, Open); 46] = [
         ("detail", Open::Detail),
         ("approval", Open::Approval),
         ("info", Open::Info),
