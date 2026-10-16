@@ -2504,12 +2504,12 @@ keine Taste dafür oder seine kollidiert, Löschen und endgültig Löschen sind 
 | Markieren | ⇧⌘L, wie Torro | Strg+⇧+L, wie Torro (Vorbild: S) | Einfg |
 | Spam | ⇧⌘J | Strg+⇧+J, wie Torro (Vorbild: J) | Strg+⇧+J, wie Torro |
 | In Ordner verschieben | ⇧⌘V, wie Torro | Strg+⇧+V, wie Torro | Strg+⇧+V |
-| Suchen | ⌘F, wie Torro | Strg+K (Strg+⇧+K, Strg+F) | Strg+E (F3) |
+| Suchen | ⌥⌘F (⌘F; ⌥⌘F aus dem Menü, nicht aus der Hilfe) | Strg+K (Strg+⇧+K, Strg+F) | Strg+E (F3) |
 | Mails abrufen | ⇧⌘N | F5 (⇧+F5) | F9 (Strg+M) |
 
 Auf den anderen Systemen: Apple Mail unter Windows und Linux mit Strg statt ⌘, Archivieren Strg+⇧+A (⌃⌘A wäre Strg+A),
-unter Linux Gelesen/ungelesen Strg+U (IBus). Thunderbird auf dem Mac mit ⌘ nach der Mac-Spalte der Hilfe, Abrufen ⌘Y
-(⇧⌘Y), Archivieren ⌃⌘A wie Torro. Outlook auf dem Mac ist Outlook für Windows mit ⌘, aber Gelesen ⌃Q und Abrufen ⌃M
+unter Linux Gelesen/ungelesen Strg+U (IBus), Suchen nur Strg+F (Strg+Alt ist unter Windows AltGr). Thunderbird auf dem Mac mit ⌘ nach der Mac-Spalte der Hilfe, Abrufen ⌘Y
+(⇧⌘Y), Archivieren ⌃⌘A wie Torro. Outlook auf dem Mac ist Outlook für Windows mit ⌘ (Archivieren also ⇧⌘A), aber Gelesen ⌃Q und Abrufen ⌃M
 (⌘Q beendet, ⌘M minimiert), Markieren ⇧⌘L wie Torro (kein Einfg), ohne F3 und F9. Gesperrt für alle Vorlagen und für
 eigene Tasten (E10.2): `torro_core::shortcuts::reserved`.
 
@@ -2550,7 +2550,7 @@ eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`
   `Preset::default()` folgt `System::current()`. `Key` kennt F1–F12 und Einfg; diese wirken ohne Strg. In Outlook
   schalten Strg+Q und Strg+U beide um. Suchen und Senden behalten Strg+F und Strg+Enter, wo die Vorlage sie nicht
   anders belegt, in Outlook leitet Strg+F weiter. Gesperrte Tasten als `shortcuts::reserved` für E10.2. Apple Mails
-  Hilfe nennt keine Suchtaste: ⌘F wie Torro statt ⌥⌘F. Thunderbird auf dem Mac nach der Mac-Spalte seiner Hilfe.)
+  Hilfe nennt keine Suchtaste, ⌥⌘F kommt aus dem Menü. Thunderbird auf dem Mac nach der Mac-Spalte seiner Hilfe.)
 - **Modell:** Opus · **Braucht:** E10.1 · **Dateien:** `crates/torro-core/src/shortcuts.rs`,
   `crates/torroinbox/src/{keys,app,compose}.rs`, `crates/torro-gui/src/widgets.rs` (Rückgängig unterscheidet `System`)
 - Drei neue Vorlagen in `torro_core::shortcuts`, jede gegen die aktuelle Hilfe des Herstellers geprüft (Quelle und Datum

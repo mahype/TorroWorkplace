@@ -141,8 +141,9 @@ impl Command {
 pub enum Key {
     /// A letter (`a`–`z`, lower case), a digit or another printable ASCII sign except `+`.
     Char(char),
-    /// A function key, F1 to F12 (task E10.1b: Thunderbird fetches with F5, Outlook with F9). Made
-    /// only by parsing, so the number stays in range.
+    /// A function key, F1 to F12 (task E10.1b: Thunderbird fetches with F5, Outlook with F9). Nothing
+    /// in the suite makes another number: parsing refuses `F0` and `F13`, and the window maps only
+    /// F1–F12 (`torroinbox::keys::table_key`).
     F(u8),
     /// Insert (Einfg; Outlook flags with it). A Mac keyboard has none.
     Insert,
@@ -438,11 +439,14 @@ const TORRO: [Row; 14] = [
 /// Source: Apple, "Keyboard shortcuts in Mail on Mac",
 /// <https://support.apple.com/guide/mail/keyboard-shortcuts-mlhlb94f262b/mac>, read 2026-10-16:
 /// ⌘N new, ⌘R reply, ⇧⌘R reply all, ⇧⌘F forward, ⇧⌘D send, ⌃⌘A archive, ⇧⌘U read or unread, ⇧⌘J
-/// junk, ⇧⌘N get new mail. The page names no key for flagging, moving to a chosen mailbox or
-/// searching; those take the keys of "Torro" (⇧⌘L, ⇧⌘V, ⌘F). Sending keeps ⌘Enter beside ⇧⌘D.
+/// junk, ⇧⌘N get new mail. Searching the mailbox is ⌥⌘F in Mail's menu (Edit › Find › Mailbox
+/// Search), which the page leaves out; ⌘F searches too, as in "Torro". The page names no key for
+/// flagging or moving to a chosen mailbox; those take the keys of "Torro" (⇧⌘L, ⇧⌘V). Sending keeps
+/// ⌘Enter beside ⇧⌘D.
 ///
 /// On Windows and Linux ⌘ is Ctrl. Archiving is Ctrl + Shift + A there (⌃⌘A would be Ctrl + A),
-/// toggling read on Linux Ctrl + U (IBus takes Ctrl + Shift + U).
+/// toggling read on Linux Ctrl + U (IBus takes Ctrl + Shift + U). ⌥⌘F stays the Mac's: Ctrl + Alt is
+/// AltGr on Windows, which types characters; searching is Ctrl + F there.
 const APPLE_MAIL: [Row; 14] = [
     (Command::NewMail, &["Mod+N"], &["Mod+N"], &["Mod+N"]),
     (Command::Reply, &["Mod+R"], &["Mod+R"], &["Mod+R"]),
@@ -456,7 +460,7 @@ const APPLE_MAIL: [Row; 14] = [
     (Command::Flag, &["Mod+Shift+L"], &["Mod+Shift+L"], &["Mod+Shift+L"]),
     (Command::Junk, &["Mod+Shift+J"], &["Mod+Shift+J"], &["Mod+Shift+J"]),
     (Command::MoveToFolder, &["Mod+Shift+V"], &["Mod+Shift+V"], &["Mod+Shift+V"]),
-    (Command::Search, &["Mod+F"], &["Mod+F"], &["Mod+F"]),
+    (Command::Search, &["Mod+F"], &["Mod+F"], &["Mod+Alt+F", "Mod+F"]),
     (Command::Fetch, &["Mod+Shift+N"], &["Mod+Shift+N"], &["Mod+Shift+N"]),
 ];
 
@@ -502,7 +506,8 @@ const THUNDERBIRD: [Row; 14] = [
 /// all, Ctrl + F forward, Ctrl + Enter send, Delete and Shift + Delete, Ctrl + Q read, Ctrl + U
 /// unread, Insert flag. Classic Outlook for what new Outlook leaves out: Ctrl + E or F3 search,
 /// Ctrl + Shift + V move to a folder, F9 or Ctrl + M check for new messages. Neither names a key
-/// for archiving or junk: "Torro"'s. Ctrl + F forwards, so it does not search in this preset.
+/// for archiving or junk: "Torro"'s on Windows (Ctrl + Shift + A, J), on macOS translated as the rest
+/// (⇧⌘A, not "Torro"'s ⌃⌘A). Ctrl + F forwards, so it does not search in this preset.
 ///
 /// Read and unread are one command here: Ctrl + Q and Ctrl + U both toggle. On macOS Ctrl turns ⌘
 /// (Outlook for Windows translated, not Outlook for Mac), except where ⌘ is the system's: Ctrl + Q
@@ -602,11 +607,15 @@ impl Default for Preset {
 }
 
 /// The keys no preset and no binding of a person's own may take on `system` (tasks E10.1b, E10.2):
-/// they are the window's or the system's. Escape closes what is in front, `[` the sidebar
-/// (`torro_gui::shell::is_sidebar_key`), `Mod+Z` undoes (`torro_gui::widgets::is_undo_key`), `Mod`
-/// with C, X, V and A copy, cut, paste and select all in a text field, `Mod` with `=`, `-` and `0`
-/// zoom, also with Shift (`torro_gui::zoom::step_for`). On macOS also ⌘Q quit, ⌘W close, ⌘H hide,
-/// ⌘M minimize and ⌘, settings – Control with those letters stays free there.
+/// they are the window's or the system's. Escape closes what is in front; `[` toggles the sidebar
+/// with any modifiers but ⌘ (`torro_gui::shell::is_sidebar_key`); `Mod+Z` undoes
+/// (`torro_gui::widgets::is_undo_key`); `Mod` with C, X, V and A copy, cut, paste and select all in a
+/// text field, on Windows and Linux also Ctrl + Insert (copy) and Shift + Insert (paste); `Mod` with
+/// `=`, `-` and `0` zoom, also with Shift (`torro_gui::zoom::step_for`). On macOS also ⌘Q quit, ⌘W
+/// close, ⌘H hide, ⌘M minimize and ⌘, settings – Control with those letters stays free there.
+///
+/// Shift + Delete, which cuts in a text field on Windows, is not here: it deletes for good in every
+/// preset since task E10.1, and shortcuts do not act while a field has the keyboard.
 pub fn reserved(system: System) -> Vec<Shortcut> {
     const EVERYWHERE: [&str; 13] = [
         "Escape",
@@ -623,10 +632,13 @@ pub fn reserved(system: System) -> Vec<Shortcut> {
         "Mod+0",
         "Mod+Shift+0",
     ];
+    const SIDEBAR: [&str; 7] =
+        ["Shift+[", "Ctrl+[", "Alt+[", "Ctrl+Shift+[", "Ctrl+Alt+[", "Alt+Shift+[", "Ctrl+Alt+Shift+["];
     const MAC: [&str; 5] = ["Cmd+Q", "Cmd+W", "Cmd+H", "Cmd+M", "Cmd+,"];
-    let mac: &[&str] = if system == System::Mac { &MAC } else { &[] };
+    const OTHER: [&str; 2] = ["Ctrl+Insert", "Shift+Insert"];
+    let own: &[&str] = if system == System::Mac { &MAC } else { &OTHER };
     // Tested to parse whole, as the presets are.
-    EVERYWHERE.iter().chain(mac).filter_map(|text| text.parse().ok()).collect()
+    EVERYWHERE.iter().chain(&SIDEBAR).chain(own).filter_map(|text| text.parse().ok()).collect()
 }
 
 #[cfg(test)]
@@ -809,9 +821,9 @@ mod tests {
             let commands: Vec<Command> = table.iter().map(|(command, ..)| *command).collect();
             assert_eq!(commands, Command::ALL, "every command once, in order");
         }
-        assert_eq!(reserved(System::Linux).len(), 13);
-        assert_eq!(reserved(System::Windows).len(), 13);
-        assert_eq!(reserved(System::Mac).len(), 18);
+        assert_eq!(reserved(System::Linux).len(), 22);
+        assert_eq!(reserved(System::Windows).len(), 22);
+        assert_eq!(reserved(System::Mac).len(), 25);
     }
 
     #[test]
@@ -825,6 +837,15 @@ mod tests {
                 assert!(is_reserved(system, command, letter(c)), "{system:?} {c}");
             }
             assert!(is_reserved(system, with_shift(CTRL), letter('=')), "zoom in with Shift: {system:?}");
+        }
+        for system in System::ALL {
+            for held in [CTRL, SHIFT, Held { alt: true, ..NONE }, with_shift(CTRL)] {
+                assert!(is_reserved(system, held, letter('[')), "the sidebar: {system:?} {held:?}");
+            }
+        }
+        for other in [System::Windows, System::Linux] {
+            assert!(is_reserved(other, CTRL, Key::Insert) && is_reserved(other, SHIFT, Key::Insert), "{other:?}");
+            assert!(!is_reserved(other, NONE, Key::Insert), "plain Insert flags in Outlook: {other:?}");
         }
         assert!(is_reserved(System::Mac, CMD, letter('q')), "⌘Q quits");
         assert!(!is_reserved(System::Mac, CTRL, letter('q')), "Control + Q stays free");
@@ -872,7 +893,7 @@ mod tests {
             "Mod+Shift+L",
             "Mod+Shift+J",
             "Mod+Shift+V",
-            "Mod+F",
+            "Mod+Alt+F",
             "Mod+Shift+N",
         ];
         assert_eq!(first(Preset::AppleMail, System::Mac), apple_mac);

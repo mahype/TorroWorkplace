@@ -238,9 +238,10 @@ pub fn listen(event: iced::Event, status: iced::event::Status, _window: iced::wi
     key_of(&key, modifiers).map(Message::Key)
 }
 
-/// A shortcut with Ctrl or ⌘ ([`shortcut_on`] on this system), for `iced::event::listen_with`: it
-/// hears the key also when a text field or the window's `widgets::ctrl_guard` took it – the guard
-/// does for ⌘ + letter on macOS, so the field does not type the letter. The app decides whether it
+/// A shortcut with Ctrl or ⌘, or a function key or Insert ([`shortcut_on`] on this system), for
+/// `iced::event::listen_with`: it hears the key also when a text field or the window's
+/// `widgets::ctrl_guard` took it – the guard does for ⌘ + letter on macOS, so the field does not
+/// type the letter. The app decides whether it
 /// acts while a field has the focus (`App::shortcut`).
 pub fn shortcut(event: iced::Event, _status: iced::event::Status, _window: iced::window::Id) -> Option<Message> {
     let iced::Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, modifiers, .. }) = event else {
@@ -588,6 +589,7 @@ mod tests {
             (M::SHIFT, char("l"), Shortcut::Flag),
             (M::SHIFT, char("j"), Shortcut::Junk),
             (M::SHIFT, char("v"), Shortcut::MoveToFolder),
+            (M::ALT, char("f"), Shortcut::Search),
             (M::empty(), char("f"), Shortcut::Search),
             (M::SHIFT, char("n"), Shortcut::Fetch),
         ];
