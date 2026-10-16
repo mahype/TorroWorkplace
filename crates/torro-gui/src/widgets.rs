@@ -330,7 +330,7 @@ pub fn big_button<'a, M: Clone + 'a>(
 ) -> Element<'a, M> {
     let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
     if let Some(which) = icon {
-        content = content.push(button_icon(which, icon::SIZE, style));
+        content = content.push(button_icon(which, icon::SIZE, style, on_press.is_some()));
     }
     content = content.push(typo::text(typo::body_strong(), label).wrapping(Wrapping::None));
     if let Some(key) = key {

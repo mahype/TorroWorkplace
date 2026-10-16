@@ -40,7 +40,9 @@ use iced::widget::{column, container, pick_list, row, space as blank, svg, text,
 use iced::{Alignment, Background, Border, ContentFit, Element, Fill, Padding, Theme};
 use torro_core::design::{Design, FontRole, Mode, STANDARD_ID, Weight};
 use torro_core::i18n::tr;
-use torro_core::settings::{Language, MailAppearance, MailFormat, Night, Quarter, Zoom};
+use torro_core::settings::{
+    CalendarReminders, Language, MailAppearance, MailFormat, Night, Quarter, ReminderSound, Reminders, Zoom,
+};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{Palette, palette, radius, size, space};
@@ -121,6 +123,78 @@ pub enum Message {
     MailView(MailFormat),
     /// "Mail colors": the colours of a mail's content in the reader.
     MailAppearance(MailAppearance),
+    /// A row of the reminders (task ER2.4): it changes only its own field.
+    Reminder(ReminderChange),
+}
+
+/// What one row of the reminders changes (task ER2.4, `settings.set_setting reminders`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReminderChange {
+    Enabled(bool),
+    DefaultLead(Lead),
+    AllDisplays(bool),
+    Sound(bool),
+    OnlyAccepted(bool),
+    AllDay(bool),
+    FreeEvents(bool),
+    OutsideWorkHours(bool),
+    NeverDuringCall(bool),
+    /// How the calendar (its id) shows its reminders.
+    Calendar(String, CalendarReminders),
+}
+
+impl ReminderChange {
+    /// The change as the value of `settings.set_setting reminders`: only this field.
+    pub fn value(&self) -> serde_json::Value {
+        use serde_json::json;
+        match self {
+            ReminderChange::Enabled(on) => json!({"enabled": on}),
+            ReminderChange::DefaultLead(Lead(minutes)) => json!({"defaultLead": minutes}),
+            ReminderChange::AllDisplays(on) => json!({"allDisplays": on}),
+            ReminderChange::Sound(on) => {
+                let sound = if *on { ReminderSound::System } else { ReminderSound::None };
+                json!({"sound": sound})
+            }
+            ReminderChange::OnlyAccepted(on) => json!({"onlyAccepted": on}),
+            ReminderChange::AllDay(on) => json!({"allDay": on}),
+            ReminderChange::FreeEvents(on) => json!({"freeEvents": on}),
+            ReminderChange::OutsideWorkHours(on) => json!({"outsideWorkHours": on}),
+            ReminderChange::NeverDuringCall(on) => json!({"neverDuringCall": on}),
+            ReminderChange::Calendar(id, shown) => json!({"calendars": {id.clone(): shown}}),
+        }
+    }
+}
+
+/// A default reminder of the list: minutes before the start, or none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Lead(pub Option<u32>);
+
+impl Lead {
+    /// The leads the list offers.
+    const ALL: [Lead; 8] = [
+        Lead(None),
+        Lead(Some(0)),
+        Lead(Some(1)),
+        Lead(Some(5)),
+        Lead(Some(10)),
+        Lead(Some(15)),
+        Lead(Some(30)),
+        Lead(Some(60)),
+    ];
+}
+
+impl std::fmt::Display for Lead {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            None => f.write_str(tr("None")),
+            Some(0) => f.write_str(tr("At start")),
+            Some(60) => f.write_str(&torro_core::i18n::trf("{span} before", &[("span", &tr("1 hour"))])),
+            Some(minutes) => f.write_str(&torro_core::i18n::trf(
+                "{span} before",
+                &[("span", &torro_core::i18n::trf("{n} min", &[("n", &minutes)]))],
+            )),
+        }
+    }
 }
 
 pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
@@ -146,6 +220,7 @@ pub fn update(_state: &mut State, message: Message, data: &Data) -> Action {
             (SettingKey::MailAppearance, serde_json::to_value(colors).unwrap_or_default())
         }
         Message::RunSetup => return Action::OpenSetup,
+        Message::Reminder(change) => (SettingKey::Reminders, change.value()),
     };
     Action::Send(Request::SetSetting { key, value })
 }
@@ -200,7 +275,114 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
         ),
     );
 
-    column![language, calendar, startup, setup].spacing(layout::section_gap()).into()
+    column![
+        language,
+        calendar,
+        reminders(settings.reminders.clone()),
+        which_events(&settings.reminders),
+        calendars(data),
+        startup,
+        setup
+    ]
+    .spacing(layout::section_gap())
+    .into()
+}
+
+/// A switch for one field of the reminders.
+fn switch<'a>(on: bool, change: fn(bool) -> ReminderChange) -> Element<'a, Message> {
+    toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(move |on| Message::Reminder(change(on))).into()
+}
+
+/// The group "Reminders" (task ER2.4): on or off, the default reminder, every display, the sound.
+fn reminders<'a>(reminders: Reminders) -> Element<'a, Message> {
+    let lead = pick_list(Lead::ALL, Some(Lead(reminders.default_lead)), |lead| {
+        Message::Reminder(ReminderChange::DefaultLead(lead))
+    })
+    .padding(style::pick_list_padding())
+    .text_size(typo::caption().size)
+    .text_line_height(typo::caption().line_height)
+    .font(typo::caption().font)
+    .style(style::pick_list)
+    .menu_style(style::pick_list_menu);
+    widgets::group(
+        tr("Reminders"),
+        vec![
+            setting_row(None, tr("Show reminders"), None, switch(reminders.enabled, ReminderChange::Enabled)),
+            setting_row(None, tr("Default reminder"), Some(tr("For events without their own reminder").to_string()), lead),
+            setting_row(None, tr("On all displays"), Some(tr("A full-screen reminder covers every display").to_string()), switch(reminders.all_displays, ReminderChange::AllDisplays)),
+            setting_row(None, tr("Sound"), None, switch(reminders.sound == ReminderSound::System, ReminderChange::Sound)),
+        ],
+        Some(tr("Reminders of an event come first; you set them in the event. A full-screen reminder stays until you join, snooze or dismiss it.").to_string()),
+    )
+}
+
+/// The group "Which events" (task ER2.4).
+fn which_events<'a>(reminders: &Reminders) -> Element<'a, Message> {
+    widgets::group(
+        tr("Which events"),
+        vec![
+            setting_row(
+                None,
+                tr("Only events I accepted"),
+                None,
+                switch(reminders.only_accepted, ReminderChange::OnlyAccepted),
+            ),
+            setting_row(None, tr("All-day events"), None, switch(reminders.all_day, ReminderChange::AllDay)),
+            setting_row(
+                None,
+                tr("Events marked free"),
+                None,
+                switch(reminders.free_events, ReminderChange::FreeEvents),
+            ),
+            setting_row(
+                None,
+                tr("Outside work hours"),
+                None,
+                switch(reminders.outside_work_hours, ReminderChange::OutsideWorkHours),
+            ),
+            setting_row(
+                None,
+                tr("Never full screen during a video call"),
+                Some(tr("Shows a notification instead while an event with a call link runs").to_string()),
+                switch(reminders.never_during_call, ReminderChange::NeverDuringCall),
+            ),
+        ],
+        None,
+    )
+}
+
+/// The group "Calendars" (task ER2.4): how each calendar shows its reminders.
+fn calendars<'a>(data: &'a Data) -> Element<'a, Message> {
+    let reminders = &data.settings.reminders;
+    let rows = data
+        .calendars
+        .iter()
+        .filter(|calendar| calendar.kind.has_events() && !data.settings.hidden_collections.contains(&calendar.id))
+        .map(|calendar| {
+            let shown = reminders.calendar(&calendar.id);
+            let pick =
+                |shown: CalendarReminders| Message::Reminder(ReminderChange::Calendar(calendar.id.clone(), shown));
+            let options = [
+                (tr("Off"), pick(CalendarReminders::Off)),
+                (tr("Notification"), pick(CalendarReminders::Notification)),
+                (tr("Full screen"), pick(CalendarReminders::FullScreen)),
+            ];
+            let active = match shown {
+                CalendarReminders::Off => 0,
+                CalendarReminders::Notification => 1,
+                CalendarReminders::FullScreen => 2,
+            };
+            let dot = widgets::color_dot(widgets::collection_color(calendar.color.as_deref()), space::s());
+            setting_row(Some(dot), calendar.name.as_str(), None, widgets::segmented(options, active))
+        })
+        .collect();
+    widgets::group(
+        tr("Calendars"),
+        rows,
+        Some(
+            tr("“Full screen” covers the screen until you react. Use it for calendars you must not miss.").to_string(),
+        ),
+    )
 }
 
 /// The page Appearance: light or dark, the design pack, the zoom, how mail shows.
@@ -749,5 +931,36 @@ mod tests {
         let _stored: Element<'_, Message> = view(&state, &stored);
         let _default: Element<'_, Message> = appearance(&state, &default);
         let _stored: Element<'_, Message> = appearance(&state, &stored);
+    }
+
+    /// Task ER2.4: every row of the reminders changes only its own field.
+    #[test]
+    fn each_reminder_row_sets_only_its_field() {
+        use serde_json::json;
+        let data = Data::default();
+        let set = |change: ReminderChange| sent(update(&mut State::default(), Message::Reminder(change), &data));
+        assert_eq!(set(ReminderChange::Enabled(false)), (SettingKey::Reminders, json!({"enabled": false})));
+        assert_eq!(set(ReminderChange::DefaultLead(Lead(None))), (SettingKey::Reminders, json!({"defaultLead": null})));
+        assert_eq!(set(ReminderChange::DefaultLead(Lead(Some(5)))), (SettingKey::Reminders, json!({"defaultLead": 5})));
+        assert_eq!(set(ReminderChange::Sound(false)), (SettingKey::Reminders, json!({"sound": "none"})));
+        assert_eq!(
+            set(ReminderChange::NeverDuringCall(false)),
+            (SettingKey::Reminders, json!({"neverDuringCall": false}))
+        );
+        assert_eq!(
+            set(ReminderChange::Calendar("a/work".into(), CalendarReminders::FullScreen)),
+            (SettingKey::Reminders, json!({"calendars": {"a/work": "full_screen"}}))
+        );
+        for change in [
+            ReminderChange::AllDisplays(false),
+            ReminderChange::OnlyAccepted(false),
+            ReminderChange::AllDay(true),
+            ReminderChange::FreeEvents(true),
+            ReminderChange::OutsideWorkHours(false),
+        ] {
+            let (key, value) = set(change);
+            assert_eq!((key, value.as_object().map(|o| o.len())), (SettingKey::Reminders, Some(1)), "one field");
+            assert!(Reminders::default().merged(&value).is_ok(), "{value}");
+        }
     }
 }

@@ -225,7 +225,7 @@ ER3.1 (braucht ER1.4)       ER4 später
   `calendar.preview_reminder` an den Kern.
 
 ### ER2.4 Steuerzentrale: Calendar › Reminders
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Sonnet · **Braucht:** ER1.2 · **Dateien:** `crates/torroworkplace/src/ui/general.rs`
 - **Ort umgeplant (2026-10-15):** Gibt es die Einstellungen im Kalender schon (S.19 in
   [steuerzentrale.md](steuerzentrale.md), Bibliothek `torro-settings-ui`), kommen die Gruppen als
@@ -234,6 +234,9 @@ ER3.1 (braucht ER1.4)       ER4 später
   „Which events“ (Only accepted, All-day, Free, Outside work hours, Never full screen during a video call), „Calendars“ (je Kalender Off ·
   Notification · Full screen).
 - **Abnahme:** Jede Zeile setzt nur ihr Feld (Test wie bei der Nacht).
+- **Umgesetzt (2026-10-16):** drei Gruppen auf der Seite „General“ unter „Calendar“; jede Zeile schickt
+  `settings.set_setting reminders` mit genau ihrem Feld (`ReminderChange::value`). „Show on“ ist ein Schalter „On all
+  displays“, der Ton ein Schalter. Die Vorschau steht im Termin (ER2.3), nicht hier: Die Seite kennt keinen Termin.
 
 ### ER2.5 Tray: Nächster Termin und Pause
 - [ ] erledigt

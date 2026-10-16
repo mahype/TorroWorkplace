@@ -3695,6 +3695,31 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("notification", "Benachrichtigung"),
     ("off", "aus"),
     ("until it starts", "bis zum Beginn"),
+    // Reminders of events (ER2.4): the control centre
+    ("Show reminders", "Erinnerungen zeigen"),
+    ("Default reminder", "Standard-Erinnerung"),
+    ("For events without their own reminder", "Für Termine ohne eigene Erinnerung"),
+    ("On all displays", "Auf allen Bildschirmen"),
+    ("A full-screen reminder covers every display", "Eine Vollbild-Erinnerung deckt jeden Bildschirm ab"),
+    ("Sound", "Ton"),
+    (
+        "Reminders of an event come first; you set them in the event. A full-screen reminder stays until you join, snooze or dismiss it.",
+        "Erinnerungen eines Termins gehen vor; du stellst sie im Termin ein. Eine Vollbild-Erinnerung bleibt, bis du beitrittst, sie schlummern lässt oder verwirfst.",
+    ),
+    ("Which events", "Welche Termine"),
+    ("Only events I accepted", "Nur zugesagte Termine"),
+    ("All-day events", "Ganztägige Termine"),
+    ("Events marked free", "Als frei markierte Termine"),
+    ("Outside work hours", "Außerhalb der Arbeitszeit"),
+    ("Never full screen during a video call", "Nie Vollbild während eines Videoanrufs"),
+    (
+        "Shows a notification instead while an event with a call link runs",
+        "Zeigt stattdessen eine Benachrichtigung, solange ein Termin mit Anruf-Link läuft",
+    ),
+    (
+        "“Full screen” covers the screen until you react. Use it for calendars you must not miss.",
+        "„Vollbild“ deckt den Bildschirm ab, bis du reagierst. Nimm es für Kalender, die du nicht verpassen darfst.",
+    ),
     // Reminders of events (ER2.3): the event editor
     ("1 day", "1 Tag"),
     ("Add reminder", "Erinnerung hinzufügen"),
