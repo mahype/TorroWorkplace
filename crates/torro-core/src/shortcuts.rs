@@ -474,7 +474,8 @@ const APPLE_MAIL: [Row; 14] = [
 ///
 /// Its single letters – A archive, M read or unread, J junk, S star – are the inbox's single keys
 /// here, so these commands take the keys of "Torro" (Ctrl + Shift + A, U, J, L; toggling read on
-/// Linux Ctrl + U for IBus). Moving to a chosen folder has no key in Thunderbird: "Torro"'s. Ctrl + F
+/// Linux Ctrl + U for IBus). Moving to a chosen folder has no key in Thunderbird: "Torro"'s. Its
+/// Ctrl + M for a new message is left out on macOS, where ⌘M minimizes (the page lists only ⌘N). Ctrl + F
 /// finds text in Thunderbird's message; here it searches as everywhere in the suite.
 const THUNDERBIRD: [Row; 14] = [
     (Command::NewMail, &["Mod+N", "Mod+M"], &["Mod+N", "Mod+M"], &["Mod+N"]),
@@ -611,7 +612,8 @@ impl Default for Preset {
 /// with any modifiers but ⌘ (`torro_gui::shell::is_sidebar_key`); `Mod+Z` undoes
 /// (`torro_gui::widgets::is_undo_key`); `Mod` with C, X, V and A copy, cut, paste and select all in a
 /// text field, on Windows and Linux also Ctrl + Insert (copy) and Shift + Insert (paste); `Mod` with
-/// `=`, `-` and `0` zoom, also with Shift (`torro_gui::zoom::step_for`). On macOS also ⌘Q quit, ⌘W
+/// `=`, `-` and `0` zoom, also with Shift and with Ctrl and ⌘ together (`torro_gui::zoom::step_for`
+/// zooms whenever ⌘ – Ctrl elsewhere – is held without Alt). On macOS also ⌘Q quit, ⌘W
 /// close, ⌘H hide, ⌘M minimize and ⌘, settings – Control with those letters stays free there.
 ///
 /// Shift + Delete, which cuts in a text field on Windows, is not here: it deletes for good in every
@@ -632,13 +634,15 @@ pub fn reserved(system: System) -> Vec<Shortcut> {
         "Mod+0",
         "Mod+Shift+0",
     ];
+    const ZOOM: [&str; 6] =
+        ["Ctrl+Cmd+=", "Ctrl+Cmd+Shift+=", "Ctrl+Cmd+-", "Ctrl+Cmd+Shift+-", "Ctrl+Cmd+0", "Ctrl+Cmd+Shift+0"];
     const SIDEBAR: [&str; 7] =
         ["Shift+[", "Ctrl+[", "Alt+[", "Ctrl+Shift+[", "Ctrl+Alt+[", "Alt+Shift+[", "Ctrl+Alt+Shift+["];
     const MAC: [&str; 5] = ["Cmd+Q", "Cmd+W", "Cmd+H", "Cmd+M", "Cmd+,"];
     const OTHER: [&str; 2] = ["Ctrl+Insert", "Shift+Insert"];
     let own: &[&str] = if system == System::Mac { &MAC } else { &OTHER };
     // Tested to parse whole, as the presets are.
-    EVERYWHERE.iter().chain(&SIDEBAR).chain(own).filter_map(|text| text.parse().ok()).collect()
+    EVERYWHERE.iter().chain(&ZOOM).chain(&SIDEBAR).chain(own).filter_map(|text| text.parse().ok()).collect()
 }
 
 #[cfg(test)]
@@ -821,9 +825,9 @@ mod tests {
             let commands: Vec<Command> = table.iter().map(|(command, ..)| *command).collect();
             assert_eq!(commands, Command::ALL, "every command once, in order");
         }
-        assert_eq!(reserved(System::Linux).len(), 22);
-        assert_eq!(reserved(System::Windows).len(), 22);
-        assert_eq!(reserved(System::Mac).len(), 25);
+        assert_eq!(reserved(System::Linux).len(), 28);
+        assert_eq!(reserved(System::Windows).len(), 28);
+        assert_eq!(reserved(System::Mac).len(), 31);
     }
 
     #[test]
@@ -837,6 +841,7 @@ mod tests {
                 assert!(is_reserved(system, command, letter(c)), "{system:?} {c}");
             }
             assert!(is_reserved(system, with_shift(CTRL), letter('=')), "zoom in with Shift: {system:?}");
+            assert!(is_reserved(system, Held { ctrl: true, cmd: true, ..NONE }, letter('0')), "⌃⌘0: {system:?}");
         }
         for system in System::ALL {
             for held in [CTRL, SHIFT, Held { alt: true, ..NONE }, with_shift(CTRL)] {

@@ -1975,7 +1975,9 @@ pub fn escape() -> Subscription<()> {
 /// even though Ctrl is held (Ctrl + Plus, Ctrl + `-`, Ctrl + `0` leave "a+--" in a field while the
 /// window zooms).
 ///
-/// Not a typing shortcut: Alt held (Windows reports AltGr as Ctrl + Alt, and AltGr + Q types `@`);
+/// Not a typing shortcut: Alt held on Windows and Linux (Windows reports AltGr as Ctrl + Alt, and
+/// AltGr + Q types `@`). On macOS ⌥⌘ is one: ⌥ changes the character (⌥⌘F would type "ƒ"), and
+/// Apple Mail searches with ⌥⌘F (task E10.1b);
 /// keys with no printable character (Ctrl + letters send control characters, arrows and Backspace
 /// are named keys); Ctrl + C, X, V and A, which a field handles itself as copy, cut, paste and
 /// select all (also on non-Latin layouts, hence `to_latin`); and the sidebar key, which an app
@@ -1986,7 +1988,7 @@ pub fn is_ctrl_typing(
     modifiers: keyboard::Modifiers,
     text: Option<&str>,
 ) -> bool {
-    if !modifiers.command() || modifiers.alt() {
+    if !modifiers.command() || (modifiers.alt() && !cfg!(target_os = "macos")) {
         return false;
     }
     if text.and_then(|text| text.chars().next()).is_none_or(|c| c.is_control()) {
@@ -3817,6 +3819,9 @@ mod tests {
         // AltGr: Windows reports Ctrl + Alt, and the key types `@` or `€`.
         assert!(!captured(&press("q", Code::KeyQ, ctrl | keyboard::Modifiers::ALT, Some("@"))));
         assert!(!captured(&press("e", Code::KeyE, ctrl | keyboard::Modifiers::ALT, Some("€"))));
+        // ⌥⌘F on a Mac (Apple Mail's search, task E10.1b): ⌥ makes "ƒ", which the field must not type.
+        let alt_cmd = keyboard::Modifiers::LOGO | keyboard::Modifiers::ALT;
+        assert_eq!(captured(&press("f", Code::KeyF, alt_cmd, Some("ƒ"))), cfg!(target_os = "macos"));
         // Copy, cut, paste and select all, also on a Cyrillic layout (the key is `с`, the code `KeyC`).
         for (key, code, text) in [("c", Code::KeyC, "\u{3}"), ("x", Code::KeyX, "\u{18}"), ("v", Code::KeyV, "v")] {
             assert!(!captured(&press(key, code, ctrl, Some(text))), "{key}");

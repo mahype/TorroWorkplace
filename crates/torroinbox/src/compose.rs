@@ -25,8 +25,9 @@
 //!   quietly and quotes in the secondary colour ([`markup::looks`]). Saved, the text becomes
 //!   the draft's HTML ([`markup::to_html`]); the quoted history of an answer stays someone else's
 //!   text (only its quote marks count), and the core puts the signature above it.
-//! - **Keys:** `Ctrl+Enter` (on macOS `Cmd+Enter` or `Ctrl+Enter`, the shortcut "send" of
-//!   `torro_core::shortcuts`, task E10.1) sends, also from a field; `Esc` closes (asking when
+//! - **Keys:** the shortcut "send" of the system's preset in `torro_core::shortcuts` (tasks E10.1,
+//!   E10.1b) sends, also from a field: `Ctrl+Enter`, on macOS Apple Mail's `Shift+Cmd+D` and
+//!   `Cmd+Enter` or `Ctrl+Enter`; `Esc` closes (asking when
 //!   something is unsaved), `Tab` moves between the fields.
 //! - **Sizes** ([`torro_gui::layout`]): wide and medium show the form with a header bar, narrow
 //!   the same with a compact "Send" button; mini and strip are displays, not editors: subject,

@@ -2689,8 +2689,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
             subscriptions.push(iced::event::listen_with(keys::listen));
-            // The shortcuts with Ctrl or ⌘ (task E10.1; ⌘F / Ctrl + F searches, issue #136), also when
-            // the search field or the window's guard took them; they all act on mail.
+            // The shortcuts of the system's preset (tasks E10.1, E10.1b; with Ctrl or ⌘, the function
+            // keys and Insert), also when the search field or the window's guard took them; they all
+            // act on mail.
             if !self.folders.is_empty() {
                 subscriptions.push(iced::event::listen_with(keys::shortcut));
             }
@@ -4028,7 +4029,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         !self.folders.is_empty() && (self.launch.kind == Kind::Mail || self.view.is_mail())
     }
 
-    /// Puts the keyboard into the search field (`/`, ⌘F / Ctrl + F, the search button); where the
+    /// Puts the keyboard into the search field (`/`, the shortcut "search", the search button); where the
     /// view has no field, an empty search opens with it.
     fn focus_search(&mut self) -> Task<Message> {
         self.close_menus();
