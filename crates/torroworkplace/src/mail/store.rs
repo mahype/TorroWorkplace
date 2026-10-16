@@ -346,6 +346,11 @@ pub struct SearchQuery {
     /// half again); equal ranks newest first. `order` is ignored then. Without words in `query`
     /// every rank is the same, so it is by date.
     pub relevance: Option<DateTime<Utc>>,
+    /// `Some`: only these messages (`m:…`), none when empty. For "Later" (task E9.1): the snoozed
+    /// mail, or the mail back from it, which `mail.search_messages` asks for apart.
+    pub only: Option<Vec<String>>,
+    /// Never these messages (`m:…`), for "Later" (task E9.1): left out before paging, so pages hold.
+    pub except: Vec<String>,
 }
 
 /// The store of one account. `Send`, not `Sync`: share it as `Arc<Mutex<MailStore>>` and call it
@@ -1001,6 +1006,17 @@ impl MailStore {
             conditions.push("m.date < ?".into());
             values.push(Value::Integer(before.timestamp()));
         }
+        if let Some(only) = &query.only {
+            conditions.push(match only.len() {
+                0 => "0".into(),
+                n => format!("m.id IN ({})", vec!["?"; n].join(", ")),
+            });
+            values.extend(only.iter().cloned().map(Value::Text));
+        }
+        if !query.except.is_empty() {
+            conditions.push(format!("m.id NOT IN ({})", vec!["?"; query.except.len()].join(", ")));
+            values.extend(query.except.iter().cloned().map(Value::Text));
+        }
         let filter = if conditions.is_empty() { String::new() } else { format!("WHERE {}", conditions.join(" AND ")) };
         Ok((filter, values))
     }
@@ -1482,6 +1498,7 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         flags: flags_from_bits(row.get(8)?),
         has_attachments: row.get(9)?,
         invite: invite_from_row(row)?,
+        back: None,
         untrusted: true,
     })
 }
@@ -1948,6 +1965,16 @@ mod tests {
         assert_eq!(list(&all, 10, 0), ["Message 5", "Message 3"]);
         let unknown = SearchQuery { folder: Some("f:nope".into()), ..SearchQuery::default() };
         assert!(list(&unknown, 10, 0).is_empty());
+        // Task E9.1: "Later" picks messages by id, before paging.
+        let later = SearchQuery { except: vec![ids[4].clone(), ids[2].clone()], ..in_inbox.clone() };
+        assert_eq!(list(&later, 2, 0), ["Message 4", "Message 2"]);
+        assert_eq!(list(&later, 2, 2), ["Message 1"]);
+        assert_eq!(store.count(&later).expect("count"), 3);
+        let only = SearchQuery { only: Some(vec![ids[2].clone(), other.clone()]), ..in_inbox.clone() };
+        assert_eq!(list(&only, 10, 0), ["Message 3"], "and still in the folder asked for");
+        let none = SearchQuery { only: Some(Vec::new()), ..SearchQuery::default() };
+        assert!(list(&none, 10, 0).is_empty());
+        assert_eq!(store.count(&none).expect("count"), 0);
     }
 
     #[test]

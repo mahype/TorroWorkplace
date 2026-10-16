@@ -305,6 +305,7 @@ impl ReadMessage {
                 has_attachments,
                 // Read from the calendar part by the core, which keeps it in its store (task E8.3b).
                 invite: None,
+                back: None,
                 untrusted: true,
             },
             cc: self.cc,

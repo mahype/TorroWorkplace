@@ -1330,6 +1330,11 @@ mod tests {
         let paged = call("mail_search_messages", json!({"query": "invoice", "limit": 5, "cursor": "c:5"}));
         assert!(matches!(&paged, Ok(Request::SearchMail { query: Some(q), limit: 5, cursor: Some(c), .. })
             if q == "invoice" && c == "c:5"));
+        // Task E9.1: "All" without what waits for later; a mail goes there by its id.
+        let all = call("mail_search_messages", json!({"query": "in:inbox", "limit": 50, "snoozed": false}));
+        assert!(matches!(all, Ok(Request::SearchMail { snoozed: Some(false), .. })), "{all:?}");
+        let later = call("inbox_snooze_item", json!({"id": "m:1", "until": "2026-10-16T08:00:00Z"}));
+        assert!(matches!(&later, Ok(Request::SnoozeItem { id, until: Some(_) }) if id == "m:1"), "{later:?}");
         let get = call("mail_get_message", json!({"id": "m:1", "include_body": true}));
         assert_eq!(get, Ok(Request::GetMail { id: "m:1".into(), include_body: true, include_html: false }), "no HTML");
         let html = call("mail_get_message", json!({"id": "m:1", "include_body": true, "include_html": true}));

@@ -1427,9 +1427,17 @@ pub enum Request {
     },
     /// Puts the entry off until `until`, or takes it back without ([`torro_inbox::rules::snooze`]).
     /// Answered with [`Response::Item`] as stored; `not-found`, `forbidden` (rule 1).
+    ///
+    /// `id` may also name a mail message (`m:…`, task E9.1), as for [`Request::MuteItem`]: a
+    /// message filed in an entry snoozes that entry, its whole conversation. A message without an
+    /// entry gets one first, filed as the mail feed files new mail (lane by the rules, whatever the
+    /// account's `notify` says), and that is snoozed; `unsupported` when a rule of the person hides
+    /// the mail from the inbox. Without `until` such a message stays without an entry and the
+    /// answer is the entry it would be, not snoozed. A client needs read access to the message's
+    /// account, else `not-found`.
     #[serde(rename = "inbox.snooze_item")]
     SnoozeItem {
-        /// The entry's id.
+        /// The entry's id, or a mail message's id (`m:…`).
         id: String,
         /// When it comes back (RFC 3339); leave out to stop snoozing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1657,6 +1665,13 @@ pub enum Request {
         /// (issue #136). A cursor belongs to its sort as well.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         sort: Option<MailSort>,
+        /// "Later" (task E9.1): `false` leaves out messages whose inbox entry is snoozed now and
+        /// puts messages that came back from it (their `back`) by the time
+        /// they came back instead of their date (not with `sort: relevance`); `true` gives only the
+        /// snoozed ones. Left out: every message, by date. Filtered before paging, so pages and
+        /// `cursor` hold; a cursor belongs to this field as well.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snoozed: Option<bool>,
     },
     /// How far the core's search index of each mail account is ([`Response::MailIndexStatus`],
     /// issue #136): how many messages it keeps, how many of them have their text in the index,

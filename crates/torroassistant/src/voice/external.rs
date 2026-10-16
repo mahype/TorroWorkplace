@@ -118,7 +118,7 @@ impl Stream for ProcessStream {
     fn frame(&mut self) -> Result<Option<Vec<i16>>, VoiceError> {
         let mut bytes = vec![0u8; FRAME * 2];
         match self.output.read_exact(&mut bytes) {
-            Ok(()) => Ok(Some(bytes.chunks_exact(2).map(|pair| i16::from_le_bytes([pair[0], pair[1]])).collect())),
+            Ok(()) => Ok(Some(bytes.as_chunks::<2>().0.iter().map(|pair| i16::from_le_bytes(*pair)).collect())),
             Err(err) if err.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
             Err(err) => Err(VoiceError::program(&self.name, err)),
         }

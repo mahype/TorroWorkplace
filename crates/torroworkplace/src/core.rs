@@ -752,21 +752,25 @@ fn with_entry_title(request: Request, entry: Option<&torro_inbox::Item>) -> Requ
 /// The answer to an approved `inbox.*` command whose entry changed after the approval was asked
 /// for ([`EntryPin`]): the person allowed something else.
 /// The mail message's id (`m:…`) that `inbox.list_mute_options` or `inbox.mute_item` mutes by
-/// (issue #123); `None` for an entry's id and every other request.
-fn mute_message_id(request: &Request) -> Option<&str> {
+/// (issue #123), or `inbox.snooze_item` puts off (task E9.1); `None` for an entry's id and every
+/// other request.
+fn mail_message_id(request: &Request) -> Option<&str> {
     match request {
-        Request::ListMuteOptions { id } | Request::MuteItem { id, .. } if torro_inbox::rules::is_message_id(id) => {
+        Request::ListMuteOptions { id } | Request::MuteItem { id, .. } | Request::SnoozeItem { id, .. }
+            if torro_inbox::rules::is_message_id(id) =>
+        {
             Some(id)
         }
         _ => None,
     }
 }
 
-/// `request` muting by the entry `entry` instead of the mail message it names ([`mute_message_id`]).
+/// `request` naming the entry `entry` instead of the mail message it names ([`mail_message_id`]).
 fn with_entry_id(request: Request, entry: String) -> Request {
     match request {
         Request::ListMuteOptions { .. } => Request::ListMuteOptions { id: entry },
         Request::MuteItem { scope, until, effect, .. } => Request::MuteItem { id: entry, scope, until, effect },
+        Request::SnoozeItem { until, .. } => Request::SnoozeItem { id: entry, until },
         other => other,
     }
 }
@@ -2111,7 +2115,7 @@ impl Core {
                 let mut facts = self.inbox.facts(&request);
                 // A mail message without an entry (issue #123): its traits as the mail store holds
                 // them, never as the client says.
-                if facts.item.is_none() && mute_message_id(&request).is_some() {
+                if facts.item.is_none() && mail_message_id(&request).is_some() {
                     facts.item =
                         self.resolve_message(request.clone(), Reach::Client(rights)).await.ok().and_then(|r| r.1);
                 }
@@ -2745,7 +2749,9 @@ impl Core {
             | Request::GetMail { .. }
             | Request::GetMailThread { .. }
             | Request::GetMailAttachment { .. }) => {
-                crate::mail::read::answer_counting(&self.mail, &self.inbox, reach, request).await
+                // Boxed, as the ntfy commands: reading mail would grow this match's poll frame, deep
+                // in the stack already when the inbox's quiet asks the core again.
+                Box::pin(crate::mail::read::answer_counting(&self.mail, &self.inbox, reach, request)).await
             }
             // Sending (task M3.3): the person sends any draft; a client's send carries its id and
             // never reaches here unnamed (`Core::handle_client`, `Core::run_approved`).
@@ -2845,9 +2851,20 @@ impl Core {
         // Muting by a mail message's id (issue #123): as its entry's when it has one, else by the
         // message itself – also after an approval, which pinned the message as it was then.
         let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
-        let request = match self.resolve_message(request, reach).await {
-            Ok((request, None)) => request,
+        // Boxed: the lookup in the mail stores would grow this poll frame (see `handle_within`).
+        let (request, pin) = match Box::pin(self.resolve_message(request, reach)).await {
+            Ok((request, None)) => (request, pin),
             Ok((_, Some(stand_in))) if pin.is_some_and(|pin| !pin.holds(&stand_in)) => return entry_conflict(),
+            // "Later" for a mail without an entry (task E9.1): filed first, then its entry is put
+            // off below. The pin held for the message; the entry is new or its conversation's.
+            Ok((Request::SnoozeItem { id, until: Some(until) }, Some(stand_in))) => {
+                // Boxed: looking the mail up would grow this poll frame, deep in the stack already
+                // when an approved command runs it.
+                match Box::pin(self.file_to_snooze(id, stand_in, until, client, reach)).await {
+                    Ok(entry) => (Request::SnoozeItem { id: entry, until: Some(until) }, None),
+                    Err(refused) => return *refused,
+                }
+            }
             Ok((request, Some(stand_in))) => return self.inbox.handle_message(request, &stand_in, client, Utc::now()),
             Err(refused) => return refused,
         };
@@ -3158,7 +3175,7 @@ impl Core {
             return body();
         }
         let asked = Request::GetMail { id: message.clone(), include_body: true, include_html: false };
-        match crate::mail::read::answer(&self.mail, reach, asked).await {
+        match crate::mail::read::answer(&self.mail, &self.inbox, reach, asked).await {
             Response::MailMessage { message } => {
                 message.text.filter(|text| !text.trim().is_empty()).unwrap_or_else(body)
             }
@@ -3243,8 +3260,9 @@ impl Core {
         self.pim.handle_within(Request::SaveTodo { todo }, reach).await
     }
 
-    /// `request` as it runs for `reach` when it mutes by a mail message's id (issue #123:
-    /// `inbox.list_mute_options` or `inbox.mute_item` with `m:…`, [`mute_message_id`]): with the id
+    /// `request` as it runs for `reach` when it names a mail message (issue #123:
+    /// `inbox.list_mute_options` or `inbox.mute_item` with `m:…`, task E9.1: `inbox.snooze_item`,
+    /// [`mail_message_id`]): with the id
     /// of the entry the message was filed in, when there is one, and no stand-in; else as it is,
     /// with the message as an entry would hold it ([`crate::mail::inbox_feed::message_stand_in`],
     /// for [`Inbox::handle_message`]). Every other request comes back as it is. `not-found` for a
@@ -3254,13 +3272,48 @@ impl Core {
         request: Request,
         reach: Reach<'_>,
     ) -> Result<(Request, Option<torro_inbox::Item>), Response> {
-        let Some(id) = mute_message_id(&request) else { return Ok((request, None)) };
+        let Some(id) = mail_message_id(&request) else { return Ok((request, None)) };
         let Some(stand_in) = crate::mail::inbox_feed::message_stand_in(&self.mail, reach, id).await else {
             return Err(Response::Error { code: "not-found".into(), message: "no such inbox entry or mail".into() });
         };
         match self.inbox.entry_of_message(&stand_in.source.key(), &stand_in.id) {
             Some(entry) => Ok((with_entry_id(request, entry), None)),
             None => Ok((request, Some(stand_in))),
+        }
+    }
+
+    /// The entry the mail message `id` without one (`stand_in`, [`Core::resolve_message`]) is filed
+    /// into for `inbox.snooze_item` until `until` (task E9.1): as the mail feed files new mail
+    /// ([`Inbox::file_mail`], lane by the rules), whatever the account's `notify` says – the person
+    /// asked for it. Its conversation's entry when it has one. Checked first as an entry of the
+    /// account would be ([`Inbox::message_refusal`]: `not-found`, `forbidden`). `unsupported` when
+    /// a rule of the person hides the mail from the inbox, `not-found` when the mail went meanwhile,
+    /// `error` when the inbox cannot be written.
+    async fn file_to_snooze(
+        &self,
+        id: String,
+        stand_in: torro_inbox::Item,
+        until: chrono::DateTime<Utc>,
+        client: Option<&torro_ipc::ClientInfo>,
+        reach: Reach<'_>,
+    ) -> Result<String, Box<Response>> {
+        let request = Request::SnoozeItem { id: id.clone(), until: Some(until) };
+        if let Some(refused) = self.inbox.message_refusal(&request, &stand_in, client) {
+            return Err(Box::new(refused));
+        }
+        let Some(mail) = crate::mail::inbox_feed::mail_to_snooze(&self.mail, reach, &id).await else {
+            return Err(Box::new(refusal("not-found", "no such inbox entry or mail".into())));
+        };
+        match self.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()) {
+            Ok(Some(entry)) => Ok(entry),
+            Ok(None) => Err(Box::new(refusal(
+                "unsupported",
+                "a rule hides this mail from the inbox; remove it (inbox.list_rules) to snooze the mail".into(),
+            ))),
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot file a mail to snooze: {err}");
+                Err(Box::new(refusal("error", "the inbox cannot be written".into())))
+            }
         }
     }
 
@@ -10543,6 +10596,7 @@ mod tests {
             cursor: None,
             order: None,
             sort: None,
+            snoozed: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -10582,6 +10636,174 @@ mod tests {
         let Response::Muted(muted) = *response else { panic!("muting answers what it changed") };
         let facet = muted.rule.and_then(|rule| rule.facet).expect("a rule with the trait");
         assert_eq!((facet.key, facet.value.as_str()), (FacetKey::Sender, "news@shop.example"));
+    }
+
+    /// Task E9.1: any mail goes to "Later" by its id – a mail without an entry gets one –, leaves
+    /// "All" (`in:inbox` with `snoozed: false`) at once, page by page without gaps or doubles, and
+    /// stands on top of it with `back` when it comes back, until it is read in the mail window. A
+    /// client without the account gets `not-found`.
+    #[tokio::test]
+    async fn any_mail_goes_to_later_and_comes_back_on_top() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &fake::mail("Old offer", 5, None), &["\\Seen"]);
+        for n in 1..=3 {
+            server.add("INBOX", &fake::mail(&format!("Mail {n}"), n, None), &[]);
+        }
+        server.add("Archive", &fake::mail("Kept", 0, None), &[]);
+        let secrets = MemoryTokens::default();
+        store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let search = |snoozed: Option<bool>, limit: u32, cursor: Option<String>| Request::SearchMail {
+            account: None,
+            folder: None,
+            query: Some("in:inbox".into()),
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit,
+            cursor,
+            order: None,
+            sort: None,
+            snoozed,
+        };
+        let page = |response: Response| match response {
+            Response::MailMessages { messages, cursor, total_estimate, .. } => (messages, cursor, total_estimate),
+            other => panic!("a page, got {other:?}"),
+        };
+        let subjects = |messages: &[torro_mail::MessageSummary]| -> Vec<String> {
+            messages.iter().map(|message| message.subject.clone()).collect()
+        };
+        // Every page of `snoozed`, one message at a time, as "All" pages.
+        async fn paged(
+            core: &Core,
+            key: &Key,
+            ask_for: impl Fn(Option<String>) -> Request,
+        ) -> Vec<torro_mail::MessageSummary> {
+            let (mut all, mut cursor) = (Vec::new(), None);
+            loop {
+                let Response::MailMessages { messages, cursor: next, .. } = ask(core, Some(key), ask_for(cursor)).await
+                else {
+                    panic!("a page")
+                };
+                all.extend(messages);
+                match next {
+                    Some(next) => cursor = Some(next),
+                    None => return all,
+                }
+            }
+        }
+
+        let (messages, _, _) = page(ask(&core, Some(&app_key), search(Some(false), 10, None)).await);
+        assert_eq!(subjects(&messages), ["Mail 1", "Mail 2", "Mail 3", "Old offer"]);
+        let offer = messages[3].id.clone();
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &offer), None, "a read mail has no entry");
+
+        // A client without the account does not learn the mail exists.
+        let mut stranger = RightsTemplate::FullAccess.rights();
+        stranger.mail_accounts = Selection::Only(vec!["mail:bob@example.org".into()]);
+        let (_, stranger) = client(&core, stranger).await;
+        // Whole seconds: the inbox keeps times to the microsecond.
+        let until = chrono::SubsecRound::trunc_subsecs(Utc::now() + chrono::TimeDelta::hours(1), 0);
+        let later = Request::SnoozeItem { id: offer.clone(), until: Some(until) };
+        assert_eq!(code(&ask(&core, Some(&stranger), later.clone()).await), "not-found");
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &offer), None, "nothing was filed for it");
+        // Taking back what never went to later stores nothing either.
+        let back_now = Request::SnoozeItem { id: offer.clone(), until: None };
+        let Response::Item { item } = ask(&core, Some(&app_key), back_now).await else { panic!("the mail as it is") };
+        assert!(!matches!(item.state, torro_inbox::State::Snoozed { .. }));
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &offer), None);
+
+        let Response::Item { item } = ask(&core, Some(&app_key), later).await else { panic!("the entry") };
+        assert_eq!(item.state, torro_inbox::State::Snoozed { until });
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &offer).as_deref(), Some(item.id.as_str()));
+        let (all, _, total) = page(ask(&core, Some(&app_key), search(Some(false), 10, None)).await);
+        assert_eq!((subjects(&all), total), (vec!["Mail 1".into(), "Mail 2".into(), "Mail 3".into()], Some(3)));
+        let (waiting, _, total) = page(ask(&core, Some(&app_key), search(Some(true), 10, None)).await);
+        assert_eq!((subjects(&waiting), total), (vec!["Old offer".to_string()], Some(1)));
+        let (every, _, _) = page(ask(&core, Some(&app_key), search(None, 10, None)).await);
+        assert_eq!(every.len(), 4, "without `snoozed` as before");
+        let one_by_one = paged(&core, &app_key, |cursor| search(Some(false), 1, cursor)).await;
+        assert_eq!(subjects(&one_by_one), ["Mail 1", "Mail 2", "Mail 3"], "no gaps, no doubles");
+        // A client that reads the mail but not the account's entries learns nothing of later.
+        let mut reader = RightsTemplate::FullAccess.rights();
+        reader.mail_accounts = Selection::Only(vec![ANNA_MAIL.into()]);
+        reader.inbox_sources = Selection::Only(Vec::new());
+        let (_, reader) = client(&core, reader).await;
+        let (seen, _, total) = page(ask(&core, Some(&reader), search(Some(false), 10, None)).await);
+        assert_eq!((seen.len(), total), (4, Some(4)), "nothing left out");
+        assert!(page(ask(&core, Some(&reader), search(Some(true), 10, None)).await).0.is_empty());
+
+        // Back from later: on top of newer mail, by the time it came back.
+        core.inbox.tend(until + chrono::TimeDelta::minutes(1), false).expect("woken");
+        let one_by_one = paged(&core, &app_key, |cursor| search(Some(false), 1, cursor)).await;
+        assert_eq!(subjects(&one_by_one), ["Old offer", "Mail 1", "Mail 2", "Mail 3"], "no gaps, no doubles");
+        assert_eq!(one_by_one[0].back, Some(until));
+        assert!(one_by_one[1..].iter().all(|message| message.back.is_none()));
+        let (every, _, _) = page(ask(&core, Some(&app_key), search(None, 10, None)).await);
+        assert_eq!(subjects(&every), ["Mail 1", "Mail 2", "Mail 3", "Old offer"], "by date without `snoozed`");
+        assert_eq!(every[3].back, Some(until), "but with `back`");
+        assert!(page(ask(&core, Some(&app_key), search(Some(true), 10, None)).await).0.is_empty());
+        let (seen, _, _) = page(ask(&core, Some(&reader), search(Some(false), 10, None)).await);
+        assert!(seen.iter().all(|message| message.back.is_none()), "nor when it came back");
+        assert_eq!(subjects(&seen), ["Mail 1", "Mail 2", "Mail 3", "Old offer"]);
+
+        // Read in the mail window, it sorts by its date again.
+        let read = Request::GetMail { id: offer.clone(), include_body: false, include_html: false };
+        assert!(matches!(ask(&core, Some(&app_key), read).await, Response::MailMessage { .. }));
+        let (messages, _, _) = page(ask(&core, Some(&app_key), search(Some(false), 10, None)).await);
+        assert_eq!(subjects(&messages), ["Mail 1", "Mail 2", "Mail 3", "Old offer"]);
+        assert_eq!(messages[3].back, None);
+    }
+
+    /// Task E9.1: a mail a rule of the person hides from the inbox cannot go to "Later": there is
+    /// no entry to put off.
+    #[tokio::test]
+    async fn a_hidden_mail_does_not_go_to_later() {
+        use crate::mail::service::tests::{mail_account, service_in, store_accounts};
+        use crate::mail::sync::fake;
+        use torro_inbox::item::{FacetKey, MuteEffect, MuteScope};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(MAIL_PASSWORD).await;
+        server.add("INBOX", &fake::mail("Hello", 1, None), &[]);
+        let secrets = MemoryTokens::default();
+        store_accounts(dir.path(), &secrets, &[(&mail_account("anna@example.org", &server.endpoint), MAIL_PASSWORD)]);
+        let mail = service_in(dir.path(), &secrets);
+        mail.reload().await;
+        mail.sync_all(Reach::Suite).await.expect("synced");
+        let core = core(dir.path()).with_mail(mail);
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let search = Request::SearchMail {
+            account: None,
+            folder: None,
+            query: None,
+            unread: None,
+            flagged: None,
+            since: None,
+            before: None,
+            limit: 10,
+            cursor: None,
+            order: None,
+            sort: None,
+            snoozed: None,
+        };
+        let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
+            panic!("a page")
+        };
+        let id = messages[0].id.clone();
+        let sender = MuteScope::Facet { key: FacetKey::Sender, nth: 0 };
+        let hide = Request::MuteItem { id: id.clone(), scope: sender, until: None, effect: MuteEffect::Hide };
+        assert!(matches!(ask(&core, Some(&app_key), hide).await, Response::Muted(_)));
+        let later = Request::SnoozeItem { id: id.clone(), until: Some(Utc::now() + chrono::TimeDelta::hours(1)) };
+        assert_eq!(code(&ask(&core, Some(&app_key), later).await), "unsupported");
+        assert_eq!(core.inbox.entry_of_message(ANNA_MAIL, &id), None);
     }
 
     /// Task M3.1: a client reads the mail of its account; the audit log names the account and
@@ -10633,6 +10855,7 @@ mod tests {
             cursor: None,
             order: None,
             sort: None,
+            snoozed: None,
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
         let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");

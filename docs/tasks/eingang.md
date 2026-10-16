@@ -1614,6 +1614,7 @@ Entschieden am 2026-10-15:
 7. Der Leser trennt, was jedes Mailprogramm hat, von dem, was nur Torro hat (E9.4): oben eine Kopfleiste mit den
    Mail-Standards als deutliche Knöpfe, unten eine schwebende, fest stehende „Torro-Leiste“ mit Done, Later, Task,
    den KI-Knöpfen und den Ansichts-Schaltern. Archive und Delete bleiben oben. Das Paneel der Zentrale teilt genauso.
+8. Neue Mail in einer zurückgestellten Unterhaltung holt sie zurück, auch in der Zentrale.
 
 Reihenfolge: E9.1 (Kern) vor E9.2 (Oberfläche). E9.3a (Kern) nach E9.1, darf neben E9.2 laufen; E9.3b nach E9.2 und
 E9.3a; E9.4 (issue #194) zuerst, vor E9.2 und E9.3b, nicht daneben (alle bauen den Leser um): E9.2 und E9.3b setzen
@@ -1621,10 +1622,16 @@ ihre neuen Knöpfe dann gleich in die passende Leiste. Nicht parallel: zwei Aufg
 `crates/torroinbox` oder zwei am Katalog.
 
 ### E9.1 Später für jede Mail: Kern
-- [ ] erledigt
+- [x] erledigt (2026-10-15): Mail ohne Eintrag wird abgelegt und zurückgestellt, `snoozed` filtert vor dem Blättern,
+  Tabelle `woken` (Schema 10) merkt die Rückkehr, `back` sortiert nach oben; Entscheidung 8 über
+  `rules::merge_mail` (nur Mail). Gelesene zurückgestellte Mail bleibt in „Later“, bis sie den Posteingang verlässt.
+  Festgehalten in [eingang.md › Später für jede Mail](../eingang.md#später-für-jede-mail-e91-entschieden-2026-10-15).
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
-  `crates/torroworkplace/src/{core,inbox,mcp}.rs`, `crates/torroworkplace/src/mail/{inbox_feed,service,store}.rs`,
-  `crates/torro-inbox/src/*.rs` (nur wenn nötig), `docs/{api,api-reference,eingang}.md`
+  `crates/torroworkplace/src/{core,inbox,mcp}.rs`, `crates/torroworkplace/src/mail/{inbox_feed,service,store,read}.rs`,
+  `crates/torro-mail/src/message.rs` (`back`), `crates/torro-inbox/src/*.rs` (nur wenn nötig),
+  `docs/{api,api-reference,eingang}.md`; nur zum Bauen (`snoozed: None`, `back: None`):
+  `crates/torro-ipc/src/{inbox,mail}.rs`, `crates/torro-mail-imap/src/mime.rs`, `crates/torroworkplace/src/audit.rs`,
+  `crates/torroinbox/src/search.rs` (Test)
 - **Später ohne Eintrag:** `inbox.snooze_item` nimmt wie `inbox.mute_item` (E8.25) auch die Kennung einer Mail
   (`m:…`). Hat die Mail einen Eintrag (`Inbox::entry_of_message`), gilt der Eintrag. Hat sie keinen, legt der Kern
   einen an (wie der Feed: `Inbox::file_mail`, Spur nach den Regeln, Grund am Eintrag) und stellt ihn zurück. Ohne
