@@ -1914,6 +1914,7 @@ Knöpfe in die neue Anordnung (E9.2: Later an Ordnermails in Befehlsleiste und L
 ### E11.4 Paneel des Mail-Fensters wie der Leser
 - [x] erledigt (2026-10-16): `mail::Bars` (`Split`/`Command`) an `mail::body` und `mail::panel`, `mail::entry_panel`, `mail::panel_foot`, `command_body`/`split_body`/`panel_letter`/`head_with`/`attachment_chips`, `detail::{path, heading}` geteilt, `App::{panel_bars, panel_width, mail_menu_sections}` („…“ im Paneel ohne Close); Mail-Fenster in Schmal und Mittel mit Eintrag, Ordner- und HTML-Mail, „…“- und Reply-Menü, hell und dunkel, torro und plex angesehen, Zentrale unverändert; Nachtrag: Befehlsleiste fest unter dem Kopf (`Panel::bar`, `mail::panel_bar`), Eigenschaften eines Eintrags unter dem Absender
 - **Modell:** Opus · **Braucht:** E11.3 · **Dateien:** `crates/torroinbox/src/{mail,detail,app}.rs`,
+  `crates/torro-gui/src/panel.rs` (Nachtrag: `Panel::bar`, feste Leiste unter dem Kopf),
   `crates/torro-core/src/i18n/de.rs` (nur wenn neue Texte)
 - **Mittel und Schmal** im Mail-Fenster (`App::view` ohne `wide_reader`: `mail::panel` für Ordnermails,
   `detail::panel` mit `mail::body` für Mail-Einträge): neuer Parameter `mail::Bars` (`Split` = E9.4 für Zentrale und App

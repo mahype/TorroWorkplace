@@ -2129,14 +2129,15 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     let edge = size::pill();
     let face = list::avatar(&name, reading.account, false, edge);
     let words_room = (room - edge - space::m()).max(0.0);
-    let name = typo::ellipsize(&name, typo::body_strong(), words_room);
-    let left = words_room - typo::text_width(&name, typo::body_strong()) - space::s();
+    // A flagged mail says so at its sender, as the panel's head of task E9.4 did: the name leaves
+    // room for the flag, so a long one never pushes it out.
+    let flagged = summary.flags.contains(&Flag::Flagged);
+    let flag_room = if flagged { icon::SIZE_SM + space::s() } else { 0.0 };
+    let name = typo::ellipsize(&name, typo::body_strong(), (words_room - flag_room).max(0.0));
+    let left = words_room - flag_room - typo::text_width(&name, typo::body_strong()) - space::s();
     let mut who = row![typo::text(typo::body_strong(), name).style(theme::text).wrapping(Wrapping::None)]
         .spacing(space::s())
         .align_y(Alignment::Center);
-    // A flagged mail says so at its sender, as the panel's head of task E9.4 did.
-    let flagged = summary.flags.contains(&Flag::Flagged);
-    let left = if flagged { left - icon::SIZE_SM - space::s() } else { left };
     if flagged {
         who = who.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
     }
