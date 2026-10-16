@@ -2286,11 +2286,18 @@ Entschieden im Gespräch am 2026-10-15. Die Kürzel stellt man in den **Einstell
 eine Vorlage und kann jeden Befehl darüber hinaus frei belegen. **E10.2 und E10.3 warten auf die Einstellungen im
 Mail-Fenster:** [S.16](steuerzentrale.md#s16-gerüst-bibliothek-torro-settings-ui-und-host-für-den-inhaltsbereich) (Gerüst
 `torro-settings-ui`) und [S.20](steuerzentrale.md#s20-eingang-und-mail-einstellungen-im-inhaltsbereich) (Eingang und Mail).
-E10.1 braucht sie nicht und kann vorher laufen.
+E10.1 und E10.1b brauchen sie nicht und können vorher laufen.
+
+Geändert im Gespräch am 2026-10-16 (#200): Jedes System bekommt die Kürzel seines gewohnten Mailprogramms als Vorgabe,
+**macOS Apple Mail, Linux Thunderbird, Windows Outlook** (E10.1b). „Torro“ ist nirgends mehr Vorgabe, bleibt aber
+wählbar. Jede Vorlage geht auf jedem System, etwa die Kürzel von Apple Mail unter Linux für alle, die vom Mac kommen.
 
 **Grundsätze**
 
-- Unter Windows und Linux gilt Strg, auf dem Mac ⌘ und gleichwertig Strg: beide gehen.
+- Vorgabe je System: macOS Apple Mail, Linux Thunderbird, Windows Outlook. In den Einstellungen wählt man eine andere
+  Vorlage (auch die eines anderen Systems) und belegt einzelne Befehle selbst (E10.2, E10.3).
+- Unter Windows und Linux gilt Strg, auf dem Mac ⌘ und gleichwertig Strg: beide gehen. Eine Vorlage eines anderen
+  Systems wird übersetzt: ⌘ wird unter Linux und Windows zu Strg (Super gehört unter Hyprland dem Fenstermanager).
 - Entf und ⌫ löschen auf jedem System (gibt es seit E8.18). ⇧+Entf, auf dem Mac auch ⇧+⌫, löscht endgültig. Davor
   kommt eine Rückfrage, weil es kein Undo gibt. Die Rückfrage gehört zum Befehl, nicht zur Taste: Sie kommt bei jeder
   Belegung.
@@ -2298,7 +2305,8 @@ E10.1 braucht sie nicht und kann vorher laufen.
 - Kürzel wirken nur, wenn kein Textfeld den Fokus hat; dort gelten dessen Tasten (Kopieren, Einfügen, Alles auswählen).
   Ausnahme: Senden im Schreibfenster.
 
-**Vorlage „Torro“ (Standard)** – gängige Kürzel, sonst die von Apple Mail, Verschieben wie in Outlook:
+**Vorlage „Torro“ (wählbar; Vorgabe nur, bis E10.1b steht)** – gängige Kürzel, sonst die von Apple Mail, Verschieben
+wie in Outlook, auf jedem System gleich:
 
 | Befehl | Windows, Linux | macOS (⌘ oder Strg) |
 |---|---|---|
@@ -2322,8 +2330,8 @@ Strg+A bleibt „Alles auswählen“, darum Archivieren mit Strg+⇧+A. Unter Li
 Eingabemethode aktiv ist (Unicode-Eingabe); bei der Sichtprüfung unter Hyprland ansehen. Rückgängig gilt in der ganzen
 Suite (`widgets::is_undo_key`) und ist nicht frei belegbar.
 
-**Weitere Vorlagen:** Apple Mail, Outlook, Thunderbird, Gmail, jeweils wie beim Vorbild. ⌘ und Strg werden je System
-übersetzt. Die Belegungen vor der Umsetzung gegen die aktuelle Hilfe des Herstellers prüfen; die Übersicht im Gespräch
+**Weitere Vorlagen:** Apple Mail, Outlook, Thunderbird (E10.1b), Gmail (E10.2), jeweils wie beim Vorbild. ⌘ und Strg
+werden je System übersetzt. Die Belegungen vor der Umsetzung gegen die aktuelle Hilfe des Herstellers prüfen; die Übersicht im Gespräch
 war nicht nachgeschlagen. Was das Vorbild nicht kennt (Später, Aufgabe, Spur …), bleibt bei den Einzeltasten.
 
 **Frei belegen:** Eigene Tasten liegen über der gewählten Vorlage. Ein Wechsel der Vorlage behält sie, „Reset“ löscht
@@ -2358,13 +2366,33 @@ eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`
 - **Abnahme:** Tests je Kürzel für beide Systeme (macOS: ⌘ und Strg), Strg+A archiviert nicht, ⇧+Entf fragt erst,
   Textfeld behält seine Tasten, Einzeltasten wie bisher; beide Sprachen.
 
-### E10.2 Vorlagen und eigene Tasten im Kern
+### E10.1b Vorlagen Apple Mail, Thunderbird und Outlook als Vorgabe je System
+- [ ] offen
+- **Modell:** Opus · **Braucht:** E10.1 · **Dateien:** `crates/torro-core/src/shortcuts.rs`,
+  `crates/torroinbox/src/{keys,app,compose}.rs`
+- Drei neue Vorlagen in `torro_core::shortcuts`, jede gegen die aktuelle Hilfe des Herstellers geprüft (Quelle und Datum
+  im Doc-Kommentar der Vorlage). Die Vorgabe richtet sich nach dem System: macOS Apple Mail, Linux Thunderbird, Windows
+  Outlook. Dafür unterscheidet `System` Windows und Linux, nicht mehr nur `Mac` und `Other`; das ändert eine
+  festgelegte Schnittstelle und ist hiermit beschlossen. Jede Vorlage hat Tasten für alle Systeme, damit E10.2 sie
+  überall anbieten kann; ⌘ wird unter Linux und Windows zu Strg.
+- Wo die Übersetzung oder das Vorbild mit festen Tasten kollidiert (etwa ⌃⌘A, das unter Linux zu Strg+A, also „Alles
+  auswählen“, würde, oder Strg+⇧+U und IBus), bekommt der Befehl eine freie Ersatztaste; die Wahl steht im Doc-Kommentar.
+  Was das Vorbild nicht kennt (Spam, In Ordner verschieben, Später …), übernimmt die Vorlage von „Torro“, damit jeder
+  Befehl eine Taste hat. Rückfrage vor dem endgültigen Löschen und die Einzeltasten bleiben.
+- **Oberfläche:** Mail-Fenster und Schreibfenster, wie E10.1; ohne Einstellung, die Vorgabe ist fest bis E10.2.
+  **API/MCP:** kein neuer Request (wie E10.1); die Auswahl kommt mit E10.2.
+- **Abnahme:** Tests je Vorlage und System (Tabelle gegen die Hilfe des Herstellers), keine Doppelbelegung in einer
+  Vorlage, auch nicht mit den Einzeltasten und den gesperrten Tasten; die Vorgabe folgt `System::current()`; beide
+  Sprachen.
+
+### E10.2 Vorlagen wählen und eigene Tasten im Kern
 - [ ] offen – wartet auf S.20
-- **Modell:** Opus · **Braucht:** E10.1, S.20 · **Dateien:** `crates/torro-core/src/{shortcuts,settings}.rs`,
+- **Modell:** Opus · **Braucht:** E10.1b, S.20 · **Dateien:** `crates/torro-core/src/{shortcuts,settings}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs` (`SettingKey`, Beschreibungen von `SET_SETTING` und `GET_SETTINGS`),
   `crates/torroworkplace/src/{core,approvals,mcp}.rs` (Freigabe-Text; in `mcp.rs` nur der Kommentar zu `narrow_schema`),
   `crates/torroinbox/src/{keys,app}.rs`, `docs/api.md`, `docs/api-reference.md`
-- Vorlagen Apple Mail, Outlook, Thunderbird, Gmail (gegen die Hilfe des Herstellers geprüft). Der Kern prüft
+- Vorlage Gmail (gegen die Hilfe des Herstellers geprüft). Ohne gespeicherte Wahl gilt die Vorgabe des Systems aus
+  E10.1b; wählbar sind alle Vorlagen auf jedem System. Der Kern prüft
   Schreibweise, gesperrte Tasten und Doppelbelegung, auch mit den Einzeltasten (`conflict` mit dem belegten Befehl).
   Offene Mail-Fenster folgen sofort, wie beim Design.
 - **Schreibweise:** `Mod` steht für Strg unter Windows und Linux und für ⌘ oder Strg auf dem Mac (`"Mod+Shift+A"`);
