@@ -2121,8 +2121,9 @@ fn head_with<'a>(
 }
 
 /// Who wrote the mail, in the reader's head `room` wide (task E11.3): the avatar ([`size::pill()`])
-/// and beside it the name with the address quietly after it, under them "to … · account · when" in
-/// `typo::meta()`/`text_2` – left-aligned, no date at the right. What does not fit ends in "…".
+/// and beside it the name – with the flag of a flagged mail – and the address quietly after it, under
+/// them "to … · account · when" and, once the mail is loaded, "cc …" in `typo::meta()`/`text_2` –
+/// left-aligned, no date at the right. What does not fit ends in "…".
 fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f32) -> Element<'a, Message> {
     let name = sender_name(summary.from.as_ref());
     let edge = size::pill();
@@ -2133,6 +2134,12 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     let mut who = row![typo::text(typo::body_strong(), name).style(theme::text).wrapping(Wrapping::None)]
         .spacing(space::s())
         .align_y(Alignment::Center);
+    // A flagged mail says so at its sender, as the panel's head of task E9.4 did.
+    let flagged = summary.flags.contains(&Flag::Flagged);
+    let left = if flagged { left - icon::SIZE_SM - space::s() } else { left };
+    if flagged {
+        who = who.push(widgets::with_tooltip(small_icon(Icon::Flag, Some(reading.attention)), tr("Flagged")));
+    }
     if let Some(from) = &summary.from {
         let address = typo::ellipsize(&list::one_line(&from.address), typo::meta(), left);
         who = who.push(typo::text(typo::meta(), address).style(theme::text_3).wrapping(Wrapping::None));
@@ -2145,7 +2152,14 @@ fn sender_block<'a>(reading: &Reading<'a>, summary: &'a MessageSummary, room: f3
     to.push(when(summary.date, reading.now));
     let to = typo::ellipsize(&to.join(" · "), typo::meta(), words_room);
     let to = typo::text(typo::meta(), to).style(theme::text_2).wrapping(Wrapping::None);
-    let words = column![container(who).clip(true), container(to).clip(true)].width(Fill);
+    let mut words = column![container(who).clip(true), container(to).clip(true)].width(Fill);
+    // Who else got it, once the mail is loaded (its summary has no cc).
+    if let Some(Ok(mail)) = reading.loaded
+        && !mail.cc.is_empty()
+    {
+        let cc = typo::ellipsize(&trf("cc {names}", &[("names", &names(&mail.cc))]), typo::meta(), words_room);
+        words = words.push(typo::text(typo::meta(), cc).style(theme::text_2).wrapping(Wrapping::None));
+    }
     row![face, words].spacing(space::m()).align_y(Alignment::Center).into()
 }
 

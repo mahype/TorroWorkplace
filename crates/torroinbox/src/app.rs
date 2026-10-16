@@ -4718,12 +4718,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let open = self.info_open[column.index()];
             let (look, lead, width) = (self.look(), self.lead().is_some(), self.card_width());
             // `overview::row_span` counts the hub's strip under the cursor's row; the mail window's
-            // is taller (task E11.2), its bottom lies that much lower. Cards and the waiting cards
-            // carry no strip.
+            // is taller (task E11.2), its bottom lies that much lower. Cards and the waiting cards –
+            // only the notices' column has those (`Sections::of`) – carry no strip.
             let taller = list::strip_height_in(self.edge_strip()) - list::strip_height();
             let span = sections.order(open).get(index).and_then(|item| {
                 let span = overview::row_span(&sections, open, &item.id, look, lead, width)?;
-                let strip = !look.cards() && !list::is_waiting(item);
+                let waiting = column == Column::Notices && list::is_waiting(item);
+                let strip = !look.cards() && !waiting;
                 Some(if strip { (span.0, span.1 + taller) } else { span })
             });
             (self.column_scroll[column.index()], span, column.scroll_id())
@@ -5943,10 +5944,11 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// panel of the medium and narrow one, whose ✕ stands in its head (task E11.4).
     fn mail_menu_sections(&self, menu: Menu) -> Option<Vec<MenuSection<'_, Message>>> {
         let id = self.menu_mail.as_deref()?;
+        // Both act on the mail the reader or panel shows: none once it shows another.
+        let reading = self.reading().filter(|reading| reading.id == id)?;
         Some(match menu {
             Menu::Reply => mail::reply_menu(id),
             _ => {
-                let reading = self.reading().filter(|reading| reading.id == id)?;
                 // Only the mail window has the command bar: wide its reader, else its panel.
                 let close = self.class() == SizeClass::Wide;
                 mail::more_menu(&reading, self.reader_entry().map(|entry| entry.item), close)
@@ -6100,6 +6102,13 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let at = |pick: fn(&detail::Anchors) -> &Anchor| menu_anchor(from_panel, &anchors, &rows, pick);
         let (snooze_at, task_at, event_at, hide_at) =
             (at(|a| &a.snooze), at(|a| &a.task), at(|a| &a.event), at(|a| &a.hide));
+        // Opened by a key, the pills' menus (Task, Event, Mute…, "Move to folder") hang at the
+        // command bar's fixed "…" (task E11.3): the pills scroll with the mail and may be out of
+        // sight. A click on a pill keeps its menu at the pill, which is in view.
+        let pinned = |pill: Anchor| {
+            if from_panel && self.menu_at == MenuAt::Keys { anchors.more.or(&pill) } else { pill }
+        };
+        let (task_at, event_at, hide_at) = (pinned(task_at), pinned(event_at), pinned(hide_at));
         // The reader has no "Move to …" of its own (task E11.3): its "…" holds it, so the lane
         // question hangs there.
         let lane_at = at(|a| &a.lane);
@@ -6136,8 +6145,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Message::CloseMenu,
             )),
             Some(Menu::Mute) => Some(widgets::floating(&hide_at, below, self.mute_menu(), Message::CloseMenu)),
-            // At the bell (in the reader's Torro bar, task E9.4; above it when there is no room
-            // below), else at the cursor's row.
+            // At the bell (the reader's pill "Mute…", task E11.3; by key at its "…"), else at the
+            // cursor's row.
             // In the panel it opens to the right of the bell, like "Make task": aligned at its end the
             // menu ran out of the panel over the list.
             Some(Menu::Move) => {
@@ -11090,6 +11099,10 @@ mod tests {
         assert_eq!((app.menu, app.menu_mail.as_deref()), (Some(Menu::Reply), Some(id.as_str())));
         assert_eq!((app.menu_from_panel(), app.focus()), (true, Focus::Elsewhere), "at the reader, for the mouse");
         assert!(app.mail_menu(Menu::Reply).is_some());
+        // Once the reader shows another mail, neither menu acts on the one it was opened for.
+        app.menu_mail = Some("m:gone".to_owned());
+        assert!(app.mail_menu(Menu::Reply).is_none() && app.mail_menu(Menu::More).is_none());
+        app.menu_mail = Some(id.clone());
         let _ = app.view();
         let _ = app.update(Message::Mail(MailAction::ReplyAll, id.clone()));
         assert_eq!((app.menu, app.menu_mail.as_deref()), (None, None), "Reply all closes it");
