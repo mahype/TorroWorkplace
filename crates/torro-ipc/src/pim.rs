@@ -321,6 +321,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         }
     }
 
@@ -337,6 +338,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 

@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Setup</title>
+<!-- Entwurf der Einrichtung beim ersten Start (docs/einrichtung.md). Klickbar; ?theme=light, ?step=calendar, ?size=s|m|l. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap">
+<script>
+// Größenklasse und Entwurfszustand aus der Fenstergröße bzw. der URL (?theme=light, ?size=m, ?open=menu).
+(function(){
+  const q=new URLSearchParams(location.search), d=document.documentElement, w=innerWidth;
+  if(q.get('theme')==='light')d.dataset.theme='light';
+  d.dataset.size=q.get('size')||(w>=1024?'l':w>=600?'m':'s');
+  d.dataset.open=q.get('open')||'';
+})();
+</script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+/* Aus linear/torro.css übernommen, damit der Entwurf allein läuft. Torro im Linear-Stil: gemeinsame Tokens und Bausteine für die Entwürfe (Kalender, Aufgaben).
+   Dunkel ist Standard; ?theme=light schaltet hell. Werte nach Linear (Redesign 2024), siehe docs/tasks/design.md. */
+
+:root{
+  --bg:#08090A; --panel:#0F1011; --hover:#16171A; --selected:#1C1E22; --raised:#141518;
+  --line:rgba(255,255,255,.06); --line-strong:rgba(255,255,255,.10);
+  --text:#EDEEF0; --text2:#B4B8BF; --text3:#8A8F98;
+  --accent:#D50C0C; --focus:rgba(255,255,255,.35);
+  --c-work:#5B8CFF; --c-personal:#3FB984; --c-family:#E8A33D; --c-birthday:#D96CA8; --c-groceries:#A78BFA;
+  --tint:18%; --shadow:0 12px 32px rgba(0,0,0,.5); --menu:#17181B;
+  color-scheme:dark;
+}
+:root[data-theme="light"]{
+  --bg:#F4F5F6; --panel:#FFFFFF; --hover:#F0F1F3; --selected:#E9EAED; --raised:#F8F9FA;
+  --line:rgba(0,0,0,.07); --line-strong:rgba(0,0,0,.11);
+  --text:#18191B; --text2:#4F535A; --text3:#62666D;
+  --focus:rgba(0,0,0,.5);
+  --c-work:#3B6EF0; --c-personal:#1F9D68; --c-family:#B06F12; --c-birthday:#C2508F; --c-groceries:#7C5CE6;
+  --tint:14%; --shadow:0 12px 32px rgba(0,0,0,.12); --menu:#FFFFFF;
+  color-scheme:light;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:400 13px/20px Inter,system-ui,sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+.tab{font-family:"Inter Tabular",Inter,sans-serif}
+.muted{color:var(--text2)} .faint{color:var(--text3)}
+svg.i,svg.lucide{width:16px;height:16px;stroke-width:1.75;flex:none}
+svg.i.s14{width:14px;height:14px}
+
+/* Fenster: Seitenleiste auf dem Grund, Inhalt als eingesetzte Fläche (Linear). */
+.app{display:flex;height:100vh}
+.sidebar{width:232px;flex:none;display:flex;flex-direction:column;padding:8px 8px 8px 8px;gap:2px}
+.panel{flex:1;min-width:0;margin:8px 8px 8px 0;background:var(--panel);border:1px solid var(--line);border-radius:8px;display:flex;flex-direction:column;overflow:hidden}
+
+/* Seitenleiste */
+.switcher{display:flex;align-items:center;gap:8px;height:32px;padding:0 6px;border-radius:6px}
+.switcher:hover{background:var(--hover)}
+.logo{width:20px;height:20px;border-radius:5px;background:var(--accent);display:grid;place-items:center;color:#fff;font-weight:600;font-size:11px}
+.switcher b{font-weight:500}
+.switcher .grow{flex:1}
+.iconbtn{width:28px;height:28px;display:grid;place-items:center;border-radius:6px;color:var(--text2);border:0;background:none;padding:0}
+.iconbtn:hover{background:var(--hover);color:var(--text)}
+.iconbtn.boxed{background:var(--raised);border:1px solid var(--line-strong);color:var(--text)}
+.nav{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;color:var(--text2);text-decoration:none}
+.nav:hover{background:var(--hover);color:var(--text)}
+.nav.active{background:var(--selected);color:var(--text)}
+.nav .grow{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav .count{font-family:"Inter Tabular",Inter,sans-serif;font-size:12px;color:var(--text3)}
+.group{display:flex;align-items:center;gap:4px;height:28px;padding:0 8px;margin-top:12px;font-size:12px;font-weight:500;color:var(--text3)}
+.group svg{width:12px;height:12px}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--c)}
+.ring{width:14px;height:14px;border-radius:50%;border:2px solid var(--c);flex:none}
+.sidebar .spacer{flex:1}
+
+/* Kopfleiste im Inhalt */
+.header{height:44px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px 0 16px;border-bottom:1px solid var(--line)}
+.crumbs{display:flex;align-items:center;gap:6px;color:var(--text2);white-space:nowrap}
+.crumbs b{color:var(--text);font-weight:500}
+.crumbs svg{color:var(--text3)}
+.header .grow{flex:1}
+.btn{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 12px/1 Inter,sans-serif;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.ghost{border-color:transparent;background:none;color:var(--text2)}
+.btn.ghost:hover{background:var(--hover);color:var(--text)}
+.btn.primary{background:var(--accent);border-color:transparent;color:#fff}
+.seg{display:inline-flex;height:28px;padding:2px;border-radius:6px;background:var(--bg);border:1px solid var(--line)}
+.seg span{display:grid;place-items:center;padding:0 10px;border-radius:4px;font-size:12px;font-weight:500;color:var(--text3)}
+.seg span.on{background:var(--selected);color:var(--text);box-shadow:0 0 0 1px var(--line-strong)}
+kbd{font:500 11px/1 Inter,sans-serif;color:var(--text3);border:1px solid var(--line-strong);border-radius:4px;padding:2px 4px}
+
+/* Eigenschaften-Spalte (Linear „Properties“) */
+.props{width:300px;flex:none;border-left:1px solid var(--line);padding:16px 16px 24px;overflow:auto}
+.props h4{margin:16px 0 4px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.props h4:first-child{margin-top:0}
+.prop{display:flex;align-items:center;gap:8px;min-height:32px;padding:0 8px;margin:0 -8px;border-radius:6px;color:var(--text)}
+.prop:hover{background:var(--hover)}
+.prop svg{color:var(--text3)}
+.prop .faint{margin-left:auto}
+.avatar{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-size:9px;font-weight:600;color:#fff;margin-left:-6px;border:2px solid var(--panel)}
+.avatar:first-child{margin-left:0}
+
+/* Größenklassen wie torro_gui::layout::of: l = breit (>= 1024), m = mittel (600–1023), s = schmal (< 600).
+   Gesetzt von size.js als <html data-size>. Die Hilfsklassen blenden Teile je Klasse aus. */
+html[data-size="m"] .sidebar,html[data-size="s"] .sidebar{display:none}
+html[data-size="m"] .panel,html[data-size="s"] .panel{margin:0;border:0;border-radius:0}
+html:not([data-size="l"]) .only-l{display:none!important}
+html[data-size="l"] .not-l{display:none!important}
+html:not([data-size="s"]) .only-s{display:none!important}
+html[data-size="s"] .not-s{display:none!important}
+html[data-size="s"] .header{padding:0 8px}
+
+/* Ausklappmenü und schwebende Karte: dorthin wandern Optionen, wenn die Kachel kleiner wird. */
+.dd{position:relative}
+.btn .chev{color:var(--text3)}
+.menu{position:absolute;top:calc(100% + 4px);left:0;min-width:232px;background:var(--menu);border:1px solid var(--line-strong);border-radius:8px;box-shadow:var(--shadow);padding:4px;z-index:30}
+.menu.right{left:auto;right:0}
+.menu .item{display:flex;align-items:center;gap:8px;height:30px;padding:0 8px;border-radius:5px;color:var(--text);white-space:nowrap}
+.menu .item:hover,.menu .item.hl{background:var(--hover)}
+.menu .item .grow{flex:1}
+.menu .item .faint,.menu .item kbd{margin-left:auto}
+.menu .item.on::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--text2);margin-left:8px}
+.menu .label{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);padding:8px 8px 4px}
+.menu .sep{height:1px;background:var(--line);margin:4px 0}
+.popover{position:absolute;width:320px;background:var(--menu);border:1px solid var(--line-strong);border-radius:10px;box-shadow:var(--shadow);padding:16px;z-index:30}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.pchip{height:26px;display:inline-flex;align-items:center;gap:6px;padding:0 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;color:var(--text)}
+.pchip svg{width:14px;height:14px;color:var(--text3)}
+.tab{font-variant-numeric:tabular-nums}
+
+/* Schrittliste: wie die Seitenleiste, Zustand rechts als Icon. */
+.steps .nav .state{color:var(--text3)}
+.steps .nav.done .state{color:var(--text2)}
+.steps .nav.skipped .grow{color:var(--text3)}
+.steps .nav.skipped .state{font-size:12px}
+.steps .brand{display:flex;align-items:center;gap:8px;height:32px;padding:0 6px;margin-bottom:8px}
+.steps .brand b{font-weight:500}
+.steps .ver{font-size:12px;color:var(--text3);padding:0 8px 4px}
+html[data-size="m"] .steps{display:flex;width:52px;align-items:center}
+html[data-size="m"] .steps .grow,html[data-size="m"] .steps .state,html[data-size="m"] .steps .brand b,html[data-size="m"] .steps .ver{display:none}
+html[data-size="m"] .steps .nav{width:36px;justify-content:center;padding:0}
+html[data-size="m"] .panel{margin:8px 8px 8px 0;border:1px solid var(--line);border-radius:8px}
+
+/* Inhalt */
+.body{flex:1;overflow:auto;padding:32px 24px}
+html[data-size="s"] .body{padding:24px 16px}
+.page{max-width:640px;display:grid;gap:24px}
+.page h1{margin:0;font-size:22px;line-height:28px;font-weight:600}
+.page .lead{margin:4px 0 0;color:var(--text2)}
+.foot{height:56px;flex:none;display:flex;align-items:center;gap:8px;padding:0 16px;border-top:1px solid var(--line)}
+.foot .grow{flex:1;display:flex;align-items:center;gap:6px;color:var(--text2);min-width:0}
+.btn.lg{height:36px;padding:0 14px;font-size:13px}
+.progress{height:4px;border-radius:2px;background:var(--line-strong);overflow:hidden;width:64px}
+.progress i{display:block;height:100%;background:var(--text2)}
+
+/* Gruppe (widgets::group): Titel, Zeilen mit Linien, Satz darunter. */
+.grp h3{margin:0 0 4px;font-size:12px;line-height:16px;font-weight:500;color:var(--text3)}
+.rows{border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;min-height:44px;padding:6px 16px}
+.row + .row,.row + .sub,.sub + .row{border-top:1px solid var(--line)}
+.row.tall{min-height:56px}
+.row .grow{flex:1;min-width:0}
+.row .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .d{font-size:12px;line-height:16px;color:var(--text3)}
+.row > svg{color:var(--text2)}
+.row.off{opacity:.55}
+.row.link{color:var(--text2);cursor:pointer}
+.row.link:hover{background:var(--hover);color:var(--text)}
+.grp .note{margin:8px 0 0;font-size:12px;line-height:16px;color:var(--text2)}
+.sub{padding:12px 16px 16px;background:var(--raised);display:grid;gap:12px}
+.tile{width:28px;height:28px;border-radius:6px;display:grid;place-items:center;background:var(--selected);border:1px solid var(--line-strong);font-size:12px;font-weight:600;flex:none;color:var(--text)}
+.tile svg{width:16px;height:16px}
+
+/* Schalter (style::toggler): neutral, nie rot. */
+.sw{width:28px;height:16px;border-radius:8px;border:1px solid var(--line-strong);background:var(--raised);position:relative;flex:none;cursor:pointer}
+.sw::after{content:"";position:absolute;top:2px;left:2px;width:10px;height:10px;border-radius:50%;background:var(--text3);transition:left .12s ease-out}
+.sw.on{background:var(--text);border-color:transparent}
+.sw.on::after{left:14px;background:var(--panel)}
+
+/* Zustand mit Wort, Farbe nur im Icon */
+.pill{display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 8px;border-radius:11px;border:1px solid var(--line-strong);font-size:12px;font-weight:500;color:var(--text2);white-space:nowrap}
+.pill svg{width:12px;height:12px}
+.ok svg,.ok{color:#3FB984} .warn{color:#E8A33D}
+:root[data-theme="light"] .ok svg,:root[data-theme="light"] .ok{color:#1F9D68}
+.pill.ok{color:var(--text2)} .pill.ok svg{color:#3FB984}
+
+/* Felder */
+.field{display:grid;gap:4px}
+.field label{font-size:12px;line-height:16px;font-weight:500;color:var(--text2)}
+.input{height:32px;border-radius:6px;border:1px solid var(--line-strong);background:var(--panel);color:var(--text);font:400 13px Inter,sans-serif;padding:0 10px;width:100%}
+.input:focus{outline:2px solid var(--focus);outline-offset:1px}
+.inline{display:flex;gap:8px;align-items:center}
+.chip{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500;color:var(--text2);cursor:pointer}
+.chip:hover{background:var(--hover);color:var(--text)}
+.chip.on{background:var(--selected);border-color:rgba(255,255,255,.28);color:var(--text)}
+:root[data-theme="light"] .chip.on{border-color:rgba(0,0,0,.32)}
+
+/* Komponenten als Karten */
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,280px),1fr));gap:12px}
+.card{border:1px solid var(--line-strong);background:var(--raised);border-radius:10px;padding:16px;display:grid;gap:12px;cursor:pointer}
+.card:hover{border-color:rgba(255,255,255,.28)}
+.card.on{background:var(--selected)}
+.card .head{display:flex;align-items:center;gap:12px}
+.card .head b{font-weight:500;flex:1}
+.card p{margin:0;color:var(--text2);font-size:12px;line-height:16px}
+.hero{display:grid;gap:16px;padding-top:24px}
+.hero .logo{width:40px;height:40px;border-radius:10px;font-size:20px}
+.hero h1{font-size:28px;line-height:32px}
+.spin{animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar steps" id="steps"></aside>
+  <main class="panel">
+    <div class="header" id="head"></div>
+    <div class="body"><div class="page" id="page"></div></div>
+    <div class="foot" id="foot"></div>
+  </main>
+</div>
+
+<script>
+const S = {
+  step: 0,
+  skipped: new Set(),
+  visited: new Set([0]),
+  lang: 'System', look: 'System',
+  nc: 'idle',            // idle | waiting | connected
+  ncSkipped: false,
+  comp: {calendar:true, tasks:true, mail:false, inbox:true, assistant:true, workspaces:true},
+  cals: {Work:true, Family:true, Personal:true, Birthdays:false},
+  lists: {'Inbox':true, 'Shopping':true, 'Projects':true},
+  caldavOpen: false, caldav: null, caldavProvider: 'mailbox.org',
+  github: false,
+  sources: {notif:true, talk:true, github:false, mail:false},
+  quiet: true,
+  ollama: 'found',       // found | connected
+  keyOpen: null, keys: {},
+  model: 'qwen3:8b',
+};
+
+const COMPONENTS = [
+  ['calendar','calendar','Calendar','From Nextcloud and other CalDAV calendars'],
+  ['tasks','list-checks','Tasks','From Nextcloud, CalDAV and GitHub issues'],
+  ['mail','mail','Mail','IMAP accounts, or take them over from TorroMail'],
+  ['inbox','inbox','Inbox','Notifications, mentions and reviews in one place'],
+  ['assistant','sparkles','Assistant','Chat with a local or cloud AI'],
+  ['workspaces','layout-dashboard','Workspaces','Save and restore window layouts · Hyprland found'],
+];
+
+// Alle Schritte; Komponenten-Schritte nur, wenn die Komponente an ist.
+const ALL = [
+  {id:'welcome', icon:'hand', name:'Welcome'},
+  {id:'nextcloud', icon:'cloud', name:'Nextcloud'},
+  {id:'components', icon:'layout-grid', name:'Components'},
+  {id:'calendar', icon:'calendar', name:'Calendar', comp:'calendar'},
+  {id:'tasks', icon:'list-checks', name:'Tasks', comp:'tasks'},
+  {id:'mail', icon:'mail', name:'Mail', comp:'mail'},
+  {id:'inbox', icon:'inbox', name:'Inbox', comp:'inbox'},
+  {id:'ai', icon:'sparkles', name:'AI'},
+  {id:'done', icon:'flag', name:'Done'},
+];
+const steps = () => ALL.filter(s => !s.comp || S.comp[s.comp]);
+const cur = () => steps()[Math.min(S.step, steps().length-1)];
+
+const ic = (n, cls='') => `<i data-lucide="${n}" class="${cls}"></i>`;
+const sw = (on, act) => `<span class="sw ${on?'on':''}" role="switch" aria-checked="${on}" onclick="event.stopPropagation();${act}"></span>`;
+const dot = c => `<span class="dot" style="--c:var(--c-${c})"></span>`;
+
+function go(i){ S.step = Math.max(0, Math.min(i, steps().length-1)); S.visited.add(S.step); render(); }
+function next(){ go(S.step+1); }
+function skip(){ S.skipped.add(cur().id); next(); }
+function set(path, v){ const k=path.split('.'); let o=S; while(k.length>1)o=o[k.shift()]; o[k[0]] = v===undefined ? !o[k[0]] : v; render(); }
+
+function stepState(s, i){
+  if (S.skipped.has(s.id)) return 'skipped';
+  if (i < S.step || (s.id==='nextcloud' && S.nc==='connected')) return 'done';
+  return '';
+}
+
+function renderSteps(){
+  const list = steps().map((s,i) => {
+    const st = stepState(s,i), active = i===S.step;
+    const right = st==='done' ? ic('check','s14') : st==='skipped' ? 'Skipped' : '';
+    return `<a class="nav ${active?'active':''} ${st}" href="#" title="${s.name}" onclick="go(${i});return false">${ic(s.icon)}<span class="grow">${s.name}</span><span class="state">${right}</span></a>`;
+  }).join('');
+  document.getElementById('steps').innerHTML =
+    `<div class="brand"><div class="logo">T</div><b>Set up Torro</b></div>${list}<div class="spacer"></div><div class="ver">Torro Workplace · 0.4</div>`;
+}
+
+function renderHead(){
+  const n = steps().length, i = S.step+1, s = cur();
+  const pct = Math.round(i/n*100);
+  document.getElementById('head').innerHTML = `
+    ${S.step>0 ? `<button class="iconbtn only-s" onclick="go(S.step-1)" title="Back">${ic('chevron-left')}</button>` : ''}
+    <div class="crumbs"><span class="tab">Step ${i} of ${n}</span>${ic('chevron-right','s14')}<b>${s.name}</b></div>
+    <span class="progress only-s"><i style="width:${pct}%"></i></span>
+    <span class="grow"></span>
+    ${s.id!=='done' ? `<button class="btn ghost" onclick="laterMsg()">Set up later</button>` : ''}`;
+}
+function laterMsg(){ alert('Setup stays open: Overview shows “Finish setup”. Everything connected so far is kept.'); }
+
+function renderFoot(status, primary, opts={}){
+  const back = S.step>0 ? `<button class="btn ghost not-s" onclick="go(S.step-1)">Back</button>` : '';
+  const sk = opts.noSkip ? '' : `<button class="btn" onclick="${opts.skipAct||'skip()'}">${opts.skipLabel||'Skip'}</button>`;
+  document.getElementById('foot').innerHTML =
+    `<span class="grow">${status||''}</span>${back}${sk}<button class="btn primary ${opts.lg?'lg':''}" onclick="${primary[1]}">${primary[0]}</button>`;
+}
+
+const pages = {
+  welcome(){
+    renderFoot('', ['Get started','next()'], {noSkip:true});
+    const seg = (key, vals) => `<div class="seg">${vals.map(v=>`<span class="${S[key]===v?'on':''}" onclick="set('${key}','${v}')" style="cursor:pointer">${v}</span>`).join('')}</div>`;
+    return `<div class="hero"><div class="logo">T</div>
+      <div><h1>Set up Torro Workplace</h1>
+      <p class="lead">Connect your Nextcloud, choose what you need, and add more calendars, mail and AI. Every step can be skipped and changed later in Settings.</p></div></div>
+      <div class="grp"><h3>Preferences</h3><div class="rows">
+        <div class="row">${ic('languages')}<span class="grow">Language</span>${seg('lang',['System','English','Deutsch'])}</div>
+        <div class="row">${ic('sun-moon')}<span class="grow">Appearance</span>${seg('look',['System','Light','Dark'])}</div>
+      </div><p class="note">Applies to all apps of the suite.</p></div>`;
+  },
+
+  nextcloud(){
+    if (S.nc==='connected'){
+      renderFoot(`<span class="ok">${ic('circle-check','s14')}</span> Signed in as anna@cloud.example.org`, ['Continue','next()'], {noSkip:true});
+      const svc = [
+        ['calendar','Calendars','4 calendars',true],['list-checks','Tasks','3 task lists',true],
+        ['contact','Contacts','Later in the suite',true],['bell','Notifications','For the inbox',true],
+        ['message-circle','Talk','For the inbox',true],['zap','Push','Instant updates, no polling',true],
+        ['square-kanban','Deck','Not on this server',false],
+      ];
+      return `<div><h1>Nextcloud is connected</h1><p class="lead">This is what your server offers. The next steps use it.</p></div>
+        <div class="grp"><h3>cloud.example.org</h3><div class="rows">
+        ${svc.map(([i,n,d,on])=>`<div class="row ${on?'':'off'}">${ic(i)}<span class="grow"><div class="t">${n}</div></span><span class="d">${d}</span>${on?`<span class="ok">${ic('circle-check','s14')}</span>`:ic('minus','s14')}</div>`).join('')}
+        </div><p class="note">Calendars and tasks come over CalDAV, which every Nextcloud has. The Calendar and Tasks apps on the server are only their web pages.</p></div>
+        <div class="grp"><div class="rows"><div class="row link" onclick="set('nc','idle')">${ic('plus')}<span class="grow">Add another Nextcloud</span><span class="d">e.g. work and private</span></div></div></div>`;
+    }
+    if (S.nc==='waiting'){
+      renderFoot(`${ic('loader-circle','s14 spin')} Waiting for the sign-in in your browser…`, ['Open browser again','finishNc()'], {skipLabel:'Cancel', skipAct:"set('nc','idle')"});
+      return `<div><h1>Sign in to Nextcloud</h1><p class="lead">Nextcloud handles the sign-in. You sign in on its own page; Torro Workplace never sees your password.</p></div>
+        <div class="grp"><h3>Browser didn't open?</h3><div class="rows"><div class="row">${ic('link')}<span class="grow t faint">https://cloud.example.org/login/v2/flow/7Hk2…</span><button class="btn ghost">${ic('copy','s14')} Copy</button></div></div></div>`;
+    }
+    renderFoot('', ['Connect','startNc()'], {skipLabel:"I don't use Nextcloud"});
+    return `<div><h1>Connect your Nextcloud</h1><p class="lead">Calendars, tasks, notifications and Talk come from your Nextcloud. Without one, you can add other accounts in the next steps.</p></div>
+      <div class="grp"><div class="field"><label>Server address</label><input class="input" value="cloud.example.org" onkeydown="if(event.key==='Enter')startNc()"></div>
+      <p class="note">Your browser opens to sign in. Torro Workplace keeps an app password in the system keychain.</p></div>`;
+  },
+
+  components(){
+    renderFoot(`${Object.values(S.comp).filter(Boolean).length} of 6 on`, ['Continue','next()'], {noSkip:true});
+    return `<div><h1>What do you want to use?</h1><p class="lead">Turn on what you need. The next steps set up each of them. You can change this later under Apps.</p></div>
+      <div class="cards">${COMPONENTS.map(([k,i,n,d])=>`
+        <div class="card ${S.comp[k]?'on':''}" onclick="set('comp.${k}')">
+          <div class="head"><span class="tile">${ic(i)}</span><b>${n}</b>${sw(S.comp[k],`set('comp.${k}')`)}</div>
+          <p>${d}</p></div>`).join('')}</div>
+      <p class="note" style="margin:0;font-size:12px;color:var(--text2)">Turned off: not in the app switcher or the tray, and nothing runs for it in the background. Accounts and data stay.</p>`;
+  },
+
+  calendar(){
+    const n = Object.values(S.cals).filter(Boolean).length + (S.caldav?2:0);
+    renderFoot(`${n} calendars shown`, ['Continue','next()']);
+    const colors = {Work:'work',Family:'family',Personal:'personal',Birthdays:'birthday'};
+    const nc = S.nc==='connected' ? `
+      <div class="grp"><h3>Nextcloud · anna@cloud.example.org</h3><div class="rows">
+      ${Object.entries(S.cals).map(([c,on])=>`<div class="row">${dot(colors[c])}<span class="grow t">${c}</span>${c==='Birthdays'?'<span class="d">Read-only</span>':''}${sw(on,`set('cals.${c}')`)}</div>`).join('')}
+      </div><p class="note">Hidden calendars stay on the server.</p></div>` :
+      `<div class="grp"><h3>Nextcloud</h3><div class="rows"><div class="row link" onclick="go(1)">${ic('cloud')}<span class="grow">Connect Nextcloud to use its calendars</span>${ic('chevron-right','s14')}</div></div></div>`;
+    const providers = ['mailbox.org','Posteo','Fastmail','iCloud','Other CalDAV server'];
+    const form = S.caldavOpen ? `<div class="sub">
+        <div class="chips">${providers.map(p=>`<span class="chip ${S.caldavProvider===p?'on':''}" onclick="set('caldavProvider','${p}')">${S.caldavProvider===p?ic('check','s14'):''}${p}</span>`).join('')}</div>
+        <div class="field"><label>${S.caldavProvider==='Other CalDAV server'?'Server address':'E-mail address'}</label><input class="input" placeholder="${S.caldavProvider==='Other CalDAV server'?'dav.example.org':'anna@'+S.caldavProvider.toLowerCase()}"></div>
+        <div class="field"><label>Password</label><input class="input" type="password" value="secretsecret"></div>
+        ${S.caldavProvider==='iCloud'?`<p class="note" style="margin:0">iCloud needs an app password. <a href="#" style="color:var(--text)">Create one at appleid.apple.com</a></p>`:''}
+        <div class="inline"><span class="grow"></span><button class="btn ghost" onclick="set('caldavOpen',false)">Cancel</button><button class="btn" onclick="addCaldav()">Connect</button></div>
+      </div>` : '';
+    const added = S.caldav ? `<div class="row">${dot('groceries')}<span class="grow t">Team</span><span class="d">${S.caldav}</span>${sw(true,'')}</div>
+      <div class="row">${dot('work')}<span class="grow t">Holidays</span><span class="d">${S.caldav}</span>${sw(true,'')}</div>` : '';
+    return `<div><h1>Calendar</h1><p class="lead">Choose which calendars the suite shows, and add calendars from other providers.</p></div>
+      ${nc}
+      <div class="grp"><h3>Other calendars</h3><div class="rows">${added}
+        <div class="row link" onclick="set('caldavOpen',true)">${ic('plus')}<span class="grow">Add a CalDAV calendar</span><span class="d">mailbox.org, iCloud, Fastmail …</span></div>${form}
+        <div class="row off">${ic('rss')}<span class="grow">Subscribe to a calendar link</span><span class="d">Coming later</span></div>
+      </div></div>`;
+  },
+
+  tasks(){
+    renderFoot('', ['Continue','next()']);
+    const colors = {Inbox:'work',Shopping:'groceries',Projects:'personal'};
+    return `<div><h1>Tasks</h1><p class="lead">Your task lists from Nextcloud and CalDAV, and issues from GitHub.</p></div>
+      ${S.nc==='connected'?`<div class="grp"><h3>Nextcloud · anna@cloud.example.org</h3><div class="rows">
+      ${Object.entries(S.lists).map(([c,on])=>`<div class="row"><span class="ring" style="--c:var(--c-${colors[c]})"></span><span class="grow t">${c}</span>${sw(on,`set('lists.${c}')`)}</div>`).join('')}
+      </div></div>`:''}
+      <div class="grp"><h3>GitHub</h3><div class="rows">
+      ${S.github ? `<div class="row tall">${ic('github')}<span class="grow"><div class="t">Signed in as anna-berg</div><div class="d">Issues and pull requests as filter lists</div></span><span class="pill ok">${ic('circle-check')}Connected</span></div>`
+      : `<div class="row tall">${ic('github')}<span class="grow"><div class="t">Use GitHub CLI sign-in</div><div class="d">gh is signed in as anna-berg · confirm once</div></span><button class="btn" onclick="set('github',true)">Use</button></div>
+         <div class="row link">${ic('key-round')}<span class="grow">Paste a token instead</span>${ic('chevron-right','s14')}</div>`}
+      </div><p class="note">Read-only. Projects need the read:project permission.</p></div>
+      <div class="grp"><h3>Other task lists</h3><div class="rows"><div class="row link">${ic('plus')}<span class="grow">Add a CalDAV account</span><span class="d">${S.caldav?S.caldav+' has no task lists':'mailbox.org, Posteo …'}</span></div></div></div>`;
+  },
+
+  mail(){
+    renderFoot('', ['Continue','next()']);
+    return `<div><h1>Mail</h1><p class="lead">Add your mail accounts. Calendars that come with them show up under Calendar.</p></div>
+      <div class="grp"><h3>Use accounts from TorroMail?</h3><div class="rows">
+        <div class="row tall"><span class="tile">A</span><span class="grow"><div class="t">anna@mailbox.org</div><div class="d">imap.mailbox.org · smtp.mailbox.org</div></span><button class="btn">Use</button></div>
+        <div class="row tall off"><span class="tile">W</span><span class="grow"><div class="t">anna@work.example</div><div class="d">Signs in with Microsoft – not supported yet</div></span></div>
+      </div><p class="note">Using an account copies its password from TorroMail's keychain entry.</p></div>
+      <div class="grp"><div class="rows"><div class="row link">${ic('plus')}<span class="grow">Add mail account</span><span class="d">Finds the servers from your address</span></div></div></div>`;
+  },
+
+  inbox(){
+    renderFoot('', ['Continue','next()']);
+    const nc = S.nc==='connected';
+    const src = [
+      ['notif','bell','Nextcloud notifications','Mentions, shares, reminders',nc],
+      ['talk','message-circle','Nextcloud Talk','Unread chats and mentions',nc],
+      ['github','github','GitHub','Review requests and mentions',S.github],
+      ['mail','mail','Mail','New mail from people, not newsletters',S.comp.mail],
+    ];
+    return `<div><h1>Inbox</h1><p class="lead">One place for what needs you. Choose what flows in.</p></div>
+      <div class="grp"><h3>Sources</h3><div class="rows">
+      ${src.map(([k,i,n,d,ok])=>`<div class="row tall ${ok?'':'off'}">${ic(i)}<span class="grow"><div class="t">${n}</div><div class="d">${ok?d:'Not connected'}</div></span>${ok?sw(S.sources[k],`set('sources.${k}')`):''}</div>`).join('')}
+        <div class="row link">${ic('radio-tower')}<span class="grow">Subscribe to ntfy topics</span><span class="d">CI, uptime, scripts</span></div>
+      </div></div>
+      <div class="grp"><div class="rows"><div class="row tall">${ic('bell-off')}<span class="grow"><div class="t">Quiet during busy events</div><div class="d">Only urgent entries pop up while you're in a meeting</div></span>${sw(S.quiet,"set('quiet')")}</div></div></div>`;
+  },
+
+  ai(){
+    const any = S.ollama==='connected' || Object.keys(S.keys).length;
+    renderFoot(any?`<span class="ok">${ic('circle-check','s14')}</span> ${S.ollama==='connected'?'Ollama':Object.keys(S.keys)[0]} connected`:'', ['Continue','next()']);
+    const cloud = [
+      ['Open models', [['OpenRouter','R','Qwen, Llama, Mistral, DeepSeek … with one key','Cloud · US']]],
+      ['Providers', [['Anthropic','A','Claude','Cloud · US'],['OpenAI','O','GPT','Cloud · US'],['Google Gemini','G','Gemini','Cloud · US'],['Mistral','M','Mistral, Codestral','Cloud · EU']]],
+      ['Providers in China', [['DeepSeek','D','DeepSeek V3, R1 · open weights','Cloud · China'],['Qwen','Q','Alibaba Cloud Model Studio · open weights','Cloud · China'],['Kimi','K','Moonshot AI · open weights','Cloud · China'],['GLM','Z','Z.ai (Zhipu) · open weights','Cloud · China'],['MiniMax','M','MiniMax','Cloud · China']]],
+    ];
+    const row = ([n,l,d,r]) => {
+      const done = S.keys[n];
+      const open = S.keyOpen===n && !done;
+      return `<div class="row tall"><span class="tile">${l}</span><span class="grow"><div class="t">${n}</div><div class="d">${d}</div></span><span class="pill">${r}</span>
+        ${done?`<span class="pill ok">${ic('circle-check')}Connected</span>`:`<button class="btn ${open?'ghost':''}" onclick="set('keyOpen','${open?'':n}')">${open?'Cancel':'Add key'}</button>`}</div>
+        ${open?`<div class="sub"><div class="field"><label>API key</label><div class="inline"><input class="input" type="password" value="sk-xxxxxxxxxxxxxxxx"><button class="btn" onclick="S.keys['${n}']=1;S.keyOpen=null;render()">Connect</button></div></div>
+          <p class="note" style="margin:0">Stored in the system keychain. <a href="#" style="color:var(--text)">Get a key from ${n}</a></p></div>`:''}`;
+    };
+    return `<div><h1>AI</h1><p class="lead">Local models first: they keep your data on this computer. Add cloud providers if you want more.</p></div>
+      <div class="grp"><h3>On this computer</h3><div class="rows">
+        <div class="row tall"><span class="tile">${ic('cpu')}</span><span class="grow"><div class="t">Ollama</div><div class="d">localhost:11434 · 4 models</div></span>
+          ${S.ollama==='connected'?`<span class="pill ok">${ic('circle-check')}Connected</span>`:`<button class="btn" onclick="set('ollama','connected')">Connect</button>`}</div>
+        <div class="row tall off"><span class="tile">${ic('cpu')}</span><span class="grow"><div class="t">LM Studio</div><div class="d">Not running on this computer</div></span></div>
+        <div class="row link">${ic('plus')}<span class="grow">Other local server</span><span class="d">vLLM, llama.cpp, LocalAI</span></div>
+      </div></div>
+      ${cloud.map(([t,rs])=>`<div class="grp"><h3>${t}</h3><div class="rows">${rs.map(row).join('')}</div></div>`).join('')}
+      <div class="grp"><div class="rows"><div class="row link">${ic('plus')}<span class="grow">Other OpenAI-compatible server</span><span class="d">Address and key</span></div></div>
+        <p class="note">Cloud providers receive what you send them. Mail goes to local models only unless you change it.</p></div>
+      ${any?`<div class="grp"><h3>Use for</h3><div class="rows">
+        <div class="row tall">${ic('sparkles')}<span class="grow"><div class="t">Assistant</div><div class="d">What a new chat starts with</div></span>
+          <button class="btn">${S.ollama==='connected'?'Ollama · '+S.model:Object.keys(S.keys)[0]}${ic('chevrons-up-down','s14 chev')}</button></div>
+        <div class="row tall off">${ic('inbox')}<span class="grow"><div class="t">Inbox: suggest lane, summarize</div><div class="d">Suggested setup follows with AI assignments</div></span></div>
+      </div></div>`:''}`;
+  },
+
+  done(){
+    renderFoot('', ['Finish','alert(\'Setup done – opens Overview.\')'], {noSkip:true, lg:true});
+    const line = (i,n,info,skipped,open) => `<div class="row tall ${skipped?'off':''}">${ic(i)}<span class="grow"><div class="t">${n}</div><div class="d">${info}</div></span>${skipped?'<span class="pill">Skipped</span>':open?`<button class="btn ghost">Open ${ic('arrow-up-right','s14')}</button>`:`<span class="pill ok">${ic('circle-check')}Ready</span>`}</div>`;
+    const cals = Object.values(S.cals).filter(Boolean).length + (S.caldav?2:0);
+    const rows = [
+      line('cloud','Nextcloud', S.nc==='connected'?'anna@cloud.example.org':'Not connected', S.nc!=='connected', false),
+      S.comp.calendar && line('calendar','Calendar', `${cals} calendars`, S.skipped.has('calendar'), true),
+      S.comp.tasks && line('list-checks','Tasks', `${Object.values(S.lists).filter(Boolean).length} lists${S.github?' · GitHub':''}`, S.skipped.has('tasks'), true),
+      S.comp.mail && line('mail','Mail', 'No account yet', S.skipped.has('mail') || true, true),
+      S.comp.inbox && line('inbox','Inbox', `${Object.values(S.sources).filter(Boolean).length} sources`, S.skipped.has('inbox'), true),
+      line('sparkles','AI', S.ollama==='connected'?'Ollama · '+S.model:Object.keys(S.keys).join(', ')||'No AI account', !(S.ollama==='connected'||Object.keys(S.keys).length), false),
+    ].filter(Boolean).join('');
+    return `<div><h1>You're set up</h1><p class="lead">Change any of this later in Settings.</p></div>
+      <div class="grp"><div class="rows">${rows}</div></div>
+      <div class="grp"><div class="rows"><div class="row link">${ic('bot')}<span class="grow">Connect an agent like Claude Code</span><span class="d">Agents &amp; API</span>${ic('chevron-right','s14')}</div></div></div>`;
+  },
+};
+
+function startNc(){ S.nc='waiting'; render(); setTimeout(finishNc, 1800); }
+function finishNc(){ if(S.nc==='waiting'){ S.nc='connected'; render(); } }
+function addCaldav(){ S.caldav = S.caldavProvider==='Other CalDAV server' ? 'dav.example.org' : S.caldavProvider; S.caldavOpen=false; render(); }
+
+function render(){
+  if (S.step >= steps().length) S.step = steps().length-1;
+  renderSteps(); renderHead();
+  document.getElementById('page').innerHTML = pages[cur().id]();
+  lucide.createIcons();
+}
+
+addEventListener('resize', () => {
+  if (new URLSearchParams(location.search).get('size')) return;
+  const w = innerWidth; document.documentElement.dataset.size = w>=1024?'l':w>=600?'m':'s';
+});
+const q = new URLSearchParams(location.search).get('step');
+if (q === 'nextcloud-done' || (q && q !== 'welcome' && q !== 'nextcloud')) S.nc = 'connected';
+if (q) { const i = steps().findIndex(s => s.id === q.replace('-done','')); if (i >= 0) S.step = i; }
+render();
+</script>
+</body>
+</html>

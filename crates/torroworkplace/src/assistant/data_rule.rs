@@ -7,10 +7,12 @@
 //! the default holds with the one switch for mail, and every decision goes through the functions
 //! here, so KI.1 replaces them and nothing else:
 //!
-//! - [`place_of`]: where an AI account's model runs ([`Place`]);
+//! - [`place_of`]: where a model of an AI account runs ([`Place`]), decided by account **and** model
+//!   (task S.23: Ollama's cloud models run on `ollama.com`), once the model is chosen;
 //! - [`for_model`]: a tool's answer as a model at a place under the person's rule ([`Reader`]) may
 //!   read it;
-//! - [`history_allowed`]: whether an earlier answer of the conversation may go to the model;
+//! - [`history_allowed`]: whether an earlier answer of the conversation may go to the model, by the
+//!   engine and model that wrote it;
 //! - [`kept_from`]: whether a command reads what the rule keeps from models elsewhere.
 //!
 //! With mail let out ([`DataRule::mail_to_cloud`]), a model elsewhere reads mail as a local one does:
@@ -51,7 +53,7 @@
 //! `tasks.list_todos` shows it to every model; tasks are the person's own data from then on.
 
 use serde_json::{Value, json};
-use torro_core::ai::{AiProvider, is_this_computer};
+use torro_core::ai::{AiModel, AiProvider, is_this_computer, openai};
 use torro_inbox::{Item, Rule, SourceKind};
 use torro_ipc::api::Area;
 use torro_ipc::assistant::Note;
@@ -64,23 +66,36 @@ pub const WITHHELD: &str = "withheld by your data rule";
 /// Where the model of an AI account runs, as far as the data rule cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Place {
-    /// On a computer of the person: a local server (Ollama, LM Studio), or another OpenAI-compatible
-    /// server at an address of this computer.
+    /// On a computer of the person: a model of a local server (Ollama, LM Studio) that computes
+    /// there, or of another OpenAI-compatible server at an address of this computer.
     Local,
     /// Anywhere else: OpenRouter, a server of a provider, a server in the network that is no
-    /// Ollama or LM Studio.
+    /// Ollama or LM Studio, a cloud model of Ollama (task S.23).
     Remote,
 }
 
-/// Where the model of an AI account of `provider` at the base address `server` runs: Ollama and
-/// LM Studio are local wherever they run (they run on the person's own machines), OpenRouter never
-/// is (an address of this computer would be a proxy to it), any other server only at an address of
-/// this computer (`localhost`, `127.0.0.1`, `::1`).
-pub fn place_of(provider: AiProvider, server: &str) -> Place {
+/// Where `model` of an AI account of `provider` at the base address `server` runs (task S.23: local
+/// means the model computes on the person's computer, not that its server is there):
+///
+/// - Ollama: local only for a model it says runs on its own machine ([`AiModel::remote`] `false`)
+///   and whose name is no cloud name ([`openai::ollama_cloud_name`]); a model it did not describe
+///   (not listed, or the list failed) counts as elsewhere, so mail stays home in doubt;
+/// - LM Studio: local wherever it runs (on the person's own machines), unless the model is known to
+///   run elsewhere;
+/// - OpenRouter and the other cloud providers (task W.3): never (an address of this computer would
+///   be a proxy to one);
+/// - any other server: only at an address of this computer (`localhost`, `127.0.0.1`, `::1`), and
+///   not for a model known to run elsewhere.
+///
+/// Ask it once the model is chosen, "Automatic" too (`super::ModelAccess::automatic`).
+pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
+    let elsewhere = model.remote == Some(true);
     match provider {
-        AiProvider::Ollama | AiProvider::LmStudio => Place::Local,
-        AiProvider::OpenAiCompatible if is_this_computer(server) => Place::Local,
-        AiProvider::OpenRouter | AiProvider::OpenAiCompatible => Place::Remote,
+        AiProvider::Ollama if model.remote == Some(false) && !openai::ollama_cloud_name(&model.id) => Place::Local,
+        AiProvider::LmStudio if !elsewhere => Place::Local,
+        AiProvider::OpenAiCompatible if !elsewhere && is_this_computer(server) => Place::Local,
+        // Every cloud provider (task W.3), and any other server elsewhere.
+        _ => Place::Remote,
     }
 }
 
@@ -286,18 +301,28 @@ fn rule_for_remote(rule: &Rule, mail: bool) -> Value {
     value
 }
 
-/// Whether an earlier answer of the conversation, written by `answered_by` in a turn that used the
-/// commands `commands` (catalogue names), may go to the model of `engine` read as `reader`.
+/// Whether an earlier answer of the conversation, written by the engine and model `answered_by`
+/// (the model `None` when the answer does not name it) in a turn that used the commands `commands`
+/// (catalogue names), may go to the model `asked` (engine and model) read as `reader`. An agent
+/// (Claude Code) asks with the model `None`: it names its model only once it runs, and every model
+/// of it runs elsewhere, so its engine alone tells its own answers.
 ///
 /// A local model reads everything. A model elsewhere reads earlier answers unless that turn read
 /// what the rule keeps home ([`kept_from`]: mail unless it is let out, the inbox, a bot) and another
-/// engine wrote the answer: a local model may have retold it there. Its own answers never held such
-/// content (it read [`WITHHELD`] instead), and of another engine the core may no longer know where
-/// it ran, so those are withheld.
-pub fn history_allowed(commands: &[&str], answered_by: &str, engine: &str, reader: impl Into<Reader>) -> bool {
+/// engine or model wrote the answer: a local model may have retold it there, also a local model of
+/// the same account (task S.23: Ollama runs local and cloud models). Its own answers never held
+/// such content (it read [`WITHHELD`] instead), and of another model the core may no longer know
+/// where it ran, so those are withheld; an answer without its model counts as another model's.
+pub fn history_allowed(
+    commands: &[&str],
+    answered_by: (&str, Option<&str>),
+    asked: (&str, Option<&str>),
+    reader: impl Into<Reader>,
+) -> bool {
     let reader = reader.into();
     let read_kept = commands.iter().any(|name| kept_from(name, reader.rule));
-    reader.place == Place::Local || !read_kept || answered_by == engine
+    let same = answered_by.0 == asked.0 && (asked.1.is_none() || answered_by.1 == asked.1);
+    reader.place == Place::Local || !read_kept || same
 }
 
 #[cfg(test)]
@@ -344,16 +369,47 @@ mod tests {
         SourceRef { kind: SourceKind::Agent, name: "claude-code".into() }
     }
 
+    /// A model as a server lists it, with what it says about where the model runs.
+    fn model(id: &str, remote: Option<bool>) -> AiModel {
+        AiModel {
+            id: id.into(),
+            name: id.into(),
+            tools: None,
+            open_weights: None,
+            context: None,
+            reasoning: None,
+            remote,
+        }
+    }
+
     #[test]
     fn local_servers_are_ollama_lm_studio_and_this_computer() {
-        assert_eq!(place_of(AiProvider::Ollama, "http://localhost:11434/v1"), Place::Local);
-        assert_eq!(place_of(AiProvider::Ollama, "http://gpu.local:11434/v1"), Place::Local);
-        assert_eq!(place_of(AiProvider::LmStudio, "http://localhost:1234/v1"), Place::Local);
-        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://127.0.0.1:8000/v1"), Place::Local);
-        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://[::1]:8000/v1"), Place::Local);
-        assert_eq!(place_of(AiProvider::OpenAiCompatible, "https://ai.example.org/v1"), Place::Remote);
-        assert_eq!(place_of(AiProvider::OpenRouter, "https://openrouter.ai/api/v1"), Place::Remote);
-        assert_eq!(place_of(AiProvider::OpenRouter, "http://localhost:8080/api/v1"), Place::Remote, "a proxy");
+        let local = model("qwen3:8b", Some(false));
+        let unknown = model("qwen3:8b", None);
+        assert_eq!(place_of(AiProvider::Ollama, "http://localhost:11434/v1", &local), Place::Local);
+        assert_eq!(place_of(AiProvider::Ollama, "http://gpu.local:11434/v1", &local), Place::Local);
+        assert_eq!(place_of(AiProvider::LmStudio, "http://localhost:1234/v1", &unknown), Place::Local);
+        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://127.0.0.1:8000/v1", &unknown), Place::Local);
+        assert_eq!(place_of(AiProvider::OpenAiCompatible, "http://[::1]:8000/v1", &unknown), Place::Local);
+        assert_eq!(place_of(AiProvider::OpenAiCompatible, "https://ai.example.org/v1", &unknown), Place::Remote);
+        assert_eq!(place_of(AiProvider::OpenRouter, "https://openrouter.ai/api/v1", &unknown), Place::Remote);
+        assert_eq!(place_of(AiProvider::OpenRouter, "http://localhost:8080/api/v1", &local), Place::Remote, "a proxy");
+        for cloud in AiProvider::CLOUD {
+            assert_eq!(place_of(cloud, cloud.default_url().unwrap_or_default(), &local), Place::Remote, "{cloud:?}");
+        }
+    }
+
+    /// Task S.23: Ollama's cloud models run on `ollama.com`, though Ollama runs here.
+    #[test]
+    fn a_cloud_model_of_ollama_runs_elsewhere() {
+        let ollama = "http://localhost:11434/v1";
+        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("glm-5.3:cloud", Some(true))), Place::Remote);
+        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("kimi-k2.6:cloud", Some(false))), Place::Remote);
+        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("my-glm:latest", Some(true))), Place::Remote, "copied");
+        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("qwen3:8b", None)), Place::Remote, "not described");
+        assert_eq!(place_of(AiProvider::Ollama, ollama, &model("qwen3:8b", Some(false))), Place::Local);
+        let lm_studio = "http://localhost:1234/v1";
+        assert_eq!(place_of(AiProvider::LmStudio, lm_studio, &model("qwen3-8b", Some(true))), Place::Remote);
     }
 
     #[test]
@@ -401,6 +457,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         };
         let answered =
             Response::InvitationAnswered { delivery: torro_ipc::mail::Delivery::Accepted, event: Some(event) };
@@ -700,7 +757,8 @@ mod tests {
             assert!(for_model(&request, &Response::Ok, out).withheld, "{request:?}");
         }
 
-        let (ollama, openrouter) = ("ai:ollama@localhost:11434", "ai:openrouter@openrouter.ai");
+        let ollama = ("ai:ollama@localhost:11434", Some("qwen3:8b"));
+        let openrouter = ("ai:openrouter@openrouter.ai", Some("qwen/qwen3-14b"));
         assert!(history_allowed(&["mail.get_message"], ollama, openrouter, out));
         assert!(!history_allowed(&["inbox.list_items"], ollama, openrouter, out), "Talk may be in it");
         assert!(!kept_from("mail.get_message", out.rule) && kept_from("mail.get_message", DataRule::default()));
@@ -710,11 +768,29 @@ mod tests {
     #[test]
     fn earlier_answers_after_mail_stay_with_the_engine_that_wrote_them() {
         let (ollama, openrouter) = ("ai:ollama@localhost:11434", "ai:openrouter@openrouter.ai");
+        let (local, remote) = ((ollama, Some("qwen3:8b")), (openrouter, Some("qwen/qwen3-14b")));
         let read_mail = ["calendar.list_events", "mail.get_message"];
-        assert!(!history_allowed(&read_mail, ollama, openrouter, Place::Remote));
-        assert!(history_allowed(&read_mail, openrouter, openrouter, Place::Remote), "it read the withheld text");
-        assert!(history_allowed(&read_mail, openrouter, ollama, Place::Local));
-        assert!(history_allowed(&["calendar.list_events"], ollama, openrouter, Place::Remote));
-        assert!(!history_allowed(&["inbox.list_items"], ollama, openrouter, Place::Remote));
+        assert!(!history_allowed(&read_mail, local, remote, Place::Remote));
+        assert!(history_allowed(&read_mail, remote, remote, Place::Remote), "it read the withheld text");
+        assert!(history_allowed(&read_mail, remote, local, Place::Local));
+        assert!(history_allowed(&["calendar.list_events"], local, remote, Place::Remote));
+        assert!(!history_allowed(&["inbox.list_items"], local, remote, Place::Remote));
+        // An agent names no model before it runs: its engine tells its own answers.
+        let agent = ("claude-code", Some("claude-sonnet-4-5"));
+        assert!(history_allowed(&read_mail, agent, ("claude-code", None), Place::Remote));
+        assert!(!history_allowed(&read_mail, local, ("claude-code", None), Place::Remote));
+    }
+
+    /// Task S.23: within one Ollama account the model counts – a cloud model never reads what a
+    /// local one retold of a mail, and an answer that does not name its model counts as another's.
+    #[test]
+    fn earlier_answers_after_mail_stay_with_the_model_that_wrote_them() {
+        let ollama = "ai:ollama@localhost:11434";
+        let read_mail = ["mail.get_message"];
+        let cloud = (ollama, Some("glm-5.3:cloud"));
+        assert!(!history_allowed(&read_mail, (ollama, Some("qwen3:8b")), cloud, Place::Remote));
+        assert!(!history_allowed(&read_mail, (ollama, None), cloud, Place::Remote), "no model named");
+        assert!(history_allowed(&read_mail, (ollama, Some("glm-5.3:cloud")), cloud, Place::Remote));
+        assert!(history_allowed(&read_mail, cloud, (ollama, Some("qwen3:8b")), Place::Local));
     }
 }

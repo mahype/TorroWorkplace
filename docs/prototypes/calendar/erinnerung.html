@@ -1,0 +1,406 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Torro Calendar – Reminder</title>
+<!-- Entwurf: Erinnerungen (2026-10-15, docs/erinnerungen.md). Vorbild "In Your Face": eine Erinnerung
+     über den ganzen Bildschirm, mit allem, was man in dem Moment braucht.
+     ?screen=  wide (Standard) · snooze · started · many · onsite · second · settings · editor · quiet
+     ?theme=light hell. Die Größe kommt aus dem Fenster: ab 1600 breit zwei Spalten, darunter eine,
+     unter 1280 breit oder 760 hoch die kleine Fassung. Alle Termine sind Beispieldaten. -->
+<link rel="stylesheet" href="../linear/torro.css">
+<script src="../linear/size.js"></script>
+<script src="https://unpkg.com/lucide@0.469.0/dist/umd/lucide.min.js"></script>
+<style>
+:root{--attention:#FF9500;--tintc:color-mix(in srgb,var(--c) var(--tint),transparent)}
+body{overflow:hidden}
+
+/* ---------- Vollbild ---------- */
+.rem{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;overflow:hidden}
+/* Weicher Schein in der Kalenderfarbe, oben – Tönung, nie volle Farbe als Fläche. */
+.rem::before{content:"";position:absolute;inset:-30% -10% auto;height:75%;
+  background:radial-gradient(ellipse at 50% 0%,color-mix(in srgb,var(--c) var(--tint),transparent),transparent 70%);pointer-events:none}
+.rtop{position:relative;display:flex;align-items:center;gap:12px;height:72px;padding:0 32px;color:var(--text2)}
+.rtop .grow{flex:1}
+.rtop .brand{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:12px;font-weight:500}
+.rtop .clock{font:500 28px/32px "Inter Tabular",Inter,sans-serif;color:var(--text)}
+.rtop .preview{height:24px;display:inline-flex;align-items:center;gap:6px;padding:0 10px;border-radius:12px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500;color:var(--text2)}
+
+.rbody{position:relative;flex:1;min-height:0;display:flex;align-items:center;justify-content:center;padding:0 32px}
+.grid{width:100%;max-width:720px;display:grid;grid-template-columns:1fr;gap:32px}
+html.wide .grid{max-width:1280px;grid-template-columns:minmax(0,1fr) 440px;gap:64px;align-items:center}
+
+.kind{display:flex;align-items:center;gap:8px;font-size:13px;line-height:20px;color:var(--text2);margin-bottom:16px}
+.kind .dot{width:10px;height:10px}
+.kind .sep{color:var(--text3)}
+.hero{margin:0;font-size:48px;line-height:56px;font-weight:600;letter-spacing:-.02em;color:var(--text);
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.count{margin-top:16px;display:flex;align-items:center;gap:10px;font:500 28px/32px "Inter Tabular",Inter,sans-serif;color:var(--text2)}
+.count b{font-weight:500;color:var(--text)}
+.count.late{color:var(--attention)} .count.late b{color:var(--attention)}
+.count svg{width:24px;height:24px}
+.when{margin-top:8px;display:flex;align-items:center;gap:8px;color:var(--text2);font-size:14px;line-height:22px}
+.when svg{color:var(--text3);width:14px;height:14px}
+.actions{margin-top:32px;display:flex;flex-wrap:wrap;gap:12px;align-items:center}
+.xbtn{height:44px;display:inline-flex;align-items:center;gap:8px;padding:0 16px;border-radius:8px;border:1px solid var(--line-strong);background:var(--raised);color:var(--text);font:500 14px/1 Inter,sans-serif;white-space:nowrap}
+.xbtn.primary{background:var(--accent);border-color:transparent;color:#fff}
+.xbtn.primary kbd{color:rgba(255,255,255,.8);border-color:rgba(255,255,255,.35)}
+.xbtn.ghost{background:none;border-color:transparent;color:var(--text2)}
+.xbtn svg{width:16px;height:16px}
+.xbtn kbd{margin-left:4px}
+.xbtn.focus{box-shadow:0 0 0 1px var(--bg),0 0 0 3px var(--focus)}
+
+/* Eigenschaften wie im Termin-Paneel */
+.facts{display:flex;flex-direction:column;gap:2px}
+.fact{display:grid;grid-template-columns:112px 1fr;gap:12px;align-items:start;min-height:36px;padding:8px 0;border-top:1px solid var(--line)}
+.fact:first-child{border-top:0}
+.fact .k{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:12px;line-height:20px;font-weight:500}
+.fact .k svg{width:14px;height:14px}
+.fact .v{color:var(--text);min-width:0}
+.fact .v .sub{color:var(--text3);font-size:12px;line-height:16px}
+.fact a{color:var(--text);text-decoration:underline;text-decoration-color:var(--line-strong);text-underline-offset:3px}
+.people{display:flex;align-items:center;gap:8px}
+.av{width:26px;height:26px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:600;color:#fff;border:2px solid var(--bg);margin-left:-4px;position:relative}
+.av:first-child{margin-left:0}
+.av.more{background:var(--selected);color:var(--text2)}
+.av i{position:absolute;right:-3px;bottom:-3px;width:11px;height:11px;border-radius:50%;border:2px solid var(--bg)}
+.ok{background:#28CD41} .maybe{background:var(--attention)} .no{background:#8A8F98}
+.notes{color:var(--text2);white-space:pre-line;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+html.wide .notes{-webkit-line-clamp:10}
+.showall{margin-top:4px;color:var(--text3);font-size:12px;font-weight:500}
+.linkrow{display:flex;align-items:center;gap:8px;min-height:24px}
+.linkrow svg{width:14px;height:14px;color:var(--text3)}
+.linkrow .faint{font-size:12px}
+
+.rfoot{position:relative;height:64px;display:flex;align-items:center;gap:24px;padding:0 32px;border-top:1px solid var(--line);color:var(--text2)}
+.rfoot .grow{flex:1}
+.rfoot .it{display:flex;align-items:center;gap:8px;white-space:nowrap}
+.rfoot .it b{font-weight:500;color:var(--text)}
+.rfoot .t{font-family:"Inter Tabular",Inter,sans-serif;color:var(--text3)}
+.rfoot .lbl{color:var(--text3);font-size:12px;font-weight:500}
+
+/* Mehrere gleichzeitig */
+.pager{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:12px;font-weight:500;margin-bottom:12px}
+.pager .iconbtn{border:1px solid var(--line-strong);background:var(--raised);color:var(--text)}
+.also{display:flex;flex-direction:column;gap:8px}
+.alsocard{display:flex;align-items:center;gap:12px;padding:12px 16px;border-radius:10px;background:var(--raised);border:1px solid var(--line-strong)}
+.alsocard.on{background:var(--selected);border-color:rgba(255,255,255,.28)}
+:root[data-theme="light"] .alsocard.on{border-color:rgba(0,0,0,.32)}
+.alsocard .bar{width:3px;align-self:stretch;border-radius:2px;background:var(--c)}
+.alsocard .grow{flex:1;min-width:0}
+.alsocard b{display:block;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.alsocard .faint{font-size:12px}
+
+/* Klein: Eigenschaften als Chips */
+html.small .rtop{height:56px;padding:0 20px}
+html.small .rtop .clock{font-size:22px}
+html.small .hero{font-size:36px;line-height:44px}
+html.small .facts{display:none}
+html.small .smallchips{display:flex}
+.smallchips{display:none;flex-wrap:wrap;gap:6px;margin-top:20px}
+
+/* Zweiter Bildschirm: ruhige Fassung */
+.second .grid{max-width:560px;text-align:center}
+.second .kind,.second .count,.second .actions{justify-content:center}
+.second .hero{font-size:40px;line-height:48px}
+.second .hint{margin-top:24px;color:var(--text3);font-size:12px}
+
+/* Menü am Schlummer-Knopf */
+.dd{position:relative;display:inline-flex}
+.menu.up{top:auto;bottom:calc(100% + 6px)}
+.menu .item kbd{margin-left:auto}
+
+/* ---------- Steuerzentrale ---------- */
+.page{flex:1;overflow:auto}
+.page .inner{max-width:640px;margin:0 auto;padding:24px}
+.page h1{font-size:22px;line-height:28px;font-weight:600;margin:8px 0 24px}
+.gtitle{font-size:12px;line-height:16px;font-weight:500;color:var(--text3);margin:24px 0 8px}
+.gbox{border:1px solid var(--line);border-radius:8px;background:var(--panel)}
+.srow{display:flex;align-items:center;gap:12px;min-height:44px;padding:6px 16px;border-top:1px solid var(--line)}
+.srow:first-child{border-top:0}
+.srow .grow{flex:1;min-width:0}
+.srow .sub{color:var(--text3);font-size:12px;line-height:16px}
+.gnote{color:var(--text2);font-size:12px;line-height:16px;margin:8px 2px 0}
+.switch{width:30px;height:18px;border-radius:9px;background:var(--line-strong);position:relative;flex:none}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:14px;height:14px;border-radius:50%;background:#fff;transition:none}
+.switch.on{background:#28CD41}
+.switch.on::after{left:14px}
+.select{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 8px 0 10px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500}
+.select svg{width:14px;height:14px;color:var(--text3)}
+
+/* ---------- Termin-Paneel ---------- */
+.cal-bg{flex:1;display:flex;flex-direction:column;min-width:0}
+.weekgrid{flex:1;display:grid;grid-template-columns:52px repeat(5,1fr);border-top:1px solid var(--line);position:relative}
+.weekgrid .col{border-left:1px solid var(--line);position:relative}
+.weekgrid .ax{color:var(--text3);font:400 11px/14px "Inter Tabular",Inter,sans-serif;text-align:right;padding-right:8px}
+.ev{position:absolute;left:4px;right:4px;border-radius:4px;background:color-mix(in srgb,var(--c) var(--tint),var(--panel));border-left:3px solid var(--c);padding:4px 6px;font-size:12px;font-weight:500}
+.ev .faint{display:block;font:400 11px/14px "Inter Tabular",Inter,sans-serif;color:var(--text2)}
+.ev.sel{box-shadow:0 0 0 1px var(--text2)}
+.side{width:400px;flex:none;border-left:1px solid var(--line);display:flex;flex-direction:column}
+.side .head{height:44px;display:flex;align-items:center;gap:8px;padding:0 8px 0 16px;border-bottom:1px solid var(--line);color:var(--text2)}
+.side .head .grow{flex:1}
+.side .body{padding:20px 24px;overflow:auto;flex:1}
+.side .ttl{font-size:22px;line-height:28px;font-weight:600;margin:0 0 16px}
+.rchip{height:28px;display:inline-flex;align-items:center;gap:6px;padding:0 6px 0 8px;border-radius:6px;border:1px solid var(--line-strong);background:var(--raised);font-size:12px;font-weight:500}
+.rchip svg{width:14px;height:14px;color:var(--text3)}
+.rchip .x{margin-left:2px}
+.pline{display:grid;grid-template-columns:88px 1fr;gap:8px;align-items:start;min-height:32px;padding:4px 0}
+.pline .k{color:var(--text3);font-size:12px;line-height:24px}
+.pline .v{display:flex;flex-wrap:wrap;gap:6px;align-items:center;min-height:24px}
+
+/* ---------- Leise: Desktop mit Benachrichtigung und Tray ---------- */
+.desk{position:fixed;inset:0;background:linear-gradient(135deg,#1d2433,#3a2b3f 60%,#4b3a2a)}
+:root[data-theme="light"] .desk{background:linear-gradient(135deg,#c9d4e6,#e5d7e6 60%,#efe1cf)}
+.topbar{height:28px;display:flex;align-items:center;justify-content:flex-end;gap:16px;padding:0 16px;background:rgba(0,0,0,.35);color:#fff;font-size:12px;font-weight:500}
+.trayicon{width:20px;height:20px;border-radius:5px;background:var(--accent);display:grid;place-items:center;font-size:11px;font-weight:600}
+.notif{position:absolute;top:44px;right:16px;width:380px;background:var(--menu);border:1px solid var(--line-strong);border-radius:12px;box-shadow:var(--shadow);padding:12px 14px}
+.notif .h{display:flex;align-items:center;gap:8px;color:var(--text3);font-size:12px}
+.notif .h .logo{width:16px;height:16px;font-size:9px;border-radius:4px}
+.notif .h .grow{flex:1}
+.notif b{display:block;margin-top:8px;font-weight:600}
+.notif .m{color:var(--text2)}
+.notif .acts{display:flex;gap:6px;margin-top:10px}
+.traymenu{position:absolute;top:32px;right:420px;width:300px}
+.traymenu .menu{position:relative}
+.sub-menu{position:absolute!important;left:auto;right:calc(100% + 4px);top:112px;min-width:180px}
+.caption{position:absolute;left:24px;bottom:24px;max-width:520px;color:#fff;font-size:12px;line-height:18px;background:rgba(0,0,0,.45);padding:10px 12px;border-radius:8px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const q = new URLSearchParams(location.search), scr = q.get('screen') || 'wide', H = document.documentElement;
+const W = innerWidth, Hh = innerHeight;
+if (W >= 1600) H.classList.add('wide');
+if (W < 1280 || Hh < 760) H.classList.add('small');
+
+const C = {work:'var(--c-work)', personal:'var(--c-personal)', family:'var(--c-family)', ops:'var(--c-groceries)'};
+const ic = (n, cls='') => `<i data-lucide="${n}" class="${cls}"></i>`;
+const av = (t, c, s) => `<span class="av" style="background:${c}">${t}<i class="${s}"></i></span>`;
+
+const EV = {
+  title: 'Weekly product sync', cal: 'Work', c: C.work, service: 'Zoom',
+  time: '10:00 – 10:45', dur: '45 min', day: 'Thu, 15 Oct', repeat: 'Every Thursday',
+  where: 'Room 3.12, Hafenstraße 4', link: 'zoom.us/j/8123456789',
+  org: 'Anna Berg', people: [['AB', C.work, 'ok'], ['CM', C.personal, 'ok'], ['JW', C.family, 'maybe'], ['LK', C.ops, 'ok']], more: 4,
+  notes: 'Agenda\n1. Release 0.2 – what is still open (Jonas)\n2. Reminders: full-screen concept, decide the defaults\n3. Inbox insights: first numbers\n4. Anything else\n\nFigma: https://figma.com/file/roadmap · Notes from last week in Nextcloud.',
+  links: [['video', 'Zoom meeting', 'zoom.us'], ['figma', 'Roadmap', 'figma.com'], ['github', 'TorroWorkplace #154', 'github.com']]
+};
+
+function facts(e, opt = {}) {
+  return `<div class="facts">
+    <div class="fact"><div class="k">${ic('map-pin')}Location</div><div class="v">${e.where}<div class="sub"><a>Open in Maps</a></div></div></div>
+    ${e.people ? `<div class="fact"><div class="k">${ic('users')}People</div><div class="v"><div class="people"><span style="display:flex">${e.people.map(p => av(...p)).join('')}${e.more ? `<span class="av more">+${e.more}</span>` : ''}</span></div><div class="sub">6 accepted · 1 maybe · 1 no reply</div></div></div>` : ''}
+    ${e.org ? `<div class="fact"><div class="k">${ic('user-round')}Organizer</div><div class="v">${e.org}</div></div>` : ''}
+    ${e.links ? `<div class="fact"><div class="k">${ic('link')}Links</div><div class="v">${e.links.map(([i, t, h]) => `<div class="linkrow">${ic(i === 'figma' ? 'pen-tool' : i)}<span>${t}</span><span class="faint">${h}</span></div>`).join('')}</div></div>` : ''}
+    ${e.notes ? `<div class="fact"><div class="k">${ic('align-left')}Notes</div><div class="v"><div class="notes">${e.notes}</div>${H.classList.contains('wide') && !opt.clampNotes ? '' : `<div class="showall">Show all</div>`}</div></div>` : ''}
+  </div>`;
+}
+
+function smallChips(e) {
+  return `<div class="smallchips">
+    <span class="pchip">${ic('map-pin')}Room 3.12</span>
+    <span class="pchip">${ic('users')}8 people</span>
+    <span class="pchip">${ic('align-left')}Show notes</span></div>`;
+}
+
+function head(e, extra = '') {
+  return `<header class="rtop">
+    <span class="brand"><span class="logo">T</span>Reminder</span>${extra}
+    <span class="grow"></span><span class="clock">09:55</span></header>`;
+}
+
+function kind(e) {
+  return `<div class="kind"><span class="dot" style="--c:${e.c}"></span>${e.cal}<span class="sep">·</span>${e.service ? `${ic('video', 's14')}Video call · ${e.service}` : `${ic('map-pin', 's14')}In person`}</div>`;
+}
+
+function snoozeMenu() {
+  return `<div class="menu" style="min-width:220px;top:calc(100% + 6px)">
+    <div class="label">Snooze</div>
+    <div class="item">${ic('clock')}<span class="grow">1 min</span><kbd>1</kbd></div>
+    <div class="item hl">${ic('clock')}<span class="grow">5 min</span><kbd>5</kbd></div>
+    <div class="item">${ic('clock')}<span class="grow">10 min</span><kbd>0</kbd></div>
+    <div class="sep"></div>
+    <div class="item">${ic('alarm-clock')}<span class="grow">Until it starts</span><kbd>B</kbd></div></div>`;
+}
+
+function actions(e, o = {}) {
+  const join = e.service
+    ? `<button class="xbtn primary focus">${ic('video')}${o.late ? 'Join now' : 'Join ' + e.service}<kbd>Enter</kbd></button>`
+    : `<button class="xbtn primary focus">${ic('check')}Dismiss<kbd>Esc</kbd></button>`;
+  const snooze = `<span class="dd"><button class="xbtn">${ic('alarm-clock')}Snooze${ic('chevron-down', 's14')}<kbd>S</kbd></button>${o.menu ? snoozeMenu() : ''}</span>`;
+  const rest = e.service
+    ? `<button class="xbtn ghost">${ic('x')}Dismiss<kbd>Esc</kbd></button>`
+    : `<button class="xbtn ghost">${ic('map')}Open in Maps</button>`;
+  return `<div class="actions">${join}${o.late ? '' : snooze}${rest}</div>`;
+}
+
+function lead(e, o = {}) {
+  const count = o.late
+    ? `<div class="count late">${ic('clock-alert')}Started <b>2 min</b> ago</div>`
+    : `<div class="count">Starts in <b>${o.count || '4:32'}</b></div>`;
+  return `<section>${o.pager || ''}${kind(e)}<h1 class="hero">${e.title}</h1>${count}
+    <div class="when">${ic('clock')}${e.time} · ${e.dur} · ${e.day}${e.repeat ? `<span class="faint">·</span>${ic('repeat')}${e.repeat}` : ''}</div>
+    ${smallChips(e)}${actions(e, o)}</section>`;
+}
+
+function foot(extra = '') {
+  return `<footer class="rfoot">
+    <span class="it"><span class="lbl">Next</span><span class="t">11:30</span><span class="dot" style="--c:${C.personal}"></span><b>Lunch with Ben</b></span>
+    <span class="it"><span class="t">14:00</span><span class="dot" style="--c:${C.work}"></span>Design review</span>
+    <span class="grow"></span>${extra}
+    <span class="it faint">${ic('pause', 's14')}Pause reminders</span></footer>`;
+}
+
+const screens = {
+  wide: () => `<div class="rem" style="--c:${EV.c}">${head(EV)}
+      <main class="rbody"><div class="grid">${lead(EV)}${facts(EV)}</div></main>${foot()}</div>`,
+
+  snooze: () => `<div class="rem" style="--c:${EV.c}">${head(EV)}
+      <main class="rbody"><div class="grid">${lead(EV, {menu: true, count: '0:58'})}${facts(EV, {clampNotes: true})}</div></main>${foot()}</div>`,
+
+  started: () => `<div class="rem" style="--c:${EV.c}">${head(EV)}
+      <main class="rbody"><div class="grid">${lead(EV, {late: true})}${facts(EV)}</div></main>${foot()}</div>`,
+
+  many: () => {
+    const ops = {title: 'Deploy window 0.2', cal: 'Ops', c: C.ops, service: 'Google Meet', time: '10:00 – 10:30', dur: '30 min', day: 'Thu, 15 Oct'};
+    const pager = `<div class="pager"><button class="iconbtn">${ic('chevron-left')}</button><button class="iconbtn">${ic('chevron-right')}</button><span>1 of 2 at 10:00</span><kbd>←</kbd><kbd>→</kbd></div>`;
+    const also = `<div class="also"><div class="gtitle" style="margin:0 0 4px">Also now</div>
+        <div class="alsocard on" style="--c:${EV.c}"><span class="bar"></span><div class="grow"><b>${EV.title}</b><span class="faint tab">10:00 – 10:45 · Work · Zoom</span></div>${ic('video')}</div>
+        <div class="alsocard" style="--c:${ops.c}"><span class="bar"></span><div class="grow"><b>${ops.title}</b><span class="faint tab">10:00 – 10:30 · Ops · Google Meet</span></div>${ic('video')}</div>
+        <div class="gtitle" style="margin:20px 0 4px">${EV.title}</div>${facts(EV, {clampNotes: true})}</div>`;
+    return `<div class="rem" style="--c:${EV.c}">${head(EV)}
+      <main class="rbody"><div class="grid">${lead(EV, {pager})}${also}</div></main>
+      ${foot(`<button class="btn ghost">${ic('check-check', 's14')}Dismiss all</button>`)}</div>`;
+  },
+
+  onsite: () => {
+    const e = {title: 'Dentist – Dr. Keller', cal: 'Personal', c: C.personal, service: null, time: '16:30 – 17:15', dur: '45 min', day: 'Thu, 15 Oct',
+      where: 'Praxis Dr. Keller, Lindenallee 12, 2nd floor', notes: 'Bring the insurance card.\nParking in the yard behind the house.'};
+    return `<div class="rem" style="--c:${e.c}">${head(e)}
+      <main class="rbody"><div class="grid">${lead(e, {count: '29:40'})}${facts(e)}</div></main>${foot()}</div>`;
+  },
+
+  second: () => `<div class="rem second" style="--c:${EV.c}">${head(EV)}
+      <main class="rbody"><div class="grid"><section>${kind(EV)}<h1 class="hero">${EV.title}</h1>
+        <div class="count">Starts in <b>4:32</b></div>
+        <div class="actions"><button class="xbtn primary">${ic('video')}Join Zoom</button><button class="xbtn">${ic('alarm-clock')}Snooze${ic('chevron-down', 's14')}</button><button class="xbtn ghost">${ic('x')}Dismiss</button></div>
+        <div class="hint">Details on your main display</div></section></div></main></div>`,
+
+  settings: () => `<div class="app">
+    <aside class="sidebar">
+      <div class="switcher"><span class="logo">T</span><b>Torro Workplace</b>${ic('chevron-down', 's14 faint')}</div>
+      <a class="nav">${ic('layout-dashboard')}<span class="grow">Overview</span></a>
+      <a class="nav">${ic('users')}<span class="grow">Accounts</span></a>
+      <a class="nav">${ic('layout-grid')}<span class="grow">Workspaces</span></a>
+      <a class="nav">${ic('inbox')}<span class="grow">Inbox</span></a>
+      <a class="nav active">${ic('calendar')}<span class="grow">Calendar</span></a>
+      <a class="nav">${ic('bot')}<span class="grow">Agents &amp; API</span></a>
+      <a class="nav">${ic('palette')}<span class="grow">Appearance</span></a>
+      <a class="nav">${ic('settings')}<span class="grow">General</span></a>
+    </aside>
+    <section class="panel">
+      <div class="header"><div class="crumbs">Settings ${ic('chevron-right', 's14')}<b>Calendar</b></div><span class="grow"></span>
+        <button class="btn">${ic('eye', 's14')}Preview reminder</button></div>
+      <div class="page"><div class="inner">
+        <div class="gtitle" style="margin-top:0">Reminders</div>
+        <div class="gbox">
+          <div class="srow"><div class="grow">Show reminders</div><span class="switch on"></span></div>
+          <div class="srow"><div class="grow">Default reminder<div class="sub">For events without their own reminder</div></div><span class="select">1 min before${ic('chevron-down')}</span></div>
+          <div class="srow"><div class="grow">Show on</div><span class="seg"><span>Main display</span><span class="on">All displays</span></span></div>
+          <div class="srow"><div class="grow">Sound</div><span class="select">Chime${ic('chevron-down')}</span></div>
+        </div>
+        <div class="gnote">Reminders of an event come first; you set them in the event. A full-screen reminder stays until you join, snooze or dismiss it.</div>
+
+        <div class="gtitle">Which events</div>
+        <div class="gbox">
+          <div class="srow"><div class="grow">Only events I accepted</div><span class="switch on"></span></div>
+          <div class="srow"><div class="grow">All-day events</div><span class="switch"></span></div>
+          <div class="srow"><div class="grow">Events marked free</div><span class="switch"></span></div>
+          <div class="srow"><div class="grow">Outside work hours<div class="sub">Work hours: Mon–Fri 09:00–17:00</div></div><span class="switch on"></span></div>
+          <div class="srow"><div class="grow">Never full screen during a video call<div class="sub">Shows a notification instead while an event with a call link runs</div></div><span class="switch on"></span></div>
+        </div>
+
+        <div class="gtitle">Calendars</div>
+        <div class="gbox">
+          ${[['Work', C.work, 2], ['Ops', C.ops, 2], ['Personal', C.personal, 1], ['Family', C.family, 1], ['Birthdays', 'var(--c-birthday)', 0]].map(([n, c, s]) =>
+            `<div class="srow"><span class="dot" style="--c:${c}"></span><div class="grow">${n}<div class="sub">nextcloud.example.org</div></div>
+             <span class="seg">${['Off', 'Notification', 'Full screen'].map((t, i) => `<span class="${i === s ? 'on' : ''}">${t}</span>`).join('')}</span></div>`).join('')}
+        </div>
+        <div class="gnote">“Full screen” covers the screen until you react. Use it for calendars you must not miss.</div>
+      </div></div>
+    </section></div>`,
+
+  editor: () => `<div class="app">
+    <section class="panel" style="margin:8px">
+      <div class="header"><div class="crumbs"><b>Thu, 15 Oct</b></div><span class="faint">Week 42</span><span class="grow"></span>
+        <span class="seg"><span>Day</span><span class="on">Week</span><span>Month</span></span><button class="btn primary">${ic('plus', 's14')}New event</button></div>
+      <div style="flex:1;display:flex;min-height:0">
+        <div class="cal-bg">
+          <div class="weekgrid">
+            <div class="ax">${['09:00', '10:00', '11:00', '12:00', '13:00', '14:00', '15:00', '16:00'].map(t => `<div style="height:48px;padding-top:2px">${t}</div>`).join('')}</div>
+            <div class="col"></div><div class="col"></div><div class="col"></div>
+            <div class="col">
+              <div class="ev sel" style="--c:${C.work};top:48px;height:36px">Weekly product sync<span class="faint">10:00 – 10:45</span></div>
+              <div class="ev" style="--c:${C.personal};top:120px;height:40px">Lunch with Ben<span class="faint">11:30</span></div>
+              <div class="ev" style="--c:${C.work};top:240px;height:48px">Design review<span class="faint">14:00</span></div>
+            </div>
+            <div class="col"></div>
+          </div>
+        </div>
+        <aside class="side">
+          <div class="head"><span class="dot" style="--c:${C.work}"></span>Work ${ic('chevron-right', 's14')} Thu, 15 Oct<span class="grow"></span>
+            <span class="dd"><button class="iconbtn">${ic('ellipsis')}</button></span><button class="iconbtn">${ic('x')}</button></div>
+          <div class="body">
+            <h2 class="ttl">Weekly product sync</h2>
+            <div class="pline"><span class="k">When</span><span class="v tab">Thu, 15 Oct · 10:00 – 10:45</span></div>
+            <div class="pline"><span class="k">Calendar</span><span class="v"><span class="dot" style="--c:${C.work}"></span>Work</span></div>
+            <div class="pline"><span class="k">Location</span><span class="v">Room 3.12, Hafenstraße 4</span></div>
+            <div class="pline"><span class="k">Reminders</span><span class="v" style="position:relative">
+              <span class="rchip">${ic('maximize')}5 min before · Full screen<span class="iconbtn x" style="width:20px;height:20px">${ic('x', 's14')}</span></span>
+              <span class="rchip">${ic('bell')}1 day before · Notification<span class="iconbtn x" style="width:20px;height:20px">${ic('x', 's14')}</span></span>
+              <span class="dd"><button class="btn ghost">${ic('plus', 's14')}Add reminder</button>
+                <div class="menu" style="left:0;min-width:240px">
+                  <div class="label">When</div>
+                  <div class="item">At start</div><div class="item">1 min before</div><div class="item hl">5 min before</div>
+                  <div class="item">10 min before</div><div class="item">15 min before</div><div class="item">30 min before</div>
+                  <div class="item">1 hour before</div><div class="item">1 day before</div><div class="item">Custom…</div>
+                  <div class="sep"></div><div class="label">Style</div>
+                  <div class="item on">${ic('calendar')}<span class="grow">Calendar default</span><span class="faint">Full screen</span></div>
+                  <div class="item">${ic('bell')}<span class="grow">Notification</span></div>
+                  <div class="item">${ic('maximize')}<span class="grow">Full screen</span></div>
+                </div></span>
+            </span></div>
+            <div class="pline" style="margin-top:8px"><span class="k">Notes</span><span class="v muted" style="display:block">Agenda: Release 0.2, reminders, inbox insights.</span></div>
+          </div>
+        </aside>
+      </div>
+    </section></div>`,
+
+  quiet: () => `<div class="desk">
+    <div class="topbar"><span>Thu 15 Oct 09:55</span><span class="trayicon">T</span></div>
+    <div class="notif">
+      <div class="h"><span class="logo">T</span>Torro Workplace<span class="grow"></span>now</div>
+      <b>Weekly product sync · in 5 min</b>
+      <div class="m tab">10:00 – 10:45 · Room 3.12 · Zoom</div>
+      <div class="acts"><button class="btn">${ic('video', 's14')}Join</button><button class="btn">${ic('alarm-clock', 's14')}In 5 min</button><button class="btn ghost">Dismiss</button></div>
+    </div>
+    <div class="traymenu"><div class="menu">
+      <div class="label">Next</div>
+      <div class="item">${ic('video')}<span class="grow">Weekly product sync</span><span class="faint tab">in 5 min</span></div>
+      <div class="item">${ic('utensils')}<span class="grow">Lunch with Ben</span><span class="faint tab">11:30</span></div>
+      <div class="sep"></div>
+      <div class="item hl">${ic('pause')}<span class="grow">Pause reminders</span>${ic('chevron-right', 's14 faint')}</div>
+      <div class="sep"></div>
+      <div class="item">${ic('layout-grid')}<span class="grow">Workspaces</span>${ic('chevron-right', 's14 faint')}</div>
+      <div class="item">${ic('inbox')}<span class="grow">Inbox</span><span class="faint tab">3</span></div>
+      <div class="item">${ic('settings')}<span class="grow">Settings…</span></div>
+      <div class="menu sub-menu"><div class="item">For 1 hour</div><div class="item">Until tomorrow</div><div class="sep"></div><div class="item faint">Resume</div></div>
+    </div></div>
+    <div class="caption">Leise Fassung: Kalender mit Art „Notification“ zeigen die normale Benachrichtigung der Suite (dazu ein Eintrag im Eingang). Das Tray nennt die nächsten Termine und kann Erinnerungen pausieren.</div>
+  </div>`
+};
+
+document.getElementById('root').innerHTML = (screens[scr] || screens.wide)();
+if (scr === 'second') H.classList.remove('wide');
+lucide.createIcons();
+</script>
+</body></html>

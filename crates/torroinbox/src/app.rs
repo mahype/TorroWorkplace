@@ -232,6 +232,9 @@ pub const UNDO_FOR: Duration = widgets::TOAST_FOR;
 /// How often a shown hint checks whether its time is up. Only while a hint shows.
 const HINT_TICK: Duration = Duration::from_secs(1);
 
+/// "In 5 min" puts a reminder's entry off for this many minutes (task ER1.4).
+const REMINDER_SNOOZE_MINUTES: i64 = 5;
+
 /// "Later today" snoozes for this many hours.
 const LATER_TODAY_HOURS: i64 = 3;
 
@@ -4572,9 +4575,10 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     list::card_span(above, mail::message_card_height(message, width))
                 }
                 Look::Rows => {
+                    // The cursor's row carries the strip with its actions below its lines.
                     let row = list::message_height();
                     let top = index as f32 * row;
-                    (top, top + row)
+                    (top, top + row + list::strip_height())
                 }
             });
             (self.scroll, span, list::SCROLL)
@@ -5550,6 +5554,14 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     snooze(Icon::CalendarDays, tr("Next week"), next_week),
                     choice(Icon::CalendarClock, tr("Pick…").to_owned(), Message::ShowPicker),
                 ];
+                // A reminder of an event comes back soon (task ER1.4): snoozing its entry snoozes
+                // the reminder, so the event is not missed.
+                if item.kind == torro_inbox::Kind::Reminder {
+                    choices.insert(
+                        0,
+                        snooze(Icon::Clock, tr("In 5 min"), self.now + TimeDelta::minutes(REMINDER_SNOOZE_MINUTES)),
+                    );
+                }
                 if matches!(item.state, State::Snoozed { .. }) {
                     let wake = Message::Edit(Edit::Snooze { id: id(), until: None });
                     choices.push(choice(Icon::Inbox, tr("Bring back now").to_owned(), wake));
@@ -5927,9 +5939,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     // The panel fills narrow windows: no room for the words of "Move to …".
                     compact: !matches!(class, SizeClass::Wide | SizeClass::Medium),
                     ai: self.ai_ready,
+                    // A mail's switches and "Copy text" in the footer, as in the reader's Torro bar
+                    // (task E9.4).
+                    view: self.reading().map(|reading| reading.view_tools()),
                 };
                 // A mail entry shows its whole mail in place of the entry's short text.
-                let letter = self.reading().map(|reading| mail::body(&reading, None));
+                let letter = self.reading().map(|reading| mail::body(&reading));
                 detail::panel(item, self.view_label(), self.now, footer, letter, &self.text)
             })
         };
@@ -8341,6 +8356,20 @@ mod tests {
         assert!(app.sent.is_empty(), "nothing is sent");
         let hint = app.hint.as_ref().expect("a hint says why");
         assert_eq!((hint.text.as_str(), &hint.undo), (tr("An approval closes once it is decided."), &None));
+    }
+
+    #[test]
+    fn a_reminder_comes_back_in_five_minutes_first() {
+        let mut app = at("demo-2");
+        let _ = press(&mut app, Key::S);
+        if let Some(item) = app.subject.as_mut() {
+            item.kind = torro_inbox::Kind::Reminder;
+        }
+        let choices = app.choices();
+        assert_eq!(choices[0].label, tr("In 5 min"));
+        let soon = Edit::Snooze { id: "demo-2".into(), until: Some(app.now + TimeDelta::minutes(5)) };
+        assert!(matches!(&choices[0].message, Message::Edit(edit) if *edit == soon), "snoozes the entry for 5 min");
+        assert_eq!(choices.len(), 5, "and the usual ones after it");
     }
 
     #[test]

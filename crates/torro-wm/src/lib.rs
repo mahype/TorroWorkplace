@@ -17,7 +17,9 @@ mod types;
 use std::future::Future;
 
 pub use detect::detect;
-pub use types::{Monitor, NoWindow, Rect, Split, SplitDirection, Window, WindowId, WmError, WmEvent, WorkspaceId};
+pub use types::{
+    Cover, Monitor, NoWindow, Rect, Split, SplitDirection, Window, WindowId, WmError, WmEvent, WorkspaceId,
+};
 
 /// Receiving end of a backend's event stream.
 pub type Events = tokio::sync::mpsc::Receiver<WmEvent>;
@@ -73,6 +75,15 @@ pub trait WindowManager: Send + Sync {
 
     /// Starts listening for window and workspace events. Every call opens a new stream.
     fn events(&self) -> impl Future<Output = Result<Events, WmError>> + Send;
+
+    /// Before windows open that should each cover one monitor whole and lie over everything
+    /// (task ER2.2, the reminder over the whole screen): tells the window manager where each of
+    /// `covers` goes. Hyprland registers a rule per monitor; window managers without such rules
+    /// do nothing, and the window covers its screen by itself.
+    fn cover_monitors(&self, covers: &[Cover]) -> impl Future<Output = Result<(), WmError>> + Send {
+        let _ = covers;
+        async { Ok(()) }
+    }
 }
 
 /// The backend chosen at runtime.
@@ -176,6 +187,13 @@ impl WindowManager for Backend {
             Backend::GlazeWm(wm) => wm.events().await,
             Backend::AeroSpace(wm) => wm.events().await,
             Backend::Unsupported { name } => Err(WmError::Unsupported(name.clone())),
+        }
+    }
+
+    async fn cover_monitors(&self, covers: &[Cover]) -> Result<(), WmError> {
+        match self {
+            Backend::Hyprland(wm) => wm.cover_monitors(covers).await,
+            Backend::GlazeWm(_) | Backend::AeroSpace(_) | Backend::Unsupported { .. } => Ok(()),
         }
     }
 }

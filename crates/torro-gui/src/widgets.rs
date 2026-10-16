@@ -115,6 +115,12 @@ const SELECTED_BAR: f32 = 2.0;
 /// Width of the label column of a [`prop_line`] ("Priority", "Due"): the value starts at the same
 /// x in every row of the properties column.
 const PROP_LABEL_WIDTH: f32 = 88.0;
+
+/// How wide the label of a property row is ([`prop_line`]), for views that line up their own rows
+/// with property rows (the facts of the reminder window, task ER2.1).
+pub fn prop_label_width() -> f32 {
+    PROP_LABEL_WIDTH
+}
 /// Top and bottom padding of a [`prop_line`]: with the 20-px line of `BODY` that makes the 32-px
 /// [`size::control()`]; a value of several lines (wrapping label chips) makes the row taller.
 const PROP_PADDING_Y: f32 = 6.0;
@@ -312,6 +318,36 @@ pub fn text_button<'a, M: Clone + 'a>(
         .into()
 }
 
+/// A large button of a reminder over the whole screen (task ER2.1): [`size::control_xl()`] high,
+/// label in `typo::body_strong()`, optional icon (16) in front and the key that presses it as a
+/// [`kbd`] behind ("Enter", "S", "Esc"). `style` as for [`text_button`]; `None` for `on_press`
+/// shows it disabled.
+pub fn big_button<'a, M: Clone + 'a>(
+    icon: Option<Icon>,
+    label: impl IntoFragment<'a>,
+    key: Option<&'a str>,
+    style: ButtonStyle,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let mut content = row![].spacing(space::s()).align_y(Alignment::Center);
+    if let Some(which) = icon {
+        content = content.push(button_icon(which, icon::SIZE, style, on_press.is_some()));
+    }
+    content = content.push(typo::text(typo::body_strong(), label).wrapping(Wrapping::None));
+    if let Some(key) = key {
+        // In the button's own text colour: `text_3` would be too faint on the primary's red.
+        let hint = typo::text(typo::caption(), key)
+            .style(move |t| iced::widget::text::Style { color: Some(style(t, button::Status::Active).text_color) });
+        content = content.push(container(hint).padding(style::KBD_PADDING).style(style::container::kbd));
+    }
+    button(container(content).center_y(Fill))
+        .height(size::control_xl())
+        .padding([0.0, space::l()])
+        .style(style)
+        .on_press_maybe(on_press)
+        .into()
+}
+
 /// A [`text_button`] while the action it started runs ("Creating…", "Saving…"): the same size and
 /// `style` (usually `style::button::primary`), the label `label` from the caller, led by the
 /// [`Icon::RefreshCw`] arrows (14) as a quiet "working" sign. It has no message, so a second click
@@ -493,6 +529,152 @@ pub fn density_switch<'a, M: Clone + 'a>(
         segment
     });
     container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
+}
+
+// ---------------------------------------------------------------------------------------------
+// Bars of actions over a page (task E9.4): the reader's standard bar and its floating Torro bar
+// ---------------------------------------------------------------------------------------------
+
+/// A button of a bar over a page (task E9.4: the mail reader's standard bar at the top and the
+/// floating bar at the bottom): one step taller than [`text_button`] – [`size::control()`], 32 –
+/// so it reads as a button, not as a link.
+///
+/// With `words`: the icon (14) and `label` in `CAPTION` with the button padding, as wide as
+/// [`text_button_width`]`(true, label)` says. Without: a square [`size::control()`] with the icon at
+/// 16 and `label` as its tooltip, [`size::control()`] wide. `style` is one of
+/// [`crate::style::button`]: `primary` for the window's one main action, `secondary` for the
+/// others, `icon` for quiet icons at the end of a bar. `None` for `on_press` shows it off.
+///
+/// ```ignore
+/// widgets::bar_button(Icon::Reply, tr("Reply"), words, style::button::primary, Some(Message::Reply))
+/// ```
+pub fn bar_button<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    words: bool,
+    style: ButtonStyle,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let on = on_press.is_some();
+    bar_button_with(
+        button_icon(which, if words { icon::SIZE_SM } else { icon::SIZE }, style, on),
+        label,
+        words,
+        style,
+        on_press,
+    )
+}
+
+/// A [`bar_button`] whose icon is in the accent colour instead of the button's text colour: a
+/// function of its own that the bar wants recognised at a glance – the AI buttons with
+/// [`Icon::Sparkles`] (task E9.4). The word stays in the button's colour; off, the icon fades with it.
+pub fn bar_button_accent<'a, M: Clone + 'a>(
+    which: Icon,
+    label: impl IntoFragment<'a>,
+    words: bool,
+    style: ButtonStyle,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    let edge = if words { icon::SIZE_SM } else { icon::SIZE };
+    let mark = icon(which, edge)
+        .style(|t, _| svg::Style { color: Some(palette(t).accent) })
+        .opacity(icon_opacity(on_press.is_some()));
+    bar_button_with(mark.into(), label, words, style, on_press)
+}
+
+/// The [`bar_button`] around `mark`: with its word or square with a tooltip.
+fn bar_button_with<'a, M: Clone + 'a>(
+    mark: Element<'a, M>,
+    label: impl IntoFragment<'a>,
+    words: bool,
+    style: ButtonStyle,
+    on_press: Option<M>,
+) -> Element<'a, M> {
+    if words {
+        let content = row![mark, typo::text(typo::caption(), label).wrapping(Wrapping::None)]
+            .spacing(ICON_GAP)
+            .align_y(Alignment::Center);
+        return button(container(content).center_y(Fill))
+            .height(size::control())
+            .padding(style::button_padding())
+            .style(style)
+            .on_press_maybe(on_press)
+            .into();
+    }
+    let square = button(center(mark))
+        .width(size::control())
+        .height(size::control())
+        .padding(0)
+        .style(style)
+        .on_press_maybe(on_press);
+    with_tooltip(square, label)
+}
+
+/// A [`segmented`] control as tall as a [`bar_button`] ([`size::control()`]), for the switches in
+/// the same bars ("HTML | Text", "Light | Dark"). As wide as [`segmented_width`] estimates.
+pub fn bar_segmented<'a, M: Clone + 'a, L: IntoFragment<'a>>(
+    options: impl IntoIterator<Item = (L, M)>,
+    active: usize,
+) -> Element<'a, M> {
+    let inner = size::control() - 2.0 * style::SEGMENT_INSET - 2.0 * LINE;
+    let segments = options.into_iter().enumerate().map(|(i, (label, message))| {
+        button(container(typo::text(typo::caption(), label).wrapping(Wrapping::None)).center_y(Fill))
+            .height(inner)
+            .padding(style::button_padding())
+            .style(style::button::segment(i == active))
+            .on_press(message)
+            .into()
+    });
+    container(row(segments)).padding(style::SEGMENT_INSET).style(style::container::segmented).into()
+}
+
+/// The padding inside a [`floating_bar`], around its rows, and the gap between its rows and
+/// controls.
+pub fn floating_bar_gap() -> f32 {
+    space::xs()
+}
+
+/// A bar that floats over a page (task E9.4, the mail reader's Torro bar): `content` – rows of
+/// [`bar_button`]s and [`bar_segmented`] switches, [`floating_bar_gap`] apart – on the menu surface
+/// with its frame and shadow and the radius of floating cards ([`style::container::popover`]),
+/// [`floating_bar_gap`] inside. Place it with [`over_bar`]; it is as wide as its content.
+pub fn floating_bar<'a, M: 'a>(content: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    container(content).padding(floating_bar_gap()).style(style::container::popover).into()
+}
+
+/// The height of a [`floating_bar`] of `rows` rows of [`size::control()`]: the rows, the gaps
+/// between them, the padding and the frame.
+pub fn floating_bar_height(rows: usize) -> f32 {
+    let rows = rows.max(1) as f32;
+    rows * size::control() + (rows - 1.0) * floating_bar_gap() + 2.0 * (floating_bar_gap() + LINE)
+}
+
+/// The room for the controls of a [`floating_bar`] over a page `width` wide: the page less the bar's
+/// margin ([`space::m()`]) at both sides, its padding and its frame.
+pub fn floating_bar_room(width: f32) -> f32 {
+    (width - 2.0 * (space::m() + floating_bar_gap() + LINE)).max(0.0)
+}
+
+/// How much room a page under a [`floating_bar`] of `rows` rows keeps at its end (its bottom
+/// padding), so its last line and what follows it scroll out from under the bar: the bar and its
+/// margin below and above it ([`space::m()`]).
+pub fn floating_bar_clearance(rows: usize) -> f32 {
+    floating_bar_height(rows) + 2.0 * space::m()
+}
+
+/// `page` with `bar` ([`floating_bar`]) floating over it, fixed at the bottom, centred,
+/// [`space::m()`] from the bottom and the sides. Give the scrolling page the bottom padding of
+/// [`floating_bar_clearance`]. A click or the wheel beside the bar reaches the page below.
+///
+/// ```ignore
+/// let rows = 2;
+/// let page = scrollable(container(content).padding(Padding { bottom: widgets::floating_bar_clearance(rows), ..pad }));
+/// widgets::over_bar(page, widgets::floating_bar(column![first_row, second_row].spacing(widgets::floating_bar_gap())))
+/// ```
+pub fn over_bar<'a, M: 'a>(page: impl Into<Element<'a, M>>, bar: impl Into<Element<'a, M>>) -> Element<'a, M> {
+    let layer =
+        container(bar).width(Fill).height(Fill).padding(space::m()).align_x(Alignment::Center).align_y(Alignment::End);
+    stack![page.into(), layer].width(Fill).height(Fill).into()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1002,6 +1184,35 @@ pub fn card_actions<'a, M: Clone + 'a>(
     with_actions(card.into(), actions, shown, words, Place::Card(inset))
 }
 
+/// The action bar of a row as a strip of its own below the row's lines (the inbox's list): the
+/// buttons of `actions` side by side, [`space::s()`] apart, each `secondary` ([`size::control_sm()`]
+/// high) so they stand out on the row's `selected` surface, with icon and word – or, without
+/// `words`, 28 × 28 with the icon alone ([`row_actions_strip_words`] chooses). Every button's
+/// tooltip names it with its key ([`kbd`]). Unlike [`row_actions`] nothing floats over the row: the
+/// row grows by [`row_actions_strip_height`] while it shows the strip. Empty without actions.
+///
+/// ```ignore
+/// let words = widgets::row_actions_strip_words(&actions, room);
+/// column![lines, widgets::row_actions_strip(actions, words)].spacing(space::s())
+/// ```
+pub fn row_actions_strip<'a, M: Clone + 'a>(actions: Vec<RowAction<'a, M>>, words: bool) -> Element<'a, M> {
+    let buttons = actions.into_iter().map(|action| row_action_button(action, words, style::button::secondary));
+    iced::widget::Row::with_children(buttons).spacing(space::s()).align_y(Alignment::Center).into()
+}
+
+/// The height a [`row_actions_strip`] adds to its row: a button ([`size::control_sm()`]) and the gap
+/// [`space::s()`] above it.
+pub fn row_actions_strip_height() -> f32 {
+    size::control_sm() + space::s()
+}
+
+/// Whether the [`row_actions_strip`] of `actions` shows its words in `room`: when all of them fit,
+/// else icons alone with their word as tooltip – never a mix.
+pub fn row_actions_strip_words<M>(actions: &[RowAction<'_, M>], room: f32) -> bool {
+    let buttons: f32 = actions.iter().map(|action| row_action_width(action.label.as_ref())).sum();
+    buttons + space::s() * actions.len().saturating_sub(1) as f32 <= room
+}
+
 /// Where the bar of [`with_actions`] sits at the right of what it lies over.
 #[derive(Debug, Clone, Copy)]
 enum Place {
@@ -1024,7 +1235,7 @@ fn with_actions<'a, M: Clone + 'a>(
     if actions.is_empty() {
         return base;
     }
-    let buttons = actions.into_iter().map(|action| row_action_button(action, words));
+    let buttons = actions.into_iter().map(|action| row_action_button(action, words, style::button::menu_item(false)));
     let bar = container(iced::widget::Row::with_children(buttons).spacing(BAR_INSET).align_y(Alignment::Center))
         .padding(BAR_INSET)
         .style(|t| {
@@ -1052,13 +1263,17 @@ fn with_actions<'a, M: Clone + 'a>(
     if shown { stack![base, layer].into() } else { iced::widget::hover(base, layer) }
 }
 
-/// One button of [`row_actions`]: on the `menu` surface, so hover and press are `selected` (as in
-/// menus, where `hover` would vanish); the tooltip names it with its key.
+/// One button of [`row_actions`] in `style`: on the `menu` surface `menu_item`, so hover and press
+/// are `selected` (as in menus, where `hover` would vanish); in [`row_actions_strip`] `secondary`.
+/// The tooltip names it with its key.
 ///
 /// An action that is off ([`RowAction::blocked`]) stands there faded – word, icon and all – takes no
 /// press and says why in its tooltip. An action without a key (`""`) shows no key hint.
-fn row_action_button<'a, M: Clone + 'a>(action: RowAction<'a, M>, words: bool) -> Element<'a, M> {
-    let style = style::button::menu_item(false);
+fn row_action_button<'a, M: Clone + 'a>(
+    action: RowAction<'a, M>,
+    words: bool,
+    style: impl Fn(&Theme, button::Status) -> button::Style + Copy + 'a,
+) -> Element<'a, M> {
     let press = action.press();
     let on = press.is_some();
     let mut tooltip = row![typo::text(typo::caption(), action.tip()).style(theme::text_2)]
@@ -3136,6 +3351,26 @@ mod tests {
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> Rectangle {
         Rectangle { x, y, width, height }
+    }
+
+    /// Task E9.4: a floating bar is its rows of 32-high controls with the gaps, padding and frame; the
+    /// page under it keeps room for it and its margins; its room is the page less margins and frame.
+    #[test]
+    fn a_floating_bar_is_as_high_as_its_rows() {
+        let frame = 2.0 * (floating_bar_gap() + LINE);
+        assert_eq!(floating_bar_height(1), size::control() + frame);
+        assert_eq!(floating_bar_height(2), 2.0 * size::control() + floating_bar_gap() + frame);
+        assert_eq!(floating_bar_height(0), floating_bar_height(1), "a bar has a row at least");
+        assert_eq!(floating_bar_clearance(2), floating_bar_height(2) + 2.0 * space::m());
+        assert_eq!(floating_bar_room(800.0), 800.0 - 2.0 * space::m() - frame);
+        assert_eq!(floating_bar_room(10.0), 0.0);
+        assert!(size::control() > size::control_sm(), "a bar's buttons are a step taller");
+        let words: Element<'_, Msg> = bar_button(Icon::Reply, "Reply", true, style::button::primary, Some(Msg::Go));
+        let icon: Element<'_, Msg> =
+            bar_button_accent(Icon::Sparkles, "AI task", false, style::button::secondary, None);
+        let switch: Element<'_, Msg> = bar_segmented([("HTML", Msg::Go), ("Text", Msg::Close)], 0);
+        let bar: Element<'_, Msg> = floating_bar(row![words, icon, switch]);
+        let _: Element<'_, Msg> = over_bar(blank(), bar);
     }
 
     /// Task U.13: a segmented control is as wide as its words with their padding and the frame.

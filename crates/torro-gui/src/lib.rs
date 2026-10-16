@@ -30,6 +30,7 @@
 //! - [`zoom`]: zoom like a browser (Ctrl + Plus / Minus / 0) for the whole suite, with the short
 //!   badge that shows the new level.
 
+pub mod components;
 pub mod connect;
 pub mod datetime;
 pub mod design;
@@ -152,6 +153,32 @@ pub fn place_traffic_lights<T: Send + 'static>() -> iced::Task<T> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        iced::Task::none()
+    }
+}
+
+/// How many screens there are, for one reminder window per screen (task ER2.2); 1 on systems
+/// where the suite cannot tell ([`torro_appkit::screen_count`]).
+pub fn screen_count() -> usize {
+    torro_appkit::screen_count()
+}
+
+/// The task that puts the window `id` over the whole of screen `screen` and in front (task ER2.2,
+/// [`torro_appkit::cover_screen`]); with `key` it takes the keyboard. Nothing on other systems,
+/// where the window's own settings make it full screen.
+pub fn cover_screen<T: Send + 'static>(id: iced::window::Id, screen: usize, key: bool) -> iced::Task<T> {
+    #[cfg(target_os = "macos")]
+    {
+        iced::window::run(id, move |window| {
+            if let Err(err) = torro_appkit::cover_screen(window, screen, key) {
+                eprintln!("cannot cover the screen: {err}");
+            }
+        })
+        .discard()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (id, screen, key);
         iced::Task::none()
     }
 }

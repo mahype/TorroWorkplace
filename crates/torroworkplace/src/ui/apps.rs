@@ -8,17 +8,23 @@
 //! The page does not look for the apps itself: the core knows where its apps are, so the control
 //! centre and the daemon agree on what they can start. Until the first answer arrives, the group
 //! shows a quiet loading line.
+//!
+//! Above the apps a switch per component of the suite (task W.2, `settings.set_setting component`):
+//! where a component turned off in the setup is turned on again.
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row};
+use iced::widget::{column, container, row, toggler};
 use iced::{Alignment, Element, Fill};
 use torro_core::i18n::{tr, trf};
+use torro_core::settings::{Component, ComponentSwitch};
+use torro_gui::layout;
 use torro_gui::theme::{self, space};
 use torro_gui::widgets::{self, Status};
 use torro_gui::{style, typo};
-use torro_ipc::{AppInfo, Request};
+use torro_ipc::{AppInfo, Request, SettingKey};
 
-use super::{Action, Data, one_line, row_frame};
+use super::setup::component_name;
+use super::{Action, Data, one_line, row_frame, setting_row};
 
 #[derive(Debug, Default)]
 pub struct State {}
@@ -28,15 +34,43 @@ pub enum Message {
     /// "Open" was pressed for the app with this window class. The class, not the binary: the
     /// inbox's three windows share the binary `torroinbox` (task E8.1).
     Open(String),
+    /// A component's switch (task W.2).
+    Component(Component, bool),
 }
 
 pub fn update(_state: &mut State, message: Message, _data: &Data) -> Action {
     match message {
         Message::Open(app) => Action::Send(Request::OpenApp { app, target: None }),
+        Message::Component(component, enabled) => Action::Send(Request::SetSetting {
+            key: SettingKey::Component,
+            value: serde_json::to_value(ComponentSwitch { component, enabled }).unwrap_or_default(),
+        }),
     }
 }
 
 pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
+    column![components(data), apps(data)].spacing(layout::section_gap()).into()
+}
+
+/// A switch per component of the suite (task W.2).
+fn components(data: &Data) -> Element<'_, Message> {
+    let rows = Component::ALL
+        .into_iter()
+        .map(|component| {
+            let switch = toggler(data.settings.component_on(component))
+                .size(style::CHECK_SIZE)
+                .style(style::toggler)
+                .on_toggle(move |on| Message::Component(component, on));
+            setting_row(None, component_name(component), None, switch)
+        })
+        .collect();
+    let footer = tr(
+        "Turned off, a part of the suite leaves the app switcher and the tray, and nothing runs for it in the background. Accounts and data stay.",
+    );
+    widgets::group(tr("Components"), rows, Some(footer.to_string()))
+}
+
+fn apps(data: &Data) -> Element<'_, Message> {
     let title = tr("Suite apps");
     match &data.apps {
         // The core has not answered yet: one quiet line, so the page does not jump when the rows come.

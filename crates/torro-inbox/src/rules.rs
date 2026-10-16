@@ -49,7 +49,7 @@ pub enum Poster {
 pub fn placement(kind: Kind, wanted: Option<Lane>) -> (Lane, bool) {
     match kind {
         Kind::AgentWaiting | Kind::Approval | Kind::Alert => (Lane::ForMe, true),
-        Kind::AgentDone | Kind::AccountProblem => (Lane::ForMe, false),
+        Kind::AgentDone | Kind::AccountProblem | Kind::Reminder => (Lane::ForMe, false),
         Kind::Notice => (wanted.unwrap_or(Lane::Info), false),
         Kind::Message => (wanted.unwrap_or(Lane::ForMe), false),
     }
@@ -217,7 +217,8 @@ pub fn facets(item: &Item, list: Option<&str>, bulk: bool) -> Vec<Facet> {
             match item.kind {
                 Kind::AgentWaiting => add(FacetKey::Kind, "agent_waiting"),
                 Kind::AgentDone => add(FacetKey::Kind, "agent_done"),
-                Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message | Kind::Alert => {}
+                Kind::Notice | Kind::Approval | Kind::AccountProblem | Kind::Message | Kind::Alert | Kind::Reminder => {
+                }
             }
         }
         SourceKind::Script => add(FacetKey::Client, &item.source.name),
@@ -673,8 +674,8 @@ pub fn muting(rules: &[Rule], item: &Item, now: DateTime<Utc>) -> Option<MuteEff
 /// anyone else, so no client or hook makes its entries urgent.
 pub fn admitted_kind(kind: Kind, poster: Poster) -> Option<Kind> {
     match (kind, poster) {
-        (Kind::Approval | Kind::AccountProblem, Poster::Core) => Some(kind),
-        (Kind::Approval | Kind::AccountProblem, _) => None,
+        (Kind::Approval | Kind::AccountProblem | Kind::Reminder, Poster::Core) => Some(kind),
+        (Kind::Approval | Kind::AccountProblem | Kind::Reminder, _) => None,
         (Kind::AgentWaiting | Kind::AgentDone, Poster::Core | Poster::Hook) => Some(kind),
         (Kind::AgentWaiting | Kind::AgentDone, Poster::Client) => Some(Kind::Notice),
         (Kind::Message | Kind::Alert, Poster::Core) => Some(kind),

@@ -45,6 +45,20 @@ pub struct Monitor {
     pub active_workspace: Option<WorkspaceId>,
 }
 
+/// A window that should cover one monitor whole (task ER2.2): the reminder over the whole screen,
+/// told apart by its class and its title.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Cover {
+    /// The window's class (app id), e.g. `torro-reminder`.
+    pub class: String,
+    /// The window's exact first title, e.g. `Reminder · DP-1`.
+    pub title: String,
+    /// The monitor it covers, by name ([`Monitor::name`]).
+    pub monitor: String,
+    /// Whether it takes the keyboard when it appears (the main monitor's does, the others do not).
+    pub focus: bool,
+}
+
 /// A normal window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Window {

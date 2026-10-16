@@ -49,6 +49,9 @@ jobs:
           - { bin: torrocalendar, appid: torro-calendar, title: Torro Calendar, arch: x86_64, runner: macos-15-intel }
           - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: aarch64, runner: macos-14 }
           - { bin: torrotasks, appid: torro-tasks, title: Torro Tasks, arch: x86_64, runner: macos-15-intel }
+          # The reminder over the whole screen (task ER2.2): the calendar's binary as an agent app.
+          - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, title: Torro Reminder, arch: aarch64, runner: macos-14 }
+          - { bin: torrocalendar, exe: torro-reminder, agent: "1", appid: torro-reminder, title: Torro Reminder, arch: x86_64, runner: macos-15-intel }
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag || fromJson(inputs.plan).announcement_tag }}
@@ -68,8 +71,8 @@ jobs:
         run: |
           version="${TAG#v}"
           # Pass a 1024x1024 PNG as the last argument once real artwork exists (packaging/macos/icons/).
-          packaging/macos/make-app.sh "${{ matrix.bin }}" "${{ matrix.appid }}" "${{ matrix.title }}" \
-            "$version" "${{ matrix.bin }}-${TARGET}/${{ matrix.bin }}" out
+          AGENT_APP="${{ matrix.agent }}" packaging/macos/make-app.sh "${{ matrix.exe || matrix.bin }}" \
+            "${{ matrix.appid }}" "${{ matrix.title }}" "$version" "${{ matrix.bin }}-${TARGET}/${{ matrix.bin }}" out
 
       - name: Import the signing certificate
         env:
@@ -104,7 +107,7 @@ jobs:
         run: |
           set -euo pipefail
           codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" \
-            "$APP/Contents/MacOS/${{ matrix.bin }}"
+            "$APP/Contents/MacOS/${{ matrix.exe || matrix.bin }}"
           codesign --force --timestamp --options runtime --sign "$MACOS_SIGN_IDENTITY" "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
@@ -127,7 +130,7 @@ jobs:
 
       - name: Upload to the release
         run: |
-          asset="${{ matrix.bin }}-${TARGET}.app.zip"
+          asset="${{ matrix.exe || matrix.bin }}-${TARGET}.app.zip"
           ditto -c -k --keepParent "$APP" "$asset"
           shasum -a 256 "$asset" > "$asset.sha256"
           gh release upload "$TAG" "$asset" "$asset.sha256" --repo "$GITHUB_REPOSITORY" --clobber

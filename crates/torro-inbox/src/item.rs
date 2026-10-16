@@ -573,6 +573,9 @@ pub enum Kind {
     /// urgency here, but only in topics the person subscribed to themselves. From a client or a
     /// hook it becomes a [`Kind::Notice`] ([`crate::rules::admitted_kind`]).
     Alert,
+    /// A reminder of an event fired (task ER1.4, `docs/erinnerungen.md`). Only the core creates
+    /// it, for me and not urgent; done or snoozed here dismisses or snoozes the reminder itself.
+    Reminder,
 }
 
 /// The two lanes of the inbox. Only "for me" counts and may show pop-ups.

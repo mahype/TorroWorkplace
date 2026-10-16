@@ -13,7 +13,8 @@
 //! onto its one request ([`request_for`]):
 //!
 //! - `calendar_list_events`: `start` and `end` as a day or a local time, not only RFC 3339,
-//! - `calendar_save_event`: `collection`, `summary`, `start`, … to create an event,
+//! - `calendar_save_event`: `collection`, `summary`, `start`, … (with `reminder_minutes`, task
+//!   ER2.6) to create an event,
 //! - `tasks_save_todo`: `collection`, `summary`, `due`, … to create a task,
 //! - `inbox_list_items`: without arguments what waits for the person (lane `for_me`, state
 //!   `open`, 50 entries, newest first); `all` for lane or state selects every one,
@@ -483,7 +484,8 @@ fn narrow_schema(command: &str, schema: &mut JsonObject) {
 ///   left open, and so is it for `inbox.create_task_from_item` and `inbox.create_event_from_item`
 ///   (task E8.5b), which write a task or an event to the server, and for
 ///   `inbox.suggest_task_from_item` and `inbox.suggest_event_from_item` (issue #120), which ask an
-///   AI server – one elsewhere, as the person set it up.
+///   AI server – one elsewhere, as the person set it up. The reminders of the calendar
+///   ([`STAYS_HERE`], task ER1.2) never reach a server: closed.
 pub fn annotations(command: &Command) -> ToolAnnotations {
     let read_only = command.access == Access::Read;
     let destructive = matches!(command.access, Access::Delete | Access::Admin)
@@ -508,9 +510,20 @@ pub fn annotations(command: &Command) -> ToolAnnotations {
         Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox => {
             hints.open_world(false)
         }
+        _ if STAYS_HERE.contains(&command.name) => hints.open_world(false),
         _ => hints,
     }
 }
+
+/// Commands of server areas that stay on this computer: the core keeps reminders, snoozing and
+/// dismissing locally and never writes them to the calendar server (task ER1.2).
+const STAYS_HERE: &[&str] = &[
+    "calendar.list_reminders",
+    "calendar.snooze_reminder",
+    "calendar.dismiss_reminder",
+    "calendar.pause_reminders",
+    "calendar.preview_reminder",
+];
 
 /// The inbox commands that reach a server: a calendar server (a task or an event of an entry) or an
 /// AI server (a suggestion, issue #120). Their open-world hint stays open.
@@ -527,6 +540,9 @@ const IDEMPOTENT: &[&str] = &[
     "workspaces.delete_template",
     "workspaces.rename_template",
     "calendar.delete_event",
+    // Dismissed stays dismissed; the same pause again ends when it did (task ER1.2).
+    "calendar.dismiss_reminder",
+    "calendar.pause_reminders",
     "tasks.delete_todo",
     "tasks.delete_filter_list",
     "tasks.unpin_issue",
@@ -794,6 +810,10 @@ struct EventInput {
     location: Option<String>,
     /// Short form: notes.
     description: Option<String>,
+    /// Short form: one reminder this many minutes before the start (0 at the start, up to a
+    /// week), shown as its calendar shows reminders. Leave out for the suite's default reminder.
+    #[schemars(range(min = 0, max = 10080))]
+    reminder_minutes: Option<u32>,
 }
 
 /// Input of `tasks_save_todo`: either the full `todo` (to change one, as `list_todos` returns
@@ -947,9 +967,10 @@ fn list_events<Tz: TimeZone>(input: EventsInput, zone: &Tz) -> Result<Request, T
 }
 
 fn save_event<Tz: TimeZone>(input: EventInput, zone: &Tz) -> Result<Request, ToolError> {
-    let EventInput { event, collection, summary, start, end, all_day, location, description } = input;
+    let EventInput { event, collection, summary, start, end, all_day, location, description, reminder_minutes } = input;
     let short = [&collection, &summary, &start, &end, &location, &description].iter().any(|field| field.is_some())
-        || all_day.is_some();
+        || all_day.is_some()
+        || reminder_minutes.is_some();
     match (event, short) {
         (Some(_), true) => Err(ToolError::Input("pass either `event` or the short form, not both".into())),
         (Some(event), false) => Ok(Request::SaveEvent { event }),
@@ -981,9 +1002,25 @@ fn save_event<Tz: TimeZone>(input: EventInput, zone: &Tz) -> Result<Request, Too
                     description,
                     recurring: false,
                     transparency: torro_pim::Transparency::Opaque,
+                    alarms: reminder_alarm(reminder_minutes)?,
                 },
             })
         }
+    }
+}
+
+/// The reminder of `reminder_minutes` (task ER2.6): one, before the start, in the calendar's style;
+/// none without it. More than a week is refused.
+fn reminder_alarm(minutes: Option<u32>) -> Result<Vec<torro_pim::Alarm>, ToolError> {
+    match minutes {
+        None => Ok(Vec::new()),
+        Some(minutes) if minutes > torro_core::settings::Reminders::MAX_LEAD => {
+            Err(ToolError::Input("`reminder_minutes` is at most 10080 (a week)".into()))
+        }
+        Some(minutes) => Ok(vec![torro_pim::Alarm {
+            trigger: torro_pim::AlarmTrigger::Before { minutes: i64::from(minutes), of: torro_pim::AlarmAnchor::Start },
+            style: None,
+        }]),
     }
 }
 
@@ -1137,7 +1174,8 @@ mod tests {
             let local = matches!(
                 command.area,
                 Area::System | Area::Workspaces | Area::Settings | Area::Apps | Area::Approvals | Area::Inbox
-            ) && !WRITES_TO_A_SERVER.contains(&command.name);
+            ) && !WRITES_TO_A_SERVER.contains(&command.name)
+                || STAYS_HERE.contains(&command.name);
             assert_eq!(hints.open_world_hint, local.then_some(false), "{}", tool.name);
         }
         let schema = |name: &str| tools().iter().find(|t| t.name == name).expect("tool").input_schema.clone();
@@ -1526,6 +1564,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
@@ -2889,5 +2928,68 @@ mod tests {
             let unknown = session.request("prompts/get", json!({"name": "no_such_prompt"})).await;
             assert!(unknown.get("error").is_some(), "an unknown prompt is a protocol error: {unknown}");
         }
+    }
+
+    /// Task ER1.2: the reminder tools are the catalogue's, with the request's own fields.
+    #[test]
+    fn the_reminder_tools_build_their_requests() {
+        let request = |tool: &str, arguments: Value| {
+            let Value::Object(arguments) = arguments else { panic!("an object") };
+            request_for(tool, arguments, &Utc)
+        };
+        assert_eq!(request("calendar_list_reminders", json!({})), Ok(Request::ListReminders { due_only: false }));
+        assert_eq!(
+            request("calendar_snooze_reminder", json!({"id": "r1", "until": {"minutes": 5}})),
+            Ok(Request::SnoozeReminder { id: "r1".into(), until: torro_ipc::Snooze::Minutes(5) })
+        );
+        assert_eq!(
+            request("calendar_snooze_reminder", json!({"id": "r1", "until": "until_start"})),
+            Ok(Request::SnoozeReminder { id: "r1".into(), until: torro_ipc::Snooze::UntilStart })
+        );
+        assert_eq!(
+            request("calendar_dismiss_reminder", json!({"id": "r1"})),
+            Ok(Request::DismissReminder { id: "r1".into() })
+        );
+        assert_eq!(request("calendar_pause_reminders", json!({})), Ok(Request::PauseReminders { until: None }));
+        assert_eq!(
+            request("calendar_preview_reminder", json!({"href": "/cal/work/e.ics"})),
+            Ok(Request::PreviewReminder { href: "/cal/work/e.ics".into() })
+        );
+        assert!(request("calendar_snooze_reminder", json!({"id": "r1", "until": "later"})).is_err());
+        let snooze = tools().iter().find(|t| t.name == "calendar_snooze_reminder").expect("tool").input_schema.clone();
+        let snooze = serde_json::to_string(&snooze).expect("json");
+        assert!(snooze.contains("\"minimum\":1") && snooze.contains("\"maximum\":120"), "1 to 120 minutes: {snooze}");
+        let hints = |name: &str| tools().iter().find(|t| t.name == name).and_then(|t| t.annotations.clone());
+        assert_eq!(hints("calendar_list_reminders").and_then(|h| h.open_world_hint), Some(false), "stays here");
+        assert_eq!(hints("calendar_list_events").and_then(|h| h.open_world_hint), None, "the server's");
+    }
+
+    /// Task ER2.6: the short form of save_event takes one reminder in minutes.
+    #[test]
+    fn the_short_form_of_an_event_takes_a_reminder() {
+        let Value::Object(arguments) = json!({
+            "collection": "a/work", "summary": "Sync", "start": "2026-10-15T10:00Z", "end": "2026-10-15T10:45Z",
+            "reminder_minutes": 15
+        }) else {
+            panic!("an object")
+        };
+        let Ok(Request::SaveEvent { event }) = request_for("calendar_save_event", arguments, &Utc) else {
+            panic!("a save")
+        };
+        assert_eq!(
+            event.alarms,
+            [torro_pim::Alarm {
+                trigger: torro_pim::AlarmTrigger::Before { minutes: 15, of: torro_pim::AlarmAnchor::Start },
+                style: None
+            }]
+        );
+        let Value::Object(too_far) = json!({
+            "collection": "a/work", "summary": "Sync", "start": "2026-10-15T10:00Z", "reminder_minutes": 20000
+        }) else {
+            panic!("an object")
+        };
+        assert!(request_for("calendar_save_event", too_far, &Utc).is_err());
+        let schema = tools().iter().find(|t| t.name == "calendar_save_event").expect("tool").input_schema.clone();
+        assert!(schema["properties"].get("reminder_minutes").is_some(), "documented for agents");
     }
 }

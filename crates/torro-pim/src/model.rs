@@ -113,6 +113,12 @@ pub struct Event {
     /// RFC 5545 says; send the value back as read so a change of other fields keeps it.
     #[serde(default)]
     pub transparency: Transparency,
+    /// The event's own reminders (iCalendar `VALARM` with `ACTION:DISPLAY` or `AUDIO`), in the
+    /// stored order; empty when it has none, and then the suite's default applies (task ER1.3).
+    /// Mail reminders (`ACTION:EMAIL`) are the server's and not listed. Send the list back as
+    /// read: a save rewrites the event's reminders only when it differs.
+    #[serde(default)]
+    pub alarms: Vec<Alarm>,
 }
 
 impl Event {
@@ -137,6 +143,52 @@ pub enum Transparency {
     Opaque,
     /// The time stays free (`TRANSP:TRANSPARENT`).
     Transparent,
+}
+
+/// One reminder of an event (`docs/erinnerungen.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub struct Alarm {
+    /// When it fires.
+    pub trigger: AlarmTrigger,
+    /// How it shows; `None` means as its calendar is set to show reminders.
+    #[serde(default)]
+    pub style: Option<AlarmStyle>,
+}
+
+/// When a reminder fires (iCalendar `TRIGGER`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AlarmTrigger {
+    /// `minutes` before the start or the end of the event (`-PT15M`, `RELATED=END`). Negative
+    /// minutes fire after it; seconds are dropped (`-PT90S` is one minute before).
+    Before {
+        minutes: i64,
+        #[serde(default)]
+        of: AlarmAnchor,
+    },
+    /// At a fixed instant (`TRIGGER;VALUE=DATE-TIME`).
+    At(DateTime<Utc>),
+}
+
+/// What a relative reminder counts from (iCalendar `RELATED`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AlarmAnchor {
+    /// The start of the event, the default.
+    #[default]
+    Start,
+    /// The end of the event.
+    End,
+}
+
+/// How a reminder shows (Torro's own `X-TORRO-STYLE` in the `VALARM`; other programs ignore it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AlarmStyle {
+    /// A desktop notification and an inbox entry.
+    Notification,
+    /// Over the whole screen until the person reacts.
+    FullScreen,
 }
 
 /// A task (VTODO).

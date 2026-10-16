@@ -77,9 +77,8 @@
 //! click next to the dialog send it. [`view`] is the dialog's content only; `accounts::overlay`
 //! puts it on the dialog surface over the whole window (`super::dialog`).
 
-use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
-use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input};
+use iced::widget::{Space, checkbox, column, container, row, svg, text, text_input, toggler};
 use iced::{Alignment, Color, Element, Fill, Theme};
 use torro_core::account::{NtfyTopic, Secret};
 use torro_core::ai::AiProvider;
@@ -87,23 +86,17 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
 use torro_gui::theme::{self, Palette, palette, space};
 use torro_gui::{dialog, layout, style, typo, widgets};
-use torro_ipc::{AccountInfo, AiServer, Request, Response, TopicName, TorroMailAccount};
+use torro_ipc::{AiServer, Request, Response, TopicName, TorroMailAccount};
 use torro_mail::{Endpoint, Security};
 use torro_ntfy::{NtfyError, Topic};
-use torro_pim::AccountState;
 
 use crate::account::ntfy::{LABEL_MAX, NtfyAccountError, TOPICS_MAX};
 
 use super::accounts::on_axis;
+use super::connect::github::{self, GithubSignIn};
+use super::connect::nextcloud::{self, Ended, NextcloudSignIn};
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, chevron, one_line, pressable, row_frame, setting_row};
-
-/// GitHub's page for a new classic token, with the scope the suite needs (`repo`: private
-/// repositories, closing issues) and a name already filled in.
-pub const NEW_TOKEN_URL: &str = "https://github.com/settings/tokens/new?scopes=repo&description=Torro%20Workplace";
-
-/// OpenRouter's page for API keys (task KI.1a).
-pub const OPENROUTER_KEYS_URL: &str = "https://openrouter.ai/settings/keys";
 
 /// The AI servers "On this computer" lists, in this order (Open First).
 const LOCAL_AI: [AiProvider; 2] = [AiProvider::Ollama, AiProvider::LmStudio];
@@ -271,16 +264,14 @@ pub struct State {
     step: Step,
     /// The provider being set up; Done says what is ready.
     provider: Provider,
-    /// The server address as typed (Nextcloud).
-    server: String,
-    /// The GitHub token as pasted; `Debug` never shows it.
-    token: Secret,
+    /// The Nextcloud sign-in: the address as typed and the sign-in while it runs (task W.5).
+    nextcloud: NextcloudSignIn,
+    /// The GitHub sign-in: the token as pasted and the check (task W.6).
+    github: GithubSignIn,
     /// The step a failed GitHub check goes back to: the two ways or the token field.
     back: Step,
     /// The GitHub login once connected, for Done.
     login: Option<String>,
-    /// The Nextcloud sign-in that runs: its start and the accounts before it.
-    sign_in: Option<SignIn>,
     /// Error text for the footer: the core's answer or the shell's last error.
     error: Option<String>,
     /// What the mail provider path has asked for and learned so far.
@@ -389,6 +380,10 @@ struct AiSetup {
     key: Secret,
     /// The address of the local server being connected, for its row.
     connecting: Option<String>,
+    /// The cloud provider whose key is asked for (task W.3); OpenRouter unless another was chosen.
+    cloud: Option<AiProvider>,
+    /// Use the provider's platform for mainland China ([`AiProvider::china_url`]).
+    china: bool,
     /// The connected account's name, for Done.
     connected: Option<String>,
 }
@@ -645,18 +640,6 @@ fn app_password_help(provider: &str) -> Option<&'static str> {
     APP_PASSWORDS.iter().find(|(name, _)| name.eq_ignore_ascii_case(provider)).map(|(_, url)| *url)
 }
 
-/// What a Nextcloud sign-in compares against to tell how it ended ([`observe`]).
-#[derive(Debug, Clone)]
-struct SignIn {
-    started: DateTime<Utc>,
-    /// Every account with its problem when the sign-in started.
-    before: Vec<(String, Option<String>)>,
-    /// The entry with an empty id was in a reload, so its absence means the end.
-    seen_pending: bool,
-    /// The server the core signs in at, from that entry; only its accounts count.
-    server: Option<String>,
-}
-
 impl State {
     /// A dialog on its first step.
     pub fn new() -> State {
@@ -673,7 +656,7 @@ impl State {
 
     /// A sign-in or a check runs; the shell reloads more often.
     pub fn busy(&self) -> bool {
-        matches!(self.step, Step::Checking | Step::NtfyChecking) || self.sign_in.is_some()
+        matches!(self.step, Step::Checking | Step::NtfyChecking) || self.nextcloud.running()
     }
 }
 
@@ -735,8 +718,10 @@ pub enum Message {
     AiServerChanged(String),
     /// The API key field changed. A [`Secret`] like the token.
     AiKeyChanged(Secret),
-    /// "Create a key on OpenRouter".
+    /// "Create a key on <provider>".
     OpenAiKeyPage,
+    /// "Use the platform for mainland China" on the key step of a provider that has one.
+    AiChina(bool),
     /// The ntfy server's address changed (task E5.14).
     NtfyServerChanged(String),
     /// The name of the topic in row `.0` changed. A [`TopicName`], so `Debug` shows no name.
@@ -760,39 +745,20 @@ pub enum Message {
 /// While waiting it also copies the shell's error (for example "daemon not running") into the
 /// footer.
 pub fn observe(state: &mut State, data: &Data) {
-    let Some(sign_in) = state.sign_in.as_mut().filter(|_| state.step == Step::SigningIn) else { return };
-    if let Some(pending) = data.accounts.iter().find(|account| account.id.is_empty()) {
-        sign_in.seen_pending = true;
-        if let AccountState::SigningIn { server, .. } = &pending.state {
-            sign_in.server = Some(server.clone());
-        }
-        state.error = data.error.clone();
+    if state.step != Step::SigningIn || !state.nextcloud.running() {
         return;
     }
-    if data.accounts.iter().any(|account| signed_in(sign_in, account)) {
-        state.step = Step::Done;
-        state.sign_in = None;
-        state.error = None;
-    } else if sign_in.seen_pending {
-        state.step = Step::Server;
-        state.sign_in = None;
-        state.error = Some(tr("Signing in did not finish. Try again.").to_string());
-    } else {
-        state.error = data.error.clone();
-    }
-}
-
-/// `account` is a Nextcloud account on the server of `sign_in` that changed since it started:
-/// new, synced afterwards, or with another problem than before.
-fn signed_in(sign_in: &SignIn, account: &AccountInfo) -> bool {
-    let AccountState::Connected { server, last_sync, problem, .. } = &account.state else { return false };
-    let same_server = |a: &str, b: &str| a.trim_end_matches('/') == b.trim_end_matches('/');
-    if account.kind != "nextcloud" || !sign_in.server.as_deref().is_none_or(|s| same_server(s, server)) {
-        return false;
-    }
-    match sign_in.before.iter().find(|(id, _)| *id == account.id) {
-        None => true,
-        Some((_, before)) => last_sync.is_some_and(|at| at > sign_in.started) || problem != before,
+    match state.nextcloud.observe(data) {
+        Some(Ended::SignedIn(_)) => {
+            state.step = Step::Done;
+            state.error = None;
+        }
+        Some(Ended::Failed) => {
+            state.step = Step::Server;
+            state.error = Some(tr("Signing in did not finish. Try again.").to_string());
+        }
+        // While waiting the footer shows the shell's error (for example "daemon not running").
+        None => state.error = data.error.clone(),
     }
 }
 
@@ -888,26 +854,24 @@ pub fn answered(state: &mut State, result: &Result<Response, String>) -> bool {
             state.error = Some(message.clone());
             true
         }
-        (Step::Checking, Ok(Response::Account { account })) => {
-            state.login = Some(account.label.clone());
-            state.step = Step::Done;
-            state.error = None;
-            true
-        }
-        (Step::Checking, Ok(_)) => {
-            state.step = state.back;
-            state.error = Some(tr("Torro Workplace did not answer as expected. Try again.").to_string());
-            true
-        }
-        (Step::Checking, Err(message)) => {
-            state.step = state.back;
-            state.error = Some(message.clone());
-            true
-        }
+        (Step::Checking, result) => match state.github.answered(result) {
+            Some(Ok(login)) => {
+                state.login = Some(login);
+                state.step = Step::Done;
+                state.error = None;
+                true
+            }
+            Some(Err(message)) => {
+                state.step = state.back;
+                state.error = Some(message);
+                true
+            }
+            None => false,
+        },
         // The sign-in could not start (no such server): back to the address.
         (Step::SigningIn, Err(message)) => {
             state.step = Step::Server;
-            state.sign_in = None;
+            state.nextcloud.stop();
             state.error = Some(message.clone());
             true
         }
@@ -1108,11 +1072,14 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         }
         Message::ConnectLocalAi(..) => Action::None,
         Message::ChooseAi(provider) if state.step == Step::AiChoose => {
-            state.step = match provider {
-                AiProvider::OpenRouter => Step::AiKey,
-                _ => Step::AiServer,
-            };
+            state.step = if provider.needs_key() { Step::AiKey } else { Step::AiServer };
+            state.ai.cloud = provider.needs_key().then_some(provider);
+            state.ai.china = false;
             state.error = None;
+            Action::None
+        }
+        Message::AiChina(china) => {
+            state.ai.china = china;
             Action::None
         }
         Message::ChooseAi(_) => Action::None,
@@ -1124,7 +1091,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.ai.key = key;
             Action::None
         }
-        Message::OpenAiKeyPage => Action::OpenUrl(OPENROUTER_KEYS_URL.to_string()),
+        Message::OpenAiKeyPage => match cloud(state).key_url() {
+            Some(url) => Action::OpenUrl(url.to_string()),
+            None => Action::None,
+        },
         Message::AddressChanged(address) if state.step == Step::MailAddress => {
             // What was found belonged to the old address.
             state.mail = Mail { address, ..Mail::default() };
@@ -1180,19 +1150,28 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             _ => Action::None,
         },
         Message::ServerChanged(server) => {
-            state.server = server;
+            state.nextcloud.server = server;
             Action::None
         }
         Message::Continue => match state.step {
-            Step::Server if can_continue(state) => start_nextcloud(state, data),
-            Step::Token if !state.token.is_blank() => {
+            Step::Server if state.nextcloud.can_start() => {
+                state.step = Step::SigningIn;
+                state.error = None;
+                state.nextcloud.start(data)
+            }
+            Step::Token if state.github.has_token() => {
                 state.back = Step::Token;
                 state.step = Step::Checking;
                 state.error = None;
-                Action::Send(Request::SetGithubToken { token: std::mem::take(&mut state.token) })
+                state.github.send_token()
             }
             step @ (Step::MailAddress | Step::MailPassword | Step::MailServices) => continue_mail(state, step),
-            Step::AiKey if ai_can_connect(state) => connect_ai(state, AiProvider::OpenRouter, None),
+            Step::AiKey if ai_can_connect(state) => {
+                let provider = cloud(state);
+                // The China platform is another address; the international one is the usual.
+                let server = state.ai.china.then(|| provider.china_url()).flatten().map(str::to_string);
+                connect_ai(state, provider, server)
+            }
             Step::AiServer if ai_can_connect(state) => {
                 let server = state.ai.server.trim().to_string();
                 connect_ai(state, AiProvider::OpenAiCompatible, Some(server))
@@ -1209,7 +1188,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Step::NtfyLogin if state.ntfy.login.is_ready() => sign_in_ntfy(state),
             _ => Action::None,
         },
-        Message::OpenLoginPage => match (state.step, login_url(data)) {
+        Message::OpenLoginPage => match (state.step, nextcloud::login_url(data)) {
             (Step::SigningIn, Some(url)) => Action::OpenUrl(url.to_string()),
             _ => Action::None,
         },
@@ -1217,7 +1196,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.back = Step::Github;
             state.step = Step::Checking;
             state.error = None;
-            Action::Send(Request::ConnectGithub)
+            state.github.use_cli()
         }
         Message::PasteToken if state.step == Step::Github => {
             state.step = Step::Token;
@@ -1225,10 +1204,10 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::TokenChanged(token) => {
-            state.token = token;
+            state.github.token = token;
             Action::None
         }
-        Message::OpenTokenPage => Action::OpenUrl(NEW_TOKEN_URL.to_string()),
+        Message::OpenTokenPage => Action::OpenUrl(github::NEW_TOKEN_URL.to_string()),
         Message::UseTorroMail(id) if state.step == Step::Provider && state.torromail.can_use(&id) => {
             state.torromail.importing = Some(id.clone());
             state.torromail.failed = None;
@@ -1395,36 +1374,6 @@ fn connect_request(mail: &mut Mail) -> Option<Request> {
     })
 }
 
-/// Starts Login Flow v2 and notes what the accounts were, so [`observe`] can tell the end.
-fn start_nextcloud(state: &mut State, data: &Data) -> Action {
-    let server = state.server.trim().to_string();
-    let before = data.accounts.iter().map(|account| (account.id.clone(), problem_of(&account.state))).collect();
-    state.sign_in = Some(SignIn { started: Utc::now(), before, seen_pending: false, server: None });
-    state.step = Step::SigningIn;
-    state.error = None;
-    Action::Send(Request::ConnectNextcloud { server })
-}
-
-fn problem_of(state: &AccountState) -> Option<String> {
-    match state {
-        AccountState::Connected { problem, .. } => problem.clone(),
-        AccountState::NotConnected | AccountState::SigningIn { .. } => None,
-    }
-}
-
-/// Continue is only possible with a server address (spaces do not count).
-fn can_continue(state: &State) -> bool {
-    !state.server.trim().is_empty()
-}
-
-/// The login URL of the account that is signing in, if the core reports one.
-fn login_url(data: &Data) -> Option<&str> {
-    data.accounts.iter().find_map(|account| match &account.state {
-        AccountState::SigningIn { login_url, .. } => Some(login_url.as_str()),
-        _ => None,
-    })
-}
-
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let header = column![
         typo::text(typo::title(), tr("Add account")),
@@ -1473,7 +1422,8 @@ fn subtitle(state: &State) -> &'static str {
         (Step::MailServices, _) => tr("Choose what to use from this account."),
         (Step::MailConnecting, _) => tr("Signing in to your provider."),
         (Step::AiChoose, _) => tr("Choose where your AI models run."),
-        (Step::AiKey, _) => tr("Paste an API key from OpenRouter."),
+        (Step::AiKey, _) if cloud(state) == AiProvider::OpenRouter => tr("Paste an API key from OpenRouter."),
+        (Step::AiKey, _) => tr("Paste an API key from the provider."),
         (Step::AiServer, _) => tr("Enter the address of your AI server."),
         (Step::AiConnecting, _) => tr("Checking the connection with the AI server."),
         (Step::NtfyServer, _) => tr("Enter the address of your ntfy server."),
@@ -1636,15 +1586,7 @@ fn coming_soon_row<'a>(
 
 /// GitHub's two ways in, as rows to press, and where the token stays.
 fn github_step() -> Element<'static, Message> {
-    let way = |name: &'static str, summary: &'static str, message| {
-        pressable(setting_row(None, name, Some(summary.to_string()), chevron()), Some(message))
-    };
-    let rows = vec![
-        way(tr("Use GitHub CLI sign-in"), tr("Uses the sign-in of the gh command."), Message::UseGithubCli),
-        way(tr("Paste a token"), tr("A personal access token from your GitHub settings."), Message::PasteToken),
-    ];
-    let footer = tr("The token stays in the system keychain. Agents never see it.");
-    widgets::group(tr("Sign in with"), rows, Some(footer.to_string()))
+    github::ways(tr("Sign in with"), Message::UseGithubCli, Message::PasteToken)
 }
 
 /// A text field in the look of the suite: `BODY`, 32 high.
@@ -1660,62 +1602,22 @@ pub(super) fn field<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_i
 
 /// The server address field and Continue; Enter in the field works like Continue.
 fn server_step(state: &State) -> Element<'_, Message> {
-    field("cloud.example.org", &state.server)
-        .on_input(Message::ServerChanged)
-        .on_submit_maybe(can_continue(state).then_some(Message::Continue))
-        .into()
+    nextcloud::address(&state.nextcloud, Message::ServerChanged, Message::Continue)
 }
 
 /// What the token needs, the way to GitHub's token page, and the masked field.
 fn token_step(state: &State) -> Element<'_, Message> {
-    let create = widgets::text_button(
-        Some(Icon::ArrowUpRight),
-        tr("Create a token on GitHub"),
-        style::button::secondary,
-        Some(Message::OpenTokenPage),
-    );
-    let input = field("ghp_… / github_pat_…", state.token.expose())
-        .secure(true)
-        .on_input(|token| Message::TokenChanged(Secret::new(token)))
-        .on_submit_maybe((!state.token.is_blank()).then_some(Message::Continue));
-    column![
-        typo::text(
-            typo::body(),
-            tr("Reading private repositories and closing issues needs the repo scope; GitHub's page has it selected.")
-        )
-        .style(theme::text_2),
-        row![create],
-        input,
-    ]
-    .spacing(space::m())
-    .into()
+    github::token_form(
+        &state.github,
+        |token| Message::TokenChanged(Secret::new(token)),
+        Message::Continue,
+        Message::OpenTokenPage,
+    )
 }
 
 /// The explanation, the waiting line, the login link to copy and a button to open it again.
 fn signing_in_step(data: &Data) -> Element<'_, Message> {
-    let login = login_url(data);
-    let mut body = column![
-        typo::text(
-            typo::body(),
-            tr("Nextcloud handles the sign-in. You sign in on its own page; Torro Workplace never sees your password.")
-        ),
-        typo::text(typo::body(), tr("Waiting for the browser …")).style(theme::text_2),
-    ]
-    .spacing(space::m());
-    if let Some(url) = login {
-        // `text_input` without an edit handler cannot take focus, so no copying. Editing is
-        // allowed but ignored: the field always shows `url`, so the text stays unchanged.
-        body = body
-            .push(typo::text(typo::body(), tr("If the browser does not open, copy this link:")).style(theme::text_2))
-            .push(field("", url).on_input(|_| Message::LoginLinkEdited));
-    }
-    let again = widgets::text_button(
-        Some(Icon::ArrowUpRight),
-        tr("Open the page again"),
-        style::button::secondary,
-        login.map(|_| Message::OpenLoginPage),
-    );
-    body.push(row![again]).into()
+    nextcloud::waiting(data, Message::OpenLoginPage, |_| Message::LoginLinkEdited)
 }
 
 // ----- AI providers (task KI.1a) --------------------------------------------------------------------
@@ -1728,14 +1630,21 @@ fn ai_step(state: &State) -> Element<'_, Message> {
     let way = |provider, name: &'static str, summary: &'static str| {
         pressable(setting_row(None, name, Some(summary.to_string()), chevron()), Some(Message::ChooseAi(provider)))
     };
-    let others = vec![
-        way(AiProvider::OpenRouter, "OpenRouter", tr("Open models from many makers, with one API key")),
-        way(
-            AiProvider::OpenAiCompatible,
-            tr("Other OpenAI-compatible server"),
-            tr("vLLM, llama.cpp or a server of your own"),
-        ),
-    ];
+    let mut others: Vec<Element<'_, Message>> = AiProvider::CLOUD
+        .into_iter()
+        .map(|provider| {
+            let summary = match provider {
+                AiProvider::OpenRouter => tr("Open models from many makers, with one API key"),
+                _ => provider.seat().label(),
+            };
+            way(provider, provider.name(), summary)
+        })
+        .collect();
+    others.push(way(
+        AiProvider::OpenAiCompatible,
+        tr("Other OpenAI-compatible server"),
+        tr("vLLM, llama.cpp or a server of your own"),
+    ));
     column![
         widgets::group(tr("On this computer"), local, Some(footer.to_string())),
         widgets::group(tr("More providers"), others, None),
@@ -1782,29 +1691,46 @@ fn local_ai_detail(server: &AiServer) -> String {
     }
 }
 
-/// OpenRouter: what it is, the way to its key page and the masked key field.
+/// The cloud provider whose key the key step asks for.
+fn cloud(state: &State) -> AiProvider {
+    state.ai.cloud.unwrap_or(AiProvider::OpenRouter)
+}
+
+/// A cloud provider (OpenRouter and those of task W.3): what it is and where it runs, the way to its
+/// key page, the masked key field and, where the provider has one, its platform for mainland China.
 fn ai_key_step(state: &State) -> Element<'_, Message> {
+    let provider = cloud(state);
     let create = widgets::text_button(
         Some(Icon::ArrowUpRight),
-        tr("Create a key on OpenRouter"),
+        trf("Create a key on {provider}", &[("provider", &provider.name())]),
         style::button::secondary,
-        Some(Message::OpenAiKeyPage),
+        provider.key_url().map(|_| Message::OpenAiKeyPage),
     );
-    let input = field("sk-or-v1-…", state.ai.key.expose())
+    let placeholder = if provider == AiProvider::OpenRouter { "sk-or-v1-…" } else { "" };
+    let input = field(placeholder, state.ai.key.expose())
         .secure(true)
         .on_input(|key| Message::AiKeyChanged(Secret::new(key)))
         .on_submit_maybe(ai_can_connect(state).then_some(Message::Continue));
-    column![
-        typo::text(
-            typo::body(),
-            tr("OpenRouter offers open models such as Qwen, Llama and Mistral through one API key. Torro Workplace lists the models with open weights.")
-        )
-        .style(theme::text_2),
+    let about = match provider {
+        AiProvider::OpenRouter => tr("OpenRouter offers open models such as Qwen, Llama and Mistral through one API key. Torro Workplace lists the models with open weights.").to_string(),
+        _ => trf(
+            "{provider} runs its models in its own cloud ({seat}). What you send them goes there.",
+            &[("provider", &provider.name()), ("seat", &provider.seat().label())],
+        ),
+    };
+    let mut parts = column![
+        typo::text(typo::body(), about).style(theme::text_2),
         row![create],
         field_group(tr("API key"), input, Some(tr("The key stays in the system keychain. Agents never see it."))),
     ]
-    .spacing(space::m())
-    .into()
+    .spacing(space::m());
+    if provider.china_url().is_some() {
+        let switch = toggler(state.ai.china).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::AiChina);
+        let note = tr("Keys of the platform for mainland China only work there, and the other way round.");
+        parts =
+            parts.push(setting_row(None, tr("Use the platform for mainland China"), Some(note.to_string()), switch));
+    }
+    parts.into()
 }
 
 /// Another OpenAI-compatible server: its address and, when it asks for one, a key.
@@ -2230,7 +2156,7 @@ fn footer(state: &State) -> Element<'_, Message> {
         Step::NtfyTopics => primary(tr("Connect"), Some(Message::Continue)),
         Step::NtfyLogin => primary(tr("Connect"), state.ntfy.login.is_ready().then_some(Message::Continue)),
         Step::AiKey | Step::AiServer => primary(tr("Connect"), ai_can_connect(state).then_some(Message::Continue)),
-        Step::Server => primary(tr("Continue"), can_continue(state).then_some(Message::Continue)),
+        Step::Server => primary(tr("Continue"), state.nextcloud.can_start().then_some(Message::Continue)),
         Step::MailAddress => {
             // The first press searches, the second goes on with what was found.
             let label = if state.mail.found.is_none() { tr("Find provider") } else { tr("Continue") };
@@ -2240,7 +2166,7 @@ fn footer(state: &State) -> Element<'_, Message> {
             primary(tr("Continue"), mail_can_continue(state, state.step).then_some(Message::Continue))
         }
         Step::MailServices => primary(tr("Connect"), mail_can_continue(state, state.step).then_some(Message::Continue)),
-        Step::Token => primary(tr("Continue"), (!state.token.is_blank()).then_some(Message::Continue)),
+        Step::Token => primary(tr("Continue"), state.github.has_token().then_some(Message::Continue)),
         Step::Done => primary(tr("Done"), Some(Message::Close)),
     };
     row![error].push(back).push(cancel).push(next).spacing(space::s()).align_y(Alignment::Center).into()
@@ -2415,8 +2341,10 @@ fn ntfy_demo(demo: Demo) -> Option<Vec<Message>> {
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeDelta;
+    use chrono::{DateTime, TimeDelta, Utc};
+    use torro_ipc::AccountInfo;
     use torro_mail_imap::discover::MailUnsupported;
+    use torro_pim::AccountState;
 
     use super::*;
 
@@ -2430,6 +2358,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         }
     }
 
@@ -2656,7 +2585,7 @@ mod tests {
             "{action:?}"
         );
         assert!(!format!("{action:?}").contains("SECRET"));
-        assert!(state.token.is_blank(), "the dialog keeps no copy");
+        assert!(!state.github.has_token(), "the dialog keeps no copy");
         assert_eq!(state.step, Step::Checking);
     }
 
@@ -2665,10 +2594,10 @@ mod tests {
         let mut state = at_github();
         update(&mut state, Message::PasteToken, &Data::default());
         match update(&mut state, Message::OpenTokenPage, &Data::default()) {
-            Action::OpenUrl(url) => assert_eq!(url, NEW_TOKEN_URL),
+            Action::OpenUrl(url) => assert_eq!(url, github::NEW_TOKEN_URL),
             other => panic!("expected OpenUrl, got {other:?}"),
         }
-        assert!(NEW_TOKEN_URL.contains("scopes=repo"));
+        assert!(github::NEW_TOKEN_URL.contains("scopes=repo"));
         update(&mut state, Message::Back, &Data::default());
         assert_eq!(state.step, Step::Github);
         update(&mut state, Message::Back, &Data::default());
@@ -2689,14 +2618,14 @@ mod tests {
         update(&mut state, Message::ChooseProvider(Provider::Nextcloud), &empty);
         for typed in ["", "   ", "\t"] {
             update(&mut state, Message::ServerChanged(typed.into()), &empty);
-            assert!(!can_continue(&state), "{typed:?} must not enable Continue");
+            assert!(!state.nextcloud.can_start(), "{typed:?} must not enable Continue");
             let action = update(&mut state, Message::Continue, &empty);
             assert!(matches!(action, Action::None));
             assert_eq!(state.step, Step::Server);
             assert!(!state.busy());
         }
         update(&mut state, Message::ServerChanged("cloud.example.org".into()), &empty);
-        assert!(can_continue(&state));
+        assert!(state.nextcloud.can_start());
     }
 
     #[test]
@@ -3469,6 +3398,34 @@ mod tests {
     }
 
     /// The AI providers, opened from the catalog: the search went out.
+    #[test]
+    fn a_cloud_provider_asks_for_its_key_and_may_use_its_china_platform() {
+        let mut state = at_ai();
+        drop(view(&state, &Data::default()));
+        update(&mut state, Message::ChooseAi(AiProvider::Kimi), &Data::default());
+        assert_eq!(state.step, Step::AiKey);
+        drop(view(&state, &Data::default()));
+        let page = send(&mut state, Message::OpenAiKeyPage);
+        assert!(matches!(page, Action::OpenUrl(url) if Some(url.as_str()) == AiProvider::Kimi.key_url()));
+        update(&mut state, Message::AiKeyChanged(Secret::new("sk-kimi")), &Data::default());
+        update(&mut state, Message::AiChina(true), &Data::default());
+        let Action::Send(Request::ConnectAi { provider, server, key }) = send(&mut state, Message::Continue) else {
+            panic!("connect")
+        };
+        assert_eq!(
+            (provider, server.as_deref(), key.expose()),
+            (AiProvider::Kimi, Some("https://api.moonshot.cn/v1"), "sk-kimi")
+        );
+
+        let mut usual = at_ai();
+        update(&mut usual, Message::ChooseAi(AiProvider::Mistral), &Data::default());
+        update(&mut usual, Message::AiKeyChanged(Secret::new("key")), &Data::default());
+        let Action::Send(Request::ConnectAi { server, .. }) = send(&mut usual, Message::Continue) else {
+            panic!("connect")
+        };
+        assert_eq!(server, None, "the international address is the usual one");
+    }
+
     fn at_ai() -> State {
         let mut state = at_catalog();
         let action = update(&mut state, Message::ChooseProvider(Provider::Ai), &Data::default());
@@ -3543,7 +3500,9 @@ mod tests {
         assert_eq!(state.step, Step::AiChoose);
         update(&mut state, Message::Back, &Data::default());
         assert_eq!(state.step, Step::Provider);
-        assert!(matches!(send(&mut state, Message::OpenAiKeyPage), Action::OpenUrl(url) if url == OPENROUTER_KEYS_URL));
+        assert!(
+            matches!(send(&mut state, Message::OpenAiKeyPage), Action::OpenUrl(url) if Some(url.as_str()) == AiProvider::OpenRouter.key_url())
+        );
     }
 
     #[test]

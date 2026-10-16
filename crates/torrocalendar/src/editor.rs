@@ -39,7 +39,7 @@ use chrono::{Duration, Local, NaiveDate, NaiveDateTime, NaiveTime};
 use iced::widget::text::Wrapping;
 use iced::widget::{column, container, row, svg, text, text_editor, text_input, toggler};
 use iced::{Alignment, Background, Border, Color, Element, Length, Padding, Theme, keyboard};
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_gui::datetime::{format_date, format_time, parse_date, parse_time, to_local, to_utc};
 use torro_gui::icon::{self, Icon, icon};
 use torro_gui::links;
@@ -48,7 +48,7 @@ use torro_gui::theme::{self, palette, space};
 use torro_gui::typo::text_width;
 use torro_gui::widgets::{self, Align, Anchor, Mark, MenuItem, MenuSection, Placement, collection_color};
 use torro_gui::{style, typo};
-use torro_pim::{Collection, Event, EventTime};
+use torro_pim::{Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, Event, EventTime};
 
 use crate::views::short_date;
 
@@ -108,6 +108,10 @@ pub struct Editor {
     confirm_delete: bool,
     /// Enter asked for a save once: from then on the first problem is shown at its field.
     attempted: bool,
+    /// The menu "Add reminder" is open (task ER2.3).
+    alarm_menu: bool,
+    /// How the next reminder added shows: `None` for its calendar's style.
+    alarm_style: Option<AlarmStyle>,
 }
 
 /// A calendar in the calendar menu: the id that goes into the event, the name that is shown.
@@ -147,6 +151,16 @@ pub enum Message {
     OpenLink(String),
     /// "Copy notes": the whole notes to the clipboard.
     CopyNotes,
+    /// "Add reminder": open its menu, or close it (task ER2.3).
+    ToggleAlarms,
+    /// In the menu: how the reminder added next shows.
+    AlarmStyle(Option<AlarmStyle>),
+    /// In the menu: add a reminder at this time.
+    AddAlarm(AlarmTrigger),
+    /// The ✕ of a reminder's chip.
+    RemoveAlarm(usize),
+    /// "Preview reminder": show the event's reminder now (`calendar.preview_reminder`).
+    PreviewReminder,
     /// Enter in a field: save now, and show what is missing if that is not possible.
     Save,
     /// Save what changed, quietly (the autosave tick, Escape in a field).
@@ -178,6 +192,8 @@ pub enum Action {
     OpenLink(String),
     /// Put this text on the clipboard.
     Copy(String),
+    /// Show the reminder of the stored event at this `href` now (task ER2.3).
+    Preview(String),
 }
 
 /// Why the form cannot be saved yet. The first one found is shown as the hint.
@@ -253,6 +269,8 @@ pub struct Form {
     end_time: String,
     location: String,
     notes: String,
+    /// The event's own reminders (task ER2.3), in their order.
+    alarms: Vec<Alarm>,
 }
 
 impl Form {
@@ -274,6 +292,7 @@ impl Form {
             end_time,
             location: String::new(),
             notes: String::new(),
+            alarms: Vec::new(),
         }
     }
 
@@ -312,6 +331,7 @@ impl Form {
         form.title = event.summary.clone();
         form.location = event.location.clone().unwrap_or_default();
         form.notes = event.description.clone().unwrap_or_default();
+        form.alarms = event.alarms.clone();
         form
     }
 
@@ -356,12 +376,14 @@ impl Form {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         });
         event.summary = title.to_string();
         event.start = start;
         event.end = Some(end);
         event.location = non_empty(&self.location);
         event.description = non_empty(&self.notes);
+        event.alarms = self.alarms.clone();
         Ok(event)
     }
 }
@@ -446,6 +468,8 @@ impl Editor {
             menu: false,
             confirm_delete: false,
             attempted: false,
+            alarm_menu: false,
+            alarm_style: None,
         }
     }
 
@@ -518,8 +542,35 @@ impl Editor {
             }
             Message::CancelDelete => self.confirm_delete = false,
             Message::Close => return Action::Close,
+            Message::ToggleAlarms => {
+                self.confirm_delete = false;
+                self.menu = false;
+                self.alarm_menu = !self.alarm_menu && self.read_only.is_none();
+            }
+            Message::AlarmStyle(style) => self.alarm_style = style,
+            Message::AddAlarm(trigger) => {
+                self.alarm_menu = false;
+                let alarm = Alarm { trigger, style: self.alarm_style };
+                if !self.form.alarms.contains(&alarm) {
+                    self.form.alarms.push(alarm);
+                }
+                return self.request_save(false);
+            }
+            Message::RemoveAlarm(index) => {
+                if index < self.form.alarms.len() && self.read_only.is_none() {
+                    self.form.alarms.remove(index);
+                    return self.request_save(false);
+                }
+            }
+            Message::PreviewReminder => {
+                if let Some(href) = self.original.as_ref().and_then(|event| event.href.clone()) {
+                    return Action::Preview(href);
+                }
+            }
             Message::Escape => {
-                if self.menu {
+                if self.alarm_menu {
+                    self.alarm_menu = false;
+                } else if self.menu {
                     self.menu = false;
                 } else if self.confirm_delete {
                     self.confirm_delete = false;
@@ -635,6 +686,9 @@ impl Editor {
     /// The open calendar menu as a floating layer under the calendar row (`anchor`), or `None`.
     /// Hand it to `torro_gui::panel::place` as its layer; a click beside it closes it.
     pub fn layer<'a, M: Clone + 'a>(&'a self, anchor: &Anchor, wrap: fn(Message) -> M) -> Option<Element<'a, M>> {
+        if self.alarm_menu {
+            return Some(self.alarm_layer(anchor).map(wrap));
+        }
         if !self.menu {
             return None;
         }
@@ -648,6 +702,57 @@ impl Editor {
             .collect();
         let menu = widgets::menu(vec![MenuSection::titled(tr("Calendar"), items)]);
         Some(widgets::floating(anchor, Placement::Below(Align::Start), menu, Message::CloseMenu).map(wrap))
+    }
+
+    /// The menu "Add reminder" (task ER2.3): when, then how it shows; a time adds it at once in the
+    /// style chosen below.
+    fn alarm_layer(&self, anchor: &Anchor) -> Element<'_, Message> {
+        let when = ALARM_CHOICES
+            .iter()
+            .map(|&minutes| {
+                let trigger = AlarmTrigger::Before { minutes, of: AlarmAnchor::Start };
+                MenuItem::new(Mark::Icon(Icon::Clock), alarm_when(trigger), Message::AddAlarm(trigger))
+            })
+            .collect();
+        let style = |mark: Icon, label: &'static str, style: Option<AlarmStyle>| {
+            MenuItem::new(Mark::Icon(mark), tr(label), Message::AlarmStyle(style)).current(self.alarm_style == style)
+        };
+        let styles = vec![
+            style(Icon::Calendar, "Calendar default", None),
+            style(Icon::Bell, "Notification", Some(AlarmStyle::Notification)),
+            style(Icon::Eye, "Full screen", Some(AlarmStyle::FullScreen)),
+        ];
+        let menu = widgets::menu(vec![MenuSection::titled(tr("When"), when), MenuSection::titled(tr("Style"), styles)]);
+        widgets::floating(anchor, Placement::Below(Align::Start), menu, Message::ToggleAlarms)
+    }
+
+    /// The rows of "Reminders": a chip per reminder (with ✕ where it can be changed), "Add reminder",
+    /// and a quiet note when the event has none of its own.
+    fn alarm_rows(&self, anchor: &Anchor, editable: bool) -> Vec<Element<'_, Message>> {
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
+        for (index, alarm) in self.form.alarms.iter().enumerate() {
+            let label = typo::text(typo::body(), alarm_label(alarm)).style(theme::text);
+            let mut value = row![label].spacing(space::s()).align_y(Alignment::Center);
+            if editable {
+                value =
+                    value.push(widgets::icon_button(Icon::X, tr("Remove reminder"), Some(Message::RemoveAlarm(index))));
+            }
+            let mark = match alarm.style {
+                Some(AlarmStyle::FullScreen) => Icon::Eye,
+                _ => Icon::Bell,
+            };
+            rows.push(widgets::prop_row(Some(Mark::Icon(mark)), value, None));
+        }
+        if self.form.alarms.is_empty() {
+            let quiet = typo::text(typo::body(), tr("The default reminder of the settings")).style(theme::text_3);
+            rows.push(widgets::prop_row(Some(Mark::Icon(Icon::Bell)), quiet, None));
+        }
+        if editable {
+            let add = typo::text(typo::body(), tr("Add reminder")).style(theme::text_2);
+            let add = widgets::prop_row(Some(Mark::Icon(Icon::Plus)), add, Some(Message::ToggleAlarms));
+            rows.push(if self.alarm_menu { widgets::anchored(anchor, add) } else { add });
+        }
+        rows
     }
 
     /// "● Work › Wed, 7 Oct": the calendar with its colour and the day the event starts on.
@@ -745,6 +850,7 @@ impl Editor {
             widgets::prop_section(tr("When"), when),
             widgets::prop_section(tr("Calendar"), calendar),
             widgets::prop_section(tr("Location"), vec![location]),
+            widgets::prop_section(tr("Reminders"), self.alarm_rows(anchor, true)),
             widgets::prop_section(tr("Notes"), self.notes_rows(notes.into())),
         ]
         .spacing(space::l());
@@ -834,6 +940,9 @@ impl Editor {
             let row = widgets::prop_row(Some(Mark::Icon(Icon::MapPin)), place, None);
             body = body.push(widgets::prop_section(tr("Location"), vec![row]));
         }
+        if !form.alarms.is_empty() {
+            body = body.push(widgets::prop_section(tr("Reminders"), self.alarm_rows(&Anchor::new(), false)));
+        }
         if !form.notes.trim().is_empty() {
             let notes = selectable(&self.notes, Message::Notes, |t| palette(t).text_2);
             body = body.push(widgets::prop_section(tr("Notes"), self.notes_rows(notes)));
@@ -851,13 +960,68 @@ impl Editor {
             return Vec::new();
         }
         if !self.confirm_delete {
-            return vec![widgets::text_button(None, tr("Delete event"), style::button::danger, Some(Message::Delete))];
+            let preview = widgets::text_button(
+                Some(Icon::Eye),
+                tr("Preview reminder"),
+                style::button::ghost,
+                Some(Message::PreviewReminder),
+            );
+            return vec![
+                preview,
+                widgets::text_button(None, tr("Delete event"), style::button::danger, Some(Message::Delete)),
+            ];
         }
         vec![
             typo::text(typo::body(), tr("Really delete?")).style(theme::text_2).into(),
             widgets::text_button(None, tr("Delete"), style::button::danger, Some(Message::ConfirmDelete)),
             widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CancelDelete)),
         ]
+    }
+}
+
+/// The times "Add reminder" offers, in minutes before the start: at the start, 1, 5, 10, 15 and 30
+/// minutes, an hour, a day.
+const ALARM_CHOICES: [i64; 8] = [0, 1, 5, 10, 15, 30, 60, 1440];
+
+/// When a reminder fires, in words: "At start", "15 min before", "1 day before", "10 min before the
+/// end", "5 min after the start", or the day and time of a fixed one.
+pub fn alarm_when(trigger: AlarmTrigger) -> String {
+    let span = |minutes: i64| match minutes {
+        m if m % 1440 == 0 && m / 1440 == 1 => tr("1 day").to_string(),
+        m if m % 1440 == 0 => trf("{n} days", &[("n", &(m / 1440))]),
+        m if m % 60 == 0 && m / 60 == 1 => tr("1 hour").to_string(),
+        m if m % 60 == 0 => trf("{n} hours", &[("n", &(m / 60))]),
+        m => trf("{n} min", &[("n", &m)]),
+    };
+    match trigger {
+        AlarmTrigger::At(at) => {
+            let local = to_local(at);
+            format!("{} {}", format_date(local.date()), format_time(local.time()))
+        }
+        AlarmTrigger::Before { minutes: 0, of: AlarmAnchor::Start } => tr("At start").to_string(),
+        AlarmTrigger::Before { minutes: 0, of: AlarmAnchor::End } => tr("At the end").to_string(),
+        AlarmTrigger::Before { minutes, of: AlarmAnchor::Start } if minutes > 0 => {
+            trf("{span} before", &[("span", &span(minutes))])
+        }
+        AlarmTrigger::Before { minutes, of: AlarmAnchor::Start } => {
+            trf("{span} after the start", &[("span", &span(-minutes))])
+        }
+        AlarmTrigger::Before { minutes, of: AlarmAnchor::End } if minutes > 0 => {
+            trf("{span} before the end", &[("span", &span(minutes))])
+        }
+        AlarmTrigger::Before { minutes, of: AlarmAnchor::End } => {
+            trf("{span} after the end", &[("span", &span(-minutes))])
+        }
+    }
+}
+
+/// A reminder's chip: "15 min before · Full screen"; without a style of its own only the time.
+pub fn alarm_label(alarm: &Alarm) -> String {
+    let when = alarm_when(alarm.trigger);
+    match alarm.style {
+        None => when,
+        Some(AlarmStyle::Notification) => format!("{when} · {}", tr("Notification")),
+        Some(AlarmStyle::FullScreen) => format!("{when} · {}", tr("Full screen")),
     }
 }
 
@@ -1121,6 +1285,7 @@ mod tests {
             description: Some("Bring slides".into()),
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
@@ -1481,7 +1646,7 @@ mod tests {
 
         let event = stored("Review", EventTime::Date(day(2026, 10, 11)), None);
         let mut existing = Editor::edit(&event, &calendars());
-        assert_eq!(existing.footer().len(), 1, "Delete event");
+        assert_eq!(existing.footer().len(), 2, "Preview reminder and Delete event");
         assert!(matches!(existing.update(Message::Delete), Action::None));
         assert!(existing.confirm_delete);
         assert_eq!(existing.footer().len(), 3, "the question, Delete and Cancel");
@@ -1621,5 +1786,48 @@ mod tests {
         for label in [tr("Start"), tr("End"), tr("All day")] {
             assert!(text_width(label, typo::body()) <= width, "{label}");
         }
+    }
+
+    // Reminders (task ER2.3).
+
+    #[test]
+    fn reminder_chips_say_when_and_how() {
+        let before = |minutes| AlarmTrigger::Before { minutes, of: AlarmAnchor::Start };
+        assert_eq!(alarm_when(before(0)), tr("At start"));
+        assert_eq!(alarm_when(before(15)), trf("{span} before", &[("span", &trf("{n} min", &[("n", &15)]))]));
+        assert_eq!(alarm_when(before(60)), trf("{span} before", &[("span", &tr("1 hour"))]));
+        assert_eq!(alarm_when(before(1440)), trf("{span} before", &[("span", &tr("1 day"))]));
+        assert_eq!(alarm_when(before(-5)), trf("{span} after the start", &[("span", &trf("{n} min", &[("n", &5)]))]));
+        let end = AlarmTrigger::Before { minutes: 10, of: AlarmAnchor::End };
+        assert_eq!(alarm_when(end), trf("{span} before the end", &[("span", &trf("{n} min", &[("n", &10)]))]));
+        let full = Alarm { trigger: before(5), style: Some(AlarmStyle::FullScreen) };
+        assert_eq!(alarm_label(&full), format!("{} · {}", alarm_when(before(5)), tr("Full screen")));
+        assert_eq!(alarm_label(&Alarm { style: None, ..full }), alarm_when(before(5)), "the calendar decides");
+    }
+
+    #[test]
+    fn adding_and_removing_a_reminder_saves_the_event() {
+        let mut editor = Editor::edit(&timed(), &calendars());
+        let _ = editor.update(Message::ToggleAlarms);
+        assert!(editor.alarm_menu);
+        let _ = editor.update(Message::AlarmStyle(Some(AlarmStyle::FullScreen)));
+        let trigger = AlarmTrigger::Before { minutes: 5, of: AlarmAnchor::Start };
+        let saved = saves(&mut editor, Message::AddAlarm(trigger));
+        assert_eq!(saved.alarms, [Alarm { trigger, style: Some(AlarmStyle::FullScreen) }]);
+        assert!(!editor.alarm_menu, "the menu closes");
+        let _ = store(&mut editor, saved, "2");
+        let saved = saves(&mut editor, Message::RemoveAlarm(0));
+        assert!(saved.alarms.is_empty());
+    }
+
+    #[test]
+    fn a_stored_event_previews_its_reminder() {
+        let mut editor = Editor::edit(&timed(), &calendars());
+        assert!(
+            matches!(editor.update(Message::PreviewReminder), Action::Preview(href) if Some(href.clone()) == timed().href)
+        );
+        let _ = editor.update(Message::ToggleAlarms);
+        let _ = editor.update(Message::Escape);
+        assert!(!editor.alarm_menu, "Escape closes the menu first");
     }
 }

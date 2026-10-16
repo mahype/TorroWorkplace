@@ -206,6 +206,10 @@ async fn serve(shows: Shows) -> Result<(), String> {
     tokio::spawn(tend_inbox(Arc::clone(&core)));
     // Popups for new entries "for me" (task E3.4), also when headless: they need no tray.
     tokio::spawn(crate::inbox_notify::run(Arc::clone(&core), Arc::new(crate::inbox_notify::SystemDesktop)));
+    // Reminders of events (tasks ER1.3, ER1.4): planned and fired here, filed in the inbox and shown
+    // on the desktop.
+    let desktop = Arc::new(crate::reminders::Desktop::new(&core));
+    tokio::spawn(crate::reminders::run(Arc::clone(&core), desktop));
 
     let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
     let (quit_tx, mut quit_rx) = mpsc::unbounded_channel();
@@ -258,10 +262,17 @@ async fn serve(shows: Shows) -> Result<(), String> {
     // The tray shows whether the voice listener listens or records (task C.9).
     let voice_changes = core.voice_changes();
     let front = Front::start(&daemon, shows, core.snapshot().await).await?;
+    // A first start without accounts opens the setup (task W.9); a headless core opens no window.
+    if !matches!(front, Front::None) {
+        let core = Arc::clone(&core);
+        tokio::spawn(async move { core.offer_setup().await });
+    }
     tokio::spawn(refresher(Arc::clone(&core), refresh_rx, front.clone()));
     tokio::spawn(watch_approvals(Arc::clone(&core), approval_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(inbox_changes, refresh_tx.clone()));
     tokio::spawn(watch_inbox(voice_changes, refresh_tx.clone()));
+    // "Next" and the pause of the reminders (task ER2.5).
+    tokio::spawn(watch_reminders(core.reminders().changes(), refresh_tx.clone()));
 
     match core.events().await {
         Ok(mut events) => {
@@ -372,6 +383,15 @@ async fn watch_inbox(mut changes: tokio::sync::watch::Receiver<()>, refresh: mps
     }
 }
 
+/// Refreshes the tray after every change of the reminders: one fired, was dismissed, the pause.
+async fn watch_reminders(mut changes: tokio::sync::watch::Receiver<u64>, refresh: mpsc::UnboundedSender<()>) {
+    while changes.changed().await.is_ok() {
+        if refresh.send(()).is_err() {
+            return;
+        }
+    }
+}
+
 /// How often the inbox wakes snoozed entries that are due. The apps poll at about the same pace,
 /// and listing wakes entries too, so a minute is late enough.
 const INBOX_WAKE_EVERY: Duration = Duration::from_secs(60);
@@ -442,6 +462,12 @@ fn describe(request: &Request) -> String {
         Request::Todos => "todos".into(),
         Request::SaveEvent { .. } => "save event".into(),
         Request::DeleteEvent { .. } => "delete event".into(),
+        Request::ListReminders { .. } => "reminders".into(),
+        Request::SnoozeReminder { .. } => "snooze reminder".into(),
+        Request::DismissReminder { .. } => "dismiss reminder".into(),
+        Request::PauseReminders { until: Some(_) } => "pause reminders".into(),
+        Request::PauseReminders { until: None } => "resume reminders".into(),
+        Request::PreviewReminder { .. } => "preview reminder".into(),
         Request::SaveTodo { .. } => "save todo".into(),
         Request::DeleteTodo { .. } => "delete todo".into(),
         Request::MoveTodo { .. } => "move todo".into(),

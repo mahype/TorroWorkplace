@@ -5,7 +5,7 @@
 //! contract: add fields with `#[serde(default)]` so older files keep loading.
 
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -82,6 +82,16 @@ pub struct Settings {
     /// leniently: a value that does not read is `None`, never a settings file that fails.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient_default")]
     pub assistant_default: Option<AssistantDefault>,
+    /// Where the first-run setup stands (task W.1, `docs/einrichtung.md`): not finished yet,
+    /// put off or done, and the version of the setup last finished or put off. Read leniently: a
+    /// value that does not read is the default, never a settings file that fails.
+    #[serde(default, deserialize_with = "lenient")]
+    pub setup: Setup,
+    /// The components a person turned off (task W.1); every other one is on. Only the ones turned
+    /// off are stored, so a component added later starts on, and so do installations from before.
+    /// A name this version does not know is dropped when the file is read.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty", deserialize_with = "known_components")]
+    pub components_off: BTreeSet<Component>,
     /// How a mail that has HTML first shows in the reader (task M9.5, decision 9 in
     /// `docs/mail.md`): formatted ([`MailFormat::Html`], the default) or as plain text. The reader
     /// can switch a mail it shows; this is where it starts. Read leniently: a value that does not
@@ -100,6 +110,11 @@ pub struct Settings {
     /// may switch it off.
     #[serde(default)]
     pub mail_to_cloud: bool,
+    /// Reminders of events (task ER1.2, `docs/erinnerungen.md`): whether they come, which events,
+    /// and per calendar as a notification or over the whole screen. Read leniently: a value that
+    /// does not read gives the defaults, never a settings file that fails.
+    #[serde(default, deserialize_with = "lenient_reminders")]
+    pub reminders: Reminders,
 }
 
 /// How a mail that has HTML first shows in the reader (`settings.set_setting mail_view`, task
@@ -128,6 +143,137 @@ pub enum MailAppearance {
     Light,
     /// `"dark"`: always recoloured for a dark background.
     Dark,
+}
+
+/// How reminders of events come (task ER1.2, `settings.set_setting reminders`), as one object:
+/// `{"enabled": true, "defaultLead": 1, "calendars": {"<calendar id>": "full_screen"}, …}`. Read
+/// from a file, fields left out have their defaults; a change ([`Reminders::merged`]) touches only
+/// the fields it names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Reminders {
+    /// Reminders come at all. On unless switched off.
+    pub enabled: bool,
+    /// Minutes before the start for events without a reminder of their own (0 to
+    /// [`Reminders::MAX_LEAD`]); `null` for none. One minute unless changed.
+    pub default_lead: Option<u32>,
+    /// How each calendar shows its reminders, by calendar id from `calendar.list_calendars`. A
+    /// calendar that is not named here shows them as a notification.
+    pub calendars: BTreeMap<String, CalendarReminders>,
+    /// Only events the person accepted (or organises); declined ones never remind. On.
+    pub only_accepted: bool,
+    /// All-day events remind too. Off.
+    pub all_day: bool,
+    /// Events marked free (`TRANSP:TRANSPARENT`) remind too. Off.
+    pub free_events: bool,
+    /// Events outside the work hours remind too. On; it only matters once work hours exist (K.33).
+    pub outside_work_hours: bool,
+    /// A full-screen reminder covers every display, not only the main one. On.
+    pub all_displays: bool,
+    /// While an event with a call link runs, a full-screen reminder comes as a notification. On.
+    pub never_during_call: bool,
+    /// The sound of a reminder. The system's unless changed.
+    pub sound: ReminderSound,
+}
+
+/// How a calendar shows its reminders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CalendarReminders {
+    /// No reminders from this calendar.
+    Off,
+    /// A desktop notification and an inbox entry, the default.
+    #[default]
+    Notification,
+    /// Over the whole screen until the person reacts.
+    FullScreen,
+}
+
+/// The sound of a reminder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderSound {
+    /// The system's notification sound.
+    #[default]
+    System,
+    /// Silent.
+    None,
+}
+
+impl Default for Reminders {
+    fn default() -> Reminders {
+        Reminders {
+            enabled: true,
+            default_lead: Some(1),
+            calendars: BTreeMap::new(),
+            only_accepted: true,
+            all_day: false,
+            free_events: false,
+            outside_work_hours: true,
+            all_displays: true,
+            never_during_call: true,
+            sound: ReminderSound::System,
+        }
+    }
+}
+
+impl Reminders {
+    /// The longest default lead: one week, in minutes.
+    pub const MAX_LEAD: u32 = 7 * 24 * 60;
+
+    /// How the calendar `id` shows its reminders.
+    pub fn calendar(&self, id: &str) -> CalendarReminders {
+        self.calendars.get(id).copied().unwrap_or_default()
+    }
+
+    /// The reminders in `value`, or why they do not fit: an object of the fields above (left-out
+    /// ones keep their defaults), a lead of at most [`Reminders::MAX_LEAD`] minutes. Calendars
+    /// that show notifications, the default, are not stored. For `settings.set_setting`.
+    pub fn from_value(value: &serde_json::Value) -> Result<Reminders, String> {
+        let mut reminders: Reminders = serde_json::from_value(value.clone())
+            .map_err(|err| format!("{value} is not a setting for reminders ({err})"))?;
+        if reminders.default_lead.is_some_and(|lead| lead > Self::MAX_LEAD) {
+            return Err(format!("the default reminder is at most {} minutes before", Self::MAX_LEAD));
+        }
+        reminders.calendars.retain(|_, shown| *shown != CalendarReminders::Notification);
+        Ok(reminders)
+    }
+
+    /// The reminders as `settings.set_setting` takes them.
+    pub fn to_value(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
+    }
+
+    /// These reminders with the fields `change` names, or why it does not fit: an object whose
+    /// fields replace the ones here (left-out fields stay as they are), and whose `calendars` change
+    /// only the calendars it names (`"notification"` sets one back to the default). Checked like
+    /// [`Reminders::from_value`]. Two clients changing different fields so never undo each other.
+    pub fn merged(&self, change: &serde_json::Value) -> Result<Reminders, String> {
+        let serde_json::Value::Object(change) = change else {
+            return Err(format!("{change} is not a setting for reminders: send an object"));
+        };
+        let mut merged = match self.to_value() {
+            serde_json::Value::Object(current) => current,
+            _ => serde_json::Map::new(),
+        };
+        for (field, value) in change {
+            match (field.as_str(), merged.get_mut(field), value) {
+                ("calendars", Some(serde_json::Value::Object(calendars)), serde_json::Value::Object(named)) => {
+                    calendars.extend(named.iter().map(|(id, shown)| (id.clone(), shown.clone())));
+                }
+                _ => {
+                    merged.insert(field.clone(), value.clone());
+                }
+            }
+        }
+        Reminders::from_value(&serde_json::Value::Object(merged))
+    }
+}
+
+/// `reminders` as written, or the defaults when it does not read.
+fn lenient_reminders<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Reminders, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(Reminders::from_value(&value).unwrap_or_default())
 }
 
 /// What a new chat of the assistant starts with (issue #131, `settings.set_setting
@@ -189,6 +335,14 @@ fn lenient<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned + Default>(
     Ok(serde_json::from_value(value).unwrap_or_default())
 }
 
+/// The components in a list as written, without the names this version does not know (a file
+/// written by a newer one) and without anything that is not a name.
+fn known_components<'de, D: Deserializer<'de>>(deserializer: D) -> Result<BTreeSet<Component>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let names = value.as_array().map(Vec::as_slice).unwrap_or_default();
+    Ok(names.iter().filter_map(|name| serde_json::from_value(name.clone()).ok()).collect())
+}
+
 /// The id of the standard design, for settings from before design packs.
 fn standard_design() -> String {
     crate::design::STANDARD_ID.to_string()
@@ -214,11 +368,104 @@ impl Default for Settings {
             assistant_retention: Retention::default(),
             voice: Voice::default(),
             assistant_default: None,
+            setup: Setup::default(),
+            components_off: BTreeSet::new(),
             mail_view: MailFormat::default(),
             mail_appearance: MailAppearance::default(),
             mail_to_cloud: false,
+            reminders: Reminders::default(),
         }
     }
+}
+
+/// A part of the suite a person can turn off (task W.1, `docs/einrichtung.md`, "Komponenten an
+/// und aus"). Off means: not in the app switcher, the tray and the overview, and nothing runs in
+/// the background only for it. Its accounts and data stay, and its requests keep answering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Component {
+    /// The calendar app and the calendars of the accounts.
+    Calendar,
+    /// The tasks app and the task lists of the accounts.
+    Tasks,
+    /// Mail: the mail accounts and their fetching.
+    Mail,
+    /// The inbox and its sources.
+    Inbox,
+    /// The assistant, its chat window and listening by voice.
+    Assistant,
+    /// Saving and loading workspace templates of the tiling manager.
+    Workspaces,
+}
+
+impl Component {
+    /// Every component, in the order the setup and the Apps page show them.
+    pub const ALL: [Component; 6] = [
+        Component::Calendar,
+        Component::Tasks,
+        Component::Mail,
+        Component::Inbox,
+        Component::Assistant,
+        Component::Workspaces,
+    ];
+}
+
+/// The `value` of the setting `component` (`settings.set_setting`, task W.1): one component and
+/// whether it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentSwitch {
+    /// The component: `calendar`, `tasks`, `mail`, `inbox`, `assistant` or `workspaces`.
+    pub component: Component,
+    /// `true` turns it on, `false` off.
+    pub enabled: bool,
+}
+
+/// Where the first-run setup stands (task W.1, `docs/einrichtung.md`, "Wann sie erscheint").
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Setup {
+    /// Not finished yet, put off or done.
+    #[serde(default)]
+    pub state: SetupState,
+    /// The version of the setup ([`Setup::VERSION`]) that was last finished or put off; 0 before.
+    /// When it is lower than the current one, the setup has steps the person has not seen.
+    #[serde(default)]
+    pub version: u32,
+}
+
+impl Setup {
+    /// The version of the setup this build brings. Raised when a release adds a step the person
+    /// should be told about ("New in setup: AI").
+    pub const VERSION: u32 = 1;
+
+    /// The setup after a person moved it to `state`: finishing or putting it off records this
+    /// build's version; starting it again keeps the version of the last run.
+    pub fn moved_to(self, state: SetupState) -> Setup {
+        let version = match state {
+            SetupState::Pending => self.version,
+            SetupState::Skipped | SetupState::Done => Setup::VERSION,
+        };
+        Setup { state, version }
+    }
+
+    /// The setup was finished or put off with an older version, so it has steps the person has not
+    /// seen. Never while it is still pending: then all of it is new anyway.
+    pub fn has_new_steps(self) -> bool {
+        self.state != SetupState::Pending && self.version < Setup::VERSION
+    }
+}
+
+/// How far the first-run setup got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupState {
+    /// Not finished: on a first start without accounts the core opens it.
+    #[default]
+    Pending,
+    /// Put off with "Set up later": the overview offers to continue it.
+    Skipped,
+    /// Finished.
+    Done,
 }
 
 /// A time of day on the quarter hour, `00:00` to `23:45`, the grid of [`Night`]. Kept as minutes
@@ -576,6 +823,20 @@ impl Voice {
 }
 
 impl Settings {
+    /// Whether `component` is on (task W.1): every component is, unless a person turned it off.
+    pub fn component_on(&self, component: Component) -> bool {
+        !self.components_off.contains(&component)
+    }
+
+    /// Turns `component` on or off.
+    pub fn set_component(&mut self, component: Component, on: bool) {
+        if on {
+            self.components_off.remove(&component);
+        } else {
+            self.components_off.insert(component);
+        }
+    }
+
     /// How the task list `list` (an id) is ordered: as stored, else grouped by due date.
     pub fn list_order(&self, list: &str) -> ListOrder {
         self.list_orders.get(list).copied().unwrap_or_default()
@@ -970,9 +1231,12 @@ mod tests {
             assistant_retention: Retention::DEFAULT,
             voice: Voice::default(),
             assistant_default: None,
+            setup: Setup::default(),
+            components_off: BTreeSet::new(),
             mail_view: MailFormat::Html,
             mail_appearance: MailAppearance::App,
             mail_to_cloud: false,
+            reminders: Reminders::default(),
         };
         assert_eq!(load_from(&path), expected);
     }
@@ -998,6 +1262,51 @@ mod tests {
         assert!(load_from(&path).quiet_when_busy, "a file from before the setting keeps quiet on");
         fs::write(&path, r#"{"quietWhenBusy":false}"#).expect("write");
         assert!(!load_from(&path).quiet_when_busy);
+    }
+
+    #[test]
+    fn components_are_on_unless_turned_off() {
+        let dir = TempDir::new("components");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        let before = load_from(&path);
+        assert!(Component::ALL.iter().all(|c| before.component_on(*c)), "a file from before has all on");
+
+        let mut settings = Settings::default();
+        settings.set_component(Component::Mail, false);
+        settings.set_component(Component::Mail, false);
+        assert!(!settings.component_on(Component::Mail) && settings.component_on(Component::Tasks));
+        let json = serde_json::to_value(&settings).expect("json");
+        assert_eq!(json["componentsOff"], serde_json::json!(["mail"]), "only the ones off, once");
+        settings.set_component(Component::Mail, true);
+        assert!(serde_json::to_value(&settings).expect("json").get("componentsOff").is_none());
+    }
+
+    #[test]
+    fn unknown_components_and_a_damaged_setup_do_not_cost_the_file() {
+        let dir = TempDir::new("setup-lenient");
+        let path = dir.file("settings.json");
+        let written = r#"{"language":"german","componentsOff":["mail","whiteboard",3],"setup":{"state":"later"}}"#;
+        fs::write(&path, written).expect("write");
+        let settings = load_from(&path);
+        assert_eq!(settings.language, Language::German, "the rest of the file is kept");
+        assert_eq!(settings.components_off, BTreeSet::from([Component::Mail]));
+        assert_eq!(settings.setup, Setup::default());
+    }
+
+    #[test]
+    fn setup_records_the_version_it_was_finished_or_put_off_with() {
+        let pending = Setup::default();
+        assert_eq!((pending.state, pending.version), (SetupState::Pending, 0));
+        assert!(!pending.has_new_steps(), "a setup never run is new as a whole");
+        let done = pending.moved_to(SetupState::Done);
+        assert_eq!(done, Setup { state: SetupState::Done, version: Setup::VERSION });
+        assert!(!done.has_new_steps());
+        let again = done.moved_to(SetupState::Pending);
+        assert_eq!(again.version, Setup::VERSION, "running it again keeps the version of the last run");
+        let old = Setup { state: SetupState::Skipped, version: 0 };
+        assert!(old.has_new_steps());
+        assert_eq!(old.moved_to(SetupState::Skipped).version, Setup::VERSION);
     }
 
     #[test]
@@ -1065,9 +1374,17 @@ mod tests {
                 ..Voice::default()
             },
             assistant_default: None,
+            setup: Setup { state: SetupState::Skipped, version: 1 },
+            components_off: BTreeSet::from([Component::Mail, Component::Assistant]),
             mail_view: MailFormat::Text,
             mail_appearance: MailAppearance::Dark,
             mail_to_cloud: true,
+            reminders: Reminders {
+                default_lead: None,
+                calendars: BTreeMap::from([("work".to_string(), CalendarReminders::FullScreen)]),
+                sound: ReminderSound::None,
+                ..Reminders::default()
+            },
         };
         save_to(&path, &first).expect("save");
         assert_eq!(load_from(&path), first);
@@ -1286,5 +1603,67 @@ mod tests {
         ] {
             assert!(serde_json::from_value::<ListOrderEntry>(bad.clone()).is_err(), "{bad}");
         }
+    }
+
+    // Reminders (task ER1.2).
+
+    #[test]
+    fn reminders_come_one_minute_before_as_notifications_by_default() {
+        let reminders = Settings::default().reminders;
+        assert!(reminders.enabled && reminders.only_accepted && reminders.never_during_call && reminders.all_displays);
+        assert!(!reminders.all_day && !reminders.free_events);
+        assert_eq!(reminders.default_lead, Some(1));
+        assert_eq!(reminders.calendar("any"), CalendarReminders::Notification);
+        assert_eq!(reminders.sound, ReminderSound::System);
+        let dir = TempDir::new("no-reminders");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german"}"#).expect("write");
+        assert_eq!(load_from(&path).reminders, Reminders::default(), "settings from before ER1.2");
+    }
+
+    #[test]
+    fn reminders_are_set_as_one_object_with_defaults_for_the_rest() {
+        let value = serde_json::json!({
+            "defaultLead": null,
+            "calendars": {"a/work": "full_screen", "a/home": "notification", "a/birthdays": "off"},
+            "allDay": true,
+        });
+        let reminders = Reminders::from_value(&value).expect("valid");
+        assert_eq!(reminders.default_lead, None, "null is no default reminder");
+        assert!(reminders.all_day && reminders.enabled, "set and left-out fields");
+        assert_eq!(reminders.calendar("a/work"), CalendarReminders::FullScreen);
+        assert_eq!(reminders.calendar("a/birthdays"), CalendarReminders::Off);
+        assert!(!reminders.calendars.contains_key("a/home"), "the default is not stored");
+        assert_eq!(Reminders::from_value(&reminders.to_value()), Ok(reminders.clone()));
+
+        // A change touches only what it names, calendar by calendar.
+        let changed = reminders
+            .merged(&serde_json::json!({"freeEvents": true, "calendars": {"a/home": "full_screen", "a/work": "notification"}}))
+            .expect("valid change");
+        assert!(changed.free_events && changed.all_day, "the new field and the one set before");
+        assert_eq!(changed.default_lead, None, "left out, so as it was");
+        assert_eq!(changed.calendar("a/home"), CalendarReminders::FullScreen);
+        assert_eq!(changed.calendar("a/birthdays"), CalendarReminders::Off, "not named, so as it was");
+        assert!(!changed.calendars.contains_key("a/work"), "back to the default, so not stored");
+        assert!(reminders.merged(&serde_json::json!({"defaultLead": "soon"})).is_err());
+        assert!(reminders.merged(&serde_json::json!([1])).is_err(), "an object");
+    }
+
+    #[test]
+    fn reminders_that_do_not_fit_are_refused_and_read_as_defaults() {
+        for wrong in [
+            serde_json::json!({"defaultLead": Reminders::MAX_LEAD + 1}),
+            serde_json::json!({"calendars": {"a/work": "loud"}}),
+            serde_json::json!({"enabled": "yes"}),
+            serde_json::json!("on"),
+        ] {
+            assert!(Reminders::from_value(&wrong).is_err(), "{wrong}");
+        }
+        let dir = TempDir::new("bad-reminders");
+        let path = dir.file("settings.json");
+        fs::write(&path, r#"{"language":"german","reminders":{"defaultLead":"soon"}}"#).expect("write");
+        let loaded = load_from(&path);
+        assert_eq!(loaded.language, Language::German, "the other settings stay");
+        assert_eq!(loaded.reminders, Reminders::default());
     }
 }

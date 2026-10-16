@@ -947,12 +947,15 @@ fn switcher_row<'a, M: Clone + 'a>(
     top.spacing(SIDEBAR_GAP).align_y(Alignment::Center).into()
 }
 
-/// The menu of the app switcher: every app of the suite ([`AppId::ALL`]), `current` marked. A click
+/// The menu of the app switcher: every app of the suite ([`AppId::ALL`]) whose component is on
+/// ([`crate::components`], task W.2), `current` marked and always there. A click
 /// on another app sends [`Switcher::OpenApp`], on the current one [`Switcher::Toggle`] (closes).
 /// Show it with `widgets::floating(&anchor, Placement::Below(Align::Start), switcher_menu(..), close)`.
 pub fn switcher_menu<'a, M: Clone + 'a>(current: AppId, on: fn(Switcher) -> M) -> Element<'a, M> {
+    // The apps of components turned off are left out (task W.2); the window's own app stays.
     let items = AppId::ALL
         .iter()
+        .filter(|&&app| crate::components::app_on(app) || app == current)
         .map(|&app| {
             let message = switcher_message(app, current);
             let is_current = message == Switcher::Toggle;

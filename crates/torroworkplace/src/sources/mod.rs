@@ -44,6 +44,7 @@ use crate::account::github::GithubAccounts;
 use crate::account::ntfy::NtfyAccounts;
 use crate::inbox::Inbox;
 use crate::pim::PimService;
+use crate::settings_service::SettingsStore;
 
 /// What the modules of the remote sources reach in the core. Cheap to clone: everything is shared.
 #[derive(Clone)]
@@ -57,6 +58,19 @@ pub struct Sources {
     pub pim: Arc<PimService>,
     /// The ntfy accounts, their topics and logins (task E5.13: `NtfyAccounts::access`).
     pub ntfy: Arc<NtfyAccounts>,
+    /// The suite settings: while the inbox is turned off (task W.2) no source asks its server.
+    pub settings: SettingsStore,
+}
+
+/// How long a source waits before it looks again whether the inbox was turned on (task W.2).
+pub(crate) const RECHECK: std::time::Duration = std::time::Duration::from_secs(60);
+
+impl Sources {
+    /// The inbox is on (task W.2, `Settings::components_off`); while it is off the sources ask no
+    /// server and file nothing.
+    pub(crate) fn inbox_on(&self) -> bool {
+        self.settings.current().component_on(torro_core::settings::Component::Inbox)
+    }
 }
 
 /// Starts every remote source on the current runtime: each module runs its own loop and returns at

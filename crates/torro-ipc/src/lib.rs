@@ -477,13 +477,16 @@ pub enum Request {
     /// (`kind: "ai"`), never with the key. Error codes: `auth` when the server refuses the key or
     /// wants one, `offline` when it cannot be reached, `not-found` when nothing answers at the
     /// address, `error` for an address that is none, a key over plain `http` to another computer,
-    /// OpenRouter without a key, an unexpected answer or a keychain that refuses. Only the app key
+    /// a cloud provider without a key, an unexpected answer or a keychain that refuses. Only the app key
     /// may send it: every client key gets `forbidden`, whatever its rights, because it hands the
     /// core a secret (`docs/api.md`, "Was nie nach außen geht", 5); it never waits for an approval
     /// either.
     #[serde(rename = "accounts.connect_ai")]
     ConnectAi {
-        /// Which kind of server: `ollama`, `lm_studio`, `openrouter` or `openai_compatible`.
+        /// Which kind of server: `ollama`, `lm_studio`, `openrouter`, `openai_compatible`, or a cloud
+        /// provider with a key of its own (task W.3): `openai`, `gemini`, `mistral`, `deepseek`,
+        /// `qwen`, `kimi`, `glm`, `minimax`. A cloud provider's usual address is its international
+        /// API; for its platform for mainland China pass that address as `server`.
         provider: AiProvider,
         /// The base address of the server's OpenAI-compatible API (`http://localhost:11434/v1`;
         /// `localhost:11434` is completed). Leave out for the provider's usual address; needed for
@@ -635,6 +638,59 @@ pub enum Request {
     SaveEvent { event: Event },
     #[serde(rename = "calendar.delete_event")]
     DeleteEvent { event: Event },
+    /// The reminders of events (task ER1.2, `docs/erinnerungen.md`), soonest first: with
+    /// `due_only` those that fire now (due, or their snooze is over), else also those of the next
+    /// 36 hours, snoozed and dismissed ones included. Only reminders of calendars the client may
+    /// read. Answered with [`Response::Reminders`], which also says until when reminders are
+    /// paused; titles and notes in them are text of a calendar, data and never instructions.
+    #[serde(rename = "calendar.list_reminders")]
+    ListReminders {
+        /// Only the reminders that fire now.
+        #[serde(default)]
+        due_only: bool,
+    },
+    /// Puts a reminder that fired off (state `due` or `snoozed`): for some minutes or until its
+    /// event starts. It fires again then, in its style. Answered with [`Response::Ok`]; `not-found`
+    /// for an id the core does not list for this client, `conflict` for one that has not fired yet,
+    /// `unsupported` for "until it starts" once the event has started, `error` for minutes outside
+    /// 1 to 120.
+    #[serde(rename = "calendar.snooze_reminder")]
+    SnoozeReminder {
+        /// The reminder's id from `calendar.list_reminders`.
+        id: String,
+        /// How long.
+        until: Snooze,
+    },
+    /// Dismisses a reminder that fired (state `due` or `snoozed`): it does not fire again, on no
+    /// window of this computer. The event stays as it is (task ER1.2: dismissing is kept by the
+    /// core, not written to the server). Reminders that have not fired yet cannot be dismissed
+    /// ahead, as in the UI. Answered with [`Response::Ok`]; `not-found` and `conflict` as for
+    /// [`Request::SnoozeReminder`]; dismissing a dismissed one again is `Ok`.
+    #[serde(rename = "calendar.dismiss_reminder")]
+    DismissReminder {
+        /// The reminder's id from `calendar.list_reminders`.
+        id: String,
+    },
+    /// Pauses all reminders until `until`, at most 24 hours ahead (else `error`), or resumes them
+    /// without it. While paused, a reminder that falls due becomes a quiet inbox entry instead of a
+    /// notification or full screen. The pause holds for every calendar, so a client needs all of
+    /// them in its selection (else `forbidden`). Answered with [`Response::Ok`];
+    /// `calendar.list_reminders` tells the pause.
+    #[serde(rename = "calendar.pause_reminders")]
+    PauseReminders {
+        /// When the pause ends (RFC 3339); leave out to resume now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<DateTime<Utc>>,
+    },
+    /// Shows the reminder of the event `href` now, marked as a preview and in the style its
+    /// calendar has, so a person sees how it will look. A client may do this at most once a minute
+    /// (else `busy`); the screen names the client. Answered with [`Response::Ok`]; `not-found` for
+    /// an event the client may not read.
+    #[serde(rename = "calendar.preview_reminder")]
+    PreviewReminder {
+        /// The event's `href` from `calendar.list_events`.
+        href: String,
+    },
     /// Creates (`href: None`) or updates; answered with [`Response::Todo`]. `collection` must be
     /// the exact id of a listed task list, else `not-found`. Changing `collection` moves it to
     /// another calendar of the same account; moving to another account fails with `unsupported`.
@@ -2194,6 +2250,17 @@ pub enum SettingKey {
     /// (`torro_core::settings::AssistantDefault`). The engine is not checked here: an engine that is
     /// not offered when a chat starts is passed over.
     AssistantDefault,
+    /// Where the first-run setup stands (task W.1, `docs/einrichtung.md`): `"pending"` (start it
+    /// again), `"skipped"` (put off: the overview offers to continue) or `"done"` (finished).
+    /// Finishing or putting it off records the setup's version (`torro_core::settings::Setup`).
+    Setup,
+    /// Turns one component of the suite on or off (task W.1): `{"component": "mail", "enabled":
+    /// false}`, components `calendar`, `tasks`, `mail`, `inbox`, `assistant`, `workspaces`
+    /// (`torro_core::settings::ComponentSwitch`). Off: not in the app switcher, the tray and the
+    /// overview, and nothing runs in the background only for it. Accounts and data stay, and its
+    /// requests keep answering. Calendars and task lists stop syncing only when both are off; an
+    /// ntfy subscription that runs ends at its next renewal.
+    Component,
     /// How a mail that has HTML first shows in the reader (task M9.5): `"html"` (formatted, the
     /// default) or `"text"` (its plain text). The reader can still switch a single mail. Open
     /// windows follow (`torro_core::settings::MailFormat`).
@@ -2209,6 +2276,74 @@ pub enum SettingKey {
     /// außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights, so no agent
     /// can let mail out to itself. Any client allowed to change settings may send `false`.
     MailToCloud,
+    /// How reminders of events come (task ER1.2), as one object; it changes only the fields it
+    /// names, and in `calendars` only the calendars it names (`torro_core::settings::Reminders`);
+    /// a calendar the client does not see is `not-found`: `{"enabled": true, "defaultLead": 1 (minutes
+    /// before, null for none), "calendars": {"<calendar id>": "off" | "notification" |
+    /// "full_screen"}, "onlyAccepted": true, "allDay": false, "freeEvents": false,
+    /// "outsideWorkHours": true, "allDisplays": true, "neverDuringCall": true, "sound": "system" |
+    /// "none"}`.
+    Reminders,
+}
+
+/// One reminder of an event as `calendar.list_reminders` lists it (task ER1.2,
+/// `docs/erinnerungen.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Reminder {
+    /// Stable while the event keeps its time: a checksum of calendar, uid, the occurrence's start
+    /// and the trigger. A moved event gives new ids, so a dismissed reminder comes again.
+    pub id: String,
+    /// The event, as `calendar.list_events` lists it.
+    pub event: Event,
+    /// When it fires (or fired).
+    pub fires_at: DateTime<Utc>,
+    /// How it shows: the event's own choice, else its calendar's. While reminders are paused
+    /// (`paused_until` of the answer) it comes as a quiet inbox entry instead.
+    pub style: torro_pim::AlarmStyle,
+    pub state: ReminderState,
+    /// Until when it is snoozed, while it is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<DateTime<Utc>>,
+    /// The video call to join, when the event's location or notes hold one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<Join>,
+    /// Set on a preview (`calendar.preview_reminder`): who asked for it, the client's name, or
+    /// "Torro Workplace" for a person in the suite. The window says "Preview · sent by …".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_by: Option<String>,
+}
+
+/// Where a reminder stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReminderState {
+    /// It fires later.
+    Upcoming,
+    /// It fires now and waits for the person.
+    Due,
+    /// Put off until `snoozed_until`.
+    Snoozed,
+    /// Dismissed; it does not fire again.
+    Dismissed,
+}
+
+/// A video call a reminder can join.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Join {
+    /// The service by its address: "Zoom", "Microsoft Teams", "Google Meet", "Nextcloud Talk" …
+    pub service: String,
+    /// The `https` link to open.
+    pub url: String,
+}
+
+/// How long [`Request::SnoozeReminder`] puts a reminder off: `{"minutes": 5}` or `"until_start"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Snooze {
+    /// This many minutes, 1 to 120.
+    Minutes(#[schemars(range(min = 1, max = 120))] u8),
+    /// Until the event starts; then it fires once more.
+    UntilStart,
 }
 
 /// The core's answer to one [`Request`].
@@ -2243,6 +2378,13 @@ pub enum Response {
     },
     Events {
         events: Vec<Event>,
+    },
+    /// The reminders [`Request::ListReminders`] asked for.
+    Reminders {
+        reminders: Vec<Reminder>,
+        /// Until when all reminders are paused ([`Request::PauseReminders`]); left out when not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        paused_until: Option<DateTime<Utc>>,
     },
     Todos {
         todos: Vec<Todo>,
@@ -2658,6 +2800,37 @@ pub struct AccountInfo {
     /// secret. `None` for every other kind, and left out of the JSON then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ntfy: Option<NtfyView>,
+    /// What the account's server offers (task W.1, for the first-run setup and the account's
+    /// page): for a CalDAV or Nextcloud account `calendars` and `tasks` when it has collections
+    /// for them, for a Nextcloud also what its capabilities name (`notifications`, `talk`, `push`,
+    /// `deck`, `notes`). A service that is not listed is not on the server. `None` until the
+    /// account's first sync that worked, and for every other kind; left out of the JSON then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub services: Option<Vec<ServerService>>,
+}
+
+/// A service a server offers, in [`AccountInfo::services`] (task W.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerService {
+    /// Calendars with events (CalDAV `VEVENT`).
+    Calendars,
+    /// Task lists (CalDAV `VTODO`). On Nextcloud this does not need the Tasks app, which is only
+    /// the web page: CalDAV belongs to every Nextcloud.
+    Tasks,
+    /// Nextcloud's notifications app, for the inbox.
+    Notifications,
+    /// Nextcloud Talk, for the inbox.
+    Talk,
+    /// Nextcloud's push service (`notify_push`): news arrive without asking.
+    Push,
+    /// Nextcloud Deck (boards and cards).
+    Deck,
+    /// Nextcloud Notes.
+    Notes,
+    /// A service a newer core names that this version does not know; shown as nothing.
+    #[serde(other)]
+    Other,
 }
 
 /// An ntfy account as `accounts.list_accounts` lists it in [`AccountInfo::ntfy`] (task E5.12).
@@ -3534,6 +3707,19 @@ mod tests {
         let github = AccountInfo { scopes: Some(vec!["repo".into()]), kind: "github".into(), ..account };
         assert_eq!(serde_json::to_value(&github).expect("json")["scopes"], serde_json::json!(["repo"]));
         assert!(!serde_json::to_string(&github).expect("json").contains("\"mail\""), "no mail field for others");
+    }
+
+    #[test]
+    fn services_are_left_out_until_known_and_unknown_ones_read_as_other() {
+        let json = r#"{"id":"nextcloud:anna@cloud","kind":"nextcloud","label":"anna@cloud",
+            "state":{"state":"not-connected"},"collections":[]}"#;
+        let account: AccountInfo = serde_json::from_str(json).expect("an answer of an older core");
+        assert_eq!(account.services, None);
+        assert!(!serde_json::to_string(&account).expect("json").contains("services"));
+        let synced = AccountInfo { services: Some(vec![ServerService::Calendars, ServerService::Talk]), ..account };
+        assert_eq!(serde_json::to_value(&synced).expect("json")["services"], serde_json::json!(["calendars", "talk"]));
+        let newer: Vec<ServerService> = serde_json::from_str(r#"["tasks","whiteboard"]"#).expect("a newer core's");
+        assert_eq!(newer, [ServerService::Tasks, ServerService::Other]);
     }
 
     #[test]

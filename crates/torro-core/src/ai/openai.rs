@@ -1,6 +1,6 @@
 //! The wire format of the OpenAI-compatible protocol (task KI.1a): what Ollama, LM Studio, vLLM,
 //! llama.cpp and OpenRouter take and send at `<base>/chat/completions` and `<base>/models`, plus
-//! Ollama's `/api/show`. Pure functions over bytes and JSON, without a network, so every rule is
+//! Ollama's `/api/show` and `/api/tags`. Pure functions over bytes and JSON, without a network, so every rule is
 //! tested here; the core sends them (`torroworkplace::account::ai::OpenAiCompatible`).
 //!
 //! A streamed answer comes as server-sent events, one JSON chunk per `data:` line and `[DONE]` at
@@ -10,6 +10,8 @@
 //! Servers' error texts can repeat what was sent, an API key included. [`scrub`] drops such a
 //! text and only then shortens it, so no cut leaves a piece of a key behind; the core passes every
 //! error through it.
+
+use std::collections::HashMap;
 
 use serde_json::{Value, json};
 
@@ -44,17 +46,31 @@ pub fn chat_body(request: &ChatRequest, stream: bool) -> Value {
 }
 
 /// [`chat_body`] as the server of `provider` takes it: with the request's [`ChatRequest::effort`]
-/// where each one reads it (issue #131) – OpenRouter as `"reasoning": {"effort": "high"}`, every
-/// other server (Ollama, LM Studio, vLLM …) as OpenAI's `"reasoning_effort": "high"`, which Ollama's
-/// `/v1` maps onto its thinking. Without an effort the body is [`chat_body`]'s.
+/// where each one reads it (issue #131) – OpenRouter as `"reasoning": {"effort": "high"}`, OpenAI,
+/// Gemini and the servers of one's own (Ollama, LM Studio, vLLM …) as OpenAI's `"reasoning_effort":
+/// "high"`, which Ollama's `/v1` maps onto its thinking; the other cloud providers (task W.3) get
+/// none. Without an effort the body is [`chat_body`]'s.
 pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) -> Value {
     let mut body = chat_body(request, stream);
     if let Some(effort) = request.effort {
         match provider {
             AiProvider::OpenRouter => body["reasoning"] = json!({ "effort": effort.id() }),
-            AiProvider::Ollama | AiProvider::LmStudio | AiProvider::OpenAiCompatible => {
+            // Gemini maps OpenAI's `reasoning_effort` onto its thinking budget.
+            AiProvider::Ollama
+            | AiProvider::LmStudio
+            | AiProvider::OpenAiCompatible
+            | AiProvider::OpenAi
+            | AiProvider::Gemini => {
                 body["reasoning_effort"] = json!(effort.id());
             }
+            // Not documented for their OpenAI-compatible APIs, and an unknown field may be refused:
+            // these think as their models do.
+            AiProvider::Mistral
+            | AiProvider::DeepSeek
+            | AiProvider::Qwen
+            | AiProvider::Kimi
+            | AiProvider::Glm
+            | AiProvider::MiniMax => {}
         }
     }
     body
@@ -285,6 +301,7 @@ pub fn parse_models(body: &[u8]) -> Result<Vec<AiModel>, AiError> {
                 open_weights,
                 context: model.get("context_length").and_then(Value::as_u64),
                 reasoning,
+                remote: None,
             })
         })
         .collect())
@@ -318,6 +335,39 @@ fn ollama_capability(body: &[u8], name: &str) -> Option<bool> {
     let answer: Value = serde_json::from_slice(body).ok()?;
     let capabilities = answer.get("capabilities")?.as_array()?;
     Some(capabilities.iter().any(|capability| capability.as_str() == Some(name)))
+}
+
+/// Which of Ollama's models run elsewhere, from its `GET <root>/api/tags` answer (task S.23): each
+/// model's `name` and `model` with `true` where it has a `remote_host` (a cloud model, run on
+/// `ollama.com` through the local Ollama), `false` where it has none. `None` for an answer that is
+/// no model list.
+pub fn ollama_remote(body: &[u8]) -> Option<HashMap<String, bool>> {
+    let answer: Value = serde_json::from_slice(body).ok()?;
+    let mut remote = HashMap::new();
+    for model in answer.get("models")?.as_array()? {
+        let elsewhere = model.get("remote_host").and_then(Value::as_str).is_some_and(|host| !host.trim().is_empty());
+        for key in ["name", "model"] {
+            if let Some(id) = text_of(model.get(key)).filter(|id| !id.is_empty()) {
+                remote.insert(id, elsewhere);
+            }
+        }
+    }
+    Some(remote)
+}
+
+/// Whether the name of an Ollama model says it is a cloud model: it ends in `:cloud`
+/// (`kimi-k2.6:cloud`) or `-cloud` (`gpt-oss:120b-cloud`).
+pub fn ollama_cloud_name(id: &str) -> bool {
+    let id = id.to_ascii_lowercase();
+    id.ends_with(":cloud") || id.ends_with("-cloud")
+}
+
+/// Whether the Ollama model `id` runs elsewhere, given what `/api/tags` said (`tags`,
+/// [`ollama_remote`]; `None` when it did not answer): a cloud name always does, else what the
+/// tags say. Without tags, or for a model they do not list, it counts as elsewhere: in doubt mail
+/// stays home, and a cloud model copied with `ollama cp` no longer carries its suffix.
+pub fn ollama_runs_elsewhere(id: &str, tags: Option<&HashMap<String, bool>>) -> bool {
+    ollama_cloud_name(id) || tags.is_none_or(|tags| tags.get(id).copied().unwrap_or(true))
 }
 
 /// The error of an answer with HTTP `status` and `body`: 401 and 403 are [`AiError::Auth`] (never
@@ -473,10 +523,20 @@ mod tests {
         let openrouter = chat_body_for(AiProvider::OpenRouter, &asked, true);
         assert_eq!(openrouter["reasoning"], json!({"effort": "high"}));
         assert!(openrouter.get("reasoning_effort").is_none());
-        for provider in [AiProvider::Ollama, AiProvider::LmStudio, AiProvider::OpenAiCompatible] {
+        let reads = [
+            AiProvider::Ollama,
+            AiProvider::LmStudio,
+            AiProvider::OpenAiCompatible,
+            AiProvider::OpenAi,
+            AiProvider::Gemini,
+        ];
+        for provider in reads {
             let body = chat_body_for(provider, &asked, true);
             assert_eq!(body["reasoning_effort"], "high", "{provider:?}");
             assert!(body.get("reasoning").is_none(), "{provider:?}");
+        }
+        for provider in [AiProvider::Mistral, AiProvider::DeepSeek, AiProvider::Kimi] {
+            assert_eq!(chat_body_for(provider, &asked, true), chat_body(&asked, true), "{provider:?}: nothing extra");
         }
         for provider in AiProvider::ALL {
             assert_eq!(chat_body_for(provider, &request(), true), chat_body(&request(), true), "{provider:?}");
@@ -625,7 +685,8 @@ mod tests {
                 tools: None,
                 open_weights: None,
                 context: None,
-                reasoning: None
+                reasoning: None,
+                remote: None
             }]
         );
         assert!(matches!(parse_models(br#"{"models":[]}"#), Err(AiError::Format(_))));
@@ -642,6 +703,30 @@ mod tests {
         assert_eq!(ollama_root("http://localhost:11434/v1/"), "http://localhost:11434");
         assert_eq!(ollama_root("http://localhost:11434"), "http://localhost:11434");
         assert_eq!(ollama_show_body("qwen3:8b"), json!({"model": "qwen3:8b"}));
+    }
+
+    /// Task S.23: Ollama's cloud models run on `ollama.com`; `/api/tags` names them by `remote_host`.
+    #[test]
+    fn ollama_tags_tell_which_models_run_elsewhere() {
+        let tags = br#"{"models":[
+            {"name":"glm-5.3:cloud","model":"glm-5.3:cloud","remote_model":"glm-5.3",
+             "remote_host":"https://ollama.com:443","size":384},
+            {"name":"my-glm:latest","model":"my-glm:latest","remote_host":"https://ollama.com:443"},
+            {"name":"qwen3:8b","model":"qwen3:8b","size":5225388164,"remote_host":""}]}"#;
+        let remote = ollama_remote(tags).expect("tags");
+        assert_eq!(remote.get("glm-5.3:cloud"), Some(&true));
+        assert_eq!(remote.get("qwen3:8b"), Some(&false));
+        assert_eq!(ollama_remote(br#"{"data":[]}"#), None);
+        assert_eq!(ollama_remote(b"<html>"), None);
+
+        assert!(ollama_runs_elsewhere("glm-5.3:cloud", Some(&remote)));
+        assert!(ollama_runs_elsewhere("my-glm:latest", Some(&remote)), "copied, without the suffix");
+        assert!(!ollama_runs_elsewhere("qwen3:8b", Some(&remote)));
+        assert!(ollama_runs_elsewhere("unlisted:7b", Some(&remote)), "unknown counts as elsewhere");
+        assert!(ollama_runs_elsewhere("qwen3:8b", None), "without tags every model counts as elsewhere");
+        assert!(ollama_runs_elsewhere("kimi-k2.6:cloud", Some(&HashMap::from([("kimi-k2.6:cloud".into(), false)]))));
+        assert!(ollama_cloud_name("gpt-oss:120b-cloud") && ollama_cloud_name("Kimi-K2.6:CLOUD"));
+        assert!(!ollama_cloud_name("qwen3:8b") && !ollama_cloud_name("cloudy:7b"));
     }
 
     #[test]

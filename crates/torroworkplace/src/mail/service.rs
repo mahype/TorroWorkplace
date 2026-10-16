@@ -808,6 +808,7 @@ impl Mailbox {
             scopes: None,
             mail: Some(view),
             ntfy: None,
+            services: None,
         }
     }
 
@@ -941,6 +942,9 @@ pub struct MailService {
     /// The send journal and the kept Sent copies (task M3.3), opened on first use
     /// ([`MailService::outbox`]).
     outbox: tokio::sync::OnceCell<Arc<Outbox>>,
+    /// Mail is turned off (task W.2): the accounts and their stores stay readable, but no worker
+    /// fetches or indexes in the background.
+    paused: AtomicBool,
 }
 
 impl MailService {
@@ -976,7 +980,25 @@ impl MailService {
             writing: Mutex::new(()),
             calendars: None,
             outbox: tokio::sync::OnceCell::new(),
+            paused: AtomicBool::new(false),
         }
+    }
+
+    /// Notes whether mail is turned off (task W.2) before [`MailService::start`]: the workers then
+    /// start only while it is on.
+    pub fn pause_from_start(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Release);
+    }
+
+    /// Mail was turned off or on (task W.2): the workers stop, or start again. Nothing happens when
+    /// it stays as it was. The accounts are opened anew, so requests keep answering throughout.
+    pub async fn set_paused(&self, paused: bool) {
+        if self.paused.swap(paused, Ordering::AcqRel) == paused {
+            return;
+        }
+        // Dropping the entries stops their workers; reloading opens them as `paused` says.
+        self.entries.write().await.clear();
+        self.reload().await;
     }
 
     /// A service without account list, keychain or data directory, for the cores of tests that
@@ -1083,8 +1105,10 @@ impl MailService {
     /// The entry of a newly read account: its store opened and its worker started when it syncs.
     async fn open(&self, account: Account, config: MailAccountConfig, password: Option<Secret>) -> Entry {
         let mailbox = Arc::new(self.mailbox(account, config, password).await);
-        let worker = mailbox.syncs().then(|| tokio::spawn(run(Arc::clone(&mailbox))));
-        let indexer = (mailbox.syncs() && self.timing.index).then(|| tokio::spawn(index(Arc::clone(&mailbox))));
+        // Mail turned off (task W.2): the account is there, nothing runs for it.
+        let runs = mailbox.syncs() && !self.paused.load(Ordering::Acquire);
+        let worker = runs.then(|| tokio::spawn(run(Arc::clone(&mailbox))));
+        let indexer = (runs && self.timing.index).then(|| tokio::spawn(index(Arc::clone(&mailbox))));
         Entry { mailbox, worker, indexer }
     }
 
@@ -1883,6 +1907,28 @@ pub(crate) mod tests {
         assert_eq!(server.logins(), 0);
         let checks = service.account_checks(Utc::now()).await.expect("loaded");
         assert_eq!(checks[0].health, Health::Fine);
+    }
+
+    /// Task W.2: with mail turned off the account is there but nothing fetches; turned on again,
+    /// its worker syncs.
+    #[tokio::test]
+    async fn mail_turned_off_keeps_the_accounts_and_fetches_nothing_until_it_is_on() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let server = FakeImap::start(PASSWORD).await;
+        let secrets = MemoryTokens::default();
+        let account = mail_account("anna@example.org", &server.endpoint);
+        store_accounts(dir.path(), &secrets, &[(&account, PASSWORD)]);
+        let service = service_in(dir.path(), &secrets);
+        service.pause_from_start(true);
+        service.reload().await;
+        assert_eq!(service.infos(Reach::Suite).await.len(), 1, "the account is listed");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(server.logins(), 0, "nothing is fetched");
+
+        service.set_paused(false).await;
+        eventually("the first sync", || synced(&service, &account.id)).await;
+        service.set_paused(true).await;
+        assert_eq!(service.infos(Reach::Suite).await.len(), 1, "still listed");
     }
 
     #[tokio::test]

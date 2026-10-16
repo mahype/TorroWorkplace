@@ -237,6 +237,7 @@ impl State {
             open_weights: Some(false),
             context: None,
             reasoning: Some(reasoning),
+            remote: None,
         };
         let claude = Engine {
             id: CLAUDE_CODE.into(),
@@ -784,6 +785,7 @@ fn accounts() -> Vec<AccountInfo> {
         scopes: None,
         mail: None,
         ntfy: None,
+        services: None,
     };
     vec![
         account(CLOUD, "nextcloud", "anna@cloud.example.org"),
@@ -862,6 +864,7 @@ fn models(account: &str) -> Option<Vec<AiModel>> {
         open_weights: Some(true),
         context: None,
         reasoning: Some(id.starts_with("qwen3")),
+        remote: None,
     };
     match account {
         OLLAMA => Some(vec![

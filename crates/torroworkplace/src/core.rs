@@ -16,7 +16,7 @@ use torro_core::AppId;
 use torro_core::account::AccountKind;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::ListOrderEntry;
-use torro_ipc::api::{Access, Area};
+use torro_ipc::api::{Access, Area, Selection};
 use torro_ipc::assistant::Mode;
 use torro_ipc::{API_VERSION, AccountInfo, IssuedKey, Key, Request, Response, SettingKey, Status};
 use torro_mail::MailSettings;
@@ -43,6 +43,7 @@ use crate::inbox::{Inbox, Opening};
 use crate::mail::service::{MailService, Service, SignInError};
 use crate::mail::store::DraftAuthor;
 use crate::pim::{Definition, PimService, Reach};
+use crate::reminders::Reminders;
 use crate::settings_service::SettingsStore;
 use crate::sources::Sources;
 use crate::suggest::Wanted;
@@ -63,6 +64,28 @@ fn control_centre_command(program: String, section: Section) -> Vec<String> {
     let mut command = AppId::WORKPLACE.command(program);
     command.extend(["--section".to_string(), section.arg().to_string()]);
     command
+}
+
+/// The command line that starts the first-run setup (task W.9): `torroworkplace ui --setup`.
+fn setup_command(program: String) -> Vec<String> {
+    let mut command = AppId::WORKPLACE.command(program);
+    command.push("--setup".to_string());
+    command
+}
+
+/// Whether the core opens the first-run setup as it starts (task W.9, `docs/einrichtung.md`, "Wann
+/// sie erscheint"): while it was never finished or put off and there is no account yet. An
+/// installation from before the setup has accounts, so it is left alone; the overview offers the
+/// setup there instead.
+pub(crate) fn offers_setup(settings: &torro_core::settings::Settings, accounts: usize) -> bool {
+    settings.setup.state == torro_core::settings::SetupState::Pending && accounts == 0
+}
+
+/// Starts a new control centre in the first-run setup (task W.9); `_section` is for the signature
+/// [`show_control_centre`] takes.
+fn start_setup(_section: Section) -> Result<(), String> {
+    let program = sibling(AppId::WORKPLACE.binary).to_string_lossy().into_owned();
+    SystemLauncher.spawn(&setup_command(program)).map(|_| ()).map_err(|err| err.to_string())
 }
 
 /// Starts a new control centre on `section`: the accounts page, where a person finishes what a
@@ -89,6 +112,15 @@ async fn show_control_centre(
         Some(window) => wm.focus_window(&window.id).await.map_err(|err| err.to_string()),
         None => start(section),
     }
+}
+
+/// The window class of the reminder window (`torrocalendar --reminders`, task ER2.2).
+pub const REMINDER_WINDOW_CLASS: &str = "torro-reminder";
+
+/// The title of the reminder window on `monitor`, which the window manager's rule matches; the
+/// same in every language (`crates/torrocalendar/src/reminder.rs`, `window_title`).
+pub fn reminder_window_title(monitor: &str) -> String {
+    format!("Reminder · {monitor}")
 }
 
 /// Opens `url` in the system browser, for `inbox.open_item`. The inbox let only `http`/`https`
@@ -435,6 +467,7 @@ fn event_from_entry(entry: &torro_inbox::Item, made: EntryEvent, origin: Option<
         description: with_note(notes, with_line(entry.body.clone(), way_back)),
         recurring: false,
         transparency: torro_pim::Transparency::Opaque,
+        alarms: Vec::new(),
     }
 }
 
@@ -623,6 +656,7 @@ fn event_from_invitation(
         description: with_line(event.description.clone(), Some(line)),
         recurring: false,
         transparency: torro_pim::Transparency::Opaque,
+        alarms: Vec::new(),
     }
 }
 
@@ -810,6 +844,14 @@ pub struct Snapshot {
     /// The setting `voice_enabled` (task C.11): while it is on, the tray offers to mute the
     /// microphone even when the listener does not run (it crashed, or could not start).
     pub voice_enabled: bool,
+    /// The components a person turned off (task W.2): the tray leaves out their apps, and the
+    /// templates without workspaces.
+    pub components_off: std::collections::BTreeSet<torro_core::settings::Component>,
+    /// The event of the next reminder that has not been dismissed (task ER2.5): when it starts and
+    /// its title (calendar text, shown as plain text).
+    pub next_reminder: Option<(chrono::DateTime<Utc>, String)>,
+    /// Until when all reminders are paused (task ER2.5).
+    pub reminders_paused: Option<chrono::DateTime<Utc>>,
 }
 
 /// How many of the newest inbox entries the tray lists.
@@ -902,6 +944,9 @@ pub struct Core {
     /// shows its setup screen although accounts exist. True from the start for a core that is
     /// never started, as in tests.
     accounts_read: tokio::sync::watch::Sender<bool>,
+    /// The reminders of events (task ER1.3): the user's ledger ([`Reminders::system`]); tests keep
+    /// theirs in memory.
+    reminders: Arc<Reminders>,
 }
 
 impl Core {
@@ -941,6 +986,146 @@ impl Core {
             voice: if cfg!(test) { Listener::none() } else { Listener::system() },
             lent_scopes: std::sync::Mutex::new(Vec::new()),
             accounts_read: tokio::sync::watch::Sender::new(true),
+            reminders: Arc::new(Reminders::system()),
+        }
+    }
+
+    /// Prepares the window manager for the reminder window (task ER2.2) and names the monitors it
+    /// goes on, the one with the focus first (only that one without `all`): on Hyprland a rule per
+    /// monitor ([`torro_wm::WindowManager::cover_monitors`]) that the window's titles match
+    /// ([`reminder_window_title`]). Empty where the window manager has no monitors to name or no
+    /// such rules; the window then finds its screens itself.
+    pub async fn cover_monitors_for_reminders(&self, all: bool) -> Vec<String> {
+        if !matches!(self.backend, Backend::Hyprland(_)) {
+            return Vec::new();
+        }
+        let Ok(mut monitors) = self.backend.monitors().await else { return Vec::new() };
+        let focused = self.backend.active_workspace().await.ok();
+        monitors.sort_by_key(|monitor| monitor.active_workspace != focused);
+        if !all {
+            monitors.truncate(1);
+        }
+        let covers: Vec<torro_wm::Cover> = monitors
+            .iter()
+            .enumerate()
+            .map(|(index, monitor)| torro_wm::Cover {
+                class: REMINDER_WINDOW_CLASS.to_string(),
+                title: reminder_window_title(&monitor.name),
+                monitor: monitor.name.clone(),
+                focus: index == 0,
+            })
+            .collect();
+        if let Err(err) = self.backend.cover_monitors(&covers).await {
+            eprintln!("torroworkplace: cannot prepare the reminder windows: {err}");
+            return Vec::new();
+        }
+        monitors.into_iter().map(|monitor| monitor.name).collect()
+    }
+
+    /// Keeps the reminder windows on the visible workspace of their monitor while they are open
+    /// (task ER2.2, Hyprland): a full-screen window stays on its workspace, so switching to another
+    /// one would hide it. Ends once no reminder window is left after a change of workspace.
+    pub async fn keep_reminder_windows_in_view(&self) {
+        let Ok(mut events) = self.backend.events().await else { return };
+        while let Some(event) = events.recv().await {
+            if !matches!(event, torro_wm::WmEvent::WorkspaceFocused { .. }) {
+                continue;
+            }
+            let Ok(windows) = self.backend.windows(None).await else { continue };
+            let reminders: Vec<_> =
+                windows.into_iter().filter(|window| window.class == REMINDER_WINDOW_CLASS).collect();
+            if reminders.is_empty() {
+                return;
+            }
+            let Ok(monitors) = self.backend.monitors().await else { continue };
+            for window in reminders {
+                let shown = monitors
+                    .iter()
+                    .find(|monitor| window.monitor.as_deref() == Some(monitor.name.as_str()))
+                    .and_then(|monitor| monitor.active_workspace.clone());
+                if let Some(workspace) = shown.filter(|workspace| *workspace != window.workspace)
+                    && let Err(err) = self.backend.move_to_workspace(&window.id, &workspace).await
+                {
+                    eprintln!("torroworkplace: cannot keep a reminder window in view: {err}");
+                }
+            }
+        }
+    }
+
+    /// Opens the call link of a reminder (task ER1.4) in the browser; only `http` and `https`
+    /// addresses ([`torro_gui::links::openable`]).
+    pub fn open_call(&self, url: &str) -> Result<(), String> {
+        if !torro_gui::links::openable(url) {
+            return Err("only http and https links are opened".into());
+        }
+        (self.open_url)(url)
+    }
+
+    /// The reminders, for their run ([`crate::reminders::run`]).
+    pub fn reminders(&self) -> &Reminders {
+        &self.reminders
+    }
+
+    /// What the reminders' run plans with at `now`: the events of the calendars the suite shows
+    /// ([`crate::reminders::window`]; none when the calendars cannot be read, and none while the
+    /// calendar is turned off, task W.1: nothing runs in the background for it) and the setting.
+    pub async fn reminder_inputs(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> (Vec<torro_pim::Event>, torro_core::settings::Reminders) {
+        let settings = self.settings.current();
+        if !settings.component_on(torro_core::settings::Component::Calendar) {
+            return (Vec::new(), settings.reminders);
+        }
+        let events = self.reminder_events(Reach::Suite, now).await.unwrap_or_default();
+        (events, settings.reminders)
+    }
+
+    /// The events `reach` may read that reminders are planned from at `now`, or the calendar
+    /// service's refusal.
+    async fn reminder_events(
+        &self,
+        reach: Reach<'_>,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Vec<torro_pim::Event>, Response> {
+        let (start, end) = crate::reminders::window(now);
+        match Box::pin(self.pim.handle_within(Request::Events { start, end }, reach)).await {
+            Response::Events { events } => Ok(events),
+            other => Err(other),
+        }
+    }
+
+    /// The reminder commands (task ER1.3) for `reach`; `by` names who asks for a preview (the
+    /// client's id and name; `None` for a person in the suite).
+    async fn reminder_request(&self, request: Request, reach: Reach<'_>, by: Option<(&str, &str)>) -> Response {
+        let now = Utc::now();
+        let settings = self.settings.current().reminders;
+        let events = match self.reminder_events(reach, now).await {
+            Ok(events) => events,
+            Err(refused) => return refused,
+        };
+        match request {
+            Request::ListReminders { due_only } => self.reminders.list(&events, &settings, now, due_only),
+            Request::SnoozeReminder { id, until } => self.reminders.snooze(&id, until, &events, &settings, now),
+            Request::DismissReminder { id } => self.reminders.dismiss(&id, &events, &settings, now),
+            // The pause holds for every calendar, so a client must see them all (task ER1.2).
+            Request::PauseReminders { .. } if matches!(reach, Reach::Client(rights) if rights.calendars != Selection::All) =>
+            {
+                let message = "a pause holds for every calendar; this key sees only some of them".into();
+                Response::Error { code: "forbidden".into(), message }
+            }
+            Request::PauseReminders { until } => self.reminders.pause(until, now),
+            Request::PreviewReminder { href } => match self.pim.cached_event_within(reach, &href).await {
+                Some(event) => {
+                    let (client, name) = by.map_or((None, crate::reminders::SUITE), |(id, name)| (Some(id), name));
+                    self.reminders.preview(&event, &settings, &events, name, client, now)
+                }
+                None => Response::Error { code: "not-found".into(), message: format!("no event {href:?}") },
+            },
+            other => {
+                let message = format!("{} is no reminder command", other.operation().name());
+                Response::Error { code: "error".into(), message }
+            }
         }
     }
 
@@ -1026,6 +1211,23 @@ impl Core {
         &self.inbox
     }
 
+    /// Opens the first-run setup when [`offers_setup`] says so (task W.9): the daemon calls it once
+    /// as it starts with a tray, never headless. Reading the accounts or starting the window may
+    /// fail; then nothing opens and the overview still offers the setup.
+    pub async fn offer_setup(&self) {
+        let settings = self.settings.current();
+        let accounts = tokio::task::spawn_blocking(|| torro_core::account::load().map(|accounts| accounts.len()))
+            .await
+            .ok()
+            .and_then(Result::ok);
+        // A control centre that is open already comes to the front instead of a second window.
+        if accounts.is_some_and(|accounts| offers_setup(&settings, accounts))
+            && let Err(err) = show_control_centre(&self.backend, Section::Overview, start_setup).await
+        {
+            eprintln!("torroworkplace: cannot open the setup: {err}");
+        }
+    }
+
     /// Starts the background work [`Core::new`] leaves out: asks the person again about the
     /// approvals still open (their notifications went with the core before, task A.3b), loads the
     /// GitHub accounts and checks their tokens, then refreshes their filter lists now and every
@@ -1057,6 +1259,8 @@ impl Core {
         self.ai.start();
         self.ntfy.start();
         self.start_mail_feed(torro_core::account::accounts_file().ok());
+        let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
+        self.mail.pause_from_start(mail_off);
         self.mail.start();
         // GitHub, Nextcloud, Talk and ntfy in the inbox (task E5.2).
         crate::sources::start(self.sources());
@@ -1128,6 +1332,7 @@ impl Core {
             github: Arc::clone(&self.github),
             pim: Arc::clone(&self.pim),
             ntfy: Arc::clone(&self.ntfy),
+            settings: self.settings.clone(),
         }
     }
 
@@ -1603,6 +1808,11 @@ impl Core {
         if let Request::SaveDraft { draft } = request {
             return Ok(self.save_draft(draft, reach, DraftAuthor::Client(id)).await);
         }
+        // A preview names who sent it and comes once a minute per client (task ER1.3).
+        if let Request::PreviewReminder { .. } = request {
+            let name = self.client_name(&id);
+            return Ok(Box::pin(self.reminder_request(request, reach, Some((&id, &name)))).await);
+        }
         // Boxed: `handle_within` is a large future, and a client's request can run it again inside
         // (the inbox's quiet asks the core for settings and events); on the stack both no longer
         // fit a test thread's in debug builds.
@@ -2026,6 +2236,20 @@ impl Core {
                 };
                 Facts { name, engine, bot, ..Facts::default() }
             }
+            // A reminder by the title and start of its event as the cache holds it (task ER1.3).
+            Request::SnoozeReminder { id, .. } | Request::DismissReminder { id } => {
+                let now = Utc::now();
+                let (events, settings) = self.reminder_inputs(now).await;
+                let (reminders, _) = self.reminders.reminders(&events, &settings, now);
+                let held = reminders.into_iter().find(|reminder| reminder.id == *id);
+                Facts {
+                    item: held.map(|held| crate::approvals::Known {
+                        title: held.event.summary,
+                        start: Some(held.event.start),
+                    }),
+                    ..Facts::default()
+                }
+            }
             request if crate::mail::write::changes_mail(request) => {
                 Facts { mail: crate::mail::write::facts(&self.mail, request).await, ..Facts::default() }
             }
@@ -2179,9 +2403,23 @@ impl Core {
             let approved = Some(fingerprint.unwrap_or_default());
             return crate::mail::send::send_draft(&self.mail, reach, &author, draft, approved).await;
         }
+        if let Request::PreviewReminder { .. } = request {
+            let name = self.client_name(client);
+            return Box::pin(self.reminder_request(request, reach, Some((client, &name)))).await;
+        }
         // Boxed: decisions come from `handle_within`, so this call is recursive. An approval
         // never holds `approvals.decide_approval` itself (`Approvals::open` refuses it).
         Box::pin(self.handle_within(request, reach)).await
+    }
+
+    /// The name of the client `id` as a person stored it, a bot's as "Bot …" (as approvals say it,
+    /// so a bot cannot pass itself off as another client); its id when it is gone.
+    fn client_name(&self, id: &str) -> String {
+        match self.clients.list().into_iter().find(|info| info.id == id) {
+            Some(info) if info.kind == torro_ipc::api::BOT_CLIENT => trf("Bot \"{name}\"", &[("name", &info.name)]),
+            Some(info) => info.name,
+            None => id.to_string(),
+        }
     }
 
     /// Answers `request` without a key check, with all rights: for the tray menu inside the
@@ -2203,6 +2441,15 @@ impl Core {
             (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::ListOrder, value }) => {
                 let list = list_of(value)?;
                 (!self.pim.sees_task_list(reach, &list).await).then_some(list)
+            }
+            // Only the calendars it sees (task ER1.2): others look unknown, as in its settings.
+            (reach @ Reach::Client(_), Request::SetSetting { key: SettingKey::Reminders, value }) => {
+                for calendar in reminder_calendars(value) {
+                    if !self.pim.sees_calendar(reach, &calendar).await {
+                        return Some(calendar);
+                    }
+                }
+                None
             }
             (reach, request) => self.pim.out_of_reach(reach, request).await,
         }
@@ -2333,16 +2580,26 @@ impl Core {
             | Request::DeleteEvent { .. }
             | Request::DeleteTodo { .. }
             | Request::MoveTodo { .. }) => self.pim.handle_within(pim, reach).await,
+            // Reminders (task ER1.3); a client's preview comes through `handle_client` with its name.
+            request @ (Request::ListReminders { .. }
+            | Request::SnoozeReminder { .. }
+            | Request::DismissReminder { .. }
+            | Request::PauseReminders { .. }
+            | Request::PreviewReminder { .. }) => Box::pin(self.reminder_request(request, reach, None)).await,
             Request::Settings => {
                 let mut settings = self.settings.current();
                 if let Reach::Client(rights) = reach {
                     // Not even the ids of lists it may not see (task P.3a).
                     let hidden = std::mem::take(&mut settings.hidden_collections);
                     settings.list_orders.retain(|list, _| rights.task_lists.contains(list) && !hidden.contains(list));
+                    // Nor of calendars outside its selection (task ER1.2).
+                    let seen = |id: &String| rights.calendars.contains(id) && !hidden.contains(id);
+                    settings.reminders.calendars.retain(|id, _| seen(id));
                 }
                 Response::Settings { settings }
             }
             Request::SetSetting { key: SettingKey::ListOrder, value } => self.set_list_order(&value).await,
+            Request::SetSetting { key: SettingKey::Reminders, value } => Box::pin(self.set_reminders(&value)).await,
             Request::UpdateSettings { settings } => {
                 // A client never sees the hidden collections, so what it sends back says nothing
                 // about them; they change only through `set_collection_shown`. Kept under the
@@ -2351,7 +2608,7 @@ impl Core {
                     true => self.settings.update_keeping_hidden(settings),
                     false => self.settings.update(settings),
                 };
-                self.follow_voice();
+                self.follow_components();
                 match updated {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -2359,7 +2616,7 @@ impl Core {
             }
             Request::SetSetting { key, value } => {
                 let set = self.settings.set(key, &value);
-                self.follow_voice();
+                self.follow_components();
                 match set {
                     Ok(()) => Response::Ok,
                     Err(message) => Response::Error { code: "error".into(), message },
@@ -2603,8 +2860,10 @@ impl Core {
                 let made = EntryEvent { collection, title, start, end, location, notes };
                 self.create_event_from_item(&id, made, client, pin).await
             }
-            Request::SuggestTaskFromItem { id } => self.suggest_from_item(&id, Wanted::Task, client).await,
-            Request::SuggestEventFromItem { id } => self.suggest_from_item(&id, Wanted::Event, client).await,
+            // Boxed, as the ntfy commands above: asking each AI account for its models (task S.23)
+            // would grow this match's poll frame by a whole suggestion.
+            Request::SuggestTaskFromItem { id } => Box::pin(self.suggest_from_item(&id, Wanted::Task, client)).await,
+            Request::SuggestEventFromItem { id } => Box::pin(self.suggest_from_item(&id, Wanted::Event, client)).await,
             Request::GetQuiet => self.get_quiet(client).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
@@ -2804,7 +3063,8 @@ impl Core {
     /// In this order: the entry as `inbox.get_item` answers it to the caller (`not-found` for one it
     /// may not see, hook clients see none), its text ([`Core::text_for_ai`]), the AI
     /// ([`crate::suggest::choose`]: the person's default of the assistant, else the first AI account;
-    /// the data rule keeps mail, Nextcloud and Talk with local models), then one question to it
+    /// the data rule keeps mail, Nextcloud and Talk with local models, judged by the model each
+    /// account would answer with, [`Core::suggestion_model`]), then one question to it
     /// ([`crate::suggest::suggest`]), dates read in the person's time zone. Errors as the request
     /// says; the protocol names no text.
     async fn suggest_from_item(&self, id: &str, wanted: Wanted, client: Option<&torro_ipc::ClientInfo>) -> Response {
@@ -2824,17 +3084,28 @@ impl Core {
             received: entry.received,
             text: self.text_for_ai(&entry, reach).await,
         };
-        let mut candidates = Vec::new();
-        for account in self.ai.infos().await {
-            let Some((provider, server)) = self.ai.server(&account.id).await else { continue };
-            let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
-            let place = crate::assistant::place_of(provider, &server);
-            candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
-        }
         let default = self.settings.current().assistant_default;
         let local_only = crate::assistant::held_back(&entry);
+        let mut candidates = Vec::new();
+        let mut models = HashMap::new();
+        for account in self.ai.infos().await {
+            if self.ai.server(&account.id).await.is_none() {
+                continue;
+            }
+            let problem = matches!(&account.state, AccountState::Connected { problem: Some(_), .. });
+            let wanted = default.as_ref().filter(|default| default.engine == account.id);
+            let (place, model) = match problem {
+                true => (crate::assistant::Place::Remote, None),
+                false => self.suggestion_model(&account.id, wanted.and_then(|d| d.model.as_deref()), local_only).await,
+            };
+            if let Some(model) = model {
+                models.insert(account.id.clone(), model);
+            }
+            candidates.push(crate::suggest::Candidate { id: account.id, place, problem });
+        }
         let chosen = match crate::suggest::choose(&candidates, default.as_ref(), local_only) {
-            Ok(chosen) => chosen,
+            // The model its place was judged by is the one asked (task S.23).
+            Ok(chosen) => crate::suggest::Chosen { model: models.remove(&chosen.engine).or(chosen.model), ..chosen },
             Err(refused) => return refused.response(),
         };
         let provider = match self.ai.provider(&chosen.engine).await {
@@ -2842,6 +3113,39 @@ impl Core {
             Err(err) => return crate::suggest::SuggestError::Ai(err).response(),
         };
         crate::suggest::suggest(provider.as_ref(), &chosen, wanted, &content, now, &chrono::Local).await
+    }
+
+    /// The model the AI account `id` would suggest with and where it runs (task S.23: a cloud model of
+    /// a local Ollama runs elsewhere): `wanted` (the model of the person's default) when it may read
+    /// the entry (it runs locally, or the entry is not `local_only`); else of its models the first
+    /// that fits ([`crate::suggest::pick_model`]) among those on the person's computer, and for an
+    /// entry that may leave it among the others then. Elsewhere and no model when none fits or the
+    /// models cannot be listed: such an account never gets an entry that stays home.
+    async fn suggestion_model(
+        &self,
+        id: &str,
+        wanted: Option<&str>,
+        local_only: bool,
+    ) -> (crate::assistant::Place, Option<String>) {
+        use crate::assistant::Place;
+        let Some((provider, server)) = self.ai.server(id).await else { return (Place::Remote, None) };
+        let place = |model: &torro_core::ai::AiModel| crate::assistant::place_of(provider, &server, model);
+        let models = self.ai.known_models(id, wanted).await;
+        if let Some(wanted) = wanted
+            && let Ok((model, at)) = crate::assistant::ModelAccess::choose(models.clone(), Some(wanted), place)
+            && (at == Place::Local || !local_only)
+        {
+            return (at, Some(model));
+        }
+        let Ok(models) = models else { return (Place::Remote, None) };
+        let (local, elsewhere): (Vec<_>, Vec<_>) = models.into_iter().partition(|model| place(model) == Place::Local);
+        if let Ok(model) = crate::suggest::pick_model(local) {
+            return (Place::Local, Some(model));
+        }
+        match local_only {
+            true => (Place::Remote, None),
+            false => (Place::Remote, crate::suggest::pick_model(elsewhere).ok()),
+        }
     }
 
     /// What an AI reads of `entry` (issue #120): for a mail entry the whole text of its newest mail,
@@ -3072,7 +3376,7 @@ impl Core {
         };
         let margin = chrono::TimeDelta::hours(12);
         let (start, end) = (instant(event.start) - margin, instant(event.end.unwrap_or(event.start)) + margin);
-        match self.pim.handle_within(Request::Events { start, end }, reach).await {
+        match Box::pin(self.pim.handle_within(Request::Events { start, end }, reach)).await {
             Response::Events { events } => {
                 let copy = |known: &torro_pim::Event| {
                     known.uid == event.uid.trim() && !known.recurring && made_from_mail(known)
@@ -4122,6 +4426,21 @@ impl Core {
         }
     }
 
+    /// `settings.set_setting` with `reminders` (task ER1.2): like every setting, but each calendar it
+    /// names must be a calendar (not a task list) of a connected account, else `not-found` and
+    /// nothing is written.
+    async fn set_reminders(&self, value: &serde_json::Value) -> Response {
+        for calendar in reminder_calendars(value) {
+            if !self.pim.knows_calendar(&calendar).await {
+                return no_collection(&calendar);
+            }
+        }
+        match self.settings.set(SettingKey::Reminders, value) {
+            Ok(()) => Response::Ok,
+            Err(message) => Response::Error { code: "error".into(), message },
+        }
+    }
+
     /// `settings.set_setting` with `list_order` (task P.3a): like every setting, but the list must
     /// be a task list (not a calendar) of a connected account, else `not-found` and nothing is written.
     async fn set_list_order(&self, value: &serde_json::Value) -> Response {
@@ -4208,6 +4527,7 @@ impl Core {
         let settings = self.settings.current();
         snapshot.voice = self.voice.state();
         snapshot.voice_enabled = settings.voice.enabled;
+        snapshot.components_off = settings.components_off.clone();
         snapshot.approvals_waiting = self.open_approvals(Utc::now()).await.len();
         let for_me = self.inbox.for_me(Utc::now(), TRAY_NEWEST).unwrap_or_default();
         snapshot.inbox_for_me = for_me.open;
@@ -4217,6 +4537,16 @@ impl Core {
             .into_iter()
             .map(|item| InboxLine { source: item.source.label(), id: item.id, title: item.title })
             .collect();
+        let now = Utc::now();
+        let (events, reminder_settings) = self.reminder_inputs(now).await;
+        let (reminders, paused) = self.reminders.reminders(&events, &reminder_settings, now);
+        snapshot.next_reminder = reminders
+            .iter()
+            .filter(|reminder| reminder.preview_by.is_none() && reminder.state != torro_ipc::ReminderState::Dismissed)
+            .map(|reminder| (crate::reminders::starts(&reminder.event), reminder.event.summary.clone()))
+            .filter(|(start, _)| *start >= now - crate::reminders::grace())
+            .min_by_key(|(start, _)| *start);
+        snapshot.reminders_paused = paused;
         snapshot
     }
 
@@ -4255,8 +4585,22 @@ impl Core {
     }
 
     /// Starts or stops the voice listener as the setting `voice.enabled` says now (task C.9).
+    /// After the settings changed: the voice listener and the mail workers follow the components
+    /// (task W.2). Stopping or starting the workers runs in the background.
+    fn follow_components(&self) {
+        self.follow_voice();
+        let mail_off = !self.settings.current().component_on(torro_core::settings::Component::Mail);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let mail = Arc::clone(&self.mail);
+            runtime.spawn(async move { mail.set_paused(mail_off).await });
+        }
+    }
+
     fn follow_voice(&self) {
-        self.voice.follow(self.settings.current().voice.enabled);
+        // Listening is part of the assistant: turned off (task W.2), the microphone stays closed.
+        let settings = self.settings.current();
+        let assistant = settings.component_on(torro_core::settings::Component::Assistant);
+        self.voice.follow(settings.voice.enabled && assistant);
     }
 
     /// Wakes whenever what the voice listener does may have changed, for the tray.
@@ -4404,18 +4748,25 @@ impl crate::assistant::Host for Core {
         self.assistant_client()
     }
 
+    /// First the model, then where it runs (task S.23): the model asked or "Automatic" among the
+    /// account's models as last listed ([`AiAccounts::known_models`], asked anew only for a model
+    /// the list lacks), then [`crate::assistant::place_of`] for that model.
     fn model<'a>(
         &'a self,
         engine: &'a str,
+        model: Option<&'a str>,
     ) -> torro_core::ai::BoxFuture<'a, Result<crate::assistant::ModelAccess, torro_core::ai::AiError>> {
         Box::pin(async move {
             let provider = self.ai.provider(engine).await?;
+            let server = self.ai.server(engine).await;
             // An account removed meanwhile counts as elsewhere: nothing of mail goes to it.
-            let place = match self.ai.server(engine).await {
-                Some((kind, server)) => crate::assistant::place_of(kind, &server),
+            let place = |described: &torro_core::ai::AiModel| match &server {
+                Some((kind, server)) => crate::assistant::place_of(*kind, server, described),
                 None => crate::assistant::Place::Remote,
             };
-            Ok(crate::assistant::ModelAccess { provider, place })
+            let models = self.ai.known_models(engine, model).await;
+            let (model, place) = crate::assistant::ModelAccess::choose(models, model, place)?;
+            Ok(crate::assistant::ModelAccess { provider, model, place })
         })
     }
 
@@ -4947,6 +5298,15 @@ fn joined_info(mut mail: AccountInfo, calendars: AccountInfo) -> AccountInfo {
 /// settings refuse with `error`.
 fn list_of(value: &serde_json::Value) -> Option<String> {
     serde_json::from_value::<ListOrderEntry>(value.clone()).ok().map(|entry| entry.list)
+}
+
+/// The calendars a `set_setting reminders` value names in `calendars`.
+fn reminder_calendars(value: &serde_json::Value) -> Vec<String> {
+    value
+        .get("calendars")
+        .and_then(serde_json::Value::as_object)
+        .map(|named| named.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// The answer to a new client or key: the key, this once.
@@ -5903,6 +6263,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
@@ -6011,6 +6372,46 @@ mod tests {
         waits(ask(&core, Some(&key), manual("/tasks/work/")).await);
         let moved = Request::MoveTodo { href: "/tasks/home/t.ics".into(), etag: "\"1\"".into(), before: None };
         assert_eq!(code(&ask(&core, Some(&key), moved).await), "not-found", "no such task, or not its list");
+    }
+
+    #[tokio::test]
+    async fn reminder_styles_are_set_for_known_calendars_and_clients_see_only_theirs() {
+        use torro_core::settings::CalendarReminders;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/home/"))]).await;
+        let full_screen = |path: &str| Request::SetSetting {
+            key: SettingKey::Reminders,
+            value: serde_json::json!({"calendars": {id(path): "full_screen"}}),
+        };
+        assert_eq!(core.handle(full_screen("/cal/work/")).await, Response::Ok);
+        assert_eq!(core.handle(full_screen("/cal/home/")).await, Response::Ok, "the work calendar stays");
+        let stored = settings(&core).await.reminders;
+        assert_eq!(stored.calendar(&id("/cal/work/")), CalendarReminders::FullScreen);
+        assert_eq!(stored.calendar(&id("/cal/home/")), CalendarReminders::FullScreen);
+        assert_eq!(code(&core.handle(full_screen("/cal/nope/")).await), "not-found");
+        let list = torro_pim::Collection { kind: torro_pim::CollectionKind::Todos, ..calendar(&id("/tasks/work/")) };
+        core.pim.cache_collections(vec![calendar(&id("/cal/work/")), calendar(&id("/cal/home/")), list]).await;
+        assert_eq!(code(&core.handle(full_screen("/tasks/work/")).await), "not-found", "a task list has no reminders");
+        let wrong = Request::SetSetting { key: SettingKey::Reminders, value: serde_json::json!({"defaultLead": "x"}) };
+        assert_eq!(code(&core.handle(wrong).await), "error");
+
+        // limited to /cal/work/: the style of home is neither shown nor reachable, nor lost.
+        let key = limited_client(&core).await;
+        let Response::Settings { settings: seen } = ask(&core, Some(&key), Request::Settings).await else {
+            panic!("settings")
+        };
+        assert_eq!(seen.reminders.calendars.keys().cloned().collect::<Vec<_>>(), [id("/cal/work/")]);
+        assert_eq!(code(&ask(&core, Some(&key), full_screen("/cal/home/")).await), "not-found");
+        waits(ask(&core, Some(&key), full_screen("/cal/work/")).await);
+        let rights = RightsTemplate::FullAccess.rights();
+        let mut sent = seen;
+        sent.reminders.all_day = true;
+        let answer = core.handle_within(Request::UpdateSettings { settings: sent }, Reach::Client(&rights)).await;
+        assert_eq!(answer, Response::Ok);
+        let after = settings(&core).await.reminders;
+        assert!(after.all_day, "its change");
+        assert_eq!(after.calendar(&id("/cal/home/")), CalendarReminders::FullScreen, "kept as stored");
     }
 
     #[tokio::test]
@@ -6419,6 +6820,20 @@ mod tests {
 
     fn started(section: Section) -> usize {
         STARTED.lock().expect("lock").iter().filter(|s| **s == section).count()
+    }
+
+    /// Task W.9: the setup opens by itself only on a first start without accounts.
+    #[test]
+    fn the_setup_opens_on_a_first_start_without_accounts_only() {
+        use torro_core::settings::{Settings, Setup, SetupState};
+        let fresh = Settings::default();
+        assert!(offers_setup(&fresh, 0));
+        assert!(!offers_setup(&fresh, 1), "an installation from before the setup");
+        for state in [SetupState::Skipped, SetupState::Done] {
+            let settings = Settings { setup: Setup { state, version: Setup::VERSION }, ..Settings::default() };
+            assert!(!offers_setup(&settings, 0), "{state:?}");
+        }
+        assert_eq!(setup_command("/bin/torroworkplace".into()), ["/bin/torroworkplace", "ui", "--setup"]);
     }
 
     #[tokio::test]
@@ -8611,6 +9026,56 @@ mod tests {
         assert_eq!(event.summary, "Deploy failed");
         assert_eq!(created_on(&fake), 1);
         assert!(matches!(entry(&core, dir.path(), &id).await.state, torro_inbox::State::Done { .. }));
+    }
+
+    #[tokio::test]
+    async fn reminders_are_listed_and_handled_only_within_reach() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (core, fake) = core_with_tasks(dir.path()).await;
+        let now = Utc::now();
+        let href = "https://cloud.example.org/cal/work/sync.ics";
+        let sync = torro_pim::Event {
+            summary: "Weekly sync".into(),
+            start: torro_pim::EventTime::DateTime(now + chrono::TimeDelta::seconds(30)),
+            end: Some(torro_pim::EventTime::DateTime(now + chrono::TimeDelta::minutes(45))),
+            ..event_in(&fake.work, Some(href))
+        };
+        core.pim.cache_events_as_synced(vec![sync]).await;
+        let Response::Reminders { reminders, paused_until } =
+            core.handle(Request::ListReminders { due_only: true }).await
+        else {
+            panic!("reminders")
+        };
+        assert_eq!((reminders.len(), paused_until), (1, None), "a minute before, as the default says");
+        let id = reminders[0].id.clone();
+
+        // A client with the home calendar only sees nothing of work, and reaches nothing there.
+        let mut home_only = RightsTemplate::FullAccess.rights();
+        home_only.calendars = Selection::Only(vec![fake.home.clone()]);
+        let within = |request| core.handle_within(request, Reach::Client(&home_only));
+        let Response::Reminders { reminders, .. } = within(Request::ListReminders { due_only: false }).await else {
+            panic!("reminders")
+        };
+        assert!(reminders.is_empty());
+        assert_eq!(code(&within(Request::DismissReminder { id: id.clone() }).await), "not-found");
+        assert_eq!(code(&within(Request::PauseReminders { until: None }).await), "forbidden", "not all calendars");
+        let (_, key) = client(&core, home_only.clone()).await;
+        let preview = Request::PreviewReminder { href: href.into() };
+        assert_eq!(code(&ask(&core, Some(&key), preview.clone()).await), "not-found", "before anyone is asked");
+
+        // Every calendar: it dismisses, pauses and previews with its name.
+        let all = RightsTemplate::FullAccess.rights();
+        let within = |request| core.handle_within(request, Reach::Client(&all));
+        assert_eq!(within(Request::DismissReminder { id }).await, Response::Ok);
+        let until = now + chrono::TimeDelta::hours(1);
+        assert_eq!(within(Request::PauseReminders { until: Some(until) }).await, Response::Ok);
+        assert_eq!(core.reminders().ledger(now).paused_until, Some(until));
+        assert_eq!(core.handle(Request::PauseReminders { until: None }).await, Response::Ok);
+        assert_eq!(core.handle(preview).await, Response::Ok, "a person's preview");
+        let Response::Reminders { reminders, .. } = core.handle(Request::ListReminders { due_only: true }).await else {
+            panic!("reminders")
+        };
+        assert_eq!(reminders.iter().map(|r| r.preview_by.as_deref()).collect::<Vec<_>>(), [Some("Torro Workplace")]);
     }
 
     #[tokio::test]
@@ -10844,6 +11309,7 @@ mod tests {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         };
         let work = torro_pim::Collection {
             id: format!("{ANNA_MAIL}/https://dav.example.org/work/"),
@@ -12199,7 +12665,7 @@ mod tests {
         assert_eq!(asked_bot.ids, vec![format!("bot:{}", bot.id)]);
     }
 
-    use crate::account::ai::tests::{KEY as AI_KEY, NOBODY, fake_ollama, fake_openrouter};
+    use crate::account::ai::tests::{KEY as AI_KEY, NOBODY, fake_ollama, fake_ollama_with_cloud, fake_openrouter};
 
     /// [`audited`] with AI accounts in `dir` on the keychain `keys`, looking for local servers at
     /// `local`.
@@ -12337,9 +12803,14 @@ mod tests {
         fn model<'a>(
             &'a self,
             _engine: &'a str,
+            model: Option<&'a str>,
         ) -> torro_core::ai::BoxFuture<'a, Result<ModelAccess, torro_core::ai::AiError>> {
-            let provider = Box::new(Scripted(Arc::clone(&self.script)));
-            Box::pin(async move { Ok(ModelAccess { provider, place: Place::Local }) })
+            let provider = Scripted(Arc::clone(&self.script));
+            Box::pin(async move {
+                let models = torro_core::ai::Provider::models(&provider).await;
+                let (model, place) = ModelAccess::choose(models, model, |_| Place::Local)?;
+                Ok(ModelAccess { provider: Box::new(provider), model, place })
+            })
         }
 
         fn run<'a>(
@@ -13303,6 +13774,46 @@ mod tests {
         assert!(matches!(local, Response::Conversation { .. }), "{local:?}");
     }
 
+    /// Task S.23: a bot without a model answers with what "Automatic" picks – the local model of a
+    /// mixed Ollama – so it may be asked after mail; a bot set to the cloud model may not.
+    #[tokio::test]
+    async fn after_mail_a_bot_on_the_cloud_model_of_ollama_is_not_asked() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ollama = fake_ollama_with_cloud(true).await;
+        answers_chat(&ollama, "/v1/chat/completions", "Pack light.").await;
+        let assistant = crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO);
+        let core = Arc::new(core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant));
+        core.attach_assistant();
+        let account =
+            core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        core.clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, reading(&[Area::Calendar, Area::Mail]))
+            .await
+            .expect("the assistant");
+        let automatic = bot_with(&core, "Packing helper", &account.id, reading(&[Area::Calendar])).await;
+        let mut save = save_bot(None, "Travel planner");
+        if let Request::SaveBot { engine, model, .. } = &mut save {
+            (*engine, *model) = (account.id.clone(), Some("glm-5.3:cloud".into()));
+        }
+        let cloud = bot_of(core.handle(save).await);
+        let main = said(&core, "Ask the travel planner and the packing helper").await;
+
+        let refused = Host::ask_bot(&*core, &main, ask_bot(&cloud.id), "test", false, true, &[]).await;
+        let Response::Error { code, message } = refused else { panic!("refused: {refused:?}") };
+        assert!(code == "forbidden" && message.contains("mail"), "the data rule: {message}");
+        let local = Host::ask_bot(&*core, &main, ask_bot(&automatic.id), "test", false, true, &[]).await;
+        let Response::Conversation { entries, .. } = local else { panic!("asked: {local:?}") };
+        let answered: Vec<Option<&str>> = entries
+            .iter()
+            .filter_map(|entry| match &entry.content {
+                torro_ipc::assistant::EntryContent::Answer { model, .. } => Some(model.as_deref()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(answered, [Some("qwen3:8b")], "the model checked answers");
+    }
+
     /// Task B.2: an approval the bot asks for while it runs for the assistant keeps the narrowing:
     /// "Allow" runs it with what both clients may then, never more – the assistant's right taken
     /// away meanwhile, nothing runs – and its log lines name the bot and the assistant.
@@ -13439,6 +13950,35 @@ mod tests {
     }
 
     /// Task C.2: the core reports Ollama as local and OpenRouter as elsewhere, for the data rule.
+    /// Task S.23: the core decides by account and model – a cloud model of a local Ollama runs
+    /// elsewhere, "Automatic" takes the local one, and without `/api/tags` every model is elsewhere.
+    #[tokio::test]
+    async fn the_core_tells_where_each_model_of_ollama_runs() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let at = |engine: String, model: Option<&'static str>| {
+            let core = &core;
+            async move {
+                let access = Host::model(core, &engine, model).await.expect("a model");
+                (access.model, access.place)
+            }
+        };
+        let (with_tags, without) = (fake_ollama_with_cloud(true).await, fake_ollama_with_cloud(false).await);
+        let mut engines = Vec::new();
+        for server in [&with_tags, &without] {
+            let connected = core.ai.connect(AiProvider::Ollama, Some(&server.url("/v1")), Default::default()).await;
+            engines.push(connected.expect("ollama").id);
+        }
+        let (told, untold) = (engines[0].clone(), engines[1].clone());
+        assert_eq!(at(told.clone(), None).await, ("qwen3:8b".to_string(), Place::Local), "Automatic: local first");
+        assert_eq!(at(told.clone(), Some("glm-5.3:cloud")).await, ("glm-5.3:cloud".to_string(), Place::Remote));
+        assert_eq!(at(told.clone(), Some("qwen3:8b")).await, ("qwen3:8b".to_string(), Place::Local));
+        assert_eq!(at(told, Some("llama3:8b")).await.1, Place::Remote, "a model it does not list");
+        assert_eq!(at(untold.clone(), Some("qwen3:8b")).await.1, Place::Remote, "no word from /api/tags");
+        assert_eq!(at(untold, None).await.1, Place::Remote);
+    }
+
     #[tokio::test]
     async fn the_core_tells_where_an_accounts_model_runs() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -13457,7 +13997,7 @@ mod tests {
             .expect("openrouter");
         let place = |engine: String| {
             let core = &core;
-            async move { Host::model(core, &engine).await.map(|access| access.place).expect("a model") }
+            async move { Host::model(core, &engine, None).await.map(|access| access.place).expect("a model") }
         };
         assert_eq!(place(local.id).await, Place::Local);
         assert_eq!(place(remote.id).await, Place::Remote, "its address is on this computer, but it is OpenRouter");
@@ -13610,6 +14150,7 @@ mod tests {
                 description: Some("Prepared by Anna.".into()),
                 recurring: false,
                 transparency: torro_pim::Transparency::Opaque,
+                alarms: Vec::new(),
             };
             room.fake.service.cache_events_of_today(vec![foreign]).await;
             let declined = ask(core, key, respond(&room.id, InvitationAnswer::Decline, None)).await;
@@ -14054,6 +14595,48 @@ mod tests {
         assert_eq!(code(&ask(&core, Some(&app_key), suggest("nothing")).await), "not-found");
         // Nothing was saved: the entries are open as they were.
         assert!(entry_state(&core, &entry).is_open() && entry_state(&core, &filed).is_open());
+    }
+
+    /// Task S.23: the person's default is the cloud model of a local Ollama. A mail entry goes to
+    /// its local model, an entry that may leave the computer to the default's model.
+    #[tokio::test]
+    async fn a_mail_entry_is_suggested_by_the_local_model_of_an_ollama_with_cloud_models() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let core = core_with_ai(dir.path(), &keys, Vec::new());
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let ollama = fake_ollama_with_cloud(true).await;
+        answers_chat(&ollama, "/v1/chat/completions", r#"{"title": "Read it"}"#).await;
+        let account =
+            core.ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Default::default()).await.expect("ollama");
+        let default = serde_json::json!({"engine": account.id, "model": "glm-5.3:cloud"});
+        let set = Request::SetSetting { key: SettingKey::AssistantDefault, value: default };
+        assert_eq!(ask(&core, Some(&app_key), set).await, Response::Ok);
+
+        let mail = crate::inbox::NewMail {
+            account: "mail:anna@example.org".into(),
+            message: "m:1".into(),
+            thread: "t:1".into(),
+            subject: "Offsite".into(),
+            snippet: "Shall we meet on the 20th?".into(),
+            from: Some(torro_inbox::Sender { name: "Anna".into(), address: Some("anna@example.org".into()) }),
+            bulk: None,
+            list: None,
+            github: None,
+            date: Utc::now(),
+        };
+        let filed = core.inbox.file_mail(&mail, torro_mail::Notify::All, Utc::now()).expect("filed").expect("entry");
+        let suggested = |id: String| {
+            let (core, app_key) = (&core, &app_key);
+            async move {
+                match ask(core, Some(app_key), Request::SuggestTaskFromItem { id }).await {
+                    Response::TaskSuggestion { suggestion } => suggestion.model,
+                    other => panic!("a suggestion: {other:?}"),
+                }
+            }
+        };
+        assert_eq!(suggested(filed).await, "qwen3:8b", "mail stays on this computer");
+        assert_eq!(suggested(posted_entry(&core).await).await, "glm-5.3:cloud", "the default's model");
     }
 
     /// The state of the inbox entry `id`, as the app key reads it.

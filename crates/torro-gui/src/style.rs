@@ -424,6 +424,19 @@ pub mod container {
         }
     }
 
+    /// The whole screen of a reminder (task ER2.1): the window ground `bg`, lit from the top by a
+    /// soft tint of the event's calendar `color` (the tint of events, never the full colour), fading
+    /// out at two fifths of the height.
+    pub fn reminder_screen(color: Color) -> impl Fn(&Theme) -> Style {
+        move |theme| {
+            let p = palette(theme);
+            let glow = iced::gradient::Linear::new(iced::Radians(std::f32::consts::PI))
+                .add_stop(0.0, p.tinted(color))
+                .add_stop(0.4, p.bg);
+            Style { text_color: Some(p.text), background: Some(Background::Gradient(glow.into())), ..Style::default() }
+        }
+    }
+
     /// A floating card or dialog: like [`menu`] with radius [`radius::lg()`]. Padding
     /// [`crate::theme::space::l()`], width 320.
     pub fn popover(theme: &Theme) -> Style {

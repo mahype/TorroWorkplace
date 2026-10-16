@@ -26,6 +26,13 @@
 //! as it was. Lines are folded anew, so the result is valid even when the server sent long
 //! unfolded lines.
 //!
+//! An event's reminders (`Event::alarms`, task ER1.1) are its `VALARM`s with `ACTION:DISPLAY` or
+//! `AUDIO`. While the list stays as read, every `VALARM` stays as stored. When it changed, only
+//! those alarms are replaced ([`AlarmPlan`]): one that is still wanted keeps its block as it is,
+//! a changed one keeps its foreign properties (`UID`, `X-*`) with a new `TRIGGER`, and mail or
+//! other alarms the model does not hold stay where they are. Torro's own `X-TORRO-STYLE` says
+//! whether a reminder shows over the whole screen.
+//!
 //! New task lists (task G.7, [`CalDavClient::create_task_list`]) are made with `MKCALENDAR`
 //! (RFC 4791, section 5.3.1) in the user's calendar home, for `VTODO` only, with name and colour
 //! the way Nextcloud keeps them ([`mkcalendar_body`]). Each gets a new address of its own
@@ -35,7 +42,10 @@
 use chrono::{DateTime, NaiveDate, Utc};
 use reqwest::{Method, StatusCode, Url};
 use roxmltree::Node;
-use torro_pim::{Collection, CollectionKind, Event, EventTime, ProviderError, Todo, Transparency};
+use torro_pim::{
+    Alarm, AlarmAnchor, AlarmStyle, AlarmTrigger, Collection, CollectionKind, Event, EventTime, ProviderError, Todo,
+    Transparency,
+};
 
 use crate::CalDavClient;
 use crate::ical::{self, Property};
@@ -487,7 +497,9 @@ fn xml_text(text: &str) -> String {
 }
 
 fn event_ics(event: &Event, now: DateTime<Utc>) -> String {
-    calendar("VEVENT", &new_lines(event_fields(event, None, now)))
+    let mut body = new_lines(event_fields(event, None, now));
+    body.extend(event.alarms.iter().flat_map(|alarm| fresh_alarm(*alarm)));
+    calendar("VEVENT", &body)
 }
 
 fn todo_ics(todo: &Todo, now: DateTime<Utc>) -> String {
@@ -495,21 +507,24 @@ fn todo_ics(todo: &Todo, now: DateTime<Utc>) -> String {
 }
 
 fn event_onto(stored: &str, event: &Event, now: DateTime<Utc>) -> String {
-    let merged = merge_component(stored, "VEVENT", &event.uid, |props| {
-        let before = ical::to_event(props, &event.collection);
+    let merged = merge_component(stored, "VEVENT", &event.uid, |props, alarms| {
+        let before = ical::to_event(props, alarms, &event.collection);
         let mut fields = event_fields(event, before.as_ref(), now);
         fields.push(last_modified(now));
-        fields
+        // The reminders are rewritten only when they differ from what is stored.
+        let alarms = before.is_none_or(|before| before.alarms != event.alarms).then(|| event.alarms.clone());
+        Rewrite { fields, alarms }
     });
     merged.unwrap_or_else(|| event_ics(event, now))
 }
 
 fn todo_onto(stored: &str, todo: &Todo, now: DateTime<Utc>) -> String {
-    let merged = merge_component(stored, "VTODO", &todo.uid, |props| {
+    let merged = merge_component(stored, "VTODO", &todo.uid, |props, _| {
         let before = ical::to_todo(props, &todo.collection);
         let mut fields = todo_fields(todo, before.as_ref(), now);
         fields.push(last_modified(now));
-        fields
+        // A task's alarms are not the model's (yet): they stay as stored.
+        Rewrite { fields, alarms: None }
     });
     merged.unwrap_or_else(|| todo_ics(todo, now))
 }
@@ -711,16 +726,24 @@ fn optional_text(name: &str, value: &Option<String>) -> Vec<String> {
     non_empty(value).map(|value| text_line(name, value)).into_iter().collect()
 }
 
+/// What [`merge_component`] changes in a component: its fields, and, when `alarms` is set, the
+/// reminders the model holds ([`AlarmPlan`]).
+struct Rewrite {
+    fields: Vec<Field>,
+    alarms: Option<Vec<Alarm>>,
+}
+
 /// `stored` with the `component` (`VEVENT`, `VTODO`) that has `uid` (else the first one)
-/// rewritten by `fields`, which gets that component's own properties (not those of nested
-/// components such as `VALARM`). Properties covered by a changed field are dropped, the
-/// changed fields' lines follow right after `BEGIN` (RFC 5545 puts properties before nested
-/// components), and every other line stays. `None` when `stored` holds no such component.
+/// rewritten by `rewrite`, which gets that component's own properties and the properties of each
+/// `VALARM` in it. Properties covered by a changed field are dropped, the changed fields' lines
+/// follow right after `BEGIN` (RFC 5545 puts properties before nested components), and every
+/// other line stays; the reminders change as [`AlarmPlan`] says. `None` when `stored` holds no
+/// such component.
 fn merge_component(
     stored: &str,
     component: &str,
     uid: &str,
-    fields: impl FnOnce(&[Property<'_>]) -> Vec<Field>,
+    rewrite: impl FnOnce(&[Property<'_>], &[Vec<Property<'_>>]) -> Rewrite,
 ) -> Option<String> {
     let lines = ical::unfold(stored);
     let parsed: Vec<Option<Property<'_>>> = lines.iter().map(|line| ical::parse_line(line)).collect();
@@ -735,12 +758,26 @@ fn merge_component(
     let chosen = candidates.iter().find(has_uid).or_else(|| candidates.first())?;
 
     let own: Vec<Property<'_>> = chosen.own.iter().filter_map(|&i| ical::parse_line(lines.get(i)?)).collect();
-    let fields = fields(&own);
+    let alarm_props: Vec<Vec<Property<'_>>> = chosen
+        .alarms
+        .iter()
+        .map(|block| (block.begin + 1..block.end).filter_map(|i| ical::parse_line(lines.get(i)?)).collect())
+        .collect();
+    let Rewrite { fields, alarms } = rewrite(&own, &alarm_props);
     let dropped = |prop: &Property<'_>| fields.iter().any(|field| field.changed && field.covers.matches(prop));
+    let plan = alarms.map(|wanted| AlarmPlan::new(&lines, chosen, &alarm_props, &wanted));
 
     let mut out = String::new();
     for (i, (line, prop)) in lines.iter().zip(&parsed).enumerate() {
+        if let Some(plan) = &plan
+            && plan.at == i
+        {
+            plan.lines.iter().for_each(|new| push_line(&mut out, new));
+        }
         if chosen.own.contains(&i) && prop.as_ref().is_some_and(dropped) {
+            continue;
+        }
+        if plan.as_ref().is_some_and(|plan| plan.replaces(i)) {
             continue;
         }
         push_line(&mut out, line);
@@ -753,11 +790,140 @@ fn merge_component(
     Some(out)
 }
 
-/// One top-level component of a stored object: the index of its `BEGIN` line and of its own
-/// property lines.
+/// How the reminders of a component change when the model's list differs from the stored one.
+///
+/// The `VALARM`s the model holds ([`ical::alarm`]) are taken out; the wanted reminders take the
+/// place of the first of them (or go right before the component's `END`). A wanted reminder that
+/// is stored unchanged keeps its block line for line; one that changed takes the next stored
+/// reminder that is not kept, with its foreign properties and a new `TRIGGER` and style; the
+/// rest are written new. Alarms the model does not hold (mail, `ACTION:NONE`) stay untouched.
+struct AlarmPlan {
+    /// The line before which the new blocks go.
+    at: usize,
+    /// The line ranges of the stored blocks that are replaced.
+    replaced: Vec<Block>,
+    /// The new blocks, unfolded.
+    lines: Vec<String>,
+}
+
+impl AlarmPlan {
+    fn new(lines: &[String], chosen: &Candidate, alarm_props: &[Vec<Property<'_>>], wanted: &[Alarm]) -> AlarmPlan {
+        let held: Vec<(Block, Alarm)> = chosen
+            .alarms
+            .iter()
+            .zip(alarm_props)
+            .filter_map(|(block, props)| Some((*block, ical::alarm(props)?)))
+            .collect();
+        let mut used = vec![false; held.len()];
+        // First every wanted reminder that is stored as it is, so a reminder added in front does
+        // not turn the stored ones into "changed" ones.
+        let mut source: Vec<Option<usize>> = wanted
+            .iter()
+            .map(|alarm| {
+                let found = (0..held.len()).find(|&k| !used[k] && held[k].1 == *alarm)?;
+                used[found] = true;
+                Some(found)
+            })
+            .collect();
+        let mut out = Vec::new();
+        for (alarm, kept) in wanted.iter().zip(source.iter_mut()) {
+            let block_lines = |block: Block| lines.get(block.begin..=block.end).unwrap_or_default();
+            match *kept {
+                Some(k) => out.extend(block_lines(held[k].0).iter().cloned()),
+                None => match (0..held.len()).find(|&k| !used[k]) {
+                    Some(k) => {
+                        used[k] = true;
+                        out.extend(changed_alarm(block_lines(held[k].0), *alarm));
+                    }
+                    None => out.extend(fresh_alarm(*alarm)),
+                },
+            }
+        }
+        let replaced: Vec<Block> = held.iter().map(|(block, _)| *block).collect();
+        let at = replaced.first().map_or(chosen.end, |block| block.begin);
+        AlarmPlan { at, replaced, lines: out }
+    }
+
+    /// Line `i` belongs to a replaced block.
+    fn replaces(&self, i: usize) -> bool {
+        self.replaced.iter().any(|block| (block.begin..=block.end).contains(&i))
+    }
+}
+
+/// A new `VALARM` for `alarm`. `DESCRIPTION` is required for `ACTION:DISPLAY` (RFC 5545 section
+/// 3.6.6); a fixed word keeps the block stable when the title changes.
+fn fresh_alarm(alarm: Alarm) -> Vec<String> {
+    let mut out = vec!["BEGIN:VALARM".to_string(), "ACTION:DISPLAY".to_string(), trigger_line(alarm.trigger)];
+    out.push("DESCRIPTION:Reminder".to_string());
+    out.extend(style_line(alarm.style));
+    out.push("END:VALARM".to_string());
+    out
+}
+
+/// A stored `VALARM` (from `BEGIN` to `END`) moved to `alarm`: its own properties stay, but
+/// `TRIGGER` and the style are new, and what belonged to the old time goes – Apple's mark of its
+/// default reminder and the time it was acknowledged.
+fn changed_alarm(block: &[String], alarm: Alarm) -> Vec<String> {
+    const STALE: [&str; 4] = ["TRIGGER", "X-TORRO-STYLE", "X-APPLE-DEFAULT-ALARM", "ACKNOWLEDGED"];
+    let stale = |line: &String| {
+        ical::parse_line(line).is_some_and(|prop| STALE.iter().any(|name| prop.name.eq_ignore_ascii_case(name)))
+    };
+    let mut out = Vec::new();
+    for (i, line) in block.iter().enumerate() {
+        if i > 0 && stale(line) {
+            continue;
+        }
+        out.push(line.clone());
+        if i == 0 {
+            out.push(trigger_line(alarm.trigger));
+            out.extend(style_line(alarm.style));
+        }
+    }
+    out
+}
+
+/// `TRIGGER:-PT15M`, `TRIGGER;RELATED=END:-P1D`, `TRIGGER:PT5M` (after), `TRIGGER:PT0S` (at the
+/// start) or `TRIGGER;VALUE=DATE-TIME:20261011T080000Z`.
+fn trigger_line(trigger: AlarmTrigger) -> String {
+    match trigger {
+        AlarmTrigger::At(at) => format!("TRIGGER;VALUE=DATE-TIME:{}", utc(at)),
+        AlarmTrigger::Before { minutes, of } => {
+            let related = if of == AlarmAnchor::End { ";RELATED=END" } else { "" };
+            let sign = if minutes > 0 { "-" } else { "" };
+            let m = minutes.unsigned_abs();
+            let value = match m {
+                0 => "PT0S".to_string(),
+                m if m % 1440 == 0 => format!("P{}D", m / 1440),
+                m if m % 60 == 0 => format!("PT{}H", m / 60),
+                m => format!("PT{m}M"),
+            };
+            format!("TRIGGER{related}:{sign}{value}")
+        }
+    }
+}
+
+/// Torro's own style of a reminder; none means the calendar decides.
+fn style_line(style: Option<AlarmStyle>) -> Option<String> {
+    style.map(|style| match style {
+        AlarmStyle::FullScreen => "X-TORRO-STYLE:FULLSCREEN".to_string(),
+        AlarmStyle::Notification => "X-TORRO-STYLE:NOTIFICATION".to_string(),
+    })
+}
+
+/// One top-level component of a stored object: the index of its `BEGIN` and `END` lines, of its
+/// own property lines and of the `VALARM`s directly inside it.
 struct Candidate {
     begin: usize,
+    end: usize,
     own: Vec<usize>,
+    alarms: Vec<Block>,
+}
+
+/// The lines of one nested component, from its `BEGIN` to its `END`.
+#[derive(Debug, Clone, Copy)]
+struct Block {
+    begin: usize,
+    end: usize,
 }
 
 /// The `component`s directly inside the `VCALENDAR`, in order. Lines of nested components
@@ -766,20 +932,30 @@ struct Candidate {
 fn components(parsed: &[Option<Property<'_>>], component: &str) -> Vec<Candidate> {
     let mut found = Vec::new();
     let mut current: Option<Candidate> = None;
+    // The start of the VALARM being read inside `current`.
+    let mut alarm: Option<usize> = None;
     // 1 inside the VCALENDAR, 2 inside a component, 3 and more in nested ones.
     let mut depth = 0usize;
     for (i, prop) in parsed.iter().enumerate() {
         let Some(prop) = prop else { continue };
         if prop.name.eq_ignore_ascii_case("BEGIN") {
             if depth == 1 && prop.value.trim().eq_ignore_ascii_case(component) {
-                current = Some(Candidate { begin: i, own: Vec::new() });
+                current = Some(Candidate { begin: i, end: i, own: Vec::new(), alarms: Vec::new() });
+            } else if depth == 2 && current.is_some() && prop.value.trim().eq_ignore_ascii_case("VALARM") {
+                alarm = Some(i);
             }
             depth += 1;
         } else if prop.name.eq_ignore_ascii_case("END") {
             depth = depth.saturating_sub(1);
-            if depth == 1
-                && let Some(done) = current.take()
+            if depth == 2
+                && let (Some(begin), Some(candidate)) = (alarm.take(), current.as_mut())
             {
+                candidate.alarms.push(Block { begin, end: i });
+            }
+            if depth == 1
+                && let Some(mut done) = current.take()
+            {
+                done.end = i;
                 found.push(done);
             }
         } else if depth == 2
@@ -990,6 +1166,7 @@ mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
@@ -1794,5 +1971,157 @@ END:VTODO\r\nEND:VCALENDAR\r\n";
         assert_eq!(made(StatusCode::FORBIDDEN, &url), Err(ProviderError::Other(NO_NEW_LISTS_HERE.into())));
         let full = made(StatusCode::INSUFFICIENT_STORAGE, &url);
         assert!(matches!(&full, Err(ProviderError::Other(message)) if message.contains("507")), "{full:?}");
+    }
+
+    // Reminders (task ER1.1): written new, kept when unchanged, replaced only where they changed.
+
+    const NEXTCLOUD_EVENT: &str = include_str!("../tests/fixtures/nextcloud-event-alarms.ics");
+    const APPLE_EVENT: &str = include_str!("../tests/fixtures/apple-event-alarms.ics");
+
+    fn alarm(minutes: i64, style: Option<AlarmStyle>) -> Alarm {
+        Alarm { trigger: AlarmTrigger::Before { minutes, of: AlarmAnchor::Start }, style }
+    }
+
+    /// Every `VALARM` of `ics` with its lines, unfolded, in order.
+    fn alarm_blocks(ics: &str) -> Vec<Vec<String>> {
+        let mut blocks = Vec::new();
+        let mut current: Option<Vec<String>> = None;
+        for line in unfolded_lines(&ics.replace("\r\n", "\n").replace('\n', "\r\n")) {
+            match line.as_str() {
+                "BEGIN:VALARM" => current = Some(vec![line]),
+                "END:VALARM" => {
+                    if let Some(mut block) = current.take() {
+                        block.push(line);
+                        blocks.push(block);
+                    }
+                }
+                _ => current.iter_mut().for_each(|block| block.push(line.clone())),
+            }
+        }
+        blocks
+    }
+
+    #[test]
+    fn triggers_are_written_in_their_shortest_form() {
+        let before = |minutes, of| trigger_line(AlarmTrigger::Before { minutes, of });
+        assert_eq!(before(15, AlarmAnchor::Start), "TRIGGER:-PT15M");
+        assert_eq!(before(90, AlarmAnchor::Start), "TRIGGER:-PT90M");
+        assert_eq!(before(120, AlarmAnchor::Start), "TRIGGER:-PT2H");
+        assert_eq!(before(2 * 1440, AlarmAnchor::Start), "TRIGGER:-P2D");
+        assert_eq!(before(0, AlarmAnchor::Start), "TRIGGER:PT0S");
+        assert_eq!(before(-5, AlarmAnchor::Start), "TRIGGER:PT5M", "after the start");
+        assert_eq!(before(10, AlarmAnchor::End), "TRIGGER;RELATED=END:-PT10M");
+        assert_eq!(trigger_line(AlarmTrigger::At(at(11, 7))), "TRIGGER;VALUE=DATE-TIME:20261011T070000Z");
+    }
+
+    #[test]
+    fn a_new_event_writes_its_reminders_and_reads_them_back() {
+        let event = Event {
+            alarms: vec![
+                alarm(15, None),
+                alarm(5, Some(AlarmStyle::FullScreen)),
+                Alarm { trigger: AlarmTrigger::At(at(11, 7)), style: Some(AlarmStyle::Notification) },
+            ],
+            ..event()
+        };
+        let ics = event_ics(&event, now());
+        assert_eq!(
+            alarm_blocks(&ics)[1],
+            [
+                "BEGIN:VALARM",
+                "ACTION:DISPLAY",
+                "TRIGGER:-PT5M",
+                "DESCRIPTION:Reminder",
+                "X-TORRO-STYLE:FULLSCREEN",
+                "END:VALARM"
+            ]
+        );
+        assert_eq!(read_event(&ics), event);
+    }
+
+    #[test]
+    fn an_event_without_reminders_is_written_as_before() {
+        let stored = event_ics(&event(), now());
+        assert!(alarm_blocks(&stored).is_empty());
+        let written = event_onto(&stored, &event(), later());
+        assert_rewritten(&stored, &written, &["DTSTAMP:20261011T120000Z"], &stamps());
+    }
+
+    #[test]
+    fn unchanged_reminders_keep_every_alarm_as_stored() {
+        for stored in [NEXTCLOUD_EVENT, APPLE_EVENT, THUNDERBIRD_EVENT] {
+            let mut event = read_event(stored);
+            assert!(!event.alarms.is_empty(), "the fixture has reminders");
+            event.summary.push_str(" (moved)");
+            let written = event_onto(stored, &event, later());
+            assert_eq!(alarm_blocks(&written), alarm_blocks(stored), "every VALARM stays line for line");
+            assert_eq!(read_event(&written), event);
+        }
+    }
+
+    #[test]
+    fn a_changed_style_keeps_the_alarm_s_own_properties() {
+        let mut event = read_event(APPLE_EVENT);
+        event.alarms[1].style = Some(AlarmStyle::FullScreen);
+        let written = event_onto(APPLE_EVENT, &event, later());
+        let (stored, blocks) = (alarm_blocks(APPLE_EVENT), alarm_blocks(&written));
+        assert_eq!(blocks.len(), 3, "Apple's ACTION:NONE placeholder stays");
+        assert_eq!(blocks[0], stored[0], "the unchanged reminder stays line for line");
+        assert_eq!(
+            blocks[1],
+            [
+                "BEGIN:VALARM",
+                "TRIGGER:-P1D",
+                "X-TORRO-STYLE:FULLSCREEN",
+                "X-WR-ALARMUID:0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D",
+                "UID:0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D",
+                "DESCRIPTION:Reminder",
+                "ACTION:DISPLAY",
+                "END:VALARM",
+            ]
+        );
+        assert_eq!(blocks[2], stored[2]);
+        assert_eq!(read_event(&written), event);
+    }
+
+    #[test]
+    fn a_moved_default_reminder_is_no_longer_apples_default() {
+        let mut event = read_event(APPLE_EVENT);
+        event.alarms[0] = alarm(10, None);
+        let written = event_onto(APPLE_EVENT, &event, later());
+        let first = &alarm_blocks(&written)[0];
+        assert!(first.contains(&"TRIGGER:-PT10M".to_string()));
+        assert!(first.contains(&"ATTACH;VALUE=URI:Chord".to_string()), "the sound stays");
+        assert!(first.contains(&"ACTION:AUDIO".to_string()));
+        for stale in ["X-APPLE-DEFAULT-ALARM:TRUE", "ACKNOWLEDGED:20261009T120500Z", "TRIGGER:-PT30M"] {
+            assert!(!first.contains(&stale.to_string()), "{stale} belonged to the old time");
+        }
+        assert_eq!(read_event(&written), event);
+    }
+
+    #[test]
+    fn removing_the_reminders_keeps_mail_and_unreadable_alarms() {
+        let mut event = read_event(NEXTCLOUD_EVENT);
+        event.alarms.clear();
+        let written = event_onto(NEXTCLOUD_EVENT, &event, later());
+        let blocks = alarm_blocks(&written);
+        let stored = alarm_blocks(NEXTCLOUD_EVENT);
+        assert_eq!(blocks, [stored[1].clone(), stored[4].clone()], "the mail alarm and the broken one");
+        assert!(read_event(&written).alarms.is_empty());
+    }
+
+    #[test]
+    fn a_reminder_added_in_front_leaves_the_stored_ones_alone() {
+        let mut event = read_event(NEXTCLOUD_EVENT);
+        event.alarms.insert(0, alarm(5, Some(AlarmStyle::FullScreen)));
+        let written = event_onto(NEXTCLOUD_EVENT, &event, later());
+        let (stored, blocks) = (alarm_blocks(NEXTCLOUD_EVENT), alarm_blocks(&written));
+        assert_eq!(blocks[0], fresh_alarm(alarm(5, Some(AlarmStyle::FullScreen))));
+        // The kept ones follow in the model's order, then the alarms the model does not hold.
+        assert_eq!(
+            blocks[1..],
+            [stored[0].clone(), stored[2].clone(), stored[3].clone(), stored[1].clone(), stored[4].clone()]
+        );
+        assert_eq!(read_event(&written), event);
     }
 }

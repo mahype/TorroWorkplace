@@ -247,8 +247,8 @@ const PALETTE_KEYS: [&str; 34] = [
     "sidebar_text_3",
     "sidebar_line",
 ];
-const LEVEL_KEYS: [&str; 9] =
-    ["micro", "caption", "meta", "body", "body_strong", "read", "title", "headline", "display"];
+const LEVEL_KEYS: [&str; 11] =
+    ["micro", "caption", "meta", "body", "body_strong", "read", "title", "headline", "display", "hero", "countdown"];
 const LAYOUT_KEYS: [&str; 7] =
     ["inset", "page_padding", "panel_padding", "row_padding", "control_padding", "section_gap", "item_gap"];
 
@@ -345,6 +345,16 @@ fn merge(id: &str, root: &Root, file: PackFile, problems: &mut Vec<DesignError>)
         if let Some(slot) = design.typo.slot_mut(name) {
             merge_level(slot, level);
         }
+    }
+    // The levels of a reminder over the whole screen (task ER1.5) follow a pack that does not name
+    // them, so packs from before stay valid: the title takes its headlines' font and weight, the
+    // countdown Medium where its figures font has it, else the weight of its time axis.
+    if !file.typo.contains_key("hero") {
+        design.typo.hero.font = design.typo.headline.font;
+        design.typo.hero.weight = design.typo.headline.weight;
+    }
+    if !file.typo.contains_key("countdown") && design.fonts.numbers.face(Weight::Medium).is_none() {
+        design.typo.countdown.weight = design.typo.micro.weight;
     }
     if let Some(SpaceFile { scale: [xs, s, m, l, xl, xxl] }) = file.space {
         design.space = Space { xs, s, m, l, xl, xxl };

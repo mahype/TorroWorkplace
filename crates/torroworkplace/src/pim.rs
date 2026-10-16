@@ -104,7 +104,7 @@ use tokio::sync::{Mutex, RwLock};
 use torro_core::account::{AccountKind, Secret};
 use torro_core::{AppId, paths::AppPaths};
 use torro_ipc::api::{Access, Area, Rights, Selection};
-use torro_ipc::{AccountInfo, Request, Response};
+use torro_ipc::{AccountInfo, Request, Response, ServerService};
 use torro_pim::account::{collection_id, local_id};
 use torro_pim::model::{GitHubKind, GitHubState, Link};
 use torro_pim::source::{GitHubRepo, GitHubRepoDetails, move_plan};
@@ -138,6 +138,11 @@ const WINDOW_AHEAD_DAYS: i64 = 365;
 /// (task E2.1, [`Trouble::SyncFailing`]): an outage of a few minutes, or a laptop that wakes up
 /// before its network, is nothing to bother the user with.
 pub const SYNC_PROBLEM_AFTER: Span = Span::minutes(30);
+
+/// How long what a Nextcloud's capabilities say counts before a sync reads them again (task W.1,
+/// [`AccountInfo::services`]): apps are seldom switched on or off, and the inbox reads them for
+/// itself as well.
+const CAPABILITIES_EVERY: Span = Span::hours(1);
 
 /// One account in the core: who it is, its connection and what is cached of it.
 #[derive(Debug)]
@@ -174,6 +179,10 @@ struct Slot {
     /// sync that works, the collections of a service not chosen are hidden ([`chosen`]), then
     /// this is cleared. `None` for every other account and afterwards.
     choice: Option<Services>,
+    /// What the server's capabilities said and when they were read (task W.1): for a Nextcloud
+    /// after its first sync that worked, `None` before and for every other account. Kept when a
+    /// later read fails: an app does not vanish because one request did.
+    capabilities: Option<(torro_nextcloud::Capabilities, DateTime<Utc>)>,
 }
 
 impl Slot {
@@ -191,6 +200,7 @@ impl Slot {
             todos: Vec::new(),
             wipe_checked: false,
             choice: None,
+            capabilities: None,
         }
     }
 
@@ -223,6 +233,41 @@ impl Slot {
 
     fn is_mail(&self) -> bool {
         self.connected.account.kind == AccountKind::Mail
+    }
+
+    /// An OCS client for this account when its capabilities are due at `now` (task W.1): a
+    /// Nextcloud with its app password whose capabilities were never read or are older than
+    /// [`CAPABILITIES_EVERY`]. `None` otherwise, also when the server address is refused.
+    fn capabilities_due(&self, now: DateTime<Utc>) -> Option<torro_nextcloud::Nextcloud> {
+        let fresh = self.capabilities.as_ref().is_some_and(|(_, at)| now - *at < CAPABILITIES_EVERY);
+        let Connected { account, app_password } = &self.connected;
+        if !self.is_nextcloud() || fresh || app_password.is_blank() {
+            return None;
+        }
+        torro_nextcloud::Nextcloud::new(&account.server, &account.login_name, app_password.clone()).ok()
+    }
+
+    /// What the server offers, for [`AccountInfo::services`] (task W.1): calendars and task lists
+    /// by the collections it has, for a Nextcloud also what its capabilities name. `None` before the
+    /// first sync that worked, and for accounts of other kinds (a mail account's calendars are
+    /// shown with its mail).
+    fn server_services(&self) -> Option<Vec<ServerService>> {
+        let kind = self.connected.account.kind;
+        if !matches!(kind, AccountKind::Nextcloud | AccountKind::CalDav) || self.last_sync.is_none() {
+            return None;
+        }
+        let has = |test: fn(torro_pim::CollectionKind) -> bool| self.collections.iter().any(|c| test(c.kind));
+        let mut services = Vec::new();
+        services.extend(has(torro_pim::CollectionKind::has_events).then_some(ServerService::Calendars));
+        services.extend(has(torro_pim::CollectionKind::has_todos).then_some(ServerService::Tasks));
+        if let Some((capabilities, _)) = &self.capabilities {
+            services.extend(capabilities.notifications.is_some().then_some(ServerService::Notifications));
+            services.extend(capabilities.talk.is_some().then_some(ServerService::Talk));
+            services.extend(capabilities.push.is_some().then_some(ServerService::Push));
+            services.extend(capabilities.deck.then_some(ServerService::Deck));
+            services.extend(capabilities.notes.then_some(ServerService::Notes));
+        }
+        Some(services)
     }
 
     /// The services whose collections this account syncs: for a mail account those switched on in
@@ -299,6 +344,7 @@ impl Slot {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: self.server_services(),
         }
     }
 }
@@ -869,7 +915,12 @@ impl PimService {
             service.state.write().await.loaded = true;
             loop {
                 let any = !service.state.read().await.accounts.is_empty();
-                if any {
+                // Calendars and task lists serve those two components only (task W.2): with both
+                // turned off nothing is fetched in the background.
+                let settings = service.settings.current();
+                let wanted = settings.component_on(torro_core::settings::Component::Calendar)
+                    || settings.component_on(torro_core::settings::Component::Tasks);
+                if any && wanted {
                     // Each account logs its own failure.
                     let _ = service.sync().await;
                 }
@@ -1041,6 +1092,16 @@ impl PimService {
                 let repo = repo.trim();
                 return (!reach.reaches_repo(repo)).then(|| repo.to_string());
             }
+            // An event to preview must be one the client sees, before anyone is asked (task ER1.3).
+            Request::PreviewReminder { href } => {
+                return self.cached_event_within(reach, href).await.is_none().then(|| href.clone());
+            }
+            // The other reminder handlers list only reminders of calendars the client reads and look
+            // an id up among those, so one out of reach is `not-found` there.
+            Request::ListReminders { .. }
+            | Request::SnoozeReminder { .. }
+            | Request::DismissReminder { .. }
+            | Request::PauseReminders { .. } => return None,
             // Nothing exists yet that could be out of reach. Searches outside the client's
             // repositories are `forbidden`, not `not-found`: the handlers check them before GitHub
             // is asked ([`Reach::confines`]). A new task list goes to an account, which every
@@ -1194,6 +1255,18 @@ impl PimService {
         self.state.read().await.collections().any(|c| c.id == id)
     }
 
+    /// The event stored at `href` as the cache holds it, when `reach` sees its calendar (task
+    /// ER1.3, `calendar.preview_reminder`); `None` otherwise, as if there were none.
+    pub async fn cached_event_within(&self, reach: Reach<'_>, href: &str) -> Option<Event> {
+        let event = cached_event(&*self.state.read().await, href).cloned()?;
+        self.sees_calendar(reach, &event.collection).await.then_some(event)
+    }
+
+    /// `id` is a calendar (a collection with events) of a connected account, hidden or not.
+    pub async fn knows_calendar(&self, id: &str) -> bool {
+        self.state.read().await.collections().any(|c| c.id == id && c.kind.has_events())
+    }
+
     /// `id` is a task list (a collection with todos) of a connected account, hidden or not.
     pub async fn knows_task_list(&self, id: &str) -> bool {
         self.state.read().await.collections().any(|c| c.id == id && c.kind.has_todos())
@@ -1256,6 +1329,17 @@ impl PimService {
         }
     }
 
+    /// [`PimService::cache_events_of_today`] with a cache as wide as a sync makes it, for the
+    /// core's tests of reminders (task ER1.3), which plan days ahead.
+    #[cfg(test)]
+    pub async fn cache_events_as_synced(&self, events: Vec<Event>) {
+        let now = Utc::now();
+        if let Some(slot) = self.state.write().await.accounts.first_mut() {
+            slot.window = Some((now - Span::days(WINDOW_BACK_DAYS), now + Span::days(WINDOW_AHEAD_DAYS)));
+            slot.events = events;
+        }
+    }
+
     /// Stores the account [`tests::ANNA`] as a sign-in would, without network or keychain, for
     /// the core's handler tests. Does nothing when it is there already.
     /// Adds `account` with `password` as a connected account with a CalDAV client, as signing in
@@ -1283,7 +1367,9 @@ impl PimService {
 
     /// The accounts with their state, as `reach` may see them: for the suite with all
     /// collections, hidden ones included, so the control centre can show them again (task S.2);
-    /// for a client only with the collections it sees as calendar or task list.
+    /// for a client only with the collections it sees as calendar or task list, and with calendars
+    /// and tasks among its services only when it sees one of them (task W.1): what a client may
+    /// not see behaves as if it were not there.
     pub async fn accounts_within(&self, reach: Reach<'_>) -> Vec<AccountInfo> {
         let mut accounts = account_infos(&*self.state.read().await);
         if let Reach::Client(_) = reach {
@@ -1292,6 +1378,17 @@ impl PimService {
                 account
                     .collections
                     .retain(|c| reach.sees(c, Role::Calendar, &hidden) || reach.sees(c, Role::TaskList, &hidden));
+                if let Some(services) = &mut account.services {
+                    let seen =
+                        |test: fn(torro_pim::CollectionKind) -> bool| account.collections.iter().any(|c| test(c.kind));
+                    let (calendars, tasks) =
+                        (seen(torro_pim::CollectionKind::has_events), seen(torro_pim::CollectionKind::has_todos));
+                    services.retain(|service| match service {
+                        ServerService::Calendars => calendars,
+                        ServerService::Tasks => tasks,
+                        _ => true,
+                    });
+                }
             }
         }
         accounts
@@ -1840,14 +1937,28 @@ impl PimService {
     /// password runs the remote wipe check.
     async fn sync_account(&self, id: &str) -> Result<(), ProviderError> {
         let _running = self.syncing.lock().await;
-        let (client, nextcloud, wanted) = self
+        let (client, nextcloud, wanted, ocs) = self
             .state
             .read()
             .await
             .slot(id)
-            .and_then(|slot| Some((slot.client.clone()?, slot.is_nextcloud(), slot.services())))
+            .and_then(|slot| {
+                Some((slot.client.clone()?, slot.is_nextcloud(), slot.services(), slot.capabilities_due(Utc::now())))
+            })
             .ok_or_else(not_connected)?;
         let result = fetch_all(&client, id, nextcloud, wanted).await;
+        // Only after CalDAV took the app password: a refused one must not be tried a second time
+        // (Nextcloud's brute-force protection would count it against the person).
+        let capabilities = match (&result, ocs) {
+            (Ok(_), Some(ocs)) => match ocs.capabilities().await {
+                Ok(capabilities) => Some((capabilities, Utc::now())),
+                Err(err) => {
+                    eprintln!("torroworkplace: the capabilities of {id} could not be read: {err}");
+                    None
+                }
+            },
+            _ => None,
+        };
         let mut state = self.state.write().await;
         let Some(slot) = state.slot_mut(id) else {
             // The account was removed while the sync ran; nothing of it is kept.
@@ -1872,6 +1983,9 @@ impl PimService {
                 slot.problem = None;
                 slot.trouble = None;
                 slot.wipe_checked = false;
+                if capabilities.is_some() {
+                    slot.capabilities = capabilities;
+                }
                 Ok(())
             }
             Err(err) => {
@@ -2268,6 +2382,25 @@ impl PimService {
             Facts { item, name: name_of(collection), moved_from, ..Facts::default() }
         };
         match request {
+            // The event as the cache holds it, never the client's text (task ER1.3).
+            Request::PreviewReminder { href } => match cached_event(&state, href) {
+                Some(event) => Facts {
+                    item: Some(Known { title: event.summary.clone(), start: Some(event.start) }),
+                    name: name_of(&event.collection),
+                    ..Facts::default()
+                },
+                None => Facts::default(),
+            },
+            // The calendars a change of the reminder settings names, by their cached names.
+            Request::SetSetting { key: torro_ipc::SettingKey::Reminders, value } => {
+                let named = value.get("calendars").and_then(serde_json::Value::as_object);
+                let calendars = named
+                    .into_iter()
+                    .flat_map(|named| named.keys())
+                    .filter_map(|id| Some((id.clone(), name_of(id)?)))
+                    .collect();
+                Facts { calendars, ..Facts::default() }
+            }
             Request::DeleteEvent { event } => {
                 written(&event.collection, event.href.as_deref(), event.etag.as_deref(), Role::Calendar, false)
             }
@@ -3410,6 +3543,7 @@ fn account_infos(state: &State) -> Vec<AccountInfo> {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         });
     }
     infos
@@ -3419,6 +3553,12 @@ fn account_infos(state: &State) -> Vec<AccountInfo> {
 /// account id (`torro_core::Account::nextcloud`).
 fn host(server: &str) -> &str {
     server.split_once("://").map_or(server, |(_, rest)| rest).trim_end_matches('/')
+}
+
+/// The cached event stored at `href`, of any account, compared exactly, like [`cached_todo`]. A
+/// recurring event has the same href for every occurrence: the first cached one.
+fn cached_event<'a>(state: &'a State, href: &str) -> Option<&'a Event> {
+    state.accounts.iter().flat_map(|slot| &slot.events).find(|event| event.href.as_deref() == Some(href))
 }
 
 /// The cached task stored at `href`, of any account, compared exactly: hrefs come from
@@ -3758,6 +3898,7 @@ pub(crate) mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
@@ -3950,6 +4091,7 @@ pub(crate) mod tests {
                 scopes: None,
                 mail: None,
                 ntfy: None,
+                services: None,
             }
         );
     }
@@ -3979,6 +4121,8 @@ pub(crate) mod tests {
                 scopes: None,
                 mail: None,
                 ntfy: None,
+                // Synced once: two calendars, and no capabilities read yet.
+                services: Some(vec![ServerService::Calendars]),
             }]
         );
     }
@@ -4872,6 +5016,76 @@ pub(crate) mod tests {
         drop(state);
         let kinds: Vec<String> = service.accounts_within(Reach::Suite).await.into_iter().map(|a| a.kind).collect();
         assert_eq!(kinds, ["nextcloud", "caldav"]);
+    }
+
+    /// A Nextcloud with Talk and Deck: [`healthy_server`] that also answers the capabilities.
+    fn server_with_talk(seen: &Seen) -> Reply {
+        const CAPABILITIES: &str = r#"{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":{"version":{"major":31},"capabilities":{"spreed":{"features":["chat-v2"]},"deck":{"version":"1.14.0"}}}}}"#;
+        match (seen.method.as_str(), seen.path.as_str()) {
+            ("GET", "/ocs/v2.php/cloud/capabilities") => (200, None, CAPABILITIES),
+            _ => healthy_server(seen),
+        }
+    }
+
+    /// Task W.1: after a sync a Nextcloud tells what its server offers, from its collections and
+    /// its capabilities, which are read once and not again within the hour.
+    #[tokio::test]
+    async fn a_synced_nextcloud_tells_its_services_and_reads_the_capabilities_once() {
+        let (base, record) = fake_server(server_with_talk).await;
+        let service = service_on(&base).await;
+        let services = |infos: Vec<AccountInfo>| infos.into_iter().next().and_then(|info| info.services);
+        assert_eq!(services(service.accounts_within(Reach::Suite).await), None, "not known before the first sync");
+
+        service.sync().await.expect("synced");
+        service.sync().await.expect("synced again");
+        let expected = vec![ServerService::Calendars, ServerService::Tasks, ServerService::Talk, ServerService::Deck];
+        assert_eq!(services(service.accounts_within(Reach::Suite).await), Some(expected));
+        let asked = lines(&record).iter().filter(|line| line.contains("/ocs/v2.php/cloud/capabilities")).count();
+        assert_eq!(asked, 1, "the capabilities count for an hour");
+    }
+
+    /// Task W.1: a client learns of calendars and task lists only through the ones it sees; the
+    /// apps of the server it learns as they are.
+    #[tokio::test]
+    async fn a_client_sees_calendars_and_tasks_among_the_services_only_with_a_collection() {
+        let (base, _record) = fake_server(server_with_talk).await;
+        let service = service_on(&base).await;
+        service.sync().await.expect("synced");
+        let all = torro_ipc::api::RightsTemplate::ReadOnly.rights();
+        let mut nothing = all.clone();
+        nothing.calendars = Selection::Only(vec![]);
+        nothing.task_lists = Selection::Only(vec![]);
+        let info = service.accounts_within(Reach::Client(&nothing)).await.remove(0);
+        assert_eq!(info.services, Some(vec![ServerService::Talk, ServerService::Deck]));
+        let info = service.accounts_within(Reach::Client(&all)).await.remove(0);
+        assert_eq!(
+            info.services,
+            Some(vec![ServerService::Calendars, ServerService::Tasks, ServerService::Talk, ServerService::Deck])
+        );
+    }
+
+    /// Task W.1: a server without the capabilities endpoint still tells its calendars, and a CalDAV
+    /// account is never asked for Nextcloud's capabilities.
+    #[tokio::test]
+    async fn without_capabilities_the_collections_still_tell_calendars_and_tasks() {
+        let (base, record) = fake_server(healthy_server).await;
+        let service = service_on(&base).await;
+        service.sync().await.expect("synced");
+        let info = service.accounts_within(Reach::Suite).await.remove(0);
+        assert_eq!(info.services, Some(vec![ServerService::Calendars, ServerService::Tasks]));
+        assert!(lines(&record).iter().any(|line| line.contains("/ocs/")), "a Nextcloud is asked");
+
+        let (other, other_record) = fake_server(server_with_talk).await;
+        let mailbox = Connected {
+            account: torro_core::Account::caldav(&other, "anna@example.org", "example.org"),
+            app_password: Secret::new(PASSWORD),
+        };
+        let http = reqwest::Client::builder().no_proxy().build().expect("http client");
+        let client = account::caldav(&http, &mailbox).expect("client");
+        let caldav = Arc::new(PimService::with_settings(SettingsStore::without_file()));
+        caldav.state.write().await.accounts.push(Slot::new(mailbox, Some(client)));
+        caldav.sync().await.expect("synced");
+        assert!(!lines(&other_record).iter().any(|line| line.contains("/ocs/")), "CalDAV is no Nextcloud");
     }
 
     #[tokio::test]

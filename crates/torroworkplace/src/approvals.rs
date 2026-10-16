@@ -304,6 +304,9 @@ pub struct Facts {
     /// account's label (its server) is [`Facts::name`]. The summary never names the topic itself:
     /// on a public server its name is a password.
     pub topic: Option<String>,
+    /// For `settings.set_setting reminders` (task ER1.3): the display names of the calendars the
+    /// value names, by id, as the core caches them. A calendar it does not know keeps its id.
+    pub calendars: BTreeMap<String, String>,
 }
 
 /// What the core holds about the messages, drafts and folders a `mail.*` command names, for the
@@ -1154,6 +1157,40 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
             ],
         ),
         Request::Sync => tr("Sync all accounts").to_string(),
+        Request::SnoozeReminder { until, .. } => match &facts.item {
+            Some(item) => {
+                let how = match until {
+                    torro_ipc::Snooze::Minutes(minutes) => trf("for {n} min", &[("n", &minutes)]),
+                    torro_ipc::Snooze::UntilStart => tr("until it starts").to_string(),
+                };
+                trf(
+                    "Snooze the reminder of \"{title}\" on {when} {how}",
+                    &[("title", &quote(&item.title)), ("when", &reminder_when(item, today)), ("how", &how)],
+                )
+            }
+            None => tr("Snooze an unknown reminder").to_string(),
+        },
+        Request::DismissReminder { .. } => match &facts.item {
+            Some(item) => trf(
+                "Dismiss the reminder of \"{title}\" on {when}",
+                &[("title", &quote(&item.title)), ("when", &reminder_when(item, today))],
+            ),
+            None => tr("Dismiss an unknown reminder").to_string(),
+        },
+        Request::PauseReminders { until: Some(until) } => {
+            trf("Pause all reminders until {when}", &[("when", &when(&EventTime::DateTime(*until), today))])
+        }
+        Request::PauseReminders { until: None } => tr("Resume reminders").to_string(),
+        Request::PreviewReminder { .. } => match &facts.item {
+            Some(item) => trf(
+                "Show the reminder of \"{title}\" on {when} now, as a preview",
+                &[("title", &quote(&item.title)), ("when", &reminder_when(item, today))],
+            ),
+            None => tr("Show the reminder of an unknown event").to_string(),
+        },
+        Request::SetSetting { key: torro_ipc::SettingKey::Reminders, value } => {
+            trf("Change how reminders come: {changes}", &[("changes", &reminders_changed(value, facts))])
+        }
         Request::SetSetting { key, value } => trf(
             "Change the setting {key} to {value}",
             &[("key", &quote(&format!("{key:?}"))), ("value", &quote(&value.to_string()))],
@@ -1278,6 +1315,36 @@ pub fn summary(request: &Request, facts: &Facts) -> String {
         // which command it is.
         other => trf("Run {command}", &[("command", &other.operation().name())]),
     }
+}
+
+/// When the event of a reminder starts, for its summary; empty when unknown.
+fn reminder_when(item: &Known, today: chrono::NaiveDate) -> String {
+    item.start.map(|start| when(&start, today)).unwrap_or_default()
+}
+
+/// The fields a `set_setting reminders` value changes, in words: `"Work" full screen, all-day
+/// events on`. Calendars by the names the core caches ([`Facts::calendars`]); every text through
+/// [`quote`].
+fn reminders_changed(value: &serde_json::Value, facts: &Facts) -> String {
+    let Some(fields) = value.as_object() else { return quote(&value.to_string()) };
+    let mut parts = Vec::new();
+    for (field, value) in fields {
+        match (field.as_str(), value) {
+            ("calendars", serde_json::Value::Object(calendars)) => {
+                for (id, shown) in calendars {
+                    let name = facts.calendars.get(id).map_or(id.as_str(), String::as_str);
+                    let shown = match shown.as_str() {
+                        Some("off") => tr("off"),
+                        Some("full_screen") => tr("full screen"),
+                        _ => tr("notification"),
+                    };
+                    parts.push(format!("\"{}\" {shown}", quote(name)));
+                }
+            }
+            (field, value) => parts.push(format!("{field} {}", quote(&value.to_string()))),
+        }
+    }
+    parts.join(", ")
 }
 
 /// What answering an invitation would do, in words (task E8.3b): `Accept the invitation "Planning"
@@ -2799,6 +2866,7 @@ pub(crate) mod tests {
             description: None,
             recurring: false,
             transparency: torro_pim::Transparency::Opaque,
+            alarms: Vec::new(),
         }
     }
 
@@ -2831,6 +2899,29 @@ pub(crate) mod tests {
 
     fn facts(item: Option<Known>, name: &str) -> Facts {
         Facts { item, name: Some(name.into()), ..Facts::default() }
+    }
+
+    #[test]
+    fn reminder_summaries_name_the_event_as_cached() {
+        let today = Local::now().date_naive();
+        let held = facts(cached("Board meeting", Some(day(14))), "Work");
+        let snooze = Request::SnoozeReminder { id: "r".into(), until: torro_ipc::Snooze::Minutes(10) };
+        let text = summary(&snooze, &held);
+        assert!(text.contains("Board meeting") && text.contains(&when(&day(14), today)), "{text}");
+        assert_eq!(summary(&snooze, &Facts::default()), tr("Snooze an unknown reminder"));
+        let dismiss = summary(&Request::DismissReminder { id: "r".into() }, &held);
+        assert!(dismiss.contains("Board meeting"), "{dismiss}");
+        let preview = summary(&Request::PreviewReminder { href: "/cal/x.ics".into() }, &Facts::default());
+        assert_eq!(preview, tr("Show the reminder of an unknown event"));
+        assert_eq!(summary(&Request::PauseReminders { until: None }, &Facts::default()), tr("Resume reminders"));
+        let set = Request::SetSetting {
+            key: torro_ipc::SettingKey::Reminders,
+            value: serde_json::json!({"calendars": {"a/work": "full_screen", "a/x": "off"}, "allDay": true}),
+        };
+        let named =
+            Facts { calendars: BTreeMap::from([("a/work".to_string(), "Work".to_string())]), ..Facts::default() };
+        let text = summary(&set, &named);
+        assert!(text.contains("\"Work\"") && text.contains("a/x") && text.contains("allDay"), "{text}");
     }
 
     #[test]

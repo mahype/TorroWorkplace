@@ -121,6 +121,12 @@ async fn follow(sources: &Sources, id: &str) {
     let mut accounts = sources.ntfy.changes();
     let mut inbox = sources.inbox.changes();
     loop {
+        // While the inbox is off (task W.2) no session starts; one that runs ends at its next
+        // renewal or retry and waits here.
+        if !sources.inbox_on() {
+            tokio::time::sleep(super::RECHECK).await;
+            continue;
+        }
         // Read after marking, so a change while the session starts is not missed.
         accounts.mark_unchanged();
         let Some(access) = sources.ntfy.access(id).await else { break };
@@ -612,7 +618,8 @@ mod tests {
         Sources {
             inbox: Arc::new(crate::inbox::tests::inbox_in(dir)),
             github: Arc::new(github),
-            pim: Arc::new(PimService::with_settings(settings)),
+            pim: Arc::new(PimService::with_settings(settings.clone())),
+            settings,
             ntfy: Arc::new(ntfy_service(dir, &MemoryTokens::default())),
         }
     }

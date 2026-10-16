@@ -5,6 +5,7 @@ Window-manager glue, one folder per target (filled in during the MVP):
 - `hyprland/`: window rules on `class:^torro-<app>$` and `.desktop` launchers
 - `aerospace/`: `[[on-window-detected]]` rules for `~/.aerospace.toml`
 - `omarchy/`: bar widgets on top of `<app> status --json` (pattern: omarchy-torromail)
+- `glazewm/`: a rule that keeps GlazeWM from tiling the reminder over the whole screen (task ER2.2)
 
 App ids live in `crates/torro-core/src/app.rs`.
 
@@ -53,3 +54,11 @@ apps (`^torro-.*$`) fully opaque. Install it with
 `cp integrations/hyprland/windowrules.lua ~/.config/hypr/torro-windowrules.lua`, then add
 `require("hypr.torro-windowrules")` to `~/.config/hypr/hyprland.lua` after `require("hypr.autostart")`.
 The rule applies to windows opened afterwards; restart the Torro apps once.
+
+## Reminders over the whole screen
+
+A reminder in the style "full screen" opens `torrocalendar --reminders` (window class `torro-reminder`,
+`docs/erinnerungen.md`). On **Hyprland** the core registers a rule per monitor before the window opens, so
+nothing needs configuring. On **GlazeWM** add the rule in `glazewm/torro-reminder.yaml` to your config. On
+**macOS** install "Torro Reminder.app" next to "Torro Workplace.app" (the release builds it): as an agent app
+it shows over apps in full screen; without it the window covers only the desktop.

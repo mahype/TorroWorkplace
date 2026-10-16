@@ -18,9 +18,10 @@
 //!
 //! Both start their text at the same x: the notice's tile stands centred in the avatar's width.
 //!
-//! Every row carries its **action bar** (`widgets::row_actions`): Task (`t`), Done (`e`), Later
-//! (`s`) and Hide (`m`), shown while the pointer is over the row and always on the row under the
-//! keyboard cursor – only what works for the entry, as in the panel ([`actions`]). A button sends
+//! The row under the cursor carries its **action bar** in a strip below its lines
+//! (`widgets::row_actions_strip`, [`with_strip`]): Task (`t`), Done (`e`), Later (`s`) and Hide
+//! (`m`) – only what works for the entry, as in the panel ([`actions`]). Nothing floats over a row;
+//! the selected row grows by the strip ([`strip_height`]). A button sends
 //! [`Message::Act`]: the app puts its cursor on the row and does what the key does, so the menus
 //! open at the row.
 //!
@@ -117,7 +118,7 @@ pub struct Rows<'a> {
 /// How a list draws mail (task E8.3): one row per mail, or a card per mail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Look {
-    /// Rows, the action bar under the pointer or the cursor (the compact density, and the hub until
+    /// Rows, the action bar in a strip below the row under the cursor (the compact density, and the hub until
     /// E8.5 brings its own cards; the notifications window draws its board, `notifications.rs`).
     #[default]
     Rows,
@@ -252,8 +253,9 @@ pub fn height_of(item: &Item, look: Look, width: f32) -> f32 {
     }
 }
 
-/// Where row `index` of `items` lies in the list's content as `(top, bottom)`, every row as high
-/// as [`row_height_of`] says; the first row of a group starts at its head, so scrolling up to it
+/// Where row `index` of `items` lies in the list's content as `(top, bottom)` while the cursor is
+/// on it – the rows above as high as [`row_height_of`] says, row `index` with the strip of its
+/// actions below ([`strip_height`]); the first row of a group starts at its head, so scrolling up to it
 /// shows the head too. `None` past the end.
 ///
 /// With cards (`look`, task E8.3) the list has no heads: the cards, `width` wide (task E8.11: their
@@ -272,7 +274,8 @@ pub fn row_span(items: &[Item], index: usize, look: Look, width: f32) -> Option<
     let heads = groups.iter().filter(|(_, range)| range.start <= index).count() as f32;
     let top = above + heads * head;
     let first = groups.iter().any(|(_, range)| range.start == index);
-    Some((if first { top - head } else { top }, top + row_height_of(item)))
+    // Row `index` is the cursor's: it carries the strip with its actions ([`entry_row`]).
+    Some((if first { top - head } else { top }, top + row_height_of(item) + strip_height()))
 }
 
 /// The list, scrolling; the empty state of the view when there are no entries.
@@ -319,7 +322,7 @@ pub(crate) fn without_top<'a>(head: Element<'a, Message>) -> Element<'a, Message
 }
 
 /// The row of `item`, `width` wide: a mail row or a notice row ([`row_height_of`]), highlighted
-/// while it is under the cursor, with its action bar ([`actions`]). A click opens it in the panel.
+/// while it is under the cursor, with its action bar ([`actions`]) in a strip below it then. A click opens it in the panel.
 pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a, Message> {
     let selected = rows.selected == Some(item.id.as_str());
     let content = if item.source.kind == SourceKind::Mail {
@@ -329,14 +332,42 @@ pub fn entry_row<'a>(item: &'a Item, rows: &Rows<'a>, width: f32) -> Element<'a,
     } else {
         notice_content(item, rows, width)
     };
-    let height = row_height_of(item);
+    let mut height = row_height_of(item);
+    let actions = if selected {
+        entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.ai, rows.folders, rows.now)
+    } else {
+        Vec::new()
+    };
+    if !actions.is_empty() {
+        height += strip_height();
+    }
+    let content = with_strip(content, rows.anchors.mark(true, actions), width);
     let row = sized_row(content, selected, Message::Select(item.id.clone()), height);
-    let actions = entry_actions(item, rows.hidable.contains(&item.id.as_str()), rows.ai, rows.folders, rows.now);
-    let actions = rows.anchors.mark(selected, actions);
-    let words = widgets::row_actions_words(&actions, width);
-    // On the first line, over the time: the preview and the account below stay readable.
-    let row = widgets::row_actions_at(row, actions, selected, words, first_line_middle(height, line_count(item)));
     if selected { widgets::anchored(&rows.anchors.row, row) } else { row }
+}
+
+/// The height the strip with the action bar adds to the selected row ([`entry_row`], a folder's
+/// message row).
+pub fn strip_height() -> f32 {
+    widgets::row_actions_strip_height()
+}
+
+/// The `content` of a row `width` wide with the strip of `actions` below it
+/// (`widgets::row_actions_strip`): the action bar hangs below the lines of the selected row, in a
+/// strip of its own, so it covers nothing of the row; the strip starts where the text does. The
+/// row is [`strip_height`] higher then. Without actions the content as it is.
+pub(crate) fn with_strip<'a>(
+    content: Element<'a, Message>,
+    actions: Vec<RowAction<'a, Message>>,
+    width: f32,
+) -> Element<'a, Message> {
+    if actions.is_empty() {
+        return content;
+    }
+    let words = widgets::row_actions_strip_words(&actions, words_room(width));
+    let strip = container(widgets::row_actions_strip(actions, words))
+        .padding(Padding::new(0.0).left(mark_width() + space::m()));
+    column![content, strip].spacing(space::s()).into()
 }
 
 /// What the action bar of `item` offers, in its order (task E3.9), as the panel does:
@@ -1506,22 +1537,28 @@ mod tests {
         let waiting = items.iter().filter(|item| is_waiting(item)).count();
         let head = group_head() - head_trim();
         let (notice, message) = (size::row_notice(), size::row_message());
+        // The row asked for is the cursor's: its strip with the actions hangs below it.
+        let strip = strip_height();
         assert_eq!(row_height_of(&items[0]), notice);
         assert_eq!(row_height_of(&items[items.len() - 1]), message, "mail has three lines");
-        assert_eq!(row_span(&items, 0, Look::Rows, 480.0), Some((0.0, head + notice)), "the first row shows its head");
-        assert_eq!(row_span(&items, 1, Look::Rows, 480.0), Some((head + notice, head + 2.0 * notice)));
+        assert_eq!(
+            row_span(&items, 0, Look::Rows, 480.0),
+            Some((0.0, head + notice + strip)),
+            "the first row shows its head"
+        );
+        assert_eq!(row_span(&items, 1, Look::Rows, 480.0), Some((head + notice, head + 2.0 * notice + strip)));
         let other = head + waiting as f32 * notice;
         assert_eq!(
             row_span(&items, waiting, Look::Rows, 480.0),
-            Some((other, other + head + notice)),
+            Some((other, other + head + notice + strip)),
             "no double line"
         );
         let last = items.len() - 1;
         let top = 2.0 * head + last as f32 * notice;
-        assert_eq!(row_span(&items, last, Look::Rows, 480.0), Some((top, top + message)));
+        assert_eq!(row_span(&items, last, Look::Rows, 480.0), Some((top, top + message + strip)));
         assert_eq!(row_span(&items, items.len(), Look::Rows, 480.0), None);
         let calm = &items[waiting..];
-        assert_eq!(row_span(calm, 1, Look::Rows, 480.0), Some((notice, 2.0 * notice)), "no heads: plain rows");
+        assert_eq!(row_span(calm, 1, Look::Rows, 480.0), Some((notice, 2.0 * notice + strip)), "no heads: plain rows");
         assert_eq!(message_height(), message, "a folder's rows are the mail rows (task E3.11)");
     }
 

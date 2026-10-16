@@ -147,6 +147,7 @@ aus einem Guss wirkt:
 | `size::control_sm()` | 28 | Knöpfe, Icon-Knöpfe, Segmente, Menü-Knöpfe in der Kopfleiste |
 | `size::control()` | 32 | Eingaben, Eigenschaftszeilen |
 | `size::control_lg()` | 36 | Schnelleingabe, Primärknopf im Dialog |
+| `size::control_xl()` | 44 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; nirgends sonst |
 | `size::row()` | 40 | Listenzeile (Aufgaben) |
 | `size::row_message()` | 88 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau (E3.9) |
 | `size::row_notice()` | 64 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
@@ -196,6 +197,8 @@ aus einem Guss wirkt:
 | `typo::title()` | 16 / 22 | 600 | Karten- und Dialogtitel |
 | `typo::headline()` | 22 / 28 | 600 | Detailtitel („Review API concept“), Ansichtstitel ohne Kopfleiste |
 | `typo::display()` | 28 / 32 | 600 | Kopfzahl in Mini (Uhrzeit, Zahl offener Aufgaben) |
+| `typo::countdown()` | 28 / 32 | 500 | Countdown und Uhr einer Erinnerung im Vollbild (ER1.5), Ziffernschrift; nirgends sonst |
+| `typo::hero()` | 48 / 56 | 600 | Titel einer Erinnerung im Vollbild (ER1.5), höchstens zwei Zeilen; nirgends sonst |
 
 - Gewichte nur 400/500/600; kein Bold, keine Kursive. Hierarchie über Stufe *und* Farbe
   (`TEXT` → `TEXT_2` → `TEXT_3`).
@@ -268,6 +271,21 @@ aus einem Guss wirkt:
   `SELECTED` mit Rand `LINE_STRONG`, Zeichen in `TEXT`; mit Farbe des Nutzers nur getönt (`Palette::tinted` über
   `PANEL`, ohne Rand), nie die volle Farbe als Fläche. Alle Bausteine der Dichten anschauen:
   `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design plex` mit `TORRO_DATA_HOME`).
+- **Standard oben, Torro-Leiste unten** (E9.4, Leser des Mail-Fensters): Was jedes Programm dieser Art kann
+  (Reply, Reply all, Forward | Archive, Delete; Flag, gelesen, Close als Icons), steht **fest oben** über dem
+  Scrollbereich, mit Linie darunter; was Torro dazugibt (Erledigen · KI · Ansicht), **schwebt unten** als eigene
+  Fläche über dem Inhalt. Knöpfe beider Leisten eine Stufe höher als in Kopfleisten: `widgets::bar_button`
+  (`size::control()` 32, mit Wort oder quadratisch mit Tooltip), Schalter `widgets::bar_segmented`; mit Wort
+  `secondary`, die Hauptaktion `primary`, ruhige Icons am Ende `style::button::icon`. Schwebende Leiste:
+  `widgets::floating_bar` (Fläche `MENU`, Rand `LINE_STRONG`, Schatten, `radius::lg()`, Innenrand und Abstand
+  `widgets::floating_bar_gap()` 4), mit `widgets::over_bar` unten mittig `space::m()` vom Rand; die Seite darunter
+  bekommt unten `widgets::floating_bar_clearance(reihen)` als Polster, damit ihr Ende frei hervorscrollt. Gruppen
+  mit senkrechtem Trennstrich; breit eine Reihe mit Wörtern, mittel zwei Reihen mit Wörtern, schmal Icons in so
+  vielen Reihen wie nötig (nichts abgeschnitten, nichts im Menü versteckt). Menüs der Leiste öffnen über ihr
+  (`Placement::Below` klappt um, wenn unten kein Platz ist). KI-Knöpfe tragen `Icon::Sparkles` in der
+  Akzentfarbe (`widgets::bar_button_accent`) – Ausnahme von „Rot nur Primärknopf“, damit die KI als eigene
+  Funktion erkennbar ist; nur das Icon, nie das Wort oder die Fläche. Im Paneel dieselbe Teilung, aber ohne
+  schwebende Fläche: Standards oben im Inhalt, Torro-Funktionen im festen Fuß (`Panel::footer`).
 - **Hinweis mit „Undo“** (E3.11, `widgets::toast`): nach einer Änderung, die sich zurücknehmen lässt
   (Done, Later, Hide …), unten mittig `space::xl()` über dem Fensterrand; Fläche `MENU`, Rand
   `LINE_STRONG`, Radius `radius::md()`, Schatten (`style::container::menu`), Text `typo::body()` in

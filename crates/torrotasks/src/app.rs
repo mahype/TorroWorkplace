@@ -1004,8 +1004,9 @@ impl App {
             }
             Message::AccountLoaded(Err(err)) => self.error = Some(load_failed(&err)),
             Message::Connect(message) => match self.connect.update(message) {
-                // The account is set up in the control centre; the polling in `Tick` picks it up.
-                connect::Action::OpenSettings => connect::open_settings(),
+                // The account is set up in the control centre – in the first-run setup at this app's
+                // step while that is not done (task W.9); the polling in `Tick` picks it up.
+                connect::Action::OpenSettings => connect::open_setup_or_settings("tasks"),
             },
             Message::Loaded(result) => match result {
                 Ok((collections, mut todos)) => {

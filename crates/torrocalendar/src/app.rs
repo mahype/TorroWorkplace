@@ -455,6 +455,8 @@ pub enum Message {
     ComingPage(i64),
     /// "Settings" in the band or the sidebar: open the control centre.
     OpenSettings,
+    /// The core answered `calendar.preview_reminder` (task ER2.3).
+    Previewed(Result<(), String>),
     /// The core answered `Request::OpenApp`.
     AppOpened(Result<(), String>),
     /// The window has this size (at start and after every resize).
@@ -735,8 +737,9 @@ impl App {
                 self.error = Some(load_failed(&err));
             }
             Message::Connect(message) => match self.connect.update(message) {
-                // The account is set up in the control centre; the polling in `Tick` picks it up.
-                connect::Action::OpenSettings => connect::open_settings(),
+                // The account is set up in the control centre – in the first-run setup at this app's
+                // step while that is not done (task W.9); the polling in `Tick` picks it up.
+                connect::Action::OpenSettings => connect::open_setup_or_settings("calendar"),
             },
             Message::Loaded(result) => {
                 self.loading = false;
@@ -912,6 +915,8 @@ impl App {
             // Like the other apps: a browser that cannot be started is only logged.
             Message::LinkOpened(Ok(())) => {}
             Message::LinkOpened(Err(err)) => eprintln!("torrocalendar: cannot open the link in a browser: {err}"),
+            Message::Previewed(Ok(())) => {}
+            Message::Previewed(Err(err)) => eprintln!("torrocalendar: cannot preview the reminder: {err}"),
             Message::Tick => {
                 self.now = self.launch.now.unwrap_or_else(|| Local::now().naive_local());
                 let appearance =
@@ -1400,6 +1405,22 @@ impl App {
             }
             editor::Action::OpenLink(_) => Task::none(),
             editor::Action::Copy(text) => iced::clipboard::write(text),
+            // Task ER2.3: the core shows the event's reminder now; the demo has no core.
+            editor::Action::Preview(href) => {
+                let Source::Core(client) = &self.source else { return Task::none() };
+                let socket = client.socket.clone();
+                Task::perform(
+                    async move {
+                        let request = torro_ipc::Request::PreviewReminder { href };
+                        match torro_ipc::client::call(&socket, &request).await {
+                            Ok(torro_ipc::Response::Error { message, .. }) => Err(message),
+                            Ok(_) => Ok(()),
+                            Err(err) => Err(err.to_string()),
+                        }
+                    },
+                    Message::Previewed,
+                )
+            }
             editor::Action::Delete(event) => {
                 self.editor = None;
                 let source = self.source.clone();

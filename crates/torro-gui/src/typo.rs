@@ -102,6 +102,17 @@ pub fn display() -> Level {
     level(|t| t.display)
 }
 
+/// 48/56, SemiBold: the title of a reminder over the whole screen (task ER1.5), two lines at most;
+/// nowhere else (the design's heading font).
+pub fn hero() -> Level {
+    level(|t| t.hero)
+}
+/// 28/32, Medium, tabular: the countdown of a reminder over the whole screen ("Starts in 4:32"),
+/// and the clock beside it (the design's numbers font).
+pub fn countdown() -> Level {
+    level(|t| t.countdown)
+}
+
 /// The eight levels of the Linear scale, smallest first: everything but [`read`], which came with
 /// the inbox's reader (task E8.2). Kept at eight because the test "same picture" of design packs
 /// (`crate::design`) holds them to the constants from before the packs; the tests here check
@@ -199,7 +210,12 @@ mod tests {
             (display(), 28.0, 32.0, theme::font_semibold()),
         ];
         assert_eq!(expected.len(), all().len());
-        for (level, size, height, font) in expected.into_iter().chain([(read(), 14.0, 22.0, theme::font())]) {
+        let later = [
+            (read(), 14.0, 22.0, theme::font()),
+            (hero(), 48.0, 56.0, theme::font_semibold()),
+            (countdown(), 28.0, 32.0, theme::font_tabular_medium()),
+        ];
+        for (level, size, height, font) in expected.into_iter().chain(later) {
             assert_eq!(level.size.0, size);
             assert_eq!(line(level), height, "line height of {size}px level");
             assert_eq!(level.font, font, "font of {size}px level");

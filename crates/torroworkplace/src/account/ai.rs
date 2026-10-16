@@ -4,7 +4,10 @@
 //! (`ai.find_local_servers`), removing it (`accounts.remove_account`).
 //!
 //! The protocol's wire format is `torro_core::ai::openai`; here it is sent ([`OpenAiCompatible`],
-//! the one implementation of [`Provider`]). The accounts are kept like the GitHub accounts
+//! the one implementation of [`Provider`]). Where a model runs (task S.23): Ollama's cloud models
+//! run on `ollama.com` through the local Ollama, so its model list says so per model
+//! ([`AiModel::remote`]), and the core keeps the last list per account ([`AiAccounts::known_models`])
+//! so the data rule need not ask the server at every message. The accounts are kept like the GitHub accounts
 //! ([`super::github`]): the list in `accounts.json` (kind `ai`, the server's base address in
 //! `server`, the kind of server in `Account::ai`), the API key in the system keychain under the
 //! account id, loaded once in the background ([`AiAccounts::start`]).
@@ -14,6 +17,7 @@
 //! client follows no redirect (a redirect could carry it elsewhere), and every error passes
 //! through [`openai::scrub`], so no answer, message or log line repeats it.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -23,7 +27,7 @@ use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
 use torro_core::ai::{self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, Provider, openai};
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiServer};
 use torro_pim::AccountState;
 
@@ -45,8 +49,10 @@ const READ_TIMEOUT: Duration = Duration::from_secs(300);
 /// How long [`AiAccounts::find_local`] waits for each local server: one that runs answers at once.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// How long Ollama may take to describe one model (`/api/show`, read from disk); a model it does not
-/// describe in time stays without a word on tools, so one stuck model never holds up the list.
+/// How long Ollama may take to describe one model (`/api/show`, read from disk) or to list where its
+/// models run (`/api/tags`); a model it does not describe in time stays without a word on tools, so
+/// one stuck model never holds up the list, and without the tags in time every model counts as
+/// elsewhere.
 const SHOW_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The HTTP client for AI servers: no redirects (the key must not follow one to another host), no
@@ -111,6 +117,20 @@ impl OpenAiCompatible {
             Some(body) => (openai::ollama_tools(&body), openai::ollama_thinking(&body)),
             None => (None, None),
         }
+    }
+
+    /// Which of Ollama's models run elsewhere (`GET <root>/api/tags`, task S.23,
+    /// [`openai::ollama_remote`]): one request for all models. `None` when it does not answer
+    /// within [`SHOW_TIMEOUT`] or not with a model list; then every model counts as elsewhere.
+    async fn ollama_tags(&self) -> Option<HashMap<String, bool>> {
+        let url = format!("{}/api/tags", openai::ollama_root(&self.base));
+        let builder = self.authorized(self.http.get(url));
+        let asked = async {
+            let response = self.send(builder).await.ok()?;
+            response.bytes().await.ok()
+        };
+        let body = tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten()?;
+        openai::ollama_remote(&body)
     }
 
     /// A request to `<base>/<path>` with the key, if there is one.
@@ -179,13 +199,17 @@ impl OpenAiCompatible {
 
 impl Provider for OpenAiCompatible {
     /// `GET <base>/models`; for Ollama each model's capabilities from `/api/show` besides, one after
-    /// the other (a local server, a handful of models).
+    /// the other (a local server, a handful of models), and where each runs from `/api/tags`
+    /// ([`openai::ollama_runs_elsewhere`]: a cloud model, or every model when the tags do not
+    /// answer, is [`AiModel::remote`]).
     fn models(&self) -> BoxFuture<'_, Result<Vec<AiModel>, AiError>> {
         Box::pin(async move {
             let mut models = self.list().await?;
             if self.provider == AiProvider::Ollama {
+                let tags = self.ollama_tags().await;
                 for model in &mut models {
                     (model.tools, model.reasoning) = self.ollama_capabilities(&model.id).await;
+                    model.remote = Some(openai::ollama_runs_elsewhere(&model.id, tags.as_ref()));
                 }
             }
             Ok(models)
@@ -231,6 +255,9 @@ struct Slot {
     /// When the server last answered for this account (connecting, listing models).
     checked: Option<DateTime<Utc>>,
     problem: Option<String>,
+    /// All its models as the server last listed them ([`AiAccounts::models`]); `None` until it did.
+    /// What the data rule reads where a model runs ([`AiAccounts::known_models`]).
+    models: Option<Vec<AiModel>>,
 }
 
 impl Slot {
@@ -253,6 +280,7 @@ impl Slot {
             scopes: None,
             mail: None,
             ntfy: None,
+            services: None,
         }
     }
 }
@@ -352,7 +380,7 @@ impl AiAccounts {
             };
             // An account connected while loading is newer than the stored one.
             if !held.iter().any(|slot| slot.account.id == account.id) {
-                held.push(Slot { account, key, checked: None, problem });
+                held.push(Slot { account, key, checked: None, problem, models: None });
             }
         }
         Ok(())
@@ -415,7 +443,9 @@ impl AiAccounts {
         };
         let key = Some(Secret::new(key.expose().trim())).filter(|key| !key.is_blank());
         if key.is_none() && provider.needs_key() {
-            return Err(AiError::Invalid(tr("OpenRouter needs an API key. Create one on openrouter.ai.").into()));
+            let needs =
+                trf("{provider} needs an API key. Create one on its website.", &[("provider", &provider.name())]);
+            return Err(AiError::Invalid(needs));
         }
         if key.is_some() && !ai::key_may_travel(&base) {
             return Err(AiError::Invalid(
@@ -426,7 +456,7 @@ impl AiAccounts {
         client.check().await?;
         let account = Account::ai(provider, &base);
         self.store(&account, key.as_ref()).await.map_err(AiError::Format)?;
-        let slot = Slot { account, key, checked: Some(Utc::now()), problem: None };
+        let slot = Slot { account, key, checked: Some(Utc::now()), problem: None, models: None };
         let info = slot.info();
         let mut slots = self.slots.write().await;
         match slots.iter_mut().find(|held| held.account.id == slot.account.id) {
@@ -455,14 +485,16 @@ impl AiAccounts {
     /// The models of the account `id`, asked from its server now ([`Provider::models`]); without
     /// `all` only those not known to have closed weights ([`ai::open_weights_only`]). Reading
     /// changes no data, only how the account is shown: an answer renews when it last answered, a
-    /// refused key becomes its problem until it answers again.
+    /// refused key becomes its problem until it answers again. The whole list is kept for
+    /// [`AiAccounts::known_models`].
     pub async fn models(&self, id: &str, all: bool) -> Result<Vec<AiModel>, AiError> {
         let result = self.provider(id).await?.models().await;
         if let Some(slot) = self.slots.write().await.iter_mut().find(|slot| slot.account.id == id) {
             match &result {
-                Ok(_) => {
+                Ok(models) => {
                     slot.checked = Some(Utc::now());
                     slot.problem = None;
+                    slot.models = Some(models.clone());
                 }
                 Err(AiError::Auth) => {
                     slot.problem = Some(tr("Connect again: the server does not accept the API key").into());
@@ -472,6 +504,20 @@ impl AiAccounts {
         }
         let models = result?;
         Ok(if all { models } else { ai::open_weights_only(models) })
+    }
+
+    /// All models of the account `id` as its server last listed them ([`AiAccounts::models`]), asked
+    /// now when it never did or when the list lacks `model`: what the data rule needs to know where
+    /// a model runs ([`AiModel::remote`], task S.23) without asking the server at every message. It
+    /// lives as long as the capabilities of the same list: until the account is listed again (the
+    /// apps do with `ai.list_models`) or connected anew. Errors as [`AiAccounts::models`].
+    pub async fn known_models(&self, id: &str, model: Option<&str>) -> Result<Vec<AiModel>, AiError> {
+        let kept =
+            self.slots.read().await.iter().find(|slot| slot.account.id == id).and_then(|slot| slot.models.clone());
+        match kept {
+            Some(models) if model.is_none_or(|model| models.iter().any(|known| known.id == model)) => Ok(models),
+            _ => self.models(id, true).await,
+        }
     }
 
     /// The local servers that answer now ([`LOCAL_SERVERS`]), asked side by side, each for at most
@@ -582,6 +628,51 @@ pub(crate) mod tests {
                 then.status(500).json_body(json!({"error": "cannot read the model"}));
             })
             .await;
+        // Every model runs on this computer (task S.23).
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/api/tags");
+                then.status(200).json_body(json!({"models": [
+                    {"name": "qwen3:8b", "model": "qwen3:8b"},
+                    {"name": "gemma3:4b", "model": "gemma3:4b"},
+                    {"name": "broken:1b", "model": "broken:1b"},
+                ]}));
+            })
+            .await;
+        server
+    }
+
+    /// An Ollama with a cloud model first and a local one (task S.23), both calling tools; with
+    /// `tags` it says in `/api/tags` which runs elsewhere, without it does not answer there.
+    pub(crate) async fn fake_ollama_with_cloud(tags: bool) -> MockServer {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(200).json_body(json!({"object": "list", "data": [
+                    {"id": "glm-5.3:cloud", "object": "model", "owned_by": "library"},
+                    {"id": "qwen3:8b", "object": "model", "owned_by": "library"},
+                ]}));
+            })
+            .await;
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/api/show");
+                then.status(200).json_body(json!({"capabilities": ["completion", "tools"]}));
+            })
+            .await;
+        if tags {
+            server
+                .mock_async(|when, then| {
+                    when.method("GET").path("/api/tags");
+                    then.status(200).json_body(json!({"models": [
+                        {"name": "glm-5.3:cloud", "model": "glm-5.3:cloud", "remote_model": "glm-5.3",
+                         "remote_host": "https://ollama.com:443", "size": 384},
+                        {"name": "qwen3:8b", "model": "qwen3:8b", "size": 5_225_388_164_u64},
+                    ]}));
+                })
+                .await;
+        }
         server
     }
 
@@ -645,8 +736,38 @@ pub(crate) mod tests {
         );
         let reasoning: Vec<Option<bool>> = models.iter().map(|model| model.reasoning).collect();
         assert_eq!(reasoning, [Some(true), Some(false), None], "issue #131: from the same answer");
+        assert!(models.iter().all(|model| model.remote == Some(false)), "task S.23: all on this computer");
         let listed: Vec<String> = ai.infos().await.into_iter().map(|listed| listed.id).collect();
         assert_eq!(listed, [info.id]);
+    }
+
+    /// Task S.23: a cloud model of Ollama runs elsewhere, a local one does not; without `/api/tags`
+    /// every model counts as elsewhere. The list is kept, so the data rule does not ask again.
+    #[tokio::test]
+    async fn ollama_says_which_models_run_elsewhere_and_without_tags_all_do() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ai = service(dir.path(), &keys, Vec::new());
+        let remote = |models: &[AiModel]| -> Vec<(String, Option<bool>)> {
+            models.iter().map(|model| (model.id.clone(), model.remote)).collect()
+        };
+
+        let ollama = fake_ollama_with_cloud(true).await;
+        let info = ai.connect(AiProvider::Ollama, Some(&ollama.url("/v1")), Secret::default()).await.expect("ok");
+        let models = ai.models(&info.id, false).await.expect("models");
+        assert_eq!(remote(&models), [("glm-5.3:cloud".into(), Some(true)), ("qwen3:8b".into(), Some(false))]);
+        assert_eq!(serde_json::to_value(&models[0]).expect("json")["remote"], true, "ai.list_models shows it");
+
+        // Kept: asked again only for a model the list lacks.
+        ollama.reset_async().await;
+        let known = ai.known_models(&info.id, Some("qwen3:8b")).await.expect("kept");
+        assert_eq!(remote(&known), remote(&models));
+        assert!(ai.known_models(&info.id, Some("llama3:8b")).await.is_err(), "asked anew, and gone");
+
+        let without = fake_ollama_with_cloud(false).await;
+        let info = ai.connect(AiProvider::Ollama, Some(&without.url("/v1")), Secret::default()).await.expect("ok");
+        let known = ai.known_models(&info.id, None).await.expect("listed now");
+        assert_eq!(remote(&known), [("glm-5.3:cloud".into(), Some(true)), ("qwen3:8b".into(), Some(true))]);
     }
 
     #[tokio::test]
@@ -675,6 +796,35 @@ pub(crate) mod tests {
         assert_eq!(open[0].context, Some(40960));
         let all = ai.models(&info.id, true).await.expect("models");
         assert_eq!(all.len(), 3, "closed ones too");
+    }
+
+    /// Task W.3: a cloud provider of its own is checked by its model list with the key, and named
+    /// by the provider.
+    #[tokio::test]
+    async fn a_cloud_provider_is_checked_by_its_models_with_the_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let mistral = MockServer::start_async().await;
+        mistral
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models").header("authorization", format!("Bearer {KEY}"));
+                then.status(200).json_body(json!({"object": "list", "data": [{"id": "mistral-small-latest"}]}));
+            })
+            .await;
+        mistral
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(401).json_body(json!({"message": "Unauthorized"}));
+            })
+            .await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let refused = ai.connect(AiProvider::Mistral, Some(&mistral.url("/v1")), Secret::new("wrong")).await;
+        assert_eq!(refused, Err(AiError::Auth));
+        let info =
+            ai.connect(AiProvider::Mistral, Some(&mistral.url("/v1")), Secret::new(KEY)).await.expect("connected");
+        assert_eq!(info.label, format!("Mistral (127.0.0.1:{})", mistral.port()));
+        let keyless = ai.connect(AiProvider::DeepSeek, None, Secret::default()).await;
+        assert!(matches!(keyless, Err(AiError::Invalid(ref why)) if why.contains("DeepSeek")), "{keyless:?}");
     }
 
     #[tokio::test]

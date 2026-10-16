@@ -17,7 +17,8 @@
 //!   its input ([`with_conversation`]), so a window can open it; the model reads the bot's answer
 //!   ([`Asked::for_model`]).
 //! - **Data rule**: a conversation whose model read mail asks no bot whose model runs elsewhere (the
-//!   message could carry the mail); when the bot read mail, its answer is withheld from a model
+//!   message could carry the mail; the model the bot really answers with, its "Automatic" resolved
+//!   as for any answer, task S.23); when the bot read mail, its answer is withheld from a model
 //!   elsewhere; when it read data from outside the suite, its answer is marked so, and the
 //!   assistant's conversation counts as having read it (notes then wait for a person, task C.11).
 //! - **Stopping** the assistant's answer stops the bots it asked (`assistant.cancel`).
@@ -129,12 +130,18 @@ impl Assistant {
         };
         // The data rule: what the assistant's model read may be in the message, and what the rule
         // keeps home stays on the person's computers (`read_mail` is what it keeps, task C.17).
-        if read_mail && self.place_of(kind, &bot.engine).await == Place::Remote {
-            return forbidden(
-                "this conversation read what the person's data rule keeps from models outside this computer (mail \
-                 unless the person let it out, or messages in the inbox), and the bot answers with such a model; do \
-                 not ask it now, tell the person instead",
-            );
+        let mut model = bot.model.clone();
+        if read_mail {
+            let (place, checked) = self.place_of(kind, &bot.engine, bot.model.as_deref()).await;
+            if place == Place::Remote {
+                return forbidden(
+                    "this conversation read what the person's data rule keeps from models outside this computer \
+                     (mail unless the person let it out, or messages in the inbox), and the bot answers with such a \
+                     model; do not ask it now, tell the person instead",
+                );
+            }
+            // The model checked answers, not one "Automatic" might pick anew (task S.23).
+            model = checked.or(model);
         }
         // Last, as it uses up a confirmation: nothing else refuses the ask after this.
         if let Err(refused) = self.may_ask(main, &bot).await {
@@ -143,7 +150,7 @@ impl Assistant {
         let message = Message {
             conversation: kept,
             engine: bot.engine.clone(),
-            model: bot.model.clone(),
+            model,
             effort: None,
             text,
             without: without.to_vec(),
@@ -163,15 +170,20 @@ impl Assistant {
         self.get(&id, Some(before)).await
     }
 
-    /// Where the model of `engine` (driven as `kind`) runs, for the data rule: the test engine here,
-    /// an agent elsewhere, an AI account where the core says (elsewhere when it cannot tell).
-    async fn place_of(&self, kind: EngineKind, engine: &str) -> Place {
+    /// Where the model `model` of `engine` (driven as `kind`) runs, for the data rule: the test
+    /// engine here, an agent elsewhere, an AI account where the core says for that model (task
+    /// S.23; for `None` the model "Automatic" picks) – elsewhere when it cannot tell. With the
+    /// model of the AI account that was judged, so the bot answers with that one.
+    async fn place_of(&self, kind: EngineKind, engine: &str, model: Option<&str>) -> (Place, Option<String>) {
         match kind {
-            EngineKind::Test => Place::Local,
-            EngineKind::Agent => Place::Remote,
+            EngineKind::Test => (Place::Local, None),
+            EngineKind::Agent => (Place::Remote, None),
             EngineKind::Ai => match self.host() {
-                Some(host) => host.model(engine).await.map_or(Place::Remote, |access| access.place),
-                None => Place::Remote,
+                Some(host) => host
+                    .model(engine, model)
+                    .await
+                    .map_or((Place::Remote, None), |access| (access.place, Some(access.model))),
+                None => (Place::Remote, None),
             },
         }
     }
