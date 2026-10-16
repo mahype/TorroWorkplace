@@ -329,6 +329,9 @@ pub struct Ui {
     /// The core has answered at least once (successfully or not); until then the page shows the
     /// loading state instead of empty lists.
     loaded: bool,
+    /// Until the core answered at the start ([`Message::CoreReady`], issue #206): the timer waits too,
+    /// so it cannot show an error for a core that is still starting.
+    waiting: bool,
     /// The desktop's light/dark preference, for the appearance "System".
     system_mode: Mode,
     /// The stored appearance. Kept apart from `data` so a core that does not answer for a moment
@@ -472,6 +475,8 @@ impl Ui {
             sidebar: SidebarMode::default(),
             size: torro_gui::window(AppId::WORKPLACE).size,
             loaded: false,
+            // The demo and a start without home directory load at once, nothing to wait for.
+            waiting: !demo && torro_ipc::socket_path().is_some(),
             system_mode: Mode::None,
             appearance: Appearance::System,
             // The demo keeps the zoom in the process, like everything else it changes.
@@ -846,7 +851,7 @@ impl Ui {
             assistant::subscription(&self.assistant).map(Message::Assistant),
         ];
         // The demo has nothing to reload.
-        if !self.launch.demo {
+        if !self.launch.demo && !self.waiting {
             all.push(iced::time::every(every).map(|_| Message::Tick));
         }
         Subscription::batch(all)
@@ -855,7 +860,10 @@ impl Ui {
     fn update(&mut self, message: Message) -> Task<Message> {
         let action = match message {
             Message::DragWindow => return torro_gui::drag_window(),
-            Message::CoreReady => return self.reload(),
+            Message::CoreReady => {
+                self.waiting = false;
+                return self.reload();
+            }
             Message::Select(section) => {
                 self.select(section);
                 self.notice = None;
@@ -2367,7 +2375,10 @@ mod tests {
 
     #[test]
     fn the_demo_does_not_listen_to_a_clock_and_the_appearance_parameter_wins() {
-        let (demo, real) = (started(&["--demo"]), ui(Section::Overview));
+        let (demo, mut real) = (started(&["--demo"]), ui(Section::Overview));
+        // Issue #206: the reload tick waits for the core's first answer, so a starting core shows no error.
+        assert_eq!(demo.subscription().units(), real.subscription().units(), "no reload tick while waiting");
+        let _ = real.update(Message::CoreReady);
         assert_eq!(demo.subscription().units() + 1, real.subscription().units(), "no reload tick in the demo");
 
         let mut light = started(&["--demo", "--appearance", "light"]);

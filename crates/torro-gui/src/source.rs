@@ -70,8 +70,14 @@ impl Source {
     }
 }
 
-/// How long an app waits at its start for the core to answer ([`Source::ready`]).
+/// How long an app waits at its start for the core to answer ([`Source::ready`]): on Unix, where
+/// [`ensure_core`] has just started it.
+#[cfg(unix)]
 pub const CORE_START_WAIT: Duration = Duration::from_secs(10);
+
+/// Elsewhere no app starts the core, so waiting would only hold back the error: one ask.
+#[cfg(not(unix))]
+pub const CORE_START_WAIT: Duration = Duration::ZERO;
 
 /// How often [`wait_for_core`] asks.
 const CORE_POLL: Duration = Duration::from_millis(50);

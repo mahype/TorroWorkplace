@@ -348,6 +348,9 @@ pub struct App {
     launch: Launch,
     /// The one-time part of `launch.open` (the editor) has been done.
     opened: bool,
+    /// Until the core answered at the start ([`Message::CoreReady`], issue #206): the timer waits too,
+    /// so it cannot show an error for a core that is still starting.
+    waiting: bool,
     now: NaiveDateTime,
     /// The chosen view. The narrow layout may show another one ([`App::shown`]); this one comes
     /// back when the window is wider again.
@@ -609,6 +612,7 @@ impl App {
             design,
             launch,
             opened: false,
+            waiting: true,
             timeline: timeline::State::default(),
             night: Night::DEFAULT,
             night_saving: false,
@@ -649,7 +653,10 @@ impl App {
         // Zoom keys work everywhere, glance views and open panels included.
         // The design pack polls the core every 2 s itself and wakes the window only for a change.
         let design = self.design.subscription().map(Message::Design);
-        let mut all = vec![tick, system, resize, self.zoom.subscription().map(Message::Zoom), design];
+        let mut all = vec![system, resize, self.zoom.subscription().map(Message::Zoom), design];
+        if !self.waiting {
+            all.push(tick);
+        }
         // Mini and strip are displays: no keys, nothing open to close.
         if !is_glance(self.class()) {
             // Over the view the panel is all there is to work with; beside it the view still is.
@@ -730,7 +737,10 @@ impl App {
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
-            Message::CoreReady => return self.fetch_account(),
+            Message::CoreReady => {
+                self.waiting = false;
+                return self.fetch_account();
+            }
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
                 // Only accounts that can hold calendars: GitHub alone is "No calendar account yet".

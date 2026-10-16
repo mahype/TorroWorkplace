@@ -571,6 +571,9 @@ pub struct App {
     launch: Launch,
     /// The one-time part of `launch.open` (the detail) has been done.
     opened: bool,
+    /// Until the core answered at the start ([`Message::CoreReady`], issue #206): the timer waits too,
+    /// so it cannot show an error for a core that is still starting.
+    waiting: bool,
     today: NaiveDate,
     /// The window size, for the size class ([`layout::of`]). Kept from the window events rather
     /// than asked of the view, so that subscriptions and tests know the class too.
@@ -886,6 +889,7 @@ impl App {
             design,
             launch,
             opened: false,
+            waiting: true,
             notice: None,
             filter_dialog: None,
             new_list: None,
@@ -932,7 +936,6 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let every = if self.connected() { Duration::from_secs(60) } else { Duration::from_secs(2) };
         let mut subscriptions = vec![
-            iced::time::every(every).map(|_| Message::Tick),
             iced::system::theme_changes().map(Message::SystemMode),
             iced::window::resize_events().map(|(_, size)| Message::Resized(size)),
             // Zoom keys work everywhere, glance views and the open detail included.
@@ -976,6 +979,9 @@ impl App {
         if self.notice.is_some() || self.created.is_some() {
             subscriptions.push(iced::time::every(Duration::from_secs(1)).map(Message::NoticeTick));
         }
+        if !self.waiting {
+            subscriptions.push(iced::time::every(every).map(|_| Message::Tick));
+        }
         Subscription::batch(subscriptions)
     }
 
@@ -1001,7 +1007,10 @@ impl App {
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
-            Message::CoreReady => return self.fetch_account(),
+            Message::CoreReady => {
+                self.waiting = false;
+                return self.fetch_account();
+            }
             Message::AccountLoaded(Ok(accounts)) => {
                 let was_connected = self.connected();
                 // Every account that can hold task lists, GitHub (filter lists) included.
