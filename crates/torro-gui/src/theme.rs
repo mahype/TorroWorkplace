@@ -521,7 +521,8 @@ pub mod size {
         design::with(|t| t.design.size.control_lg)
     }
     /// 44: the buttons of a reminder over the whole screen (task ER1.5), with text in
-    /// `typo::body_strong()`; nowhere else.
+    /// `typo::body_strong()`, and the strip of actions under the chosen mail in the mail window's
+    /// list (task E11.1, `widgets::row_strip`); nowhere else.
     pub fn control_xl() -> f32 {
         design::with(|t| t.design.size.control_xl)
     }
@@ -535,15 +536,14 @@ pub mod size {
     pub fn row_two() -> f32 {
         design::with(|t| t.design.size.row_two)
     }
-    /// 88: a mail entry's row in the inbox (task E3.9) – a 32 avatar beside three lines of 20
-    /// (sender with domain and time, subject, preview), with about 12 above and below, so a list of
-    /// mail reads at a glance instead of as one dense block.
+    /// 92: a mail entry's row in the inbox (task E3.9) – a 32 avatar beside three lines of 20
+    /// (sender with domain and time, subject, preview), with 16 above and below (task E11.1, the
+    /// row padding of the list), so a list of mail reads at a glance instead of as one dense block.
     pub fn row_message() -> f32 {
         design::with(|t| t.design.size.row_message)
     }
     /// 64: any other entry's row in the inbox (task E3.9) – the source's 28 icon beside two lines of
-    /// 20 (title and time, then the text or "project · branch"), with the same 12 above and below
-    /// as [`row_message`].
+    /// 20 (title and time, then the text or "project · branch"), with 12 above and below.
     pub fn row_notice() -> f32 {
         design::with(|t| t.design.size.row_notice)
     }
@@ -628,6 +628,17 @@ pub mod size {
     /// stands for an app.
     pub fn tile_lg() -> f32 {
         design::with(|t| t.design.size.tile_lg)
+    }
+    /// 46: the command bar at the top of the mail reader (task E11.1, `widgets::command_bar`):
+    /// Reply, Forward, Archive … as cells over the reader's whole width, a step above an input so
+    /// the actions read as buttons, not as a header.
+    pub fn command() -> f32 {
+        design::with(|t| t.design.size.command)
+    }
+    /// 42: a Torro pill in the mail reader (task E11.1, `widgets::pill_button`: Task, Event, Mute…)
+    /// and the sender's avatar in the reader's head, which stands at the pills' height.
+    pub fn pill() -> f32 {
+        design::with(|t| t.design.size.pill)
     }
     /// 1: a line – separators, grid lines, borders – and a gap as wide as one (keeping labels
     /// above the columns of a grid). Always one logical pixel, also on HiDPI screens; not part of a
@@ -869,6 +880,8 @@ mod tests {
         );
         assert_eq!([size::hour(), size::axis(), size::axis_narrow()], [48.0, 52.0, 44.0]);
         assert_eq!([size::row_sidebar(), size::row_group(), size::HAIRLINE], [28.0, 32.0, 1.0]);
+        // The mail window's large buttons (task E11.1).
+        assert_eq!([size::command(), size::pill(), size::control_xl(), size::row_message()], [46.0, 42.0, 44.0, 92.0]);
     }
 
     #[test]

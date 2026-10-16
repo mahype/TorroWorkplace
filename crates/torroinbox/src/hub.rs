@@ -1785,6 +1785,7 @@ mod tests {
             look: list::Look::Rows,
             folders: &[],
             ai: false,
+            edge_strip: false,
         };
         let review = find(&items, "demo-14");
         let time = list::time_text(&review, &view, now());

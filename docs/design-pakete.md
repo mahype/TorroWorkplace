@@ -141,6 +141,7 @@ sidebar = 248
 card_gap = 12                  # Abstand zwischen Karten und innerhalb einer Karte (E8.2)
 avatar = 36                    # Avatar einer Karte; avatar_lg 40 im Kopf des Lesers
 tile = 28                      # Quellen-Kachel; tile_sm 20 neben Wörtern, tile_lg 36 für Anhänge
+command = 46                   # Befehlsleiste des Lesers im Mail-Fenster (E11.1); pill 42 für Torro-Pillen
 
 [colors.dark]                  # nur, was abweicht; Namen wie torro_gui::theme::Palette
 accent = "#0EA5A4"
@@ -245,7 +246,7 @@ angewendet) und die Steuerzentrale nennt jeden Grund. Die Suite bleibt dann beim
 | Schrift | jede Stufe 11–40 groß; Zeilenhöhe ≥ Größe und ≤ 2 × Größe; `body` 12–18; `read` von `body` bis 20; `hero` 32–72 und `countdown` 20–48 (Erinnerung im Vollbild, ER1.5); jedes genutzte Gewicht hat eine Datei in der genutzten Schrift; `regular` ist Pflicht für `[fonts.text]` |
 | Layout-Abstände | `inset` 0–24; Innenränder 0–48; `section_gap` 8–64; `item_gap` 2–24 |
 | Abstände | `space` aufsteigend, 2–64; `radius` aufsteigend, 0–16 |
-| Maße | Bedienelemente (`control_sm` … `control_xl`) ≥ 24 (Klickziel); `row` 32–64; `row_two` 32–96; `row_message` 72–120 und `row_notice` 48–96 (Zeilen des Eingangs); `row_sidebar` 24–40; `header` 36–64; `sidebar` 180–320; `props`, `panel`, `list` 280–520; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend |
+| Maße | Bedienelemente (`control_sm` … `control_xl`) ≥ 24 (Klickziel); `row` 32–64; `row_two` 32–96; `row_message` 72–120 und `row_notice` 48–96 (Zeilen des Eingangs); `row_sidebar` 24–40; `header` 36–64; `sidebar` 180–320; `props`, `panel`, `list` 280–520; `content_max` 560–1200; Karten (E8.2): `card_gap` 4–32, `avatar` und `avatar_lg` 24–64, `tile_sm` 16–32, `tile` 20–48, `tile_lg` 24–64, Avatare und Kacheln von klein nach groß wachsend; Mail-Fenster (E11.1): `command` 32–64 (Befehlsleiste des Lesers), `pill` 28–64 (Torro-Pillen) |
 | Dateien | Pfade nur innerhalb des Paketordners, keine Links nach außen; `design.toml` ≤ 64 KB, SVG ≤ 256 KB, PNG ≤ 2 MB, Schrift ≤ 5 MB, Paket ≤ 20 MB |
 | SVG | ohne Verweise auf andere Dateien oder Adressen (`href` nur `#…` und `data:`), ohne Skripte |
 | Schriften | lesbar als TrueType/OpenType; Familie aus `family` steht in der Datei; Lizenzdatei vorhanden |

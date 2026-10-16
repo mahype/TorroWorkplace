@@ -147,9 +147,11 @@ aus einem Guss wirkt:
 | `size::control_sm()` | 28 | Knöpfe, Icon-Knöpfe, Segmente, Menü-Knöpfe in der Kopfleiste |
 | `size::control()` | 32 | Eingaben, Eigenschaftszeilen |
 | `size::control_lg()` | 36 | Schnelleingabe, Primärknopf im Dialog |
-| `size::control_xl()` | 44 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; nirgends sonst |
+| `size::control_xl()` | 44 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; Leiste unter der gewählten Mail im Mail-Fenster (`widgets::row_strip`, E11.1); nirgends sonst |
+| `size::command()` | 46 | Befehlsleiste oben im Leser des Mail-Fensters (`widgets::command_bar`, E11.1) |
+| `size::pill()` | 42 | Torro-Pillen im Leser (`widgets::pill_button`: Task, Event, Mute…) und Avatar im Kopf des Lesers (E11.1) |
 | `size::row()` | 40 | Listenzeile (Aufgaben) |
-| `size::row_message()` | 88 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau (E3.9) |
+| `size::row_message()` | 92 | Mail-Zeile im Eingang: Avatar 32, Absender · Domain · Zeit, Betreff, Vorschau – drei Zeilen 20, oben und unten 16 (E3.9, E11.1) |
 | `size::row_notice()` | 64 | Andere Zeile im Eingang: Kachel 28 mit Quell-Icon, Titel · Zeit, Text (E3.9) |
 | `size::card_gap()` | 12 | Abstand zwischen Karten und zwischen den Teilen einer Karte (`widgets::card`, E8.2) |
 | `size::avatar()` / `size::avatar_lg()` | 36 / 40 | Avatar einer Karte / Absender im Kopf des Lesers (E8.2); die kompakte Mail-Zeile bleibt bei 32 |
@@ -271,7 +273,24 @@ aus einem Guss wirkt:
   `SELECTED` mit Rand `LINE_STRONG`, Zeichen in `TEXT`; mit Farbe des Nutzers nur getönt (`Palette::tinted` über
   `PANEL`, ohne Rand), nie die volle Farbe als Fläche. Alle Bausteine der Dichten anschauen:
   `cargo run -p torro-gui --example gallery -- --cards` (dazu `--light`, `--design plex` mit `TORRO_DATA_HOME`).
-- **Standard oben, Torro-Leiste unten** (E9.4, Leser des Mail-Fensters): Was jedes Programm dieser Art kann
+- **Befehlsleiste und Leiste der Zeile** (E11.1, Mail-Fenster in allen Größen; Entwurf
+  `docs/prototypes/inbox/mail-buttons.html#d`): **Aktionen sind Zellen bzw. Pillen, Ansicht ist versenkt.**
+  Oben im Leser `widgets::command_bar` (`size::command()` 46, Zellen gleich breit über die ganze Breite,
+  senkrechte `LINE` dazwischen, `LINE` darunter) mit `command_split` (Reply, kräftig, Menü ▾ „More replies“),
+  `command_cell` (Icon 14 und Wort `typo::body()`, ohne Wort Icon 16 mit Tooltip) und `command_more` („…“);
+  Wörter für alle oder keine nach `widgets::command_words`. Unter der gewählten Zeile der Liste
+  `widgets::row_strip` (`size::control_xl()` 44, von Rand zu Rand, `LINE` oben und dazwischen, Tooltip mit Wort
+  und `kbd`), Wörter nach `widgets::row_strip_words`. Zellen sind `style::button::cell` (flach, `raised`, ohne
+  Radius und Rand). Was Torro dazugibt, sind **Pillen** (`widgets::pill_button`, `size::pill()` 42, voll rund,
+  `style::button::pill`): Rand und Icon in der Akzentfarbe, Wort in `TEXT`, Fläche neutral – Ausnahme von „Rot
+  nur Primärknopf“ wie die KI-Sparkles; in der Leiste der Zeile nur das Icon rot (`RowAction::accent`). Das
+  Mail-Fenster hat dann keinen roten Primärknopf mehr. Ansicht-Schalter liegen versenkt:
+  `widgets::view_switch` (Spur `style::container::track` auf `BG` mit `LINE_STRONG`, Segmente nur Icon mit
+  Tooltip, `size::control()`). Anhänge als `widgets::file_chip` (32 hoch, Büroklammer in `TEXT_3`, Größe in
+  `typo::meta()`); Suchfeld über der Liste `style::text_input_flat` (ohne Rand, Fokus bleibt sichtbar).
+  Alles anschauen: `cargo run -p torro-gui --example gallery -- --mailbar` (dazu `--light`, `--design plex`).
+- **Standard oben, Torro-Leiste unten** (E9.4, gilt nur noch für Zentrale und App Feed; das Mail-Fenster folgt
+  E11): Was jedes Programm dieser Art kann
   (Reply, Reply all, Forward | Archive, Delete; Flag, gelesen, Close als Icons), steht **fest oben** über dem
   Scrollbereich, mit Linie darunter; was Torro dazugibt (Erledigen · KI · Ansicht), **schwebt unten** als eigene
   Fläche über dem Inhalt. Knöpfe beider Leisten eine Stufe höher als in Kopfleisten: `widgets::bar_button`

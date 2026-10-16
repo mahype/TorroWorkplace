@@ -18,11 +18,12 @@
 use std::time::Duration;
 
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, row, svg, text_input};
+use iced::widget::{column, container, row, rule, svg, text_input};
 use iced::{Alignment, Element, Fill, Padding, Theme};
 use torro_core::i18n::{tr, trf};
 use torro_gui::icon::{self, Icon};
-use torro_gui::theme::{self, palette, space};
+use torro_gui::layout;
+use torro_gui::theme::{self, palette, size, space};
 use torro_gui::ui_state::SEARCHES_MAX;
 use torro_gui::widgets::{self, Mark};
 use torro_gui::{style, typo};
@@ -329,6 +330,10 @@ pub struct Bar<'a> {
     pub suggestions: Vec<Suggestion>,
     /// What the line under the bar says, while a search with words is shown ([`status_line`]).
     pub status: Option<Element<'a, Message>>,
+    /// The field over the whole width of the list (task E11.2, the mail window): flat
+    /// (`style::text_input_flat`), [`size::header()`] high with a line below it and no margin at
+    /// its sides; else framed inside the bar's margin, as in the hub.
+    pub full: bool,
 }
 
 /// The placeholder of the field: where it searches.
@@ -346,32 +351,56 @@ fn placeholder(search: Option<&SearchView>, scopes: Option<&ScopeChoice>) -> Str
 /// while there is something to clear; the suggestions under it ([`suggestions`], `Tab` takes the
 /// first); while a search is shown, where it looks (all mail, this account, this folder) and the
 /// order (relevance or date), then the line on its results ([`status_line`]).
+///
+/// With [`Bar::full`] (task E11.2, the mail window) the field spans the list from edge to edge,
+/// [`size::header()`] high and flat, its text in line with the rows' avatars, "Clear search" at its
+/// end and a line below; the rest follows under the line with the bar's margin.
 pub fn bar<'a>(bar: Bar<'a>) -> Element<'a, Message> {
     let field = text_input(&placeholder(bar.search, bar.scopes.as_ref()), bar.input)
         .id(FIELD)
         .size(typo::body().size)
         .line_height(typo::body().line_height)
         .font(typo::body().font)
-        .padding(style::INPUT_PADDING)
+        .padding(if bar.full { full_field_padding() } else { style::INPUT_PADDING })
         .width(Fill)
-        .style(style::text_input)
+        .style(if bar.full { style::text_input_flat } else { style::text_input })
         .on_input(Message::SearchInput)
         .on_submit(Message::Search);
     let mut top = row![field].spacing(space::s()).align_y(Alignment::Center);
     if bar.search.is_some() || !bar.input.is_empty() {
         top = top.push(widgets::icon_button(Icon::X, tr("Clear search"), Some(Message::ClearSearch)));
     }
-    let mut lines = column![top].spacing(space::s());
+    let mut rest: Vec<Element<'a, Message>> = Vec::new();
     if !bar.suggestions.is_empty() {
-        lines = lines.push(suggestion_row(bar.suggestions, bar.input.trim().is_empty()));
+        rest.push(suggestion_row(bar.suggestions, bar.input.trim().is_empty()));
     }
     if let Some(search) = bar.search.filter(|search| !search.query.is_empty()) {
-        lines = lines.push(controls(search, bar.scopes));
+        rest.push(controls(search, bar.scopes));
     }
     if let Some(status) = bar.status {
-        lines = lines.push(status);
+        rest.push(status);
     }
-    container(lines).width(Fill).padding(Padding::new(space::s()).left(space::l()).right(space::l())).into()
+    let margin = Padding::new(space::s()).left(space::l()).right(space::l());
+    if !bar.full {
+        let lines = column![top].extend(rest).spacing(space::s());
+        return container(lines).width(Fill).padding(margin).into();
+    }
+    // The clear button keeps the gap of the bar's buttons from the list's right edge.
+    let top = container(top.padding(Padding::new(0.0).right(space::s()))).width(Fill).center_y(size::header());
+    let mut bar = column![top, rule::horizontal(size::HAIRLINE).style(style::rule)].width(Fill);
+    if !rest.is_empty() {
+        bar = bar.push(container(column(rest).spacing(space::s())).width(Fill).padding(margin));
+    }
+    bar.into()
+}
+
+/// The padding of the field over the whole width ([`Bar::full`]): as high as the header bar
+/// ([`size::header()`]) with a line of text, its text [`layout::row_padding()`] in from the left – where
+/// the rows' avatars start.
+fn full_field_padding() -> Padding {
+    let above = (size::header() - typo::line_height(typo::body())) / 2.0;
+    let side = layout::row_padding().left;
+    Padding::new(above).left(side).right(side)
 }
 
 /// The suggestions as chips, the first with the `Tab` hint; the searches last made (`recent`, with

@@ -1315,6 +1315,7 @@ mod tests {
             look: list::Look::Rows,
             folders: &[],
             ai: false,
+            edge_strip: false,
         };
         let time = list::time_text(backup, &view, now());
         let reports = trf("{n} reports", &[("n", &3)]);

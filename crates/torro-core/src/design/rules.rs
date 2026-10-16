@@ -226,6 +226,10 @@ fn size_range(key: &str) -> (f32, f32) {
         "tile_sm" => (16.0, 32.0),
         "tile" => (20.0, 48.0),
         "tile_lg" => (24.0, 64.0),
+        // The mail window's large buttons (task E11.1): a command bar a step above an input and a
+        // pill a step above a button, neither as tall as a row.
+        "command" => (32.0, 64.0),
+        "pill" => (28.0, 64.0),
         // Calendar grid: an hour and the time axis stay readable and fit a tile.
         _ => (24.0, 120.0),
     }
@@ -448,5 +452,22 @@ mod tests {
         assert!(problems.contains(&DesignError::NotAscending { key: "size.avatar, size.avatar_lg".into() }));
         assert!(problems.contains(&DesignError::NotAscending { key: "size.tile_sm, size.tile, size.tile_lg".into() }));
         assert_eq!(problems.len(), 4, "{problems:?}");
+    }
+
+    /// Task E11.1: the command bar and the pills stay in their ranges.
+    #[test]
+    fn the_mail_sizes_stay_in_range() {
+        assert!(check(&Design::standard()).is_empty(), "the standard is valid");
+        let mut d = Design::standard();
+        d.size.command = 30.0;
+        d.size.pill = 70.0;
+        let keys: Vec<(String, f32, f32)> = check(&d)
+            .into_iter()
+            .map(|p| match p {
+                DesignError::OutOfRange { key, min, max, .. } => (key, min, max),
+                other => panic!("unexpected {other:?}"),
+            })
+            .collect();
+        assert_eq!(keys, [("size.command".into(), 32.0, 64.0), ("size.pill".into(), 28.0, 64.0)]);
     }
 }

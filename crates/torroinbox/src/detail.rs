@@ -36,10 +36,13 @@
 //! open the same dialogs, filled in by the person's AI; without an AI they are off and say so. With
 //! them "Move to …" is its icon alone, as the words would no longer fit.
 //!
-//! A mail entry (task E4.2) shows its whole mail (`mail::body`: headers, the mail standards,
-//! attachments, text) in place of its short text; the footer stays the entry's and takes a second
-//! row (task E9.4, [`Footer::view`]): "Move to …", the bell and the mail's switches "HTML | Text",
-//! "Light | Dark" and "Copy text", in the order of the reader's Torro bar.
+//! A mail entry (task E4.2) shows its whole mail (`mail::body` with `mail::Bars::Split`: headers,
+//! the mail standards, attachments, text) in place of its short text; the footer stays the entry's
+//! and takes a second row (task E9.4, [`Footer::view`]): "Move to …", the bell and the mail's
+//! switches "HTML | Text", "Light | Dark" and "Copy text", in the order of the reader's former Torro
+//! bar (until task E11.3). So in the hub and the App Feed; the mail window's panel of a mail entry
+//! is `mail::entry_panel` with the reader's bars (task E11.4), with this panel's [`path`] and
+//! [`heading`].
 //!
 //! Task with a way back (task E8.7b): an entry made into a task shows it in a section "Task" (the
 //! card of `mail::task_card` with "Open task"; a whole mail carries it over its text instead). The
@@ -90,12 +93,19 @@ pub struct Anchors {
     /// "…" / "Hide": the menu "Hide from Notification Hub" opens here (task E3.10); in the notifications window
     /// and for mail the bell, where the bell's menu opens (task E8.6b, issue #123).
     pub hide: Anchor,
+    /// The chevron of Reply in the mail reader's command bar (task E11.3): its menu "Reply all"
+    /// opens here, under the whole cell.
+    pub reply: Anchor,
+    /// "…" at the end of the mail reader's command bar (task E11.3): its menu opens here, and so does
+    /// the lane question of its "Move to …", as the reader has no button of that name.
+    pub more: Anchor,
 }
 
 impl Anchors {
     /// The anchor of a button that sends `message`, when that opens a menu or dialog: `Act` with
     /// the command of a key (`s`, `l`, `t`, `c`, `m`) from rows and cards, the `Ask…` messages of
-    /// the panel and the reader. `None` for every other message.
+    /// the panel and the reader – the reader's Reply ▾ and "…" included (task E11.3). `None` for
+    /// every other message.
     pub fn of(&self, message: &Message) -> Option<&Anchor> {
         match message {
             Message::Act(_, Command::Snooze) | Message::AskSnooze(_) => Some(&self.snooze),
@@ -103,6 +113,8 @@ impl Anchors {
             Message::Act(_, Command::MakeTask) | Message::AskTask(_) | Message::AskMailTask(_) => Some(&self.task),
             Message::Act(_, Command::MakeEvent) | Message::AskEvent(_) => Some(&self.event),
             Message::Act(_, Command::Hide) | Message::AskHide(_) | Message::AskMuteMail(_) => Some(&self.hide),
+            Message::AskReplyMenu(_) => Some(&self.reply),
+            Message::AskMore(_) => Some(&self.more),
             _ => None,
         }
     }
@@ -156,7 +168,7 @@ pub struct Footer {
     /// A mail entry's whole mail in the panel (task E9.4, `mail::Reading::view_tools`): the footer
     /// takes two rows – Done, Later and the task and event buttons with their AI ones in the first;
     /// "Move to …", the bell and the view group (`mail::view_controls`: "HTML | Text", "Light | Dark",
-    /// "Copy text") in the second, in the order of the reader's Torro bar. `None` for every other
+    /// "Copy text") in the second, in the order of the reader's former Torro bar. `None` for every other
     /// entry: one row as before.
     pub view: Option<mail::ViewTools>,
 }
@@ -164,8 +176,8 @@ pub struct Footer {
 /// The panel for `item`, reached through the view `view_name`; `now` for the times; the footer's
 /// triage buttons register `footer.anchors`.
 ///
-/// `letter` is the whole mail of a mail entry (task E4.2, `mail::body`: headers, actions,
-/// attachments, text). It stands in place of the entry's own short text and brings its own note on
+/// `letter` is the whole mail of a mail entry (task E4.2, `mail::body` with `mail::Bars::Split`:
+/// headers, actions, attachments, text). It stands in place of the entry's own short text and brings its own note on
 /// foreign text; `None` for every other entry.
 ///
 /// `text` is the entry's message as the window keeps it to select and copy (issue #119): made from
@@ -178,7 +190,7 @@ pub fn panel<'a>(
     letter: Option<Element<'a, Message>>,
     text: &'a Selectable,
 ) -> Panel<'a, Message> {
-    let path = panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name]);
+    let path = path(item, view_name);
     let mut body = column![widgets::prop_section(tr("Properties"), properties(item, now))].spacing(space::l());
     let link = openable(item);
     if let Some(agent) = &item.agent {
@@ -230,10 +242,17 @@ pub fn panel<'a>(
     panel::panel(path, heading(item), body, Message::CloseDetail).footer(buttons(item, &footer))
 }
 
+/// The panel's path: the source's icon, the source and `view_name` ("Mail › For me"). The mail
+/// window's panel of a mail entry has the same head (task E11.4, `mail::entry_panel`).
+pub(crate) fn path<'a>(item: &Item, view_name: String) -> Element<'a, Message> {
+    panel::path(Some(Mark::Icon(list::source_icon(&item.source))), [item.source.label(), view_name])
+}
+
 /// The panel's title: the entry's title; for an agent's session with a name
 /// ([`list::session_name`]) the name, and below it what the agent does ("Claude Code is waiting
-/// for you"), so the state is not lost under the name.
-fn heading<'a>(item: &Item) -> Element<'a, Message> {
+/// for you"), so the state is not lost under the name. Also the title of the mail window's panel of
+/// a mail entry (task E11.4, `mail::entry_panel`).
+pub(crate) fn heading<'a>(item: &Item) -> Element<'a, Message> {
     let Some(name) = list::session_name(item) else {
         return panel::title(list::plain(&item.title));
     };
@@ -245,7 +264,7 @@ fn heading<'a>(item: &Item) -> Element<'a, Message> {
 /// Status, lane, source, what a service's traits say (task E5.15, `list::facet_words`: repository
 /// and reason, app and person, kind of conversation, topic and priority – each a row with its
 /// icon, foreign values as plain text), time and – from two on – the number of merged reports.
-fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
+pub(crate) fn properties<'a>(item: &'a Item, now: DateTime<Utc>) -> Vec<Element<'a, Message>> {
     let (status, word) = status(item, now);
     let dot = container(widgets::status_dot(status)).center_x(icon::SIZE);
     let mut rows = vec![
@@ -541,6 +560,10 @@ mod tests {
         assert!(at(Message::AskEvent(id()), &anchors.event));
         assert!(at(Message::Act(id(), Command::Hide), &anchors.hide));
         assert!(at(Message::AskHide(id()), &anchors.hide));
+        assert!(at(Message::AskMuteMail(id()), &anchors.hide));
+        // Task E11.3: the reader's Reply ▾ and "…".
+        assert!(at(Message::AskReplyMenu(id()), &anchors.reply));
+        assert!(at(Message::AskMore(id()), &anchors.more));
         assert!(anchors.of(&Message::Act(id(), Command::Done)).is_none(), "Done opens no menu");
         let actions = vec![
             RowAction::new(Icon::Check, "Done", "E", Message::Act(id(), Command::Done)),
