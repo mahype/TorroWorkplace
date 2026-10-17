@@ -131,6 +131,11 @@ Regel](../settings.md#die-regel)). Das Zahnrad einer App zeigt die Einstellungen
 desselben Fensters, und nur dort. Die Steuerzentrale behält, was die ganze Suite betrifft, zeigt die Seiten der Apps
 nicht noch einmal und führt Assistent und Bots unter Agents & API. S.16–S.22 sind mit #210 geändert.
 
+**Bau mit #210** (zweiter Plan, 2026-10-17): S.16–S.22 in dieser Reihenfolge, einer nach dem anderen (S.19 und S.20
+ändern beide `torro-settings-ui`). Stufe 3 (S.24–S.26) gehört nicht zu #210; bis sie gebaut ist, gelten die
+Ausweichwege der Aufgaben: Verweise auf `--section ai` führen zu `accounts`, die Datenregel bleibt in der
+Rechte-Ansicht unter Agents & API.
+
 **Oberfläche, API, MCP (gilt für alle Aufgaben dieser Stufe):** keine neue Funktion. Jede Einstellung geht über
 einen Request, den es schon gibt; die Aufgaben verlegen nur, wo die Oberfläche sie zeigt. Das neue Startwort
 `--settings` ist ein Startargument, kein Request. Braucht eine Aufgabe doch einen neuen
@@ -328,6 +333,9 @@ Konzept: [settings.md › KI](../settings.md#ki), entschieden am 2026-10-15. Zen
 ihre Modelle an und ab (Steuerzentrale › AI); welches Modell ein Modul wofür nimmt, stellt man im Modul ein. Anlass: Ein
 verbundenes Ollama erschien weder unter „Agents & API“ noch auf seiner Kontoseite mit Modellen; dabei fiel auf, dass
 seine Cloud-Modelle für die Datenregel als lokal galten (S.23).
+
+Nicht Teil von #210 (in dessen zweitem Plan entschieden, 2026-10-17): Stufe 3 braucht ein eigenes Issue, weil S.24 einen
+neuen Befehl bringt. Sie baut auf Stufe 2 auf, wenn die schon steht (Hinweise „bis S.21“ und „sobald S.17 da ist“).
 
 S.24 legt den Befehl und die Regel im Kern fest, danach laufen S.25 (Seite AI) und S.26 (Auswahlen der Module)
 parallel. S.26 und S.17 berühren beide die Auswahl „New chats“: Wer später kommt, übernimmt den Filter bzw. den Umzug in
