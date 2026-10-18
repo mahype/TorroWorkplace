@@ -2508,10 +2508,12 @@ keine Taste dafür oder seine kollidiert, Löschen und endgültig Löschen sind 
 | Mails abrufen | ⇧⌘N | F5 (⇧+F5) | F9 (Strg+M) |
 
 Auf den anderen Systemen: Apple Mail unter Windows und Linux mit Strg statt ⌘, Archivieren Strg+⇧+A (⌃⌘A wäre Strg+A),
-unter Linux Gelesen/ungelesen Strg+U (IBus), Suchen nur Strg+F (Strg+Alt ist unter Windows AltGr). Thunderbird auf dem Mac mit ⌘ nach der Mac-Spalte der Hilfe, Abrufen ⌘Y
-(⇧⌘Y), Archivieren ⌃⌘A wie Torro. Outlook auf dem Mac ist Outlook für Windows mit ⌘ (Archivieren also ⇧⌘A), aber Gelesen ⌃Q und Abrufen ⌃M
-(⌘Q beendet, ⌘M minimiert), Markieren ⇧⌘L wie Torro (kein Einfg), ohne F3 und F9. Gesperrt für alle Vorlagen und für
-eigene Tasten (E10.2): `torro_core::shortcuts::reserved`.
+unter Linux Gelesen/ungelesen Strg+U (IBus), Suchen nur Strg+F (Strg+Alt ist unter Windows AltGr). Thunderbird auf dem Mac mit ⌘ nach der Mac-Spalte der Hilfe,
+Archivieren ⌃⌘A wie Torro. Outlook auf dem Mac ist Outlook für Windows mit ⌘, aber Gelesen ⌃Q (⌘Q beendet),
+Markieren ⇧⌘L wie Torro (kein Einfg), ohne F3 und F9. **Abrufen ist auf dem Mac in jeder Vorlage ⇧⌘N wie in Torro**
+(entschieden im Review von PR #214): F-Tasten haben auf dem Mac keine Entsprechung, und was das Vorbild dafür nennt –
+Thunderbirds ⌘Y, Outlooks ⌃M – ist kaum zu erraten; dieselbe Regel gibt Outlook auf dem Mac Archivieren ⌃⌘A statt ⇧⌘A.
+Gesperrt für alle Vorlagen und für eigene Tasten (E10.2): `torro_core::shortcuts::reserved`.
 
 **Frei belegen:** Eigene Tasten liegen über der gewählten Vorlage. Ein Wechsel der Vorlage behält sie, „Reset“ löscht
 eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`/`k` …), kommt ein Hinweis mit
@@ -2549,7 +2551,8 @@ eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`
 - [x] erledigt (2026-10-16, #209: Vorlagen nach der Tabelle unter „Weitere Vorlagen“, `Preset::standard` je System,
   `Preset::default()` folgt `System::current()`. `Key` kennt F1–F12 und Einfg; diese wirken ohne Strg. In Outlook
   schalten Strg+Q und Strg+U beide um. Suchen und Senden behalten Strg+F und Strg+Enter, wo die Vorlage sie nicht
-  anders belegt, in Outlook leitet Strg+F weiter. Gesperrte Tasten als `shortcuts::reserved` für E10.2. Apple Mails
+  anders belegt, in Outlook leitet Strg+F weiter. Auf dem Mac nimmt jeder Befehl ohne eigene Mac-Taste die aus „Torro“,
+  auch wenn das Vorbild eine nennt: Abrufen überall ⇧⌘N, Outlook archiviert ⌃⌘A (Review von PR #214). Gesperrte Tasten als `shortcuts::reserved` für E10.2. Apple Mails
   Hilfe nennt keine Suchtaste, ⌥⌘F kommt aus dem Menü. Thunderbird auf dem Mac nach der Mac-Spalte seiner Hilfe.)
 - **Modell:** Opus · **Braucht:** E10.1 · **Dateien:** `crates/torro-core/src/shortcuts.rs`,
   `crates/torroinbox/src/{keys,app,compose}.rs`, `crates/torro-gui/src/widgets.rs` (Rückgängig unterscheidet `System`)

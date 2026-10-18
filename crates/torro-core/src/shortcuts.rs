@@ -393,7 +393,9 @@ impl FromStr for Shortcut {
 /// - No Ctrl + Shift + U on Linux, where IBus takes it for typing Unicode while an input method is
 ///   active: toggling read is Ctrl + U there ("Torro" keeps its key of task E10.1).
 /// - A Mac keyboard has no Insert, and its function keys set brightness and volume: on macOS those
-///   commands take the key of "Torro", unless the model names a Mac key of its own.
+///   commands take the key of "Torro", even where the model names a Mac key of its own:
+///   Thunderbird's ⌘Y and Outlook's Control + M for getting mail are left out, so ⇧⌘N fetches in
+///   every preset there.
 /// - Search and send keep Ctrl + F and Ctrl + Enter (⌘ on macOS) beside the model's key, where the
 ///   preset does not bind them otherwise: the suite has used them since issue #136.
 /// - Delete and delete for good are the same everywhere (task E8.18, E10.1); the question before
@@ -477,6 +479,9 @@ const APPLE_MAIL: [Row; 14] = [
 /// Linux Ctrl + U for IBus). Moving to a chosen folder has no key in Thunderbird: "Torro"'s. Its
 /// Ctrl + M for a new message is left out on macOS, where ⌘M minimizes (the page lists only ⌘N). Ctrl + F
 /// finds text in Thunderbird's message; here it searches as everywhere in the suite.
+///
+/// Its F5 is no key on a Mac, and the page's ⌘Y, ⇧⌘Y are left out: fetching takes "Torro"'s ⇧⌘N
+/// there, as in every preset, so one key gets new mail on every Mac.
 const THUNDERBIRD: [Row; 14] = [
     (Command::NewMail, &["Mod+N", "Mod+M"], &["Mod+N", "Mod+M"], &["Mod+N"]),
     (Command::Reply, &["Mod+R"], &["Mod+R"], &["Mod+R"]),
@@ -496,7 +501,7 @@ const THUNDERBIRD: [Row; 14] = [
         &["Mod+K", "Mod+Shift+K", "Mod+F"],
         &["Mod+K", "Mod+Shift+K", "Mod+F"],
     ),
-    (Command::Fetch, &["F5", "Shift+F5"], &["F5", "Shift+F5"], &["Mod+Y", "Mod+Shift+Y"]),
+    (Command::Fetch, &["F5", "Shift+F5"], &["F5", "Shift+F5"], &["Mod+Shift+N"]),
 ];
 
 /// The preset "Outlook", on Windows, Linux and macOS.
@@ -507,13 +512,13 @@ const THUNDERBIRD: [Row; 14] = [
 /// all, Ctrl + F forward, Ctrl + Enter send, Delete and Shift + Delete, Ctrl + Q read, Ctrl + U
 /// unread, Insert flag. Classic Outlook for what new Outlook leaves out: Ctrl + E or F3 search,
 /// Ctrl + Shift + V move to a folder, F9 or Ctrl + M check for new messages. Neither names a key
-/// for archiving or junk: "Torro"'s on Windows (Ctrl + Shift + A, J), on macOS translated as the rest
-/// (⇧⌘A, not "Torro"'s ⌃⌘A). Ctrl + F forwards, so it does not search in this preset.
+/// for archiving or junk: "Torro"'s on every system (Ctrl + Shift + A, J; ⌃⌘A and ⇧⌘J on macOS).
+/// Ctrl + F forwards, so it does not search in this preset.
 ///
 /// Read and unread are one command here: Ctrl + Q and Ctrl + U both toggle. On macOS Ctrl turns ⌘
 /// (Outlook for Windows translated, not Outlook for Mac), except where ⌘ is the system's: Ctrl + Q
-/// and Ctrl + M stay Control there (⌘Q quits, ⌘M minimizes). Insert and F9 have no Mac key: flagging
-/// takes "Torro"'s ⇧⌘L, fetching keeps Control + M; F3 is left out.
+/// stays Control there (⌘Q quits). Insert, F9 and Ctrl + M have no Mac key (⌘M minimizes): flagging
+/// takes "Torro"'s ⇧⌘L, fetching its ⇧⌘N; F3 is left out.
 const OUTLOOK: [Row; 14] = [
     (Command::NewMail, &["Mod+N"], &["Mod+N"], &["Mod+N"]),
     (Command::Reply, &["Mod+R"], &["Mod+R"], &["Mod+R"]),
@@ -522,13 +527,13 @@ const OUTLOOK: [Row; 14] = [
     (Command::Send, &["Mod+Enter"], &["Mod+Enter"], &["Mod+Enter"]),
     (Command::Delete, &["Delete", "Backspace"], &["Delete", "Backspace"], &["Backspace", "Delete"]),
     (Command::DeletePermanently, &["Shift+Delete"], &["Shift+Delete"], &["Shift+Backspace", "Shift+Delete"]),
-    (Command::Archive, &["Mod+Shift+A"], &["Mod+Shift+A"], &["Mod+Shift+A"]),
+    (Command::Archive, &["Mod+Shift+A"], &["Mod+Shift+A"], &["Ctrl+Cmd+A"]),
     (Command::ToggleRead, &["Mod+U", "Mod+Q"], &["Mod+U", "Mod+Q"], &["Mod+U", "Ctrl+Q"]),
     (Command::Flag, &["Insert"], &["Insert"], &["Mod+Shift+L"]),
     (Command::Junk, &["Mod+Shift+J"], &["Mod+Shift+J"], &["Mod+Shift+J"]),
     (Command::MoveToFolder, &["Mod+Shift+V"], &["Mod+Shift+V"], &["Mod+Shift+V"]),
     (Command::Search, &["Mod+E", "F3"], &["Mod+E", "F3"], &["Mod+E"]),
-    (Command::Fetch, &["F9", "Mod+M"], &["F9", "Mod+M"], &["Ctrl+M"]),
+    (Command::Fetch, &["F9", "Mod+M"], &["F9", "Mod+M"], &["Mod+Shift+N"]),
 ];
 
 impl Preset {
@@ -957,7 +962,7 @@ mod tests {
             "Mod+Shift+J",
             "Mod+Shift+V",
             "Mod+K",
-            "Mod+Y",
+            "Mod+Shift+N",
         ];
         assert_eq!(first(Preset::Thunderbird, System::Mac), thunderbird_mac);
 
@@ -987,20 +992,30 @@ mod tests {
             "Mod+Enter",
             "Backspace",
             "Shift+Backspace",
-            "Mod+Shift+A",
+            "Ctrl+Cmd+A",
             "Mod+U",
             "Mod+Shift+L",
             "Mod+Shift+J",
             "Mod+Shift+V",
             "Mod+E",
-            "Ctrl+M",
+            "Mod+Shift+N",
         ];
         assert_eq!(first(Preset::Outlook, System::Mac), outlook_mac);
+
+        for preset in Preset::ALL {
+            let fetch = preset.keys(C::Fetch, System::Mac);
+            assert_eq!(
+                fetch.iter().map(ToString::to_string).collect::<Vec<_>>(),
+                ["Mod+Shift+N"],
+                "a Mac has no F keys to spare, so every preset fetches with ⇧⌘N ({preset:?})"
+            );
+        }
     }
 
     /// The further keys of each model: Ctrl + M for a new message in Thunderbird, Ctrl + Q (Control +
-    /// Q on a Mac) for read in Outlook, F3 and Ctrl + M there, Shift + F5, ⇧⌘Y and the quick filter in
-    /// Thunderbird, and Ctrl + F and Ctrl + Enter where the preset leaves them free.
+    /// Q on a Mac) for read in Outlook, F3 and Ctrl + M there, Shift + F5 and the quick filter in
+    /// Thunderbird, and Ctrl + F and Ctrl + Enter where the preset leaves them free. The keys a Mac
+    /// keeps for itself bind nothing: ⌘Q, ⌘M, and Thunderbird's ⇧⌘Y, which it does not use here.
     #[test]
     fn the_further_keys_of_the_models() {
         let run = |preset: Preset, system, text: &str| {
@@ -1020,10 +1035,11 @@ mod tests {
             assert_eq!(run(Preset::Outlook, system, "F3"), Some(Command::Search));
             assert_eq!(run(Preset::Outlook, system, "Ctrl+M"), Some(Command::Fetch));
         }
-        assert_eq!(run(Preset::Thunderbird, System::Mac, "Cmd+Shift+Y"), Some(Command::Fetch));
+        assert_eq!(run(Preset::Thunderbird, System::Mac, "Cmd+Shift+Y"), None, "⇧⌘Y is left out");
         assert_eq!(run(Preset::Outlook, System::Mac, "Ctrl+Q"), Some(Command::ToggleRead));
         assert_eq!(run(Preset::Outlook, System::Mac, "Cmd+Q"), None, "⌘Q quits");
         assert_eq!(run(Preset::Outlook, System::Mac, "Cmd+M"), None, "⌘M minimizes");
+        assert_eq!(run(Preset::Outlook, System::Mac, "Ctrl+M"), None, "Control + M is Windows' only");
         for preset in Preset::ALL {
             for system in System::ALL {
                 assert_eq!(run(preset, system, "Mod+Enter"), Some(Command::Send), "{preset:?} {system:?}");
