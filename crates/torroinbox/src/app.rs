@@ -37,7 +37,9 @@
 //! under "Mute" the ways the core offers for the entry (`inbox.list_mute_options`: this
 //! conversation, then its traits – the sender, the project, the client …), under "For" how long
 //! ([`MuteFor`]: 1 hour, until tomorrow, 1 week, always) and under "What happens" what muting does (no
-//! popup, only Info, hide), and at the end "All rules", which opens the control centre. Picking a
+//! popup, only Info, hide), and at the end "All rules", which shows every rule: the section Rules
+//! of this window's settings, and in the mail window, which has none, the Notification Hub's
+//! window ([`rules_message`], task S.20). Picking a
 //! way sends `inbox.mute_item` with the "For" and "What happens" chosen; the toast says what holds
 //! now in the words of the control centre's rules ([`muted_note`]) and its undo takes it back
 //! exactly ([`Undo::Muted`]). "For" and "What happens" stay as chosen while the window runs. The
@@ -1904,6 +1906,15 @@ fn wrap_settings<'a, M: 'a>(page: Page<'a, M>, into: fn(M) -> SettingsMessage) -
 /// the windows that have it ([`Message::OpenRules`]). A test keeps it among the inbox's sections.
 const RULES_SECTION: &str = "rules";
 
+/// What "All rules" in the bell's menu does in a window of this kind (task S.20): `None` in the
+/// Notification Hub and the App Feed, which open their own section [`RULES_SECTION`], and in the
+/// mail window – which has no such section – the Notification Hub's window, brought forward by the
+/// core (`apps.open_app` with its window class, which starts it when none runs). The rules belong
+/// to the Notification Hub, so that is where they are shown, not in the control centre.
+fn rules_message(kind: Kind) -> Option<Message> {
+    (kind == Kind::Mail).then(|| Message::OpenApp(AppId::INBOX.window_class.to_string()))
+}
+
 /// A change or a load came back: the sections let go of what was on its way – the removals of
 /// Rules. Mail's drafts need nothing: they measure themselves against the fresh data.
 fn answered_settings(sections: &mut SettingsState) {
@@ -2392,8 +2403,8 @@ pub enum Message {
     /// `Link::App` on `torroworkplace`). Its own message, never the gear's – an entry must not be
     /// able to open a settings section in this window (task S.20).
     OpenControlCentre,
-    /// "All rules" in the bell's menu: the rules in this window where it has them, else the
-    /// control centre's Inbox page (task S.20).
+    /// "All rules" in the bell's menu: the section Rules of this window's settings where it has
+    /// one, else the Notification Hub's window, where the rules live ([`rules_message`], S.20).
     OpenRules,
     /// From a folder's list: the message with this id under the cursor and in the panel.
     SelectMail(String),
@@ -3409,13 +3420,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::OpenRules => {
                 self.close_menus();
-                // The Notification Hub and the App Feed hold the rules behind their own gear (task
-                // S.20); the mail window has no such section, so there they stay in the control
-                // centre.
-                if self.launch.kind == Kind::Mail {
-                    connect::open_section("inbox");
-                } else {
-                    return self.open_settings(Some(RULES_SECTION));
+                match rules_message(self.launch.kind) {
+                    Some(message) => return self.update(message),
+                    None => return self.open_settings(Some(RULES_SECTION)),
                 }
             }
             Message::SelectMail(id) => {
@@ -7236,14 +7243,19 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// "Mute" with the ways to mute ([`App::mute_choices`], digits as in every menu of choices, shown
     /// quietly in `META` ([`KeyLook::Meta`], task E8.12); a
     /// quiet line while they load or when they could not be read), a line, "For" and "What happens"
-    /// as segments (`widgets::segmented`, ←/→ and ↑/↓), a line and "All rules ↗", which opens the
-    /// control centre, where every rule is listed with "Remove".
+    /// as segments (`widgets::segmented`, ←/→ and ↑/↓), a line and "All rules", which opens the
+    /// section Rules of this window's settings, where every rule is listed with "Remove" – in the
+    /// mail window, which has no such section, the Notification Hub's window instead
+    /// ([`rules_entry`], task S.20).
     ///
     /// As wide as its longest way to mute or its segments need ([`mute_menu_width`]), so a whole
     /// address shows.
     fn mute_menu<'a>(&self) -> Element<'a, Message> {
         let choices = self.choices();
-        let width = mute_menu_width(&choices);
+        // The mail window has no section Rules; its foot entry opens the Notification Hub's
+        // window, which takes a longer word and the arrow out of this window.
+        let leaves = self.launch.kind == Kind::Mail;
+        let width = mute_menu_width(&choices, leaves);
         let mut list = column![menu_caption(tr("Mute"))];
         let quiet = match &self.mute_options {
             None => Some(tr("Loading…")),
@@ -7270,7 +7282,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         let segment = |control: Element<'a, Message>| {
             container(control).padding(Padding::ZERO.left(space::s()).right(space::s()).bottom(space::xs()))
         };
-        let rules = rules_entry(self.launch.kind == Kind::Mail);
+        let rules = rules_entry(leaves);
         list = list
             .push(menu_line())
             .push(menu_caption(tr("For")))
@@ -7744,21 +7756,39 @@ fn segmented_width(labels: &[&str]) -> f32 {
 
 /// "All rules" at the foot of the bell's menu. In the Notification Hub and the App Feed it opens
 /// the section Rules of this window's settings (task S.20); in the mail window, which has no such
-/// section, it opens the control centre's Inbox page and says so with the arrow (`leaves`).
+/// section, it brings the Notification Hub's window forward, and its word says so
+/// ([`rules_word`]) with the arrow of a way out of this window (`leaves`).
 fn rules_entry<'a>(leaves: bool) -> MenuItem<'a, Message> {
-    let entry = MenuItem::new(Icon::Settings, tr("All rules"), Message::OpenRules);
+    let entry = MenuItem::new(Icon::Settings, rules_word(leaves), Message::OpenRules);
     if leaves { entry.trail(Trail::Icon(Icon::ArrowUpRight)) } else { entry }
+}
+
+/// The word of that entry: short where the rules open in this very window, and where they do not,
+/// the window it opens instead – a line must say where it leads.
+fn rules_word(leaves: bool) -> &'static str {
+    if leaves { tr("All rules in the Notification Hub") } else { tr("All rules") }
+}
+
+/// The width that entry needs: the frame of a menu item, its icon, the gaps, its word and, where
+/// it leaves the window, the arrow at the end. The bell's menu is at least this wide, so the word
+/// of the longer one is not cut ([`mute_menu_width`]).
+fn rules_entry_width(leaves: bool) -> f32 {
+    let gap = space::s();
+    let frame = 2.0 * style::MENU_INSET + style::ITEM_PADDING.left + style::ITEM_PADDING.right;
+    let trail = if leaves { icon::SIZE + gap } else { 0.0 };
+    frame + icon::SIZE + gap + typo::text_width(rules_word(leaves), typo::body()) + trail
 }
 
 /// The width of the bell's menu with `choices`: as a menu of choices ([`choice_menu_width`]), and
 /// at least what its segments need beside the menu's and their insets – "Until tomorrow" and
 /// "Only Info" are long in some languages.
-fn mute_menu_width(choices: &[Choice]) -> f32 {
+fn mute_menu_width(choices: &[Choice], leaves: bool) -> f32 {
     let spans = MuteFor::ALL.map(MuteFor::name);
     let effects = MUTE_EFFECTS.map(effect_name);
     let frame = 2.0 * (style::MENU_INSET + space::s());
     let segments = segmented_width(&spans).max(segmented_width(&effects)) + frame;
-    choice_menu_width(choices).max(segments.ceil()).min(size::panel())
+    let rules = rules_entry_width(leaves).ceil();
+    choice_menu_width(choices).max(segments.ceil()).max(rules).min(size::panel())
 }
 
 /// The header's button that turns the order (task E8.15): the icon and word of the order shown
@@ -9374,7 +9404,7 @@ mod tests {
         let (mut app, _, _) = at_mail();
         bell_by_keys(&mut app);
         let choices = app.choices();
-        let width = mute_menu_width(&choices);
+        let width = mute_menu_width(&choices, true);
         assert!(width > widgets::menu_width(), "wider than a plain menu: {width}");
         for (i, choice) in choices.iter().enumerate() {
             let shown = choice_label(&choice.label, None, keys::digit(i + 1), width);
@@ -12052,15 +12082,22 @@ mod tests {
     }
 
     /// Task S.20: "All rules" sends its own message – never the gear's `OpenSettings` – and only
-    /// the mail window, which has no section Rules, says with the arrow that it leaves the window.
+    /// the mail window, which has no section Rules, says with its word and the arrow that it leads
+    /// to another window.
     #[test]
     fn all_rules_has_its_own_message_and_leaves_only_the_mail_window() {
         let in_window = rules_entry(false);
         assert!(matches!(in_window.on_press, Message::OpenRules));
         assert!(!matches!(in_window.on_press, Message::OpenSettings));
         assert!(matches!(in_window.trail, Trail::None), "it opens in this window");
+        assert_eq!(rules_word(false), tr("All rules"));
         let leaves = rules_entry(true);
         assert!(matches!(leaves.trail, Trail::Icon(Icon::ArrowUpRight)), "the mail window has no Rules");
+        assert_eq!(rules_word(true), tr("All rules in the Notification Hub"), "the word says where it leads");
+        assert!(rules_entry_width(true) > rules_entry_width(false), "the longer word needs more room");
+        // The menu grows at most to a panel's width; a word that needed more would be cut.
+        assert!(rules_entry_width(true) <= size::panel(), "{}", rules_entry_width(true));
+        assert!(mute_menu_width(&[], true) >= rules_entry_width(true).ceil(), "the menu makes room for it");
     }
 
     /// Task S.20: the gear turns the content area into the settings and back, and the sidebar and
@@ -12113,16 +12150,26 @@ mod tests {
         assert_eq!(mail.settings.as_ref().map(|pane| pane.host.current().id), Some("reading"));
     }
 
-    /// Task S.20: "All rules" opens the section Rules in the windows that have it; in the mail
-    /// window it stays in the control centre, so nothing of this window opens a wrong section.
+    /// Task S.20: "All rules" opens the section Rules in the windows that have it; the mail window,
+    /// which has none, brings the Notification Hub's window forward (`apps.open_app`) and opens no
+    /// settings of its own.
     #[test]
-    fn all_rules_opens_the_rules_of_this_window() {
+    fn all_rules_opens_the_rules_or_the_notification_hub() {
+        for kind in [Kind::Hub, Kind::Notifications] {
+            assert!(rules_message(kind).is_none(), "{kind:?} has the section itself");
+        }
         let mut hub = overview_at(&[]);
         let _ = hub.update(Message::OpenRules);
         assert_eq!(hub.settings.as_ref().map(|pane| pane.host.current().id), Some(RULES_SECTION));
+
+        let opens = rules_message(Kind::Mail);
+        assert!(
+            matches!(opens, Some(Message::OpenApp(ref app)) if app == AppId::INBOX.window_class),
+            "the mail window asks the core for the Notification Hub, not the control centre: {opens:?}"
+        );
         let mut mail = mail_window("compact", &[]);
         let _ = mail.update(Message::OpenRules);
-        assert!(mail.settings.is_none(), "the mail window has no section Rules");
+        assert!(mail.settings.is_none(), "the mail window opens no section of its own");
     }
 
     /// Task S.20, not negotiable: an entry that links to the control centre opens it and never a
@@ -12261,7 +12308,7 @@ mod tests {
                 }
             }
         }
-        let menu = mute_menu_width(&[]);
+        let menu = mute_menu_width(&[], false);
         assert!(menu >= widgets::menu_width() && menu <= size::panel());
     }
 

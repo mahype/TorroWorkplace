@@ -290,8 +290,9 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   shortcuts“ (E10.3) ist nur Platz gelassen. Jede Fensterart kennt nur ihre Abschnitte
   (`Kind::settings_sections`); Zahnrad, „Settings“ in Seitenleiste und Menü schalten den Inhaltsbereich um,
   `--settings <abschnitt>` nimmt nur die Wörter der eigenen Fensterart, Escape und jeder Klick, der wieder
-  Einträge zeigt, schließen sie. „All rules“ öffnet Rules im Fenster; im Mail-Fenster, das den Abschnitt nicht
-  hat, bleibt es die Steuerzentrale (mit dem Pfeil ↗). Ein Eintrag mit `Link::App` auf `torroworkplace` hat
+  Einträge zeigt, schließen sie. „All rules“ öffnet Rules im Fenster; das Mail-Fenster, das den Abschnitt
+  nicht hat, holt mit `apps.open_app` das Fenster des Notification Hub nach vorn („All rules in the
+  Notification Hub ↗“), nicht die Steuerzentrale. Ein Eintrag mit `Link::App` auf `torroworkplace` hat
   eine eigene Nachricht (`OpenControlCentre`) und öffnet nie einen Abschnitt. Eine Mail-Quelle, die früher mit
   `MuteSource` stumm wurde, zeigt „Off“; beim Anschalten gehen `UpdateMailAccount` **und**
   `MuteSource { muted: false }` raus. Sichtprüfung über Iceds `window::screenshot` mit einem nicht
