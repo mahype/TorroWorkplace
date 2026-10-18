@@ -11,6 +11,10 @@
 //! How it stands comes with [`Data::voice`], which the host asks for with every load – also after
 //! every change, so the listener's state follows by itself. "Installed something?" asks again
 //! without changing anything: an [`crate::Action::Send`] with no request is a load.
+//!
+//! "Say something" ([`Message::TestVoice`]) is the one thing here whose answer is the point:
+//! `settings.test_voice` answers with what was understood. It goes out as [`crate::Action::Ask`],
+//! and the app hands the answer back to [`answered`], which puts it under the row ([`Heard`]).
 
 use iced::Element;
 use iced::widget::{Space, column, toggler};
@@ -19,11 +23,32 @@ use torro_core::i18n::{tr, trf};
 use torro_gui::theme;
 use torro_gui::widgets::{self, Status};
 use torro_gui::{layout, style, typo};
-use torro_ipc::{Request, SettingKey, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
+use torro_ipc::{Request, Response, SettingKey, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
 
 use super::Action;
 use crate::Data;
 use crate::parts::{choice, setting_row};
+
+/// Section state: what "Say something" is doing. Everything else the section shows comes from
+/// [`Data`].
+#[derive(Debug, Default)]
+pub struct State {
+    /// "Say something" is recording.
+    testing: bool,
+    /// What the last test heard.
+    heard: Option<Heard>,
+}
+
+/// The outcome of "Say something".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Heard {
+    /// These words.
+    Text(String),
+    /// Nothing understood.
+    Nothing,
+    /// The test failed, with the daemon's message.
+    Failed(String),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Message {
@@ -35,9 +60,11 @@ pub enum Message {
     Microphone(Option<String>),
     /// "Installed something?" / "Check again": ask how voice stands again.
     Check,
+    /// "Say something": record once and show what was understood.
+    TestVoice,
 }
 
-pub fn update(message: Message, data: &Data) -> Action {
+pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
     match message {
         Message::Enabled(on) => {
             // Only switching on needs the programs; off is always possible.
@@ -52,6 +79,32 @@ pub fn update(message: Message, data: &Data) -> Action {
         }
         // Nothing to send: the host loads the sections' data again, the status with it.
         Message::Check => Action::Send(Vec::new()),
+        Message::TestVoice => {
+            if state.testing {
+                return Action::None;
+            }
+            state.testing = true;
+            state.heard = None;
+            // The answer is the point, so it comes back to this section ([`answered`]).
+            Action::Ask(Request::TestVoice)
+        }
+    }
+}
+
+/// The answer to this section's [`crate::Action::Ask`], handed over by the app: what "Say
+/// something" heard, or why it failed. Anything else is not this section's and changes nothing.
+pub fn answered(state: &mut State, result: &Result<Response, String>) {
+    match result {
+        Ok(Response::Transcript { text }) => {
+            state.testing = false;
+            state.heard =
+                Some(if text.trim().is_empty() { Heard::Nothing } else { Heard::Text(text.trim().to_string()) });
+        }
+        Err(message) if state.testing => {
+            state.testing = false;
+            state.heard = Some(Heard::Failed(message.clone()));
+        }
+        _ => {}
     }
 }
 
@@ -63,17 +116,17 @@ fn set(key: SettingKey, value: serde_json::Value) -> Action {
 // ----- Views --------------------------------------------------------------------------------
 
 /// Voice, the microphone where one can be named, and the programs on this computer.
-pub fn view(data: &Data) -> Element<'_, Message> {
+pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     if !super::is_on(data) {
         return super::off_group(tr("Voice"));
     }
-    let mut page = column![voice_group(data)].spacing(layout::section_gap());
+    let mut page = column![voice_group(state, data)].spacing(layout::section_gap());
     page = page.extend(microphone_group(data));
     page.push(programs_group(data)).into()
 }
 
-/// "Voice": on or off with what the listener does, the wake word and "Speak answers".
-fn voice_group(data: &Data) -> Element<'_, Message> {
+/// "Voice": on or off with what the listener does, the wake word, "Speak answers" and the test.
+fn voice_group<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let settings = &data.settings.voice;
     let can_listen = data.voice.as_ref().is_none_or(VoiceStatus::can_listen);
     let (status, detail) = voice_state(settings.enabled, data.voice.as_ref());
@@ -88,10 +141,20 @@ fn voice_group(data: &Data) -> Element<'_, Message> {
         toggler(settings.speak_answers).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::SpeakAnswers);
     let speak =
         setting_row(None, tr("Speak answers"), Some(tr("Read aloud with Piper as well as shown").to_string()), speak);
+    let test_button = match state.testing {
+        true => widgets::busy_button(tr("Listening…"), style::button::secondary),
+        false => widgets::text_button(
+            None,
+            tr("Say something"),
+            style::button::secondary,
+            can_listen.then_some(Message::TestVoice),
+        ),
+    };
+    let test = setting_row(None, tr("Test the microphone"), Some(heard_text(state)), test_button);
     let footer = tr(
         "Say “Hey Torro” and your question. Everything stays on this computer. Approvals are only given with a click, never by voice.",
     );
-    widgets::group(tr("Voice"), vec![on, wake, speak], Some(footer.to_string()))
+    widgets::group(tr("Voice"), vec![on, wake, speak, test], Some(footer.to_string()))
 }
 
 /// "Microphone": the system's default and every microphone the recording program lists, a check
@@ -145,6 +208,19 @@ fn program_row(program: &VoiceProgram) -> Element<'_, Message> {
 }
 
 // ----- Pure parts (unit-tested) -------------------------------------------------------------
+
+/// The line under "Test the microphone": what was heard, or how to test.
+pub fn heard_text(state: &State) -> String {
+    if state.testing {
+        return tr("Speak now, it stops at a pause").to_string();
+    }
+    match &state.heard {
+        None => tr("Shows what the assistant understands").to_string(),
+        Some(Heard::Text(text)) => trf("Heard: “{text}”", &[("text", text)]),
+        Some(Heard::Nothing) => tr("Nothing understood. Speak a little louder or closer.").to_string(),
+        Some(Heard::Failed(_)) => tr("The test failed. Check the programs below.").to_string(),
+    }
+}
 
 /// The dot and the line under "Talk to the assistant": off, or what the listener does.
 pub fn voice_state(enabled: bool, status: Option<&VoiceStatus>) -> (Status, String) {
@@ -254,19 +330,56 @@ mod tests {
     #[tokio::test]
     async fn voice_settings_send_set_setting() {
         let data = data().await;
-        assert_eq!(sent(update(Message::Enabled(true), &data)), (SettingKey::VoiceEnabled, serde_json::json!(true)));
-        assert_eq!(sent(update(Message::Enabled(false), &data)), (SettingKey::VoiceEnabled, serde_json::json!(false)));
+        let mut state = State::default();
         assert_eq!(
-            sent(update(Message::SpeakAnswers(false), &data)),
+            sent(update(&mut state, Message::Enabled(true), &data)),
+            (SettingKey::VoiceEnabled, serde_json::json!(true))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::Enabled(false), &data)),
+            (SettingKey::VoiceEnabled, serde_json::json!(false))
+        );
+        assert_eq!(
+            sent(update(&mut state, Message::SpeakAnswers(false), &data)),
             (SettingKey::SpeakAnswers, serde_json::json!(false))
         );
         assert_eq!(
-            sent(update(Message::Microphone(Some("alsa_input.usb".into())), &data)),
+            sent(update(&mut state, Message::Microphone(Some("alsa_input.usb".into())), &data)),
             (SettingKey::Microphone, serde_json::json!("alsa_input.usb"))
         );
-        assert_eq!(sent(update(Message::Microphone(None), &data)), (SettingKey::Microphone, serde_json::Value::Null));
+        assert_eq!(
+            sent(update(&mut state, Message::Microphone(None), &data)),
+            (SettingKey::Microphone, serde_json::Value::Null)
+        );
         // "Check again" sends nothing; the host loads the status again.
-        assert_eq!(update(Message::Check, &data), Act::Send(Vec::new()));
+        assert_eq!(update(&mut state, Message::Check, &data), Act::Send(Vec::new()));
+    }
+
+    /// Task C.9: "Say something" asks for one answer and says what it heard, whatever came.
+    #[tokio::test]
+    async fn say_something_shows_what_was_heard() {
+        let data = data().await;
+        let mut state = State::default();
+        assert_eq!(update(&mut state, Message::TestVoice, &data), Act::Ask(Request::TestVoice));
+        assert!(matches!(update(&mut state, Message::TestVoice, &data), Act::None), "one test at a time");
+        assert_eq!(heard_text(&state), tr("Speak now, it stops at a pause"));
+        answered(&mut state, &Ok(Response::Transcript { text: " What is on today? ".into() }));
+        assert_eq!(heard_text(&state), trf("Heard: “{text}”", &[("text", &"What is on today?")]));
+        assert!(!state.testing, "the answer ends the test");
+
+        let _ = update(&mut state, Message::TestVoice, &data);
+        answered(&mut state, &Ok(Response::Transcript { text: String::new() }));
+        assert_eq!(heard_text(&state), tr("Nothing understood. Speak a little louder or closer."));
+
+        let _ = update(&mut state, Message::TestVoice, &data);
+        answered(&mut state, &Err("no recorder".into()));
+        assert_eq!(heard_text(&state), tr("The test failed. Check the programs below."));
+
+        // An answer that is not this section's leaves it alone.
+        let before = heard_text(&state);
+        answered(&mut state, &Ok(Response::Ok));
+        answered(&mut state, &Err("offline".into()));
+        assert_eq!(heard_text(&state), before, "nothing was being tested");
     }
 
     /// Without the programs voice cannot be switched on; off always works.
@@ -275,8 +388,9 @@ mod tests {
         let missing = status(VoiceState::Off, Some(VoiceMissing::Model));
         assert!(!missing.can_listen());
         let data = Data { voice: Some(missing.clone()), ..data().await };
-        assert!(matches!(update(Message::Enabled(true), &data), Act::None));
-        assert!(matches!(update(Message::Enabled(false), &data), Act::Send(_)));
+        let mut state = State::default();
+        assert!(matches!(update(&mut state, Message::Enabled(true), &data), Act::None));
+        assert!(matches!(update(&mut state, Message::Enabled(false), &data), Act::Send(_)));
         assert_eq!(voice_state(false, Some(&missing)).1, tr("Install the programs below first"));
     }
 
@@ -305,22 +419,27 @@ mod tests {
         assert_eq!(part_label(VoicePart::SpeechToText), tr("Speech to text"));
     }
 
-    /// The section builds with the status known, unknown, the app missing, and while the assistant
-    /// is off.
+    /// The section builds with the status known, unknown, the app missing, while a test runs and
+    /// while the assistant is off.
     #[tokio::test]
     async fn the_section_builds_in_every_state() {
         let data = data().await;
         let mut on = data.clone();
         on.settings.voice.enabled = true;
-        for voice in [
-            Some(status(VoiceState::Listening, None)),
-            Some(VoiceStatus::default()),
-            Some(VoiceStatus { microphones: Vec::new(), ..status(VoiceState::Off, None) }),
-            None,
-        ] {
-            let _ = view(&Data { voice: voice.clone(), ..on.clone() });
-            let _ = view(&Data { voice, ..data.clone() });
+        let mut testing = State::default();
+        let _ = update(&mut testing, Message::TestVoice, &data);
+        let heard = State { testing: false, heard: Some(Heard::Text("What is on today?".into())) };
+        for state in [State::default(), testing, heard] {
+            for voice in [
+                Some(status(VoiceState::Listening, None)),
+                Some(VoiceStatus::default()),
+                Some(VoiceStatus { microphones: Vec::new(), ..status(VoiceState::Off, None) }),
+                None,
+            ] {
+                let _ = view(&state, &Data { voice: voice.clone(), ..on.clone() });
+                let _ = view(&state, &Data { voice, ..data.clone() });
+            }
+            let _ = view(&state, &turned_off(&data));
         }
-        let _ = view(&turned_off(&data));
     }
 }

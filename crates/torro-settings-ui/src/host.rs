@@ -32,6 +32,7 @@
 //!     Outcome::Close => { self.settings = None; Task::none() }
 //!     Outcome::OpenUrl(url) => { links::open(&url); Task::none() }
 //!     Outcome::ControlCentre(section) => { connect::open_section(&section); Task::none() }
+//!     Outcome::Answer(result) => { settings_ui::assistant::answered(&mut self.sections, &result); Task::none() }
 //!     Outcome::App(app) => self.app_action(app),
 //! },
 //!
@@ -53,7 +54,7 @@ use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
 use torro_gui::widgets::{self, Align, Anchor, MenuItem, MenuSection, Placement, Trail};
 use torro_gui::{shell, style, typo};
-use torro_ipc::Request;
+use torro_ipc::{Request, Response};
 
 use crate::parts::notice;
 use crate::{Action, Backend, Data};
@@ -184,6 +185,8 @@ pub enum Message {
     Loaded(Box<Data>),
     /// A send came back: the fresh data, or what went wrong.
     Sent(Box<Result<Data, String>>),
+    /// The answer to an [`Action::Ask`] came back; the host hands it on as [`Outcome::Answer`].
+    Answered(Box<Result<Response, String>>),
 }
 
 /// What the host asks the app to do. `A` is the app's own part of an [`Action`].
@@ -196,6 +199,11 @@ pub enum Outcome<A> {
     Close,
     /// Open this web page in the browser (`torro_gui::links::open`).
     OpenUrl(String),
+    /// The answer to an [`Action::Ask`], as it came. The app hands it to the open section's
+    /// `answered` (`assistant::answered`), which is the only place that knows what to make of it;
+    /// the sections' data is not loaded again, and the host shows no notice – a page that asks
+    /// says itself what it heard.
+    Answer(Box<Result<Response, String>>),
     /// Open the control centre at this section (`torro_gui::connect::open_section`).
     ControlCentre(String),
     /// What only the app itself can do ([`Action::App`]).
@@ -295,6 +303,11 @@ impl Host {
                 let send = crate::send(backend, requests, wanted);
                 Outcome::Work(Task::perform(send, |result| Message::Sent(Box::new(result))))
             }
+            Action::Ask(request) => {
+                // One request, one answer, no reload: `send` is for what changes something.
+                let ask = crate::ask(Arc::clone(&self.backend), request);
+                Outcome::Work(Task::perform(ask, |result| Message::Answered(Box::new(result))))
+            }
             Action::OpenUrl(url) => Outcome::OpenUrl(url),
             Action::Open(id) => {
                 self.open(id);
@@ -346,6 +359,8 @@ impl Host {
                 }
                 Outcome::None
             }
+            // The answer belongs to the section that asked for it, failures included.
+            Message::Answered(result) => Outcome::Answer(result),
         }
     }
 
@@ -636,6 +651,23 @@ mod tests {
         assert!(host.loaded(), "the fresh data is there");
         assert_eq!(host.data().settings.appearance, backend.settings().appearance);
         assert!(matches!(host.act::<()>(Action::None), Outcome::None));
+    }
+
+    /// An `Ask` reaches the daemon and its answer comes back to the section that asked, without
+    /// loading the sections' data again (task S.17: "Say something").
+    #[tokio::test]
+    async fn an_ask_brings_its_answer_back_without_a_reload() {
+        let backend = Arc::new(Demo::new());
+        let (mut host, _) = Host::new(Arc::clone(&backend) as Arc<dyn Backend>, sections(), vec![Request::Settings]);
+        assert!(matches!(host.act::<()>(Action::Ask(Request::TestVoice)), Outcome::Work(_)));
+        // The task the host builds does what `crate::ask` does; run that directly.
+        let answer = crate::ask(Arc::clone(&backend) as Arc<dyn Backend>, Request::TestVoice).await;
+        assert_eq!(backend.sent(), vec![Request::TestVoice], "it went out as it was given");
+        let outcome: Outcome<()> = host.update(Message::Answered(Box::new(answer)));
+        let Outcome::Answer(result) = outcome else { panic!("the answer belongs to the section") };
+        assert!(result.is_ok());
+        assert!(!host.loaded(), "an Ask loads nothing: it changed nothing");
+        assert!(host.notice.is_none(), "and the page says itself what it heard");
     }
 
     /// A failed change stands over the page instead of being lost.

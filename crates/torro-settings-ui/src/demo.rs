@@ -196,6 +196,12 @@ impl Backend for Demo {
             Request::ListEngines => Response::Engines { engines: self.engines() },
             Request::AiModels { .. } => Response::AiModels { models: self.models() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
+            // The answer is what "Say something" shows, so the demo has words for it; it is still
+            // noted, because a test is something the window asked for.
+            Request::TestVoice => {
+                self.note(request);
+                Response::Transcript { text: "What is on today?".into() }
+            }
             _ => {
                 self.note(request);
                 Response::Ok

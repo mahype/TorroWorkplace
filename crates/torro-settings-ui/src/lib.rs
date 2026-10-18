@@ -145,16 +145,16 @@ impl Data {
 /// state, and the first failure stands in [`Data::error`] over the page.
 pub async fn load(backend: Arc<dyn Backend>, wanted: Vec<Request>) -> Data {
     let mut data = Data::default();
-    ask(&backend, wanted, &mut data).await;
+    round(&backend, wanted, &mut data).await;
     // The second round: what only the first one could name ([`Data::follow_up`]).
     let follow_up = data.follow_up();
-    ask(&backend, follow_up, &mut data).await;
+    round(&backend, follow_up, &mut data).await;
     data
 }
 
 /// Sends `requests` in order and puts every answer into `data`; the first failure stands in
 /// [`Data::error`].
-async fn ask(backend: &Arc<dyn Backend>, requests: Vec<Request>, data: &mut Data) {
+async fn round(backend: &Arc<dyn Backend>, requests: Vec<Request>, data: &mut Data) {
     for request in requests {
         match backend.call(request).await {
             Ok(response) => data.take(response),
@@ -179,8 +179,18 @@ pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, wanted: Vec
     Ok(load(backend, wanted).await)
 }
 
+/// Sends one request and hands the answer back as it came: what the host does with an
+/// [`Action::Ask`]. Nothing is loaded again – a page that asks wants this one answer.
+pub async fn ask(backend: Arc<dyn Backend>, request: Request) -> Result<Response, String> {
+    backend.call(request).await
+}
+
 /// What a section wants the [`Host`] to do. `A` is the app's own part ([`Action::App`]).
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a request can carry a whole task and is handled once; boxing would only add an allocation"
+)]
 pub enum Action<A> {
     /// Nothing.
     None,
@@ -188,6 +198,12 @@ pub enum Action<A> {
     /// afterwards. One request per thing that changed (`settings.set_setting` with its key, not a
     /// whole `settings.update_settings`), so two windows never overwrite each other.
     Send(Vec<Request>),
+    /// Send this one request and bring its answer back to the section: for a request whose answer
+    /// is the point ("Say something" shows what was understood, `settings.test_voice`), not a
+    /// change the next load would show. The host sends it and gives the app
+    /// [`Outcome::Answer`], which the app hands to the section's `answered`; the sections' data is
+    /// **not** loaded again – that is [`Action::Send`].
+    Ask(Request),
     /// Open a web page in the browser (`torro_gui::links`).
     OpenUrl(String),
     /// Show another section of these settings, by its [`Section::id`].
@@ -218,6 +234,7 @@ impl<A> Action<A> {
         match self {
             Action::None => Action::None,
             Action::Send(requests) => Action::Send(requests),
+            Action::Ask(request) => Action::Ask(request),
             Action::OpenUrl(url) => Action::OpenUrl(url),
             Action::Open(section) => Action::Open(section),
             Action::Focus(field) => Action::Focus(field),

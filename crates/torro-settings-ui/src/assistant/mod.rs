@@ -33,6 +33,8 @@
 //! // update: what a section returned goes through the host; its app part is this app's work.
 //! match host.act(assistant::update(&mut self.sections, message, host.data())) {
 //!     Outcome::App(AppAction::EditBot(id)) => self.edit_bot(id),
+//!     // The answer to an `Ask` ("Say something") belongs to the section that asked.
+//!     Outcome::Answer(result) => assistant::answered(&mut self.sections, &result),
 //!     other => self.settings_outcome(other),
 //! }
 //! ```
@@ -57,7 +59,7 @@ use torro_gui::theme::{self, palette, size};
 use torro_gui::{typo, widgets};
 use torro_ipc::api::ASSISTANT_CLIENT;
 use torro_ipc::assistant::EngineKind;
-use torro_ipc::{ClientInfo, Request};
+use torro_ipc::{ClientInfo, Request, Response};
 
 use crate::parts::setting_row;
 use crate::{Data, Page, Section};
@@ -129,9 +131,11 @@ pub fn models_request(data: &Data) -> Option<Request> {
 /// The state of every section that keeps some; the app owns one of these next to its host.
 #[derive(Debug, Default)]
 pub struct State {
-    /// Profile: the typed profile, a note being written, the questions over it. The other four
-    /// sections read everything from [`Data`] and keep nothing.
+    /// Profile: the typed profile, a note being written, the questions over it.
     pub profile: profile::State,
+    /// Voice: what "Say something" is doing and what it heard. General, Bots and History read
+    /// everything from [`Data`] and keep nothing.
+    pub voice: voice::State,
 }
 
 /// What the sections report; the app wraps it in its own message.
@@ -150,7 +154,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::General(message) => general::update(message, data),
         Message::Profile(message) => profile::update(&mut state.profile, message, data),
         Message::Bots(message) => bots::update(message, data),
-        Message::Voice(message) => voice::update(message, data),
+        Message::Voice(message) => voice::update(&mut state.voice, message, data),
         Message::History(message) => history::update(message, data),
     }
 }
@@ -164,10 +168,17 @@ pub fn page<'a>(state: &'a State, data: &'a Data, section: &str, class: SizeClas
     match section {
         "profile" => wrap(profile::page(&state.profile, data, class), Message::Profile),
         "bots" => wrap(Page::new(bots::view(data, class)), Message::Bots),
-        "voice" => wrap(Page::new(voice::view(data)), Message::Voice),
+        "voice" => wrap(Page::new(voice::view(&state.voice, data)), Message::Voice),
         "history" => wrap(Page::new(history::view(data)), Message::History),
         _ => wrap(Page::new(general::view(data)), Message::General),
     }
+}
+
+/// The answer to a section's [`crate::Action::Ask`], as the host handed it to the app
+/// ([`crate::Outcome::Answer`]): the section that asked makes what it can of it, every other one
+/// is left alone. Today one section asks – Voice, for what "Say something" heard.
+pub fn answered(state: &mut State, result: &Result<Response, String>) {
+    voice::answered(&mut state.voice, result);
 }
 
 /// The dialog of the open section over the whole window, while one is open.
@@ -258,6 +269,7 @@ mod tests {
     use std::path::Path;
     use std::sync::Arc;
 
+    use torro_core::i18n::trf;
     use torro_core::settings::AssistantDefault;
     use torro_ipc::assistant::{AVATARS, LETTER_AVATAR};
 
@@ -380,6 +392,19 @@ mod tests {
             let _ = page.body;
         }
         let _: Element<'_, Message> = off_group(tr("Profile"));
+    }
+
+    /// The answer to an `Ask` reaches the section that asked and leaves the others alone.
+    #[tokio::test]
+    async fn an_answer_reaches_the_section_that_asked() {
+        let data = data().await;
+        let mut state = State::default();
+        assert_eq!(
+            update(&mut state, Message::Voice(voice::Message::TestVoice), &data),
+            Action::Ask(Request::TestVoice)
+        );
+        answered(&mut state, &Ok(torro_ipc::Response::Transcript { text: "What is on today?".into() }));
+        assert_eq!(voice::heard_text(&state.voice), trf("Heard: “{text}”", &[("text", &"What is on today?")]));
     }
 
     /// Every picture has a symbol or shows the letter of the name.

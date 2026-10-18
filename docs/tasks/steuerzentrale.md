@@ -194,10 +194,10 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
 
 ### S.17 Seiten des Assistenten in die Bibliothek, in Abschnitte geteilt
 - [x] erledigt (geändert mit #210; die Abschnitte General, Profile, Bots, Voice und History liegen in
-  `crates/torro-settings-ui/src/assistant/`. Sichtprüfung erst mit S.18 möglich – vorher hängt kein Fenster
-  die Abschnitte ein, und dieser Rechner hat kein Hyprland. Ohne Ort geblieben: „Test the microphone“ /
-  „Say something“, weil der Host die Antwort `Response::Transcript` keiner Seite zurückgibt; vor S.21
-  entscheiden)
+  `crates/torro-settings-ui/src/assistant/`. Der Host reicht Antworten durch – `Action::Ask` hin,
+  `Outcome::Answer` an die App und von dort an `assistant::answered` –, darum steht „Test the microphone“
+  mit „Say something“ im Abschnitt Voice. Sichtprüfung erst mit S.18 möglich: vorher hängt kein Fenster die
+  Abschnitte ein, und dieser Rechner hat kein Hyprland)
 - **Modell:** Opus · **Dateien:** `crates/torro-settings-ui/src/` (neu: `assistant/`); `crates/torroworkplace/src/ui/
   {assistant,persona}.rs` nur lesen (die Seite der Steuerzentrale bleibt unverändert bis S.21)
 - Die Seite Assistant (heute bis zu 18 Gruppen) wird zu den Abschnitten **General** (Status an/aus als Anzeige mit
