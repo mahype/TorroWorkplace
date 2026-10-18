@@ -16,11 +16,14 @@ use chrono::{TimeZone, Utc};
 use torro_core::ai::AiModel;
 use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Settings};
 use torro_core::theme::Appearance;
+use torro_inbox::item::{Facet, FacetKey};
+use torro_inbox::{Lane, Rule, RuleEffect, SourceInfo, SourceRef};
 use torro_ipc::api::{ASSISTANT_CLIENT, Rights};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
 use torro_ipc::{
-    AccountInfo, ClientInfo, Request, Response, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
+    AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceMissing, VoicePart, VoiceProgram, VoiceState,
+    VoiceStatus,
 };
 
 use crate::{Answer, Backend};
@@ -32,6 +35,10 @@ const WORK_CALENDAR: &str = "nextcloud:anna@cloud.example.org/work";
 /// The calendar the sample settings hide (task S.19): "Shared" of the second account, so
 /// "Calendars" shows a switch turned off.
 const SHARED_CALENDAR: &str = "nextcloud:ben@cloud.example.org/shared";
+
+/// The sample mail account (task S.20), for the mail window's "Accounts" and the inbox's
+/// "Sources".
+const MAIL_ADDRESS: &str = "anna@mailbox.org";
 
 /// Sample data for the sections, answered from memory.
 #[derive(Debug, Default)]
@@ -129,7 +136,114 @@ impl Demo {
                     {"id": SHARED_CALENDAR, "name": "Shared", "kind": "events", "color": "#B06F12"},
                 ]),
             ),
+            // The accounts the inbox's "Sources" shows (task S.20): GitHub, an ntfy server and a
+            // mail account, the last one also the mail window's "Accounts".
+            account(
+                "github:anna-berg",
+                "github",
+                "anna-berg",
+                "https://github.com",
+                "anna-berg",
+                serde_json::json!([]),
+            ),
+            self.ntfy_account(),
+            self.mail_account(),
         ]
+    }
+
+    /// The sample ntfy account: one server with two topics, whose subscriptions stay with the
+    /// account in the control centre – "Sources" only mutes the whole server.
+    fn ntfy_account(&self) -> AccountInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": "ntfy:ntfy.sh",
+            "kind": "ntfy",
+            "label": "ntfy.sh",
+            "state": {"state": "connected", "server": "https://ntfy.sh", "login_name": "anna"},
+            "collections": [],
+            "ntfy": {
+                "server": "https://ntfy.sh",
+                "topics": [{"label": "Backups"}, {"label": "Doorbell"}],
+                "user": "anna",
+                "login": true,
+            },
+        }))
+        .expect("a sample ntfy account")
+    }
+
+    /// The sample mail account: a sender name, a signature, formatted mail and one folder role the
+    /// server left open, so the mail window's "Accounts" has every row to show (task S.20).
+    fn mail_account(&self) -> AccountInfo {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("mail:{MAIL_ADDRESS}"),
+            "kind": "mail",
+            "label": MAIL_ADDRESS,
+            "state": {"state": "connected", "server": "imap.mailbox.org", "login_name": MAIL_ADDRESS},
+            "collections": [],
+            "mail": {
+                "address": MAIL_ADDRESS,
+                "sender_name": "Anna Example",
+                "imap": {"host": "imap.mailbox.org", "port": 993, "security": "tls"},
+                "smtp": {"host": "smtp.mailbox.org", "port": 465, "security": "tls"},
+                "settings": {"signature": "Kind regards\nAnna", "notify": "for_me_only", "format": "html"},
+                "open_roles": [{
+                    "role": "archive",
+                    "candidates": [
+                        {"name": "Archive", "path": "INBOX.Archive"},
+                        {"name": "All Mail", "path": "INBOX.All"},
+                    ],
+                }],
+                "mail": {},
+            },
+        }))
+        .expect("a sample mail account")
+    }
+
+    /// The sample inbox sources (`inbox.list_sources`, task S.20): Talk is muted, so "Sources"
+    /// shows a switch turned off; the others are on.
+    fn sources(&self) -> Vec<SourceInfo> {
+        let source = |source: SourceRef, open, muted| SourceInfo { source, open, muted, health: None };
+        vec![
+            source(SourceRef::nextcloud("anna@cloud.example.org"), 3, false),
+            source(SourceRef::talk("anna@cloud.example.org"), 0, true),
+            source(SourceRef::github("anna-berg"), 2, false),
+            source(SourceRef::ntfy("ntfy.sh"), 1, false),
+            source(SourceRef::mail(MAIL_ADDRESS), 7, false),
+        ]
+    }
+
+    /// The sample rules with what they caught (`inbox.list_rules`, task S.20): a remembered lane,
+    /// a muted source, a hidden sender and a muted trait – one of each kind the section shows.
+    fn rules(&self) -> (Vec<Rule>, Vec<RuleHits>) {
+        let made = |day| Utc.with_ymd_and_hms(2026, 10, day, 9, 0, 0).single().unwrap_or_else(Utc::now);
+        let rule = |id: &str, source: SourceRef, effect, day| Rule {
+            id: id.into(),
+            source,
+            sender: None,
+            domain: None,
+            effect,
+            created: made(day),
+            facet: None,
+            until: None,
+        };
+        let rules = vec![
+            rule("r1", SourceRef::script("nightly-build"), RuleEffect::Lane { lane: Lane::Info }, 10),
+            rule("r2", SourceRef::script("cron"), RuleEffect::Muted, 11),
+            Rule {
+                sender: Some("news@shop.example".into()),
+                ..rule("r3", SourceRef::mail(MAIL_ADDRESS), RuleEffect::Muted, 12)
+            },
+            Rule {
+                facet: Some(Facet { key: FacetKey::Bulk, value: "bulk".into() }),
+                ..rule("r4", SourceRef::mail(MAIL_ADDRESS), RuleEffect::Lane { lane: Lane::Info }, 13)
+            },
+        ];
+        let hits = vec![
+            RuleHits { rule: "r1".into(), hits: 9, since: made(10) },
+            RuleHits { rule: "r2".into(), hits: 31, since: made(11) },
+            RuleHits { rule: "r3".into(), hits: 12, since: made(12) },
+            RuleHits { rule: "r4".into(), hits: 0, since: made(13) },
+        ];
+        (rules, hits)
     }
 
     /// Who the sample assistant is.
@@ -262,6 +376,11 @@ impl Backend for Demo {
             Request::AiModels { .. } => Response::AiModels { models: self.models() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
+            Request::ListSources => Response::Sources { sources: self.sources() },
+            Request::ListRules => {
+                let (rules, hits) = self.rules();
+                Response::Rules { rules, hits }
+            }
             // The answer is what "Say something" shows, so the demo has words for it; it is still
             // noted, because a test is something the window asked for.
             Request::TestVoice => {

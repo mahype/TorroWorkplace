@@ -285,7 +285,20 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   (auch `TORRO_LANG=de`) grün.
 
 ### S.20 Eingang und Mail: Einstellungen im Inhaltsbereich
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; Notification Hub und App Feed zeigen Notifications, Sources und Rules aus
+  `torro-settings-ui/src/inbox.rs`, das Mail-Fenster Accounts und Reading aus `mail.rs` – für „Keyboard
+  shortcuts“ (E10.3) ist nur Platz gelassen. Jede Fensterart kennt nur ihre Abschnitte
+  (`Kind::settings_sections`); Zahnrad, „Settings“ in Seitenleiste und Menü schalten den Inhaltsbereich um,
+  `--settings <abschnitt>` nimmt nur die Wörter der eigenen Fensterart, Escape und jeder Klick, der wieder
+  Einträge zeigt, schließen sie. „All rules“ öffnet Rules im Fenster; im Mail-Fenster, das den Abschnitt nicht
+  hat, bleibt es die Steuerzentrale (mit dem Pfeil ↗). Ein Eintrag mit `Link::App` auf `torroworkplace` hat
+  eine eigene Nachricht (`OpenControlCentre`) und öffnet nie einen Abschnitt. Eine Mail-Quelle, die früher mit
+  `MuteSource` stumm wurde, zeigt „Off“; beim Anschalten gehen `UpdateMailAccount` **und**
+  `MuteSource { muted: false }` raus. Sichtprüfung über Iceds `window::screenshot` mit einem nicht
+  committeten Wegwerf-Patch wie bei S.18: alle Abschnitte bei 1100, 800, 500 und 360 px, hell und dunkel.
+  **Offen:** die deutschen Übersetzungen (sammelt S.22); `torro-settings-ui` hat dafür `torro-mail` als
+  Abhängigkeit bekommen (`Notify`, `MailFormat`, `Role` der Mail-Einstellungen), was die Aufgabe nicht
+  genannt hatte)
 - **Modell:** Opus (viele Quellen, große App) · **Dateien:** `crates/torro-settings-ui/src/` (neu: `inbox.rs`,
   `mail.rs`), `crates/torroinbox/{Cargo.toml,src/app.rs,src/main.rs}`
 - Fensterarten Notification Hub und App Feed: Abschnitte **Notifications** (still bei Terminen), **Sources** (je

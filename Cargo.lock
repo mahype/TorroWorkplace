@@ -6447,6 +6447,7 @@ dependencies = [
  "torro-gui",
  "torro-inbox",
  "torro-ipc",
+ "torro-mail",
 ]
 
 [[package]]
@@ -6534,6 +6535,7 @@ dependencies = [
  "torro-ipc",
  "torro-mail",
  "torro-pim",
+ "torro-settings-ui",
  "webbrowser",
 ]
 

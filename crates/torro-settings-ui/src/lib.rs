@@ -49,6 +49,8 @@ pub mod calendar;
 pub mod collections;
 pub mod demo;
 pub mod host;
+pub mod inbox;
+pub mod mail;
 pub mod parts;
 
 use std::future::Future;
@@ -57,9 +59,10 @@ use std::sync::Arc;
 
 use torro_core::ai::AiModel;
 use torro_core::settings::Settings;
+use torro_inbox::{Rule, SourceInfo};
 use torro_ipc::assistant::{Engine, Note, Profile};
 use torro_ipc::bots::BotSummary;
-use torro_ipc::{AccountInfo, ClientInfo, Request, Response, VoiceStatus};
+use torro_ipc::{AccountInfo, ClientInfo, Request, Response, RuleHits, VoiceStatus};
 
 pub use host::{Form, Frame, Host, Outcome, Page, Section, form};
 
@@ -112,6 +115,16 @@ pub struct Data {
     /// calendar app's "Calendars" and the tasks app's "Lists" group by it (task S.19,
     /// [`collections`]). A sign-in that still runs has an empty id and no collections.
     pub accounts: Vec<AccountInfo>,
+    /// The inbox sources the window may see, muted ones included (`inbox.list_sources`): the
+    /// inbox's section "Sources" tells by them whether a source is muted (task S.20,
+    /// [`inbox::sources`]).
+    pub sources: Vec<SourceInfo>,
+    /// The lasting rules of the inbox (`inbox.list_rules`), in the core's order: the inbox's
+    /// section "Rules" lists them with "Remove" (task S.20, [`inbox::rules`]).
+    pub rules: Vec<Rule>,
+    /// What each rule of [`Data::rules`] caught since it was made (`inbox.list_rules`), one per
+    /// rule by its id; empty from a core before task E8.8a.
+    pub rule_hits: Vec<RuleHits>,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
 }
@@ -130,6 +143,11 @@ impl Data {
             Response::AiModels { models } => self.default_models = models,
             Response::Voice { voice } => self.voice = Some(voice),
             Response::Accounts { accounts } => self.accounts = accounts,
+            Response::Sources { sources } => self.sources = sources,
+            Response::Rules { rules, hits } => {
+                self.rules = rules;
+                self.rule_hits = hits;
+            }
             _ => {}
         }
     }

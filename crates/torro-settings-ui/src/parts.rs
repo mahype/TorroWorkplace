@@ -125,3 +125,26 @@ pub fn notice<'a, M: 'a>(problem: String) -> Element<'a, M> {
         .style(|t: &Theme, _| svg::Style { color: Some(palette(t).error_text) });
     row![alert, typo::text(typo::body(), problem)].spacing(space::s()).align_y(Alignment::Center).into()
 }
+
+/// A switch of a settings row (`toggler` in the suite's look), with what a flip reports.
+pub fn switch<'a, M: Clone + 'a>(on: bool, change: impl Fn(bool) -> M + 'a) -> Element<'a, M> {
+    iced::widget::toggler(on).size(style::CHECK_SIZE).style(style::toggler).on_toggle(change).into()
+}
+
+/// A row's choice as a pick list in the look of a secondary button ("Show new mail", "Mail
+/// colors"): `options` as their `Display` says, `chosen` in the closed list.
+pub fn picker<'a, T, L, M>(options: L, chosen: T, on_pick: impl Fn(T) -> M + 'a) -> Element<'a, M>
+where
+    T: std::fmt::Display + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    M: Clone + 'a,
+{
+    iced::widget::pick_list(options, Some(chosen), on_pick)
+        .padding(style::pick_list_padding())
+        .text_size(typo::caption().size)
+        .text_line_height(typo::caption().line_height)
+        .font(typo::caption().font)
+        .style(style::pick_list)
+        .menu_style(style::pick_list_menu)
+        .into()
+}
