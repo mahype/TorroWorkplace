@@ -83,6 +83,14 @@
 //! filter list becomes a link there (`tasks.add_link`, "Added to {list}"), a task moves there
 //! (`tasks.save_todo` with the new list, "Moved to {list}"). Lists of another account are no
 //! targets: the core refuses such a move (`unsupported`).
+//!
+//! Settings (task S.19, `docs/settings.md`): the gear turns the content area into one section,
+//! Lists – which the suite shows, grouped by account (`torro_settings_ui::collections`,
+//! `Role::TaskList`) – and back ([`App::toggle_settings`]). Shown by the library's [`Host`],
+//! talking to the core through [`App::settings_backend`]; the sidebar stays, and a click there
+//! that shows the list again closes the settings ([`App::leave_settings`]). `--settings lists`
+//! opens the window with them open; the hint without an account still opens the control centre
+//! at Accounts, unchanged.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -115,6 +123,7 @@ use torro_pim::demo::DemoSource;
 use torro_pim::model::{GitHubFilter, GitHubKind, GitHubState, Link};
 use torro_pim::source::move_plan;
 use torro_pim::{AccountState, Collection, CollectionKind, EventTime, PimAccount, PimSource, ProviderError, Todo};
+use torro_settings_ui::{Backend as SettingsBackend, Host, Outcome, Page, Section, collections};
 
 use crate::detail::{self, Detail, Fit};
 use crate::filter;
@@ -146,6 +155,44 @@ pub enum Menu {
     Display,
     /// The "…" menu in the head of a GitHub filter list: "Edit filter…", "Delete list…".
     List,
+}
+
+/// The settings of this window (task S.19): which lists the suite shows, grouped by account.
+/// [`Section::id`] is what `--settings <id>` takes.
+const SETTINGS_SECTIONS: [Section; 1] = [Section { id: "lists", icon: Icon::ListTodo, label: "Lists" }];
+
+/// The settings in the content area while they are open: the library's [`Host`] with
+/// [`SETTINGS_SECTIONS`]. Its one section keeps no state of its own: everything it shows comes
+/// straight from [`Host::data`].
+struct SettingsPane {
+    host: Host,
+}
+
+/// [`torro_settings_ui::Backend`] for a window on the core: one request, one answer over the
+/// socket, an error answer as its message for people. The host never calls [`torro_ipc::client`]
+/// itself, so a visual check with `--demo` cannot reach it (`torro_settings_ui`'s own doc).
+struct CoreSettings {
+    socket: std::path::PathBuf,
+}
+
+impl SettingsBackend for CoreSettings {
+    fn call(&self, request: Request) -> torro_settings_ui::Answer {
+        let socket = self.socket.clone();
+        Box::pin(async move {
+            match torro_ipc::client::call(&socket, &request).await {
+                Ok(Response::Error { message, .. }) => Err(message),
+                Ok(answer) => Ok(answer),
+                Err(err) => Err(err.to_string()),
+            }
+        })
+    }
+}
+
+/// Whether `message` means the content area is to show the list again (task S.19): a click in
+/// the sidebar or the navigation menu (a filter, "New list…", another app), none of which exist
+/// while the settings are open.
+fn shows_list(message: &Message) -> bool {
+    matches!(message, Message::SetFilter(_) | Message::OpenNewList | Message::OpenApp(_) | Message::Switcher(_))
 }
 
 /// A state the window can start in (`--demo --open <state>`), so that every state can be
@@ -253,6 +300,8 @@ impl Open {
 /// - `--now <YYYY-MM-DDTHH:MM>`: a fixed "now" (only its day counts here) and demo data around
 ///   it, for pictures that can be made again; needs `--demo`. The detail counts from that day as
 ///   well ([`Detail::on_day`]).
+/// - `--settings <section>`: open the window with its settings in the content area (task S.19),
+///   at this section; works without `--demo` too.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Launch {
     pub open: Option<Open>,
@@ -263,6 +312,7 @@ pub struct Launch {
     /// (`start_task`), as the core passes it for `apps.open_app` with a `task:` target. The app
     /// opens it in the detail once the tasks are in ([`App::open_start_task`]).
     pub task: Option<String>,
+    pub settings: Option<String>,
 }
 
 /// Why the start parameters were refused; `main` prints it and exits with 64, as `ctl` does.
@@ -350,7 +400,14 @@ impl Launch {
                 return Err(unknown("--design", id, valid.iter().map(String::as_str).collect()));
             }
         };
-        Ok(Launch { open, appearance, now, design, task: None })
+        let settings = match flag_value(args, "--settings")? {
+            None => None,
+            Some(word) if SETTINGS_SECTIONS.iter().any(|section| section.id == word) => Some(word.to_owned()),
+            Some(word) => {
+                return Err(unknown("--settings", word, SETTINGS_SECTIONS.iter().map(|section| section.id).collect()));
+            }
+        };
+        Ok(Launch { open, appearance, now, design, task: None, settings })
     }
 
     /// The data source: demo data around the fixed day with `--now`, else what
@@ -642,6 +699,8 @@ pub struct App {
     moving: Option<Moving>,
     /// The row being dragged by its grip, if any.
     drag: Option<Drag>,
+    /// The settings in the content area, while they are open (task S.19).
+    settings: Option<SettingsPane>,
 }
 
 // A message may carry a whole task; two kinds do (`Saved`, `IssueChanged`), so Clippy no longer
@@ -723,8 +782,13 @@ pub enum Message {
     OpenApp(&'static str),
     /// The core's answer to [`Message::OpenApp`].
     AppOpened(Result<(), String>),
-    /// Open the control centre.
-    OpenSettings,
+    /// The gear in the band or "Settings" in the sidebar/navigation menu: the settings take the
+    /// content area, or give it back to the tasks (task S.19).
+    ToggleSettings,
+    /// One of the settings' own messages ([`Host`]).
+    SettingsHost(torro_settings_ui::host::Message),
+    /// What a widget of the open settings section reported.
+    SettingsPage(collections::Message),
     /// The list scrolled (or was laid out): its offset and visible height.
     Scrolled(f32, f32),
     /// A key from [`shortcut`]; whether a text field is being typed in is checked first.
@@ -851,7 +915,7 @@ impl App {
         let open = launch.open;
         let zoom = Zoom::for_source(&source);
         let design = Follow::for_source(&source);
-        let app = App {
+        let mut app = App {
             source,
             today: launch.now.map_or_else(|| Local::now().date_naive(), |now| now.date()),
             size: torro_gui::window(AppId::TASKS).size,
@@ -899,6 +963,7 @@ impl App {
             orders_saving: 0,
             moving: None,
             drag: None,
+            settings: None,
         };
         // The size, and the traffic lights onto the title band's line (U.11).
         let size = Task::batch([
@@ -911,7 +976,7 @@ impl App {
         } else {
             ui_state::load_last_repo_task(AppId::TASKS).map(Message::LastRepo)
         };
-        let task = Task::batch([
+        let mut tasks = vec![
             ui_state::load_task(AppId::TASKS).map(Message::UiState),
             last_repo,
             // The first load waits for a core that is still starting (issue #206).
@@ -925,8 +990,12 @@ impl App {
             app.design.fetch().map(Message::Design),
             iced::system::theme().map(Message::SystemMode),
             size,
-        ]);
-        (app, task)
+        ];
+        // `--settings <section>`: the window opens with the settings in its content area.
+        if let Some(section) = app.launch.settings.clone() {
+            tasks.push(app.open_settings(Some(&section)));
+        }
+        (app, Task::batch(tasks))
     }
 
     pub fn title(&self) -> String {
@@ -946,13 +1015,15 @@ impl App {
         // Mini and strip are displays: no keys, and nothing open that Escape could close. (A key
         // like Space must not tick off a task nobody sees.)
         if !self.is_glance() {
-            // Escape closes an open menu, drawer, dialog or the detail; nothing listens while none is open.
+            // Escape closes an open menu, drawer, dialog, the settings (task S.19) or the detail;
+            // nothing listens while none is open.
             if self.menu.is_some()
                 || self.drawer
                 || self.detail.is_some()
                 || self.filter_dialog.is_some()
                 || self.new_list.is_some()
                 || self.drag.is_some()
+                || self.settings.is_some()
             {
                 subscriptions.push(widgets::escape().map(|()| Message::Escape));
             }
@@ -960,8 +1031,9 @@ impl App {
             if self.drag.is_some() {
                 subscriptions.push(iced::event::listen_with(drag_release));
             }
-            // The keys of the list are not for a list behind a dialog.
-            if self.connected() && self.filter_dialog.is_none() && self.new_list.is_none() {
+            // The keys of the list are not for a list behind a dialog, nor while the settings
+            // cover it (task S.19): its own widgets take the keys, not the list's.
+            if self.connected() && self.filter_dialog.is_none() && self.new_list.is_none() && self.settings.is_none() {
                 subscriptions.push(iced::event::listen_with(shortcut));
             }
             // Its keys 1 and 2, only where the dialog shows.
@@ -1004,6 +1076,11 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // The sidebar stays while the settings are open; a click there that would show the list
+        // again closes them first (task S.19, design skill "Wie es aussieht").
+        if self.settings.is_some() && shows_list(&message) {
+            self.leave_settings();
+        }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
@@ -1282,8 +1359,13 @@ impl App {
             // Escape drops the dragged row where it was.
             Message::Escape if self.drag.is_some() => self.drag = None,
             Message::Escape => {
+                // Innermost first: a menu or the drawer, then the settings (task S.19: its one
+                // section has no dialog or question of its own, so the host closes it directly),
+                // then what is open in the detail.
                 if self.menu.is_some() || self.drawer {
                     self.close_menus();
+                } else if self.settings.is_some() {
+                    self.settings = None;
                 } else {
                     return self.update(Message::Detail(detail::Message::Escape));
                 }
@@ -1297,9 +1379,18 @@ impl App {
             Message::AppOpened(Err(err)) => {
                 self.error = Some(trf("Could not open the app: {error}", &[("error", &err)]))
             }
-            Message::OpenSettings => {
-                self.close_menus();
-                connect::open_settings();
+            Message::ToggleSettings => return self.toggle_settings(),
+            Message::SettingsHost(message) => {
+                let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                let outcome = pane.host.update(message);
+                return self.settings_outcome(outcome);
+            }
+            Message::SettingsPage(message) => {
+                let outcome = {
+                    let Some(pane) = self.settings.as_mut() else { return Task::none() };
+                    pane.host.act(collections::update(message))
+                };
+                return self.settings_outcome(outcome);
             }
             Message::Scrolled(offset, height) => self.scroll = Some((offset, height)),
             Message::Shortcut(key) => {
@@ -1562,7 +1653,10 @@ impl App {
             return TitleButtons::none();
         }
         let label = shell::sidebar_button_label(self.class(), self.sidebar, self.drawer);
-        TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings)
+        TitleButtons::none()
+            .sidebar(label, Message::ToggleSidebar)
+            .settings(Message::ToggleSettings)
+            .settings_open(self.settings.is_some())
     }
 
     /// What lies over the top of the window, which the title band repeats: a filter list dialog,
@@ -1633,9 +1727,22 @@ impl App {
         })
     }
 
-    /// The whole window in the layout of `class`.
+    /// The whole window in the layout of `class`. The settings (task S.19), while they are open,
+    /// take the header and the content area instead; the sidebar and its menus stay.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
-        let (switcher, nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new(), Anchor::new());
+        let switcher = Anchor::new();
+        if let Some(pane) = &self.settings {
+            let frame = self.settings_frame(pane, class);
+            let sidebar = self.sidebar(SidebarMode::Expanded, &switcher);
+            let rail = (shell::sidebar_mode(class, self.sidebar) == Some(SidebarMode::Rail))
+                .then(|| self.sidebar(SidebarMode::Rail, &switcher));
+            let window = shell::shell(class, sidebar, frame.header, frame.body, None)
+                .rail(rail)
+                .drawer(self.drawer, Message::CloseMenu)
+                .overlay(frame.overlay);
+            return self.with_notice(window.into());
+        }
+        let (nav, display, property) = (Anchor::new(), Anchor::new(), Anchor::new());
         let list_menu = Anchor::new();
         // In a narrow window the filter list dialog and the form "New task list" are views of their own.
         if let Some(dialog) = self.filter_dialog.as_ref().filter(|dialog| dialog.is_full(class)) {
@@ -2083,8 +2190,8 @@ impl App {
                 Icon::Settings,
                 tr("Settings"),
                 Trail::None,
-                false,
-                Message::OpenSettings,
+                self.settings.is_some(),
+                Message::ToggleSettings,
             ));
         }
         let head = shell::sidebar_head(mode, AppId::TASKS, switcher, Message::Switcher, Message::ToggleSidebar);
@@ -2117,7 +2224,7 @@ impl App {
         sections.push(MenuSection::new(vec![
             MenuItem::new(Icon::Calendar, tr("Open Calendar"), Message::OpenApp(AppId::CALENDAR.binary))
                 .trail(Trail::Icon(Icon::ArrowUpRight)),
-            MenuItem::new(Icon::Settings, tr("Settings"), Message::OpenSettings),
+            MenuItem::new(Icon::Settings, tr("Settings"), Message::ToggleSettings).current(self.settings.is_some()),
         ]));
         widgets::menu(sections)
     }
@@ -2238,6 +2345,81 @@ impl App {
     fn close_menus(&mut self) {
         self.menu = None;
         self.drawer = false;
+    }
+
+    // -- The settings in the content area (task S.19) -------------------------------------------
+
+    /// The way the settings take to the core: this window's own socket, or the library's demo
+    /// with `--demo`, which never opens one.
+    fn settings_backend(&self) -> Arc<dyn SettingsBackend> {
+        match &self.source {
+            Source::Core(client) => Arc::new(CoreSettings { socket: client.socket.clone() }),
+            Source::Demo(_) => Arc::new(torro_settings_ui::demo::Demo::new()),
+        }
+    }
+
+    /// The gear, or "Settings" in the sidebar or the navigation menu: the settings take the
+    /// content area, or give it back to the tasks. Nothing open in the detail is lost – it stays
+    /// until a click in the sidebar shows it again ([`App::leave_settings`]).
+    fn toggle_settings(&mut self) -> Task<Message> {
+        self.close_menus();
+        if self.settings.is_some() {
+            self.settings = None;
+            return Task::none();
+        }
+        self.open_settings(None)
+    }
+
+    /// The settings in the content area, at `section` when one is named (`--settings <section>`,
+    /// an unknown word leaves the first – only – section open) – a fresh [`Host`] and its first
+    /// load, which goes over [`App::settings_backend`] and never over this window's own requests.
+    fn open_settings(&mut self, section: Option<&str>) -> Task<Message> {
+        let (mut host, load) = Host::new(self.settings_backend(), SETTINGS_SECTIONS.to_vec(), collections::wanted());
+        if let Some(id) = section {
+            host.open(id);
+        }
+        self.settings = Some(SettingsPane { host });
+        load.map(Message::SettingsHost)
+    }
+
+    /// The content area shows the list again: the settings step aside. A click in the sidebar
+    /// that shows the list – a filter, "New list…", another app – comes through here.
+    fn leave_settings(&mut self) {
+        self.settings = None;
+    }
+
+    /// What the host asks of the window: the browser and the control centre are the app's;
+    /// everything else the host did itself.
+    fn settings_outcome(&mut self, outcome: Outcome<()>) -> Task<Message> {
+        match outcome {
+            Outcome::None => Task::none(),
+            Outcome::Work(task) => task.map(Message::SettingsHost),
+            Outcome::Close => {
+                self.settings = None;
+                Task::none()
+            }
+            Outcome::OpenUrl(url) => {
+                // Like the detail's own links: a browser that cannot be started is only logged.
+                if let Err(err) = webbrowser::open(&url) {
+                    eprintln!("cannot open the link in a browser: {err}");
+                }
+                Task::none()
+            }
+            // No section of this window asks a question of its own (`Action::Ask`).
+            Outcome::Answer(_) => Task::none(),
+            Outcome::ControlCentre(section) => {
+                connect::open_section(&section);
+                Task::none()
+            }
+            // No section of this window needs what only the app itself can do.
+            Outcome::App(()) => Task::none(),
+        }
+    }
+
+    /// The header bar and the content area of the open settings, as the host draws them.
+    fn settings_frame<'a>(&'a self, pane: &'a SettingsPane, class: SizeClass) -> torro_settings_ui::Frame<'a, Message> {
+        let body = collections::page(pane.host.data(), collections::Role::TaskList).map(Message::SettingsPage);
+        pane.host.view(class, Page::new(body), Message::SettingsHost)
     }
 
     /// The icon of a filter in the header: the smart lists' ([`filter_icon`]), a filter list's
@@ -5035,5 +5217,78 @@ mod tests {
         let (mut app, _) = App::new(launch.source(&args(&words)), launch);
         let _ = app.update(Message::Loaded(Ok((collections, todos))));
         assert!(app.detail.is_none());
+    }
+
+    // -- Settings in the content area (task S.19) ------------------------------------------------
+
+    /// The gear (`ToggleSettings`) opens the settings at "Lists" and closes them again; while
+    /// they are open the window still builds in every layout.
+    #[test]
+    fn the_gear_toggles_the_settings_open_and_closed() {
+        let mut app = launched(&["--demo"]);
+        assert!(app.settings.is_none());
+        let _ = app.update(Message::ToggleSettings);
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, "lists");
+        for size in [Size::new(1100.0, 760.0), Size::new(500.0, 760.0), Size::new(360.0, 760.0)] {
+            let _ = app.update(Message::Resized(size));
+            let _ = app.view();
+        }
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.settings.is_none(), "a second press closes them");
+    }
+
+    /// `--settings lists` opens the window with the settings already open; an unknown word is
+    /// refused with the valid ones, and `--settings` needs no `--demo`.
+    #[test]
+    fn settings_opens_at_the_word_s_section() {
+        let app = launched(&["--demo", "--settings", "lists"]);
+        let pane = app.settings.as_ref().expect("the settings are open");
+        assert_eq!(pane.host.current().id, "lists");
+        let err = Launch::parse(&args(&["--settings", "bogus"])).expect_err("unknown section");
+        assert!(matches!(err, LaunchError::UnknownValue { flag: "--settings", .. }), "{err:?}");
+        assert_eq!(Launch::parse(&args(&["--settings"])), Err(LaunchError::MissingValue("--settings")));
+        assert!(Launch::parse(&args(&["--settings", "lists"])).is_ok(), "no --demo needed");
+    }
+
+    /// A click in the sidebar that shows the list again (a filter, "New list…") closes the
+    /// settings first; folding an account does not.
+    #[test]
+    fn a_sidebar_click_leaves_the_settings_the_rest_does_not() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.settings.is_some());
+        let _ = app.update(Message::SetFilter(Filter::All));
+        assert!(app.settings.is_none(), "a filter in the sidebar shows the list");
+
+        let _ = app.update(Message::ToggleSettings);
+        let _ = app.update(Message::ToggleAccount("work".into()));
+        assert!(app.settings.is_some(), "folding an account does not leave the settings");
+    }
+
+    /// Escape closes a menu or the drawer first, then the settings, and only then the detail.
+    #[test]
+    fn escape_closes_the_settings_before_the_detail() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Select(0));
+        assert!(app.detail.is_some());
+        let _ = app.update(Message::ToggleSettings);
+        let _ = app.update(Message::ToggleNav);
+        let _ = app.update(Message::Escape);
+        assert!(app.menu.is_none() && app.settings.is_some(), "the menu first");
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none() && app.detail.is_some(), "the settings, the detail stays");
+    }
+
+    /// The switch of a list sends exactly `settings.set_collection_shown`; the library's own
+    /// tests check the rest of "Calendars" and "Lists".
+    #[test]
+    fn settings_dispatch_sends_the_switch() {
+        let action: torro_settings_ui::Action<()> =
+            collections::update(collections::Message::Shown { collection: "a/home".into(), shown: true });
+        assert_eq!(
+            action,
+            torro_settings_ui::Action::send(Request::SetCollectionShown { collection: "a/home".into(), shown: true })
+        );
     }
 }

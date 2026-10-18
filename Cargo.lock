@@ -6512,6 +6512,7 @@ dependencies = [
  "torro-gui",
  "torro-ipc",
  "torro-pim",
+ "torro-settings-ui",
  "webbrowser",
  "winresource",
 ]
@@ -6547,6 +6548,7 @@ dependencies = [
  "torro-gui",
  "torro-ipc",
  "torro-pim",
+ "torro-settings-ui",
  "webbrowser",
  "winresource",
 ]

@@ -14,14 +14,24 @@ use std::sync::Mutex;
 
 use chrono::{TimeZone, Utc};
 use torro_core::ai::AiModel;
-use torro_core::settings::{AssistantDefault, Settings};
+use torro_core::settings::{AssistantDefault, CalendarReminders, Reminders, Settings};
 use torro_core::theme::Appearance;
 use torro_ipc::api::{ASSISTANT_CLIENT, Rights};
 use torro_ipc::assistant::{Engine, EngineKind, LETTER_AVATAR, Note, Profile};
 use torro_ipc::bots::BotSummary;
-use torro_ipc::{ClientInfo, Request, Response, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus};
+use torro_ipc::{
+    AccountInfo, ClientInfo, Request, Response, VoiceMissing, VoicePart, VoiceProgram, VoiceState, VoiceStatus,
+};
 
 use crate::{Answer, Backend};
+
+/// The calendar the sample reminders single out (task S.19): "Work" of the first account, shown
+/// with "Full screen" instead of the default "Notification".
+const WORK_CALENDAR: &str = "nextcloud:anna@cloud.example.org/work";
+
+/// The calendar the sample settings hide (task S.19): "Shared" of the second account, so
+/// "Calendars" shows a switch turned off.
+const SHARED_CALENDAR: &str = "nextcloud:ben@cloud.example.org/shared";
 
 /// Sample data for the sections, answered from memory.
 #[derive(Debug, Default)]
@@ -33,6 +43,8 @@ pub struct Demo {
 impl Demo {
     /// A demo with the sample settings: dark, so the first look shows the suite's own look.
     pub fn new() -> Demo {
+        let mut reminders = Reminders::default();
+        reminders.calendars.insert(WORK_CALENDAR.into(), CalendarReminders::FullScreen);
         let settings = Settings {
             appearance: Appearance::Dark,
             // An AI account with one of its models: the load's second round then really asks
@@ -42,6 +54,9 @@ impl Demo {
                 model: Some("qwen3:8b".into()),
                 effort: None,
             }),
+            // So "Calendars" (task S.19) shows a hidden calendar too, with its switch off.
+            hidden_collections: vec![SHARED_CALENDAR.into()],
+            reminders,
             ..Settings::default()
         };
         Demo { settings, sent: Mutex::new(Vec::new()) }
@@ -65,6 +80,56 @@ impl Demo {
             rights: Rights::assistant(),
             agent: None,
         }]
+    }
+
+    /// Two accounts with calendars and task lists, for "Calendars" (task S.19) and "Lists" to
+    /// group by: a Nextcloud account with a calendar, a family calendar and a personal list, and
+    /// a second one with a calendar the sample settings hide ([`SHARED_CALENDAR`]).
+    fn accounts(&self) -> Vec<AccountInfo> {
+        let connected = |server: &str, login: &str| {
+            serde_json::json!({
+                "state": "connected", "server": server, "login_name": login, "last_sync": null, "problem": null
+            })
+        };
+        let account = |id: &str, kind: &str, label: &str, server: &str, login: &str, collections: serde_json::Value| {
+            serde_json::from_value(serde_json::json!({
+                "id": id,
+                "kind": kind,
+                "label": label,
+                "state": connected(server, login),
+                "collections": collections,
+            }))
+            .expect("a sample account")
+        };
+        vec![
+            account(
+                "nextcloud:anna@cloud.example.org",
+                "nextcloud",
+                "anna@cloud.example.org",
+                "https://cloud.example.org",
+                "anna",
+                serde_json::json!([
+                    {"id": WORK_CALENDAR, "name": "Work", "kind": "events", "color": "#3B6EF0"},
+                    {
+                        "id": "nextcloud:anna@cloud.example.org/family",
+                        "name": "Family",
+                        "kind": "events",
+                        "color": "#1F9D68"
+                    },
+                    {"id": "nextcloud:anna@cloud.example.org/personal", "name": "Personal", "kind": "todos"},
+                ]),
+            ),
+            account(
+                "nextcloud:ben@cloud.example.org",
+                "nextcloud",
+                "ben@cloud.example.org",
+                "https://cloud.example.org",
+                "ben",
+                serde_json::json!([
+                    {"id": SHARED_CALENDAR, "name": "Shared", "kind": "events", "color": "#B06F12"},
+                ]),
+            ),
+        ]
     }
 
     /// Who the sample assistant is.
@@ -196,6 +261,7 @@ impl Backend for Demo {
             Request::ListEngines => Response::Engines { engines: self.engines() },
             Request::AiModels { .. } => Response::AiModels { models: self.models() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
+            Request::Accounts => Response::Accounts { accounts: self.accounts() },
             // The answer is what "Say something" shows, so the demo has words for it; it is still
             // noted, because a test is something the window asked for.
             Request::TestVoice => {

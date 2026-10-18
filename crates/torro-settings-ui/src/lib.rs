@@ -45,6 +45,8 @@
 //! opens a socket. Nothing in this library knows the socket (a test watches over that).
 
 pub mod assistant;
+pub mod calendar;
+pub mod collections;
 pub mod demo;
 pub mod host;
 pub mod parts;
@@ -57,7 +59,7 @@ use torro_core::ai::AiModel;
 use torro_core::settings::Settings;
 use torro_ipc::assistant::{Engine, Note, Profile};
 use torro_ipc::bots::BotSummary;
-use torro_ipc::{ClientInfo, Request, Response, VoiceStatus};
+use torro_ipc::{AccountInfo, ClientInfo, Request, Response, VoiceStatus};
 
 pub use host::{Form, Frame, Host, Outcome, Page, Section, form};
 
@@ -106,6 +108,10 @@ pub struct Data {
     pub default_models: Vec<AiModel>,
     /// How talking by voice stands (`settings.voice_status`); `None` until an answer came.
     pub voice: Option<VoiceStatus>,
+    /// Every account with its collections, hidden ones included (`accounts.list_accounts`): the
+    /// calendar app's "Calendars" and the tasks app's "Lists" group by it (task S.19,
+    /// [`collections`]). A sign-in that still runs has an empty id and no collections.
+    pub accounts: Vec<AccountInfo>,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
 }
@@ -123,6 +129,7 @@ impl Data {
             Response::Engines { engines } => self.engines = engines,
             Response::AiModels { models } => self.default_models = models,
             Response::Voice { voice } => self.voice = Some(voice),
+            Response::Accounts { accounts } => self.accounts = accounts,
             _ => {}
         }
     }

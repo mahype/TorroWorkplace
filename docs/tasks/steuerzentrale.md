@@ -257,7 +257,17 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   (Agent `torro-design-review`); fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.19 Kalender und Aufgaben: Einstellungen im Inhaltsbereich
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; Kalender bekommt die drei Abschnitte aus `collections.rs`
+  (Calendars, `Role::Calendar`) und `calendar.rs` (Reminders, Night) in einer eigenen `SETTINGS_SECTIONS`
+  in `torrocalendar/src/app.rs` – die Bibliothek hat kein eigenes Kalender-Modul, weil Calendars sich
+  `collections.rs` mit Aufgabens Lists teilt. Aufgaben bekommt nur den einen Abschnitt Lists, direkt aus
+  `collections::Role::TaskList`. Beide Apps: Zahnrad/„Settings“ hin und zurück, `--settings <abschnitt>`
+  ohne `--demo`-Zwang, ein Klick in der Seitenleiste, der den Kalender bzw. die Liste wieder zeigt, schließt
+  die Einstellungen (`shows_calendar`/`shows_list`), Escape zuletzt. Dabei einen bestehenden Fehler in beiden
+  Apps gefunden und mitbehoben: die Escape- und die Tastatur-Subscription waren nicht an die Einstellungen
+  gekoppelt, sonst hätte Escape bei offenen Einstellungen gar nichts getan. **Offen:** Sichtprüfung auf diesem
+  Rechner nicht möglich – kein Hyprland, macOS, und den nicht committeten Wegwerf-Patch aus S.18 für Iceds
+  `window::screenshot` habe ich für diese Aufgabe nicht neu angelegt; S.22 holt die Design-Prüfung der Stufe nach.)
 - **Modell:** Sonnet · **Dateien:** `crates/torro-settings-ui/src/` (neu: `collections.rs`, `calendar.rs`),
   `crates/torrocalendar/{Cargo.toml,src/app.rs,src/main.rs}`, `crates/torrotasks/{Cargo.toml,src/app.rs,src/main.rs}`
 - Kalender: Abschnitte **Calendars** (welche die Suite zeigt, je Konto gruppiert, `settings.set_collection_shown`;

@@ -16,6 +16,8 @@ torro-core.workspace = true
 torro-pim.workspace = true
 torro-gui.workspace = true
 torro-ipc.workspace = true
+# The settings in the content area (task S.19).
+torro-settings-ui.workspace = true
 chrono.workspace = true
 iced.workspace = true
 # Opens the links of an event's location and notes (issue #126).

@@ -12,6 +12,10 @@
 //! `apps.open_app` opens a task (`task:<uid>`); an empty uid is refused (exit 64). The app shows it
 //! in the detail, on its list (task E8.7b).
 //!
+//! `torrotasks --settings lists` opens the window with its settings in the content area (task
+//! S.19): the one section "Lists", over the window's own way to the core – with `--demo` over the
+//! settings library's demo, which never opens a socket. Works without `--demo` too.
+//!
 //! `TORRO_TIMING=1` writes when the window first draws, when its first data came and every
 //! `update` or `view` that takes a frame or longer ([`torro_core::timing`], issue #206), measured by
 //! the hulls [`update`] and [`view`] here.
