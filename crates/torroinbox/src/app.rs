@@ -2689,8 +2689,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         // like `e` must not mark an entry done that nobody sees.)
         if !self.is_glance() {
             subscriptions.push(iced::event::listen_with(keys::listen));
-            // The shortcuts with Ctrl or ⌘ (task E10.1; ⌘F / Ctrl + F searches, issue #136), also when
-            // the search field or the window's guard took them; they all act on mail.
+            // The shortcuts of the system's preset (tasks E10.1, E10.1b; with Ctrl or ⌘, the function
+            // keys and Insert), also when the search field or the window's guard took them; they all
+            // act on mail.
             if !self.folders.is_empty() {
                 subscriptions.push(iced::event::listen_with(keys::shortcut));
             }
@@ -4028,7 +4029,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
         !self.folders.is_empty() && (self.launch.kind == Kind::Mail || self.view.is_mail())
     }
 
-    /// Puts the keyboard into the search field (`/`, ⌘F / Ctrl + F, the search button); where the
+    /// Puts the keyboard into the search field (`/`, the shortcut "search", the search button); where the
     /// view has no field, an empty search opens with it.
     fn focus_search(&mut self) -> Task<Message> {
         self.close_menus();
@@ -9951,7 +9952,10 @@ mod tests {
         let mut app = in_folder("f:work-inbox");
         let _ = press(&mut app, Key::Down);
         let before = app.sent.len();
-        for command in [S::Archive, S::Junk, S::ToggleRead, S::Flag, S::Reply, S::MoveToFolder, S::DeletePermanently] {
+        // Fetch too: F5 (Thunderbird) and F9 (Outlook) need no Ctrl, and the field does not take them.
+        let commands =
+            [S::Archive, S::Junk, S::ToggleRead, S::Flag, S::Reply, S::MoveToFolder, S::DeletePermanently, S::Fetch];
+        for command in commands {
             let _ = shortcut(&mut app, command, true);
             assert_eq!((app.sent.len(), app.menu), (before, None), "{command:?} while typing");
         }
@@ -10488,16 +10492,19 @@ mod tests {
         let _ = app.update(Message::Escape);
         let command =
             if cfg!(target_os = "macos") { iced::keyboard::Modifiers::LOGO } else { iced::keyboard::Modifiers::CTRL };
+        // The system's preset searches with ⌘F or Ctrl + F – Outlook on Windows with Ctrl + E, its
+        // Ctrl + F forwards (task E10.1b).
+        let letter = if cfg!(target_os = "windows") { "e" } else { "f" };
         let press = |modifiers| {
             iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-                key: iced::keyboard::Key::Character("f".into()),
-                modified_key: iced::keyboard::Key::Character("f".into()),
+                key: iced::keyboard::Key::Character(letter.into()),
+                modified_key: iced::keyboard::Key::Character(letter.into()),
                 physical_key: iced::keyboard::key::Physical::Unidentified(
                     iced::keyboard::key::NativeCode::Unidentified,
                 ),
                 location: iced::keyboard::Location::Standard,
                 modifiers,
-                text: Some("f".into()),
+                text: Some(letter.into()),
                 repeat: false,
             })
         };

@@ -1975,7 +1975,10 @@ pub fn escape() -> Subscription<()> {
 /// even though Ctrl is held (Ctrl + Plus, Ctrl + `-`, Ctrl + `0` leave "a+--" in a field while the
 /// window zooms).
 ///
-/// Not a typing shortcut: Alt held (Windows reports AltGr as Ctrl + Alt, and AltGr + Q types `@`);
+/// Not a typing shortcut: Alt held on Windows and Linux (Windows reports AltGr as Ctrl + Alt, and
+/// AltGr + Q types `@`). On macOS every ⌥⌘ press is one, on purpose and not only the ones the
+/// shortcut table uses: ⌥ changes the character of any key (⌥⌘F would type "ƒ"), and ⌥⌘ is a
+/// shortcut modifier there, not a way to type (Apple Mail searches with ⌥⌘F, task E10.1b);
 /// keys with no printable character (Ctrl + letters send control characters, arrows and Backspace
 /// are named keys); Ctrl + C, X, V and A, which a field handles itself as copy, cut, paste and
 /// select all (also on non-Latin layouts, hence `to_latin`); and the sidebar key, which an app
@@ -1986,7 +1989,7 @@ pub fn is_ctrl_typing(
     modifiers: keyboard::Modifiers,
     text: Option<&str>,
 ) -> bool {
-    if !modifiers.command() || modifiers.alt() {
+    if !modifiers.command() || (modifiers.alt() && !cfg!(target_os = "macos")) {
         return false;
     }
     if text.and_then(|text| text.chars().next()).is_none_or(|c| c.is_control()) {
@@ -2152,7 +2155,7 @@ pub fn held(modifiers: keyboard::Modifiers) -> Held {
 /// – one of them – on macOS (`torro_core::shortcuts::Shortcut::matches`).
 fn is_mod(system: System, held: Held) -> bool {
     match system {
-        System::Other => held.ctrl && !held.cmd,
+        System::Windows | System::Linux => held.ctrl && !held.cmd,
         System::Mac => held.ctrl != held.cmd,
     }
 }
@@ -3817,6 +3820,9 @@ mod tests {
         // AltGr: Windows reports Ctrl + Alt, and the key types `@` or `€`.
         assert!(!captured(&press("q", Code::KeyQ, ctrl | keyboard::Modifiers::ALT, Some("@"))));
         assert!(!captured(&press("e", Code::KeyE, ctrl | keyboard::Modifiers::ALT, Some("€"))));
+        // ⌥⌘F on a Mac (Apple Mail's search, task E10.1b): ⌥ makes "ƒ", which the field must not type.
+        let alt_cmd = keyboard::Modifiers::LOGO | keyboard::Modifiers::ALT;
+        assert_eq!(captured(&press("f", Code::KeyF, alt_cmd, Some("ƒ"))), cfg!(target_os = "macos"));
         // Copy, cut, paste and select all, also on a Cyrillic layout (the key is `с`, the code `KeyC`).
         for (key, code, text) in [("c", Code::KeyC, "\u{3}"), ("x", Code::KeyX, "\u{18}"), ("v", Code::KeyV, "v")] {
             assert!(!captured(&press(key, code, ctrl, Some(text))), "{key}");
@@ -4196,7 +4202,9 @@ mod tests {
         let (ctrl, logo) = (keyboard::Modifiers::CTRL, keyboard::Modifiers::LOGO);
         assert!(z(System::Mac, logo) && z(System::Mac, ctrl), "⌘ Z and Ctrl Z");
         assert!(!z(System::Mac, ctrl | logo), "⌃⌘Z is another combination");
-        assert!(z(System::Other, ctrl) && !z(System::Other, logo), "Ctrl Z, not the logo key");
+        for other in [System::Windows, System::Linux] {
+            assert!(z(other, ctrl) && !z(other, logo), "Ctrl Z, not the logo key: {other:?}");
+        }
         assert!(!z(System::Mac, ctrl | keyboard::Modifiers::SHIFT), "redo");
         let held = held(ctrl | keyboard::Modifiers::SHIFT);
         assert_eq!(held, Held { ctrl: true, cmd: false, alt: false, shift: true });
