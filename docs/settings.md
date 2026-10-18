@@ -324,8 +324,19 @@ der Befehl mit `_` statt `.`. Ablage: `settings.json` mit JSON-Schlüssel, sonst
 ### Steuerzentrale: Seitenleiste und Einstieg
 
 Reihenfolge heute (`Section::ALL`): Overview, Accounts, Workspaces, Apps, Assistant, Agents & API, Approvals,
-Notification Hub (`inbox`), Appearance; General am Fuß. Das Zahnrad der Steuerzentrale öffnet General. Overview,
-Approvals und die Kurzansicht (`glance.rs`) haben keine Einstellungen, nur Anzeigen und Aktionen.
+Notification Hub (`inbox`), Appearance; General am Fuß. Das Zahnrad der Steuerzentrale öffnet General. Die Kurzansicht
+(`glance.rs`) hat keine Einstellungen.
+
+### Overview und Approvals
+
+Beide Seiten haben keine Einstellung, nur Anzeigen und Aktionen; sie stehen hier, damit jede Seite aus `Section::ALL`
+ihre Zeile hat.
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
+| – (Status von Kern, Fenstermanager, Konten, Vorlagen) | nur Anzeige | Overview › At a glance | – | `system.status`, `accounts.list_accounts`, `workspaces.list_templates` | alle | bleibt als Anzeige |
+| Open setup, Continue setup, Finish setup, Open accounts | führen zur Einrichtung bzw. zu Accounts (Aktion) | Overview › Needs your attention, Setup | `setup` | `set_setting setup` | alle | bleibt als Aktion |
+| Allow, Deny | Freigaben entscheiden (Aktion) | Approvals | `approvals.json` | `approvals.decide_approval`, MCP bewusst nie (Punkt 3) | alle | bleibt, Suite |
 
 ### General
 
@@ -420,22 +431,45 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | Connect agent (Programm, Name, Read only/Read and write/Full access, Hook) | Client anlegen | Agents & API › Connect agent | `clients.json`, Schlüsselbund | `clients.create_client`, MCP bewusst nie | Entwickler | bleibt, Suite |
 | Rechte je Client (Stufen, Admin-Schalter, Send on my behalf, Ask first, Auswahl) | was ein Programm darf | Agent-Seite | `clients.json` | `clients.update_client`, MCP bewusst nie | Entwickler | bleibt, Suite (auch Assistent und Bots) |
 | Create new key, Disconnect… | Schlüssel neu, Client entfernen | Agent-Seite › Key | Schlüsselbund | `clients.new_key`, `clients.remove_client`, nie | – | bleibt, Suite |
-| Allow, Deny | Freigaben entscheiden | Approvals | `approvals.json` | `approvals.decide_approval`, nie (Punkt 3) | alle | bleibt, Suite |
 | Rename, Delete, Load | Vorlagen pflegen | Workspaces; Tray (Load, Save, Update, Delete) | `<data>/templates/` | `workspaces.*` | Workspaces | bleibt, Suite (später eigene App?) |
 
 ### In den Apps
 
+Gilt in allen vier Apps: Das Zahnrad und „Settings“ öffnen heute die Steuerzentrale als eigenes Fenster bei Accounts
+(`connect::open_settings`, Befund 1) – Urteil: **ändern**, die Einstellungen der App erscheinen im selben Fenster.
+
+#### Kalender
+
 | Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
 |---|---|---|---|---|---|---|
-| Zahnrad, „Settings“ | öffnet die Steuerzentrale als eigenes Fenster bei Accounts | Kalender, Aufgaben, Assistent, Eingang, Mail-Fenster (`connect::open_settings`) | – | – | alle | ändern: Einstellungen der App im selben Fenster |
 | Night (Karte am Mond) | wie General › Night | Kalender › Zeitleiste, Radar | `night` | `set_setting night` | Kalender | bleibt als schneller Weg |
 | Kalender in der Seitenleiste abhaken | blendet einen Kalender aus, **nur bis zum Neustart** | Kalender › Seitenleiste | nur im Speicher | – | Kalender | offen (Offene Frage 3), bleibt bis dahin |
+
+#### Aufgaben
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
 | Order (Due date, Manual) | Reihenfolge einer Liste | Aufgaben › Display | `listOrders` | `set_setting list_order` | Aufgaben | bleibt im Menü der App |
 | Group by, Show completed | Ansicht der Liste | Aufgaben › Display | nur im Speicher | – | Aufgaben | bleibt Ansicht |
+
+#### Assistent
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
 | Modell, Effort, Bereiche, Modus je Chat; Show all models | womit dieser Chat antwortet | Assistent › Eingabe | je Unterhaltung im Kern | `assistant.send_message` | Assistent | bleibt im Chat; „Show all models“ fällt mit S.26 |
 | Bot-Editor (Name, Description, Picture, Personality, Instructions, Skills, Engine, Access) | ein Bot | Assistent › Bot-Editor | `<config>/assistant/bots/` | `bots.save_bot`; Access über `clients.update_client` | Assistent | bleibt in der App; Access verweist nach Agents & API |
+
+#### Eingang (Notification Hub und App Feed)
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
 | Mute (Umfang, For, What happens), Hide from Notification Hub › Mute {source}, Move to {lane} › Always for {source}, Insights › Hide sender, Mute app | legt Regeln an bzw. schaltet Quellen stumm | Eingang (alle Fenster) | `<state>/inbox.sqlite` | `inbox.mute_item`, `inbox.mute_source`, `inbox.set_item_lane` | Eingang | bleibt im Eingang; Liste unter Notification Hub › Rules |
 | All rules ↗ | öffnet Steuerzentrale › Notification Hub | Eingang › Mute-Menü | – | – | Eingang | ändern: Rules im selben Fenster |
+
+#### Mail-Fenster
+
+| Einstellung | bewirkt | heute | Ablage | API/MCP | wer | Urteil |
+|---|---|---|---|---|---|---|
 | HTML/Text, Light/Dark am Leser | nur für die offene Mail | Mail-Fenster › Fuß des Lesers | nur im Speicher; Vorgabe `mailView`, `mailAppearance` | – (Vorgabe: `set_setting`) | Mail | bleibt; Vorgabe nach Mail |
 | From, Signatur beim Schreiben | Absender der neuen Mail | Mail › Schreiben | nicht gespeichert; Signatur aus dem Konto | – | Mail | bleibt |
 | Tastenkürzel | fest „Torro“ | Mail-Fenster (`torro_core::shortcuts`) | Code | – | Mail | geplant (E10.1b, E10.2, E10.3) |
@@ -449,6 +483,26 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | Design, Schrift, Farbschema getrennt | Aussehen feiner wählen | #189 | `settings.json` | `set_setting` (neu) | bleibt, Suite › Appearance |
 | Fenster-Profil (Kalender, Listen, Ansicht je Fenster) | mehrere Kalenderfenster nebeneinander | „pro Fenster (später)“ oben | State-Verzeichnis | – | bleibt geplant |
 
+### Startargumente
+
+Kein Ort für Einstellungen: Sie wählen beim Start, was ein Fenster zeigt, oder überschreiben eine Einstellung
+**nur für dieses Fenster**; keines schreibt etwas in `settings.json`, keines geht durch eine API.
+
+| Argument | bewirkt | wo | Urteil |
+|---|---|---|---|
+| `--section <wort>`, `--section bot:<id>` | öffnet die Steuerzentrale bei einem Abschnitt bzw. einer Bot-Seite (`Section::from_arg`) | Steuerzentrale | bleibt; S.21 lässt `apps` und `inbox` auf General zeigen |
+| `--setup`, `--setup-if-open`, `--step <schritt>` | öffnet die Einrichtung, auf Wunsch nur solange sie offen ist | Steuerzentrale | bleibt |
+| `--settings <abschnitt>` | öffnet eine App mit offenen Einstellungen | geplant (S.18–S.20) | kommt mit Stufe 2; kein Request, nur ein Startwort |
+| `--demo` | Beispieldaten statt Dienst, schreibt nichts | alle | bleibt (Sichtprüfung) |
+| `--appearance light\|dark\|system`, `--design <id>` | überschreibt `appearance` bzw. `design` für dieses Fenster (`--design` nur mit `--demo`) | alle | bleibt (Sichtprüfung) |
+| `--density`, `--mail-view`, `--mail-colors` | überschreiben Dichte, `mailView` und `mailAppearance` für dieses Fenster | Eingang, Mail | bleibt (Sichtprüfung) |
+| `--view`, `--lane`, `--source`, `--account`, `--open`, `--size`, `--now`, `--task` | wählen Fensterart, Ausschnitt, Größe und Zeitpunkt | Apps | bleibt, keine Einstellung |
+| `--reminders`, `--all-displays`, `--monitors`, `--cover` | das Erinnerungsfenster, das der Kern selbst startet (`torrocalendar::reminder`) | Kalender | bleibt, keine Einstellung |
+
+Das Tray öffnet mit „Settings…“ die Steuerzentrale ohne `--section` (`apps.open_app` auf `torroworkplace`, ohne
+Ziel) und landet damit auf **Overview** – anders als das Zahnrad der Apps (Accounts) und das der Steuerzentrale
+(General). Drei Einstiege, drei Ziele (Befund 1).
+
 ### Kein Einstellungs-Ort
 
 Fensterzustand in `ui.json` der App (`torro_gui::ui_state`), geht durch keine API und bleibt in der App: `sidebar`
@@ -459,7 +513,8 @@ Fensterzustand in `ui.json` der App (`torro_gui::ui_state`), geht durch keine AP
 ### Befunde
 
 1. **Das Zahnrad führt überall zu Accounts.** In allen Apps und im Mail-Fenster öffnet es die Steuerzentrale bei
-   Accounts, auch wo die gesuchte Einstellung woanders steht; in der Steuerzentrale selbst öffnet es General.
+   Accounts, auch wo die gesuchte Einstellung woanders steht; in der Steuerzentrale selbst öffnet es General, und
+   „Settings…“ im Tray landet auf Overview. Drei Einstiege, drei Ziele.
 2. **Doppelt:** Night (General und Karte am Mond), Language, Appearance, Components, Calendars and lists, Sources,
    Quiet und New chats (je Seite und Einrichtung, die Einrichtung ist gewollt), Rechte eines Bots (Bot-Seite und
    Bot-Editor), neue Mail im Eingang auf zwei Wegen (`notify` am Mail-Konto und die Quelle „Mail“ der Einrichtung).

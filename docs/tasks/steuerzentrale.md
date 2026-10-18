@@ -145,7 +145,7 @@ Request, hält sie an und fragt nach (Skill `torro-api`). Nach S.17, S.18, S.19,
 ```
 S.15 (Fehler, erledigt)
 S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgaben) ──┬── S.21 (Steuerzentrale: Seiten weg, ── S.22
-                                    └── S.20 (Eingang, Mail) ───────┘          Agents & API, General › Apps)
+                                   └── S.20 (Eingang, Mail) ───────┘           Agents & API, General › Apps)
 ```
 
 ### S.15 „All rules“ öffnet die Seite Inbox
@@ -320,11 +320,18 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
 
 ### S.22 Abschluss
 - [ ] erledigt (geändert mit #210)
-- **Modell:** Opus
+- **Modell:** Opus · **Dateien:** `crates/torro-core/src/i18n/de.rs`, `docs/settings.md`, `docs/assistent.md`,
+  `docs/eingang.md`, `docs/einrichtung.md`
 - Übersetzungen eintragen (`crates/torro-core/src/i18n/de.rs`), `docs/settings.md` an den gebauten Stand anpassen,
   Design-Prüfung aller Zahnrad-Ziele (Assistent, Kalender, Aufgaben, Notification Hub und App Feed, Mail-Fenster) in
   allen Größen und der Steuerzentrale (Agent `torro-design-review`), `torro-api-review` über die
   ganze Stufe, Fehler beheben.
+- Die übrigen Konzeptdokumente nennen noch die Orte, die mit S.21 verschwinden: `docs/assistent.md`
+  („Steuerzentrale › Assistant“ bei Rechten, Voice, Profil, Bots), `docs/eingang.md` („Steuerzentrale ›
+  Notification Hub › Rules“) und `docs/einrichtung.md` („Seite Apps“). Sie werden auf den neuen Ort umgeschrieben;
+  abgehakte Aufgaben in `docs/tasks/` bleiben, wie sie sind, sie beschreiben den damaligen Stand.
+- **Abnahme:** `grep -rn "Steuerzentrale › Assistant\|Steuerzentrale › Notification Hub\|Seite Apps" docs/` findet
+  nur noch abgehakte Aufgaben; fmt, clippy, test (auch `TORRO_LANG=de`) grün, `scripts/ci-local.sh` grün.
 
 ## Stufe 3: KI (S.23–S.26)
 
