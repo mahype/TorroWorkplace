@@ -222,7 +222,18 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   `TORRO_LANG=de`) grün.
 
 ### S.18 Assistent: Einstellungen im Inhaltsbereich
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; das Zahnrad schaltet den Inhaltsbereich zwischen Chat und Einstellungen um und ist
+  dabei hervorgehoben, `--settings <abschnitt>` startet dort, Escape geht erst an den offenen Abschnitt und dann an
+  den Host. Der Bot-Editor hat statt des Abschnitts „Access“ eine Zeile „Access ↗“ und schickt nur noch
+  `bots.save_bot`; der Demo-Zustand `--open bot-access` ist damit entfallen. Sichtprüfung auf diesem macOS-Rechner:
+  `shoot.sh` braucht Hyprland und `screencapture` darf nicht aufnehmen („could not create image from display“) –
+  stattdessen offscreen über Iceds `window::screenshot` (wegwerf-Patch, nicht commitiert, wie bei U.13):
+  `--demo --settings general|bots|voice` bei 1100, 800, 500 und 360 px, hell und dunkel, alle vier Größenklassen
+  sauber (breit Abschnittsliste, mittel Rail + Menü „General ▾“, schmal Schritte mit „‹“). **Offen:** die neue Zeile
+  „Access ↗“ im Bot-Editor steht unter dem Falz, und ohne `--open bot-access` kommt kein Bild davon zustande – das
+  Formular ist höher als ein Fenster auf diesem Bildschirm (max. 965 px). Dazu zwei Befunde aus der Bibliothek
+  (nicht aus dieser Aufgabe), die S.22 aufnimmt: lange Zeilentexte in `parts::setting_row` werden hart
+  abgeschnitten statt mit „…“, und die Textfelder des Bot-Editors zeichnen im Screenshot der ersten Frames leer)
 - **Modell:** Opus · **Dateien:** `crates/torroassistant/Cargo.toml`, `crates/torroassistant/src/{app,view,bots}.rs`,
   `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/app/bots.rs`, `crates/torroassistant/src/app/tests.rs`,
   `crates/torroassistant/src/backend.rs` (setzt das Backend des Hosts um), `crates/torroassistant/src/main.rs`,

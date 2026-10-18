@@ -6497,6 +6497,7 @@ dependencies = [
  "torro-inbox",
  "torro-ipc",
  "torro-pim",
+ "torro-settings-ui",
  "unicode-segmentation",
  "webbrowser",
 ]

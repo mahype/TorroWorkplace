@@ -474,8 +474,9 @@ fn the_first_start_asks_to_set_up_the_assistant() {
     let mut none = started(&["--open", "no-engines"]);
     assert!(none.engines_loaded && none.engines.is_empty());
     assert_eq!(none.choice, None, "nothing can answer");
-    let _ = none.update(Message::OpenSettings);
+    let _ = none.update(Message::AddAiAccount);
     assert_eq!(none.sections, [ACCOUNTS_PAGE], "\"Add an AI account\" opens the accounts");
+    assert!(none.settings.is_none(), "the control centre, not the settings in the window");
 }
 
 #[test]
@@ -694,18 +695,6 @@ fn a_new_bot_needs_a_name_and_opens_its_chat_once_saved() {
     assert_eq!((app.chat_bot(), app.current.as_ref()), (Some(new.as_str()), None), "a new chat with the new bot");
 }
 
-/// The requests of saving a bot's access among `requests`: `bots.save_bot`, `clients.list_clients`
-/// and `clients.update_client`.
-fn access_requests(requests: &[Request]) -> Vec<Request> {
-    requests
-        .iter()
-        .filter(|request| {
-            matches!(request, Request::SaveBot { .. } | Request::ListClients | Request::UpdateClient { .. })
-        })
-        .cloned()
-        .collect()
-}
-
 /// [`settle`], with `refuse` answering a request in the core's place where it gives a refusal;
 /// returns every request it answered.
 fn settled(app: &mut App, refuse: impl Fn(&Request) -> Option<Refusal>) -> Vec<Request> {
@@ -729,141 +718,52 @@ fn settled(app: &mut App, refuse: impl Fn(&Request) -> Option<Refusal>) -> Vec<R
     panic!("the window keeps asking");
 }
 
-/// The rights of the client `id` as the demo core holds them.
-fn rights_of(app: &App, id: &str) -> torro_ipc::api::Rights {
-    match block_on(app.backend.ask(Request::ListClients)) {
-        Ok(Response::Clients { clients }) => {
-            clients.into_iter().find(|client| client.id == id).map(|client| client.rights).expect("listed")
-        }
-        other => panic!("clients: {other:?}"),
-    }
-}
-
-/// A demo window with the editor of a new bot named `name` open and its rights read.
+/// A demo window with the editor of a new bot named `name` open.
 fn new_bot_named(name: &str) -> App {
     let mut app = started(&[]);
     sent(&mut app);
-    let _ = app.update(Message::NewBot);
-    settle(&mut app);
+    app.new_bot();
     let _ = app.update(Message::Draft(DraftEdit::Name(name.into())));
     app
 }
 
+/// Task S.18: "Save" in the bot editor is `bots.save_bot` and nothing else – no `clients.*`, so
+/// the editor never writes what a bot may use. That stays in the control centre, where the row
+/// "Access" of the editor points ([`Message::BotAccess`]).
 #[test]
-fn a_bots_access_is_saved_after_the_bot_and_only_when_it_changed() {
-    use torro_ipc::api::{Area, Level, Selection};
-
-    // Without a change: bots.save_bot alone.
-    let mut app = new_bot_named("Gardener");
-    let _ = app.update(Message::SaveBot);
-    let requests = access_requests(&settled(&mut app, |_| None));
-    assert!(matches!(&requests[..], [Request::SaveBot { id: None, .. }]), "{requests:?}");
-    assert!(app.bot_draft.is_none(), "saved: the editor closes");
-
-    // With one: save, read the clients again, then update the bot's client.
-    let mut app = new_bot_named("Archivist");
-    let _ = app.update(Message::Draft(DraftEdit::Level(Area::Calendar, Level::Read)));
-    let _ = app.update(Message::Draft(DraftEdit::Level(Area::Github, Level::Read)));
-    let _ = app.update(Message::Draft(DraftEdit::Level(Area::Bots, Level::Full)));
-    let _ = app.update(Message::SaveBot);
-    let requests = access_requests(&settled(&mut app, |_| None));
-    let [Request::SaveBot { id: None, .. }, Request::ListClients, Request::UpdateClient { id: client, rights }] =
-        &requests[..]
-    else {
-        panic!("save, read, update: {requests:?}");
-    };
-    assert_eq!(rights.area(Area::Calendar).level, Level::Read);
-    assert_eq!(rights.calendars.clone(), Selection::Only(app.known.present().calendars), "what exists, not All");
-    assert_eq!(rights.github_repos, Selection::Only(Vec::new()));
-    assert_eq!(rights.area(Area::Bots).level, Level::NoAccess, "never offered to a bot");
-    assert_eq!(&rights_of(&app, client), rights, "the core holds them");
-    let new = app.bots.iter().find(|bot| bot.name == "Archivist").map(|bot| bot.id.clone()).expect("listed");
-    assert_eq!((app.bot_draft.is_none(), app.chat_bot()), (true, Some(new.as_str())), "then its chat opens");
-}
-
-#[test]
-fn a_bot_saved_without_its_access_keeps_the_editor_and_a_second_save_makes_no_second_bot() {
-    use torro_ipc::api::{Area, Level};
-
-    let mut app = new_bot_named("Archivist");
-    let _ = app.update(Message::Draft(DraftEdit::Level(Area::Tasks, Level::Write)));
-    let _ = app.update(Message::SaveBot);
-    let refuse = |request: &Request| {
-        matches!(request, Request::UpdateClient { .. }).then(|| Refusal::new("error", "the disk is full"))
-    };
-    let _ = settled(&mut app, refuse);
-    let draft = app.bot_draft.as_ref().expect("the editor stays open");
-    assert_eq!(draft.access_note, Some(crate::bots::AccessNote::NotSet));
-    assert!(!draft.saving && draft.id.is_some() && draft.client.is_some(), "the bot is saved");
-    for size in SIZES {
-        let _ = app.update(Message::Resized(size));
-        let _ = app.view();
+fn the_bot_editor_saves_the_bot_and_never_its_access() {
+    for words in [vec![], vec!["--open", "bot-editor"]] {
+        let mut app = if words.is_empty() { new_bot_named("Gardener") } else { started(&words) };
+        sent(&mut app);
+        let _ = app.update(Message::SaveBot);
+        let requests = settled(&mut app, |_| None);
+        assert!(matches!(requests.first(), Some(Request::SaveBot { .. })), "{requests:?}");
+        for request in &requests {
+            assert!(
+                !matches!(
+                    request,
+                    Request::UpdateClient { .. } | Request::CreateClient { .. } | Request::RemoveClient { .. }
+                ),
+                "the editor touches a client: {request:?}"
+            );
+        }
+        assert!(app.bot_draft.is_none(), "saved: the editor closes");
     }
-
-    let _ = app.update(Message::SaveBot);
-    let requests = access_requests(&settled(&mut app, |_| None));
-    assert!(
-        matches!(
-            &requests[..],
-            [Request::SaveBot { id: Some(_), .. }, Request::ListClients, Request::UpdateClient { .. }]
-        ),
-        "again with its id: {requests:?}"
-    );
-    assert_eq!(app.bots.iter().filter(|bot| bot.name == "Archivist").count(), 1, "one bot");
-    assert!(app.bot_draft.is_none());
 }
 
+/// The editor opens with the bot alone: no rights, no calendars, no sources are read for it any
+/// more (task S.18).
 #[test]
-fn a_bot_the_assistant_proposed_shows_no_access_anywhere() {
-    use torro_ipc::api::{Confirm, Level};
-
+fn the_editor_asks_only_for_the_bot() {
     let mut app = started(&[]);
-    // As the assistant proposes a bot (bots.save_bot over MCP, approved): never with rights.
-    let proposed = Request::SaveBot {
-        id: None,
-        name: "Proposed".into(),
-        description: String::new(),
-        avatar: None,
-        engine: OLLAMA.into(),
-        model: None,
-        personality: String::new(),
-        instructions: String::new(),
-        skills: Vec::new(),
-    };
-    let Ok(Response::Bot { bot }) = block_on(app.backend.ask(proposed)) else { panic!("saved") };
     sent(&mut app);
-    let _ = app.update(Message::EditBot(bot.id.clone()));
-    settle(&mut app);
-    let draft = app.bot_draft.as_ref().expect("the editor is open");
-    let shown = draft.access.as_ref().expect("its rights were read").shown(&app.known.present());
-    assert!(crate::bots::BotAccess::areas().all(|area| shown.area(area).level == Level::NoAccess));
-    assert_eq!(shown.confirm, Confirm::OnDelete);
-}
-
-#[test]
-fn the_editor_reads_the_access_each_time_it_opens() {
-    use torro_ipc::api::{Area, Level};
-
-    let mut app = started(&["--open", "bot-access"]);
-    let draft = app.bot_draft.as_ref().expect("the travel planner's editor");
-    let shown = draft.access.as_ref().expect("read").shown(&app.known.present());
-    assert_eq!(shown.area(Area::Calendar).level, Level::Read);
-    assert_eq!(app.known.present().calendars.len(), 3);
-    let _ = app.update(Message::CloseEditor);
-    sent(&mut app);
-    let _ = app.update(Message::EditBot(TRAVEL.into()));
-    settle(&mut app);
-    let _ = app.update(Message::CloseEditor);
     let _ = app.update(Message::EditBot(TRAVEL.into()));
     let requests = sent(&mut app);
     assert_eq!(requests, [Request::GetBot { id: TRAVEL.into() }]);
     let result = block_on(app.backend.ask(requests[0].clone()));
     let _ = app.update(answer_of(&requests[0], result));
-    let reads = sent(&mut app);
-    for read in [Request::ListClients, Request::CalendarCollections, Request::TaskCollections, Request::ListSources] {
-        assert!(reads.contains(&read), "{read:?} in {reads:?}");
-    }
-    assert!(app.bot_draft.as_ref().is_some_and(|draft| draft.access.is_none()), "until the clients came");
+    assert!(app.bot_draft.as_ref().is_some_and(|draft| draft.id.is_some()), "the editor is open");
+    assert!(sent(&mut app).is_empty(), "nothing follows");
 }
 
 #[test]
@@ -940,20 +840,11 @@ fn the_card_of_a_proposal_confirms_with_the_app_request_and_says_yes() {
 
 #[test]
 fn every_bot_state_builds_in_every_size() {
-    let states = [
-        ["--open", "bot-editor"],
-        ["--open", "bot-access"],
-        ["--open", "bot-new"],
-        ["--open", "bot-delete"],
-        ["--open", "bot-menu"],
-    ];
+    let states = [["--open", "bot-editor"], ["--open", "bot-new"], ["--open", "bot-delete"], ["--open", "bot-menu"]];
     for words in states {
         let app = started(&words);
         match words[1] {
-            "bot-editor" | "bot-access" => assert!(
-                app.bot_draft.as_ref().is_some_and(|draft| draft.id.is_some() && draft.access.is_some()),
-                "{words:?}"
-            ),
+            "bot-editor" => assert!(app.bot_draft.as_ref().is_some_and(|draft| draft.id.is_some()), "{words:?}"),
             "bot-new" => assert!(app.bot_draft.as_ref().is_some_and(|draft| draft.tried && draft.problem().is_some())),
             "bot-delete" => assert!(matches!(app.dialog, Some(Dialog::DeleteBot { .. }))),
             _ => assert_eq!(app.menu, Some(Menu::Bot { id: TRAVEL.into() })),
@@ -968,6 +859,148 @@ fn every_bot_state_builds_in_every_size() {
         let _ = app.update(Message::Resized(size));
         let _ = app.view();
     }
+}
+
+// -- The settings in the content area (task S.18) ----------------------------------------------
+
+/// Hands the open settings the data of their first load: the host's tasks do not run in tests,
+/// and the demo of `torro-settings-ui` answers from memory.
+fn settings_loaded(app: &mut App) {
+    let data = block_on(torro_settings_ui::load(app.backend.settings(), settings::wanted()));
+    let _ = app.update(Message::SettingsHost(torro_settings_ui::host::Message::Loaded(Box::new(data))));
+}
+
+/// The sections of the open settings; panics without them.
+fn pane(app: &App) -> &SettingsPane {
+    app.settings.as_ref().expect("the settings are open")
+}
+
+/// The gear turns the content area into the settings and back. The chat behind them is untouched,
+/// and the settings never go through the window's own requests ([`App::ask`]) – they have their
+/// own way to the core ([`Backend::settings`]).
+#[test]
+fn the_gear_opens_the_settings_in_the_window_and_closes_them_again() {
+    let mut app = started(&["--open", "tools"]);
+    sent(&mut app);
+    let _ = app.update(Message::ToggleSettings);
+    assert_eq!(pane(&app).host.current().id, "general", "the gear lands on General");
+    assert!(sent(&mut app).is_empty(), "no request of the window");
+    settings_loaded(&mut app);
+    for size in SIZES {
+        let _ = app.update(Message::Resized(size));
+        let _ = app.view();
+    }
+    let _ = app.update(Message::Resized(WIDE));
+    let _ = app.update(Message::ToggleSettings);
+    assert!(app.settings.is_none(), "the gear leads back out");
+    assert_eq!(app.current.as_deref(), Some(TOOLS), "the chat is where it was");
+}
+
+/// The arrow in front of the path and Escape close the settings, like the gear.
+#[test]
+fn the_arrow_and_escape_close_the_settings() {
+    for back in [Message::SettingsHost(torro_settings_ui::host::Message::Back), Message::Escape] {
+        let mut app = started(&[]);
+        let _ = app.update(Message::ToggleSettings);
+        settings_loaded(&mut app);
+        let _ = app.update(back);
+        assert!(app.settings.is_none());
+    }
+}
+
+/// Escape goes to the open section first – a note being written stops, the settings stay – and
+/// only then out of the settings (task S.17's `escape`).
+#[test]
+fn escape_stops_the_open_question_before_it_closes_the_settings() {
+    use torro_settings_ui::assistant::profile;
+
+    let mut app = started(&[]);
+    let _ = app.update(Message::ToggleSettings);
+    settings_loaded(&mut app);
+    let _ = app.update(Message::SettingsPage(settings::Message::Profile(profile::Message::OpenMemory)));
+    let _ = app.update(Message::SettingsPage(settings::Message::Profile(profile::Message::AddNote)));
+    assert!(settings::escape(&pane(&app).sections).is_some(), "a note is being written");
+    let _ = app.update(Message::Escape);
+    assert!(app.settings.is_some(), "the note went, the settings stay");
+    assert!(settings::escape(&pane(&app).sections).is_none());
+    let _ = app.update(Message::Escape);
+    assert!(app.settings.is_none());
+}
+
+/// A click in the sidebar – a chat, a bot, "New chat", "New bot" – brings the content area back.
+#[test]
+fn the_sidebar_closes_the_settings() {
+    for message in [
+        Message::Select(TOOLS.into()),
+        Message::OpenBot(TRAVEL.into()),
+        Message::NewChat,
+        Message::NewBot,
+        Message::EditBot(TRAVEL.into()),
+    ] {
+        let mut app = started(&[]);
+        let _ = app.update(Message::ToggleSettings);
+        settings_loaded(&mut app);
+        let _ = app.update(message.clone());
+        assert!(app.settings.is_none(), "{message:?}");
+    }
+}
+
+/// `--settings <section>` opens the window with that section of the settings.
+#[test]
+fn settings_voice_starts_at_the_voice_section() {
+    for section in settings::SECTIONS {
+        let app = started(&["--settings", section.id]);
+        assert_eq!(pane(&app).host.current().id, section.id);
+    }
+    let app = started(&["--settings", "voice"]);
+    assert_eq!(pane(&app).host.current().id, "voice");
+    assert!(!pane(&app).host.loaded(), "its data is on its way");
+}
+
+/// What the sections ask of the app: "Edit" at a bot is the bot editor, "Access ↗" the control
+/// centre at this very bot. Neither is a request of this window.
+#[test]
+fn the_sections_reach_the_editor_and_the_control_centre() {
+    use torro_settings_ui::assistant::bots as section;
+
+    let mut app = started(&[]);
+    let _ = app.update(Message::ToggleSettings);
+    settings_loaded(&mut app);
+    sent(&mut app);
+    let _ = app.update(Message::SettingsPage(settings::Message::Bots(section::Message::Access(TRAVEL.into()))));
+    assert_eq!(app.sections, ["bot:b0000001"], "torroworkplace ui --section bot:<id>");
+    assert!(app.settings.is_some(), "the control centre is another window");
+    let _ = app.update(Message::SettingsPage(settings::Message::Bots(section::Message::Edit(TRAVEL.into()))));
+    assert!(app.settings.is_none(), "the editor takes the content area");
+    assert_eq!(sent(&mut app), [Request::GetBot { id: TRAVEL.into() }]);
+}
+
+/// Task S.18, not negotiable: only a person opens the settings. A link of an answer opens a web
+/// page or nothing at all – no scheme of its own, no path, no start parameter.
+#[test]
+fn a_link_in_an_answer_opens_only_the_web() {
+    for url in [
+        "torro://settings/voice",
+        "torroworkplace://ui?section=assistant",
+        "/etc/passwd",
+        "file:///etc/passwd",
+        "--settings voice",
+        "torroassistant --settings voice",
+        "javascript:alert(1)",
+        "mailto:anna@example.org",
+        "HTTP://example.org",
+        "",
+    ] {
+        assert_eq!(web_link(url), None, "{url:?}");
+    }
+    for url in ["http://localhost:8080/docs", "https://example.org/a?b=c"] {
+        assert_eq!(web_link(url), Some(url));
+    }
+    let mut app = started(&["--open", "tools"]);
+    sent(&mut app);
+    let _ = app.update(Message::OpenLink("torro://settings/voice".into()));
+    assert!(app.settings.is_none(), "no answer opens the settings");
+    assert!(app.sections.is_empty() && sent(&mut app).is_empty(), "and nothing else happens");
 }
 
 /// Plays `count` frames of the window at 60 a second after `now`; the time of the last one.

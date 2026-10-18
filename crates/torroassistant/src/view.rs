@@ -13,6 +13,9 @@
 //!
 //! Bots (task B.3): their rows, the editor that takes the chat's place, a bot's menu and the card of
 //! a proposal are drawn in [`editor`].
+//!
+//! The settings (task S.18) take header and content area from `torro_settings_ui::Host`
+//! ([`App::settings_frame`]) while they are open; the sidebar stays as it is.
 
 use iced::widget::text::Wrapping;
 use iced::widget::{Space, button, column, container, mouse_area, row, scrollable, stack, text_editor, text_input};
@@ -27,6 +30,8 @@ use torro_gui::{layout, markdown, style, typo};
 use torro_ipc::api::Area;
 use torro_ipc::assistant::{ConversationSummary, EngineKind, Entry, EntryContent};
 use torro_ipc::{ApprovalInfo, ApprovalState};
+use torro_settings_ui::assistant as settings;
+use torro_settings_ui::{Frame, Page};
 
 use crate::app::{
     Access, App, Dialog, EDITOR, HISTORY, MAIN, MINI_INPUT, Menu, MenuAt, Message, RENAME, SEARCH, composer_binding,
@@ -154,7 +159,8 @@ impl App {
         // Always two layers, so the window keeps its state when the notice comes and goes.
         let window = stack![self.window(class), self.notice_layer()].width(Fill).height(Fill);
         let surface = if self.chat_only { Surface::Panel } else { Surface::of(class) };
-        let mut buttons = TitleButtons::none().settings(Message::OpenSettings);
+        // The gear is marked while the settings fill the content area and leads back out of them.
+        let mut buttons = TitleButtons::none().settings(Message::ToggleSettings).settings_open(self.settings.is_some());
         if !self.chat_only {
             let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
             buttons = buttons.sidebar(label, Message::ToggleSidebar);
@@ -173,7 +179,26 @@ impl App {
     /// What lies over the top of the window, which the title band repeats.
     fn cover(&self) -> Cover {
         let drawer = if self.chat_only { Cover::Nothing } else { Cover::drawer(self.class(), self.drawer) };
-        Cover::dialog(self.dialog.is_some()).or(drawer)
+        // A dialog of an open settings section covers the band like the window's own.
+        Cover::dialog(self.dialog.is_some() || self.settings_dialog().is_some()).or(drawer)
+    }
+
+    /// The dialog of the open settings section ("Forget this note?"), while one is open.
+    fn settings_dialog(&self) -> Option<Element<'_, Message>> {
+        let pane = self.settings.as_ref()?;
+        settings::overlay(&pane.sections, pane.host.data()).map(|dialog| dialog.map(Message::SettingsPage))
+    }
+
+    /// The header bar and the content area of the open settings, as the host draws them: the
+    /// section list (wide), the menu in the header (medium) or the steps of a narrow window.
+    fn settings_frame<'a>(&'a self, pane: &'a crate::app::SettingsPane, class: SizeClass) -> Frame<'a, Message> {
+        let page = settings::page(&pane.sections, pane.host.data(), pane.host.current().id, class);
+        let page = Page {
+            body: page.body.map(Message::SettingsPage),
+            sub_page: page.sub_page.map(|(name, back)| (name, Message::SettingsPage(back))),
+            actions: page.actions.into_iter().map(|action| action.map(Message::SettingsPage)).collect(),
+        };
+        pane.host.view(class, page, Message::SettingsHost)
     }
 
     /// The notice at the bottom centre; empty without one.
@@ -187,9 +212,14 @@ impl App {
     /// The whole window in the layout of `class`, with its menus and dialogs.
     fn window(&self, class: SizeClass) -> Element<'_, Message> {
         let anchors = Anchors::default();
-        let header = self.header(class, &anchors);
-        let body = self.body(class, &anchors);
-        let layer = self.layer(&anchors);
+        // The settings take header and content area; the sidebar and its menus stay.
+        let (header, body, layer) = match &self.settings {
+            Some(pane) => {
+                let frame = self.settings_frame(pane, class);
+                (frame.header, frame.body, self.layer(&anchors).or(frame.overlay))
+            }
+            None => (self.header(class, &anchors), self.body(class, &anchors), self.layer(&anchors)),
+        };
         let window: Element<'_, Message> = if self.chat_only {
             // A chat window has no sidebar: the flush frame of the narrow layout in every size.
             shell::shell(SizeClass::Narrow, Space::new(), header, body, None).overlay(layer).into()
@@ -202,10 +232,15 @@ impl App {
                 .overlay(layer)
                 .into()
         };
-        match &self.dialog {
+        let window = match &self.dialog {
             Some(dialog) => {
                 widgets::modal(window, self.dialog_view(dialog), widgets::DIALOG_WIDTH, Message::CloseDialog)
             }
+            None => window,
+        };
+        // A question of the open settings section lies over the window, like the window's own.
+        match self.settings_dialog() {
+            Some(dialog) => stack![window, dialog].width(Fill).height(Fill).into(),
             None => window,
         }
     }
@@ -317,8 +352,8 @@ impl App {
                     Icon::Settings,
                     tr("Settings"),
                     Trail::None,
-                    false,
-                    Message::OpenSettings,
+                    self.settings.is_some(),
+                    Message::ToggleSettings,
                 )
             })
             .into_iter()
@@ -526,7 +561,7 @@ impl App {
             return prompt_state(
                 tr("No AI account yet"),
                 tr("Add a model on this computer with Ollama or LM Studio, or open models over OpenRouter."),
-                Some((tr("Add an AI account"), Message::OpenSettings)),
+                Some((tr("Add an AI account"), Message::AddAiAccount)),
             );
         }
         self.greeting()
