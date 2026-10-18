@@ -346,8 +346,9 @@ fn placeholder(search: Option<&SearchView>, scopes: Option<&ScopeChoice>) -> Str
     }
 }
 
-/// The bar over the list of every view of mail (issue #136): the field (`/`, ⌘F / Ctrl + F and
-/// the sidebar's search button focus it; typing searches, `Enter` at once) with "Clear search"
+/// The bar over the list of every view of mail (issue #136): the field (`/`, the preset's
+/// shortcut for [`torro_core::shortcuts::Command::Search`] and the sidebar's search button focus
+/// it; typing searches, `Enter` at once) with "Clear search"
 /// while there is something to clear; the suggestions under it ([`suggestions`], `Tab` takes the
 /// first); while a search is shown, where it looks (all mail, this account, this folder) and the
 /// order (relevance or date), then the line on its results ([`status_line`]).
