@@ -2573,7 +2573,7 @@ eine oder alle. Ist eine Taste schon belegt, auch als Einzeltaste (`r`, `a`, `j`
 - **Modell:** Opus · **Braucht:** E10.1b, S.20 · **Dateien:** `crates/torro-core/src/{shortcuts,settings}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs` (`SettingKey`, Beschreibungen von `SET_SETTING` und `GET_SETTINGS`),
   `crates/torroworkplace/src/{core,approvals,mcp}.rs` (Freigabe-Text; in `mcp.rs` nur der Kommentar zu `narrow_schema`),
-  `crates/torroinbox/src/{keys,app}.rs`, `docs/api.md`, `docs/api-reference.md`
+  `crates/torroinbox/src/{keys,app,compose}.rs`, `docs/api.md`, `docs/api-reference.md`
 - Vorlage Gmail (gegen die Hilfe des Herstellers geprüft). Ohne gespeicherte Wahl gilt die Vorgabe des Systems aus
   E10.1b; wählbar sind alle Vorlagen auf jedem System. Der Kern prüft
   Schreibweise, gesperrte Tasten und Doppelbelegung, auch mit den Einzeltasten (`conflict` mit dem belegten Befehl).

@@ -1976,8 +1976,9 @@ pub fn escape() -> Subscription<()> {
 /// window zooms).
 ///
 /// Not a typing shortcut: Alt held on Windows and Linux (Windows reports AltGr as Ctrl + Alt, and
-/// AltGr + Q types `@`). On macOS ⌥⌘ is one: ⌥ changes the character (⌥⌘F would type "ƒ"), and
-/// Apple Mail searches with ⌥⌘F (task E10.1b);
+/// AltGr + Q types `@`). On macOS every ⌥⌘ press is one, on purpose and not only the ones the
+/// shortcut table uses: ⌥ changes the character of any key (⌥⌘F would type "ƒ"), and ⌥⌘ is a
+/// shortcut modifier there, not a way to type (Apple Mail searches with ⌥⌘F, task E10.1b);
 /// keys with no printable character (Ctrl + letters send control characters, arrows and Backspace
 /// are named keys); Ctrl + C, X, V and A, which a field handles itself as copy, cut, paste and
 /// select all (also on non-Latin layouts, hence `to_latin`); and the sidebar key, which an app
