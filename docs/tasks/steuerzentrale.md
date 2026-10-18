@@ -325,7 +325,33 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   grün.
 
 ### S.21 Steuerzentrale: nur noch die Suite
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (geändert mit #210; die Seiten Apps, Assistant und Notification Hub sind gelöscht
+  (`apps.rs`, `assistant.rs`, `bots.rs`, `persona.rs`, `inbox.rs`), die Seitenleiste hat nur noch
+  Overview, Accounts, Agents & API, Approvals, Workspaces, Appearance und General am Fuß.
+  **Agents & API** führt den Assistenten und jeden Bot wie jedes Programm: eigene Gruppen in der
+  Liste, dieselbe Rechte-Ansicht in der Detailseite, „Turn off assistant…“ bzw. „Take access away…“
+  statt „Disconnect…“ und **kein Schlüssel-Block** – der Kern hält ihre Schlüssel, ein neuer würde
+  sie nur zerreißen (`Category::has_key`). Ist der Assistent aus, steht seine Zeile trotzdem da und
+  führt auf seinen ersten Start („Start from“ und die angebotenen Rechte, „Turn on assistant“ im
+  Kopf, `clients.create_client` mit genau diesen Rechten); sein Schlüssel wird wie bisher verworfen.
+  `--section assistant` und `bot:<id>` landen dort (`Launch::client`), `apps` und `inbox` auf General
+  (`Section::from_arg`). **General** hat die Gruppe Apps (Schalter je Komponente und „Open“ mit der
+  Fensterklasse, `torro-inbox-mail` für Mail; Workspaces hat kein Fenster und zeigt seine Seite) und
+  keine Kalender- und Erinnerungsgruppen mehr; **Appearance** keine Gruppe Mail. Die Kontoseiten
+  zeigen an Stelle der umgezogenen Gruppen je eine Zeile mit dem neuen Ort und „Open Calendar“,
+  „Open Tasks“, „Open Notification Hub“ bzw. „Open Mail“ (`apps.open_app`, kein Ziel für einen
+  Abschnitt). Die Einrichtung liest die Quelle Mail aus `notify` und schickt beim Anschalten
+  `UpdateMailAccount` **und** `MuteSource { muted: false }` (dafür hat `Action` ein `SendAll`
+  bekommen, der einzige Ort mit zwei Requests). `ui/general.rs` nutzt jetzt `parts::choice` und
+  `parts::switch`; `ui/wizard.rs` stand nicht in der Dateiliste und bleibt bei seinem eigenen `field`.
+  `ui/setup/pages.rs` brauchte keine Änderung: die Zeile fragt `State::is_muted`, das umgestellt
+  wurde. Sichtprüfung über Iceds `window::screenshot` mit nicht committetem Wegwerf-Patch wie bei
+  S.18/S.20: General, Appearance, Agents & API (Liste, Assistent an und aus, Bot, Agent, leer),
+  Kontoseite, Mail-Konto und der Schritt Notification Hub der Einrichtung bei 1100, 500 und 360 px,
+  hell und dunkel, dazu ans Seitenende gescrollte Bilder der langen Rechte-Seiten.
+  **Offen:** die deutschen Übersetzungen (sammelt S.22, Liste im Bericht), und der Befund aus S.18
+  gilt weiter: lange Zeilentexte in `parts::setting_row` werden bei 360 px hart abgeschnitten statt
+  mit „…“)
 - **Modell:** Opus · **Dateien:** `crates/torroworkplace/src/ui/{mod,launch,accounts,apps,assistant,bots,persona,
   inbox,general,agents}.rs`, `crates/torroworkplace/src/ui/setup/{mod,pages}.rs`
 - **Braucht:** S.18, S.19, S.20 (die Abschnitte haben ihren neuen Ort, bevor die alten verschwinden)

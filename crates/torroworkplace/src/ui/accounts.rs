@@ -23,24 +23,23 @@
 //!
 //! A mail account (task M5.2, `AccountInfo::mail`) has a page of its own ([`mail_detail`]): the
 //! state of each service (mail, calendars and tasks) with its last sync and problem and "Sync now",
-//! the question "Which folder holds sent mail?" while the server left a folder role open, the
-//! sender name and signature (typed into a draft, saved with "Save"), "Show new mail in the Notification Hub",
-//! the services as switches, and the connection: "Server settings…" and "Change password…" open
-//! dialogs that send `ConnectMail` again (the only way to change servers or password; the
-//! password lives in the dialog as a [`Secret`] until it is sent). Everything else goes through
-//! `UpdateMailAccount`, which changes settings only.
+//! where its mail settings are now ([`moved_group`]), the services as switches, and the connection:
+//! "Server settings…" and "Change password…" open dialogs that send `ConnectMail` again (the only
+//! way to change servers or password; the password lives in the dialog as a [`Secret`] until it is
+//! sent). The services go through `UpdateMailAccount`, which changes settings only.
 //!
 //! Task M3.5: "Server settings" always has the calendar address (CalDAV), so an account connected
 //! for mail only (a TorroMail import, for one) gets calendars and tasks later: their switches open
 //! that dialog while the account has no address, and saving it switches the service on with the
-//! address. The sender name and signature follow changes from outside while nothing is typed
-//! into them ([`loaded`], called by the shell on every reload). Both mail servers are typed as in
-//! the add-account dialog (`server_fields.rs`).
+//! address. Both mail servers are typed as in the add-account dialog (`server_fields.rs`).
 //!
-//! The inbox (task E5.14): a GitHub account's page has the group "Inbox" with the switch "Show
-//! notifications in the Inbox", a Nextcloud account's the switches "Notifications" and "Talk"; each
-//! switch is `inbox.mute_source` for its source (on = not muted, read from `inbox.list_sources`). Why
-//! a source brings nothing (`SourceInfo::health`) stands next to it in quiet words ([`health_text`]).
+//! **What moved into the apps (task S.21).** An account page is about the account itself – the
+//! sign-in, what syncs, the servers, the keychain. What a window shows of it is set in that window,
+//! behind its gear: which calendars and lists the suite shows (Calendar and Tasks), which
+//! notifications a GitHub or Nextcloud account sends and whether new mail shows up (Notification
+//! Hub), and a mail account's sender name, signature, writing format and folder questions (Mail).
+//! In their place stands one group per window with the sentence where it is now and a button that
+//! opens that window ([`moved_group`], `apps.open_app` with the window class).
 //!
 //! An ntfy account (task E5.14, `AccountInfo::ntfy`) has a page of its own ([`ntfy_detail`]): its
 //! topics by label with their names, each opening a dialog to rename it or "Unsubscribe…" (behind
@@ -50,10 +49,10 @@
 //! show a refusal in their foot.
 //!
 //! Requests: `Sync`, `RemoveAccount { id }`, `ConnectCalDav` / `ConnectMail` for "Change
-//! password…", `ConnectMail` for "Server settings…", `UpdateMailAccount` for the settings of a mail
-//! account, and `SetCollectionShown { collection, shown }` for the switches. The pure parts
-//! (relative time, status text, whether a collection is shown, which accounts are listed, what a
-//! draft changes) are plain functions with unit tests.
+//! password…", `ConnectMail` for "Server settings…", `UpdateMailAccount` for the services of a mail
+//! account, and `OpenApp` for the buttons that open a window. The pure parts (relative time, status
+//! text, whether a collection is shown, which accounts are listed) are plain functions with unit
+//! tests.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -61,8 +60,9 @@ use std::fmt;
 use chrono::{DateTime, Utc};
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
-use iced::widget::{Space, column, container, pick_list, row, text, text_editor, toggler};
+use iced::widget::{Space, column, container, row, text, toggler};
 use iced::{Alignment, Element, Fill, Theme};
+use torro_core::AppId;
 use torro_core::account::Secret;
 use torro_core::i18n::{tr, trf};
 use torro_core::settings::Settings;
@@ -70,15 +70,13 @@ use torro_gui::dialog::frame as dialog_frame;
 use torro_gui::icon::Icon;
 use torro_gui::layout::{self, SizeClass};
 use torro_gui::theme::{self, palette, size, space};
-use torro_gui::widgets::{self, Status, collection_color, color_dot, empty_state};
+use torro_gui::widgets::{self, Status, empty_state};
 use torro_gui::{style, typo};
 use torro_inbox::item::SourceHealth;
 use torro_inbox::{SourceKind, SourceRef};
-use torro_ipc::{
-    AccountInfo, MailView, NtfyTopicView, NtfyView, OpenRoleView, Request, Response, ServiceState, TopicName,
-};
+use torro_ipc::{AccountInfo, MailView, NtfyTopicView, NtfyView, Request, Response, ServiceState, TopicName};
 use torro_mail::{MailFormat, Notify, Role, Security, Services};
-use torro_pim::{AccountState, Collection, CollectionKind};
+use torro_pim::AccountState;
 
 use super::server_fields::{Server, ServerFields, imap_titles, server_group, smtp_titles};
 use super::{Action, Data, Header, chevron, confirm, dialog, pressable, row_frame, setting_row, wizard};
@@ -94,8 +92,6 @@ pub struct State {
     pub confirm_remove: bool,
     /// The "Change password" dialog of the open CalDAV or mail account.
     pub password: Option<PasswordChange>,
-    /// The sender name and signature of the open mail account as they are being typed.
-    pub mail: Option<MailDraft>,
     /// The "Server settings" dialog of the open mail account.
     pub servers: Option<ServerSettings>,
     /// The topic dialog of the open ntfy account (task E5.14): a new topic, or one to rename or
@@ -180,57 +176,6 @@ pub struct PasswordChange {
     password: Secret,
     error: Option<String>,
     sending: bool,
-}
-
-/// What is typed into the sender name and signature of a mail account's page. Both are saved
-/// together with "Save" ([`MailDraft::changes`] names what differs from the stored values).
-#[derive(Debug, Default)]
-pub struct MailDraft {
-    /// The account it belongs to (`AccountInfo::id`), so a draft never lands on another account.
-    account: String,
-    sender_name: String,
-    signature: text_editor::Content,
-    /// The sender name and signature stored when the draft was made (signature without trailing
-    /// white space). While the draft still holds them, nothing was typed, and a change from
-    /// outside replaces the draft ([`loaded`], task M3.5).
-    stored: (String, String),
-}
-
-impl MailDraft {
-    /// The stored values of `account`; `None` for an account that is not a mail account.
-    fn of(account: &AccountInfo) -> Option<MailDraft> {
-        let mail = account.mail.as_ref()?;
-        let signature = mail.settings.signature.as_deref().unwrap_or_default();
-        Some(MailDraft {
-            account: account.id.clone(),
-            sender_name: mail.sender_name.clone(),
-            signature: text_editor::Content::with_text(signature),
-            stored: (mail.sender_name.clone(), signature.trim_end().to_string()),
-        })
-    }
-
-    /// The signature as sent: line breaks as `\n` whatever the platform, no trailing white space.
-    fn signature_text(&self) -> String {
-        self.signature.text().replace("\r\n", "\n").trim_end().to_string()
-    }
-
-    /// The draft holds `stored` (a sender name and signature as [`MailDraft::stored`] keeps them),
-    /// as saving would compare them.
-    fn holds(&self, (sender_name, signature): &(String, String)) -> bool {
-        self.sender_name.trim() == sender_name.trim() && self.signature_text() == *signature
-    }
-
-    /// Only what differs from `mail`, so that saving asks for no more than the person changed.
-    fn changes(&self, mail: &MailView) -> MailChange {
-        let sender_name = self.sender_name.trim();
-        let signature = self.signature_text();
-        let stored_signature = mail.settings.signature.as_deref().unwrap_or_default();
-        MailChange {
-            sender_name: (sender_name != mail.sender_name.trim()).then(|| sender_name.to_string()),
-            signature: (signature != stored_signature.trim_end()).then_some(signature),
-            ..MailChange::default()
-        }
-    }
 }
 
 /// The fields of `UpdateMailAccount` that a click changes; the others stay as they are.
@@ -332,11 +277,6 @@ pub enum Message {
     /// Back from a detail page to the list.
     Back,
     SyncNow,
-    /// The "Show in apps" switch of one calendar or task list.
-    SetShown {
-        collection: String,
-        shown: bool,
-    },
     AskRemove,
     CancelRemove,
     Remove,
@@ -347,22 +287,11 @@ pub enum Message {
     /// "Change password" in the dialog, or Enter in its field.
     SubmitPassword,
     ClosePassword,
-    /// The sender name was typed.
-    SenderNameEdited(String),
-    SignatureEdited(text_editor::Action),
-    /// "Save": sender name and signature, as far as they differ from the stored ones.
-    SaveMail,
-    /// "Show new mail in the Notification Hub" was set.
-    SetNotify(Notify),
-    /// "Write new mail as" was set (issue #125).
-    SetFormat(MailFormat),
     /// The switch of a service of the mail account.
     SetService(MailService, bool),
-    /// A folder was picked for a role the server left open.
-    PickFolder {
-        role: Role,
-        path: String,
-    },
+    /// "Open Calendar", "Open Tasks", "Open Notification Hub" or "Open Mail" of a group that says
+    /// where a setting lives now (task S.21): the window with this class.
+    OpenApp(&'static str),
     /// "Server settings…" on a mail account's page.
     ChangeServers,
     ServerHost(Server, String),
@@ -373,8 +302,6 @@ pub enum Message {
     ServersPasswordEdited(Secret),
     SubmitServers,
     CloseServers,
-    /// The switch of one of the account's inbox sources (task E5.14): shown (`true`) or muted.
-    ShowInInbox(SourceRef, bool),
     /// "Add topic…" on an ntfy account's page.
     AddTopic,
     /// A topic's row, by its place in the account's list.
@@ -439,17 +366,15 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::Open(id) => {
             state.selected = Some(id);
             close_dialogs(state);
-            state.mail = selected(state, data).and_then(MailDraft::of);
             Action::None
         }
         Message::Back => {
             state.selected = None;
             close_dialogs(state);
-            state.mail = None;
             Action::None
         }
         Message::SyncNow => Action::Send(Request::Sync),
-        Message::SetShown { collection, shown } => Action::Send(Request::SetCollectionShown { collection, shown }),
+        Message::OpenApp(app) => Action::Send(Request::OpenApp { app: app.to_string(), target: None }),
         // Only an open detail page has an account to remove.
         Message::AskRemove => {
             state.confirm_remove = selected(state, data).is_some();
@@ -484,25 +409,6 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.password = None;
             Action::None
         }
-        Message::SenderNameEdited(name) => {
-            if let Some(draft) = draft(state, data) {
-                draft.sender_name = name;
-            }
-            Action::None
-        }
-        Message::SignatureEdited(action) => {
-            if let Some(draft) = draft(state, data) {
-                draft.signature.perform(action);
-            }
-            Action::None
-        }
-        Message::SaveMail => save_mail(state, data),
-        Message::SetNotify(notify) => with_mail(state, data, |mail| {
-            (notify != mail.settings.notify).then(|| MailChange { notify: Some(notify), ..MailChange::default() })
-        }),
-        Message::SetFormat(format) => with_mail(state, data, |mail| {
-            (format != mail.settings.format).then(|| MailChange { format: Some(format), ..MailChange::default() })
-        }),
         // Calendars and tasks of an account without a calendar address (task M3.5): the switch
         // asks for the address in "Server settings", which switches the service on with it.
         Message::SetService(which, true) if which.needs_caldav() && open_mail_lacks_caldav(state, data) => {
@@ -520,15 +426,6 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
             (services != mail.settings.services)
                 .then(|| MailChange { services: Some(services), ..MailChange::default() })
-        }),
-        // Only a role the server left open, and only one of its candidates: the core refuses
-        // anything else, so the page does not even ask.
-        Message::PickFolder { role, path } => with_mail(state, data, |mail| {
-            let offered = mail
-                .open_roles
-                .iter()
-                .any(|open| open.role == role && open.candidates.iter().any(|folder| folder.path == path));
-            offered.then(|| MailChange { folder_roles: Some(BTreeMap::from([(role, path)])), ..MailChange::default() })
         }),
         Message::ChangeServers => {
             state.password = None;
@@ -560,7 +457,6 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             state.servers = None;
             Action::None
         }
-        Message::ShowInInbox(source, shown) => Action::Send(Request::MuteSource { source, muted: !shown }),
         Message::AddTopic => {
             let room = selected_ntfy(state, data).is_some_and(|(_, view)| view.topics.len() < TOPICS_MAX);
             state.topic = room.then(TopicEdit::new);
@@ -715,52 +611,12 @@ fn open_mail_lacks_caldav(state: &State, data: &Data) -> bool {
     selected_mail(state, data).is_some_and(|(_, mail)| mail.caldav.is_none())
 }
 
-/// The shell reloaded `data` (task M3.5): the sender name and signature of the open mail account
-/// follow changes from outside (an agent, the API, another window) as long as nothing is typed
-/// into them; what the person typed stays until they save it.
-pub fn loaded(state: &mut State, data: &Data) {
-    let Some(fresh) = selected(state, data).and_then(MailDraft::of) else { return };
-    match state.mail.as_mut().filter(|draft| draft.account == fresh.account) {
-        // Typed into: it stays, and once it is what is stored (saved), it follows again.
-        Some(draft) if !draft.holds(&draft.stored) => {
-            if draft.holds(&fresh.stored) {
-                draft.stored = fresh.stored;
-            }
-        }
-        // Untouched and up to date: the cursor stays where it is.
-        Some(draft) if draft.stored == fresh.stored => {}
-        _ => state.mail = Some(fresh),
-    }
-}
-
 /// Sends the change `make` finds for the open mail account, if there is one.
 fn with_mail(state: &State, data: &Data, make: impl FnOnce(&MailView) -> Option<MailChange>) -> Action {
     let Some((account, mail)) = selected_mail(state, data) else { return Action::None };
     make(mail)
         .filter(|change| !change.is_empty())
         .map_or(Action::None, |change| Action::Send(change.request(&account.id)))
-}
-
-/// The draft of the open mail account; made from the stored values when it is missing.
-fn draft<'s>(state: &'s mut State, data: &Data) -> Option<&'s mut MailDraft> {
-    let account = selected(state, data)?;
-    if state.mail.as_ref().is_none_or(|draft| draft.account != account.id) {
-        state.mail = MailDraft::of(account);
-    }
-    state.mail.as_mut()
-}
-
-/// Whether the draft differs from what is stored.
-fn is_dirty(draft: &MailDraft, mail: &MailView) -> bool {
-    !draft.changes(mail).is_empty()
-}
-
-/// "Save": what the draft changed, in one `UpdateMailAccount`.
-fn save_mail(state: &State, data: &Data) -> Action {
-    let Some((account, mail)) = selected_mail(state, data) else { return Action::None };
-    let Some(draft) = state.mail.as_ref().filter(|draft| draft.account == account.id) else { return Action::None };
-    let change = draft.changes(mail);
-    if change.is_empty() { Action::None } else { Action::Send(change.request(&account.id)) }
 }
 
 /// Changes the open "Server settings" dialog and clears the refusal of the last try: it was about
@@ -935,7 +791,7 @@ fn refusal(result: &Result<Response, String>) -> Option<String> {
 pub fn view<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     let now = Utc::now();
     match selected(state, data) {
-        Some(account) => detail(state, account, data, now),
+        Some(account) => detail(account, data, now),
         None => list(data, now),
     }
 }
@@ -1128,12 +984,6 @@ fn providers<'a>(accounts: &[&'a AccountInfo]) -> Vec<&'a str> {
     kinds
 }
 
-/// "Calendar", "Task list · Read-only": the line under a collection's name.
-fn collection_detail(collection: &Collection) -> String {
-    let kind = kind_name(collection.kind);
-    if collection.writable { kind.to_string() } else { format!("{kind} · {}", tr("Read-only")) }
-}
-
 /// "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago". A time in the future
 /// (clock skew) counts as just now.
 pub fn relative_time(then: DateTime<Utc>, now: DateTime<Utc>) -> String {
@@ -1165,14 +1015,6 @@ pub fn last_synced_text(last_sync: Option<DateTime<Utc>>, now: DateTime<Utc>) ->
 /// Whether the apps show a collection: everything is shown unless it is hidden.
 pub fn is_shown(settings: &Settings, collection: &str) -> bool {
     !settings.hidden_collections.iter().any(|hidden| hidden == collection)
-}
-
-fn kind_name(kind: CollectionKind) -> &'static str {
-    match kind {
-        CollectionKind::Events => tr("Calendar"),
-        CollectionKind::Todos => tr("Task list"),
-        CollectionKind::Both => tr("Both"),
-    }
 }
 
 /// The account whose detail page is open, if it is still listed.
@@ -1246,9 +1088,9 @@ fn remove_button<'a>() -> Element<'a, Message> {
 
 /// The detail page: the name, then the groups for status, calendars and lists and the connection,
 /// and the removal at the end. A mail account has [`mail_detail`] instead.
-fn detail<'a>(state: &'a State, account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
+fn detail<'a>(account: &'a AccountInfo, data: &'a Data, now: DateTime<Utc>) -> Element<'a, Message> {
     if let Some(mail) = &account.mail {
-        return mail_detail(state, account, mail, now);
+        return mail_detail(account, mail, now);
     }
     if let Some(view) = &account.ntfy {
         return ntfy_detail(account, view, data, now);
@@ -1258,15 +1100,84 @@ fn detail<'a>(state: &'a State, account: &'a AccountInfo, data: &'a Data, now: D
     let middle = match account.kind.as_str() {
         "github" => Some(permissions_group(account.scopes.as_deref())),
         AI_KIND => None,
-        _ => Some(collections_group(account, &data.settings)),
+        _ => Some(collections_moved()),
     };
     column![heading(account), status_group(account, now)]
         .push(middle)
-        .push(inbox_sources_group(account, data))
+        .push(sources_moved(account))
         .push(connection_group(account))
         .push(remove_button())
         .spacing(layout::section_gap())
         .into()
+}
+
+/// A group that says where a setting of this account lives now and opens the window it lives in
+/// (task S.21): the sentence under the rows, one row per window with its "Open" button, which
+/// sends `apps.open_app` with the window class – a running window comes to the front.
+///
+/// The control centre cannot open the settings of a running window from here: only a person opens
+/// settings (`docs/settings.md` › Technik), so there is no such target for `apps.open_app`.
+fn moved_group<'a>(
+    title: &'a str,
+    rows: Vec<(&'a str, &'static str, &'static str)>,
+    footer: &'a str,
+) -> Element<'a, Message> {
+    let rows = rows
+        .into_iter()
+        .map(|(name, button, window_class)| {
+            let open =
+                widgets::text_button(None, button, style::button::secondary, Some(Message::OpenApp(window_class)));
+            setting_row(None, name, None, open)
+        })
+        .collect();
+    widgets::group(title, rows, Some(footer.to_string()))
+}
+
+/// In place of "Calendars and lists": which of them the suite shows is chosen in Calendar and in
+/// Tasks now, behind the gear.
+fn collections_moved<'a>() -> Element<'a, Message> {
+    moved_group(
+        tr("Calendars and lists"),
+        vec![
+            (tr("Calendars"), tr("Open Calendar"), AppId::CALENDAR.window_class),
+            (tr("Task lists"), tr("Open Tasks"), AppId::TASKS.window_class),
+        ],
+        tr("Calendars and lists are chosen in Calendar and Tasks, under the gear."),
+    )
+}
+
+/// In place of the switches of a GitHub or Nextcloud account's notifications: they are switched on
+/// in the Notification Hub now. `None` for an account that brings none (task E5.14 listed the
+/// sources by kind; here the two kinds that had switches).
+fn sources_moved<'a>(account: &AccountInfo) -> Option<Element<'a, Message>> {
+    let source = account.id.parse::<SourceRef>().ok()?;
+    if !matches!(source.kind, SourceKind::Github | SourceKind::Nextcloud) {
+        return None;
+    }
+    Some(moved_group(
+        tr("Notification Hub"),
+        vec![(tr("Notifications"), tr("Open Notification Hub"), AppId::INBOX.window_class)],
+        tr("What this account sends to the Notification Hub is switched on there, under the gear."),
+    ))
+}
+
+/// In place of a mail account's sender name, signature, writing format and folder questions: they
+/// are set in the mail window now, and whether new mail shows up in the Notification Hub there.
+fn mail_moved<'a>() -> Vec<Element<'a, Message>> {
+    vec![
+        moved_group(
+            tr("Mail"),
+            vec![(tr("Sender name and signature"), tr("Open Mail"), AppId::INBOX_MAIL.window_class)],
+            tr(
+                "Sender name, signature, how new mail is written and which folder holds what are set in Mail, under the gear.",
+            ),
+        ),
+        moved_group(
+            tr("Notification Hub"),
+            vec![(tr("New mail"), tr("Open Notification Hub"), AppId::INBOX.window_class)],
+            tr("Whether new mail of this account shows up there is set in the Notification Hub, under the gear."),
+        ),
+    ]
 }
 
 // ----- A mail account's page (task M5.2) ----------------------------------------------------
@@ -1334,79 +1245,16 @@ fn calendar_part_name(services: Services) -> Option<&'static str> {
     }
 }
 
-/// The question that goes with a folder role the server left open.
-fn role_question(role: Role) -> &'static str {
-    match role {
-        Role::Inbox => tr("Which folder holds new mail?"),
-        Role::Drafts => tr("Which folder holds drafts?"),
-        Role::Sent => tr("Which folder holds sent mail?"),
-        Role::Archive => tr("Which folder holds archived mail?"),
-        Role::Junk => tr("Which folder holds spam?"),
-        Role::Trash => tr("Which folder holds deleted mail?"),
-    }
-}
-
-/// "Show new mail in the Notification Hub" as a choice of a pick list.
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct NotifyChoice(Notify);
-
-const NOTIFY_CHOICES: [NotifyChoice; 3] =
-    [NotifyChoice(Notify::All), NotifyChoice(Notify::ForMeOnly), NotifyChoice(Notify::Off)];
-
-impl fmt::Display for NotifyChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            Notify::All => tr("All"),
-            Notify::ForMeOnly => tr("Only \"For me\""),
-            Notify::Off => tr("Off"),
-        })
-    }
-}
-
-/// "Write new mail as" as a choice of a pick list (issue #125).
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct FormatChoice(MailFormat);
-
-const FORMAT_CHOICES: [FormatChoice; 2] = [FormatChoice(MailFormat::Html), FormatChoice(MailFormat::Plain)];
-
-impl fmt::Display for FormatChoice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self.0 {
-            MailFormat::Html => tr("Formatted (HTML)"),
-            MailFormat::Plain => tr("Plain text"),
-        })
-    }
-}
-
-/// The room of the signature field: four lines of text and the padding of a field.
-const SIGNATURE_LINES: f32 = 4.0;
-
-fn signature_height() -> f32 {
-    SIGNATURE_LINES * typo::line_height(typo::body()) + style::INPUT_PADDING.top + style::INPUT_PADDING.bottom
-}
-
-/// A mail account's page: the state of each service with "Sync now", the question for a folder
-/// role the server left open, sender name and signature, what goes to the inbox, the services and
-/// the connection, and the removal at the end.
-fn mail_detail<'a>(
-    state: &'a State,
-    account: &'a AccountInfo,
-    mail: &'a MailView,
-    now: DateTime<Utc>,
-) -> Element<'a, Message> {
-    let mut page = column![heading(account), mail_status_group(account, mail, now)].spacing(layout::section_gap());
-    if !mail.open_roles.is_empty() {
-        page = page.push(folders_group(&mail.open_roles));
-    }
-    // A page without a draft (opened by hand in a test) has no sender or signature to edit.
-    if let Some(draft) = state.mail.as_ref().filter(|draft| draft.account == account.id) {
-        page = page.push(sender_groups(draft, mail));
-    }
-    page.push(writing_group(mail))
-        .push(inbox_group(mail))
+/// A mail account's page: the state of each service with "Sync now", where its mail settings and
+/// its place in the Notification Hub are now ([`mail_moved`]), the services and the connection, and
+/// the removal at the end.
+fn mail_detail<'a>(account: &'a AccountInfo, mail: &'a MailView, now: DateTime<Utc>) -> Element<'a, Message> {
+    column![heading(account), mail_status_group(account, mail, now)]
+        .extend(mail_moved())
         .push(services_group(mail))
         .push(mail_connection_group(account, mail))
         .push(remove_button())
+        .spacing(layout::section_gap())
         .into()
 }
 
@@ -1454,91 +1302,6 @@ fn wrapped_row<'a>(
         .width(Fill)
         .padding([space::m(), space::l()])
         .into()
-}
-
-/// The question for each role the server left open, with the folders it could be: one press picks.
-fn folders_group(roles: &[OpenRoleView]) -> Element<'_, Message> {
-    let mut rows = Vec::new();
-    for open in roles {
-        let question = typo::text(typo::body_strong(), role_question(open.role));
-        rows.push(container(question).width(Fill).padding([space::m(), space::l()]).into());
-        for folder in &open.candidates {
-            let pick = widgets::text_button(
-                None,
-                tr("Use this folder"),
-                style::button::secondary,
-                Some(Message::PickFolder { role: open.role, path: folder.path.clone() }),
-            );
-            rows.push(wrapped_row(None, folder.name.as_str(), folder.path.clone(), Some(pick)));
-        }
-    }
-    let footer = tr("The server has more than one folder that could hold it. Your choice is remembered.");
-    widgets::group(tr("Folders"), rows, Some(footer.to_string()))
-}
-
-/// Sender name and signature, and "Save" under them: it is on only while they differ from what is
-/// stored, and Enter in the name works like it.
-fn sender_groups<'a>(draft: &'a MailDraft, mail: &MailView) -> Element<'a, Message> {
-    let dirty = is_dirty(draft, mail);
-    let name = wizard::field("Anna Example", &draft.sender_name)
-        .on_input(Message::SenderNameEdited)
-        .on_submit_maybe(dirty.then_some(Message::SaveMail));
-    let signature = text_editor(&draft.signature)
-        .on_action(Message::SignatureEdited)
-        .font(typo::body().font)
-        .size(typo::body().size)
-        .line_height(typo::body().line_height)
-        .padding(style::INPUT_PADDING)
-        .wrapping(Wrapping::WordOrGlyph)
-        .height(signature_height())
-        .style(style::text_editor);
-    let save_style: widgets::ButtonStyle = if dirty { style::button::primary } else { style::button::secondary };
-    let save = widgets::text_button(None, tr("Save"), save_style, dirty.then_some(Message::SaveMail));
-    let groups = column![
-        widgets::group(
-            tr("Sender name"),
-            vec![row_frame(name, false)],
-            Some(tr("Shown next to your address in the mail you send. Optional.").to_string()),
-        ),
-        widgets::group(
-            tr("Signature"),
-            vec![container(signature).width(Fill).padding([space::s(), space::l()]).into()],
-            Some(tr("Added under new mail, replies and forwards.").to_string()),
-        ),
-    ]
-    .spacing(layout::section_gap());
-    // "Save" belongs to both groups, so it sits close under them.
-    column![groups, row![blank::horizontal(), save]].spacing(space::m()).into()
-}
-
-/// "Write new mail as": formatted (HTML with a plain text copy) or plain text (issue #125).
-fn writing_group(mail: &MailView) -> Element<'_, Message> {
-    let choice =
-        pick_list(FORMAT_CHOICES, Some(FormatChoice(mail.settings.format)), |choice| Message::SetFormat(choice.0))
-            .padding(style::pick_list_padding())
-            .text_size(typo::caption().size)
-            .text_line_height(typo::caption().line_height)
-            .font(typo::caption().font)
-            .style(style::pick_list)
-            .menu_style(style::pick_list_menu);
-    let row = setting_row(None, tr("Write new mail as"), None, choice);
-    let footer = tr("Formatted mail can hold bold text, lists, links and quotes; a plain text copy goes along.");
-    widgets::group(tr("Writing"), vec![row], Some(footer.to_string()))
-}
-
-/// "Show new mail in the Notification Hub": all, only what the inbox's rules put into "For me", or none.
-fn inbox_group(mail: &MailView) -> Element<'_, Message> {
-    let choice =
-        pick_list(NOTIFY_CHOICES, Some(NotifyChoice(mail.settings.notify)), |choice| Message::SetNotify(choice.0))
-            .padding(style::pick_list_padding())
-            .text_size(typo::caption().size)
-            .text_line_height(typo::caption().line_height)
-            .font(typo::caption().font)
-            .style(style::pick_list)
-            .menu_style(style::pick_list_menu);
-    let row = setting_row(None, tr("Show new mail in the Notification Hub"), None, choice);
-    let footer = tr("Only \"For me\" leaves out newsletters and other automatic mail.");
-    widgets::group(tr("Notification Hub"), vec![row], Some(footer.to_string()))
 }
 
 /// The services as switches. Calendars and tasks need the account's calendar address; without
@@ -1683,32 +1446,6 @@ fn status_group<'a>(account: &'a AccountInfo, now: DateTime<Utc>) -> Element<'a,
     widgets::group(tr("Status"), vec![row], None)
 }
 
-/// The calendars and task lists with their switches; before the first sync a sentence instead
-/// (an empty group would be a bare frame).
-fn collections_group<'a>(account: &'a AccountInfo, settings: &Settings) -> Element<'a, Message> {
-    let title = tr("Calendars and lists");
-    if account.collections.is_empty() {
-        let hint = tr("No calendars or task lists yet. Use Sync now to fetch them from the server.");
-        return column![widgets::section_title(title), typo::text(typo::body(), hint).style(theme::text_2)]
-            .spacing(space::s())
-            .into();
-    }
-    let rows = account.collections.iter().map(|collection| collection_row(collection, settings)).collect();
-    let footer = tr("Hidden calendars and lists stay on the server; the apps just don't show them.");
-    widgets::group(title, rows, Some(footer.to_string()))
-}
-
-/// One calendar or task list: colour dot, name, kind and "Read-only", and the "Show in apps" switch.
-fn collection_row<'a>(collection: &'a Collection, settings: &Settings) -> Element<'a, Message> {
-    let id = collection.id.clone();
-    let switch = toggler(is_shown(settings, &collection.id))
-        .size(style::CHECK_SIZE)
-        .style(style::toggler)
-        .on_toggle(move |shown| Message::SetShown { collection: id.clone(), shown });
-    let dot = color_dot(collection_color(collection.color.as_deref()), space::s());
-    setting_row(Some(dot), collection.name.as_str(), Some(collection_detail(collection)), switch)
-}
-
 /// Server and user, and where the app password lives. Nothing to show without a server.
 fn connection_group<'a>(account: &'a AccountInfo) -> Option<Element<'a, Message>> {
     let (server, user) = match &account.state {
@@ -1801,41 +1538,6 @@ pub fn github_permissions(scopes: &[String]) -> Vec<Permission> {
     ]
 }
 
-// ----- The inbox (task E5.14) ---------------------------------------------------------------
-
-/// One inbox source of an account: its switch's name and the line under it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Feed {
-    pub source: SourceRef,
-    pub name: &'static str,
-    pub summary: Option<&'static str>,
-}
-
-/// The inbox sources an account brings (its id is the source's key): a GitHub account its
-/// notifications, a Nextcloud account its notifications and Talk. Every other account none here;
-/// a mail account has its own "Show new mail in the Notification Hub", an ntfy account is nothing but its topics.
-pub fn feeds(account: &AccountInfo) -> Vec<Feed> {
-    let Ok(source) = account.id.parse::<SourceRef>() else { return Vec::new() };
-    match source.kind {
-        SourceKind::Github => {
-            vec![Feed { source, name: tr("Show notifications in the Notification Hub"), summary: None }]
-        }
-        SourceKind::Nextcloud => {
-            let talk = SourceRef::talk(source.name.clone());
-            vec![
-                Feed { source, name: tr("Notifications"), summary: Some(tr("From Nextcloud and its apps")) },
-                Feed { source: talk, name: tr("Talk"), summary: Some(tr("Unread conversations and mentions")) },
-            ]
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// Whether the inbox shows `source`: everything is shown unless `inbox.list_sources` says muted.
-pub fn source_shown(data: &Data, source: &SourceRef) -> bool {
-    !data.sources.iter().any(|info| info.source == *source && info.muted)
-}
-
 /// Why `source` brings nothing at the moment, as the core keeps it.
 fn source_health(data: &Data, source: &SourceRef) -> Option<SourceHealth> {
     data.sources.iter().find(|info| info.source == *source).and_then(|info| info.health)
@@ -1853,38 +1555,6 @@ pub fn health_text(kind: SourceKind, health: SourceHealth) -> &'static str {
         (_, SourceHealth::SignedOut) => tr("The server refused the sign-in. Sign in again to get notifications."),
         (_, SourceHealth::Offline) => tr("The server cannot be reached. Notifications come once it answers."),
     }
-}
-
-/// "Inbox" on a GitHub or Nextcloud account's page: a switch per source ([`feeds`]). A GitHub
-/// account's one row has why it is quiet as the group's sentence; Nextcloud's rows say it under
-/// their names. `None` for an account without inbox sources.
-fn inbox_sources_group<'a>(account: &AccountInfo, data: &Data) -> Option<Element<'a, Message>> {
-    let feeds = feeds(account);
-    if feeds.is_empty() {
-        return None;
-    }
-    let mut footer = None;
-    let rows = feeds
-        .into_iter()
-        .map(|feed| {
-            let source = feed.source.clone();
-            let switch = toggler(source_shown(data, &feed.source))
-                .size(style::CHECK_SIZE)
-                .style(style::toggler)
-                .on_toggle(move |shown| Message::ShowInInbox(source.clone(), shown));
-            let health = source_health(data, &feed.source).map(|health| health_text(feed.source.kind, health));
-            match (feed.summary, health) {
-                (None, health) => {
-                    footer = health.map(str::to_string);
-                    setting_row(None, feed.name, None, switch)
-                }
-                (Some(summary), health) => {
-                    wrapped_row(None, feed.name, health.unwrap_or(summary).to_string(), Some(switch.into()))
-                }
-            }
-        })
-        .collect();
-    Some(widgets::group(tr("Notification Hub"), rows, footer))
 }
 
 // ----- An ntfy account's page (task E5.14) --------------------------------------------------
@@ -2176,21 +1846,6 @@ mod tests {
     }
 
     #[test]
-    fn collections_say_kind_and_read_only() {
-        let mut collection = Collection {
-            id: "work".into(),
-            name: "Work".into(),
-            kind: CollectionKind::Events,
-            color: None,
-            writable: true,
-            source: None,
-        };
-        assert_eq!(collection_detail(&collection), tr("Calendar"));
-        collection.writable = false;
-        assert_eq!(collection_detail(&collection), format!("{} · {}", tr("Calendar"), tr("Read-only")));
-    }
-
-    #[test]
     fn dialogs_are_window_layers() {
         let data = Data { accounts: vec![account("nextcloud:anna", connected(None, None))], ..Data::default() };
         let mut state = State::default();
@@ -2209,15 +1864,7 @@ mod tests {
     #[test]
     fn pages_build_for_list_and_detail() {
         let now = Utc::now();
-        let mut anna = account("nextcloud:anna@cloud.example.org", connected(Some(now), None));
-        anna.collections = vec![Collection {
-            id: "work".into(),
-            name: "Work".into(),
-            kind: CollectionKind::Todos,
-            color: Some("#5B8CFF".into()),
-            writable: false,
-            source: None,
-        }];
+        let anna = account("nextcloud:anna@cloud.example.org", connected(Some(now), None));
         let data =
             Data { accounts: vec![anna, account("nextcloud:ben", AccountState::NotConnected)], ..Data::default() };
         let mut state = State::default();
@@ -2343,18 +1990,19 @@ mod tests {
         assert!(is_shown(&base, "b"));
     }
 
+    /// Task S.21: in place of "Calendars and lists" the page says where they are chosen now and
+    /// opens Calendar or Tasks with `apps.open_app`, by window class.
     #[test]
-    fn the_switch_sends_only_its_collection() {
+    fn the_new_place_of_the_collections_opens_its_window() {
         let data = Data::default();
-        for shown in [true, false] {
-            let message = Message::SetShown { collection: "a".into(), shown };
-            let action = update(&mut State::default(), message, &data);
+        for class in ["torro-calendar", "torro-tasks"] {
+            let action = update(&mut State::default(), Message::OpenApp(class), &data);
             assert!(
-                matches!(action, Action::Send(Request::SetCollectionShown { ref collection, shown: s })
-                    if collection == "a" && s == shown),
+                matches!(action, Action::Send(Request::OpenApp { ref app, target: None }) if app == class),
                 "{action:?}"
             );
         }
+        drop(collections_moved());
     }
 
     // ----- A mail provider's account (task M7.2) -------------------------------------------------
@@ -2501,110 +2149,28 @@ mod tests {
         assert!(state.password.is_some());
     }
 
+    /// Task S.21: a mail account's page keeps only its services; the sender name, the signature,
+    /// how mail is written, the folder questions and "Show new mail" are set in the windows, and
+    /// its page only leads there.
     #[test]
-    fn saving_sends_only_what_the_draft_changes() {
+    fn the_services_are_the_only_setting_left_on_a_mail_page() {
         let (mut state, data) = open_mail(MAILBOX);
-        assert!(matches!(update(&mut state, Message::SaveMail, &data), Action::None), "nothing changed");
-        update(&mut state, Message::SenderNameEdited("Anna Beispiel".into()), &data);
-        let request = sent(update(&mut state, Message::SaveMail, &data));
-        assert!(
-            matches!(&request, Request::UpdateMailAccount { id, sender_name: Some(name), signature: None,
-                notify: None, services: None, folder_roles: None, format: None } if id == MAILBOX && name == "Anna Beispiel"),
-            "{request:?}"
-        );
-        // Emptying the signature removes it: the empty text is sent.
-        update(&mut state, Message::SenderNameEdited("Anna Example".into()), &data);
-        let draft = state.mail.as_mut().expect("a draft");
-        draft.signature = text_editor::Content::with_text("");
-        let request = sent(update(&mut state, Message::SaveMail, &data));
-        assert!(
-            matches!(&request, Request::UpdateMailAccount { sender_name: None, signature: Some(text), .. }
-                if text.is_empty()),
-            "{request:?}"
-        );
-        // Typing the stored values again is no change.
-        let draft = state.mail.as_mut().expect("a draft");
-        draft.signature = text_editor::Content::with_text("Anna Example\r\nExample GmbH\n");
-        assert!(matches!(update(&mut state, Message::SaveMail, &data), Action::None));
-    }
-
-    #[test]
-    fn a_draft_follows_the_account_and_never_lands_on_another() {
-        let (mut state, data) = open_mail(MAILBOX);
-        update(&mut state, Message::SenderNameEdited("Changed".into()), &data);
-        update(&mut state, Message::Open("mail:anna@work.example.net".into()), &data);
-        let draft = state.mail.as_ref().expect("a draft");
-        assert_eq!((draft.account.as_str(), draft.sender_name.as_str()), ("mail:anna@work.example.net", ""));
-        update(&mut state, Message::Back, &data);
-        assert!(state.mail.is_none() && state.servers.is_none());
-    }
-
-    #[test]
-    fn notify_and_services_send_one_setting_each() {
-        let (mut state, data) = open_mail(MAILBOX);
-        let request = sent(update(&mut state, Message::SetNotify(Notify::Off), &data));
-        assert!(
-            matches!(
-                &request,
-                Request::UpdateMailAccount {
-                    notify: Some(Notify::Off),
-                    sender_name: None,
-                    signature: None,
-                    services: None,
-                    folder_roles: None,
-                    ..
-                }
-            ),
-            "{request:?}"
-        );
-        assert!(
-            matches!(update(&mut state, Message::SetNotify(Notify::ForMeOnly), &data), Action::None),
-            "as stored: nothing to send"
-        );
         let request = sent(update(&mut state, Message::SetService(MailService::Tasks, false), &data));
         assert!(
-            matches!(&request, Request::UpdateMailAccount { services: Some(services), notify: None, .. }
+            matches!(&request, Request::UpdateMailAccount { services: Some(services), notify: None,
+                sender_name: None, signature: None, folder_roles: None, format: None, .. }
                 if *services == Services { mail: true, calendars: true, tasks: false }),
             "{request:?}"
         );
         assert!(matches!(update(&mut state, Message::SetService(MailService::Mail, true), &data), Action::None));
-        // Issue #125: how mail is written, one setting too.
-        let request = sent(update(&mut state, Message::SetFormat(MailFormat::Plain), &data));
-        assert!(
-            matches!(
-                &request,
-                Request::UpdateMailAccount { format: Some(MailFormat::Plain), notify: None, services: None, .. }
-            ),
-            "{request:?}"
-        );
-        assert!(matches!(update(&mut state, Message::SetFormat(MailFormat::Html), &data), Action::None), "as stored");
-    }
-
-    #[test]
-    fn only_an_offered_folder_is_picked() {
-        let (mut state, data) = open_mail(MAILBOX);
-        let pick = |role, path: &str| Message::PickFolder { role, path: path.into() };
-        let request = sent(update(&mut state, pick(Role::Sent, "INBOX.Sent Items"), &data));
-        assert!(
-            matches!(&request, Request::UpdateMailAccount { folder_roles: Some(roles), .. }
-                if roles.get(&Role::Sent).map(String::as_str) == Some("INBOX.Sent Items") && roles.len() == 1),
-            "{request:?}"
-        );
-        assert!(matches!(update(&mut state, pick(Role::Sent, "INBOX.Other"), &data), Action::None), "not a candidate");
-        assert!(matches!(update(&mut state, pick(Role::Trash, "INBOX.Sent"), &data), Action::None), "not an open role");
-    }
-
-    #[test]
-    fn the_folder_question_names_the_role() {
-        assert_eq!(role_question(Role::Sent), tr("Which folder holds sent mail?"));
-        let roles = [Role::Inbox, Role::Drafts, Role::Sent, Role::Archive, Role::Junk, Role::Trash];
-        let questions: std::collections::HashSet<&str> = roles.into_iter().map(role_question).collect();
-        assert_eq!(questions.len(), roles.len(), "one question per role");
-        let (state, mut data) = open_mail(MAILBOX);
-        drop(view(&state, &data));
-        // The question only stands while a role is open.
-        data.accounts[0].mail.as_mut().expect("mail").open_roles.clear();
-        drop(view(&state, &data));
+        for class in ["torro-inbox-mail", "torro-inbox"] {
+            let action = update(&mut state, Message::OpenApp(class), &data);
+            assert!(
+                matches!(action, Action::Send(Request::OpenApp { ref app, target: None }) if app == class),
+                "{action:?}"
+            );
+        }
+        assert_eq!(mail_moved().len(), 2, "Mail and the Notification Hub");
     }
 
     #[test]
@@ -2740,31 +2306,6 @@ mod tests {
         assert!(state.servers.is_none());
     }
 
-    /// Task M3.5: the sender name and signature follow a change from outside while nothing is
-    /// typed into them; what the person typed stays, and follows again once it is saved.
-    #[test]
-    fn the_page_takes_changes_from_outside_while_nothing_is_typed() {
-        let (mut state, mut data) = open_mail(MAILBOX);
-        let renamed = |data: &mut Data, name: &str| {
-            data.accounts[0].mail.as_mut().expect("mail").sender_name = name.into();
-        };
-        renamed(&mut data, "Anna from elsewhere");
-        loaded(&mut state, &data);
-        assert_eq!(state.mail.as_ref().map(|draft| draft.sender_name.as_str()), Some("Anna from elsewhere"));
-
-        update(&mut state, Message::SenderNameEdited("Anna typed".into()), &data);
-        renamed(&mut data, "Anna again from elsewhere");
-        loaded(&mut state, &data);
-        assert_eq!(state.mail.as_ref().map(|draft| draft.sender_name.as_str()), Some("Anna typed"), "typed stays");
-
-        // Saved: the reload brings what was typed back, and from then on it follows again.
-        renamed(&mut data, "Anna typed");
-        loaded(&mut state, &data);
-        renamed(&mut data, "Anna, later");
-        loaded(&mut state, &data);
-        assert_eq!(state.mail.as_ref().map(|draft| draft.sender_name.as_str()), Some("Anna, later"));
-    }
-
     #[test]
     fn each_service_says_when_it_synced_and_what_went_wrong() {
         let now = Utc::now();
@@ -2791,12 +2332,6 @@ mod tests {
     }
 
     #[test]
-    fn the_inbox_choices_read_as_the_task_says() {
-        let labels: Vec<String> = NOTIFY_CHOICES.iter().map(ToString::to_string).collect();
-        assert_eq!(labels, [tr("All"), tr("Only \"For me\""), tr("Off")]);
-    }
-
-    #[test]
     fn a_mail_account_builds_with_and_without_a_calendar_address() {
         let (state, mut data) = open_mail("mail:anna@work.example.net");
         assert!(data.accounts[1].mail.as_ref().is_some_and(|mail| mail.caldav.is_none()));
@@ -2818,41 +2353,24 @@ mod tests {
         (state, data)
     }
 
+    /// Task S.21: a GitHub or Nextcloud account's page no longer switches its notifications; it
+    /// says that the Notification Hub does and opens that window. Every other kind of account has
+    /// no such group at all.
     #[test]
-    fn github_and_nextcloud_bring_their_inbox_sources() {
+    fn github_and_nextcloud_point_at_the_notification_hub() {
         let data = super::super::launch::demo_data();
         let of = |id: &str| {
             let account = data.accounts.iter().find(|account| account.id == id).expect("demo account");
-            feeds(account).into_iter().map(|feed| (feed.source.key(), feed.name)).collect::<Vec<_>>()
+            sources_moved(account).is_some()
         };
-        assert_eq!(
-            of("github:anna-dev"),
-            [("github:anna-dev".to_string(), tr("Show notifications in the Notification Hub"))]
-        );
-        assert_eq!(
-            of("nextcloud:anna@cloud.example.org"),
-            [
-                ("nextcloud:anna@cloud.example.org".to_string(), tr("Notifications")),
-                ("talk:anna@cloud.example.org".to_string(), tr("Talk")),
-            ]
-        );
+        assert!(of("github:anna-dev"));
+        assert!(of("nextcloud:anna@cloud.example.org"));
         for other in [NTFY, MAILBOX, "caldav:anna@posteo.de@posteo.de", "ai:openrouter@openrouter.ai"] {
-            assert!(of(other).is_empty(), "{other}");
+            assert!(!of(other), "{other}");
         }
-    }
-
-    #[test]
-    fn an_inbox_switch_mutes_or_unmutes_its_source() {
         let (mut state, data) = open_demo("nextcloud:anna@cloud.example.org");
-        // The demo's Talk is muted, its notifications are not.
-        assert!(source_shown(&data, &SourceRef::nextcloud("anna@cloud.example.org")));
-        assert!(!source_shown(&data, &SourceRef::talk("anna@cloud.example.org")));
-        assert!(source_shown(&data, &SourceRef::github("someone-else")), "a source not listed is shown");
-        let talk = SourceRef::talk("anna@cloud.example.org");
-        let request = sent(update(&mut state, Message::ShowInInbox(talk.clone(), true), &data));
-        assert!(matches!(request, Request::MuteSource { source, muted: false } if source == talk));
-        let request = sent(update(&mut state, Message::ShowInInbox(talk.clone(), false), &data));
-        assert!(matches!(request, Request::MuteSource { muted: true, .. }));
+        let request = sent(update(&mut state, Message::OpenApp("torro-inbox"), &data));
+        assert!(matches!(request, Request::OpenApp { ref app, target: None } if app == "torro-inbox"), "{request:?}");
     }
 
     #[test]
