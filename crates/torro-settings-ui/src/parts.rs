@@ -8,7 +8,7 @@
 
 use iced::widget::space as blank;
 use iced::widget::text::{IntoFragment, Wrapping};
-use iced::widget::{Text, button, column, container, row, svg};
+use iced::widget::{Text, button, column, container, row, svg, text_input};
 use iced::{Alignment, Element, Fill, Padding, Theme};
 
 use torro_core::i18n::tr;
@@ -48,10 +48,35 @@ pub fn one_line<'a, M: 'a>(text: Text<'a>) -> Element<'a, M> {
     container(text.wrapping(Wrapping::None)).width(Fill).clip(true).into()
 }
 
+/// A text field in the look of the suite, as wide as its row: `BODY` in the field style, 32 high.
+/// The caller adds what it does (`.on_input(…)`, `.on_submit(…)`, `.id(…)`); put into a group with
+/// [`row_frame`].
+pub fn field<'a, M: Clone + 'a>(placeholder: &str, value: &str) -> text_input::TextInput<'a, M> {
+    text_input(placeholder, value)
+        .size(typo::body().size)
+        .line_height(typo::body().line_height)
+        .font(typo::body().font)
+        .padding(style::INPUT_PADDING)
+        .width(Fill)
+        .style(style::text_input)
+}
+
 /// `row` (a [`setting_row`]) as a button over its whole width: hover lays `hover` under it, the
 /// label stays in `text`. `None` draws it disabled (40 %).
 pub fn pressable<'a, M: Clone + 'a>(row: Element<'a, M>, on_press: Option<M>) -> Element<'a, M> {
     button(row).padding(Padding::ZERO).width(Fill).style(style::button::list_row(false)).on_press_maybe(on_press).into()
+}
+
+/// One row of a list to pick from (a retention time, a microphone, an engine): its `label`, and a
+/// check at the end when it is the chosen one. The whole row is the button.
+pub fn choice<'a, M: Clone + 'a>(label: impl IntoFragment<'a>, chosen: bool, on_press: M) -> Element<'a, M> {
+    let check: Element<'a, M> = match chosen {
+        true => {
+            icon::icon(Icon::Check, icon::SIZE).style(|t: &Theme, _| svg::Style { color: Some(palette(t).text) }).into()
+        }
+        false => blank().width(icon::SIZE).into(),
+    };
+    pressable(setting_row(None, label, None, check), Some(on_press))
 }
 
 /// The chevron at the end of a row that opens a page or a next step: 16, `text_3`.

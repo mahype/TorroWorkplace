@@ -6439,6 +6439,7 @@ dependencies = [
 name = "torro-settings-ui"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "iced",
  "serde_json",
  "tokio",

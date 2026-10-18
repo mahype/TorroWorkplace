@@ -300,6 +300,9 @@ impl Host {
                 self.open(id);
                 Outcome::None
             }
+            // The focus is the window's, not the daemon's: the host does it and nothing else
+            // happens.
+            Action::Focus(field) => Outcome::Work(iced::widget::operation::focus(field)),
             Action::ControlCentre(section) => Outcome::ControlCentre(section),
             Action::App(app) => Outcome::App(app),
         }

@@ -44,6 +44,7 @@
 //! its own socket connection, or [`demo::Demo`], which answers sample data from memory and never
 //! opens a socket. Nothing in this library knows the socket (a test watches over that).
 
+pub mod assistant;
 pub mod demo;
 pub mod host;
 pub mod parts;
@@ -52,8 +53,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use torro_core::ai::AiModel;
 use torro_core::settings::Settings;
-use torro_ipc::{Request, Response};
+use torro_ipc::assistant::{Engine, Note, Profile};
+use torro_ipc::bots::BotSummary;
+use torro_ipc::{ClientInfo, Request, Response, VoiceStatus};
 
 pub use host::{Form, Frame, Host, Outcome, Page, Section, form};
 
@@ -82,6 +86,26 @@ pub trait Backend: Send + Sync + 'static {
 pub struct Data {
     /// The suite-wide settings (`settings.settings`).
     pub settings: Settings,
+    /// The clients the daemon knows (`clients.list_clients`), never with their keys: the sections
+    /// read them to tell whether the assistant is on. No section ever changes one – who may use
+    /// what, and every key, stays in the control centre (`docs/api.md`, "Was nie nach außen
+    /// geht").
+    pub clients: Vec<ClientInfo>,
+    /// Who the assistant is (`assistant.get_profile`); `None` until an answer came.
+    pub profile: Option<Profile>,
+    /// The notes of the assistant's memory, oldest first (`assistant.list_memories`).
+    pub memories: Vec<Note>,
+    /// The bots (`bots.list_bots`); none from a daemon that has none.
+    pub bots: Vec<BotSummary>,
+    /// What the assistant can answer with (`assistant.list_engines`): an AI account, a coding
+    /// agent with its own models.
+    pub engines: Vec<Engine>,
+    /// The models of the AI account the assistant's default engine names (`ai.list_models`): the
+    /// one request only the loaded data can name ([`Data::follow_up`]). Empty for an agent's
+    /// engine, which brings its models with it, and while no default is set.
+    pub default_models: Vec<AiModel>,
+    /// How talking by voice stands (`settings.voice_status`); `None` until an answer came.
+    pub voice: Option<VoiceStatus>,
     /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
     pub error: Option<String>,
 }
@@ -90,10 +114,28 @@ impl Data {
     /// Puts one answer where it belongs. An answer no section asked for is dropped: a section that
     /// wants it adds its field and its arm.
     pub fn take(&mut self, response: Response) {
-        // One arm per field; a `match` as soon as there are two.
-        if let Response::Settings { settings } = response {
-            self.settings = settings;
+        match response {
+            Response::Settings { settings } => self.settings = settings,
+            Response::Clients { clients } => self.clients = clients,
+            Response::Profile { profile } => self.profile = Some(profile),
+            Response::Memories { notes } => self.memories = notes,
+            Response::Bots { bots } => self.bots = bots,
+            Response::Engines { engines } => self.engines = engines,
+            Response::AiModels { models } => self.default_models = models,
+            Response::Voice { voice } => self.voice = Some(voice),
+            _ => {}
         }
+    }
+
+    /// What a load asks for in a second round, once the first answers are in: requests that only
+    /// the loaded data can name. Today one – `ai.list_models` takes the id of the AI account the
+    /// assistant's default engine names, which stands in the settings and whose kind stands in the
+    /// engines ([`assistant::models_request`]).
+    ///
+    /// Asked once, never again from its own answers: a section that adds a round here keeps it to
+    /// what the first round brought.
+    pub fn follow_up(&self) -> Vec<Request> {
+        assistant::models_request(self).into_iter().collect()
     }
 }
 
@@ -103,7 +145,17 @@ impl Data {
 /// state, and the first failure stands in [`Data::error`] over the page.
 pub async fn load(backend: Arc<dyn Backend>, wanted: Vec<Request>) -> Data {
     let mut data = Data::default();
-    for request in wanted {
+    ask(&backend, wanted, &mut data).await;
+    // The second round: what only the first one could name ([`Data::follow_up`]).
+    let follow_up = data.follow_up();
+    ask(&backend, follow_up, &mut data).await;
+    data
+}
+
+/// Sends `requests` in order and puts every answer into `data`; the first failure stands in
+/// [`Data::error`].
+async fn ask(backend: &Arc<dyn Backend>, requests: Vec<Request>, data: &mut Data) {
+    for request in requests {
         match backend.call(request).await {
             Ok(response) => data.take(response),
             Err(problem) => {
@@ -113,7 +165,6 @@ pub async fn load(backend: Arc<dyn Backend>, wanted: Vec<Request>) -> Data {
             }
         }
     }
-    data
 }
 
 /// Sends `requests` one after the other and then loads `wanted` again: what the host does with an
@@ -141,6 +192,10 @@ pub enum Action<A> {
     OpenUrl(String),
     /// Show another section of these settings, by its [`Section::id`].
     Open(&'static str),
+    /// Put the keyboard focus into the text field with this id: what a row that opens a field
+    /// (a note of the assistant's memory) asks for. The host does it itself
+    /// (`iced::widget::operation::focus`), so a page never builds a task.
+    Focus(&'static str),
     /// Open the control centre at this section – what `torroworkplace ui --section <s>` takes
     /// (`accounts`, `appearance`, `assistant`, `bot:<id>` …), through
     /// `torro_gui::connect::open_section`. For everything that stays in the control centre:
@@ -165,6 +220,7 @@ impl<A> Action<A> {
             Action::Send(requests) => Action::Send(requests),
             Action::OpenUrl(url) => Action::OpenUrl(url),
             Action::Open(section) => Action::Open(section),
+            Action::Focus(field) => Action::Focus(field),
             Action::ControlCentre(section) => Action::ControlCentre(section),
             Action::App(app) => Action::App(into(app)),
         }
