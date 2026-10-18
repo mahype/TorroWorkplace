@@ -160,7 +160,8 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.16 Gerüst: Bibliothek `torro-settings-ui` und Host für den Inhaltsbereich
-- [ ] erledigt (geändert mit #210)
+- [x] erledigt (Bibliothek, Host, Demo-Backend und `settings_open`; Sichtprüfung der Steuerzentrale auf
+  diesem Rechner nicht möglich – kein Hyprland, macOS –, die Bausteine sind unverändert umgezogen)
 - **Modell:** Opus (neues Crate, Schnittstelle für alle Apps) · **Dateien:** `Cargo.toml` (Wurzel, Mitglied und
   `[workspace.dependencies]`), `crates/torro-settings-ui/` (neu), `crates/torroworkplace/Cargo.toml`,
   `crates/torroworkplace/src/ui/mod.rs`, `crates/torro-gui/src/shell.rs`

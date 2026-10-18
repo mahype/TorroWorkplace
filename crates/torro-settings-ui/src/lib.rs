@@ -1,0 +1,253 @@
+//! The settings of an app, shown in its own window: what the gear of every TorroWorkplace app
+//! opens. Concept: `docs/settings.md` ("Einstellungen in den Apps"), task S.16 in
+//! `docs/tasks/steuerzentrale.md`.
+//!
+//! The rule (`docs/settings.md`, "Die Regel"): what only changes how one app works belongs into
+//! that app, exactly once, behind its gear in the same window. The control centre keeps what the
+//! whole suite shares and only points there. This library holds everything both sides need:
+//!
+//! * [`parts`] – the rows a settings page is built from ([`parts::setting_row`],
+//!   [`parts::pressable`], [`parts::chevron`], [`parts::dialog`], [`parts::confirm`] …). The
+//!   control centre uses **only** these, never the host.
+//! * the sections of each app, one module per app (`assistant`, `calendar`, `inbox`, `mail` …,
+//!   tasks S.17 to S.20), each written in the shape below.
+//! * [`host`] – the [`Host`], which shows an app's sections in its content area: the section list,
+//!   the header bar with the path, the page, and the sending and loading around it.
+//!
+//! # The shape of a section
+//!
+//! Every section is a module of this library with the same shape as a page of the control centre,
+//! so a page can move from there to here unchanged but for its imports:
+//!
+//! ```text
+//! pub struct State            page-local UI state (Default)
+//! pub enum Message            what the page's widgets report
+//! pub fn update(&mut State, Message, &Data) -> Action<A>
+//! pub fn view<'a>(&'a State, &'a Data) -> Element<'a, Message>
+//! pub fn header<'a>(&'a State, &'a Data, SizeClass) -> Page<'a, Message>   (optional)
+//! pub fn overlay<'a>(&'a State, &'a Data) -> Option<Element<'a, Message>>  (optional)
+//! ```
+//!
+//! A page never talks to the daemon itself: it returns an [`Action`], and the [`Host`] carries it
+//! out. What a page shows comes from [`Data`], which the host loads with the requests the app
+//! names ([`Host::new`]).
+//!
+//! `A` is the app's own part of an [`Action`] ([`Action::App`]) – what only the app can do, such
+//! as opening the bot editor. A section that needs nothing of the kind stays generic over `A`; a
+//! section that does names its own type (`pub enum AppAction { EditBot(String) }`) and the app
+//! matches on it. [`Action::map_app`] fits sections with different types into one app.
+//!
+//! # The way to the daemon
+//!
+//! The host never calls [`torro_ipc::client`] itself: that reads the app key, so a visual check
+//! with `--demo` would change real rights and settings. The app hands it a [`Backend`] instead –
+//! its own socket connection, or [`demo::Demo`], which answers sample data from memory and never
+//! opens a socket. Nothing in this library knows the socket (a test watches over that).
+
+pub mod demo;
+pub mod host;
+pub mod parts;
+
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+
+use torro_core::settings::Settings;
+use torro_ipc::{Request, Response};
+
+pub use host::{Form, Frame, Host, Outcome, Page, Section, form};
+
+/// The answer of a [`Backend`], boxed so a `dyn Backend` can be handed around.
+pub type Answer = Pin<Box<dyn Future<Output = Result<Response, String>> + Send>>;
+
+/// The way to the daemon, which the app gives the [`Host`] ([`Host::new`]).
+///
+/// The app implements it over its own socket connection (`torro_ipc::client::call`); with `--demo`
+/// it passes [`demo::Demo`], which answers from memory. The host and the sections only ever speak
+/// through this trait, so the demo cannot touch anything real.
+///
+/// An answer the daemon reports as [`Response::Error`] comes back as `Err(message)`, with the
+/// message for a person – like the control centre's own `send`. Everything else is `Ok`.
+pub trait Backend: Send + Sync + 'static {
+    /// Sends `request` and waits for the answer.
+    fn call(&self, request: Request) -> Answer;
+}
+
+/// Everything the sections of one app show, as far as it was loaded.
+///
+/// The app names the requests its sections need ([`Host::new`]); [`load`] sends them and
+/// [`Data::take`] puts every answer where it belongs. A section that needs something new adds its
+/// field here and the one arm that fills it – nothing else changes.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Data {
+    /// The suite-wide settings (`settings.settings`).
+    pub settings: Settings,
+    /// Why the load failed, if it did (daemon not running …); the host shows it over the page.
+    pub error: Option<String>,
+}
+
+impl Data {
+    /// Puts one answer where it belongs. An answer no section asked for is dropped: a section that
+    /// wants it adds its field and its arm.
+    pub fn take(&mut self, response: Response) {
+        // One arm per field; a `match` as soon as there are two.
+        if let Response::Settings { settings } = response {
+            self.settings = settings;
+        }
+    }
+}
+
+/// Loads `wanted` through `backend`, in the given order, into one [`Data`].
+///
+/// Every request is sent, also after one failed: a section whose data is missing shows its empty
+/// state, and the first failure stands in [`Data::error`] over the page.
+pub async fn load(backend: Arc<dyn Backend>, wanted: Vec<Request>) -> Data {
+    let mut data = Data::default();
+    for request in wanted {
+        match backend.call(request).await {
+            Ok(response) => data.take(response),
+            Err(problem) => {
+                if data.error.is_none() {
+                    data.error = Some(problem);
+                }
+            }
+        }
+    }
+    data
+}
+
+/// Sends `requests` one after the other and then loads `wanted` again: what the host does with an
+/// [`Action::Send`].
+///
+/// Stops at the first request that fails and reports it, so a half-done change does not look
+/// finished; what the daemon already did stays done, and the next load shows it.
+pub async fn send(backend: Arc<dyn Backend>, requests: Vec<Request>, wanted: Vec<Request>) -> Result<Data, String> {
+    for request in requests {
+        backend.call(request).await?;
+    }
+    Ok(load(backend, wanted).await)
+}
+
+/// What a section wants the [`Host`] to do. `A` is the app's own part ([`Action::App`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action<A> {
+    /// Nothing.
+    None,
+    /// Send these requests to the daemon, one after the other, and load the sections' data again
+    /// afterwards. One request per thing that changed (`settings.set_setting` with its key, not a
+    /// whole `settings.update_settings`), so two windows never overwrite each other.
+    Send(Vec<Request>),
+    /// Open a web page in the browser (`torro_gui::links`).
+    OpenUrl(String),
+    /// Show another section of these settings, by its [`Section::id`].
+    Open(&'static str),
+    /// Open the control centre at this section – what `torroworkplace ui --section <s>` takes
+    /// (`accounts`, `appearance`, `assistant`, `bot:<id>` …), through
+    /// `torro_gui::connect::open_section`. For everything that stays in the control centre:
+    /// accounts, rights, keys, approvals.
+    ControlCentre(String),
+    /// What only the app itself can do – open the bot editor, show a chat. The app chooses the
+    /// type; a section that needs none stays generic over it.
+    App(A),
+}
+
+impl<A> Action<A> {
+    /// One request to send, then reload: the usual case of [`Action::Send`].
+    pub fn send(request: Request) -> Self {
+        Action::Send(vec![request])
+    }
+
+    /// The same action with the app's part mapped, so sections with app actions of their own fit
+    /// into one app (`action.map_app(AppAction::Assistant)`).
+    pub fn map_app<B>(self, into: impl FnOnce(A) -> B) -> Action<B> {
+        match self {
+            Action::None => Action::None,
+            Action::Send(requests) => Action::Send(requests),
+            Action::OpenUrl(url) => Action::OpenUrl(url),
+            Action::Open(section) => Action::Open(section),
+            Action::ControlCentre(section) => Action::ControlCentre(section),
+            Action::App(app) => Action::App(into(app)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    /// Nothing in this library may talk to the daemon itself: the host and the sections only speak
+    /// through [`Backend`], so `--demo` cannot reach a socket. A section that needs a request asks
+    /// the host for it (task S.16).
+    #[test]
+    fn no_source_file_speaks_to_the_socket() {
+        // Spelled in pieces: the scan reads this file too, and the words below are what it looks
+        // for, not something it should find.
+        let forbidden = [["client", "::call"].concat(), ["torro_ipc::", "client"].concat()];
+        let mut found = Vec::new();
+        visit(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut |file: &Path, text: &str| {
+            for line in code_of(text) {
+                for word in &forbidden {
+                    if line.contains(word.as_str()) {
+                        found.push(format!("{}: {word}", file.display()));
+                    }
+                }
+            }
+        });
+        assert!(found.is_empty(), "the settings library reaches the socket: {found:?}");
+    }
+
+    /// The code of a source file: without comments (a doc comment may name what the code must not
+    /// do) and without its test module, as `scripts/design-check.sh` reads a file.
+    fn code_of(text: &str) -> impl Iterator<Item = &str> {
+        text.lines()
+            .take_while(|line| line.trim() != "#[cfg(test)]")
+            .filter(|line| !line.trim_start().starts_with("//"))
+    }
+
+    /// Hands every `.rs` file under `dir` to `each`, with its text.
+    fn visit(dir: &Path, each: &mut impl FnMut(&Path, &str)) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                visit(&path, each);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && let Ok(text) = std::fs::read_to_string(&path)
+            {
+                each(&path, &text);
+            }
+        }
+    }
+
+    /// Sample data comes back without a daemon: the demo answers from memory (task S.16).
+    #[tokio::test]
+    async fn the_demo_answers_without_a_daemon() {
+        let backend: Arc<dyn Backend> = Arc::new(demo::Demo::new());
+        let data = load(Arc::clone(&backend), vec![Request::Settings]).await;
+        assert!(data.error.is_none(), "the demo failed: {:?}", data.error);
+        assert_eq!(data.settings.appearance, demo::Demo::new().settings().appearance);
+    }
+
+    /// A send goes through in order and ends in fresh data.
+    #[tokio::test]
+    async fn a_send_asks_for_the_data_again() {
+        let backend = Arc::new(demo::Demo::new());
+        let request = Request::SetSetting { key: torro_ipc::SettingKey::Zoom, value: serde_json::json!(1.1) };
+        let data = send(Arc::clone(&backend) as Arc<dyn Backend>, vec![request.clone()], vec![Request::Settings])
+            .await
+            .expect("the demo answers");
+        assert!(data.error.is_none());
+        assert_eq!(backend.sent(), vec![request], "the demo remembers what it was asked to change");
+    }
+
+    /// The app's part of an action can be wrapped, the rest stays as it is.
+    #[test]
+    fn map_app_only_touches_the_app_s_part() {
+        let open: Action<u8> = Action::Open("reminders");
+        assert_eq!(open.map_app(|n| n.to_string()), Action::Open("reminders"));
+        let app: Action<u8> = Action::App(7);
+        assert_eq!(app.map_app(|n| n.to_string()), Action::App("7".to_string()));
+    }
+}

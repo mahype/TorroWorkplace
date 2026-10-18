@@ -1,0 +1,23 @@
+[package]
+name = "torro-settings-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "The settings of a TorroWorkplace app in its own window: row building blocks, the sections of each app and the host that shows them in the content area."
+
+[lints]
+workspace = true
+
+[dependencies]
+torro-core.workspace = true
+torro-gui.workspace = true
+torro-ipc.workspace = true
+# The sources of the inbox's sections (`SourceRef`, task S.20).
+torro-inbox.workspace = true
+iced.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio.workspace = true

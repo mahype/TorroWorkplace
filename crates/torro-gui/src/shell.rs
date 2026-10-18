@@ -394,18 +394,21 @@ pub fn has_band() -> bool {
 /// ```ignore
 /// let label = shell::sidebar_button_label(class, self.sidebar, self.drawer);
 /// let buttons = TitleButtons::none().sidebar(label, Message::ToggleSidebar).settings(Message::OpenSettings);
+/// // While the settings fill the content area, the gear is marked (task S.16).
+/// let buttons = buttons.settings_open(self.settings.is_some());
 /// shell::titlebar(content, zoom, surface, cover, buttons, Message::DragWindow)
 /// ```
 #[derive(Debug, Clone, PartialEq)]
 pub struct TitleButtons<M> {
     sidebar: Option<(&'static str, M)>,
     settings: Option<M>,
+    settings_open: bool,
 }
 
 impl<M> TitleButtons<M> {
     /// No buttons: the band holds the traffic lights alone.
     pub fn none() -> Self {
-        TitleButtons { sidebar: None, settings: None }
+        TitleButtons { sidebar: None, settings: None, settings_open: false }
     }
 
     /// The panel button, which sends `on_press` – the same as `[` ([`is_sidebar_key`]): the app flips
@@ -419,6 +422,14 @@ impl<M> TitleButtons<M> {
     /// The settings button ("Settings"), which sends `on_press`.
     pub fn settings(mut self, on_press: M) -> Self {
         self.settings = Some(on_press);
+        self
+    }
+
+    /// Marks the settings button while the settings are `open` – they fill the app's content area,
+    /// and the gear leads back out of them (task S.16, `docs/settings.md`): `selected` under the
+    /// icon and the icon in `text`, like a chosen sidebar row. Neutral, never red.
+    pub fn settings_open(mut self, open: bool) -> Self {
+        self.settings_open = open;
         self
     }
 }
@@ -492,25 +503,31 @@ const BAND_BUTTON: f32 = 24.0;
 /// divided by `zoom` into layout units.
 #[cfg(target_os = "macos")]
 fn band_buttons<'a, M: Clone + 'a>(buttons: TitleButtons<M>, cover: Cover, zoom: f32) -> Element<'a, M> {
-    let TitleButtons { sidebar, settings } = buttons;
+    let TitleButtons { sidebar, settings, settings_open } = buttons;
     let (sidebar, settings) = match cover {
         Cover::Nothing => (sidebar, settings),
         Cover::Drawer => (sidebar, None),
         Cover::Dialog | Cover::Panel | Cover::Filled(_) => (None, None),
     };
-    let button_of = |which: Icon, label: &'static str, on_press: M| -> Element<'a, M> {
-        let mark = widgets::toned(which, icon::SIZE / zoom, Tone::Text2);
+    let button_of = |which: Icon, label: &'static str, on_press: M, marked: bool| -> Element<'a, M> {
+        let tone = if marked { Tone::Text } else { Tone::Text2 };
+        let mark = widgets::toned(which, icon::SIZE / zoom, tone);
         let edge = BAND_BUTTON / zoom;
         let pressable = button(container(mark).center(Fill)).width(edge).height(edge).padding(0);
-        widgets::with_tooltip(pressable.style(style::button::icon).on_press(on_press), label)
+        // One closure for both, because the two styles are different types.
+        let how = move |theme: &iced::Theme, status: iced::widget::button::Status| match marked {
+            true => style::button::sidebar_item(true)(theme, status),
+            false => style::button::icon(theme, status),
+        };
+        widgets::with_tooltip(pressable.style(how).on_press(on_press), label)
     };
     let mut buttons = row![blank().width(BAND_LEADING / zoom)];
     if let Some((label, on_press)) = sidebar {
-        buttons = buttons.push(button_of(Icon::PanelLeft, label, on_press));
+        buttons = buttons.push(button_of(Icon::PanelLeft, label, on_press, false));
     }
     buttons = buttons.push(blank::horizontal());
     if let Some(on_press) = settings {
-        buttons = buttons.push(button_of(Icon::Settings, tr("Settings"), on_press));
+        buttons = buttons.push(button_of(Icon::Settings, tr("Settings"), on_press, settings_open));
     }
     // Centred on the line of the traffic lights, not in the band: the line sits lower (see `LIGHTS`).
     let row = buttons.push(blank().width(BAND_TRAILING / zoom)).height(BAND_BUTTON / zoom).align_y(Alignment::Center);
@@ -1238,6 +1255,19 @@ mod tests {
                 let _: Element<'_, Msg> = titlebar(blank(), 1.5, surface, cover, buttons(), Msg::Close);
             }
         }
+    }
+
+    /// The gear is marked while the settings are open, and nothing else about the buttons changes
+    /// (task S.16).
+    #[test]
+    fn the_gear_is_marked_while_the_settings_are_open() {
+        let buttons = TitleButtons::none().sidebar("Collapse sidebar", Msg::Close).settings(Msg::Close);
+        assert!(!buttons.settings_open, "closed by default, as before S.16");
+        let open = buttons.clone().settings_open(true);
+        assert!(open.settings_open);
+        assert_eq!((open.sidebar, open.settings), (buttons.sidebar, buttons.settings), "nothing else changed");
+        // A window without a gear keeps none.
+        assert_eq!(TitleButtons::<Msg>::none().settings_open(true).settings, None);
     }
 
     #[test]

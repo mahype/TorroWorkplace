@@ -14,6 +14,7 @@ members = [
     "crates/torro-setups",
     "crates/torro-tui",
     "crates/torro-gui",
+    "crates/torro-settings-ui",
     "crates/torro-appkit",
     "crates/torroworkplace",
     "crates/torrotasks",
@@ -49,6 +50,7 @@ torro-ipc = { path = "crates/torro-ipc" }
 torro-wm = { path = "crates/torro-wm" }
 torro-setups = { path = "crates/torro-setups" }
 torro-gui = { path = "crates/torro-gui" }
+torro-settings-ui = { path = "crates/torro-settings-ui" }
 torro-appkit = { path = "crates/torro-appkit" }
 torro-htmlview = { path = "crates/torro-htmlview" }
 
