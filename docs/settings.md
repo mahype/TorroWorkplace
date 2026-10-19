@@ -385,12 +385,13 @@ Assistent-Fenster denselben nutzen.
 ### Schalter und Wege im Kern
 
 - Jeder Aufruf trägt im Umschlag, über welchen Weg er kommt (`via`: `api` oder `mcp`, ohne Angabe `api`);
-  `torroworkplace mcp` setzt `mcp`. Der Kern prüft nach dem Key:
+  `torroworkplace mcp` und der Hook-Befehl `torroworkplace hook` setzen `mcp`. Der Kern prüft nach dem Key:
   - Key der Art `script`: nur mit „Allow API keys“, und nur über `api`.
   - Key eines MCP-Clients (Claude Code, Codex, Gemini CLI, Claude Desktop, Cursor, Other MCP client): nur mit
     „Allow MCP“, und nur über `mcp`.
-  - Key der Art `hook`: nur mit „Allow MCP“ (er gehört zu einem Agenten), über `api` (die Hooks rufen den Kern
-    direkt).
+  - Key der Art `hook`: nur mit „Allow MCP“ (er gehört zu einem Agenten), über beide Wege. Der Hook-Befehl
+    `torroworkplace hook` meldet sich als `mcp`, weil er ohne Schlüsseldatei `TORRO_TOKEN` nimmt, das der Key des
+    Agenten sein kann.
   - Die Arten `assistant` und `bot` (auch ihre geliehenen Keys) hängen an keinem der beiden Schalter: Sie sind die
     Suite selbst.
   - Jede andere Art wird wie `script` geprüft; neue Clients gibt es nur in den genannten Arten.

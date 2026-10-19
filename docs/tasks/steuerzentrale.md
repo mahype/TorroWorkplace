@@ -791,7 +791,7 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
   `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/client.rs`, `crates/torro-ipc/src/server.rs`,
   `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/settings_service.rs`,
   `crates/torroworkplace/src/clients.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`,
-  `crates/torroworkplace/src/mcp.rs`, `crates/torroworkplace/src/assistant/tools.rs`, `crates/torroworkplace/src/ui/launch.rs`
+  `crates/torroworkplace/src/mcp.rs`, `crates/torroworkplace/src/hook.rs`, `crates/torroworkplace/src/assistant/tools.rs`, `crates/torroworkplace/src/ui/launch.rs`
   (nur die Demo-Antworten auf `CreateClient`), `docs/api-reference.md`
 - **Schnittstellen (mit dieser Planung freizugeben):**
   - `Rights::denied: BTreeSet<String>` (`#[serde(default, skip_serializing_if = "BTreeSet::is_empty")]`): Katalognamen
@@ -804,7 +804,8 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
     `core.rs`): `Envelope::via: Option<Door>` (`#[serde(default, skip_serializing_if = "Option::is_none")]`), ebenso
     in `RawEnvelope`; fehlt es, gilt `Api`. Neue Signaturen: `Core::handle_from(key, door, request)` und der Handler von
     `serve_with_key` `Fn(Option<Key>, Door, Request)`. `client.rs` bekommt einen Weg, `via` mitzuschicken (z. B.
-    `call_with_key_via`); `mcp.rs` sendet `Door::Mcp`, alle anderen bleiben ohne.
+    `call_with_key_via`); `mcp.rs` und `hook.rs` senden `Door::Mcp` (der Hook nimmt ohne Schlüsseldatei `TORRO_TOKEN`,
+    das ein Agent-Key sein kann), alle anderen bleiben ohne.
   - Einstellungen `allow_api_keys` und `allow_mcp` (`Settings`, Standard `true` über eine eigene Default-Funktion),
     `SettingKey::AllowApiKeys` und `SettingKey::AllowMcp`, in `settings_service.rs` wie `MailToCloud`.
   - `clients.create_client` mit der Art `assistant` antwortet ohne Schlüssel: neue Antwort `Response::Client { client:
@@ -821,7 +822,7 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
   vor den Befehlen, die eine Art von selbst darf, und auch vor `system.ping` mit Schlüssel, damit ein abgeschalteter Weg
   immer gleich mit `unauthorized` antwortet; Regel in api.md › Transport): Art
   `script` nur mit `allow_api_keys` und über `Api`; MCP-Arten (`claude-code`, `codex`, `gemini`, `claude-desktop`,
-  `cursor`, `mcp`) nur mit `allow_mcp` und über `Mcp`; `hook` nur mit `allow_mcp`, über `Api`; die Arten `assistant`
+  `cursor`, `mcp`) nur mit `allow_mcp` und über `Mcp`; `hook` nur mit `allow_mcp`, über beide Wege; die Arten `assistant`
   und `bot` ohne diese Prüfung (nur sie bekommen geliehene Schlüssel, `Clients::lent_for`); jede andere Art wie
   `script`. Ablehnung `unauthorized` mit Satz
   („The API is turned off in Torro Workplace, Settings › API.“ bzw. „… MCP …“, „This key belongs to an MCP client.“),
@@ -848,7 +849,8 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
     `allowed_by_kind` bleiben trotz Eintrag erlaubt; die Meldung nennt den Grund „turned off“; `my_access` und die
     Werkzeugliste des Assistenten lassen gesperrte Befehle weg;
   - Umschlag ohne `via` ist `Api`; `mcp.rs` schickt `Mcp` (Test, dass das Tool den Umschlag so baut);
-  - Script über `Api` geht, über `Mcp` nicht; Agent über `Mcp` geht, über `Api` nicht; Hook über `Api` geht; mit
+  - Script über `Api` geht, über `Mcp` nicht; Agent über `Mcp` geht, über `Api` nicht; Hook über beide Wege; der
+    Hook-Befehl mit einem Agent-Key aus `TORRO_TOKEN` meldet weiter (er schickt `Mcp`); mit
     `allow_api_keys` aus wird Script abgelehnt, Agent nicht; mit `allow_mcp` aus werden Agent und Hook abgelehnt, ein
     geliehener Schlüssel des Assistenten nicht; eine unbekannte Art aus `clients.json` verhält sich wie `script`; mit
     abgeschaltetem Weg antwortet auch `system.ping` mit Schlüssel `unauthorized`;

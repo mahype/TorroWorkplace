@@ -818,14 +818,14 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
   JSON-RPC (in TorroMail eine Fehlerquelle). Schlüssel aus `TORRO_TOKEN`. Läuft der Dienst nicht,
   startet der MCP-Server ihn wie die Apps.
 - **Weg im Umschlag** (#231): `{"v":1,"key":…,"via":"mcp","request":…}`. `via` ist `api` oder `mcp`, ohne
-  Angabe `api` (verträglich, ältere Programme schicken es nicht). `torroworkplace mcp` setzt `mcp`, alle anderen
-  setzen nichts. Der Kern prüft direkt nach dem Schlüssel, vor den Rechten (auch bei `ping` mit Schlüssel und noch
+  Angabe `api` (verträglich, ältere Programme schicken es nicht). `torroworkplace mcp`
+  und der Hook-Befehl `torroworkplace hook` (er gehört zur Anbindung eines Agenten und nimmt ohne Schlüsseldatei
+  `TORRO_TOKEN`, das ein Agent-Key sein kann) setzen `mcp`, alle anderen setzen nichts. Der Kern prüft direkt nach dem Schlüssel, vor den Rechten (auch bei `ping` mit Schlüssel und noch
   einmal, bevor eine Freigabe ausgeführt wird), ob Art, Weg und Schalter passen:
   - Art `script`: nur über `api` und nur mit „Allow API keys“ (Einstellung `allow_api_keys`, Standard an).
   - MCP-Clients (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`, `mcp`): nur über `mcp` und nur
     mit „Allow MCP“ (`allow_mcp`, Standard an).
-  - Art `hook`: über `api` (die Hooks rufen den Kern direkt), nur mit „Allow MCP“, weil er zu einem Agenten
-    gehört.
+  - Art `hook`: über beide Wege, nur mit „Allow MCP“, weil er zu einem Agenten gehört.
   - Die Arten `assistant` und `bot` (nur sie bekommen geliehene Schlüssel): an keinen Schalter gebunden.
   - Jede andere Art (etwa aus einer älteren `clients.json`): wie `script`. `clients.create_client` nimmt nur die
     genannten Arten an.
