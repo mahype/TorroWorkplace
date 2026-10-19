@@ -656,10 +656,12 @@ fn source_key(source: &SourceRef) -> String {
 /// the same step, which would otherwise keep the source quiet whatever `notify` says – exactly as
 /// Notification Hub › Sources does it.
 ///
-/// Switched on it writes [`Notify::default`] (`All`): the switch knows only on and off, so an
-/// account that stood at "Only for me" and is switched off and on again ends up at "All". The three
-/// steps themselves are set in the Notification Hub, under its gear. Without an account for the
-/// source nothing is sent; the core would only answer `not-found`.
+/// Switched on it writes back what the account has stored ([`switched_on`]): an account at "Only
+/// ‚For me‘" keeps that step, because the reading side counts it as on ([`State::is_muted`]) – it
+/// would otherwise lose the choice and let every newsletter into the inbox again. Only an account
+/// stored as `Off` (or one the setup cannot see) starts at `All`. The three steps themselves are
+/// set in the Notification Hub, under its gear. Without an account for the source nothing is sent;
+/// the core would only answer `not-found`.
 fn source_requests(source: &SourceRef, on: bool, data: &Data) -> Action {
     if source.kind != torro_inbox::SourceKind::Mail {
         return Action::Send(Request::MuteSource { source: source.clone(), muted: !on });
@@ -669,7 +671,7 @@ fn source_requests(source: &SourceRef, on: bool, data: &Data) -> Action {
         id: account.id.clone(),
         sender_name: None,
         signature: None,
-        notify: Some(if on { Notify::default() } else { Notify::Off }),
+        notify: Some(if on { switched_on(mail_notify(data, source)) } else { Notify::Off }),
         services: None,
         folder_roles: None,
         format: None,
@@ -685,6 +687,16 @@ fn source_requests(source: &SourceRef, on: bool, data: &Data) -> Action {
 fn mail_account<'a>(data: &'a Data, source: &SourceRef) -> Option<&'a torro_ipc::AccountInfo> {
     let id = format!("mail:{}", source.name);
     data.accounts.iter().find(|account| account.id == id)
+}
+
+/// What a mail source's switch writes when it is turned on: the step the account has, so "Only
+/// ‚For me‘" survives being switched off and on again; `All` for one that stands at `Off` and has
+/// no step to keep.
+fn switched_on(stored: Notify) -> Notify {
+    match stored {
+        Notify::Off => Notify::All,
+        kept => kept,
+    }
 }
 
 /// What the mail account of `source` stores under `notify`; [`Notify::default`] for a source
@@ -1306,6 +1318,29 @@ mod tests {
         let without = Data { accounts: Vec::new(), ..data.clone() };
         let none = update(&mut state(Step::Inbox), Message::Source(source, true), &without);
         assert!(matches!(none, Outcome::Stay(Action::None)), "{none:?}");
+    }
+
+    /// Found in the review of task S.22: switching a mail source on writes back the step the
+    /// account has. "Only ‚For me‘" counts as on ([`State::is_muted`]), so writing `All` would
+    /// quietly undo that choice and let every newsletter into the inbox again.
+    #[test]
+    fn switching_a_mail_source_on_keeps_only_for_me() {
+        assert_eq!(switched_on(Notify::ForMeOnly), Notify::ForMeOnly, "the choice stays");
+        assert_eq!(switched_on(Notify::All), Notify::All);
+        assert_eq!(switched_on(Notify::Off), Notify::All, "an account that was off has no step to keep");
+
+        let mut data = data();
+        let account = data.accounts.iter().find(|a| a.kind == "mail").expect("the demo's mail").clone();
+        let name = account.id.split_once(':').map(|(_, name)| name.to_string()).expect("an id with a kind");
+        let source = SourceRef { kind: torro_inbox::SourceKind::Mail, name };
+        if let Some(mail) = data.accounts.iter_mut().find(|a| a.id == account.id).and_then(|a| a.mail.as_mut()) {
+            mail.settings.notify = Notify::ForMeOnly;
+        }
+        let on = update(&mut state(Step::Inbox), Message::Source(source, true), &data);
+        let Outcome::Stay(Action::Send(Request::UpdateMailAccount { notify, .. })) = on else {
+            panic!("expected accounts.update_mail_account, got {on:?}");
+        };
+        assert_eq!(notify, Some(Notify::ForMeOnly), "the newsletters stay out");
     }
 
     #[test]
