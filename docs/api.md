@@ -641,7 +641,8 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    Fehlermeldung, keinem `Debug` und keinem Protokoll (Typ `Secret`, im Schema `writeOnly`).
 
 6. **Mikrofon einschalten** (Weckwort und Sprache des Assistenten, [assistent.md](assistent.md)): nur
-   mit dem App-Schlüssel, also nur durch einen Menschen in der Steuerzentrale oder im Tray. Kein
+   mit dem App-Schlüssel, also nur durch einen Menschen im Assistenten-Fenster (Zahnrad › Voice,
+   `torro-settings-ui`, Aufgabe S.17/S.18) oder im Tray. Kein
    Agent und kein Modell kann das Lauschen einschalten; ausschalten darf jeder, der Einstellungen
    ändern darf (Admin-Recht in `settings`, mit Freigabe). Eingeschaltet wird
    mit `settings.set_setting` und `voice_enabled: true`; weil hier der Wert entscheidet und nicht
@@ -649,8 +650,11 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    bekommt `forbidden`, auch mit Admin-Rechten, ebenso für `settings.update_settings`, das die
    Sprache einschalten würde (Tests `the_microphone_is_switched_on_by_people_only` in `torro-ipc` und
    `only_people_switch_the_microphone_on_and_agents_may_switch_it_off` im Kern). `voice_enabled:
-   false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest der Steuerzentrale
-   (`settings.test_voice`) gibt es nur mit dem App-Schlüssel (`Mcp::Never`).
+   false` ist eine gewöhnliche Admin-Änderung mit Freigabe. Den Mikrofontest („Say something“ im
+   Abschnitt Voice des Assistenten, `settings.test_voice`) gibt es nur mit dem App-Schlüssel
+   (`Mcp::Never`). Dass die Einstellung im App-Fenster statt in der Steuerzentrale steht, ändert
+   die Zusage nicht: Jedes Fenster der Suite hält den App-Schlüssel, und ein Mensch drückt den
+   Schalter.
 
    Ebenso **Mail an Claude Code und Cloud-Modelle geben** (Datenregel, Aufgabe C.17): `settings.set_setting`
    mit `mail_to_cloud: true` und ein `settings.update_settings`, das es einschalten würde, bekommen
