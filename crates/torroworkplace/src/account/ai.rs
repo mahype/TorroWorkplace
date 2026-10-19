@@ -641,6 +641,16 @@ impl AiAccounts {
         Ok(AiClient::new(self.http()?.clone(), slot.provider(), &slot.account.server, slot.key.clone()))
     }
 
+    /// One call to the decision model of the account `id` (task E12.6, `torro_core::ai::systemone`).
+    /// `not-connected` when the account has no key on this device, `not-found` when it is gone.
+    pub async fn decide(
+        &self,
+        id: &str,
+        request: &systemone::DecisionRequest,
+    ) -> Result<systemone::DecisionReply, AiError> {
+        self.client(id).await?.decide(request).await
+    }
+
     /// Checks the account with its server ([`OpenAiCompatible::check`]) and, when the server takes
     /// it, stores the key in the keychain (or removes an old one when there is none now) and the
     /// account in `accounts.json` (next to the others; the same provider at the same host replaces

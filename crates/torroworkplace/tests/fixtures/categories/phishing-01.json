@@ -1,0 +1,8 @@
+{
+  "expect": "phishing",
+  "subject": "Ihr Konto wird in 24 Stunden gesperrt",
+  "from": "Sicherheitsabteilung <service@bank-sicherheit.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Aus Sicherheitsgründen müssen Sie Ihre Daten sofort bestätigen. Klicken Sie hier und geben Sie Ihre PIN und TAN ein, sonst wird Ihr Konto dauerhaft gesperrt."
+}

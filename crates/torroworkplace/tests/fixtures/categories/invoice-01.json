@@ -1,0 +1,8 @@
+{
+  "expect": "invoice",
+  "subject": "Rechnung 2026-114 zu Ihrer Bestellung",
+  "from": "Buchhaltung <billing@shop.example>",
+  "list": null,
+  "bulk": false,
+  "text": "Sehr geehrte Kundin,\n\nanbei erhalten Sie die Rechnung 2026-114 über 42,00 EUR.\nZahlbar bis zum 01.11.2026 ohne Abzug.\n\nMit freundlichen Grüßen"
+}

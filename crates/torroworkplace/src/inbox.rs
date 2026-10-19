@@ -1088,6 +1088,20 @@ impl Inbox {
         self.with(|db| file_mail(db, mail, source, notify, now)).map_err(|failure| failure.to_string())
     }
 
+    /// Puts `category` on the entry `id` (task E12.6) and gives the entry back; `None` takes it
+    /// away. For what the model decided and what `inbox.classify_item` asked for – the person's
+    /// own choice goes through `inbox.set_item_category`. `Err` holds the message for the log.
+    pub fn set_category(&self, id: &str, category: Option<MailCategory>) -> Result<Item, String> {
+        self.with(|db| {
+            let mut item =
+                read_items(db, &Scope::All, "id = ?", vec![text(id)], "")?.pop().ok_or_else(|| no_item(id))?.item;
+            item.category = category;
+            update_item(db, &item)?;
+            Ok(item)
+        })
+        .map_err(|failure| failure.to_string())
+    }
+
     /// The messages filed into the entry `id`, oldest first (task E12.4): what a category set by
     /// hand is written to, so the whole conversation reads alike. `Err` holds the message for the
     /// log.

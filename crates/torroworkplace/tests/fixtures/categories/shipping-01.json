@@ -1,0 +1,8 @@
+{
+  "expect": "shipping",
+  "subject": "Ihre Sendung ist unterwegs",
+  "from": "Versand <noreply@parcel.example>",
+  "list": null,
+  "bulk": true,
+  "text": "Ihr Paket mit der Sendungsnummer 00340000000000000000 wurde heute versandt und wird voraussichtlich am Donnerstag zugestellt."
+}

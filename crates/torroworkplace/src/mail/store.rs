@@ -746,6 +746,32 @@ impl MailStore {
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
     }
 
+    /// Keeps the two answers the same model call brings along besides the category (task E12.6):
+    /// whether a reply is waited for and how pressing the mail is (0 routine, 1 soon, 2 urgent).
+    /// Nothing reads them yet; they are kept so a later step need not run the model over the
+    /// whole backlog again. `false` when the store has no such message.
+    pub fn set_model_answers(
+        &self,
+        id: &str,
+        needs_reply: Option<bool>,
+        urgency: Option<u8>,
+    ) -> Result<bool, MailStoreError> {
+        let sql = "UPDATE messages SET needs_reply = ?2, urgency = ?3 WHERE id = ?1";
+        Ok(self.db.execute(sql, params![id, needs_reply, urgency.map(i64::from)])? > 0)
+    }
+
+    /// The mail of the inbox folder that has no category yet, newest first, at most `limit` and
+    /// not older than `since`: what the backlog run asks for (task E12.6). Mail that already has
+    /// one is never asked about again, so a second run asks nothing twice.
+    pub fn uncategorised(&self, since: DateTime<Utc>, limit: u32) -> Result<Vec<String>, MailStoreError> {
+        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok(Vec::new()) };
+        let sql = "SELECT id FROM messages WHERE folder_id = ?1 AND category IS NULL AND date >= ?2
+            ORDER BY date DESC, seq DESC LIMIT ?3";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map(params![inbox.id, since.timestamp(), limit], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     /// How much unread mail each category holds (task E12.4), only categories that occur. Mail
     /// without a category is not counted: the sidebar offers only what is there.
     pub fn unread_by_category(&self) -> Result<Vec<(Category, u32)>, MailStoreError> {

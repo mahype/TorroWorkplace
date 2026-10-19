@@ -1,0 +1,8 @@
+{
+  "expect": "request",
+  "subject": "Kurze Rückfrage zum Angebot",
+  "from": "Bernd Beispiel <bernd@example.org>",
+  "list": null,
+  "bulk": false,
+  "text": "Hallo,\n\nkannst du mir bis Freitag sagen, ob der Termin am 5. passt? Ich muss den Raum sonst wieder freigeben.\n\nViele Grüße\nBernd"
+}

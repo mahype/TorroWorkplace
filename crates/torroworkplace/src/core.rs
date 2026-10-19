@@ -38,6 +38,7 @@ use crate::approvals::{Approvals, ApprovalsError, Decision, EntryPin, Facts};
 use crate::apps::Listener;
 use crate::assistant::{Assistant, Place};
 use crate::audit::Audit;
+use crate::categorize;
 use crate::clients::{Caller, Clients, ClientsError, Refused};
 use crate::inbox::{Inbox, Opening};
 use crate::mail::service::{MailService, Service, SignInError};
@@ -788,6 +789,140 @@ fn with_entry_id(request: Request, entry: String) -> Request {
 const CATEGORY_BACKLOG_DAYS: i64 = 30;
 const CATEGORY_BACKLOG_MAX: u32 = 500;
 
+/// The decision model to ask for sorting mail, and whether the data rule allows it (task E12.6).
+/// `Err` names why nothing is asked; the caller then leaves the mail alone.
+///
+/// A free function, not a method: the mail feed's closure needs it too and holds only the pieces.
+async fn decider_of(settings: &SettingsStore, ai: &AiAccounts) -> Result<(String, String), categorize::Refusal> {
+    let settings = settings.current();
+    let assignment = settings.ai_assignments.get(&torro_core::ai::AiFunction::InboxCategorize).cloned();
+    let mut accounts = Vec::new();
+    for info in ai.infos().await {
+        if let Some((provider, _)) = ai.server(&info.id).await {
+            // Without a model named the account's seat decides; with one, task E12.5 weighed it
+            // when it was assigned.
+            let seat = match provider.seat() {
+                torro_core::ai::Seat::ThisComputer => Place::Local,
+                _ => Place::Remote,
+            };
+            accounts.push((info.id, seat));
+        }
+    }
+    let (engine, model) = categorize::chosen(assignment.as_ref(), &accounts, !settings.mail_to_cloud)?;
+    let model = match model {
+        Some(model) => model,
+        None => {
+            let models = ai.models(&engine, true).await.map_err(|_| categorize::Refusal::NoModel)?;
+            categorize::pick_model(&models).ok_or(categorize::Refusal::NoModel)?
+        }
+    };
+    Ok((engine, model))
+}
+
+/// Asks the decision model what the mail `message` of `account` is and keeps the answer with it
+/// (task E12.6): the category, and the two answers the same call brings along.
+///
+/// `Ok(None)` when the model said nothing readable – then the mail keeps no category, so a later
+/// run can still catch it. The audit log already holds the request that started this, with the
+/// entry's id and nothing of its content (security rule 7); the call adds no line of its own.
+async fn decide_mail_with(
+    ai: &AiAccounts,
+    mail: &MailService,
+    engine: &str,
+    model: &str,
+    account: &str,
+    message: &str,
+) -> Result<Option<torro_mail::MailCategory>, String> {
+    let Some(content) = mail.content_for_category(account, message).await.map_err(|err| err.to_string())? else {
+        return Ok(None);
+    };
+    let reply = ai.decide(engine, &categorize::request(model, &content)).await.map_err(|err| err.to_string())?;
+    let Some(decided) = categorize::read(&reply) else { return Ok(None) };
+    let one = [message.to_string()];
+    mail.set_category(account, &one, Some(decided.category)).await.map_err(|err| err.to_string())?;
+    mail.set_model_answers(account, message, decided.needs_reply, decided.urgency)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(Some(decided.category))
+}
+
+/// How long the backlog run waits between two model calls (task E12.6): a local model must not
+/// take the machine over while the person works.
+const CATEGORY_PAUSE: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// The backlog run (task E12.6): for every account, the mail of the inbox that has no category
+/// yet, newest first, within the window – asked one at a time, with a pause between, and stopped
+/// at once when somebody cancels. What it sorted stays sorted.
+async fn catch_up_run(
+    mail: Arc<MailService>,
+    inbox: Arc<Inbox>,
+    ai: Arc<AiAccounts>,
+    state: Arc<CatchUp>,
+    accounts: Vec<String>,
+    engine: String,
+    model: String,
+) {
+    use std::sync::atomic::Ordering;
+
+    let since = Utc::now() - chrono::Duration::days(CATEGORY_BACKLOG_DAYS);
+    for account in accounts {
+        let waiting = match mail.uncategorised(&account, since, CATEGORY_BACKLOG_MAX).await {
+            Ok(waiting) => waiting,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the backlog of {account}: {err}");
+                continue;
+            }
+        };
+        for message in waiting {
+            if state.cancelled.load(Ordering::Acquire) {
+                return;
+            }
+            let content = match mail.content_for_category(&account, &message).await {
+                Ok(Some(content)) => content,
+                Ok(None) => continue,
+                Err(err) => {
+                    eprintln!("torroworkplace: inbox: cannot read a mail of {account}: {err}");
+                    continue;
+                }
+            };
+            let reply = match ai.decide(&engine, &categorize::request(&model, &content)).await {
+                Ok(reply) => reply,
+                // The server is gone or busy: stop, rather than hammer it for 500 messages.
+                Err(err) => {
+                    eprintln!("torroworkplace: inbox: the decision model stopped answering: {err}");
+                    return;
+                }
+            };
+            let Some(decided) = categorize::read(&reply) else { continue };
+            if let Err(err) = mail.set_category(&account, std::slice::from_ref(&message), Some(decided.category)).await
+            {
+                eprintln!("torroworkplace: inbox: cannot keep a category of {account}: {err}");
+                continue;
+            }
+            let _ = mail.set_model_answers(&account, &message, decided.needs_reply, decided.urgency).await;
+            // The entry of that mail, where there is one, reads alike.
+            if let Some(entry) = inbox.entry_of_message(&account, &message) {
+                let _ = inbox.set_category(&entry, Some(decided.category));
+            }
+            tokio::time::sleep(CATEGORY_PAUSE).await;
+        }
+    }
+}
+
+/// Why no model was asked (task E12.6), as the answer a person reads.
+fn refused_decider(refusal: categorize::Refusal) -> Response {
+    match refusal {
+        categorize::Refusal::NoModel => no_decision_model(),
+        categorize::Refusal::NotLocal => Response::Error {
+            code: "not-connected".into(),
+            message: tr(
+                "Mail, Nextcloud and Talk go only to an AI on this computer. Connect a local AI such as Ollama.",
+            )
+            .to_string(),
+        },
+    }
+}
+
 /// No decision model is assigned, so nothing can be sorted by one (task E12.4). The sentence is
 /// the one `inbox.suggest_task_from_item` uses when mail may only go to a local model.
 fn no_decision_model() -> Response {
@@ -901,6 +1036,15 @@ pub struct InboxLine {
 /// The core's state: window manager, template store, settings, the keys that may talk to it,
 /// the approvals they wait for, the GitHub accounts, and a lock so only one save or load runs at
 /// a time.
+/// The state of the backlog run that sorts mail into categories (task E12.6). One at a time:
+/// starting again while it runs changes nothing, and stopping it lets the mail it already sorted
+/// stand.
+#[derive(Debug, Default)]
+struct CatchUp {
+    running: std::sync::atomic::AtomicBool,
+    cancelled: std::sync::atomic::AtomicBool,
+}
+
 pub struct Core {
     backend: Backend,
     store: Store,
@@ -923,6 +1067,10 @@ pub struct Core {
     /// The AI accounts (task KI.1a), kept apart like the GitHub accounts: the user's
     /// ([`AiAccounts::system`]), loaded only by [`Core::start`]; tests bring their own.
     ai: Arc<AiAccounts>,
+    /// How the backlog run of the mail categories stands (task E12.6): whether one is going and
+    /// whether someone stopped it. One run at a time for the whole suite; what it sorted stays
+    /// sorted when it is stopped.
+    catch_up: Arc<CatchUp>,
     /// The ntfy accounts (task E5.12), kept apart like the AI accounts: the user's
     /// ([`NtfyAccounts::system`]), loaded only by [`Core::start`]; tests bring their own. The
     /// inbox's ntfy source subscribes to their topics (task E5.13).
@@ -996,6 +1144,7 @@ impl Core {
             pim,
             settings,
             clients,
+            catch_up: Arc::new(CatchUp::default()),
             approvals: Arc::new(Approvals::system()),
             inbox: Arc::new(Inbox::system()),
             audit: Arc::new(Audit::system()),
@@ -1349,7 +1498,12 @@ impl Core {
     /// from `accounts_file` (task E4.1, [`crate::mail::inbox_feed`]). Part of [`Core::start`],
     /// before the mail sync starts, so no change is missed.
     pub(crate) fn start_mail_feed(&self, accounts_file: Option<std::path::PathBuf>) {
-        crate::mail::inbox_feed::start(Arc::clone(&self.inbox), Arc::clone(&self.mail), accounts_file);
+        crate::mail::inbox_feed::start_with(
+            Arc::clone(&self.inbox),
+            Arc::clone(&self.mail),
+            accounts_file,
+            Some(self.new_mail_decider()),
+        );
     }
 
     /// What the remote sources of the inbox reach (task E5.2, [`crate::sources`]): this core's
@@ -2877,6 +3031,26 @@ impl Core {
     /// was shown it ([`EntryPin::holds`]), else the answer is `conflict` and nothing runs. Opening
     /// and making a task check it on what they read from the entry; the other commands before
     /// they run, which suffices since they do not read its texts or link.
+    /// What the mail feed uses to sort new mail the fixed rules could not (task E12.6): asks the
+    /// assigned model once per mail and keeps the answer. Reads the assignment afresh every time,
+    /// so switching the model off stops it at the next mail.
+    fn new_mail_decider(&self) -> crate::mail::inbox_feed::Decider {
+        let (settings, ai, mail) = (self.settings.clone(), Arc::clone(&self.ai), Arc::clone(&self.mail));
+        Arc::new(move |account: String, message: String| {
+            let (settings, ai, mail) = (settings.clone(), Arc::clone(&ai), Arc::clone(&mail));
+            Box::pin(async move {
+                let (engine, model) = decider_of(&settings, &ai).await.ok()?;
+                match decide_mail_with(&ai, &mail, &engine, &model, &account, &message).await {
+                    Ok(category) => category,
+                    Err(err) => {
+                        eprintln!("torroworkplace: inbox: cannot sort a mail of {account}: {err}");
+                        None
+                    }
+                }
+            })
+        })
+    }
+
     /// `ai.list_assignments` (task E12.5): every function of the suite, with what it uses and the
     /// words a person reads for it. Functions nobody set up come with empty fields.
     async fn ai_assignments(&self) -> Response {
@@ -3003,27 +3177,110 @@ impl Core {
             Ok(progress) => progress,
             Err(err) => return err.response(),
         };
-        let accounts = progress
+        let accounts: Vec<torro_ipc::inbox::CategoryProgress> = progress
             .into_iter()
             .map(|(account, messages, done)| torro_ipc::inbox::CategoryProgress {
                 account,
                 messages,
                 done,
-                state: if messages > 0 && done >= messages {
-                    torro_ipc::inbox::CatchUpState::Complete
-                } else {
-                    torro_ipc::inbox::CatchUpState::NotStarted
-                },
+                state: torro_ipc::inbox::CatchUpState::NotStarted,
             })
             .collect();
-        let categorization = torro_ipc::inbox::Categorization { enabled: false, accounts, ..Default::default() };
+        let assignment =
+            self.settings.current().ai_assignments.get(&torro_core::ai::AiFunction::InboxCategorize).cloned();
+        let running = self.catch_up.running.load(std::sync::atomic::Ordering::Acquire);
+        let cancelled = self.catch_up.cancelled.load(std::sync::atomic::Ordering::Acquire);
+        let accounts: Vec<torro_ipc::inbox::CategoryProgress> = accounts
+            .into_iter()
+            .map(|mut progress| {
+                progress.state = match (running, cancelled, progress.done >= progress.messages) {
+                    (true, _, _) => torro_ipc::inbox::CatchUpState::Running,
+                    (false, _, true) => torro_ipc::inbox::CatchUpState::Complete,
+                    (false, true, false) => torro_ipc::inbox::CatchUpState::Cancelled,
+                    (false, false, false) => torro_ipc::inbox::CatchUpState::NotStarted,
+                };
+                progress
+            })
+            .collect();
+        let categorization = torro_ipc::inbox::Categorization {
+            enabled: assignment.as_ref().is_some_and(|held| held.is_ready()),
+            engine: assignment.as_ref().and_then(|held| held.engine.clone()),
+            model: assignment.and_then(|held| held.model),
+            accounts,
+        };
         Response::Categorization { categorization }
     }
 
-    /// `inbox.catch_up_categories` (task E12.4): the run itself comes with task E12.6; until a
-    /// decision model is assigned there is nothing to start.
-    fn catch_up_categories(&self, _cancel: bool) -> Response {
-        no_decision_model()
+    /// `inbox.classify_item` (task E12.6): asks the model again for one mail. Unlike the
+    /// automatic run this overwrites a category the person set by hand – pressing the button means
+    /// exactly that.
+    async fn classify_item(&self, id: &str, client: Option<&torro_ipc::ClientInfo>) -> Response {
+        let stored = match self.inbox.handle(Request::GetItem { id: id.into() }, client, Utc::now()) {
+            Response::Item { item } => item,
+            other => return other,
+        };
+        if stored.source.kind != torro_inbox::SourceKind::Mail {
+            let message = tr("Only mail is sorted into categories.");
+            return Response::Error { code: "unsupported".into(), message: message.to_string() };
+        }
+        let (engine, model) = match decider_of(&self.settings, &self.ai).await {
+            Ok(decider) => decider,
+            Err(refusal) => return refused_decider(refusal),
+        };
+        let account = stored.source.key();
+        let messages = match self.inbox.messages_of(&stored.id) {
+            Ok(messages) if !messages.is_empty() => messages,
+            Ok(_) => {
+                return Response::Error { code: "unsupported".into(), message: tr("This entry has no mail.").into() };
+            }
+            Err(err) => return Response::Error { code: "error".into(), message: err },
+        };
+        // The newest mail of the conversation decides what the whole entry is.
+        let newest = messages.last().cloned().unwrap_or_default();
+        let decided = match decide_mail_with(&self.ai, &self.mail, &engine, &model, &account, &newest).await {
+            Ok(Some(category)) => category,
+            Ok(None) => {
+                let message = tr("The AI's answer held no category. Try again or pick another model.");
+                return Response::Error { code: "error".into(), message: message.to_string() };
+            }
+            Err(err) => return Response::Error { code: "error".into(), message: err },
+        };
+        // Every mail of the conversation reads alike, and so does the entry.
+        if let Err(err) = self.mail.set_category(&account, &messages, Some(decided)).await {
+            eprintln!("torroworkplace: inbox: cannot keep the category of {account}: {err}");
+        }
+        match self.inbox.set_category(&stored.id, Some(decided)) {
+            Ok(item) => Response::ItemCategory { item, rule: None, new_rule: false },
+            Err(err) => Response::Error { code: "error".into(), message: err },
+        }
+    }
+
+    /// `inbox.catch_up_categories` (task E12.6): starts the backlog run or stops it. One run at a
+    /// time; what it sorted stays sorted when it is stopped.
+    async fn catch_up_categories(&self, cancel: bool, reach: Reach<'_>) -> Response {
+        use std::sync::atomic::Ordering;
+
+        if cancel {
+            self.catch_up.cancelled.store(true, Ordering::Release);
+            return self.get_categorization(reach).await;
+        }
+        let (engine, model) = match decider_of(&self.settings, &self.ai).await {
+            Ok(decider) => decider,
+            Err(refusal) => return refused_decider(refusal),
+        };
+        // Already going: starting again changes nothing.
+        if self.catch_up.running.swap(true, Ordering::AcqRel) {
+            return self.get_categorization(reach).await;
+        }
+        self.catch_up.cancelled.store(false, Ordering::Release);
+        let accounts: Vec<String> = self.mail.accounts_in(reach).await;
+        let (mail, inbox, state) = (Arc::clone(&self.mail), Arc::clone(&self.inbox), Arc::clone(&self.catch_up));
+        let ai = Arc::clone(&self.ai);
+        tokio::spawn(async move {
+            catch_up_run(mail, inbox, ai, state.clone(), accounts, engine, model).await;
+            state.running.store(false, Ordering::Release);
+        });
+        self.get_categorization(reach).await
     }
 
     async fn inbox_request(
@@ -3070,8 +3327,8 @@ impl Core {
             // the inbox database (task E12.4).
             Request::ListCategories { account } => Box::pin(self.list_categories(account, reach)).await,
             Request::GetCategorization => Box::pin(self.get_categorization(reach)).await,
-            Request::CatchUpCategories { cancel } => self.catch_up_categories(cancel),
-            Request::ClassifyItem { .. } => no_decision_model(),
+            Request::CatchUpCategories { cancel } => Box::pin(self.catch_up_categories(cancel, reach)).await,
+            Request::ClassifyItem { id } => Box::pin(self.classify_item(&id, client)).await,
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
                 if let Some(pin) = pin

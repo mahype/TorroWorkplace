@@ -994,7 +994,7 @@ mod tests {
         let secrets = anna(dir.path(), &imap, torro_mail::Notify::All);
         let mail = Arc::new(service_in(dir.path(), &secrets));
         let accounts = crate::account::github::tests::accounts_file(dir.path());
-        crate::mail::inbox_feed::start(Arc::clone(&world.sources.inbox), Arc::clone(&mail), Some(accounts));
+        crate::mail::inbox_feed::start_with(Arc::clone(&world.sources.inbox), Arc::clone(&mail), Some(accounts), None);
         mail.reload().await;
         eventually("synced", || synced(&mail)).await;
         eventually("the inbox watched", || async { idling(&imap) }).await;

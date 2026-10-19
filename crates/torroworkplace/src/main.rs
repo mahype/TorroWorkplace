@@ -31,6 +31,7 @@ mod apps;
 mod assistant;
 mod audit;
 mod bots;
+mod categorize;
 mod cli;
 mod client_setup;
 mod clients;

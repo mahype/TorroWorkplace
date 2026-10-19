@@ -2952,7 +2952,17 @@ E12.10 braucht E12.5 und E12.6
   ohne offene Funde.
 
 ### E12.6 Einordnen mit dem Modell: beim Eintreffen und Altbestand
-- [ ] erledigt
+- [x] erledigt (2026-10-19): `crate::categorize` mit `Content`, `request` (drei Fragen, 20
+  Optionen), `read` (Schwelle 0,6, `other` darunter), `chosen` und `pick_model`;
+  `MailStore::{set_model_answers, uncategorised}`, `MailService::{content_for_category,
+  uncategorised, accounts_in, set_model_answers}`; `inbox.classify_item` überschreibt auch eine
+  Kategorie des Menschen, der Altbestandslauf und das Einordnen beim Eintreffen nie. Der Lauf
+  hängt an `Core::catch_up` (ein Lauf zur Zeit, 250 ms Pause, Abbruch nach dem laufenden Aufruf);
+  der Feed bekommt den Modellaufruf als `inbox_feed::Decider` hereingereicht, damit er von
+  KI-Konten, Zuordnungen und Datenregel nichts wissen muss. Fixtures unter
+  `crates/torroworkplace/tests/fixtures/categories/`.
+  Abweichung: Keine eigene Protokollzeile je Modellaufruf – `audit.rs` hat dafür kein Format, und
+  die Zeile des auslösenden Requests steht schon ohne Inhalte darin.
 - **Modell:** Opus · **Braucht:** E12.3, E12.4, E12.5 · **Dateien:**
   `crates/torroworkplace/src/categorize.rs` (neu), `crates/torroworkplace/src/main.rs` (Modul),
   `crates/torroworkplace/src/mail/inbox_feed.rs`, `crates/torroworkplace/src/mail/store.rs`

@@ -133,12 +133,22 @@ fn name_part(part: &str) -> bool {
 
 /// Starts the feed of `mail` into `inbox`: listens to the mail service from now on, so call it
 /// before the service syncs ([`MailService::start`]), and works through its changes in a task of
-/// its own. `accounts_file` is `accounts.json`, where each account's `notify` is read when its mail
-/// comes; `None` (no home directory) files nothing. The core calls it once, on its runtime.
-pub fn start(inbox: Arc<Inbox>, mail: Arc<MailService>, accounts_file: Option<PathBuf>) {
+/// its own. `accounts_file` is `accounts.json`, where each account's `notify` is read when its
+/// mail comes; `None` (no home directory) files nothing. The core calls it once, on its runtime.
+///
+/// `decide` asks a decision model what new mail is that the fixed rules could not sort (task
+/// E12.6); `None` leaves such mail without a category – exactly what happens when nobody set a
+/// model up.
+pub fn start_with(inbox: Arc<Inbox>, mail: Arc<MailService>, accounts_file: Option<PathBuf>, decide: Option<Decider>) {
     let changes = mail.subscribe();
-    tokio::spawn(Feed { inbox, mail, accounts_file }.run(changes));
+    tokio::spawn(Feed { inbox, mail, accounts_file, decide }.run(changes));
 }
+
+/// Asks a decision model what the mail `message` of `account` is and keeps the answer with it
+/// (task E12.6); `Ok(None)` when nothing could be said. The core wires `Core::decide_new_mail`
+/// in here, so the feed need not know about AI accounts, assignments or the data rule.
+pub type Decider =
+    Arc<dyn Fn(String, String) -> std::pin::Pin<Box<dyn Future<Output = Option<MailCategory>> + Send>> + Send + Sync>;
 
 /// Marks the mail of `item` read on its server, in the background, when `item` is a mail entry
 /// the inbox just marked done (task E4.1), or a done GitHub entry with GitHub mail filed with it
@@ -399,6 +409,9 @@ pub fn from_mail_line(summary: &torro_mail::MessageSummary) -> String {
 /// The feed: the inbox it files into, the mail service it listens to, and where the accounts'
 /// settings are.
 struct Feed {
+    /// Asks a decision model about mail the fixed rules could not sort (task E12.6); `None`
+    /// leaves such mail without a category.
+    decide: Option<Decider>,
     inbox: Arc<Inbox>,
     mail: Arc<MailService>,
     accounts_file: Option<PathBuf>,
@@ -529,6 +542,7 @@ impl Feed {
                 }
             })
             .collect();
+        let sorted: Vec<String> = decided.iter().map(|(message, _)| message.clone()).collect();
         if !decided.is_empty()
             && let Err(err) = store
                 .run(move |store| {
@@ -540,6 +554,14 @@ impl Feed {
                 .await
         {
             eprintln!("torroworkplace: inbox: cannot keep the category of the new mail of {account}: {err}");
+        }
+        // What no rule could tell goes to the decision model, one mail at a time (task E12.6).
+        if let Some(decide) = &self.decide {
+            let undecided: Vec<String> =
+                mails.iter().filter(|mail| !sorted.contains(&mail.message)).map(|mail| mail.message.clone()).collect();
+            for message in undecided {
+                decide(account.to_string(), message).await;
+            }
         }
         for mail in &mails {
             if let Err(err) = self.inbox.file_mail(mail, notify, now) {
@@ -737,7 +759,7 @@ pub(crate) mod tests {
     async fn fed(dir: &Path, secrets: &MemoryTokens) -> (Arc<Inbox>, Arc<MailService>) {
         let inbox = Arc::new(inbox_in(dir));
         let mail = Arc::new(service_in(dir, secrets));
-        start(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir)));
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir)), None);
         mail.reload().await;
         (inbox, mail)
     }
@@ -847,7 +869,7 @@ pub(crate) mod tests {
         let review = crate::inbox::tests::remote(SourceRef::github("anna-berg"), "42", &["101"], Utc::now());
         let github_entry = crate::inbox::tests::filed_remote(&inbox, &review, Utc::now());
         let mail = Arc::new(service_in(dir.path(), &secrets));
-        start(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())));
+        start_with(Arc::clone(&inbox), Arc::clone(&mail), Some(accounts_file(dir.path())), None);
         mail.reload().await;
 
         eventually("filed", || async { entries(&inbox).len() == 2 }).await;
@@ -1041,7 +1063,7 @@ pub(crate) mod tests {
         let until = Utc::now() + TimeDelta::hours(1);
         inbox.handle(Request::SnoozeItem { id: filed[0].clone(), until: Some(until) }, None, Utc::now());
 
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: None, decide: None };
         let store = mail.store(ANNA).await.expect("the store");
         feed.settle(&store, ANNA, None, Utc::now()).await;
         let items = entries(&inbox);
@@ -1154,7 +1176,7 @@ pub(crate) mod tests {
         let (inbox, mail) = fed(dir.path(), &secrets).await;
         eventually("filed", || async { entries(&inbox).len() == 1 }).await;
         let file = Some(accounts_file(dir.path()));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None };
         feed.retire(Utc::now()).await;
         assert_eq!(entries(&inbox)[0].state, State::New, "the account syncs: its entry stays");
 
@@ -1190,7 +1212,7 @@ pub(crate) mod tests {
         mail.reload().await;
         eventually("synced", || synced(&mail)).await;
         let file = Some(accounts_file(dir.path()));
-        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file };
+        let feed = Feed { inbox: Arc::clone(&inbox), mail: Arc::clone(&mail), accounts_file: file, decide: None };
 
         feed.catch_up(Utc::now()).await;
         let titles: Vec<String> = entries(&inbox).into_iter().map(|item| item.title).collect();
