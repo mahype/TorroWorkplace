@@ -5182,8 +5182,9 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             let open = self.info_open[column.index()];
             let (look, lead, width) = (self.look(), self.lead().is_some(), self.card_width());
             // `overview::row_span` counts the hub's strip under the cursor's row; the mail window's
-            // is taller (task E11.2), its bottom lies that much lower. Cards and the waiting cards –
-            // only the notices' column has those (`Sections::of`) – carry no strip.
+            // stands in the row (issue #227), its bottom lies that much higher (`taller` is negative).
+            // Cards and the waiting cards – only the notices' column has those (`Sections::of`) –
+            // carry no strip.
             let taller = list::strip_height_in(self.edge_strip()) - list::strip_height();
             let span = sections.order(open).get(index).and_then(|item| {
                 let span = overview::row_span(&sections, open, &item.id, look, lead, width)?;
@@ -5202,7 +5203,8 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                     list::card_span(above, mail::message_card_height(message, width))
                 }
                 Look::Rows => {
-                    // The cursor's row carries the strip with its actions below its lines.
+                    // The cursor's row carries the strip with its actions: the hub's below the row, the
+                    // mail window's in it (issue #227), which grows by `edge_strip_extra` at most.
                     let row = list::message_height();
                     let top = index as f32 * row;
                     (top, top + row + list::strip_height_in(self.edge_strip()))

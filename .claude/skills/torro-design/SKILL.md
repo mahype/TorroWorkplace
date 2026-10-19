@@ -147,7 +147,7 @@ aus einem Guss wirkt:
 | `size::control_sm()` | 28 | Knöpfe, Icon-Knöpfe, Segmente, Menü-Knöpfe in der Kopfleiste |
 | `size::control()` | 32 | Eingaben, Eigenschaftszeilen |
 | `size::control_lg()` | 36 | Schnelleingabe, Primärknopf im Dialog |
-| `size::control_xl()` | 44 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; Leiste unter der gewählten Mail im Mail-Fenster (`widgets::row_strip`, E11.1); nirgends sonst |
+| `size::control_xl()` | 44 | Knöpfe einer Erinnerung im Vollbild (ER1.5), Text `typo::body_strong()`; nirgends sonst (die Leiste der gewählten Mail war bis #227 so hoch, sie ist jetzt `control_sm()`) |
 | `size::command()` | 46 | Befehlsleiste oben im Leser des Mail-Fensters (`widgets::command_bar`, E11.1) |
 | `size::pill()` | 42 | Torro-Pillen im Leser (`widgets::pill_button`: Task, Event, Mute…) und Avatar im Kopf des Lesers (E11.1) |
 | `size::row()` | 40 | Listenzeile (Aufgaben) |
@@ -286,9 +286,10 @@ kein Knopf: Geklickt wird die Zeile, geändert wird über ihr Menü.
   Oben im Leser `widgets::command_bar` (`size::command()` 46, Zellen gleich breit über die ganze Breite,
   senkrechte `LINE` dazwischen, `LINE` darunter) mit `command_split` (Reply, kräftig, Menü ▾ „More replies“),
   `command_cell` (Icon 14 und Wort `typo::body()`, ohne Wort Icon 16 mit Tooltip) und `command_more` („…“);
-  Wörter für alle oder keine nach `widgets::command_words`. Unter der gewählten Zeile der Liste
-  `widgets::row_strip` (`size::control_xl()` 44, von Rand zu Rand, `LINE` oben und dazwischen, Tooltip mit Wort
-  und `kbd`), Wörter nach `widgets::row_strip_words`. Zellen sind `style::button::cell` (flach, `raised`, ohne
+  Wörter für alle oder keine nach `widgets::command_words`. In der gewählten Zeile der Liste
+  `widgets::row_strip` (`size::control_sm()` 28, von Rand zu Rand, anstelle der Vorschauzeile: die Zeile wächst
+  nicht, Absender und Betreff bleiben stehen, der Kontoname entfällt; `LINE` oben und dazwischen, Tooltip mit Wort
+  und `kbd`; seit #227), Wörter nach `widgets::row_strip_words`. Zellen sind `style::button::cell` (flach, `raised`, ohne
   Radius und Rand). Was Torro dazugibt, sind **Pillen** (`widgets::pill_button`, `size::pill()` 42, voll rund,
   `style::button::pill`): Rand und Icon in der Akzentfarbe, Wort in `TEXT`, Fläche neutral – Ausnahme von „Rot
   nur Primärknopf“ wie die KI-Sparkles; in der Leiste der Zeile nur das Icon rot (`RowAction::accent`). Das

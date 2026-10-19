@@ -8,7 +8,7 @@
 //! neutral share bar ([`share_bar`]) and a table of figures ([`data_table`]). For rights (task U.13):
 //! rows with a segmented control in a common column ([`segment_row`], [`segment_column`]). For the
 //! mail window's large buttons (task E11.1): the reader's command bar ([`command_bar`] with
-//! [`command_cell`], [`command_split`], [`command_more`]), the strip under the chosen mail
+//! [`command_cell`], [`command_split`], [`command_more`]), the strip in the chosen mail's row
 //! ([`row_strip`]), the Torro pills ([`pill_button`]), the sunken view switch ([`view_switch`]) and
 //! the chips of attachments ([`file_chip`]).
 //!
@@ -859,12 +859,13 @@ pub fn command_words(labels: &[&str], room: f32) -> bool {
 
 /// The strip of actions under the chosen row of the mail window's list (task E11.1): the `actions`
 /// as flat cells (`style::button::cell`) side by side, equally wide over the row's whole width,
-/// [`size::control_xl()`] high, a `line` above the strip and a vertical `line` between each two
+/// [`size::control_sm()`] high, a `line` above the strip and a vertical `line` between each two
 /// cells. Each cell shows the icon and its word in `typo::body()` – or, without `words`, the icon
 /// alone (16); [`row_strip_words`] chooses. An action marked [`RowAction::accent`] (Task) has its
 /// icon in the accent colour. Every cell's tooltip names the action with its key ([`kbd`]), as in
 /// [`row_actions_strip`]; an action that is off ([`RowAction::blocked`]) stands faded and says why.
-/// The strip is [`row_strip_height`] high; empty without actions. The hub keeps
+/// The strip is [`row_strip_height`] high; empty without actions. It stands where the row's preview
+/// line stands, so the chosen row is as high as any other (issue #227). The hub keeps
 /// [`row_actions_strip`].
 ///
 /// ```ignore
@@ -876,12 +877,12 @@ pub fn row_strip<'a, M: Clone + 'a>(actions: Vec<RowAction<'a, M>>, words: bool)
         return column![].into();
     }
     let cells = actions.into_iter().map(|action| strip_cell(action, words)).collect();
-    column![rule::horizontal(LINE).style(style::rule), cells_with_lines(cells, size::control_xl())].width(Fill).into()
+    column![rule::horizontal(LINE).style(style::rule), cells_with_lines(cells, size::control_sm())].width(Fill).into()
 }
 
-/// The height of a [`row_strip`]: its cells ([`size::control_xl()`]) and the line above them.
+/// The height of a [`row_strip`]: its cells ([`size::control_sm()`]) and the line above them.
 pub fn row_strip_height() -> f32 {
-    size::control_xl() + LINE
+    size::control_sm() + LINE
 }
 
 /// Whether the cells of the [`row_strip`] of `actions` show their words over a row `width` wide:
@@ -4360,8 +4361,7 @@ mod tests {
         assert!(row_strip_words(&actions, exact), "exactly the room");
         assert!(!row_strip_words(&actions, exact - 1.0), "a pixel too little");
         assert!(row_strip_words::<Msg>(&[], 0.0));
-        assert_eq!(row_strip_height(), size::control_xl() + LINE);
-        assert_eq!(size::control_xl(), 44.0, "the standard's strip");
+        assert_eq!(row_strip_height(), size::control_sm() + LINE);
     }
 
     /// Task E11.1: an action marked accent keeps everything else; only the strip draws it red.

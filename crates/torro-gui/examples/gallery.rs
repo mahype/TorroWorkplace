@@ -2285,14 +2285,14 @@ fn mailbar() -> Element<'static, Msg> {
     let strips = [390.0, 640.0].map(|width| {
         let actions = strip_actions();
         let words = widgets::row_strip_words(&actions, width);
-        let lines = column![
-            typo::text(typo::body_strong(), "Jonas Weber"),
-            typo::text(typo::body(), "Budget review for Q4"),
-            typo::text(typo::body(), "the numbers for Q4 are in. Could you look…").style(theme::text_2),
-        ]
-        .padding(layout::row_padding());
+        let lines =
+            column![typo::text(typo::body_strong(), "Jonas Weber"), typo::text(typo::body(), "Budget review for Q4"),]
+                .padding(layout::row_padding());
+        // The strip stands where the preview line is (issue #227): the row keeps its height.
+        let above = size::row_message() - widgets::row_strip_height();
         let chosen =
-            column![container(lines).padding([space::l(), 0.0]), widgets::row_strip(actions, words)].width(width);
+            column![container(lines).padding([space::l(), 0.0]).height(above), widgets::row_strip(actions, words)]
+                .width(width);
         let chosen = container(chosen).style(|t: &Theme| container::Style {
             background: Some(Background::Color(palette(t).selected)),
             ..container::Style::default()
