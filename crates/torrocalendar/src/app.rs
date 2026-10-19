@@ -12,7 +12,8 @@
 //! properties column ("Up next"), and over the view otherwise; the open event is outlined in the
 //! views. The editor has no Save button: it hands out saves as it changes, and while typed text
 //! waits to be saved a one-second timer sends `Flush` ([`AUTOSAVE`]). Escape closes an open menu
-//! or the drawer first, then whatever is open in the panel, then the panel.
+//! or the drawer first, then the settings while they cover the content area, then whatever is open
+//! in the panel, then the panel.
 //!
 //! In the wide layout the sidebar collapses to a rail of icons (U.2: panel button at its top or
 //! `[`, remembered in `ui.json`); the rail leaves out the small month. The medium layout always
@@ -968,15 +969,20 @@ impl App {
             }
             Message::CloseMenu => self.close_menus(),
             Message::Escape => {
-                // Innermost first: a menu, the drawer or the night's card, then what is open in
-                // the side panel, then the settings (task S.19: none of its sections have a
-                // dialog or question of their own, so the host closes them directly).
+                // Innermost first: a menu, the drawer or the night's card, then the settings
+                // (task S.19: none of its sections have a dialog or question of their own, so the
+                // host closes them directly), then what is open in the side panel.
+                //
+                // The settings come before the editor, as in the tasks app: they cover the content
+                // area, so an editor behind them is out of sight and keeps what it holds
+                // ([`App::toggle_settings`]). Escape must act on what can be seen, not on the
+                // hidden editor – a key that does nothing visible is a key that looks broken.
                 if self.menu.is_some() || self.drawer || self.night_card.is_some() {
                     self.close_menus();
-                } else if self.editor.is_some() {
-                    return self.update(Message::Editor(editor::Message::Escape));
                 } else if self.settings.is_some() {
                     self.settings = None;
+                } else if self.editor.is_some() {
+                    return self.update(Message::Editor(editor::Message::Escape));
                 }
             }
             Message::ToggleDrawer => {
@@ -3033,10 +3039,10 @@ mod tests {
         assert!(app.settings.is_some(), "folding an account does not leave the settings");
     }
 
-    /// Escape closes a menu, the drawer or the night's card first, then the open editor, and
-    /// only then the settings.
+    /// Escape closes a menu, the drawer or the night's card first, then the settings, and only
+    /// then what is open in the side panel.
     #[test]
-    fn escape_closes_the_settings_last() {
+    fn escape_closes_the_menu_then_the_settings_then_the_panel() {
         let mut app = launched(&["--demo"]);
         let _ = app.update(Message::ToggleSettings);
         let _ = app.update(Message::ToggleMenu(Menu::Switcher));
@@ -3044,6 +3050,24 @@ mod tests {
         assert!(app.menu.is_none() && app.settings.is_some(), "the menu first");
         let _ = app.update(Message::Escape);
         assert!(app.settings.is_none());
+    }
+
+    /// An editor behind the open settings is out of sight: Escape closes the settings, which is
+    /// what can be seen, and only the next one closes the editor. The editor keeps its event
+    /// meanwhile.
+    #[test]
+    fn escape_closes_the_settings_before_the_hidden_editor() {
+        let mut app = launched(&["--demo", "--now", "2026-10-07T14:20"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::OpenEvent(editable(&app)));
+        assert!(app.editor.is_some(), "an event is open in the panel");
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.settings.is_some() && app.editor.is_some(), "the settings cover the editor, they do not close it");
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none(), "the key acts on what is on screen");
+        assert!(app.editor.is_some(), "and the editor is back with what it held");
+        let _ = app.update(Message::Escape);
+        assert!(app.editor.is_none(), "the next one closes the editor");
     }
 
     /// Each section sends exactly the request its own library tests expect; this only checks the
