@@ -76,7 +76,8 @@ impl Demo {
         &self.settings
     }
 
-    /// The assistant's client, so the sections show the assistant as on. Switching it is the
+    /// The assistant's client, so the sections show the assistant as on, with one command switched
+    /// off, so the rights editor shows what that looks like (task S.33). Switching it is the
     /// control centre's; the demo only pretends it was.
     fn clients(&self) -> Vec<ClientInfo> {
         let created = Utc.with_ymd_and_hms(2026, 10, 1, 9, 0, 0).single().unwrap_or_else(Utc::now);
@@ -86,7 +87,7 @@ impl Demo {
             kind: ASSISTANT_CLIENT.into(),
             created,
             last_used: None,
-            rights: Rights::assistant(),
+            rights: Rights { denied: ["calendar.list_reminders".to_string()].into(), ..Rights::assistant() },
             agent: None,
         }]
     }
@@ -170,6 +171,18 @@ impl Demo {
             // The local AI, so the mail window's "Categorization" has a model to offer.
             account("ai:ollama@localhost:11434", "ai", "Ollama", connected("http://localhost:11434", ""), Vec::new()),
         ]
+    }
+
+    /// The calendars (`events`) or the task lists of the sample accounts the suite shows, as
+    /// `calendar.list_calendars` and `tasks.list_lists` answer: without the hidden ones
+    /// ([`SHARED_CALENDAR`]). What the rights editor offers to choose from (task S.33).
+    fn collections(&self, events: bool) -> Vec<Collection> {
+        self.accounts()
+            .into_iter()
+            .flat_map(|account| account.collections)
+            .filter(|collection| if events { collection.kind.has_events() } else { collection.kind.has_todos() })
+            .filter(|collection| !self.settings.hidden_collections.contains(&collection.id))
+            .collect()
     }
 
     /// The sample ntfy account: one server with two topics, whose subscriptions stay with the
@@ -467,6 +480,8 @@ impl Backend for Demo {
             Request::GetCategorization => Response::Categorization { categorization: self.categorization() },
             Request::VoiceStatus => Response::Voice { voice: self.voice() },
             Request::Accounts => Response::Accounts { accounts: self.accounts() },
+            Request::CalendarCollections => Response::Collections { collections: self.collections(true) },
+            Request::TaskCollections => Response::Collections { collections: self.collections(false) },
             Request::ListSources => Response::Sources { sources: self.sources() },
             Request::ListRules => {
                 let (rules, hits) = self.rules();

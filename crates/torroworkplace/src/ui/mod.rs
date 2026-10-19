@@ -679,12 +679,23 @@ impl Ui {
                     // The agent with its own rights shows the most: levels, admin, selections.
                     _ => "codex",
                 };
-                let client = self.data.clients.iter().find(|client| client.kind == kind).map(|c| c.id.clone());
+                // The agent's page shows the rights editor's commands too (task S.33): its calendar
+                // area open, with one command switched off.
+                let client = self.data.clients.iter_mut().find(|client| client.kind == kind).map(|client| {
+                    if open == Open::AgentDetail {
+                        client.rights.denied.insert("calendar.list_reminders".into());
+                    }
+                    client.id.clone()
+                });
                 let mut messages = vec![Message::Select(Section::Agents)];
                 messages.extend(client.map(|id| Message::Agents(agents::Message::Open(id))));
                 match open {
                     Open::NewKey => messages.push(Message::Agents(agents::Message::NewKey)),
                     Open::Disconnect => messages.push(Message::Agents(agents::Message::AskDisconnect)),
+                    Open::AgentDetail => {
+                        let calendar = torro_settings_ui::rights::Message::Expand(torro_ipc::api::Area::Calendar);
+                        messages.push(Message::Agents(agents::Message::Rights(calendar)));
+                    }
                     _ => {}
                 }
                 messages

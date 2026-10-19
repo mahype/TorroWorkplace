@@ -871,7 +871,7 @@ nacheinander. Empfohlene Reihenfolge: S.30 ∥ S.24 → S.32 → S.31 ∥ S.26 �
     test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
 
 ### S.33 Ein Rechte-Editor in `torro-settings-ui`, mit Schaltern je Befehl
-- [ ] erledigt
+- [x] erledigt (Sichtprüfung auf macOS nicht möglich, Design-Review steht aus)
 - **Modell:** Opus (großer Umzug, geteilte Logik) · **Braucht:** S.30, S.32 · **Dateien:**
   `crates/torro-settings-ui/src/rights.rs` (neu), `crates/torro-settings-ui/src/lib.rs`,
   `crates/torro-settings-ui/src/demo.rs`, `crates/torroworkplace/src/ui/agents.rs`, `crates/torroworkplace/src/ui/mod.rs`
