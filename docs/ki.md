@@ -6,12 +6,12 @@ Stand: 2026-10-11. **Diskussionsgrundlage.** Entstanden aus den Entscheidungen 8
 ## Zwei verschiedene Richtungen
 
 Bisher kommt KI in der Suite nur von außen: **Agenten rufen die Suite** über MCP (Claude Code,
-Codex …), Rechte in „Agents & API“ ([api.md](api.md)). Neu ist die umgekehrte Richtung:
+Codex …), Rechte in Steuerzentrale › MCP ([api.md](api.md), seit #231). Neu ist die umgekehrte Richtung:
 
 | Richtung | Wer ruft wen | Wo eingestellt | Beispiel |
 |---|---|---|---|
-| **Agenten** | ein Agent ruft die Suite | Steuerzentrale › Agents & API | Claude Code liest den Eingang |
-| **KI-Konten** (neu) | die Suite ruft ein Modell | Steuerzentrale › AI (Anbieter einrichten, Modelle an/aus); welches Modell wofür: in den Einstellungen des Moduls | Der Eingang lässt eine Spur vorschlagen |
+| **Agenten** | ein Agent ruft die Suite | Steuerzentrale › MCP (Skripte: › API) | Claude Code liest den Eingang |
+| **KI-Konten** (neu) | die Suite ruft ein Modell | Steuerzentrale › Accounts › AI (Anbieter einrichten; auf der Kontoseite Modelle an/aus, seit #231); welches Modell wofür: in den Einstellungen des Moduls | Der Eingang lässt eine Spur vorschlagen |
 
 Beides bleibt getrennt. Ein Agent bekommt nie Zugriff auf die KI-Konten der Suite, und die Suite
 benutzt nie den Schlüssel eines Agenten.
@@ -62,8 +62,9 @@ damit niemand Modellnamen tippen muss.
 
 ## Zuordnung je Funktion
 
-**Umgeplant am 2026-10-15** ([settings.md › KI](settings.md#ki)): Steuerzentrale › AI richtet nur Anbieter ein und
-schaltet Modelle an und ab. **Welches Modell eine Funktion nimmt, stellt man im Modul ein**, zu dem sie gehört (die
+**Umgeplant am 2026-10-15** ([settings.md › KI](settings.md#ki)): Die Steuerzentrale richtet nur Anbieter ein und
+schaltet Modelle an und ab (seit #231 unter Accounts, auf der Kontoseite des KI-Kontos; ein eigener Abschnitt „AI“
+entfällt). **Welches Modell eine Funktion nimmt, stellt man im Modul ein**, zu dem sie gehört (die
 Inbox für „suggest lane“ und „summarize item“, in den Einstellungen der Inbox), und zur Wahl stehen nur angeschaltete
 Modelle. Die Tabelle unten bleibt die Übersicht aller Funktionen; die Befehle `ai.list_assignments` und
 `ai.set_assignment` bleiben, nur ihre Oberfläche wandert in die Module.
@@ -98,9 +99,10 @@ Ursprünglich geplant: Seite **„AI“** in der Steuerzentrale (erscheint erst 
 | Funktion | Oberfläche | API · Zugriff | MCP |
 |---|---|---|---|
 | KI-Konto verbinden (lokal: Adresse; Anbieter: Schlüssel) | Accounts › Add › AI | `accounts.connect_ai` · Admin, nur App-Schlüssel | **Never** (Punkt 5: Geheimnisse nur über die Oberfläche) |
-| Modelle eines Kontos | Seite AI, Auswahl | `ai.list_models` · Read | `ai_list_models` |
-| Zuordnungen lesen | Seite AI | `ai.list_assignments` · Read | `ai_list_assignments` |
-| Zuordnung ändern | Seite AI | `ai.set_assignment` · Admin | `ai_set_assignment` (Admin braucht beim Agenten immer Freigabe) |
+| Modelle eines Kontos | Accounts › KI-Konto › Models | `ai.list_models` · Read | `ai_list_models` |
+| Modell an/aus (S.24) | Accounts › KI-Konto › Models, Schalter | `ai.set_model_enabled` · Admin (anschalten, was anderswo rechnet: nur Menschen) | `ai_set_model_enabled` |
+| Zuordnungen lesen | Einstellungen des Moduls | `ai.list_assignments` · Read | `ai_list_assignments` |
+| Zuordnung ändern | Einstellungen des Moduls | `ai.set_assignment` · Admin | `ai_set_assignment` (Admin braucht beim Agenten immer Freigabe) |
 | Eintrag zusammenfassen | Paneel „Summarize“ | `inbox.summarize_item` · Write (löst einen Modellaufruf aus) | `inbox_summarize_item` |
 
 Neuer Bereich `ai` im Katalog für die Einstellungen; die Funktionen selbst gehören zu dem Bereich, in
@@ -113,9 +115,9 @@ Kommt **nach** E1–E3 des Eingangs. Aufgaben entstehen, wenn dieses Konzept fre
 1. **KI.1 Kern:** KI-Konten (`AccountKind::Ai`), Anbieter-Trait mit OpenAI-kompatibel und Anthropic,
    Modell-Liste, Zuordnung je Funktion, Datenregel je Quelle, Zähler. Tests mit `httpmock`.
 2. **KI.2 Steuerzentrale:** Anbieter „AI providers“ im Assistenten (die Zeile gibt es schon),
-   lokale Anbieter oben, automatische Suche nach Ollama/LM Studio auf `localhost`; Seite „AI“ mit Anbietern und
-   Modellen an/aus (S.24–S.26 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md)), die Zuordnung je Funktion in den
-   Modulen.
+   lokale Anbieter oben, automatische Suche nach Ollama/LM Studio auf `localhost`; Modelle an/aus auf der Kontoseite
+   unter Accounts (S.24, S.26, S.31 in [tasks/steuerzentrale.md](tasks/steuerzentrale.md); S.25 entfällt mit #231),
+   die Zuordnung je Funktion in den Modulen.
 3. **E6.x Eingang:** Spur vorschlagen, Eintrag zusammenfassen, Tageszusammenfassung.
 
 ## Offen

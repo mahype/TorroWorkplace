@@ -6,11 +6,17 @@ S.16–S.21: Jede App hat ihre Einstellungen hinter dem Zahnrad im eigenen Fenst
 hat nur noch die Abschnitte der Suite. Der Abschnitt [Bestand](#bestand-stand-2026-10-16) beschreibt
 den Stand davor.
 
+**Neu geordnet mit #231 (2026-10-19):** Accounts, API und MCP sind getrennt; „Agents & API“ und der geplante
+Abschnitt „AI“ entfallen. Die Entscheidungen stehen in [Accounts, API und MCP](#accounts-api-und-mcp-231),
+die Aufgaben in [tasks/steuerzentrale.md](tasks/steuerzentrale.md), Stufe 5. Nennt ein älterer Absatz (vor allem
+im [Bestand](#bestand-stand-2026-10-16)) noch „Agents & API“ oder „Settings › AI“, gilt dieser Abschnitt.
+
 ### Die Regel
 
 **In die Steuerzentrale gehört, was mehrere Apps teilen oder ohne das keine App läuft:** Konten und ihre
-Verbindung, KI-Anbieter mit Modellen und der Datenregel, Programme mit Schlüsseln, Rechten und Freigaben
-(auch Assistent und Bots), Aussehen, Sprache und welche Apps an sind.
+Verbindung (auch KI-Konten mit ihren Modellen und der Datenregel), Programme, die die Suite von außen nutzen,
+mit Schlüsseln und Rechten (API und MCP), Freigaben, Aussehen, Sprache und welche Apps an sind. Die Rechte von
+Assistent und Bots stehen seit #231 in deren Fenster (siehe [Accounts, API und MCP](#accounts-api-und-mcp-231)).
 
 **In die App gehört, was nur ändert, wie diese App arbeitet:** welche Kalender oder Listen sie zeigt, wann
 sie erinnert, was in den Eingang darf, wie Mail aussieht und abgeschickt wird, wer der Assistent ist. Das
@@ -53,9 +59,9 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | Abschnitt | Inhalt | |
 |---|---|---|
 | **Overview** | Auf einen Blick: Dienst läuft, Tiling-Manager erkannt, Konten (Zahl, Probleme), letzter Sync, „Needs your attention“ mit Konten, die eine neue Anmeldung brauchen | v1 |
-| **Accounts** | Liste der Konten als Karten, „Add account“, Detailseite je Konto (siehe unten): Status, Verbindung, Dienste, Entfernen | v1 |
-| **AI** (KI) | Anbieter von Modellen einrichten (Ollama, LM Studio, OpenRouter, OpenAI-kompatibel, Anthropic), ihre Modelle an- und abschalten, die Datenregel „Mail to cloud models“. Siehe [KI](#ki) | S.24–S.26 |
-| **Agents & API** | Alle Programme mit Rechten: Agenten und Skripte (wie TorroMail: Karte je Client, eigener Schlüssel), **der Assistent und jeder Bot**; Rechte je Bereich und Sammlung, Freigabe-Stufe. Konzept: [api.md](api.md) | v1, Assistent und Bots mit S.21 |
+| **Accounts** | Externe Konten in festen Gruppen (Nextcloud, Mail, GitHub, AI, ntfy), je Gruppe „Add“; Detailseite je Konto: Status, Verbindung, Dienste, bei KI-Konten die Modelle mit Schaltern, Entfernen. Siehe [Accounts, API und MCP](#accounts-api-und-mcp-231) | v1, neu geordnet mit #231 (S.30, S.31) |
+| **API** | Ob Programme die API mit eigenem Schlüssel nutzen dürfen; die Keys mit ihren Rechten bis auf einzelne Endpunkte. Konzept: [api.md](api.md) | #231 (S.35) |
+| **MCP** | Ob Agenten Torro über MCP nutzen dürfen; die verbundenen Clients (Claude Code, Codex …) mit ihren Rechten bis auf einzelne Tools und ihren Hooks für den Notification Hub | #231 (S.35) |
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
 | **Workspaces** | Vorlagen: umbenennen, löschen, Tastenplatz F1–F10, beim Anmelden laden; Strategie je Fenster | v1 (Liste, Umbenennen, Löschen), Rest später |
 | **Appearance** | Hell/dunkel, Design-Paket ([design-pakete.md](design-pakete.md)), Zoom; gilt für alle Apps, die Apps verweisen hierher | v1 |
@@ -64,10 +70,11 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 | **Diagnostics** | Log-Datei, Sync-Protokoll, Verbindung testen | später |
 | **Help** | Kurzanleitung, Tastenkürzel, Links | später |
 
-Die Seitenleiste hat **eine** Liste: Overview, Accounts, AI, Agents & API, Approvals, Workspaces,
-Appearance; General am Fuß. Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen
-(entschieden 2026-10-16, #210): Apps geht in General auf, die Einstellungen von Assistent und Eingang ziehen
-in deren Fenster, die Rechte von Assistent und Bots nach Agents & API, die Datenregel nach AI.
+Die Seitenleiste hat **eine** Liste: Overview, Accounts, API, MCP, Approvals, Workspaces, Appearance; General
+am Fuß (#231). Die heutigen Seiten **Apps**, **Assistant** und **Notification Hub** entfallen (entschieden
+2026-10-16, #210): Apps geht in General auf, die Einstellungen von Assistent und Eingang ziehen in deren Fenster.
+Mit #231 ziehen auch die Rechte von Assistent und Bots in das Fenster des Assistenten, die Datenregel unter
+Accounts › AI; „Agents & API“ und der geplante Abschnitt „AI“ entfallen.
 
 ## Einstellungen in den Apps
 
@@ -111,15 +118,14 @@ Warum: Bis dahin öffnete das Zahnrad jeder App die Steuerzentrale als eigenes F
   dort die Einstellungen gleich aufzuschlagen bräuchte einen neuen Weg vom Kern zur App und ist nicht geplant. Hinweise in der App, die
   bisher die Steuerzentrale öffneten, öffnen den passenden Abschnitt im selben Fenster („All rules“ →
   Rules); das Mail-Fenster hat keine Rules, dort holt „All rules“ das Fenster des Notification Hub nach
-  vorn, wo die Regeln stehen. Was Rechte und Konten betrifft, bleibt ein Verweis in die
-  Steuerzentrale: „Change access“ unter einer abgelehnten Antwort und „Access…“ eines Bots öffnen Agents & API beim Assistenten bzw.
-  beim Bot, Konten einrichten öffnet Accounts.
+  vorn, wo die Regeln stehen. „Change access“ unter einer abgelehnten Antwort und „Access…“ eines Bots öffnen
+  seit #231 den Abschnitt Access im selben Fenster; Konten einrichten öffnet weiter Accounts in der Steuerzentrale.
 
 ### Was wohin gehört
 
 | App | Abschnitte | kommt heute von |
 |---|---|---|
-| **Assistant** | General (Status an/aus mit Verweis auf Agents & API, wo er ein- und ausgeschaltet wird; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access ↗“ öffnet Agents & API beim Bot) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) | Seite Assistant ohne Rechte, Datenregel und „Engines“ |
+| **Assistant** | General (Status an/aus mit Verweis auf Access; neue Chats: Engine, Modell, Denkstufe) · Profile (Profil und Gedächtnis) · **Access** (seit #231: Rechte des Assistenten und je Bot, „Turn on assistant“, „Turn off assistant…“) · Bots (Liste; je Bot „Edit“ öffnet den Bot-Editor, „Access“ öffnet Access beim Bot) · Voice (Sprechen, Antworten vorlesen, Mikrofon, Programme auf diesem Rechner) · History (Unterhaltungen aufheben) | Seite Assistant ohne Datenregel und „Engines“; Access aus Agents & API (#231) |
 | **Calendar** | Calendars (welche die Suite zeigt, je Konto gruppiert; Art der Erinnerung je Kalender) · Reminders (an/aus, Vorlauf, alle Bildschirme, Ton, welche Termine) · Night (die Karte am Mond in der Zeitleiste bleibt als schneller Weg) | Kontodetail „Calendars and lists“; General › Calendar, › Reminders, › Which events, › Calendars |
 | **Tasks** | Lists (welche die Suite zeigt, je Konto gruppiert) | Kontodetail „Calendars and lists“ |
 | **Notification Hub** (Fensterarten Notification Hub und App Feed) | Notifications (still bei Terminen) · Sources (je Konto: Nextcloud-Benachrichtigungen und Talk, GitHub, je ntfy-Server stumm oder an, je Mail-Konto „Show new mail“) · Rules (Liste mit „Remove“) | Seite Notification Hub; Abschnitte „Notification Hub“ der Kontoseiten |
@@ -129,15 +135,15 @@ Keine App zeigt „Appearance“ als eigene Seite (nur den Verweis). Die Fenster
 zeigen je ihre Abschnitte: Notification Hub und App Feed die des Eingangs, das Mail-Fenster die von Mail.
 
 In der Steuerzentrale bleiben: Konten (Status, Verbindung, welche Dienste ein Konto liefert,
-Entfernen), AI (Anbieter, Modelle, Datenregel, siehe [KI](#ki)), Agents & API (alle Programme mit Rechten),
+Entfernen; KI-Konten mit Modellen und Datenregel, siehe [KI](#ki)), API und MCP (Programme von außen mit Rechten),
 Approvals, Workspaces, Appearance, General (Sprache, Start beim Anmelden, Apps an/aus). Die Kontodetailseiten
 werden dadurch kurz; wo eine Einstellung umzieht, steht dort eine Zeile, die zum neuen Ort führt
 („Calendars and lists are chosen in Calendar and Tasks.“) mit „Open“ je App.
 
 Zusammengelegt (Befund 2): „Show new mail in the Notification Hub“ gibt es nur noch als Zeile je Mail-Konto
 unter Notification Hub › Sources (`accounts.update_mail_account`, Feld `notify`); die Quelle „Mail“ der
-Einrichtung schickt dasselbe statt `inbox.mute_source`. Die Rechte eines Bots stehen nur noch unter Agents &
-API; der Bot-Editor verweist dorthin. Die Nacht bleibt an zwei Stellen, aber beide in der Kalender-App
+Einrichtung schickt dasselbe statt `inbox.mute_source`. Die Rechte eines Bots stehen seit #231 nur unter
+Assistant › Access; der Bot-Editor verweist dorthin. Die Nacht bleibt an zwei Stellen, aber beide in der Kalender-App
 (Abschnitt Night und Karte am Mond).
 
 Was im Fenster gewählt wird, gilt für die ganze Suite (wie heute in der Steuerzentrale). Die
@@ -155,22 +161,27 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
   Echtes.
 - „Open“ unter General › Apps und an den Kontoseiten schickt `apps.open_app` mit der Fensterklasse (Mail:
   `torro-inbox-mail`).
-- Die Apps senden keine schreibenden `clients.*` (`create_client`, `remove_client`, `update_client`; lesen mit
-  `clients.list_clients` darf der Assistent weiter, um seinen Zugriff zu kennen): Ein- und Ausschalten des Assistenten bleibt in der Steuerzentrale, damit
-  der Schlüssel eines neuen Clients nie in einen App-Prozess gelangt.
+- Der Schlüssel eines neuen Clients gelangt nie in einen App-Prozess. Bis #231 hieß das: Apps senden keine
+  schreibenden `clients.*`. Seit #231 darf **nur** der Abschnitt Access des Assistenten `clients.update_client`,
+  `clients.activity` und – für die Art `assistant` – `clients.create_client` und `clients.remove_client` senden;
+  der Kern gibt für die Art `assistant` keinen Schlüssel heraus (der Kern führt die Werkzeuge des Assistenten
+  selbst aus, niemand braucht ihn). `clients.new_key` und Clients anderer Arten bleiben der Steuerzentrale.
 - Nur ein Mensch öffnet die Einstellungen. Antworten des Assistenten, Mails und Einträge im Eingang
   können keinen Abschnitt aufschlagen, und Agenten haben kein Ziel `settings:…` für `apps.open_app`.
 - **Oberfläche, API, MCP:** keine neue Funktion. Alle Einstellungen gehen über Requests, die es
   schon gibt (`settings.set_setting`, `settings.set_collection_shown`, `inbox.mute_source`,
   `inbox.remove_rule`, `accounts.update_mail_account` …), nur an anderer
   Stelle der Oberfläche. Die Rechte von Assistent und Bots (`clients.*`, `Mcp::Never`) ändert weiter nur ein
-  Mensch in der Steuerzentrale, nie ein Agent und nie eine App.
+  Mensch, nie ein Agent: seit #231 im Abschnitt Access des Assistenten, der wie jedes Fenster der Suite den
+  App-Schlüssel hält (dieselbe Begründung wie beim Mikrofon, [api.md](api.md) Punkt 6).
 
 ## Konten
 
-### Anbieter-Katalog
+### Anbieter
 
-„Add account“ öffnet zuerst die Auswahl des Anbieters, dann den Assistenten des Anbieters.
+Seit #231 gibt es keinen Katalog mehr: Die Seite Accounts zeigt eine feste Gruppe je Art, und das „+ Add“ der
+Gruppe öffnet den Assistenten direkt bei diesem Anbieter (siehe [Accounts, API und MCP](#accounts-api-und-mcp-231)).
+Die Tabelle sagt, was es gibt; Slack erscheint erst, wenn es gebaut ist.
 
 | Anbieter | Wofür | Anmeldung | |
 |---|---|---|---|
@@ -179,8 +190,8 @@ spätere Auswahl **pro Fenster** (unten) kommt als eigener Schalter dazu, nicht 
 | **Slack** | Erwähnungen, Direktnachrichten, ausgewählte Kanäle | Weg noch offen (Token statt OAuth wahrscheinlich); Token im Schlüsselbund | später |
 | **ntfy** | Themen abonnieren für den Eingang (CI, Uptime Kuma, Skripte) | Server (leer = `ntfy.sh`) und Themen mit Etikett; nur wenn ein Thema es braucht Benutzer und Passwort oder Token `tk_…` (`accounts.set_ntfy_login`, nur über `https` oder an diesen Rechner), im Schlüsselbund. Themen-Namen sieht nur die Steuerzentrale, Agenten das Etikett (E5.12) | E5 |
 
-Weitere Anbieter (Google Kalender, Todoist, IMAP über TorroMail …) kommen als neue Einträge im
-Katalog hinzu, nie als Umbau.
+Weitere Anbieter (Google Kalender, Todoist …) kommen als neue Gruppe bzw. als weiterer Weg im
+Add-Dialog einer Gruppe hinzu, nie als Umbau.
 
 ### Einrichtungsassistent
 
@@ -219,22 +230,23 @@ agent“ verstand niemand als den Weg zu einem Modell. Aufgaben: S.23–S.26.
    nimmt, welches ein Bot, welches später die Inbox zum Zusammenfassen: das steht in den Einstellungen
    des Moduls, in dessen Fenster ([Einstellungen in den Apps](#einstellungen-in-den-apps)), nicht in
    der Steuerzentrale.
-3. **Rechte stehen zentral** (entschieden 2026-10-16, #210). Was ein Programm (Claude Code, ein Skript,
-   der Assistent, ein Bot) darf, stellt man an einer Stelle ein: Steuerzentrale › Agents & API, je Programm
-   mit Bereichen und Sammlungen. Die Module verweisen dorthin. Bindet die Suite später **externe
-   MCP-Server** ein, steuert man den Zugriff darauf ebenfalls zentral.
+3. **Rechte stehen beim Weg, über den ein Programm kommt** (geändert mit #231; vorher „Rechte stehen zentral“,
+   #210). Programme von außen: Steuerzentrale › API (Skripte mit Key) bzw. › MCP (Agenten wie Claude Code).
+   Der eigene Assistent und seine Bots: im Fenster des Assistenten, Abschnitt Access. Alle nutzen denselben
+   Rechte-Editor. Bindet die Suite später **externe MCP-Server** ein, steuert man den Zugriff darauf unter MCP.
 
-**Steuerzentrale › AI** ist ein eigener Abschnitt der Seitenleiste nach Accounts. Die KI-Konten verlassen
-dafür Accounts (Katalog und Liste); intern bleiben sie Konten (`accounts.json`, Schlüssel im
-Schlüsselbund).
+**KI-Konten stehen unter Accounts** (geändert mit #231; vorher als eigener Abschnitt „AI“ geplant, S.25
+entfällt). Sie sind die Gruppe „AI“ der Seite Accounts, mit „+ Add“ wie jede Gruppe; intern Konten wie bisher
+(`accounts.json`, Schlüssel im Schlüsselbund). Unter der Gruppe steht die Zeile der Datenregel „Mail to cloud
+models“ (vorher in den Rechten des Assistenten).
 
-- **„Providers“:** eine Karte je Anbieter mit Name, Adresse bzw. „Found on this computer“, Status
+- **Die Gruppe „AI“:** eine Zeile je Anbieter mit Name, Adresse bzw. „Found on this computer“, Status
   (verbunden, Server aus, Schlüssel abgelehnt) und der Zahl angeschalteter Modelle. Reihenfolge Open
   First: zuerst, was auf diesem Rechner installiert ist (Ollama, LM Studio), dann
   OpenRouter, dann andere OpenAI-kompatible Server, dann geschlossene Anbieter (Anthropic, OpenAI,
   Google). „Installiert“ ist nicht „rechnet hier“: Die `:cloud`-Modelle von Ollama laufen über das
   lokale Ollama, rechnen aber auf `ollama.com`. Der Ort jedes Modells steht an seiner Zeile.
-- **„Add provider“** öffnet den bekannten Dialog direkt bei den KI-Anbietern: „On this computer“
+- **„+ Add“ der Gruppe** öffnet den bekannten Dialog direkt bei den KI-Anbietern: „On this computer“
   (gefundene Server mit „Connect“), OpenRouter (API-Schlüssel), „Other OpenAI-compatible server“
   (Adresse, optional Schlüssel). Erst nach erfolgreicher Prüfung ist der Anbieter da.
 - **Claude ist ein Anbieter wie jeder andere:** ein KI-Konto über das Anthropic-Protokoll mit eigenem
@@ -242,15 +254,15 @@ Schlüsselbund).
   über die gefundene CLI (Antrieb B in [assistent.md](assistent.md)) wird seit Issue #219 nicht mehr
   angeboten: Er war nie eingerichtet, nur gefunden, also gab es nichts anzuzeigen und nichts
   abzuschalten. Codex bleibt ebenfalls außen vor (kein Weg, nur die Werkzeuge der Suite zu erlauben).
-  Claude Code unter „Agents & API“ ist etwas anderes: Dort ruft der Agent die Suite über MCP.
-- **Ein Anbieter aufgeklappt** (Unterseite „‹ AI › Ollama“): Status und Verbindung, darunter
+  Claude Code unter „MCP“ ist etwas anderes: Dort ruft der Agent die Suite über MCP.
+- **Die Kontoseite eines KI-Kontos** („‹ Accounts › Ollama“): Status und Verbindung, darunter
   **„Models“**: eine Zeile je Modell mit Name, Merkmalen (Tools, Thinking, Context), dem Ort, an dem es
   rechnet („On this computer“, „Ollama Cloud“, „Cloud“), und einem **Schalter**. Modelle ohne
   Werkzeuge stehen blass mit „Can't use tools“ und ohne Schalter, weil kein Modul sie nutzen kann.
-  OpenRouter: Suche und „Show closed models“, weil es Hunderte sind. Ganz unten „Remove provider…“.
+  OpenRouter: Suche und „Show closed models“, weil es Hunderte sind. Ganz unten „Remove account…“.
 - **Was angeschaltet ist, gilt überall:** Die Auswahlen der Module (Assistent › New chats, die Auswahl
   pro Chat, der Bot-Editor, später die KI-Funktionen der Inbox) bieten nur angeschaltete Modelle an.
-  Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › AI“.
+  Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › Accounts“.
 - **Am Anfang an:** alle Modelle mit Werkzeugen, die **auf diesem Rechner rechnen** (Ollama ohne
   `:cloud`, LM Studio, OpenAI-kompatible Server an einer Adresse dieses Rechners). Modelle, die anderswo
   rechnen (Ollama Cloud, OpenRouter, Anthropic, Server im Netz), sind aus, bis man sie anschaltet:
@@ -260,11 +272,11 @@ Schlüsselbund).
 - **Ein Modell anschalten, das anderswo rechnet, kann nur ein Mensch** (wie der Schalter
   `mail_to_cloud`, [api.md](api.md) Punkt 6). Abschalten dürfen auch Agenten, mit Freigabe.
 - **Ein abgeschaltetes Modell, das ein Modul noch nutzt** (Standard neuer Chats, ein Bot, die Wahl in
-  einer Unterhaltung): Das Modul zeigt es weiter mit dem Hinweis „Turned off in Settings › AI“ und
+  einer Unterhaltung): Das Modul zeigt es weiter mit dem Hinweis „Turned off in Settings › Accounts“ und
   nimmt für neue Antworten „Automatic“ unter den angeschalteten Modellen **desselben Anbieters**, bis
   jemand ein anderes wählt; erst danach bestimmt der Kern den Ort und wendet die Datenregel an.
   Laufende Antworten laufen zu Ende. Ist bei diesem Anbieter gar nichts mehr an, antwortet das Modul
-  nicht mit einem anderen Anbieter, sondern sagt es: „Turn on a model of {provider} in Settings › AI.“
+  nicht mit einem anderen Anbieter, sondern sagt es: „Turn on a model of {provider} in Settings › Accounts.“
 - **Ollama Cloud:** Modelle mit dem Zusatz `:cloud` laufen über das lokale Ollama auf `ollama.com` und
   gelten für die Datenregel als **entfernt** ([ki.md](ki.md), Grundsatz 4; umgesetzt mit S.23). Ein
   eigener Anbieter „Ollama Cloud“ (direkt mit API-Schlüssel) kommt erst, wenn jemand ihn ohne lokales
@@ -281,6 +293,143 @@ Issues lesen: Classic-Token mit `repo` (privat) bzw. ohne Rechte (öffentlich) o
 Token mit „Issues: Read“. Projekte (Projects v2, GraphQL): `read:project` beim Classic-Token bzw.
 „Projects: Read“ beim Fine-grained Token (für Projekte einer Organisation). Die Detailseite zeigt,
 welche Rechte das Token hat, und was ohne sie fehlt („Projects need the read:project permission“).
+
+## Accounts, API und MCP (#231)
+
+Entschieden am 2026-10-19 (#231). Anlass: „Add account“ zeigte einen Katalog aller Anbieter und dazu die Konten
+aus TorroMail; unter „Agents & API“ standen Assistent, Bots, Coding-Agenten, Hooks und Skripte gemischt; die
+Modelle eines KI-Kontos ließen sich nirgends an- und abschalten. Aufgaben: S.24, S.26, S.30–S.35 in
+[tasks/steuerzentrale.md](tasks/steuerzentrale.md).
+
+**Die Ordnung:** Drei Orte, je einer pro Richtung.
+
+| Abschnitt | Richtung | Was man dort tut |
+|---|---|---|
+| **Accounts** | Torro nutzt etwas von außen | Externe Konten hinzufügen, prüfen, entfernen; bei KI-Konten Modelle an/aus |
+| **API** | Programme nutzen Torro mit Key | API an/aus, Keys anlegen, je Key die Rechte bis auf einzelne Endpunkte |
+| **MCP** | Agenten nutzen Torro über MCP | MCP an/aus, Clients verbinden, je Client die Rechte bis auf einzelne Tools, Hooks |
+
+### Accounts
+
+- **Feste Gruppen**, immer sichtbar, in dieser Reihenfolge: **Nextcloud**, **Mail** (mit den CalDAV-Konten
+  eines Mail-Anbieters, Art `caldav`), **GitHub**, **AI**, **ntfy**. Eine leere Gruppe sagt in einem Satz, was
+  hierher gehört („Add a Nextcloud for calendars and tasks.“), statt zu verschwinden.
+- **„+ Add“ je Gruppe** (in der Kopfzeile der Gruppe bzw. als Zeile am Ende der leeren Gruppe) öffnet den
+  Add-Dialog direkt beim ersten Schritt dieses Anbieters. Der Dialog hat keinen Katalog mehr und kein „Back“
+  zu einem Katalog; „Back“ gibt es nur noch zwischen den Schritten eines Anbieters. Der globale Knopf „Add
+  account“ in der Kopfleiste entfällt, ebenso die Zeile „Slack – Coming soon“.
+- **TorroMail:** Die Übernahme steht nicht mehr im Add-Dialog. Die Gruppe Mail zeigt „Import from TorroMail…“
+  nur, wenn TorroMail Konten hat, die die Suite übernehmen kann und noch nicht hat. Der Knopf öffnet denselben
+  Dialog bei einem eigenen Schritt „TorroMail“, der nur die Liste zum Übernehmen zeigt (wie bisher oben im
+  Katalog). Die Einrichtung beim ersten Start („Take over from TorroMail“) öffnet denselben Schritt.
+- **KI-Konten:** Gruppe „AI“ und Kontoseite mit „Models“, siehe [KI](#ki). Unter der Gruppe die Datenregel.
+
+### API
+
+- Gruppe **„API“:** Schalter **„Allow API keys“** (Standard an). Aus: Der Kern weist jeden Key der Art `script`
+  ab (`unauthorized` mit dem Satz, dass die API in Torro Workplace ausgeschaltet ist). Später hier HTTP auf
+  `127.0.0.1` mit Port (A.10).
+- Gruppe **„Keys“:** eine Zeile je Key (Name, Rechte in Worten, zuletzt benutzt), „Create key“ in der
+  Kopfleiste. „Create key“ fragt Name und Vorlage (Read only, Read and write, Full access) und zeigt den Key
+  einmal mit „Copy“ (der bisherige Weg „Script“ des Agent-Dialogs).
+- **Seite eines Keys:** der Rechte-Editor (unten) mit den Endpunkten (`calendar.list_events`), die letzten
+  Aufrufe, „Create new key“, „Revoke…“.
+
+### MCP
+
+- Gruppe **„MCP server“:** Schalter **„Allow MCP“** (Standard an). Aus: Der Kern weist jeden Aufruf eines
+  MCP-Clients ab, auch die seiner Hooks. Darunter die Befehlszeile zum Kopieren für Clients, die man von Hand
+  einrichtet (`torroworkplace mcp` mit `TORRO_TOKEN`).
+- Gruppe **„Connected clients“:** eine Zeile je Client (Claude Code, Codex, Gemini CLI, Claude Desktop,
+  Cursor, „Other MCP client“), „Connect client“ in der Kopfleiste: der bisherige Agent-Dialog ohne „Script“,
+  dafür mit „Other MCP client“ (Name, Key einmal zum Kopieren samt Befehlszeile).
+- **Seite eines Clients:** der Rechte-Editor mit den MCP-Tools (`calendar_list_events`); Gruppe **„Notification
+  Hub“** mit dem Schalter „Report when waiting or done“ (nur Claude Code, Codex, Gemini CLI) und dem Stand der
+  Hooks (eingerichtet; bei Codex „Trust the hooks in Codex' /hooks“; Fehler mit Grund); die letzten Aufrufe,
+  „Create new key“, „Disconnect…“.
+- **Hooks** sind technisch weiter ein eigener Client der Art `hook` mit festen, kleinen Rechten
+  (`Rights::hook`). Sie erscheinen nirgends mehr als eigene Zeile: Der Schalter auf der Seite des Agenten legt
+  den Hook-Client an und schreibt die Hooks, bzw. nimmt beides heraus. Wie die Meldungen der Agenten im
+  Eingang erscheinen, bleibt in den Einstellungen des Notification Hub; die Apps brauchen dafür nichts Eigenes.
+
+### Der Rechte-Editor
+
+Ein Editor für API, MCP und Access (Assistent, Bots), in `torro-settings-ui`, damit Steuerzentrale und
+Assistent-Fenster denselben nutzen.
+
+- **Je Bereich die Stufe** (No access · Read · Write · Full) und der Admin-Schalter, wie bisher. Die Stufe ist
+  der schnelle Weg.
+- **Neu: Bereich aufklappen** („Show commands“): eine Zeile je Befehl des Bereichs, den die Stufe erlaubt, mit
+  Schalter, in API mit dem Endpunkt-Namen, in MCP und Access mit dem Tool-Namen, darunter die erste Zeile der
+  Beschreibung aus dem Katalog. Abschalten trägt den Befehl in die **Sperrliste** des Clients ein
+  (`Rights::denied`, Namen aus dem Katalog). Die Sperrliste schränkt nur ein: Was die Stufe nicht erlaubt,
+  erscheint gar nicht, und kein Eintrag erlaubt mehr als die Stufe. Ein Bereich mit gesperrten Befehlen zeigt
+  das in seiner Zeile („Write · 2 off“).
+- Wie bisher: Auswahl der Kalender, Listen, Repositories, Inbox-Quellen und Mail-Konten, „Ask first“, „Send on
+  my behalf“. Gespeichert wird automatisch nach 500 ms mit `clients.update_client` (die ganzen Rechte).
+
+### Assistent und Bots
+
+- Assistent-Fenster › Zahnrad › **Access**: oben der Assistent (Status; ohne Client „Turn on assistant“ mit
+  „Start from“ wie bisher; mit Client der Rechte-Editor und „Turn off assistant…“), darunter eine Zeile je Bot,
+  die den Rechte-Editor des Bots öffnet. Ein Bot hat keinen Knopf zum Entfernen; ob es ihn gibt, entscheidet
+  der Bot-Editor.
+- Der Bot-Editor öffnet mit „What the bot may use“ den Abschnitt Access beim Bot, im selben Fenster.
+- „Change access“ unter einer abgelehnten Antwort öffnet Access beim Assistenten bzw. beim Bot.
+- Die Bereiche `assistant` und `bots` bleiben für Assistent und Bots ausgeblendet (`api::shows_area`).
+- `--section assistant` und `--section bot:<id>` der Steuerzentrale holen das Assistent-Fenster nach vorn
+  (`apps.open_app`; dort Access aufzuschlagen bräuchte einen neuen Weg vom Kern zur App, wie oben bei
+  „Direkt öffnen“). Im Fenster selbst öffnen „Change access“ und „What the bot may use“ Access direkt;
+  `torroassistant --settings access [--bot <id>]` schlägt es beim Start auf (auch für die Sichtprüfung).
+
+### Schalter und Wege im Kern
+
+- Jeder Aufruf trägt im Umschlag, über welchen Weg er kommt (`via`: `api` oder `mcp`, ohne Angabe `api`);
+  `torroworkplace mcp` setzt `mcp`. Der Kern prüft nach dem Key:
+  - Key der Art `script`: nur mit „Allow API keys“, und nur über `api`.
+  - Key eines MCP-Clients (Claude Code, Codex, Gemini CLI, Claude Desktop, Cursor, Other MCP client): nur mit
+    „Allow MCP“, und nur über `mcp`.
+  - Key der Art `hook`: nur mit „Allow MCP“ (er gehört zu einem Agenten), über `api` (die Hooks rufen den Kern
+    direkt).
+  - Geliehene Keys des Assistenten (`clients.lent_for`) und die Arten `assistant` und `bot` hängen an keinem der
+    beiden Schalter: Sie sind die Suite selbst.
+- **Ehrlich festgehalten:** Der Weg im Umschlag ist eine Angabe des Programms, keine Prüfung. Er schützt vor
+  Fehlbedienung (ein Agent-Key in einem Skript), nicht vor bösartigem Code unter demselben Benutzer – wie die
+  Keys selbst ([api.md](api.md), „Was der Schlüssel schützt“).
+- **Einschalten nur durch Menschen:** „Allow API keys“ und „Allow MCP“ einschalten bekommt von jedem Client
+  `forbidden` (wie `mail_to_cloud`, [api.md](api.md) Punkt 6); ausschalten ist eine gewöhnliche Admin-Änderung.
+
+### Was wohin zieht
+
+| Bisher | Seit #231 |
+|---|---|
+| „Add account“ in der Kopfleiste, Katalog | „+ Add“ je Gruppe |
+| Katalog › „Use accounts from TorroMail?“ | Mail › „Import from TorroMail…“ |
+| Gruppe CalDAV | Gruppe Mail |
+| geplanter Abschnitt „AI“ (S.25) | Kontoseite des KI-Kontos › Models (S.31) |
+| Rechte des Assistenten › „Mail to cloud models“ | Accounts › unter der Gruppe AI |
+| Agents & API › Agents | MCP › Connected clients |
+| Agents & API › Scripts | API › Keys |
+| Agents & API › Hooks | MCP › Seite des Agenten › Notification Hub |
+| Agents & API › Assistant, Bots | Assistent-Fenster › Access |
+| `--section agents` | `--section mcp` (`agents` bleibt als Wort dafür) |
+
+### Entscheidungen (#231)
+
+1. **Drei Abschnitte statt „Agents & API“:** Accounts, API, MCP. Verworfen: ein Abschnitt mit Gruppen je Art –
+   genau das war das Durcheinander.
+2. **„Add“ je Gruppe statt Katalog.** Spart einen Klick und jede Verwechslung. Verworfen: Katalog mit
+   vorgewählter Gruppe.
+3. **KI-Konten bleiben unter Accounts**, die Modelle stehen auf der Kontoseite. Verworfen: eigener Abschnitt
+   „AI“ (S.25) – ein KI-Konto ist ein Konto wie die anderen, und die Modelle gehören zu ihm.
+4. **Rechte je Befehl als Sperrliste unter der Stufe.** Verworfen: nur Schalter je Befehl (über 100 Befehle,
+   unbedienbar) und nur Stufen (zu grob).
+5. **Rechte von Assistent und Bots im Assistent-Fenster.** Hebt „Rechte stehen zentral“ (#210) für diese beiden
+   auf. Verworfen: weiter in der Steuerzentrale – dort stünden sie als einzige interne Programme zwischen API und
+   MCP.
+6. **Hooks gehören zum Agenten.** Verworfen: eigener Abschnitt oder eigene Einstellungen in den Apps.
+7. **Weg im Umschlag, Schalter für API und MCP.** Verworfen: keine Schalter (dann ließe sich die API nicht
+   abschalten) und eine echte Trennung über getrennte Sockets (Aufwand ohne Schutz gegen denselben Benutzer).
 
 ## Kalender und Listen pro Fenster (später)
 

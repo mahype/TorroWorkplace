@@ -431,7 +431,7 @@ parallel. S.26 und S.17 berühren beide die Auswahl „New chats“: Wer später
 
 ```
 S.23 (Datenregel, erledigt)
-S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
+S.24 (Modelle an/aus im Kern) ──┬── S.25 (entfällt mit #231, ersetzt durch S.31 in Stufe 5)
                                 └── S.26 (Auswahlen bieten nur angeschaltete Modelle)
 ```
 
@@ -519,10 +519,10 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
   abgeschaltetem Modell (`delegate.rs`). Engine B fällt weg: Sie wird seit #219 (C.18) nicht mehr angeboten.
 - **Ein Anbieter ganz aus:** `assistant.list_engines` nennt nur Anbieter mit mindestens einem angeschalteten Modell
   (Katalogtext nachziehen: KI-Konten, mit `models`). `send_message` und `ask_bot` mit einer solchen
-  Engine antworten `unsupported` mit „Turn on a model of {provider} in Settings › AI.“; kein Ausweichen auf einen
+  Engine antworten `unsupported` mit „Turn on a model of {provider} in Settings › Accounts.“ (geändert mit #231); kein Ausweichen auf einen
   anderen Anbieter. Die Beschreibungen von `assistant.send_message` und `bots.save_bot` sagen, dass ein abgeschaltetes
   Modell ersetzt wird und die Antwort das gewählte nennt.
-- **Oberfläche:** Steuerzentrale › AI (S.25)
+- **Oberfläche:** Steuerzentrale › Accounts › Kontoseite des KI-Kontos (S.31; geändert mit #231, S.25 entfällt)
 - **API:** `Request::SetModelEnabled` · `ai.set_model_enabled` · Admin; `Request::AiModels` · `ai.list_models` · Read
   (neues Feld `enabled`)
 - **MCP:** `ai_set_model_enabled` (Admin, beim Agenten mit Freigabe; entfernte Modelle anschalten nur Menschen);
@@ -537,7 +537,8 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
     (`TORRO_BLESS=1 cargo test -p torro-ipc`); fmt, clippy, test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
 
 ### S.25 Steuerzentrale › AI: Anbieter und ihre Modelle
-- [ ] erledigt (geändert mit #210: Datenregel)
+- [x] entfällt – gestrichen (#231): KI-Konten bleiben unter Accounts, die Modelle stehen auf der Kontoseite (S.31), die
+  Datenregel unter der Gruppe AI (S.30). Der Text bleibt zum Nachlesen stehen.
 - **Modell:** Opus (neue Seite, Umzug aus Accounts) · **Braucht:** S.24 · **Dateien:**
   `crates/torroworkplace/src/ui/ai.rs` (neu), `crates/torroworkplace/src/ui/mod.rs`,
   `crates/torroworkplace/src/ui/wizard.rs`, `crates/torroworkplace/src/ui/accounts.rs`,
@@ -579,16 +580,19 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
   1100, 500 und 360 px, hell und dunkel (Agent `torro-design-review`); fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 
 ### S.26 Die Auswahlen der Module bieten nur angeschaltete Modelle
-- [ ] erledigt (geändert mit #210: Ort von New chats)
+- [ ] erledigt (geändert mit #210: Ort von New chats; mit #231: Verweise auf Accounts statt AI)
 - **Modell:** Sonnet · **Braucht:** S.24 · **Dateien:** `crates/torroworkplace/src/ui/assistant.rs` (bis S.21) und
-  `crates/torro-settings-ui/src/assistant/` (sobald S.17 da ist), `crates/torroassistant/src/view.rs`, `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/app.rs`
+  `crates/torro-settings-ui/src/assistant/` (sobald S.17 da ist), `crates/torro-settings-ui/src/mail.rs` (#231),
+  `crates/torroassistant/src/view.rs`, `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/app.rs`
 - Assistant › New chats (heute in der Steuerzentrale, nach S.17 in `torro-settings-ui`), die Auswahl pro Chat und der
   Bot-Editor zeigen nur Modelle mit `enabled`. „Show all models“ im Chat entfällt; an seiner Stelle „Manage models…“,
-  das die Steuerzentrale bei AI öffnet (vorhandener Weg `torro_gui::connect::open_section("ai")`, kein neuer Request;
-  solange S.25 fehlt, `accounts`, weil `--section ai` sonst abgelehnt wird).
-- Ist bei keinem Anbieter ein Modell an: „No model is turned on. Turn on models in Settings › AI.“ mit demselben Knopf.
+  das die Steuerzentrale bei Accounts öffnet (vorhandener Weg `torro_gui::connect::open_section("accounts")`, kein
+  neuer Request; `--section ai` gibt es mit #231 nicht).
+- Ist bei keinem Anbieter ein Modell an: „No model is turned on. Turn on models in Settings › Accounts.“ mit demselben
+  Knopf.
 - Ein gespeichertes, aber abgeschaltetes Modell (Standard, Bot) steht oben in der Auswahl mit „Turned off in Settings ›
-  AI“, damit man sieht, warum „Automatic“ antwortet.
+  Accounts“, damit man sieht, warum „Automatic“ antwortet. Auch die Auswahl der Inbox für „Mail einordnen“
+  (`torro-settings-ui/src/mail.rs`, `categorization::offered`) bietet nur angeschaltete Modelle (#231).
 - **Oberfläche:** Assistent › Einstellungen › General › New chats und, bis S.21, Steuerzentrale › Assistant › New
   chats (beide gefiltert); Assistent ›
   Auswahl im Chat; Bot-Editor
@@ -688,3 +692,237 @@ S.27 (Bestand) ── S.28 (drei Entwürfe) ── Wahl durch einen Menschen ─
 - **Abnahme:** keine Aufgabe in Stufe 2 oder 3 verweist auf einen Abschnitt, den die gewählte Struktur nicht mehr hat
   (`grep` nach den alten Abschnittsnamen); Abhängigkeitsbaum stimmt mit „Braucht“ überein; `scripts/ci-local.sh` grün.
   Danach `/issue-plan 210` für den Bau.
+
+## Stufe 5: Accounts, API und MCP (S.30–S.35, #231)
+
+Konzept: [settings.md › Accounts, API und MCP](../settings.md#accounts-api-und-mcp-231), [api.md](../api.md) (Rechte,
+Transport, Entscheidungen 9–12), [ki.md](../ki.md). Entschieden am 2026-10-19 (#231): drei Abschnitte Accounts, API und
+MCP statt „Agents & API“; „Add“ je Gruppe statt Katalog; KI-Konten mit ihren Modellen unter Accounts (S.25 entfällt);
+ein Rechte-Editor mit Schaltern je Befehl für API, MCP und die Rechte von Assistent und Bots, die ins Assistent-Fenster
+ziehen; Hooks auf der Seite ihres Agenten; Schalter „Allow API keys“ und „Allow MCP“.
+
+S.24 und S.26 aus Stufe 3 gehören dazu (Modelle an/aus). Alle Änderungen an Requests, Antworten, `Rights` und
+Einstellungen stehen in S.32 (Gerüst); die Oberflächen-Aufgaben bauen darauf. `crates/torro-core/src/i18n/de.rs`
+trägt nur die Koordination ein; jede Aufgabe nennt ihre Übersetzungen im Bericht.
+
+```
+S.24 (Modelle an/aus im Kern) ──┬── S.26 (Auswahlen filtern)
+                                └── S.31 (KI-Konto: Models) ◄── S.30
+S.30 (Accounts: Gruppen, Add je Gruppe) ──┬── S.31
+                                          └── S.33
+S.32 (Kern: Sperrliste, Weg, Schalter) ──┬── S.33 (Rechte-Editor) ── S.34 (Access im Assistenten) ── S.35 (API und MCP)
+                                         └── S.35
+```
+
+S.30 und S.32 können parallel laufen (keine gemeinsamen Dateien außer `de.rs`), ebenso S.24 neben beiden. S.31 und S.33
+ändern verschiedene Dateien und können nach ihren Vorgängern parallel laufen.
+
+### S.30 Accounts: feste Gruppen, „Add“ je Gruppe, TorroMail-Import, Datenregel
+- [ ] erledigt
+- **Modell:** Sonnet · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`, `crates/torroworkplace/src/ui/wizard.rs`,
+  `crates/torroworkplace/src/ui/setup/mod.rs`, `crates/torroworkplace/src/ui/mod.rs`,
+  `crates/torroworkplace/src/ui/launch.rs`, `crates/torroworkplace/src/ui/agents.rs` (nur die Datenregel heraus)
+- **Gruppen:** `accounts::providers` bildet feste Gruppen in der Reihenfolge Nextcloud, Mail (Arten `mail` und `caldav`),
+  GitHub, AI (`AI_KIND`), ntfy (`NTFY_KIND`); jede Gruppe erscheint auch ohne Konto, mit einem Satz je Gruppe, was
+  hierher gehört. Unbekannte Arten bleiben als eigene Gruppe am Ende. Die Zeile eines CalDAV-Kontos nennt „CalDAV“ als
+  Art (wie heute auf der Kontoseite). `empty_state` der ganzen Liste entfällt.
+- **„+ Add“ je Gruppe:** neue `Message::Add(wizard::Provider)`; ein Helfer `wizard::State::at(provider, data) -> (State,
+  Action)` macht, was heute `setup::open_dialog(Some(p))` tut (`State::new()` und `ChooseProvider(p)`, inklusive
+  `FindAiServers` bei AI); `setup/mod.rs` nutzt ihn mit. Der Knopf „Add account“ in `accounts::header` entfällt; die
+  Kopfleiste der Liste hat keinen Primärknopf mehr, die Gruppen tragen „Add“ (Stil nach Skill `torro-design`, ein
+  Knopf je Gruppe, kein Rot).
+- **Dialog ohne Katalog:** Ein Dialog, der bei einem Anbieter beginnt, zeigt auf dessen erstem Schritt kein „Back“
+  (`footer`), und `Message::Back` führt dort nicht zu `Step::Provider`. Die Zeile „Slack – Coming soon“ im Katalog
+  entfällt (`coming_soon_row` bleibt für die Dienste des Mail-Wegs). `Step::Provider` darf bleiben, wenn Tests oder die
+  Einrichtung ihn brauchen, ist aber von Accounts aus nicht mehr erreichbar.
+- **TorroMail:** neuer Schritt `Step::TorroMail`, der nur die Liste zum Übernehmen zeigt (`offer_group`, die Logik aus
+  `Offer` und `offer_answered` unverändert), geöffnet über `wizard::State::torromail() -> (State, Action)` (sendet
+  `Request::TorroMailAccounts`). Die Gruppe Mail zeigt „Import from TorroMail…“ nur, wenn es Konten gibt, die
+  `Offer::can_use` erlaubt; dafür fragt die Seite `Request::TorroMailAccounts` beim Öffnen von Accounts und nach dem
+  Schließen des Dialogs (nicht bei jedem Neuladen) und merkt die Antwort im `State` der Seite. „Take over from TorroMail“
+  der Einrichtung öffnet denselben Schritt. „Enter password“ einer fehlgeschlagenen Übernahme führt wie heute in den
+  Mail-Weg.
+- **Datenregel:** unter der Gruppe AI eine Zeile „Mail to cloud models“ mit Schalter und Satz (für Assistent und alle
+  Bots), `Request::SetSetting { key: MailToCloud, … }` wie heute; `data_rule_row`, `shows_data_rule` und
+  `Message::MailToCloud` verlassen `agents.rs`.
+- **Demos:** die `--open`-Wörter `wizard-*` öffnen den Dialog beim jeweiligen Anbieter; neu `wizard-torromail` für den
+  Schritt TorroMail; `wizard` (Katalog) entfällt aus der Liste der gültigen Wörter, die Fehlermeldung nennt die neuen.
+- **Oberfläche:** Steuerzentrale › Accounts; Einrichtung › Mail
+- **API:** keine neue Funktion; dieselben Requests (`accounts.connect_*`, `accounts.list_torromail_accounts`,
+  `accounts.import_torromail_account`, `settings.set_setting mail_to_cloud`) an anderer Stelle
+- **MCP:** unverändert (`accounts_list_torromail_accounts`; die Verbindungs-Befehle bleiben Never)
+- **Abnahme:** Tests: feste Reihenfolge der Gruppen auch ohne Konten (ersetzt
+  `one_group_per_provider_in_order_of_appearance`), CalDAV in Mail, „Add“ jeder Gruppe öffnet den richtigen ersten
+  Schritt (AI sendet `FindAiServers`), kein „Back“ auf dem ersten Schritt, Import-Knopf nur mit übernehmbaren Konten,
+  Schritt TorroMail übernimmt wie bisher; die Tests des Katalogs (`five_providers_open_the_catalog`,
+  `disabled_providers_do_nothing`, `adding_is_possible_with_accounts`, `the_dialog_takes_only_its_own_answers`, die
+  Back-zu-`Step::Provider`-Prüfungen) passen auf den neuen Ablauf; Datenregel nur unter AI. Sichtprüfung Accounts
+  (leer, mit Konten, Dialog bei Mail und bei TorroMail) in allen Größen, hell und dunkel (Agent `torro-design-review`);
+  fmt, clippy, test (auch `TORRO_LANG=de`) grün.
+
+### S.31 KI-Konto: Modelle an- und abschalten auf der Kontoseite
+- [ ] erledigt
+- **Modell:** Sonnet · **Braucht:** S.24, S.30 · **Dateien:** `crates/torroworkplace/src/ui/accounts.rs`,
+  `crates/torroworkplace/src/ui/mod.rs`, `crates/torroworkplace/src/ui/launch.rs`
+- Ersetzt S.25. Die Kontoseite eines KI-Kontos (`accounts::detail` mit `AI_KIND`) bekommt zwischen Status und
+  Verbindung die Gruppe **„Models“** nach settings.md › KI: eine Zeile je Modell mit Name, Merkmalen (Tools, Thinking aus
+  `reasoning`, Context), Ort („On this computer“, „Ollama Cloud“, „Cloud (Anthropic)“, „Cloud“ aus `remote` und
+  Anbieter) und Schalter (`Request::SetModelEnabled`); Modelle ohne Werkzeuge blass mit „Can't use tools“ ohne Schalter.
+  Bei OpenRouter Suche und „Show closed models“ (`open_weights`).
+- Die Modelle lädt die Seite beim Öffnen der Kontoseite (`Request::AiModels { account, all: true }`), nicht bei jedem
+  Neuladen; „Loading models…“; ein Fehler des Servers als Satz in der Gruppe. Ein Schalter zeigt den neuen Stand sofort
+  und nimmt ihn zurück, wenn der Kern ablehnt (Satz unter der Gruppe).
+- Die Zeile des Kontos in der Gruppe AI nennt „{n} models on“ aus der letzten Antwort, sonst nur den Status.
+- Der Anbieter steht nur in der Kennung (`ai:<provider>@<host>`); ein vorhandener Helfer zum Zerlegen wird benutzt,
+  sonst einer in `accounts.rs` mit Test.
+- **Oberfläche:** Steuerzentrale › Accounts › KI-Konto
+- **API:** `ai.list_models` · Read; `ai.set_model_enabled` · Admin (aus S.24)
+- **MCP:** `ai_list_models`, `ai_set_model_enabled` (aus S.24)
+- **Abnahme:** Tests mit Demo-Daten: Gruppe Models, ein Schalter baut `SetModelEnabled`, Modell ohne Werkzeuge ohne
+  Schalter, Ort je Modell, Suche und „Show closed models“ bei OpenRouter, Rücknahme nach Ablehnung. Demo
+  `--open account-detail-ai`. Sichtprüfung in allen Größen, hell und dunkel; fmt, clippy, test (auch `TORRO_LANG=de`)
+  grün.
+
+### S.32 Kern: Sperrliste je Befehl, Weg im Umschlag, Schalter für API und MCP
+- [ ] erledigt
+- **Modell:** Opus (Rechte, Schlüssel, Schnittstellen) · **Dateien:** `crates/torro-ipc/src/api.rs`,
+  `crates/torro-ipc/src/lib.rs`, `crates/torro-ipc/src/client.rs`, `crates/torro-ipc/src/server.rs`,
+  `crates/torro-core/src/settings.rs`, `crates/torroworkplace/src/settings_service.rs`,
+  `crates/torroworkplace/src/clients.rs`, `crates/torroworkplace/src/core.rs`, `crates/torroworkplace/src/daemon.rs`,
+  `crates/torroworkplace/src/mcp.rs`, `docs/api-reference.md`
+- **Schnittstellen (mit dieser Planung freizugeben):**
+  - `Rights::denied: BTreeSet<String>` (`#[serde(default, skip_serializing_if = "BTreeSet::is_empty")]`): Katalognamen
+    gesperrter Befehle. `Rights::allows` lehnt einen Befehl ab, dessen `command.name` darin steht; `system.ping` nie.
+    `Rights::common` vereinigt die Sperrlisten. `clients.rs` verwirft beim Laden Namen, die `CATALOGUE` nicht kennt.
+  - `Envelope::via: Option<Via>` mit `enum Via { Api, Mcp }` (snake_case, `#[serde(default, skip_serializing_if =
+    "Option::is_none")]`), ebenso in `RawEnvelope`; fehlt es, gilt `Api`. `client.rs` bekommt einen Weg, `via`
+    mitzuschicken (z. B. `call_with_key_via`); `mcp.rs` sendet `Via::Mcp`, alle anderen bleiben ohne.
+  - Einstellungen `allow_api_keys` und `allow_mcp` (`Settings`, Standard `true` über eine eigene Default-Funktion),
+    `SettingKey::AllowApiKeys` und `SettingKey::AllowMcp`, in `settings_service.rs` wie `MailToCloud`.
+  - `clients.create_client` mit der Art `assistant` antwortet ohne Schlüssel: neue Antwort `Response::Client { client:
+    ClientInfo }` (neue Antwortart, verträglich nach api.md „Versionen“); die Katalogbeschreibung sagt das.
+  - Neue Client-Art `mcp` („Other MCP client“) neben `script`; `create_client` nimmt sie an.
+- **Prüfung im Kern** (`Core::handle_from`, nach `admit`, vor den übrigen Prüfungen; Regel in api.md › Transport): Art
+  `script` nur mit `allow_api_keys` und über `Api`; MCP-Arten (`claude-code`, `codex`, `gemini`, `claude-desktop`,
+  `cursor`, `mcp`) nur mit `allow_mcp` und über `Mcp`; `hook` nur mit `allow_mcp`, über `Api`; geliehene Schlüssel
+  (`Clients::lent_for`) und die Arten `assistant`, `bot` ohne diese Prüfung. Ablehnung `unauthorized` mit Satz
+  („The API is turned off in Torro Workplace, Settings › API.“ bzw. „… MCP …“, „This key belongs to an MCP client.“),
+  Protokollzeile wie bei anderen Ablehnungen, keine Freigabe.
+- **Nur Menschen schalten ein:** `Request::kept_for_people` um `AllowApiKeys` und `AllowMcp` mit Wert ungleich `false`
+  erweitern, `switches_on_for_people` um beide Felder (wie `mail_to_cloud`); `docs/api.md` Punkt 6 steht schon.
+- **Texte des MCP-Servers:** `INSTRUCTIONS` und `KEY_HINT` in `mcp.rs` nennen „Torro Workplace, Settings › MCP“ statt
+  „Agents & API“.
+- **Oberfläche:** keine in dieser Aufgabe (S.30, S.33–S.35)
+- **API:** keine neuen Befehle. `clients.update_client` · Admin, Never (trägt `denied` in den ganzen Rechten);
+  `clients.create_client` · Admin, Never (Antwort `client` für `assistant`, Art `mcp`); `settings.set_setting` · Admin
+  (`allow_api_keys`, `allow_mcp`; einschalten nur App-Schlüssel); `settings.get_settings` · Read (neue Felder)
+- **MCP:** `settings_set_setting` (ausschalten mit Freigabe, einschalten `forbidden`); `clients.*` bleiben Never
+- **Abnahme:** Tests in `torro-ipc` und im Kern (Temp-Verzeichnisse):
+  - ein gesperrter Befehl ist `forbidden`, obwohl die Stufe ihn erlaubt; ein nicht gesperrter Befehl desselben Bereichs
+    geht; `system.ping` lässt sich nicht sperren; unbekannte Namen verschwinden beim Laden; alte `clients.json` ohne
+    `denied` lädt unverändert;
+  - Umschlag ohne `via` ist `Api`; `mcp.rs` schickt `Mcp` (Test, dass das Tool den Umschlag so baut);
+  - Script über `Api` geht, über `Mcp` nicht; Agent über `Mcp` geht, über `Api` nicht; Hook über `Api` geht; mit
+    `allow_api_keys` aus wird Script abgelehnt, Agent nicht; mit `allow_mcp` aus werden Agent und Hook abgelehnt, ein
+    geliehener Schlüssel des Assistenten nicht;
+  - ein Client kann `allow_mcp`/`allow_api_keys` nicht einschalten (`forbidden`), ausschalten mit Admin und Freigabe;
+  - `create_client` mit `assistant` liefert `Response::Client` ohne Schlüssel, mit `mcp` einen Schlüssel;
+  - Rechte-Tabelle und MCP-Vertragstest grün; API-Referenz neu (`TORRO_BLESS=1 cargo test -p torro-ipc`); fmt, clippy,
+    test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
+
+### S.33 Ein Rechte-Editor in `torro-settings-ui`, mit Schaltern je Befehl
+- [ ] erledigt
+- **Modell:** Opus (großer Umzug, geteilte Logik) · **Braucht:** S.30, S.32 · **Dateien:**
+  `crates/torro-settings-ui/src/rights.rs` (neu), `crates/torro-settings-ui/src/lib.rs`,
+  `crates/torro-settings-ui/src/demo.rs`, `crates/torroworkplace/src/ui/agents.rs`, `crates/torroworkplace/src/ui/mod.rs`
+- Die Rechte-Ansicht aus `agents.rs` zieht nach `torro_settings_ui::rights`: `Pick`, `change_rights`, `access_group`,
+  `confirm_group`, `outbound_rows`, `selection_group` mit Kandidaten, die Beschriftungen (`area_label`, `admin_label`,
+  `rights_summary` …), `segment_slot`/`control_column` und der Entwurf mit Autosave nach `SAVE_DELAY` (500 ms,
+  `clients.update_client` mit den ganzen Rechten) samt `subscription`. Form wie die anderen Seiten der Bibliothek
+  (`State`, `Message`, `update -> Action`, `view`), dazu ein `Naming { Endpoints, Tools }` für die Namen der Befehle und
+  eine Struktur der Kandidaten (Kalender, Listen, Mail-Konten, Inbox-Quellen, Repositories), die Steuerzentrale und
+  Assistent-Fenster füllen. `torro_settings_ui::Data` bekommt Kalender und Listen (`Response::Collections` in
+  `Data::take`).
+- **Neu: Schalter je Befehl.** Jede Bereichszeile mit Zugriff lässt sich aufklappen („Show commands“): eine Zeile je
+  Katalogeintrag des Bereichs mit `Mcp::Tool`, den Stufe und Admin-Schalter erlauben, mit Name nach `Naming`
+  (`command.name` bzw. `tool_name()`), der ersten Zeile der Beschreibung und einem Schalter, der den Namen in
+  `Rights::denied` ein- oder austrägt. Die Bereichszeile nennt gesperrte Befehle („Write · 2 off“). Senkt man die
+  Stufe, bleiben Einträge für Befehle, die nicht mehr erlaubt sind, in `denied` (harmlos) und erscheinen wieder, wenn
+  die Stufe steigt.
+- Die Datenregel ist nicht mehr Teil der Rechte (S.30). `agents.rs` nutzt bis S.35 den neuen Editor (Naming `Tools`
+  für Agenten, `Endpoints` für Skripte), damit die Steuerzentrale zwischen den Aufgaben funktioniert.
+- **Oberfläche:** derselbe Editor in Steuerzentrale (bis S.35 Agents & API) und später Assistent › Access
+- **API:** keine neue Funktion; `clients.update_client` · Admin, Never
+- **MCP:** Never (`clients.*`, api.md Punkt 2)
+- **Abnahme:** die Tests der Rechte-Ansicht aus `agents.rs` laufen in `rights.rs` (Stufen, Admin, Auswahlen, Ask first,
+  Send on my behalf, Autosave); neue Tests: aufgeklappter Bereich zeigt nur erlaubte Befehle, ein Schalter trägt in
+  `denied` ein und aus, Namen nach `Naming`; Galerie bzw. Demo zeigt einen aufgeklappten Bereich. Sichtprüfung des
+  Editors (Steuerzentrale, Detailseite eines Agenten) in allen Größen; fmt, clippy, test (auch `TORRO_LANG=de`) grün.
+
+### S.34 Assistent und Bots: Access im Assistent-Fenster
+- [ ] erledigt
+- **Modell:** Opus (Rechte in einem App-Prozess) · **Braucht:** S.33 · **Dateien:**
+  `crates/torro-settings-ui/src/assistant/access.rs` (neu), `crates/torro-settings-ui/src/assistant/mod.rs`,
+  `crates/torro-settings-ui/src/assistant/bots.rs`, `crates/torro-settings-ui/src/assistant/general.rs`,
+  `crates/torro-settings-ui/src/demo.rs`, `crates/torroassistant/src/app.rs`, `crates/torroassistant/src/launch.rs`,
+  `crates/torroassistant/src/bots.rs`, `crates/torroassistant/src/view/editor.rs`, `crates/torroassistant/src/chat.rs`,
+  `crates/torroassistant/src/demo.rs`
+- Neuer Abschnitt **Access** (`SECTIONS`, `--settings access`, `--settings access --bot <id>`): oben der Assistent – ohne
+  Client „Turn on assistant“ mit „Start from“ (`Preset` aus `agents.rs` hierher) und `clients.create_client` (Antwort
+  `Response::Client`, kein Schlüssel); mit Client der Rechte-Editor (Naming `Tools`) und „Turn off assistant…“
+  (`clients.remove_client`, bestätigt). Darunter eine Zeile je Bot, die den Rechte-Editor des Bot-Clients öffnet (kein
+  Knopf zum Entfernen). Die Bereiche `assistant` und `bots` bleiben ausgeblendet (`api::shows_area`).
+- Bots › „Access“, der Bot-Editor („What the bot may use“, `Message::BotAccess`) und „Change access“ unter einer
+  abgelehnten Antwort öffnen Access im selben Fenster statt der Steuerzentrale; General verweist für an/aus auf Access.
+  `chat.rs` `area_name` für `Area::Clients`: „API and MCP“.
+- **Grenze im App-Prozess:** Der Test `no_section_touches_clients_rights_or_the_data_rule` gilt weiter für alle Abschnitte
+  außer `assistant/access.rs`; dort sind nur `UpdateClient`, `ClientActivity` und für die Art `assistant`
+  `CreateClient`/`RemoveClient` erlaubt, nie `NewClientKey` (Test). Kommt doch eine Antwort mit Schlüssel, verwirft der
+  Abschnitt sie ungelesen.
+- **Oberfläche:** Assistent › Einstellungen › Access; Bot-Editor; Chat („Change access“)
+- **API:** keine neue Funktion; `clients.update_client`, `clients.create_client`, `clients.remove_client`,
+  `clients.activity` · Admin, nur App-Schlüssel
+- **MCP:** Never (api.md Punkt 2)
+- **Abnahme:** Tests: Access mit und ohne Assistent-Client, Einschalten ohne Schlüssel in der Antwort, Bot-Zeile öffnet
+  den Editor des Bots, Bot-Editor und „Change access“ öffnen Access, verbotene Requests in anderen Abschnitten und
+  `NewClientKey` in Access (Test); Sichtprüfung `torroassistant --demo --settings access` (auch mit `--bot`) in allen
+  Größen, hell und dunkel; fmt, clippy, test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
+
+### S.35 Steuerzentrale: Abschnitte API und MCP, Hooks beim Agenten
+- [ ] erledigt
+- **Modell:** Opus · **Braucht:** S.32, S.33, S.34 · **Dateien:** `crates/torroworkplace/src/ui/api.rs` (neu),
+  `crates/torroworkplace/src/ui/mcp.rs` (neu), `crates/torroworkplace/src/ui/agents.rs` (entfällt),
+  `crates/torroworkplace/src/ui/agent_wizard.rs`, `crates/torroworkplace/src/ui/mod.rs`,
+  `crates/torroworkplace/src/ui/launch.rs`, `crates/torroworkplace/src/client_setup.rs`,
+  `crates/torroworkplace/assets/assistant/skill.md`, `crates/torro-gui/src/widgets.rs` (nur Kommentar),
+  `docs/einrichtung.md`, `docs/assistent.md`, `docs/eingang.md`, `docs/erweiterungen.md`, `docs/mail.md`
+- `Section::Agents` wird zu `Section::Api` und `Section::Mcp` (Seitenleiste: Overview, Accounts, API, MCP, Approvals,
+  Workspaces, Appearance; General am Fuß; Symbole nach Skill `torro-design` aus dem vorhandenen Satz). `--section api`,
+  `--section mcp`; `agents` bleibt als Wort für `mcp`; `assistant` und `bot:<id>` holen das Assistent-Fenster nach vorn
+  (`apps.open_app`) statt einer Seite.
+- **API** (`ui/api.rs`): Gruppe „API“ mit „Allow API keys“ (`SetSetting AllowApiKeys`); Gruppe „Keys“ mit den Clients
+  der Art `script`; „Create key“ (Dialog: Name wie bisher geprüft, Vorlage, `CreateClient { kind: "script" }`, Key einmal
+  mit „Copy“); Detailseite mit Rechte-Editor (Naming `Endpoints`), letzten Aufrufen, „Create new key“, „Revoke…“.
+- **MCP** (`ui/mcp.rs`): Gruppe „MCP server“ mit „Allow MCP“ (`SetSetting AllowMcp`) und der Befehlszeile; Gruppe
+  „Connected clients“ mit allen MCP-Arten; „Connect client“ öffnet `agent_wizard` ohne „Script“, mit „Other MCP client“
+  (Art `mcp`, Key einmal mit Befehlszeile). Detailseite mit Rechte-Editor (Naming `Tools`), Gruppe „Notification Hub“
+  (nur Claude Code, Codex, Gemini CLI): Schalter „Report when waiting or done“ – an: `CreateClient { kind: hook, agent }`
+  und `Job::Hook { owner }` wie im Dialog heute; aus: `Job::Disconnect` für den Hook-Client (nimmt nur seine Hooks
+  heraus) und `RemoveClient`; Stand aus `client_setup.json` (eingerichtet, Codex muss vertrauen, Fehler mit Grund).
+  Hook-Clients erscheinen in keiner Liste; ein Hook-Client ohne Agent (verwaist) steht als Zeile „Hooks without an
+  agent“ mit „Remove“ unter MCP.
+- Assistent und Bots erscheinen in keinem Abschnitt (S.34). Die Demo-Zustände (`AgentDetail`, `ScriptDetail`,
+  `HookDetail`, `NewKey`, `Disconnect`, `AgentWizard*` …) heißen nach dem neuen Ort (`api-detail`, `mcp-detail`,
+  `mcp-hooks`, `connect-client` …); die `Assistant*`-Zustände entfallen hier.
+- Texte: kein „Agents & API“ mehr in `crates/` (außer Tests, die das Fehlen prüfen); `docs/`-Verweise außerhalb von
+  `docs/tasks/` zeigen auf API, MCP bzw. Assistent › Access.
+- **Oberfläche:** Steuerzentrale › API, › MCP
+- **API:** keine neue Funktion; `clients.*` · Admin, Never; `settings.set_setting allow_api_keys|allow_mcp` · Admin
+  (einschalten nur App-Schlüssel)
+- **MCP:** `clients.*` Never; `settings_set_setting` wie in S.32
+- **Abnahme:** Tests: Abschnitte und `--section`-Wörter (alte Wörter führen richtig), Listen je Art ohne Hook-, Assistent-
+  und Bot-Clients, „Create key“ zeigt den Key einmal, „Connect client“ ohne Script und mit „Other MCP client“, der
+  Hook-Schalter erzeugt bzw. entfernt Hook-Client und Hooks (mit gefälschtem Runner wie heute), Schalter senden
+  `SetSetting`; `grep -rn "Agents & API" crates docs --include=*.rs --include=*.md` findet nur `docs/tasks/` und Tests.
+  Sichtprüfung API und MCP (Liste, Detail, Hooks, Dialoge) in allen Größen, hell und dunkel (Agent
+  `torro-design-review`); fmt, clippy, test (auch `TORRO_LANG=de`) grün; `scripts/ci-local.sh`; Agent `torro-api-review`.

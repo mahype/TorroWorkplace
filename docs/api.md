@@ -663,6 +663,12 @@ Diese Liste ist abschließend. Alles andere muss es auf allen drei Wegen geben.
    verschaffen. `mail_to_cloud: false` ist eine gewöhnliche Admin-Änderung (Tests
    `only_people_let_mail_go_to_the_cloud` in `torro-ipc` und
    `only_people_let_mail_go_to_the_cloud_and_agents_may_keep_it_local` im Kern).
+
+   Ebenso **API und MCP einschalten** (#231, Schalter „Allow API keys“ und „Allow MCP“, Einstellungen
+   `allow_api_keys` und `allow_mcp`): `settings.set_setting` mit `true` und ein `settings.update_settings`, das
+   einen davon einschalten würde, bekommen von jedem Client `forbidden`; ausschalten ist eine gewöhnliche
+   Admin-Änderung. Sonst könnte ein Client mit Admin-Rechten einen Weg wieder öffnen, den ein Mensch geschlossen
+   hat.
 7. **Einen Bot für den Assistenten bestätigen** (`assistant.confirm_bot`, B.2): nur mit dem
    App-Schlüssel. Der Assistent fragt einen Bot nur, wenn die Person ihn in ihrer letzten Nachricht
    nennt oder seinen Vorschlag bestätigt; diese Bestätigung gibt nie ein Agent oder Modell. Das
@@ -685,8 +691,10 @@ Browser des Menschen; ein Agent bekommt nie ein Passwort zu sehen.
 
 ## Rechte
 
-Agenten werden in der **Steuerzentrale, Abschnitt „Agents & API“**, verbunden, und dort wird je
-Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
+Seit #231 je nach Weg ([settings.md › Accounts, API und MCP](settings.md#accounts-api-und-mcp-231)):
+Skripte und Programme mit Key in der **Steuerzentrale, Abschnitt „API“**, Agenten in **„MCP“**, der eigene
+Assistent und seine Bots im **Assistent-Fenster, Abschnitt „Access“**. Alle drei nutzen denselben Rechte-Editor;
+dort wird je Client festgelegt, worauf er zugreifen darf (wie in TorroMail).
 
 ### Je Client
 
@@ -694,6 +702,11 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
   `Admin`-Befehle (Konten verbinden/entfernen, Einstellungen ändern) sind ein eigener Schalter je
   Bereich, Standard aus. Ist er an, braucht jeder `Admin`-Befehl trotzdem eine Freigabe durch den
   Menschen, unabhängig von „Freigabe vorher“.
+- **Je Befehl ein Schalter** (#231): Unter der Stufe lässt sich jeder Befehl des Bereichs einzeln abschalten.
+  Gespeichert als **Sperrliste** `Rights::denied` (Katalognamen, z. B. `calendar.delete_event`; fehlt sie, ist
+  sie leer). Sie schränkt nur ein: `Rights::allows` lehnt einen gesperrten Befehl ab, auch wenn Stufe und
+  Admin-Schalter ihn erlauben, und kein Eintrag erlaubt mehr als die Stufe. Unbekannte Namen (ein Befehl, den
+  es nicht mehr gibt) werden beim Laden verworfen. `system.ping` lässt sich nicht sperren.
 - **Je Sammlung eine Auswahl**: „alle“ oder ausgewählte Kalender und Aufgabenlisten, Repositories,
   Quellen des Eingangs und Mail-Konten (später auch Kanäle). Eine nicht freigegebene Sammlung verhält sich wie eine, die es nicht gibt;
   der Dienst filtert, bevor er Daten liest. Was die Suite ausblendet, sieht auch kein Agent.
@@ -709,8 +722,9 @@ Agent festgelegt, worauf er zugreifen darf (wie in TorroMail).
 
 ### Prüfung im Dienst
 
-Für jede Anfrage: Schlüssel → Client → `Request::operation()` → Stufe im Bereich reicht? →
-Sammlung freigegeben? → Freigabe nötig? → ausführen → protokollieren. Rechte werden bei der
+Für jede Anfrage: Schlüssel → Client → Weg und Schalter passen (#231, siehe „Transport“) →
+`Request::operation()` → Stufe im Bereich reicht und Befehl nicht gesperrt? → Sammlung freigegeben? →
+Freigabe nötig? → ausführen → protokollieren. Rechte werden bei der
 Ausführung einer Freigabe **noch einmal** geprüft.
 
 - Rechte gelten je Anfrage: Eine Änderung wirkt ab der nächsten Anfrage, eine laufende läuft mit
@@ -800,6 +814,19 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
 - **MCP:** `torroworkplace mcp`, stdio, auf dem offiziellen Rust-SDK `rmcp` statt eines eigenen
   JSON-RPC (in TorroMail eine Fehlerquelle). Schlüssel aus `TORRO_TOKEN`. Läuft der Dienst nicht,
   startet der MCP-Server ihn wie die Apps.
+- **Weg im Umschlag** (#231): `{"v":1,"key":…,"via":"mcp","request":…}`. `via` ist `api` oder `mcp`, ohne
+  Angabe `api` (verträglich, ältere Programme schicken es nicht). `torroworkplace mcp` setzt `mcp`, alle anderen
+  setzen nichts. Der Kern prüft nach dem Schlüssel, ob Art, Weg und Schalter passen:
+  - Art `script`: nur über `api` und nur mit „Allow API keys“ (Einstellung `allow_api_keys`, Standard an).
+  - MCP-Clients (`claude-code`, `codex`, `gemini`, `claude-desktop`, `cursor`, `mcp`): nur über `mcp` und nur
+    mit „Allow MCP“ (`allow_mcp`, Standard an).
+  - Art `hook`: über `api` (die Hooks rufen den Kern direkt), nur mit „Allow MCP“, weil er zu einem Agenten
+    gehört.
+  - Geliehene Schlüssel des Assistenten und die Arten `assistant` und `bot`: an keinen Schalter gebunden.
+  - Passt es nicht: `unauthorized` mit einem Satz, der sagt, was in Torro Workplace aus ist bzw. welcher Weg
+    erwartet wird. Kein Eintrag in eine Freigabe; das Protokoll vermerkt Client, Befehl und `unauthorized`.
+  - `via` ist eine Angabe des Programms, keine Prüfung (siehe „Was der Schlüssel schützt“): Sie verhindert
+    Fehlbedienung, nicht bösartigen Code unter demselben Benutzer.
 - **Später, abschaltbar:** HTTP auf `127.0.0.1` (Standard aus, Port in den Einstellungen), dieselben
   Befehle als `POST /v1/<bereich>/<befehl>` mit `Authorization: Bearer torro_…`, dazu
   `/v1/openapi.json` aus dem Katalog. Für Programme ohne Socket-Zugang (Stream Deck, Raycast, Home
@@ -818,19 +845,24 @@ Das ist zugleich der Anfang des „Freigaben-Eingangs“ aus dem [App-Katalog](a
 - MCP-Toolnamen sind stabil wie API-Namen. Im MCP wird `pending` nach 60 Sekunden Warten als
   Tool-Fehler mit Code `pending` und der Kennung der Freigabe gemeldet (siehe „Freigaben“).
 
-## Steuerzentrale: Abschnitt „Agents & API“
+## Steuerzentrale: Abschnitte „API“ und „MCP“
 
-Ersetzt „AI & agents“ aus [settings.md](settings.md).
+Seit #231; ersetzt den Abschnitt „Agents & API“ (vorher „AI & agents“). Aufbau und Gründe:
+[settings.md › Accounts, API und MCP](settings.md#accounts-api-und-mcp-231). Der eigene Assistent und seine
+Bots stehen nicht hier, sondern im Assistent-Fenster unter Access.
 
-- **Liste der Clients als Karten**: Name, Art (Claude Code, Codex, Claude Desktop, Cursor, Script),
-  Vorlage der Rechte als Wort, „zuletzt benutzt vor …“, Status nur bei Abweichung.
-- **„Connect agent“** öffnet einen Assistenten:
-  1. **Welcher Client:** Liste der bekannten Clients; erkannt, welche installiert sind.
+- **API:** Schalter „Allow API keys“; Liste der Keys (Name, Rechte in Worten, „zuletzt benutzt vor …“, Status
+  nur bei Abweichung); „Create key“ fragt Name und Vorlage und zeigt den Key einmal zum Kopieren.
+- **MCP:** Schalter „Allow MCP“ mit der Befehlszeile zum Kopieren; Liste der verbundenen Clients (Name, Art,
+  Rechte in Worten, zuletzt benutzt); Hook-Clients erscheinen nicht als eigene Zeile.
+- **„Connect client“** (MCP) öffnet einen Assistenten:
+  1. **Welcher Client:** Liste der bekannten Clients; erkannt, welche installiert sind; dazu „Other MCP
+     client“ (Art `mcp`, Key einmal zum Kopieren samt Befehlszeile).
   2. **Rechte:** Vorlage wählen, Kalender/Listen auswählen.
   3. **Verbinden:** Der Schlüssel wird direkt in den Client eingetragen (Claude Code über
      `claude mcp add -s user -e TORRO_TOKEN=… torroworkplace -- torroworkplace mcp`, Codex über
-     seine CLI; Gemini CLI, Claude Desktop und Cursor über ihre JSON-Dateien), oder bei „Script“
-     einmal angezeigt zum Kopieren. Danach ist er nie wieder sichtbar. Jede geänderte Datei wird
+     seine CLI; Gemini CLI, Claude Desktop und Cursor über ihre JSON-Dateien), oder bei „Other MCP
+     client“ einmal angezeigt zum Kopieren. Danach ist er nie wieder sichtbar. Jede geänderte Datei wird
      zusammengeführt statt ersetzt, atomar mit 0600 geschrieben, ihr alter Inhalt liegt als
      `<Datei>.torroworkplace-backup` (0600) daneben; eine Datei, die sich nicht lesen lässt, und ein
      Link ins Leere bleiben unangetastet (Fehlermeldung). Ein Link (Dotfiles) bleibt ein Link.
@@ -841,9 +873,12 @@ Ersetzt „AI & agents“ aus [settings.md](settings.md).
      Agenten und nicht in der Befehlszeile. „Disconnect…“ nimmt Eintrag, Hooks und Schlüsseldatei
      wieder heraus, aber nur, was der Assistent selbst eingetragen hat (`client_setup.json`).
   4. **Fertig:** „Restart Claude Code to use Torro Workplace.“
-- **Detailseite eines Clients**: Rechte je Bereich (Zeilen mit Stufe), Sammlungen, Freigabe vorher,
-  letzte Aktionen, „Create new key“ (alter wird ungültig), „Disconnect…“ (bestätigt; entfernt den
-  Schlüssel aus dem Client, wenn möglich).
+- **Detailseite eines Keys bzw. Clients**: der gemeinsame Rechte-Editor (Stufe je Bereich, aufgeklappt ein
+  Schalter je Befehl: unter API mit dem Endpunkt-Namen, unter MCP mit dem Tool-Namen), Sammlungen, Freigabe
+  vorher, letzte Aktionen, „Create new key“ (alter wird ungültig), „Revoke…“ (API) bzw. „Disconnect…“ (MCP;
+  bestätigt; entfernt den Schlüssel aus dem Client, wenn möglich). Unter MCP zusätzlich die Gruppe „Notification
+  Hub“: Schalter „Report when waiting or done“ legt den Hook-Client an und schreibt die Hooks bzw. nimmt beides
+  heraus.
 - **Abschnitt „Approvals“** (oder Gruppe in Overview, solange es wenige sind): offene Freigaben mit
   „Allow“/„Deny“, darunter die zuletzt entschiedenen.
 
@@ -884,3 +919,14 @@ Getroffen am 2026-10-11.
    (`schemars`), damit Agenten wissen, welche Felder nötig sind (A.0c).
 8. **Tray-Befehle**: „Settings…“ öffnet die Steuerzentrale über `apps.open_app` (auch für API
    und MCP); „Quit“ wird `system.quit`, nur App-Schlüssel (siehe „Was nie nach außen geht“).
+
+Getroffen am 2026-10-19 (#231):
+
+9. **API und MCP getrennt in der Oberfläche**, ein Client-Modell im Kern: Keys der Art `script` unter API,
+   MCP-Clients unter MCP, gleicher Rechte-Editor. Verworfen: getrennte Client-Modelle (doppelte Prüfung).
+10. **Sperrliste je Befehl** (`Rights::denied`) unter der Stufe statt Schalter allein. Kein neuer Befehl:
+    Sie reist mit `clients.update_client` in den ganzen Rechten.
+11. **Weg im Umschlag** (`via`) und die Schalter `allow_api_keys`, `allow_mcp`; einschalten nur Menschen.
+12. **Rechte von Assistent und Bots im Assistent-Fenster**; der Kern gibt für die Art `assistant` keinen
+    Schlüssel heraus (`clients.create_client` antwortet dort ohne Key), damit kein Schlüssel in einen
+    App-Prozess gelangt.
