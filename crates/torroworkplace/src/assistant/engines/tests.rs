@@ -440,6 +440,30 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
     assert!(text.ends_with("And tomorrow?"), "{text}");
 }
 
+/// Issue #225 (PR review of #232): engine B leaves the PDF tool to the agent only with write access
+/// to `tools`, as engine A offers it; switched on and selected but reading only, it is denied.
+#[tokio::test]
+async fn an_agent_gets_the_pdf_tool_only_with_write_access() {
+    use torro_core::settings::ToolId;
+    use torro_ipc::api::{AreaRights, Level, Selection};
+    let denied = |arguments: &[String]| {
+        let at = arguments.iter().position(|argument| argument == "--disallowedTools").expect("the flag");
+        arguments[at + 1].split(',').any(|tool| tool.ends_with("tools_create_pdf"))
+    };
+    for (level, refused) in [(Level::Write, false), (Level::Read, true)] {
+        let setup = set_up(&[init(), says("Done."), done("Done.")], "", Duration::from_secs(10), true).await;
+        setup.host.tools_on.lock().expect("lock").insert(ToolId::Pdf);
+        let client = setup.host.client().expect("the assistant's client");
+        let mut rights = client.rights.clone();
+        rights.areas.insert(Area::Tools, AreaRights { level, admin: false });
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        setup.host.clients.update(&client.id, rights).await.expect("rights");
+        let id = ask(&setup, None, "Make a PDF", Vec::new()).await;
+        finished(&setup.assistant, &id).await;
+        assert_eq!(denied(&setup.arguments()), refused, "{level:?}");
+    }
+}
+
 /// Task C.17: once the person lets mail go to cloud models, the run's key is lent
 /// with mail, the agent's tools include it, and the prompt no longer says it is kept from it.
 #[tokio::test]

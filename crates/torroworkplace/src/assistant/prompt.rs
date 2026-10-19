@@ -32,7 +32,7 @@
 use chrono::{DateTime, Local};
 use torro_core::i18n::Lang;
 use torro_core::settings::ToolId;
-use torro_ipc::api::{Access, Area, Confirm, Level, Outbound, Rights, Selection};
+use torro_ipc::api::{Area, Confirm, Level, Outbound, Rights, Selection};
 use torro_ipc::assistant::{MAX_NOTE_CHARS, Note};
 use torro_ipc::bots::{Bot, MAX_INSTRUCTIONS_CHARS, MAX_NAME_CHARS, MAX_SKILL_CHARS, MAX_SKILL_NAME_CHARS, Skill};
 
@@ -308,12 +308,8 @@ fn access(context: &Context<'_>) -> Vec<String> {
 /// and the area among [`Context::areas`]. Nothing when there is none.
 fn own_tools(context: &Context<'_>) -> Vec<String> {
     let Some(rights) = context.rights else { return Vec::new() };
-    if !context.areas.contains(&Area::Tools) || !rights.area(Area::Tools).allows(Access::Write) {
-        return Vec::new();
-    }
-    let tools: Vec<String> = ToolId::ALL
+    let tools: Vec<String> = super::tools::usable_tools(rights, context.areas)
         .into_iter()
-        .filter(|tool| rights.reaches_tool(*tool))
         .map(|tool| match tool {
             ToolId::Pdf => "PDF (tools_create_pdf makes a PDF from your Markdown and saves it on this computer)".into(),
         })

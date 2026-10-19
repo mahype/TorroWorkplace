@@ -389,12 +389,11 @@ impl Running {
         let Some(lent) = lent else { return Err(no_client()) };
         let rights = mode.narrow(&client.rights);
         self.rights = Some(rights.clone());
-        // The assistant's own tools (issue #225): only those switched on and in the selection are
-        // named in the prompt and left to the agent.
+        // The assistant's own tools (issue #225): only those switched on, in the selection and with
+        // write access to `tools` are named in the prompt and left to the agent.
         let rights = tools::with_tools_on(&rights, &host.tools_on());
-        let usable: Vec<torro_core::settings::ToolId> =
-            torro_core::settings::ToolId::ALL.into_iter().filter(|tool| rights.reaches_tool(*tool)).collect();
         let areas = allowed_areas(actor.kind(), &rights, &without, mode);
+        let usable = tools::usable_tools(&rights, &areas);
         // The personality and the memory (task C.10); the prompt keeps the notes marked
         // `local_only` from the agent, which runs elsewhere. A bot has its own personality and no
         // memory (task B.1).

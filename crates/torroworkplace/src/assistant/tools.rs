@@ -159,6 +159,17 @@ pub fn with_tools_on(rights: &Rights, on: &BTreeSet<ToolId>) -> Rights {
     cut
 }
 
+/// The assistant's own tools an answer may use (issue #225): with write access to `tools` (their
+/// commands make and open files), the area among `areas` (not turned off for the conversation nor
+/// withheld) and each tool in the selection of `rights`, which come cut to the switched-on tools
+/// ([`with_tools_on`]). What the prompt names and what engine B leaves to the agent.
+pub fn usable_tools(rights: &Rights, areas: &[Area]) -> Vec<ToolId> {
+    if !areas.contains(&Area::Tools) || !rights.area(Area::Tools).allows(Access::Write) {
+        return Vec::new();
+    }
+    ToolId::ALL.into_iter().filter(|tool| rights.reaches_tool(*tool)).collect()
+}
+
 /// The tool named `name` if the model may call it at all: one of the catalogue in an area a person
 /// can grant (so never `system`, `clients` or `approvals`) other than `assistant`. Whether its rights
 /// and the conversation allow it is checked after this: `without` by the loop, the rights by the
@@ -465,6 +476,23 @@ pub fn is_small(id: &str, local: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use torro_ipc::api::{AreaRights, Level, RightsTemplate};
+
+    /// Issue #225: an own tool is usable only with write access to `tools`, the area in the answer
+    /// and the tool selected (and switched on, which the rights come cut to).
+    #[test]
+    fn an_own_tool_is_usable_with_writing_the_area_and_the_selection() {
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        assert_eq!(usable_tools(&rights, &[Area::Tools]), vec![ToolId::Pdf]);
+        assert!(usable_tools(&rights, &[Area::Calendar]).is_empty(), "the area turned off");
+        assert!(usable_tools(&with_tools_on(&rights, &BTreeSet::new()), &[Area::Tools]).is_empty(), "off");
+        let mut reading = rights.clone();
+        reading.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "listing only");
+        reading.areas.remove(&Area::Tools);
+        assert!(usable_tools(&reading, &[Area::Tools]).is_empty(), "no access");
+    }
 
     use super::*;
 
