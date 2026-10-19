@@ -816,7 +816,7 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
 - Tests setzen alle Wurzeln (Daten, Schreibtisch, Home) als Parameter, nie über die Umgebung.
 
 ### WZ.1 Spike: printpdf setzt Markdown nach Vorlage
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `spikes/printpdf/**` (neu, eigenes Cargo-Projekt wie
   `spikes/blitz-iced`, außerhalb des Workspace)
 - printpdf 0.12.8 mit Standard-Feature `html` plus `png`/`jpeg`, `pulldown-cmark` 0.12; Eingabe eine Markdown-Datei
