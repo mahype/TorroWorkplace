@@ -49,6 +49,9 @@ mod reminders;
 mod settings_service;
 mod sources;
 mod suggest;
+// The PDF tool's typesetting (task WZ.3); the commands of the tool call it from WZ.4 on.
+#[allow(dead_code)]
+mod tools;
 mod tray;
 mod ui;
 

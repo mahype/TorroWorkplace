@@ -879,7 +879,7 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
   `TORRO_BLESS=1 cargo test -p torro-ipc` und `docs/api-reference.md`.
 
 ### WZ.3 Kern: Satz einer PDF aus Markdown und Vorlage
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WZ.1, WZ.2 · **Dateien:** `crates/torroworkplace/src/tools/pdf.rs` (neu),
   `crates/torroworkplace/src/main.rs` (`mod tools`), `crates/torroworkplace/src/tools/mod.rs` (neu, nur
   Moduldoku und `pub mod pdf`), `crates/torro-gui/src/design.rs` (`font_file`), `Cargo.toml` (Wurzel: `printpdf`,
