@@ -1023,13 +1023,13 @@ Copies an account of the separate TorroMail app into the suite as a mail account
 
 Zugriff `admin` · kein MCP-Tool, nur App-Schlüssel
 
-Connects an AI account (Ollama, LM Studio, OpenRouter or another OpenAI-compatible server) with the address and API key a person entered in the control centre: checks it with the server, keeps the key in the system keychain and adds the account. Returns the account, never the key. Only the app key may use it.
+Connects an AI account (Ollama, LM Studio, OpenRouter, Anthropic, another cloud provider or any other OpenAI-compatible server) with the address and API key a person entered in the control centre: checks it with the server, keeps the key in the system keychain and adds the account. Returns the account, never the key. Only the app key may use it.
 
 | Feld | Typ | Pflicht | Beschreibung |
 |---|---|---|---|
 | `key` | string, nur schreiben | nein | The API key; empty for none. It goes into the system keychain only and is never part of an answer, an error message, a log or an approval. |
-| `provider` | `"ollama"` \| `"lm_studio"` \| `"openrouter"` \| `"openai_compatible"` \| `"openai"` \| `"gemini"` \| `"mistral"` \| `"deepseek"` \| `"qwen"` \| `"kimi"` \| `"glm"` \| `"minimax"` | ja | Which kind of server: `ollama`, `lm_studio`, `openrouter`, `openai_compatible`, or a cloud provider with a key of its own (task W.3): `openai`, `gemini`, `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`. A cloud provider's usual address is its international API; for its platform for mainland China pass that address as `server`. |
-| `server` | string | nein | The base address of the server's OpenAI-compatible API (`http://localhost:11434/v1`; `localhost:11434` is completed). Leave out for the provider's usual address; needed for `openai_compatible`. |
+| `provider` | `"ollama"` \| `"lm_studio"` \| `"openrouter"` \| `"anthropic"` \| `"openai_compatible"` \| `"openai"` \| `"gemini"` \| `"mistral"` \| `"deepseek"` \| `"qwen"` \| `"kimi"` \| `"glm"` \| `"minimax"` | ja | Which kind of server: `ollama`, `lm_studio`, `openrouter`, `openai_compatible`, or a cloud provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`, `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`. A cloud provider's usual address is its international API; for its platform for mainland China pass that address as `server`. |
+| `server` | string | nein | The base address of the server's API (`http://localhost:11434/v1`; `localhost:11434` is completed). Leave out for the provider's usual address; needed for `openai_compatible`. |
 
 ### `accounts.connect_ntfy`
 

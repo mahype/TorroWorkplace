@@ -3,8 +3,10 @@
 //! (`accounts.connect_ai`), its models (`ai.list_models`), finding local servers
 //! (`ai.find_local_servers`), removing it (`accounts.remove_account`).
 //!
-//! The protocol's wire format is `torro_core::ai::openai`; here it is sent ([`OpenAiCompatible`],
-//! the one implementation of [`Provider`]). Where a model runs (task S.23): Ollama's cloud models
+//! The wire formats are `torro_core::ai::{openai, anthropic}`; here they are sent, one
+//! implementation of [`Provider`] per protocol ([`OpenAiCompatible`] and [`Anthropic`]), both over
+//! the same [`Wire`], which holds the rules that must not differ between them. Where a model runs
+//! (task S.23): Ollama's cloud models
 //! run on `ollama.com` through the local Ollama, so its model list says so per model
 //! ([`AiModel::remote`]), and the core keeps the last list per account ([`AiAccounts::known_models`])
 //! so the data rule need not ask the server at every message. The accounts are kept like the GitHub accounts
@@ -12,10 +14,13 @@
 //! `server`, the kind of server in `Account::ai`), the API key in the system keychain under the
 //! account id, loaded once in the background ([`AiAccounts::start`]).
 //!
-//! The key leaves the core only towards the account's own server, in the `Authorization` header.
-//! It travels only over https or to this computer ([`torro_core::ai::key_may_travel`]), the HTTP
-//! client follows no redirect (a redirect could carry it elsewhere), and every error passes
-//! through [`openai::scrub`], so no answer, message or log line repeats it.
+//! The key leaves the core only towards the account's own server, and only in the key header of
+//! its protocol: `Authorization: Bearer` for the OpenAI-compatible one, `x-api-key` for
+//! Anthropic's, which takes it nowhere else ([`Auth`]). It travels only over https or to this
+//! computer ([`torro_core::ai::key_may_travel`]), the HTTP client follows no redirect (a redirect
+//! could carry it elsewhere), the header is marked sensitive so no `Debug` prints it, and every
+//! error passes through [`openai::scrub`], so no answer, message or log line repeats it. All four
+//! live in [`Wire`], once for both protocols.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,7 +31,9 @@ use chrono::{DateTime, Utc};
 use tokio::sync::RwLock;
 use torro_core::Account;
 use torro_core::account::{self, AccountKind, Secret};
-use torro_core::ai::{self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, Provider, openai};
+use torro_core::ai::{
+    self, AiError, AiModel, AiProvider, BoxFuture, ChatReply, ChatRequest, Provider, anthropic, openai,
+};
 use torro_core::i18n::{tr, trf};
 use torro_ipc::{AccountInfo, AiServer};
 use torro_pim::AccountState;
@@ -69,68 +76,34 @@ pub fn http_client() -> Result<reqwest::Client, String> {
         .map_err(|err| err.to_string())
 }
 
-/// One AI server with the OpenAI-compatible protocol: Ollama, LM Studio, vLLM, llama.cpp,
-/// OpenRouter. `Debug` never shows the key ([`Secret`]).
+/// How a protocol carries the API key. Both ways are a header to the account's own server and
+/// nothing else; no protocol reads the other's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Auth {
+    /// `Authorization: Bearer <key>`, the OpenAI-compatible protocol.
+    Bearer,
+    /// `x-api-key: <key>`, Anthropic's protocol, which ignores `Authorization` for an API key. Its
+    /// requests also carry `anthropic-version`.
+    ApiKey,
+}
+
+/// What both protocols need of the network, in one place: the address, the key in the header its
+/// protocol reads, a request that is sent and read, and the two rules that must never differ
+/// between them – every error through [`openai::scrub`], and the key only ever in that one header.
+/// `Debug` never shows the key ([`Secret`]).
 #[derive(Debug, Clone)]
-pub struct OpenAiCompatible {
+struct Wire {
     http: reqwest::Client,
-    provider: AiProvider,
-    /// The base address of its API, as `torro_core::ai::normalize_base` writes it, without `/` at
+    /// The base address of the API, as `torro_core::ai::normalize_base` writes it, without `/` at
     /// the end: `http://localhost:11434/v1`.
     base: String,
     key: Option<Secret>,
+    auth: Auth,
 }
 
-impl OpenAiCompatible {
-    /// The server of `provider` at `base` with `key` (none for most local servers). Sends nothing
-    /// yet.
-    pub fn new(http: reqwest::Client, provider: AiProvider, base: &str, key: Option<Secret>) -> OpenAiCompatible {
-        OpenAiCompatible { http, provider, base: base.trim_end_matches('/').to_string(), key }
-    }
-
-    /// Whether the server takes this account: OpenRouter's key with `GET <base>/key` (its model
-    /// list is public, so it would not tell), any other server by listing its models.
-    pub async fn check(&self) -> Result<(), AiError> {
-        match self.provider {
-            AiProvider::OpenRouter => self.send(self.request(reqwest::Method::GET, "key")).await.map(drop),
-            _ => self.list().await.map(drop),
-        }
-    }
-
-    /// `GET <base>/models`, without asking Ollama about tools: what finding a server needs.
-    pub async fn list(&self) -> Result<Vec<AiModel>, AiError> {
-        let response = self.send(self.request(reqwest::Method::GET, "models")).await?;
-        let body = self.body(response).await?;
-        openai::parse_models(&body).map_err(|err| self.scrubbed(err))
-    }
-
-    /// Ollama's word on whether `model` calls tools and thinks (`POST <root>/api/show`, issue
-    /// #131); `None` for each when it does not answer within [`SHOW_TIMEOUT`] or does not say.
-    async fn ollama_capabilities(&self, model: &str) -> (Option<bool>, Option<bool>) {
-        let url = format!("{}/api/show", openai::ollama_root(&self.base));
-        let builder = self.authorized(self.http.post(url)).json(&openai::ollama_show_body(model));
-        let asked = async {
-            let response = self.send(builder).await.ok()?;
-            response.bytes().await.ok()
-        };
-        match tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten() {
-            Some(body) => (openai::ollama_tools(&body), openai::ollama_thinking(&body)),
-            None => (None, None),
-        }
-    }
-
-    /// Which of Ollama's models run elsewhere (`GET <root>/api/tags`, task S.23,
-    /// [`openai::ollama_remote`]): one request for all models. `None` when it does not answer
-    /// within [`SHOW_TIMEOUT`] or not with a model list; then every model counts as elsewhere.
-    async fn ollama_tags(&self) -> Option<HashMap<String, bool>> {
-        let url = format!("{}/api/tags", openai::ollama_root(&self.base));
-        let builder = self.authorized(self.http.get(url));
-        let asked = async {
-            let response = self.send(builder).await.ok()?;
-            response.bytes().await.ok()
-        };
-        let body = tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten()?;
-        openai::ollama_remote(&body)
+impl Wire {
+    fn new(http: reqwest::Client, base: &str, key: Option<Secret>, auth: Auth) -> Wire {
+        Wire { http, base: base.trim_end_matches('/').to_string(), key, auth }
     }
 
     /// A request to `<base>/<path>` with the key, if there is one.
@@ -138,11 +111,24 @@ impl OpenAiCompatible {
         self.authorized(self.http.request(method, format!("{}/{path}", self.base)))
     }
 
-    /// The key goes in the `Authorization` header only, which reqwest marks as sensitive.
+    /// The key goes into the one header its protocol reads and nowhere else, marked sensitive so
+    /// no `Debug` of the request prints it (`bearer_auth` marks its own). A key that is no legal
+    /// header value is left out; the server then answers `auth`, which is what it is.
     fn authorized(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
-        match &self.key {
-            Some(key) => builder.bearer_auth(key.expose()),
-            None => builder,
+        let builder = match self.auth {
+            Auth::ApiKey => builder.header("anthropic-version", anthropic::VERSION),
+            Auth::Bearer => builder,
+        };
+        let Some(key) = &self.key else { return builder };
+        match self.auth {
+            Auth::Bearer => builder.bearer_auth(key.expose()),
+            Auth::ApiKey => match reqwest::header::HeaderValue::from_str(key.expose()) {
+                Ok(mut value) => {
+                    value.set_sensitive(true);
+                    builder.header("x-api-key", value)
+                }
+                Err(_) => builder,
+            },
         }
     }
 
@@ -161,39 +147,117 @@ impl OpenAiCompatible {
         response.bytes().await.map(|bytes| bytes.to_vec()).map_err(|err| self.scrubbed(transport_error(&err)))
     }
 
+    /// Reads the body of `response` as it arrives, handing every piece to `read` – the decoder of
+    /// the protocol, which is the only part of streaming that differs.
+    async fn chunks(
+        &self,
+        mut response: reqwest::Response,
+        read: &mut (dyn FnMut(&[u8]) -> Result<(), AiError> + Send),
+    ) -> Result<(), AiError> {
+        loop {
+            match response.chunk().await {
+                Ok(Some(bytes)) => read(&bytes)?,
+                Ok(None) => return Ok(()),
+                Err(err) => return Err(self.scrubbed(transport_error(&err))),
+            }
+        }
+    }
+
     /// `error` without any server text that repeats the key ([`openai::scrub`]).
     fn scrubbed(&self, error: AiError) -> AiError {
         openai::scrub(error, self.key.as_ref().map(Secret::expose))
     }
+}
 
+/// Whether `response` is a stream of server-sent events, or a whole answer because the server
+/// ignored `stream: true`.
+fn streamed(response: &reqwest::Response) -> bool {
+    response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"))
+}
+
+/// One AI server with the OpenAI-compatible protocol: Ollama, LM Studio, vLLM, llama.cpp,
+/// OpenRouter. `Debug` never shows the key ([`Secret`]).
+#[derive(Debug, Clone)]
+pub struct OpenAiCompatible {
+    wire: Wire,
+    provider: AiProvider,
+}
+
+impl OpenAiCompatible {
+    /// The server of `provider` at `base` with `key` (none for most local servers). Sends nothing
+    /// yet.
+    pub fn new(http: reqwest::Client, provider: AiProvider, base: &str, key: Option<Secret>) -> OpenAiCompatible {
+        OpenAiCompatible { wire: Wire::new(http, base, key, Auth::Bearer), provider }
+    }
+
+    /// Whether the server takes this account: OpenRouter's key with `GET <base>/key` (its model
+    /// list is public, so it would not tell), any other server by listing its models.
+    pub async fn check(&self) -> Result<(), AiError> {
+        match self.provider {
+            AiProvider::OpenRouter => self.wire.send(self.wire.request(reqwest::Method::GET, "key")).await.map(drop),
+            _ => self.list().await.map(drop),
+        }
+    }
+
+    /// `GET <base>/models`, without asking Ollama about tools: what finding a server needs.
+    pub async fn list(&self) -> Result<Vec<AiModel>, AiError> {
+        let response = self.wire.send(self.wire.request(reqwest::Method::GET, "models")).await?;
+        let body = self.wire.body(response).await?;
+        openai::parse_models(&body).map_err(|err| self.wire.scrubbed(err))
+    }
+
+    /// Ollama's word on whether `model` calls tools and thinks (`POST <root>/api/show`, issue
+    /// #131); `None` for each when it does not answer within [`SHOW_TIMEOUT`] or does not say.
+    async fn ollama_capabilities(&self, model: &str) -> (Option<bool>, Option<bool>) {
+        let url = format!("{}/api/show", openai::ollama_root(&self.wire.base));
+        let builder = self.wire.authorized(self.wire.http.post(url)).json(&openai::ollama_show_body(model));
+        let asked = async {
+            let response = self.wire.send(builder).await.ok()?;
+            response.bytes().await.ok()
+        };
+        match tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten() {
+            Some(body) => (openai::ollama_tools(&body), openai::ollama_thinking(&body)),
+            None => (None, None),
+        }
+    }
+
+    /// Which of Ollama's models run elsewhere (`GET <root>/api/tags`, task S.23,
+    /// [`openai::ollama_remote`]): one request for all models. `None` when it does not answer
+    /// within [`SHOW_TIMEOUT`] or not with a model list; then every model counts as elsewhere.
+    async fn ollama_tags(&self) -> Option<HashMap<String, bool>> {
+        let url = format!("{}/api/tags", openai::ollama_root(&self.wire.base));
+        let builder = self.wire.authorized(self.wire.http.get(url));
+        let asked = async {
+            let response = self.wire.send(builder).await.ok()?;
+            response.bytes().await.ok()
+        };
+        let body = tokio::time::timeout(SHOW_TIMEOUT, asked).await.ok().flatten()?;
+        openai::ollama_remote(&body)
+    }
+
+    /// The answer of `POST <base>/chat/completions`, read as server-sent events, or whole when the
+    /// server ignored `stream: true` and answered with plain JSON.
     async fn stream(
         &self,
         response: reqwest::Response,
         on_text: &mut (dyn FnMut(&str) + Send),
     ) -> Result<ChatReply, AiError> {
-        let streamed = response
-            .headers()
-            .get(reqwest::header::CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| value.contains("text/event-stream"));
-        let mut response = response;
-        if !streamed {
-            // A server that ignored `stream: true` answers whole.
-            let reply = openai::parse_reply(&self.body(response).await?).map_err(|err| self.scrubbed(err))?;
+        if !streamed(&response) {
+            let reply = openai::parse_reply(&self.wire.body(response).await?).map_err(|err| self.wire.scrubbed(err))?;
             if !reply.text.is_empty() {
                 on_text(&reply.text);
             }
             return Ok(reply);
         }
         let mut decoder = openai::StreamDecoder::new();
-        loop {
-            match response.chunk().await {
-                Ok(Some(bytes)) => decoder.push(&bytes, on_text).map_err(|err| self.scrubbed(err))?,
-                Ok(None) => break,
-                Err(err) => return Err(self.scrubbed(transport_error(&err))),
-            }
-        }
-        decoder.finish(on_text).map_err(|err| self.scrubbed(err))
+        self.wire
+            .chunks(response, &mut |bytes| decoder.push(bytes, on_text).map_err(|err| self.wire.scrubbed(err)))
+            .await?;
+        decoder.finish(on_text).map_err(|err| self.wire.scrubbed(err))
     }
 }
 
@@ -226,10 +290,134 @@ impl Provider for OpenAiCompatible {
     ) -> BoxFuture<'a, Result<ChatReply, AiError>> {
         Box::pin(async move {
             let body = openai::chat_body_for(self.provider, request, true);
-            let builder = self.request(reqwest::Method::POST, "chat/completions").json(&body);
-            let response = self.send(builder).await?;
+            let builder = self.wire.request(reqwest::Method::POST, "chat/completions").json(&body);
+            let response = self.wire.send(builder).await?;
             self.stream(response, on_text).await
         })
+    }
+}
+
+/// Anthropic's Messages API (task KI.1c), the Claude models: the second protocol of the suite. Its
+/// wire format is `torro_core::ai::anthropic`; what differs here from [`OpenAiCompatible`] is only
+/// the paths (`/messages`, `/models`), the key header ([`Auth::ApiKey`]) and the decoder.
+/// `Debug` never shows the key ([`Secret`]).
+#[derive(Debug, Clone)]
+pub struct Anthropic {
+    wire: Wire,
+}
+
+impl Anthropic {
+    /// The server at `base` with `key`. Sends nothing yet.
+    pub fn new(http: reqwest::Client, base: &str, key: Option<Secret>) -> Anthropic {
+        Anthropic { wire: Wire::new(http, base, key, Auth::ApiKey) }
+    }
+
+    /// Whether the server takes this account: by listing its models, which needs the key, so a
+    /// key it refuses is [`AiError::Auth`].
+    pub async fn check(&self) -> Result<(), AiError> {
+        self.list().await.map(drop)
+    }
+
+    /// `GET <base>/models?limit=1000`: one request for the whole catalogue. The server's default
+    /// page is 20 models and its limit is 1000, far above every model Anthropic offers, so the
+    /// answer is never cut short.
+    pub async fn list(&self) -> Result<Vec<AiModel>, AiError> {
+        let response = self.wire.send(self.wire.request(reqwest::Method::GET, "models?limit=1000")).await?;
+        let body = self.wire.body(response).await?;
+        anthropic::parse_models(&body).map_err(|err| self.wire.scrubbed(err))
+    }
+
+    /// The answer of `POST <base>/messages`, read as server-sent events, or whole when the server
+    /// answered with plain JSON.
+    async fn stream(
+        &self,
+        response: reqwest::Response,
+        on_text: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<ChatReply, AiError> {
+        if !streamed(&response) {
+            let reply =
+                anthropic::parse_reply(&self.wire.body(response).await?).map_err(|err| self.wire.scrubbed(err))?;
+            if !reply.text.is_empty() {
+                on_text(&reply.text);
+            }
+            return Ok(reply);
+        }
+        let mut decoder = anthropic::StreamDecoder::new();
+        self.wire
+            .chunks(response, &mut |bytes| decoder.push(bytes, on_text).map_err(|err| self.wire.scrubbed(err)))
+            .await?;
+        decoder.finish(on_text).map_err(|err| self.wire.scrubbed(err))
+    }
+}
+
+impl Provider for Anthropic {
+    /// `GET <base>/models?limit=1000`. Every model of this provider calls tools and runs in its
+    /// cloud, which [`anthropic::parse_models`] says; nothing else is asked.
+    fn models(&self) -> BoxFuture<'_, Result<Vec<AiModel>, AiError>> {
+        Box::pin(self.list())
+    }
+
+    /// `POST <base>/messages` with `stream: true` and the effort as `output_config.effort`
+    /// ([`anthropic::chat_body`]); read as server-sent events.
+    fn chat<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+        on_text: &'a mut (dyn FnMut(&str) + Send),
+    ) -> BoxFuture<'a, Result<ChatReply, AiError>> {
+        Box::pin(async move {
+            let body = anthropic::chat_body(request, true);
+            let builder = self.wire.request(reqwest::Method::POST, "messages").json(&body);
+            let response = self.wire.send(builder).await?;
+            self.stream(response, on_text).await
+        })
+    }
+}
+
+/// One AI account's server, whichever protocol it speaks: what [`AiAccounts`] builds from an
+/// account and hands out as `dyn Provider`. The choice is the account's [`AiProvider`] and is made
+/// in one place ([`AiClient::new`]), so no caller has to know the protocols.
+#[derive(Debug, Clone)]
+enum AiClient {
+    OpenAi(OpenAiCompatible),
+    Anthropic(Anthropic),
+}
+
+impl AiClient {
+    /// The server of `provider` at `base` with `key`. Anthropic speaks its own protocol, every
+    /// other provider the OpenAI-compatible one.
+    fn new(http: reqwest::Client, provider: AiProvider, base: &str, key: Option<Secret>) -> AiClient {
+        match provider {
+            AiProvider::Anthropic => AiClient::Anthropic(Anthropic::new(http, base, key)),
+            _ => AiClient::OpenAi(OpenAiCompatible::new(http, provider, base, key)),
+        }
+    }
+
+    /// Whether the server takes this account, as its protocol checks it.
+    async fn check(&self) -> Result<(), AiError> {
+        match self {
+            AiClient::OpenAi(client) => client.check().await,
+            AiClient::Anthropic(client) => client.check().await,
+        }
+    }
+}
+
+impl Provider for AiClient {
+    fn models(&self) -> BoxFuture<'_, Result<Vec<AiModel>, AiError>> {
+        match self {
+            AiClient::OpenAi(client) => client.models(),
+            AiClient::Anthropic(client) => client.models(),
+        }
+    }
+
+    fn chat<'a>(
+        &'a self,
+        request: &'a ChatRequest,
+        on_text: &'a mut (dyn FnMut(&str) + Send),
+    ) -> BoxFuture<'a, Result<ChatReply, AiError>> {
+        match self {
+            AiClient::OpenAi(client) => client.chat(request, on_text),
+            AiClient::Anthropic(client) => client.chat(request, on_text),
+        }
     }
 }
 
@@ -410,13 +598,13 @@ impl AiAccounts {
         Ok(Box::new(self.client(id).await?))
     }
 
-    async fn client(&self, id: &str) -> Result<OpenAiCompatible, AiError> {
+    async fn client(&self, id: &str) -> Result<AiClient, AiError> {
         let slots = self.slots.read().await;
         let slot = slots.iter().find(|slot| slot.account.id == id).ok_or_else(|| no_account(id))?;
         if slot.key.is_none() && slot.provider().needs_key() {
             return Err(AiError::NoKey);
         }
-        Ok(OpenAiCompatible::new(self.http()?.clone(), slot.provider(), &slot.account.server, slot.key.clone()))
+        Ok(AiClient::new(self.http()?.clone(), slot.provider(), &slot.account.server, slot.key.clone()))
     }
 
     /// Checks the account with its server ([`OpenAiCompatible::check`]) and, when the server takes
@@ -452,7 +640,7 @@ impl AiAccounts {
                 tr("An API key is only sent over https or to this computer. Use an https address.").into(),
             ));
         }
-        let client = OpenAiCompatible::new(self.http()?.clone(), provider, &base, key.clone());
+        let client = AiClient::new(self.http()?.clone(), provider, &base, key.clone());
         client.check().await?;
         let account = Account::ai(provider, &base);
         self.store(&account, key.as_ref()).await.map_err(AiError::Format)?;
@@ -1016,6 +1204,186 @@ pub(crate) mod tests {
             let error = error.expect_err("an error");
             assert!(!format!("{error:?} {error}").contains("SECRET"), "{error:?}");
         }
+    }
+
+    /// Anthropic's key for the tests; must look like a real one so `scrub` has something to find.
+    const CLAUDE_KEY: &str = "sk-ant-api03-0123456789SECRETabcdef";
+
+    /// A fake Anthropic whose `/v1/models` answers with two models for the right key.
+    async fn fake_anthropic() -> MockServer {
+        let server = MockServer::start_async().await;
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models").header("x-api-key", CLAUDE_KEY);
+                then.status(200).json_body(json!({"data": [
+                    {"type": "model", "id": "claude-opus-5", "display_name": "Claude Opus 5",
+                     "max_input_tokens": 1_000_000,
+                     "capabilities": {"effort": {"supported": true},
+                      "thinking": {"supported": true, "types": {"adaptive": {"supported": true}}}}},
+                    {"type": "model", "id": "claude-haiku-4-5", "display_name": "Claude Haiku 4.5",
+                     "max_input_tokens": 200_000,
+                     "capabilities": {"effort": {"supported": false},
+                      "thinking": {"supported": true, "types": {"adaptive": {"supported": false}}}}},
+                ], "has_more": false}));
+            })
+            .await;
+        // Any other key, or none: the server refuses it as its own would.
+        server
+            .mock_async(|when, then| {
+                when.method("GET").path("/v1/models");
+                then.status(401).json_body(json!({"type": "error", "error": {"type": "authentication_error",
+                    "message": format!("invalid x-api-key: {CLAUDE_KEY}")}}));
+            })
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn anthropic_lists_its_models_with_the_key_in_its_own_header() {
+        let server = fake_anthropic().await;
+        let client = Anthropic::new(http(), &server.url("/v1"), Some(Secret::new(CLAUDE_KEY)));
+        assert!(!format!("{client:?}").contains("SECRET"), "Debug must not show the key");
+        let models = client.models().await.expect("models");
+        assert_eq!(texts(&models), [("claude-opus-5", Some(true), None), ("claude-haiku-4-5", Some(true), None)]);
+        assert_eq!(models[0].reasoning, Some(true));
+        assert_eq!(models[1].reasoning, Some(false));
+        assert_eq!(models[0].context, Some(1_000_000));
+        for model in &models {
+            assert_eq!(model.open_weights, None, "{}: else Open First drops every Claude model", model.id);
+        }
+        assert_eq!(client.check().await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_account_is_connected_and_lists_its_models_through_the_core() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = fake_anthropic().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+        let base = server.url("/v1");
+
+        let info = ai
+            .connect(AiProvider::Anthropic, Some(&base), Secret::new(CLAUDE_KEY))
+            .await
+            .expect("the server takes the key");
+        assert_eq!(info.id, Account::ai(AiProvider::Anthropic, &base).id);
+        assert_eq!(keys.get_plain(&info.id).as_deref(), Some(CLAUDE_KEY), "the key went into the keychain");
+        assert!(!serde_json::to_string(&info).expect("json").contains("SECRET"), "never in the answer");
+
+        // Open First keeps them: their weights are unknown, not closed.
+        let models = ai.models(&info.id, false).await.expect("models");
+        assert_eq!(models.len(), 2, "{models:?}");
+        assert_eq!(ai.server(&info.id).await, Some((AiProvider::Anthropic, base)));
+    }
+
+    #[tokio::test]
+    async fn anthropic_streams_text_in_pieces_and_a_tool_call_whole() {
+        let server = MockServer::start_async().await;
+        let stream = "event: message_start\n\
+            data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":41,\"output_tokens\":1}}}\n\n\
+            event: content_block_start\n\
+            data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Two \"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"meetings.\"}}\n\n\
+            data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_5\",\"name\":\"calendar_list_events\"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"start\\\":\"}}\n\n\
+            data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"today\\\"}\"}}\n\n\
+            data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":9}}\n\n\
+            data: {\"type\":\"message_stop\"}\n\n";
+        server
+            .mock_async(|when, then| {
+                when.method("POST")
+                    .path("/v1/messages")
+                    .header("x-api-key", CLAUDE_KEY)
+                    .header("anthropic-version", torro_core::ai::anthropic::VERSION)
+                    .header_exists("content-type");
+                then.status(200).header("content-type", "text/event-stream; charset=utf-8").body(stream);
+            })
+            .await;
+        let client = Anthropic::new(http(), &server.url("/v1"), Some(Secret::new(CLAUDE_KEY)));
+        let request = ChatRequest { model: "claude-opus-5".into(), ..ask_calendar() };
+        let mut pieces = Vec::new();
+        let reply = client.chat(&request, &mut |text| pieces.push(text.to_string())).await.expect("reply");
+        assert_eq!(pieces, ["Two ", "meetings."]);
+        assert_eq!((reply.text.as_str(), reply.finish), ("Two meetings.", Finish::ToolCalls));
+        assert_eq!(reply.usage, Some(Usage { prompt_tokens: 41, completion_tokens: 9 }));
+        assert_eq!(reply.tool_calls.len(), 1);
+        assert_eq!(reply.tool_calls[0].name, "calendar_list_events");
+        assert_eq!(reply.tool_calls[0].arguments, "{\"start\":\"today\"}");
+    }
+
+    #[tokio::test]
+    async fn anthropic_never_sends_the_key_in_the_authorization_header() {
+        let server = MockServer::start_async().await;
+        // Matches only a request that carries no `Authorization` at all.
+        server
+            .mock_async(|when, then| {
+                when.method("POST").path("/v1/messages").header_missing("authorization");
+                then.status(200).json_body(json!({"type": "message", "content": [{"type": "text", "text": "Fine."}],
+                        "stop_reason": "end_turn", "usage": {"input_tokens": 3, "output_tokens": 1}}));
+            })
+            .await;
+        let client = Anthropic::new(http(), &server.url("/v1"), Some(Secret::new(CLAUDE_KEY)));
+        let request = ChatRequest { model: "claude-opus-5".into(), ..ask_calendar() };
+        let mut pieces = Vec::new();
+        let reply = client.chat(&request, &mut |text| pieces.push(text.to_string())).await.expect("reply");
+        assert_eq!(reply.text, "Fine.", "a server that answers whole still hands out its text");
+        assert_eq!(pieces, ["Fine."]);
+    }
+
+    #[tokio::test]
+    async fn anthropics_errors_have_their_codes_and_never_repeat_the_key() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let server = fake_anthropic().await;
+        let ai = service(dir.path(), &keys, Vec::new());
+
+        // The fake server answers a wrong key with 401 and repeats it, as Anthropic's own does.
+        let wrong = "sk-ant-api03-WRONGWRONGWRONG";
+        let refused = ai.connect(AiProvider::Anthropic, Some(&server.url("/v1")), Secret::new(wrong)).await;
+        assert_eq!(refused, Err(AiError::Auth));
+        assert!(!format!("{refused:?} {}", AiError::Auth).contains("WRONG"), "{refused:?}");
+        assert!(ai.infos().await.is_empty() && !accounts_file(dir.path()).exists(), "nothing was stored");
+
+        // A server that repeats the key in another error: the text goes, the error stays.
+        let loud = MockServer::start_async().await;
+        loud.mock_async(|when, then| {
+            when.method("GET").path("/v1/models");
+            then.status(400).json_body(json!({"type": "error", "error": {"type": "invalid_request_error",
+                "message": format!("your key {CLAUDE_KEY} is malformed")}}));
+        })
+        .await;
+        let talkative = Anthropic::new(http(), &loud.url("/v1"), Some(Secret::new(CLAUDE_KEY)));
+        let failed = talkative.list().await;
+        assert!(matches!(&failed, Err(AiError::Server { status: 400, message }) if message.is_empty()), "{failed:?}");
+        assert!(!format!("{failed:?}").contains("SECRET"));
+
+        let busy = MockServer::start_async().await;
+        busy.mock_async(|when, then| {
+            when.method("GET").path("/v1/models");
+            then.status(429).json_body(json!({"type": "error", "error": {"type": "rate_limit_error"}}));
+        })
+        .await;
+        let waiting = Anthropic::new(http(), &busy.url("/v1"), Some(Secret::new(CLAUDE_KEY))).list().await;
+        assert!(matches!(&waiting, Err(error) if error.code() == "busy"), "{waiting:?}");
+
+        let gone = Anthropic::new(http(), NOBODY, Some(Secret::new(CLAUDE_KEY)));
+        assert_eq!(gone.list().await, Err(AiError::Offline));
+        assert_eq!(gone.check().await, Err(AiError::Offline));
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_account_needs_a_key_and_never_sends_one_unencrypted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let keys = MemoryTokens::default();
+        let ai = service(dir.path(), &keys, Vec::new());
+
+        let without = ai.connect(AiProvider::Anthropic, None, Secret::default()).await;
+        assert!(matches!(&without, Err(AiError::Invalid(message)) if message.contains("Anthropic")), "{without:?}");
+
+        let plain = ai.connect(AiProvider::Anthropic, Some("http://ai.example.org/v1"), Secret::new(CLAUDE_KEY)).await;
+        assert!(matches!(plain, Err(AiError::Invalid(_))), "no key over plain http to another computer");
+        assert!(ai.infos().await.is_empty());
     }
 
     #[tokio::test]

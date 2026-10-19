@@ -461,10 +461,11 @@ pub enum Request {
         /// The account's id in TorroMail, as `accounts.list_torromail_accounts` lists it.
         id: String,
     },
-    /// Connects an AI account (task KI.1a, `docs/ki.md`): a server the suite asks a model, with
-    /// the OpenAI-compatible protocol. `provider` says which kind of server, `server` where it is
-    /// (left out: the provider's usual address), `key` the API key it wants (OpenRouter always,
-    /// a local server only when it asks for one).
+    /// Connects an AI account (tasks KI.1a, KI.1c, `docs/ki.md`): a server the suite asks a model,
+    /// with the OpenAI-compatible protocol or, for `anthropic`, with Anthropic's own. `provider`
+    /// says which kind of server, `server` where it is (left out: the provider's usual address),
+    /// `key` the API key it wants (every cloud provider always, a local server only when it asks
+    /// for one).
     ///
     /// The core writes the address as `torro_core::ai::normalize_base` does, refuses a key that
     /// would travel without TLS to another computer, then checks the account with the server:
@@ -484,13 +485,13 @@ pub enum Request {
     #[serde(rename = "accounts.connect_ai")]
     ConnectAi {
         /// Which kind of server: `ollama`, `lm_studio`, `openrouter`, `openai_compatible`, or a cloud
-        /// provider with a key of its own (task W.3): `openai`, `gemini`, `mistral`, `deepseek`,
-        /// `qwen`, `kimi`, `glm`, `minimax`. A cloud provider's usual address is its international
-        /// API; for its platform for mainland China pass that address as `server`.
+        /// provider with a key of its own (tasks W.3, KI.1b): `anthropic`, `openai`, `gemini`,
+        /// `mistral`, `deepseek`, `qwen`, `kimi`, `glm`, `minimax`. A cloud provider's usual address
+        /// is its international API; for its platform for mainland China pass that address as
+        /// `server`.
         provider: AiProvider,
-        /// The base address of the server's OpenAI-compatible API (`http://localhost:11434/v1`;
-        /// `localhost:11434` is completed). Leave out for the provider's usual address; needed for
-        /// `openai_compatible`.
+        /// The base address of the server's API (`http://localhost:11434/v1`; `localhost:11434` is
+        /// completed). Leave out for the provider's usual address; needed for `openai_compatible`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server: Option<String>,
         /// The API key; empty for none. It goes into the system keychain only and is never part

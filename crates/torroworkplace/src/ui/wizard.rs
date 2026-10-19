@@ -1706,7 +1706,12 @@ fn ai_key_step(state: &State) -> Element<'_, Message> {
         style::button::secondary,
         provider.key_url().map(|_| Message::OpenAiKeyPage),
     );
-    let placeholder = if provider == AiProvider::OpenRouter { "sk-or-v1-…" } else { "" };
+    // How the provider's keys begin, so a pasted one is recognisable; no text for people.
+    let placeholder = match provider {
+        AiProvider::OpenRouter => "sk-or-v1-…",
+        AiProvider::Anthropic => "sk-ant-…",
+        _ => "",
+    };
     let input = field(placeholder, state.ai.key.expose())
         .secure(true)
         .on_input(|key| Message::AiKeyChanged(Secret::new(key)))
@@ -3424,6 +3429,25 @@ mod tests {
             panic!("connect")
         };
         assert_eq!(server, None, "the international address is the usual one");
+    }
+
+    /// Task KI.1d: Anthropic is a row like any other, although it speaks its own protocol.
+    #[test]
+    fn anthropic_asks_for_its_key_like_every_other_cloud_provider() {
+        let mut state = at_ai();
+        drop(view(&state, &Data::default()));
+        update(&mut state, Message::ChooseAi(AiProvider::Anthropic), &Data::default());
+        assert_eq!(state.step, Step::AiKey);
+        drop(view(&state, &Data::default()));
+        let page = send(&mut state, Message::OpenAiKeyPage);
+        assert!(matches!(page, Action::OpenUrl(url) if Some(url.as_str()) == AiProvider::Anthropic.key_url()));
+        update(&mut state, Message::AiKeyChanged(Secret::new("sk-ant-x")), &Data::default());
+        let Action::Send(Request::ConnectAi { provider, server, key }) = send(&mut state, Message::Continue) else {
+            panic!("connect")
+        };
+        // No address: the usual one is Anthropic's, and it has no platform of its own in China.
+        assert_eq!((provider, server, key.expose()), (AiProvider::Anthropic, None, "sk-ant-x"));
+        assert_eq!(AiProvider::Anthropic.china_url(), None);
     }
 
     fn at_ai() -> State {

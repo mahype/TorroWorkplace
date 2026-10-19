@@ -63,6 +63,9 @@ pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) 
             | AiProvider::Gemini => {
                 body["reasoning_effort"] = json!(effort.id());
             }
+            // Anthropic speaks its own protocol and never comes through here; its effort is
+            // `output_config.effort` in `super::anthropic::chat_body`.
+            AiProvider::Anthropic => {}
             // Not documented for their OpenAI-compatible APIs, and an unknown field may be refused:
             // these think as their models do.
             AiProvider::Mistral
@@ -133,6 +136,9 @@ pub fn parse_reply(body: &[u8]) -> Result<ChatReply, AiError> {
         tool_calls,
         finish: finish_of(answer.pointer("/choices/0/finish_reason")).unwrap_or_default(),
         usage: usage_of(answer.get("usage")),
+        // This protocol asks for nothing back; thinking, where a server reports it, is its own
+        // field of the answer and not a block that has to travel again.
+        thinking: Vec::new(),
     })
 }
 
@@ -197,7 +203,13 @@ impl StreamDecoder {
                 arguments: call.arguments,
             })
             .collect();
-        Ok(ChatReply { text: self.text, tool_calls, finish: self.finish.unwrap_or_default(), usage: self.usage })
+        Ok(ChatReply {
+            text: self.text,
+            tool_calls,
+            finish: self.finish.unwrap_or_default(),
+            usage: self.usage,
+            thinking: Vec::new(),
+        })
     }
 
     fn line(&mut self, line: &[u8], on_text: &mut dyn FnMut(&str)) -> Result<(), AiError> {
@@ -371,17 +383,22 @@ pub fn ollama_runs_elsewhere(id: &str, tags: Option<&HashMap<String, bool>>) -> 
 }
 
 /// The error of an answer with HTTP `status` and `body`: 401 and 403 are [`AiError::Auth`] (never
-/// with the server's words), 404 [`AiError::NotFound`], 402 and 429 [`AiError::Busy`], everything
+/// with the server's words), 404 [`AiError::NotFound`], 402, 429 and 529 [`AiError::Busy`], everything
 /// else [`AiError::Server`] with the server's message on one line. The message is read from
 /// `{"error": {"message": …}}`, `{"error": "…"}` or `{"message": …}`, else the body as text. It is
 /// whole: always pass the result through [`scrub`], which checks it for the key and then shortens
 /// it to [`MAX_MESSAGE`] characters.
+///
+/// Reads no field that belongs to one protocol, so [`super::anthropic`] uses it as well: its error
+/// bodies are `{"type": "error", "error": {"type": …, "message": …}}`.
 pub fn error_of(status: u16, body: &[u8]) -> AiError {
     let message = message_of(body);
     match status {
         401 | 403 => AiError::Auth,
         402 => AiError::Busy(tr("The credit of this AI account is used up.").into()),
-        429 => AiError::Busy(tr("The AI server is busy or limits requests. Try again later.").into()),
+        // 529 is Anthropic's "overloaded", which is a server that is busy and no fault of the
+        // request; the trait's contract puts it with 429.
+        429 | 529 => AiError::Busy(tr("The AI server is busy or limits requests. Try again later.").into()),
         404 if message.is_empty() => {
             AiError::NotFound(tr("The AI server knows no such address or model. Check the address.").into())
         }
@@ -396,6 +413,9 @@ pub fn error_of(status: u16, body: &[u8]) -> AiError {
 /// some servers repeat a key they refuse ("Incorrect API key: sk-or-…"). Then every server text
 /// is shortened to [`MAX_MESSAGE`] characters – after the check, so a cut never hides a piece of
 /// the key from it. Without a key only the shortening happens.
+///
+/// Belongs to no protocol: [`super::anthropic`] passes its errors through this too, and every
+/// implementation of [`super::Provider`] must.
 pub fn scrub(error: AiError, key: Option<&str>) -> AiError {
     let error = without_key(error, key);
     match error {
@@ -734,6 +754,8 @@ mod tests {
         assert_eq!(error_of(401, br#"{"error":{"message":"Incorrect API key sk-or-v1-abcdef"}}"#), AiError::Auth);
         assert_eq!(error_of(403, b""), AiError::Auth);
         assert!(matches!(error_of(429, b""), AiError::Busy(_)));
+        // Anthropic's "overloaded" is 529 and means the same for people.
+        assert!(matches!(error_of(529, b""), AiError::Busy(_)));
         assert!(matches!(error_of(402, b""), AiError::Busy(_)));
         let AiError::NotFound(missing) =
             error_of(404, br#"{"error":"model \"qwen9\" not found, try pulling it first"}"#)

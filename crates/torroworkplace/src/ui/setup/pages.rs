@@ -552,7 +552,7 @@ fn ai<'a>(state: &'a State, data: &'a Data) -> Element<'a, Message> {
     ];
     let groups = [
         (tr("Open models"), vec![AiProvider::OpenRouter]),
-        (tr("Providers"), vec![AiProvider::OpenAi, AiProvider::Gemini, AiProvider::Mistral]),
+        (tr("Providers"), vec![AiProvider::Anthropic, AiProvider::OpenAi, AiProvider::Gemini, AiProvider::Mistral]),
         (
             tr("Providers in China"),
             vec![AiProvider::DeepSeek, AiProvider::Qwen, AiProvider::Kimi, AiProvider::Glm, AiProvider::MiniMax],

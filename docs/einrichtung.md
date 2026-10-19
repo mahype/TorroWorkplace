@@ -180,7 +180,7 @@ models only unless you change it.“
 | Lokal | Other local server (vLLM, llama.cpp, LocalAI) | OpenAI-kompatibel | dieser Rechner/Netz | gibt es als `openai_compatible` |
 | Selbst gehostet | Nextcloud Assistant | Nextcloud TaskProcessing | eigener Server | später, ohne neuen Schlüssel ([ki.md](ki.md), offen 3) |
 | Offene Modelle | OpenRouter | OpenAI-kompatibel | USA | gibt es |
-| Anbieter | Anthropic (Claude) | **Anthropic** | USA | Protokoll kommt mit KI.1 |
+| Anbieter | Anthropic (Claude) | **Anthropic** | USA | gibt es (KI.1b–KI.1d) |
 | Anbieter | OpenAI | OpenAI | USA | |
 | Anbieter | Google Gemini | OpenAI-kompatibel | USA | |
 | Anbieter | Mistral | OpenAI-kompatibel | EU | |
@@ -249,7 +249,7 @@ Entschieden am 2026-10-14 (Vorschläge übernommen):
 1. **Komponente aus** betrifft Sichtbarkeit und Hintergrundarbeit. Die Requests der Komponente
    antworten weiter, weil die Daten noch da sind.
 2. **`AiProvider` bekommt je Anbieter eine Variante** (OpenAI, Gemini, Mistral, DeepSeek, Qwen, Kimi,
-   GLM, MiniMax; Anthropic mit KI.1). Neue Enum-Werte sind freigegeben (W.3).
+   GLM, MiniMax; Anthropic mit KI.1b). Neue Enum-Werte sind freigegeben (W.3).
 3. **Chinesische Anbieter:** internationale Endpunkte als Standard, China-Endpunkte unter „Advanced“.
 4. **Workspaces:** die Einrichtung zeigt nur, ob ein Tiling-Manager gefunden wurde. Die Wahl zwischen
    Tiling- und Fenster-Modus kommt mit [modes.md](modes.md).

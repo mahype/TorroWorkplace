@@ -2075,10 +2075,10 @@ static CONNECT_AI: Command = Command {
     area: Area::Accounts,
     access: Access::Admin,
     mcp: Mcp::Never,
-    description: "Connects an AI account (Ollama, LM Studio, OpenRouter or another OpenAI-compatible server) with \
-                  the address and API key a person entered in the control centre: checks it with the server, keeps \
-                  the key in the system keychain and adds the account. Returns the account, never the key. Only the \
-                  app key may use it.",
+    description: "Connects an AI account (Ollama, LM Studio, OpenRouter, Anthropic, another cloud provider or any \
+                  other OpenAI-compatible server) with the address and API key a person entered in the control \
+                  centre: checks it with the server, keeps the key in the system keychain and adds the account. \
+                  Returns the account, never the key. Only the app key may use it.",
 };
 
 // Like `connect_github`: for agents and scripts the core only shows the control centre, where a
@@ -4233,6 +4233,7 @@ mod tests {
                 "ollama",
                 "lm_studio",
                 "openrouter",
+                "anthropic",
                 "openai_compatible",
                 "openai",
                 "gemini",
