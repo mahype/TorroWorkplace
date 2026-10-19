@@ -164,7 +164,7 @@ impl Tools {
     /// it was copied; `error` for a path that is not absolute, a folder that does not exist, a folder or a symbolic
     /// link as the target, or a copy that cannot be written.
     pub async fn save_file_as(&self, id: &str, path: &str) -> Response {
-        let Some(target) = target_of(path) else { return ToolError::Invalid(NOT_ABSOLUTE).response() };
+        let Some((target, added)) = target_of(path) else { return ToolError::Invalid(NOT_ABSOLUTE).response() };
         let Some(entry) = self.file(id, Maker::App).await else { return ToolError::NotFound.response() };
         let copied = tokio::task::spawn_blocking(move || -> Result<(), ToolError> {
             if !target.parent().is_some_and(Path::is_dir) {
@@ -172,6 +172,11 @@ impl Tools {
             }
             if fs::symlink_metadata(&target).is_ok_and(|meta| meta.is_dir() || meta.file_type().is_symlink()) {
                 return Err(ToolError::Invalid(NOT_REPLACEABLE));
+            }
+            // The system's dialog asked about the name the person chose, not about the one with `.pdf`
+            // added: that file is not replaced unasked.
+            if added && fs::symlink_metadata(&target).is_ok() {
+                return Err(ToolError::Invalid(TAKEN));
             }
             let bytes = fs::read(&entry.path).map_err(|_| ToolError::NotFound)?;
             if !entry.holds(&bytes) {
@@ -237,14 +242,15 @@ pub fn limit_refusal(title: &str, markdown: &str) -> Option<Response> {
     Some(ToolError::Invalid(message).response())
 }
 
-/// `path` as the target of a copy: absolute, with a name, `.pdf` added when the name does not end in it.
-fn target_of(path: &str) -> Option<PathBuf> {
+/// `path` as the target of a copy: absolute, with a name, `.pdf` added when the name does not end in it; and
+/// whether it was added.
+fn target_of(path: &str) -> Option<(PathBuf, bool)> {
     let path = PathBuf::from(path.trim());
     if !path.is_absolute() || path.file_name().is_none() {
         return None;
     }
     let pdf = path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
-    Some(if pdf { path } else { PathBuf::from(format!("{}.pdf", path.display())) })
+    Some(if pdf { (path, false) } else { (PathBuf::from(format!("{}.pdf", path.display())), true) })
 }
 
 const BLANK_TITLE: &str = "The PDF needs a title.";
@@ -253,6 +259,7 @@ const LONG_MARKDOWN: &str = "The text of a PDF may be at most 200,000 bytes.";
 const NOT_ABSOLUTE: &str = "Give the full path of the copy.";
 const NO_FOLDER: &str = "The folder for the copy does not exist.";
 const NOT_REPLACEABLE: &str = "A folder or a link cannot be replaced by the copy.";
+const TAKEN: &str = "A file of that name with .pdf exists already; choose the name with .pdf to replace it.";
 
 /// Why a tool's command failed. [`ToolError::response`] is the answer, for people, without titles or paths.
 #[derive(Debug)]
@@ -438,6 +445,8 @@ pub(crate) mod tests {
         assert_eq!(tools.save_file_as(&mine.id, &copy.to_string_lossy()).await, Response::Ok);
         let copied = room.dir.path().join("Copy.pdf");
         assert_eq!(fs::read(&copied).expect("copied"), fs::read(&mine.path).expect("read"), ".pdf added");
+        let asked_without = tools.save_file_as(&mine.id, &copy.to_string_lossy()).await;
+        assert_eq!(code(&asked_without), "error", "the name with .pdf added is not replaced unasked");
         assert_eq!(tools.save_file_as(&mine.id, &copied.to_string_lossy()).await, Response::Ok, "replaced");
         for refused in ["Copy.pdf", "", "/"] {
             assert_eq!(code(&tools.save_file_as(&mine.id, refused).await), "error", "{refused:?}");

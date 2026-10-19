@@ -45,7 +45,7 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use torro_core::i18n::{tr, trf};
@@ -330,13 +330,25 @@ async fn check_draft(
         }
     };
     if let DraftAuthor::Client(client) = author {
-        for attachment in &draft.attachments {
-            if let DraftAttachment::File { path } = attachment
-                && !cache.is_some_and(|cache| cache.contains(Path::new(path)))
-                && tool_file(tools, Path::new(path), client).is_none()
-            {
-                return Err(WriteError::Forbidden(FILE_OUTSIDE));
-            }
+        let outside: Vec<PathBuf> = draft
+            .attachments
+            .iter()
+            .filter_map(|attachment| match attachment {
+                DraftAttachment::File { path } => Some(PathBuf::from(path)),
+                _ => None,
+            })
+            .filter(|path| !cache.is_some_and(|cache| cache.contains(path)))
+            .collect();
+        // The register reads its list and hashes each file: off the async threads.
+        let (register, client) = (tools.cloned(), client.clone());
+        let ours = outside.is_empty()
+            || tokio::task::spawn_blocking(move || {
+                outside.iter().all(|path| tool_file(register.as_ref(), path, &client).is_some())
+            })
+            .await
+            .unwrap_or(false);
+        if !ours {
+            return Err(WriteError::Forbidden(FILE_OUTSIDE));
         }
     }
     Ok(old)

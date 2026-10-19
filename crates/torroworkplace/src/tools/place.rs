@@ -32,13 +32,15 @@ pub fn folder(setting: Option<&Path>, desktop: Option<PathBuf>, home: &Path) -> 
 }
 
 /// The file name for a document titled `title`, with `.pdf`: control characters and the characters no system
-/// allows in a name (`/ \ : * ? " < > |`) become spaces, runs of spaces one, dots and spaces at either end go (no
+/// allows in a name (`/ \ : * ? " < > |`) become spaces, zero-width and bidi characters go (a name must read as
+/// it is), runs of spaces one, dots and spaces at either end go (no
 /// hidden file, no `..`), at most [`MAX_NAME_CHARS`] characters; [`FALLBACK_NAME`] when nothing is left or the
 /// name is one Windows keeps for devices (`CON`, `NUL`, `COM1` …).
 pub fn file_name(title: &str) -> String {
     let replaced: String =
         title
             .chars()
+            .filter(|c| !crate::mail::is_invisible(*c))
             .map(|c| {
                 if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
                     ' '
@@ -124,6 +126,8 @@ mod tests {
         assert_eq!(file_name("con"), "Document.pdf");
         assert_eq!(file_name("COM1.txt"), "Document.pdf");
         assert_eq!(file_name("Combined"), "Combined.pdf");
+        assert_eq!(file_name("Invoice\u{202E}fdp.exe"), "Invoicefdp.exe.pdf", "no bidi or zero-width characters");
+        assert_eq!(file_name("A\u{200B}B\u{FEFF}"), "AB.pdf");
         let long = "ä".repeat(120);
         assert_eq!(file_name(&long), format!("{}.pdf", "ä".repeat(MAX_NAME_CHARS)));
     }
