@@ -90,7 +90,9 @@
 //! talking to the core through [`App::settings_backend`]; the sidebar stays, and a click there
 //! that shows the list again closes the settings ([`App::leave_settings`]). `--settings lists`
 //! opens the window with them open; the hint without an account still opens the control centre
-//! at Accounts, unchanged.
+//! at Accounts, unchanged. A dialog that was open stays open behind them, out of sight: no key
+//! reaches it while it cannot be seen (Escape and the dialog's own keys act on the settings
+//! instead, [`Message::Escape`]), and it comes back with what it held.
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fmt;
@@ -776,7 +778,9 @@ pub enum Message {
     LastRepo(Option<String>),
     /// Close the open menu and the drawer (click beside them).
     CloseMenu,
-    /// Escape: closes the innermost open thing – menu or drawer, the detail's editor, the detail.
+    /// Escape: closes the innermost open thing that can be seen – a menu or the drawer, then the
+    /// settings while they cover the content area, then a dialog, then the detail's editor and the
+    /// detail.
     Escape,
     /// Start or raise another app of the suite ([`AppId::binary`]) through the core.
     OpenApp(&'static str),
@@ -1036,8 +1040,9 @@ impl App {
             if self.connected() && self.filter_dialog.is_none() && self.new_list.is_none() && self.settings.is_none() {
                 subscriptions.push(iced::event::listen_with(shortcut));
             }
-            // Its keys 1 and 2, only where the dialog shows.
-            if let Some(dialog) = &self.new_list {
+            // Its keys 1 and 2, only where the dialog shows – not while the settings cover it
+            // ([`App::window`] draws it only without them).
+            if let Some(dialog) = self.new_list.as_ref().filter(|_| self.settings.is_none()) {
                 subscriptions.push(dialog.subscription().map(Message::NewList));
             }
         }
@@ -1350,10 +1355,15 @@ impl App {
             Message::UiState(state) => self.sidebar = state.sidebar,
             Message::LastRepo(repo) => self.last_repo = repo,
             Message::CloseMenu => self.close_menus(),
-            Message::Escape if self.filter_dialog.is_some() => {
+            // The dialogs come before the detail, but behind the settings: those cover the header
+            // and the content area, so [`App::window`] draws no dialog while they are open. Escape
+            // must act on what can be seen – a key that does nothing visible is a key that looks
+            // broken –, and the dialog comes back with what it held once the settings step aside
+            // (the same order as in the calendar, commit 44ee2e2).
+            Message::Escape if self.filter_dialog.is_some() && self.settings.is_none() => {
                 return self.update(Message::Filter(filter::Message::Escape));
             }
-            Message::Escape if self.new_list.is_some() => {
+            Message::Escape if self.new_list.is_some() && self.settings.is_none() => {
                 return self.update(Message::NewList(new_list::Message::Cancel));
             }
             // Escape drops the dragged row where it was.
@@ -5295,6 +5305,38 @@ mod tests {
         assert!(app.menu.is_none() && app.settings.is_some(), "the menu first");
         let _ = app.update(Message::Escape);
         assert!(app.settings.is_none() && app.detail.is_some(), "the settings, the detail stays");
+    }
+
+    /// A dialog behind the open settings is out of sight ([`App::window`] draws none while they
+    /// cover the content area), so no key reaches it: Escape closes the settings, which is what
+    /// can be seen, and the dialog's own keys (1 and 2 of the choice) are off. The dialog comes
+    /// back with what it held. Found in the review of #210; the calendar has the same order
+    /// (commit 44ee2e2).
+    #[test]
+    fn no_key_reaches_a_dialog_behind_the_settings() {
+        let mut app = launched_with_accounts(&["--demo", "--open", "new-list"]);
+        assert!(app.new_list.is_some(), "the choice is open");
+        let with_choice = app.subscription().units();
+        let _ = app.update(Message::ToggleSettings);
+        assert!(
+            app.settings.is_some() && app.new_list.is_some(),
+            "the settings cover the choice, they do not close it"
+        );
+        assert!(app.subscription().units() < with_choice, "the keys 1 and 2 of the choice are off");
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none(), "the key acts on what is on screen");
+        assert!(app.new_list.is_some(), "and the choice is back");
+        let _ = app.update(Message::Escape);
+        assert!(app.new_list.is_none(), "the next one closes it");
+
+        // The same for the dialog of a filter list, whose Escape goes through the dialog.
+        let mut app = launched_with_accounts(&["--demo", "--open", "filter-new"]);
+        assert!(app.filter_dialog.is_some(), "the dialog is open");
+        let _ = app.update(Message::ToggleSettings);
+        let _ = app.update(Message::Escape);
+        assert!(app.settings.is_none() && app.filter_dialog.is_some(), "the settings first, the dialog stays");
+        let _ = app.update(Message::Escape);
+        assert!(app.filter_dialog.is_none(), "the next one closes it");
     }
 
     /// A change behind the gear reaches the list at once: when the host reports it stored
