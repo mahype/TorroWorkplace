@@ -1904,6 +1904,18 @@ impl App {
         self.settings = None;
     }
 
+    /// What the window loads again after a change behind the gear ([`Outcome::Changed`]): the
+    /// appearance and the night always, the events only where a tick would load them too – with an
+    /// account connected and with nothing open in the editor, which keeps what it holds while the
+    /// settings cover it. An editor that is open gets the fresh events when it closes.
+    fn settings_loads(&mut self) -> Task<Message> {
+        let mut loads = vec![self.fetch_appearance(), self.fetch_night()];
+        if self.connected() && self.editor.is_none() {
+            loads.push(self.load());
+        }
+        Task::batch(loads)
+    }
+
     /// What the host asks of the window: the browser and the control centre are the app's;
     /// everything else the host did itself.
     fn settings_outcome(&mut self, outcome: Outcome<()>) -> Task<Message> {
@@ -1912,8 +1924,12 @@ impl App {
             Outcome::Work(task) => task.map(Message::SettingsHost),
             // A section changed something: the calendar loads what it shows itself, right now
             // instead of on its next tick – a calendar just hidden must leave the sidebar and the
-            // week at once, not up to a minute later. The same loads a tick does.
-            Outcome::Changed => Task::batch([self.fetch_appearance(), self.fetch_night(), self.load()]),
+            // week at once, not up to a minute later.
+            //
+            // Exactly the loads a tick does, under the same conditions ([`Message::Tick`]): the
+            // events wait while the editor holds an event, which it does behind the open settings
+            // (task S.19), and while no account is connected there is nothing to load.
+            Outcome::Changed => self.settings_loads(),
             Outcome::Close => {
                 self.settings = None;
                 Task::none()
@@ -3064,6 +3080,30 @@ mod tests {
         let task =
             app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: failed }));
         assert!(!app.loading && task.units() == 0, "the host shows the notice, the calendar stays as it is");
+    }
+
+    /// The loads after a change are the ones a tick does, under the same conditions (found in the
+    /// second review of #210): an editor keeps the event it holds while the settings cover it
+    /// (task S.19), so the events wait for it, as they do on every tick. The appearance and the
+    /// night come either way.
+    #[test]
+    fn a_change_in_the_settings_leaves_an_open_editor_alone() {
+        let mut app = launched(&["--demo", "--now", "2026-10-07T14:20"]);
+        let _ = app.update(Message::Resized(WIDE));
+        let _ = app.update(Message::OpenEvent(editable(&app)));
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.editor.is_some() && app.settings.is_some(), "the editor is behind the settings");
+
+        app.loading = false;
+        let task = app.settings_outcome(Outcome::Changed);
+        assert!(!app.loading, "the events wait for the editor, as they do on a tick");
+        assert!(app.editor.is_some(), "and the editor keeps what it holds");
+        assert!(task.units() > 0, "the appearance and the night come anyway");
+
+        // Without the editor the events come at once.
+        app.editor = None;
+        let _ = app.settings_outcome(Outcome::Changed);
+        assert!(app.loading);
     }
 
     /// Escape closes a menu, the drawer or the night's card first, then the settings, and only

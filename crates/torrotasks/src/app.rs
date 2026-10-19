@@ -2388,6 +2388,18 @@ impl App {
         self.settings = None;
     }
 
+    /// What the window loads again after a change behind the gear ([`Outcome::Changed`]): the
+    /// appearance always, the lists and their todos only where a tick would load them too – with
+    /// an account connected and with no detail open, which keeps what it holds while the settings
+    /// cover it (task S.20). A glance shows no detail and must not go stale, so it always loads.
+    fn settings_loads(&mut self) -> Task<Message> {
+        let mut loads = vec![self.fetch_appearance()];
+        if self.connected() && (self.detail.is_none() || self.is_glance()) {
+            loads.push(self.load());
+        }
+        Task::batch(loads)
+    }
+
     /// What the host asks of the window: the browser and the control centre are the app's;
     /// everything else the host did itself.
     fn settings_outcome(&mut self, outcome: Outcome<()>) -> Task<Message> {
@@ -2396,8 +2408,9 @@ impl App {
             Outcome::Work(task) => task.map(Message::SettingsHost),
             // "Lists" changed what the suite shows: the lists and their todos come again right
             // now, so a hidden list leaves the sidebar and the list at once instead of waiting up
-            // to a minute for the next tick.
-            Outcome::Changed => Task::batch([self.fetch_appearance(), self.load()]),
+            // to a minute for the next tick – under the same conditions a tick has
+            // ([`App::settings_loads`]), so an open detail is not torn away.
+            Outcome::Changed => self.settings_loads(),
             Outcome::Close => {
                 self.settings = None;
                 Task::none()
@@ -5299,6 +5312,31 @@ mod tests {
         let task =
             app.update(Message::SettingsHost(torro_settings_ui::host::Message::Sent { changed: true, result: failed }));
         assert_eq!(task.units(), 0, "nothing changed, so there is nothing to load");
+    }
+
+    /// The loads after a change are the ones a tick does, under the same conditions (found in the
+    /// second review of #210). An open detail keeps what it holds while the settings cover it
+    /// (task S.20); loading on top of it would drop it – hiding the list of the open task made it
+    /// vanish, because a reload without the task in the list clears the detail.
+    #[test]
+    fn a_change_in_the_settings_leaves_an_open_detail_alone() {
+        let mut app = launched(&["--demo"]);
+        let _ = app.update(Message::Select(0));
+        let _ = app.update(Message::ToggleSettings);
+        assert!(app.detail.is_some() && app.settings.is_some(), "the detail is behind the settings");
+
+        let with_detail = app.settings_loads().units();
+        app.detail = None;
+        let without = app.settings_loads().units();
+        assert!(with_detail < without, "the todos wait for the detail: {with_detail} against {without}");
+        assert!(with_detail > 0, "the appearance comes either way");
+
+        // What the condition spares the detail: a load whose list no longer holds the open task
+        // takes the detail with it.
+        let _ = app.update(Message::Select(0));
+        assert!(app.detail.is_some());
+        let _ = app.update(Message::Loaded(Ok((app.collections.clone(), Vec::new()))));
+        assert!(app.detail.is_none(), "a reload without the task closes the detail");
     }
 
     /// The switch of a list sends exactly `settings.set_collection_shown`; the library's own
