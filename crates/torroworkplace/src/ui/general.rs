@@ -3,8 +3,9 @@
 //!
 //! - **General** ([`view`]): "Language", a list of choices – one row each, the whole row is the
 //!   button, a check mark at the chosen one (Deutsch is shown in its own name, like the language
-//!   picker of any app); "Apps" ([`apps`], task S.21) has every part of the suite with its switch
-//!   and "Open"; "Startup" has the "Start at login" switch; "Setup" runs the first-run setup again.
+//!   picker of any app); "Apps" ([`apps`], task S.21) has every part of the suite with its switch,
+//!   its window class under the name (for window rules) and "Open", the App Feed among them;
+//!   "Startup" has the "Start at login" switch; "Setup" runs the first-run setup again.
 //! - **Appearance** ([`appearance`], its own page in the sidebar since S.14, so it is found at a
 //!   glance): "Appearance" (System, Light, Dark) as a list of choices like the language; "Design"
 //!   lists the design packs (task L.4, below); "Interface" has the zoom of the suite with −, the
@@ -40,7 +41,7 @@ use iced::widget::{column, container, row, space as blank, svg, text};
 use iced::{Alignment, Background, Border, ContentFit, Element, Fill, Padding, Theme};
 use torro_core::AppId;
 use torro_core::design::{Design, FontRole, Mode, STANDARD_ID, Weight};
-use torro_core::i18n::tr;
+use torro_core::i18n::{tr, trf};
 use torro_core::settings::{Component, ComponentSwitch, Language, Zoom};
 use torro_core::theme::Appearance;
 use torro_gui::icon::{self, Icon};
@@ -197,30 +198,37 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
 /// "Open" is off while the core has not reported the app as installed. Workspaces has no window of
 /// its own: its "Open" shows the Workspaces page, where the templates are.
 ///
+/// Under the name stands the window's class, quietly ([`app_detail`]): that is what a window rule
+/// in Hyprland needs, and the control centre is the one place it is written down.
+///
+/// The App Feed ([`AppId::INBOX_NOTIFICATIONS`]) gets a row of its own after the Notification Hub,
+/// with its class and "Open" but no switch: it is a second window of the same part of the suite,
+/// not a part of its own. Nothing else in the control centre opens it.
+///
 /// What a window shows and how it behaves is set in that window, behind its gear; this page only
-/// says so and leads there.
+/// says so and leads there. No "Open" ever names a section of the settings
+/// (`apps.open_app` with a target): those a person opens with the gear.
 fn apps(data: &Data) -> Element<'_, Message> {
-    let rows = Component::ALL
-        .into_iter()
-        .map(|component| {
-            let app = window_of(component);
-            let open = match app {
-                Some(app) => installed(data, app).then(|| Message::OpenApp(app.window_class.to_string())),
-                None => Some(Message::OpenWorkspaces),
-            };
-            // A button without a message is drawn disabled, so a missing app cannot be opened.
-            let button = widgets::text_button(None, tr("Open"), style::button::secondary, open);
-            let controls = row![
-                button,
-                switch(data.settings.component_on(component), move |on| { Message::Component(component, on) })
-            ]
-            .spacing(space::l())
-            .align_y(Alignment::Center);
-            let missing = app.is_some_and(|app| !installed(data, app));
-            let detail = missing.then(|| tr("Not installed").to_string());
-            setting_row(None, component_name(component), detail, controls)
-        })
-        .collect();
+    let mut rows: Vec<Element<'_, Message>> = Vec::new();
+    for component in Component::ALL {
+        let app = window_of(component);
+        let open = match app {
+            Some(app) => installed(data, app).then(|| Message::OpenApp(app.window_class.to_string())),
+            None => Some(Message::OpenWorkspaces),
+        };
+        // A button without a message is drawn disabled, so a missing app cannot be opened.
+        let button = widgets::text_button(None, tr("Open"), style::button::secondary, open);
+        let controls = row![
+            button,
+            switch(data.settings.component_on(component), move |on| { Message::Component(component, on) })
+        ]
+        .spacing(space::l())
+        .align_y(Alignment::Center);
+        rows.push(setting_row(None, component_name(component), app_detail(data, app), controls));
+        if component == Component::Inbox {
+            rows.push(second_window(data, AppId::INBOX_NOTIFICATIONS, tr("App Feed")));
+        }
+    }
     let footer = format!(
         "{} {}",
         tr("Its settings are behind the gear in its window."),
@@ -229,6 +237,26 @@ fn apps(data: &Data) -> Element<'_, Message> {
         ),
     );
     widgets::group(tr("Apps"), rows, Some(footer))
+}
+
+/// A second window of a part of the suite (the App Feed of the Notification Hub): its name, its
+/// class and "Open", without a switch – what switches it is the part's own row above.
+fn second_window<'a>(data: &'a Data, app: AppId, label: &'a str) -> Element<'a, Message> {
+    let open = installed(data, app).then(|| Message::OpenApp(app.window_class.to_string()));
+    let button = widgets::text_button(None, tr("Open"), style::button::secondary, open);
+    setting_row(None, label, app_detail(data, Some(app)), button)
+}
+
+/// The line under an app's name: its window class, for window rules, and "Not installed" while the
+/// core does not report it. `None` for a part of the suite without a window of its own
+/// (Workspaces), which has neither.
+fn app_detail(data: &Data, app: Option<AppId>) -> Option<String> {
+    let app = app?;
+    let class = trf("Window class: {class}", &[("class", &app.window_class)]);
+    match installed(data, app) {
+        true => Some(class),
+        false => Some(format!("{class} · {}", tr("Not installed"))),
+    }
 }
 
 /// The window a part of the suite opens: mail is the inbox's mail window, the Notification Hub its
@@ -671,6 +699,60 @@ mod tests {
         assert!(installed(&apps, AppId::INBOX_MAIL));
         assert!(!installed(&apps, AppId::INBOX));
         drop(view(&State::default(), &apps));
+    }
+
+    /// Found in the review of task S.22: the window class belongs on the row (window rules in
+    /// Hyprland need it and the control centre is the one place it is written down), and the App
+    /// Feed must be reachable – it is a window of the Notification Hub, not a part of the suite,
+    /// so it gets no switch of its own.
+    #[test]
+    fn every_app_row_names_its_window_class_and_the_app_feed_can_be_opened() {
+        let listed = |class: &str, installed: bool| torro_ipc::AppInfo {
+            binary: "torroinbox".into(),
+            name: "Torro".into(),
+            window_class: class.into(),
+            installed,
+        };
+        let class_of = |app: AppId| trf("Window class: {class}", &[("class", &app.window_class)]);
+
+        // Every window of the suite is in the list; only Workspaces has none.
+        let all: Vec<torro_ipc::AppInfo> =
+            AppId::ALL.iter().map(|app| listed(app.window_class, true)).collect::<Vec<_>>();
+        let data = Data { apps: Some(all), ..Data::default() };
+        for component in Component::ALL {
+            let app = window_of(component);
+            assert_eq!(app_detail(&data, app), app.map(class_of), "{component:?}");
+        }
+        assert_eq!(window_of(Component::Workspaces), None);
+
+        // Not installed: the class stays, the state follows it.
+        let none = Data::default();
+        assert_eq!(
+            app_detail(&none, Some(AppId::CALENDAR)),
+            Some(format!("{} · {}", class_of(AppId::CALENDAR), tr("Not installed")))
+        );
+
+        // The App Feed opens by its own class, and only while the core reports it.
+        assert_eq!(AppId::INBOX_NOTIFICATIONS.window_class, "torro-inbox-notifications");
+        let feed =
+            update(&mut State::default(), Message::OpenApp(AppId::INBOX_NOTIFICATIONS.window_class.into()), &data);
+        assert!(
+            matches!(feed, Action::Send(Request::OpenApp { ref app, target: None })
+                if app == "torro-inbox-notifications"),
+            "{feed:?}"
+        );
+        drop(view(&State::default(), &data));
+        drop(second_window(&none, AppId::INBOX_NOTIFICATIONS, tr("App Feed")));
+    }
+
+    /// No "Open" of this page ever names a section of the settings: those a person opens with the
+    /// gear in the window (task S.21).
+    #[test]
+    fn no_open_asks_for_a_settings_section() {
+        for app in AppId::ALL {
+            let action = update(&mut State::default(), Message::OpenApp(app.window_class.into()), &Data::default());
+            assert!(matches!(action, Action::Send(Request::OpenApp { target: None, .. })), "{action:?}");
+        }
     }
 
     #[test]

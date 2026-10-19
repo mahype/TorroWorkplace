@@ -136,6 +136,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Not installed", "Nicht installiert"),
     ("Open", "Öffnen"),
     ("Open link", "Link öffnen"),
+    ("Window class: {class}", "Fensterklasse: {class}"),
     ("Start at login", "Beim Anmelden starten"),
     (
         "Starts Torro Workplace in the background when you log in, so the tray icon and your workspaces are ready.",
