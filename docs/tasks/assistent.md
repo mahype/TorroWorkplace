@@ -35,7 +35,9 @@ KI.1b ── KI.1c ── KI.1d (Anbieter Anthropic, Issue #218) parallel ab KI.
   Schlüssel erscheint in keiner Antwort und keinem Protokoll.
 
 ### KI.1b Anbieter Anthropic im Katalog und sein Format auf der Leitung (Issue #218)
-- [ ] erledigt
+- [x] erledigt (nachgetragen: `crates/torro-ipc/src/api.rs` — der Test
+  `the_ai_key_is_a_write_only_string_and_optional` listet die Anbieterwerte des Schemas von Hand und wäre mit dem
+  neuen Wert rot geblieben; `anthropic` steht dort wie im Katalog hinter `openrouter`)
 - **Modell:** Opus · **Braucht:** KI.1a · **Dateien:** `crates/torro-core/src/ai/mod.rs`,
   `crates/torro-core/src/ai/anthropic.rs` (neu), `docs/einrichtung.md`, `docs/api-reference.md`
 - `AiProvider::Anthropic`, serde und `id()` `anthropic`, `name()` `Anthropic`, `default_url()`

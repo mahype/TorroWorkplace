@@ -4233,6 +4233,7 @@ mod tests {
                 "ollama",
                 "lm_studio",
                 "openrouter",
+                "anthropic",
                 "openai_compatible",
                 "openai",
                 "gemini",

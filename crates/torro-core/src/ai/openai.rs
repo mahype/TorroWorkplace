@@ -63,6 +63,9 @@ pub fn chat_body_for(provider: AiProvider, request: &ChatRequest, stream: bool) 
             | AiProvider::Gemini => {
                 body["reasoning_effort"] = json!(effort.id());
             }
+            // Anthropic speaks its own protocol and never comes through here; its effort is
+            // `output_config.effort` in `super::anthropic::chat_body`.
+            AiProvider::Anthropic => {}
             // Not documented for their OpenAI-compatible APIs, and an unknown field may be refused:
             // these think as their models do.
             AiProvider::Mistral
@@ -376,6 +379,9 @@ pub fn ollama_runs_elsewhere(id: &str, tags: Option<&HashMap<String, bool>>) -> 
 /// `{"error": {"message": …}}`, `{"error": "…"}` or `{"message": …}`, else the body as text. It is
 /// whole: always pass the result through [`scrub`], which checks it for the key and then shortens
 /// it to [`MAX_MESSAGE`] characters.
+///
+/// Reads no field that belongs to one protocol, so [`super::anthropic`] uses it as well: its error
+/// bodies are `{"type": "error", "error": {"type": …, "message": …}}`.
 pub fn error_of(status: u16, body: &[u8]) -> AiError {
     let message = message_of(body);
     match status {
@@ -396,6 +402,9 @@ pub fn error_of(status: u16, body: &[u8]) -> AiError {
 /// some servers repeat a key they refuse ("Incorrect API key: sk-or-…"). Then every server text
 /// is shortened to [`MAX_MESSAGE`] characters – after the check, so a cut never hides a piece of
 /// the key from it. Without a key only the shortening happens.
+///
+/// Belongs to no protocol: [`super::anthropic`] passes its errors through this too, and every
+/// implementation of [`super::Provider`] must.
 pub fn scrub(error: AiError, key: Option<&str>) -> AiError {
     let error = without_key(error, key);
     match error {

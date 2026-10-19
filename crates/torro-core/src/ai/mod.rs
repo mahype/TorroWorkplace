@@ -3,11 +3,12 @@
 //! ([`AiModel`]), a conversation with tools ([`ChatRequest`], [`ChatReply`]) – and the
 //! [`Provider`] trait a server's protocol implements.
 //!
-//! One protocol for now: the OpenAI-compatible one that Ollama, LM Studio, vLLM, llama.cpp and
-//! OpenRouter all speak. Its wire format (request bodies, answers, the server-sent events of a
-//! streamed answer, model lists) is [`openai`], pure and without a network; the core sends it
-//! (`torroworkplace::account::ai`). The Anthropic protocol follows in task KI.1 as a second
-//! implementation of [`Provider`], never as a change of these types.
+//! Two protocols: the OpenAI-compatible one that Ollama, LM Studio, vLLM, llama.cpp, OpenRouter and
+//! most providers speak ([`openai`]), and Anthropic's own, which the Claude models answer
+//! ([`anthropic`], task KI.1b). Each module holds its wire format (request bodies, answers, the
+//! server-sent events of a streamed answer, model lists), pure and without a network; the core
+//! sends them (`torroworkplace::account::ai`), one implementation of [`Provider`] per protocol. A
+//! further protocol is another module beside these, never a change of the types here.
 //!
 //! Open First (`docs/ki.md`, principle 2): local servers come first, then open models over
 //! OpenRouter. A model list keeps only open-weights models unless asked for all
@@ -17,6 +18,7 @@
 //! [`crate::account::Secret`]. Nothing here holds or prints one; [`AiError`] never carries a
 //! server's words that could repeat it ([`openai::error_of`]).
 
+pub mod anthropic;
 pub mod openai;
 
 use std::fmt;
@@ -46,6 +48,9 @@ pub enum AiProvider {
     /// model list says which can call tools and which have open weights. Written `openrouter`.
     #[serde(rename = "openrouter")]
     OpenRouter,
+    /// Anthropic's API (`https://api.anthropic.com/v1`), the Claude models. The only provider that
+    /// speaks a protocol of its own ([`anthropic`]) instead of the OpenAI-compatible one.
+    Anthropic,
     /// Any other server with the OpenAI-compatible protocol: vLLM, llama.cpp, LocalAI, a server of
     /// your own. Its address is always given. Written `openai_compatible`.
     #[serde(rename = "openai_compatible")]
@@ -103,10 +108,11 @@ impl Seat {
 impl AiProvider {
     /// Every provider in the order the suite lists them (Open First): this computer, open models in
     /// the cloud, the providers, those run from China, and any other server last.
-    pub const ALL: [AiProvider; 12] = [
+    pub const ALL: [AiProvider; 13] = [
         AiProvider::Ollama,
         AiProvider::LmStudio,
         AiProvider::OpenRouter,
+        AiProvider::Anthropic,
         AiProvider::OpenAi,
         AiProvider::Gemini,
         AiProvider::Mistral,
@@ -119,8 +125,9 @@ impl AiProvider {
     ];
 
     /// The cloud providers with an API key of their own (task W.3), in the order of [`AiProvider::ALL`].
-    pub const CLOUD: [AiProvider; 9] = [
+    pub const CLOUD: [AiProvider; 10] = [
         AiProvider::OpenRouter,
+        AiProvider::Anthropic,
         AiProvider::OpenAi,
         AiProvider::Gemini,
         AiProvider::Mistral,
@@ -139,6 +146,7 @@ impl AiProvider {
             AiProvider::LmStudio => "LM Studio",
             AiProvider::OpenRouter => "OpenRouter",
             AiProvider::OpenAiCompatible => "OpenAI-compatible",
+            AiProvider::Anthropic => "Anthropic",
             AiProvider::OpenAi => "OpenAI",
             AiProvider::Gemini => "Google Gemini",
             AiProvider::Mistral => "Mistral",
@@ -158,6 +166,7 @@ impl AiProvider {
             AiProvider::LmStudio => "lm_studio",
             AiProvider::OpenRouter => "openrouter",
             AiProvider::OpenAiCompatible => "openai_compatible",
+            AiProvider::Anthropic => "anthropic",
             AiProvider::OpenAi => "openai",
             AiProvider::Gemini => "gemini",
             AiProvider::Mistral => "mistral",
@@ -169,14 +178,18 @@ impl AiProvider {
         }
     }
 
-    /// The base address of the provider's OpenAI-compatible API when nobody types one; `None` for
-    /// [`AiProvider::OpenAiCompatible`], whose address is always given.
+    /// The base address of the provider's API when nobody types one; `None` for
+    /// [`AiProvider::OpenAiCompatible`], whose address is always given. The OpenAI-compatible one
+    /// for every provider but [`AiProvider::Anthropic`], which speaks its own.
     pub fn default_url(self) -> Option<&'static str> {
         match self {
             AiProvider::Ollama => Some("http://localhost:11434/v1"),
             AiProvider::LmStudio => Some("http://localhost:1234/v1"),
             AiProvider::OpenRouter => Some("https://openrouter.ai/api/v1"),
             AiProvider::OpenAiCompatible => None,
+            // Anthropic's Messages API (task KI.1b), the one address that is no OpenAI-compatible
+            // API; `ai::anthropic` says what travels over it.
+            AiProvider::Anthropic => Some("https://api.anthropic.com/v1"),
             // The addresses of the OpenAI-compatible APIs, checked against the providers' own
             // documentation on 2026-10-15 (task W.3). Outside China the international ones.
             AiProvider::OpenAi => Some("https://api.openai.com/v1"),
@@ -213,6 +226,8 @@ impl AiProvider {
     pub fn key_url(self) -> Option<&'static str> {
         match self {
             AiProvider::OpenRouter => Some("https://openrouter.ai/settings/keys"),
+            // Checked on 2026-10-19; the older address under `console.anthropic.com` redirects here.
+            AiProvider::Anthropic => Some("https://platform.claude.com/settings/keys"),
             AiProvider::OpenAi => Some("https://platform.openai.com/api-keys"),
             AiProvider::Gemini => Some("https://aistudio.google.com/apikey"),
             AiProvider::Mistral => Some("https://console.mistral.ai/api-keys"),
@@ -230,7 +245,7 @@ impl AiProvider {
         match self {
             AiProvider::Ollama | AiProvider::LmStudio => Seat::ThisComputer,
             AiProvider::OpenAiCompatible => Seat::OwnServer,
-            AiProvider::OpenRouter | AiProvider::OpenAi | AiProvider::Gemini => Seat::Us,
+            AiProvider::OpenRouter | AiProvider::Anthropic | AiProvider::OpenAi | AiProvider::Gemini => Seat::Us,
             AiProvider::Mistral => Seat::Eu,
             AiProvider::DeepSeek | AiProvider::Qwen | AiProvider::Kimi | AiProvider::Glm | AiProvider::MiniMax => {
                 Seat::China
@@ -515,11 +530,13 @@ impl fmt::Display for AiError {
 impl std::error::Error for AiError {}
 
 /// A server's protocol: what the suite asks of every AI account. Implemented by the
-/// OpenAI-compatible protocol (`torroworkplace::account::ai::OpenAiCompatible`), later by
-/// Anthropic's. Object safe, so the core can hold `Box<dyn Provider>` per account.
+/// OpenAI-compatible protocol (`torroworkplace::account::ai::OpenAiCompatible`) and by Anthropic's
+/// (`torroworkplace::account::ai::Anthropic`). Object safe, so the core can hold
+/// `Box<dyn Provider>` per account.
 ///
 /// Implementations must
-/// - send the account's API key only in the `Authorization` header to the account's server, and
+/// - send the account's API key only in the key header of its protocol (`Authorization` for the
+///   OpenAI-compatible one, `x-api-key` for Anthropic's) and only to the account's own server, and
 ///   never put it into an error, a log line or `Debug`;
 /// - map failures to [`AiError`] as its variants say (unreachable → `Offline`, 401/403 → `Auth`,
 ///   429/402 → `Busy`, anything unreadable → `Format`);
