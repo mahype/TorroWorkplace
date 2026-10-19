@@ -23,7 +23,7 @@ use torro_core::settings::CalendarReminders;
 use torro_gui::theme::{self, space};
 use torro_gui::widgets;
 use torro_gui::{layout, style, typo};
-use torro_ipc::{AccountInfo, Request, ServerService, SettingKey};
+use torro_ipc::{AccountInfo, Request, SettingKey};
 use torro_pim::{Collection, CollectionKind};
 
 use crate::parts::setting_row;
@@ -74,10 +74,10 @@ pub fn page(data: &Data, role: Role) -> Element<'_, Message> {
 /// The page: one group per connected account that owns a collection of `role`, each row a switch
 /// (and, for a shown calendar, its reminder kind); a quiet hint while none does.
 ///
-/// An account whose server could hold such collections but has none yet keeps its place with one
-/// sentence instead of rows ([`may_hold`], [`waiting_group`]): before the first sync that worked
-/// there is nothing to list, and an account that quietly fell out of the page looked like one that
-/// was never set up.
+/// An account that fetches calendars and lists from a server but has none yet keeps its place with
+/// one sentence instead of rows ([`may_hold`], [`waiting_group`]): before the first sync that
+/// worked there is nothing to list, and an account that quietly fell out of the page looked like
+/// one that was never set up.
 fn page_in(data: &Data, role: Role, one_line: bool) -> Element<'_, Message> {
     let footer = tr("Hidden calendars and lists stay on the server; the apps just don't show them.");
     let groups: Vec<(&str, Vec<Element<'_, Message>>)> = data
@@ -86,10 +86,10 @@ fn page_in(data: &Data, role: Role, one_line: bool) -> Element<'_, Message> {
         .filter(|account| !account.id.is_empty())
         .filter_map(|account| {
             let rows = rows_of(account, data, role, one_line);
-            // An account with no collection of this role: kept with its hint where the server
-            // could have them, left out where it never could (AI, ntfy, GitHub's filter lists).
+            // An account with no collection of this role: kept with its hint where a sync fetches
+            // them, left out for the kinds that never had such a group (mail, ntfy, AI, GitHub).
             if rows.is_empty() {
-                return may_hold(account, role).then(|| (account.label.as_str(), Vec::new()));
+                return may_hold(account).then(|| (account.label.as_str(), Vec::new()));
             }
             Some((account.label.as_str(), rows))
         })
@@ -124,28 +124,19 @@ fn waiting_group<'a>(label: &'a str, role: Role) -> Element<'a, Message> {
         .into()
 }
 
-/// Whether `account` could hold collections of `role`, so an account without any keeps its place
-/// with a hint instead of falling out of the page.
+/// Whether `account` is one whose page said "nothing here yet" before task S.19, so an account
+/// without any collection keeps its place with that hint instead of falling out of the page.
 ///
-/// What the server offers where the first sync that worked reported it
-/// ([`torro_ipc::AccountInfo::services`]); else the kind of account, since one that never synced is
-/// exactly the one the hint is for: Nextcloud and any other CalDAV server, and a mail account whose
-/// sign-in also has a CalDAV address in use. An AI or ntfy account has no calendars or lists at
-/// all, and GitHub's filter lists are made in the tasks app instead of fetched from a server.
-fn may_hold(account: &AccountInfo, role: Role) -> bool {
-    let wanted = match role {
-        Role::Calendar => ServerService::Calendars,
-        Role::TaskList => ServerService::Tasks,
-    };
-    match &account.services {
-        Some(services) => services.contains(&wanted),
-        None => match account.kind.as_str() {
-            "nextcloud" | "caldav" => true,
-            // `caldav` is stored only while the calendars and tasks of that sign-in are in use.
-            "mail" => account.mail.as_ref().is_some_and(|mail| mail.caldav.is_some()),
-            _ => false,
-        },
-    }
+/// Exactly the rule the control centre's account page had (`accounts::detail` on `origin/main`):
+/// every account but the four kinds whose page never had a group for calendars and lists – mail
+/// (its own page), ntfy and AI (they hold none at all), and GitHub, whose filter lists are made in
+/// the tasks app instead of fetched from a server.
+///
+/// Deliberately **not** read from [`torro_ipc::AccountInfo::services`]: it is `None` for a mail
+/// account whatever its CalDAV does, and `Some` without the wanted service for a server that simply
+/// has no such collection yet – which is the one case this hint is for.
+fn may_hold(account: &AccountInfo) -> bool {
+    !matches!(account.kind.as_str(), "mail" | "ntfy" | "github" | "ai")
 }
 
 /// One account's rows: its collections that fit `role`, what each one is under its name
@@ -351,38 +342,45 @@ mod tests {
         assert_eq!(kind_name(CollectionKind::Events), tr("Calendar"));
     }
 
-    /// Found in the review of task S.22: an account whose server holds calendars and lists but has
-    /// none yet keeps its place with one sentence; one that never could (AI, ntfy, GitHub) stays
-    /// out of the page.
+    /// Found in the review of task S.22: an account that fetches calendars and lists from a server
+    /// but has none yet keeps its place with one sentence; the kinds whose page never had such a
+    /// group (mail, ntfy, AI, GitHub) stay out of it.
+    ///
+    /// The rule is the kind of account, as the control centre's account page had it, and nothing
+    /// else: the second review of #210 showed what reading
+    /// [`torro_ipc::AccountInfo::services`] costs – a mail account that syncs only task lists
+    /// would stand in Calendars with a hint nobody can act on, and a CalDAV server that answered
+    /// with no collection at all would vanish.
     #[tokio::test]
     async fn an_account_without_collections_keeps_its_place_with_a_hint() {
         let loaded = data().await;
         let of = |id: &str| loaded.accounts.iter().find(|a| a.kind == id).expect(id).clone();
 
-        // Nextcloud without collections: the server could have them, so the hint stands.
+        // Nextcloud without collections: a sync fetches them, so the hint stands.
         let mut empty = of("nextcloud");
         empty.collections = Vec::new();
-        assert!(may_hold(&empty, Role::Calendar) && may_hold(&empty, Role::TaskList));
+        assert!(may_hold(&empty));
 
-        // What the first sync that worked reported wins over the kind.
-        let synced = AccountInfo { services: Some(vec![ServerService::Calendars]), ..empty.clone() };
-        assert!(may_hold(&synced, Role::Calendar), "the server has calendars");
-        assert!(!may_hold(&synced, Role::TaskList), "and no task lists");
+        // A server that answered and has none of its own keeps the hint, which is what it is for.
+        let synced = AccountInfo { services: Some(Vec::new()), ..empty.clone() };
+        assert!(may_hold(&synced), "a sync that found nothing is exactly this case");
+        let caldav = AccountInfo { kind: "caldav".into(), ..empty.clone() };
+        assert!(may_hold(&caldav));
 
-        // GitHub's filter lists are made in the tasks app; ntfy and mail without CalDAV have none.
-        assert!(!may_hold(&of("github"), Role::TaskList) && !may_hold(&of("github"), Role::Calendar));
-        assert!(!may_hold(&of("ntfy"), Role::Calendar));
-        let mail = of("mail");
-        assert!(mail.mail.as_ref().is_some_and(|view| view.caldav.is_none()), "the demo's mail is mail only");
-        assert!(!may_hold(&mail, Role::Calendar));
+        // The kinds whose page never had the group: mail has its own page, ntfy and AI hold none,
+        // GitHub's filter lists are made in the tasks app.
+        assert!(!may_hold(&of("github")) && !may_hold(&of("ntfy")) && !may_hold(&of("mail")));
+        assert!(!may_hold(&AccountInfo { kind: "ai".into(), ..empty.clone() }));
+        // Also for a mail account whose sign-in syncs collections: its services are never listed,
+        // so a hint here could tell someone to sync a service that is switched off.
         let with_caldav = AccountInfo {
-            mail: mail
+            mail: of("mail")
                 .mail
                 .clone()
                 .map(|view| torro_ipc::MailView { caldav: Some("https://dav.mailbox.org".into()), ..view }),
-            ..mail
+            ..of("mail")
         };
-        assert!(may_hold(&with_caldav, Role::Calendar), "that sign-in's calendars are in use");
+        assert!(!may_hold(&with_caldav), "mail keeps its own page");
 
         // The page builds with such an account, in both roles and in a narrow window.
         let accounts = vec![empty, of("github")];
