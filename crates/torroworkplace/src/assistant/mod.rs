@@ -13,7 +13,8 @@
 //!   the blocking threads, under the conversations' lock, so their lines keep the order of their
 //!   numbers.
 //! - **Engines** ([`Assistant::engines`]): every AI account (engine A, [`model`]), the coding
-//!   agents installed while the assistant has its client (engine B, [`engines`]), and the test
+//!   agents while they are offered (engine B, [`engines`] — never in the product since task C.18,
+//!   issue #219, so in practice no agent), and the test
 //!   engine ([`TEST_ENGINE`]) with fixed answers, offered in tests and when the core runs with
 //!   `TORRO_TEST_ENGINE=1` ([`TEST_ENGINE_VAR`]), so the app and the control centre can be built
 //!   without a model.
@@ -318,8 +319,8 @@ impl Assistant {
     }
 
     /// `assistant.list_engines`: every AI account in the order they were added, then the coding
-    /// agents that are installed while the assistant has its own client, then the test engine
-    /// where it is offered.
+    /// agents while they are offered (none in the product, task C.18, issue #219), then the test
+    /// engine where it is offered.
     pub async fn engines(&self, ai: &AiAccounts) -> Vec<Engine> {
         let mut engines: Vec<Engine> = ai
             .infos()
@@ -443,7 +444,8 @@ impl Assistant {
     }
 
     /// What drives `engine` for `actor`, or why it cannot answer: `not-found` for no engine of
-    /// `assistant.list_engines` (an agent that is not installed, or while `actor` has no client),
+    /// `assistant.list_engines` (an agent, which is not offered any more — task C.18, issue #219 —
+    /// so a bot still set to one is refused, like a bot whose AI account was removed),
     /// `unsupported` for an AI account while no core is attached ([`Assistant::attach`]), so
     /// nothing is stored for an answer that would never come.
     async fn engine(&self, ai: &AiAccounts, engine: &str, actor: &Actor) -> Result<EngineKind, Response> {

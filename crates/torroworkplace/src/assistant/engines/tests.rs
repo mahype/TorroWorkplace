@@ -245,6 +245,36 @@ async fn claude_code_is_an_engine_only_when_installed_and_the_assistant_has_its_
     assert!(matches!(refused, Some(Response::Error { ref code, .. }) if code == "not-found"), "{refused:?}");
 }
 
+/// Task C.18, issue #219: the product does not offer agents. The command is where `locate` looks
+/// and the assistant has its client, yet nothing is listed and no engine id finds an agent. Only
+/// the test constructor offers them, which is why every test here still runs.
+#[test]
+fn agents_that_are_not_offered_are_no_engines_even_when_installed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("bin")).expect("bin");
+    crate::apps::tests::fake_at(&root.join("bin").join("claude"), "exit 0\n");
+    let env = Env {
+        home: root.join("home"),
+        app_config: root.join("home").join(".config"),
+        path: vec![root.join("bin")],
+        program: root.join("torroworkplace"),
+        config_dir: root.join("config"),
+    };
+    let runs = root.join("runs");
+    let (idle, total) = (Duration::from_secs(5), Duration::from_secs(30));
+
+    let offered = Agents::new(env.clone(), runs.clone(), idle, total);
+    assert_eq!(offered.engines(true).len(), 1, "the fake command is where locate looks");
+    assert_eq!(offered.find("claude-code"), Some(Agent::ClaudeCode));
+
+    let agents = Agents::new(env, runs, idle, total).not_offered();
+    assert!(agents.engines(true).is_empty(), "the product offers no agent (#219)");
+    assert!(agents.find("claude-code").is_none(), "and no engine id finds one");
+    assert_eq!(Agent::of("claude-code"), Some(Agent::ClaudeCode), "the agent itself stays, for never_given");
+    assert_eq!(never_given("claude-code"), [Area::Mail], "so an old conversation keeps its data rule");
+}
+
 fn send_to_claude() -> Request {
     Request::SendMessage {
         conversation: None,

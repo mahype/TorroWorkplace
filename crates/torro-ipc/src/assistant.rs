@@ -101,8 +101,12 @@ pub enum EngineKind {
     /// A coding agent installed on this computer (engine B, task C.7): Claude Code. The core runs
     /// it without a terminal, with the suite's MCP server as its only tools and the key of the
     /// assistant's own client; no shell, no files. It picks its model itself unless `model`
-    /// in `assistant.send_message` names one of its [`Engine::models`] (`sonnet`); it is offered only
-    /// while the assistant has its client.
+    /// in `assistant.send_message` names one of its [`Engine::models`] (`sonnet`).
+    ///
+    /// **Not offered any more** (task C.18, issue #219): an agent was never set up, only found on
+    /// the computer, so nobody could see why it answered and nobody could switch it off; Claude is
+    /// an AI account with its own key now ([`EngineKind::Ai`]). The kind stays in the schema, so a
+    /// client that stored it keeps reading, and `assistant.list_engines` never returns it.
     Agent,
     /// The test engine ([`TEST_ENGINE`]): fixed answers, no model, no tools.
     Test,

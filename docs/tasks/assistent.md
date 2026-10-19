@@ -518,7 +518,9 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
   `torro-api-review` ohne Muss-Punkt.
 
 ### C.18 Antrieb B wird nicht mehr angeboten (Issue #219)
-- [ ] erledigt
+- [x] erledigt (Feld `Agents::offered`, `false` in `none()` und `system()`, `true` nur im
+  Test-Konstruktor `new()`, dazu `not_offered()` für den neuen Test; `engines` und `find` liefern
+  nichts, solange es `false` ist; `never_given` und `Agent::of` unangetastet)
 - **Modell:** Opus (Datenregel, geliehene Schlüssel) · **Braucht:** C.7 · **Dateien:**
   `crates/torroworkplace/src/assistant/engines/{mod,tests}.rs`, `crates/torroworkplace/src/assistant/mod.rs`,
   `crates/torro-ipc/src/assistant.rs`
