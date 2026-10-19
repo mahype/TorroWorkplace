@@ -11,9 +11,13 @@
 //!   is an object, where [`ToolCall::arguments`] is the text the model wrote;
 //! - the result of a tool is a `tool_result` block in a message of the **person**, and the results
 //!   of one round must sit in **one** message, else the model stops calling tools side by side;
-//! - no block may be empty, and the first message must be the person's.
+//! - no block may be empty, and the first message must be the person's;
+//! - the models think by default, and the `thinking` blocks of an answer must come back
+//!   **unchanged** with the assistant message of a tool round – dropped or rebuilt, the round
+//!   fails. They travel in [`ChatMessage::thinking`], which nothing reads into and nothing edits
+//!   (task KI.1e).
 //!
-//! [`chat_body`] does all four. A streamed answer comes as server-sent events, one JSON chunk per
+//! [`chat_body`] does all five. A streamed answer comes as server-sent events, one JSON chunk per
 //! `data:` line, each saying its own `type`; there is no `[DONE]` ([`StreamDecoder`]). Text and the
 //! `input` of a tool call both arrive in pieces, keyed by the block's `index`, and are handed out
 //! whole.
@@ -120,7 +124,9 @@ fn blocks_of(message: &ChatMessage) -> Option<(&'static str, Vec<Value>)> {
         Role::System => None,
         Role::User => Some(("user", vec![text_block(&message.content)])),
         Role::Assistant => {
-            let mut blocks = Vec::new();
+            // What the model thought comes first and exactly as it arrived: the protocol refuses
+            // an assistant message of a tool round whose thinking blocks were dropped or rebuilt.
+            let mut blocks = message.thinking.clone();
             // An assistant message that only calls tools gets no text block: an empty one is
             // refused. Blank counts as empty, or [`filled`] would put [`EMPTY`] into the model's
             // own earlier words.
@@ -190,9 +196,12 @@ pub fn parse_reply(body: &[u8]) -> Result<ChatReply, AiError> {
         .ok_or_else(|| format_error(tr("The answer has no message.")))?;
     let mut text = String::new();
     let mut tool_calls = Vec::new();
+    let mut thinking = Vec::new();
     for block in content {
         match block.get("type").and_then(Value::as_str) {
             Some("text") => text.push_str(block.get("text").and_then(Value::as_str).unwrap_or_default()),
+            // Kept whole and untouched, to travel back with the next request.
+            Some("thinking" | "redacted_thinking") => thinking.push(block.clone()),
             Some("tool_use") => {
                 let at = tool_calls.len();
                 tool_calls.push(ToolCall {
@@ -209,6 +218,7 @@ pub fn parse_reply(body: &[u8]) -> Result<ChatReply, AiError> {
         tool_calls,
         finish: finish_of(answer.get("stop_reason")).unwrap_or_default(),
         usage: usage_of(answer.get("usage"), None),
+        thinking,
     })
 }
 
@@ -233,10 +243,15 @@ pub struct StreamDecoder {
     /// Bytes after the last line break, waiting for the rest of their line.
     pending: Vec<u8>,
     text: String,
-    /// The `tool_use` blocks by their `index`; blocks of other kinds are not held.
+    /// The `tool_use` blocks by their `index`; blocks of other kinds are not held here.
     calls: HashMap<usize, PartialCall>,
     /// The order the `tool_use` blocks started in, so the calls come out as the server sent them.
     order: Vec<usize>,
+    /// The thinking blocks by their `index`, each as the object it will travel back as: the block
+    /// of `content_block_start` with its text and signature grown by the deltas.
+    thinking: HashMap<usize, Value>,
+    /// The order the thinking blocks started in.
+    thought: Vec<usize>,
     finish: Option<Finish>,
     usage: Option<Usage>,
     /// At least one chunk was read.
@@ -280,7 +295,15 @@ impl StreamDecoder {
                 arguments: call.arguments,
             })
             .collect();
-        Ok(ChatReply { text: self.text, tool_calls, finish: self.finish.unwrap_or_default(), usage: self.usage })
+        let thought = std::mem::take(&mut self.thought);
+        let thinking: Vec<Value> = thought.iter().filter_map(|index| self.thinking.remove(index)).collect();
+        Ok(ChatReply {
+            text: self.text,
+            tool_calls,
+            finish: self.finish.unwrap_or_default(),
+            usage: self.usage,
+            thinking,
+        })
     }
 
     fn line(&mut self, line: &[u8], on_text: &mut dyn FnMut(&str)) -> Result<(), AiError> {
@@ -325,44 +348,64 @@ impl StreamDecoder {
         }
     }
 
-    /// A block that starts: only a `tool_use` one is held, with the id and name the server gives it
-    /// here; its `input` follows piece by piece.
+    /// A block that starts: a `tool_use` one is held with the id and name the server gives it here
+    /// (its `input` follows piece by piece), a thinking one as the object it will travel back as.
+    /// A text block needs nothing: its pieces go straight into the answer.
     fn block_start(&mut self, chunk: &Value) {
         let Some(index) = index_of(chunk) else { return };
-        if chunk.pointer("/content_block/type").and_then(Value::as_str) != Some("tool_use") {
-            return;
-        }
-        let call = PartialCall {
-            id: text_of(chunk.pointer("/content_block/id")).unwrap_or_default(),
-            name: text_of(chunk.pointer("/content_block/name")).unwrap_or_default(),
-            arguments: String::new(),
-        };
-        if self.calls.insert(index, call).is_none() {
-            self.order.push(index);
+        match chunk.pointer("/content_block/type").and_then(Value::as_str) {
+            Some("tool_use") => {
+                let call = PartialCall {
+                    id: text_of(chunk.pointer("/content_block/id")).unwrap_or_default(),
+                    name: text_of(chunk.pointer("/content_block/name")).unwrap_or_default(),
+                    arguments: String::new(),
+                };
+                if self.calls.insert(index, call).is_none() {
+                    self.order.push(index);
+                }
+            }
+            Some("thinking" | "redacted_thinking") => {
+                let Some(block) = chunk.get("content_block").cloned() else { return };
+                if self.thinking.insert(index, block).is_none() {
+                    self.thought.push(index);
+                }
+            }
+            _ => {}
         }
     }
 
-    /// One piece of a block: text goes to the answer, the JSON of a call's `input` to that call.
-    /// What the model thinks is dropped.
+    /// One piece of a block, by what the delta says it is: text goes into the answer, the JSON of a
+    /// call's `input` to that call, and what the model thinks grows its block – not the answer, but
+    /// kept, because the block has to travel back whole.
     fn block_delta(&mut self, chunk: &Value, on_text: &mut dyn FnMut(&str)) {
-        let piece = chunk.pointer("/delta/text").and_then(Value::as_str);
+        let piece = |field: &str| chunk.pointer(&format!("/delta/{field}")).and_then(Value::as_str).unwrap_or_default();
         match chunk.pointer("/delta/type").and_then(Value::as_str) {
             Some("text_delta") => {
-                if let Some(piece) = piece.filter(|piece| !piece.is_empty()) {
-                    self.text.push_str(piece);
-                    on_text(piece);
+                let text = piece("text");
+                if !text.is_empty() {
+                    self.text.push_str(text);
+                    on_text(text);
                 }
             }
             Some("input_json_delta") => {
-                let Some(index) = index_of(chunk) else { return };
-                let part = chunk.pointer("/delta/partial_json").and_then(Value::as_str).unwrap_or_default();
+                let (Some(index), part) = (index_of(chunk), piece("partial_json")) else { return };
                 if let Some(call) = self.calls.get_mut(&index) {
                     call.arguments.push_str(part);
                 }
             }
-            // `thinking_delta` and `signature_delta`: no part of the answer.
+            // The two fields a thinking block grows by; both are text and both belong to it.
+            Some("thinking_delta") => self.grow("thinking", piece("thinking"), index_of(chunk)),
+            Some("signature_delta") => self.grow("signature", piece("signature"), index_of(chunk)),
             _ => {}
         }
+    }
+
+    /// Appends `part` to the field `field` of the thinking block `index`, so the block that goes
+    /// back is the one the server sent.
+    fn grow(&mut self, field: &str, part: &str, index: Option<usize>) {
+        let Some(block) = index.and_then(|index| self.thinking.get_mut(&index)) else { return };
+        let held = block.get(field).and_then(Value::as_str).unwrap_or_default();
+        block[field] = json!(format!("{held}{part}"));
     }
 }
 
@@ -802,6 +845,84 @@ mod tests {
         assert_eq!(blocks.len(), 1, "no text block for blank words: {body}");
         assert_eq!(blocks[0]["type"], "tool_use");
         assert!(!body.to_string().contains(EMPTY), "the model never reads its own words as (empty)");
+    }
+
+    /// Task KI.1e: the model thinks by default, and the protocol refuses a tool round whose
+    /// thinking blocks were dropped or rebuilt. This is the whole round in one test: the stream of
+    /// the first answer, then the body of the second request.
+    #[test]
+    fn the_thinking_of_a_tool_round_travels_back_exactly_as_it_arrived() {
+        let first = [
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":9,"output_tokens":1}}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check the "}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"calendar."}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqoB"}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"Cksg"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_1","name":"calendar_list_events"}}"#,
+            r#"data: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{}"}}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":4}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ]
+        .join("\n")
+            + "\n";
+
+        // Whatever the pieces, the block comes out whole and with both its fields.
+        for size in [1, 13, 97, first.len()] {
+            let (reply, pieces) = pushed(first.as_bytes(), size);
+            assert!(pieces.is_empty(), "thinking is not the answer's text, size {size}");
+            assert_eq!(reply.text, "", "size {size}");
+            assert_eq!(
+                reply.thinking,
+                vec![json!({"type": "thinking", "thinking": "Check the calendar.", "signature": "EqoBCksg"})],
+                "size {size}"
+            );
+        }
+
+        // The second request of the round: the answer's blocks go back untouched and first.
+        let (reply, _) = pushed(first.as_bytes(), 40);
+        let asked = ChatRequest {
+            messages: vec![
+                ChatMessage::user("What is on today?"),
+                ChatMessage::assistant(reply.text.clone(), reply.tool_calls.clone())
+                    .with_thinking(reply.thinking.clone()),
+                ChatMessage::tool("toolu_1", "[]"),
+            ],
+            ..request()
+        };
+        let body = chat_body(&asked, true);
+        let blocks = body["messages"][1]["content"].as_array().expect("blocks");
+        assert_eq!(blocks[0], reply.thinking[0], "unchanged, and before everything else");
+        assert_eq!(blocks[1]["type"], "tool_use", "the call follows its thinking");
+        assert_eq!(blocks.len(), 2, "no text block, the answer said nothing: {body}");
+    }
+
+    #[test]
+    fn a_redacted_thinking_block_also_travels_back_whole() {
+        let body = concat!(
+            r#"data: {"type":"content_block_start","index":0,"#,
+            r#""content_block":{"type":"redacted_thinking","data":"EroBCkYIBB"}}"#,
+            "\n",
+            "data: {\"type\":\"message_stop\"}\n",
+        );
+        let (reply, _) = pushed(body.as_bytes(), 7);
+        assert_eq!(reply.thinking, vec![json!({"type": "redacted_thinking", "data": "EroBCkYIBB"})]);
+
+        let whole = br#"{"type":"message","content":[
+            {"type":"redacted_thinking","data":"EroBCkYIBB"},
+            {"type":"text","text":"Done."}],"stop_reason":"end_turn"}"#;
+        let read = parse_reply(whole).expect("reply");
+        assert_eq!(read.text, "Done.");
+        assert_eq!(read.thinking, vec![json!({"type": "redacted_thinking", "data": "EroBCkYIBB"})]);
+    }
+
+    #[test]
+    fn a_protocol_without_thinking_sends_no_blocks_and_the_body_has_none() {
+        let body = chat_body(&request(), true);
+        assert!(!body.to_string().contains("thinking"), "nothing was kept, so nothing goes back: {body}");
+        let whole = br#"{"type":"message","content":[{"type":"text","text":"Hi."}],"stop_reason":"end_turn"}"#;
+        assert!(parse_reply(whole).expect("reply").thinking.is_empty());
     }
 
     #[test]

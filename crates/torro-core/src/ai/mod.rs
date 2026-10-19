@@ -360,6 +360,14 @@ pub struct ChatMessage {
     /// The call a [`Role::Tool`] message answers ([`ToolCall::id`]); `None` for the other roles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// What a protocol must get back **unchanged** with this assistant message, as it sent it
+    /// (task KI.1e): Anthropic's thinking blocks. Anthropic's models think by default, and it
+    /// refuses an assistant message of a tool round whose blocks were dropped or rebuilt, so the
+    /// answer's [`ChatReply::thinking`] travels back here. Opaque: nothing reads into it, nobody
+    /// edits it, and whoever continues a conversation carries it along. Empty for every other
+    /// protocol and for every other role.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking: Vec<serde_json::Value>,
 }
 
 impl ChatMessage {
@@ -377,13 +385,20 @@ impl ChatMessage {
         ChatMessage { tool_calls, ..ChatMessage::plain(Role::Assistant, text) }
     }
 
+    /// The same message with the blocks its protocol must get back unchanged
+    /// ([`ChatMessage::thinking`]); they come from the answer that wrote it
+    /// ([`ChatReply::thinking`]).
+    pub fn with_thinking(self, thinking: Vec<serde_json::Value>) -> ChatMessage {
+        ChatMessage { thinking, ..self }
+    }
+
     /// The result of the call `call_id`, as text (usually JSON, shortened by the caller).
     pub fn tool(call_id: impl Into<String>, text: impl Into<String>) -> ChatMessage {
         ChatMessage { tool_call_id: Some(call_id.into()), ..ChatMessage::plain(Role::Tool, text) }
     }
 
     fn plain(role: Role, text: impl Into<String>) -> ChatMessage {
-        ChatMessage { role, content: text.into(), tool_calls: Vec::new(), tool_call_id: None }
+        ChatMessage { role, content: text.into(), tool_calls: Vec::new(), tool_call_id: None, thinking: Vec::new() }
     }
 }
 
@@ -464,6 +479,13 @@ pub struct ChatReply {
     pub finish: Finish,
     /// `None` when the server does not count.
     pub usage: Option<Usage>,
+    /// The blocks the protocol must get back unchanged with this answer (task KI.1e): Anthropic's
+    /// thinking blocks, in the order they arrived. Whoever continues the conversation puts them
+    /// into the assistant message it writes ([`ChatMessage::with_thinking`]) and changes nothing in
+    /// them – dropping or rebuilding them breaks the next turn of a tool round. Empty for a
+    /// protocol that has none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking: Vec<serde_json::Value>,
 }
 
 /// Why asking a model or its server failed. The messages are for people, in the core's language

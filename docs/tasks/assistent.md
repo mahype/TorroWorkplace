@@ -15,7 +15,8 @@ KI.1a ── C.1 ──┬── C.2 ── C.3 ──┬── C.4 (App)
 C.8 (Skill-Datei und MCP-Prompt) parallel ab C.1
 C.9 (Sprache, Weckwort) nach C.4
 C.10 (Persönlichkeit, Gedächtnis) nach C.3
-KI.1b ── KI.1c ── KI.1d (Anbieter Anthropic, Issue #218) parallel ab KI.1a
+KI.1b ── KI.1c ──┬── KI.1d (Oberfläche)      (Anbieter Anthropic, Issue #218) parallel ab KI.1a
+                 └── KI.1e (Denk-Blöcke)
 ```
 
 ### KI.1a Kern: KI-Konten, OpenAI-kompatibel (vorgezogener Teil von KI.1)
@@ -154,6 +155,30 @@ KI.1b ── KI.1c ── KI.1d (Anbieter Anthropic, Issue #218) parallel ab KI.
   `a_refused_key_is_auth_stores_nothing_and_never_shows_the_key`). Agent `torro-api-review`. `cargo fmt --all`,
   `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`,
   `TORRO_LANG=de cargo test --workspace`.
+
+### KI.1e Denk-Blöcke einer Werkzeug-Runde gehen unverändert zurück (Issue #218)
+- [x] erledigt (Fund des Reviews, Schnittstellen-Änderung mit Rückfrage entschieden 2026-10-19)
+- **Modell:** Opus · **Braucht:** KI.1c · **Dateien:** `crates/torro-core/src/ai/{mod,anthropic,openai}.rs`,
+  `crates/torroworkplace/src/assistant/model.rs`
+- **Anlass:** Bei allen aktuellen Claude-Modellen ist Denken an, auch ohne `thinking` im Rumpf. Anthropic verlangt,
+  dass die `thinking`-Blöcke einer Antwort mit der Assistant-Nachricht einer Werkzeug-Runde **unverändert**
+  zurückgehen („dropping or editing them breaks the turn“); `assistant/model.rs` baute den Zug aus `text` und
+  `tool_calls` neu auf. Jede Unterhaltung mit Werkzeug wäre mit HTTP 400 abgebrochen oder hätte in genau den
+  Werkzeug-Runden das Denken verloren.
+- `ChatReply::thinking` und `ChatMessage::thinking`: die Blöcke, die ein Protokoll unverändert zurückbekommen muss,
+  als undurchsichtiges JSON. Niemand liest hinein, niemand ändert sie; `skip_serializing_if` hält gespeicherte
+  Unterhaltungen lesbar, und der OpenAI-Weg lässt sie leer. `ChatMessage::with_thinking` hängt sie an.
+- `ai::anthropic`: `parse_reply` sammelt `thinking` und `redacted_thinking`, der `StreamDecoder` setzt sie aus
+  `content_block_start` plus `thinking_delta` und `signature_delta` wieder zusammen, `blocks_of` schickt sie als
+  erste Blöcke der Assistant-Nachricht zurück.
+- **Grenze:** Innerhalb eines Laufs (eine Nachricht der Person samt Werkzeug-Runden) ist der Zug vollständig; über
+  mehrere Nachrichten hinweg baut der Kern den Verlauf aus dem Speicher neu auf, dort stehen die Blöcke nicht. Das
+  ist der von Anthropic als „recoverable“ beschriebene Fall (das Modell antwortet ohne das frühere Denken), nicht
+  der Fehler. Blöcke im Speicher wären eine eigene Aufgabe.
+- **Abnahme:** Ein Test über die ganze Runde: der Strom der ersten Antwort in beliebigen Stücken, dann der Rumpf
+  der zweiten Anfrage — der Block steht unverändert und vor allem anderen. Dazu `redacted_thinking`, und dass der
+  OpenAI-Weg nichts schickt. `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
+  `cargo test --workspace`, `TORRO_LANG=de cargo test --workspace`.
 
 ### KI.1d Anthropic in Accounts › Add › AI (Issue #218)
 - [x] erledigt (Sichtprüfung per Screenshot nicht möglich: `shoot.sh` braucht Hyprland, die Sitzung lief auf

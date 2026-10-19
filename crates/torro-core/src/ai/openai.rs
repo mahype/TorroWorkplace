@@ -136,6 +136,9 @@ pub fn parse_reply(body: &[u8]) -> Result<ChatReply, AiError> {
         tool_calls,
         finish: finish_of(answer.pointer("/choices/0/finish_reason")).unwrap_or_default(),
         usage: usage_of(answer.get("usage")),
+        // This protocol asks for nothing back; thinking, where a server reports it, is its own
+        // field of the answer and not a block that has to travel again.
+        thinking: Vec::new(),
     })
 }
 
@@ -200,7 +203,13 @@ impl StreamDecoder {
                 arguments: call.arguments,
             })
             .collect();
-        Ok(ChatReply { text: self.text, tool_calls, finish: self.finish.unwrap_or_default(), usage: self.usage })
+        Ok(ChatReply {
+            text: self.text,
+            tool_calls,
+            finish: self.finish.unwrap_or_default(),
+            usage: self.usage,
+            thinking: Vec::new(),
+        })
     }
 
     fn line(&mut self, line: &[u8], on_text: &mut dyn FnMut(&str)) -> Result<(), AiError> {

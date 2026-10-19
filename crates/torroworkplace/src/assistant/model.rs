@@ -586,7 +586,10 @@ impl Answering {
                     return Ok(());
                 }
             }
-            messages.push(ChatMessage::assistant(reply.text, reply.tool_calls.clone()));
+            // With its thinking blocks unchanged (task KI.1e): Anthropic refuses an assistant
+            // message of a tool round whose blocks were dropped or rebuilt, and the other protocol
+            // sends none.
+            messages.push(ChatMessage::assistant(reply.text, reply.tool_calls.clone()).with_thinking(reply.thinking));
             for call in &reply.tool_calls {
                 let Some(result) = self.call(call, reader).await else { return Ok(()) };
                 messages.push(ChatMessage::tool(call.id.clone(), result));
