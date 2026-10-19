@@ -29,11 +29,13 @@ benutzt nie den Schlüssel eines Agenten.
 4. **Daten nur dahin, wo du es erlaubt hast.** Je Quelle des Eingangs lässt sich festlegen, dass ihre
    Inhalte nur an **lokale** Modelle gehen (z. B. Mail und Messenger ja nur lokal, GitHub darf in die
    Cloud). Standard für Mail: nur lokal. Bis die Regeln je Quelle kommen (KI.1), gibt es dafür einen
-   Schalter (Aufgabe C.17, Einstellung `mail_to_cloud`): „Mail an Claude Code und Cloud-Modelle“ unter
+   Schalter (Aufgabe C.17, Einstellung `mail_to_cloud`): „Mail an Cloud-Modelle“ unter
    Mail in den Rechten des Assistenten und seiner Bots. Einschalten kann nur die Person selbst in der
-   Steuerzentrale; dann lesen auch Claude Code und Modelle außerhalb der eigenen Rechner Mail, soweit
-   die Rechte sie geben. Für Cloud-Modelle bleiben Einträge von Nextcloud und Talk weiter lokal (Claude
-   Code sieht über seinen Schlüssel die Quellen des Eingangs, die ihm die Rechte geben, wie schon vorher).
+   Steuerzentrale; dann lesen auch Modelle außerhalb der eigenen Rechner Mail, soweit
+   die Rechte sie geben. Für Cloud-Modelle bleiben Einträge von Nextcloud und Talk weiter lokal.
+   Der Schalter hieß bis Issue #219 „Mail an Claude Code und Cloud-Modelle“; Agenten als Antrieb
+   (Antrieb B in [assistent.md](assistent.md)) werden nicht mehr angeboten, die Sperre gilt aber
+   weiter für jeden Agenten-Antrieb, falls einer zurückkommt.
    Die Regel gilt ab der nächsten Antwort; eine laufende Antwort behält, was beim Start galt.
    **Lokal heißt: das Modell rechnet auf einem eigenen Rechner**, nicht „der Server ist lokal“. Modelle
    von Ollama mit `:cloud` laufen über das lokale Ollama auf `ollama.com` und gelten als entfernt

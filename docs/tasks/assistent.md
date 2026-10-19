@@ -291,7 +291,11 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
 - **Abnahme:** `torro-design-review`; Änderung wirkt in einer laufenden Unterhaltung ab der nächsten Anfrage.
 
 ### C.7 Antrieb B: Claude Code und Codex
-- [x] erledigt (nur Claude Code: Codex hat keine Positivliste für Werkzeuge, „Dateien und Shell immer aus“ lässt sich
+- [x] erledigt, **aber nicht mehr angeboten** (C.18, Issue #219): Antrieb B war nie eingerichtet, nur
+  gefunden — kein Konto, kein Schlüssel, kein Eintrag, also sah niemand, warum dort Claude antwortet,
+  und niemand konnte es abschalten. Seit KI.1b–KI.1d ist Claude ein KI-Konto mit eigenem Schlüssel.
+  Der Code bleibt vollständig liegen, `Agents::offered` ist im Produkt `false`. Ursprünglich erledigt
+  (nur Claude Code: Codex hat keine Positivliste für Werkzeuge, „Dateien und Shell immer aus“ lässt sich
   dort nicht zusichern; Schlüssel je Lauf geliehen, nur im Speicher und in der Umgebung des Agenten; Mail nie an
   Agenten (Datenregel); Verlauf wird je Nachricht mitgeschickt, keine Sitzung beim Agenten; nachgetragen
   (Koordination): `crates/torroworkplace/src/{clients,core}.rs` (geliehene Schlüssel, Protokoll mit Antrieb),
@@ -488,7 +492,9 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
 
 ### C.17 Datenregel für Mail als Schalter (vorgezogener Teil von KI.1)
 - [x] erledigt (Antworten aus Einträgen jeder Quelle bleiben auch mit Schalter lokal, weil der Kern ihre Quelle nicht
-  nennt; Claude Code sah Talk- und Nextcloud-Einträge seiner Quellen schon vorher)
+  nennt; Claude Code sah Talk- und Nextcloud-Einträge seiner Quellen schon vorher). Der Schalter heißt seit C.20
+  (Issue #219) „Mail to cloud models“, weil Antrieb B nicht mehr angeboten wird (C.18); was er sperrt, ist
+  unverändert — `Lack::NeverToAgents` gilt weiter für jeden Agenten-Antrieb.
 - **Modell:** Opus · **Braucht:** C.14, C.16 · **Dateien:** `crates/torro-core/src/{settings,i18n/de}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/{core,clients,settings_service}.rs`,
   `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/ui/{assistant,agents,bots,general}.rs`,
@@ -579,7 +585,11 @@ C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #
   `torro-design-review`); `fmt`, `clippy`, `test` (auch `TORRO_LANG=de`).
 
 ### C.20 Der Mail-Schalter heißt nach den Cloud-Modellen (Issue #219)
-- [ ] erledigt
+- [x] erledigt (Schalter „Mail to cloud models“ / „Mail an Cloud-Modelle“; `Lack::NeverToAgents` und
+  `Lack::NeverToAgents::message` bleiben inhaltlich, nur der genannte Schaltername zieht nach;
+  nachgetragen (zwingend mechanisch): `crates/torro-core/src/settings.rs` — der Doc-Kommentar des
+  Feldes `mail_to_cloud` nennt Claude Code und steht in `docs/api-reference.md`, sonst wäre die
+  Referenz nach dem Neuerzeugen weiter falsch)
 - **Modell:** Haiku · **Braucht:** C.18 · **Dateien:** `crates/torroworkplace/src/ui/agents.rs`,
   `crates/torro-ipc/src/{api,lib}.rs`, `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`,
   `docs/tasks/{assistent,steuerzentrale}.md`, `docs/{assistent,ki,settings}.md`

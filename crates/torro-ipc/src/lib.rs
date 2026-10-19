@@ -2287,7 +2287,8 @@ pub enum SettingKey {
     /// windows follow (`torro_core::settings::MailAppearance`).
     MailAppearance,
     /// The data rule for mail (task C.17): `false` (the default) keeps mail with models on the
-    /// person's own computers; `true` lets it go to Claude Code and to models elsewhere as well.
+    /// person's own computers; `true` lets it go to models elsewhere as well, and to any coding
+    /// agent that drives the assistant where one is offered (none since task C.18, issue #219).
     /// Only the app key may send `true` – a person in the control centre (point 6 of "Was nie nach
     /// außen geht", `docs/api.md`); a client gets `forbidden`, whatever its rights, so no agent
     /// can let mail out to itself. Any client allowed to change settings may send `false`.

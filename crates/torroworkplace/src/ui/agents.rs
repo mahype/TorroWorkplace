@@ -353,8 +353,8 @@ pub enum Message {
     Confirm(Confirm),
     /// A segment of "Send on my behalf".
     Outbound(Outbound),
-    /// "Mail to Claude Code and cloud models" under Mail of the assistant and its bots (task C.17):
-    /// the data rule, a setting of the suite (`settings.set_setting mail_to_cloud`), not a right.
+    /// "Mail to cloud models" under Mail of the assistant and its bots (task C.17): the data rule,
+    /// a setting of the suite (`settings.set_setting mail_to_cloud`), not a right.
     MailToCloud(bool),
     /// "All" (`true`) or "Selected" of a selection.
     All(Pick, bool),
@@ -1707,15 +1707,16 @@ fn shows_data_rule(kind: &str) -> bool {
     kind == ASSISTANT_CLIENT || kind == BOT_CLIENT
 }
 
-/// "Mail to Claude Code and cloud models" (task C.17): off, only AI accounts on the person's
-/// computers read the mail granted above; on, Claude Code and models elsewhere too.
+/// "Mail to cloud models" (task C.17): off, only AI accounts on the person's computers read the
+/// mail granted above; on, models elsewhere too. Named after what it still does: coding agents are
+/// not offered as engines any more (task C.18, issue #219), what it blocks has not changed.
 fn data_rule_row<'a>(mail_to_cloud: bool, column: Option<f32>) -> Element<'a, Message> {
     let switch = toggler(mail_to_cloud).size(style::CHECK_SIZE).style(style::toggler).on_toggle(Message::MailToCloud);
     let detail = match mail_to_cloud {
         false => tr("Off: only AI accounts on your own computers read mail"),
         true => tr("Mail goes to the model's provider and can't be taken back"),
     };
-    setting_row(None, tr("Mail to Claude Code and cloud models"), Some(detail.to_string()), in_column(switch, column))
+    setting_row(None, tr("Mail to cloud models"), Some(detail.to_string()), in_column(switch, column))
 }
 
 /// The line under "Send on my behalf": what sending means, so "Never" reads as a real choice.
