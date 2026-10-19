@@ -73,8 +73,8 @@ pub const TEST_ENGINE: &str = "test";
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Engine {
     /// What `assistant.send_message` takes as `engine`: an AI account's id
-    /// (`ai:ollama@localhost:11434`), an agent's id (`claude-code`, [`EngineKind::Agent`]), or
-    /// [`TEST_ENGINE`].
+    /// (`ai:ollama@localhost:11434`) or [`TEST_ENGINE`]. An agent's id (`claude-code`,
+    /// [`EngineKind::Agent`]) is not offered any more (issue #219) and answers `not-found`.
     pub id: String,
     pub kind: EngineKind,
     /// What to call it: the AI account's label (`Ollama`, `OpenRouter`), the agent's name
@@ -101,8 +101,12 @@ pub enum EngineKind {
     /// A coding agent installed on this computer (engine B, task C.7): Claude Code. The core runs
     /// it without a terminal, with the suite's MCP server as its only tools and the key of the
     /// assistant's own client; no shell, no files. It picks its model itself unless `model`
-    /// in `assistant.send_message` names one of its [`Engine::models`] (`sonnet`); it is offered only
-    /// while the assistant has its client.
+    /// in `assistant.send_message` names one of its [`Engine::models`] (`sonnet`).
+    ///
+    /// **Not offered any more** (task C.18, issue #219): an agent was never set up, only found on
+    /// the computer, so nobody could see why it answered and nobody could switch it off; Claude is
+    /// an AI account with its own key now ([`EngineKind::Ai`]). The kind stays in the schema, so a
+    /// client that stored it keeps reading, and `assistant.list_engines` never returns it.
     Agent,
     /// The test engine ([`TEST_ENGINE`]): fixed answers, no model, no tools.
     Test,

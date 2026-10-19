@@ -108,8 +108,8 @@ impl SettingsStore {
     /// Nor does a client switch the microphone on (point 6 of "Was nie nach außen geht",
     /// task C.9): voice stays off when it is off as stored now, whatever `new` says. The core
     /// refuses such a request before (`forbidden`); this keeps it so when a person switched voice
-    /// off between that check and the write. The same holds for letting mail go to Claude Code and
-    /// cloud models (`mail_to_cloud`, task C.17): a client may keep it local, never let it out.
+    /// off between that check and the write. The same holds for letting mail go to cloud models
+    /// (`mail_to_cloud`, task C.17): a client may keep it local, never let it out.
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);

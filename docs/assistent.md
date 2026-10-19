@@ -33,6 +33,12 @@ Modelle (Qwen, Llama, Mistral, DeepSeek, GLM …) über eine Schnittstelle und e
 Geschlossene Modelle und fertige Agenten sind möglich, stehen aber hinten.
 
 Der Assistent hat dafür zwei **Antriebe**; Oberfläche, Befehle und Rechte sind dieselben.
+**Antrieb B wird seit Issue #219 nicht mehr angeboten** (Aufgaben C.7 und C.18): Er war nie
+eingerichtet, sondern nur gefunden — es gab kein Konto, keinen Schlüssel und keinen Eintrag, also
+sah niemand, warum dort Claude antwortet, und niemand konnte ihn abschalten. Claude läuft seit
+KI.1b–KI.1d als KI-Konto über das Anthropic-Protokoll, mit eigenem Schlüssel wie jeder andere
+Anbieter. Codex war als Antrieb ohnehin nie möglich (keine Positivliste für Werkzeuge). Der Code
+bleibt liegen; die Spalte unten beschreibt, was er tut, falls er je zurückkommt.
 
 | | **A: KI-Konto (eigener Antrieb)** – zuerst | **B: Agent als Antrieb** – danach |
 |---|---|---|

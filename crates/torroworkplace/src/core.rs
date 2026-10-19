@@ -4663,7 +4663,7 @@ impl Core {
 
     /// Whether `request` from a client switches on through the whole settings what only a person
     /// switches on (`settings.update_settings` with it on while it is off): the microphone (point
-    /// 6) and mail to Claude Code and cloud models (`mail_to_cloud`, task C.17), refused like
+    /// 6) and mail to cloud models (`mail_to_cloud`, task C.17), refused like
     /// `settings.set_setting` with `true` ([`torro_ipc::api::Rights::allows_request`]), which
     /// carries the value itself.
     fn switches_on_for_people(&self, request: &Request) -> bool {
@@ -5895,7 +5895,7 @@ mod tests {
         assert!(!settings(&core).await.voice.enabled, "off once the person allowed it");
     }
 
-    /// Task C.17: no client lets mail go to Claude Code and cloud models, not with every right,
+    /// Task C.17: no client lets mail go to cloud models, not with every right,
     /// neither one setting at a time nor with the whole settings; keeping it local again is an
     /// admin change like any other, after approval. Only the app key switches it on.
     #[tokio::test]

@@ -2,8 +2,14 @@
 //! this computer answers in the assistant, without a terminal, with the suite's MCP server as its
 //! only tools. Claude Code is such an agent ([`claude`]); Codex is not offered (below).
 //!
-//! - **Offered** ([`Agents::engines`]) when the agent's command is found as "Connect agent" finds
-//!   it ([`crate::client_setup::Target::locate`]: on the `PATH`, Claude Code also in
+//! - **Not offered any more** (task C.18, issue #219): an agent was never set up, only *found*, so
+//!   nobody could see why Claude answered in the assistant and nobody could switch it off. Claude
+//!   is an AI account with its own key now (engine A, `docs/ki.md`). [`Agents::offered`] is `false`
+//!   in the product, there is no switch, and this module stays as it is: bringing engine B back
+//!   means turning one `false` around.
+//! - **Offered** ([`Agents::engines`]) while [`Agents::offered`] — only the test constructor
+//!   ([`Agents::new`]) — when the agent's command is found as "Connect agent" finds it
+//!   ([`crate::client_setup::Target::locate`]: on the `PATH`, Claude Code also in
 //!   `~/.local/bin` and `~/.claude/local`) **and** the assistant has its own client: the agent
 //!   runs with that client's key, so without one it could do nothing (decision 5: one client
 //!   "Assistant" for every engine).
@@ -27,7 +33,7 @@
 //!   minus the areas switched off in the conversation and minus `mail`: an agent sends what it
 //!   reads to its provider, and the data rule (`super::data_rule`, `docs/ki.md`: mail only to
 //!   models on the person's computers) keeps mail from it, unless the person lets mail go to
-//!   Claude Code and cloud models (setting `mail_to_cloud`, task C.17; read when the run starts).
+//!   cloud models (setting `mail_to_cloud`, task C.17; read when the run starts).
 //!   Without mail rights the inbox hides the entries of mail accounts too
 //!   (`Rights::reaches_source`). The core checks this, not the agent.
 //! - **History**: the agent keeps no session (`--no-session-persistence`); every message carries
@@ -103,7 +109,7 @@ const DETAIL_CHARS: usize = 300;
 const NEVER_TO_AGENTS: &[Area] = &[Area::Mail];
 
 /// The areas a run of an agent goes without under `rule`: [`NEVER_TO_AGENTS`], or none once the
-/// person let mail go to Claude Code and cloud models.
+/// person let mail go to cloud models.
 fn withheld_from_agents(rule: DataRule) -> &'static [Area] {
     match rule.mail_to_cloud {
         true => &[],
@@ -164,6 +170,11 @@ impl Agent {
 
 /// Where the agents are found and how their runs are bounded.
 pub struct Agents {
+    /// Whether agents are offered as engines at all (task C.18, issue #219). `false` everywhere in
+    /// the product, with no switch and no environment variable; only the test constructor
+    /// ([`Agents::new`]) sets it, so the tests of task C.7 keep running and no symbol here goes
+    /// unused. Turning engine B back on means setting this `true` in [`Agents::system`] again.
+    offered: bool,
     /// Where to look for the agents' commands, and the `torroworkplace` their MCP configuration
     /// runs ([`Env::program`]); `None` offers no agent (tests that bring none, no home directory).
     env: Option<Env>,
@@ -176,21 +187,28 @@ pub struct Agents {
 impl Agents {
     /// No agents: what an assistant gets unless it is the user's ([`Agents::system`]).
     pub fn none() -> Agents {
-        Agents { env: None, runs: None, idle: IDLE, total: TOTAL }
+        Agents { offered: false, env: None, runs: None, idle: IDLE, total: TOTAL }
     }
 
     /// The user's: the commands on this process's `PATH` and in the agents' own folders, the runs
-    /// in `<state>/assistant-runs`.
+    /// in `<state>/assistant-runs` — found, but not offered (issue #219).
     pub fn system() -> Agents {
         let runs = AppPaths::for_app(AppId::WORKPLACE).map(|paths| paths.state.join("assistant-runs"));
-        Agents { env: Env::current(), runs, idle: IDLE, total: TOTAL }
+        Agents { offered: false, env: Env::current(), runs, idle: IDLE, total: TOTAL }
     }
 
-    /// Agents found in `env`, their runs in `runs`, stopped after `idle` without output or
-    /// `total` in all; for tests.
+    /// Agents found in `env` and offered, their runs in `runs`, stopped after `idle` without
+    /// output or `total` in all; for tests.
     #[cfg(test)]
     pub fn new(env: Env, runs: PathBuf, idle: Duration, total: Duration) -> Agents {
-        Agents { env: Some(env), runs: Some(runs), idle, total }
+        Agents { offered: true, env: Some(env), runs: Some(runs), idle, total }
+    }
+
+    /// The same agents, found but not offered — what the product does ([`Agents::system`]); for
+    /// tests.
+    #[cfg(test)]
+    pub fn not_offered(self) -> Agents {
+        Agents { offered: false, ..self }
     }
 
     /// The command of `agent` when it is installed: found as "Connect agent" finds it, through its
@@ -203,9 +221,10 @@ impl Agents {
         }
     }
 
-    /// The agents that can answer: installed, and only while the assistant has its own `client`.
+    /// The agents that can answer: offered ([`Agents::offered`], never in the product since issue
+    /// #219), installed, and only while the assistant has its own `client`.
     pub fn engines(&self, client: bool) -> Vec<Engine> {
-        if !client {
+        if !self.offered || !client {
             return Vec::new();
         }
         Agent::ALL
@@ -221,8 +240,13 @@ impl Agents {
             .collect()
     }
 
-    /// The installed agent with the engine id `id`.
+    /// The offered and installed agent with the engine id `id`; nothing in the product (issue
+    /// #219). Not [`never_given`]'s question: that one asks [`Agent::of`], so an engine id of an
+    /// older conversation keeps its data rule even though no agent is offered any more.
     pub fn find(&self, id: &str) -> Option<Agent> {
+        if !self.offered {
+            return None;
+        }
         Agent::of(id).filter(|agent| self.command(*agent).is_some())
     }
 }

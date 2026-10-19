@@ -1,6 +1,6 @@
 //! The data rule of the assistant (task C.2, `docs/ki.md` principle 4): which results of its tools
 //! a model may read. Mail stays with models on the person's own computers unless the person lets it
-//! go to Claude Code and cloud models (setting `mail_to_cloud`, task C.17, [`DataRule`]); a model
+//! go to cloud models (setting `mail_to_cloud`, task C.17, [`DataRule`]); a model
 //! elsewhere reads "withheld by your data rule" instead.
 //!
 //! Per-source rules ("GitHub may go to the cloud, Messenger only local") are task KI.1. Until then
@@ -103,7 +103,7 @@ pub fn place_of(provider: AiProvider, server: &str, model: &AiModel) -> Place {
 /// `mail_to_cloud` as it is when a run starts. The default keeps mail local.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DataRule {
-    /// Mail may go to Claude Code and to models elsewhere as well.
+    /// Mail may go to models elsewhere as well.
     pub mail_to_cloud: bool,
 }
 

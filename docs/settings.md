@@ -54,7 +54,7 @@ folgen bewusst demselben Muster; die Steuerzentrale übernimmt es, nur mit Iced 
 |---|---|---|
 | **Overview** | Auf einen Blick: Dienst läuft, Tiling-Manager erkannt, Konten (Zahl, Probleme), letzter Sync, „Needs your attention“ mit Konten, die eine neue Anmeldung brauchen | v1 |
 | **Accounts** | Liste der Konten als Karten, „Add account“, Detailseite je Konto (siehe unten): Status, Verbindung, Dienste, Entfernen | v1 |
-| **AI** (KI) | Anbieter von Modellen einrichten (Ollama, LM Studio, OpenRouter, OpenAI-kompatibel, Claude Code), ihre Modelle an- und abschalten, die Datenregel „Mail to Claude Code and cloud models“. Siehe [KI](#ki) | S.24–S.26 |
+| **AI** (KI) | Anbieter von Modellen einrichten (Ollama, LM Studio, OpenRouter, OpenAI-kompatibel, Anthropic), ihre Modelle an- und abschalten, die Datenregel „Mail to cloud models“. Siehe [KI](#ki) | S.24–S.26 |
 | **Agents & API** | Alle Programme mit Rechten: Agenten und Skripte (wie TorroMail: Karte je Client, eigener Schlüssel), **der Assistent und jeder Bot**; Rechte je Bereich und Sammlung, Freigabe-Stufe. Konzept: [api.md](api.md) | v1, Assistent und Bots mit S.21 |
 | **Approvals** | Was Agenten zur Freigabe vorlegen, und was entschieden wurde | v1 |
 | **Workspaces** | Vorlagen: umbenennen, löschen, Tastenplatz F1–F10, beim Anmelden laden; Strategie je Fenster | v1 (Liste, Umbenennen, Löschen), Rest später |
@@ -230,17 +230,19 @@ Schlüsselbund).
 
 - **„Providers“:** eine Karte je Anbieter mit Name, Adresse bzw. „Found on this computer“, Status
   (verbunden, Server aus, Schlüssel abgelehnt) und der Zahl angeschalteter Modelle. Reihenfolge Open
-  First: zuerst, was auf diesem Rechner installiert ist (Ollama, LM Studio, Claude Code), dann
-  OpenRouter, dann andere OpenAI-kompatible Server. „Installiert“ ist nicht „rechnet hier“: Claude Code
-  läuft hier, rechnet aber bei Anthropic, und die `:cloud`-Modelle von Ollama auf `ollama.com`.
-  Der Ort jedes Modells steht an seiner Zeile.
+  First: zuerst, was auf diesem Rechner installiert ist (Ollama, LM Studio), dann
+  OpenRouter, dann andere OpenAI-kompatible Server, dann geschlossene Anbieter (Anthropic, OpenAI,
+  Google). „Installiert“ ist nicht „rechnet hier“: Die `:cloud`-Modelle von Ollama laufen über das
+  lokale Ollama, rechnen aber auf `ollama.com`. Der Ort jedes Modells steht an seiner Zeile.
 - **„Add provider“** öffnet den bekannten Dialog direkt bei den KI-Anbietern: „On this computer“
   (gefundene Server mit „Connect“), OpenRouter (API-Schlüssel), „Other OpenAI-compatible server“
   (Adresse, optional Schlüssel). Erst nach erfolgreicher Prüfung ist der Anbieter da.
-- **Claude Code** erscheint als Anbieter, sobald es auf diesem Computer gefunden wird; einzurichten
-  gibt es nichts. Seine Modelle (Opus, Sonnet, Haiku) schaltet man an und ab wie die anderen; ihr Ort
-  ist „Cloud (Anthropic)“. Codex
-  bleibt außen vor ([assistent.md](assistent.md): kein Weg, nur die Werkzeuge der Suite zu erlauben).
+- **Claude ist ein Anbieter wie jeder andere:** ein KI-Konto über das Anthropic-Protokoll mit eigenem
+  Schlüssel (KI.1b–KI.1d), Ort „Cloud (Anthropic)“. **Claude Code** erscheint hier *nicht* — der Weg
+  über die gefundene CLI (Antrieb B in [assistent.md](assistent.md)) wird seit Issue #219 nicht mehr
+  angeboten: Er war nie eingerichtet, nur gefunden, also gab es nichts anzuzeigen und nichts
+  abzuschalten. Codex bleibt ebenfalls außen vor (kein Weg, nur die Werkzeuge der Suite zu erlauben).
+  Claude Code unter „Agents & API“ ist etwas anderes: Dort ruft der Agent die Suite über MCP.
 - **Ein Anbieter aufgeklappt** (Unterseite „‹ AI › Ollama“): Status und Verbindung, darunter
   **„Models“**: eine Zeile je Modell mit Name, Merkmalen (Tools, Thinking, Context), dem Ort, an dem es
   rechnet („On this computer“, „Ollama Cloud“, „Cloud“), und einem **Schalter**. Modelle ohne
@@ -251,7 +253,7 @@ Schlüsselbund).
   Ist keins an, sagen sie es in einem Satz mit „Turn on models in Settings › AI“.
 - **Am Anfang an:** alle Modelle mit Werkzeugen, die **auf diesem Rechner rechnen** (Ollama ohne
   `:cloud`, LM Studio, OpenAI-kompatible Server an einer Adresse dieses Rechners). Modelle, die anderswo
-  rechnen (Ollama Cloud, Claude Code, OpenRouter, Server im Netz), sind aus, bis man sie anschaltet:
+  rechnen (Ollama Cloud, OpenRouter, Anthropic, Server im Netz), sind aus, bis man sie anschaltet:
   Open First, und so geht ohne Zutun nichts in die Cloud. Ausnahme: Ein Modell, das ein Modul schon
   nutzt (gespeicherter Standard, ein Bot), ist an. Neue Modelle, die hier rechnen, kommen an dazu,
   solange der Mensch an diesem Anbieter noch nichts ausgeschaltet hat.
@@ -418,7 +420,7 @@ Approval, bis zu fünf Auswahlgruppen, Voice, Microphone, Programs on this compu
 | New chats (The one used last, Engine), Model, Effort | womit ein neuer Chat beginnt | Assistant › New chats, Model, Effort; Einrichtung › AI › Use for (nur Engine) | `assistantDefault` | `set_setting assistant_default` | Assistent | bleibt, Assistent |
 | Engines (Zeile je KI-Konto) | nur Anzeige, führt zu Accounts | Assistant › Engines | – | `assistant.list_engines` | – | streichen, ersetzt durch Verweis auf AI |
 | What the assistant may use (Stufe je Bereich), Approval (Ask first), Auswahl (All/Selected je Kalender, Liste, Repo, Quelle, Mail-Konto), Send on my behalf, Admin-Schalter | Rechte des Assistenten | Assistant › Rechte-Gruppen (`agents::rights_groups`) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | umziehen nach Agents & API |
-| Mail to Claude Code and cloud models | Datenregel für Mail, **gilt für die ganze Suite** | Assistant; jede Bot-Seite | `mailToCloud` | `set_setting mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort |
+| Mail to cloud models | Datenregel für Mail, **gilt für die ganze Suite** | Assistant; jede Bot-Seite | `mailToCloud` | `set_setting mail_to_cloud` (anschalten nur Menschen) | alle KI-Nutzer | umziehen nach AI, ein Ort |
 | Profile: Name, Description, Picture, Personality | wer der Assistent ist und wie er spricht | Assistant › Profile (Unterseite) | `<config>/assistant/profile.json`, `persona.md` | `assistant.update_profile` | Assistent | bleibt, Assistent |
 | Memory: Add note, Edit, Forget | Gedächtnis | Assistant › Profile › Memory | `memory.md` | `assistant.remember`, `assistant.forget` | Assistent | bleibt, Assistent |
 | Bots (Zeile je Bot) › What the bot may use … | Rechte eines Bots | Assistant › Bots › Bot; Assistent-App › Bot-Editor › Access (nur Stufen und Ask first) | `clients.json` | `clients.update_client`, MCP bewusst nie | Assistent | umziehen nach Agents & API; der Bot-Editor verweist dorthin |

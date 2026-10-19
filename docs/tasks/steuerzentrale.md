@@ -491,7 +491,7 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
   `docs/api.md`, `docs/api-reference.md`
 - **Neuer Befehl:** `Request::SetModelEnabled { account, model, enabled }` · `ai.set_model_enabled` · Bereich `ai` ·
   Admin. Schaltet ein Modell eines Anbieters für die ganze Suite an oder aus. Fehlercodes: `not-found` (kein solcher
-  Anbieter; Claude Code nicht gefunden; Anschalten eines Modells, das der Anbieter nicht meldet; Ausschalten geht auch
+  Anbieter; Anschalten eines Modells, das der Anbieter nicht meldet; Ausschalten geht auch
   dann), `offline`, `auth`, `not-connected`, `busy` (Anschalten fragt den Server nach seinen Modellen),
   `forbidden`. Katalogbeschreibung englisch: „Turns a model of an AI provider on or off for the whole suite; modules
   offer only models that are on. Turning on a model that runs elsewhere is kept for people.“
@@ -501,42 +501,38 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
   Die Zusammenfassung der Freigabe (`approvals::Facts`) nimmt Anbieter, Modell und Ort aus der Liste des Kerns, nie aus
   dem Text des Clients.
 - **Lesen:** `ai.list_models` liefert je Modell das neue Feld `enabled` (verträglich, `#[serde(default)]`; der Kern
-  setzt es aus der Ablage, `account/ai.rs` setzt es beim Abfragen des Servers nie). `account` darf auch die Engine
-  `claude-code` sein, unter derselben Bedingung, unter der `assistant.list_engines` sie anbietet (Befehl gefunden **und**
-  der Assistent hat seinen Client): dann die Modelle aus `engines::claude::models()` mit `remote: true`, `all` wird
-  ignoriert; sonst `not-found`. Doc-Kommentar von `Request::AiModels` und Katalogtext von `ai.list_models` nennen das
-  („or an engine id from assistant_list_engines“), auch dass Leserecht in `ai` damit verrät, ob Claude Code installiert
-  ist.
+  setzt es aus der Ablage, `account/ai.rs` setzt es beim Abfragen des Servers nie). `account` ist immer ein KI-Konto:
+  Die Kennung `claude-code` nimmt `ai.list_models` **nicht** (geändert mit #219, C.18 — Antrieb B wird nicht mehr
+  angeboten, und Leserecht in `ai` soll nicht verraten, ob ein Befehl auf dem Rechner liegt); für ein unbekanntes
+  `account` bleibt es `not-found`.
 - **Ablage:** eigene Datei `<config>/ai-models.json` (0600, atomar geschrieben): je Anbieter die angeschalteten Modelle und
   ob der Mensch dort schon etwas ausgeschaltet hat. **Nicht** in `settings.json`, damit `settings.update_settings`
   (Bereich `settings`) die Rechte in `ai` nicht umgeht und gleichzeitige Schaltvorgänge nicht überschreibt. Protokoll
   (`audit.rs`) nur mit Anbieter und `enabled`, ohne Modellnamen.
 - **Regel am Anfang** (settings.md › KI): an sind die Modelle mit Werkzeugen, die auf diesem Rechner rechnen; aus sind
-  Ollama Cloud, Claude Code, OpenRouter und Server im Netz. Beim ersten Start nach dem Update sind zusätzlich die
+  Ollama Cloud, OpenRouter, Anthropic und Server im Netz. Beim ersten Start nach dem Update sind zusätzlich die
   Modelle an, die schon genutzt werden: `assistant_default` und die Modelle der Bots. Die pro Unterhaltung gewählten
   Modelle schalten nichts an; sie fallen wie unten auf „Automatic“, mit Hinweis.
 - **Der Kern hält sich daran, in dieser Reihenfolge:** erst das Modell (ein gespeichertes, aber abgeschaltetes wird
   durch „Automatic“ unter den angeschalteten Modellen desselben Anbieters ersetzt, lokal zuerst wie S.23), dann der Ort,
-  dann Datenregel, Prompt und `local_only` (wie S.23). Das gilt für `assistant.send_message`, Bots ohne oder mit
-  abgeschaltetem Modell (`delegate.rs`) und Engine B: Für Claude Code übergibt der Kern immer ausdrücklich ein
-  angeschaltetes Modell (`--model`), nie „Claude Code wählt selbst“.
+  dann Datenregel, Prompt und `local_only` (wie S.23). Das gilt für `assistant.send_message` und Bots ohne oder mit
+  abgeschaltetem Modell (`delegate.rs`). Engine B fällt weg: Sie wird seit #219 (C.18) nicht mehr angeboten.
 - **Ein Anbieter ganz aus:** `assistant.list_engines` nennt nur Anbieter mit mindestens einem angeschalteten Modell
-  (Katalogtext nachziehen: KI-Konten **und** Claude Code, mit `models`). `send_message` und `ask_bot` mit einer solchen
+  (Katalogtext nachziehen: KI-Konten, mit `models`). `send_message` und `ask_bot` mit einer solchen
   Engine antworten `unsupported` mit „Turn on a model of {provider} in Settings › AI.“; kein Ausweichen auf einen
   anderen Anbieter. Die Beschreibungen von `assistant.send_message` und `bots.save_bot` sagen, dass ein abgeschaltetes
   Modell ersetzt wird und die Antwort das gewählte nennt.
 - **Oberfläche:** Steuerzentrale › AI (S.25)
 - **API:** `Request::SetModelEnabled` · `ai.set_model_enabled` · Admin; `Request::AiModels` · `ai.list_models` · Read
-  (neues Feld `enabled`, Engine `claude-code`)
+  (neues Feld `enabled`)
 - **MCP:** `ai_set_model_enabled` (Admin, beim Agenten mit Freigabe; entfernte Modelle anschalten nur Menschen);
   `ai_list_models` (Beschreibung ergänzt)
 - **Abnahme:** Handler-Tests (Temp-Verzeichnisse, gefälschter Ollama):
   - Schalten wirkt, überlebt einen Neustart und steht nicht in `settings.get_settings`;
-  - Regel am Anfang: lokales Modell an, `:cloud`, OpenRouter und Claude Code aus; genutzter Standard und Bot-Modell an;
+  - Regel am Anfang: lokales Modell an, `:cloud`, OpenRouter und Anthropic aus; genutzter Standard und Bot-Modell an;
   - ein Agent kann ein entferntes Modell nicht anschalten (`forbidden`), ein lokales nur mit Freigabe;
   - ist ein lokales Modell aus und nur ein `:cloud`-Modell desselben Kontos an, nimmt „Automatic“ das Cloud-Modell **und**
     die Datenregel behandelt es als entfernt;
-  - Claude Code bekommt immer ein angeschaltetes `--model`; ohne angeschaltetes Modell `unsupported`;
   - Rechte-Tabelle und MCP-Vertragstest grün (automatisch); API-Referenz neu erzeugt
     (`TORRO_BLESS=1 cargo test -p torro-ipc`); fmt, clippy, test (auch `TORRO_LANG=de`) grün; Agent `torro-api-review`.
 
@@ -552,16 +548,17 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
   aus dem vorhandenen Satz). Aufbau nach settings.md › KI: Karten der Anbieter (Open First, Status, „3 of 10 models
   on“), „Add provider“, je Anbieter eine Unterseite mit Status, Verbindung, „Models“ mit Merkmalen, Ort („On this
   computer“, „Ollama Cloud“, „Cloud“) und Schalter, Suche und „Show closed models“ bei OpenRouter, „Remove provider…“.
-  Claude Code als Karte, sobald gefunden, ohne „Remove“. Die Karten zeigen „3 models on“ aus der Ablage (über
+  Keine Karte „Claude Code“: Antrieb B wird seit #219 (C.18) nicht mehr angeboten, Claude ist ein KI-Konto
+  (Anthropic). Die Karten zeigen „3 models on“ aus der Ablage (über
   `ai.list_models` erst auf der Unterseite), nicht „3 of 10“, damit beim Öffnen der Seite nicht jeder Server gefragt
   wird. Der Ort steht je Modell: „On this computer“, „Ollama Cloud“, „Cloud (Anthropic)“, „Cloud“.
 - „Add provider“ öffnet den vorhandenen Dialog (`wizard.rs`) gleich bei den KI-Anbietern; der Katalog „Add account“
   verliert den Eintrag „AI providers“, die Liste unter Accounts die KI-Konten. Wer `--section accounts` mit einem
   KI-Konto erwartet (alte Verweise), landet über `--section ai` richtig: Die Zeile „Engines“ der Assistentenseite (bis S.21)
   und „No AI account yet“ öffnen künftig AI statt Accounts.
-- **Datenregel** (#210): Gruppe „Mail“ auf der Seite AI mit dem Schalter „Mail to Claude Code and cloud models“
+- **Datenregel** (#210): Gruppe „Mail“ auf der Seite AI mit dem Schalter „Mail to cloud models“ (C.20)
   (`set_setting mail_to_cloud`, anschalten nur mit dem App-Schlüssel wie heute) und einem Satz, dass er für den
-  Assistenten, alle Bots und Claude Code gilt. Die Zeile verschwindet aus der Rechte-Ansicht (`agents::access_group`),
+  Assistenten und alle Bots gilt. Die Zeile verschwindet aus der Rechte-Ansicht (`agents::access_group`),
   damit sie nicht mehr wie ein Recht eines Programms aussieht.
 - Modelle werden beim Öffnen einer Unterseite geladen (`ai.list_models`), nicht bei jedem Takt; „Loading models…“,
   Fehler des Servers als Satz in der Gruppe.
@@ -571,13 +568,13 @@ S.24 (Modelle an/aus im Kern) ──┬── S.25 (Steuerzentrale › AI)
 - S.25 und S.21 ändern beide `ui/accounts.rs`: nicht gleichzeitig; wer später kommt, übernimmt den Filter bzw. die kurzen
   Kontoseiten.
 - **API:** `ai.list_models` · Read; `ai.set_model_enabled` · Admin; `ai.find_local_servers` · Read;
-  `assistant.list_engines` · Read (Karte Claude Code); `accounts.connect_ai` · Admin; `accounts.remove_account` · Admin;
+  `accounts.connect_ai` · Admin; `accounts.remove_account` · Admin;
   `accounts.list_accounts` · Read
-- **MCP:** `ai_list_models`, `ai_set_model_enabled`, `ai_find_local_servers`, `assistant_list_engines`,
+- **MCP:** `ai_list_models`, `ai_set_model_enabled`, `ai_find_local_servers`,
   `accounts_remove_account`;
   `accounts.connect_ai` bleibt **Never** (Schlüssel nur über die Oberfläche)
 - **Abnahme:** Tests mit Demo-Daten: Seite in der Navigation und per `--section ai`, Reihenfolge Open First, ein Schalter
-  baut `SetModelEnabled`, Modelle ohne Werkzeuge ohne Schalter, Claude Code ohne „Remove“, Katalog ohne KI-Anbieter,
+  baut `SetModelEnabled`, Modelle ohne Werkzeuge ohne Schalter, keine Karte „Claude Code“, Katalog ohne KI-Anbieter,
   Accounts ohne KI-Konten, die Datenregel nur auf AI und nicht in der Rechte-Ansicht. Demo-Ansichten `--demo --section ai` und eine Unterseite für die Sichtprüfung. Sichtprüfung bei
   1100, 500 und 360 px, hell und dunkel (Agent `torro-design-review`); fmt, clippy, test (auch `TORRO_LANG=de`) grün.
 

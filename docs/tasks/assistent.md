@@ -5,7 +5,9 @@ Konzept: [assistent.md](../assistent.md), KI-Konten: [ki.md](../ki.md). Issue #7
 Request anfasst, lädt `torro-api`; nach jeder Funktion prüft `torro-api-review`.
 
 > **Stand 2026-10-13: freigegeben.** Alle offenen Punkte sind entschieden (Abschnitt „Entscheidungen“ im Konzept).
-> Open First: Antrieb A (KI-Konto mit Ollama/OpenRouter) zuerst, Antrieb B (Claude Code, Codex) danach.
+> Open First: Antrieb A (KI-Konto mit Ollama/OpenRouter) zuerst. Antrieb B (Agent als Antrieb, C.7) ist
+> gebaut, wird aber seit Issue #219 **nicht mehr angeboten** (C.18); Claude läuft als KI-Konto über
+> Anthropic (KI.1b–KI.1d).
 
 ```
 KI.1a ── C.1 ──┬── C.2 ── C.3 ──┬── C.4 (App)
@@ -17,6 +19,8 @@ C.9 (Sprache, Weckwort) nach C.4
 C.10 (Persönlichkeit, Gedächtnis) nach C.3
 KI.1b ── KI.1c ──┬── KI.1d (Oberfläche)      (Anbieter Anthropic, Issue #218) parallel ab KI.1a
                  └── KI.1e (Denk-Blöcke)
+C.18 ──┬── C.19 (Demo)        (Antrieb B nicht mehr angeboten, Issue #219) nach KI.1d
+       └── C.20 (Texte, Doku)
 ```
 
 ### KI.1a Kern: KI-Konten, OpenAI-kompatibel (vorgezogener Teil von KI.1)
@@ -289,7 +293,11 @@ KI.1b ── KI.1c ──┬── KI.1d (Oberfläche)      (Anbieter Anthropic,
 - **Abnahme:** `torro-design-review`; Änderung wirkt in einer laufenden Unterhaltung ab der nächsten Anfrage.
 
 ### C.7 Antrieb B: Claude Code und Codex
-- [x] erledigt (nur Claude Code: Codex hat keine Positivliste für Werkzeuge, „Dateien und Shell immer aus“ lässt sich
+- [x] erledigt, **aber nicht mehr angeboten** (C.18, Issue #219): Antrieb B war nie eingerichtet, nur
+  gefunden — kein Konto, kein Schlüssel, kein Eintrag, also sah niemand, warum dort Claude antwortet,
+  und niemand konnte es abschalten. Seit KI.1b–KI.1d ist Claude ein KI-Konto mit eigenem Schlüssel.
+  Der Code bleibt vollständig liegen, `Agents::offered` ist im Produkt `false`. Ursprünglich erledigt
+  (nur Claude Code: Codex hat keine Positivliste für Werkzeuge, „Dateien und Shell immer aus“ lässt sich
   dort nicht zusichern; Schlüssel je Lauf geliehen, nur im Speicher und in der Umgebung des Agenten; Mail nie an
   Agenten (Datenregel); Verlauf wird je Nachricht mitgeschickt, keine Sitzung beim Agenten; nachgetragen
   (Koordination): `crates/torroworkplace/src/{clients,core}.rs` (geliehene Schlüssel, Protokoll mit Antrieb),
@@ -486,7 +494,9 @@ KI.1b ── KI.1c ──┬── KI.1d (Oberfläche)      (Anbieter Anthropic,
 
 ### C.17 Datenregel für Mail als Schalter (vorgezogener Teil von KI.1)
 - [x] erledigt (Antworten aus Einträgen jeder Quelle bleiben auch mit Schalter lokal, weil der Kern ihre Quelle nicht
-  nennt; Claude Code sah Talk- und Nextcloud-Einträge seiner Quellen schon vorher)
+  nennt; Claude Code sah Talk- und Nextcloud-Einträge seiner Quellen schon vorher). Der Schalter heißt seit C.20
+  (Issue #219) „Mail to cloud models“, weil Antrieb B nicht mehr angeboten wird (C.18); was er sperrt, ist
+  unverändert — `Lack::NeverToAgents` gilt weiter für jeden Agenten-Antrieb.
 - **Modell:** Opus · **Braucht:** C.14, C.16 · **Dateien:** `crates/torro-core/src/{settings,i18n/de}.rs`,
   `crates/torro-ipc/src/{lib,api}.rs`, `crates/torroworkplace/src/{core,clients,settings_service}.rs`,
   `crates/torroworkplace/src/assistant/**`, `crates/torroworkplace/src/ui/{assistant,agents,bots,general}.rs`,
@@ -504,7 +514,7 @@ KI.1b ── KI.1c ──┬── KI.1d (Oberfläche)      (Anbieter Anthropic,
   App-Schlüssel (`Request::kept_for_people`, auch über `settings.update_settings`); ausschalten darf jeder, der
   Einstellungen ändern darf. Ein Agent kann sich so nie selbst Mail verschaffen.
 - **Sichtbar bei den Rechten:** In den Rechten des Assistenten (Steuerzentrale › Assistant, dorthin führt auch seine
-  Zeile in Agents & API) und jedes Bots steht direkt unter Mail der Schalter „Mail to Claude Code and cloud models“
+  Zeile in Agents & API) und jedes Bots steht direkt unter Mail der Schalter „Mail to cloud models“ (C.20)
   mit dem, was er bedeutet. Der Grund eines `forbidden` (`Lack::NeverToAgents`) und der Systemtext des Assistenten
   nennen den Schalter, die Werkzeugzeile im Chat sagt „(Datenregel)“.
 - **Oberfläche:** Rechte des Assistenten und der Bots. **API:** `settings.set_setting
@@ -514,6 +524,112 @@ KI.1b ── KI.1c ──┬── KI.1d (Oberfläche)      (Anbieter Anthropic,
   `update_settings`); mit Schalter an bekommt Claude Code Mail (kein Abzug beim geliehenen Schlüssel, Prompt ohne
   „never given“); Modell anderswo liest Mail, aber keine Talk-Einträge; Verlauf und Bots folgen dem Schalter;
   `torro-api-review` ohne Muss-Punkt.
+
+### C.18 Antrieb B wird nicht mehr angeboten (Issue #219)
+- [x] erledigt (Feld `Agents::offered`, `false` in `none()` und `system()`, `true` nur im
+  Test-Konstruktor `new()`, dazu `not_offered()` für den neuen Test; `engines` und `find` liefern
+  nichts, solange es `false` ist; `never_given` und `Agent::of` unangetastet)
+- **Modell:** Opus (Datenregel, geliehene Schlüssel) · **Braucht:** C.7 · **Dateien:**
+  `crates/torroworkplace/src/assistant/engines/{mod,tests}.rs`, `crates/torroworkplace/src/assistant/mod.rs`,
+  `crates/torro-ipc/src/assistant.rs`
+- **Anlass:** Claude Code als Antrieb wird nur *gefunden* (Befehl auf dem `PATH`), nie eingerichtet. Es gibt dazu
+  kein Konto, keinen Schlüssel und keinen Eintrag, also sieht niemand, warum im Assistenten Claude antwortet.
+  Seit KI.1b–KI.1d gibt es Anthropic als KI-Konto mit eigenem Schlüssel; das ist der Weg. Codex war als Antrieb
+  ohnehin nie möglich (keine Positivliste für Werkzeuge, C.7).
+- **Hart aus, kein Schalter** (in der Planung entschieden): `Agents` bekommt ein Feld, das sagt, ob Agenten
+  angeboten werden. `Agents::system()` setzt es fest auf `false` mit Verweis auf #219, `Agents::none()` ebenso,
+  der Test-Konstruktor `Agents::new` auf `true`. Keine Umgebungsvariable: im Produkt führt kein Weg zu Antrieb B.
+- `Agents::engines` und `Agents::find` liefern nichts, solange das Feld `false` ist. Damit nennt
+  `assistant.list_engines` nur KI-Konten und den Test-Antrieb — genau das, was Katalogtext und Doc-Kommentar von
+  `Request::ListEngines` heute schon sagen (nachgesehen: beide nennen Agenten nicht, der Text wird erst richtig).
+- Der Doc-Kommentar von `EngineKind::Agent` (`crates/torro-ipc/src/assistant.rs`) sagt heute „it is offered
+  only while the assistant has its client“ — das stimmt dann nicht mehr: Satz auf „nicht mehr angeboten
+  (seit #219), die Art bleibt im Schema“ ändern.
+- **Nicht angefasst:** `EngineKind::Agent` als Variante im Protokoll (Entfernen wäre ein Bruch, `docs/api.md`
+  „Versionen“),
+  `Lack::NeverToAgents`, `engines::answer`, `claude.rs`. Der Code bleibt vollständig liegen; Zurückholen heißt,
+  ein `false` umzudrehen.
+- `never_given` bleibt wie sie ist: Sie fragt `Agent::of(id)`, nicht die Antriebsliste. So behält ein
+  `claude-code` in einer alten Unterhaltung oder einer laufenden Leihe seine Mail-Sperre.
+- **Kein toter Code:** Weil `Agents::new` weiter Agenten anbietet, laufen die 570 Zeilen Tests von C.7 unverändert
+  und jedes Symbol bleibt erreichbar. `clippy -D warnings` darf nichts als unbenutzt melden.
+- **Oberfläche, API, MCP:** keine neue Funktion, kein Weg fällt weg. `assistant.list_engines` (Read) und
+  `assistant_list_engines` bleiben und liefern nur noch KI-Konten.
+- **Bots werden nicht umgeschrieben:** Ein Bot mit `claude-code` als Antrieb bekommt danach `not-found` aus
+  `Assistant::engine` (`delegate.rs` gibt die Absage weiter, kein Rückfall). Das bleibt so: Ein stiller
+  Rückfall wählte ein Modell, das der Mensch nicht gewählt hat, und am Antrieb hängt die Datenregel
+  (`place_of`). Genauso verhält sich heute schon ein Bot, dessen KI-Konto entfernt wurde. Wer so einen Bot
+  hat, wählt im Bot-Editor einen anderen Antrieb.
+- **Abnahme:** neuer Test, dass ein `Agents` mit dem Feld `false` trotz gefundenem Befehl nichts anbietet und
+  `find` nichts findet; `engines/tests.rs` von C.7 bleibt grün; `fmt`, `clippy`, `test` (auch `TORRO_LANG=de`).
+
+### C.19 Demo-Ansichten ohne Agenten-Antrieb (Issue #219)
+- [x] erledigt (die Demo der Steuerzentrale stellt „New chats“ auf ihr verbundenes KI-Konto, sonst
+  zeigte sie einen Standard ohne Antrieb; nachgetragen (zwingend mechanisch):
+  `crates/torroassistant/src/app/tests.rs` — zwei Tests (Aufwand je Modell, Standard der
+  Steuerzentrale) holten den Antrieb über `demo::CLAUDE_CODE` aus der Demo und bauen ihn nun selbst,
+  `demo::CLAUDE_CODE` entfällt damit. Der Demo-Standard der Steuerzentrale zeigt auf das **verbundene**
+  KI-Konto (OpenRouter): Das Ollama der Demo ist gefunden, aber nicht verbunden, also ist es kein
+  Antrieb, und die Antriebsliste der Demo trägt wie der Kern keine Modelle)
+- **Modell:** Haiku · **Braucht:** C.18 · **Dateien:** `crates/torroassistant/src/demo.rs`,
+  `crates/torro-settings-ui/src/demo.rs`, `crates/torro-settings-ui/src/assistant/{mod,general}.rs`,
+  `crates/torroworkplace/src/ui/launch.rs`
+- Die Demo zeigt nur, was das Produkt kann (in der Planung entschieden): Der Antrieb mit `EngineKind::Agent`
+  verschwindet aus den drei Demo-Datensätzen.
+- Zwei Tests holen ihn heute aus der Demo (`.expect("the demo has one")` in
+  `torro-settings-ui/src/assistant/mod.rs` und `assistant/general.rs`): Sie bauen sich den Antrieb nun selbst,
+  damit sie weiter prüfen, dass die Oberfläche einen Agenten-Antrieb darstellen kann — `EngineKind::Agent` bleibt
+  im Protokoll, also muss die Darstellung bleiben.
+- **Nicht angefasst** (nachgesehen): die Hinweiszeile „No AI account yet“ in `general.rs`. Sie erscheint nur,
+  solange der Assistent an ist (`assistant::is_on` prüft seinen Client), und KI-Konten stehen unabhängig vom
+  Client in `assistant.list_engines` — eine leere Antriebsliste heißt dort wirklich „kein KI-Konto“. Der Text
+  bleibt richtig. Ebenso `ui/setup/pages.rs`: `engine_choice` filtert schon auf `EngineKind::Ai`.
+- **Abnahme:** `--demo` zeigt in Assistent und Steuerzentrale keinen Antrieb „Claude Code“ mehr; die beiden Tests
+  laufen ohne Demo-Agenten; Sichtprüfung der Einstellungsseite „General“ in allen Größenklassen (Agent
+  `torro-design-review`); `fmt`, `clippy`, `test` (auch `TORRO_LANG=de`).
+
+### C.20 Der Mail-Schalter heißt nach den Cloud-Modellen (Issue #219)
+- [x] erledigt (Schalter „Mail to cloud models“ / „Mail an Cloud-Modelle“; `Lack::NeverToAgents` und
+  `Lack::NeverToAgents::message` bleiben inhaltlich, nur der genannte Schaltername zieht nach.
+  Nachgetragen, weil die Formulierung dort umbrochen oder umschrieben steht und der wörtliche Grep
+  der Abnahme sie nicht findet: `crates/torro-core/src/settings.rs` und `crates/torro-ipc/src/api.rs`
+  (Doc des Feldes bzw. der Variante; das Feld steht in `docs/api-reference.md`),
+  `crates/torroworkplace/src/{core,settings_service}.rs`,
+  `crates/torroworkplace/src/assistant/{data_rule,engines/mod,engines/tests}.rs` und
+  `docs/api.md` (Punkt 6, normative Zusage). **Nicht nur mechanisch:**
+  `crates/torroworkplace/src/assistant/prompt.rs` — der Systemtext eines Agenten-Antriebs schickte
+  dem Modell den alten Schalternamen; er nennt jetzt „Mail to cloud models“, der Wortlaut-Test dort
+  und in `engines/tests.rs` zieht nach. Dazu drei Doc-Kommentare, die einen Agenten noch als
+  angebotenen Antrieb beschrieben: `crates/torroassistant/src/{chat,view}.rs` und
+  `crates/torro-settings-ui/src/assistant/general.rs`)
+- **Modell:** Haiku · **Braucht:** C.18 · **Dateien:** `crates/torroworkplace/src/ui/agents.rs`,
+  `crates/torro-ipc/src/{api,lib}.rs`, `crates/torro-core/src/i18n/de.rs`, `docs/api-reference.md`,
+  `docs/tasks/{assistent,steuerzentrale}.md`, `docs/{assistent,ki,settings}.md`
+- Ohne Antrieb B gilt `mail_to_cloud` (C.17) nur noch für Modelle in der Cloud. Der Schalter heißt deshalb
+  „Mail to cloud models“ statt „Mail to Claude Code and cloud models“ — englisch über `tr()`, Satzschreibung,
+  Übersetzung in `de.rs` nachziehen. Was er *tut*, ändert sich nicht.
+- Dieselbe Formulierung nachziehen in: `Lack::NeverToAgents::message` und der Beschreibung von
+  `settings.set_setting` (beide `torro-ipc/src/api.rs`) sowie dem Test in `api.rs`, der den Wortlaut prüft.
+  Der genaue Satz steht sechsmal in `crates/**/*.rs` (zwei davon Doc-Kommentare in `ui/agents.rs`), dazu
+  einmal ohne „Mail to“ in der Beschreibung von `settings.set_setting`; `docs/api-reference.md` nennt
+  „Claude Code“ viermal und wird neu erzeugt
+  (er sucht heute `"Mail to Claude Code and cloud models"`). Danach `docs/api-reference.md` neu erzeugen
+  (`TORRO_BLESS=1 cargo test -p torro-ipc`) und mit committen.
+- Auch der Doc-Kommentar der Einstellung `mail_to_cloud` (`crates/torro-ipc/src/lib.rs`, `SettingKey`) nennt
+  Claude Code; nachziehen.
+- **Doku auf den Stand bringen:** C.7 und C.17 in dieser Datei (erledigt, aber Antrieb B nicht mehr angeboten,
+  mit Grund und Verweis auf C.18), Antrieb B in `docs/assistent.md` und `docs/ki.md`, und in
+  `docs/tasks/steuerzentrale.md` die offenen Aufgaben S.24 und S.25: keine Claude-Code-Karte, kein `claude-code`
+  als Kennung in `ai.list_models`, Anfangsregel ohne Claude Code.
+- **`docs/settings.md` ist breiter betroffen** (Konzept der Einstellungen, Grundlage von S.24–S.26): Dort steht
+  Claude Code nicht nur im Schalternamen (Zeilen um 57 und 421), sondern als **Anbieter** auf der geplanten
+  AI-Seite (Open-First-Reihenfolge, „erscheint als Anbieter, sobald gefunden“, Anfangsregel „aus“). Alle diese
+  Stellen auf den neuen Stand bringen: Antrieb B wird nicht angeboten, Claude ist ein KI-Konto (Anthropic).
+- **Nicht angefasst:** `Lack::NeverToAgents` selbst und der Text „… never goes to coding agents like Claude Code“
+  (`de.rs`) — die Sperre gilt weiter für jeden Agenten-Antrieb, falls C.18 je zurückgenommen wird.
+- **Abnahme:** kein Vorkommen von „Mail to Claude Code and cloud models“ mehr in `crates/**` und `docs/**`; der Wortlaut-Test in
+  `api.rs` prüft den neuen Text; `docs/api-reference.md` neu und committet; Sichtprüfung der Rechte-Ansicht
+  des Assistenten (Agent `torro-design-review`); `fmt`, `clippy`, `test` (auch `TORRO_LANG=de`), `torro-api-review`.
 
 ## Stufe 2: Bots (B.1–B.5)
 

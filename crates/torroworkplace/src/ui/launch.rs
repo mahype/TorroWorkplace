@@ -727,10 +727,10 @@ pub fn demo_data() -> Data {
         settings: Settings {
             start_at_login: true,
             hidden_collections,
-            // Issue #131: new chats start with Claude Code's Opus, thinking hard.
+            // Issue #131: new chats start with a model of the connected AI account, thinking hard.
             assistant_default: Some(torro_core::settings::AssistantDefault {
-                engine: "claude-code".into(),
-                model: Some("opus".into()),
+                engine: "ai:openrouter@openrouter.ai".into(),
+                model: Some("qwen/qwen3-32b".into()),
                 effort: Some(torro_core::ai::Effort::High),
             }),
             ..Settings::default()
@@ -755,8 +755,8 @@ fn demo_bots() -> Vec<torro_ipc::bots::BotSummary> {
         name: name.into(),
         description: description.into(),
         avatar: avatar.into(),
-        engine: "ai:ollama@localhost:11434".into(),
-        model: Some("qwen3:14b".into()),
+        engine: "ai:openrouter@openrouter.ai".into(),
+        model: Some("qwen/qwen3-32b".into()),
         client: client.into(),
     };
     vec![
@@ -771,35 +771,19 @@ fn demo_bots() -> Vec<torro_ipc::bots::BotSummary> {
     ]
 }
 
-/// The engines of the demo's assistant (issue #131): the OpenRouter account and Claude Code with
-/// its fixed models, as the core lists them.
+/// The engines of the demo's assistant (issue #131): the one connected AI account, as the core
+/// lists them — without models, which come from `ai.list_models`. The demo's Ollama is found but
+/// not connected, so it is no engine. No coding agent either: they are not offered any more (task
+/// C.19, issue #219), and the demo shows what the product can do.
 fn demo_engines() -> Vec<torro_ipc::assistant::Engine> {
     use torro_ipc::assistant::{Engine, EngineKind};
-    let model = |id: &str, name: &str, reasoning: bool| torro_core::ai::AiModel {
-        id: id.into(),
-        name: name.into(),
-        tools: Some(true),
-        open_weights: Some(false),
-        context: None,
-        reasoning: Some(reasoning),
-        remote: None,
-    };
-    vec![
-        Engine {
-            id: "ai:openrouter@openrouter.ai".into(),
-            kind: EngineKind::Ai,
-            name: "OpenRouter".into(),
-            problem: None,
-            models: Vec::new(),
-        },
-        Engine {
-            id: "claude-code".into(),
-            kind: EngineKind::Agent,
-            name: "Claude Code".into(),
-            problem: None,
-            models: vec![model("opus", "Opus", true), model("sonnet", "Sonnet", true), model("haiku", "Haiku", false)],
-        },
-    ]
+    vec![Engine {
+        id: "ai:openrouter@openrouter.ai".into(),
+        kind: EngineKind::Ai,
+        name: "OpenRouter".into(),
+        problem: None,
+        models: Vec::new(),
+    }]
 }
 
 /// The demo's ntfy account at `push.example.org` (task E5.14), signed in as `anna` with a password,

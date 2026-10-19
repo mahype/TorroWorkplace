@@ -682,8 +682,8 @@ pub enum Lack {
     SwitchedOff { area: Area },
     /// The engine that runs never gets the area, whatever the rights say: a coding agent answers
     /// outside the person's computers, and the data rule keeps mail on them
-    /// (`NEVER_TO_AGENTS` in the core, task C.7) unless the person lets mail go to Claude Code and
-    /// cloud models (setting `mail_to_cloud`, task C.17).
+    /// (`NEVER_TO_AGENTS` in the core, task C.7) unless the person lets mail go to cloud models
+    /// (setting `mail_to_cloud`, task C.17).
     NeverToAgents { area: Area },
     /// The person set the conversation to read only (issue #132,
     /// [`crate::assistant::Mode::ReadOnly`]): nothing that changes something runs there.
@@ -782,8 +782,8 @@ impl Lack {
             Lack::NeverToAgents { area } => format!(
                 "{} is not given to a coding agent that drives the assistant: the person's data rule keeps it on \
                  their own computers. Changing the rights does not change this; only the person can let it go to \
-                 Claude Code and cloud models, with \"Mail to Claude Code and cloud models\" in Torro Workplace, \
-                 Assistant. Say so instead of trying",
+                 cloud models, with \"Mail to cloud models\" in Torro Workplace, Assistant. Say so instead of \
+                 trying",
                 area.name()
             ),
             Lack::ReadOnly => {
@@ -2207,8 +2207,8 @@ static SET_SETTING: Command = Command {
                   reader: `mail_view` (\"html\" formatted, the default, or \"text\"; where a mail with HTML \
                   starts) or `mail_appearance` (\"app\" like the suite, the default, \"light\" or \"dark\"; only \
                   the colours of the mail's content) or `mail_to_cloud` (only false: keeps mail with models on the \
-                  person's own computers again; letting mail go to Claude Code and cloud models is for a person, \
-                  true is forbidden) or `setup` (\"pending\" to run the first-run setup again, \"skipped\" to put \
+                  person's own computers again; letting mail go to cloud models is for a person, true is \
+                  forbidden) or `setup` (\"pending\" to run the first-run setup again, \"skipped\" to put \
                   it off, \"done\" when finished) or `component` ({\"component\": \"calendar\"|\"tasks\"|\"mail\"| \
                   \"inbox\"|\"assistant\"|\"workspaces\", \"enabled\": false} turns a part of the suite off: it leaves \
                   the app switcher, the tray and the overview and nothing runs in the background for it; accounts \
@@ -3210,7 +3210,7 @@ mod tests {
         }
         assert!(
             Lack::NeverToAgents { area: Area::Mail }.message().contains("not given to a coding agent")
-                && Lack::NeverToAgents { area: Area::Mail }.message().contains("Mail to Claude Code and cloud models")
+                && Lack::NeverToAgents { area: Area::Mail }.message().contains("Mail to cloud models")
         );
         assert!(Lack::SwitchedOff { area: Area::Mail }.message().contains("this conversation"));
         assert!(Lack::Level { area: Area::Mail, needs: Access::Delete }.message().contains("full access to mail"));
@@ -3837,7 +3837,7 @@ mod tests {
         assert_eq!(Request::VoiceStatus.operation().access, Access::Read);
     }
 
-    /// Task C.17: no client lets mail go to Claude Code and cloud models, not even with every
+    /// Task C.17: no client lets mail go to cloud models, not even with every
     /// right, so no agent gets mail by its own command; keeping mail local again is an ordinary
     /// admin change.
     #[test]

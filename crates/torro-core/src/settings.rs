@@ -104,8 +104,8 @@ pub struct Settings {
     #[serde(default, deserialize_with = "lenient")]
     pub mail_appearance: MailAppearance,
     /// The data rule for mail (task C.17, `docs/ki.md` principle 4): `false` (the default) keeps
-    /// mail with models on the person's own computers; `true` lets it go to Claude Code and to
-    /// models elsewhere (OpenRouter, a provider's server) as well. Only a person switches it on
+    /// mail with models on the person's own computers; `true` lets it go to models elsewhere
+    /// (OpenRouter, a provider's server) as well. Only a person switches it on
     /// (`settings.set_setting mail_to_cloud`, app key only); any client allowed to change settings
     /// may switch it off.
     #[serde(default)]

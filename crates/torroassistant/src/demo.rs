@@ -61,8 +61,6 @@ pub const APPROVAL_ID: &str = "a000000000000001";
 
 /// The demo's local AI account.
 pub const OLLAMA: &str = "ai:ollama@localhost:11434";
-/// Claude Code, offered with its fixed models (issue #131).
-pub const CLAUDE_CODE: &str = "claude-code";
 /// The demo's AI account on OpenRouter.
 pub const OPENROUTER: &str = "ai:openrouter@openrouter.ai";
 
@@ -229,28 +227,9 @@ impl State {
             problem: None,
             models: Vec::new(),
         };
-        // Claude Code with its fixed models (issue #131), as the core lists it.
-        let claude_model = |id: &str, name: &str, reasoning: bool| AiModel {
-            id: id.into(),
-            name: name.into(),
-            tools: Some(true),
-            open_weights: Some(false),
-            context: None,
-            reasoning: Some(reasoning),
-            remote: None,
-        };
-        let claude = Engine {
-            id: CLAUDE_CODE.into(),
-            kind: EngineKind::Agent,
-            name: "Claude Code".into(),
-            problem: None,
-            models: vec![
-                claude_model("opus", "Opus", true),
-                claude_model("sonnet", "Sonnet", true),
-                claude_model("haiku", "Haiku", false),
-            ],
-        };
-        vec![engine(OPENROUTER, "OpenRouter"), engine(OLLAMA, "Ollama"), claude]
+        // Only AI accounts: coding agents are not offered any more (task C.19, issue #219), and
+        // the demo shows what the product can do.
+        vec![engine(OPENROUTER, "OpenRouter"), engine(OLLAMA, "Ollama")]
     }
 
     fn client(&self) -> Option<ClientInfo> {

@@ -9,7 +9,8 @@
 //!
 //! **New chats** (issue #131): the engine, model and effort a new chat starts with
 //! (`settings.set_setting assistant_default`), or "The one used last" (`null`). The engines come
-//! from `assistant.list_engines` – an agent brings its own models –, an AI account's models from
+//! from `assistant.list_engines` – only AI accounts since issue #219; a coding agent would bring
+//! its own models –, an AI account's models from
 //! `ai.list_models` ([`super::models_request`]); the effort only where the model takes one. Each
 //! chat can still pick another. Without any engine the group says where an AI account is added.
 
@@ -83,7 +84,15 @@ fn status_group(data: &Data) -> Element<'_, Message> {
 /// "New chats", and for a default engine its "Model" and, where the model takes one, its "Effort"
 /// (issue #131): each row a check, a press stores the whole default.
 fn default_groups(data: &Data) -> Vec<Element<'_, Message>> {
-    let current = data.settings.assistant_default.as_ref();
+    // A stored default whose engine is not offered reads as "The one used last", because that is
+    // what a new chat really starts with (the window skips it, `chat::preferred_choice`). Without
+    // this the group would show no choice at all and a model under no engine. Issue #219 puts
+    // everyone who had Claude Code there into this state; a removed AI account does the same.
+    let current = data
+        .settings
+        .assistant_default
+        .as_ref()
+        .filter(|default| data.engines.iter().any(|engine| engine.id == default.engine));
     let footer = tr("What a new chat starts with. Each chat can pick another.");
     if data.engines.is_empty() {
         return vec![widgets::group(tr("New chats"), vec![no_engine_row()], Some(footer.to_string()))];
@@ -239,8 +248,11 @@ mod tests {
         let closed = AssistantDefault { model: Some("openai/gpt-5".into()), ..stored.clone() };
         assert_eq!(default_models(&closed, &data)[0].id, "openai/gpt-5", "a stored model shows");
 
-        // An agent brings its own models, each with whether it takes an effort.
-        let agent = data.engines.iter().find(|engine| engine.kind == EngineKind::Agent).expect("the demo has one");
+        // An agent brings its own models, each with whether it takes an effort. The demo offers
+        // no agent any more (task C.19, issue #219), so the test brings its own: the kind stays in
+        // the protocol, so the group must still show one.
+        let agent = super::super::tests::agent_engine();
+        data.engines.push(agent.clone());
         let on_agent = AssistantDefault { engine: agent.id.clone(), model: None, effort: None };
         let ids: Vec<String> = default_models(&on_agent, &data).into_iter().map(|model| model.id).collect();
         assert_eq!(ids, ["opus", "sonnet", "haiku"]);

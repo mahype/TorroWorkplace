@@ -23,7 +23,7 @@ struct FakeHost {
     clients: Clients,
     /// The areas every key was lent without.
     lent: Mutex<Vec<Vec<Area>>>,
-    /// The person let mail go to Claude Code and cloud models (task C.17).
+    /// The person let mail go to cloud models (task C.17).
     mail_to_cloud: std::sync::atomic::AtomicBool,
 }
 
@@ -245,6 +245,41 @@ async fn claude_code_is_an_engine_only_when_installed_and_the_assistant_has_its_
     assert!(matches!(refused, Some(Response::Error { ref code, .. }) if code == "not-found"), "{refused:?}");
 }
 
+/// Task C.18, issue #219: the product does not offer agents. The command is where `locate` looks
+/// and the assistant has its client, yet nothing is listed and no engine id finds an agent. Only
+/// the test constructor offers them, which is why every test here still runs.
+#[test]
+fn agents_that_are_not_offered_are_no_engines_even_when_installed() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("bin")).expect("bin");
+    crate::apps::tests::fake_at(&root.join("bin").join("claude"), "exit 0\n");
+    let env = Env {
+        home: root.join("home"),
+        app_config: root.join("home").join(".config"),
+        path: vec![root.join("bin")],
+        program: root.join("torroworkplace"),
+        config_dir: root.join("config"),
+    };
+    let runs = root.join("runs");
+    let (idle, total) = (Duration::from_secs(5), Duration::from_secs(30));
+
+    let offered = Agents::new(env.clone(), runs.clone(), idle, total);
+    assert_eq!(offered.engines(true).len(), 1, "the fake command is where locate looks");
+    assert_eq!(offered.find("claude-code"), Some(Agent::ClaudeCode));
+
+    let agents = Agents::new(env, runs, idle, total).not_offered();
+    assert!(agents.engines(true).is_empty(), "the product offers no agent (#219)");
+    assert!(agents.find("claude-code").is_none(), "and no engine id finds one");
+    assert_eq!(Agent::of("claude-code"), Some(Agent::ClaudeCode), "the agent itself stays, for never_given");
+    assert_eq!(never_given("claude-code"), [Area::Mail], "so an old conversation keeps its data rule");
+
+    // The product's own constructor, so rebuilding `engines` on `Agent::ALL` cannot slip past this
+    // test. The flag is read before anything is looked up, so no home directory is needed.
+    assert!(Agents::system().engines(true).is_empty(), "the user's agents are not offered either");
+    assert!(Agents::system().find("claude-code").is_none());
+}
+
 fn send_to_claude() -> Request {
     Request::SendMessage {
         conversation: None,
@@ -352,7 +387,7 @@ async fn the_stream_becomes_answers_and_tool_lines_and_the_key_stays_in_the_envi
     assert!(text.ends_with("And tomorrow?"), "{text}");
 }
 
-/// Task C.17: once the person lets mail go to Claude Code and cloud models, the run's key is lent
+/// Task C.17: once the person lets mail go to cloud models, the run's key is lent
 /// with mail, the agent's tools include it, and the prompt no longer says it is kept from it.
 #[tokio::test]
 async fn with_mail_let_out_the_agent_gets_mail_as_the_rights_give_it() {
@@ -365,7 +400,7 @@ async fn with_mail_let_out_the_agent_gets_mail_as_the_rights_give_it() {
     let prompt = arguments.split_once("--append-system-prompt=").map(|(_, rest)| rest).expect("the prompt");
     assert!(prompt.contains("  - mail: read"), "{prompt}");
     assert!(!prompt.contains("not given to you"), "{prompt}");
-    assert!(prompt.contains("lets mail go to Claude Code and cloud models"), "{prompt}");
+    assert!(prompt.contains("lets mail go to cloud models"), "{prompt}");
 }
 
 #[tokio::test]

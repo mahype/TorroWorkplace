@@ -3502,7 +3502,7 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("{area} is off in this conversation", "{area} ist in dieser Unterhaltung aus"),
     ("{engine} does not get {area} (data rule)", "{engine} bekommt {area} nicht (Datenregel)"),
     // Task C.17: the data rule for mail under Mail of the assistant and its bots.
-    ("Mail to Claude Code and cloud models", "Mail an Claude Code und Cloud-Modelle"),
+    ("Mail to cloud models", "Mail an Cloud-Modelle"),
     (
         "Off: only AI accounts on your own computers read mail",
         "Aus: Nur KI-Konten auf deinen eigenen Rechnern lesen Mail",

@@ -313,43 +313,22 @@ impl Demo {
             name: "Travel planner".into(),
             description: "Plans trips by train".into(),
             avatar: LETTER_AVATAR.into(),
-            engine: "claude-code".into(),
+            engine: "ai:ollama@localhost:11434".into(),
             model: None,
             client: "c0000001".into(),
         }]
     }
 
-    /// Two sample engines: a coding agent with its own models and an AI account.
+    /// The sample engine: an AI account. Coding agents are not offered any more (task C.19,
+    /// issue #219), and the demo shows what the product can do.
     fn engines(&self) -> Vec<Engine> {
-        let model = |id: &str, name: &str, reasoning| AiModel {
-            id: id.into(),
-            name: name.into(),
-            tools: Some(true),
-            open_weights: None,
-            context: None,
-            reasoning,
-            remote: None,
-        };
-        vec![
-            Engine {
-                id: "claude-code".into(),
-                kind: EngineKind::Agent,
-                name: "Claude Code".into(),
-                problem: None,
-                models: vec![
-                    model("opus", "Opus", Some(true)),
-                    model("sonnet", "Sonnet", Some(true)),
-                    model("haiku", "Haiku", Some(false)),
-                ],
-            },
-            Engine {
-                id: "ai:ollama@localhost:11434".into(),
-                kind: EngineKind::Ai,
-                name: "Ollama".into(),
-                problem: None,
-                models: Vec::new(),
-            },
-        ]
+        vec![Engine {
+            id: "ai:ollama@localhost:11434".into(),
+            kind: EngineKind::Ai,
+            name: "Ollama".into(),
+            problem: None,
+            models: Vec::new(),
+        }]
     }
 
     /// The models the sample AI account offers (`ai.list_models`).
