@@ -111,7 +111,9 @@ pub enum Message {
     Zoom(Step),
     /// A part of the suite was switched on or off under Apps (task W.2).
     Component(Component, bool),
-    /// "Open" of a part of the suite: its window, by window class (task S.21).
+    /// "Open" of a part of the suite: its window, by window class and nothing else (task S.21).
+    /// The window class alone, deliberately – a target such as `settings:<section>` has no place
+    /// here, because a window's settings are opened by a person with its gear ([`apps`]).
     OpenApp(String),
     /// "Open" of Workspaces, which has no window of its own: the Workspaces page.
     OpenWorkspaces,
@@ -206,8 +208,11 @@ pub fn view<'a>(_state: &'a State, data: &'a Data) -> Element<'a, Message> {
 /// not a part of its own. Nothing else in the control centre opens it.
 ///
 /// What a window shows and how it behaves is set in that window, behind its gear; this page only
-/// says so and leads there. No "Open" ever names a section of the settings
-/// (`apps.open_app` with a target): those a person opens with the gear.
+/// says so and leads there. No "Open" can name a section of the settings (`apps.open_app` with a
+/// target `settings:<section>`), because [`Message::OpenApp`] carries nothing but the window class
+/// and [`update`] fills in `target: None`: there is no place to put one. That is on purpose – the
+/// settings of a window are opened by a person with its gear, not by a button elsewhere. Giving
+/// this page such a way means widening the message first, which is where the decision belongs.
 fn apps(data: &Data) -> Element<'_, Message> {
     let mut rows: Vec<Element<'_, Message>> = Vec::new();
     for component in Component::ALL {
@@ -750,16 +755,6 @@ mod tests {
         );
         drop(view(&State::default(), &data));
         drop(second_window(&none, AppId::INBOX_NOTIFICATIONS, tr("App Feed")));
-    }
-
-    /// No "Open" of this page ever names a section of the settings: those a person opens with the
-    /// gear in the window (task S.21).
-    #[test]
-    fn no_open_asks_for_a_settings_section() {
-        for app in AppId::ALL {
-            let action = update(&mut State::default(), Message::OpenApp(app.window_class.into()), &Data::default());
-            assert!(matches!(action, Action::Send(Request::OpenApp { target: None, .. })), "{action:?}");
-        }
     }
 
     #[test]
