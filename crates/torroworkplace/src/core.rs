@@ -3052,6 +3052,9 @@ impl Core {
                 let person = matches!(reach, Reach::Suite);
                 crate::assistant::answer_from(&self.assistant, &self.ai, request, person).await
             }
+            // Cards (issue #225): resolved with the rights of the conversation's client, not the caller's
+            // alone.
+            Request::GetCards { conversation } => self.cards(&conversation, reach).await,
             // Bots (task B.1): rights were checked in `handle_from`; a bot's client is made and
             // removed with it.
             request @ (Request::ListBots
@@ -4504,6 +4507,52 @@ impl Core {
         }
     }
 
+    /// `assistant.get_cards` (issue #225, task WZ.5) for `reach`: the cards of the conversation
+    /// `conversation` as they are now ([`crate::assistant::cards::resolve`]). Resolved with the rights
+    /// of the conversation's client – the assistant's own, or the bot's for a conversation with a bot
+    /// – for a client cut to its own rights ([`torro_ipc::api::Rights::common`]); the app key adds
+    /// no rights of its own, so it never sees more than that client. A file shows only while that
+    /// client may reach the tools' files ([`crate::tools::reaches_files`]: the tool switched on,
+    /// `tools` readable, `pdf` selected) and the register keeps it as that client's and intact;
+    /// every other card is unavailable, also without such a client (none set up, the bot deleted).
+    /// `not-found` for an unknown conversation, `error` for an id beyond its limit. The register and
+    /// the files are read on a blocking thread.
+    async fn cards(&self, conversation: &str, reach: Reach<'_>) -> Response {
+        let request = Request::GetCards { conversation: conversation.to_string() };
+        if let Some(refused) = torro_ipc::assistant::limit_refusal(&request) {
+            return refused;
+        }
+        let (summary, entries) = match self.assistant.get(conversation, None).await {
+            Response::Conversation { conversation, entries } => (conversation, entries),
+            other => return other,
+        };
+        let client = match &summary.bot {
+            None => self.assistant_client(),
+            Some(bot) => match self.assistant.bots().get(bot).await {
+                Some(bot) => self.bot_client(&bot.client),
+                None => None,
+            },
+        };
+        let settings = self.settings.current();
+        let maker = client
+            .filter(|client| {
+                let rights = match reach {
+                    Reach::Suite => client.rights.clone(),
+                    Reach::Client(asker) => client.rights.common(asker),
+                };
+                crate::tools::reaches_files(&settings.tools, &rights)
+            })
+            .map(|client| client.id);
+        let register = self.tools.register().clone();
+        let resolved = tokio::task::spawn_blocking(move || {
+            crate::assistant::cards::resolve(&entries, &register, maker.as_deref())
+        });
+        match resolved.await {
+            Ok(cards) => Response::Cards { cards },
+            Err(err) => Response::Error { code: "error".into(), message: format!("cannot read the cards: {err}") },
+        }
+    }
+
     /// `forbidden` with [`torro_ipc::api::Lack::ToolOff`] for a command of one of the assistant's
     /// own tools while a person has it switched off (issue #225, setting `tool_enabled`): for every
     /// client and the app key, whatever the rights say. `None` for every other request.
@@ -5515,6 +5564,21 @@ impl crate::assistant::Host for Core {
     /// The tools a person switched on now (issue #225, setting `tool_enabled`).
     fn tools_on(&self) -> std::collections::BTreeSet<torro_core::settings::ToolId> {
         self.settings.current().tools.enabled
+    }
+
+    /// The register's file `id` as made by `actor`'s client and still intact (issue #225), read on a
+    /// blocking thread ([`crate::tools::Tools::file`]); `false` without that client.
+    fn knows_file<'a>(
+        &'a self,
+        actor: &'a crate::assistant::Actor,
+        id: &'a str,
+    ) -> torro_core::ai::BoxFuture<'a, bool> {
+        Box::pin(async move {
+            match crate::assistant::Host::client_of(self, actor) {
+                Some(client) => self.tools.file(id, Maker::Client(&client.id)).await.is_some(),
+                None => false,
+            }
+        })
     }
 
     fn run<'a>(
@@ -14139,6 +14203,14 @@ mod tests {
             Host::tools_on(&*self.core)
         }
 
+        fn knows_file<'a>(
+            &'a self,
+            actor: &'a crate::assistant::Actor,
+            id: &'a str,
+        ) -> torro_core::ai::BoxFuture<'a, bool> {
+            Host::knows_file(&*self.core, actor, id)
+        }
+
         // Bots (tasks B.1 and B.2) as the core runs them.
 
         fn client_of(&self, actor: &crate::assistant::Actor) -> Option<torro_ipc::ClientInfo> {
@@ -14446,6 +14518,188 @@ mod tests {
         rights.tools = Selection::Only(Vec::new());
         core.clients.update(&client, rights).await.expect("updated");
         assert_eq!(offered_now("Make a PDF").await, (false, true, false), "not selected");
+    }
+
+    /// The cards of conversation `id` as the client with `key` gets them, or the person for `None`.
+    async fn cards_of(core: &Core, key: Option<&Key>, id: &str) -> Vec<torro_ipc::assistant::CardEntry> {
+        let request = Request::GetCards { conversation: id.into() };
+        let answer = match key {
+            Some(key) => ask(core, Some(key), request).await,
+            None => core.handle(request).await,
+        };
+        match answer {
+            Response::Cards { cards } => cards,
+            other => panic!("expected cards, got {other:?}"),
+        }
+    }
+
+    /// Issue #225, task WZ.5, end to end with a scripted model (engine A): a PDF the assistant made
+    /// gets a card right after its tool line, a refused one none. `assistant.get_cards` shows the
+    /// file with the rights of the assistant's client – for another client within its own rights as
+    /// well – and "unavailable" once the selection is taken away, the tool is switched off or the
+    /// file is gone. The log names the conversation, never a title or a path.
+    #[tokio::test]
+    async fn a_pdf_of_the_assistant_becomes_a_card_resolved_with_its_rights() {
+        use torro_ipc::assistant::{Card, EntryContent};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let room = crate::tools::tests::Room::new();
+        let ollama = fake_ollama().await;
+        let pdf = serde_json::json!({"title": "Offer for Müller", "markdown": "# Offer\n\nÄpfel."});
+        let script = Script::new(vec![
+            calls("tools_create_pdf", pdf.clone()),
+            says("It is on your desktop."),
+            calls("tools_create_pdf", pdf),
+            says("The tool is switched off."),
+        ]);
+        let keys = MemoryTokens::default();
+        let limits = Limits { max_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
+        let assistant =
+            crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO).with_limits(limits);
+        let core =
+            Arc::new(core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant).with_tools(room.tools()));
+        let engine = core
+            .ai
+            .connect(AiProvider::Ollama, Some(&ollama.url("/v1")), torro_core::account::Secret::default())
+            .await
+            .expect("connected")
+            .id;
+        let mut rights = Rights::assistant();
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        let (assistant_client, assistant_key) = core
+            .clients
+            .add("Assistant", torro_ipc::api::ASSISTANT_CLIENT, rights.clone())
+            .await
+            .expect("the assistant");
+        let host = Arc::new(ScriptedCore { core: Arc::clone(&core), script: Arc::clone(&script) });
+        let weak = Arc::downgrade(&host);
+        let weak: std::sync::Weak<dyn Host> = weak;
+        core.assistant.attach(weak);
+        switch_pdf(&core, true).await;
+
+        // Made: the tool line, then its card.
+        let made = tell(&core, &engine, "Write the offer as a PDF").await;
+        let entries = conversation_until(&core, &made, |running, _| !running).await;
+        let kinds: Vec<&str> = entries
+            .iter()
+            .map(|entry| match &entry.content {
+                EntryContent::Tool { error: None, .. } => "tool",
+                EntryContent::Tool { .. } => "refused",
+                EntryContent::Card { .. } => "card",
+                EntryContent::Message { .. } => "message",
+                EntryContent::Answer { .. } => "answer",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(kinds, ["message", "tool", "card", "answer"]);
+        let cards = cards_of(&core, None, &made).await;
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].seq, entries[2].seq);
+        let torro_ipc::assistant::Card::File(file) = &cards[0].card else { panic!("a file: {cards:?}") };
+        assert_eq!((file.title.as_str(), file.name.as_str()), ("Offer for Müller", "Offer for Müller.pdf"));
+        assert_eq!(std::path::PathBuf::from(&file.path), room.desktop().join("Offer for Müller.pdf"));
+        let file = file.clone();
+        let theirs = crate::assistant::Actor::Assistant;
+        assert!(Host::knows_file(&*core, &theirs, &file.id).await, "the assistant's own file");
+        assert!(!Host::knows_file(&*core, &crate::assistant::Actor::Bot("b0b0b0b0".into()), &file.id).await);
+
+        // Refused: the tool line says so, and no card follows.
+        switch_pdf(&core, false).await;
+        let refused = tell(&core, &engine, "Once more").await;
+        let entries = conversation_until(&core, &refused, |running, _| !running).await;
+        assert!(entries.iter().any(|entry| matches!(&entry.content, EntryContent::Tool { error: Some(_), .. })));
+        assert!(!entries.iter().any(|entry| matches!(entry.content, EntryContent::Card { .. })), "{entries:?}");
+        assert!(cards_of(&core, None, &refused).await.is_empty());
+        let unavailable = || vec![torro_ipc::assistant::CardEntry { seq: cards[0].seq, card: Card::Unavailable }];
+        assert_eq!(cards_of(&core, None, &made).await, unavailable(), "switched off");
+        switch_pdf(&core, true).await;
+
+        // Another client sees the card only within its own rights; the assistant's client never asks.
+        let mut reading = RightsTemplate::ReadOnly.rights();
+        reading.areas.insert(Area::Assistant, AreaRights { level: Level::Read, admin: false });
+        reading.areas.remove(&Area::Tools);
+        reading.tools = Selection::Only(Vec::new());
+        let (other, other_key) = core.clients.add("Agent", "claude-code", reading.clone()).await.expect("added");
+        assert_eq!(cards_of(&core, Some(&other_key), &made).await, unavailable(), "no tools of its own");
+        reading.areas.insert(Area::Tools, AreaRights { level: Level::Read, admin: false });
+        reading.tools = Selection::Only(vec!["pdf".into()]);
+        core.clients.update(&other.id, reading).await.expect("updated");
+        assert_eq!(cards_of(&core, Some(&other_key), &made).await[0].card, Card::File(file.clone()));
+        let own = ask(&core, Some(&assistant_key), Request::GetCards { conversation: made.clone() }).await;
+        assert_eq!(code(&own), "forbidden", "the assistant never reads its own area");
+        let unknown = core.handle(Request::GetCards { conversation: "0123456789abcdef".into() }).await;
+        assert_eq!(code(&unknown), "not-found");
+
+        // The assistant's selection taken away, then the file deleted: unavailable either way.
+        let mut narrowed = rights.clone();
+        narrowed.tools = Selection::Only(Vec::new());
+        core.clients.update(&assistant_client.id, narrowed).await.expect("updated");
+        assert_eq!(cards_of(&core, None, &made).await, unavailable(), "not selected");
+        core.clients.update(&assistant_client.id, rights).await.expect("updated");
+        assert_eq!(cards_of(&core, None, &made).await[0].card, Card::File(file.clone()));
+        std::fs::remove_file(&file.path).expect("deleted");
+        assert_eq!(cards_of(&core, None, &made).await, unavailable(), "deleted");
+
+        let log = std::fs::read_to_string(crate::audit::tests::file_in(dir.path())).expect("log written");
+        assert!(log.contains("assistant.get_cards"), "{log}");
+        assert!(!log.contains("Müller") && !log.contains("Desktop"), "no title or path in the log: {log}");
+    }
+
+    /// Issue #225, task WZ.5: in a conversation with a bot the card is the bot's: made with its
+    /// client, resolved with its rights (the assistant's play no part), unavailable once the bot is
+    /// deleted.
+    #[tokio::test]
+    async fn a_bots_pdf_card_is_resolved_with_the_bots_rights() {
+        use torro_ipc::assistant::Card;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let room = crate::tools::tests::Room::new();
+        let ollama = fake_ollama().await;
+        let pdf = serde_json::json!({"title": "Packing list", "markdown": "- Socks"});
+        let script = Script::new(vec![calls("tools_create_pdf", pdf), says("Done.")]);
+        let keys = MemoryTokens::default();
+        let limits = Limits { max_steps: 6, approval_poll: std::time::Duration::from_millis(5) };
+        let assistant =
+            crate::assistant::tests::assistant_in(dir.path(), std::time::Duration::ZERO).with_limits(limits);
+        let core =
+            Arc::new(core_with_ai(dir.path(), &keys, Vec::new()).with_assistant(assistant).with_tools(room.tools()));
+        let engine = core
+            .ai
+            .connect(AiProvider::Ollama, Some(&ollama.url("/v1")), torro_core::account::Secret::default())
+            .await
+            .expect("connected")
+            .id;
+        let host = Arc::new(ScriptedCore { core: Arc::clone(&core), script });
+        let weak = Arc::downgrade(&host);
+        let weak: std::sync::Weak<dyn Host> = weak;
+        core.assistant.attach(weak);
+        switch_pdf(&core, true).await;
+        let mut rights = reading(&[]);
+        rights.areas.insert(Area::Tools, AreaRights { level: Level::Write, admin: false });
+        rights.tools = Selection::Only(vec!["pdf".into()]);
+        let bot = bot_with(&core, "Packing helper", &engine, rights).await;
+
+        let send = Request::SendMessage {
+            conversation: None,
+            engine: engine.clone(),
+            model: Some("qwen3:8b".into()),
+            effort: None,
+            text: "Make a packing list".into(),
+            without: Vec::new(),
+            mode: torro_ipc::assistant::Mode::Default,
+            bot: Some(bot.id.clone()),
+        };
+        let Response::Conversation { conversation, .. } = core.handle(send).await else { panic!("a conversation") };
+        conversation_until(&core, &conversation.id, |running, _| !running).await;
+        let cards = cards_of(&core, None, &conversation.id).await;
+        let [shown] = cards.as_slice() else { panic!("one card: {cards:?}") };
+        let Card::File(file) = &shown.card else { panic!("a file: {cards:?}") };
+        assert_eq!(file.title, "Packing list");
+        assert!(Host::knows_file(&*core, &crate::assistant::Actor::Bot(bot.client.clone()), &file.id).await);
+        assert!(!Host::knows_file(&*core, &crate::assistant::Actor::Assistant, &file.id).await, "no assistant");
+
+        assert_eq!(core.handle(Request::DeleteBot { id: bot.id.clone() }).await, Response::Ok);
+        let gone = cards_of(&core, None, &conversation.id).await;
+        assert_eq!(gone[0].card, Card::Unavailable, "the bot and its client are gone");
     }
 
     /// Issue #134, end to end with a scripted model (engine A): every right switched on, mail with

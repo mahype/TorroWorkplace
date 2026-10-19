@@ -594,6 +594,8 @@ fn describe(request: &Request) -> String {
         Request::ListEngines => "assistant engines".into(),
         Request::ListConversations => "assistant conversations".into(),
         Request::GetConversation { id, .. } => format!("conversation {id}"),
+        // Never a file's title or path (issue #225).
+        Request::GetCards { conversation } => format!("cards of conversation {conversation}"),
         Request::SendMessage { .. } => "message to the assistant".into(),
         Request::CancelAnswer { conversation } => format!("stop the answer in conversation {conversation}"),
         Request::RenameConversation { id, .. } => format!("rename conversation {id}"),

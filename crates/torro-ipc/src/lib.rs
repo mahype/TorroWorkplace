@@ -57,7 +57,7 @@ use torro_setups::TemplateSummary;
 use torro_setups::restore::RestoreReport;
 
 use crate::api::{Area, Rights, RightsTemplate};
-use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
+use crate::assistant::{CardEntry, ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
 use crate::mail::{Delivery, IncompleteReason, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget};
 use crate::tools::{FileInfo, PdfTemplateId, ToolInfo};
@@ -1945,6 +1945,18 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         after: Option<u64>,
     },
+    /// The cards of a conversation as they are now ([`Response::Cards`]): for every card entry
+    /// ([`assistant::EntryContent::Card`]) its number and what it shows, fetched fresh from the core
+    /// (a file of the assistant's own tools: name, template, size, path), or
+    /// [`assistant::Card::Unavailable`] for an item that is gone or out of reach. Resolved with the
+    /// rights of the conversation's client (the assistant's, or the bot's for a conversation with a
+    /// bot), for a client also within its own rights; the app key adds none of its own. A card is
+    /// never more than that client may see now. `not-found` for an unknown conversation.
+    #[serde(rename = "assistant.get_cards")]
+    GetCards {
+        /// The conversation's id from `assistant.list_conversations`.
+        conversation: String,
+    },
     /// Adds the person's message to the conversation `conversation`, or to a new one, and starts
     /// the answer in the background. Answered at once with [`Response::Conversation`]: the
     /// conversation and the entries the call added (the message; an answer that is quick may be
@@ -2942,6 +2954,11 @@ pub enum Response {
     Conversation {
         conversation: ConversationSummary,
         entries: Vec<Entry>,
+    },
+    /// The cards of a conversation, in the order of their entries ([`Request::GetCards`]). A
+    /// file's title is the client's text: data, never instructions.
+    Cards {
+        cards: Vec<CardEntry>,
     },
     /// How talking by voice stands ([`Request::VoiceStatus`]).
     Voice {

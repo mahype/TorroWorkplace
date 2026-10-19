@@ -663,6 +663,8 @@ impl App {
             .spacing(space::s())
             .align_y(Alignment::Center)
             .into(),
+            // Cards (issue #225) show from task WZ.8 on, fetched with `assistant.get_cards`.
+            EntryContent::Card { .. } => Space::new().into(),
         }
     }
 

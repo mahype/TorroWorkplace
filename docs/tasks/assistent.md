@@ -937,7 +937,7 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
   nur mit Schalter und Auswahl; `denied` enthält die gesperrten; Prompt nennt das Werkzeug.
 
 ### WZ.5 Karten-Grundlage und Datei-Karte im Kern
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WZ.4 · **Dateien:** `crates/torro-ipc/src/{lib,api,assistant}.rs`,
   `crates/torroworkplace/src/assistant/{mod,model,cards}.rs` (`cards.rs` neu),
   `crates/torroworkplace/src/assistant/engines/mod.rs`, `crates/torroworkplace/src/{core,audit,daemon,pim}.rs`,

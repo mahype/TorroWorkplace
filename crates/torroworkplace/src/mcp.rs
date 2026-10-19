@@ -2262,7 +2262,11 @@ mod tests {
             .filter(|command| command.area == Area::Assistant && command.mcp == Mcp::Tool)
             .map(|command| command.tool_name())
             .collect();
-        assert_eq!(catalogue.len(), 15, "nine of task C.1, five of C.10, one of issue #134: {catalogue:?}");
+        assert_eq!(
+            catalogue.len(),
+            16,
+            "nine of task C.1, five of C.10, one of issue #134, one of #225: {catalogue:?}"
+        );
         assert!(catalogue.iter().all(|name| name.starts_with("assistant_") && names.contains(name.as_str())));
         // But the person's yes to asking a bot (task B.2), which no agent may give.
         let assistant = CATALOGUE.iter().filter(|c| c.area == Area::Assistant && c.name != "assistant.confirm_bot");
@@ -2744,6 +2748,7 @@ mod tests {
                 ("assistant_list_engines", json!({})),
                 ("assistant_list_conversations", json!({})),
                 ("assistant_get_conversation", json!({"id": CONVERSATION})),
+                ("assistant_get_cards", json!({"conversation": CONVERSATION})),
                 ("assistant_send_message", json!({"engine": "test", "text": "Hello"})),
                 ("assistant_cancel", json!({"conversation": CONVERSATION})),
                 ("assistant_rename_conversation", json!({"id": CONVERSATION, "title": "Renamed"})),

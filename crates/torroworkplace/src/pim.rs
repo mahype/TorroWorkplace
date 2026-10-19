@@ -1219,6 +1219,7 @@ impl PimService {
             Request::ListEngines
             | Request::ListConversations
             | Request::GetConversation { .. }
+            | Request::GetCards { .. }
             | Request::SendMessage { .. }
             | Request::CancelAnswer { .. }
             | Request::RenameConversation { .. }

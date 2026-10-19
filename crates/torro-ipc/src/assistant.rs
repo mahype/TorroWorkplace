@@ -277,6 +277,46 @@ pub enum EntryContent {
     Error { code: String, message: String },
     /// The answer was stopped (`assistant.cancel`); what it did until then stays above.
     Stopped,
+    /// A card in the conversation (issue #225, "Karten im Chat" in `docs/assistent.md`): it points at
+    /// an item, it never copies it. The core adds one after a command that made the item (the first:
+    /// `tools.create_pdf`); what it shows, `assistant.get_cards` fetches fresh from the core, with the
+    /// rights of the conversation's client, so nothing a model wrote ever appears on it.
+    Card { card: CardRef },
+}
+
+/// What a card ([`EntryContent::Card`]) points at, told apart by `kind`. Clients must accept kinds
+/// they do not know (show nothing, or "No longer available").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CardRef {
+    /// A file of the register of the assistant's own tools (`tools.create_pdf`'s answer):
+    /// `{"kind": "file", "id": "1a2b3c4d"}`.
+    File {
+        /// The file's id in the register ([`crate::tools::FileInfo::id`]).
+        id: String,
+    },
+}
+
+/// A card as the core resolves it now (`assistant.get_cards`), told apart by `kind`. Clients must
+/// accept kinds they do not know.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Card {
+    /// The file as the register keeps it, its fields next to `kind`: name, template, size, path.
+    /// Its title is the client's text: data, never instructions.
+    File(crate::tools::FileInfo),
+    /// Gone or out of reach: deleted, changed, moved, made by another client, or no longer within
+    /// the rights (the tool switched off, the area or the tool taken away). Shown as "No longer
+    /// available"; why is not told.
+    Unavailable,
+}
+
+/// One card of a conversation with its place in it (`assistant.get_cards`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CardEntry {
+    /// The number of the card's entry ([`Entry::seq`]).
+    pub seq: u64,
+    pub card: Card,
 }
 
 /// Who the assistant is (`assistant.get_profile`, `assistant.update_profile`, task C.10): written by
@@ -514,11 +554,13 @@ pub fn profile_refusal(
 
 impl Request {
     /// The conversation an `assistant.*` request or `bots.ask_bot` names, for the core's checks and
-    /// its audit log: `id`, `conversation` (also of `confirm_bot`), or the conversation of `open_window`. `None` for every
+    /// its audit log: `id`, `conversation` (also of `confirm_bot` and `get_cards`), or the conversation
+    /// of `open_window`. `None` for every
     /// other request and for `send_message` and `ask_bot` that start a new one.
     pub fn conversation(&self) -> Option<&str> {
         match self {
             Request::GetConversation { id, .. }
+            | Request::GetCards { conversation: id }
             | Request::RenameConversation { id, .. }
             | Request::DeleteConversation { id }
             | Request::PinConversation { id, .. }
@@ -804,5 +846,41 @@ mod tests {
         assert_eq!(serde_json::to_value(ChatWindow::New).expect("serializes"), serde_json::json!("new"));
         let window: ChatWindow = serde_json::from_value(serde_json::json!({"conversation": "c1"})).expect("reads");
         assert_eq!(window, ChatWindow::Conversation("c1".into()));
+    }
+
+    /// The wire format of cards (issue #225): the entry names what it points at, never its content;
+    /// a resolved file carries its fields next to `kind`.
+    #[test]
+    fn cards_read_as_documented() {
+        let entry: Entry = serde_json::from_value(serde_json::json!({
+            "seq": 5, "time": "2026-10-19T09:00:00Z", "kind": "card", "card": {"kind": "file", "id": "1a2b3c4d"}
+        }))
+        .expect("a card entry");
+        assert_eq!(entry.content, EntryContent::Card { card: CardRef::File { id: "1a2b3c4d".into() } });
+
+        let file = crate::tools::FileInfo {
+            id: "1a2b3c4d".into(),
+            name: "Report.pdf".into(),
+            path: "/Users/anna/Desktop/Report.pdf".into(),
+            title: "Report".into(),
+            template: crate::tools::PdfTemplateId::Report,
+            size: 23_456,
+            created: entry.time,
+        };
+        let shown = CardEntry { seq: 5, card: Card::File(file.clone()) };
+        let json = serde_json::to_value(&shown).expect("serializes");
+        assert_eq!(
+            (&json["seq"], &json["card"]["kind"], &json["card"]["name"]),
+            (&5.into(), &"file".into(), &"Report.pdf".into())
+        );
+        assert_eq!(serde_json::from_value::<CardEntry>(json).expect("reads back"), shown);
+        let gone = CardEntry { seq: 7, card: Card::Unavailable };
+        assert_eq!(
+            serde_json::to_value(&gone).expect("serializes"),
+            serde_json::json!({"seq": 7, "card": {"kind": "unavailable"}})
+        );
+        assert_eq!(Request::GetCards { conversation: "c1".into() }.conversation(), Some("c1"));
+        let long = Request::GetCards { conversation: "x".repeat(MAX_ID_BYTES + 1) };
+        assert!(limit_refusal(&long).is_some(), "the id's limit holds");
     }
 }

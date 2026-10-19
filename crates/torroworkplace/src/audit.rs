@@ -344,6 +344,7 @@ pub fn ids(request: &Request) -> Vec<String> {
         Request::OpenChatWindow { window: ChatWindow::Bot(bot) } => vec![format!("bot:{}", hashed(bot))],
         Request::OpenChatWindow { window: ChatWindow::New } => Vec::new(),
         Request::GetConversation { id: conversation, .. }
+        | Request::GetCards { conversation }
         | Request::CancelAnswer { conversation }
         | Request::RenameConversation { id: conversation, .. }
         | Request::DeleteConversation { id: conversation }

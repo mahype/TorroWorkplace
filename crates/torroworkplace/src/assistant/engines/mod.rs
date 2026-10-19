@@ -20,7 +20,9 @@
 //!   of task C.3 appended with the personality and the memory of task C.10, without notes marked
 //!   `local_only`), writes the message to its input and closes it, and turns what it
 //!   writes into entries: text as a growing answer, then answer entries, a tool line per call
-//!   (name, input, result in a few words), an error entry when it fails. The folder is removed
+//!   (name, input, result in a few words), a card after a command that made an item (issue #225,
+//!   only for a file the register keeps as the client's, `super::cards::of_agent`), an error entry
+//!   when it fails. The folder is removed
 //!   when the run ends, however it ends.
 //! - **The key** is lent for the run only ([`crate::clients::Clients::lend`] through
 //!   [`Host::lend`]): a key of the assistant's client made for this run, kept in the core's
@@ -257,6 +259,7 @@ impl Agents {
 pub(super) async fn answer(assistant: Arc<Assistant>, host: Arc<dyn Host>, job: Job, agent: Agent) {
     let mut run = Running {
         assistant,
+        host: Arc::clone(&host),
         job,
         agent,
         model: None,
@@ -340,6 +343,8 @@ impl Failed {
 /// The state of one run.
 struct Running {
     assistant: Arc<Assistant>,
+    /// The core: whether a file of a tool line is the client's own, before its card is added (issue #225).
+    host: Arc<dyn Host>,
     job: Job,
     agent: Agent,
     /// The model the agent named when it started.
@@ -510,7 +515,21 @@ impl Running {
             claude::Event::ToolResult { id, text, error } => {
                 let (name, input) = self.calls.remove(&id).unwrap_or_else(|| (String::new(), Value::Null));
                 let lack = if error { self.lack(&name, &text) } else { None };
-                if !self.add(tool_line(&name, input, &text, error, lack, self.agent.name()), false).await {
+                let line = tool_line(&name, input, &text, error, lack, self.agent.name());
+                // A card after a command that made an item (issue #225), only for a file the register keeps
+                // as this client's: the result is the agent's text.
+                let card = match (&line, error) {
+                    (EntryContent::Tool { name, .. }, false) => {
+                        super::cards::of_agent(self.host.as_ref(), &self.job.actor, name, &text).await
+                    }
+                    _ => None,
+                };
+                if !self.add(line, false).await {
+                    return Some(Ok(Ended::Stopped));
+                }
+                if let Some(card) = card
+                    && !self.add(card, false).await
+                {
                     return Some(Ok(Ended::Stopped));
                 }
             }
