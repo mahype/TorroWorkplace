@@ -37,8 +37,12 @@
 //!   assistant's tools itself with the client's rights, so nobody ever needs its key, and the page
 //!   must not show it ([`answered`] drops it).
 //! - **Bots** (`api::BOT_CLIENT`, task B.3) are a group of their own; their rows open the same
-//!   rights view for the bot's own client, which sets what each bot may use. Who a bot is – name,
-//!   instructions, skills – is edited in the assistant app. The areas `assistant` and `bots` have no
+//!   rights view for the bot's own client, which sets what each bot may use, and "Open chat" in the
+//!   header leads to the bot's chat window in the assistant app
+//!   (`assistant.open_window { bot }`, [`chat_button`]). A bot's page has **no** destructive
+//!   button ([`Category::away_label`]): who a bot is – name,
+//!   instructions, skills – is edited in the assistant app, and whether it exists at all is the
+//!   assistant's too. The areas `assistant` and `bots` have no
 //!   row for a bot or for the assistant itself – the core refuses them whatever the rights say
 //!   (`api::loops_back`). For every other agent a short warning stands under `bots` (it would act
 //!   with a bot's rights) and `assistant` (it would also read the conversations with bots) while
@@ -61,8 +65,9 @@
 //! Disconnecting a hook client itself takes out only its hooks.
 //!
 //! Requests: `clients.update_client` (every control of the rights), `clients.activity` (opening a
-//! detail page), `clients.new_key`, `clients.remove_client` ("Disconnect…", "Turn off assistant…")
-//! and `clients.create_client` ("Turn on assistant" and the "Connect program" dialog). The clients
+//! detail page), `clients.new_key`, `clients.remove_client` ("Disconnect…", "Turn off assistant…"),
+//! `clients.create_client` ("Turn on assistant" and the "Connect program" dialog) and
+//! `assistant.open_window` ("Open chat" on a bot's page). The clients
 //! come from
 //! `clients.list_clients`, the candidates of the selections from `calendar.list_calendars`,
 //! `tasks.list_lists` (whose GitHub filter lists also name repositories), `inbox.list_sources` and
@@ -374,6 +379,9 @@ pub enum Message {
     /// "Disconnect…", then its confirmation.
     AskDisconnect,
     Disconnect,
+    /// "Open chat" in the header of a bot's page: the bot's chat window in the assistant app
+    /// (`assistant.open_window` with the bot's id, not its client's).
+    OpenChat(String),
     /// "Cancel" or Escape in a confirmation.
     CloseDialog,
     /// "Connect program" in the header: opens the assistant.
@@ -476,10 +484,18 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::KeepKey => Action::None,
-        Message::AskDisconnect => ask(state, data, Dialog::Disconnect),
+        // Only a page that offers the button asks the question: a bot's has none
+        // ([`Category::away_label`]), and its client must not be taken away from here.
+        Message::AskDisconnect => match selected_client(state, data).map(Category::of) {
+            Some(category) if category.away_label().is_some() => ask(state, data, Dialog::Disconnect),
+            _ => Action::None,
+        },
         Message::Disconnect => {
             state.dialog = None;
-            let Some(id) = selected_client(state, data).map(|client| client.id.clone()) else {
+            let Some(id) = selected_client(state, data)
+                .filter(|client| Category::of(client).away_label().is_some())
+                .map(|client| client.id.clone())
+            else {
                 return Action::None;
             };
             let was_assistant = state.assistant;
@@ -495,6 +511,9 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             }
             state.removing = Some(id.clone());
             Action::Send(Request::RemoveClient { id })
+        }
+        Message::OpenChat(bot) => {
+            Action::Send(Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot(bot) })
         }
         Message::CloseDialog => {
             state.dialog = None;
@@ -790,13 +809,14 @@ pub fn escape(state: &State) -> Option<Message> {
     }
 }
 
-/// The header bar: on a detail page the client's name with a back button to the list; on the
-/// assistant's first start its name and "Turn on assistant" – the window's one primary button,
-/// where it stays in sight while the rights below are chosen; on the list "Connect program". Only
-/// the icon of a primary button in narrow windows.
+/// The header bar: on a detail page the client's name with a back button to the list, and on a
+/// bot's page "Open chat" ([`chat_button`]); on the assistant's first start its name and "Turn on
+/// assistant" – the window's one primary button, where it stays in sight while the rights below
+/// are chosen; on the list "Connect program". Only the icon of a primary button in narrow windows.
 pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<'a, Message> {
     if let Some(client) = selected_client(state, data) {
-        return Header { sub_page: Some((client.name.clone(), Message::Back)), actions: Vec::new() };
+        let actions = chat_button(data, client, class).into_iter().collect();
+        return Header { sub_page: Some((client.name.clone(), Message::Back)), actions };
     }
     if first_start(state, data) {
         let button = match state.creating {
@@ -806,6 +826,26 @@ pub fn header<'a>(state: &'a State, data: &'a Data, class: SizeClass) -> Header<
         return Header { sub_page: Some((tr("Assistant").to_string(), Message::Back)), actions: vec![button] };
     }
     Header { sub_page: None, actions: vec![primary(class, tr("Connect program"), Message::Connect)] }
+}
+
+/// "Open chat" on a bot's page: its chat window in the assistant app, where the bot itself is
+/// edited. `None` for every other client, and for a bot whose own entry the core no longer lists –
+/// then there is nothing to chat with. In narrow windows only the icon, like the bot's page in the
+/// control centre had it before task S.21.
+fn chat_button<'a>(data: &'a Data, client: &ClientInfo, class: SizeClass) -> Option<Element<'a, Message>> {
+    if client.kind != BOT_CLIENT {
+        return None;
+    }
+    let bot = data.bots.iter().find(|bot| bot.client == client.id)?;
+    let open = Some(Message::OpenChat(bot.id.clone()));
+    Some(match class {
+        SizeClass::Wide | SizeClass::Medium => {
+            widgets::text_button(Some(Icon::ArrowUpRight), tr("Open chat"), style::button::secondary, open)
+        }
+        SizeClass::Narrow | SizeClass::Mini | SizeClass::Strip => {
+            widgets::compact_button(Icon::ArrowUpRight, tr("Open chat"), style::button::secondary, open)
+        }
+    })
 }
 
 /// The header's primary button: with its word, in narrow windows only its "+" icon, so the section
@@ -1177,12 +1217,20 @@ impl Category {
         }
     }
 
-    /// The last button of the detail page: what it takes away, in the words of what it is.
-    fn away_label(self) -> &'static str {
+    /// The last button of the detail page: what it takes away, in the words of what it is; `None`
+    /// for a page that has none.
+    ///
+    /// A bot has none. Taking its client away cannot be undone from here – the core refuses
+    /// `clients.create_client` for the kind `bot`, so only the next `bots.save_bot` in the
+    /// assistant would give the bot a client again, with no rights. Task S.21 names one
+    /// destructive button for this section, "Turn off assistant…", and the bot's page in the
+    /// control centre never had one. What a bot may use is set here; whether it exists at all is
+    /// the assistant's.
+    fn away_label(self) -> Option<&'static str> {
         match self {
-            Category::Assistant => tr("Turn off assistant…"),
-            Category::Bot => tr("Take access away…"),
-            Category::Agent | Category::Hook | Category::Script => tr("Disconnect…"),
+            Category::Assistant => Some(tr("Turn off assistant…")),
+            Category::Bot => None,
+            Category::Agent | Category::Hook | Category::Script => Some(tr("Disconnect…")),
         }
     }
 
@@ -1503,12 +1551,16 @@ fn detail_page<'a>(
         page =
             page.extend(rights_groups(&state.repo_input, rights, data, column, &client.kind, access_title(category)));
     }
-    let away = widgets::text_button(None, category.away_label(), style::button::danger, Some(Message::AskDisconnect));
     page = page.push(activity_group(state, client, now));
     if category.has_key() {
         page = page.push(key_group(column));
     }
-    page.push(on_axis(away)).into()
+    // A bot's page ends without one: see [`Category::away_label`].
+    if let Some(label) = category.away_label() {
+        let away = widgets::text_button(None, label, style::button::danger, Some(Message::AskDisconnect));
+        page = page.push(on_axis(away));
+    }
+    page.into()
 }
 
 /// The name of the rights group, in the words of what the client is: an agent is given access, the
@@ -2684,10 +2736,9 @@ mod tests {
         assert_eq!(Category::of(&data.clients[0]), Category::Assistant);
         assert!(!Category::Assistant.has_key() && !Category::Bot.has_key(), "the core holds their keys");
         assert!(Category::Agent.has_key() && Category::Script.has_key() && Category::Hook.has_key());
-        assert_eq!(Category::Assistant.away_label(), tr("Turn off assistant…"));
+        assert_eq!(Category::Assistant.away_label(), Some(tr("Turn off assistant…")));
         assert_eq!(Category::Assistant.confirm_word(), tr("Turn off"));
-        assert_eq!(Category::Bot.away_label(), tr("Take access away…"));
-        assert_eq!(Category::Agent.away_label(), tr("Disconnect…"));
+        assert_eq!(Category::Agent.away_label(), Some(tr("Disconnect…")));
         assert_eq!(access_title(Category::Assistant), tr("What the assistant may use"));
         assert_eq!(access_title(Category::Bot), tr("What the bot may use"));
         assert_eq!(access_title(Category::Agent), tr("Access"));
@@ -2709,14 +2760,57 @@ mod tests {
         assert!(matches!(action, Action::Send(Request::RemoveClient { ref id }) if id == "a1"), "{action:?}");
         assert!(!state.assistant && state.choice == Rights::assistant(), "it starts from the suggestion again");
 
-        // A bot's page is a client's page like any other.
+        // A bot's page is a client's page like any other, but it never takes the bot's access
+        // away: only the next `bots.save_bot` in the assistant could give it a client again.
         let mut bot = State::default();
         let _ = update(&mut bot, Message::Open("c0000001".into()), &data);
         drop(view(&bot, &data));
-        let _ = update(&mut bot, Message::AskDisconnect, &data);
-        assert!(overlay(&bot, &data).is_some());
-        let action = update(&mut bot, Message::Disconnect, &data);
-        assert!(matches!(action, Action::Send(Request::RemoveClient { ref id }) if id == "c0000001"), "{action:?}");
+        assert_eq!(Category::Bot.away_label(), None, "no destructive button on a bot's page");
+        assert!(matches!(update(&mut bot, Message::AskDisconnect, &data), Action::None), "and no question either");
+        assert!(overlay(&bot, &data).is_none());
+        assert!(matches!(update(&mut bot, Message::Disconnect, &data), Action::None), "nor a way past it");
+    }
+
+    /// Task S.21, found in the review of S.22: "Open chat" is back on a bot's page, the way the
+    /// control centre's own bot page had it – with the bot's id, not its client's. Every other
+    /// detail page has no such button.
+    #[test]
+    fn a_bot_s_page_opens_its_chat() {
+        let bot_client = client("c0000001", "Travel planner", BOT_CLIENT, Rights::none());
+        let agent = client("c1", "Claude Code", "claude-code", RightsTemplate::ReadAndWrite.rights());
+        let summary = torro_ipc::bots::BotSummary {
+            id: "b0000001".into(),
+            name: "Travel planner".into(),
+            description: "Plans trips".into(),
+            avatar: torro_ipc::assistant::LETTER_AVATAR.into(),
+            engine: "ai:ollama".into(),
+            model: None,
+            client: "c0000001".into(),
+        };
+        let data = Data { clients: vec![bot_client, agent], bots: vec![summary], ..data() };
+
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Open("c0000001".into()), &data);
+        for class in [SizeClass::Wide, SizeClass::Medium, SizeClass::Narrow] {
+            let header = header(&state, &data, class);
+            assert_eq!(header.actions.len(), 1, "{class:?}: the bot's page offers \"Open chat\"");
+        }
+        let action = update(&mut state, Message::OpenChat("b0000001".into()), &data);
+        assert!(
+            matches!(
+                action,
+                Action::Send(Request::OpenChatWindow { window: torro_ipc::assistant::ChatWindow::Bot(ref id) })
+                    if id == "b0000001"
+            ),
+            "{action:?}"
+        );
+
+        // An agent's page has none, and neither has a bot the core no longer lists.
+        let mut other = State::default();
+        let _ = update(&mut other, Message::Open("c1".into()), &data);
+        assert!(header(&other, &data, SizeClass::Wide).actions.is_empty());
+        let gone = Data { bots: Vec::new(), ..data };
+        assert!(header(&state, &gone, SizeClass::Wide).actions.is_empty(), "nothing to chat with");
     }
 
     /// Task S.21: the list always has the assistant's group – its row turns it on while it is off –

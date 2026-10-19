@@ -329,8 +329,10 @@ S.16 ── S.17 ── S.18 (Assistent) ──┬── S.19 (Kalender, Aufgabe
   (`apps.rs`, `assistant.rs`, `bots.rs`, `persona.rs`, `inbox.rs`), die Seitenleiste hat nur noch
   Overview, Accounts, Agents & API, Approvals, Workspaces, Appearance und General am Fuß.
   **Agents & API** führt den Assistenten und jeden Bot wie jedes Programm: eigene Gruppen in der
-  Liste, dieselbe Rechte-Ansicht in der Detailseite, „Turn off assistant…“ bzw. „Take access away…“
-  statt „Disconnect…“ und **kein Schlüssel-Block** – der Kern hält ihre Schlüssel, ein neuer würde
+  Liste, dieselbe Rechte-Ansicht in der Detailseite, „Turn off assistant…“ statt „Disconnect…“ beim
+  Assistenten, beim Bot **kein zerstörender Knopf** (nachgezogen mit dem Review zu #210: von hier
+  ließe sich sein Client nicht wieder anlegen, nur das nächste `bots.save_bot` im Assistenten;
+  dafür hat die Bot-Seite wieder „Open chat“ wie vorher) und **kein Schlüssel-Block** – der Kern hält ihre Schlüssel, ein neuer würde
   sie nur zerreißen (`Category::has_key`). Ist der Assistent aus, steht seine Zeile trotzdem da und
   führt auf seinen ersten Start („Start from“ und die angebotenen Rechte, „Turn on assistant“ im
   Kopf, `clients.create_client` mit genau diesen Rechten); sein Schlüssel wird wie bisher verworfen.
