@@ -1037,6 +1037,12 @@ impl PimService {
             return None;
         }
         let (role, collection, href) = match request {
+            // The categories of mail touch no calendar or task collection (task E12.4).
+            Request::ListCategories { .. }
+            | Request::SetItemCategory { .. }
+            | Request::ClassifyItem { .. }
+            | Request::GetCategorization
+            | Request::CatchUpCategories { .. } => return None,
             Request::SaveEvent { event } | Request::DeleteEvent { event } => {
                 (Role::Calendar, &event.collection, event.href.as_deref())
             }

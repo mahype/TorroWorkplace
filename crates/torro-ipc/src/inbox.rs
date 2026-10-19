@@ -52,10 +52,12 @@
 use std::path::PathBuf;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveTime, TimeDelta, Utc};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 use torro_inbox::item::{Hidden, HideScope, ItemTask, MuteEffect, MuteOption, MuteScope, Muted, TaskDue};
 use torro_inbox::source::TaskList;
 use torro_inbox::{InboxError, InboxSource, Item, ItemFilter, Lane, SourceInfo, SourceRef};
-use torro_mail::{Flag, Folder, InvitationAnswer, Message, MessageSummary, Order};
+use torro_mail::{Category, CategoryGroup, Flag, Folder, InvitationAnswer, Message, MessageSummary, Order};
 use torro_pim::EventTime;
 
 use crate::assistant::EngineKind;
@@ -213,6 +215,7 @@ impl InboxClient {
             order: asked(order),
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, .. } => Ok((messages, cursor)),
@@ -241,6 +244,7 @@ impl InboxClient {
             order: asked(order).filter(|_| sort == MailSort::Date),
             sort: (sort != MailSort::default()).then_some(sort),
             snoozed: None,
+            categories: Vec::new(),
         };
         match self.ask(request).await? {
             Response::MailMessages { messages, cursor, complete, highlights, total_estimate, .. } => {
@@ -562,9 +566,10 @@ fn unexpected(response: Response) -> InboxError {
 impl InboxSource for InboxClient {
     /// `inbox.list_items` with the fields of `filter`; the core sorts, wakes and cuts.
     async fn list_items(&self, filter: ItemFilter) -> Result<Vec<Item>, InboxError> {
-        let ItemFilter { lane, source, state, since, limit, order, dismissed } = filter;
-        match self.ask(Request::ListItems { lane, source, state, since, limit, order: asked(order), dismissed }).await?
-        {
+        let ItemFilter { lane, source, state, since, limit, order, dismissed, categories } = filter;
+        let asking =
+            Request::ListItems { lane, source, state, since, limit, order: asked(order), dismissed, categories };
+        match self.ask(asking).await? {
             Response::Items { items } => Ok(items),
             other => Err(unexpected(other)),
         }
@@ -738,7 +743,7 @@ mod tests {
         match request {
             Request::Ping => Response::Pong { version: "test".into(), api: crate::API_VERSION },
             // The id names the filter that arrived.
-            Request::ListItems { lane, source, state, since, limit, order, dismissed } => Response::Items {
+            Request::ListItems { lane, source, state, since, limit, order, dismissed, .. } => Response::Items {
                 items: vec![item(&format!(
                     "{lane:?}|{}|{state:?}|{}|{limit:?}{}{}",
                     source.map(|s| s.key()).unwrap_or_default(),
@@ -1035,6 +1040,7 @@ mod tests {
             limit: Some(50),
             order: Order::OldestFirst,
             dismissed: Some(false),
+            categories: Vec::new(),
         };
         let items = core.client().list_items(filter).await.expect("listed");
         assert_eq!(items.len(), 1);
@@ -1418,6 +1424,7 @@ mod tests {
                 order,
                 sort: None,
                 snoozed: None,
+                ..
             } => Response::MailMessages {
                 messages: vec![summary(
                     &format!(
@@ -1568,4 +1575,69 @@ mod tests {
         assert_eq!(client.list_items(ItemFilter::default()).await, Err(InboxError::Offline));
         assert_eq!(client.list_sources().await, Err(InboxError::Offline));
     }
+}
+
+/// One category of mail as `inbox.list_categories` lists it (task E12.4, `docs/kategorien.md`):
+/// the catalogue the sidebar and the "Category" menu are built from, with how much unread mail
+/// each one holds.
+///
+/// The words are the suite's own, so nothing here is foreign text.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryInfo {
+    /// The category on the wire: `invoice`, `service_notice`, `auto_reply` …
+    pub category: Category,
+    /// Which of the four groups it belongs to.
+    pub group: CategoryGroup,
+    /// What a person reads for the category, in the core's language.
+    pub label: String,
+    /// What a person reads for its group.
+    pub group_label: String,
+    /// Unread mail of this category, counted only in the accounts the caller may read; 0 for a
+    /// caller without access to any mail.
+    pub unread: u32,
+}
+
+/// How the categorisation of mail stands (`inbox.get_categorization`, task E12.4).
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+pub struct Categorization {
+    /// Mail is sorted by a model at all. `false` without a model assigned, or when the person
+    /// switched it off.
+    pub enabled: bool,
+    /// The AI account the decision model belongs to (`ai:…`); `None` when none is assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    /// The model that decides; `None` when none is assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How far the backlog run has come, per mail account the caller may read.
+    #[serde(default)]
+    pub accounts: Vec<CategoryProgress>,
+}
+
+/// How far the backlog of one mail account has been sorted ([`Categorization::accounts`], task
+/// E12.4); shaped like [`crate::mail::MailIndexProgress`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CategoryProgress {
+    /// The account: `mail:<address>`.
+    pub account: String,
+    /// How much mail the run looks at: the inbox of the last 30 days, at most 500 messages.
+    pub messages: u64,
+    /// Of them, how much has a category now.
+    pub done: u64,
+    /// What the core is doing about the rest.
+    pub state: CatchUpState,
+}
+
+/// What the backlog run of one account is doing ([`CategoryProgress`], task E12.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CatchUpState {
+    /// Nobody has started it yet.
+    NotStarted,
+    /// It is running: the core asks the model, throttled, in the background.
+    Running,
+    /// Every mail the run looks at has a category.
+    Complete,
+    /// Someone stopped it; what was sorted stays sorted.
+    Cancelled,
 }

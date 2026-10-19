@@ -752,6 +752,7 @@ pub(crate) mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         match inbox.handle(all, None, Utc::now()) {
             Response::Items { items } => items,
@@ -971,6 +972,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } =
             crate::mail::read::answer(&mail, &inbox, Reach::Suite, search).await
@@ -1015,6 +1017,7 @@ pub(crate) mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } =
             crate::mail::read::answer(&mail, &inbox, Reach::Suite, search).await
@@ -1115,6 +1118,7 @@ pub(crate) mod tests {
                 limit: None,
                 order: None,
                 dismissed: None,
+                categories: Vec::new(),
             };
             match core.handle(all).await {
                 Response::Items { items } => items,

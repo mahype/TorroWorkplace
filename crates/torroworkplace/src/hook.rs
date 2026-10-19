@@ -1353,6 +1353,7 @@ mod tests {
                     limit: None,
                     order: None,
                     dismissed: None,
+                    categories: Vec::new(),
                 };
                 match torro_ipc::client::call(&socket, &all).await {
                     Ok(Response::Items { items }) => items,

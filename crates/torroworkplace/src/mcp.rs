@@ -943,7 +943,17 @@ fn list_items<Tz: TimeZone>(input: ItemsInput, zone: &Tz) -> Result<Request, Too
         StateChoice::All => None,
     };
     let since = since.map(|since| instant(time(&since, "since", zone)?, zone, "since")).transpose()?;
-    Ok(Request::ListItems { lane, source, state, since, limit: Some(limit.unwrap_or(INBOX_LIMIT)), order, dismissed })
+    Ok(Request::ListItems {
+        lane,
+        source,
+        state,
+        since,
+        limit: Some(limit.unwrap_or(INBOX_LIMIT)),
+        order,
+        dismissed,
+        // The short form of the tool does not filter by category; the full request does.
+        categories: Vec::new(),
+    })
 }
 
 /// Always a notice: from a client key the core makes every other kind one or refuses it.
@@ -1695,7 +1705,16 @@ mod tests {
     }
 
     fn list_items_request(lane: Option<Lane>, state: Option<StateFilter>, limit: u32) -> Request {
-        Request::ListItems { lane, source: None, state, since: None, limit: Some(limit), order: None, dismissed: None }
+        Request::ListItems {
+            lane,
+            source: None,
+            state,
+            since: None,
+            limit: Some(limit),
+            order: None,
+            dismissed: None,
+            categories: Vec::new(),
+        }
     }
 
     #[test]
@@ -1728,6 +1747,7 @@ mod tests {
                 limit: Some(50),
                 order: None,
                 dismissed: None,
+                categories: Vec::new(),
             })
         );
         // Task E8.15: the order goes along as given.

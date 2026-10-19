@@ -458,6 +458,20 @@ fn describe(request: &Request) -> String {
         Request::LoadTemplate { id, .. } => format!("load {id}"),
         Request::ConnectNextcloud { server } => format!("connect {server}"),
         Request::ConnectGithub => "connect github".into(),
+        // Never the category: the log and the notification name the entry only (task E12.4).
+        Request::ListCategories { .. } => "list categories".into(),
+        Request::SetItemCategory { id, remember, .. } => {
+            format!("file {id}{}", if *remember { " and remember" } else { "" })
+        }
+        Request::ClassifyItem { id } => format!("classify {id}"),
+        Request::GetCategorization => "categorization".into(),
+        Request::CatchUpCategories { cancel } => {
+            if *cancel {
+                "stop sorting mail".into()
+            } else {
+                "sort the mail backlog".into()
+            }
+        }
         // Never the token.
         Request::SetGithubToken { .. } => "set github token".into(),
         // Never the address or the password (task M7.1).

@@ -196,6 +196,11 @@ pub struct ItemFilter {
     /// `dismissed`, the demo's set of dismissed ids).
     #[serde(default)]
     pub dismissed: Option<bool>,
+    /// Only entries whose mail has one of these categories (task E12.4, `docs/kategorien.md`);
+    /// empty: every entry, with a category or without. Entries that are no mail never have one,
+    /// so a filter always leaves them out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub categories: Vec<torro_mail::Category>,
 }
 
 /// The states the views of the app show: "For me" and "Info" show open entries, "Snoozed" and
@@ -226,6 +231,8 @@ impl ItemFilter {
             && self.source.as_ref().is_none_or(|source| item.source == *source)
             && self.state.is_none_or(|state| state.matches(&item.state))
             && self.since.is_none_or(|since| item.updated >= since)
+            && (self.categories.is_empty()
+                || item.category.is_some_and(|held| self.categories.contains(&held.category)))
     }
 
     /// The entries of `items` that match, sorted by [`rules::order_in`] in `order` and cut to
@@ -368,6 +375,7 @@ mod tests {
             limit: Some(50),
             order: Order::OldestFirst,
             dismissed: Some(false),
+            categories: Vec::new(),
         };
         let json = serde_json::to_string(&filter).expect("serialize");
         assert_eq!(serde_json::from_str::<ItemFilter>(&json).expect("deserialize"), filter);

@@ -746,6 +746,38 @@ impl MailStore {
         Ok(self.db.execute(sql, params![id, key, source, confidence])? > 0)
     }
 
+    /// How much unread mail each category holds (task E12.4), only categories that occur. Mail
+    /// without a category is not counted: the sidebar offers only what is there.
+    pub fn unread_by_category(&self) -> Result<Vec<(Category, u32)>, MailStoreError> {
+        let sql = "SELECT category, count(*) FROM messages
+            WHERE category IS NOT NULL AND flags & 1 = 0 GROUP BY category";
+        let mut statement = self.db.prepare(sql)?;
+        let rows = statement.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)))?;
+        let mut counts = Vec::new();
+        for row in rows {
+            let (key, count) = row?;
+            // A key this version does not know (a store written by a newer one) is left out.
+            if let Some(category) = Category::from_key(&key) {
+                counts.push((category, count.clamp(0, i64::from(u32::MAX)) as u32));
+            }
+        }
+        Ok(counts)
+    }
+
+    /// How much mail of the inbox folder the backlog run looks at and how much of it has a
+    /// category already (task E12.4): `(messages, done)`, counted over the last `days` days and
+    /// at most `limit` messages, the window the run itself uses.
+    pub fn category_counts(&self, since: DateTime<Utc>, limit: u32) -> Result<(u64, u64), MailStoreError> {
+        let Some(inbox) = self.folder_by_role(Role::Inbox)? else { return Ok((0, 0)) };
+        let sql = "SELECT count(*), coalesce(sum(category IS NOT NULL), 0) FROM (
+                SELECT category FROM messages WHERE folder_id = ?1 AND date >= ?2
+                ORDER BY date DESC, seq DESC LIMIT ?3)";
+        let counted = self.db.query_row(sql, params![inbox.id, since.timestamp(), limit], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        Ok((counted.0.max(0) as u64, counted.1.max(0) as u64))
+    }
+
     pub fn set_invite_answer(&self, id: &str, answer: Option<InvitationAnswer>) -> Result<bool, MailStoreError> {
         let answer = answer.map(InvitationAnswer::as_str);
         Ok(self.db.execute("UPDATE messages SET invite_answer = ?2 WHERE id = ?1", params![id, answer])? > 0)

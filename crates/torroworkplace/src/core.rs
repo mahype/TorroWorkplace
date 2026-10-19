@@ -756,7 +756,11 @@ fn with_entry_title(request: Request, entry: Option<&torro_inbox::Item>) -> Requ
 /// other request.
 fn mail_message_id(request: &Request) -> Option<&str> {
     match request {
-        Request::ListMuteOptions { id } | Request::MuteItem { id, .. } | Request::SnoozeItem { id, .. }
+        Request::ListMuteOptions { id }
+        | Request::MuteItem { id, .. }
+        | Request::SnoozeItem { id, .. }
+        | Request::SetItemCategory { id, .. }
+        | Request::ClassifyItem { id }
             if torro_inbox::rules::is_message_id(id) =>
         {
             Some(id)
@@ -771,7 +775,28 @@ fn with_entry_id(request: Request, entry: String) -> Request {
         Request::ListMuteOptions { .. } => Request::ListMuteOptions { id: entry },
         Request::MuteItem { scope, until, effect, .. } => Request::MuteItem { id: entry, scope, until, effect },
         Request::SnoozeItem { until, .. } => Request::SnoozeItem { id: entry, until },
+        Request::SetItemCategory { category, remember, .. } => {
+            Request::SetItemCategory { id: entry, category, remember }
+        }
+        Request::ClassifyItem { .. } => Request::ClassifyItem { id: entry },
         other => other,
+    }
+}
+
+/// How far back the backlog run of task E12.6 looks, and how much mail it looks at per account:
+/// the window `inbox.get_categorization` reports on (`docs/kategorien.md`).
+const CATEGORY_BACKLOG_DAYS: i64 = 30;
+const CATEGORY_BACKLOG_MAX: u32 = 500;
+
+/// No decision model is assigned, so nothing can be sorted by one (task E12.4). The sentence is
+/// the one `inbox.suggest_task_from_item` uses when mail may only go to a local model.
+fn no_decision_model() -> Response {
+    Response::Error {
+        code: "not-connected".into(),
+        message: torro_core::i18n::tr(
+            "No decision model is set up for mail. Choose one in the mail window, under Categorization.",
+        )
+        .to_string(),
     }
 }
 
@@ -2691,6 +2716,11 @@ impl Core {
             | Request::MuteItem { .. }
             | Request::ListRules
             | Request::RemoveRule { .. }
+            | Request::ListCategories { .. }
+            | Request::SetItemCategory { .. }
+            | Request::ClassifyItem { .. }
+            | Request::GetCategorization
+            | Request::CatchUpCategories { .. }
             | Request::GetStats { .. }
             | Request::GetQuiet) => match reach {
                 Reach::Client(_) => Refused::Forbidden { command: request.operation().name() }.response(),
@@ -2842,6 +2872,76 @@ impl Core {
     /// was shown it ([`EntryPin::holds`]), else the answer is `conflict` and nothing runs. Opening
     /// and making a task check it on what they read from the entry; the other commands before
     /// they run, which suffices since they do not read its texts or link.
+    /// Writes the category a person chose to every mail of the entry (task E12.4), so the mail
+    /// store and the entry say the same. A store that cannot be written is logged, never shown:
+    /// the entry already carries the category.
+    async fn keep_category(&self, item: &torro_inbox::Item, category: torro_mail::Category) {
+        let messages = match self.inbox.messages_of(&item.id) {
+            Ok(messages) => messages,
+            Err(err) => {
+                eprintln!("torroworkplace: inbox: cannot read the mail of {}: {err}", item.source.key());
+                return;
+            }
+        };
+        let held = torro_mail::MailCategory::by_person(category);
+        if let Err(err) = self.mail.set_category(&item.source.key(), &messages, Some(held)).await {
+            eprintln!("torroworkplace: inbox: cannot keep the category of {}: {err}", item.source.key());
+        }
+    }
+
+    /// `inbox.list_categories` (task E12.4): the whole catalogue with its words, and how much
+    /// unread mail each category holds in the accounts `reach` allows. A key without mail rights
+    /// reaches no account and sees 0 everywhere – never a number about a mailbox it cannot see.
+    async fn list_categories(&self, account: Option<String>, reach: Reach<'_>) -> Response {
+        let counts = match self.mail.unread_by_category(reach, account.as_deref()).await {
+            Ok(counts) => counts,
+            Err(err) => return err.response(),
+        };
+        let categories = torro_mail::Category::ALL
+            .into_iter()
+            .map(|category| torro_ipc::inbox::CategoryInfo {
+                category,
+                group: category.group(),
+                label: torro_core::category::label(category).to_string(),
+                group_label: torro_core::category::group_label(category.group()).to_string(),
+                unread: counts.get(&category).copied().unwrap_or(0),
+            })
+            .collect();
+        Response::Categories { categories }
+    }
+
+    /// `inbox.get_categorization` (task E12.4): what is assigned and how far the backlog has come
+    /// per mail account in reach. Task E12.6 fills in the model and the running state; until then
+    /// nothing is assigned and no run has started.
+    async fn get_categorization(&self, reach: Reach<'_>) -> Response {
+        let since = Utc::now() - chrono::Duration::days(CATEGORY_BACKLOG_DAYS);
+        let progress = match self.mail.category_progress(reach, since, CATEGORY_BACKLOG_MAX).await {
+            Ok(progress) => progress,
+            Err(err) => return err.response(),
+        };
+        let accounts = progress
+            .into_iter()
+            .map(|(account, messages, done)| torro_ipc::inbox::CategoryProgress {
+                account,
+                messages,
+                done,
+                state: if messages > 0 && done >= messages {
+                    torro_ipc::inbox::CatchUpState::Complete
+                } else {
+                    torro_ipc::inbox::CatchUpState::NotStarted
+                },
+            })
+            .collect();
+        let categorization = torro_ipc::inbox::Categorization { enabled: false, accounts, ..Default::default() };
+        Response::Categorization { categorization }
+    }
+
+    /// `inbox.catch_up_categories` (task E12.4): the run itself comes with task E12.6; until a
+    /// decision model is assigned there is nothing to start.
+    fn catch_up_categories(&self, _cancel: bool) -> Response {
+        no_decision_model()
+    }
+
     async fn inbox_request(
         &self,
         request: Request,
@@ -2882,6 +2982,12 @@ impl Core {
             Request::SuggestTaskFromItem { id } => Box::pin(self.suggest_from_item(&id, Wanted::Task, client)).await,
             Request::SuggestEventFromItem { id } => Box::pin(self.suggest_from_item(&id, Wanted::Event, client)).await,
             Request::GetQuiet => self.get_quiet(client).await,
+            // The catalogue and the backlog need the mail stores, so the core answers them, not
+            // the inbox database (task E12.4).
+            Request::ListCategories { account } => Box::pin(self.list_categories(account, reach)).await,
+            Request::GetCategorization => Box::pin(self.get_categorization(reach)).await,
+            Request::CatchUpCategories { cancel } => self.catch_up_categories(cancel),
+            Request::ClassifyItem { .. } => no_decision_model(),
             request => {
                 // What the client may no longer see stays `not-found`, changed or not.
                 if let Some(pin) = pin
@@ -2891,12 +2997,21 @@ impl Core {
                     return refused;
                 }
                 let done = matches!(request, Request::SetItemDone { done: true, .. });
+                // A category set by hand is kept with the mail too, so the list, the search and
+                // the sidebar read alike (task E12.4).
+                let filed = match &request {
+                    Request::SetItemCategory { category, .. } => Some(*category),
+                    _ => None,
+                };
                 let reads = matches!(request, Request::ListItems { .. } | Request::GetItem { .. });
                 let mut response = self.inbox.handle(request, client, Utc::now());
                 // Done with a mail entry marks its mail read on the server (task E4.1), with an
                 // entry of a remote source it reaches that source (task E5.2).
                 if let (true, Response::Item { item }) = (done, &response) {
                     self.settle(item);
+                }
+                if let (Some(category), Response::ItemCategory { item, .. }) = (filed, &response) {
+                    Box::pin(self.keep_category(item, category)).await;
                 }
                 // Entries come with the task made of them, for whom may read it (task E8.7a).
                 let reach = client.map_or(Reach::Suite, |client| Reach::Client(&client.rights));
@@ -5785,6 +5900,7 @@ mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         let entries = |response: Response| match response {
             Response::Items { items } => items,
@@ -6855,6 +6971,7 @@ mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         let Response::Items { items } = core.handle(suite).await else { panic!("items") };
         let titles: Vec<(torro_inbox::Kind, &str)> =
@@ -8790,6 +8907,7 @@ mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         let Response::Items { items } = ask(&core, Some(&app_key), suite).await else { panic!("items") };
         let approval = items.first().expect("the approval's entry").id.clone();
@@ -9208,6 +9326,7 @@ mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         assert_eq!(code(&ask(&core, Some(&hook_key), list()).await), "not-found");
         assert!(matches!(ask(&core, Some(&hook_key), notice("Done")).await, Response::Posted { id: Some(_) }));
@@ -9701,6 +9820,7 @@ mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         let Response::Items { items } = ask(&core, Some(&app_key), suite).await else { panic!("items") };
         let [entry] = items.as_slice() else { panic!("one entry: {items:?}") };
@@ -9791,6 +9911,7 @@ mod tests {
             limit: None,
             order: None,
             dismissed: None,
+            categories: Vec::new(),
         };
         assert_eq!(code(&ask(&core, Some(&codex), list.clone()).await), "not-found");
         assert_eq!(code(&ask(&core, Some(&claude), list).await), "not-found");
@@ -10608,6 +10729,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -10684,6 +10806,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed,
+            categories: Vec::new(),
         };
         let page = |response: Response| match response {
             Response::MailMessages { messages, cursor, total_estimate, .. } => (messages, cursor, total_estimate),
@@ -10804,6 +10927,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&app_key), search).await else {
             panic!("a page")
@@ -10867,6 +10991,7 @@ mod tests {
             order: None,
             sort: None,
             snoozed: None,
+            categories: Vec::new(),
         };
         let Response::MailMessages { messages, .. } = ask(&core, Some(&key), search).await else { panic!("a page") };
         let id = messages.first().map(|message| message.id.clone()).expect("found by the attachment's name");
@@ -11941,6 +12066,7 @@ mod tests {
                 limit: None,
                 order: None,
                 dismissed: None,
+                categories: Vec::new(),
             };
             match core.handle(all).await {
                 Response::Items { items } => items,
@@ -12069,6 +12195,7 @@ mod tests {
                     limit: None,
                     order: None,
                     dismissed: None,
+                    categories: Vec::new(),
                 };
                 if let Response::Items { items } = core.handle(all).await
                     && let Some(found) =
@@ -12306,6 +12433,7 @@ mod tests {
                     limit: None,
                     order: None,
                     dismissed: None,
+                    categories: Vec::new(),
                 };
                 let Response::Items { items } = core.handle(request).await else { panic!("items") };
                 items.into_iter().filter(|item| item.thread_key.starts_with("task-done:")).collect::<Vec<_>>()
@@ -14432,6 +14560,7 @@ mod tests {
                 limit: None,
                 order: None,
                 dismissed: None,
+                categories: Vec::new(),
             };
             let invite_in = |response: Response| match response {
                 Response::Items { items } => {

@@ -2826,7 +2826,15 @@ E12.10 braucht E12.5 und E12.6
   `ollama_decision` aus `capabilities` gelesen wird. Kein echtes Netz.
 
 ### E12.4 Requests, Katalog, MCP
-- [ ] erledigt
+- [x] erledigt (2026-10-19): die fünf Befehle mit Katalogeintrag, Zugriffsregel (`remember` →
+  Admin) und je einem MCP-Tool (die entstehen aus dem Katalog, `mcp::request_for` braucht keinen
+  eigenen Zweig); Filterfeld `categories` an `inbox.list_items` und `mail.search_messages` samt
+  `ItemFilter` und `SearchQuery`; `category` in den Beschreibungen der vier Lesebefehle, mit dem
+  Satz, dass `source: model` ein Vorschlag ist; Freigabe-Satz in `approvals.rs`, Protokollzeile in
+  `audit.rs` (nur die Kennung, nie die Kategorie) und Beschriftung in `daemon.rs`.
+  `inbox.classify_item` und `inbox.catch_up_categories` antworten bis E12.6 `not-connected`.
+  Abweichung: `docs/api.md` hat keine Befehlstabelle für den Eingang – die Liste steht in der
+  erzeugten `docs/api-reference.md`, die mitcommittet ist.
 - **Modell:** Opus · **Braucht:** E12.2, E12.3 · **Dateien:**
   `crates/torro-ipc/src/{lib,api,inbox,mail}.rs`, `crates/torro-inbox/src/source.rs`,
   `crates/torroworkplace/src/{core,inbox,mcp,approvals,audit,daemon}.rs`,

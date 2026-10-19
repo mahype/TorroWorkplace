@@ -1512,6 +1512,77 @@ impl MailService {
         Ok(progress)
     }
 
+    /// How much unread mail each category holds, over every account in `reach` (task E12.4):
+    /// the counts behind `inbox.list_categories`. With `only` just that account.
+    pub async fn unread_by_category(
+        &self,
+        reach: Reach<'_>,
+        only: Option<&str>,
+    ) -> Result<std::collections::BTreeMap<torro_mail::Category, u32>, MailError> {
+        let mut counts = std::collections::BTreeMap::new();
+        for mailbox in self.reachable(reach, only).await {
+            let Ok(store) = mailbox.store() else { continue };
+            for (category, count) in store.run(|store| store.unread_by_category()).await? {
+                *counts.entry(category).or_insert(0u32) += count;
+            }
+        }
+        Ok(counts)
+    }
+
+    /// How far the backlog of each account in `reach` has been sorted (task E12.4): the window the
+    /// run uses is the inbox of the last `days` days, at most `limit` messages.
+    pub async fn category_progress(
+        &self,
+        reach: Reach<'_>,
+        since: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<(String, u64, u64)>, MailError> {
+        let mut progress = Vec::new();
+        for mailbox in self.reachable(reach, None).await {
+            let Ok(store) = mailbox.store() else { continue };
+            let (messages, done) = store.run(move |store| store.category_counts(since, limit)).await?;
+            progress.push((mailbox.id().to_string(), messages, done));
+        }
+        Ok(progress)
+    }
+
+    /// Keeps `category` with every message of `messages` in the account `account` (task E12.4);
+    /// `None` takes it away. Messages the store does not know are skipped.
+    pub async fn set_category(
+        &self,
+        account: &str,
+        messages: &[String],
+        category: Option<torro_mail::MailCategory>,
+    ) -> Result<(), MailError> {
+        if messages.is_empty() {
+            return Ok(());
+        }
+        let mailbox = self.mailbox_of(account).await?;
+        let store = mailbox.store()?;
+        let messages = messages.to_vec();
+        store
+            .run(move |store| {
+                for message in &messages {
+                    store.set_category(message, category)?;
+                }
+                Ok(())
+            })
+            .await?;
+        Ok(())
+    }
+
+    /// The mailboxes in `reach` that sync mail, or just `only` when it is given and in reach.
+    async fn reachable(&self, reach: Reach<'_>, only: Option<&str>) -> Vec<Arc<Mailbox>> {
+        self.entries
+            .read()
+            .await
+            .iter()
+            .filter(|entry| entry.mailbox.settings.services.mail && entry.mailbox.within(reach))
+            .filter(|entry| only.is_none_or(|wanted| entry.mailbox.id() == wanted))
+            .map(|entry| Arc::clone(&entry.mailbox))
+            .collect()
+    }
+
     /// One step of the indexer of `account` by hand ([`sync::backfill`] of up to `limit` texts),
     /// for tests, whose services run no indexer task.
     #[cfg(test)]

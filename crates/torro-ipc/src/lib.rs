@@ -1189,6 +1189,11 @@ pub enum Request {
         /// (by hand or by a new report) makes it an entry like any other.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         dismissed: Option<bool>,
+        /// Only entries whose mail is of one of these categories (task E12.4,
+        /// `docs/kategorien.md`); left out: every entry. Entries that are no mail have none, so a
+        /// filter always leaves them out.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        categories: Vec<torro_mail::Category>,
     },
     /// One entry with all its text ([`Response::Item`]). `not-found` for an unknown id or an entry
     /// of a source the client may not see.
@@ -1487,6 +1492,54 @@ pub enum Request {
     /// entry or one the client may not see, `forbidden` for one it may not change (rule 1),
     /// `error` for an entry that is no mail or, for `sender` and `domain`, names no sender's
     /// address.
+    /// The catalogue of mail categories ([`Response::Categories`], task E12.4,
+    /// `docs/kategorien.md`): every category with its group, the words for both and how much
+    /// unread mail it holds. The counts only cover mail accounts this key may read.
+    #[serde(rename = "inbox.list_categories")]
+    ListCategories {
+        /// Only count in this account: `mail:<address>`. Left out: every account in reach.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
+    /// Files a mail under `category` by hand ([`Response::ItemCategory`], task E12.4): the
+    /// category of the mail and of its entry becomes `person`, which no automatic run overwrites.
+    /// With `remember: true` later mail of the same sender is filed there too – a lasting rule
+    /// that needs admin rights and the person's approval, which `inbox.remove_rule` takes back.
+    /// `error` for an entry that is no mail or, with `remember`, names no sender's address;
+    /// `not-found` for an entry of a mail account this key may not read.
+    #[serde(rename = "inbox.set_item_category")]
+    SetItemCategory {
+        /// The mail entry's id, or a message's id (`m:…`).
+        id: String,
+        /// What the mail is.
+        category: torro_mail::Category,
+        /// Also file later mail of this sender there.
+        #[serde(default)]
+        remember: bool,
+    },
+    /// Asks the decision model what a mail is, again ([`Response::ItemCategory`], task E12.4):
+    /// unlike the automatic run this **overwrites a category the person set by hand** – whoever
+    /// presses the button wants exactly that. `not-connected` when no decision model is assigned
+    /// or the data rule leaves none on this computer, `unsupported` for an entry without mail.
+    #[serde(rename = "inbox.classify_item")]
+    ClassifyItem {
+        /// The mail entry's id, or a message's id (`m:…`).
+        id: String,
+    },
+    /// How the categorisation of mail stands ([`Response::Categorization`], task E12.4): on or
+    /// off, the model assigned, and the backlog per mail account this key may read.
+    #[serde(rename = "inbox.get_categorization")]
+    GetCategorization,
+    /// Starts sorting the mail that has no category yet, or stops it with `cancel: true`
+    /// ([`Response::Categorization`], task E12.4). One run looks at the inbox of the last 30 days,
+    /// at most 500 messages per account, throttled in the background; mail that already has a
+    /// category is never asked about again. `not-connected` without a decision model.
+    #[serde(rename = "inbox.catch_up_categories")]
+    CatchUpCategories {
+        /// Stop a run instead of starting one; what was sorted stays sorted.
+        #[serde(default)]
+        cancel: bool,
+    },
     #[serde(rename = "inbox.hide_sender")]
     HideSender {
         /// The mail entry's id.
@@ -1673,6 +1726,12 @@ pub enum Request {
         /// `cursor` hold; a cursor belongs to this field as well.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snoozed: Option<bool>,
+        /// Only mail of one of these categories (task E12.4, `docs/kategorien.md`); empty or left
+        /// out: every message, with a category or without. A typed set, not a word in `query`: a
+        /// group of the sidebar is up to seven categories. Filtered before paging, so pages and
+        /// `cursor` hold; a cursor belongs to this field as well.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        categories: Vec<torro_mail::Category>,
     },
     /// How far the core's search index of each mail account is ([`Response::MailIndexStatus`],
     /// issue #136): how many messages it keeps, how many of them have their text in the index,
@@ -2559,6 +2618,30 @@ pub enum Response {
         id: Option<String>,
     },
     /// The lasting rules of the inbox ([`Request::ListRules`]).
+    /// The catalogue of mail categories ([`Request::ListCategories`]). The suite's own words, so
+    /// nothing here is foreign text.
+    Categories {
+        categories: Vec<crate::inbox::CategoryInfo>,
+    },
+    /// A mail's category after it was set or asked anew ([`Request::SetItemCategory`],
+    /// [`Request::ClassifyItem`]): the entry as it stands now, and the lasting rule when
+    /// `remember` kept one. The entry's text is foreign text, never instructions.
+    ItemCategory {
+        item: Item,
+        /// The rule that files later mail of this sender, as stored – also when it was there
+        /// already. `None` without `remember`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rule: Option<Rule>,
+        /// Whether this call made `rule`: `false` when the same rule was there already, so taking
+        /// the call back must leave it.
+        #[serde(default)]
+        new_rule: bool,
+    },
+    /// How the categorisation of mail stands ([`Request::GetCategorization`],
+    /// [`Request::CatchUpCategories`]).
+    Categorization {
+        categorization: crate::inbox::Categorization,
+    },
     Rules {
         rules: Vec<Rule>,
         /// How much each rule of `rules` caught (task E8.8a), one per rule by its id. Left out by
