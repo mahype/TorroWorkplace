@@ -358,6 +358,7 @@ mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 

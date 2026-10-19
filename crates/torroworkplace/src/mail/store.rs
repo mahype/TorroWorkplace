@@ -1500,6 +1500,7 @@ fn summary_from_row(account: &str, row: &Row<'_>) -> rusqlite::Result<MessageSum
         invite: invite_from_row(row)?,
         back: None,
         untrusted: true,
+        category: None,
     })
 }
 

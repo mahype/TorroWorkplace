@@ -8491,6 +8491,7 @@ mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         };
         let due = chrono::NaiveDate::from_ymd_opt(2026, 10, 14).map(torro_pim::EventTime::Date);
         let task = task_from_entry(&item, "work".into(), Some("  Fix the deploy ".into()), due, None);
@@ -8926,6 +8927,7 @@ mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         };
         let (start, end) =
             (torro_pim::EventTime::DateTime(at), torro_pim::EventTime::DateTime(at + chrono::TimeDelta::hours(1)));

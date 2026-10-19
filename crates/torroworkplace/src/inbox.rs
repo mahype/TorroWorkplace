@@ -2220,6 +2220,7 @@ fn post(
         task: None,
         invite: None,
         reason: None,
+        category: None,
     };
     // Security rule 6: only what is safe to open is kept (web pages, apps of the suite, the
     // window of a hook's agent); anything else is dropped, not refused.
@@ -3338,6 +3339,7 @@ fn finished_task_entry(
         task: Some(task),
         invite: None,
         reason: None,
+        category: None,
     }
 }
 
@@ -3381,6 +3383,7 @@ impl Matter {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 }
@@ -3765,6 +3768,7 @@ fn file_mail(
         task: None,
         invite: None,
         reason,
+        category: None,
     };
     // This mail's traits decide whether a muted trait holds (task E8.6a): hidden, it is not filed
     // and not kept as filed, like a hidden sender; "Info" files it there.
@@ -3974,6 +3978,7 @@ fn file_remote(db: &mut Connection, remote: &Remote, now: DateTime<Utc>) -> Resu
         task: None,
         invite: None,
         reason: None,
+        category: None,
     };
     // Security rule 6: only a web page.
     if !rules::may_open(&incoming, is_app_of_the_suite) {
@@ -4571,6 +4576,7 @@ pub(crate) mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 
@@ -7648,6 +7654,7 @@ pub(crate) mod tests {
             invite: None,
             back: None,
             untrusted: true,
+            category: None,
         };
         let stand_in = rules::message_stand_in(&summary, None, true).expect("a mail account");
         assert_eq!(inbox.entry_of_message(ANNA, "m:9"), None, "never filed");

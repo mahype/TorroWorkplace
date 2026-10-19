@@ -729,6 +729,7 @@ mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 
@@ -1383,6 +1384,7 @@ mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            category: None,
             untrusted: true,
         }
     }

@@ -96,6 +96,18 @@ pub struct Item {
     /// "For me" says why.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<LaneReason>,
+    /// What the mail of a mail entry is (task E12.1, `docs/kategorien.md`): the category of the
+    /// message the entry links to, as the mail store holds it. Set by the core, never taken from
+    /// a poster.
+    ///
+    /// **Only mail has one.** Entries of the suite, of agents and of scripts, and those of
+    /// GitHub, Nextcloud, Talk and ntfy leave it `None`: their facets (`reason`, `result`,
+    /// `kind`) say more, and a model call would be wasted there.
+    ///
+    /// A category with [`torro_mail::CategorySource::Model`] is a **suggestion** with a
+    /// confidence, not a fact (`docs/ki.md`, principle 5); the app marks it as one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<torro_mail::MailCategory>,
 }
 
 /// Why an entry stands in its lane ([`Item::reason`], issue #128). The first three name the

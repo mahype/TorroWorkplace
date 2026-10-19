@@ -591,6 +591,8 @@ pub fn message_stand_in(summary: &torro_mail::MessageSummary, list: Option<&str>
         task: None,
         invite: None,
         reason: None,
+        // The stand-in speaks for the message, so it shows the message's own category (E12.1).
+        category: summary.category,
     };
     item.facets = facets(&item, list, bulk);
     Some(item)
@@ -857,6 +859,7 @@ mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         }
     }
 
@@ -1039,6 +1042,7 @@ mod tests {
             has_attachments: false,
             invite: None,
             back: None,
+            category: None,
             untrusted: true,
         }
     }

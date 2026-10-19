@@ -2665,7 +2665,13 @@ E12.10 braucht E12.5 und E12.6
 ```
 
 ### E12.1 Modell: Kategorie, Gruppe, Herkunft
-- [ ] erledigt
+- [x] erledigt (2026-10-19): `torro_mail::category` mit `Category` (23), `CategoryGroup` (4),
+  `CategorySource` und `MailCategory`; `torro_core::category` mit `label`, `group_label` und der
+  englischen `description` fürs Modell; Felder an `MessageSummary` und `Item`. Zwei Abweichungen
+  vom Plan: `MailCategory::confidence` ist `Option<u8>` in **Prozent** statt `Option<f32>`, weil
+  `MessageSummary` und `Item` `Eq` ableiten und `f32` nicht `Eq` ist; und alle Beschriftungen
+  laufen über `trc("category", …)` statt `tr`, weil fünf der englischen Wörter in der Suite schon
+  etwas anderes heißen (`Task`, `Order`, `Event`, `Other`, `Junk`).
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-mail/src/{lib,category}.rs` (neu:
   `category.rs`), `crates/torro-mail/src/message.rs`, `crates/torro-core/src/{lib,category}.rs`
   (neu: `category.rs`), `crates/torro-core/src/i18n/de.rs`, `crates/torro-inbox/src/item.rs`

@@ -2140,6 +2140,7 @@ mod tests {
             task: None,
             invite: None,
             reason: None,
+            category: None,
         };
         let listed = result_of(Response::Items { items: vec![entry("a", true), entry("b", false)] });
         let items = &listed.structured_content.expect("structured")["items"];
