@@ -363,7 +363,9 @@ Eigene weitere Vorlagen und einen Editor mit Vorschau gibt es nicht.
 Die erste Karte im Chat (Grundlage nach „Karten im Chat“): `EntryContent::Card` verweist auf die Datei im
 Register, `assistant.get_cards` holt Name, Vorlage, Größe und Pfad frisch vom Kern; fehlt die Datei, zeigt die
 Karte „No longer available“. Der Kern hängt sie nach jedem erfolgreichen `tools.create_pdf` an, bei beiden
-Antrieben. Knöpfe (Klicks des Menschen, Requests der App):
+Antrieben. Aufgelöst wird mit den Rechten des Clients der Unterhaltung, geschnitten mit denen des Fragenden: Ein
+anderer Agent mit Lesezugriff auf `assistant` und `pdf` in seiner Auswahl sieht so Name, Titel und Pfad einer PDF
+des Assistenten (der Titel steht ohnehin in der Werkzeugzeile), öffnen, sichern und anhängen kann er sie nicht. Knöpfe (Klicks des Menschen, Requests der App):
 
 - **Open:** `tools.open_file`, öffnet die Datei mit dem Programm des Systems.
 - **Save as…:** Dialog des Systems in der App, dann `tools.save_file_as` (nur App-Schlüssel, Punkt 9).
