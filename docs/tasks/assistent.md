@@ -972,7 +972,7 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
   `torro-design-review` (schmal bis breit), Übersetzungen in `de.rs`.
 
 ### WZ.7 Steuerzentrale: Auswahl der Werkzeuge
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** WZ.2 · **Dateien:** `crates/torroworkplace/src/ui/{agents,mod}.rs`,
   `crates/torroassistant/src/view/editor.rs` (Fußtext), `crates/torro-core/src/i18n/de.rs`
 - `Pick::Tools` mit allen Methoden, Kandidaten aus `tools.list_tools` (neues Feld in `Data`, geladen wie die

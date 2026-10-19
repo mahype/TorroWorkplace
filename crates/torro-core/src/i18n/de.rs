@@ -3572,8 +3572,8 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("changes settings", "ändert Einstellungen"),
     ("admin commands", "Verwaltungsbefehle"),
     (
-        "Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen in Torro Workplace.",
-        "Kalender, Listen, Repositorys, Quellen, E-Mail-Konten, Senden und Verwaltungsbefehle wählst du in Torro Workplace.",
+        "Calendars, lists, repositories, sources, mail accounts, tools, sending and admin commands are chosen in Torro Workplace.",
+        "Kalender, Listen, Repositorys, Quellen, E-Mail-Konten, Werkzeuge, Senden und Verwaltungsbefehle wählst du in Torro Workplace.",
     ),
     // Inbox: AI task and AI event (issue #120)
     ("AI event", "KI-Termin"),
@@ -4048,4 +4048,14 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Choose a logo", "Logo wählen"),
     ("Pictures", "Bilder"),
     ("This path cannot be used.", "Dieser Pfad kann nicht verwendet werden."),
+    // Agents & API › the selection of tools (WZ.7, #225)
+    (
+        "Includes tools added later. Each works only while it is on in the assistant's settings.",
+        "Enthält später hinzugefügte Werkzeuge. Jedes arbeitet nur, solange es in den Einstellungen des Assistenten eingeschaltet ist.",
+    ),
+    (
+        "This agent can't use tools left off. Each works only while it is on in the assistant's settings.",
+        "Ausgeschaltete Werkzeuge kann dieser Agent nicht verwenden. Jedes arbeitet nur, solange es in den Einstellungen des Assistenten eingeschaltet ist.",
+    ),
+    ("Off in the assistant's settings", "In den Einstellungen des Assistenten ausgeschaltet"),
 ];

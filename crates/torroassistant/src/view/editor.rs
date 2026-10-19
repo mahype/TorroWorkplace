@@ -422,7 +422,7 @@ fn access_group<'a>(draft: &'a BotDraft) -> Element<'a, Message> {
     let row =
         setting_row(None, tr("What the bot may use"), detail, tinted(Icon::ArrowUpRight, icon::SIZE, |p| p.text_3));
     let footer = tr(
-        "Calendars, lists, repositories, sources, mail accounts, sending and admin commands are chosen in Torro Workplace.",
+        "Calendars, lists, repositories, sources, mail accounts, tools, sending and admin commands are chosen in Torro Workplace.",
     );
     let open = draft.id.clone().map(Message::BotAccess);
     widgets::group(tr("Access"), vec![pressable(row, open)], Some(footer.to_string()))

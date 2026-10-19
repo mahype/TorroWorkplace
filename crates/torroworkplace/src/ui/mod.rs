@@ -192,6 +192,9 @@ pub struct Data {
     pub task_lists: Vec<Collection>,
     /// The inbox sources with entries or muted (`inbox.list_sources`), for the agents' selections.
     pub sources: Vec<SourceInfo>,
+    /// The assistant's own tools (`tools.list_tools`, task WZ.7), for the agents' selections; none
+    /// from a core without tools.
+    pub tools: Vec<torro_ipc::tools::ToolInfo>,
     /// The bots, by name (`bots.list_bots`, task B.3); none from a core without bots. Their rights
     /// live on their clients, which Agents & API shows; the bot tells which client is whose.
     pub bots: Vec<torro_ipc::bots::BotSummary>,
@@ -1484,6 +1487,9 @@ fn load() -> Task<Message> {
             }
             if let Ok(Response::Sources { sources }) = client::call(&socket, &Request::ListSources).await {
                 data.sources = sources;
+            }
+            if let Ok(Response::Tools { tools }) = client::call(&socket, &Request::ListTools).await {
+                data.tools = tools;
             }
             // Only which bot a client belongs to: a bot's profile, instructions and skills are
             // the assistant app's (task S.21), the rights its client's.
