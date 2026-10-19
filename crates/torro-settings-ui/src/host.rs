@@ -337,6 +337,7 @@ impl Host {
             // happens.
             Action::Focus(field) => Outcome::Work(iced::widget::operation::focus(field)),
             Action::ControlCentre(section) => Outcome::ControlCentre(section),
+            Action::Close => Outcome::Close,
             Action::App(app) => Outcome::App(app),
         }
     }

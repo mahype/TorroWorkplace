@@ -40,7 +40,9 @@
 //! ([`App::toggle_settings`]). The sections and their pages are `torro_settings_ui::assistant`,
 //! shown by the library's [`Host`], which talks to the core through [`Backend::settings`]; the
 //! sidebar stays, and a click on a chat or a bot there closes the settings again
-//! ([`App::leave_settings`]). `--settings <section>` opens the window with them open.
+//! ([`App::leave_settings`]). `--settings <section>` opens the window with them open. Every way out
+//! – the gear, Escape, a click in the sidebar – asks the open section first, so a profile that is
+//! typed and not saved is never dropped silently ([`App::settings_question`]).
 //!
 //! **Only a person opens the settings.** `--settings` is a start parameter, and the links of an
 //! answer stay on `http(s)` ([`web_link`]): no text of the model can open a section, name a scheme
@@ -729,6 +731,12 @@ impl App {
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
+        // Every way out of the settings asks the open section first (task S.18): a profile that is
+        // typed and not saved must not vanish without "Discard changes?"
+        // ([`App::settings_question`]).
+        if let Some(question) = self.settings_question(&message) {
+            return question;
+        }
         match message {
             Message::DragWindow => return torro_gui::drag_window(),
             Message::Resized(size) => self.size = size,
@@ -945,7 +953,9 @@ impl App {
             Message::Escape => {
                 // Innermost first: a dialog of the window, then what the open settings section
                 // has open (its question, a note being written, task S.17), then a menu or the
-                // drawer over the content, then the settings themselves, then the notice.
+                // drawer over the content, then the settings themselves, then the notice. The
+                // settings only get here with nothing of theirs left to discard
+                // ([`App::settings_question`] took that turn).
                 if self.dialog.is_some() {
                     self.dialog = None;
                 } else if let Some(message) = self.settings.as_ref().and_then(|pane| settings::escape(&pane.sections)) {
@@ -1602,7 +1612,8 @@ impl App {
 
     /// The gear, or "Settings" in the sidebar: the settings take the content area, or give it back
     /// to the chat. Nothing of the chat is lost – the settings are a second view of the same
-    /// window, not a second window.
+    /// window, not a second window. Giving the area back only gets here once the open section has
+    /// nothing unsaved left ([`App::settings_question`]).
     fn toggle_settings(&mut self) -> Task<Message> {
         self.close_menus();
         if self.settings.is_some() {
@@ -1626,9 +1637,50 @@ impl App {
     }
 
     /// The content area shows the chat or the bot editor again: the settings step aside. A click in
-    /// the sidebar – a chat, a bot, "New chat", "New bot" – comes through here.
+    /// the sidebar – a chat, a bot, "New chat", "New bot" – comes through here, once
+    /// [`App::settings_question`] has let the message through.
     pub(crate) fn leave_settings(&mut self) {
         self.settings = None;
+    }
+
+    /// The question "Discard changes?" instead of `message`, while `message` would take the
+    /// content area back from the settings and the open section holds something unsaved
+    /// ([`settings::closing`]); `None` lets `message` run as usual.
+    ///
+    /// **The question belongs to the section, not to the window:** only it knows what is typed, it
+    /// already builds the dialog for its own back button, and after "Discard" it closes the
+    /// settings itself ([`Outcome::Close`]) – so the gear, Escape and a click in the sidebar all
+    /// ask the same question and let go at the same moment. The window does not remember where the
+    /// click wanted to go: once the question is answered the content area is back, and the person
+    /// clicks where they meant to.
+    fn settings_question(&mut self, message: &Message) -> Option<Task<Message>> {
+        let pane = self.settings.as_ref()?;
+        if !self.leaves_settings(message) {
+            return None;
+        }
+        let question = settings::closing(&pane.sections, pane.host.data())?;
+        Some(self.update(Message::SettingsPage(question)))
+    }
+
+    /// Whether `message` would take the content area back from the open settings: the gear, a
+    /// click in the sidebar, and Escape once nothing of the window or of the section lies over
+    /// them (that is the step of [`Message::Escape`] where the settings close).
+    fn leaves_settings(&self, message: &Message) -> bool {
+        match message {
+            Message::ToggleSettings => true,
+            Message::Select(_)
+            | Message::NewChat
+            | Message::Switcher(Switcher::New)
+            | Message::OpenBot(_)
+            | Message::NewBotChat(_)
+            | Message::NewBot
+            | Message::EditBot(_) => true,
+            Message::Escape => {
+                let section_dialog = self.settings.as_ref().and_then(|pane| settings::escape(&pane.sections)).is_some();
+                self.dialog.is_none() && !section_dialog && self.menu.is_none() && !self.drawer
+            }
+            _ => false,
+        }
     }
 
     /// What the host asks of the window: the browser, the control centre, the bot editor are the

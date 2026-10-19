@@ -19,6 +19,10 @@
 //! loads again –, so the draft measures itself against the stored profile of the fresh [`Data`]:
 //! once a change is stored, "Save" greys out by itself, and what is still typed stays typed. A
 //! note being written closes as it is sent; if it fails, the host's message stands over the page.
+//!
+//! A typed profile is never dropped without asking: the back button of the page asks
+//! "Discard changes?", and so does every way out of the settings themselves – the window asks
+//! [`closing`] first and lets go only after "Discard" ([`crate::Action::Close`]).
 
 use chrono::{NaiveDate, Utc};
 use iced::widget::space as blank;
@@ -99,8 +103,19 @@ pub struct State {
     edit: Option<NoteEdit>,
     /// "Forget this note?" for the note with this id.
     forget: Option<String>,
-    /// "Discard changes?" before the back button leaves a profile with unsaved changes.
-    leaving: bool,
+    /// "Discard changes?" while it is open, and what pressing "Discard" then leads to.
+    leaving: Option<Leaving>,
+}
+
+/// What a "Discard" in "Discard changes?" lets go of: the unsaved profile is dropped either way,
+/// the question only differs in how far the way out leads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Leaving {
+    /// The back button in the header: back to the section's own two rows.
+    Page,
+    /// The window wants its content area back – the gear, Escape, a click in the sidebar: the
+    /// settings close ([`crate::Action::Close`]).
+    Settings,
 }
 
 /// The profile as it is being typed.
@@ -191,7 +206,11 @@ pub enum Message {
     OpenMemory,
     /// The back button in the header: asks first while the profile has unsaved changes.
     Back,
-    /// "Discard" in "Discard changes?": back without saving.
+    /// The window wants its content area back – the gear, Escape, a click in the sidebar – while
+    /// the profile has unsaved changes: ask first. The window asks for this message through
+    /// [`closing`] instead of closing the settings itself.
+    AskClose,
+    /// "Discard" in "Discard changes?": on without saving, as far as the way led ([`Leaving`]).
     Leave,
     Name(String),
     Description(String),
@@ -240,12 +259,26 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
             Action::None
         }
         Message::Back if unsaved(state, data) => {
-            state.leaving = true;
+            state.leaving = Some(Leaving::Page);
             Action::None
         }
-        Message::Back | Message::Leave => {
+        Message::Back => {
             *state = State::default();
             Action::None
+        }
+        Message::AskClose => {
+            state.leaving = Some(Leaving::Settings);
+            Action::None
+        }
+        Message::Leave => {
+            // The way out is taken now that it was confirmed: the typed profile goes with the
+            // state, and a way that led out of the settings takes them with it.
+            let leaving = state.leaving;
+            *state = State::default();
+            match leaving {
+                Some(Leaving::Settings) => Action::Close,
+                Some(Leaving::Page) | None => Action::None,
+            }
         }
         Message::Name(name) => edit_draft(state, |draft| draft.name = name),
         Message::Description(description) => edit_draft(state, |draft| draft.description = description),
@@ -289,7 +322,7 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         },
         Message::CloseDialog => {
             state.forget = None;
-            state.leaving = false;
+            state.leaving = None;
             Action::None
         }
     }
@@ -333,9 +366,20 @@ fn save_note(state: &mut State) -> Action {
     Action::send(request)
 }
 
+/// What stands between the window and closing these settings: the question "Discard changes?"
+/// while the typed profile is not stored. `None` lets the window close them.
+///
+/// The question sits here, not in the window: only this section knows what is typed, it already
+/// builds the dialog for the back button, and "Discard" closes the settings from here
+/// ([`crate::Action::Close`]) – so all three ways out ask the same question and let go at the same
+/// moment.
+pub fn closing(state: &State, data: &Data) -> Option<Message> {
+    unsaved(state, data).then_some(Message::AskClose)
+}
+
 /// What Escape means here: close the question, then stop typing a note.
 pub fn escape(state: &State) -> Option<Message> {
-    if state.forget.is_some() || state.leaving {
+    if state.forget.is_some() || state.leaving.is_some() {
         Some(Message::CloseDialog)
     } else if state.edit.is_some() {
         Some(Message::CancelNote)
@@ -346,7 +390,7 @@ pub fn escape(state: &State) -> Option<Message> {
 
 /// "Forget this note?" or "Discard changes?" while one is open.
 pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Message>> {
-    if state.leaving {
+    if state.leaving.is_some() {
         return Some(confirm(
             tr("Discard changes?"),
             tr("What you changed in the profile is not saved.").to_string(),
@@ -729,6 +773,37 @@ mod tests {
         assert!(matches!(update(&mut state, Message::AddNote, &data), Act::Focus(NOTE_FIELD)));
         assert!(matches!(update(&mut state, Message::EditNote("1a2b3c4d".into()), &data), Act::Focus(NOTE_FIELD)));
         assert!(matches!(update(&mut state, Message::EditNote("ffffffff".into()), &data), Act::None));
+    }
+
+    /// The same question for the window's way out (found in the review of #210): while something
+    /// is typed, [`closing`] hands the window [`Message::AskClose`] instead of letting it close
+    /// the settings, and only "Discard" lets them go – then from here, with [`Act::Close`].
+    #[tokio::test]
+    async fn closing_the_settings_asks_before_an_unsaved_profile_is_lost() {
+        let data = with_notes().await;
+        let mut state = State::default();
+        assert!(closing(&state, &data).is_none(), "nothing open, nothing to ask");
+        let _ = update(&mut state, Message::OpenProfile, &data);
+        assert!(closing(&state, &data).is_none(), "nothing typed either");
+
+        let _ = update(&mut state, Message::Name("Jarvis".into()), &data);
+        let ask = closing(&state, &data).expect("the window must ask");
+        assert!(matches!(ask, Message::AskClose));
+        let _ = update(&mut state, ask, &data);
+        assert!(overlay(&state, &data).is_some(), "\"Discard changes?\" stands");
+        assert!(matches!(escape(&state), Some(Message::CloseDialog)), "Escape cancels it");
+        let _ = update(&mut state, Message::CloseDialog, &data);
+        assert!(state.draft.is_some() && closing(&state, &data).is_some(), "still typed, still asking");
+
+        let _ = update(&mut state, Message::AskClose, &data);
+        assert!(matches!(update(&mut state, Message::Leave, &data), Act::Close), "\"Discard\" closes the settings");
+        assert!(state.sub.is_none() && state.draft.is_none(), "and lets go of what was typed");
+
+        // The back button of the page leads only out of the page, not out of the settings.
+        let _ = update(&mut state, Message::OpenProfile, &data);
+        let _ = update(&mut state, Message::Name("Friday".into()), &data);
+        let _ = update(&mut state, Message::Back, &data);
+        assert!(matches!(update(&mut state, Message::Leave, &data), Act::None));
     }
 
     #[tokio::test]

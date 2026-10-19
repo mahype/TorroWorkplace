@@ -81,7 +81,7 @@ use torro_ipc::{AccountInfo, AppInfo, ApprovalInfo, ClientInfo, Request, Respons
 use torro_pim::Collection;
 use torro_setups::TemplateSummary;
 
-pub use launch::{Launch, Open};
+pub use launch::{ClientTarget, Launch, Open};
 
 /// The sections in sidebar order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -330,6 +330,12 @@ pub struct Ui {
     /// The first-run setup while it is open (task W.4): it takes the window instead of the
     /// sections.
     setup: Option<setup::State>,
+    /// What `--section assistant` or `--section bot:<id>` still waits for ([`Ui::open_target`]):
+    /// a bot is named by its own id, but its page is its client's, which only the core's list of
+    /// bots can name – and without `--demo` that list comes with the first load, long after
+    /// [`Ui::new`]. The target waits here until the data can name it; `None` once it is open or
+    /// when the core does not know the bot.
+    target: Option<ClientTarget>,
 }
 
 #[derive(Debug, Clone)]
@@ -458,6 +464,7 @@ impl Ui {
             approvals: approvals::State::default(),
             general: general::State::default(),
             setup: None,
+            target: None,
         };
         if demo {
             // No service to ask: the sample data is there from the first frame.
@@ -480,10 +487,11 @@ impl Ui {
             ui.open(open);
         }
         // `--section assistant` and `--section bot:<id>` open a page below Agents & API (task
-        // S.21), the way the assistant app's "Change access" and "Access…" get here.
-        if let Some(target) = ui.launch.client.clone() {
-            let _ = ui.update(Message::Agents(target.message(&ui.data)));
-        }
+        // S.21), the way the assistant app's "Change access" and "Access…" get here. The demo has
+        // its data from the first frame; without it a bot's page waits for the core's list of bots
+        // ([`Ui::target`]).
+        ui.target = ui.launch.client.clone();
+        let target = ui.open_target();
         // A start on the Appearance page lists the design packs, as opening it does.
         let designs = match ui.section == Section::Appearance && general::unlisted(&ui.general) {
             true => ui.perform(Action::ListDesigns),
@@ -501,8 +509,32 @@ impl Ui {
             ui_state::load_task(AppId::WORKPLACE).map(Message::UiState),
             size,
             designs,
+            target,
         ]);
         (ui, task)
+    }
+
+    /// Opens what `--section assistant` or `--section bot:<id>` names, as soon as [`Data`] can
+    /// name it ([`ClientTarget::message`]): the assistant at once, a bot's page with the load that
+    /// brings the core's list of bots. Nothing happens without such a target, and a bot the core
+    /// answered without is given up on – the section's own list stays open, which shows every bot
+    /// it has.
+    fn open_target(&mut self) -> Task<Message> {
+        let Some(target) = self.target.clone() else { return Task::none() };
+        match target.message(&self.data) {
+            Some(message) => {
+                self.target = None;
+                self.update(Message::Agents(message))
+            }
+            None => {
+                // The core answered without the bot: no later load will bring it either, so the
+                // target goes. An answer that failed carries no bots at all – that one waits.
+                if self.loaded && self.data.error.is_none() {
+                    self.target = None;
+                }
+                Task::none()
+            }
+        }
     }
 
     /// Goes to the state `--open` asks for, the way a click would: through the pages' messages.
@@ -871,6 +903,9 @@ impl Ui {
                     false => None,
                 };
                 let agents = agents::loaded(&mut self.agents, &self.data);
+                // `--section bot:<id>` waited for this list of bots, which names the bot's client
+                // ([`Ui::open_target`]); with it here, the bot's page opens.
+                let target = self.open_target();
                 // The app switcher of this window follows the components (task W.2).
                 if self.data.error.is_none() {
                     torro_gui::components::set_off(&self.data.settings.components_off);
@@ -889,10 +924,11 @@ impl Ui {
                 // No canvas keeps a cache: the next frame draws with the new design, the task
                 // loads its fonts.
                 if let Some(task) = design {
-                    return task.map(Message::Design);
+                    return Task::batch([target, task.map(Message::Design)]);
                 }
                 // The assistant's page asks for its new client's activity once the list has it.
-                agents.unwrap_or(Action::None)
+                let agents = agents.map_or_else(Task::none, |action| self.perform(action));
+                return Task::batch([target, agents]);
             }
             Message::Sent(result) => {
                 // The add-account dialog and the setup show the outcome of their own requests themselves.
@@ -2231,5 +2267,38 @@ mod tests {
         // A bot the core does not list opens nothing but the section's own list.
         let unknown = started(&["--demo", "--section", "bot:ffffffff"]);
         assert_eq!((unknown.section, unknown.agents.selected.as_deref()), (Section::Agents, None));
+    }
+
+    /// The way `--section bot:<id>` really runs (found in the review of #210): without `--demo`
+    /// the window starts with no data at all, so the id can name no client yet – the target waits
+    /// for the core's list of bots and opens the bot's page with it, instead of being resolved
+    /// against an empty [`Data`] in [`Ui::new`] and lost.
+    #[test]
+    fn a_bots_page_waits_for_the_core_s_list_of_bots() {
+        let mut ui = started(&["--section", "bot:b0000001"]);
+        assert_eq!(ui.section, Section::Agents);
+        assert!(!ui.loaded && ui.agents.selected.is_none(), "nothing to open the page with yet");
+        assert!(ui.target.is_some(), "the bot's id waits for the data");
+
+        let data = launch::demo_data();
+        let travel = data.bots.iter().find(|bot| bot.id == launch::DEMO_TRAVEL).expect("the demo's bot");
+        let client = travel.client.clone();
+        let _ = ui.update(Message::Loaded(Box::new(data)));
+        assert_eq!(ui.agents.selected.as_deref(), Some(client.as_str()), "the bot's own page, not the list");
+        assert!(ui.target.is_none(), "and the target is spent");
+        assert!(ui.page_header(SizeClass::Wide).sub_page.is_some(), "a page below the section");
+
+        // A bot the core answers without: the section's own list stays open and nothing waits on.
+        let mut unknown = started(&["--section", "bot:ffffffff"]);
+        let _ = unknown.update(Message::Loaded(Box::new(launch::demo_data())));
+        assert_eq!(unknown.agents.selected.as_deref(), None, "the list of bots, which shows every one");
+        assert!(unknown.target.is_none(), "no later load will bring it either");
+
+        // An answer that failed carries no bots at all: that one waits for the next load.
+        let mut offline = started(&["--section", "bot:b0000001"]);
+        let _ = offline.update(loaded(Appearance::System, Some("core is not running")));
+        assert!(offline.target.is_some(), "a core that did not answer keeps the target");
+        let _ = offline.update(Message::Loaded(Box::new(launch::demo_data())));
+        assert_eq!(offline.agents.selected.as_deref(), Some(client.as_str()), "the page opens once the core answers");
     }
 }

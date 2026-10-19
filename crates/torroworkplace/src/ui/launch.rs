@@ -398,16 +398,18 @@ pub enum ClientTarget {
 }
 
 impl ClientTarget {
-    /// What the agents page is told to open. A bot is named by its own id; its rights live on its
-    /// client, which [`Data::bots`] points at. A bot the core does not list leaves the section's
-    /// list open, which shows every bot it has.
-    pub fn message(&self, data: &Data) -> super::agents::Message {
+    /// What the agents page is told to open, as far as `data` can say. The assistant's page needs
+    /// no data – it opens its first start while there is no client. A bot is named by its own id,
+    /// but its rights live on its client, which only [`Data::bots`] can name: `None` means the
+    /// list of bots does not hold the id, so the window waits for the next load
+    /// (`Ui::open_target`) and leaves the section's own list open once the core answered without
+    /// it.
+    pub fn message(&self, data: &Data) -> Option<super::agents::Message> {
         match self {
-            ClientTarget::Assistant => super::agents::Message::ShowAssistant,
-            ClientTarget::Bot(id) => match data.bots.iter().find(|bot| bot.id == *id) {
-                Some(bot) => super::agents::Message::Open(bot.client.clone()),
-                None => super::agents::Message::Back,
-            },
+            ClientTarget::Assistant => Some(super::agents::Message::ShowAssistant),
+            ClientTarget::Bot(id) => {
+                data.bots.iter().find(|bot| bot.id == *id).map(|bot| super::agents::Message::Open(bot.client.clone()))
+            }
         }
     }
 }

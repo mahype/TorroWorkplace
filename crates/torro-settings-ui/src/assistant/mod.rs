@@ -40,7 +40,8 @@
 //! ```
 //!
 //! Escape goes to [`escape`] first (it closes a dialog of the Profile section) and only then to the
-//! host, which closes the settings. The window's own subscription batches [`subscription`], the
+//! host, which closes the settings – but every way out of the settings passes [`closing`] first, so
+//! a profile that is typed and not saved is never dropped without "Discard changes?". The window's own subscription batches [`subscription`], the
 //! clock the open sections need (Voice asks how the listener stands after it was switched).
 
 pub mod bots;
@@ -199,6 +200,17 @@ pub fn overlay<'a>(state: &'a State, data: &'a Data) -> Option<Element<'a, Messa
 /// to the host, which closes the settings.
 pub fn escape(state: &State) -> Option<Message> {
     profile::escape(&state.profile).map(Message::Profile)
+}
+
+/// What stands between the window and closing these settings: the question a section must ask
+/// before its unsaved work is dropped ([`profile::closing`], "Discard changes?"). `None` lets the
+/// window close them.
+///
+/// The window asks this on every way out – the gear, Escape, a click in the sidebar – and sends
+/// the message back as any other; after "Discard" the section closes the settings itself
+/// ([`crate::Action::Close`]), so the question and the closing stay in one place.
+pub fn closing(state: &State, data: &Data) -> Option<Message> {
+    profile::closing(&state.profile, data).map(Message::Profile)
 }
 
 /// One section's page with its messages wrapped in [`Message`].
