@@ -835,7 +835,7 @@ WZ.2 (Gerüst) ──────────┼── WZ.3 (Satz) ── WZ.4 (
 - **Abnahme:** `README.md` mit je Punkt ja/nein und Beleg (Seite der erzeugten PDF), Empfehlung A oder B.
 
 ### WZ.2 Gerüst: Bereich `tools`, Requests, Katalog, Rechte, Einstellungen
-- [ ] erledigt
+- [x] erledigt
 - **Modell:** Opus · **Braucht:** – · **Dateien:** `crates/torro-ipc/src/{lib,api}.rs`,
   `crates/torro-ipc/src/tools.rs` (neu), `crates/torro-core/src/settings.rs`,
   `crates/torroworkplace/src/{core,settings_service,audit,daemon,pim,mcp,clients}.rs`,

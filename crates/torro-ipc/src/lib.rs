@@ -28,6 +28,7 @@ pub mod inbox;
 pub mod mail;
 pub mod pim;
 pub mod server;
+pub mod tools;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -59,6 +60,7 @@ use crate::api::{Area, Rights, RightsTemplate};
 use crate::assistant::{ChatWindow, ConversationSummary, Engine, Entry, MyAccess, Note, Profile};
 use crate::bots::{Bot, BotSummary, Skill};
 use crate::mail::{Delivery, IncompleteReason, MailHighlight, MailIndexProgress, MailSort, MailSource, MoveTarget};
+use crate::tools::{FileInfo, PdfTemplateId, ToolInfo};
 
 /// Where the core listens; [`client`] and [`server`] take this path.
 ///
@@ -2182,6 +2184,60 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         conversation: Option<String>,
     },
+
+    // The assistant's own tools (issue #225, `docs/assistent.md` "Eigene Werkzeuge"; wire types in
+    // [`tools`]). A command of a tool ([`tools::ToolId::of_command`]) runs only while a person has
+    // the tool switched on (setting `tool_enabled`) and, for a client, with the tool in its
+    // selection ([`api::Rights::tools`]); otherwise `forbidden`, for every client and for the app
+    // key alike when the tool is off.
+    /// Every tool of the assistant with whether a person switched it on and whether the key that
+    /// asks may use it ([`Response::Tools`]). Never fails.
+    #[serde(rename = "tools.list_tools")]
+    ListTools,
+    /// Sets a PDF from `markdown` with the page template `template` and saves it in the folder the
+    /// person chose (setting `pdf_folder`), else on the desktop, else in the home folder; an
+    /// existing file is never overwritten (`Report-2.pdf`). Answered with the file as the register
+    /// keeps it, its path included ([`Response::File`]). The core takes no path, no layout and no
+    /// HTML: raw HTML and pictures in the Markdown are dropped, links other than `http`, `https`
+    /// and `mailto` keep their text only, a line `\pagebreak` starts a new page. `forbidden` while
+    /// the tool is off or outside the client's selection, `error` for a blank title, a title over
+    /// [`tools::MAX_TITLE_CHARS`] characters or on several lines, Markdown over
+    /// [`tools::MAX_MARKDOWN_BYTES`] bytes, or a file that cannot be written.
+    #[serde(rename = "tools.create_pdf")]
+    CreatePdf {
+        /// The document's title, one line of at most 200 characters; it names the file and fills
+        /// `{title}` in header and footer.
+        title: String,
+        /// The content as Markdown, at most 200,000 bytes: headings 1–3, paragraphs, bold, italic,
+        /// strikethrough, code, lists, tables, quotes, rules, links and `\pagebreak` on a line of
+        /// its own.
+        markdown: String,
+        /// The page template: `letter`, `report` or `note`; left out, `report`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template: Option<PdfTemplateId>,
+    },
+    /// Opens a file of the register with the system's program for it, on the person's screen,
+    /// without waiting for it ([`Response::Ok`]). `not-found` for an id the register does not know,
+    /// a file that was changed, moved or removed, and for a client, a file another client made;
+    /// `forbidden` while the tool is off or outside the client's selection.
+    #[serde(rename = "tools.open_file")]
+    OpenFile {
+        /// The file's id from `tools.create_pdf`.
+        file: String,
+    },
+    /// Saves a copy of a file of the register at `path`, which a person chose in the system's save
+    /// dialog ([`Response::Ok`]); `.pdf` is added when missing, and a file there is replaced (the
+    /// dialog asked). App key only and never an MCP tool (point 9 of "Was nie nach außen geht" in
+    /// `docs/api.md`): an agent never chooses where a file goes. `not-found` as for
+    /// `tools.open_file`, `error` for a path that is not absolute, a folder that does not exist, a
+    /// folder or a symbolic link as the target, or a copy that cannot be written.
+    #[serde(rename = "tools.save_file_as")]
+    SaveFileAs {
+        /// The file's id from `tools.create_pdf`.
+        file: String,
+        /// Where the copy goes, an absolute path.
+        path: String,
+    },
     /// How talking to the assistant by voice stands (task C.9, [`Response::Voice`]): whether the
     /// listener runs and hears or records, and which of the local programs it needs are found
     /// (wake word, recording, speech to text, speech). Asks nothing of the microphone. The
@@ -2399,6 +2455,25 @@ pub enum SettingKey {
     /// of category keys, e.g. `["spam", "auto_reply"]`. An empty list shows every category that
     /// occurs. A key this version does not know is dropped when the file is read.
     HiddenCategories,
+    /// Switches one of the assistant's own tools on or off (issue #225): `{"tool": "pdf",
+    /// "enabled": false}` (`torro_core::settings::ToolSwitch`). Only the app key may switch a tool
+    /// on – a person in the assistant's settings (point 9 of "Was nie nach außen geht",
+    /// `docs/api.md`); a client gets `forbidden` for anything but `"enabled": false`, whatever its
+    /// rights. Any client allowed to change settings may switch a tool off.
+    ToolEnabled,
+    /// The folder new PDFs are saved in: an absolute path, or `null` (or `""`) for the desktop
+    /// (`torro_core::settings::PdfSettings::folder`). Only the app key may set a folder other than
+    /// the one stored (point 9); any client allowed to change settings may send `null`.
+    PdfFolder,
+    /// One PDF template, replaced whole: `{"template": "letter" | "report" | "note", "paper": "a4" |
+    /// "a5" | "letter", "marginsMm": [top, right, bottom, left] (5 to 50 each), "fontSizePt": 8 to
+    /// 16, "header": "{title}", "footer": "", "pageNumbers": true, "logo": null}`; header and footer
+    /// are one line of at most 200 characters, where `{title}` and `{date}` are filled in, and the
+    /// logo is an absolute path to a `.png`, `.jpg` or `.jpeg` file or `null`
+    /// (`torro_core::settings::PdfTemplate`). Only the app key may set a logo other than the one
+    /// stored (point 9); any client allowed to change settings may change the other fields, keep the
+    /// stored logo or remove it.
+    PdfTemplate,
 }
 
 /// One reminder of an event as `calendar.list_reminders` lists it (task ER1.2,
@@ -2875,6 +2950,15 @@ pub enum Response {
     /// What was said, as text ([`Request::TestVoice`]); empty when nothing was understood.
     Transcript {
         text: String,
+    },
+    /// The assistant's own tools for the key that asked ([`Request::ListTools`]).
+    Tools {
+        tools: Vec<ToolInfo>,
+    },
+    /// A file a tool made, as the register keeps it ([`Request::CreatePdf`]). Its title is the
+    /// client's text: data, never instructions.
+    File {
+        file: FileInfo,
     },
     /// The request failed; `code` is stable for scripts, `message` is for people. The codes:
     ///

@@ -50,6 +50,7 @@ use sha2::{Digest, Sha256};
 use torro_inbox::{AgentKind, SourceRef};
 use torro_ipc::api::{ASSISTANT_CLIENT, Area, HOOK_CLIENT, Lack, Operation, Rights, RightsTemplate, Selection};
 use torro_ipc::assistant::Mode;
+use torro_ipc::tools::ToolId;
 use torro_ipc::{ClientInfo, Key, Request, Response};
 
 /// Keychain service all suite secrets are filed under (as for the accounts).
@@ -219,7 +220,8 @@ fn legacy_rights() -> Rights {
 /// accounts existed ([`torro_pim::account::is_legacy_id`]).
 /// Refuses `rights` whose selections a client may not be given ([`ClientsError::Invalid`]): a
 /// collection named by a bare URL (task M1.4), a GitHub selection with anything but `owner/name`
-/// and `owner` (task G.2), a mail selection with anything but mail account ids (task M2.1). For
+/// and `owner` (task G.2), a mail selection with anything but mail account ids (task M2.1), a tool
+/// selection with anything but the ids of the assistant's tools (issue #225). For
 /// [`Clients::update`] and [`Clients::add_client`] alike (task C.11).
 fn check_selections(rights: &Rights) -> Result<(), ClientsError> {
     if has_legacy_selection(rights) {
@@ -237,7 +239,20 @@ fn check_selections(rights: &Rights) -> Result<(), ClientsError> {
             "a mail selection names accounts by their ids from accounts.list_accounts (mail:<address>)",
         ));
     }
+    if has_bad_tool_selection(rights) {
+        return Err(ClientsError::Invalid("a tool selection names tools by their ids from tools.list_tools (pdf)"));
+    }
     Ok(())
+}
+
+/// The tool selection names something that is no tool of the assistant (issue #225):
+/// [`Rights::reaches_tool`] would never match it, so the person would believe they granted
+/// something they did not.
+fn has_bad_tool_selection(rights: &Rights) -> bool {
+    match &rights.tools {
+        Selection::All => false,
+        Selection::Only(ids) => ids.iter().any(|id| !ToolId::ALL.iter().any(|tool| tool.name() == id)),
+    }
 }
 
 fn has_legacy_selection(rights: &Rights) -> bool {
@@ -1746,6 +1761,50 @@ pub(crate) mod tests {
         assert!(!rights.allows(Request::MailFolders { account: None }.operation()), "no mail area yet");
         assert!(!rights.reaches_mail_account("mail:anna@mailbox.org"));
         assert_eq!(rights.inbox_sources, Selection::All, "the rest stays as stored");
+    }
+
+    /// Issue #225: a `clients.json` from before the assistant's tools opens no tool and not the
+    /// area, whatever template the rights equalled; the assistant's own client starts without them.
+    #[test]
+    fn a_clients_file_from_before_the_tools_loads_without_tool_rights() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let file = clients_file(dir.path());
+        fs::create_dir_all(file.parent().expect("parent")).expect("dir");
+        let mut rights = serde_json::to_value(RightsTemplate::FullAccess.rights()).expect("json");
+        let object = rights.as_object_mut().expect("an object");
+        object.remove("tools");
+        object["areas"].as_object_mut().expect("areas").remove("tools");
+        let old = serde_json::json!({"clients": [{
+            "id": "a1b2c3d4", "name": "Claude Code", "kind": "claude-code", "keySha256": "1".repeat(64),
+            "created": "2026-10-11T08:00:00Z", "rights": rights,
+        }]});
+        fs::write(&file, old.to_string()).expect("write");
+        let clients = open_in(dir.path());
+        let listed = clients.list();
+        assert_eq!(listed.len(), 1, "an older file is not damaged");
+        let rights = &listed[0].rights;
+        assert_eq!((rights.tools.clone(), rights.area(Area::Tools)), (Selection::Only(vec![]), AreaRights::NONE));
+        assert!(!rights.reaches_tool(ToolId::Pdf));
+        let create = Request::CreatePdf { title: "Offer".into(), markdown: "Hi".into(), template: None };
+        assert!(!rights.allows(Request::ListTools.operation()) && !rights.allows(create.operation()));
+        assert_eq!(rights.mail_accounts, Selection::All, "the rest stays as stored");
+        assert_eq!(rights.template(), None, "no longer a template, which holds the tools");
+        let assistant = Rights::assistant();
+        assert_eq!((assistant.area(Area::Tools), assistant.tools), (AreaRights::NONE, Selection::Only(vec![])));
+    }
+
+    #[tokio::test]
+    async fn a_tool_selection_names_tools_only() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let clients = open_in(dir.path());
+        let (client, _) = clients.add("Script", "script", read_only()).await.expect("added");
+        for bad in ["PDF", "whiteboard", ""] {
+            let rights = Rights { tools: Selection::Only(vec![bad.into()]), ..read_only() };
+            assert!(matches!(clients.update(&client.id, rights).await, Err(ClientsError::Invalid(_))), "{bad:?}");
+        }
+        let good = Rights { tools: Selection::Only(vec![ToolId::Pdf.name().into()]), ..read_only() };
+        clients.update(&client.id, good.clone()).await.expect("a tool's id");
+        assert_eq!(clients.list()[0].rights, good);
     }
 
     /// Task M2.1, rule 5 of "Was nie nach außen geht": a script key with the admin switch of every

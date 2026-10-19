@@ -389,8 +389,8 @@ impl MyAccess {
 }
 
 /// Takes `area` out of `rights` with what it selects: an area the client does not get here names
-/// none of its calendars, lists, repositories or mail accounts either (a mail account's id is its
-/// address, which the data rule keeps from an agent), and without mail no mail account's inbox
+/// none of its calendars, lists, repositories, mail accounts or tools either (a mail account's id is
+/// its address, which the data rule keeps from an agent), and without mail no mail account's inbox
 /// source.
 fn close(rights: &mut Rights, area: Area) {
     rights.areas.remove(&area);
@@ -400,6 +400,7 @@ fn close(rights: &mut Rights, area: Area) {
         Area::Tasks => rights.task_lists = nothing(),
         Area::Github => rights.github_repos = nothing(),
         Area::Inbox => rights.inbox_sources = nothing(),
+        Area::Tools => rights.tools = nothing(),
         Area::Mail => {
             rights.mail_accounts = nothing();
             if let Selection::Only(keys) = &mut rights.inbox_sources {

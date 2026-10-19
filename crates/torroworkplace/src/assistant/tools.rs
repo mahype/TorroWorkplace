@@ -415,6 +415,8 @@ pub fn lack_summary(lack: Lack, engine: &str) -> String {
             trf("{engine} does not get {area} (data rule)", &[("engine", &engine), ("area", &area(a))])
         }
         Lack::ReadOnly => tr("Read only in this conversation").into(),
+        Lack::ToolOff { tool } => trf("{tool} is switched off", &[("tool", &tool.title())]),
+        Lack::Tool { tool } => trf("No access to the tool {tool}", &[("tool", &tool.title())]),
     }
 }
 
@@ -480,6 +482,16 @@ mod tests {
             "the switch first"
         );
         assert_eq!(lack_summary(Lack::ReadOnly, "Ollama"), tr("Read only in this conversation"));
+        // Issue #225: the tool's reasons name the tool.
+        let pdf = torro_ipc::tools::ToolId::Pdf;
+        assert_eq!(
+            lack_summary(Lack::ToolOff { tool: pdf }, "Ollama"),
+            trf("{tool} is switched off", &[("tool", &"PDF")])
+        );
+        assert_eq!(
+            lack_summary(Lack::Tool { tool: pdf }, "Ollama"),
+            trf("No access to the tool {tool}", &[("tool", &"PDF")])
+        );
     }
 
     #[test]

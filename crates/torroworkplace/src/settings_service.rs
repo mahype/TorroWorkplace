@@ -27,8 +27,8 @@ use std::sync::{Mutex, PoisonError};
 
 use torro_core::design;
 use torro_core::settings::{
-    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, Reminders,
-    Retention, Settings, SetupState, Voice, Zoom,
+    self, AssistantDefault, ComponentSwitch, Language, ListOrderEntry, MailAppearance, MailFormat, Night, PdfSettings,
+    PdfTemplate, PdfTemplateId, Reminders, Retention, Settings, SetupState, ToolSwitch, Voice, Zoom,
 };
 use torro_core::theme::Appearance;
 use torro_ipc::SettingKey;
@@ -115,6 +115,11 @@ impl SettingsStore {
     /// against the accounts, the models and the data rule when they are set
     /// (`Core::set_ai_assignment`), and a whole-settings write would go round that check. They
     /// change only through [`SettingsStore::set_ai_assignment`].
+    ///
+    /// Nor does a client switch on one of the assistant's own tools (point 9, issue #225): a tool
+    /// stays on only when it is on as stored and in `new`, the PDF folder and the logos of the
+    /// templates stay as stored (`torro_core::settings::Tools::from_client`); the other fields of
+    /// the templates come from `new`.
     pub fn update_keeping_hidden(&self, new: Settings) -> Result<(), String> {
         self.change(|settings| {
             let hidden = std::mem::take(&mut settings.hidden_collections);
@@ -127,6 +132,7 @@ impl SettingsStore {
             let voice = Voice { enabled, ..new.voice.clone() };
             let mail_to_cloud = settings.mail_to_cloud && new.mail_to_cloud;
             let reminders = Reminders { calendars, ..new.reminders.clone() };
+            let tools = settings.tools.from_client(&new.tools);
             *settings = Settings {
                 hidden_collections: hidden,
                 ai_assignments: assignments,
@@ -134,6 +140,7 @@ impl SettingsStore {
                 voice,
                 mail_to_cloud,
                 reminders,
+                tools,
                 ..new
             };
         })
@@ -335,6 +342,14 @@ enum Change {
     /// A change of the reminders of events (task ER1.2): the fields it names, checked against the
     /// defaults when parsed and merged onto the stored ones when applied ([`Reminders::merged`]).
     Reminders(serde_json::Value),
+    /// One of the assistant's own tools on or off (issue #225). Who may switch it on is the core's
+    /// check (`Request::kept_for_people`).
+    ToolEnabled(ToolSwitch),
+    /// The folder of new PDFs; `None` for the desktop. Who may set one is the core's check
+    /// (`Core::switches_on_for_people`).
+    PdfFolder(Option<String>),
+    /// One PDF template, replaced whole. Who may set its logo is the core's check, as for the folder.
+    PdfTemplate(PdfTemplateId, PdfTemplate),
 }
 
 impl Change {
@@ -383,6 +398,12 @@ impl Change {
                 Reminders::default().merged(value)?;
                 Change::Reminders(value.clone())
             }
+            SettingKey::ToolEnabled => Change::ToolEnabled(serde_json::from_value(value.clone()).map_err(invalid)?),
+            SettingKey::PdfFolder => Change::PdfFolder(PdfSettings::folder_from(value)?),
+            SettingKey::PdfTemplate => {
+                let (id, template) = PdfTemplate::from_value(value)?;
+                Change::PdfTemplate(id, template)
+            }
         })
     }
 
@@ -417,6 +438,9 @@ impl Change {
                     settings.reminders = merged;
                 }
             }
+            Change::ToolEnabled(switch) => settings.tools.set_on(switch.tool, switch.enabled),
+            Change::PdfFolder(folder) => settings.tools.pdf.folder = folder,
+            Change::PdfTemplate(id, template) => *settings.tools.pdf.template_mut(id) = template,
         }
     }
 }
@@ -1055,6 +1079,7 @@ mod tests {
                 reminders: Reminders::from_value(&reminders).expect("valid reminders"),
                 ai_assignments: std::collections::BTreeMap::new(),
                 hidden_categories: Vec::new(),
+                tools: Default::default(),
             }
         );
         Change::parse(SettingKey::MailToCloud, &json!(true)).expect("valid flag").apply(&mut settings);
@@ -1182,6 +1207,92 @@ mod tests {
         sent.mail_to_cloud = false;
         store.update_keeping_hidden(sent).expect("written");
         assert!(!store.current().mail_to_cloud);
+    }
+
+    /// An absolute path on this system, for folders and logos.
+    fn absolute(path: &str) -> String {
+        match cfg!(windows) {
+            true => format!(r"C:{}", path.replace('/', r"\")),
+            false => path.to_string(),
+        }
+    }
+
+    /// Issue #225: a tool is switched by its key, the PDF folder and a template are set and checked;
+    /// a value that does not fit is refused and changes nothing.
+    #[test]
+    fn tools_are_switched_and_the_pdf_settings_set_and_checked() {
+        use torro_core::settings::{Paper, ToolId};
+        let (_dir, store) = store();
+        store.set(SettingKey::ToolEnabled, &json!({"tool": "pdf", "enabled": true})).expect("on");
+        assert!(store.current().tools.is_on(ToolId::Pdf));
+        store.set(SettingKey::ToolEnabled, &json!({"tool": "pdf", "enabled": false})).expect("off");
+        assert!(!store.current().tools.is_on(ToolId::Pdf));
+        let folder = absolute("/Users/anna/PDFs");
+        store.set(SettingKey::PdfFolder, &json!(folder)).expect("a folder");
+        assert_eq!(store.current().tools.pdf.folder, Some(folder.clone()));
+        let mut letter = PdfTemplate::standard(PdfTemplateId::Letter);
+        (letter.paper, letter.footer) = (Paper::Letter, "ACME".into());
+        store.set(SettingKey::PdfTemplate, &letter.to_value(PdfTemplateId::Letter)).expect("a template");
+        let stored = store.current().tools;
+        assert_eq!(stored.pdf.letter, letter);
+        assert_eq!(stored.pdf.report, PdfTemplate::standard(PdfTemplateId::Report), "the others stay");
+
+        let mut too_small = letter.to_value(PdfTemplateId::Letter);
+        too_small["fontSizePt"] = json!(7);
+        let mut relative_logo = letter.to_value(PdfTemplateId::Letter);
+        relative_logo["logo"] = json!("logo.png");
+        let mut unknown = letter.to_value(PdfTemplateId::Letter);
+        unknown["template"] = json!("invoice");
+        for (key, value) in [
+            (SettingKey::ToolEnabled, json!({"tool": "whiteboard", "enabled": true})),
+            (SettingKey::ToolEnabled, json!({"tool": "pdf", "enabled": true, "why": "x"})),
+            (SettingKey::ToolEnabled, json!(true)),
+            (SettingKey::PdfFolder, json!("PDFs")),
+            (SettingKey::PdfTemplate, too_small),
+            (SettingKey::PdfTemplate, relative_logo),
+            (SettingKey::PdfTemplate, unknown),
+        ] {
+            assert!(store.set(key, &value).is_err(), "{key:?} {value}");
+        }
+        assert_eq!(store.current().tools, stored, "a refused value changes nothing");
+        store.set(SettingKey::PdfFolder, &json!(null)).expect("back to the desktop");
+        assert_eq!(store.current().tools.pdf.folder, None);
+    }
+
+    /// Issue #225, point 9: a client's whole settings never switch a tool on, set a folder or a
+    /// logo; they may switch a tool off and change the other fields of a template, and the paths a
+    /// person set stay.
+    #[test]
+    fn a_client_never_switches_a_tool_on_nor_sets_its_paths() {
+        use torro_core::settings::ToolId;
+        let (_dir, store) = store();
+        let folder = absolute("/sync/Out");
+        let logo = absolute("/pictures/logo.png");
+        let mut sent = store.current();
+        sent.tools.set_on(ToolId::Pdf, true);
+        sent.tools.pdf.folder = Some(folder.clone());
+        sent.tools.pdf.note.logo = Some(logo.clone());
+        sent.tools.pdf.note.font_size_pt = 12;
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        let kept = store.current().tools;
+        assert!(!kept.is_on(ToolId::Pdf), "off stays off");
+        assert_eq!((kept.pdf.folder, kept.pdf.note.logo), (None, None), "no path of a client");
+        assert_eq!(kept.pdf.note.font_size_pt, 12, "the other fields are taken");
+
+        // The person switches it on and sets the paths: on stays on, the paths stay as they are.
+        store.set(SettingKey::ToolEnabled, &json!({"tool": "pdf", "enabled": true})).expect("the person");
+        store.set(SettingKey::PdfFolder, &json!(absolute("/Users/anna/PDFs"))).expect("the person");
+        let mut note = PdfTemplate::standard(PdfTemplateId::Note);
+        note.logo = Some(absolute("/pictures/anna.png"));
+        store.set(SettingKey::PdfTemplate, &note.to_value(PdfTemplateId::Note)).expect("the person");
+        let person = store.current().tools;
+        store.update_keeping_hidden(sent.clone()).expect("written");
+        let kept = store.current().tools;
+        assert!(kept.is_on(ToolId::Pdf), "on stays on");
+        assert_eq!((&kept.pdf.folder, &kept.pdf.note.logo), (&person.pdf.folder, &person.pdf.note.logo));
+        sent.tools.set_on(ToolId::Pdf, false);
+        store.update_keeping_hidden(sent).expect("written");
+        assert!(!store.current().tools.is_on(ToolId::Pdf), "a client may switch it off");
     }
 
     #[test]

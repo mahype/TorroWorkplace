@@ -995,6 +995,7 @@ pub(crate) fn area_label(area: Area) -> &'static str {
         Area::Ai => tr("AI"),
         Area::Assistant => tr("Assistant"),
         Area::Bots => tr("Bots"),
+        Area::Tools => tr("Tools"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
         Area::Clients => tr("Agents & API"),
@@ -1015,6 +1016,7 @@ fn area_detail(area: Area) -> &'static str {
         Area::Ai => tr("Models of your AI accounts"),
         Area::Assistant => tr("Chats with the assistant, which acts with its own rights"),
         Area::Bots => tr("Bots and asking them, which act with their own rights"),
+        Area::Tools => tr("The assistant's own tools, such as making PDFs"),
         Area::Settings => tr("Settings of the suite"),
         Area::Apps => tr("Opening the suite's apps"),
         Area::System | Area::Clients | Area::Approvals => "",
@@ -2433,8 +2435,8 @@ mod tests {
         let mut wide = RightsTemplate::ReadOnly.rights();
         wide.confirm = Confirm::Never;
         let first = format!("{}, {}, {}", tr("Workspaces"), tr("Calendar"), tr("Tasks"));
-        // GitHub, Inbox, Mail, Accounts, AI, Settings, Apps follow.
-        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &7)]));
+        // GitHub, Inbox, Mail, Accounts, AI, Tools, Settings, Apps follow.
+        assert_eq!(rights_summary(&wide, "codex"), trf("Custom: {areas} +{n}", &[("areas", &first), ("n", &8)]));
     }
 
     #[test]

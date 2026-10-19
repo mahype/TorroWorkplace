@@ -3023,6 +3023,15 @@ impl Core {
                         .into(),
                 },
             },
+            // The assistant's own tools (issue #225): the commands and their checks are there, the
+            // tools themselves follow (task WZ.4).
+            request @ (Request::ListTools
+            | Request::CreatePdf { .. }
+            | Request::OpenFile { .. }
+            | Request::SaveFileAs { .. }) => Response::Error {
+                code: "unsupported".into(),
+                message: format!("{} is not available in this version yet", request.operation().name()),
+            },
         }
     }
 
@@ -5200,15 +5209,36 @@ impl Core {
         self.voice.changes()
     }
 
-    /// Whether `request` from a client switches on through the whole settings what only a person
-    /// switches on (`settings.update_settings` with it on while it is off): the microphone (point
-    /// 6) and mail to cloud models (`mail_to_cloud`, task C.17), refused like
-    /// `settings.set_setting` with `true` ([`torro_ipc::api::Rights::allows_request`]), which
-    /// carries the value itself.
+    /// Whether `request` from a client does what only a person does, judged against the stored
+    /// settings, and is refused like `settings.set_setting` with `true`
+    /// ([`torro_ipc::api::Rights::allows_request`], which judges by the value alone):
+    ///
+    /// - `settings.update_settings` that switches on what is off: the microphone (point 6), mail to cloud
+    ///   models (`mail_to_cloud`, task C.17), a tool of the assistant (point 9, issue #225); or that sets the PDF folder or a template's logo to a path other than the
+    ///   stored one (`torro_core::settings::Tools::needs_a_person`),
+    /// - `settings.set_setting pdf_folder` with a folder other than the stored one,
+    /// - `settings.set_setting pdf_template` with a logo other than the stored one of that template.
+    ///
+    /// Removing a folder or a logo, keeping the stored one and every other field of a template are
+    /// ordinary admin changes. A value that does not read is no such change: it fails anyway.
     fn switches_on_for_people(&self, request: &Request) -> bool {
-        let Request::UpdateSettings { settings } = request else { return false };
-        let now = self.settings.current();
-        (settings.voice.enabled && !now.voice.enabled) || (settings.mail_to_cloud && !now.mail_to_cloud)
+        match request {
+            Request::UpdateSettings { settings } => {
+                let now = self.settings.current();
+                (settings.voice.enabled && !now.voice.enabled)
+                    || (settings.mail_to_cloud && !now.mail_to_cloud)
+                    || now.tools.needs_a_person(&settings.tools)
+            }
+            Request::SetSetting { key: SettingKey::PdfFolder, value } => {
+                let Ok(Some(folder)) = torro_core::settings::PdfSettings::folder_from(value) else { return false };
+                self.settings.current().tools.pdf.folder.as_ref() != Some(&folder)
+            }
+            Request::SetSetting { key: SettingKey::PdfTemplate, value } => {
+                let Ok((id, template)) = torro_core::settings::PdfTemplate::from_value(value) else { return false };
+                template.logo.is_some() && self.settings.current().tools.pdf.template(id).logo != template.logo
+            }
+            _ => false,
+        }
     }
 
     /// `settings.voice_status` (task C.9): what the listener does, and what the assistant app
@@ -6433,6 +6463,102 @@ mod tests {
         let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
         assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
         assert!(!settings(&core).await.voice.enabled, "off once the person allowed it");
+    }
+
+    /// Issue #225, point 9 of "Was nie nach außen geht": no client switches a tool of the assistant
+    /// on, sets the PDF folder or a template's logo, not with every right, neither one setting at a
+    /// time nor with the whole settings, and nobody is asked to approve it. Switching off, removing
+    /// a path, keeping the stored one and the other fields of a template are admin changes like any
+    /// other, after approval. Only the app key switches on and sets paths.
+    #[tokio::test]
+    async fn only_people_switch_tools_on_and_set_their_paths() {
+        use serde_json::json;
+        use torro_core::settings::{PdfTemplate, PdfTemplateId, ToolId};
+        use torro_ipc::SettingKey;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let mut rights = RightsTemplate::FullAccess.rights();
+        for area in Area::ALL {
+            rights.areas.insert(area, AreaRights { level: Level::Full, admin: true });
+        }
+        let (_, key) = client(&core, rights).await;
+        let app_key = crate::clients::tests::app_key(dir.path());
+        let folder = dir.path().join("PDFs").to_string_lossy().into_owned();
+        let logo = dir.path().join("logo.png").to_string_lossy().into_owned();
+        let switch = |on: bool| Request::SetSetting {
+            key: SettingKey::ToolEnabled,
+            value: json!({"tool": ToolId::Pdf.name(), "enabled": on}),
+        };
+        let folder_to = |path: Option<&str>| Request::SetSetting { key: SettingKey::PdfFolder, value: json!(path) };
+        let note_with = |logo: Option<&str>| {
+            let mut note = PdfTemplate::standard(PdfTemplateId::Note);
+            (note.logo, note.font_size_pt) = (logo.map(str::to_string), 9);
+            Request::SetSetting { key: SettingKey::PdfTemplate, value: note.to_value(PdfTemplateId::Note) }
+        };
+
+        for refused in [switch(true), folder_to(Some(&folder)), note_with(Some(&logo))] {
+            assert_eq!(code(&ask(&core, Some(&key), refused.clone()).await), "forbidden", "{refused:?}");
+        }
+        let read = settings(&core).await;
+        let mut on = read.clone();
+        on.tools.set_on(ToolId::Pdf, true);
+        let mut with_folder = read.clone();
+        with_folder.tools.pdf.folder = Some(folder.clone());
+        let mut with_logo = read.clone();
+        with_logo.tools.pdf.letter.logo = Some(logo.clone());
+        for whole in [on, with_folder, with_logo] {
+            let update = Request::UpdateSettings { settings: whole };
+            assert_eq!(code(&ask(&core, Some(&key), update).await), "forbidden");
+        }
+        assert_eq!(settings(&core).await.tools, read.tools, "nothing changed");
+        assert!(core.approvals.list(None, Utc::now()).await.unwrap_or_default().is_empty(), "nothing to approve");
+
+        // The person switches it on and sets the paths.
+        for request in [switch(true), folder_to(Some(&folder)), note_with(Some(&logo))] {
+            assert_eq!(ask(&core, Some(&app_key), request).await, Response::Ok);
+        }
+        let set = settings(&core).await;
+        assert!(set.tools.is_on(ToolId::Pdf));
+        assert_eq!(
+            (set.tools.pdf.folder.as_deref(), set.tools.pdf.note.logo.as_deref()),
+            (Some(&*folder), Some(&*logo))
+        );
+        // The stored values again set nothing anew: an admin change, which waits for the person.
+        for request in [folder_to(Some(&folder)), note_with(Some(&logo)), Request::UpdateSettings { settings: set }] {
+            let asked = waits(ask(&core, Some(&key), request).await);
+            assert!(asked.command.starts_with("settings."), "{}", asked.command);
+        }
+
+        // Off and removing: admin changes, run once the person allows them.
+        for request in [switch(false), folder_to(None), note_with(None)] {
+            let asked = waits(ask(&core, Some(&key), request).await);
+            let allowed = approval(ask(&core, Some(&app_key), decide(&asked.id, true)).await);
+            assert_eq!(allowed.state, torro_ipc::ApprovalState::Done { response: Box::new(Response::Ok) });
+        }
+        let tools = settings(&core).await.tools;
+        assert!(!tools.is_on(ToolId::Pdf), "off once the person allowed it");
+        assert_eq!((tools.pdf.folder, tools.pdf.note.logo, tools.pdf.note.font_size_pt), (None, None, 9));
+    }
+
+    /// Issue #225: until the tools are built (task WZ.4) their commands answer `unsupported`, for
+    /// the app key and for a client its rights let through.
+    #[tokio::test]
+    async fn the_tools_answer_unsupported_until_they_are_built() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let core = core(dir.path());
+        let requests = [
+            Request::ListTools,
+            Request::CreatePdf { title: "Offer".into(), markdown: "Hi".into(), template: None },
+            Request::OpenFile { file: "1a2b3c4d".into() },
+            Request::SaveFileAs { file: "1a2b3c4d".into(), path: "/tmp/Offer.pdf".into() },
+        ];
+        for request in requests {
+            assert_eq!(code(&core.handle(request.clone()).await), "unsupported", "{request:?}");
+        }
+        let (_, key) = client(&core, RightsTemplate::FullAccess.rights()).await;
+        assert_eq!(code(&ask(&core, Some(&key), Request::ListTools).await), "unsupported");
+        let save = Request::SaveFileAs { file: "1a2b3c4d".into(), path: "/tmp/Offer.pdf".into() };
+        assert_eq!(code(&ask(&core, Some(&key), save).await), "forbidden", "only the app key saves elsewhere");
     }
 
     /// Task C.17: no client lets mail go to cloud models, not with every right,

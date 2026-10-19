@@ -352,6 +352,7 @@ pub fn area_name(area: Area) -> &'static str {
         Area::Ai => tr("AI"),
         Area::Assistant => tr("Assistant"),
         Area::Bots => tr("Bots"),
+        Area::Tools => tr("Tools"),
         Area::Settings => tr("Settings"),
         Area::Apps => tr("Apps"),
         Area::Clients => tr("Agents & API"),
@@ -458,6 +459,10 @@ pub fn refusal_hint(area: Option<Area>, lack: Option<Lack>) -> (String, bool) {
             "{area} never goes to coding agents like Claude Code: your data rule keeps it on your computers. Choose an AI account on this computer for it.",
             &[("area", &name(area))],
         ),
+        Lack::ToolOff { tool } => {
+            trf("The tool {tool} is switched off in the assistant's settings.", &[("tool", &tool.title())])
+        }
+        Lack::Tool { tool } => trf("The assistant may not use the tool {tool}.", &[("tool", &tool.title())]),
     };
     (text, lack.in_rights())
 }
@@ -847,6 +852,14 @@ mod tests {
         let (never, change) = hint(Lack::NeverToAgents { area: Area::Mail });
         assert!(!change && never.contains("Claude Code"), "{never}");
         assert!(!hint(Lack::ForPeople).1);
+        // Issue #225: a tool switched off is the assistant's settings, a tool not granted its rights.
+        let pdf = torro_ipc::tools::ToolId::Pdf;
+        let tool = |text: &'static str| trf(text, &[("tool", &"PDF")]);
+        let off = hint(Lack::ToolOff { tool: pdf });
+        assert_eq!(off, (tool("The tool {tool} is switched off in the assistant's settings."), false));
+        let not_granted = hint(Lack::Tool { tool: pdf });
+        assert_eq!(not_granted, (tool("The assistant may not use the tool {tool}."), true));
+        assert_eq!(area_name(Area::Tools), tr("Tools"));
     }
 
     #[test]

@@ -1241,6 +1241,11 @@ impl PimService {
             | Request::DeleteBot { .. }
             | Request::AskBot { .. }
             | Request::ConfirmBot { .. } => return None,
+            // No collection: the assistant's own tools have none; their files are the core's
+            // register (issue #225).
+            Request::ListTools | Request::CreatePdf { .. } | Request::OpenFile { .. } | Request::SaveFileAs { .. } => {
+                return None;
+            }
         };
         let seen = ids(self.seen(reach, role).await);
         if !seen.contains(collection) {
