@@ -1121,6 +1121,9 @@ pub enum Menu {
     Category,
     /// After one was picked: only this mail, or always for its sender (task E12.8).
     CategoryAlways,
+    /// A link of a mail the model called a fraud (task E12.9): where it goes, in plain text, and
+    /// whether to open it after all.
+    PhishingLink,
     /// The dialog that makes a task of `App::subject` (task E3.5).
     Task,
     /// The dialog that makes an event of `App::subject` (task E8.5b).
@@ -2032,6 +2035,9 @@ pub struct App<S> {
     /// The category picked in "Category ▸" while the question "Always for this sender?" stands
     /// (task E12.8); `None` at every other time.
     picked_category: Option<torro_mail::Category>,
+    /// A link of a fraudulent mail, held back until the person confirms (task E12.9); `None`
+    /// when no such question stands.
+    held_link: Option<String>,
     /// The message "Move to folder" or the question "Delete permanently?" is for (task E10.1).
     mail_subject: Option<String>,
     /// The day and time in the picker of "Pick…".
@@ -2271,6 +2277,8 @@ pub enum Message {
     AskCategory(String),
     /// Folds a group of "Categories" in the sidebar open or shut (task E12.8).
     ToggleCategoryGroup(CategoryGroup),
+    /// Opens the link held back from a fraudulent mail after all (task E12.9).
+    OpenLinkAnyway,
     /// One category picked: the question "Always for this sender?" follows.
     PickCategory(torro_mail::Category),
     /// Files the mail `id` under the category; with `remember` later mail of its sender too.
@@ -2769,6 +2777,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             open_groups: std::collections::BTreeSet::new(),
             model_ready: false,
             picked_category: None,
+            held_link: None,
             offset,
             now: Utc::now() + offset,
             size: torro_gui::window(INBOX).size,
@@ -3195,6 +3204,12 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Message::AskLane(id) => {
                 self.menu_at = MenuAt::Panel;
                 return self.ask_lane(&id);
+            }
+            Message::OpenLinkAnyway => {
+                self.menu = None;
+                if let Some(url) = self.held_link.take() {
+                    return self.open_url(url);
+                }
             }
             Message::ToggleCategoryGroup(group) => {
                 if !self.open_groups.remove(&group) {
@@ -3648,7 +3663,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             // Only web addresses become links ([`mail::pieces`]); checked again here all the same.
             Message::OpenMailLink(url) if url.starts_with("http://") || url.starts_with("https://") => {
-                return self.open_url(url);
+                return self.open_link(url);
             }
             Message::OpenMailLink(_) => {}
             Message::Text(action) => self.text.perform(action),
@@ -3675,7 +3690,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
             Message::ShowMailAs(format) => self.mail_format = format,
             Message::MailColors(scheme) => self.mail_scheme = Some(scheme),
-            Message::HtmlLink(url) if mail::opens_in_browser(&url) => return self.open_url(url),
+            Message::HtmlLink(url) if mail::opens_in_browser(&url) => return self.open_link(url),
             Message::HtmlLink(_) => {}
             Message::MailLook(Ok(look)) => self.take_look(look),
             // The core may be starting up; keep what the window shows.
@@ -4977,7 +4992,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             Some(Menu::Snooze | Menu::Lane | Menu::Hide | Menu::Move | Menu::Category | Menu::CategoryAlways) => {
                 Focus::Choices
             }
-            Some(Menu::DeleteForGood) => Focus::Question,
+            Some(Menu::DeleteForGood | Menu::PhishingLink) => Focus::Question,
             Some(Menu::Mute) => Focus::Mute,
             Some(Menu::Pick) => Focus::Picker,
             Some(Menu::Task | Menu::Event) => Focus::Task,
@@ -6502,6 +6517,34 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
     /// and "Delete" (danger), a click beside it cancels, as the other questions of the suite do;
     /// empty while it is not asked.
     fn question_layer(&self) -> Element<'_, Message> {
+        // Task E12.9: a link of a mail the model called a fraud. The question names where it
+        // goes, in plain text – the link's own words are the very thing not to trust.
+        if self.menu == Some(Menu::PhishingLink) {
+            let Some(url) = &self.held_link else { return Space::new().into() };
+            let actions = row![
+                Space::new().width(Fill),
+                widgets::text_button(None, tr("Cancel"), style::button::ghost, Some(Message::CloseMenu)),
+                widgets::text_button(None, tr("Open anyway"), style::button::danger, Some(Message::OpenLinkAnyway)),
+            ]
+            .spacing(space::s())
+            .align_y(Alignment::Center);
+            let content = column![
+                typo::text(typo::title(), tr("Open this link?")),
+                typo::text(typo::body(), tr("This mail looks like an attempt to deceive. The link goes to:"))
+                    .style(theme::text_2),
+                // The whole address, wrapped, never shortened: shortening is how such links hide.
+                typo::text(typo::body_strong(), url.as_str()).wrapping(Wrapping::WordOrGlyph),
+                actions,
+            ]
+            .spacing(space::l());
+            let card = container(content).padding(space::xl()).width(Fill).style(style::container::popover);
+            return widgets::modal(
+                Space::new().width(Fill).height(Fill),
+                card,
+                widgets::POPOVER_WIDTH,
+                Message::CloseMenu,
+            );
+        }
         if self.menu != Some(Menu::DeleteForGood) {
             return Space::new().into();
         }
@@ -6659,7 +6702,7 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
                 Some(widgets::floating(&hide_at, dialog, self.choice_menu(tr("Move to folder")), Message::CloseMenu))
             }
             // A question over the whole window ([`App::question_layer`]), not at a button.
-            Some(Menu::DeleteForGood) => None,
+            Some(Menu::DeleteForGood | Menu::PhishingLink) => None,
             // The menus of the reader's command bar (task E11.3): Reply's under its cell's left edge,
             // "…"'s under its right one.
             Some(menu @ (Menu::Reply | Menu::More)) => self.mail_menu(menu).map(|card| {
@@ -7268,6 +7311,36 @@ impl<S: InboxSource + MailSource + StatsSource + HubSource + SuggestSource + 'st
             }
         }
         entries
+    }
+
+    /// A link of the mail being read (task E12.9). From a mail the model called a fraud it is
+    /// held back: the question says where it goes, in plain text, and only "Open anyway" opens
+    /// it. Every other mail opens as before – the one change is the extra click.
+    fn open_link(&mut self, url: String) -> Task<Message> {
+        if !self.reading_a_fraud() {
+            return self.open_url(url);
+        }
+        self.held_link = Some(url);
+        self.menu = Some(Menu::PhishingLink);
+        Task::none()
+    }
+
+    /// The mail open in the reader is one the model called a fraud ([`Category::Phishing`]).
+    ///
+    /// **Either** the loaded mail or the row of the list is enough: asking once too often costs
+    /// a click, opening a fraudulent link once too often costs more. So a list that is a moment
+    /// behind the mail still holds the link back.
+    fn reading_a_fraud(&self) -> bool {
+        let Some(letter) = &self.letter else { return false };
+        let fraud = |held: Option<torro_mail::MailCategory>| {
+            held.is_some_and(|held| held.category == torro_mail::Category::Phishing)
+        };
+        let of_list = self.messages.iter().find(|message| message.id == letter.id).and_then(|m| m.category);
+        let of_mail = match &letter.loaded {
+            Some(Ok(mail)) => mail.summary.category,
+            _ => None,
+        };
+        fraud(of_mail) || fraud(of_list)
     }
 
     /// The colour of the category group at `at` in `Palette::category` (task E12.8).
@@ -10828,6 +10901,54 @@ mod tests {
             let _ = app.update(Message::HtmlLink(url.into()));
         }
         assert_eq!(app.sent.len(), before, "nothing else opens");
+    }
+
+    /// Task E12.9: a link of a mail the model called a fraud opens nothing – the question names
+    /// where it goes, and only "Open anyway" opens it. Both ways into the browser ask; every
+    /// other mail opens as before. Nothing is hidden, moved or deleted.
+    #[test]
+    fn a_link_of_a_fraudulent_mail_asks_before_it_opens() {
+        let fraud = "https://bank-sicherheit.example/verify?id=9";
+        for ask in [Message::HtmlLink(fraud.to_owned()), Message::OpenMailLink(fraud.to_owned())] {
+            let mut app = reading_mail("f:private-inbox", "m:p2");
+            // The mail the reader shows is a fraud.
+            for message in &mut app.messages {
+                if message.id == "m:p2" {
+                    message.category = Some(torro_mail::MailCategory::by_model(torro_mail::Category::Phishing, 0.97));
+                }
+            }
+            let before = app.sent.len();
+            let _ = app.update(ask);
+            assert_eq!(app.sent.len(), before, "nothing opened yet");
+            assert_eq!(app.menu, Some(Menu::PhishingLink), "the question stands");
+            assert_eq!(app.held_link.as_deref(), Some(fraud), "the whole address, to show in plain text");
+            let _ = app.view();
+
+            // Cancelling opens nothing and lets go of the link.
+            let _ = app.update(Message::CloseMenu);
+            assert_eq!(app.sent.len(), before, "cancelled");
+
+            let _ = app.update(Message::HtmlLink(fraud.to_owned()));
+            let _ = app.update(Message::OpenLinkAnyway);
+            assert_eq!(app.sent.last(), Some(&Sent::Link(fraud.to_owned())), "exactly that address");
+            assert_eq!(app.menu, None);
+            assert_eq!(app.held_link, None);
+        }
+
+        // Every other mail opens as before, and the scheme check still comes first.
+        let mut plain = reading_mail("f:private-inbox", "m:p2");
+        let _ = plain.update(Message::HtmlLink("https://shop.example/sale".into()));
+        assert_eq!(plain.sent.last(), Some(&Sent::Link("https://shop.example/sale".into())));
+        let mut fraudulent = reading_mail("f:private-inbox", "m:p2");
+        for message in &mut fraudulent.messages {
+            if message.id == "m:p2" {
+                message.category = Some(torro_mail::MailCategory::by_model(torro_mail::Category::Phishing, 0.97));
+            }
+        }
+        let before = fraudulent.sent.len();
+        let _ = fraudulent.update(Message::HtmlLink("javascript:alert(1)".into()));
+        assert_eq!(fraudulent.sent.len(), before, "a scheme that never opens stays refused");
+        assert_eq!(fraudulent.menu, None, "and asks nothing");
     }
 
     /// No mail window any more (task M9.7): Enter and two quick presses on a row of a mail with HTML

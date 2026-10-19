@@ -3103,7 +3103,16 @@ E12.10 braucht E12.5 und E12.6
   (Bilder im Bericht). Übersetzungen im Bericht.
 
 ### E12.9 Phishing: Band im Leser und entschärfte Links
-- [ ] erledigt
+- [x] erledigt (2026-10-19): `widgets::warning_band` (Schild in der Fehlerfarbe, getönte Fläche)
+  über der Nachricht, nur bei `Category::Phishing`; beide Link-Wege (`Message::HtmlLink` und
+  `Message::OpenMailLink`) gehen über `App::open_link` und halten den Link zurück, die Rückfrage
+  nennt die **ganze** Adresse im Klartext, erst „Open anyway" öffnet. Die Schema-Prüfung
+  (`javascript:`, `file:`) bleibt davor. Entscheidung dabei: Es reicht, wenn **eine** der beiden
+  Quellen (geladene Mail oder Zeile der Liste) Betrug sagt – einmal zu viel fragen kostet einen
+  Klick, einen Betrugslink einmal zu viel öffnen kostet mehr. Versteckt, verschoben oder gelöscht
+  wird nichts.
+  **Sichtprüfung steht aus**, aus demselben Grund wie bei E12.8 (keine Screenshots auf dieser
+  Maschine).
 - **Modell:** Opus · **Braucht:** E12.8 · **Dateien:**
   `crates/torroinbox/src/{app,mail}.rs`, `crates/torro-core/src/i18n/de.rs`
 - Skill `torro-design` laden. Nicht parallel zu E12.8.

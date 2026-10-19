@@ -2325,6 +2325,15 @@ fn head_with<'a>(
         // which draws this head without the subject.
         if let Some(held) = summary.category {
             head = head.push(widgets::chip_row(vec![category_pill(held)]));
+            // Phishing (task E12.9): a band over the message, and its links ask before they open.
+            // Nothing is hidden, moved or deleted – the one change is the extra click.
+            if held.category == torro_mail::Category::Phishing {
+                head = head.push(widgets::warning_band(
+                    tr("This looks like an attempt to deceive."),
+                    tr("Links here open only after you confirm, and you see where each one goes. \
+                        The mail itself is untouched."),
+                ));
+            }
         }
     }
     head = head.push(pill_row(pills(reading, entry), anchors));

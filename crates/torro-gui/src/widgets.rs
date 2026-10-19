@@ -3226,6 +3226,36 @@ pub fn error_state<'a, M: Clone + 'a>(what: impl IntoFragment<'a>, retry: M) -> 
     center(content).padding(space::xl()).into()
 }
 
+/// A band over the content of a message that warns about it (task E12.9, `docs/kategorien.md`):
+/// the shield in the error colour, `what` in `BODY_STRONG` and `why` under it in `text_2`, on a
+/// surface tinted with the error colour and a border of it.
+///
+/// A warning, never a wall: what it stands over stays readable, nothing is hidden or moved. The
+/// only thing the band changes is that the links below it ask first.
+pub fn warning_band<'a, M: 'a>(what: impl IntoFragment<'a>, why: impl IntoFragment<'a>) -> Element<'a, M> {
+    let shield = icon(Icon::ShieldAlert, icon::SIZE).style(|t, _| svg::Style { color: Some(palette(t).error_text) });
+    let words = column![
+        typo::text(typo::body_strong(), what),
+        typo::text(typo::meta(), why).style(theme::text_2).wrapping(Wrapping::WordOrGlyph),
+    ]
+    .spacing(space::xs())
+    .width(Fill);
+    let content = row![shield, words].spacing(space::m()).align_y(Alignment::Start);
+    container(content)
+        .width(Fill)
+        .padding(space::m())
+        .style(|t| {
+            let p = palette(t);
+            container::Style {
+                background: Some(p.error.scale_alpha(0.12).into()),
+                text_color: Some(p.error_text),
+                border: border::rounded(radius::sm()).color(p.error).width(LINE),
+                ..container::Style::default()
+            }
+        })
+        .into()
+}
+
 /// The empty state of a list or view: what appears here (`title`, `BODY_STRONG`) and what to do
 /// (`hint`, `text_2`), centred.
 pub fn empty_state<'a, M: 'a>(title: &'a str, hint: &'a str) -> Element<'a, M> {

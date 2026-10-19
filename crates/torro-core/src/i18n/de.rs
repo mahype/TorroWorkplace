@@ -3862,6 +3862,18 @@ pub(super) static TABLE: &[(&str, &str)] = &[
     ("Couldn't change the category.", "Die Kategorie konnte nicht geändert werden."),
     ("No mail of this kind.", "Keine E-Mails dieser Art."),
     ("Mail sorted into it shows up here.", "Hier erscheinen E-Mails, die so eingeordnet wurden."),
+    // Phishing: the band in the reader and the question before a link (E12.9).
+    ("This looks like an attempt to deceive.", "Das sieht nach einem Täuschungsversuch aus."),
+    (
+        "Links here open only after you confirm, and you see where each one goes. The mail itself is untouched.",
+        "Links öffnen hier erst nach deiner Bestätigung, und du siehst, wohin jeder führt.          An der E-Mail selbst ändert sich nichts.",
+    ),
+    ("Open this link?", "Diesen Link öffnen?"),
+    (
+        "This mail looks like an attempt to deceive. The link goes to:",
+        "Diese E-Mail sieht nach einem Täuschungsversuch aus. Der Link führt zu:",
+    ),
+    ("Open anyway", "Trotzdem öffnen"),
     // The Rules page of the Notification Hub shows a kept category too (E12.2).
     ("Filed as “{category}”", "Abgelegt als „{category}“"),
     ("Filed {n} since {day}", "{n} abgelegt seit {day}"),
