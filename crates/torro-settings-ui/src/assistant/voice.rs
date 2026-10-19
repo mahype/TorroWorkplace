@@ -16,7 +16,9 @@
 //! listener, which takes a moment, so that load still finds it off and the row would read
 //! "Starting …" for ever. The section therefore asks again, up to [`VOICE_POLLS`] times every
 //! [`VOICE_POLL`], until the listener reports what it does ([`subscription`], [`Message::Poll`]) –
-//! the way the control centre's Assistant page did it before task S.17.
+//! the way the control centre's Assistant page did it before task S.17. A load that failed stops
+//! the clock at once, as it did there: asking a daemon that does not answer only makes its message
+//! blink.
 //!
 //! "Say something" ([`Message::TestVoice`]) is the one thing here whose answer is the point:
 //! `settings.test_voice` answers with what was understood. It goes out as [`crate::Action::Ask`],
@@ -110,6 +112,15 @@ pub fn update(state: &mut State, message: Message, data: &Data) -> Action {
         Message::Check => Action::Send(Vec::new()),
         Message::Poll => {
             let Some(on) = state.expected else { return Action::None };
+            // The daemon did not answer: asking again would only fail again, and every ask takes
+            // the notice away and puts it back, which makes it blink. The control centre set
+            // `polls = 0` on a failed status for the same reason (task C.9). "Installed
+            // something?" asks again by hand once the daemon is back.
+            if data.error.is_some() {
+                state.expected = None;
+                state.polls = 0;
+                return Action::None;
+            }
             // Followed, or asked often enough: let the clock stop and show what last came.
             if followed(on, data.voice.as_ref()) || state.polls == 0 {
                 state.expected = None;
@@ -470,6 +481,25 @@ mod tests {
         assert_eq!(subscription(&state).units(), 1);
         assert!(matches!(update(&mut state, Message::Poll, &starting), Act::None), "off is off");
         assert_eq!(subscription(&state).units(), 0);
+    }
+
+    /// Found in the second review of #210: a load that failed stops the clock at once, the way
+    /// the control centre set `polls = 0` on a failed status. Otherwise it would ask five times
+    /// over ten seconds at a daemon that does not answer, and the message of every ask would take
+    /// the notice away and put it back.
+    #[tokio::test]
+    async fn a_daemon_that_does_not_answer_stops_the_clock() {
+        let starting = Data { voice: Some(status(VoiceState::Off, None)), ..data().await };
+        let mut state = State::default();
+        let _ = update(&mut state, Message::Enabled(true), &starting);
+        assert_eq!(subscription(&state).units(), 1);
+
+        // The next load came back with nothing but the problem.
+        let offline = Data { error: Some("the core is not running".into()), voice: None, ..starting.clone() };
+        assert!(matches!(update(&mut state, Message::Poll, &offline), Act::None), "no second try");
+        assert_eq!(subscription(&state).units(), 0, "and no clock");
+        // By hand it still asks, for when the daemon is back.
+        assert_eq!(update(&mut state, Message::Check, &offline), Act::Send(Vec::new()));
     }
 
     /// It does not ask for ever: after [`VOICE_POLLS`] tries the row shows what last came, and
